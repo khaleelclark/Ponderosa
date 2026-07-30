@@ -1,12 +1,14 @@
 import { isUtf8 } from "node:buffer";
 import { execFile } from "node:child_process";
-import { promises as fs } from "node:fs";
-import path from "node:path";
 import type {
   WorkspaceChangeDto,
   WorkspaceFileReviewDto,
   WorkspaceStatusDto,
 } from "@ponderosa/core";
+import {
+  listSecureDirectory,
+  readSecureFileAsync,
+} from "@ponderosa/native-host";
 import {
   FILE_REFERENCE_IGNORED_SEGMENTS,
   MAX_FILE_BYTES,
@@ -30,7 +32,13 @@ function runGit(root: string, args: string[]): Promise<GitResult> {
   return new Promise((resolve, reject) => {
     execFile(
       "git",
-      ["-c", "color.ui=false", ...args],
+      [
+        "--no-optional-locks",
+        "-c", "color.ui=false",
+        "-c", "core.fsmonitor=false",
+        "-c", "core.untrackedCache=false",
+        ...args,
+      ],
       { cwd: root, encoding: "utf8", timeout: 8_000, maxBuffer: WORKSPACE_REVIEW_MAX_BYTES },
       (error, stdout, stderr) => {
         if (error && typeof error.code === "string") return reject(error);
@@ -68,6 +76,11 @@ export function parseGitStatus(output: string): WorkspaceChangeDto[] {
 async function workspaceStatus(projectId: string, root: string): Promise<WorkspaceStatusDto> {
   const generatedAt = new Date().toISOString();
   try {
+    const retainedGitDirectory = listSecureDirectory({ root })
+      ?.some((entry) => entry.name === ".git" && entry.kind === "directory");
+    if (!retainedGitDirectory) {
+      return { projectId, isGitRepository: false, generatedAt, changes: [] };
+    }
     const inside = await runGit(root, ["rev-parse", "--is-inside-work-tree"]);
     if (inside.exitCode !== 0 || inside.stdout.trim() !== "true") return { projectId, isGitRepository: false, generatedAt, changes: [] };
     const [status, branch, head] = await Promise.all([
@@ -91,35 +104,35 @@ async function workspaceStatus(projectId: string, root: string): Promise<Workspa
 async function workspaceFile(projectId: string, root: string, input: string | undefined): Promise<WorkspaceFileReviewDto> {
   const relativePath = safeRelativePath(input);
   if (!relativePath || !isWorkspaceReviewPathAllowed(relativePath)) throw new Error("path is excluded from workspace review");
-  const rootReal = await fs.realpath(root);
-  const candidate = path.resolve(rootReal, relativePath);
-  if (!candidate.startsWith(`${rootReal}${path.sep}`)) throw new Error("path escapes project");
-
-  const [staged, unstaged] = await Promise.all([
-    runGit(rootReal, ["diff", "--cached", "--no-ext-diff", "--unified=3", "--", relativePath]),
-    runGit(rootReal, ["diff", "--no-ext-diff", "--unified=3", "--", relativePath]),
-  ]);
   let exists = false;
   let content: string | undefined;
-  let truncated = staged.stdout.length + unstaged.stdout.length >= WORKSPACE_REVIEW_MAX_BYTES;
-  try {
-    const resolved = await fs.realpath(candidate);
-    if (resolved !== rootReal && !resolved.startsWith(`${rootReal}${path.sep}`)) throw new Error("path escapes project");
-    const stat = await fs.stat(resolved);
-    exists = stat.isFile();
-    if (exists && stat.size <= MAX_FILE_BYTES) {
-      const body = await fs.readFile(resolved);
+  let truncated = false;
+  const segments = relativePath.split("/");
+  const leaf = segments.pop()!;
+  const entry = listSecureDirectory({
+    root,
+    relativePath: segments.join("/"),
+  })?.find((candidate) =>
+    candidate.name === leaf && candidate.kind === "file");
+  if (entry?.size !== undefined) {
+    exists = true;
+    if (entry.size <= MAX_FILE_BYTES) {
+      const body = await readSecureFileAsync({
+        root,
+        relativePath,
+        maxBytes: MAX_FILE_BYTES,
+        expectedSize: entry.size,
+      });
+      if (!body) throw new Error("workspace file changed during secure read");
       if (isUtf8(body)) content = body.toString("utf8");
-    } else if (exists) {
+    } else {
       truncated = true;
     }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  const stagedDiff = staged.stdout;
-  const unstagedDiff = unstaged.stdout;
-  let diff = [stagedDiff, unstagedDiff].filter(Boolean).join("\n");
-  if (!diff && exists && content !== undefined) {
+  const stagedDiff = "";
+  const unstagedDiff = "";
+  let diff = "";
+  if (exists && content !== undefined) {
     const lines = content.split("\n");
     diff = [`--- /dev/null`, `+++ b/${relativePath}`, `@@ -0,0 +1,${lines.length} @@`, ...lines.map((line) => `+${line}`)].join("\n");
     if (diff.length > WORKSPACE_REVIEW_MAX_BYTES) {

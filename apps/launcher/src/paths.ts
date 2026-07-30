@@ -53,6 +53,15 @@ export function resolveLauncherPaths(input: {
   };
 }
 
+export function launcherStateLocation(
+  paths: LauncherPaths,
+): Pick<LauncherState, "dataDir" | "installRoot"> {
+  return {
+    dataDir: paths.applicationDataDir,
+    installRoot: paths.installRoot,
+  };
+}
+
 export function ensureDataLayout(paths: LauncherPaths): void {
   for (const directory of [
     paths.dataDir,
@@ -84,6 +93,12 @@ export function readLauncherState(pathname: string): LauncherState | undefined {
     const parsed = JSON.parse(readFileSync(pathname, "utf8")) as LauncherState;
     if (parsed.schemaVersion !== 1 ||
         typeof parsed.controlToken !== "string" || parsed.controlToken.length < 32 ||
+        (parsed.supervisorPid !== undefined &&
+          (!Number.isSafeInteger(parsed.supervisorPid) || parsed.supervisorPid <= 0)) ||
+        (parsed.supervisorGeneration !== undefined &&
+          (typeof parsed.supervisorGeneration !== "string" ||
+            !/^[0-9a-f-]{36}$/iu.test(parsed.supervisorGeneration))) ||
+        ((parsed.supervisorPid === undefined) !== (parsed.supervisorGeneration === undefined)) ||
         !Number.isSafeInteger(parsed.pid) || parsed.pid < 0 ||
         !Number.isSafeInteger(parsed.port) || parsed.port < 1 || parsed.port > 65_535 ||
         parsed.host !== "127.0.0.1" ||

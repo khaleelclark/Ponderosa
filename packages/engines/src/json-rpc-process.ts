@@ -1,8 +1,11 @@
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import type { ProviderRootExitDetail, RuntimeProcessHandle } from "@ponderosa/core";
+import { spawnContainedCli } from "./contained-spawn.js";
 import type { SpawnFn } from "./process.js";
-import { assertPersistentRuntimeHostingSupported, processGroupAlive, terminateProcessGroup } from "./process-termination.js";
+import { processGroupAlive, terminateProcessGroup } from "./process-termination.js";
+import type { NativeProcessTreeAuthority } from "./process-termination.js";
 import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, LineBuffer } from "./jsonl.js";
+import { runtimeEnvironment } from "./runtime-environment.js";
 
 type RpcId = number;
 type RpcMessage = {
@@ -74,17 +77,23 @@ export class JsonRpcProcess {
   private stderrTail = "";
   private closed = false;
   private closePromise?: Promise<void>;
+  private readonly nativeAuthority?: NativeProcessTreeAuthority;
 
   readonly notifications: AsyncIterable<JsonRpcNotification> = this.queue;
 
   constructor(private readonly opts: JsonRpcProcessOptions) {
-    assertPersistentRuntimeHostingSupported();
-    this.child = (opts.spawnFn ?? nodeSpawn)(opts.bin, opts.args, {
+    const spawnFn = opts.spawnFn ?? nodeSpawn;
+    const environment = runtimeEnvironment(opts.environment);
+    const contained = spawnContainedCli({
+      bin: opts.bin,
+      args: opts.args,
       cwd: opts.cwd,
-      env: { ...process.env, ...opts.environment },
-      stdio: ["pipe", "pipe", "pipe"],
-      detached: process.platform !== "win32",
+      env: environment,
+      stdin: "pipe",
+      spawnFn,
     });
+    this.child = contained.child;
+    this.nativeAuthority = contained.authority;
     opts.onRuntimeSpawned(this);
     let rootExitReported = false;
     const reportRootExit = (detail?: ProviderRootExitDetail) => {
@@ -169,7 +178,7 @@ export class JsonRpcProcess {
   }
 
   isAlive(): boolean {
-    return processGroupAlive(this.child);
+    return this.nativeAuthority?.isAlive() ?? processGroupAlive(this.child);
   }
 
   close(): Promise<void> {
@@ -178,7 +187,7 @@ export class JsonRpcProcess {
     const attempt = terminateProcessGroup(this.child, {
       label: this.opts.bin,
       termGraceMs: this.opts.killGraceMs ?? 3_000,
-    });
+    }, this.nativeAuthority);
     const shared = attempt.catch((error) => {
       // A failed attempt keeps the process handle live. Later cleanup retries
       // may re-signal it instead of inheriting a permanently rejected promise.

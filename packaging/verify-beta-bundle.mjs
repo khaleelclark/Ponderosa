@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { auditPortableSymlinkTree } from "./qualification/symlink-portability.mjs";
 
 function option(name, fallback) {
   const inline = process.argv.find((argument) => argument.startsWith(`--${name}=`));
@@ -24,36 +26,50 @@ const required = [
   path.join(bundle, "app", "launcher", "dist", "cli.js"),
   path.join(bundle, "app", "server", "dist", "main.js"),
   path.join(bundle, "app", "web", "dist", "index.html"),
-  path.join(bundle, "migrations"),
-  path.join(bundle, "starter-pack", "expected-results.json"),
+  path.join(bundle, "schema", "0000_current_schema.sql"),
+  path.join(bundle, "qualification", "verify-installed-bundle.mjs"),
   path.join(bundle, "docs", "wiki", "getting-started.md"),
 ];
 if (manifest.target.platform === "win32") required.push(path.join(bundle, "ponderosa.vbs"));
 for (const pathname of required) {
   if (!existsSync(pathname)) throw new Error(`Bundle is incomplete: ${pathname}`);
 }
+auditPortableSymlinkTree(bundle, { label: "verified native beta bundle" });
 
-if (manifest.target.platform === process.platform && manifest.target.arch === process.arch) {
-  const result = spawnSync(
-    path.join(bundle, "runtime", nodeName),
-    [
-      path.join(bundle, "app", "launcher", "dist", "cli.js"),
-      "version",
-      "--install-root", bundle,
-      "--json",
-    ],
-    { encoding: "utf8", timeout: 10_000 },
-  );
-  if (result.status !== 0) {
-    throw new Error(`Bundled launcher failed:\n${result.stderr || result.stdout}`);
-  }
-  const reported = JSON.parse(result.stdout);
-  if (reported.commit !== manifest.commit || reported.version !== manifest.version) {
-    throw new Error("Bundled launcher identity does not match its manifest.");
-  }
-} else {
-  process.stdout.write(
-    `Static verification only: bundle targets ${manifest.target.platform}/${manifest.target.arch}; host is ${process.platform}/${process.arch}.\n`,
+if (manifest.target.platform !== process.platform || manifest.target.arch !== process.arch) {
+  throw new Error(
+    `Native verification requires ${manifest.target.platform}/${manifest.target.arch}; ` +
+    `this host is ${process.platform}/${process.arch}. Static cross-verification is not release evidence.`,
   );
 }
-process.stdout.write(`Verified Ponderosa ${manifest.version} (${manifest.commit}) at ${bundle}\n`);
+if (!/^v22\.\d+\.\d+(?:[-+].*)?$/u.test(manifest.nodeVersion)) {
+  throw new Error(`Manifest does not declare a supported Node 22 runtime: ${manifest.nodeVersion ?? "missing"}`);
+}
+if (manifest.databaseSchemaVersion !== "0000_current_schema.sql") {
+  throw new Error(`Unexpected launch-baseline schema: ${manifest.databaseSchemaVersion ?? "missing"}`);
+}
+const schemaHash = createHash("sha256")
+  .update(readFileSync(path.join(bundle, "schema", manifest.databaseSchemaVersion)))
+  .digest("hex");
+if (schemaHash !== manifest.databaseSchemaSha256) {
+  throw new Error("Bundled launch-baseline schema does not match its manifest identity.");
+}
+
+const reportPath = path.resolve(option(
+  "report",
+  path.join(path.dirname(bundle), "qualification-report.json"),
+));
+const result = spawnSync(
+  path.join(bundle, "runtime", nodeName),
+  [
+    path.join(bundle, "qualification", "verify-installed-bundle.mjs"),
+    "--install-root", bundle,
+    "--report", reportPath,
+  ],
+  { encoding: "utf8", timeout: 60_000, windowsHide: true },
+);
+if (result.status !== 0) {
+  throw new Error(`Installed-bundle qualification failed:\n${result.stderr || result.stdout}`);
+}
+process.stdout.write(result.stdout);
+process.stdout.write(`Natively verified Ponderosa ${manifest.version} (${manifest.commit}) at ${bundle}\n`);

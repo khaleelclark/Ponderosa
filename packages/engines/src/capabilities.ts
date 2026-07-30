@@ -4,7 +4,9 @@ import { promisify } from "node:util";
 import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 import type { EngineCapabilities, EngineCapabilityDiscoveryOptions, EngineCommand, EngineComposerCapability, EngineMcpServer } from "@ponderosa/core";
+import { spawnContainedCli } from "./contained-spawn.js";
 import { runtimeProcessHandle } from "./process-termination.js";
+import { runtimeEnvironment } from "./runtime-environment.js";
 
 const execFile = promisify(nodeExecFile);
 
@@ -527,12 +529,20 @@ export async function discoverCliMcps(
 ): Promise<EngineMcpServer[]> {
   if (lifecycle) {
     if (lifecycle.signal.aborted) return parse("");
-    const child = spawnFn(bin, args, {
+    const spawned = spawnContainedCli({
+      bin,
+      args,
       cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: process.platform !== "win32",
+      env: runtimeEnvironment(),
+      stdin: "ignore",
+      spawnFn,
     });
-    const handle = runtimeProcessHandle(child, { label: `${bin} capability discovery`, termGraceMs: killGraceMs });
+    const child = spawned.child;
+    const handle = runtimeProcessHandle(
+      child,
+      { label: `${bin} capability discovery`, termGraceMs: killGraceMs },
+      spawned.authority,
+    );
     lifecycle.onRuntimeSpawned(handle);
     let output = "";
     const append = (chunk: Buffer | string): void => {

@@ -19,11 +19,14 @@ import type {
 } from "@ponderosa/core";
 import { DEFAULT_ASSET_LIMITS } from "@ponderosa/core";
 import { AgentStore, WorkspaceStore } from "@ponderosa/agents";
+import { ClaudeAdapter } from "@ponderosa/engines";
+import { secureFileAuthoritySupported } from "@ponderosa/native-host";
 import { createServer, type EngineRegistration } from "../src/app.js";
 
 class BehavioralAdapter implements Adapter {
   readonly id = "codex";
   readonly displayName = "Behavioral adapter";
+  seedCalls = 0;
 
   listModels() {
     return [{ id: "test-model", label: "Test model" }];
@@ -34,6 +37,7 @@ class BehavioralAdapter implements Adapter {
   }
 
   async *seed(_options: SeedOptions): AsyncIterable<AgentEvent> {
+    this.seedCalls += 1;
     yield { type: "turn_done" };
   }
 
@@ -103,7 +107,7 @@ describe("server public API behavior", () => {
     });
 
     const ready = await app.inject({ method: "GET", url: "/api/ready" });
-    const descriptorFilesystemAvailable = process.platform === "linux";
+    const descriptorFilesystemAvailable = secureFileAuthoritySupported();
     expect(ready.statusCode).toBe(descriptorFilesystemAvailable ? 200 : 503);
     expect(ready.json()).toMatchObject({
       status: descriptorFilesystemAvailable ? "ready" : "not_ready",
@@ -118,6 +122,43 @@ describe("server public API behavior", () => {
       },
       runtimes: [{ id: "codex", authenticated: true }],
     });
+  });
+
+  it("survives a missing Claude executable during model discovery", async () => {
+    const project = store.createProject({
+      label: "Missing Claude",
+      hostPath: repoDir,
+      defaultEngine: "claude",
+    });
+    const app = server({
+      dataDir,
+      store,
+      engines: [{
+        adapter: new ClaudeAdapter({
+          bin: path.join(dataDir, "missing-claude"),
+          killGraceMs: 0,
+        }),
+        authStatus: async () => ({
+          authenticated: false,
+          detail: "Claude executable is unavailable",
+        }),
+      }],
+      logger: false,
+    });
+
+    const discovery = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/engine-models/claude?refresh=true`,
+    });
+    expect(discovery.statusCode).toBe(503);
+    expect(discovery.json()).toEqual(expect.objectContaining({
+      error: expect.any(String),
+    }));
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const health = await app.inject({ method: "GET", url: "/api/health" });
+    expect(health.statusCode).toBe(200);
+    expect(health.json()).toMatchObject({ status: "ok", service: "ponderosa" });
   });
 
   it("validates and persists the workspace-wide Run concurrency limit", async () => {
@@ -352,6 +393,114 @@ describe("server public API behavior", () => {
     expect(fallback.body).toContain("<main>app</main>");
     expect(apiMiss.statusCode).toBe(404);
     expect(apiMiss.body).not.toContain("<main>app</main>");
+  });
+
+  it("allows unauthenticated PWA updates without exposing APIs or SPA routes", async () => {
+    const webDist = mkdtempSync(path.join(tmpdir(), "ponderosa-server-pwa-"));
+    extraDirectories.push(webDist);
+    mkdirSync(path.join(webDist, "static", "js"), { recursive: true });
+    mkdirSync(path.join(webDist, "icons"), { recursive: true });
+    for (const [relative, body] of [
+      ["index.html", "<main>current shell</main>"],
+      ["sw.js", "self.addEventListener('install', () => undefined);"],
+      ["register-sw.js", "navigator.serviceWorker.register('/sw.js');"],
+      ["push-handler.js", "self.addEventListener('push', () => undefined);"],
+      ["manifest.webmanifest", "{}"],
+      [path.join("static", "js", "current.123.js"), "console.log('current');"],
+      [path.join("icons", "app-icon.png"), "fixture"],
+    ]) {
+      writeFileSync(path.join(webDist, relative), body, "utf8");
+    }
+    const app = server({
+      dataDir,
+      store,
+      engines,
+      webDist,
+      logger: false,
+      authToken: "api-secret",
+      launcherSecurity: { controlToken: "launcher-secret" },
+    });
+
+    for (const url of [
+      "/index.html",
+      "/sw.js",
+      "/register-sw.js",
+      "/push-handler.js",
+      "/manifest.webmanifest",
+      "/static/js/current.123.js",
+      "/icons/app-icon.png",
+    ]) {
+      const response = await app.inject({ method: "GET", url });
+      expect(response.statusCode, url).toBe(200);
+    }
+
+    const updateHead = await app.inject({ method: "HEAD", url: "/sw.js?update=1" });
+    expect(updateHead.statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/" })).statusCode).toBe(401);
+    expect((await app.inject({ method: "GET", url: "/agents/stale-route" })).statusCode).toBe(401);
+    expect((await app.inject({ method: "GET", url: "/api/projects" })).statusCode).toBe(401);
+    expect((await app.inject({ method: "POST", url: "/sw.js" })).statusCode).toBe(401);
+    expect((await app.inject({ method: "GET", url: "/api-lookalike.js" })).statusCode).toBe(401);
+  });
+
+  it("lets the scheduler dispatch Agent work in launcher-authenticated mode", async () => {
+    const adapter = new BehavioralAdapter();
+    const project = store.createProject({
+      label: "Installed",
+      hostPath: repoDir,
+      defaultEngine: "codex",
+    });
+    const agent = store.createAgent(project.id, {
+      title: "Installed Agent",
+      engine: "codex",
+      conversationId: project.lastConversationId,
+    });
+    const app = server({
+      dataDir,
+      store,
+      engines: [{
+        adapter,
+        authStatus: async () => ({ authenticated: true, detail: "test subscription" }),
+      }],
+      logger: false,
+      launcherSecurity: { controlToken: "launcher-secret" },
+      communicationV3: { pollMs: 5 },
+    });
+
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      headers: { "x-ponderosa-v3-dispatch": "forged-dispatch-key" },
+      payload: { text: "Bypass launcher authentication." },
+    })).statusCode).toBe(401);
+
+    const bootstrap = await app.inject({
+      method: "POST",
+      url: "/api/launcher/bootstrap",
+      headers: { authorization: "Bearer launcher-secret" },
+    });
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/launcher/session-exchange",
+      payload: { token: bootstrap.json<{ token: string }>().token },
+    });
+    const cookie = exchange.headers["set-cookie"];
+    expect(exchange.statusCode).toBe(204);
+    expect(typeof cookie).toBe("string");
+
+    const sent = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      headers: { cookie: cookie as string },
+      payload: { text: "Confirm installed dispatch." },
+    });
+    expect(sent.statusCode).toBe(202);
+
+    const deadline = Date.now() + 2_000;
+    while (adapter.seedCalls === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(adapter.seedCalls).toBe(1);
   });
 
   it("reports engine authentication without invoking provider credentials", async () => {
@@ -709,25 +858,31 @@ describe("server public API behavior", () => {
     })).statusCode).toBe(503);
   });
 
-  it.skipIf(process.platform === "linux")(
-    "fails artifact-dependent Agent creation closed when descriptor-relative access is unavailable",
-    async () => {
-      const project = store.createProject({
-        label: "Unsupported artifact filesystem",
-        hostPath: repoDir,
-        defaultEngine: "codex",
-      });
-      const app = server();
-      const response = await app.inject({
-        method: "POST",
-        url: `/api/projects/${project.id}/agents`,
-        payload: { title: "Blocked", engine: "codex" },
-      });
-      expect(response.statusCode).toBe(503);
-      expect(response.json()).toEqual({
-        error: expect.stringContaining("artifact filesystem requires Linux"),
-      });
-      expect(store.listAgents(project.id)).toHaveLength(0);
-    },
-  );
+  it("fails artifact-dependent Agent creation closed when secure file authority is unavailable", async () => {
+    const project = store.createProject({
+      label: "Unsupported artifact filesystem",
+      hostPath: repoDir,
+      defaultEngine: "codex",
+    });
+    const app = server({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      artifactFilesystemCapabilityProbe: () => ({
+        ok: false,
+        detail: "test secure artifact filesystem authority is unavailable",
+      }),
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/agents`,
+      payload: { title: "Blocked", engine: "codex" },
+    });
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({
+      error: expect.stringContaining("test secure artifact filesystem authority is unavailable"),
+    });
+    expect(store.listAgents(project.id)).toHaveLength(0);
+  });
 });

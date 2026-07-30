@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type {
   AgentDto,
@@ -15,8 +15,8 @@ import type {
   TriggerSourceKind,
 } from "@ponderosa/core";
 import {
-  publishManagedArtifactContents,
-  readManagedArtifactContent,
+  openManagedArtifactContent,
+  publishManagedArtifactContentsAsync,
   type AgentStore,
   type CoordinationV3Store,
 } from "@ponderosa/agents";
@@ -42,6 +42,12 @@ import {
   parseCreateTrigger,
   triggerObject,
 } from "../trigger-validation.js";
+import {
+  decodePortableArtifact,
+  encodePortableArtifact,
+  parsePortablePackageUpload,
+  stringifyPortablePackage,
+} from "../agent-package-codec.js";
 
 interface AgentPackageRoutesContext {
   dataDir: string;
@@ -165,27 +171,53 @@ export function registerAgentPackageRoutes(
           ));
       const artifacts = await Promise.all(projectArtifacts.map(async (artifact) => {
         const runtimeArtifact = coordinationV3.runtimeArtifact(artifact.id);
-        const runtime = runtimeArtifact?.projectId === agent.projectId
-          ? assets.authoritativeRuntimeArtifact(agent.projectId, runtimeArtifact)
+        const runtimeIdentity = runtimeArtifact?.projectId === agent.projectId &&
+          assets.authoritativeRuntimeArtifactMetadata(
+            agent.projectId,
+            runtimeArtifact,
+          )
+          ? {
+              size: runtimeArtifact.byteLength,
+              sha256: runtimeArtifact.blobHash,
+            }
           : undefined;
-        const generated = artifact.kind === "generated_file"
-          ? assets.authoritativeGeneratedArtifact(agent.projectId, artifact)
-          : undefined;
-        const fallback = !runtime && !generated && artifact.size && artifact.sha256
-          ? readManagedArtifactContent(
+        const generatedIdentity =
+          artifact.kind === "generated_file" &&
+          assets.authoritativeGeneratedArtifactMetadata(
+            agent.projectId,
+            artifact,
+          ) &&
+          artifact.size &&
+          artifact.sha256
+            ? { size: artifact.size, sha256: artifact.sha256 }
+            : undefined;
+        const fallbackIdentity =
+          !runtimeIdentity && !generatedIdentity &&
+          artifact.size && artifact.sha256
+            ? { size: artifact.size, sha256: artifact.sha256 }
+            : undefined;
+        const identity =
+          runtimeIdentity ?? generatedIdentity ?? fallbackIdentity;
+        const opened = identity
+          ? await openManagedArtifactContent(
               context.dataDir,
               agent.projectId,
               artifact.id,
-              artifact.size,
-              artifact.sha256,
-            )?.body
+              identity.size,
+              identity.sha256,
+            )
           : undefined;
-        const data = runtime?.body ?? generated?.body ?? fallback;
-        if (!data) {
+        if (!opened) {
           throw new AssetError(
             409,
             `artifact ${artifact.id} content is unavailable or changed`,
           );
+        }
+        let data: Buffer;
+        try {
+          data = await opened.readRange(identity!.size);
+        } finally {
+          await opened.close();
         }
         portableArtifactBytes += data.length;
         if (portableArtifactBytes > 64 * 1024 * 1024) {
@@ -204,7 +236,7 @@ export function registerAgentPackageRoutes(
           ...(artifact.visibility ? { visibility: artifact.visibility } : {}),
           ...(artifact.pinned !== undefined ? { pinned: artifact.pinned } : {}),
           ...(artifact.sourcePath ? { sourcePath: artifact.sourcePath } : {}),
-          dataBase64: data.toString("base64"),
+          dataBase64: await encodePortableArtifact(data),
         };
       }));
       const triggers = mode === "full"
@@ -281,7 +313,9 @@ export function registerAgentPackageRoutes(
         `attachment; filename="${safeTitle || "agent"}-${result.mode}.ponderosa.json"`,
       );
     }
-    return result;
+    return reply
+      .type("application/json; charset=utf-8")
+      .send(await stringifyPortablePackage(result));
   });
 
   const importPackage = async (
@@ -580,13 +614,9 @@ export function registerAgentPackageRoutes(
                 `artifact ${String(artifact.ref)} has an invalid shape`,
               );
             }
-            const data = Buffer.from(artifact.dataBase64, "base64");
-            if (
-              data.toString("base64").replace(/=+$/u, "")
-              !== artifact.dataBase64.replace(/=+$/u, "")
-            ) {
-              throw new Error(`artifact ${artifact.ref} has invalid data`);
-            }
+            const { data, sha256 } = await decodePortableArtifact(
+              artifact.dataBase64,
+            );
             artifactBytes += data.length;
             if (artifactBytes > 64 * 1024 * 1024) {
               return reply.code(413).send({
@@ -618,7 +648,6 @@ export function registerAgentPackageRoutes(
               || "Imported artifact";
             const mediaType = artifact.mediaType?.trim()
               || "application/octet-stream";
-            const sha256 = createHash("sha256").update(data).digest("hex");
             if (
               artifact.kind === "generated_file"
               && !generatedArtifactMetadataIsValid({
@@ -793,13 +822,19 @@ export function registerAgentPackageRoutes(
         throw new Error("Project deletion is already in progress");
       }
       const plannedArtifacts = importNodes.flatMap((node) => node.artifacts);
-      await publishManagedArtifactContents(
+      const publishedArtifacts = await publishManagedArtifactContentsAsync(
         context.dataDir,
         project.id,
         plannedArtifacts.map((artifact) => ({
           artifactId: artifact.destinationId,
           input: artifact.data,
         })),
+      );
+      const publicationById = new Map(
+        plannedArtifacts.map((artifact, index) => [
+          artifact.destinationId,
+          publishedArtifacts[index]!,
+        ]),
       );
 
       const created = new Map<string, AgentDto>();
@@ -843,8 +878,9 @@ export function registerAgentPackageRoutes(
             sha256: artifact.sha256,
           };
           if (catalogArtifact.kind === "generated_file") {
-            assets.registerGeneratedArtifact(
+            assets.registerPublishedGeneratedArtifact(
               catalogArtifact as RegisteredGeneratedArtifact,
+              publicationById.get(artifact.destinationId)!,
             );
           }
           catalogArtifacts.push({ artifact: catalogArtifact });
@@ -910,7 +946,7 @@ export function registerAgentPackageRoutes(
     Body: ImportAgentPackageRequest;
   }>(
     "/api/projects/:id/import-agents",
-    { bodyLimit: 96 * 1024 * 1024 },
+    { bodyLimit: 1024 * 1024 },
     (request, reply) => importPackage(request.params.id, request.body, reply),
   );
 
@@ -921,20 +957,10 @@ export function registerAgentPackageRoutes(
     "/api/projects/:id/import-agent-package",
     { bodyLimit: 96 * 1024 * 1024 },
     async (request, reply) => {
-      const separator = request.body.indexOf(0x0a);
-      if (separator < 1 || separator > 16 * 1024) {
-        return reply.code(400).send({
-          error: "Agent package upload metadata is invalid",
-        });
-      }
       try {
-        const decoder = new TextDecoder("utf-8", { fatal: true });
-        const metadata = JSON.parse(
-          decoder.decode(request.body.subarray(0, separator)),
-        ) as Omit<ImportAgentPackageRequest, "package">;
-        const portable = JSON.parse(
-          decoder.decode(request.body.subarray(separator + 1)),
-        ) as AgentPortablePackageDto;
+        const { metadata, portable } = await parsePortablePackageUpload(
+          request.body,
+        );
         return importPackage(
           request.params.id,
           { ...metadata, package: portable },

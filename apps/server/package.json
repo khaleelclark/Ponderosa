@@ -16,6 +16,7 @@
     "@ponderosa/agents": "workspace:*",
     "@ponderosa/core": "workspace:*",
     "@ponderosa/engines": "workspace:*",
+    "@ponderosa/native-host": "workspace:*",
     "better-sqlite3": "^11.10.0",
     "chokidar": "^5.0.0",
     "croner": "^10.0.1",

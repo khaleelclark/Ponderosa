@@ -710,12 +710,12 @@ export function startProviderRunExecution(
             continue;
           }
           for (const buffered of bufferedSessionEvents.splice(0)) {
-            persistRuntimeEvent(agent.id, activeRun, buffered);
+            await persistRuntimeEvent(agent.id, activeRun, buffered);
           }
           const logEvent: LogEvent = event.type === "text" || event.type === "reasoning" || event.type === "work_item_update" || event.type === "turn_done"
             ? { ...event, executionId: runId }
             : event;
-          const stored = persistRuntimeEvent(agent.id, activeRun, logEvent);
+          const stored = await persistRuntimeEvent(agent.id, activeRun, logEvent);
           if (!stored) break;
           // Once provider acceptance is fenced and durable, preserve the
           // compatible session's expanded artifact roots even if the
@@ -761,7 +761,7 @@ export function startProviderRunExecution(
                     usedTokens: usage.usedTokens,
                     at: new Date().toISOString(),
                   });
-                  persistRuntimeEvent(agent.id, activeRun, {
+                  await persistRuntimeEvent(agent.id, activeRun, {
                     type: "context_rollover_triggered",
                     executionId: runId,
                     usedTokens: usage.usedTokens,
@@ -793,7 +793,7 @@ export function startProviderRunExecution(
       const workspaceIssue = await reconcileProjectWorkspace(project, agent);
       projectWorkspaceUnavailable = Boolean(workspaceIssue);
       runError = workspaceIssue ?? message;
-      persistRuntimeEvent(agent.id, activeRun, { type: "error", message: runError });
+      await persistRuntimeEvent(agent.id, activeRun, { type: "error", message: runError });
     } finally {
       const owned = ownsActiveRunForAuditDrain(agent.id, activeRun);
       schedulerCancelled ||= Boolean(!isClosed() && activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));

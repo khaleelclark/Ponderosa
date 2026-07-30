@@ -3,19 +3,87 @@
 // (invariant 1); it asks the CLI for its auth mode so the UI can show an auth
 // badge without Ponderosa reading token files (SPEC §8 /api/engines, §9).
 
-import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import type { EngineAuthStatus, EngineAvailabilityStatus } from "@ponderosa/core";
+import { spawnContainedCli } from "./contained-spawn.js";
+import { runtimeProcessHandle } from "./process-termination.js";
+import { runtimeEnvironment } from "./runtime-environment.js";
 
-const execFileAsync = promisify(execFile);
 type AuthCommandRunner = (
   bin: string,
   args: string[],
   options: { env: NodeJS.ProcessEnv; timeout: number; maxBuffer: number },
 ) => Promise<{ stdout: string; stderr: string }>;
+
+async function containedAuthCommand(
+  bin: string,
+  args: string[],
+  options: { env: NodeJS.ProcessEnv; timeout: number; maxBuffer: number },
+): Promise<{ stdout: string; stderr: string }> {
+  const spawned = spawnContainedCli({
+    bin,
+    args,
+    cwd: process.cwd(),
+    env: options.env,
+    stdin: "ignore",
+  });
+  const handle = runtimeProcessHandle(spawned.child, {
+    label: "provider authentication probe",
+    termGraceMs: 1_000,
+    killConfirmationMs: 2_000,
+  }, spawned.authority);
+  let stdout = "";
+  let stderr = "";
+  let bytes = 0;
+  return new Promise((resolve, reject) => {
+    let finished = false;
+    const timer = setTimeout(() => {
+      void finish(new Error(`provider authentication probe timed out after ${options.timeout}ms`), true);
+    }, options.timeout);
+    const finish = async (error?: Error, terminate = false): Promise<void> => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      try {
+        // close() is an observed no-op after natural exit and exact tree
+        // teardown after timeout, output overflow, or spawn failure.
+        await handle.close();
+      } catch (closeError) {
+        error = new Error(
+          `${error?.message ?? "provider authentication probe failed"}; teardown: ` +
+          `${closeError instanceof Error ? closeError.message : String(closeError)}`,
+        );
+      }
+      if (error || terminate) {
+        const failure = error ?? new Error("provider authentication probe failed");
+        Object.assign(failure, { stdout, stderr });
+        reject(failure);
+      } else {
+        resolve({ stdout, stderr });
+      }
+    };
+    const collect = (stream: "stdout" | "stderr", chunk: Buffer | string): void => {
+      const text = chunk.toString();
+      bytes += Buffer.byteLength(text);
+      if (stream === "stdout") stdout += text;
+      else stderr += text;
+      if (bytes > options.maxBuffer) {
+        void finish(new Error(`provider authentication probe exceeded ${options.maxBuffer} output bytes`), true);
+      }
+    };
+    spawned.child.stdout?.on("data", (chunk: Buffer | string) => collect("stdout", chunk));
+    spawned.child.stderr?.on("data", (chunk: Buffer | string) => collect("stderr", chunk));
+    spawned.child.once("error", (error) => void finish(error, true));
+    spawned.child.once("close", (code, signal) => {
+      if (code === 0) void finish();
+      else void finish(new Error(
+        `provider authentication probe exited with ${signal ? `signal ${signal}` : `code ${code ?? "unknown"}`}`,
+      ));
+    });
+  });
+}
 
 const API_AUTH_DETAIL =
   "Codex is logged in with API-key/token auth; run `codex logout` then `codex login` for ChatGPT subscription auth";
@@ -32,11 +100,12 @@ export function codexHome(env: NodeJS.ProcessEnv = process.env): string {
 export async function codexAuthStatus(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<EngineAuthStatus> {
-  const bin = env.PONDEROSA_CODEX_BIN ?? "codex";
+  const bin = env.PONDEROSA_CODEX_BIN?.trim() || "codex";
   try {
-    const { stdout, stderr } = await execFileAsync(bin, ["login", "status"], {
-      env: { ...process.env, ...env },
+    const { stdout, stderr } = await containedAuthCommand(bin, ["login", "status"], {
+      env: runtimeEnvironment(env),
       timeout: 5000,
+      maxBuffer: 256 * 1024,
     });
     const output = `${stdout}\n${stderr}`.trim();
     return parseCodexLoginStatus(output);
@@ -89,12 +158,12 @@ export async function claudeAuthStatus(
  */
 export async function claudeAvailabilityStatus(
   env: NodeJS.ProcessEnv = process.env,
-  run: AuthCommandRunner = execFileAsync,
+  run: AuthCommandRunner = containedAuthCommand,
   readAuth: () => Promise<EngineAuthStatus> = () => claudeAuthStatus(env),
 ): Promise<EngineAvailabilityStatus> {
   const auth = await readAuth();
   if (!auth.authenticated) return { available: false, detail: auth.detail };
-  const bin = env.PONDEROSA_CLAUDE_BIN ?? "claude";
+  const bin = env.PONDEROSA_CLAUDE_BIN?.trim() || "claude";
   try {
     const { stdout } = await run(bin, [
       "--print",
@@ -105,7 +174,7 @@ export async function claudeAvailabilityStatus(
       "--no-session-persistence",
       "Reply exactly PONDEROSA_RUNTIME_READY and do nothing else.",
     ], {
-      env: { ...process.env, ...env },
+      env: runtimeEnvironment(env),
       timeout: 60_000,
       maxBuffer: 2 * 1024 * 1024,
     });

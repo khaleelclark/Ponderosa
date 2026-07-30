@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { currentPonderosaStatus, startPonderosa, stopPonderosa } from "./control.js";
 import { writeDiagnosticBundle } from "./diagnostics.js";
 import { runDoctor } from "./doctor.js";
@@ -89,6 +90,15 @@ function parseArguments(argv: string[]): ParsedArguments {
   };
 }
 
+function isDirectInvocation(entryPath: string | undefined, moduleUrl: string): boolean {
+  if (!entryPath) return false;
+  try {
+    return realpathSync(entryPath) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return pathToFileURL(entryPath).href === moduleUrl;
+  }
+}
+
 function printDoctor(report: Awaited<ReturnType<typeof runDoctor>>): void {
   process.stdout.write(`Ponderosa Doctor — ${report.ready ? "ready" : "needs attention"}\n\n`);
   for (const item of report.checks) {
@@ -170,6 +180,21 @@ async function main(argv: string[]): Promise<void> {
     return;
   }
 
+  if (parsed.command === "open") {
+    const running = await currentPonderosaStatus(paths);
+    const runningDifferentBuild = running?.healthy && (
+      running.version !== manifest.version ||
+      running.commit !== manifest.commit ||
+      running.channel !== manifest.channel
+    );
+    if (runningDifferentBuild && await platform.confirmUpdateRestart({
+      running,
+      installed: manifest,
+    })) {
+      await stopPonderosa({ paths });
+    }
+  }
+
   const state = await startPonderosa({
     paths,
     manifest,
@@ -185,7 +210,7 @@ async function main(argv: string[]): Promise<void> {
   }
 }
 
-const direct = Boolean(process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url);
+const direct = isDirectInvocation(process.argv[1], import.meta.url);
 if (direct) {
   main(process.argv.slice(2)).catch((error: unknown) => {
     process.stderr.write(`Ponderosa launcher error: ${error instanceof Error ? error.message : String(error)}\n`);
@@ -208,4 +233,4 @@ if (direct) {
   });
 }
 
-export { main, parseArguments };
+export { isDirectInvocation, main, parseArguments };

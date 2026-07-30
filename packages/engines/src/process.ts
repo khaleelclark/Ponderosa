@@ -6,8 +6,10 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import type { AgentEvent, RuntimeProcessHandle } from "@ponderosa/core";
+import { spawnContainedCli } from "./contained-spawn.js";
 import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, parseJsonlChunks } from "./jsonl.js";
 import { runtimeProcessHandle } from "./process-termination.js";
+import { runtimeEnvironment } from "./runtime-environment.js";
 
 /** A minimal spawn signature so tests can inject a fake CLI. */
 export type SpawnFn = typeof nodeSpawn;
@@ -93,14 +95,16 @@ export async function* streamProcess(
     return;
   }
 
-  const child: ChildProcess = spawnFn(bin, args, {
+  const providerEnvironment = runtimeEnvironment(environment);
+  const contained = spawnContainedCli({
+    bin,
+    args,
     cwd,
-    env: { ...process.env, ...environment },
-    stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-    // Give each run its own process group. Agent CLIs can spawn long-running
-    // commands, so cancelling only the CLI would leave its descendants alive.
-    detached: process.platform !== "win32",
+    env: providerEnvironment,
+    stdin: stdin === undefined ? "ignore" : "pipe",
+    spawnFn,
   });
+  const child: ChildProcess = contained.child;
 
   // Large prompts cannot safely be argv entries: POSIX limits the combined
   // argument and environment size and Node surfaces that launch failure as
@@ -121,7 +125,7 @@ export async function* streamProcess(
   const handle = runtimeProcessHandle(child, {
     label: `${label} run`,
     termGraceMs: killGraceMs,
-  });
+  }, contained.authority);
   const terminate = (): Promise<void> => handle.close();
   onRuntimeSpawned?.(handle);
   const onAbort = (): void => {

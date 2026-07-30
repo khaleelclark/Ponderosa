@@ -64,6 +64,7 @@ type ServerLifecycleContext =
     coordinationV3: CoordinationV3Store;
     workspace: WorkspaceStore;
     artifactFilesystem: ReadinessCheckDto;
+    processContainment: ReadinessCheckDto;
     coordinationV3WorkerId: string;
     activeRuns: Map<string, ActiveRun>;
     runtimeAuthorities: Map<string, AgentRuntimeAuthority>;
@@ -97,6 +98,7 @@ export function registerServerLifecycle(
     coordinationV3,
     workspace,
     artifactFilesystem,
+    processContainment,
     coordinationV3WorkerId,
     activeRuns,
     runtimeAuthorities,
@@ -213,6 +215,17 @@ export function registerServerLifecycle(
         body: artifactFilesystem.detail,
       });
     }
+    if (processContainment.ok) {
+      resolveOperationalNotification("startup:process-containment-capability");
+    } else {
+      createOperationalNotification({
+        dedupeKey: "startup:process-containment-capability",
+        category: "system",
+        severity: "urgent",
+        title: "Process containment is incompatible",
+        body: processContainment.detail,
+      });
+    }
     for (const decision of workspace.listDecisions({ status: "pending" })) {
       if (!decision.blocking || !(decision.continuationRequestIds?.length)) continue;
       coordinationV3.suspendQuestionsForDecision({
@@ -229,7 +242,7 @@ export function registerServerLifecycle(
     coordinationV3.recoverOrphanedRuns(coordinationV3WorkerId);
     coordinationV3.reconcileUnavailableActivationRecipients();
     coordinationV3.expireDue();
-    if (!artifactFilesystem.ok) await coordinationV3Scheduler.pauseLeasing();
+    if (!artifactFilesystem.ok || !processContainment.ok) await coordinationV3Scheduler.pauseLeasing();
     coordinationV3Scheduler.start();
     await triggerSources.start();
     reconcileTriggerOperationalNotifications();

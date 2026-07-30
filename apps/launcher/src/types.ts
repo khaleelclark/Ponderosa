@@ -7,11 +7,27 @@ export interface BuildManifest {
   commit: string;
   communicationProtocolVersion: string;
   databaseSchemaVersion: string;
+  databaseSchemaSha256: string;
   target: {
     platform: NodeJS.Platform | string;
     arch: NodeJS.Architecture | string;
   };
   nodeVersion: string;
+  nodeExecutableBytes: number;
+  nodeExecutableSha256: string;
+  nodeSource: {
+    url: string;
+    archiveSha256: string;
+    executableSha256: string;
+  };
+  nativeAbi: {
+    modules: string;
+    napi: string;
+  };
+  nativeHost: {
+    bytes: number;
+    sha256: string;
+  };
   buildTime: string;
   channel: ReleaseChannel;
 }
@@ -31,10 +47,15 @@ export interface LauncherConfiguration {
 export interface LauncherState {
   schemaVersion: 1;
   controlToken: string;
+  /** Windows supervisor that owns the server Job Object until it drains. */
+  supervisorPid?: number;
+  /** Correlates the persisted supervisor status with this launcher instance. */
+  supervisorGeneration?: string;
   pid: number;
   port: number;
   host: "127.0.0.1";
   startedAt: string;
+  /** Application data directory passed to the server, nested below the launcher data root. */
   dataDir: string;
   installRoot: string;
   version: string;
@@ -45,6 +66,11 @@ export interface LauncherState {
 export interface PublicLauncherState extends Omit<LauncherState, "controlToken"> {
   healthy: boolean;
   detail: string;
+}
+
+export interface UpdateRestartPrompt {
+  running: Pick<LauncherState, "version" | "commit" | "channel">;
+  installed: Pick<BuildManifest, "version" | "commit" | "channel">;
 }
 
 export type DoctorCheckStatus = "pass" | "warning" | "fail";
@@ -70,7 +96,9 @@ export interface DoctorReport {
 
 export interface LauncherPaths {
   installRoot: string;
+  /** Launcher-owned root containing state, logs, configuration, and application data. */
   dataDir: string;
+  /** Application data directory passed to the server and persisted in LauncherState. */
   applicationDataDir: string;
   runtimeDir: string;
   logsDir: string;
@@ -104,6 +132,7 @@ export interface PlatformAdapter {
   nodeExecutableName(): string;
   executableCandidates(provider: "codex" | "claude", env?: NodeJS.ProcessEnv, homeDir?: string): string[];
   openBrowser(url: string): Promise<void>;
+  confirmUpdateRestart(input: UpdateRestartPrompt): Promise<boolean>;
 }
 
 export interface LauncherOutput {

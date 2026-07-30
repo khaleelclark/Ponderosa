@@ -8,12 +8,10 @@ export interface ObservedProcessTerminationOptions {
   killConfirmationMs?: number;
 }
 
-export function assertPersistentRuntimeHostingSupported(platform = process.platform): void {
-  if (platform === "win32") {
-    throw new Error(
-      "Persistent provider runtime hosting is unavailable on Windows until Job Object process-tree containment is implemented",
-    );
-  }
+export interface NativeProcessTreeAuthority {
+  isAlive(): boolean;
+  terminate(): void;
+  close(): void;
 }
 
 /**
@@ -25,7 +23,24 @@ export function assertPersistentRuntimeHostingSupported(platform = process.platf
 export async function terminateProcessGroup(
   child: ChildProcess,
   opts: ObservedProcessTerminationOptions,
+  nativeAuthority?: NativeProcessTreeAuthority,
 ): Promise<void> {
+  if (nativeAuthority) {
+    if (!nativeAuthority.isAlive()) {
+      nativeAuthority.close();
+      return;
+    }
+    nativeAuthority.terminate();
+    const confirmationMs = opts.killConfirmationMs ??
+      Math.max(250, Math.min(Math.max(0, opts.termGraceMs), 5_000));
+    if (await waitForNativeTreeExit(nativeAuthority, confirmationMs)) {
+      nativeAuthority.close();
+      return;
+    }
+    throw new Error(
+      `${opts.label} Windows Job Object remained active after termination and ${confirmationMs}ms confirmation`,
+    );
+  }
   const pid = child.pid;
   if (!processTreeAlive(child, pid)) return;
 
@@ -55,13 +70,14 @@ export function processGroupAlive(child: ChildProcess, observedTerminal = false)
 export function runtimeProcessHandle(
   child: ChildProcess,
   opts: ObservedProcessTerminationOptions,
+  nativeAuthority?: NativeProcessTreeAuthority,
 ): RuntimeProcessHandle {
   let termination: Promise<void> | undefined;
   return {
-    isAlive: () => processGroupAlive(child),
+    isAlive: () => nativeAuthority?.isAlive() ?? processGroupAlive(child),
     close: () => {
       if (termination) return termination;
-      const attempt = terminateProcessGroup(child, opts);
+      const attempt = terminateProcessGroup(child, opts, nativeAuthority);
       const shared = attempt.catch((error) => {
         if (termination === shared) termination = undefined;
         throw error;
@@ -71,6 +87,30 @@ export function runtimeProcessHandle(
       return shared;
     },
   };
+}
+
+function waitForNativeTreeExit(
+  authority: NativeProcessTreeAuthority,
+  timeoutMs: number,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + timeoutMs;
+    let timer: NodeJS.Timeout | undefined;
+    const check = (): void => {
+      if (!authority.isAlive()) {
+        if (timer) clearTimeout(timer);
+        resolve(true);
+        return;
+      }
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        resolve(false);
+        return;
+      }
+      timer = setTimeout(check, Math.min(25, remaining));
+    };
+    check();
+  });
 }
 
 function processTreeAlive(child: ChildProcess, pid: number | undefined, observedTerminal = false): boolean {

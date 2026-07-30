@@ -44,16 +44,31 @@ export interface EngineRegistration {
   availabilityProbe?: () => Promise<EngineAvailabilityStatus>;
 }
 
-export function defaultEngineRegistrations(): EngineRegistration[] {
+function configuredProviderBinary(
+  env: NodeJS.ProcessEnv,
+  key: "PONDEROSA_CODEX_BIN" | "PONDEROSA_CLAUDE_BIN",
+  fallback: "codex" | "claude",
+): string {
+  return env[key]?.trim() || fallback;
+}
+
+export function defaultEngineRegistrations(
+  env: NodeJS.ProcessEnv = process.env,
+): EngineRegistration[] {
+  const codexBin = configuredProviderBinary(env, "PONDEROSA_CODEX_BIN", "codex");
+  const claudeBin = configuredProviderBinary(env, "PONDEROSA_CLAUDE_BIN", "claude");
   return [
     {
-      adapter: new CodexAdapter(),
-      authStatus: codexAuthStatus,
+      adapter: new CodexAdapter({ bin: codexBin }),
+      authStatus: () => codexAuthStatus(env),
     },
     {
-      adapter: new ClaudeAdapter(),
-      authStatus: claudeAuthStatus,
-      availabilityProbe: claudeAvailabilityStatus,
+      adapter: new ClaudeAdapter({
+        bin: claudeBin,
+        modelEnvironment: env,
+      }),
+      authStatus: () => claudeAuthStatus(env),
+      availabilityProbe: () => claudeAvailabilityStatus(env),
     },
   ];
 }

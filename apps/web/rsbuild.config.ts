@@ -1,6 +1,7 @@
 import { defineConfig } from "@rsbuild/core";
 import { pluginReact } from "@rsbuild/plugin-react";
 import { pluginPWA } from "rsbuild-plugin-pwa";
+import { PWA_NAVIGATION_DENYLIST } from "./src/pwa-policy";
 
 export default defineConfig({
   plugins: [
@@ -60,6 +61,7 @@ export default defineConfig({
         workboxOptions: {
           cleanupOutdatedCaches: true,
           navigateFallback: "/index.html",
+          navigateFallbackDenylist: PWA_NAVIGATION_DENYLIST,
           importScripts: ["/push-handler.js"],
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           runtimeCaching: [],

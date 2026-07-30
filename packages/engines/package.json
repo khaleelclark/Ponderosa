@@ -18,7 +18,8 @@
     "try": "node dist/harness.js"
   },
   "dependencies": {
-    "@ponderosa/core": "workspace:*"
+    "@ponderosa/core": "workspace:*",
+    "@ponderosa/native-host": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

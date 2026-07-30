@@ -10,6 +10,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const webDist = path.resolve(here, "../../web/dist");
 
 const launcherControlToken = process.env.PONDEROSA_LAUNCHER_CONTROL_TOKEN?.trim();
+delete process.env.PONDEROSA_LAUNCHER_CONTROL_TOKEN;
 const launcherSecurity = launcherControlToken ? { controlToken: launcherControlToken } : undefined;
 
 function internalAgentBaseUrl(host: string, port: number): string {

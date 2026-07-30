@@ -218,8 +218,10 @@ export interface CreateServerOptions {
   workspaceArtifactReadFaults?: WorkspaceArtifactReadFaults;
   /** Deterministic async managed-artifact read seam; never enabled in production configuration. */
   managedArtifactReadFaults?: ManagedArtifactAsyncReadFaults;
-  /** Deterministic startup capability seam; production probes Linux /proc/self/fd. */
+  /** Deterministic startup capability seam; production probes the exact platform authority. */
   artifactFilesystemCapabilityProbe?: () => ReadinessDto["checks"]["artifactFilesystem"];
+  /** Deterministic process-containment seam; production probes the native authority. */
+  processContainmentCapabilityProbe?: () => ReadinessDto["checks"]["processContainment"];
   /** Web Push configuration/test seams. Production reads host-only VAPID env. */
   webPush?: {
     publicKey?: string;

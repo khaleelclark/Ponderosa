@@ -8,7 +8,7 @@ export {
 export { writeDiagnosticBundle } from "./diagnostics.js";
 export { runDoctor } from "./doctor.js";
 export { parseBuildManifest, readBuildManifest } from "./manifest.js";
-export { ensureDataLayout, resolveLauncherPaths } from "./paths.js";
+export { ensureDataLayout, launcherStateLocation, resolveLauncherPaths } from "./paths.js";
 export { hostPlatformAdapter } from "./platform.js";
 export { discoverProvider, discoverProviders } from "./providers.js";
 export type * from "./types.js";

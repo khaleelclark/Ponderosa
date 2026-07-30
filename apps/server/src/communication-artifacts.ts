@@ -6,7 +6,7 @@ import {
   shouldBackTextWithArtifact,
 } from "@ponderosa/core";
 import {
-  publishManagedArtifactContent,
+  publishManagedArtifactContentAsync,
   type AgentStore,
   type CoordinationV3Store,
   type ManagedArtifactAccess,
@@ -81,7 +81,12 @@ export function createCommunicationArtifactAuthority(context: CommunicationArtif
     const id = `text-${createHash("sha256")
       .update(`${input.communicationId}\0${input.role}`)
       .digest("hex")}`;
-    const published = publishManagedArtifactContent(dataDir, input.projectId, id, content);
+    const published = await publishManagedArtifactContentAsync(
+      dataDir,
+      input.projectId,
+      id,
+      content,
+    );
     const blobHash = published.sha256;
     const artifact: PreparedCommunicationArtifact = {
       id,

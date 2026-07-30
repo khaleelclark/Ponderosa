@@ -1,6 +1,6 @@
 {
   "name": "ponderosa",
-  "version": "0.0.0",
+  "version": "0.1.0-beta.1",
   "private": true,
   "description": "Self-hosted coding-agent workbench",
   "packageManager": "pnpm@11.10.0",
@@ -9,12 +9,13 @@
   },
   "scripts": {
     "build": "pnpm -r build",
-    "typecheck": "pnpm --filter @ponderosa/core build && pnpm --filter @ponderosa/agents build && pnpm --filter @ponderosa/engines build && pnpm -r typecheck",
+    "typecheck": "pnpm --filter @ponderosa/core build && pnpm --filter @ponderosa/native-host build && pnpm --filter @ponderosa/agents build && pnpm --filter @ponderosa/engines build && pnpm -r typecheck",
     "test": "pnpm --filter @ponderosa/core build && pnpm --filter @ponderosa/agents build && pnpm --filter @ponderosa/engines build && pnpm -r test",
     "verify": "pnpm typecheck && pnpm test && pnpm build",
     "clean": "pnpm -r exec rm -rf dist",
     "engines:try": "node packages/engines/dist/harness.js",
     "start:prod": "NODE_ENV=production node apps/server/dist/main.js",
+    "beta:node": "node packaging/prepare-node-runtime.mjs",
     "beta:bundle": "pnpm build && node packaging/build-beta-bundle.mjs",
     "beta:package": "node packaging/package-beta.mjs",
     "beta:verify": "node packaging/verify-beta-bundle.mjs"

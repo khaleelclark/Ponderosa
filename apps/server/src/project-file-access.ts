@@ -6,8 +6,17 @@ import {
   readFileSync,
   realpathSync,
 } from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { ReadinessCheckDto } from "@ponderosa/core";
+import {
+  listSecureDirectory,
+  readSecureFile,
+  readSecureFileAsync,
+  removeSecureFile,
+  secureFileAuthoritySupported,
+  writeSecureFileAtomic,
+} from "@ponderosa/native-host";
 
 export type WorkspaceArtifactReadPurpose = "generated_capture" | "legacy_pdf";
 
@@ -106,6 +115,9 @@ function openProjectPathFromRoot(root: OpenedProjectRoot, relativePath: string):
       descriptors.push(descriptor);
       const info = fstatSync(descriptor);
       if (!info.isDirectory()) throw new Error("Project path component is not a directory");
+      if (info.dev !== root.identity.dev) {
+        throw new Error("Project path crosses a filesystem boundary");
+      }
       identities.push({ dev: info.dev, ino: info.ino });
       parentDescriptor = descriptor;
     }
@@ -116,6 +128,9 @@ function openProjectPathFromRoot(root: OpenedProjectRoot, relativePath: string):
     );
     descriptors.push(fileDescriptor);
     const fileInfo = fstatSync(fileDescriptor);
+    if (fileInfo.dev !== root.identity.dev) {
+      throw new Error("Project file crosses a filesystem boundary");
+    }
     identities.push({ dev: fileInfo.dev, ino: fileInfo.ino });
     return { descriptors, identities, fileDescriptor };
   } catch (error) {
@@ -155,6 +170,39 @@ export function readWorkspaceArtifactFile(input: {
   requireNonEmpty?: boolean;
   faults?: WorkspaceArtifactReadFaults;
 }): SafeProjectFile | undefined {
+  if (process.platform !== "linux") {
+    if (!secureFileAuthoritySupported()) return undefined;
+    try {
+      const rootReal = realpathSync(input.rootPath);
+      const relativePath = relativeProjectPath(
+        input.rootPath,
+        rootReal,
+        input.requestedPath,
+      );
+      if (!relativePath) return undefined;
+      const context = {
+        purpose: input.purpose,
+        rootPath: rootReal,
+        relativePath,
+      } as const;
+      input.faults?.afterPathValidation?.(context);
+      const body = readSecureFile({
+        root: input.rootPath,
+        relativePath,
+        maxBytes: input.maxBytes,
+        requireNonEmpty: input.requireNonEmpty,
+      });
+      if (!body) return undefined;
+      input.faults?.afterFileOpen?.(context);
+      return {
+        body,
+        name: path.basename(relativePath),
+        relativePath: relativePath.replaceAll(path.sep, "/"),
+      };
+    } catch {
+      return undefined;
+    }
+  }
   let root: OpenedProjectRoot | undefined;
   let opened: OpenedProjectPath | undefined;
   try {
@@ -185,40 +233,97 @@ export function readWorkspaceArtifactFile(input: {
   }
 }
 
-/** Production preflight for the Linux procfs descriptor bridge used by all
- * managed and workspace-derived artifact operations. */
-export function descriptorRelativeFilesystemCapability(dataDir: string): ReadinessCheckDto {
-  if (process.platform !== "linux") {
-    return { ok: false, detail: "artifact filesystem requires Linux with visible /proc/self/fd" };
-  }
-  let descriptor: number | undefined;
-  let relativeDescriptor: number | undefined;
+export async function readWorkspaceArtifactFileAsync(input: {
+  rootPath: string;
+  requestedPath: string;
+  purpose: WorkspaceArtifactReadPurpose;
+  maxBytes: number;
+  requireNonEmpty?: boolean;
+  signal?: AbortSignal;
+  faults?: WorkspaceArtifactReadFaults;
+}): Promise<SafeProjectFile | undefined> {
+  if (!secureFileAuthoritySupported()) return undefined;
   try {
-    const rootReal = realpathSync(dataDir);
-    descriptor = openSync(
+    const rootReal = realpathSync(input.rootPath);
+    const relativePath = relativeProjectPath(
+      input.rootPath,
       rootReal,
-      fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+      input.requestedPath,
     );
-    const descriptorReal = realpathSync(descriptorPath(descriptor));
-    if (descriptorReal !== rootReal) throw new Error("descriptor did not resolve to the opened data directory");
-    const info = fstatSync(descriptor);
-    if (!info.isDirectory()) throw new Error("opened data directory is not a directory");
-    relativeDescriptor = openSync(
-      `${descriptorPath(descriptor)}/.`,
-      fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
-    );
-    const relativeInfo = fstatSync(relativeDescriptor);
-    if (!relativeInfo.isDirectory() || relativeInfo.dev !== info.dev || relativeInfo.ino !== info.ino) {
-      throw new Error("descriptor-relative procfs traversal did not preserve the opened directory");
+    if (!relativePath) return undefined;
+    const context = {
+      purpose: input.purpose,
+      rootPath: rootReal,
+      relativePath,
+    } as const;
+    input.faults?.afterPathValidation?.(context);
+    const body = await readSecureFileAsync({
+      root: input.rootPath,
+      relativePath,
+      maxBytes: input.maxBytes,
+      requireNonEmpty: input.requireNonEmpty,
+    }, input.signal);
+    if (!body) return undefined;
+    input.faults?.afterFileOpen?.(context);
+    return {
+      body,
+      name: path.basename(relativePath),
+      relativePath: relativePath.replaceAll(path.sep, "/"),
+    };
+  } catch (error) {
+    if (input.signal?.aborted) throw error;
+    return undefined;
+  }
+}
+
+/** Production preflight for retained-root Project reads plus managed
+ * publication, enumeration, and removal on the current native host. */
+export function descriptorRelativeFilesystemCapability(dataDir: string): ReadinessCheckDto {
+  if (!secureFileAuthoritySupported()) {
+    return { ok: false, detail: `secure artifact filesystem is unsupported on ${process.platform}` };
+  }
+  const generation = randomUUID();
+  const leaf = `.ponderosa-authority-${generation}`;
+  const temporaryLeaf = `${leaf}.tmp`;
+  let installed = false;
+  try {
+    writeSecureFileAtomic({
+      root: dataDir,
+      leaf,
+      temporaryLeaf,
+      body: Buffer.from("ponderosa-secure-authority\n"),
+    });
+    installed = true;
+    const body = readSecureFile({
+      root: dataDir,
+      relativePath: leaf,
+      maxBytes: 64,
+      requireNonEmpty: true,
+    });
+    if (body?.toString() !== "ponderosa-secure-authority\n") {
+      throw new Error("retained-root read did not return the exact published bytes");
     }
-    return { ok: true, detail: "Linux /proc/self/fd descriptor-relative artifact access is available" };
+    if (!listSecureDirectory({ root: dataDir })?.some((entry) =>
+      entry.name === leaf && entry.kind === "file")) {
+      throw new Error("retained-root enumeration did not observe the published leaf");
+    }
+    if (!removeSecureFile({ root: dataDir, leaf })) {
+      throw new Error("retained-root removal did not remove the published leaf");
+    }
+    installed = false;
+    return {
+      ok: true,
+      detail: `${process.platform} retained-root no-follow read/write/list/remove authority is available`,
+    };
   } catch (error) {
     return {
       ok: false,
-      detail: `artifact filesystem requires visible Linux /proc/self/fd: ${error instanceof Error ? error.message : String(error)}`,
+      detail: `secure artifact filesystem authority failed: ${error instanceof Error ? error.message : String(error)}`,
     };
   } finally {
-    if (relativeDescriptor !== undefined) closeSync(relativeDescriptor);
-    if (descriptor !== undefined) closeSync(descriptor);
+    if (installed) {
+      try { removeSecureFile({ root: dataDir, leaf }); }
+      catch { /* readiness remains failed and the dot-prefixed leaf is inert */ }
+    }
   }
 }

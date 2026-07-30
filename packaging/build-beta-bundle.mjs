@@ -4,14 +4,20 @@ import {
   chmodSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
-  readdirSync,
+  readFileSync,
+  renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { auditPortableSymlinkTree } from "./qualification/symlink-portability.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -29,14 +35,57 @@ function exactCommit() {
   }).trim();
 }
 
-function databaseSchemaVersion() {
-  const migrations = readdirSync(path.join(repositoryRoot, "packages", "agents", "src", "migrations"))
-    .map((name) => name.match(/^(\d{4})_/u)?.[1])
-    .filter(Boolean)
-    .sort();
-  const latest = migrations.at(-1);
-  if (!latest) throw new Error("No database migrations were found.");
-  return latest;
+function assertCleanSource() {
+  const status = execFileSync("git", ["status", "--porcelain=v1"], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+  }).trim();
+  if (status) {
+    throw new Error(
+      "Native beta bundles require a clean exact-source worktree. Commit or remove source changes before packaging.",
+    );
+  }
+}
+
+function sha256(pathname) {
+  return createHash("sha256").update(readFileSync(pathname)).digest("hex");
+}
+
+function nodeRuntimeIdentity(binary) {
+  const bytes = statSync(binary).size;
+  if (bytes < 5 * 1024 * 1024) {
+    throw new Error(
+      `The proposed bundled Node executable is only ${bytes} bytes and is not self-contained. ` +
+      "Run `pnpm beta:node` to prepare the checksummed official Node 22 runtime.",
+    );
+  }
+  let raw;
+  try {
+    raw = execFileSync(binary, [
+      "--input-type=module",
+      "--eval",
+      "process.stdout.write(JSON.stringify({version:process.version,platform:process.platform,arch:process.arch,modules:process.versions.modules,napi:process.versions.napi}))",
+    ], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 10_000,
+    });
+  } catch (error) {
+    throw new Error(
+      `The bundled Node executable could not be run on this build host. ` +
+      `Native beta bundles must be assembled on their target OS/architecture: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const identity = JSON.parse(raw);
+  if (!/^v22\.\d+\.\d+(?:[-+].*)?$/u.test(identity.version)) {
+    throw new Error(`Ponderosa private beta requires bundled Node 22; found ${identity.version ?? "unknown"}.`);
+  }
+  for (const field of ["platform", "arch", "modules", "napi"]) {
+    if (typeof identity[field] !== "string" || identity[field] === "") {
+      throw new Error(`Bundled Node did not report ${field}.`);
+    }
+  }
+  return { ...identity, bytes, sha256: sha256(binary) };
 }
 
 function executable(pathname) {
@@ -45,23 +94,69 @@ function executable(pathname) {
 
 const targetPlatform = option("platform", process.platform);
 const targetArch = option("arch", process.arch);
-const version = option("version", process.env.PONDEROSA_BUILD_VERSION ?? "0.0.0-beta.local");
+const productVersion = JSON.parse(
+  readFileSync(path.join(repositoryRoot, "package.json"), "utf8"),
+).version;
+const version = option("version", process.env.PONDEROSA_BUILD_VERSION ?? productVersion);
 const channel = option("channel", process.env.PONDEROSA_RELEASE_CHANNEL ?? "beta");
-const nodeBinary = path.resolve(option("node", process.env.PONDEROSA_NODE_BINARY ?? process.execPath));
+const preparedNode = path.join(
+  repositoryRoot,
+  "dist",
+  "node-runtime",
+  `${targetPlatform}-${targetArch}`,
+  targetPlatform === "win32" ? "node.exe" : "node",
+);
+const configuredNode = option("node", process.env.PONDEROSA_NODE_BINARY);
+const nodeBinary = path.resolve(configuredNode ?? preparedNode);
+const nodeSourcePath = path.resolve(option(
+  "node-source",
+  path.join(path.dirname(nodeBinary), "SOURCE.json"),
+));
 const outputParent = path.resolve(option(
   "output",
   path.join(repositoryRoot, "dist", "beta", `${targetPlatform}-${targetArch}`),
 ));
 const bundleRoot = path.join(outputParent, "Ponderosa");
 const runtimeNodeName = targetPlatform === "win32" ? "node.exe" : "node";
+const baselineName = "0000_current_schema.sql";
+const schemaSource = path.join(repositoryRoot, "packages", "agents", "src", "schema", baselineName);
 
 for (const required of [
   path.join(repositoryRoot, "apps", "launcher", "dist", "cli.js"),
   path.join(repositoryRoot, "apps", "server", "dist", "main.js"),
   path.join(repositoryRoot, "apps", "web", "dist", "index.html"),
+  path.join(repositoryRoot, "packaging", "qualification", "verify-installed-bundle.mjs"),
+  path.join(repositoryRoot, "packaging", "qualification", "symlink-portability.mjs"),
+  schemaSource,
   nodeBinary,
+  nodeSourcePath,
 ]) {
   if (!existsSync(required)) throw new Error(`Required build input is missing: ${required}`);
+}
+
+assertCleanSource();
+const nodeIdentity = nodeRuntimeIdentity(nodeBinary);
+const nodeSource = JSON.parse(readFileSync(nodeSourcePath, "utf8"));
+const nodeDistributionPlatform = targetPlatform === "win32" ? "win" : targetPlatform;
+const nodeArchiveExtension = targetPlatform === "win32"
+  ? "zip"
+  : targetPlatform === "darwin"
+    ? "tar.gz"
+    : "tar.xz";
+const officialNodeUrl = `https://nodejs.org/dist/${nodeIdentity.version}/` +
+  `node-${nodeIdentity.version}-${nodeDistributionPlatform}-${targetArch}.${nodeArchiveExtension}`;
+if (nodeSource.version !== nodeIdentity.version ||
+    nodeSource.target !== `${targetPlatform}-${targetArch}` ||
+    nodeSource.url !== officialNodeUrl ||
+    !/^[a-f0-9]{64}$/u.test(nodeSource.archiveSha256 ?? "") ||
+    nodeSource.executableSha256 !== nodeIdentity.sha256) {
+  throw new Error("Bundled Node SOURCE.json does not match the executable and requested native target.");
+}
+if (nodeIdentity.platform !== targetPlatform || nodeIdentity.arch !== targetArch) {
+  throw new Error(
+    `Bundled Node is ${nodeIdentity.platform}/${nodeIdentity.arch}, but the requested target is ` +
+    `${targetPlatform}/${targetArch}. Cross-assembled bundles are not release artifacts.`,
+  );
 }
 
 rmSync(outputParent, { recursive: true, force: true });
@@ -77,22 +172,91 @@ execFileSync("pnpm", [
   stdio: "inherit",
   env: { ...process.env, CI: process.env.CI ?? "true" },
 });
+
+const launcherTarget = path.join(bundleRoot, "app", "launcher");
+execFileSync("pnpm", [
+  "--filter", "@ponderosa/launcher",
+  "deploy", "--prod", "--legacy", launcherTarget,
+], {
+  cwd: repositoryRoot,
+  stdio: "inherit",
+  env: { ...process.env, CI: process.env.CI ?? "true" },
+});
+
+function removeDeployedWorkspaceSelfLink(packageTarget, packageName) {
+  const selfLink = path.join(
+    packageTarget,
+    "node_modules",
+    ".pnpm",
+    "node_modules",
+    "@ponderosa",
+    packageName,
+  );
+  let stats;
+  try {
+    stats = lstatSync(selfLink);
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  if (!stats.isSymbolicLink()) {
+    throw new Error(`Deployed workspace self-link is not a symlink: ${selfLink}`);
+  }
+  rmSync(selfLink);
+}
+
+removeDeployedWorkspaceSelfLink(serverTarget, "server");
+removeDeployedWorkspaceSelfLink(launcherTarget, "launcher");
+
+function nativeHostAddon(packageTarget) {
+  const require = createRequire(path.join(packageTarget, "package.json"));
+  const entry = require.resolve("@ponderosa/native-host");
+  const addon = path.resolve(path.dirname(entry), "..", "build", "Release", "ponderosa_native.node");
+  if (!existsSync(addon)) {
+    throw new Error(`Deployed native host addon is missing: ${addon}`);
+  }
+  return addon;
+}
+
+function nativeHostIdentity(addon) {
+  return {
+    bytes: statSync(addon).size,
+    sha256: sha256(addon),
+  };
+}
+
+const serverNativeHostAddon = nativeHostAddon(serverTarget);
+const launcherNativeHostAddon = nativeHostAddon(launcherTarget);
+// Native linkers may embed build-specific identities (notably Mach-O
+// LC_UUID), so two correct builds from the same source need not be
+// byte-for-byte identical. Ship the freshly deployed server build as the one
+// canonical native image in both applications; installed qualification still
+// loads and hashes each deployed copy through the bundled runtime.
+const canonicalTemporaryAddon = `${launcherNativeHostAddon}.canonical-${process.pid}`;
+try {
+  cpSync(serverNativeHostAddon, canonicalTemporaryAddon);
+  rmSync(launcherNativeHostAddon);
+  renameSync(canonicalTemporaryAddon, launcherNativeHostAddon);
+} finally {
+  rmSync(canonicalTemporaryAddon, { force: true });
+}
+const serverNativeHost = nativeHostIdentity(serverNativeHostAddon);
+const launcherNativeHost = nativeHostIdentity(launcherNativeHostAddon);
+if (serverNativeHost.bytes !== launcherNativeHost.bytes ||
+    serverNativeHost.sha256 !== launcherNativeHost.sha256) {
+  throw new Error("Server and launcher could not be normalized to one native host addon identity.");
+}
 cpSync(
   path.join(repositoryRoot, "apps", "web", "dist"),
   path.join(bundleRoot, "app", "web", "dist"),
-  { recursive: true },
-);
-cpSync(
-  path.join(repositoryRoot, "apps", "launcher", "dist"),
-  path.join(bundleRoot, "app", "launcher", "dist"),
   { recursive: true },
 );
 mkdirSync(path.join(bundleRoot, "runtime"), { recursive: true });
 cpSync(nodeBinary, path.join(bundleRoot, "runtime", runtimeNodeName));
 executable(path.join(bundleRoot, "runtime", runtimeNodeName));
 cpSync(
-  path.join(repositoryRoot, "packages", "agents", "src", "migrations"),
-  path.join(bundleRoot, "migrations"),
+  path.join(repositoryRoot, "packages", "agents", "src", "schema"),
+  path.join(bundleRoot, "schema"),
   { recursive: true },
 );
 cpSync(
@@ -101,8 +265,8 @@ cpSync(
   { recursive: true },
 );
 cpSync(
-  path.join(repositoryRoot, "starter-pack"),
-  path.join(bundleRoot, "starter-pack"),
+  path.join(repositoryRoot, "packaging", "qualification"),
+  path.join(bundleRoot, "qualification"),
   { recursive: true },
 );
 
@@ -113,9 +277,22 @@ const manifest = {
   version,
   commit,
   communicationProtocolVersion: "communication-v3",
-  databaseSchemaVersion: databaseSchemaVersion(),
+  databaseSchemaVersion: baselineName,
+  databaseSchemaSha256: sha256(schemaSource),
   target: { platform: targetPlatform, arch: targetArch },
-  nodeVersion: process.version,
+  nodeVersion: nodeIdentity.version,
+  nodeExecutableBytes: nodeIdentity.bytes,
+  nodeExecutableSha256: nodeIdentity.sha256,
+  nodeSource: {
+    url: nodeSource.url,
+    archiveSha256: nodeSource.archiveSha256,
+    executableSha256: nodeSource.executableSha256,
+  },
+  nativeAbi: {
+    modules: nodeIdentity.modules,
+    napi: nodeIdentity.napi,
+  },
+  nativeHost: serverNativeHost,
   buildTime: new Date().toISOString(),
   channel,
 };
@@ -162,4 +339,5 @@ writeFileSync(path.join(bundleRoot, "INSTALLATION.txt"), [
   "",
 ].join("\n"));
 
+auditPortableSymlinkTree(bundleRoot, { label: "native beta bundle" });
 process.stdout.write(`${bundleRoot}\n`);

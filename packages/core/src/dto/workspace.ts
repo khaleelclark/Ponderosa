@@ -464,8 +464,10 @@ export interface ReadinessDto {
     daemon: ReadinessCheckDto;
     dataDirectory: ReadinessCheckDto;
     projections: ReadinessCheckDto;
-    /** Linux procfs descriptor bridge required for race-safe artifact reads. */
+    /** Native descriptor/handle authority required for race-safe artifact reads. */
     artifactFilesystem: ReadinessCheckDto;
+    /** Native authority that contains complete provider process trees. */
+    processContainment: ReadinessCheckDto;
     runtimes: ReadinessCheckDto;
     communicationMigration: ReadinessCheckDto;
   };

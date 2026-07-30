@@ -14,15 +14,24 @@ interface BrowserAuthorityContext {
   store: AgentStore;
   activeRuns: ReadonlyMap<string, ActiveRun>;
   publish(agentId: string, stored: StoredLogEvent): void;
+  logWarn(meta: Record<string, unknown>, message: string): void;
   persistRuntimeEvent(
     agentId: string,
     run: ActiveRun,
     event: LogEvent | AgentEvent,
-  ): StoredLogEvent | undefined;
+  ): Promise<StoredLogEvent | undefined>;
 }
 
 export function createBrowserAuthority(context: BrowserAuthorityContext) {
-  const { dataDir, driverFactory, store, activeRuns, publish, persistRuntimeEvent } = context;
+  const {
+    dataDir,
+    driverFactory,
+    store,
+    activeRuns,
+    publish,
+    persistRuntimeEvent,
+    logWarn,
+  } = context;
 
   const browserSessions = new BrowserSessionManager(
     dataDir,
@@ -37,7 +46,12 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
         publish(scope.agentId, store.appendEvent(scope.agentId, event));
         return;
       }
-      persistRuntimeEvent(scope.agentId, run, event);
+      void persistRuntimeEvent(scope.agentId, run, event).catch((error: unknown) => {
+        logWarn(
+          { err: error, agentId: scope.agentId, runId: scope.runId },
+          "browser runtime event persistence failed",
+        );
+      });
     },
   );
   const projectBrowserGrants = new Map<string, { agentId: string; runId: string }>();
@@ -49,7 +63,16 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
       if (!grant || scope.actorAgentId !== grant.agentId || scope.actorRunId !== grant.runId) return;
       const run = activeRuns.get(grant.agentId);
       if (!run || run.runId !== grant.runId) return;
-      persistRuntimeEvent(grant.agentId, run, { ...event, executionId: grant.runId });
+      void persistRuntimeEvent(
+        grant.agentId,
+        run,
+        { ...event, executionId: grant.runId },
+      ).catch((error: unknown) => {
+        logWarn(
+          { err: error, agentId: grant.agentId, runId: grant.runId },
+          "Project browser runtime event persistence failed",
+        );
+      });
     },
   );
 

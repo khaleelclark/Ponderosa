@@ -7,7 +7,7 @@ import type {
   BrowserOperatorInputRequest,
   BrowserSessionDto,
 } from "@ponderosa/core";
-import { publishManagedArtifactContent } from "@ponderosa/agents";
+import { publishManagedArtifactContentAsync } from "@ponderosa/agents";
 import type {
   BrowserDriver,
   BrowserDriverFactory,
@@ -716,7 +716,12 @@ export class BrowserSessionManager {
     });
     const artifactId = randomUUID();
     const relative = path.posix.join("browser", `${artifactId}.png`);
-    const published = publishManagedArtifactContent(this.dataDir, scope.projectId, artifactId, body);
+    const published = await publishManagedArtifactContentAsync(
+      this.dataDir,
+      scope.projectId,
+      artifactId,
+      body,
+    );
     this.emit(scope, {
       type: "browser_screenshot", sessionId: session.dto.id, executionId: scope.actorRunId ?? scope.runId,
       artifactId, path: relative, width: VIEWPORT.width, height: VIEWPORT.height,
