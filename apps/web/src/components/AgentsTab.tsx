@@ -369,8 +369,7 @@ export function AgentsTab({
       .map(({ agent }) => agent.id),
   );
   const filtersActive = Boolean(
-    renderedAgentIds || effectiveSearch.trim() || statusFilters.length ||
-      masterFilter !== "all",
+    effectiveSearch.trim() || statusFilters.length || masterFilter !== "all",
   );
   const contextAgentIds =
     organizationView === "hierarchy"

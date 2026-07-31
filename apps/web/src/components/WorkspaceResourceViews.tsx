@@ -207,7 +207,9 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
   const agentDirectory = workspaceDirectoryItems(agentDirectoryQuery.data?.pages, preferences);
   const rows = [...agentDirectory.starredItems, ...agentDirectory.items];
   const loadedAgentIds = new Set(rows.map(row => row.agent.id));
-  const agents = agentContextQueries.flatMap(query => query.data ?? []);
+  const agents = agentContextQueries
+    .flatMap(query => query.data ?? [])
+    .filter(agent => !agent.archived);
   const conversations = conversationContextQueries.flatMap(
     query => query.data ?? [],
   );
@@ -234,7 +236,10 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
     ...conversationContextQueries,
     ...healthContextQueries,
   ];
-  if (contextQueries.some(query => query.isLoading)) {
+  if (
+    agentDirectoryQuery.isLoading ||
+    contextQueries.some(query => query.isLoading)
+  ) {
     return <Box sx={{ p: 2 }}><LinearProgress /></Box>;
   }
   if (contextQueries.some(query => query.isError)) {
@@ -282,7 +287,7 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
           compact
         />
       </>}
-      agents={agents} renderedAgentIds={loadedAgentIds} projectId={projectId || undefined} engines={engines} conversations={conversations} statusByAgentId={statusByAgentId} healthByAgentId={healthByAgentId} projectByAgentId={projectByAgentId} displayOrder={rows.map(row => row.agent.id)} selectionAllowed onReorder={(sourceId, targetId, position) => onPreferences({ agentSort: "custom", agentOrder: reorderStableIds(preferences.agentOrder, rows.map(row => row.agent.id), sourceId, targetId, position) })} starredAgentIds={starredIds} onToggleStar={(agentId) => onPreferences(toggleWorkspaceResourceStar(preferences, "agent", agentId))} onOpenAgent={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentInNewTab={(agentId) => { const project = projectByAgentId.get(agentId)!; onOpenInNewTab({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentSettings={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId, view: "settings" }); }} onNewAgent={(managerAgentId) => onCreate(
+      agents={agents} renderedAgentIds={agentDirectoryQuery.data ? loadedAgentIds : undefined} projectId={projectId || undefined} engines={engines} conversations={conversations} statusByAgentId={statusByAgentId} healthByAgentId={healthByAgentId} projectByAgentId={projectByAgentId} displayOrder={rows.map(row => row.agent.id)} selectionAllowed onReorder={(sourceId, targetId, position) => onPreferences({ agentSort: "custom", agentOrder: reorderStableIds(preferences.agentOrder, rows.map(row => row.agent.id), sourceId, targetId, position) })} starredAgentIds={starredIds} onToggleStar={(agentId) => onPreferences(toggleWorkspaceResourceStar(preferences, "agent", agentId))} onOpenAgent={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentInNewTab={(agentId) => { const project = projectByAgentId.get(agentId)!; onOpenInNewTab({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentSettings={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId, view: "settings" }); }} onNewAgent={(managerAgentId) => onCreate(
       managerAgentId
         ? projectByAgentId.get(managerAgentId)?.id
         : projectId || undefined,

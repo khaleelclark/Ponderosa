@@ -354,7 +354,9 @@ export function ProjectShell({
     onClose={() => navigate(route.agentId ? { kind: "agent", projectId, agentId: route.agentId } : { kind: "project", projectId })}
   />;
 } else if (route.kind === "agents") {
-    main = (
+    main = agentDirectoryQuery.isLoading ? (
+      <Box sx={{ p: 2 }}><LinearProgress /></Box>
+    ) : (
       <AgentsTab
         searchValue={agentDirectorySearch}
         onSearchValueChange={setAgentDirectorySearch}
@@ -369,7 +371,7 @@ export function ProjectShell({
           </Button>
         ) : null}
         agents={agents}
-        renderedAgentIds={visibleAgentIds}
+        renderedAgentIds={agentDirectoryQuery.data ? visibleAgentIds : undefined}
         projectId={projectId}
         engines={projectEngines}
         conversations={conversations}

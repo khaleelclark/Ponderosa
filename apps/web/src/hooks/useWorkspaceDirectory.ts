@@ -65,11 +65,12 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     staleTime: 5_000,
   });
   return {
-    ...query,
-    hasNextPage: query.isPlaceholderData ||
-      (query.isFetching && !query.isFetchingNextPage)
-      ? false
-      : query.hasNextPage,
+    data: query.data,
+    fetchNextPage: query.fetchNextPage,
+    hasNextPage: query.isPlaceholderData ? false : query.hasNextPage,
+    isError: query.isError,
+    isFetchingNextPage: query.isFetchingNextPage,
+    isLoading: query.isLoading,
   };
 }
 
