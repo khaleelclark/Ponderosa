@@ -15,7 +15,6 @@ import {
   parseSuccessfulJsonResponse,
   requireSuccessfulResponse,
 } from "./http-response.mjs";
-import { MACOS_GUI_PATH } from "./macos-gui-entry.mjs";
 import { expectedClaudeGuiExecutable } from "./macos-provider-evidence.mjs";
 import {
   findMacosChromiumExecutable,
@@ -80,6 +79,24 @@ async function readJsonEventually(pathname, timeoutMs = 15_000) {
   throw lastError ?? new Error(`Timed out reading ${pathname}`);
 }
 
+async function waitForPathRemoval(pathname, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!existsSync(pathname)) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Timed out waiting for ${pathname} to be removed`);
+}
+
+async function waitForProcessExit(pid, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!processIsAlive(pid)) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Timed out waiting for process ${pid} to exit`);
+}
+
 async function fetchEventually(url, init = {}, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
@@ -100,6 +117,7 @@ async function fetchEventually(url, init = {}, timeoutMs = 15_000) {
 if (process.platform !== "darwin") {
   throw new Error("Normal GUI launch qualification requires macOS.");
 }
+const MACOS_GUI_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
 
 const applicationOption = option("application", "");
 const installRootOption = option("install-root", "");
@@ -119,7 +137,7 @@ if (!reportOption) {
 }
 const reportPath = canonicalPath(reportOption);
 
-const appExecutable = path.join(application, "Contents", "MacOS", "Ponderosa");
+const appExecutable = path.join(application, "Contents", "MacOS", "Ponderosa Engine");
 const installedLauncherDist = path.join(installRoot, "app", "launcher", "dist");
 const installedWebDist = path.join(installRoot, "app", "web", "dist");
 const {
@@ -144,6 +162,7 @@ assert(canonicalPath(expectedLauncherStateLocation.installRoot) === installRoot,
 const nodeExecutable = canonicalPath(launcherPaths.nodeExecutable);
 const launcher = canonicalPath(path.join(installedLauncherDist, "cli.js"));
 const statePath = canonicalPath(launcherPaths.statePath);
+const engineSupervisorPath = canonicalPath(launcherPaths.engineSupervisorPath);
 const guiEnvironment = Object.fromEntries(Object.entries({
   HOME: process.env.HOME,
   USER: process.env.USER,
@@ -157,6 +176,7 @@ const checks = [];
 let started = false;
 let launchAttempted = false;
 const observedPids = new Set();
+const observedApplicationPids = new Set();
 
 function launcherCall(command, args = [], allowFailure = false) {
   try {
@@ -189,11 +209,19 @@ function launcherJsonCall(command, args = []) {
   }
 }
 
+function applicationPids() {
+  return run("ps", ["-axo", "pid=,command="])
+    .split("\n")
+    .filter((line) => line.includes(appExecutable) && !line.includes("Helpers"))
+    .map((line) => Number(line.trim().split(/\s+/u)[0]))
+    .filter((pid) => Number.isSafeInteger(pid) && pid > 0);
+}
+
 async function launchFromApplication(port) {
   launchAttempted = true;
+  const before = new Set(applicationPids());
   run("open", [
     "-n",
-    "-W",
     application,
     "--args",
     "--data-dir", dataDir,
@@ -202,6 +230,15 @@ async function launchFromApplication(port) {
   ], {
     env: guiEnvironment,
   });
+  const applicationDeadline = Date.now() + 15_000;
+  let applicationPid;
+  while (Date.now() < applicationDeadline) {
+    applicationPid = applicationPids().find((pid) => !before.has(pid));
+    if (applicationPid) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert(applicationPid, "Ponderosa Engine native application process did not remain alive.");
+  observedApplicationPids.add(applicationPid);
   const state = await readJsonEventually(statePath);
   observedPids.add(state.pid);
   const stateInstallRoot = canonicalPath(state.installRoot);
@@ -216,7 +253,7 @@ async function launchFromApplication(port) {
   );
   assert(health.ok, "GUI-launched daemon did not remain healthy.");
   started = true;
-  return state;
+  return { ...state, applicationPid };
 }
 
 function processIsAlive(pid) {
@@ -241,13 +278,28 @@ async function cleanupGuiLaunch(port) {
         lastStateError = error;
       }
     }
+    if (existsSync(engineSupervisorPath)) {
+      try {
+        const supervisor = JSON.parse(readFileSync(engineSupervisorPath, "utf8"));
+        if (Number.isSafeInteger(supervisor.pid)) observedPids.add(supervisor.pid);
+      } catch (error) {
+        lastStateError = error;
+      }
+    }
     // Attempt the authoritative launcher stop even before state is observed:
     // LaunchServices can return or fail while the packaged wrapper is still
     // completing its state publication.
     launcherCall("stop", [], true);
+    for (const pid of observedApplicationPids) {
+      if (processIsAlive(pid)) {
+        try { process.kill(pid, "SIGTERM"); } catch { /* Retried until cleanup settles. */ }
+      }
+    }
     const clean = (
       !existsSync(statePath) &&
+      !existsSync(engineSupervisorPath) &&
       [...observedPids].every((pid) => !processIsAlive(pid)) &&
+      [...observedApplicationPids].every((pid) => !processIsAlive(pid)) &&
       await portIsAvailable(port)
     );
     if (clean) {
@@ -296,13 +348,11 @@ async function browserSession(state) {
 }
 
 mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-const wrapper = readFileSync(appExecutable, "utf8");
-assert(wrapper.includes(`PATH="${MACOS_GUI_PATH}"`), "Packaged macOS entry point does not sanitize GUI PATH.");
-assert(wrapper.includes('"$@"'), "Packaged macOS entry point does not forward qualification arguments.");
+assert(existsSync(appExecutable), "Packaged native Ponderosa Engine executable is missing.");
 checks.push({
-  id: "macos-gui-environment",
+  id: "macos-native-engine",
   status: "pass",
-  detail: `packaged entry point enforces Finder-style PATH ${MACOS_GUI_PATH}`,
+  detail: "packaged Electron Engine application owns a persistent native process",
 });
 
 const port = await availablePort();
@@ -314,6 +364,19 @@ await seedLegacyPwaProfile(port, persistentProfile, chromiumExecutable);
 let primaryError;
 try {
   const firstState = await launchFromApplication(port);
+  const firstSupervisor = await readJsonEventually(engineSupervisorPath);
+  assert(Number.isSafeInteger(firstSupervisor.pid) && firstSupervisor.pid > 0,
+    "Ponderosa Engine did not publish its persistent desktop supervisor.");
+  assert(firstSupervisor.pid !== firstState.pid,
+    "Ponderosa Engine supervisor was incorrectly conflated with the detached server.");
+  assert(processIsAlive(firstSupervisor.pid),
+    "Ponderosa Engine desktop supervisor exited while its server remained healthy.");
+  observedPids.add(firstSupervisor.pid);
+  checks.push({
+    id: "macos-engine-supervisor",
+    status: "pass",
+    detail: "desktop Engine process remained alive independently of its detached server",
+  });
   const baseUrl = `http://127.0.0.1:${firstState.port}`;
   const persistentBootstrapToken = await browserBootstrapToken(firstState);
   const pwaUpgrade = await qualifyPersistentPwaUpgrade({
@@ -437,15 +500,28 @@ try {
   launcherCall("stop");
   started = false;
   assert(!existsSync(statePath), "GUI launcher stop left instance state behind.");
+  await waitForPathRemoval(engineSupervisorPath);
+  await waitForProcessExit(firstSupervisor.pid);
+  process.kill(firstState.applicationPid, "SIGTERM");
+  await waitForProcessExit(firstState.applicationPid);
   const secondState = await launchFromApplication(port);
   assert(secondState.pid !== firstState.pid, "GUI reopen reused the stopped daemon pid.");
-  launcherCall("stop");
+  const secondSupervisor = await readJsonEventually(engineSupervisorPath);
+  assert(processIsAlive(secondSupervisor.pid),
+    "Reopened Ponderosa Engine did not retain a desktop supervisor.");
+  observedPids.add(secondSupervisor.pid);
+  process.kill(secondState.applicationPid, "SIGTERM");
+  await waitForPathRemoval(statePath, 35_000);
+  await waitForPathRemoval(engineSupervisorPath);
   started = false;
-  assert(!existsSync(statePath), "Second GUI launcher stop left instance state behind.");
+  assert(!processIsAlive(secondState.pid),
+    "Quitting Ponderosa Engine left its detached server alive.");
+  await waitForProcessExit(secondSupervisor.pid);
+  await waitForProcessExit(secondState.applicationPid);
   checks.push({
     id: "macos-gui-close-reopen",
     status: "pass",
-    detail: "normal packaged-app launch, stop, reopen, and observed stop all passed",
+    detail: "normal packaged-app launch, explicit stop, reopen, and desktop Quit all passed",
   });
 
   mkdirSync(path.dirname(reportPath), { recursive: true });

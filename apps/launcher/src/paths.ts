@@ -48,6 +48,7 @@ export function resolveLauncherPaths(input: {
     configPath: path.join(configDir, "launcher.json"),
     statePath: path.join(stateDir, "instance.json"),
     operationLockPath: path.join(stateDir, "operation.lock"),
+    engineSupervisorPath: path.join(stateDir, "engine-supervisor.json"),
     stdoutLogPath: path.join(logsDir, "server.log"),
     stderrLogPath: path.join(logsDir, "server-error.log"),
   };
@@ -120,7 +121,10 @@ export function writeJsonAtomic(pathname: string, value: unknown): void {
   const temporary = `${pathname}.${process.pid}.tmp`;
   writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
   try { chmodSync(temporary, 0o600); } catch { /* Windows ignores POSIX modes. */ }
-  const file = openSync(temporary, "r");
+  // Windows requires a writable handle for FlushFileBuffers (fsync). Opening
+  // the completed temporary file read-only works on POSIX but fails with EPERM
+  // on Windows before the launcher can publish its state.
+  const file = openSync(temporary, "r+");
   try { fsyncSync(file); } finally { closeSync(file); }
   renameSync(temporary, pathname);
   // A durable rename requires the containing directory on POSIX. Windows

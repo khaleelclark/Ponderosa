@@ -425,6 +425,16 @@ export interface HealthDto {
   revision: string;
 }
 
+/** Bounded tail of one installed-engine log. */
+export interface EngineLogDto {
+  stream: "server" | "error";
+  text: string;
+  totalBytes: number;
+  returnedBytes: number;
+  truncated: boolean;
+  updatedAt?: string;
+}
+
 export interface ReadinessCheckDto {
   ok: boolean;
   detail: string;

@@ -5,11 +5,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { currentPonderosaStatus, startPonderosa, stopPonderosa } from "./control.js";
 import { writeDiagnosticBundle } from "./diagnostics.js";
 import { runDoctor } from "./doctor.js";
+import { supervisePonderosaEngine } from "./engine-supervisor.js";
 import { readBuildManifest } from "./manifest.js";
 import { ensureDataLayout, readLauncherState, resolveLauncherPaths } from "./paths.js";
 import { hostPlatformAdapter } from "./platform.js";
 
-type Command = "open" | "start" | "stop" | "restart" | "status" | "doctor" | "diagnostics" | "version" | "help";
+type Command = "open" | "engine" | "start" | "stop" | "restart" | "status" | "doctor" | "diagnostics" | "version" | "help";
 
 interface ParsedArguments {
   command: Command;
@@ -23,10 +24,11 @@ interface ParsedArguments {
 const HELP = `Ponderosa private-beta launcher
 
 Usage:
-  ponderosa [open|start|stop|restart|status|doctor|diagnostics|version] [options]
+  ponderosa [open|engine|start|stop|restart|status|doctor|diagnostics|version] [options]
 
 Commands:
   open          Start Ponderosa if necessary and open it in the default browser
+  engine        Run the persistent Ponderosa Engine desktop supervisor
   start         Start Ponderosa without opening a browser
   stop          Gracefully stop Ponderosa and its provider processes
   restart       Stop, start, and open Ponderosa
@@ -54,7 +56,7 @@ function parseArguments(argv: string[]): ParsedArguments {
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]!;
     if (!argument.startsWith("-") && !commandSeen) {
-      if (!["open", "start", "stop", "restart", "status", "doctor", "diagnostics", "version", "help"].includes(argument)) {
+      if (!["open", "engine", "start", "stop", "restart", "status", "doctor", "diagnostics", "version", "help"].includes(argument)) {
         throw new Error(`Unknown command: ${argument}`);
       }
       command = argument as Command;
@@ -180,7 +182,7 @@ async function main(argv: string[]): Promise<void> {
     return;
   }
 
-  if (parsed.command === "open") {
+  if (parsed.command === "open" || parsed.command === "engine") {
     const running = await currentPonderosaStatus(paths);
     const runningDifferentBuild = running?.healthy && (
       running.version !== manifest.version ||
@@ -200,13 +202,18 @@ async function main(argv: string[]): Promise<void> {
     manifest,
     platform,
     ...(parsed.port !== undefined ? { requestedPort: parsed.port } : {}),
-    openBrowser: parsed.command === "open" && parsed.openBrowser,
+    openBrowser:
+      (parsed.command === "open" || parsed.command === "engine") &&
+      parsed.openBrowser,
   });
   if (parsed.command === "start" && parsed.openBrowser) {
     // "start" deliberately leaves browser opening to the explicit open command.
     process.stdout.write(`Ponderosa started at http://${state.host}:${state.port}\n`);
   } else {
     process.stdout.write(`Ponderosa is available at http://${state.host}:${state.port}\n`);
+  }
+  if (parsed.command === "engine") {
+    await supervisePonderosaEngine(paths);
   }
 }
 

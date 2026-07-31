@@ -88,8 +88,11 @@ const installerChecks = [];
 try {
   if (process.platform === "linux") {
     if (!artifact.endsWith(".deb")) throw new Error("Linux installer qualification requires a .deb.");
-    installedRoot = "/opt/ponderosa-beta";
-    if (existsSync(installedRoot)) throw new Error(`${installedRoot} already exists; refusing to replace it.`);
+    installedApplication = "/opt/ponderosa-engine";
+    installedRoot = path.join(installedApplication, "resources", "Ponderosa");
+    if (existsSync(installedApplication)) {
+      throw new Error(`${installedApplication} already exists; refusing to replace it.`);
+    }
     run("sudo", ["dpkg", "--install", artifact]);
     uninstall = () => run("sudo", ["dpkg", "--remove", "ponderosa-beta"]);
     installed = true;
@@ -98,8 +101,8 @@ try {
     mounted = path.join(disposable, "mounted");
     mkdirSync(mounted);
     run("hdiutil", ["attach", "-nobrowse", "-readonly", "-mountpoint", mounted, artifact]);
-    const sourceApp = path.join(mounted, "Ponderosa Beta.app");
-    const installedApp = path.join(disposable, "Applications", "Ponderosa Beta.app");
+    const sourceApp = path.join(mounted, "Ponderosa Engine.app");
+    const installedApp = path.join(disposable, "Applications", "Ponderosa Engine.app");
     mkdirSync(path.dirname(installedApp), { recursive: true });
     copyPortableTree(sourceApp, installedApp, {
       label: "copied macOS installed application",

@@ -50,7 +50,7 @@ interface EngineRoutesContext {
   publishWorkspaceSince(cursor: number): void;
   notifyScheduler(): void;
   authStatuses: Pick<EngineAuthStatusCache, "invalidate" | "get">;
-  availability: Pick<EngineAvailabilityStore, "record">;
+  availability: Pick<EngineAvailabilityStore, "denial" | "record">;
   createOperationalNotification(input: OperationalNotificationInput): unknown;
   resolveOperationalNotification(dedupeKey: string): void;
   projectDeletionInProgress(projectId: string): boolean;
@@ -188,9 +188,21 @@ export function registerEngineRoutes(
         : { authenticated: true };
       if (!auth.authenticated) return engineDto(registration);
       if (!registration.availabilityProbe) {
-        return reply.code(409).send({
-          error: "this runtime does not provide an entitlement probe",
-        });
+        const denial = availability.denial(request.params.id);
+        if (denial?.source === "provider_run") {
+          availability.record({
+            engineId: request.params.id,
+            available: true,
+            detail: "provider authentication rechecked successfully",
+            source: "operator_probe",
+          });
+        }
+        const refreshed = await engineDto(registration);
+        if (refreshed.available) {
+          resolveOperationalNotification(`provider:${request.params.id}:unavailable`);
+          notifyScheduler();
+        }
+        return refreshed;
       }
       let result: EngineAvailabilityStatus;
       try {

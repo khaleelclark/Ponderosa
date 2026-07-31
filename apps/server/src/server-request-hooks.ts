@@ -72,7 +72,8 @@ export function registerRequestSecurityHooks(
 
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-    const browserBootstrapPath = request.url === "/__ponderosa_bootstrap" ||
+    const browserBootstrapPath =
+      /^\/__ponderosa_bootstrap(?:\?|$)/u.test(request.url) ||
       request.url === "/__ponderosa_bootstrap.js";
     const launcherExchange = request.url === "/api/launcher/session-exchange";
     const launcherControlRequest = request.url.startsWith("/api/launcher/") && !launcherExchange;

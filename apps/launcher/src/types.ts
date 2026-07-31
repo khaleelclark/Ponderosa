@@ -112,6 +112,7 @@ export interface LauncherPaths {
   configPath: string;
   statePath: string;
   operationLockPath: string;
+  engineSupervisorPath: string;
   stdoutLogPath: string;
   stderrLogPath: string;
 }

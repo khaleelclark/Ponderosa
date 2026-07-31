@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs } from "node:fs";
+import path from "node:path";
+import type { FastifyReply } from "fastify";
 import {
   canonicalizeProviderText,
+  type EngineLogDto,
   unicodeCodePointLength,
   type CommunicationReconciliationReport,
   type ReadinessCheckDto,
@@ -68,6 +71,57 @@ interface ServerControlRoutesContext {
     authDetail?: string;
     availabilityDetail?: string;
   }>;
+}
+
+const ENGINE_LOG_TAIL_BYTES = 64 * 1024;
+
+async function engineLogTail(
+  pathname: string | undefined,
+  stream: EngineLogDto["stream"],
+): Promise<EngineLogDto> {
+  if (!pathname) {
+    return {
+      stream,
+      text: "",
+      totalBytes: 0,
+      returnedBytes: 0,
+      truncated: false,
+    };
+  }
+  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+  try {
+    handle = await fs.open(pathname, "r");
+    const stat = await handle.stat();
+    const start = Math.max(0, stat.size - ENGINE_LOG_TAIL_BYTES);
+    const buffer = Buffer.alloc(stat.size - start);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
+    let text = buffer.subarray(0, bytesRead).toString("utf8");
+    if (start > 0) {
+      const firstNewline = text.indexOf("\n");
+      text = firstNewline >= 0 ? text.slice(firstNewline + 1) : "";
+    }
+    return {
+      stream,
+      text,
+      totalBytes: stat.size,
+      returnedBytes: Buffer.byteLength(text),
+      truncated: start > 0,
+      updatedAt: stat.mtime.toISOString(),
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return {
+        stream,
+        text: "",
+        totalBytes: 0,
+        returnedBytes: 0,
+        truncated: false,
+      };
+    }
+    throw error;
+  } finally {
+    await handle?.close();
+  }
 }
 
 export function registerServerControlRoutes(
@@ -145,16 +199,38 @@ app.post<{ Body: { handoff?: string } }>("/api/agent-session/rollover", async (r
 
 registerHealthRoutes(app, serverContext);
 
-app.get("/api/launcher/status", async () => ({
-  service: "ponderosa",
-  pid: process.pid,
-  dataDir: opts.dataDir,
-  version: opts.buildVersion?.trim() || "0.0.0",
-  commit: opts.buildRevision?.trim() || "development",
-  channel: opts.releaseChannel?.trim() || "development",
-  acceptingDurableIntake: !isClosed() && artifactFilesystem.ok && processContainment.ok,
-  leasingRuns: coordinationV3Scheduler.isLeasingRuns(),
-}));
+app.get(
+  "/api/launcher/status",
+  { logLevel: "silent" },
+  async () => ({
+    service: "ponderosa",
+    pid: process.pid,
+    dataDir: opts.dataDir,
+    version: opts.buildVersion?.trim() || "0.0.0",
+    commit: opts.buildRevision?.trim() || "development",
+    channel: opts.releaseChannel?.trim() || "development",
+    acceptingDurableIntake: !isClosed() && artifactFilesystem.ok && processContainment.ok,
+    leasingRuns: coordinationV3Scheduler.isLeasingRuns(),
+    activeRunCount: activeRuns.size,
+  }),
+);
+
+app.get<{ Querystring: { stream?: string } }>(
+  "/api/launcher/logs",
+  { logLevel: "silent" },
+  async (request, reply) => {
+    const stream = request.query.stream;
+    if (stream !== "server" && stream !== "error") {
+      return reply.code(400).send({ error: "stream must be server or error" });
+    }
+    const filename = stream === "server" ? "server.log" : "server-error.log";
+    const pathname = opts.launcherDataDir
+      ? path.join(opts.launcherDataDir, "logs", filename)
+      : undefined;
+    reply.header("Cache-Control", "no-store");
+    return engineLogTail(pathname, stream);
+  },
+);
 
 app.post("/api/launcher/bootstrap", async (_request, reply) => {
   reply.header("Cache-Control", "no-store");
@@ -205,9 +281,59 @@ app.get("/__ponderosa_bootstrap", async (_request, reply) => reply
 app.get("/__ponderosa_bootstrap.js", async (_request, reply) => reply
   .type("text/javascript; charset=utf-8")
   .header("Cache-Control", "no-store")
-  .send(`(async()=>{const e=document.getElementById("status"),t=decodeURIComponent(location.hash.slice(1));history.replaceState(null,"","/__ponderosa_bootstrap");if(!t){e.textContent="This launch link is incomplete. Open Ponderosa from the installed application again.";return}try{const r=await fetch("/api/launcher/session-exchange",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token:t})});if(!r.ok)throw new Error("exchange failed");location.replace("/")}catch{e.textContent="This launch link expired or was already used. Open Ponderosa from the installed application again."}})();`));
+  .send(`(async()=>{
+const status=document.getElementById("status");
+const token=decodeURIComponent(location.hash.slice(1));
+const destination="/";
+history.replaceState(null,"","/__ponderosa_bootstrap"+location.search);
+if(!token){location.replace(destination);return}
+try{
+  const response=await fetch("/api/launcher/session-exchange",{
+    method:"POST",
+    headers:{"content-type":"application/json"},
+    body:JSON.stringify({token})
+  });
+  if(!response.ok)throw new Error("exchange failed");
+  if("serviceWorker" in navigator){
+    try{
+      const registration=await navigator.serviceWorker.getRegistration("/");
+      if(registration){
+        await registration.update();
+        let candidate=registration.waiting||registration.installing;
+        if(candidate&&candidate.state!=="installed"){
+          await Promise.race([
+            new Promise(resolve=>{
+              const changed=()=>{
+                if(candidate.state==="installed"||candidate.state==="redundant"){
+                  candidate.removeEventListener("statechange",changed);
+                  resolve();
+                }
+              };
+              candidate.addEventListener("statechange",changed);
+              changed();
+            }),
+            new Promise(resolve=>setTimeout(resolve,5000))
+          ]);
+        }
+        candidate=registration.waiting;
+        if(candidate){
+          const controlled=Promise.race([
+            new Promise(resolve=>navigator.serviceWorker.addEventListener("controllerchange",resolve,{once:true})),
+            new Promise(resolve=>setTimeout(resolve,5000))
+          ]);
+          candidate.postMessage({type:"SKIP_WAITING"});
+          await controlled;
+        }
+      }
+    }catch{}
+  }
+  location.replace(destination);
+}catch{
+  status.textContent="This launch link expired or was already used. Open Ponderosa Engine again.";
+}
+})();`));
 
-app.post("/api/launcher/shutdown", async (_request, reply) => {
+const beginShutdown = (reply: FastifyReply) => {
   if (isClosed()) return reply.code(409).send({ error: "Ponderosa is already shutting down" });
   reply.code(202);
   setImmediate(() => {
@@ -217,7 +343,10 @@ app.post("/api/launcher/shutdown", async (_request, reply) => {
     });
   });
   return { accepted: true };
-});
+};
+
+app.post("/api/launcher/shutdown", async (_request, reply) =>
+  beginShutdown(reply));
 
 app.post("/api/deployment/drain", async (_request, reply) => {
   if (isClosed()) return reply.code(409).send({ error: "daemon is shutting down" });

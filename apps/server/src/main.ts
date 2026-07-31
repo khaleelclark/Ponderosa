@@ -27,6 +27,7 @@ function internalAgentBaseUrl(host: string, port: number): string {
 
 const app = createServer({
   dataDir: config.dataDir,
+  launcherDataDir: process.env.PONDEROSA_LAUNCHER_DATA_DIR,
   engines: defaultEngineRegistrations(),
   webDist,
   authToken: config.authToken,

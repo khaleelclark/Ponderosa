@@ -79,6 +79,8 @@ export interface ManagementPlan {
 
 export interface CreateServerOptions {
   dataDir: string;
+  /** Launcher-owned data root. Runtime state remains under dataDir. */
+  launcherDataDir?: string;
   store?: AgentStore;
   engines: EngineRegistration[];
   webDist?: string;

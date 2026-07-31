@@ -14,6 +14,10 @@ export const queryKeys = {
   readiness: {
     all: ["readiness"] as const,
   },
+  engine: {
+    status: ["engine", "status"] as const,
+    log: (stream: "server" | "error") => ["engine", "log", stream] as const,
+  },
   projects: {
     all: ["projects"] as const,
   },

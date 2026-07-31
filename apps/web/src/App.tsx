@@ -60,6 +60,7 @@ import {
   type ProjectBrowserRequest,
 } from "./components/ProjectBrowserContext";
 import { engineAvailabilityPresentation } from "./conversationEngine";
+import { recheckProvider } from "./providerAuthRefresh";
 import {
   WORKSPACE_TABS_STORAGE_KEY,
   adjacentWorkspaceTab,
@@ -156,6 +157,10 @@ export default function App({
     );
   });
   const engines = enginesQuery.data ?? [];
+  const providerEngines = useRef(engines);
+  providerEngines.current = engines;
+  const providerRecheckAt = useRef(new Map<string, number>());
+  const providerRecheckInFlight = useRef(new Set<string>());
   const engineAvailability = engineAvailabilityPresentation(engines);
   const theme = useTheme();
   const mobileWorkspace = useMediaQuery(theme.breakpoints.down("md"));
@@ -183,6 +188,46 @@ export default function App({
     staleTime: 30_000,
   });
   const projectAgentQueries = useProjectAgents(projects);
+
+  useEffect(() => {
+    let stopped = false;
+
+    const recheckUnavailableProviders = () => {
+      if (stopped || document.visibilityState !== "visible") return;
+      const now = Date.now();
+      for (const engine of providerEngines.current) {
+        if (
+          engine.enabled === false ||
+          (engine.authenticated && engine.available) ||
+          providerRecheckInFlight.current.has(engine.id) ||
+          now - (providerRecheckAt.current.get(engine.id) ?? 0) < 4_000
+        ) {
+          continue;
+        }
+        providerRecheckAt.current.set(engine.id, now);
+        providerRecheckInFlight.current.add(engine.id);
+        void recheckProvider(queryClient, engine.id)
+          .catch(() => {
+            // Provider settings keep the explicit retry and error surface.
+          })
+          .finally(() => {
+            providerRecheckInFlight.current.delete(engine.id);
+          });
+      }
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") recheckUnavailableProviders();
+    };
+
+    window.addEventListener("focus", recheckUnavailableProviders);
+    document.addEventListener("visibilitychange", onVisible);
+    recheckUnavailableProviders();
+    return () => {
+      stopped = true;
+      window.removeEventListener("focus", recheckUnavailableProviders);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [engines, queryClient]);
   const preferredQuotaProvider = route.kind === "agent"
     ? projectAgentQueries[
         projects.findIndex((project) => project.id === route.projectId)

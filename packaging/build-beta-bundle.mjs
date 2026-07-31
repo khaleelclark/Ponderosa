@@ -7,6 +7,7 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -93,6 +94,22 @@ function executable(pathname) {
   try { chmodSync(pathname, 0o755); } catch { /* Windows does not use POSIX modes. */ }
 }
 
+function pnpmCli() {
+  const candidates = [
+    process.env.npm_execpath,
+    ...String(process.env.PATH ?? "")
+      .split(path.delimiter)
+      .filter(Boolean)
+      .map((directory) => path.join(directory, process.platform === "win32" ? "pnpm.cmd" : "pnpm")),
+  ];
+  for (const candidate of candidates) {
+    if (!candidate || !existsSync(candidate)) continue;
+    const resolved = realpathSync(candidate);
+    if (/pnpm(?:\.c?js|\.mjs)?$/iu.test(resolved)) return resolved;
+  }
+  throw new Error("Could not locate the pnpm CLI needed to deploy production dependencies.");
+}
+
 const targetPlatform = option("platform", process.platform);
 const targetArch = option("arch", process.arch);
 const configuredVersion = option("version", process.env.PONDEROSA_BUILD_VERSION);
@@ -120,8 +137,35 @@ const runtimeNodeName = targetPlatform === "win32" ? "node.exe" : "node";
 const baselineName = "0000_current_schema.sql";
 const schemaSource = path.join(repositoryRoot, "packages", "agents", "src", "schema", baselineName);
 
+assertCleanSource();
+// This command is also a supported release entry point, so never trust a
+// previously generated web/dist tree. A stale PWA shell can otherwise make a
+// correct new daemon look like the old installed version.
+execFileSync(
+  process.execPath,
+  [
+    path.join(
+      repositoryRoot,
+      "apps",
+      "web",
+      "node_modules",
+      "@rsbuild",
+      "core",
+      "bin",
+      "rsbuild.js",
+    ),
+    "build",
+  ],
+  {
+    cwd: path.join(repositoryRoot, "apps", "web"),
+    stdio: "inherit",
+    env: { ...process.env, NODE_ENV: "production" },
+  },
+);
+
 for (const required of [
   path.join(repositoryRoot, "apps", "launcher", "dist", "cli.js"),
+  path.join(repositoryRoot, "apps", "engine-desktop", "dist", "main.js"),
   path.join(repositoryRoot, "apps", "server", "dist", "main.js"),
   path.join(repositoryRoot, "apps", "web", "dist", "index.html"),
   path.join(repositoryRoot, "packaging", "qualification", "verify-installed-bundle.mjs"),
@@ -133,7 +177,6 @@ for (const required of [
   if (!existsSync(required)) throw new Error(`Required build input is missing: ${required}`);
 }
 
-assertCleanSource();
 const nodeIdentity = nodeRuntimeIdentity(nodeBinary);
 const nodeSource = JSON.parse(readFileSync(nodeSourcePath, "utf8"));
 const nodeDistributionPlatform = targetPlatform === "win32" ? "win" : targetPlatform;
@@ -163,23 +206,34 @@ mkdirSync(bundleRoot, { recursive: true });
 
 const serverTarget = path.join(bundleRoot, "app", "server");
 mkdirSync(path.dirname(serverTarget), { recursive: true });
-execFileSync("pnpm", [
+const runtimeBuildEnvironment = {
+  ...process.env,
+  CI: process.env.CI ?? "true",
+  PATH: `${path.dirname(nodeBinary)}${path.delimiter}${process.env.PATH ?? ""}`,
+  npm_node_execpath: nodeBinary,
+};
+
+execFileSync(nodeBinary, [pnpmCli(),
+  "--config.verify-deps-before-run=false",
+  "--config.node-linker=hoisted",
   "--filter", "@ponderosa/server",
   "deploy", "--prod", "--legacy", serverTarget,
 ], {
   cwd: repositoryRoot,
   stdio: "inherit",
-  env: { ...process.env, CI: process.env.CI ?? "true" },
+  env: runtimeBuildEnvironment,
 });
 
 const launcherTarget = path.join(bundleRoot, "app", "launcher");
-execFileSync("pnpm", [
+execFileSync(nodeBinary, [pnpmCli(),
+  "--config.verify-deps-before-run=false",
+  "--config.node-linker=hoisted",
   "--filter", "@ponderosa/launcher",
   "deploy", "--prod", "--legacy", launcherTarget,
 ], {
   cwd: repositoryRoot,
   stdio: "inherit",
-  env: { ...process.env, CI: process.env.CI ?? "true" },
+  env: runtimeBuildEnvironment,
 });
 
 function removeDeployedWorkspaceSelfLink(packageTarget, packageName) {
@@ -250,6 +304,21 @@ cpSync(
   path.join(bundleRoot, "app", "web", "dist"),
   { recursive: true },
 );
+const engineDesktopTarget = path.join(bundleRoot, "app", "engine-desktop");
+cpSync(
+  path.join(repositoryRoot, "apps", "engine-desktop", "dist"),
+  path.join(engineDesktopTarget, "dist"),
+  { recursive: true },
+);
+writeFileSync(path.join(engineDesktopTarget, "package.json"), `${JSON.stringify({
+  name: "ponderosa-engine-desktop",
+  version,
+  description: "Self-hosted coding-agent workbench",
+  author: "Ponderosa",
+  private: true,
+  type: "module",
+  main: "dist/main.js",
+}, null, 2)}\n`);
 mkdirSync(path.join(bundleRoot, "runtime"), { recursive: true });
 cpSync(nodeBinary, path.join(bundleRoot, "runtime", runtimeNodeName));
 executable(path.join(bundleRoot, "runtime", runtimeNodeName));
@@ -315,16 +384,6 @@ set "ROOT=%~dp0"\r
 "%ROOT%runtime\\node.exe" "%ROOT%app\\launcher\\dist\\cli.js" --install-root "%ROOT%" %*\r
 `;
 writeFileSync(path.join(bundleRoot, "ponderosa.cmd"), windowsLauncher);
-
-const windowsGuiLauncher = `Option Explicit\r
-Dim shell, fso, root, command\r
-Set shell = CreateObject("WScript.Shell")\r
-Set fso = CreateObject("Scripting.FileSystemObject")\r
-root = fso.GetParentFolderName(WScript.ScriptFullName)\r
-command = Chr(34) & root & "\\runtime\\node.exe" & Chr(34) & " " & Chr(34) & root & "\\app\\launcher\\dist\\cli.js" & Chr(34) & " open --install-root " & Chr(34) & root & Chr(34)\r
-shell.Run command, 0, False\r
-`;
-writeFileSync(path.join(bundleRoot, "ponderosa.vbs"), windowsGuiLauncher);
 
 writeFileSync(path.join(bundleRoot, "INSTALLATION.txt"), [
   "Ponderosa private beta",

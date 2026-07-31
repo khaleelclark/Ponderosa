@@ -30,7 +30,6 @@ const required = [
   path.join(bundle, "qualification", "verify-installed-bundle.mjs"),
   path.join(bundle, "docs", "wiki", "getting-started.md"),
 ];
-if (manifest.target.platform === "win32") required.push(path.join(bundle, "ponderosa.vbs"));
 for (const pathname of required) {
   if (!existsSync(pathname)) throw new Error(`Bundle is incomplete: ${pathname}`);
 }

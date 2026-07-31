@@ -60,7 +60,7 @@ export function expectedMacosBundleIdentity(manifest) {
     shortVersion: numericAppleVersion(manifest.version),
     exactVersion: manifest.version,
     exactCommit: manifest.commit,
-    infoString: `Ponderosa Beta ${manifest.version} (${manifest.commit.slice(0, 8)})`,
+    infoString: `Ponderosa Engine ${manifest.version} (${manifest.commit.slice(0, 8)})`,
   };
 }
 
@@ -90,8 +90,8 @@ export function macosInfoPlist(manifest) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleName</key><string>Ponderosa Beta</string>
-<key>CFBundleDisplayName</key><string>Ponderosa Beta</string>
+<key>CFBundleName</key><string>Ponderosa Engine</string>
+<key>CFBundleDisplayName</key><string>Ponderosa Engine</string>
 <key>CFBundleIdentifier</key><string>app.ponderosa.beta</string>
 <key>CFBundleVersion</key><string>${bundleVersion}</string>
 <key>CFBundleShortVersionString</key><string>${shortVersion}</string>

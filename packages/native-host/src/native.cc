@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
@@ -731,11 +732,14 @@ using NtCreateFilePointer = NTSTATUS(NTAPI*)(
 using NtQueryDirectoryFilePointer = NTSTATUS(NTAPI*)(
     HANDLE, HANDLE, PVOID, PVOID, PIO_STATUS_BLOCK, PVOID, ULONG,
     FILE_INFORMATION_CLASS, BOOLEAN, PUNICODE_STRING, BOOLEAN);
+using NtSetInformationFilePointer = NTSTATUS(NTAPI*)(
+    HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, FILE_INFORMATION_CLASS);
 using RtlNtStatusToDosErrorPointer = ULONG(WINAPI*)(NTSTATUS);
 
 struct NtApi {
   NtCreateFilePointer create_file = nullptr;
   NtQueryDirectoryFilePointer query_directory = nullptr;
+  NtSetInformationFilePointer set_information = nullptr;
   RtlNtStatusToDosErrorPointer status_to_dos = nullptr;
 
   NtApi() {
@@ -745,6 +749,8 @@ struct NtApi {
         GetProcAddress(module, "NtCreateFile"));
     query_directory = reinterpret_cast<NtQueryDirectoryFilePointer>(
         GetProcAddress(module, "NtQueryDirectoryFile"));
+    set_information = reinterpret_cast<NtSetInformationFilePointer>(
+        GetProcAddress(module, "NtSetInformationFile"));
     status_to_dos = reinterpret_cast<RtlNtStatusToDosErrorPointer>(
         GetProcAddress(module, "RtlNtStatusToDosError"));
   }
@@ -775,6 +781,8 @@ constexpr ULONG kFileDirectoryFile = 0x00000001;
 constexpr ULONG kFileSynchronousIoNonAlert = 0x00000020;
 constexpr ULONG kFileNonDirectoryFile = 0x00000040;
 constexpr ULONG kFileOpenReparsePoint = 0x00200000;
+constexpr FILE_INFORMATION_CLASS kFileRenameInformation =
+    static_cast<FILE_INFORMATION_CLASS>(10);
 constexpr NTSTATUS kStatusNoMoreFiles =
     static_cast<NTSTATUS>(0x80000006L);
 constexpr NTSTATUS kStatusObjectNameNotFound =
@@ -1187,22 +1195,28 @@ napi_value WriteSecureFileAtomic(napi_env env, napi_callback_info info) {
     return fail("secure temporary file failed durability or identity validation");
   }
   const std::wstring destination = Wide(leaf);
+  const size_t destination_bytes = destination.size() * sizeof(WCHAR);
   const size_t rename_size =
-      sizeof(FILE_RENAME_INFO) + destination.size() * sizeof(WCHAR);
+      offsetof(FILE_RENAME_INFO, FileName) + destination_bytes;
   std::vector<uint8_t> rename_buffer(rename_size);
   auto* rename = reinterpret_cast<FILE_RENAME_INFO*>(rename_buffer.data());
   rename->ReplaceIfExists = FALSE;
   rename->RootDirectory = handles.values.back();
-  rename->FileNameLength =
-      static_cast<DWORD>(destination.size() * sizeof(WCHAR));
+  rename->FileNameLength = static_cast<DWORD>(destination_bytes);
   std::memcpy(
       rename->FileName, destination.data(), rename->FileNameLength);
-  if (!SetFileInformationByHandle(
-          output, FileRenameInfo, rename,
-          static_cast<DWORD>(rename_buffer.size()))) {
-    const DWORD rename_error = GetLastError();
+  NtApi& api = NativeWindowsApi();
+  IO_STATUS_BLOCK rename_status_block{};
+  const NTSTATUS rename_status = api.set_information
+      ? api.set_information(
+          output, &rename_status_block, rename,
+          static_cast<ULONG>(rename_buffer.size()),
+          kFileRenameInformation)
+      : static_cast<NTSTATUS>(0xC0000002L);
+  if (!NtSuccess(rename_status)) {
     const std::string rename_detail =
-        WindowsError("SetFileInformationByHandle rename");
+        NtError("NtSetInformationFile rename", rename_status);
+    const DWORD rename_error = GetLastError();
     if (rename_error == ERROR_ALREADY_EXISTS ||
         rename_error == ERROR_FILE_EXISTS) {
       DeleteWindowsFileHandle(output);

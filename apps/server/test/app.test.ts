@@ -503,6 +503,67 @@ describe("server public API behavior", () => {
     expect(adapter.seedCalls).toBe(1);
   });
 
+  it("exposes bounded Engine diagnostics only to its native launcher", async () => {
+    const launcherDataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-engine-data-"));
+    extraDirectories.push(launcherDataDir);
+    const logsDir = path.join(launcherDataDir, "logs");
+    mkdirSync(logsDir);
+    writeFileSync(
+      path.join(logsDir, "server.log"),
+      `${"bounded log line\n".repeat(5_000)}`,
+      "utf8",
+    );
+    writeFileSync(path.join(logsDir, "server-error.log"), "test error\n", "utf8");
+    const app = server({
+      dataDir,
+      launcherDataDir,
+      store,
+      engines,
+      logger: false,
+      buildVersion: "0.1.0-beta.engine-test",
+      buildRevision: "engine-test-revision",
+      releaseChannel: "beta",
+      launcherSecurity: { controlToken: "launcher-secret" },
+    });
+
+    expect((await app.inject({
+      method: "GET",
+      url: "/api/launcher/status",
+    })).statusCode).toBe(401);
+
+    const status = await app.inject({
+      method: "GET",
+      url: "/api/launcher/status",
+      headers: { authorization: "Bearer launcher-secret" },
+    });
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({
+      version: "0.1.0-beta.engine-test",
+      commit: "engine-test-revision",
+      channel: "beta",
+      activeRunCount: 0,
+    });
+
+    const log = await app.inject({
+      method: "GET",
+      url: "/api/launcher/logs?stream=server",
+      headers: { authorization: "Bearer launcher-secret" },
+    });
+    expect(log.statusCode).toBe(200);
+    expect(log.json()).toMatchObject({
+      stream: "server",
+      truncated: true,
+    });
+    expect(log.json<{ returnedBytes: number }>().returnedBytes).toBeLessThanOrEqual(
+      64 * 1_024,
+    );
+    expect((await app.inject({
+      method: "GET",
+      url: "/api/launcher/logs?stream=other",
+      headers: { authorization: "Bearer launcher-secret" },
+    })).statusCode).toBe(400);
+  });
+
   it("reports engine authentication without invoking provider credentials", async () => {
     const broken = new BehavioralAdapter();
     Object.defineProperties(broken, {
