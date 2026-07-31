@@ -312,6 +312,9 @@ cpSync(
 );
 writeFileSync(path.join(engineDesktopTarget, "package.json"), `${JSON.stringify({
   name: "ponderosa-engine-desktop",
+  version,
+  description: "Self-hosted coding-agent workbench",
+  author: "Ponderosa",
   private: true,
   type: "module",
   main: "dist/main.js",
