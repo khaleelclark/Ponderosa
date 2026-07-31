@@ -27,7 +27,8 @@ import type {
   WorkspaceProjectDirectoryItemDto,
   WorkspaceTriggerDirectoryItemDto,
 } from "@ponderosa/core";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { api } from "../api";
 import {
   useWorkspaceDirectory,
@@ -70,6 +71,8 @@ import {
   useWorkspaceSidebarNavigation,
   useWorkspaceSidebarResize,
 } from "./useWorkspaceSidebarState";
+
+const WIKI_SEARCH_PAGE_SIZE = 15;
 
 export function WorkspaceSidebar({
   projects,
@@ -128,6 +131,19 @@ export function WorkspaceSidebar({
   const showingCreate = sidebarSection === "create";
   const showingWiki = sidebarSection === "wiki";
   const showingSettings = sidebarSection === "settings";
+  const [debouncedWikiFilter, setDebouncedWikiFilter] = useState("");
+  useEffect(() => {
+    const next = showingWiki ? filter.trim() : "";
+    if (next.length < 2) {
+      setDebouncedWikiFilter("");
+      return;
+    }
+    const timer = globalThis.setTimeout(
+      () => setDebouncedWikiFilter(next),
+      250,
+    );
+    return () => globalThis.clearTimeout(timer);
+  }, [filter, showingWiki]);
   const directorySearch = showingHome || showingAgents || showingChats ||
     showingProjects || showingTriggers ? filter : "";
   const directoryOptions = {
@@ -214,6 +230,19 @@ export function WorkspaceSidebar({
     queryKey: queryKeys.wiki.index,
     queryFn: () => api.getWikiIndex(),
     enabled: showingWiki,
+    staleTime: 60_000,
+  });
+  const wikiSearchQuery = useInfiniteQuery({
+    queryKey: queryKeys.wiki.search(debouncedWikiFilter),
+    queryFn: ({ pageParam }) =>
+      api.searchWiki(
+        debouncedWikiFilter,
+        WIKI_SEARCH_PAGE_SIZE,
+        pageParam,
+      ),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: lastPage => lastPage.nextCursor,
+    enabled: showingWiki && debouncedWikiFilter.length >= 2,
     staleTime: 60_000,
   });
   const healthQuery = useQuery({
@@ -841,18 +870,15 @@ export function WorkspaceSidebar({
     />
   );
 
-  const wikiSections = (wikiIndexQuery.data?.sections ?? [])
-    .map(section => ({
-      ...section,
-      articles: section.articles.filter(
-        article =>
-          !normalizedFilter ||
-          `${article.title} ${article.summary}`
-            .toLocaleLowerCase()
-            .includes(normalizedFilter),
-      ),
-    }))
-    .filter(section => section.articles.length > 0);
+  const wikiSections = wikiIndexQuery.data?.sections ?? [];
+  const wikiSearchResults = wikiSearchQuery.data?.pages.flatMap(
+    page => page.results,
+  ) ?? [];
+  const wikiSearchTotal = wikiSearchQuery.data?.pages[0]?.total ?? 0;
+  const wikiSearchPending = normalizedFilter.length >= 2 &&
+    (debouncedWikiFilter.toLocaleLowerCase() !== normalizedFilter ||
+      wikiSearchQuery.isLoading);
+  const wikiSearchError = !wikiSearchPending && wikiSearchQuery.isError;
   const activeWikiArticleId =
     route.kind === "wiki"
       ? (route.articleId ?? wikiIndexQuery.data?.sections[0]?.articles[0]?.id)
@@ -865,7 +891,14 @@ export function WorkspaceSidebar({
       isError={wikiIndexQuery.isError}
       isLoading={wikiIndexQuery.isLoading}
       sections={wikiSections}
+      searchError={wikiSearchError}
+      searchLoading={wikiSearchPending}
+      searchResults={wikiSearchResults}
+      searchTotal={wikiSearchTotal}
+      hasMoreSearchResults={wikiSearchQuery.hasNextPage}
+      loadingMoreSearchResults={wikiSearchQuery.isFetchingNextPage}
       onFilterChange={setFilter}
+      onLoadMoreSearchResults={() => void wikiSearchQuery.fetchNextPage()}
       onNavigateArticle={articleId => {
         setFilter("");
         onNavigate({ kind: "wiki", articleId });

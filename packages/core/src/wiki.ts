@@ -59,6 +59,7 @@ export interface WikiSearchResponseDto {
   results: WikiSearchResultDto[];
   total: number;
   limit: number;
+  nextCursor?: string;
 }
 
 export interface WikiDocumentationPageDto {

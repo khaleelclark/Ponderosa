@@ -7,11 +7,17 @@ export function registerWikiRoutes(
 ): void {
   app.get("/api/wiki", async () => documentationReferences.index());
 
-  app.get<{ Querystring: { q?: string; limit?: string } }>("/api/wiki/search", async (request, reply) => {
+  app.get<{ Querystring: { q?: string; limit?: string; cursor?: string } }>("/api/wiki/search", async (request, reply) => {
     const query = request.query.q?.trim() ?? "";
     const limit = request.query.limit === undefined ? 20 : Number(request.query.limit);
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) return reply.code(400).send({ error: "limit must be an integer from 1 to 50" });
-    return documentationReferences.search(query, limit);
+    try {
+      return documentationReferences.search(query, limit, request.query.cursor);
+    } catch (error) {
+      return reply.code(400).send({
+        error: error instanceof Error ? error.message : "invalid Wiki search cursor",
+      });
+    }
   });
 
   app.get<{ Params: { id: string } }>("/api/wiki/articles/:id", async (request, reply) => {

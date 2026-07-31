@@ -209,8 +209,8 @@ export const realApi = {
   getWikiArticle(id: string): Promise<WikiArticleDto> {
     return requestJson<WikiArticleDto>(`/api/wiki/articles/${encodeURIComponent(id)}`);
   },
-  searchWiki(query: string, limit = 20): Promise<WikiSearchResponseDto> {
-    return requestJson<WikiSearchResponseDto>(`/api/wiki/search${toQuery({ q: query, limit })}`);
+  searchWiki(query: string, limit = 20, cursor?: string): Promise<WikiSearchResponseDto> {
+    return requestJson<WikiSearchResponseDto>(`/api/wiki/search${toQuery({ q: query, limit, cursor })}`);
   },
   listProjects(): Promise<ProjectDto[]> {
     return requestJson<ProjectDto[]>("/api/projects");

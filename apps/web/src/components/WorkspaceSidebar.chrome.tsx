@@ -21,7 +21,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { WikiIndexDto } from "@ponderosa/core";
+import type { WikiIndexDto, WikiSearchResultDto } from "@ponderosa/core";
 import type { Route } from "../routing";
 import { IconTitle } from "./IconTitle";
 import {
@@ -262,7 +262,14 @@ export function WikiSidebarPanel({
   isError,
   isLoading,
   sections,
+  searchError,
+  searchLoading,
+  searchResults,
+  searchTotal,
+  hasMoreSearchResults,
+  loadingMoreSearchResults,
   onFilterChange,
+  onLoadMoreSearchResults,
   onNavigateArticle,
   onOpenArticleMenu,
 }: {
@@ -272,10 +279,19 @@ export function WikiSidebarPanel({
   isError: boolean;
   isLoading: boolean;
   sections: WikiIndexDto["sections"];
+  searchError: boolean;
+  searchLoading: boolean;
+  searchResults: WikiSearchResultDto[];
+  searchTotal: number;
+  hasMoreSearchResults: boolean;
+  loadingMoreSearchResults: boolean;
   onFilterChange(value: string): void;
+  onLoadMoreSearchResults(): void;
   onNavigateArticle(articleId: string): void;
   onOpenArticleMenu(anchor: HTMLElement, articleId: string): void;
 }): JSX.Element {
+  const searchText = filter.trim();
+  const searching = Boolean(searchText);
   return (
     <Box
       sx={{
@@ -322,17 +338,96 @@ export function WikiSidebarPanel({
         className="ponderosa-scroll"
         sx={{ minHeight: 0, overflowY: "auto", px: 1.25, pb: 2 }}
       >
-        {isLoading ? (
+        {!searching && isLoading ? (
           <Typography variant="body2" color="text.secondary" sx={{ p: 1 }}>
             Loading Wiki…
           </Typography>
         ) : null}
-        {isError ? (
+        {!searching && isError ? (
           <Typography variant="body2" color="error" sx={{ p: 1 }}>
             Wiki navigation could not be loaded.
           </Typography>
         ) : null}
-        {sections.map(section => (
+        {searching && searchText.length < 2 ? (
+          <Typography variant="body2" color="text.secondary" sx={{ p: 1 }}>
+            Type at least two characters to search article text.
+          </Typography>
+        ) : null}
+        {searching && searchText.length >= 2 && searchLoading ? (
+          <Typography variant="body2" color="text.secondary" sx={{ p: 1 }}>
+            Searching Wiki…
+          </Typography>
+        ) : null}
+        {searching && searchText.length >= 2 && searchError ? (
+          <Typography variant="body2" color="error" sx={{ p: 1 }}>
+            Wiki search could not be loaded.
+          </Typography>
+        ) : null}
+        {searching && !searchLoading && !searchError && searchResults.length > 0 ? (
+          <Box component="section" sx={{ mb: 2 }}>
+            <SidebarSectionHeading>
+              {searchTotal === 1 ? "1 Result" : `${searchTotal} Results`}
+            </SidebarSectionHeading>
+            <List dense disablePadding>
+              {searchResults.map(result => (
+                <ListItemButton
+                  key={result.article.id}
+                  selected={result.article.id === activeArticleId}
+                  onClick={() => onNavigateArticle(result.article.id)}
+                  onContextMenu={event => {
+                    event.preventDefault();
+                    onOpenArticleMenu(event.currentTarget, result.article.id);
+                  }}
+                  sx={{
+                    borderRadius: 1.25,
+                    alignItems: "flex-start",
+                    py: 0.8,
+                    mb: 0.35,
+                  }}
+                >
+                  <ListItemText
+                    primary={result.article.title}
+                    secondary={result.snippet}
+                    primaryTypographyProps={{
+                      fontSize: 13,
+                      fontWeight: result.article.id === activeArticleId ? 800 : 650,
+                    }}
+                    secondaryTypographyProps={{
+                      fontSize: 11.5,
+                      lineHeight: 1.4,
+                      sx: {
+                        mt: 0.25,
+                        display: "-webkit-box",
+                        WebkitBoxOrient: "vertical",
+                        WebkitLineClamp: 2,
+                        overflow: "hidden",
+                      },
+                    }}
+                  />
+                </ListItemButton>
+              ))}
+              {hasMoreSearchResults ? (
+                <ListItemButton
+                  disabled={loadingMoreSearchResults}
+                  onClick={onLoadMoreSearchResults}
+                  sx={{ borderRadius: 1.25, mt: 0.5 }}
+                >
+                  <ListItemText
+                    primary={loadingMoreSearchResults
+                      ? "Loading more results…"
+                      : "Load more results"}
+                    primaryTypographyProps={{
+                      color: "primary.main",
+                      fontSize: 12.5,
+                      fontWeight: 750,
+                    }}
+                  />
+                </ListItemButton>
+              ) : null}
+            </List>
+          </Box>
+        ) : null}
+        {!searching && sections.map(section => (
           <Box component="section" key={section.id} sx={{ mb: 2 }}>
             <SidebarSectionHeading>{section.title}</SidebarSectionHeading>
             <List dense disablePadding>
@@ -359,11 +454,15 @@ export function WikiSidebarPanel({
             </List>
           </Box>
         ))}
-        {!isLoading && sections.length === 0 ? (
+        {searching && searchText.length >= 2 && !searchLoading &&
+        !searchError && searchResults.length === 0 ? (
           <Typography variant="body2" color="text.secondary" sx={{ p: 1 }}>
-            {filter.trim()
-              ? `No Wiki articles match “${filter.trim()}”.`
-              : "No Wiki articles are available."}
+            {`No Wiki articles match “${searchText}”.`}
+          </Typography>
+        ) : null}
+        {!searching && !isLoading && !isError && sections.length === 0 ? (
+          <Typography variant="body2" color="text.secondary" sx={{ p: 1 }}>
+            No Wiki articles are available.
           </Typography>
         ) : null}
       </Box>
