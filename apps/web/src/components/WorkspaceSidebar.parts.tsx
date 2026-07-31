@@ -12,7 +12,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { ReactNode } from "react";
+import { Children, type ReactNode } from "react";
 import { IconTitle } from "./IconTitle";
 import { sidebarSurface } from "./WorkspaceSidebar.helpers";
 
@@ -88,6 +88,7 @@ function SharedSidebarPanel({
   onViewAllContextMenu?(anchor: HTMLElement): void;
   drawer: boolean;
 }): JSX.Element {
+  const hasStarredRows = Children.count(starredRows) > 0;
   return (
     <Box
       data-sidebar-layout="shared-resource"
@@ -140,10 +141,12 @@ function SharedSidebarPanel({
         sx={{ minHeight: 0, overflowY: "auto", px: 1.25, pb: 1.5 }}
       >
         {topContent}
-        <Box component="section" data-sidebar-section="starred" sx={{ mb: 2 }}>
-          <SidebarSectionHeading>Starred</SidebarSectionHeading>
-          <List disablePadding>{starredRows}</List>
-        </Box>
+        {hasStarredRows ? (
+          <Box component="section" data-sidebar-section="starred" sx={{ mb: 2 }}>
+            <SidebarSectionHeading>Starred</SidebarSectionHeading>
+            <List disablePadding>{starredRows}</List>
+          </Box>
+        ) : null}
         <Box component="section" data-sidebar-section="all">
           <SidebarSectionHeading>
             {title === "Home" ? "Recents" : `All ${title}`}
