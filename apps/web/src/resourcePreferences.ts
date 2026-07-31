@@ -1,4 +1,8 @@
-import type { ProjectSort, WorkspacePreferencesDto } from "@ponderosa/core";
+import type {
+  ProjectSort,
+  WorkspaceDirectoryKind,
+  WorkspacePreferencesDto,
+} from "@ponderosa/core";
 
 export type WorkspaceResourceKind = "project" | "conversation" | "agent" | "trigger";
 export type WorkspaceResourceSortKind = "home" | "chat" | "agent" | "trigger";
@@ -12,6 +16,53 @@ export function starredWorkspaceResources(preferences: WorkspacePreferencesDto):
     ...(preferences.starredResourceIds ?? []),
     ...preferences.starredProjectIds.map((id) => resourcePreferenceKey("project", id)),
   ]);
+}
+
+function sameSequence(
+  left: readonly string[] | undefined,
+  right: readonly string[] | undefined,
+): boolean {
+  const leftItems = left ?? [];
+  const rightItems = right ?? [];
+  return leftItems.length === rightItems.length &&
+    leftItems.every((item, index) => item === rightItems[index]);
+}
+
+/** Directory projections affected by one canonical preference change. */
+export function changedWorkspaceDirectoryKinds(
+  previous: WorkspacePreferencesDto | undefined,
+  next: WorkspacePreferencesDto,
+): WorkspaceDirectoryKind[] {
+  if (!previous) return ["project", "conversation", "agent", "trigger"];
+  const changed = new Set<WorkspaceDirectoryKind>();
+  if (
+    previous.projectSort !== next.projectSort ||
+    !sameSequence(previous.projectOrder, next.projectOrder)
+  ) changed.add("project");
+  if (
+    previous.chatSort !== next.chatSort ||
+    !sameSequence(previous.chatOrder, next.chatOrder)
+  ) changed.add("conversation");
+  if (
+    previous.agentSort !== next.agentSort ||
+    !sameSequence(previous.agentOrder, next.agentOrder)
+  ) changed.add("agent");
+  if (
+    previous.triggerSort !== next.triggerSort ||
+    !sameSequence(previous.triggerOrder, next.triggerOrder)
+  ) changed.add("trigger");
+
+  const previousStars = starredWorkspaceResources(previous);
+  const nextStars = starredWorkspaceResources(next);
+  for (const key of new Set([...previousStars, ...nextStars])) {
+    if (previousStars.has(key) === nextStars.has(key)) continue;
+    const kind = key.slice(0, key.indexOf(":"));
+    if (
+      kind === "project" || kind === "conversation" ||
+      kind === "agent" || kind === "trigger"
+    ) changed.add(kind);
+  }
+  return [...changed];
 }
 
 export function toggleWorkspaceResourceStar(

@@ -6,7 +6,7 @@ export function registerSearchRoutes(
   app: FastifyInstance,
   { globalChatSearch, store, workspace }: SearchRoutesContext,
 ): void {
-  app.get<{ Querystring: { q?: string; limit?: string } }>("/api/search", async (request, reply) => {
+  app.get<{ Querystring: { q?: string; limit?: string; kind?: string } }>("/api/search", async (request, reply) => {
     try {
       return globalChatSearch(request.query);
     } catch (error) {
@@ -89,7 +89,7 @@ export function registerSearchRoutes(
     const agent = store.getAgent(request.params.id);
     if (!agent) return reply.code(404).send({ error: "agent not found" });
     try {
-      const response = globalChatSearch(request.query);
+      const response = globalChatSearch({ ...request.query, kind: "agent" });
       return {
         ...response,
         results: response.results.filter((result) => result.chat.kind === "agent" && result.chat.id === agent.id),

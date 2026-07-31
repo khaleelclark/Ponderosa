@@ -1,7 +1,6 @@
 import type {
   AgentDto,
   AgentHealthDto,
-  AgentLifecycleStatus,
   ConversationDto,
   ProjectDto,
   WorkspaceNotificationDto,
@@ -13,14 +12,6 @@ export interface WorkspaceProjectSnapshot {
   agents: AgentDto[];
   health: AgentHealthDto[];
 }
-
-export interface WorkspaceAgentRow {
-  agent: AgentDto;
-  project: ProjectDto;
-  status: AgentLifecycleStatus;
-}
-
-const activeStatus = (status: AgentLifecycleStatus): boolean => status === "running" || status === "compacting";
 
 const ORDINARY_MESSAGE_NOTIFICATION_KINDS = new Set<WorkspaceNotificationDto["kind"]>([
   "direct_responses",
@@ -53,30 +44,10 @@ export function hasUnreadConversationNotifications(
     isOrdinaryMessageNotification(notification)));
 }
 
-export function workspaceAgents(snapshots: WorkspaceProjectSnapshot[]): WorkspaceAgentRow[] {
-  const rows = snapshots.flatMap(({ project, agents, health }) => {
-    const statusById = new Map(health.map((entry) => [entry.agentId, entry.status]));
-    return agents
-      .filter((agent) => !agent.archived)
-      .map((agent) => ({ agent, project, status: statusById.get(agent.id) ?? "idle" as const }));
-  });
-  return rows.sort((a, b) => Number(activeStatus(b.status)) - Number(activeStatus(a.status))
-    || b.agent.updatedAt.localeCompare(a.agent.updatedAt)
-    || a.agent.title.localeCompare(b.agent.title)
-    || a.agent.id.localeCompare(b.agent.id));
-}
-
-export function workspaceCounts(
-  snapshots: WorkspaceProjectSnapshot[],
-  notifications: WorkspaceNotificationDto[],
-): { running: number; unread: number } {
-  return {
-    running: workspaceAgents(snapshots).filter((row) => activeStatus(row.status)).length,
-    unread: notifications.filter((notification) => !notification.readAt).length,
-  };
-}
-
-export function projectDisambiguator(project: ProjectDto, projects: ProjectDto[]): string {
+export function projectDisambiguator(
+  project: Pick<ProjectDto, "id" | "label" | "hostPath">,
+  projects: ProjectDto[],
+): string {
   const duplicateLabel = projects.some((candidate) => candidate.id !== project.id && candidate.label.localeCompare(project.label, undefined, { sensitivity: "base" }) === 0);
   return duplicateLabel ? `${project.label} · ${project.hostPath}` : project.label;
 }

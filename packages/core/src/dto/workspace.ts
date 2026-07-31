@@ -1,7 +1,10 @@
 import type { EngineId } from "../adapter.js";
+import type { AgentDto, AgentHealthDto } from "./agents.js";
 import type { BrowserControlOwner, BrowserSessionStatus } from "../events.js";
-import type { ProjectSort } from "./projects.js";
-import type { ProviderPermissionMode } from "./conversations.js";
+import type { ConversationDto, ProviderPermissionMode } from "./conversations.js";
+import type { HistoryWindowDto } from "./common.js";
+import type { ProjectDto, ProjectSort } from "./projects.js";
+import type { TriggerDefinitionDto } from "./triggers.js";
 
 export type NotificationPreference = "direct_responses" | "project_responses" | "mentions" | "all_messages" | "everyone" | "broadcasts" | "none";
 
@@ -74,6 +77,56 @@ export interface WorkspacePreferencesDto {
   onboardingCompletedAt: string | null;
   profile: OperatorProfileDto;
   updatedAt: string;
+}
+
+export type WorkspaceDirectoryKind = "project" | "conversation" | "agent" | "trigger";
+
+export interface WorkspaceProjectDirectoryItemDto {
+  kind: "project";
+  project: ProjectDto;
+  recentConversation?: Pick<ConversationDto, "id" | "title" | "updatedAt">;
+  conversationCount: number;
+  runningAgentCount: number;
+}
+
+export interface WorkspaceConversationDirectoryItemDto {
+  kind: "conversation";
+  project: Pick<ProjectDto, "id" | "label" | "hostPath">;
+  conversation: ConversationDto;
+}
+
+export interface WorkspaceAgentDirectoryItemDto {
+  kind: "agent";
+  project: Pick<ProjectDto, "id" | "label" | "hostPath">;
+  agent: AgentDto;
+  health: AgentHealthDto;
+}
+
+export interface WorkspaceTriggerDirectoryItemDto {
+  kind: "trigger";
+  project: Pick<ProjectDto, "id" | "label" | "hostPath">;
+  agent: Pick<AgentDto, "id" | "title">;
+  trigger: TriggerDefinitionDto;
+}
+
+export type WorkspaceDirectoryItemDto =
+  | WorkspaceProjectDirectoryItemDto
+  | WorkspaceConversationDirectoryItemDto
+  | WorkspaceAgentDirectoryItemDto
+  | WorkspaceTriggerDirectoryItemDto;
+
+export interface WorkspaceDirectoryPageDto<
+  T extends WorkspaceDirectoryItemDto = WorkspaceDirectoryItemDto,
+> {
+  kind: T["kind"];
+  /** Starred matches are returned independently and never consume the page limit. */
+  starredItems: T[];
+  items: T[];
+  /** Total matching resources, including starred resources. */
+  total: number;
+  /** Workspace-wide active count, present for the Agent directory. */
+  activeCount?: number;
+  history: HistoryWindowDto;
 }
 
 export type WorkspaceResourceKind =

@@ -152,6 +152,8 @@ function AgentRosterShell({
 }
 
 export function AgentsTab({
+  searchValue,
+  onSearchValueChange,
   agents,
   projectId,
   engines,
@@ -173,8 +175,13 @@ export function AgentsTab({
   toolbarControls,
   scopeLabel,
   collection,
+  collectionFooter,
+  visibleLimit,
+  renderedAgentIds,
   organizationRootAgentId,
 }: {
+  searchValue?: string;
+  onSearchValueChange?(value: string): void;
   agents: AgentDto[];
   projectId?: string;
   engines: EngineDto[];
@@ -205,6 +212,12 @@ export function AgentsTab({
     totalCount?: number;
     variant?: "page" | "embedded";
   };
+  collectionFooter?: ReactNode | ((filteredCount: number) => ReactNode);
+  /** Bound large embedded rosters while retaining full hierarchy context. */
+  visibleLimit?: number;
+  /** Bound rendered rows while retaining the complete organization as
+   * hierarchy, filter, and parent-label context. */
+  renderedAgentIds?: ReadonlySet<string>;
   /** Limit the roster to descendants of this Agent while retaining the full
    * Project organization for parent labels and hierarchy validation. */
   organizationRootAgentId?: string;
@@ -213,6 +226,8 @@ export function AgentsTab({
   const [statusFilters, setStatusFilters] = useState<StatusFilter[]>([]);
   const [masterFilter, setMasterFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
+  const effectiveSearch = searchValue ?? search;
+  const setEffectiveSearch = onSearchValueChange ?? setSearch;
   const [pendingDelete, setPendingDelete] = useState<AgentDto | undefined>();
   const [pendingRename, setPendingRename] = useState<AgentDto | undefined>();
   const [pendingOrganization, setPendingOrganization] = useState<
@@ -331,6 +346,7 @@ export function AgentsTab({
   const matchingAgentIds = new Set(
     scopedOrganizationRows
       .filter(({ agent }) => {
+        if (renderedAgentIds && !renderedAgentIds.has(agent.id)) return false;
         const status = statusByAgentId.get(agent.id) ?? "idle";
         if (!matchesAgentStatusFilters(agent, status, statusFilters))
           return false;
@@ -341,10 +357,11 @@ export function AgentsTab({
           return false;
         }
         if (
-          search.trim() &&
+          !onSearchValueChange &&
+          effectiveSearch.trim() &&
           !agent.title
             .toLocaleLowerCase()
-            .includes(search.trim().toLocaleLowerCase())
+            .includes(effectiveSearch.trim().toLocaleLowerCase())
         )
           return false;
         return true;
@@ -352,7 +369,7 @@ export function AgentsTab({
       .map(({ agent }) => agent.id),
   );
   const filtersActive = Boolean(
-    search.trim() || statusFilters.length || masterFilter !== "all",
+    effectiveSearch.trim() || statusFilters.length || masterFilter !== "all",
   );
   const contextAgentIds =
     organizationView === "hierarchy"
@@ -379,6 +396,9 @@ export function AgentsTab({
         (orderRank.get(right.agent.id) ?? Number.MAX_SAFE_INTEGER)
       : 0,
   );
+  const visibleFiltered = visibleLimit === undefined
+    ? filtered
+    : filtered.slice(0, visibleLimit);
   const statusOptions = agentStatusFilterOptions(scopedAgents, statusByAgentId);
   const activeRunTargets = scopedAgents.flatMap(agent => {
     const runId = healthByAgentId.get(agent.id)?.runtimeActivity?.executionId;
@@ -449,7 +469,7 @@ export function AgentsTab({
             : collection.detail,
       }
     : undefined;
-  const visibleAgentIds = filtered.map(({ agent }) => agent.id);
+  const visibleAgentIds = visibleFiltered.map(({ agent }) => agent.id);
   const allVisibleSelected =
     visibleAgentIds.length > 0 &&
     visibleAgentIds.every(id => selectedAgentIds.has(id));
@@ -550,8 +570,8 @@ export function AgentsTab({
       headerActions={headerActions}
       toolbar={
         <CollectionToolbar
-          search={search}
-          onSearch={setSearch}
+          search={effectiveSearch}
+          onSearch={setEffectiveSearch}
           searchLabel="Search Agents"
           searchMaxWidth={300}
           reorderHint={
@@ -707,13 +727,13 @@ export function AgentsTab({
                 : "Try a different search, status, Project, or Chat filter."
             }
             action={
-              statusFilters.length > 0 || masterFilter !== "all" || search
+              statusFilters.length > 0 || masterFilter !== "all" || effectiveSearch
                 ? {
                     label: "Clear Filters",
                     onClick: () => {
                       setStatusFilters([]);
                       setMasterFilter("all");
-                      setSearch("");
+                      setEffectiveSearch("");
                     },
                   }
                 : undefined
@@ -721,7 +741,7 @@ export function AgentsTab({
           />
         ) : (
           <Stack spacing={0.75} role="tree" aria-label="Agent organization">
-            {filtered.map(({ agent, depth }, index) => {
+            {visibleFiltered.map(({ agent, depth }, index) => {
               const status = statusByAgentId.get(agent.id) ?? "idle";
               const profile = agentRoleProfile(agent);
               const organizationParent = agent.managerAgentId
@@ -976,6 +996,9 @@ export function AgentsTab({
           </Stack>
         )}
       </Box>
+      {typeof collectionFooter === "function"
+        ? collectionFooter(filtered.length)
+        : collectionFooter}
 
       {pendingDelete ? (
         <AgentDeletionDialog

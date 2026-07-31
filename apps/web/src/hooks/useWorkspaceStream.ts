@@ -1,9 +1,14 @@
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
-import type { WorkspaceEvent, WorkspaceEventEnvelope } from "@ponderosa/core";
+import type {
+  WorkspaceEvent,
+  WorkspaceEventEnvelope,
+  WorkspacePreferencesDto,
+} from "@ponderosa/core";
 import { api } from "../api";
 import type { StreamSubscription } from "../api/types";
 import { queryKeys } from "../queryKeys";
+import { changedWorkspaceDirectoryKinds } from "../resourcePreferences";
 import { hasLiveAgentStream } from "./agentStreamRegistry";
 import { reconcileCursor } from "./streamCursor";
 
@@ -302,6 +307,7 @@ export function useWorkspaceStream(): void {
       decisionConversationInvalidator.dispose();
       void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.all });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
       invalidateActiveQueries(queryClient, queryKeys.agents.all);
       invalidateActiveQueries(queryClient, queryKeys.agents.healthAll);
@@ -328,7 +334,17 @@ export function useWorkspaceStream(): void {
       cursor.current = reconciliation.cursor;
       persistWorkspaceCursor(reconciliation.cursor, instanceId.current ?? undefined);
       const event = envelope.event;
+      let preferenceDirectoryKinds: ReturnType<
+        typeof changedWorkspaceDirectoryKinds
+      > = [];
       if (event.type === "preferences_updated") {
+        const previousPreferences = queryClient.getQueryData<
+          WorkspacePreferencesDto
+        >(queryKeys.workspacePreferences.all);
+        preferenceDirectoryKinds = changedWorkspaceDirectoryKinds(
+          previousPreferences,
+          event.preferences,
+        );
         queryClient.setQueryData(queryKeys.workspacePreferences.all, event.preferences);
       }
       if (reconciliation.gap) {
@@ -350,6 +366,23 @@ export function useWorkspaceStream(): void {
       if (workspaceEventInvalidatesGlobalSearch(event)) void queryClient.invalidateQueries({ queryKey: queryKeys.globalSearch.all });
       if (workspaceEventInvalidatesAllChat(event)) void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
       if (workspaceEventChangesResourceRecency(event)) void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceResourceRecency.all });
+      if (event.type === "preferences_updated") {
+        for (const kind of preferenceDirectoryKinds) {
+          void queryClient.invalidateQueries({
+            queryKey: queryKeys.workspaceDirectory.kind(kind),
+          });
+        }
+      } else if (event.type === "project_changed") {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("project") });
+      } else if (event.type === "conversation_changed") {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("conversation") });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("project") });
+      } else if (event.type === "trigger_changed") {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("trigger") });
+      } else if (event.type === "agent_event" && event.category === "lifecycle") {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("agent") });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("project") });
+      }
       if (event.type === "preferences_updated") return;
       if (event.type === "project_changed") void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
       else if (event.type === "conversation_changed") {

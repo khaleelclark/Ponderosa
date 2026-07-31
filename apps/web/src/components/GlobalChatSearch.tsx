@@ -3,6 +3,7 @@ import CloseIcon from "@mui/icons-material/Close";
 import {
   Alert,
   Box,
+  Button,
   Chip,
   Dialog,
   DialogContent,
@@ -178,6 +179,12 @@ export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
   const [scope, setScope] = useState<"all" | "projects" | "chats" | "agents" | "files">("all");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(-1);
+  const [resultLimit, setResultLimit] = useState(25);
+  const resultKind = scope === "chats"
+    ? "conversation" as const
+    : scope === "agents"
+      ? "agent" as const
+      : undefined;
   useEffect(() => {
     const timer = globalThis.setTimeout(() => setDebouncedQuery(query.trim()), 250);
     return () => globalThis.clearTimeout(timer);
@@ -186,8 +193,8 @@ export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
     if (open) setDebouncedQuery(query.trim());
   }, [open]);
   const search = useQuery({
-    queryKey: queryKeys.globalSearch.results(debouncedQuery),
-    queryFn: () => api.searchGlobalChats(debouncedQuery),
+    queryKey: queryKeys.globalSearch.results(debouncedQuery, resultLimit, resultKind),
+    queryFn: () => api.searchGlobalChats(debouncedQuery, resultLimit, resultKind),
     enabled: open,
     staleTime: 5_000,
     refetchOnReconnect: true,
@@ -217,6 +224,9 @@ export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
     ], [debouncedQuery, search.data?.recentChats, unread, visibleResults]);
   const entryIdentity = entries.map((entry) => entry.key).join("\u0000");
   useEffect(() => { setActiveIndex(-1); }, [open, query, scope]);
+  useEffect(() => {
+    setResultLimit(25);
+  }, [query, scope]);
   useEffect(() => { setActiveIndex(-1); }, [entryIdentity]);
   const chooseSelection = (selection: GlobalSearchSelection, openInNewTab = false) => {
     if (openInNewTab) (onOpenInNewTab ?? onSelect)(selection);
@@ -316,7 +326,13 @@ export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
       </Box>
       {debouncedQuery && !search.isFetching && visibleResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 2, textAlign: "center" }}>{scope === "projects" || scope === "files" ? `${scope === "projects" ? "Project" : "File"} discovery is not yet indexed; search matching messages instead.` : `No ${scope === "all" ? "messages" : scope} match “${debouncedQuery}”.`}</Typography> : null}
       {!debouncedQuery && !search.isFetching && unread.length === 0 && (search.data?.recentChats.length ?? 0) === 0 ? <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: .5 }}>{openAttentionCount ? `${openAttentionCount} item${openAttentionCount === 1 ? "" : "s"} needs attention.` : "You’re all caught up."}</Typography> : null}
-      {search.data?.truncated ? <Alert severity="info" sx={{ mt: 1 }}>Showing the newest matches from a bounded search. Add more terms to narrow the result.</Alert> : null}
+      {search.data?.truncated ? <Stack spacing={1} sx={{ mt: 1 }}>
+        <Alert severity="info">Showing the newest matches from a bounded search. Add more terms to narrow the result.</Alert>
+        {resultLimit < 50 ? <Button
+          color="inherit"
+          onClick={() => setResultLimit(50)}
+        >Show more results</Button> : null}
+      </Stack> : null}
     </DialogContent>
   </Dialog>;
 }

@@ -30,6 +30,14 @@ interface PageCursor {
   byteOffset: number;
 }
 
+interface SearchCursor {
+  v: 1;
+  version: string;
+  queryHash: string;
+  limit: number;
+  offset: number;
+}
+
 function defaultWikiRoot(): string {
   const relative = fileURLToPath(new URL("../../../../docs/wiki", import.meta.url));
   if (existsSync(relative)) return relative;
@@ -97,6 +105,31 @@ function decodeCursor(value: string): PageCursor {
       !Number.isSafeInteger(decoded.maxBytes) || !Number.isSafeInteger(decoded.itemIndex) ||
       !Number.isSafeInteger(decoded.byteOffset)) throw new Error("invalid documentation cursor");
   return decoded as PageCursor;
+}
+
+function encodeSearchCursor(cursor: SearchCursor): string {
+  return Buffer.from(JSON.stringify(cursor)).toString("base64url");
+}
+
+function decodeSearchCursor(value: string): SearchCursor {
+  try {
+    if (!value || value.length > 4096) throw new Error();
+    const decoded = JSON.parse(
+      Buffer.from(value, "base64url").toString("utf8"),
+    ) as Partial<SearchCursor>;
+    if (
+      decoded.v !== 1 ||
+      typeof decoded.version !== "string" ||
+      typeof decoded.queryHash !== "string" ||
+      !Number.isSafeInteger(decoded.limit) ||
+      !Number.isSafeInteger(decoded.offset) ||
+      (decoded.limit ?? 0) < 1 ||
+      (decoded.offset ?? -1) < 0
+    ) throw new Error();
+    return decoded as SearchCursor;
+  } catch {
+    throw new Error("invalid Wiki search cursor");
+  }
 }
 
 export class DocumentationReferenceIndex {
@@ -187,10 +220,25 @@ export class DocumentationReferenceIndex {
     return this.byId.get(id)?.article;
   }
 
-  search(query: string, requestedLimit = 20): WikiSearchResponseDto {
+  search(
+    query: string,
+    requestedLimit = 20,
+    cursorValue?: string,
+  ): WikiSearchResponseDto {
     const normalized = query.trim().toLocaleLowerCase().replace(/\s+/g, " ");
     const limit = Math.min(50, Math.max(1, requestedLimit));
     if (!normalized) return { query: "", results: [], total: 0, limit };
+    const queryHash = createHash("sha256")
+      .update(`${this.version}\0${normalized}`)
+      .digest("base64url");
+    const cursor = cursorValue ? decodeSearchCursor(cursorValue) : undefined;
+    if (
+      cursor &&
+      (cursor.version !== this.version ||
+        cursor.queryHash !== queryHash ||
+        cursor.limit !== limit)
+    ) throw new Error("Wiki search cursor no longer matches this search");
+    const offset = cursor?.offset ?? 0;
     const terms = [...new Set(normalized.split(" ").filter((term) => term.length > 1))];
     const ranked = this.records.flatMap((record) => {
       if (!terms.every((term) => record.searchable.includes(term))) return [];
@@ -206,7 +254,26 @@ export class DocumentationReferenceIndex {
       const snippet = `${start ? "…" : ""}${text.slice(start, start + 260)}${start + 260 < text.length ? "…" : ""}`;
       return [{ article: this.summary(record.article), snippet, score }];
     }).sort((left, right) => right.score - left.score || left.article.order - right.article.order);
-    return { query: query.trim(), results: ranked.slice(0, limit), total: ranked.length, limit };
+    if (offset > ranked.length) throw new Error("invalid Wiki search cursor");
+    const results = ranked.slice(offset, offset + limit);
+    const nextOffset = offset + results.length;
+    return {
+      query: query.trim(),
+      results,
+      total: ranked.length,
+      limit,
+      ...(nextOffset < ranked.length
+        ? {
+            nextCursor: encodeSearchCursor({
+              v: 1,
+              version: this.version,
+              queryHash,
+              limit,
+              offset: nextOffset,
+            }),
+          }
+        : {}),
+    };
   }
 
   asset(name: string): { body: Buffer; mediaType: string } | undefined {

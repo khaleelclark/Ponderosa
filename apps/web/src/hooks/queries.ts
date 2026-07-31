@@ -25,19 +25,19 @@ export function useAllChat(limit = 50) {
   });
 }
 
-export function useConversations(projectId: string | undefined) {
+export function useConversations(projectId: string | undefined, enabled = true) {
   return useQuery({
     queryKey: queryKeys.conversations.project(projectId),
     queryFn: () => api.listConversations(projectId ?? ""),
-    enabled: Boolean(projectId),
+    enabled: Boolean(projectId) && enabled,
   });
 }
 
-export function useAgentHealth(projectId: string | undefined) {
+export function useAgentHealth(projectId: string | undefined, enabled = true) {
   return useQuery({
     queryKey: queryKeys.agents.health(projectId),
     queryFn: () => api.getAgentHealth(projectId ?? ""),
-    enabled: Boolean(projectId),
+    enabled: Boolean(projectId) && enabled,
     refetchInterval: (query) => {
       const agents = query.state.data?.agents ?? [];
       return agents.some((agent) => agent.status === "running" || agent.status === "waiting" || agent.status === "compacting")
@@ -62,11 +62,11 @@ export function useCollaborationView(conversationId: string | undefined, limit =
   });
 }
 
-export function useAgents(projectId: string | undefined) {
+export function useAgents(projectId: string | undefined, enabled = true) {
   return useQuery({
     queryKey: queryKeys.agents.project(projectId),
     queryFn: () => api.listAgents(projectId ?? ""),
-    enabled: Boolean(projectId),
+    enabled: Boolean(projectId) && enabled,
     // Managed agents can be created or cascade-deleted by another agent. Poll
     // the roster so hierarchy, authorship, counts, and statuses stay coherent
     // without requiring a page refresh.

@@ -12,6 +12,7 @@ import type {
   ResponseFileActivityDto,
   WorkspaceNotificationDto,
   WorkspacePreferencesDto,
+  WorkspaceAgentDirectoryItemDto,
 } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -20,6 +21,7 @@ import { mergeAgentStatuses } from "../agents";
 import { useAgent, useAgentHealth, useAgentPresets, useConversations, useAgents } from "../hooks/queries";
 import { queryKeys } from "../queryKeys";
 import { enginesWithModelCatalog } from "../conversationEngine";
+import { useWorkspaceDirectory, workspaceDirectoryItems } from "../hooks/useWorkspaceDirectory";
 import { assertNeverRoute, type ProjectRoute } from "../routeRegistry";
 import type { Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
@@ -81,12 +83,30 @@ export function ProjectShell({
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
   const queryClient = useQueryClient();
 
+  const pagedAgentRoster = route.kind === "agents";
+  const [agentDirectorySearch, setAgentDirectorySearch] = useState("");
+  const agentDirectoryQuery =
+    useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
+      search: agentDirectorySearch,
+      projectId,
+      enabled: pagedAgentRoster,
+    });
+  const agentDirectory = workspaceDirectoryItems(agentDirectoryQuery.data?.pages, preferences);
   const conversationsQuery = useConversations(projectId);
   const agentsQuery = useAgents(projectId);
-  const conversations = conversationsQuery.data ?? [];
-  const agents = agentsQuery.data ?? [];
-  const presetsQuery = useAgentPresets(projectId);
   const healthQuery = useAgentHealth(projectId);
+  const agentDirectoryRows = [
+    ...agentDirectory.starredItems,
+    ...agentDirectory.items,
+  ];
+  const conversations = conversationsQuery.data ?? [];
+  const agents = agentsQuery.data ?? agentDirectoryRows.map(item => item.agent);
+  const projectedHealth = healthQuery.data?.agents ??
+    agentDirectoryRows.map(item => item.health);
+  const visibleAgentIds = new Set(
+    agentDirectoryRows.map(item => item.agent.id),
+  );
+  const presetsQuery = useAgentPresets(projectId);
   const claudeEngine = engines.find((engine) => engine.id === "claude");
   const modelCatalogQuery = useQuery({
     queryKey: queryKeys.engines.models(projectId, "claude"),
@@ -102,7 +122,7 @@ export function ProjectShell({
     ? agents.find((agent) => agent.id === route.agentId)
     : undefined;
   const routedAgentHasLiveSession = route.kind === "agent" && Boolean(
-    healthQuery.data?.agents.find((agent) => agent.agentId === route.agentId)
+    projectedHealth.find((agent) => agent.agentId === route.agentId)
       ?.providerSessionLive,
   );
   const capabilityAgent = routedAgentHasLiveSession ? routedAgent : undefined;
@@ -141,11 +161,11 @@ export function ProjectShell({
   const [presetsOpen, setPresetsOpen] = useState(false);
 
   const statusByAgentId = useMemo(() => {
-    return mergeAgentStatuses(agents, healthQuery.data?.agents ?? [], new Map());
-  }, [agents, healthQuery.data]);
+    return mergeAgentStatuses(agents, projectedHealth, new Map());
+  }, [agents, projectedHealth]);
   const healthByAgentId = useMemo(
-    () => new Map<string, AgentHealthDto>((healthQuery.data?.agents ?? []).map((agent) => [agent.agentId, agent])),
-    [healthQuery.data],
+    () => new Map<string, AgentHealthDto>(projectedHealth.map((agent) => [agent.agentId, agent])),
+    [projectedHealth],
   );
 
   const openNewSubagent = (managerAgentId: string) => {
@@ -334,9 +354,24 @@ export function ProjectShell({
     onClose={() => navigate(route.agentId ? { kind: "agent", projectId, agentId: route.agentId } : { kind: "project", projectId })}
   />;
 } else if (route.kind === "agents") {
-    main = (
+    main = agentDirectoryQuery.isLoading ? (
+      <Box sx={{ p: 2 }}><LinearProgress /></Box>
+    ) : (
       <AgentsTab
+        searchValue={agentDirectorySearch}
+        onSearchValueChange={setAgentDirectorySearch}
+        collectionFooter={agentDirectoryQuery.hasNextPage ? (
+          <Button
+            color="inherit"
+            disabled={agentDirectoryQuery.isFetchingNextPage}
+            onClick={() => void agentDirectoryQuery.fetchNextPage()}
+          >
+            {agentDirectoryQuery.isFetchingNextPage ? "Loading…" :
+              preferences.agentSort === "last_used" ? "Load older Agents" : "Load more Agents"}
+          </Button>
+        ) : null}
         agents={agents}
+        renderedAgentIds={agentDirectoryQuery.data ? visibleAgentIds : undefined}
         projectId={projectId}
         engines={projectEngines}
         conversations={conversations}
@@ -394,7 +429,7 @@ export function ProjectShell({
             { replace: true },
           )}
         agents={agents}
-        health={healthQuery.data?.agents}
+        health={projectedHealth}
         healthByAgentId={healthByAgentId}
         engines={projectEngines}
         notifications={notifications}
