@@ -13,7 +13,9 @@ export class TriggerSecretStore {
     try {
       const keyStat = statSync(keyPath);
       if (!keyStat.isFile()) throw new Error("Trigger secret encryption key must be a regular file");
-      if ((keyStat.mode & 0o077) !== 0) throw new Error("Trigger secret encryption key must be owner-only (0600)");
+      if (process.platform !== "win32" && (keyStat.mode & 0o077) !== 0) {
+        throw new Error("Trigger secret encryption key must be owner-only (0600)");
+      }
       this.key = readFileSync(keyPath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;

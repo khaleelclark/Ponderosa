@@ -23,6 +23,7 @@ function writeAll(fd: number, bytes: Buffer, errorMessage: string): void {
 }
 
 function fsyncDirectory(directory: string): void {
+  if (process.platform === "win32") return;
   const fd = openSync(directory, "r");
   try { fsyncSync(fd); }
   finally { closeSync(fd); }

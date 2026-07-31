@@ -14,6 +14,7 @@ import {
 import { dirname, join } from "node:path";
 
 function fsyncDirectory(directory: string): void {
+  if (process.platform === "win32") return;
   const descriptor = openSync(directory, "r");
   try { fsyncSync(descriptor); }
   finally { closeSync(descriptor); }
@@ -25,7 +26,7 @@ function writeJson(file: string, data: unknown): void {
   const temporary = join(directory, `.${randomUUID()}.json.tmp`);
   try {
     writeFileSync(temporary, JSON.stringify(data, null, 2) + "\n", "utf8");
-    const descriptor = openSync(temporary, "r");
+    const descriptor = openSync(temporary, "r+");
     try { fsyncSync(descriptor); }
     finally { closeSync(descriptor); }
     renameSync(temporary, file);
