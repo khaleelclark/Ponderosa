@@ -215,6 +215,7 @@ const runtimeBuildEnvironment = {
 
 execFileSync(nodeBinary, [pnpmCli(),
   "--config.verify-deps-before-run=false",
+  "--config.node-linker=hoisted",
   "--filter", "@ponderosa/server",
   "deploy", "--prod", "--legacy", serverTarget,
 ], {
@@ -226,6 +227,7 @@ execFileSync(nodeBinary, [pnpmCli(),
 const launcherTarget = path.join(bundleRoot, "app", "launcher");
 execFileSync(nodeBinary, [pnpmCli(),
   "--config.verify-deps-before-run=false",
+  "--config.node-linker=hoisted",
   "--filter", "@ponderosa/launcher",
   "deploy", "--prod", "--legacy", launcherTarget,
 ], {
