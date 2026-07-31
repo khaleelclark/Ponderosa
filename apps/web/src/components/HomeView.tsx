@@ -19,12 +19,22 @@ import {
   Stack,
   Typography,
 } from "@mui/material";
-import type { EngineDto, ProjectDto, WorkspaceNotificationDto, WorkspacePreferencesDto } from "@ponderosa/core";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import type {
+  EngineDto,
+  ProjectDto,
+  WorkspaceAgentDirectoryItemDto,
+  WorkspaceConversationDirectoryItemDto,
+  WorkspaceNotificationDto,
+  WorkspacePreferencesDto,
+  WorkspaceProjectDirectoryItemDto,
+  WorkspaceTriggerDirectoryItemDto,
+} from "@ponderosa/core";
+import { useQueryClient } from "@tanstack/react-query";
 import { useState, type MouseEvent, type ReactElement } from "react";
-import { api } from "../api";
-import { useProjectAgentHealth, useProjectAgents, useProjectConversations } from "../hooks/useProjectCollections";
-import { queryKeys } from "../queryKeys";
+import {
+  useWorkspaceDirectory,
+  workspaceDirectoryItems,
+} from "../hooks/useWorkspaceDirectory";
 import { engineAvailabilityPresentation } from "../conversationEngine";
 import type { Route } from "../routing";
 import { isOpenAttention } from "../attention";
@@ -122,22 +132,32 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
   const [tabMenu, setTabMenu] = useState<ResourceContextMenuState<Route>>();
   const [createAnchor, setCreateAnchor] = useState<HTMLElement>();
   const [tab, setTab] = useState<"overview" | "work">("overview");
-  const conversationQueries = useProjectConversations(projects);
-  const agentQueries = useProjectAgents(projects);
-  const healthQueries = useProjectAgentHealth(projects);
-  const triggersQuery = useQuery({ queryKey: queryKeys.triggers.all, queryFn: () => api.listAllTriggers(), staleTime: 5_000 });
-  const conversations = conversationQueries.flatMap((query, index) => (query.data ?? []).map((conversation) => ({ conversation, project: projects[index]! })));
-  const agents = agentQueries.flatMap((query, index) => (query.data ?? []).map((agent) => ({ agent, project: projects[index]! })));
-  const agentDestinations = new Map(agents.map(({ agent, project }) => [agent.id, { agent, project }] as const));
-  const activeAgents = healthQueries.reduce((count, query) => count + (query.data?.agents ?? []).filter((item) => item.status === "running" || item.status === "compacting").length, 0);
+  const directoryOptions = { preferenceRevision: preferences.updatedAt };
+  const projectDirectoryQuery =
+    useWorkspaceDirectory<WorkspaceProjectDirectoryItemDto>("project", directoryOptions);
+  const conversationDirectoryQuery =
+    useWorkspaceDirectory<WorkspaceConversationDirectoryItemDto>("conversation", directoryOptions);
+  const agentDirectoryQuery =
+    useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", directoryOptions);
+  const triggerDirectoryQuery =
+    useWorkspaceDirectory<WorkspaceTriggerDirectoryItemDto>("trigger", directoryOptions);
+  const projectDirectory = workspaceDirectoryItems(projectDirectoryQuery.data?.pages);
+  const conversationDirectory = workspaceDirectoryItems(conversationDirectoryQuery.data?.pages);
+  const agentDirectory = workspaceDirectoryItems(agentDirectoryQuery.data?.pages);
+  const triggerDirectory = workspaceDirectoryItems(triggerDirectoryQuery.data?.pages);
+  const projectItems = [...projectDirectory.starredItems, ...projectDirectory.items];
+  const conversationItems = [...conversationDirectory.starredItems, ...conversationDirectory.items];
+  const agentItems = [...agentDirectory.starredItems, ...agentDirectory.items];
+  const triggerItems = [...triggerDirectory.starredItems, ...triggerDirectory.items];
+  const activeAgents = agentDirectoryQuery.data?.pages.at(-1)?.activeCount ?? 0;
   const needsAttention = notifications.filter(isOpenAttention).length;
   const unread = notifications.filter((item) => !item.readAt && (item.status ?? "open") === "open").length;
   const provider = engineAvailabilityPresentation(engines);
   const allResources: RecentResource[] = [
-    ...projects.map((project) => ({ id: `project:${project.id}`, title: project.label, detail: "Project", updatedAt: project.lastUsedAt ?? project.createdAt, route: { kind: "project", projectId: project.id } as Route, icon: <FolderOutlinedIcon fontSize="small" /> })),
-    ...conversations.filter(({ conversation }) => !conversation.archived).map(({ conversation, project }) => ({ id: `conversation:${conversation.id}`, title: conversation.title, detail: `${project.label} · Chat`, updatedAt: conversation.updatedAt, route: { kind: "conversation", projectId: project.id, conversationId: conversation.id } as Route, icon: <ChatBubbleOutlineIcon fontSize="small" /> })),
-    ...agents.filter(({ agent }) => !agent.archived).map(({ agent, project }) => ({ id: `agent:${agent.id}`, title: agent.title, detail: `${project.label} · Agent`, updatedAt: agent.updatedAt, route: { kind: "agent", projectId: project.id, agentId: agent.id } as Route, icon: <SmartToyOutlinedIcon fontSize="small" /> })),
-    ...(triggersQuery.data ?? []).flatMap((trigger) => { const destination = agentDestinations.get(trigger.agentId); return destination ? [{ id: `trigger:${trigger.id}`, title: trigger.name, detail: `${destination.project.label} · Trigger`, updatedAt: trigger.updatedAt, route: { kind: "agent", projectId: destination.project.id, agentId: destination.agent.id, view: "triggers" } as Route, icon: <BoltOutlinedIcon fontSize="small" /> }] : []; }),
+    ...projectItems.map(({ project }) => ({ id: `project:${project.id}`, title: project.label, detail: "Project", updatedAt: project.lastUsedAt ?? project.createdAt, route: { kind: "project", projectId: project.id } as Route, icon: <FolderOutlinedIcon fontSize="small" /> })),
+    ...conversationItems.map(({ conversation, project }) => ({ id: `conversation:${conversation.id}`, title: conversation.title, detail: `${project.label} · Chat`, updatedAt: conversation.updatedAt, route: { kind: "conversation", projectId: project.id, conversationId: conversation.id } as Route, icon: <ChatBubbleOutlineIcon fontSize="small" /> })),
+    ...agentItems.map(({ agent, project }) => ({ id: `agent:${agent.id}`, title: agent.title, detail: `${project.label} · Agent`, updatedAt: agent.updatedAt, route: { kind: "agent", projectId: project.id, agentId: agent.id } as Route, icon: <SmartToyOutlinedIcon fontSize="small" /> })),
+    ...triggerItems.map(({ trigger, project, agent }) => ({ id: `trigger:${trigger.id}`, title: trigger.name, detail: `${project.label} · Trigger`, updatedAt: trigger.updatedAt, route: { kind: "agent", projectId: project.id, agentId: agent.id, view: "triggers" } as Route, icon: <BoltOutlinedIcon fontSize="small" /> })),
   ];
   const starredIds = starredWorkspaceResources(preferences);
   const orderedResources = sortWorkspaceResources(allResources, "last_used", [], (item) => item.id, (item) => item.title, (item) => recency.get(item.id) ?? item.updatedAt);

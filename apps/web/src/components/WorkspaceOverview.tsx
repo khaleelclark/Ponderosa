@@ -14,15 +14,14 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
+import type { ProjectDto, WorkspacePreferencesDto, WorkspaceProjectDirectoryItemDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { api } from "../api";
-import { useProjectAgentHealth, useProjectAgents, useProjectConversations } from "../hooks/useProjectCollections";
+import { useWorkspaceDirectory, workspaceDirectoryItems } from "../hooks/useWorkspaceDirectory";
 import { queryKeys } from "../queryKeys";
 import type { Route } from "../routing";
 import { resourcePreferenceKey, starredWorkspaceResources, toggleWorkspaceResourceStar } from "../resourcePreferences";
-import type { WorkspaceProjectSnapshot } from "../workspaceNavigation";
 import { TextInputDialog } from "./ConfirmationDialogs";
 import { ProjectDeletionDialog } from "./ProjectDeletionDialog";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
@@ -35,20 +34,8 @@ import {
   ResourceRow,
 } from "./CollectionPrimitives";
 
-function useWorkspaceSnapshots(projects: ProjectDto[]): WorkspaceProjectSnapshot[] {
-  const conversationQueries = useProjectConversations(projects);
-  const agentQueries = useProjectAgents(projects);
-  const healthQueries = useProjectAgentHealth(projects);
-  return projects.map((project, index) => ({
-    project,
-    conversations: conversationQueries[index]?.data ?? [],
-    agents: agentQueries[index]?.data ?? [],
-    health: healthQueries[index]?.data?.agents ?? [],
-  }));
-}
-
-function openProjectRoute(snapshot: WorkspaceProjectSnapshot): Route {
-  return { kind: "project", projectId: snapshot.project.id };
+function openProjectRoute(item: WorkspaceProjectDirectoryItemDto): Route {
+  return { kind: "project", projectId: item.project.id };
 }
 
 type ProjectDirectoryResource = {
@@ -85,8 +72,17 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
-  const snapshots = useWorkspaceSnapshots(projects);
   const [filter, setFilter] = useState("");
+  const directoryQuery =
+    useWorkspaceDirectory<WorkspaceProjectDirectoryItemDto>("project", {
+      search: filter,
+      preferenceRevision: preferences.updatedAt,
+    });
+  const directory = workspaceDirectoryItems(directoryQuery.data?.pages);
+  const filteredSnapshots = [
+    ...directory.starredItems,
+    ...directory.items,
+  ];
   const [draggedProjectId, setDraggedProjectId] = useState<string>();
   const [dropTarget, setDropTarget] = useState<{ projectId: string; position: "before" | "after" }>();
   const [tabMenu, setTabMenu] = useState<ResourceContextMenuState<ProjectDirectoryResource>>();
@@ -99,21 +95,11 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
       api.updateProject(project.id, { label }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("project") });
       setProjectAction(undefined);
     },
   });
-  const normalizedFilter = filter.trim().toLocaleLowerCase();
   const starredResourceIds = starredWorkspaceResources(preferences);
-  const filteredSnapshots = useMemo(() => normalizedFilter
-    ? snapshots.filter((snapshot) => {
-      const searchable = [
-        snapshot.project.label,
-        snapshot.project.hostPath,
-        ...snapshot.conversations.map((conversation) => conversation.title),
-      ].join(" ").toLocaleLowerCase();
-      return searchable.includes(normalizedFilter);
-    })
-    : snapshots, [snapshots, normalizedFilter]);
   const dropProject = (targetId: string, position: "before" | "after") => {
     if (!draggedProjectId) return;
     const currentOrder = projects.map((project) => project.id);
@@ -126,7 +112,7 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
   return <CollectionWorkspace
     icon={<FolderOutlinedIcon />}
     title="All Projects"
-    detail={filteredSnapshots.length === projects.length ? `${projects.length} ${projects.length === 1 ? "Project" : "Projects"} across Ponderosa` : `${filteredSnapshots.length} of ${projects.length} Projects`}
+    detail={filter.trim() ? `${directory.total} matching ${directory.total === 1 ? "Project" : "Projects"}` : `${directory.total} ${directory.total === 1 ? "Project" : "Projects"} across Ponderosa`}
     primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={onCreateProject} sx={{ whiteSpace: "nowrap" }}>New Project</Button>}
     toolbar={<CollectionToolbar search={filter} onSearch={setFilter} searchLabel="Search Projects" reorderHint>
       <CollectionDirectoryControls
@@ -137,8 +123,8 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
     listLabel="All Projects"
   >
     {filteredSnapshots.map((snapshot, index) => {
-        const recent = [...snapshot.conversations].filter((item) => !item.archived).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
-        const running = snapshot.health.filter((entry) => entry.status === "running" || entry.status === "compacting").length;
+        const recent = snapshot.recentConversation;
+        const running = snapshot.runningAgentCount;
         const route = openProjectRoute(snapshot);
         const menuResource = { route, project: snapshot.project };
         return <ResourceRow
@@ -220,9 +206,20 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
           }
         />;
       })}
+    {directoryQuery.hasNextPage ? <Button
+      color="inherit"
+      disabled={directoryQuery.isFetchingNextPage}
+      onClick={() => void directoryQuery.fetchNextPage()}
+    >
+      {directoryQuery.isFetchingNextPage
+        ? "Loading…"
+        : preferences.projectSort === "last_used"
+          ? "Load older Projects"
+          : "Load more Projects"}
+    </Button> : null}
     {filteredSnapshots.length === 0 ? <CollectionEmptyState
-      title={projects.length === 0 && !filter.trim() ? "No Projects Yet" : `No Projects match “${filter.trim()}”`}
-      detail={projects.length === 0 && !filter.trim() ? "Create a Project to get started." : "Try a Project name, folder, or Chat title."}
+      title={directory.total === 0 && !filter.trim() ? "No Projects Yet" : `No Projects match “${filter.trim()}”`}
+      detail={directory.total === 0 && !filter.trim() ? "Create a Project to get started." : "Try a Project name, folder, or Chat title."}
       action={filter.trim() ? {
         label: "Clear Search",
         onClick: () => setFilter(""),

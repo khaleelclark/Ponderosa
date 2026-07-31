@@ -113,6 +113,9 @@ import type {
   WorkspaceFileReviewDto,
   WorkspaceFileViewDto,
   WorkspaceNotificationDto,
+  WorkspaceDirectoryItemDto,
+  WorkspaceDirectoryKind,
+  WorkspaceDirectoryPageDto,
   WorkspacePreferencesDto,
   WorkspaceResourceRecencyDto,
   WorkspaceResourceRecencyListDto,
@@ -280,8 +283,14 @@ export const realApi = {
   getAgentProviderUsage(agentId: string, refreshStale = false): Promise<ProviderUsageStateDto> {
     return requestJson<ProviderUsageStateDto>(`/api/agents/${encodeURIComponent(agentId)}/provider-usage${refreshStale ? "?refresh=stale" : ""}`);
   },
-  searchGlobalChats(query: string, limit?: number): Promise<GlobalChatSearchResponseDto> {
-    return requestJson<GlobalChatSearchResponseDto>(`/api/search${toQuery({ q: query, limit })}`);
+  searchGlobalChats(
+    query: string,
+    limit?: number,
+    kind?: "conversation" | "agent",
+  ): Promise<GlobalChatSearchResponseDto> {
+    return requestJson<GlobalChatSearchResponseDto>(
+      `/api/search${toQuery({ q: query, limit, kind })}`,
+    );
   },
   getAllChat(limit: number = 50, cursor?: string): Promise<AllChatPageDto> {
     return requestJson<AllChatPageDto>(`/api/all-chat${toQuery({ limit: String(limit), cursor })}`);
@@ -352,6 +361,28 @@ export const realApi = {
     return requestJson<GenerateConversationTitleResponse>(`/api/conversations/${encodeURIComponent(conversationId)}/generate-title`, { method: "POST" });
   },
   getWorkspacePreferences(): Promise<WorkspacePreferencesDto> { return requestJson<WorkspacePreferencesDto>("/api/workspace/preferences"); },
+  getWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
+    kind: WorkspaceDirectoryKind,
+    options: {
+      limit?: number;
+      cursor?: string;
+      search?: string;
+      projectId?: string;
+      agentIds?: string;
+      conversationId?: string;
+    } = {},
+  ): Promise<WorkspaceDirectoryPageDto<T>> {
+    return requestJson<WorkspaceDirectoryPageDto<T>>(
+      `/api/workspace/directory/${encodeURIComponent(kind)}${toQuery({
+        limit: options.limit,
+        cursor: options.cursor,
+        search: options.search,
+        projectId: options.projectId,
+        agentIds: options.agentIds,
+        conversationId: options.conversationId,
+      })}`,
+    );
+  },
   updateWorkspacePreferences(request: UpdateWorkspacePreferencesRequest): Promise<WorkspacePreferencesDto> { return requestJson<WorkspacePreferencesDto>("/api/workspace/preferences", { method: "PATCH", body: JSON.stringify(request satisfies UpdateWorkspacePreferencesRequest) }); },
   getWorkspaceResourceRecency(): Promise<WorkspaceResourceRecencyListDto> { return requestJson<WorkspaceResourceRecencyListDto>("/api/workspace/recent-resources"); },
   markWorkspaceResourceUsed(request: MarkWorkspaceResourceUsedRequest): Promise<WorkspaceResourceRecencyDto> { return requestJson<WorkspaceResourceRecencyDto>("/api/workspace/recent-resources/use", { method: "POST", body: JSON.stringify(request satisfies MarkWorkspaceResourceUsedRequest) }); },

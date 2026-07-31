@@ -42,6 +42,10 @@ export interface ServerContext {
 }
 
 export interface SearchRoutesContext extends ServerContext {
-  readonly globalChatSearch: (query: { q?: string; limit?: string | number }) => GlobalChatSearchResponseDto;
+  readonly globalChatSearch: (query: {
+    q?: string;
+    limit?: string | number;
+    kind?: string;
+  }) => GlobalChatSearchResponseDto;
   readonly workspace: Pick<WorkspaceStore, "listDecisionEventPage">;
 }

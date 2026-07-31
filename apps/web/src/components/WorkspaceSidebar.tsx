@@ -20,31 +20,30 @@ import {
 import type {
   ConversationDto,
   ProjectDto,
+  WorkspaceAgentDirectoryItemDto,
+  WorkspaceConversationDirectoryItemDto,
   WorkspaceNotificationDto,
   WorkspacePreferencesDto,
+  WorkspaceProjectDirectoryItemDto,
+  WorkspaceTriggerDirectoryItemDto,
 } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import {
-  useProjectAgentHealth,
-  useProjectAgents,
-  useProjectConversations,
-} from "../hooks/useProjectCollections";
+  useWorkspaceDirectory,
+  workspaceDirectoryItems,
+} from "../hooks/useWorkspaceDirectory";
 import { queryKeys } from "../queryKeys";
 import type { Route } from "../routing";
 import {
   reorderStableIds,
   resourcePreferenceKey,
-  sortWorkspaceResources,
   starredWorkspaceResources,
   toggleWorkspaceResourceStar,
   workspaceResourceSort,
 } from "../resourcePreferences";
 import {
   projectDisambiguator,
-  workspaceAgents,
-  workspaceCounts,
-  type WorkspaceProjectSnapshot,
 } from "../workspaceNavigation";
 import { clampWorkspaceSidebarWidth } from "../workspaceSidebarState";
 import { markWorkspaceResourceUsed } from "../workspaceRecency";
@@ -54,7 +53,6 @@ import { IconTitle } from "./IconTitle";
 import {
   SIDEBAR_PANEL_WIDTH,
   SIDEBAR_RAIL_WIDTH,
-  projectSnapshots,
   sidebarSurface,
   starColor,
 } from "./WorkspaceSidebar.helpers";
@@ -109,16 +107,6 @@ export function WorkspaceSidebar({
   onWidthChange?(width: number): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
-  const conversationQueries = useProjectConversations(projects);
-  const agentQueries = useProjectAgents(projects);
-  const healthQueries = useProjectAgentHealth(projects);
-  const snapshots = projectSnapshots(
-    projects,
-    conversationQueries.map(query => query.data),
-    agentQueries.map(query => query.data),
-    healthQueries.map(query => query.data),
-  );
-  const counts = workspaceCounts(snapshots, notifications);
   const {
     sidebarSection,
     setSidebarSection,
@@ -140,12 +128,86 @@ export function WorkspaceSidebar({
   const showingCreate = sidebarSection === "create";
   const showingWiki = sidebarSection === "wiki";
   const showingSettings = sidebarSection === "settings";
-  const allTriggersQuery = useQuery({
-    queryKey: queryKeys.triggers.all,
-    queryFn: () => api.listAllTriggers(),
-    enabled: showingTriggers || showingHome,
-    staleTime: 5_000,
+  const directorySearch = showingHome || showingAgents || showingChats ||
+    showingProjects || showingTriggers ? filter : "";
+  const directoryOptions = {
+    search: directorySearch,
+    preferenceRevision: preferences.updatedAt,
+  };
+  const projectDirectoryQuery =
+    useWorkspaceDirectory<WorkspaceProjectDirectoryItemDto>("project", {
+      ...directoryOptions,
+      enabled: showingHome || showingProjects,
+    });
+  const chatDirectoryQuery =
+    useWorkspaceDirectory<WorkspaceConversationDirectoryItemDto>("conversation", {
+      ...directoryOptions,
+      enabled: showingHome || showingChats,
+    });
+  const agentDirectoryQuery =
+    useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
+      ...directoryOptions,
+      enabled: true,
+    });
+  const triggerDirectoryQuery =
+    useWorkspaceDirectory<WorkspaceTriggerDirectoryItemDto>("trigger", {
+      ...directoryOptions,
+      enabled: showingHome || showingTriggers,
+    });
+  const projectDirectory = workspaceDirectoryItems(
+    projectDirectoryQuery.data?.pages,
+  );
+  const chatDirectory = workspaceDirectoryItems(chatDirectoryQuery.data?.pages);
+  const agentDirectory = workspaceDirectoryItems(
+    agentDirectoryQuery.data?.pages,
+  );
+  const triggerDirectory = workspaceDirectoryItems(
+    triggerDirectoryQuery.data?.pages,
+  );
+  const projectItems = [
+    ...projectDirectory.starredItems,
+    ...projectDirectory.items,
+  ];
+  const chatItems = [...chatDirectory.starredItems, ...chatDirectory.items];
+  const agentItems = [
+    ...agentDirectory.starredItems,
+    ...agentDirectory.items,
+  ];
+  const triggerItems = [
+    ...triggerDirectory.starredItems,
+    ...triggerDirectory.items,
+  ];
+  const homeProjectIds = new Set([
+    ...projectItems.map(item => item.project.id),
+    ...chatItems.map(item => item.project.id),
+    ...agentItems.map(item => item.project.id),
+    ...triggerItems.map(item => item.project.id),
+  ]);
+  const projectById = new Map(projects.map(project => [project.id, project]));
+  const snapshots = [...homeProjectIds].flatMap(projectId => {
+    const project = projectById.get(projectId);
+    if (!project) return [];
+    return [{
+      project,
+      conversations: chatItems
+        .filter(item => item.project.id === projectId)
+        .map(item => item.conversation),
+      agents: agentItems
+        .filter(item => item.project.id === projectId)
+        .map(item => item.agent),
+      health: agentItems
+        .filter(item => item.project.id === projectId)
+        .map(item => item.health),
+    }];
   });
+  const counts = {
+    running:
+      agentDirectoryQuery.data?.pages.at(-1)?.activeCount ?? 0,
+    unread: notifications.filter(
+      notification =>
+        !notification.readAt && (notification.status ?? "open") === "open",
+    ).length,
+  };
   const wikiIndexQuery = useQuery({
     queryKey: queryKeys.wiki.index,
     queryFn: () => api.getWikiIndex(),
@@ -192,10 +254,13 @@ export function WorkspaceSidebar({
     onNavigate({ kind: "agent", projectId, agentId, view: "triggers" });
   };
 
-  const openProject = (snapshot: WorkspaceProjectSnapshot) => {
+  const openProject = (snapshot: WorkspaceProjectDirectoryItemDto) => {
     onNavigate({ kind: "project", projectId: snapshot.project.id });
   };
-  const openChat = (project: ProjectDto, conversation: ConversationDto) => {
+  const openChat = (
+    project: Pick<ProjectDto, "id" | "label" | "hostPath">,
+    conversation: ConversationDto,
+  ) => {
     void api.markProjectUsed(project.id, conversation.id);
     onNavigate({
       kind: "conversation",
@@ -228,20 +293,7 @@ export function WorkspaceSidebar({
   );
 
   const starredResourceIds = starredWorkspaceResources(preferences);
-  const projectList = sortWorkspaceResources(
-    snapshots.filter(
-      snapshot =>
-        !normalizedFilter ||
-        `${snapshot.project.label} ${snapshot.project.hostPath}`
-          .toLocaleLowerCase()
-          .includes(normalizedFilter),
-    ),
-    preferences.projectSort,
-    preferences.projectOrder,
-    snapshot => snapshot.project.id,
-    snapshot => snapshot.project.label,
-    snapshot => snapshot.project.lastUsedAt ?? snapshot.project.createdAt,
-  );
+  const projectList = projectItems;
   const toggleStar = (
     kind: "project" | "conversation" | "agent" | "trigger",
     id: string,
@@ -249,7 +301,7 @@ export function WorkspaceSidebar({
   const homePanel = (
     <HomeSidebarPanel
       snapshots={snapshots}
-      triggers={allTriggersQuery.data ?? []}
+      triggers={triggerItems.map(item => item.trigger)}
       preferences={preferences}
       filter={filter}
       drawer={drawer}
@@ -322,22 +374,13 @@ export function WorkspaceSidebar({
         </Stack>
       );
     });
-  const starredProjects = projectList.filter(snapshot =>
-    starredResourceIds.has(
-      resourcePreferenceKey("project", snapshot.project.id),
-    ),
-  );
-  const unstarredProjects = projectList.filter(
-    snapshot =>
-      !starredResourceIds.has(
-        resourcePreferenceKey("project", snapshot.project.id),
-      ),
-  );
+  const starredProjects = projectDirectory.starredItems;
+  const unstarredProjects = projectDirectory.items;
   const projectsPanel = (
     <SharedSidebarPanel
       icon={<FolderOutlinedIcon />}
       title="Projects"
-      total={projects.length}
+      total={projectDirectory.total}
       searchLabel="Search projects"
       searchValue={filter}
       onSearchValueChange={setFilter}
@@ -356,6 +399,10 @@ export function WorkspaceSidebar({
           </Typography>
         ) : undefined
       }
+      loadMoreLabel={projectDirectoryQuery.hasNextPage ?
+        (preferences.projectSort === "last_used" ? "Load older Projects" : "Load more Projects") : undefined}
+      onLoadMore={() => void projectDirectoryQuery.fetchNextPage()}
+      loadingMore={projectDirectoryQuery.isFetchingNextPage}
       viewAllLabel="View All Projects"
       viewAllIcon={<FolderOutlinedIcon />}
       onViewAll={openAllProjects}
@@ -365,25 +412,8 @@ export function WorkspaceSidebar({
       drawer={drawer}
     />
   );
-  const allChatRows = snapshots.flatMap(snapshot =>
-    snapshot.conversations
-      .filter(conversation => !conversation.archived)
-      .map(conversation => ({ project: snapshot.project, conversation })),
-  );
-  const chatRows = sortWorkspaceResources(
-    allChatRows.filter(
-      ({ project: chatProject, conversation }) =>
-        !normalizedFilter ||
-        `${conversation.title} ${chatProject.label}`
-          .toLocaleLowerCase()
-          .includes(normalizedFilter),
-    ),
-    workspaceResourceSort(preferences, "chat"),
-    preferences.chatOrder,
-    row => row.conversation.id,
-    row => row.conversation.title,
-    row => row.conversation.updatedAt,
-  );
+  const allChatRows = chatItems;
+  const chatRows = chatItems;
   const globalChatResourceRows = (items: typeof chatRows) =>
     items.map(({ project: chatProject, conversation }) => {
       const starred = starredResourceIds.has(
@@ -473,7 +503,7 @@ export function WorkspaceSidebar({
     <SharedSidebarPanel
       icon={<ChatBubbleOutlineIcon />}
       title="Chats"
-      total={allChatRows.length}
+      total={chatDirectory.total}
       searchLabel="Search chats"
       searchValue={filter}
       onSearchValueChange={setFilter}
@@ -505,6 +535,10 @@ export function WorkspaceSidebar({
           </Typography>
         ) : undefined
       }
+      loadMoreLabel={chatDirectoryQuery.hasNextPage ?
+        (workspaceResourceSort(preferences, "chat") === "last_used" ? "Load older Chats" : "Load more Chats") : undefined}
+      onLoadMore={() => void chatDirectoryQuery.fetchNextPage()}
+      loadingMore={chatDirectoryQuery.isFetchingNextPage}
       viewAllLabel="View All Chats"
       viewAllIcon={<ChatBubbleOutlineIcon />}
       onViewAll={() => onNavigate({ kind: "allChats" })}
@@ -515,21 +549,12 @@ export function WorkspaceSidebar({
     />
   );
 
-  const allAgentRows = workspaceAgents(snapshots);
-  const agentRows = sortWorkspaceResources(
-    allAgentRows.filter(
-      ({ agent, project }) =>
-        !normalizedFilter ||
-        `${agent.title} ${project.label} ${project.hostPath} ${agent.activeEngine}`
-          .toLocaleLowerCase()
-          .includes(normalizedFilter),
-    ),
-    workspaceResourceSort(preferences, "agent"),
-    preferences.agentOrder,
-    row => row.agent.id,
-    row => row.agent.title,
-    row => row.agent.updatedAt,
-  );
+  const allAgentRows = agentItems.map(({ agent, project, health }) => ({
+    agent,
+    project,
+    status: health.status,
+  }));
+  const agentRows = allAgentRows;
   const agentResourceRows = (items: typeof agentRows) =>
     items.map(({ agent, project: agentProject, status }) => {
       const starred = starredResourceIds.has(
@@ -618,7 +643,7 @@ export function WorkspaceSidebar({
     <SharedSidebarPanel
       icon={<SmartToyOutlinedIcon />}
       title="Agents"
-      total={allAgentRows.length}
+      total={agentDirectory.total}
       searchLabel="Search agents"
       searchValue={filter}
       onSearchValueChange={setFilter}
@@ -646,6 +671,10 @@ export function WorkspaceSidebar({
           </Typography>
         ) : undefined
       }
+      loadMoreLabel={agentDirectoryQuery.hasNextPage ?
+        (workspaceResourceSort(preferences, "agent") === "last_used" ? "Load older Agents" : "Load more Agents") : undefined}
+      onLoadMore={() => void agentDirectoryQuery.fetchNextPage()}
+      loadingMore={agentDirectoryQuery.isFetchingNextPage}
       viewAllLabel="View All Agents"
       viewAllIcon={<SmartToyOutlinedIcon />}
       onViewAll={() => onNavigate({ kind: "allAgents" })}
@@ -656,40 +685,10 @@ export function WorkspaceSidebar({
     />
   );
 
-  const triggerDestinations = workspaceAgents(snapshots);
-  const triggerAgentById = new Map(
-    triggerDestinations.map(
-      destination => [destination.agent.id, destination] as const,
-    ),
-  );
-  const filteredTriggers = sortWorkspaceResources(
-    (allTriggersQuery.data ?? []).filter(trigger => {
-      const destination = triggerAgentById.get(trigger.agentId);
-      return (
-        !normalizedFilter ||
-        [
-          trigger.name,
-          trigger.instructions,
-          trigger.sourceKind,
-          destination?.agent.title,
-          destination?.project.label,
-        ]
-          .filter(Boolean)
-          .join(" ")
-          .toLocaleLowerCase()
-          .includes(normalizedFilter)
-      );
-    }),
-    workspaceResourceSort(preferences, "trigger"),
-    preferences.triggerOrder,
-    trigger => trigger.id,
-    trigger => trigger.name,
-    trigger => trigger.updatedAt,
-  );
+  const filteredTriggers = triggerItems;
   const triggerResourceRows = (items: typeof filteredTriggers) =>
-    items.map(trigger => {
-      const destination = triggerAgentById.get(trigger.agentId);
-      if (!destination) return null;
+    items.map(({ trigger, agent, project }) => {
+      const destination = { agent, project };
       const starred = starredResourceIds.has(
         resourcePreferenceKey("trigger", trigger.id),
       );
@@ -712,7 +711,7 @@ export function WorkspaceSidebar({
                 triggerSort: "custom",
                 triggerOrder: reorderStableIds(
                   preferences.triggerOrder,
-                  (allTriggersQuery.data ?? []).map(item => item.id),
+                  triggerItems.map(item => item.trigger.id),
                   draggedResource.id,
                   trigger.id,
                 ),
@@ -785,36 +784,36 @@ export function WorkspaceSidebar({
     <SharedSidebarPanel
       icon={<BoltOutlinedIcon />}
       title="Triggers"
-      total={(allTriggersQuery.data ?? []).length}
+      total={triggerDirectory.total}
       searchLabel="Search triggers or agents"
       searchValue={filter}
       onSearchValueChange={setFilter}
       topContent={
-        allTriggersQuery.isLoading ? (
+        triggerDirectoryQuery.isLoading ? (
           <Typography variant="body2" color="text.secondary" sx={{ p: 1 }}>
             Loading triggers…
           </Typography>
-        ) : allTriggersQuery.isError ? (
+        ) : triggerDirectoryQuery.isError ? (
           <Typography variant="body2" color="error" sx={{ p: 1 }}>
             Triggers could not be loaded.
           </Typography>
         ) : undefined
       }
       starredRows={triggerResourceRows(
-        filteredTriggers.filter(trigger =>
+        filteredTriggers.filter(({ trigger }) =>
           starredResourceIds.has(resourcePreferenceKey("trigger", trigger.id)),
         ),
       )}
       allRows={triggerResourceRows(
         filteredTriggers.filter(
-          trigger =>
+          ({ trigger }) =>
             !starredResourceIds.has(
               resourcePreferenceKey("trigger", trigger.id),
             ),
         ),
       )}
       empty={
-        !allTriggersQuery.isLoading && filteredTriggers.length === 0 ? (
+        !triggerDirectoryQuery.isLoading && filteredTriggers.length === 0 ? (
           <Typography
             variant="body2"
             color="text.secondary"
@@ -826,6 +825,10 @@ export function WorkspaceSidebar({
           </Typography>
         ) : undefined
       }
+      loadMoreLabel={triggerDirectoryQuery.hasNextPage ?
+        (workspaceResourceSort(preferences, "trigger") === "last_used" ? "Load older Triggers" : "Load more Triggers") : undefined}
+      onLoadMore={() => void triggerDirectoryQuery.fetchNextPage()}
+      loadingMore={triggerDirectoryQuery.isFetchingNextPage}
       viewAllLabel="View All Triggers"
       viewAllIcon={<BoltOutlinedIcon />}
       onViewAll={() => onNavigate({ kind: "allTriggers" })}

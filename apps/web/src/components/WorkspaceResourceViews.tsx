@@ -11,18 +11,26 @@ import {
   Alert, Box, Button, Chip, FormControl, IconButton, InputLabel, LinearProgress,
   MenuItem, Paper, Select, Stack, Tooltip, Typography,
 } from "@mui/material";
-import type { ConversationDto, EngineDto, ProjectDto, TriggerDefinitionDto, WorkspacePreferencesDto } from "@ponderosa/core";
+import type {
+  ConversationDto, EngineDto, ProjectDto, TriggerDefinitionDto,
+  WorkspaceAgentDirectoryItemDto,
+  WorkspaceConversationDirectoryItemDto,
+  WorkspacePreferencesDto,
+  WorkspaceTriggerDirectoryItemDto,
+} from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api";
 import {
-  useProjectAgentHealth,
   useProjectAgents,
-  useProjectConversations,
 } from "../hooks/useProjectCollections";
 import { queryKeys } from "../queryKeys";
 import {
-  reorderStableIds, resourcePreferenceKey, sortWorkspaceResources, starredWorkspaceResources,
+  useWorkspaceDirectory,
+  workspaceDirectoryItems,
+} from "../hooks/useWorkspaceDirectory";
+import {
+  reorderStableIds, resourcePreferenceKey, starredWorkspaceResources,
   toggleWorkspaceResourceStar, workspaceResourceSort, workspaceResourceSortPatch,
 } from "../resourcePreferences";
 import type { Route } from "../routing";
@@ -52,31 +60,30 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void; onNavigate(route: Route): void; onOpenInNewTab(route: Route): void; onCreate(projectId?: string): void;
   onConversationAction(kind: "rename" | "delete", conversation: ConversationDto): void;
 }): JSX.Element {
-  const queries = useProjectConversations(projects);
   const [search, setSearch] = useState(""); const [projectId, setProjectId] = useState(filterProjectId ?? ""); const [dragged, setDragged] = useState<string>(); const [menu, setMenu] = useState<ResourceContextMenuState<ChatDirectoryResource>>();
   useEffect(() => setProjectId(filterProjectId ?? ""), [filterProjectId]);
   const sort = workspaceResourceSort(preferences, "chat"); const starred = starredWorkspaceResources(preferences);
-  const rows = projects.flatMap((project, index) => (queries[index]?.data ?? []).filter((conversation) => !conversation.archived).map((conversation) => ({ project, conversation })));
+  const directoryQuery =
+    useWorkspaceDirectory<WorkspaceConversationDirectoryItemDto>("conversation", {
+      search,
+      projectId: (filterProjectId ?? projectId) || undefined,
+      preferenceRevision: preferences.updatedAt,
+    });
+  const directory = workspaceDirectoryItems(directoryQuery.data?.pages);
+  const ordered = [...directory.starredItems, ...directory.items];
   const scopedProject = filterProjectId
     ? projects.find(project => project.id === filterProjectId)
     : undefined;
-  const scopedRows = filterProjectId
-    ? rows.filter(({ project }) => project.id === filterProjectId)
-    : rows;
-  const filtered = scopedRows.filter(({ project, conversation }) => (!projectId || project.id === projectId) && (!search.trim() || `${conversation.title} ${project.label}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())));
-  const ordered = sortWorkspaceResources(filtered, sort, preferences.chatOrder, (row) => row.conversation.id, (row) => row.conversation.title, (row) => row.conversation.updatedAt);
   const filtersActive = Boolean(search.trim() || (!filterProjectId && projectId));
   return <CollectionWorkspace
     icon={<ChatBubbleOutlineIcon />}
     title="All Chats"
     detail={
       scopedProject
-        ? filtersActive
-          ? `${ordered.length} of ${scopedRows.length} Chats in ${scopedProject.label}`
-          : `${scopedRows.length} ${scopedRows.length === 1 ? "Chat" : "Chats"} in ${scopedProject.label}`
+        ? `${directory.total} ${directory.total === 1 ? "Chat" : "Chats"} in ${scopedProject.label}`
         : filtersActive
-          ? `${ordered.length} of ${rows.length} Project Chats`
-          : `${rows.length} Project ${rows.length === 1 ? "Chat" : "Chats"} across Ponderosa`
+          ? `${directory.total} matching Project ${directory.total === 1 ? "Chat" : "Chats"}`
+          : `${directory.total} Project ${directory.total === 1 ? "Chat" : "Chats"} across Ponderosa`
     }
     primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={() => onCreate(projectId || undefined)}>New Chat</Button>}
     toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Chats" reorderHint>
@@ -131,9 +138,18 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
         }}
       />;
     })}
-    {!queries.some((query) => query.isLoading) && ordered.length === 0 ? <CollectionEmptyState
-      title={scopedRows.length === 0 && !filtersActive ? "No Chats Yet" : "No Chats match these filters"}
-      detail={scopedRows.length === 0 && !filtersActive ? "Create a Chat to get started." : `Try a different search${filterProjectId ? "." : " or Project filter."}`}
+    {directoryQuery.hasNextPage ? <Button
+      color="inherit"
+      disabled={directoryQuery.isFetchingNextPage}
+      onClick={() => void directoryQuery.fetchNextPage()}
+    >
+      {directoryQuery.isFetchingNextPage
+        ? "Loading…"
+        : sort === "last_used" ? "Load older Chats" : "Load more Chats"}
+    </Button> : null}
+    {!directoryQuery.isLoading && ordered.length === 0 ? <CollectionEmptyState
+      title={directory.total === 0 && !filtersActive ? "No Chats Yet" : "No Chats match these filters"}
+      detail={directory.total === 0 && !filtersActive ? "Create a Chat to get started." : `Try a different search${filterProjectId ? "." : " or Project filter."}`}
       action={filtersActive ? {
         label: "Clear Filters",
         onClick: () => {
@@ -172,19 +188,34 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
   onCreate(projectId?: string, managerAgentId?: string): void;
   onAgentsDeleted(projectId: string, agentIds: string[]): void;
 }): JSX.Element {
-  const agentQueries = useProjectAgents(projects);
-  const conversationQueries = useProjectConversations(projects);
-  const healthQueries = useProjectAgentHealth(projects);
   const [projectId, setProjectId] = useState(filterProjectId ?? "");
+  const [search, setSearch] = useState("");
   useEffect(() => setProjectId(filterProjectId ?? ""), [filterProjectId]);
   const sort = workspaceResourceSort(preferences, "agent");
-  const rows = projects.flatMap((project, index) => (agentQueries[index]?.data ?? []).filter((agent) => !agent.archived).map((agent) => ({ project, agent })));
-  const scopedRows = rows.filter(({ project }) => !projectId || project.id === projectId);
-  const orderedRows = sortWorkspaceResources(scopedRows, sort, preferences.agentOrder, (row) => row.agent.id, (row) => row.agent.title, (row) => row.agent.updatedAt);
-  const agents = orderedRows.map((row) => row.agent);
-  const conversations = projects.flatMap((project, index) => (!projectId || project.id === projectId) ? (conversationQueries[index]?.data ?? []).filter((conversation) => !conversation.archived) : []);
-  const allHealth = projects.flatMap((project, index) => (!projectId || project.id === projectId) ? (healthQueries[index]?.data?.agents ?? []) : []);
-  const healthByAgentId = new Map(allHealth.map((item) => [item.agentId, item]));
+  const agentDirectoryQuery =
+    useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
+      search,
+      projectId: projectId || undefined,
+      preferenceRevision: preferences.updatedAt,
+    });
+  const conversationDirectoryQuery =
+    useWorkspaceDirectory<WorkspaceConversationDirectoryItemDto>("conversation", {
+      projectId: projectId || undefined,
+      preferenceRevision: preferences.updatedAt,
+    });
+  const agentDirectory = workspaceDirectoryItems(agentDirectoryQuery.data?.pages);
+  const conversationDirectory = workspaceDirectoryItems(
+    conversationDirectoryQuery.data?.pages,
+  );
+  const rows = [...agentDirectory.starredItems, ...agentDirectory.items];
+  const orderedRows = rows;
+  const agents = orderedRows.map(row => row.agent);
+  const conversations = [
+    ...conversationDirectory.starredItems,
+    ...conversationDirectory.items,
+  ].map(row => row.conversation);
+  const allHealth = rows.map(row => row.health);
+  const healthByAgentId = new Map(allHealth.map(item => [item.agentId, item]));
   const statusByAgentId = mergeAgentStatuses(agents, allHealth, new Map());
   const projectByAgentId = new Map(rows.map(({ project, agent }) => [agent.id, { id: project.id, label: project.label }]));
   const starredIds = starredWorkspaceResources(preferences);
@@ -192,22 +223,39 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
     ? projects.find(project => project.id === projectId)
     : undefined;
   return <Box sx={{ height: "100%", minHeight: 0, overflow: "hidden" }}>
-    <AgentsTab collection={{
-      title: "All Agents",
-      detail: scopedProject
-        ? `${scopedRows.length} ${scopedRows.length === 1 ? "Agent" : "Agents"} in ${scopedProject.label}`
-        : `${rows.length} ${rows.length === 1 ? "Agent" : "Agents"} across Ponderosa`,
-      totalCount: scopedRows.length,
-    }} toolbarControls={<>
-      <CollectionDirectoryControls
-        projects={projects}
-        projectId={projectId}
-        onProject={setProjectId}
-        sort={sort}
-        onSort={value => onPreferences(workspaceResourceSortPatch("agent", value))}
-        compact
-      />
-    </>} agents={agents} projectId={projectId || undefined} engines={engines} conversations={conversations} statusByAgentId={statusByAgentId} healthByAgentId={healthByAgentId} projectByAgentId={projectByAgentId} displayOrder={agents.map((agent) => agent.id)} selectionAllowed onReorder={(sourceId, targetId, position) => onPreferences({ agentSort: "custom", agentOrder: reorderStableIds(preferences.agentOrder, agents.map((agent) => agent.id), sourceId, targetId, position) })} starredAgentIds={starredIds} onToggleStar={(agentId) => onPreferences(toggleWorkspaceResourceStar(preferences, "agent", agentId))} onOpenAgent={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentInNewTab={(agentId) => { const project = projectByAgentId.get(agentId)!; onOpenInNewTab({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentSettings={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId, view: "settings" }); }} onNewAgent={(managerAgentId) => onCreate(
+    <AgentsTab
+      collection={{
+        title: "All Agents",
+        detail: scopedProject
+          ? `${agentDirectory.total} ${agentDirectory.total === 1 ? "Agent" : "Agents"} in ${scopedProject.label}`
+          : `${agentDirectory.total} ${agentDirectory.total === 1 ? "Agent" : "Agents"} across Ponderosa`,
+        totalCount: agentDirectory.total,
+      }}
+      searchValue={search}
+      onSearchValueChange={setSearch}
+      collectionFooter={agentDirectoryQuery.hasNextPage ? (
+        <Button
+          color="inherit"
+          disabled={agentDirectoryQuery.isFetchingNextPage}
+          onClick={() => void agentDirectoryQuery.fetchNextPage()}
+          sx={{ alignSelf: "center", my: 1 }}
+        >
+          {agentDirectoryQuery.isFetchingNextPage
+            ? "Loading…"
+            : sort === "last_used" ? "Load older Agents" : "Load more Agents"}
+        </Button>
+      ) : null}
+      toolbarControls={<>
+        <CollectionDirectoryControls
+          projects={projects}
+          projectId={projectId}
+          onProject={setProjectId}
+          sort={sort}
+          onSort={value => onPreferences(workspaceResourceSortPatch("agent", value))}
+          compact
+        />
+      </>}
+      agents={agents} projectId={projectId || undefined} engines={engines} conversations={conversations} statusByAgentId={statusByAgentId} healthByAgentId={healthByAgentId} projectByAgentId={projectByAgentId} displayOrder={agents.map((agent) => agent.id)} selectionAllowed onReorder={(sourceId, targetId, position) => onPreferences({ agentSort: "custom", agentOrder: reorderStableIds(preferences.agentOrder, agents.map((agent) => agent.id), sourceId, targetId, position) })} starredAgentIds={starredIds} onToggleStar={(agentId) => onPreferences(toggleWorkspaceResourceStar(preferences, "agent", agentId))} onOpenAgent={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentInNewTab={(agentId) => { const project = projectByAgentId.get(agentId)!; onOpenInNewTab({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentSettings={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId, view: "settings" }); }} onNewAgent={(managerAgentId) => onCreate(
       managerAgentId
         ? projectByAgentId.get(managerAgentId)?.id
         : projectId || undefined,
@@ -243,8 +291,6 @@ export function AllTriggersWorkspace({
   onNavigate(route: Route): void; onOpenInNewTab(route: Route): void; onCreate(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
-  const triggers = useQuery({ queryKey: queryKeys.triggers.all, queryFn: () => api.listAllTriggers(), staleTime: 5_000 });
-  const agents = useProjectAgents(projects);
   const [search, setSearch] = useState(""); const [projectId, setProjectId] = useState(filterProjectId ?? ""); const [dragged, setDragged] = useState<string>(); const [menu, setMenu] = useState<ResourceContextMenuState<TriggerDirectoryResource>>();
   useEffect(() => setProjectId(filterProjectId ?? ""), [filterProjectId]);
   const [triggerAction, setTriggerAction] = useState<{
@@ -257,6 +303,7 @@ export function AllTriggersWorkspace({
     onSuccess: (_updated, { trigger }) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.agent(trigger.agentId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("trigger") });
       setTriggerAction(undefined);
     },
   });
@@ -265,28 +312,21 @@ export function AllTriggersWorkspace({
     onSuccess: (_deleted, trigger) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.agent(trigger.agentId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("trigger") });
       setTriggerAction(undefined);
     },
   });
   const sort = workspaceResourceSort(preferences, "trigger"); const starred = starredWorkspaceResources(preferences);
-  const destinations = useMemo(() => new Map(projects.flatMap((project, index) => (agents[index]?.data ?? []).map((agent) => [agent.id, { project, agent }] as const))), [projects, agents.map((query) => query.data)]);
-  const scopedAgentIds = filterAgentIds ? new Set(filterAgentIds) : undefined;
-  const rows = (triggers.data ?? []).flatMap((trigger) => {
-    if (scopedAgentIds && !scopedAgentIds.has(trigger.agentId)) return [];
-    if (
-      filterConversationId &&
-      trigger.conversationId !== filterConversationId
-    ) {
-      return [];
-    }
-    const destination = destinations.get(trigger.agentId);
-    return destination ? [{ trigger, ...destination }] : [];
-  });
-  const scopedRows = filterProjectId
-    ? rows.filter(({ project }) => project.id === filterProjectId)
-    : rows;
-  const filtered = scopedRows.filter(({ project, agent, trigger }) => (!projectId || project.id === projectId) && (!search.trim() || `${trigger.name} ${trigger.sourceKind} ${agent.title} ${project.label}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())));
-  const ordered = sortWorkspaceResources(filtered, sort, preferences.triggerOrder, (row) => row.trigger.id, (row) => row.trigger.name, (row) => row.trigger.updatedAt);
+  const directoryQuery =
+    useWorkspaceDirectory<WorkspaceTriggerDirectoryItemDto>("trigger", {
+      search,
+      projectId: (filterProjectId ?? projectId) || undefined,
+      agentIds: filterAgentIds,
+      conversationId: filterConversationId,
+      preferenceRevision: preferences.updatedAt,
+    });
+  const directory = workspaceDirectoryItems(directoryQuery.data?.pages);
+  const ordered = [...directory.starredItems, ...directory.items];
   const filtersActive = Boolean(search.trim() || (!filterProjectId && projectId));
   const scopedProject = filterProjectId
     ? projects.find(project => project.id === filterProjectId)
@@ -301,12 +341,10 @@ export function AllTriggersWorkspace({
     title={scopeTitle ?? (scopedProject ? "Project Triggers" : "All Triggers")}
     detail={
       scopedProject
-        ? filtersActive
-          ? `${ordered.length} of ${scopedRows.length} Triggers in ${scopedProject.label}`
-          : `${scopedRows.length} ${scopedRows.length === 1 ? "Trigger" : "Triggers"} in ${scopedProject.label}`
+        ? `${directory.total} ${directory.total === 1 ? "Trigger" : "Triggers"} in ${scopedProject.label}`
         : filtersActive
-          ? `${ordered.length} of ${rows.length} Triggers`
-          : `${rows.length} ${rows.length === 1 ? "Trigger" : "Triggers"} across Ponderosa`
+          ? `${directory.total} matching ${directory.total === 1 ? "Trigger" : "Triggers"}`
+          : `${directory.total} ${directory.total === 1 ? "Trigger" : "Triggers"} across Ponderosa`
     }
     primaryAction={createButton}
     toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Triggers" reorderHint>
@@ -374,9 +412,18 @@ export function AllTriggersWorkspace({
         }}
       />;
     })}
-    {!triggers.isLoading && ordered.length === 0 ? <CollectionEmptyState
-      title={scopedRows.length === 0 && !filtersActive ? "No Triggers Yet" : "No Triggers match these filters"}
-      detail={scopedRows.length === 0 && !filtersActive ? "Create a Trigger to automate Agent work." : `Try a different search${filterProjectId ? "." : " or Project filter."}`}
+    {directoryQuery.hasNextPage ? <Button
+      color="inherit"
+      disabled={directoryQuery.isFetchingNextPage}
+      onClick={() => void directoryQuery.fetchNextPage()}
+    >
+      {directoryQuery.isFetchingNextPage
+        ? "Loading…"
+        : sort === "last_used" ? "Load older Triggers" : "Load more Triggers"}
+    </Button> : null}
+    {!directoryQuery.isLoading && ordered.length === 0 ? <CollectionEmptyState
+      title={directory.total === 0 && !filtersActive ? "No Triggers Yet" : "No Triggers match these filters"}
+      detail={directory.total === 0 && !filtersActive ? "Create a Trigger to automate Agent work." : `Try a different search${filterProjectId ? "." : " or Project filter."}`}
       action={filtersActive ? {
         label: "Clear Filters",
         onClick: () => {

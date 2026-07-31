@@ -8,7 +8,7 @@ import type {
   WorkspaceNotificationDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
-import type { ComponentProps } from "react";
+import { useEffect, useState, type ComponentProps } from "react";
 import type { AgentStatus } from "../agents";
 import { chatStateKey, readChatState } from "../chatState";
 import type { AgentTelemetryFocus } from "../routing";
@@ -110,6 +110,8 @@ export function AgentDetailPanels({
   onOpenArtifactInNewTab,
   onCloseTriggerSettings,
 }: AgentDetailPanelsProps): JSX.Element {
+  const [visibleSubagentCount, setVisibleSubagentCount] = useState(25);
+  useEffect(() => setVisibleSubagentCount(25), [detail.agent.id]);
   const panes: Record<AgentTab, JSX.Element> = {
     chat: (
       <Box
@@ -164,6 +166,15 @@ export function AgentDetailPanels({
           onAgentsDeleted(agentIds)}
         selectionAllowed={false}
         organizationRootAgentId={detail.agent.id}
+        visibleLimit={visibleSubagentCount}
+        collectionFooter={delegatedAgentCount > visibleSubagentCount ? (
+          <Button
+            color="inherit"
+            onClick={() => setVisibleSubagentCount(count => count + 25)}
+          >
+            Load older Agents
+          </Button>
+        ) : null}
         collection={{
           title: `${detail.agent.title} Agents`,
           detail: `${delegatedAgentCount} delegated ${

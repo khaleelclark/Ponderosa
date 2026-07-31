@@ -76,7 +76,10 @@ export function workspaceCounts(
   };
 }
 
-export function projectDisambiguator(project: ProjectDto, projects: ProjectDto[]): string {
+export function projectDisambiguator(
+  project: Pick<ProjectDto, "id" | "label" | "hostPath">,
+  projects: ProjectDto[],
+): string {
   const duplicateLabel = projects.some((candidate) => candidate.id !== project.id && candidate.label.localeCompare(project.label, undefined, { sensitivity: "base" }) === 0);
   return duplicateLabel ? `${project.label} · ${project.hostPath}` : project.label;
 }

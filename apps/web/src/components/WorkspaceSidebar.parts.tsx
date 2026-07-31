@@ -50,6 +50,9 @@ function SharedSidebarPanel({
   starredRows,
   allRows,
   empty,
+  loadMoreLabel,
+  onLoadMore,
+  loadingMore = false,
   newLabel,
   newIcon,
   onNew,
@@ -71,6 +74,9 @@ function SharedSidebarPanel({
   starredRows: ReactNode;
   allRows: ReactNode;
   empty?: ReactNode;
+  loadMoreLabel?: string;
+  onLoadMore?(): void;
+  loadingMore?: boolean;
   newLabel?: string;
   newIcon?: ReactNode;
   onNew?(): void;
@@ -145,6 +151,17 @@ function SharedSidebarPanel({
           <List disablePadding>{allRows}</List>
         </Box>
         {empty}
+        {loadMoreLabel && onLoadMore ? (
+          <Button
+            fullWidth
+            color="inherit"
+            disabled={loadingMore}
+            onClick={onLoadMore}
+            sx={{ mt: 1, color: "text.secondary" }}
+          >
+            {loadingMore ? "Loading…" : loadMoreLabel}
+          </Button>
+        ) : null}
       </Box>
       <Box
         sx={{

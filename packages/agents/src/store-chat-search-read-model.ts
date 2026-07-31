@@ -12,6 +12,7 @@ import {
 export interface GlobalChatSearchInput {
   query?: string;
   limit?: number;
+  chatKind?: "conversation" | "agent";
   recentLimit?: number;
   maxScannedMessages?: number;
   notifications?: Array<{
@@ -97,6 +98,7 @@ export class AgentChatSearchReadModel {
           ON search.chat_kind = 'agent' AND chat_agent.id = search.chat_id AND chat_agent.archived = 0
         LEFT JOIN agents author_agent ON author_agent.id = search.author_agent_id
         WHERE (conversation.id IS NOT NULL OR chat_agent.id IS NOT NULL)
+          AND (? IS NULL OR search.chat_kind = ?)
           AND NOT (
             search.chat_kind = 'agent' AND EXISTS (
               SELECT 1
@@ -111,7 +113,11 @@ export class AgentChatSearchReadModel {
         ORDER BY search.timestamp DESC, search.chat_kind DESC, search.row_key DESC
         LIMIT ?
       `)
-      .all(maxScannedMessages + 1) as SearchProjectionRow[];
+      .all(
+        input.chatKind ?? null,
+        input.chatKind ?? null,
+        maxScannedMessages + 1,
+      ) as SearchProjectionRow[];
     const candidates: ProjectedChatSearchCandidate[] = rows.map(row => {
       const author: GlobalChatSearchAuthorDto = row.authorAgentId
         ? {

@@ -302,6 +302,7 @@ export function useWorkspaceStream(): void {
       decisionConversationInvalidator.dispose();
       void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.all });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
       invalidateActiveQueries(queryClient, queryKeys.agents.all);
       invalidateActiveQueries(queryClient, queryKeys.agents.healthAll);
@@ -350,6 +351,19 @@ export function useWorkspaceStream(): void {
       if (workspaceEventInvalidatesGlobalSearch(event)) void queryClient.invalidateQueries({ queryKey: queryKeys.globalSearch.all });
       if (workspaceEventInvalidatesAllChat(event)) void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
       if (workspaceEventChangesResourceRecency(event)) void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceResourceRecency.all });
+      if (event.type === "preferences_updated") {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.all });
+      } else if (event.type === "project_changed") {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("project") });
+      } else if (event.type === "conversation_changed") {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("conversation") });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("project") });
+      } else if (event.type === "trigger_changed") {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("trigger") });
+      } else if (event.type === "agent_event" && event.category === "lifecycle") {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("agent") });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("project") });
+      }
       if (event.type === "preferences_updated") return;
       if (event.type === "project_changed") void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
       else if (event.type === "conversation_changed") {

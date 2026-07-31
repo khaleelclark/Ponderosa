@@ -66,6 +66,7 @@ import { registerSearchRoutes } from "./search.js";
 import { registerStreamRoutes } from "./streams.js";
 import { registerTriggerRoutes } from "./triggers.js";
 import { registerWikiRoutes } from "./wiki.js";
+import { registerWorkspaceDirectoryRoutes } from "./workspace-directory.js";
 import { registerWorkspacePreferenceRoutes } from "./workspace-preferences.js";
 
 type ApplicationRoutesContext =
@@ -523,6 +524,13 @@ registerTriggerRoutes(app, {
   notifyScheduler: notifyScheduler,
 });
 
+registerWorkspaceDirectoryRoutes(app, {
+  store,
+  coordination: coordinationV3,
+  workspace,
+  agentHealth,
+});
+
 app.get<{ Params: { id: string } }>("/api/agent-trigger-occurrences/:id", async (request, reply) => {
   const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
   const capability = token ? agentMessageCapabilities.get(token) : undefined;
@@ -583,12 +591,25 @@ registerAgentMaintenanceRoutes(app, {
   notifyScheduler: notifyScheduler,
 });
 
-const globalChatSearch = (query: { q?: string; limit?: string | number }): GlobalChatSearchResponseDto => {
+const globalChatSearch = (query: {
+  q?: string;
+  limit?: string | number;
+  kind?: string;
+}): GlobalChatSearchResponseDto => {
   const q = String(query.q ?? "").trim();
   if (q.length > 200) throw new Error("search query must be 200 characters or fewer");
+  const chatKind = query.kind || undefined;
+  if (chatKind !== undefined && chatKind !== "conversation" && chatKind !== "agent") {
+    throw new Error("search kind must be conversation or agent");
+  }
   const requestedLimit = Number(query.limit ?? 30);
   const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(50, Math.floor(requestedLimit))) : 30;
-  return store.searchGlobalChats({ query: q, limit, notifications: workspace.listNotifications() });
+  return store.searchGlobalChats({
+    query: q,
+    limit,
+    chatKind,
+    notifications: workspace.listNotifications(),
+  });
 };
 
 registerWikiRoutes(app, serverContext);

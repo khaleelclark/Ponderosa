@@ -26,14 +26,12 @@ import {
   type SidebarConversationAction,
 } from "./components/WorkspaceDialogs";
 import {
+  useAgent,
   useEngines,
   useNotifications,
   useProjects,
   useWorkspacePreferences,
 } from "./hooks/queries";
-import {
-  useProjectAgents,
-} from "./hooks/useProjectCollections";
 import { useWorkspaceStream } from "./hooks/useWorkspaceStream";
 import {
   loadLastProjectId,
@@ -187,7 +185,9 @@ export default function App({
     enabled: engineStatusOpen,
     staleTime: 30_000,
   });
-  const projectAgentQueries = useProjectAgents(projects);
+  const activeAgentQuery = useAgent(
+    route.kind === "agent" ? route.agentId : undefined,
+  );
 
   useEffect(() => {
     let stopped = false;
@@ -228,11 +228,8 @@ export default function App({
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [engines, queryClient]);
-  const preferredQuotaProvider = route.kind === "agent"
-    ? projectAgentQueries[
-        projects.findIndex((project) => project.id === route.projectId)
-      ]?.data?.find((agent) => agent.id === route.agentId)?.activeEngine
-    : undefined;
+  const preferredQuotaProvider =
+    activeAgentQuery.data?.agent.activeEngine;
   useEffect(() => {
     setWorkspaceTabs(current =>
       navigateWorkspaceTab(current, activeWorkspaceTabKey, route),

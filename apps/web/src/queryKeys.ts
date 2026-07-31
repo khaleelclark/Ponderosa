@@ -21,6 +21,27 @@ export const queryKeys = {
   projects: {
     all: ["projects"] as const,
   },
+  workspaceDirectory: {
+    all: ["workspace-directory"] as const,
+    kind: (kind: "project" | "conversation" | "agent" | "trigger") =>
+      ["workspace-directory", kind] as const,
+    list: (
+      kind: "project" | "conversation" | "agent" | "trigger",
+      search: string,
+      projectId: string | undefined,
+      agentIds: string | undefined,
+      conversationId: string | undefined,
+      revision: string,
+    ) => [
+      "workspace-directory",
+      kind,
+      search,
+      projectId ?? "",
+      agentIds ?? "",
+      conversationId ?? "",
+      revision,
+    ] as const,
+  },
   workspacePreferences: {
     all: ["workspace-preferences"] as const,
   },
@@ -147,7 +168,11 @@ export const queryKeys = {
   },
   globalSearch: {
     all: ["global-search"] as const,
-    results: (query: string) => ["global-search", query] as const,
+    results: (
+      query: string,
+      limit = 25,
+      kind?: "conversation" | "agent",
+    ) => ["global-search", query, limit, kind ?? "all"] as const,
   },
   projectBrowser: {
     all: ["project-browser"] as const,
