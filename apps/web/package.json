@@ -7,7 +7,7 @@
     "node": ">=22 <23"
   },
   "scripts": {
-    "build": "NODE_ENV=production rsbuild build",
+    "build": "rsbuild build",
     "dev": "rsbuild dev",
     "preview": "rsbuild preview",
     "typecheck": "tsc -p tsconfig.json --noEmit",

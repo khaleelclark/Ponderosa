@@ -84,7 +84,7 @@ export class EngineAvailabilityStore {
     }
     this.appendNeedsSeparator = false;
     chmodSync(this.filePath, 0o600);
-    if (!existed) {
+    if (!existed && process.platform !== "win32") {
       const directory = openSync(path.dirname(this.filePath), "r");
       try { fsyncSync(directory); }
       finally { closeSync(directory); }

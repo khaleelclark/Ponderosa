@@ -142,15 +142,20 @@ assertCleanSource();
 // previously generated web/dist tree. A stale PWA shell can otherwise make a
 // correct new daemon look like the old installed version.
 execFileSync(
-  path.join(
-    repositoryRoot,
-    "apps",
-    "web",
-    "node_modules",
-    ".bin",
-    process.platform === "win32" ? "rsbuild.cmd" : "rsbuild",
-  ),
-  ["build"],
+  process.execPath,
+  [
+    path.join(
+      repositoryRoot,
+      "apps",
+      "web",
+      "node_modules",
+      "@rsbuild",
+      "core",
+      "bin",
+      "rsbuild.js",
+    ),
+    "build",
+  ],
   {
     cwd: path.join(repositoryRoot, "apps", "web"),
     stdio: "inherit",
@@ -210,6 +215,7 @@ const runtimeBuildEnvironment = {
 
 execFileSync(nodeBinary, [pnpmCli(),
   "--config.verify-deps-before-run=false",
+  "--config.node-linker=hoisted",
   "--filter", "@ponderosa/server",
   "deploy", "--prod", "--legacy", serverTarget,
 ], {
@@ -221,6 +227,7 @@ execFileSync(nodeBinary, [pnpmCli(),
 const launcherTarget = path.join(bundleRoot, "app", "launcher");
 execFileSync(nodeBinary, [pnpmCli(),
   "--config.verify-deps-before-run=false",
+  "--config.node-linker=hoisted",
   "--filter", "@ponderosa/launcher",
   "deploy", "--prod", "--legacy", launcherTarget,
 ], {
@@ -305,6 +312,9 @@ cpSync(
 );
 writeFileSync(path.join(engineDesktopTarget, "package.json"), `${JSON.stringify({
   name: "ponderosa-engine-desktop",
+  version,
+  description: "Self-hosted coding-agent workbench",
+  author: "Ponderosa",
   private: true,
   type: "module",
   main: "dist/main.js",

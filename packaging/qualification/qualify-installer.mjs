@@ -88,8 +88,11 @@ const installerChecks = [];
 try {
   if (process.platform === "linux") {
     if (!artifact.endsWith(".deb")) throw new Error("Linux installer qualification requires a .deb.");
-    installedRoot = "/opt/ponderosa-beta";
-    if (existsSync(installedRoot)) throw new Error(`${installedRoot} already exists; refusing to replace it.`);
+    installedApplication = "/opt/ponderosa-engine";
+    installedRoot = path.join(installedApplication, "resources", "Ponderosa");
+    if (existsSync(installedApplication)) {
+      throw new Error(`${installedApplication} already exists; refusing to replace it.`);
+    }
     run("sudo", ["dpkg", "--install", artifact]);
     uninstall = () => run("sudo", ["dpkg", "--remove", "ponderosa-beta"]);
     installed = true;

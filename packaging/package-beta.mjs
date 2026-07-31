@@ -281,7 +281,7 @@ exec /opt/ponderosa-engine/ponderosa-engine "$@"
 Type=Application
 Name=Ponderosa Engine
 Exec=ponderosa-beta engine
-Icon=/opt/ponderosa-beta/app/web/dist/icons/app-icon.png
+Icon=/opt/ponderosa-engine/resources/Ponderosa/app/web/dist/icons/app-icon.png
 Categories=Development;
 Terminal=false
 `);

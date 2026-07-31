@@ -12,7 +12,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && rm -rf dist/migrations dist/schema && cp -R src/schema dist/schema",
+    "build": "tsc -p tsconfig.json && node copy-build-assets.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests"
   },
