@@ -67,9 +67,8 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
     useWorkspaceDirectory<WorkspaceConversationDirectoryItemDto>("conversation", {
       search,
       projectId: (filterProjectId ?? projectId) || undefined,
-      preferenceRevision: preferences.updatedAt,
     });
-  const directory = workspaceDirectoryItems(directoryQuery.data?.pages);
+  const directory = workspaceDirectoryItems(directoryQuery.data?.pages, preferences);
   const ordered = [...directory.starredItems, ...directory.items];
   const scopedProject = filterProjectId
     ? projects.find(project => project.id === filterProjectId)
@@ -196,16 +195,15 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
     useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
       search,
       projectId: projectId || undefined,
-      preferenceRevision: preferences.updatedAt,
     });
   const conversationDirectoryQuery =
     useWorkspaceDirectory<WorkspaceConversationDirectoryItemDto>("conversation", {
       projectId: projectId || undefined,
-      preferenceRevision: preferences.updatedAt,
     });
-  const agentDirectory = workspaceDirectoryItems(agentDirectoryQuery.data?.pages);
+  const agentDirectory = workspaceDirectoryItems(agentDirectoryQuery.data?.pages, preferences);
   const conversationDirectory = workspaceDirectoryItems(
     conversationDirectoryQuery.data?.pages,
+    preferences,
   );
   const rows = [...agentDirectory.starredItems, ...agentDirectory.items];
   const orderedRows = rows;
@@ -323,9 +321,8 @@ export function AllTriggersWorkspace({
       projectId: (filterProjectId ?? projectId) || undefined,
       agentIds: filterAgentIds,
       conversationId: filterConversationId,
-      preferenceRevision: preferences.updatedAt,
     });
-  const directory = workspaceDirectoryItems(directoryQuery.data?.pages);
+  const directory = workspaceDirectoryItems(directoryQuery.data?.pages, preferences);
   const ordered = [...directory.starredItems, ...directory.items];
   const filtersActive = Boolean(search.trim() || (!filterProjectId && projectId));
   const scopedProject = filterProjectId

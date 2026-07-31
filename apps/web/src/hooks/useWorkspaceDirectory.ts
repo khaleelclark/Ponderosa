@@ -2,10 +2,15 @@ import type {
   WorkspaceDirectoryItemDto,
   WorkspaceDirectoryKind,
   WorkspaceDirectoryPageDto,
+  WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
+import {
+  resourcePreferenceKey,
+  starredWorkspaceResources,
+} from "../resourcePreferences";
 
 export const WORKSPACE_DIRECTORY_PAGE_SIZE = 25;
 
@@ -16,7 +21,6 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     projectId?: string;
     agentIds?: readonly string[];
     conversationId?: string;
-    preferenceRevision: string;
     enabled?: boolean;
   },
 ) {
@@ -28,7 +32,6 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
       options.projectId,
       options.agentIds?.join(","),
       options.conversationId,
-      options.preferenceRevision,
     ),
     queryFn: ({ pageParam }) =>
       api.getWorkspaceDirectory<T>(kind, {
@@ -49,6 +52,7 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
 
 export function workspaceDirectoryItems<T extends WorkspaceDirectoryItemDto>(
   pages: readonly WorkspaceDirectoryPageDto<T>[] | undefined,
+  preferences: WorkspacePreferencesDto,
 ): {
   starredItems: T[];
   items: T[];
@@ -56,9 +60,11 @@ export function workspaceDirectoryItems<T extends WorkspaceDirectoryItemDto>(
 } {
   if (!pages?.length) return { starredItems: [], items: [], total: 0 };
   const latest = pages[pages.length - 1]!;
-  const starredItems = latest.starredItems;
   const seen = new Set<string>();
-  const items = pages.flatMap(page => page.items).filter(item => {
+  const allItems = [
+    ...latest.starredItems,
+    ...pages.flatMap(page => page.items),
+  ].filter(item => {
     const id =
       item.kind === "project"
         ? item.project.id
@@ -71,5 +77,18 @@ export function workspaceDirectoryItems<T extends WorkspaceDirectoryItemDto>(
     seen.add(id);
     return true;
   });
+  const stars = starredWorkspaceResources(preferences);
+  const isStarred = (item: T) => {
+    const id = item.kind === "project"
+      ? item.project.id
+      : item.kind === "conversation"
+        ? item.conversation.id
+        : item.kind === "agent"
+          ? item.agent.id
+          : item.trigger.id;
+    return stars.has(resourcePreferenceKey(item.kind, id));
+  };
+  const starredItems = allItems.filter(isStarred);
+  const items = allItems.filter(item => !isStarred(item));
   return { starredItems, items, total: latest.total };
 }

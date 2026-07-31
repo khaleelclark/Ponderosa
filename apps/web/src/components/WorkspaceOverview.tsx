@@ -76,9 +76,8 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
   const directoryQuery =
     useWorkspaceDirectory<WorkspaceProjectDirectoryItemDto>("project", {
       search: filter,
-      preferenceRevision: preferences.updatedAt,
     });
-  const directory = workspaceDirectoryItems(directoryQuery.data?.pages);
+  const directory = workspaceDirectoryItems(directoryQuery.data?.pages, preferences);
   const filteredSnapshots = [
     ...directory.starredItems,
     ...directory.items,

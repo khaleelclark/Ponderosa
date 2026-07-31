@@ -89,10 +89,9 @@ export function ProjectShell({
     useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
       search: agentDirectorySearch,
       projectId,
-      preferenceRevision: preferences.updatedAt,
       enabled: pagedAgentRoster,
     });
-  const agentDirectory = workspaceDirectoryItems(agentDirectoryQuery.data?.pages);
+  const agentDirectory = workspaceDirectoryItems(agentDirectoryQuery.data?.pages, preferences);
   const conversationsQuery = useConversations(projectId);
   const agentsQuery = useAgents(projectId, !pagedAgentRoster);
   const healthQuery = useAgentHealth(projectId, !pagedAgentRoster);

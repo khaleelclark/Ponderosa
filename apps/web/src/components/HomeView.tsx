@@ -132,7 +132,7 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
   const [tabMenu, setTabMenu] = useState<ResourceContextMenuState<Route>>();
   const [createAnchor, setCreateAnchor] = useState<HTMLElement>();
   const [tab, setTab] = useState<"overview" | "work">("overview");
-  const directoryOptions = { preferenceRevision: preferences.updatedAt };
+  const directoryOptions = {};
   const projectDirectoryQuery =
     useWorkspaceDirectory<WorkspaceProjectDirectoryItemDto>("project", directoryOptions);
   const conversationDirectoryQuery =
@@ -141,10 +141,10 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
     useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", directoryOptions);
   const triggerDirectoryQuery =
     useWorkspaceDirectory<WorkspaceTriggerDirectoryItemDto>("trigger", directoryOptions);
-  const projectDirectory = workspaceDirectoryItems(projectDirectoryQuery.data?.pages);
-  const conversationDirectory = workspaceDirectoryItems(conversationDirectoryQuery.data?.pages);
-  const agentDirectory = workspaceDirectoryItems(agentDirectoryQuery.data?.pages);
-  const triggerDirectory = workspaceDirectoryItems(triggerDirectoryQuery.data?.pages);
+  const projectDirectory = workspaceDirectoryItems(projectDirectoryQuery.data?.pages, preferences);
+  const conversationDirectory = workspaceDirectoryItems(conversationDirectoryQuery.data?.pages, preferences);
+  const agentDirectory = workspaceDirectoryItems(agentDirectoryQuery.data?.pages, preferences);
+  const triggerDirectory = workspaceDirectoryItems(triggerDirectoryQuery.data?.pages, preferences);
   const projectItems = [...projectDirectory.starredItems, ...projectDirectory.items];
   const conversationItems = [...conversationDirectory.starredItems, ...conversationDirectory.items];
   const agentItems = [...agentDirectory.starredItems, ...agentDirectory.items];

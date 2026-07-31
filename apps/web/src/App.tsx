@@ -59,6 +59,7 @@ import {
 } from "./components/ProjectBrowserContext";
 import { engineAvailabilityPresentation } from "./conversationEngine";
 import { recheckProvider } from "./providerAuthRefresh";
+import { changedWorkspaceDirectoryKinds } from "./resourcePreferences";
 import {
   WORKSPACE_TABS_STORAGE_KEY,
   adjacentWorkspaceTab,
@@ -368,6 +369,11 @@ export default function App({
     queryClient.setQueryData(queryKeys.workspacePreferences.all, { ...preferences, ...patch });
     void api.updateWorkspacePreferences(patch).then((value) => {
       queryClient.setQueryData(queryKeys.workspacePreferences.all, value);
+      for (const kind of changedWorkspaceDirectoryKinds(preferences, value)) {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.workspaceDirectory.kind(kind),
+        });
+      }
       if (patch.claudeModelOptions !== undefined) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.engines.all });
         void queryClient.invalidateQueries({ queryKey: ["engine-models"] });

@@ -31,7 +31,6 @@ export const queryKeys = {
       projectId: string | undefined,
       agentIds: string | undefined,
       conversationId: string | undefined,
-      revision: string,
     ) => [
       "workspace-directory",
       kind,
@@ -39,7 +38,6 @@ export const queryKeys = {
       projectId ?? "",
       agentIds ?? "",
       conversationId ?? "",
-      revision,
     ] as const,
   },
   workspacePreferences: {

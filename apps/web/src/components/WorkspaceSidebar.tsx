@@ -132,7 +132,6 @@ export function WorkspaceSidebar({
     showingProjects || showingTriggers ? filter : "";
   const directoryOptions = {
     search: directorySearch,
-    preferenceRevision: preferences.updatedAt,
   };
   const projectDirectoryQuery =
     useWorkspaceDirectory<WorkspaceProjectDirectoryItemDto>("project", {
@@ -156,13 +155,16 @@ export function WorkspaceSidebar({
     });
   const projectDirectory = workspaceDirectoryItems(
     projectDirectoryQuery.data?.pages,
+    preferences,
   );
-  const chatDirectory = workspaceDirectoryItems(chatDirectoryQuery.data?.pages);
+  const chatDirectory = workspaceDirectoryItems(chatDirectoryQuery.data?.pages, preferences);
   const agentDirectory = workspaceDirectoryItems(
     agentDirectoryQuery.data?.pages,
+    preferences,
   );
   const triggerDirectory = workspaceDirectoryItems(
     triggerDirectoryQuery.data?.pages,
+    preferences,
   );
   const projectItems = [
     ...projectDirectory.starredItems,
