@@ -358,12 +358,13 @@ export function WikiSidebarPanel({
             Searching Wiki…
           </Typography>
         ) : null}
-        {searching && searchText.length >= 2 && searchError ? (
+        {searching && searchText.length >= 2 && searchError &&
+        searchResults.length === 0 ? (
           <Typography variant="body2" color="error" sx={{ p: 1 }}>
             Wiki search could not be loaded.
           </Typography>
         ) : null}
-        {searching && !searchLoading && !searchError && searchResults.length > 0 ? (
+        {searching && !searchLoading && searchResults.length > 0 ? (
           <Box component="section" sx={{ mb: 2 }}>
             <SidebarSectionHeading>
               {searchTotal === 1 ? "1 Result" : `${searchTotal} Results`}
@@ -415,7 +416,9 @@ export function WikiSidebarPanel({
                   <ListItemText
                     primary={loadingMoreSearchResults
                       ? "Loading more results…"
-                      : "Load more results"}
+                      : searchError
+                        ? "Retry loading results"
+                        : "Load more results"}
                     primaryTypographyProps={{
                       color: "primary.main",
                       fontSize: 12.5,
@@ -423,6 +426,11 @@ export function WikiSidebarPanel({
                     }}
                   />
                 </ListItemButton>
+              ) : null}
+              {searchError ? (
+                <Typography color="error" variant="caption" sx={{ px: 1, py: 0.75 }}>
+                  More Wiki results could not be loaded. The results above are still available.
+                </Typography>
               ) : null}
             </List>
           </Box>

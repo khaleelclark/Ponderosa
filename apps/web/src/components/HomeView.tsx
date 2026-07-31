@@ -132,7 +132,7 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
   const [tabMenu, setTabMenu] = useState<ResourceContextMenuState<Route>>();
   const [createAnchor, setCreateAnchor] = useState<HTMLElement>();
   const [tab, setTab] = useState<"overview" | "work">("overview");
-  const directoryOptions = {};
+  const directoryOptions = { sort: "last_used" as const };
   const projectDirectoryQuery =
     useWorkspaceDirectory<WorkspaceProjectDirectoryItemDto>("project", directoryOptions);
   const conversationDirectoryQuery =

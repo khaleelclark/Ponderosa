@@ -177,6 +177,7 @@ export function AgentsTab({
   collection,
   collectionFooter,
   visibleLimit,
+  renderedAgentIds,
   organizationRootAgentId,
 }: {
   searchValue?: string;
@@ -211,9 +212,12 @@ export function AgentsTab({
     totalCount?: number;
     variant?: "page" | "embedded";
   };
-  collectionFooter?: ReactNode;
+  collectionFooter?: ReactNode | ((filteredCount: number) => ReactNode);
   /** Bound large embedded rosters while retaining full hierarchy context. */
   visibleLimit?: number;
+  /** Bound rendered rows while retaining the complete organization as
+   * hierarchy, filter, and parent-label context. */
+  renderedAgentIds?: ReadonlySet<string>;
   /** Limit the roster to descendants of this Agent while retaining the full
    * Project organization for parent labels and hierarchy validation. */
   organizationRootAgentId?: string;
@@ -342,6 +346,7 @@ export function AgentsTab({
   const matchingAgentIds = new Set(
     scopedOrganizationRows
       .filter(({ agent }) => {
+        if (renderedAgentIds && !renderedAgentIds.has(agent.id)) return false;
         const status = statusByAgentId.get(agent.id) ?? "idle";
         if (!matchesAgentStatusFilters(agent, status, statusFilters))
           return false;
@@ -352,6 +357,7 @@ export function AgentsTab({
           return false;
         }
         if (
+          !onSearchValueChange &&
           effectiveSearch.trim() &&
           !agent.title
             .toLocaleLowerCase()
@@ -363,7 +369,8 @@ export function AgentsTab({
       .map(({ agent }) => agent.id),
   );
   const filtersActive = Boolean(
-    effectiveSearch.trim() || statusFilters.length || masterFilter !== "all",
+    renderedAgentIds || effectiveSearch.trim() || statusFilters.length ||
+      masterFilter !== "all",
   );
   const contextAgentIds =
     organizationView === "hierarchy"
@@ -990,7 +997,9 @@ export function AgentsTab({
           </Stack>
         )}
       </Box>
-      {collectionFooter}
+      {typeof collectionFooter === "function"
+        ? collectionFooter(filtered.length)
+        : collectionFooter}
 
       {pendingDelete ? (
         <AgentDeletionDialog

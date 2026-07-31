@@ -23,6 +23,8 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import {
   useProjectAgents,
+  useProjectAgentHealth,
+  useProjectConversations,
 } from "../hooks/useProjectCollections";
 import { queryKeys } from "../queryKeys";
 import {
@@ -190,36 +192,63 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
   const [projectId, setProjectId] = useState(filterProjectId ?? "");
   const [search, setSearch] = useState("");
   useEffect(() => setProjectId(filterProjectId ?? ""), [filterProjectId]);
+  const scopedProjects = projectId
+    ? projects.filter(project => project.id === projectId)
+    : projects;
+  const agentContextQueries = useProjectAgents(scopedProjects);
+  const conversationContextQueries = useProjectConversations(scopedProjects);
+  const healthContextQueries = useProjectAgentHealth(scopedProjects);
   const sort = workspaceResourceSort(preferences, "agent");
   const agentDirectoryQuery =
     useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
       search,
       projectId: projectId || undefined,
     });
-  const conversationDirectoryQuery =
-    useWorkspaceDirectory<WorkspaceConversationDirectoryItemDto>("conversation", {
-      projectId: projectId || undefined,
-    });
   const agentDirectory = workspaceDirectoryItems(agentDirectoryQuery.data?.pages, preferences);
-  const conversationDirectory = workspaceDirectoryItems(
-    conversationDirectoryQuery.data?.pages,
-    preferences,
-  );
   const rows = [...agentDirectory.starredItems, ...agentDirectory.items];
-  const orderedRows = rows;
-  const agents = orderedRows.map(row => row.agent);
-  const conversations = [
-    ...conversationDirectory.starredItems,
-    ...conversationDirectory.items,
-  ].map(row => row.conversation);
-  const allHealth = rows.map(row => row.health);
-  const healthByAgentId = new Map(allHealth.map(item => [item.agentId, item]));
+  const loadedAgentIds = new Set(rows.map(row => row.agent.id));
+  const agents = agentContextQueries.flatMap(query => query.data ?? []);
+  const conversations = conversationContextQueries.flatMap(
+    query => query.data ?? [],
+  );
+  const healthByAgentId = new Map(
+    healthContextQueries.flatMap(query => query.data?.agents ?? [])
+      .map(item => [item.agentId, item] as const),
+  );
+  for (const row of rows) healthByAgentId.set(row.agent.id, row.health);
+  const allHealth = [...healthByAgentId.values()];
   const statusByAgentId = mergeAgentStatuses(agents, allHealth, new Map());
-  const projectByAgentId = new Map(rows.map(({ project, agent }) => [agent.id, { id: project.id, label: project.label }]));
+  const projectByAgentId = new Map(
+    scopedProjects.flatMap(project =>
+      agents
+        .filter(agent => agent.projectId === project.id)
+        .map(agent => [agent.id, { id: project.id, label: project.label }] as const),
+    ),
+  );
   const starredIds = starredWorkspaceResources(preferences);
   const scopedProject = projectId
     ? projects.find(project => project.id === projectId)
     : undefined;
+  const contextQueries = [
+    ...agentContextQueries,
+    ...conversationContextQueries,
+    ...healthContextQueries,
+  ];
+  if (contextQueries.some(query => query.isLoading)) {
+    return <Box sx={{ p: 2 }}><LinearProgress /></Box>;
+  }
+  if (contextQueries.some(query => query.isError)) {
+    return <Box sx={{ p: 2 }}>
+      <Alert
+        severity="error"
+        action={<Button onClick={() => {
+          for (const query of contextQueries) void query.refetch();
+        }}>Retry</Button>}
+      >
+        Agent organization context could not be loaded.
+      </Alert>
+    </Box>;
+  }
   return <Box sx={{ height: "100%", minHeight: 0, overflow: "hidden" }}>
     <AgentsTab
       collection={{
@@ -253,7 +282,7 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
           compact
         />
       </>}
-      agents={agents} projectId={projectId || undefined} engines={engines} conversations={conversations} statusByAgentId={statusByAgentId} healthByAgentId={healthByAgentId} projectByAgentId={projectByAgentId} displayOrder={agents.map((agent) => agent.id)} selectionAllowed onReorder={(sourceId, targetId, position) => onPreferences({ agentSort: "custom", agentOrder: reorderStableIds(preferences.agentOrder, agents.map((agent) => agent.id), sourceId, targetId, position) })} starredAgentIds={starredIds} onToggleStar={(agentId) => onPreferences(toggleWorkspaceResourceStar(preferences, "agent", agentId))} onOpenAgent={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentInNewTab={(agentId) => { const project = projectByAgentId.get(agentId)!; onOpenInNewTab({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentSettings={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId, view: "settings" }); }} onNewAgent={(managerAgentId) => onCreate(
+      agents={agents} renderedAgentIds={loadedAgentIds} projectId={projectId || undefined} engines={engines} conversations={conversations} statusByAgentId={statusByAgentId} healthByAgentId={healthByAgentId} projectByAgentId={projectByAgentId} displayOrder={rows.map(row => row.agent.id)} selectionAllowed onReorder={(sourceId, targetId, position) => onPreferences({ agentSort: "custom", agentOrder: reorderStableIds(preferences.agentOrder, rows.map(row => row.agent.id), sourceId, targetId, position) })} starredAgentIds={starredIds} onToggleStar={(agentId) => onPreferences(toggleWorkspaceResourceStar(preferences, "agent", agentId))} onOpenAgent={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentInNewTab={(agentId) => { const project = projectByAgentId.get(agentId)!; onOpenInNewTab({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentSettings={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId, view: "settings" }); }} onNewAgent={(managerAgentId) => onCreate(
       managerAgentId
         ? projectByAgentId.get(managerAgentId)?.id
         : projectId || undefined,

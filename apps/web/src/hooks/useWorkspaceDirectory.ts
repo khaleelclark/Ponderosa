@@ -1,10 +1,12 @@
 import type {
+  ProjectSort,
   WorkspaceDirectoryItemDto,
   WorkspaceDirectoryKind,
   WorkspaceDirectoryPageDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import {
@@ -21,17 +23,28 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     projectId?: string;
     agentIds?: readonly string[];
     conversationId?: string;
+    sort?: ProjectSort;
     enabled?: boolean;
   },
 ) {
-  const search = options.search?.trim() ?? "";
-  return useInfiniteQuery({
+  const requestedSearch = options.search?.trim() ?? "";
+  const [search, setSearch] = useState(requestedSearch);
+  useEffect(() => {
+    if (!requestedSearch) {
+      setSearch("");
+      return;
+    }
+    const timer = globalThis.setTimeout(() => setSearch(requestedSearch), 250);
+    return () => globalThis.clearTimeout(timer);
+  }, [requestedSearch]);
+  const query = useInfiniteQuery({
     queryKey: queryKeys.workspaceDirectory.list(
       kind,
       search,
       options.projectId,
       options.agentIds?.join(","),
       options.conversationId,
+      options.sort,
     ),
     queryFn: ({ pageParam }) =>
       api.getWorkspaceDirectory<T>(kind, {
@@ -41,13 +54,23 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
         projectId: options.projectId,
         agentIds: options.agentIds?.join(","),
         conversationId: options.conversationId,
+        sort: options.sort,
       }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (
       lastPage: WorkspaceDirectoryPageDto<T>,
     ) => lastPage.history.cursor,
     enabled: options.enabled ?? true,
+    placeholderData: keepPreviousData,
+    staleTime: 5_000,
   });
+  return {
+    ...query,
+    hasNextPage: query.isPlaceholderData ||
+      (query.isFetching && !query.isFetchingNextPage)
+      ? false
+      : query.hasNextPage,
+  };
 }
 
 export function workspaceDirectoryItems<T extends WorkspaceDirectoryItemDto>(
@@ -62,7 +85,7 @@ export function workspaceDirectoryItems<T extends WorkspaceDirectoryItemDto>(
   const latest = pages[pages.length - 1]!;
   const seen = new Set<string>();
   const allItems = [
-    ...latest.starredItems,
+    ...pages[0]!.starredItems,
     ...pages.flatMap(page => page.items),
   ].filter(item => {
     const id =

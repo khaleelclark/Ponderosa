@@ -79,6 +79,7 @@ import type {
   ProjectBrowserControlRequest,
   ProjectBrowserSessionDto,
   ProjectDto,
+  ProjectSort,
   ProjectEngineModelCatalogDto,
   ProjectEngineCapabilitiesDto,
   ProviderUsageCenterDto,
@@ -370,6 +371,7 @@ export const realApi = {
       projectId?: string;
       agentIds?: string;
       conversationId?: string;
+      sort?: ProjectSort;
     } = {},
   ): Promise<WorkspaceDirectoryPageDto<T>> {
     return requestJson<WorkspaceDirectoryPageDto<T>>(
@@ -380,6 +382,7 @@ export const realApi = {
         projectId: options.projectId,
         agentIds: options.agentIds,
         conversationId: options.conversationId,
+        sort: options.sort,
       })}`,
     );
   },

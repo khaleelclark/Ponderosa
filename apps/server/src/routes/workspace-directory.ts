@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   AgentDto,
   AgentHealthProjectionDto,
@@ -29,6 +30,7 @@ type DirectoryQuery = {
   projectId?: string;
   agentIds?: string;
   conversationId?: string;
+  sort?: string;
 };
 
 type DirectorySeed = {
@@ -46,10 +48,15 @@ type DirectorySeed = {
     >;
 };
 
+type CursorPosition =
+  | { kind: "offset"; offset: number }
+  | { kind: "alphabetical"; title: string; id: string }
+  | { kind: "last_used"; updatedAt: string; id: string };
+
 type CursorPayload = {
-  v: 1;
-  offset: number;
+  v: 2;
   scope: string;
+  position: CursorPosition;
 };
 
 interface WorkspaceDirectoryRoutesContext {
@@ -81,30 +88,74 @@ function parseLimit(value: string | undefined): number {
   return parsed;
 }
 
-function encodeCursor(offset: number, scope: string): string {
+function encodeCursor(position: CursorPosition, scope: string): string {
   return Buffer.from(
-    JSON.stringify({ v: 1, offset, scope } satisfies CursorPayload),
+    JSON.stringify({ v: 2, position, scope } satisfies CursorPayload),
     "utf8",
   ).toString("base64url");
 }
 
-function decodeCursor(value: string, scope: string): number {
+function decodeCursor(
+  value: string,
+  scope: string,
+  sort: ProjectSort,
+): CursorPosition {
   try {
+    if (!value || value.length > 4096) throw new Error();
     const parsed = JSON.parse(
       Buffer.from(value, "base64url").toString("utf8"),
     ) as Partial<CursorPayload>;
-    if (
-      parsed.v !== 1 ||
-      parsed.scope !== scope ||
-      !Number.isSafeInteger(parsed.offset) ||
-      (parsed.offset ?? -1) < 0
-    ) {
-      throw new Error("invalid directory cursor");
+    if (parsed.v !== 2 || parsed.scope !== scope || !parsed.position) {
+      throw new Error();
     }
-    return parsed.offset!;
+    const position = parsed.position;
+    if (
+      sort === "custom" && position.kind === "offset" &&
+      Number.isSafeInteger(position.offset) && position.offset >= 0
+    ) return position;
+    if (
+      sort === "alphabetical" && position.kind === "alphabetical" &&
+      typeof position.title === "string" && typeof position.id === "string"
+    ) return position;
+    if (
+      sort === "last_used" && position.kind === "last_used" &&
+      typeof position.updatedAt === "string" && typeof position.id === "string"
+    ) return position;
+    throw new Error();
   } catch {
     throw new Error("invalid directory cursor");
   }
+}
+
+function rowsAfterCursor(
+  rows: DirectorySeed[],
+  position: CursorPosition,
+): DirectorySeed[] {
+  if (position.kind === "offset") return rows.slice(position.offset);
+  if (position.kind === "alphabetical") {
+    return rows.filter(row =>
+      row.title.localeCompare(position.title) > 0 ||
+      (row.title.localeCompare(position.title) === 0 &&
+        row.id.localeCompare(position.id) > 0),
+    );
+  }
+  return rows.filter(row =>
+    row.updatedAt.localeCompare(position.updatedAt) < 0 ||
+    (row.updatedAt === position.updatedAt &&
+      row.id.localeCompare(position.id) > 0),
+  );
+}
+
+function nextCursorPosition(
+  row: DirectorySeed,
+  sort: ProjectSort,
+  nextOffset: number,
+): CursorPosition {
+  if (sort === "custom") return { kind: "offset", offset: nextOffset };
+  if (sort === "alphabetical") {
+    return { kind: "alphabetical", title: row.title, id: row.id };
+  }
+  return { kind: "last_used", updatedAt: row.updatedAt, id: row.id };
 }
 
 function resourceSettings(
@@ -200,11 +251,23 @@ export function registerWorkspaceDirectoryRoutes(
     } catch (error) {
       return reply.code(400).send({ error: (error as Error).message });
     }
+    const requestedSort = request.query.sort;
+    if (
+      requestedSort !== undefined &&
+      requestedSort !== "alphabetical" &&
+      requestedSort !== "last_used" &&
+      requestedSort !== "custom"
+    ) return reply.code(400).send({ error: "invalid directory sort" });
 
     const preferences = context.workspace.getPreferences();
     const projects = context.store.listProjects();
     const projectById = new Map(projects.map(project => [project.id, project]));
     const projectAgents = new Map<string, AgentDto[]>();
+    const projectConversations = new Map<
+      string,
+      ReturnType<AgentStore["listConversations"]>
+    >();
+    const projectHealth = new Map<string, AgentHealthProjectionDto>();
     const agentsForProject = (projectId: string): AgentDto[] => {
       const cached = projectAgents.get(projectId);
       if (cached) return cached;
@@ -212,6 +275,26 @@ export function registerWorkspaceDirectoryRoutes(
       projectAgents.set(projectId, agents);
       return agents;
     };
+    const conversationsForProject = (projectId: string) => {
+      const cached = projectConversations.get(projectId);
+      if (cached) return cached;
+      const conversations = context.store.listConversations(projectId);
+      projectConversations.set(projectId, conversations);
+      return conversations;
+    };
+    const healthForProject = (projectId: string) => {
+      const cached = projectHealth.get(projectId);
+      if (cached) return cached;
+      const health = context.agentHealth(
+        { type: "project", id: projectId },
+        agentsForProject(projectId),
+      );
+      projectHealth.set(projectId, health);
+      return health;
+    };
+    const directoryProjects = request.query.projectId
+      ? projects.filter(project => project.id === request.query.projectId)
+      : projects;
 
     let rows: DirectorySeed[];
     if (kind === "project") {
@@ -227,9 +310,8 @@ export function registerWorkspaceDirectoryRoutes(
         },
       }));
     } else if (kind === "conversation") {
-      rows = projects.flatMap(project =>
-        context.store
-          .listConversations(project.id)
+      rows = directoryProjects.flatMap(project =>
+        conversationsForProject(project.id)
           .filter(conversation => !conversation.archived)
           .map(conversation => ({
             id: conversation.id,
@@ -245,7 +327,7 @@ export function registerWorkspaceDirectoryRoutes(
           })),
       );
     } else if (kind === "agent") {
-      rows = projects.flatMap(project =>
+      rows = directoryProjects.flatMap(project =>
         agentsForProject(project.id)
           .filter(agent => !agent.archived)
           .map(agent => ({
@@ -306,8 +388,7 @@ export function registerWorkspaceDirectoryRoutes(
       .toLocaleLowerCase();
     if (kind === "project" && normalizedSearch) {
       for (const row of rows) {
-        row.searchText += ` ${context.store
-          .listConversations(row.projectId)
+        row.searchText += ` ${conversationsForProject(row.projectId)
           .filter(conversation => !conversation.archived)
           .map(conversation => conversation.title)
           .join(" ")}`;
@@ -326,14 +407,23 @@ export function registerWorkspaceDirectoryRoutes(
         row.searchText.toLocaleLowerCase().includes(normalizedSearch)),
     );
 
-    const { sort, order } = resourceSettings(preferences, kind);
+    const settings = resourceSettings(preferences, kind);
+    const sort = requestedSort ?? settings.sort;
+    const order = settings.order;
     sortSeeds(rows, sort, order);
     const stars = starredKeys(preferences);
-    const prefix = kind === "conversation" ? "conversation" : kind;
-    const starredRows = rows.filter(row => stars.has(`${prefix}:${row.id}`));
+    const starredRows = rows.filter(row => stars.has(`${kind}:${row.id}`));
     const unstarredRows = rows.filter(
-      row => !stars.has(`${prefix}:${row.id}`),
+      row => !stars.has(`${kind}:${row.id}`),
     );
+    const directorySettingsHash = createHash("sha256")
+      .update(JSON.stringify({
+        order,
+        stars: [...stars]
+          .filter(key => key.startsWith(`${kind}:`))
+          .sort(),
+      }))
+      .digest("base64url");
     const scope = JSON.stringify({
       kind,
       search: normalizedSearch,
@@ -341,20 +431,30 @@ export function registerWorkspaceDirectoryRoutes(
       agentIds: [...filteredAgentIds].sort(),
       conversationId: request.query.conversationId ?? "",
       sort,
+      directorySettingsHash,
     });
 
-    let offset = 0;
+    let cursorPosition: CursorPosition | undefined;
     if (request.query.cursor) {
       try {
-        offset = decodeCursor(request.query.cursor, scope);
+        cursorPosition = decodeCursor(request.query.cursor, scope, sort);
       } catch (error) {
         return reply.code(400).send({ error: (error as Error).message });
       }
     }
-    const pageRows = unstarredRows.slice(offset, offset + limit);
-    const hasMore = offset + pageRows.length < unstarredRows.length;
+    const candidateRows = cursorPosition
+      ? rowsAfterCursor(unstarredRows, cursorPosition)
+      : unstarredRows;
+    const pageRows = candidateRows.slice(0, limit);
+    const hasMore = pageRows.length < candidateRows.length;
+    const previousOffset = cursorPosition?.kind === "offset"
+      ? cursorPosition.offset
+      : 0;
+    const includeStarred = !request.query.cursor;
 
-    let starredItems = starredRows.map(row => row.item) as WorkspaceDirectoryItemDto[];
+    let starredItems = includeStarred
+      ? starredRows.map(row => row.item) as WorkspaceDirectoryItemDto[]
+      : [];
     let items = pageRows.map(row => row.item) as WorkspaceDirectoryItemDto[];
     let activeCount: number | undefined;
     if (kind === "project") {
@@ -365,16 +465,12 @@ export function registerWorkspaceDirectoryRoutes(
           WorkspaceProjectDirectoryItemDto,
           "recentConversation" | "conversationCount" | "runningAgentCount"
         >;
-        const conversations = context.store
-          .listConversations(item.project.id)
+        const conversations = conversationsForProject(item.project.id)
           .filter(conversation => !conversation.archived)
           .sort((left, right) =>
             right.updatedAt.localeCompare(left.updatedAt),
           );
-        const health = context.agentHealth(
-          { type: "project", id: item.project.id },
-          agentsForProject(item.project.id),
-        ).agents;
+        const health = healthForProject(item.project.id).agents;
         const recent = conversations[0];
         return {
           ...item,
@@ -391,16 +487,11 @@ export function registerWorkspaceDirectoryRoutes(
           ).length,
         };
       };
-      starredItems = starredRows.map(withSummary);
+      starredItems = includeStarred ? starredRows.map(withSummary) : [];
       items = pageRows.map(withSummary);
     } else if (kind === "agent") {
       const allHealth = projects.flatMap(project =>
-        context
-          .agentHealth(
-            { type: "project", id: project.id },
-            agentsForProject(project.id),
-          )
-          .agents,
+        healthForProject(project.id).agents,
       );
       const healthByAgentId = new Map(
         allHealth.map(health => [health.agentId, health] as const),
@@ -417,7 +508,7 @@ export function registerWorkspaceDirectoryRoutes(
           health: healthByAgentId.get(item.agent.id)!,
         };
       };
-      starredItems = starredRows.map(withHealth);
+      starredItems = includeStarred ? starredRows.map(withHealth) : [];
       items = pageRows.map(withHealth);
     }
 
@@ -431,7 +522,16 @@ export function registerWorkspaceDirectoryRoutes(
         limit,
         hasMore,
         ...(hasMore
-          ? { cursor: encodeCursor(offset + pageRows.length, scope) }
+          ? {
+              cursor: encodeCursor(
+                nextCursorPosition(
+                  pageRows[pageRows.length - 1]!,
+                  sort,
+                  previousOffset + pageRows.length,
+                ),
+                scope,
+              ),
+            }
           : {}),
       },
     } satisfies WorkspaceDirectoryPageDto;

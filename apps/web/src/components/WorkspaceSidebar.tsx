@@ -146,27 +146,29 @@ export function WorkspaceSidebar({
   }, [filter, showingWiki]);
   const directorySearch = showingHome || showingAgents || showingChats ||
     showingProjects || showingTriggers ? filter : "";
-  const directoryOptions = {
-    search: directorySearch,
-  };
+  const directorySort = showingHome ? "last_used" as const : undefined;
   const projectDirectoryQuery =
     useWorkspaceDirectory<WorkspaceProjectDirectoryItemDto>("project", {
-      ...directoryOptions,
+      search: directorySearch,
+      sort: directorySort,
       enabled: showingHome || showingProjects,
     });
   const chatDirectoryQuery =
     useWorkspaceDirectory<WorkspaceConversationDirectoryItemDto>("conversation", {
-      ...directoryOptions,
+      search: directorySearch,
+      sort: directorySort,
       enabled: showingHome || showingChats,
     });
   const agentDirectoryQuery =
     useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
-      ...directoryOptions,
+      search: showingAgents || showingHome ? directorySearch : "",
+      sort: directorySort,
       enabled: true,
     });
   const triggerDirectoryQuery =
     useWorkspaceDirectory<WorkspaceTriggerDirectoryItemDto>("trigger", {
-      ...directoryOptions,
+      search: directorySearch,
+      sort: directorySort,
       enabled: showingHome || showingTriggers,
     });
   const projectDirectory = workspaceDirectoryItems(
@@ -418,7 +420,7 @@ export function WorkspaceSidebar({
       starredRows={projectResourceRows(starredProjects)}
       allRows={projectResourceRows(unstarredProjects)}
       empty={
-        projectList.length === 0 ? (
+        !projectDirectoryQuery.isLoading && projectList.length === 0 ? (
           <Typography
             variant="body2"
             color="text.secondary"
@@ -554,7 +556,7 @@ export function WorkspaceSidebar({
         ),
       )}
       empty={
-        chatRows.length === 0 ? (
+        !chatDirectoryQuery.isLoading && chatRows.length === 0 ? (
           <Typography
             variant="body2"
             color="text.secondary"
@@ -690,7 +692,7 @@ export function WorkspaceSidebar({
         ),
       )}
       empty={
-        agentRows.length === 0 ? (
+        !agentDirectoryQuery.isLoading && agentRows.length === 0 ? (
           <Typography
             variant="body2"
             color="text.secondary"

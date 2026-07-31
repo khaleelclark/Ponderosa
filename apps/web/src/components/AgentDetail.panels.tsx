@@ -167,14 +167,15 @@ export function AgentDetailPanels({
         selectionAllowed={false}
         organizationRootAgentId={detail.agent.id}
         visibleLimit={visibleSubagentCount}
-        collectionFooter={delegatedAgentCount > visibleSubagentCount ? (
-          <Button
-            color="inherit"
-            onClick={() => setVisibleSubagentCount(count => count + 25)}
-          >
-            Load older Agents
-          </Button>
-        ) : null}
+        collectionFooter={filteredCount =>
+          filteredCount > visibleSubagentCount ? (
+            <Button
+              color="inherit"
+              onClick={() => setVisibleSubagentCount(count => count + 25)}
+            >
+              Load older Agents
+            </Button>
+          ) : null}
         collection={{
           title: `${detail.agent.title} Agents`,
           detail: `${delegatedAgentCount} delegated ${

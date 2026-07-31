@@ -42,14 +42,7 @@ export function registerNotificationListRoute(
   app.get("/api/notifications", async () => {
     options.reconcileCommunicationFailureNotifications();
     options.reconcileCoordinationAttentionNotifications();
-    return options.workspace.listNotifications().filter(notification => {
-      if ((notification.status ?? "open") !== "open") return false;
-      const attention = notification.kind === "decision" ||
-        notification.kind === "operational" ||
-        notification.severity === "attention" ||
-        notification.severity === "urgent";
-      return !notification.readAt || attention;
-    });
+    return options.workspace.listNotifications();
   });
 }
 

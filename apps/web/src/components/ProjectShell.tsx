@@ -93,19 +93,19 @@ export function ProjectShell({
     });
   const agentDirectory = workspaceDirectoryItems(agentDirectoryQuery.data?.pages, preferences);
   const conversationsQuery = useConversations(projectId);
-  const agentsQuery = useAgents(projectId, !pagedAgentRoster);
-  const healthQuery = useAgentHealth(projectId, !pagedAgentRoster);
+  const agentsQuery = useAgents(projectId);
+  const healthQuery = useAgentHealth(projectId);
   const agentDirectoryRows = [
     ...agentDirectory.starredItems,
     ...agentDirectory.items,
   ];
   const conversations = conversationsQuery.data ?? [];
-  const agents = pagedAgentRoster
-    ? agentDirectoryRows.map(item => item.agent)
-    : agentsQuery.data ?? [];
-  const projectedHealth = pagedAgentRoster
-    ? agentDirectoryRows.map(item => item.health)
-    : healthQuery.data?.agents ?? [];
+  const agents = agentsQuery.data ?? agentDirectoryRows.map(item => item.agent);
+  const projectedHealth = healthQuery.data?.agents ??
+    agentDirectoryRows.map(item => item.health);
+  const visibleAgentIds = new Set(
+    agentDirectoryRows.map(item => item.agent.id),
+  );
   const presetsQuery = useAgentPresets(projectId);
   const claudeEngine = engines.find((engine) => engine.id === "claude");
   const modelCatalogQuery = useQuery({
@@ -369,6 +369,7 @@ export function ProjectShell({
           </Button>
         ) : null}
         agents={agents}
+        renderedAgentIds={visibleAgentIds}
         projectId={projectId}
         engines={projectEngines}
         conversations={conversations}
