@@ -358,7 +358,7 @@ export function registerAgentCommunicationRoutes(
       if (capability.conversationId) {
         store.appendConversationMessage(
           capability.conversationId,
-          { text: publishedText ? renderScopedMessage("user", publishedText) : "", ...(artifactIds?.length ? { artifactIds } : {}) },
+          { text: renderScopedMessage("user", publishedText), ...(artifactIds?.length ? { artifactIds } : {}) },
           capability.agentId,
           "main",
           undefined,

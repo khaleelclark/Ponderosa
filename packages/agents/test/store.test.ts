@@ -374,6 +374,17 @@ describe("AgentStore — canonical communication events", () => {
     });
     expect(auditMessage.attachments![0]).not.toHaveProperty("unavailable");
 
+    const managedPath = managedArtifactContentPath(dir, project.id, artifactId);
+    writeFileSync(managedPath, "x");
+    const corrupt = store.getConversationMessages(room.id, "main")[0]!;
+    expect(corrupt.attachments).toEqual([expect.objectContaining({
+      id: artifactId,
+      unavailable: true,
+    })]);
+    expect(corrupt.attachments![0]).not.toHaveProperty("previewUrl");
+    expect(corrupt.attachments![0]).not.toHaveProperty("downloadUrl");
+    writeFileSync(managedPath, "png-bytes");
+
     expect(store.deleteProjectArtifact(project.id, artifactId, "qualification deletion")).toBe(true);
     const missing = store.getConversationMessages(room.id, "main")[0]!;
     expect(missing.attachments).toEqual([expect.objectContaining({

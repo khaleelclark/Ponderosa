@@ -14,7 +14,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { CommunicationAttachmentDto } from "@ponderosa/core";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export function ChatAttachments({
   attachments,
@@ -25,6 +25,39 @@ export function ChatAttachments({
 }): JSX.Element | null {
   const [preview, setPreview] = useState<CommunicationAttachmentDto>();
   const [failed, setFailed] = useState<Set<string>>(() => new Set());
+  const [verifiedUrls, setVerifiedUrls] = useState<Record<string, boolean>>({});
+  const availabilityKey = JSON.stringify(attachments.map((attachment) => [
+    attachment.id,
+    attachment.mediaType,
+    attachment.previewUrl ?? attachment.url ?? "",
+    attachment.downloadUrl ?? attachment.url ?? "",
+    attachment.unavailable ? "unavailable" : "available",
+  ]));
+  useEffect(() => {
+    setFailed(new Set());
+    setPreview(undefined);
+    setVerifiedUrls({});
+    const controller = new AbortController();
+    const urls = [...new Set(attachments.flatMap((attachment) => {
+      if (attachment.unavailable || attachment.mediaType.startsWith("image/")) return [];
+      return [attachment.previewUrl ?? attachment.url, attachment.downloadUrl ?? attachment.url]
+        .filter((url): url is string => Boolean(url));
+    }))];
+    for (const url of urls) {
+      void fetch(url, {
+        method: "HEAD",
+        credentials: "same-origin",
+        signal: controller.signal,
+      }).then((response) => {
+        setVerifiedUrls((current) => ({ ...current, [url]: response.ok }));
+      }).catch(() => {
+        if (!controller.signal.aborted) {
+          setVerifiedUrls((current) => ({ ...current, [url]: false }));
+        }
+      });
+    }
+    return () => controller.abort();
+  }, [availabilityKey]);
   if (!attachments.length) return null;
   const imageWidth = density === "compact" ? 220 : 320;
   const imageHeight = density === "compact" ? 180 : 240;
@@ -36,11 +69,24 @@ export function ChatAttachments({
           const image = !attachment.mediaType || attachment.mediaType.startsWith("image/");
           const previewUrl = attachment.previewUrl ?? attachment.url;
           const downloadUrl = attachment.downloadUrl ?? attachment.url;
+          const remoteUrls = image ? [] : [...new Set([previewUrl, downloadUrl].filter(Boolean))] as string[];
+          const checking = !attachment.unavailable && !image && remoteUrls.some((url) => verifiedUrls[url] === undefined);
+          const safePreviewUrl = image || (previewUrl && verifiedUrls[previewUrl]) ? previewUrl : undefined;
+          const safeDownloadUrl = image || (downloadUrl && verifiedUrls[downloadUrl]) ? downloadUrl : undefined;
           const unavailable = attachment.unavailable || failed.has(attachment.id) ||
-            (!previewUrl && !downloadUrl);
+            (!checking && !safePreviewUrl && !safeDownloadUrl);
           return (
             <Box key={attachment.id} sx={{ maxWidth: "100%" }}>
-              {unavailable ? (
+              {checking ? (
+                <Stack
+                  spacing={0.35}
+                  role="status"
+                  sx={{ p: 1, minWidth: 190, border: 1, borderColor: "divider", borderRadius: 1 }}
+                >
+                  <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{attachment.name}</Typography>
+                  <Typography variant="caption" color="text.secondary">Checking artifact availability…</Typography>
+                </Stack>
+              ) : unavailable ? (
                 <Stack
                   spacing={0.35}
                   role="status"
@@ -53,7 +99,7 @@ export function ChatAttachments({
                     Artifact unavailable
                   </Typography>
                 </Stack>
-              ) : image && previewUrl ? (
+              ) : image && safePreviewUrl ? (
                 <ButtonBase
                   aria-label={`Preview ${attachment.name}`}
                   onClick={() => setPreview(attachment)}
@@ -72,7 +118,7 @@ export function ChatAttachments({
                 >
                   <Box
                     component="img"
-                    src={previewUrl}
+                    src={safePreviewUrl}
                     alt={attachment.name}
                     onError={() => setFailed((current) => new Set(current).add(attachment.id))}
                     sx={{
@@ -90,10 +136,10 @@ export function ChatAttachments({
                   <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{attachment.name}</Typography>
                   <Typography variant="caption" color="text.secondary">{attachment.mediaType} · {attachment.size} bytes</Typography>
                   <Stack direction="row" spacing={0.5}>
-                    {previewUrl ? <Button
+                    {safePreviewUrl ? <Button
                       size="small"
                       component="a"
-                      href={previewUrl}
+                      href={safePreviewUrl}
                       target="_blank"
                       rel="noreferrer"
                       aria-label={`Preview ${attachment.name}`}
@@ -101,10 +147,10 @@ export function ChatAttachments({
                     >
                       Preview
                     </Button> : null}
-                    {downloadUrl ? <Button
+                    {safeDownloadUrl ? <Button
                       size="small"
                       component="a"
-                      href={downloadUrl}
+                      href={safeDownloadUrl}
                       download
                       aria-label={`Download ${attachment.name}`}
                       startIcon={<DownloadOutlinedIcon />}

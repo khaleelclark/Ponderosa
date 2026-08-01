@@ -7,6 +7,7 @@ import {
   type BrowserDriver,
   type BrowserScope,
 } from "../src/browser-session-manager.js";
+import { createBrowserAuthority } from "../src/browser-authority.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -74,5 +75,33 @@ describe("BrowserSessionManager screenshot publication", () => {
     expect(result.artifactId).toBe(publishedArtifactId);
     expect(result.artifactRef).toBe(`ponderosa://artifact/${publishedArtifactId}`);
     await manager.close(scope);
+  });
+
+  it("rejects capture when the authoritative Run disappeared before screenshot publication", async () => {
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), "ponderosa-browser-artifact-stale-run-"));
+    temporaryDirectories.push(dataDir);
+    const authority = createBrowserAuthority({
+      dataDir,
+      driverFactory: async () => fakeDriver(),
+      store: {} as never,
+      activeRuns: new Map(),
+      publish: () => undefined,
+      logWarn: () => undefined,
+      persistRuntimeEvent: async () => {
+        throw new Error("stale screenshot must not reach persistence");
+      },
+    });
+    const scope: BrowserScope = {
+      projectId: "project-1",
+      agentId: "agent-1",
+      runId: "run-1",
+      conversationId: "conversation-1",
+    };
+
+    await authority.browserSessions.open(scope);
+    await expect(authority.browserSessions.captureArtifact(scope)).rejects.toThrow(
+      "screenshot lost exact Run authority before publication",
+    );
+    await authority.browserSessions.close(scope);
   });
 });

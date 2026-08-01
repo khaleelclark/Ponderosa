@@ -448,4 +448,9 @@ export interface CoordinationV3StoreOptions {
   managedArtifactAttachmentAuthority?: (
     input: RuntimeManagedArtifactAttachmentAuthorizationV3,
   ) => void;
+  /** Revalidates immutable managed bytes after the scheduler transaction has
+   * committed so large reads and hashing never hold the SQLite writer fence. */
+  managedArtifactAttachmentRevalidator?: (
+    input: RuntimeManagedArtifactAttachmentAuthorizationV3,
+  ) => void;
 }

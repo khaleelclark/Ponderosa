@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { existsSync } from "node:fs";
+import { lstatSync } from "node:fs";
 import type {
   ArtifactDto,
   ArtifactKind,
@@ -305,10 +305,16 @@ export class AgentArtifactCatalog {
     return artifactIds.map((artifactIdValue) => {
       const artifact = this.getProjectArtifact(projectId, artifactIdValue);
       const readable = artifact && this.operatorCanReadProjectArtifact(projectId, artifactIdValue);
-      const available = Boolean(
-        readable && artifact.size !== undefined && artifact.sha256 && artifact.mediaType &&
-        existsSync(managedArtifactContentPath(this.dataDir, projectId, artifactIdValue)),
-      );
+      let contentMetadataMatches = false;
+      if (readable && artifact.size !== undefined && artifact.size > 0 && artifact.sha256 && artifact.mediaType) {
+        try {
+          const metadata = lstatSync(managedArtifactContentPath(this.dataDir, projectId, artifactIdValue));
+          contentMetadataMatches = metadata.isFile() && metadata.nlink === 1 && metadata.size === artifact.size;
+        } catch {
+          contentMetadataMatches = false;
+        }
+      }
+      const available = Boolean(readable && contentMetadataMatches);
       if (!artifact || !readable || !available) {
         return {
           id: artifactIdValue,

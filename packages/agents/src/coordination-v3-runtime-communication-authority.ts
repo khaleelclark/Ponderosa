@@ -140,18 +140,6 @@ export class CoordinationV3RuntimeCommunicationAuthority {
             this.requireAuthorizedRun(input.runAuthorization, input.scopeKey);
           }
           this.requireProject(input.projectId);
-          if (managedArtifactIds.length) {
-            const authority = this.options.managedArtifactAttachmentAuthority;
-            if (!authority) {
-              throw new Error("managed artifact attachment authority is unavailable");
-            }
-            authority({
-              projectId: input.projectId,
-              artifactIds: managedArtifactIds,
-              sender: input.sender,
-              audience: input.audience,
-            });
-          }
           this.runtimeArtifactAuthority.requireRuntimeArtifacts(
             input.projectId,
             artifacts,
@@ -213,6 +201,18 @@ export class CoordinationV3RuntimeCommunicationAuthority {
                 : {}),
               replayed: true,
             };
+          }
+          if (managedArtifactIds.length) {
+            const authority = this.options.managedArtifactAttachmentAuthority;
+            if (!authority) {
+              throw new Error("managed artifact attachment authority is unavailable");
+            }
+            authority({
+              projectId: input.projectId,
+              artifactIds: managedArtifactIds,
+              sender: input.sender,
+              audience: input.audience,
+            });
           }
           this.sqlite.prepare(`
             INSERT INTO runtime_communications (
@@ -362,6 +362,22 @@ export class CoordinationV3RuntimeCommunicationAuthority {
         }
       }
       throw transactionError;
+    }
+    // Managed blobs and runtime-upload associations commit separately from
+    // scheduler SQLite. Re-read accepted bytes only after the write fence is
+    // released. Exact committed replays bypass mutable artifact admission and
+    // report their durable result even if an operator later deletes the file.
+    if (!result.replayed && managedArtifactIds.length) {
+      const revalidator = this.options.managedArtifactAttachmentRevalidator;
+      if (!revalidator) {
+        throw new Error("managed artifact attachment revalidator is unavailable");
+      }
+      revalidator({
+        projectId: input.projectId,
+        artifactIds: managedArtifactIds,
+        sender: input.sender,
+        audience: input.audience,
+      });
     }
     // The filesystem-backed authority commits separately from scheduler SQLite.
     // Re-read every accepted attachment after the passive transaction commits;

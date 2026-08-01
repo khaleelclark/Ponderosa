@@ -2902,8 +2902,10 @@ describe("CoordinationV3Store scheduler", () => {
     const secondArtifactId = randomUUID();
     const authorized = new Set([firstArtifactId, secondArtifactId]);
     const authorityCalls: string[][] = [];
+    const revalidationCalls: string[][] = [];
     store = new CoordinationV3Store(opened.client, {
       managedArtifactAttachmentAuthority: (input) => {
+        expect(opened.client.inTransaction).toBe(true);
         authorityCalls.push(input.artifactIds);
         expect(input).toMatchObject({
           projectId,
@@ -2913,6 +2915,10 @@ describe("CoordinationV3Store scheduler", () => {
         if (input.artifactIds.some((id) => !authorized.has(id))) {
           throw new Error("managed artifact attachment is unavailable or unauthorized");
         }
+      },
+      managedArtifactAttachmentRevalidator: (input) => {
+        expect(opened.client.inTransaction).toBe(false);
+        revalidationCalls.push(input.artifactIds);
       },
     });
     store.enqueueMessageActivation({
@@ -2963,7 +2969,10 @@ describe("CoordinationV3Store scheduler", () => {
     };
 
     expect(record([firstArtifactId])).toMatchObject({ replayed: false });
+    expect(revalidationCalls).toEqual([[firstArtifactId]]);
+    authorized.delete(firstArtifactId);
     expect(record([firstArtifactId])).toMatchObject({ replayed: true });
+    expect(revalidationCalls).toEqual([[firstArtifactId]]);
     expect(() => record([secondArtifactId])).toThrow("runtime communication ID collision");
     expect(opened.client.prepare(`
       SELECT json_extract(payload_json, '$.artifactIds[0]') AS artifactId
@@ -2982,7 +2991,7 @@ describe("CoordinationV3Store scheduler", () => {
     });
     expect(() => record([firstArtifactId], "managed-attachment-after-cancel"))
       .toThrow("no longer authoritative");
-    expect(authorityCalls.length).toBeGreaterThanOrEqual(3);
+    expect(authorityCalls).toHaveLength(2);
   });
 
   it("applies the same artifact provenance admission before request-update and queued-edit mutation", () => {

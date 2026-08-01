@@ -650,6 +650,7 @@ export async function prepareAgentRun(
       ...input.contextMessages.map((message) => ({
         text: message.text,
         ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+        ...(message.artifactIds?.length ? { artifactIds: message.artifactIds } : {}),
       })),
       ...manifestActivationPayloads.map(({ payload }) => payload),
     ]);

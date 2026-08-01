@@ -635,6 +635,16 @@ export class AssetStore {
     return Boolean(this.authoritativeManagedProjectArtifact(projectId, expected));
   }
 
+  /** Validate catalog and publication-ledger identity without reading or
+   * hashing managed bytes. Used while the scheduler SQLite writer is fenced. */
+  managedProjectArtifactMetadataIsAuthoritative(projectId: string, expected: ArtifactDto): boolean {
+    if (expected.projectId !== projectId || !expected.mediaType || expected.size === undefined ||
+        !Number.isSafeInteger(expected.size) || expected.size < 1 || expected.size > ASSET_LIMITS.maxFileBytes ||
+        !/^[a-f0-9]{64}$/u.test(expected.sha256 ?? "")) return false;
+    return expected.kind !== "generated_file" ||
+      this.authoritativeGeneratedArtifactMetadata(projectId, expected);
+  }
+
   /** Validate generated-file catalog/ledger agreement without synchronously
    * materializing the managed blob. */
   authoritativeGeneratedArtifactMetadata(
