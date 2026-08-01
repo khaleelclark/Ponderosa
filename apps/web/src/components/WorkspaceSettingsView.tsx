@@ -37,6 +37,7 @@ import {
   inspectWebPush,
   syncWebPush,
   disableWebPush,
+  subscribeWebPushRecovery,
   webPushEnableBlockReason,
   type WebPushState,
 } from "../pushNotifications";
@@ -831,7 +832,18 @@ export function WorkspaceSettingsView({
   });
   const [pushBusy, setPushBusy] = useState(false);
   useEffect(() => {
-    void inspectWebPush().then(setPushState);
+    let active = true;
+    const refresh = () => {
+      void inspectWebPush().then((state) => {
+        if (active) setPushState(state);
+      });
+    };
+    refresh();
+    const unsubscribe = subscribeWebPushRecovery(refresh);
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, []);
   useEffect(() => {
     setInstructions(preferences.globalInstructions);
@@ -888,10 +900,6 @@ export function WorkspaceSettingsView({
     setPushBusy(true);
     void action()
       .then(setPushState)
-      .catch((error: unknown) => setPushState({
-        kind: "subscription_failed",
-        message: `Push request failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-      }))
       .finally(() => setPushBusy(false));
   };
   return (

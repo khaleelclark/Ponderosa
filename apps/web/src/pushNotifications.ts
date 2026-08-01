@@ -111,6 +111,22 @@ export function subscribeWebPushChanges(listener: () => void): () => void {
   };
 }
 
+/** Recheck recoverable browser and host prerequisites when Settings regains attention. */
+export function subscribeWebPushRecovery(listener: () => void): () => void {
+  const focused = () => listener();
+  const visible = () => {
+    if (document.visibilityState === "visible") listener();
+  };
+  const unsubscribeChanges = subscribeWebPushChanges(listener);
+  window.addEventListener("focus", focused);
+  document.addEventListener("visibilitychange", visible);
+  return () => {
+    unsubscribeChanges();
+    window.removeEventListener("focus", focused);
+    document.removeEventListener("visibilitychange", visible);
+  };
+}
+
 export async function inspectWebPush(): Promise<WebPushState> {
   const initial = prerequisites();
   if (!initial.supported || !initial.secure) return classifyWebPushState(initial);
