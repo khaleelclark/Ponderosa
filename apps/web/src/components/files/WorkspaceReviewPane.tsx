@@ -35,6 +35,10 @@ function recordedDiffTotals(diff?: string): { additions: number; deletions: numb
   return { additions, deletions };
 }
 
+export function recordedPreviewLabel(file: Pick<ChangedFileDto, "diffAvailable">): string {
+  return file.diffAvailable ? "Text preview available" : "Metadata and provenance only";
+}
+
 export function WorkspaceReviewPane({ projectId, agentId, files, running, initialPath, onBack, onOpenInNewTab }: {
   projectId: string;
   agentId?: string;
@@ -118,7 +122,7 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
                 <Box sx={{ minWidth: 0, width: "100%" }}>
                   <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{file.path}</Typography>
                   <Typography variant="caption" color="text.secondary">
-                    {file.kind} · {file.executionCount} run{file.executionCount === 1 ? "" : "s"}{file.diffAvailable ? " · preview available" : ""}
+                    {file.kind} · {file.executionCount} run{file.executionCount === 1 ? "" : "s"} · {recordedPreviewLabel(file)}
                   </Typography>
                 </Box>
               </Button>)}
@@ -135,7 +139,7 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
               {selectedProvenanceQuery.isLoading ? <CircularProgress size={22} />
                 : selectedProvenanceQuery.isError ? <Alert severity="error">Recorded change details could not be loaded. {String(selectedProvenanceQuery.error)}</Alert>
                   : recordedDiff ? <UnifiedDiffViewer diff={recordedDiff} />
-                    : <Alert severity="info">This recorded change has no textual preview. The canonical path and execution provenance remain available.</Alert>}
+                    : <Alert severity="info">No text preview was recorded for this change. Its canonical path and execution provenance remain available.</Alert>}
             </Paper>
           </Box>}
         </Box>

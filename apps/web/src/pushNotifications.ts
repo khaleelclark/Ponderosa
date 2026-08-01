@@ -16,13 +16,26 @@ export type WebPushState =
   | { kind: "subscription_failed"; message: string }
   | { kind: "active"; message: string };
 
+/** A disabled action must explain the prerequisite that prevents it. */
+export function webPushEnableBlockReason(state: WebPushState): string | undefined {
+  switch (state.kind) {
+    case "host_unconfigured":
+    case "unsupported":
+    case "insecure_origin":
+    case "permission_denied":
+      return state.message;
+    default:
+      return undefined;
+  }
+}
+
 interface WebPushPrerequisites {
   supported: boolean;
   secure: boolean;
   permission: NotificationPermission | "unsupported";
 }
 
-function classifyWebPushState(
+export function classifyWebPushState(
   prerequisites: WebPushPrerequisites,
   host?: WebPushStatusDto,
   deviceActive = false,
@@ -95,6 +108,31 @@ export function subscribeWebPushChanges(listener: () => void): () => void {
   return () => {
     window.removeEventListener("ponderosa-push-status-changed", local);
     window.removeEventListener("storage", storage);
+  };
+}
+
+/** Recheck recoverable browser and host prerequisites when Settings regains attention. */
+export function subscribeWebPushRecovery(listener: () => void): () => void {
+  let pending: number | undefined;
+  const schedule = () => {
+    if (pending !== undefined) window.clearTimeout(pending);
+    pending = window.setTimeout(() => {
+      pending = undefined;
+      listener();
+    }, 50);
+  };
+  const focused = () => schedule();
+  const visible = () => {
+    if (document.visibilityState === "visible") schedule();
+  };
+  const unsubscribeChanges = subscribeWebPushChanges(schedule);
+  window.addEventListener("focus", focused);
+  document.addEventListener("visibilitychange", visible);
+  return () => {
+    if (pending !== undefined) window.clearTimeout(pending);
+    unsubscribeChanges();
+    window.removeEventListener("focus", focused);
+    document.removeEventListener("visibilitychange", visible);
   };
 }
 
