@@ -40,6 +40,7 @@ import { agentMentionHandle } from "../mentions";
 import { AttentionSurface } from "./AttentionSurface";
 import { notificationTechnicalFocusId } from "../technicalFocus";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
+import { DirectMessageScope } from "./chat/DirectMessageScope";
 import { ChatSurface } from "./chat/ChatSurface";
 import { uniqueBy } from "../collections";
 import TagIcon from "@mui/icons-material/Tag";
@@ -846,6 +847,10 @@ export function AllChatView({
                           : {}),
                       },
                   createdAt: item.createdAt,
+                  source:
+                    item.communicationIntent === "user_dm" && item.directMessageAgents?.length ? (
+                      <DirectMessageScope agents={item.directMessageAgents} />
+                    ) : undefined,
                   attachments: item.attachments,
                   attachmentDensity: "compact",
                   onVisible: () => markCommunicationVisible(item.communicationEventId),

@@ -93,6 +93,10 @@ export interface ConversationMessageDto {
   id: string;
   /** Canonical cross-surface event identity, absent only on pre-migration history. */
   communicationEventId?: string;
+  /** Immutable communication scope used only for presentation. */
+  communicationIntent?: CommunicationIntent;
+  /** Stable Direct-message participants resolved to their current display names. */
+  directMessageAgents?: Array<Pick<AgentDto, "id" | "title">>;
   conversationId: string;
   role: "user" | "assistant" | "system";
   text: string;
@@ -114,8 +118,6 @@ export interface ConversationMessageDto {
   citations?: VerifiedCitationDto[];
   executionId?: string;
   fileActivity?: ResponseFileActivityDto[];
-  correctionOfMessageId?: string;
-  correctedByMessageId?: string;
   /** Latest append-only edit projected under this message's stable identity. */
   editedAt?: string;
   editRevision?: number;
@@ -465,20 +467,6 @@ export interface SteerQueuedMessageResponse {
   status: "steered" | "delivery_started";
 }
 
-export interface CorrectConversationMessageRequest {
-  text: string;
-  idempotencyKey: string;
-  /** Directed corrections queue; passive Broadcast edits never redeliver. */
-  activeRunDelivery?: "queue";
-}
-
-export interface CorrectConversationMessageResponse {
-  originalMessageId: string;
-  correctionMessageId: string;
-  replayed: boolean;
-  queued: boolean;
-}
-
 // ─── Messages / Runs / Work items / Artifacts ────────────────────────────────
 
 /** A Chat-pane message (SPEC §7 `messages`). Intent/conversation only. */
@@ -488,6 +476,8 @@ export interface MessageDto {
   communicationEventId?: string;
   /** Canonical scope used to explain where this audit projection originated. */
   communicationIntent?: CommunicationIntent;
+  /** Stable Direct-message participants resolved to their current display names. */
+  directMessageAgents?: Array<Pick<AgentDto, "id" | "title">>;
   /** Immutable Project-chat scope of the canonical communication, when present. */
   conversationId?: string;
   agentId: string;
@@ -653,6 +643,9 @@ export type AllChatSourceDto =
 export interface AllChatItemDto {
   communicationEventId: string;
   messageId: string;
+  communicationIntent: CommunicationIntent;
+  /** Stable Direct-message participants resolved to their current display names. */
+  directMessageAgents?: Array<Pick<AgentDto, "id" | "title">>;
   project: Pick<ProjectDto, "id" | "label">;
   source: AllChatSourceDto;
   author: GlobalChatSearchAuthorDto;

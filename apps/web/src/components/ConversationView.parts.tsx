@@ -3,7 +3,6 @@ import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
-import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import TagIcon from "@mui/icons-material/Tag";
@@ -44,6 +43,7 @@ import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { DecisionCard } from "./decisions/DecisionCard";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
+import { DirectMessageScope } from "./chat/DirectMessageScope";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 import {
   AUTO_ALLOWED_DECISION_OPTION_ID,
@@ -81,7 +81,6 @@ function ConversationMessageComponent({
   onOpenAgent,
   onOpenReview,
   onOpenFileActivity,
-  onEdit,
   onMentionAgent,
   onVisible,
   projectId,
@@ -99,7 +98,6 @@ function ConversationMessageComponent({
   ): void;
   onOpenReview?(agentId: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
-  onEdit?: (message: ConversationMessageDto) => void;
   onMentionAgent?(agentId: string): void;
   onVisible?(): void;
   projectId: string;
@@ -148,7 +146,9 @@ function ConversationMessageComponent({
             },
         createdAt: message.createdAt,
         source:
-          conversation === "collaboration" && recipientNames.length ? (
+          message.communicationIntent === "user_dm" && message.directMessageAgents?.length ? (
+            <DirectMessageScope agents={message.directMessageAgents} />
+          ) : conversation === "collaboration" && recipientNames.length ? (
             <Typography
               component="span"
               variant="caption"
@@ -214,17 +214,6 @@ function ConversationMessageComponent({
                 sx={{ mt: 0.75 }}
               />
             ) : null}
-            {message.correctionOfMessageId ? (
-              <Chip size="small" label="Correction" sx={{ mt: 0.75 }} />
-            ) : null}
-            {message.correctedByMessageId ? (
-              <Chip
-                size="small"
-                variant="outlined"
-                label="Corrected below"
-                sx={{ mt: 0.75 }}
-              />
-            ) : null}
             {message.document ? (
               <CommunicationDocumentCard document={message.document} />
             ) : null}
@@ -259,9 +248,7 @@ function ConversationMessageComponent({
         actions: (
           <>
             <CopyMessageButton text={copyableText} />
-            {conversation === "main" ? (
-              <>
-              {message.authorAgentId && onMentionAgent ? (
+            {conversation === "main" && message.authorAgentId && onMentionAgent ? (
                 <Tooltip title={`Mention ${senderName}`}>
                   <IconButton
                     size="small"
@@ -271,19 +258,6 @@ function ConversationMessageComponent({
                     <TagIcon fontSize="inherit" />
                   </IconButton>
                 </Tooltip>
-              ) : null}
-              {onEdit ? (
-                <Tooltip title="Edit Message">
-                  <IconButton
-                    size="small"
-                    aria-label="Edit message"
-                    onClick={() => onEdit(message)}
-                  >
-                    <EditOutlinedIcon fontSize="inherit" />
-                  </IconButton>
-                </Tooltip>
-              ) : null}
-              </>
             ) : null}
           </>
         ),
@@ -428,7 +402,6 @@ function MainConversationTimeline({
   onOpenFileActivity,
   mentionAgent,
   markCommunicationVisible,
-  editConversationMessage,
 }: {
   mainTimeline: MainTimelineEntry[];
   operatorProfile?: OperatorProfileDto;
@@ -445,7 +418,6 @@ function MainConversationTimeline({
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
   mentionAgent(agentId: string): void;
   markCommunicationVisible(communicationEventId: string | undefined): void;
-  editConversationMessage(selected: ConversationMessageDto): void;
 }): JSX.Element {
   return (
     <Stack spacing={0} sx={{ mb: 2 }}>
@@ -498,14 +470,6 @@ function MainConversationTimeline({
           onOpenFileActivity={onOpenFileActivity}
           onMentionAgent={mentionAgent}
           onVisible={() => markCommunicationVisible(message.communicationEventId)}
-          onEdit={
-            message.role === "user" &&
-            !message.authorAgentId &&
-            !message.correctedByMessageId &&
-            !message.correctionOfMessageId
-              ? editConversationMessage
-              : undefined
-          }
         />;
       })}
     </Stack>

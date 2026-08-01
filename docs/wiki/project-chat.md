@@ -19,11 +19,11 @@ The responsible Agent's ordinary provider response appears in **Work log**, not 
 
 ## Direct messages
 
-Addressing an exact Agent creates a private Direct Message. It remains visible once in Project chat for the operator, but future Agents do not inherit it as organizational knowledge. A user message written from an Agent's Chat view is the same canonical Direct Message, not a second conversation.
+Addressing an exact Agent creates a private Direct Message. It remains visible once in Project chat for the operator, where `Direct · You ↔ Agent` identifies its scope, but future Agents do not inherit it as organizational knowledge. A user message written from an Agent's Chat view is the same canonical Direct Message, not a second conversation.
 
 ## Composer controls
 
-The destination control above the draft defines where the message goes. **New Agent** starts fresh work, **Continue with** addresses that Agent, `#Agent` selects exact Agent recipients, `#broadcast` adds durable shared Project context, and `@` references a Project file or folder.
+The destination control above the draft defines where the message goes. With no recipient selected, Send starts a fresh Agent. **Continue with Agent** is an action that selects that Agent; the composer then shows **To: Agent** until the selection is cleared. `#Agent` selects exact Agent recipients, `#broadcast` adds durable shared Project context, and `@` references a Project file or folder.
 
 When an addressed Agent is already responding, Enter and **Steer** send the draft into that active Run. **Queue** is always an explicit alternative that waits until the active response finishes. Agent Chat is already fixed to the Agent shown in its header, so it needs no additional recipient label.
 

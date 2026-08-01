@@ -818,6 +818,62 @@ describe("server public API behavior", () => {
     expect(detail.body).not.toContain("fileActivity");
   });
 
+  it("presents Direct scope from stable audience identity and exposes no historical correction route", async () => {
+    const project = store.createProject({ label: "Direct scope", hostPath: repoDir });
+    const conversationId = project.lastConversationId!;
+    const agent = store.createAgent(project.id, {
+      title: "Spruce",
+      engine: "codex",
+      conversationId,
+    });
+    const eventId = randomUUID();
+    store.appendCommunicationEvent({
+      eventId,
+      schemaVersion: 2,
+      projectId: project.id,
+      conversationId,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "user_dm",
+      audience: {
+        kind: "user_agent",
+        userId: "local-operator",
+        agentId: agent.id,
+      },
+      text: "Private request",
+      createdAt: new Date().toISOString(),
+    });
+    store.appendConversationMessage(
+      conversationId,
+      { text: "Private request" },
+      undefined,
+      "main",
+      undefined,
+      undefined,
+      eventId,
+    );
+    const app = server();
+
+    const detail = await app.inject({
+      method: "GET",
+      url: `/api/conversations/${conversationId}`,
+    });
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json<{ messages: Array<Record<string, unknown>> }>().messages).toEqual([
+      expect.objectContaining({
+        communicationEventId: eventId,
+        communicationIntent: "user_dm",
+        directMessageAgents: [{ id: agent.id, title: "Spruce" }],
+      }),
+    ]);
+
+    const obsoleteEdit = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${conversationId}/messages/${eventId}/corrections`,
+      payload: { text: "Replacement", idempotencyKey: randomUUID() },
+    });
+    expect(obsoleteEdit.statusCode).toBe(404);
+  });
+
   it("validates Agent preset CRUD through the public routes", async () => {
     const project = store.createProject({
       label: "Presets",

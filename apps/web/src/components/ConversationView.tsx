@@ -13,7 +13,6 @@ import type {
   EngineDto,
   ConversationChannel,
   ConversationDto,
-  ConversationMessageDto,
   ProjectDto,
   ProjectEngineCapabilitiesDto,
   ResponseFileActivityDto,
@@ -24,7 +23,6 @@ import type {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import { createClientId } from "../clientId";
 import { agentBelongsToConversation, type AgentStatus } from "../agents";
 import {
   useNotifications,
@@ -175,9 +173,6 @@ export function ConversationView({
   const [agentWorkOpen, setAgentWorkOpen] = useState(false);
   const collaborationVisited = useRef(activeView === "collaboration");
   const [agentWorkFocus, setAgentWorkFocus] = useState<string>();
-  const [editingMessage, setEditingMessage] =
-    useState<ConversationMessageDto>();
-  const [correctionText, setCorrectionText] = useState("");
   const [mentionInsertRequest, setMentionInsertRequest] = useState<{
     id: string;
     text: string;
@@ -343,20 +338,6 @@ export function ConversationView({
     },
   });
 
-  const correctMessage = useMutation({
-    mutationFn: (message: ConversationMessageDto) =>
-      api.correctConversationMessage(conversationId, message.id, {
-        text: correctionText.trim(),
-        idempotencyKey: createClientId(),
-        activeRunDelivery: "queue",
-      }),
-    onSuccess: () => {
-      setEditingMessage(undefined);
-      setCorrectionText("");
-      invalidate();
-    },
-  });
-
   const rename = useMutation({
     mutationFn: (title: string) =>
       api.updateConversation(conversationId, { title }),
@@ -500,13 +481,6 @@ export function ConversationView({
   const lastRespondingAgentIsRunning =
     Boolean(lastRespondingAgent) &&
     Boolean(healthByAgentId.get(lastRespondingAgent!.id)?.runtimeActivity);
-  const editConversationMessage = useCallback(
-    (selected: ConversationMessageDto) => {
-      setEditingMessage(selected);
-      setCorrectionText(selected.text);
-    },
-    [],
-  );
   const mainTranscriptMarkdown = useMemo(
     () =>
       conversation
@@ -828,7 +802,6 @@ export function ConversationView({
               onOpenFileActivity={onOpenFileActivity}
               mentionAgent={mentionAgent}
               markCommunicationVisible={markCommunicationVisible}
-              editConversationMessage={editConversationMessage}
             />
           </ChatSurface>
         </Box>
@@ -1101,12 +1074,6 @@ export function ConversationView({
         renameValue={renameValue}
         renamePending={rename.isPending}
         renameError={rename.isError ? String(rename.error) : undefined}
-        editingMessage={editingMessage}
-        correctionText={correctionText}
-        correctionPending={correctMessage.isPending}
-        correctionError={
-          correctMessage.isError ? String(correctMessage.error) : undefined
-        }
         deleteOpen={deleteOpen}
         deletePending={deleteConversation.isPending}
         deleteError={
@@ -1121,9 +1088,6 @@ export function ConversationView({
         onRenameClose={() => setRenameOpen(false)}
         onRenameValueChange={setRenameValue}
         onRename={() => rename.mutate(renameValue.trim())}
-        onCorrectionClose={() => setEditingMessage(undefined)}
-        onCorrectionTextChange={setCorrectionText}
-        onCorrectMessage={message => correctMessage.mutate(message)}
         onDeleteClose={() => setDeleteOpen(false)}
         onDelete={() => deleteConversation.mutate()}
       />

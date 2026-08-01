@@ -20,6 +20,7 @@ import {
   type GlobalChatSearchInput,
 } from "./store-chat-search-read-model.js";
 import type { ContextReadBoundary, ContextSourcePage } from "./store-types.js";
+import { userDmAgentIds } from "./store-communication.js";
 
 interface CommunicationIndexView {
   byId: Map<string, CommunicationEvent>;
@@ -305,12 +306,22 @@ export class AgentChatFeedProjection {
       .flatMap((message) => {
         if (message.sequence === undefined || message.role === "system") return [];
         const communication = communicationById.get(message.eventId);
+        const directMessageAgents = communication
+          ? userDmAgentIds(communication).map((directAgentId) => {
+              const directAgent = this.getAgent(directAgentId);
+              return {
+                id: directAgentId,
+                title: directAgent?.title ?? communication.identity?.recipientLabels?.[directAgentId] ?? "Deleted Agent",
+              };
+            })
+          : [];
         return [{
           id: message.messageId,
           communicationEventId: message.eventId,
           ...(communication
             ? { communicationIntent: communication.intent }
             : {}),
+          ...(directMessageAgents.length ? { directMessageAgents } : {}),
           ...(message.conversationId ? { conversationId: message.conversationId } : {}),
           agentId,
           seq: message.sequence,
@@ -395,9 +406,9 @@ export class AgentChatFeedProjection {
       : [limit + 1])) as AllChatRow[];
     const hasMore = rows.length > limit;
     const selected = rows.slice(0, limit);
-    const activeAgentByProject = new Map([...new Set(selected.map((row) => row.projectId))].map((projectId) => [
+    const agentByProject = new Map([...new Set(selected.map((row) => row.projectId))].map((projectId) => [
       projectId,
-      new Map(this.listAgents(projectId).filter((agent) => !agent.archived).map((agent) => [agent.id, agent] as const)),
+      new Map(this.listAgents(projectId).map((agent) => [agent.id, agent] as const)),
     ]));
     const items = selected.flatMap((row): AllChatItemDto[] => {
       const surface: CommunicationProjection["surface"] = row.chatKind === "conversation"
@@ -422,8 +433,15 @@ export class AgentChatFeedProjection {
         ? row.chatId
         : row.authorAgentId ?? exactAudienceAgentId;
       const directMessageAgent = targetAgentId
-        ? activeAgentByProject.get(row.projectId)?.get(targetAgentId)
+        ? agentByProject.get(row.projectId)?.get(targetAgentId)
         : undefined;
+      const directMessageAgents = userDmAgentIds(event).map((agentId) => {
+        const directAgent = agentByProject.get(row.projectId)?.get(agentId);
+        return {
+          id: agentId,
+          title: directAgent?.title ?? event.identity?.recipientLabels?.[agentId] ?? "Deleted Agent",
+        };
+      });
       const author: GlobalChatSearchAuthorDto = row.authorAgentId
         ? { kind: "agent", label: row.authorTitle ?? "Agent", agentId: row.authorAgentId }
         : row.role === "user"
@@ -439,6 +457,8 @@ export class AgentChatFeedProjection {
       return [{
         communicationEventId: row.eventId,
         messageId: message.messageId,
+        communicationIntent: event.intent,
+        ...(directMessageAgents.length ? { directMessageAgents } : {}),
         project: { id: row.projectId, label: row.projectLabel },
         source,
         author,
@@ -446,7 +466,7 @@ export class AgentChatFeedProjection {
         createdAt: message.createdAt,
         ...(message.attachments?.length ? { attachments: message.attachments } : {}),
         ...(message.artifactIds?.length ? { artifactIds: message.artifactIds } : {}),
-        ...(directMessageAgent ? {
+        ...(directMessageAgent && !directMessageAgent.archived ? {
           directMessageAgent: { id: directMessageAgent.id, title: directMessageAgent.title },
         } : {}),
       }];

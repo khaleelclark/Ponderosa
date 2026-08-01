@@ -18,6 +18,7 @@ import type { ActivityStreamEntry } from "../activity/activityStream";
 import { AgentWorkReceipt } from "./AgentWorkReceipt";
 import { ChatMessageFrame } from "./ChatMessageFrame";
 import { ChatSurface } from "./ChatSurface";
+import { DirectMessageScope } from "./DirectMessageScope";
 import {
   ChatMessageBody,
   CommunicationDocumentCard,
@@ -404,7 +405,9 @@ function ChatPaneComponent({
                       : {}),
                   },
               createdAt: message.createdAt,
-              source: fromSourceChat ? (
+              source: message.communicationIntent === "user_dm" && message.directMessageAgents?.length ? (
+                <DirectMessageScope agents={message.directMessageAgents} />
+              ) : fromSourceChat ? (
                 <CommunicationSourceLink
                   message={message}
                   outgoing={outgoingTeamMessage}

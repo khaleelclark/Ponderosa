@@ -294,7 +294,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       pathname === "/api/agent-request-updates" || pathname === "/api/agent-spawn" ||
       /^\/api\/agents\/[^/]+\/(?:messages|attachments)$/u.test(pathname) ||
       /^\/api\/conversations\/[^/]+\/(?:messages|direct-messages|collaboration\/messages)$/u.test(pathname) ||
-      /^\/api\/conversations\/[^/]+\/messages\/[^/]+\/corrections$/u.test(pathname) ||
       /^\/api\/requests\/[^/]+\/retry$/u.test(pathname) ||
       /^\/api\/projects\/[^/]+\/agents$/u.test(pathname) ||
       /^\/api\/projects\/[^/]+\/import-agents$/u.test(pathname) ||

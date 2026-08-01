@@ -557,6 +557,20 @@ describe("AgentStore — canonical communication events", () => {
       .toEqual([userDm.eventId, agentDm.eventId]);
     expect(store.readProjectedCommunicationMessages(project.id, "direct_agent_audit", agent.id).map((message) => message.eventId))
       .toEqual([userDm.eventId, agentDm.eventId]);
+    expect(store.getAgentDetail(agent.id)?.messages.map((message) => ({
+      intent: message.communicationIntent,
+      agents: message.directMessageAgents,
+    }))).toEqual([
+      { intent: "user_dm", agents: [{ id: agent.id, title: agent.title }] },
+      { intent: "user_dm", agents: [{ id: agent.id, title: agent.title }] },
+    ]);
+    expect(store.getAllChatPage().items.map((message) => ({
+      intent: message.communicationIntent,
+      agents: message.directMessageAgents,
+    }))).toEqual([
+      { intent: "user_dm", agents: [{ id: agent.id, title: agent.title }] },
+      { intent: "user_dm", agents: [{ id: agent.id, title: agent.title }] },
+    ]);
   });
 
   it("projects one user-authored group DM into each explicit agent audit", () => {
