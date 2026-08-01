@@ -113,14 +113,23 @@ export function subscribeWebPushChanges(listener: () => void): () => void {
 
 /** Recheck recoverable browser and host prerequisites when Settings regains attention. */
 export function subscribeWebPushRecovery(listener: () => void): () => void {
-  const focused = () => listener();
-  const visible = () => {
-    if (document.visibilityState === "visible") listener();
+  let pending: number | undefined;
+  const schedule = () => {
+    if (pending !== undefined) window.clearTimeout(pending);
+    pending = window.setTimeout(() => {
+      pending = undefined;
+      listener();
+    }, 50);
   };
-  const unsubscribeChanges = subscribeWebPushChanges(listener);
+  const focused = () => schedule();
+  const visible = () => {
+    if (document.visibilityState === "visible") schedule();
+  };
+  const unsubscribeChanges = subscribeWebPushChanges(schedule);
   window.addEventListener("focus", focused);
   document.addEventListener("visibilitychange", visible);
   return () => {
+    if (pending !== undefined) window.clearTimeout(pending);
     unsubscribeChanges();
     window.removeEventListener("focus", focused);
     document.removeEventListener("visibilitychange", visible);
