@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { ArtifactDto } from "@ponderosa/core";
+import { MANAGED_ARTIFACT_MAX_BYTES } from "@ponderosa/agents";
 import { afterEach, describe, expect, it } from "vitest";
-import { AssetAuthority, AssetError } from "../src/assets.js";
+import { AssetAuthority, AssetError, AssetStore } from "../src/assets.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -31,6 +33,35 @@ afterEach(async () => {
 });
 
 describe("AssetAuthority", () => {
+  it("admits metadata through the managed-artifact limit rather than the upload limit", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "ponderosa-managed-asset-metadata-"));
+    temporaryDirectories.push(directory);
+    const assets = new AssetStore(directory);
+    const artifact: ArtifactDto = {
+      id: "large-managed-screenshot",
+      agentId: "agent-1",
+      projectId: "project-1",
+      kind: "screenshot",
+      path: "browser/large-managed-screenshot.png",
+      summary: "large.png",
+      createdAt: "2026-08-01T00:00:00.000Z",
+      mediaType: "image/png",
+      visibility: "project",
+      pinned: false,
+      size: 32 * 1024 * 1024,
+      sha256: "a".repeat(64),
+    };
+    try {
+      expect(assets.managedProjectArtifactMetadataIsAuthoritative("project-1", artifact)).toBe(true);
+      expect(assets.managedProjectArtifactMetadataIsAuthoritative("project-1", {
+        ...artifact,
+        size: MANAGED_ARTIFACT_MAX_BYTES + 1,
+      })).toBe(false);
+    } finally {
+      assets.close();
+    }
+  });
+
   it("settles a reservation idempotently and imports the same committed ledger", async () => {
     const test = await authority();
     try {

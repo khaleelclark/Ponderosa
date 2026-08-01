@@ -200,6 +200,13 @@ export interface RuntimeCommunicationV3View {
   createdAt: string;
 }
 
+export interface RuntimeManagedArtifactAttachmentAuthorizationV3 {
+  projectId: string;
+  artifactIds: string[];
+  sender: CommunicationActor;
+  audience: CommunicationAudience;
+}
+
 export interface RuntimeArtifactInputV3 {
   id: string;
   role: "long_text" | "document";
@@ -436,4 +443,14 @@ export interface CoordinationV3StoreOptions {
     projectId: string,
     artifact: RuntimeArtifactInputV3,
   ) => RuntimeArtifactAuthorityV3 | undefined;
+  /** Existing managed-artifact catalog, content, and audience authority used
+   * inside the Communication transaction for agent-authored attachments. */
+  managedArtifactAttachmentAuthority?: (
+    input: RuntimeManagedArtifactAttachmentAuthorizationV3,
+  ) => void;
+  /** Revalidates immutable managed bytes after the scheduler transaction has
+   * committed so large reads and hashing never hold the SQLite writer fence. */
+  managedArtifactAttachmentRevalidator?: (
+    input: RuntimeManagedArtifactAttachmentAuthorizationV3,
+  ) => void;
 }

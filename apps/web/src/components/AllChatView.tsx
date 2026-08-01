@@ -846,6 +846,8 @@ export function AllChatView({
                           : {}),
                       },
                   createdAt: item.createdAt,
+                  attachments: item.attachments,
+                  attachmentDensity: "compact",
                   onVisible: () => markCommunicationVisible(item.communicationEventId),
                   ariaLabel: allChatSourceAccessibleName(item),
                   body: (

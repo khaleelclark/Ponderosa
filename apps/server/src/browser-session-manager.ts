@@ -124,7 +124,7 @@ export class BrowserSessionManager {
   constructor(
     private readonly dataDir: string,
     private readonly createDriver: BrowserDriverFactory,
-    private readonly emit: (scope: BrowserScope, event: BrowserAuditEvent) => void,
+    private readonly emit: (scope: BrowserScope, event: BrowserAuditEvent) => void | Promise<void>,
   ) {}
 
   get(agentId: string): BrowserSessionDto | undefined {
@@ -706,7 +706,13 @@ export class BrowserSessionManager {
     return session.frameCapture;
   }
 
-  async captureArtifact(scope: BrowserScope): Promise<{ path: string; width: number; height: number }> {
+  async captureArtifact(scope: BrowserScope): Promise<{
+    artifactId: string;
+    artifactRef: string;
+    path: string;
+    width: number;
+    height: number;
+  }> {
     const session = this.ready(scope);
     this.assertControl(session, "agent");
     const body = await this.pageAction(scope, session, "agent", undefined, (driver) => driver.capture(), (captured) => {
@@ -722,12 +728,17 @@ export class BrowserSessionManager {
       artifactId,
       body,
     );
-    this.emit(scope, {
+    await this.emit(scope, {
       type: "browser_screenshot", sessionId: session.dto.id, executionId: scope.actorRunId ?? scope.runId,
       artifactId, path: relative, width: VIEWPORT.width, height: VIEWPORT.height,
       size: published.size, sha256: published.sha256,
     });
-    return { path: relative, ...VIEWPORT };
+    return {
+      artifactId,
+      artifactRef: `ponderosa://artifact/${artifactId}`,
+      path: relative,
+      ...VIEWPORT,
+    };
   }
 
   async close(scope: BrowserScope, reason = "explicit_close"): Promise<BrowserSessionDto> {

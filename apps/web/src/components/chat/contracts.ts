@@ -1,4 +1,4 @@
-import type { ImageAttachmentDto, OperatorProfileDto } from "@ponderosa/core";
+import type { CommunicationAttachmentDto, OperatorProfileDto } from "@ponderosa/core";
 import type { ReactNode } from "react";
 
 type ChatAuthor =
@@ -35,7 +35,7 @@ export interface ChatMessagePresentation {
   body: ReactNode;
   /** Quiet cross-surface context rendered beside the author and timestamp. */
   source?: ReactNode;
-  attachments?: ImageAttachmentDto[];
+  attachments?: CommunicationAttachmentDto[];
   attachmentDensity?: "comfortable" | "compact";
   afterBody?: ReactNode;
   belowBody?: ReactNode;

@@ -311,11 +311,11 @@ export function registerConversationDeliveryRoutes(
       assets.associate(master.projectId, agentId, [...ids]),
     ));
     if (communication?.intent === "broadcast" && message) {
-      projectBroadcastToAgentAudits(communication, [], message.attachments);
+      projectBroadcastToAgentAudits(communication, [], validatedAssets);
       for (const agentId of recipientAgentIds) {
         const attachments = new Map(
           [
-            ...(message.attachments ?? []),
+            ...validatedAssets,
             ...(recipientAssets.get(agentId) ?? []),
           ].map((attachment) => [attachment.id, attachment]),
         );

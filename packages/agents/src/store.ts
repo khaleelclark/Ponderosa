@@ -472,7 +472,7 @@ export class AgentStore extends AgentEventSessionFacade {
 
   appendConversationMessage(
     conversationId: string,
-    input: CreateConversationMessageRequest,
+    input: CreateConversationMessageRequest & { artifactIds?: string[] },
     authorAgentId?: string,
     channel: ConversationChannel = "main",
     deliveryIntents?: ConversationDeliveryIntent[],
@@ -877,6 +877,14 @@ export class AgentStore extends AgentEventSessionFacade {
 
   getProjectArtifact(projectId: string, artifactIdValue: string): ArtifactDto | undefined {
     return this.artifactCatalog.getProjectArtifact(projectId, artifactIdValue);
+  }
+
+  /** Server-owned publication-ledger authority for managed attachments. It is
+   * applied whenever canonical Communications are materialized for an operator. */
+  configureCommunicationAttachmentMetadataAuthority(
+    authority: (projectId: string, artifact: ArtifactDto) => boolean,
+  ): void {
+    this.communicationProjectionLedger.configureManagedArtifactAttachmentMetadataAuthority(authority);
   }
 
   getProjectArtifactAccess(projectId: string, artifactIdValue: string): ManagedArtifactAccess | undefined {

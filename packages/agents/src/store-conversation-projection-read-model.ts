@@ -438,6 +438,7 @@ export class AgentConversationProjectionReadModel {
         ...(message.attachments?.length
           ? { attachments: message.attachments }
           : {}),
+        ...(message.artifactIds?.length ? { artifactIds: message.artifactIds } : {}),
         ...(message.document ? { document: message.document } : {}),
         ...(message.citations?.length ? { citations: message.citations } : {}),
         ...(message.executionId ? { executionId: message.executionId } : {}),

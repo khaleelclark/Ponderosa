@@ -67,6 +67,7 @@ export class CoordinationV3RuntimeCommunicationAuthority {
         activationInputs.map((item) => item.agentId),
       );
     const payload = preparedAttachments.payload;
+    const managedArtifactIds = this.managedArtifactIds(payload);
     const activationScopeKeys = activationInputs.map((activation) =>
       input.scopeKey ??
       this.runtimeScopeAuthority.communicationScopeKey(
@@ -200,6 +201,18 @@ export class CoordinationV3RuntimeCommunicationAuthority {
                 : {}),
               replayed: true,
             };
+          }
+          if (managedArtifactIds.length) {
+            const authority = this.options.managedArtifactAttachmentAuthority;
+            if (!authority) {
+              throw new Error("managed artifact attachment authority is unavailable");
+            }
+            authority({
+              projectId: input.projectId,
+              artifactIds: managedArtifactIds,
+              sender: input.sender,
+              audience: input.audience,
+            });
           }
           this.sqlite.prepare(`
             INSERT INTO runtime_communications (
@@ -350,6 +363,22 @@ export class CoordinationV3RuntimeCommunicationAuthority {
       }
       throw transactionError;
     }
+    // Managed blobs and runtime-upload associations commit separately from
+    // scheduler SQLite. Re-read accepted bytes only after the write fence is
+    // released. Exact committed replays bypass mutable artifact admission and
+    // report their durable result even if an operator later deletes the file.
+    if (!result.replayed && managedArtifactIds.length) {
+      const revalidator = this.options.managedArtifactAttachmentRevalidator;
+      if (!revalidator) {
+        throw new Error("managed artifact attachment revalidator is unavailable");
+      }
+      revalidator({
+        projectId: input.projectId,
+        artifactIds: managedArtifactIds,
+        sender: input.sender,
+        audience: input.audience,
+      });
+    }
     // The filesystem-backed authority commits separately from scheduler SQLite.
     // Re-read every accepted attachment after the passive transaction commits;
     // callers must not project the canonical Communication when immutable bytes
@@ -360,5 +389,25 @@ export class CoordinationV3RuntimeCommunicationAuthority {
       preparedAttachments.bindings,
     );
     return result;
+  }
+
+  private managedArtifactIds(payloadValue: unknown): string[] {
+    const payload = payloadValue && typeof payloadValue === "object" && !Array.isArray(payloadValue)
+      ? payloadValue as Record<string, unknown>
+      : undefined;
+    const embedded = payload?.communication && typeof payload.communication === "object"
+      && !Array.isArray(payload.communication)
+      ? payload.communication as Record<string, unknown>
+      : undefined;
+    const communication = embedded
+      ?? (payload && Object.prototype.hasOwnProperty.call(payload, "schemaVersion") ? payload : undefined);
+    if (!communication || !Object.prototype.hasOwnProperty.call(communication, "artifactIds")) return [];
+    const artifactIds = communication.artifactIds;
+    if (!Array.isArray(artifactIds) || artifactIds.length === 0 || artifactIds.length > 20 ||
+        new Set(artifactIds).size !== artifactIds.length ||
+        artifactIds.some((id) => typeof id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/u.test(id))) {
+      throw new Error("managed artifact attachments are invalid");
+    }
+    return artifactIds;
   }
 }

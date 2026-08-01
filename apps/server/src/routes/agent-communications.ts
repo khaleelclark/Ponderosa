@@ -117,8 +117,14 @@ export function registerAgentCommunicationRoutes(
     const inferredReply = request.body?.intent === undefined;
     const candidateIntent = request.body?.intent ?? capability.defaultReply?.intent;
     const text = request.body?.text === undefined
-      ? undefined
+      ? ""
       : canonicalizeProviderText(request.body.text, steeringInjectionIds).trim();
+    const artifactIds = request.body?.artifactIds;
+    if (artifactIds !== undefined && (!Array.isArray(artifactIds) || artifactIds.length === 0 ||
+        artifactIds.length > 20 || new Set(artifactIds).size !== artifactIds.length ||
+        artifactIds.some((id) => typeof id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/u.test(id)))) {
+      return reply.code(400).send({ error: "artifactIds must contain 1 to 20 unique managed artifact IDs" });
+    }
     const v3Urgency = (request.body as SendAgentMessageRequest & { urgency?: "ordinary" | "urgent" })?.urgency;
     if (!candidateIntent || !(["broadcast", "direct_to_user", "collaboration"] as const).includes(candidateIntent)) {
       return reply.code(400).send({
@@ -136,9 +142,9 @@ export function registerAgentCommunicationRoutes(
         managerAgentId: currentAuthor.managerAgentId,
       });
     }
-    if (!text) return reply.code(400).send({ error: "text is required" });
+    if (!text && !artifactIds?.length) return reply.code(400).send({ error: "text or at least one artifactId is required" });
     const scopedText = intent === "broadcast" ? stripLeadingScopeTag(text, "broadcast") : text;
-    if (!scopedText) return reply.code(400).send({ error: "text is required after the broadcast scope" });
+    if (text && !scopedText) return reply.code(400).send({ error: "text is required after the broadcast scope" });
     if (Buffer.byteLength(text, "utf8") > LONG_TEXT_MAX_UTF8_BYTES) {
       return reply.code(413).send({ error: "text exceeds the 8 MiB limit" });
     }
@@ -184,6 +190,7 @@ export function registerAgentCommunicationRoutes(
     const inferredReplyFingerprint = inferredReply
       ? createHash("sha256").update(JSON.stringify({
           intent, text, recipientAgentIds: inferredRecipientAgentIds,
+          artifactIds: artifactIds ?? [],
           document: documentTitle && documentContent ? { title: documentTitle, content: documentContent, mediaType: "text/markdown" } : null,
           citations,
         })).digest("hex")
@@ -221,7 +228,7 @@ export function registerAgentCommunicationRoutes(
       ? inferredRecipientAgentIds
       : [];
     if (intent === "collaboration" && v3Urgency !== "urgent") {
-      if (/^(thanks|thank you|got it|acknowledged|noted|sounds good|already complete)[.!\s]*$/i.test(scopedText)) {
+      if (scopedText && /^(thanks|thank you|got it|acknowledged|noted|sounds good|already complete)[.!\s]*$/i.test(scopedText)) {
         return { suppressed: true, reason: "acknowledgement_only", recipientAgentIds: ordinaryCollaborationRecipients };
       }
     }
@@ -294,6 +301,7 @@ export function registerAgentCommunicationRoutes(
         intent: "user_dm",
         audience: { kind: "user_agent", userId: "local-operator", agentId: capability.agentId },
         text: publishedText,
+        ...(artifactIds?.length ? { artifactIds } : {}),
         ...(document ? { document } : {}),
         ...(citations.length ? { citations } : {}),
         createdAt,
@@ -350,7 +358,7 @@ export function registerAgentCommunicationRoutes(
       if (capability.conversationId) {
         store.appendConversationMessage(
           capability.conversationId,
-          { text: renderScopedMessage("user", publishedText) },
+          { text: renderScopedMessage("user", publishedText), ...(artifactIds?.length ? { artifactIds } : {}) },
           capability.agentId,
           "main",
           undefined,
@@ -414,7 +422,8 @@ export function registerAgentCommunicationRoutes(
       sender: { kind: "agent", agentId: capability.agentId, executionId: capability.runId },
       intent,
       audience: { kind: "organization", organizationId: currentAuthor.projectId },
-        text: publishedText,
+      text: publishedText,
+      ...(artifactIds?.length ? { artifactIds } : {}),
       ...(document ? { document } : {}),
       ...(citations.length ? { citations } : {}),
       createdAt,
@@ -429,6 +438,7 @@ export function registerAgentCommunicationRoutes(
       audience: { kind: "agents", agentIds: routing.intents.map((item) => item.targetAgentId) as [string, ...string[]] },
       audienceSelector: routing.intents.some((item) => item.audience === "everyone") ? "everyone" : "mention",
       text: publishedText,
+      ...(artifactIds?.length ? { artifactIds } : {}),
       ...(document ? { document } : {}),
       ...(citations.length ? { citations } : {}),
       createdAt,
@@ -490,7 +500,7 @@ export function registerAgentCommunicationRoutes(
     );
     const message = store.appendConversationMessage(
       capability.conversationId,
-      { role: "assistant", text: renderedText },
+      { role: "assistant", text: renderedText, ...(artifactIds?.length ? { artifactIds } : {}) },
       capability.agentId,
       channel,
       routing.intents,
@@ -498,14 +508,13 @@ export function registerAgentCommunicationRoutes(
       communication?.eventId,
     );
     if (!message) return reply.code(404).send({ error: "conversation not found" });
-    if (communication?.intent === "broadcast") projectBroadcastToAgentAudits(communication, [], message.attachments);
+    if (communication?.intent === "broadcast") projectBroadcastToAgentAudits(communication);
     if (communication?.intent === "collaboration") {
       const authorAudit = store.appendEvent(capability.agentId, {
         type: "communication_projection",
         communicationEventId: communication.eventId,
         text: renderedText,
         role: "assistant",
-        attachments: message.attachments,
       });
       publish(capability.agentId, authorAudit);
     }

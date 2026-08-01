@@ -3,6 +3,8 @@ import type Database from "better-sqlite3";
 import {
   communicationHasProjectionTarget,
   type AgentDto,
+  type ArtifactDto,
+  type CommunicationAttachmentDto,
   type CommunicationEvent,
   type CommunicationProjection,
   type CommunicationReconciliationReport,
@@ -39,6 +41,11 @@ type ProjectionIndex = {
 };
 
 export class AgentCommunicationProjectionLedger {
+  private managedArtifactAttachmentMetadataAuthority?: (
+    projectId: string,
+    artifact: ArtifactDto,
+  ) => boolean;
+
   constructor(
     private readonly dataDir: string,
     private readonly client: Database.Database,
@@ -80,7 +87,18 @@ export class AgentCommunicationProjectionLedger {
       stream: string,
       scope: string,
     ) => { orderKey: string; rowKey: string },
+    private readonly resolveManagedArtifactAttachments: (
+      projectId: string,
+      artifactIds: readonly string[],
+      metadataAuthority?: (projectId: string, artifact: ArtifactDto) => boolean,
+    ) => CommunicationAttachmentDto[],
   ) {}
+
+  configureManagedArtifactAttachmentMetadataAuthority(
+    authority: (projectId: string, artifact: ArtifactDto) => boolean,
+  ): void {
+    this.managedArtifactAttachmentMetadataAuthority = authority;
+  }
 
   communicationProjectionAllowed(
     projectId: string,
@@ -265,8 +283,20 @@ export class AgentCommunicationProjectionLedger {
           ...(event.sender.kind === "agent" ? { executionId: event.sender.executionId } : {}),
           ...(event.correctionOfEventId ? { correctionOfEventId: event.correctionOfEventId } : {}),
           ...(latestRevision ? { editedAt: latestRevision.createdAt, editRevision: targetRevisions.length } : {}),
-          ...(message.attachmentIds?.length ? { attachmentIds: message.attachmentIds } : {}),
-          ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+          ...(message.attachmentIds?.length || event.artifactIds?.length
+            ? { attachmentIds: [...(message.attachmentIds ?? []), ...(event.artifactIds ?? [])] }
+            : {}),
+          ...(message.attachments?.length || event.artifactIds?.length
+            ? { attachments: [
+                ...(message.attachments ?? []),
+                ...this.resolveManagedArtifactAttachments(
+                  projectId,
+                  event.artifactIds ?? [],
+                  this.managedArtifactAttachmentMetadataAuthority,
+                ),
+              ] }
+            : {}),
+          ...(event.artifactIds?.length ? { artifactIds: event.artifactIds } : {}),
           ...(!latestRevision && event.document ? { document: communicationDocumentReference(projectId, event.document) } : {}),
           ...(event.citations?.length ? { citations: event.citations } : {}),
         }];
@@ -354,6 +384,7 @@ export class AgentCommunicationProjectionLedger {
           ...(dispatch.authorAgentId ? { authorAgentId: dispatch.authorAgentId } : {}),
           ...(dispatch.attachments?.length ? { attachmentIds: dispatch.attachments.map((item) => item.id) } : {}),
           ...(dispatch.attachments?.length ? { attachments: dispatch.attachments } : {}),
+          ...(dispatch.artifactIds?.length ? { artifactIds: dispatch.artifactIds } : {}),
         },
       };
       if (this.communicationProjectionAllowed(projectId, projection)) {

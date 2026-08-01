@@ -38,13 +38,29 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     driverFactory ?? chromeBrowserDriverFactory(dataDir),
     (scope, event) => {
       const run = activeRuns.get(scope.agentId);
-      if (!run || run.runId !== scope.runId || run.conversationId !== scope.conversationId) return;
+      if (!run || run.runId !== scope.runId || run.conversationId !== scope.conversationId) {
+        if (event.type === "browser_screenshot") {
+          throw new Error("screenshot lost exact Run authority before publication");
+        }
+        return;
+      }
       // Cancellation advances the scheduler fence before provider/browser
       // interruption. The server-owned close audit is still valid for the exact
       // in-memory Run even though late runtime/browser activity must now fail.
       if (event.type === "browser_session" && event.status === "closed") {
         publish(scope.agentId, store.appendEvent(scope.agentId, event));
         return;
+      }
+      if (event.type === "browser_screenshot") {
+        return persistRuntimeEvent(scope.agentId, run, event).then((stored) => {
+          if (!stored) throw new Error("screenshot lost exact Run authority before publication");
+        }).catch((error: unknown) => {
+          logWarn(
+            { err: error, agentId: scope.agentId, runId: scope.runId },
+            "browser screenshot publication failed",
+          );
+          throw error;
+        });
       }
       void persistRuntimeEvent(scope.agentId, run, event).catch((error: unknown) => {
         logWarn(
@@ -60,9 +76,34 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     driverFactory ?? chromeBrowserDriverFactory(dataDir),
     (scope, event) => {
       const grant = projectBrowserGrants.get(scope.projectId);
-      if (!grant || scope.actorAgentId !== grant.agentId || scope.actorRunId !== grant.runId) return;
+      if (!grant || scope.actorAgentId !== grant.agentId || scope.actorRunId !== grant.runId) {
+        if (event.type === "browser_screenshot") {
+          throw new Error("Project screenshot lost exact Run authority before publication");
+        }
+        return;
+      }
       const run = activeRuns.get(grant.agentId);
-      if (!run || run.runId !== grant.runId) return;
+      if (!run || run.runId !== grant.runId) {
+        if (event.type === "browser_screenshot") {
+          throw new Error("Project screenshot lost exact Run authority before publication");
+        }
+        return;
+      }
+      if (event.type === "browser_screenshot") {
+        return persistRuntimeEvent(
+          grant.agentId,
+          run,
+          { ...event, executionId: grant.runId },
+        ).then((stored) => {
+          if (!stored) throw new Error("screenshot lost exact Run authority before publication");
+        }).catch((error: unknown) => {
+          logWarn(
+            { err: error, agentId: grant.agentId, runId: grant.runId },
+            "Project browser screenshot publication failed",
+          );
+          throw error;
+        });
+      }
       void persistRuntimeEvent(
         grant.agentId,
         run,

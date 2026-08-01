@@ -258,7 +258,9 @@ function conversationPrompt(
           ? "Manager"
           : "Team";
       const document = message.document ? ` [document: ${message.document.title}; id: ${message.document.id}]` : "";
-      return `${speaker}: ${message.text}${document} [message id: ${message.id}]`;
+      const artifacts = message.artifactIds?.map((id) => ` [artifact: ponderosa://artifact/${id}]`).join("") ?? "";
+      const content = `${message.text}${document}${artifacts}`.trim();
+      return `${speaker}: ${content} [message id: ${message.id}]`;
     })
     .join("\n");
 

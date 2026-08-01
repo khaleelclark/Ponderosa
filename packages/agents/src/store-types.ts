@@ -151,6 +151,7 @@ export interface MessageDispatchRecord {
   messageReceiptKey?: string;
   orderKey: string;
   attachments?: ImageAttachmentDto[];
+  artifactIds?: string[];
 }
 
 export interface AgentDeletionReceipt {

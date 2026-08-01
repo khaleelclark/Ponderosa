@@ -298,6 +298,117 @@ describe("AgentStore — V1 layout", () => {
 });
 
 describe("AgentStore — canonical communication events", () => {
+  itWithManagedArtifacts("projects managed artifact attachments on every chat read and preserves an unavailable tombstone", () => {
+    const project = store.createProject({ label: "Artifact chat", hostPath: "/repo" });
+    const room = store.createConversation(project.id, { title: "Artifact room" });
+    const author = store.createAgent(project.id, {
+      title: "Author",
+      engine: "codex",
+      conversationId: room.id,
+    });
+    const artifactId = "managed-chat-screenshot";
+    const published = publishManagedArtifactContent(dir, project.id, artifactId, Buffer.from("png-bytes"));
+    store.recordProjectArtifact({
+      id: artifactId,
+      projectId: project.id,
+      agentId: author.id,
+      originAgentId: author.id,
+      executionId: "run-artifact-chat",
+      kind: "screenshot",
+      path: `browser/${artifactId}.png`,
+      summary: "visual-pass.png",
+      createdAt: "2026-07-12T00:00:00.000Z",
+      mediaType: "image/png",
+      visibility: "project",
+      pinned: false,
+      size: published.size,
+      sha256: published.sha256,
+    });
+    const event: CommunicationEvent = {
+      eventId: "artifact-only-event",
+      schemaVersion: 2,
+      projectId: project.id,
+      conversationId: room.id,
+      sender: { kind: "agent", agentId: author.id, executionId: "run-artifact-chat" },
+      intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id },
+      text: "",
+      artifactIds: [artifactId],
+      createdAt: "2026-07-12T00:00:00.000Z",
+      idempotencyKey: "artifact-only",
+    };
+    expect(store.appendCommunicationEvent(event).replayed).toBe(false);
+    store.appendConversationMessage(
+      room.id,
+      { role: "assistant", text: "", artifactIds: [artifactId] },
+      author.id,
+      "main",
+      undefined,
+      undefined,
+      event.eventId,
+    );
+    store.appendEvent(author.id, {
+      type: "communication_projection",
+      communicationEventId: event.eventId,
+      text: "",
+      role: "assistant",
+    });
+
+    const available = store.getConversationMessages(room.id, "main")[0]!;
+    expect(available).toMatchObject({
+      text: "",
+      artifactIds: [artifactId],
+      attachments: [{
+        id: artifactId,
+        name: "visual-pass.png",
+        mediaType: "image/png",
+        size: published.size,
+        previewUrl: `/api/projects/${project.id}/artifacts/${artifactId}/preview`,
+        downloadUrl: `/api/projects/${project.id}/artifacts/${artifactId}/download`,
+      }],
+    });
+    const auditMessage = store.getProjectedAgentMessages(author.id)[0]!;
+    expect(auditMessage).toMatchObject({
+      artifactIds: [artifactId],
+      attachments: [{ id: artifactId }],
+    });
+    expect(auditMessage.attachments![0]).not.toHaveProperty("unavailable");
+
+    store.configureCommunicationAttachmentMetadataAuthority(() => false);
+    const ledgerMismatch = store.getConversationMessages(room.id, "main")[0]!;
+    expect(ledgerMismatch.attachments).toEqual([expect.objectContaining({
+      id: artifactId,
+      unavailable: true,
+    })]);
+    expect(ledgerMismatch.attachments![0]).not.toHaveProperty("previewUrl");
+    expect(ledgerMismatch.attachments![0]).not.toHaveProperty("downloadUrl");
+    expect(store.getAllChatPage().items[0]?.attachments).toEqual([expect.objectContaining({
+      id: artifactId,
+      unavailable: true,
+    })]);
+    store.configureCommunicationAttachmentMetadataAuthority(() => true);
+
+    const managedPath = managedArtifactContentPath(dir, project.id, artifactId);
+    writeFileSync(managedPath, "x");
+    const corrupt = store.getConversationMessages(room.id, "main")[0]!;
+    expect(corrupt.attachments).toEqual([expect.objectContaining({
+      id: artifactId,
+      unavailable: true,
+    })]);
+    expect(corrupt.attachments![0]).not.toHaveProperty("previewUrl");
+    expect(corrupt.attachments![0]).not.toHaveProperty("downloadUrl");
+    writeFileSync(managedPath, "png-bytes");
+
+    expect(store.deleteProjectArtifact(project.id, artifactId, "qualification deletion")).toBe(true);
+    const missing = store.getConversationMessages(room.id, "main")[0]!;
+    expect(missing.attachments).toEqual([expect.objectContaining({
+      id: artifactId,
+      unavailable: true,
+    })]);
+    expect(missing.attachments![0]).not.toHaveProperty("previewUrl");
+    expect(missing.attachments![0]).not.toHaveProperty("downloadUrl");
+  });
+
   it("keeps long-form documents canonical, scoped, and out of projected summary text", () => {
     const project = store.createProject({ label: "Docs", hostPath: "/repo" });
     const room = store.createConversation(project.id, { title: "Room" });
@@ -339,6 +450,7 @@ describe("AgentStore — canonical communication events", () => {
     expect(store.appendCommunicationEvent({ ...event, eventId: "transport-retry", createdAt: "2026-07-12T00:00:01.000Z" }))
       .toEqual({ event, replayed: true });
     expect(store.readCommunicationEvents(project.id)).toEqual([event]);
+    expect(store.readCommunicationEvents(project.id)[0]).not.toHaveProperty("artifactIds");
     expect(readFileSync(communicationEventsPath(dir, project.id), "utf8").trim().split("\n")).toHaveLength(1);
     expect(() => store.appendCommunicationEvent({ ...event, text: "Collision" })).toThrow("collision");
   });

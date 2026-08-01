@@ -136,6 +136,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       ? `durable work is unavailable: ${processContainment.detail}`
       : undefined;
   const assets = new AssetStore(opts.dataDir);
+  store.configureCommunicationAttachmentMetadataAuthority((projectId, artifact) =>
+    assets.managedProjectArtifactMetadataIsAuthoritative(projectId, artifact));
   const coordinationV3 = new CoordinationV3Store(store.sqlite, {
     attachmentAuthority: {
       resolve: (projectId, agentId, attachmentId) =>
@@ -147,6 +149,67 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     },
     artifactAuthority: (projectId, artifact) =>
       assets.authoritativeRuntimeArtifact(projectId, artifact),
+    managedArtifactAttachmentAuthority: ({ projectId, artifactIds, sender, audience }) => {
+      if (sender.kind !== "agent") throw new Error("managed artifacts may only be attached by an Agent");
+      let totalBytes = 0;
+      for (const artifactId of artifactIds) {
+        const artifact = store.getProjectArtifact(projectId, artifactId);
+        if (!artifact || artifact.projectId !== projectId ||
+            !store.agentCanReadProjectArtifact(projectId, artifactId, sender.agentId) ||
+            !assets.managedProjectArtifactMetadataIsAuthoritative(projectId, artifact)) {
+          throw new Error("managed artifact attachment is unavailable or unauthorized");
+        }
+        totalBytes += artifact.size ?? 0;
+        if (totalBytes > ASSET_LIMITS.maxMessageBytes) {
+          throw new Error("managed artifact attachments exceed the message byte limit");
+        }
+        switch (audience.kind) {
+          case "organization":
+            if (audience.organizationId !== projectId ||
+                !store.projectArtifactIsOrganizationVisible(projectId, artifactId)) {
+              throw new Error("managed artifact attachment audience is unauthorized");
+            }
+            break;
+          case "agents":
+            if (audience.agentIds.some((agentId) =>
+              !store.agentCanReadProjectArtifact(projectId, artifactId, agentId))) {
+              throw new Error("managed artifact attachment audience is unauthorized");
+            }
+            break;
+          case "user_agent":
+            if (!store.operatorCanReadProjectArtifact(projectId, artifactId) ||
+                !store.agentCanReadProjectArtifact(projectId, artifactId, audience.agentId)) {
+              throw new Error("managed artifact attachment audience is unauthorized");
+            }
+            break;
+          case "user_agents":
+            if (!store.operatorCanReadProjectArtifact(projectId, artifactId) ||
+                audience.agentIds.some((agentId) =>
+                  !store.agentCanReadProjectArtifact(projectId, artifactId, agentId))) {
+              throw new Error("managed artifact attachment audience is unauthorized");
+            }
+            break;
+          case "user":
+            if (!store.operatorCanReadProjectArtifact(projectId, artifactId)) {
+              throw new Error("managed artifact attachment audience is unauthorized");
+            }
+            break;
+          default: {
+            const unhandledAudience: never = audience;
+            void unhandledAudience;
+            throw new Error("managed artifact attachment audience is unsupported");
+          }
+        }
+      }
+    },
+    managedArtifactAttachmentRevalidator: ({ projectId, artifactIds }) => {
+      for (const artifactId of artifactIds) {
+        const artifact = store.getProjectArtifact(projectId, artifactId);
+        if (!artifact || !assets.managedProjectArtifactIsAvailable(projectId, artifact)) {
+          throw new Error("managed artifact attachment bytes are unavailable");
+        }
+      }
+    },
   });
   const resultCursorSecret = randomBytes(32);
   const {

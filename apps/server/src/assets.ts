@@ -6,6 +6,7 @@ import sharp from "sharp";
 import type { ArtifactDto, AssetDto } from "@ponderosa/core";
 import {
   attachmentsDir,
+  MANAGED_ARTIFACT_MAX_BYTES,
   managedArtifactContentPath,
   readManagedArtifactContent,
   type RuntimeArtifactInputV3,
@@ -598,6 +599,51 @@ export class AssetStore {
     if (!registered || JSON.stringify(generatedArtifactIdentity(registered)) !==
         JSON.stringify(generatedArtifactIdentity(candidate))) return undefined;
     return this.readGeneratedArtifact(registered);
+  }
+
+  /** Resolve any cataloged managed artifact through immutable content checks.
+   * Generated files additionally retain their existing publication-ledger check. */
+  authoritativeManagedProjectArtifact(projectId: string, expected: ArtifactDto): {
+    body: Buffer;
+    localPath: string;
+    contentHash: string;
+    byteLength: number;
+  } | undefined {
+    if (expected.projectId !== projectId || expected.size === undefined || !expected.sha256) return undefined;
+    if (expected.kind === "generated_file") {
+      return this.authoritativeGeneratedArtifact(projectId, expected);
+    }
+    try {
+      const content = readManagedArtifactContent(
+        this.dataDir,
+        projectId,
+        expected.id,
+        expected.size,
+        expected.sha256,
+      );
+      return content ? {
+        body: content.body,
+        localPath: managedArtifactContentPath(this.dataDir, projectId, expected.id),
+        contentHash: content.sha256,
+        byteLength: content.size,
+      } : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  managedProjectArtifactIsAvailable(projectId: string, expected: ArtifactDto): boolean {
+    return Boolean(this.authoritativeManagedProjectArtifact(projectId, expected));
+  }
+
+  /** Validate catalog and publication-ledger identity without reading or
+   * hashing managed bytes. Used while the scheduler SQLite writer is fenced. */
+  managedProjectArtifactMetadataIsAuthoritative(projectId: string, expected: ArtifactDto): boolean {
+    if (expected.projectId !== projectId || !expected.mediaType || expected.size === undefined ||
+        !Number.isSafeInteger(expected.size) || expected.size < 1 || expected.size > MANAGED_ARTIFACT_MAX_BYTES ||
+        !/^[a-f0-9]{64}$/u.test(expected.sha256 ?? "")) return false;
+    return expected.kind !== "generated_file" ||
+      this.authoritativeGeneratedArtifactMetadata(projectId, expected);
   }
 
   /** Validate generated-file catalog/ledger agreement without synchronously

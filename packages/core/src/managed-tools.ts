@@ -217,17 +217,22 @@ export const PONDEROSA_UPDATE_REQUEST_TOOL: RuntimeDynamicToolSpec = {
 
 export const PONDEROSA_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_message",
-  description: "Reply to the current uncorrelated activation with {text}. Ponderosa inherits the audience, conversation, visibility, and stable idempotency when there is one unambiguous reply target. Use explicit intent only to publish a separate organizational Broadcast, contact different Agents, or resolve an ambiguous/non-message activation. Use coordinate for tracked work and update_request for a correlated result.",
+  description: "Reply to the current uncorrelated activation with text, existing managed artifactIds, or both. Ponderosa inherits the audience, conversation, visibility, and stable idempotency when there is one unambiguous reply target. Use the artifact ID returned alongside ponderosa://artifact/<id> references by Ponderosa artifact-producing tools; paths cannot be attached. Use explicit intent only to publish a separate organizational Broadcast, contact different Agents, or resolve an ambiguous/non-message activation. Use coordinate for tracked work and update_request for a correlated result.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
-    required: ["text"],
+    anyOf: [{ required: ["text"] }, { required: ["artifactIds"] }],
     properties: {
       intent: {
         type: "string", enum: ["broadcast", "direct_to_user", "collaboration"],
         description: "Exact routing enum. Use direct_to_user for a private user reply; user_dm is not a tool value.",
       },
       text: { type: "string", minLength: 1, description: `Complete message text. Content above 10,000 Unicode code points is stored as one durable artifact; maximum ${LONG_TEXT_MAX_UTF8_BYTES} UTF-8 bytes.` },
+      artifactIds: {
+        type: "array", minItems: 1, maxItems: 20, uniqueItems: true,
+        items: { type: "string", pattern: "^[A-Za-z0-9_-]{1,128}$" },
+        description: "Existing Project-managed artifact IDs to attach. The active Run, sender, audience, Project, and artifact bytes are re-authorized atomically when the message commits.",
+      },
       steeringInjectionId: {
         type: "string", minLength: 1,
         description: "When the current Run has received steering, copy the exact steeringInjectionId from the newest Ponderosa activation prompt. Ponderosa rejects output fenced behind an acknowledged steer.",

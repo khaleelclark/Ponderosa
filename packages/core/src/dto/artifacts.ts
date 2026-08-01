@@ -18,10 +18,18 @@ export interface AssetDto {
   state?: "staged" | "associated";
   createdAt?: string;
   /** Opaque preview-or-download URL; never a host filesystem path. */
-  url: string;
+  url?: string;
   downloadUrl?: string;
   previewUrl?: string;
+  /** A durable message reference whose managed bytes or read authority are gone. */
+  unavailable?: boolean;
 }
+
+/** An authorized attachment projected into Communication. Managed artifacts
+ * retain their catalog media type without widening human upload admission. */
+export type CommunicationAttachmentDto = Omit<AssetDto, "mediaType"> & {
+  mediaType: string;
+};
 
 /** Backward-compatible name retained while clients migrate to AssetDto. */
 export type ImageAttachmentDto = AssetDto;

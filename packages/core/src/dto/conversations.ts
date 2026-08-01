@@ -9,7 +9,7 @@ import type {
   CoordinationRequestUpdateKind,
 } from "../coordination-v3.js";
 import type { AgentDto } from "./agents.js";
-import type { ArtifactKind, ImageAttachmentDto } from "./artifacts.js";
+import type { ArtifactKind, CommunicationAttachmentDto, ImageAttachmentDto } from "./artifacts.js";
 import type { HistoryWindowDto } from "./common.js";
 import type { ProjectDto } from "./projects.js";
 import type { DecisionDto } from "./workspace.js";
@@ -107,7 +107,9 @@ export interface ConversationMessageDto {
   authorAgentId?: string;
   /** Stable recipients bound to the #handles captured in the authored text. */
   agentMentions?: AgentMentionBindingDto[];
-  attachments?: ImageAttachmentDto[];
+  attachments?: CommunicationAttachmentDto[];
+  /** Canonical managed-artifact identities behind agent-authored attachments. */
+  artifactIds?: string[];
   document?: CommunicationDocumentReference;
   citations?: VerifiedCitationDto[];
   executionId?: string;
@@ -499,7 +501,9 @@ export interface MessageDto {
   agentMentions?: AgentMentionBindingDto[];
   /** Originating provider execution for agent-authored communication. */
   executionId?: string;
-  attachments?: ImageAttachmentDto[];
+  attachments?: CommunicationAttachmentDto[];
+  /** Canonical managed-artifact identities behind agent-authored attachments. */
+  artifactIds?: string[];
   document?: CommunicationDocumentReference;
   citations?: VerifiedCitationDto[];
   /** Durable per-recipient delivery evidence for operator-authored messages. */
@@ -559,7 +563,9 @@ export type SendMessageResponse = StartedMessageResponse | QueuedMessageResponse
 export type AgentMessageChannel = "individual" | "main" | "collaboration";
 
 interface AgentMessageRequestBase {
-  text: string;
+  text?: string;
+  /** Existing Project-managed artifacts to attach by immutable identity. */
+  artifactIds?: string[];
   /** Exact prompt-injection fence supplied by the latest steering prompt. */
   steeringInjectionId?: string;
   /** Optional long-form Markdown; `text` remains the concise scoped summary. */
@@ -652,6 +658,8 @@ export interface AllChatItemDto {
   author: GlobalChatSearchAuthorDto;
   text: string;
   createdAt: string;
+  attachments?: CommunicationAttachmentDto[];
+  artifactIds?: string[];
   /** Present only when this source item determines one exact active DM target. */
   directMessageAgent?: Pick<AgentDto, "id" | "title">;
 }
