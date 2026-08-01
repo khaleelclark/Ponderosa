@@ -1163,6 +1163,13 @@ describe("AgentStore — append + projection", () => {
     });
     expect(readFileSync(managedArtifactContentPath(dir, projectId, artifactId), "utf8"))
       .toContain("No diff text was provided by the engine.");
+    expect(store.getAgentDetail(agentId)?.changedFiles).toEqual([
+      expect.objectContaining({ path: "unchanged.txt", diffAvailable: false }),
+    ]);
+    expect(store.getChangedFileDetail(agentId, "unchanged.txt")).toMatchObject({
+      diffAvailable: false,
+    });
+    expect(store.getChangedFileDetail(agentId, "unchanged.txt")).not.toHaveProperty("diff");
   });
 
   itWithManagedArtifacts("rebuilds every execution artifact association and retains deleted-Agent audit evidence", () => {

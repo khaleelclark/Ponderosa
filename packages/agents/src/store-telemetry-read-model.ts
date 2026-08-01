@@ -507,7 +507,8 @@ export class AgentTelemetryReadModel {
     const boundarySeq = boundary ? Number(boundary.orderKey) : undefined;
     if (boundary && (!Number.isSafeInteger(boundarySeq) || boundarySeq! < 1)) throw new Error("invalid history cursor");
     const rows = this.client.prepare(`
-      SELECT path, kind, last_seq, last_changed_at, execution_count, diff IS NOT NULL AS diff_available
+      SELECT path, kind, last_seq, last_changed_at, execution_count,
+        COALESCE(length(diff), 0) > 0 AS diff_available
       FROM changed_file_projection
       WHERE agent_id = ?
         ${boundary ? "AND (last_seq < ? OR (last_seq = ? AND path < ?))" : ""}
@@ -558,7 +559,7 @@ export class AgentTelemetryReadModel {
       lastSeq: row.last_seq,
       lastChangedAt: row.last_changed_at,
       executionCount: row.execution_count,
-      diffAvailable: row.diff !== null,
+      diffAvailable: Boolean(row.diff),
       executionIds,
       provenanceTruncated: executionIds.length < row.execution_count,
       ...(row.diff ? { diff: row.diff } : {}),
