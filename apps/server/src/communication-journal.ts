@@ -57,8 +57,32 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
     }, 250);
     communicationReconciliationTimer.unref();
   };
+  const withSendTimeIdentity = (event: CommunicationEvent): CommunicationEvent => {
+    if (event.identity) return event;
+    const recipientAgentIds = event.intent === "collaboration"
+      ? event.audience.agentIds
+      : event.schemaVersion === 2 && event.intent === "user_dm"
+        ? event.audience.kind === "user_agent" ? [event.audience.agentId] : event.audience.agentIds
+        : [];
+    const recipientLabels = Object.fromEntries(recipientAgentIds.flatMap((agentId) => {
+      const title = store.getAgent(agentId)?.title;
+      return title ? [[agentId, title]] : [];
+    }));
+    const senderLabel = event.sender.kind === "agent"
+      ? store.getAgent(event.sender.agentId)?.title ?? "Agent"
+      : event.sender.kind === "user"
+        ? workspace.getPreferences().profile.displayName
+        : "Ponderosa";
+    return {
+      ...event,
+      identity: {
+        senderLabel,
+        ...(Object.keys(recipientLabels).length ? { recipientLabels } : {}),
+      },
+    };
+  };
   const recordCommunication = (event: CommunicationEvent): CommunicationEvent => {
-    const stored = store.appendCommunicationEvent(event);
+    const stored = store.appendCommunicationEvent(withSendTimeIdentity(event));
     if (!stored.replayed) scheduleCommunicationReconciliation(stored.event.projectId);
     if (!stored.replayed && stored.event.document?.artifactId) {
       messageLifecycleFaults?.afterCanonicalCommunicationAppend?.({
