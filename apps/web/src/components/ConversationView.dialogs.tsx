@@ -11,7 +11,6 @@ import {
 } from "@mui/material";
 import type {
   ConversationDto,
-  ConversationMessageDto,
   EngineDto,
 } from "@ponderosa/core";
 import { ConfirmDialog, ResourceDeletionDialog } from "./ConfirmationDialogs";
@@ -29,10 +28,6 @@ interface ConversationDialogsProps {
   renameValue: string;
   renamePending: boolean;
   renameError?: string;
-  editingMessage?: ConversationMessageDto;
-  correctionText: string;
-  correctionPending: boolean;
-  correctionError?: string;
   deleteOpen: boolean;
   deletePending: boolean;
   deleteError?: string;
@@ -46,9 +41,6 @@ interface ConversationDialogsProps {
   onRenameClose(): void;
   onRenameValueChange(value: string): void;
   onRename(): void;
-  onCorrectionClose(): void;
-  onCorrectionTextChange(value: string): void;
-  onCorrectMessage(message: ConversationMessageDto): void;
   onDeleteClose(): void;
   onDelete(): void;
 }
@@ -62,10 +54,6 @@ export function ConversationDialogs({
   renameValue,
   renamePending,
   renameError,
-  editingMessage,
-  correctionText,
-  correctionPending,
-  correctionError,
   deleteOpen,
   deletePending,
   deleteError,
@@ -76,9 +64,6 @@ export function ConversationDialogs({
   onRenameClose,
   onRenameValueChange,
   onRename,
-  onCorrectionClose,
-  onCorrectionTextChange,
-  onCorrectMessage,
   onDeleteClose,
   onDelete,
 }: ConversationDialogsProps): JSX.Element {
@@ -135,52 +120,6 @@ export function ConversationDialogs({
             onClick={onRename}
           >
             Save
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog
-        open={Boolean(editingMessage)}
-        onClose={() => {
-          if (!correctionPending) onCorrectionClose();
-        }}
-        fullWidth
-        maxWidth="sm"
-      >
-        <DialogTitle>Edit Message</DialogTitle>
-        <DialogContent>
-          <Alert severity="info" sx={{ mb: 2 }}>
-            The original remains in append-only history. Broadcast edits update
-            the shared note; edits to a delivered request queue a correction to
-            its original recipient.
-          </Alert>
-          <TextField
-            autoFocus
-            fullWidth
-            multiline
-            minRows={3}
-            label="Message"
-            value={correctionText}
-            onChange={event => onCorrectionTextChange(event.target.value)}
-          />
-          {correctionError ? (
-            <Alert severity="error" sx={{ mt: 2 }}>
-              {correctionError}
-            </Alert>
-          ) : null}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={onCorrectionClose} disabled={correctionPending}>
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            disabled={!correctionText.trim() || correctionPending}
-            onClick={() => {
-              if (editingMessage) onCorrectMessage(editingMessage);
-            }}
-          >
-            Save Edit
           </Button>
         </DialogActions>
       </Dialog>

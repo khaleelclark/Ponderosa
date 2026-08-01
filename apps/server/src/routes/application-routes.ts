@@ -45,7 +45,6 @@ import { registerAttachmentRoutes } from "./attachments.js";
 import { registerBrowserRoutes } from "./browsers.js";
 import { registerCollaborationRoutes } from "./collaboration.js";
 import { registerCommunicationDocumentRoutes } from "./communication-documents.js";
-import { registerConversationCorrectionRoutes } from "./conversation-corrections.js";
 import { registerConversationDeliveryRoutes } from "./conversation-deliveries.js";
 import { registerConversationRoutes } from "./conversations.js";
 import { registerDraftRoutes } from "./drafts.js";
@@ -80,7 +79,6 @@ type ApplicationRoutesContext =
   Omit<Parameters<typeof registerConversationDeliveryRoutes>[1],
     "projectDeletionInProgress" | "assetMetadata"> &
   Parameters<typeof registerQueuedMessageRoutes>[1] &
-  Parameters<typeof registerConversationCorrectionRoutes>[1] &
   Omit<Parameters<typeof registerCollaborationRoutes>[1],
     "projectDeletionInProgress" | "assetMetadata" | "afterCommunicationArtifactCommit"> &
   Omit<Parameters<typeof registerAgentCreationRoutes>[1], "messageLifecycleFaults"> &
@@ -442,15 +440,6 @@ registerQueuedMessageRoutes(app, {
   notifyScheduler: notifyScheduler,
   afterQueuedEditSqliteCommit: opts.messageLifecycleFaults?.afterQueuedEditSqliteCommit,
 });
-registerConversationCorrectionRoutes(app, {
-  store,
-  coordinationV3,
-  recordCommunication,
-  appendWorkspace,
-  publishCoordinationV3Changed,
-  notifyScheduler: notifyScheduler,
-});
-
 registerCollaborationRoutes(app, {
   store,
   coordinationV3,

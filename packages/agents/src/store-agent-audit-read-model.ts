@@ -14,6 +14,7 @@ import { asc, eq } from "drizzle-orm";
 import type { CommunicationEvent } from "@ponderosa/core";
 import type { Db } from "./db.js";
 import { messages } from "./schema.js";
+import { userDmAgentIds } from "./store-communication.js";
 
 type Page<T> = (agentId: string, input: { limit: number }) => HistoryPageDto<T>;
 const CHANGED_FILE_DETAIL_LIMIT = 100;
@@ -60,9 +61,20 @@ export class AgentAuditReadModel {
         const authorAgentId = communication?.sender.kind === "agent"
           ? communication.sender.agentId
           : undefined;
+        const directMessageAgents = communication
+          ? userDmAgentIds(communication).map((directAgentId) => {
+              const directAgent = this.getAgent(directAgentId);
+              return {
+                id: directAgentId,
+                title: directAgent?.title ?? communication.identity?.recipientLabels?.[directAgentId] ?? "Deleted Agent",
+              };
+            })
+          : [];
         return {
           id: row.id,
           communicationEventId: row.communicationEventId ?? undefined,
+          ...(communication ? { communicationIntent: communication.intent } : {}),
+          ...(directMessageAgents.length ? { directMessageAgents } : {}),
           agentId: row.agentId,
           seq: row.seq,
           role: authorAgentId

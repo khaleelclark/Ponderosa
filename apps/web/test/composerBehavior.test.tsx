@@ -82,6 +82,7 @@ describe("Composer behavior", () => {
       [],
       [],
       undefined,
+      undefined,
     );
     expect((input as HTMLTextAreaElement).value).toBe(
       "ship the current behavior",
@@ -242,6 +243,7 @@ describe("Composer behavior", () => {
       [],
       [],
       undefined,
+      undefined,
     );
     expect(onSend).not.toHaveBeenCalled();
     await waitFor(() => {
@@ -259,5 +261,97 @@ describe("Composer behavior", () => {
     expect(
       screen.queryByRole("button", { name: "Queue message" }),
     ).toBeNull();
+  });
+
+  it("presents continuation as an action and targets it only after selection", async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    renderComposer({
+      ...baseProps,
+      destinationMode: "project-chat",
+      allowUnmentionedSend: true,
+      mentionHandles: ["Spruce"],
+      continueWith: {
+        agentId: "agent-spruce",
+        handle: "Spruce",
+        title: "Spruce",
+        responding: false,
+      },
+      onSend,
+    });
+
+    expect(screen.getByRole("button", { name: "Continue with Spruce" })).toBeTruthy();
+    expect(screen.getByText(
+      "Sending without a recipient starts a new Agent.",
+    )).toBeTruthy();
+    expect(screen.queryByText("To: Spruce")).toBeNull();
+
+    const input = screen.getByRole("combobox", { name: "Message" });
+    await user.type(input, "Start fresh");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    expect(onSend).toHaveBeenLastCalledWith(
+      "Start fresh",
+      [],
+      [],
+      undefined,
+      undefined,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Continue with Spruce" }));
+    expect(screen.getByText("To: Spruce")).toBeTruthy();
+    const selectedDestination = screen.getByRole("button", {
+      name: "To: Spruce. Press Delete or Backspace to clear.",
+    });
+    expect(selectedDestination.getAttribute("title")).toBe("To: Spruce");
+    selectedDestination.focus();
+    await user.keyboard("{Backspace}");
+    expect(screen.getByRole("button", { name: "Continue with Spruce" })).toBeTruthy();
+    expect(screen.queryByText("To: Spruce")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Continue with Spruce" }));
+    await user.type(input, "Continue this run");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    expect(onSend).toHaveBeenLastCalledWith(
+      "#Spruce Continue this run",
+      [],
+      [],
+      undefined,
+      undefined,
+    );
+
+    expect(screen.getByRole("button", { name: "Continue with Spruce" })).toBeTruthy();
+    expect(screen.queryByText("To: Spruce")).toBeNull();
+  });
+
+  it("keeps an active response visibly and canonically selected", async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    renderComposer({
+      ...baseProps,
+      destinationMode: "project-chat",
+      allowUnmentionedSend: true,
+      continueWith: {
+        agentId: "agent-spruce",
+        handle: "Spruce",
+        title: "Spruce",
+        responding: true,
+      },
+      onSend,
+    });
+
+    expect(screen.getByText("To: Spruce")).toBeTruthy();
+    expect(screen.getByRole("button", {
+      name: "To: Spruce. Press Delete or Backspace to clear.",
+    })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Continue with Spruce" })).toBeNull();
+    await user.type(screen.getByRole("textbox", { name: "Message" }), "Steer this run");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    expect(onSend).toHaveBeenLastCalledWith(
+      "Steer this run",
+      [],
+      [],
+      undefined,
+      { implicitRecipientId: "agent-spruce" },
+    );
   });
 });

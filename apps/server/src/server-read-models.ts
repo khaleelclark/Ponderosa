@@ -102,10 +102,21 @@ export function createServerReadModels(context: ReadModelContext) {
         : communication?.schemaVersion === 2 && communication.intent === "user_dm"
           ? communication.audience.kind === "user_agent" ? [communication.audience.agentId] : communication.audience.agentIds
           : [];
+      const directMessageAgents = communication?.schemaVersion === 2 && communication.intent === "user_dm"
+        ? recipientAgentIds.map((agentId) => {
+            const agent = projectAgents.find((candidate) => candidate.id === agentId);
+            return {
+              id: agentId,
+              title: agent?.title ?? communication.identity?.recipientLabels?.[agentId] ?? "Deleted Agent",
+            };
+          })
+        : [];
       const agentMentions = resolveAgentMentionBindings(message.text, recipientAgentIds, projectAgents);
       const deliveryReceipts = deliveryReceiptsByEvent.get(message.communicationEventId) ?? [];
       return {
         ...message,
+        ...(communication ? { communicationIntent: communication.intent } : {}),
+        ...(directMessageAgents.length ? { directMessageAgents } : {}),
         ...(deliveryReceipts.length ? { deliveryReceipts } : {}),
         ...(agentMentions.length ? { agentMentions } : {}),
       };

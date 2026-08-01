@@ -1,9 +1,9 @@
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
+import CloseIcon from "@mui/icons-material/Close";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
 import SubdirectoryArrowRightIcon from "@mui/icons-material/SubdirectoryArrowRight";
 import {
-  Box,
   Button,
   Chip,
   IconButton,
@@ -112,14 +112,20 @@ export function ComposerProjectDestinationAction({
     ...(hasEveryoneDestination ? ["#everyone"] : []),
     ...projectDestinations.map(destination => `#${destination.handle}`),
   ];
-  const selectedLabel = continuing
-    ? continueWith!.title
+  const continuingHandleSelected =
+    explicitLabels.length === 1 &&
+    continueWith &&
+    projectDestinations.length === 1 &&
+    projectDestinations[0]!.handle.toLocaleLowerCase() ===
+      continueWith.handle.toLocaleLowerCase();
+  const selectedLabel = continuing || continuingHandleSelected
+    ? `To: ${continueWith!.title}`
     : explicitLabels.length > 1
       ? `${explicitLabels[0]} +${explicitLabels.length - 1}`
       : (explicitLabels[0] ?? "Destination");
-  const selectedDestinationLabels = continuing
-    ? [continueWith!.title]
-    : explicitLabels;
+  const selectedDestinationTitle = continuing || continuingHandleSelected
+    ? selectedLabel
+    : explicitLabels.join(" ");
   const clearExplicitDestinations = () => {
     clearDestination("broadcast");
     clearDestination("everyone");
@@ -169,9 +175,14 @@ export function ComposerProjectDestinationAction({
           hasBroadcastDestination ? <CampaignOutlinedIcon /> : undefined
         }
         label={selectedLabel}
-        title={selectedDestinationLabels.join(" ")}
-        aria-label={`Destinations: ${selectedDestinationLabels.join(", ")}`}
+        title={selectedDestinationTitle}
+        aria-label={`${selectedLabel}${
+          explicitLabels.length > 1
+            ? `: ${explicitLabels.join(", ")}`
+            : ""
+        }. Press Delete or Backspace to clear.`}
         onDelete={chooseNewAgent}
+        deleteIcon={<CloseIcon />}
         sx={{
           maxWidth: { xs: 124, sm: 240 },
           height: 34,
@@ -186,39 +197,60 @@ export function ComposerProjectDestinationAction({
     );
   }
   if (!continueWith) return null;
+  const explanation =
+    `Select ${continueWith.title} as the recipient. Sending without a recipient starts a new Agent.`;
+  const helperText = "Sending without a recipient starts a new Agent.";
   return (
-    <Button
-      aria-label={`Continue with ${continueWith.title}`}
-      size="small"
-      color="primary"
-      startIcon={<SubdirectoryArrowRightIcon />}
-      onClick={chooseContinuation}
+    <Stack
+      spacing={0.25}
       sx={{
-        minHeight: 40,
         minWidth: 0,
-        maxWidth: { xs: 124, sm: 240 },
-        px: { xs: 0.5, sm: 0.75 },
-        fontWeight: 700,
-        textTransform: "none",
-        justifyContent: "flex-start",
-        "& .MuiButton-startIcon": { mr: 0.5 },
+        maxWidth: { xs: 190, sm: 360 },
+        alignItems: "flex-start",
       }}
     >
-      <Typography
-        component="span"
-        variant="body2"
-        noWrap
-        sx={{ minWidth: 0, fontWeight: 700 }}
-      >
-        <Box
-          component="span"
-          sx={{ display: { xs: "none", sm: "inline" } }}
+      <Tooltip title={explanation} describeChild>
+        <Button
+          aria-label={`Continue with ${continueWith.title}`}
+          variant="outlined"
+          size="small"
+          color="primary"
+          startIcon={<SubdirectoryArrowRightIcon />}
+          onClick={chooseContinuation}
+          sx={{
+            minHeight: 36,
+            minWidth: 0,
+            maxWidth: { xs: 190, sm: 240 },
+            px: 1,
+            borderRadius: 1,
+            fontWeight: 700,
+            textTransform: "none",
+            justifyContent: "flex-start",
+            "& .MuiButton-startIcon": { mr: 0.5 },
+          }}
         >
-          Continue with{" "}
-        </Box>
-        {continueWith.title}
+          <Typography
+            component="span"
+            variant="body2"
+            noWrap
+            sx={{ minWidth: 0, fontWeight: 700 }}
+          >
+            Continue with {continueWith.title}
+          </Typography>
+        </Button>
+      </Tooltip>
+      <Typography
+        variant="caption"
+        color="text.secondary"
+        sx={{
+          maxWidth: 360,
+          fontSize: 11,
+          lineHeight: 1.25,
+        }}
+      >
+        {helperText}
       </Typography>
-    </Button>
+    </Stack>
   );
 }
 

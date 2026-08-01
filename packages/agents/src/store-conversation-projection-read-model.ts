@@ -359,10 +359,6 @@ export class AgentConversationProjectionReadModel {
     projected: ProjectedCommunicationMessage[],
     includeFileActivity = true,
   ): ConversationMessageDto[] {
-    const correctedBy = new Map(projected.flatMap((message) =>
-      message.correctionOfEventId
-        ? [[message.correctionOfEventId, message.messageId] as const]
-        : []));
     const runsByAgent = new Map<string, AgentRunDto[]>();
     const statusByAgentExecution = new Map<
       string,
@@ -443,12 +439,6 @@ export class AgentConversationProjectionReadModel {
         ...(message.citations?.length ? { citations: message.citations } : {}),
         ...(message.executionId ? { executionId: message.executionId } : {}),
         ...(fileActivity?.length ? { fileActivity } : {}),
-        ...(message.correctionOfEventId
-          ? { correctionOfMessageId: message.correctionOfEventId }
-          : {}),
-        ...(correctedBy.has(message.eventId)
-          ? { correctedByMessageId: correctedBy.get(message.eventId) }
-          : {}),
         ...(message.editedAt
           ? { editedAt: message.editedAt, editRevision: message.editRevision }
           : {}),

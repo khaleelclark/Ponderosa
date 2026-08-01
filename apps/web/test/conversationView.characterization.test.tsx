@@ -317,6 +317,7 @@ describe("ConversationView public behavior", () => {
 
     expect(screen.getByText("First actual response")).toBeTruthy();
     expect(screen.getByText("Second actual response")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit message" })).toBeNull();
 
     const secondArticle = document.getElementById("master-message-message-two");
     expect(secondArticle).toBeTruthy();

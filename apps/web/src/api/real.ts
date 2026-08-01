@@ -35,8 +35,6 @@ import type {
   ConversationDraftConflictListDto,
   ConversationDraftDto,
   ConversationDto,
-  CorrectConversationMessageRequest,
-  CorrectConversationMessageResponse,
   CopyAgentPackageRequest,
   CreateAgentPresetRequest,
   CreateAgentRequest,
@@ -469,12 +467,6 @@ export const realApi = {
   },
   cancelMessageDelivery(projectId: string, activationId: string, request: CancelMessageDeliveryRequest): Promise<CancelMessageDeliveryResponse> {
     return requestJson<CancelMessageDeliveryResponse>(`/api/projects/${encodeURIComponent(projectId)}/message-deliveries/${encodeURIComponent(activationId)}/cancel`, {
-      method: "POST",
-      body: JSON.stringify(request),
-    });
-  },
-  correctConversationMessage(conversationId: string, messageId: string, request: CorrectConversationMessageRequest): Promise<CorrectConversationMessageResponse> {
-    return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/corrections`, {
       method: "POST",
       body: JSON.stringify(request),
     });
