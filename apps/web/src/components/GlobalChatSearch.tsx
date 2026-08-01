@@ -16,6 +16,7 @@ import {
   ListItemText,
   Stack,
   TextField,
+  Tooltip,
   Typography,
   useMediaQuery,
   useTheme,
@@ -274,7 +275,10 @@ export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
     </DialogTitle>
     <DialogContent sx={{ px: { xs: 1.5, sm: 2 }, pt: "16px !important", pb: 1.5, minHeight: { sm: 520 } }}>
       <Stack direction="row" spacing={.75} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
-        {(["all", "projects", "chats", "agents", "files"] as const).map((value) => <Chip key={value} clickable label={value[0]!.toUpperCase() + value.slice(1)} color={scope === value ? "primary" : "default"} variant={scope === value ? "filled" : "outlined"} onClick={() => setScope(value)} />)}
+        {(["all", "projects", "chats", "agents"] as const).map((value) => <Chip key={value} clickable label={value[0]!.toUpperCase() + value.slice(1)} color={scope === value ? "primary" : "default"} variant={scope === value ? "filled" : "outlined"} onClick={() => setScope(value)} />)}
+        <Tooltip title="File discovery is not indexed yet">
+          <span><Chip disabled label="Files · Coming later" variant="outlined" /></span>
+        </Tooltip>
       </Stack>
       {search.isFetching ? <LinearProgress aria-label="Searching chats" sx={{ mb: 1 }} /> : null}
       {search.isError ? <Alert severity="error" sx={{ mb: 1 }}>Search is unavailable. Check the server connection and try again.</Alert> : null}
