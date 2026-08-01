@@ -276,6 +276,7 @@ describe("Composer behavior", () => {
         handle: "Spruce",
         title: "Spruce",
         responding: false,
+        selectionKey: "direct-inactive",
       },
       onSend,
     });
@@ -332,6 +333,7 @@ describe("Composer behavior", () => {
         handle: "Spruce",
         title: "Spruce",
         responding: true,
+        selectionKey: "direct-active",
       },
       onSend,
     });
@@ -350,5 +352,55 @@ describe("Composer behavior", () => {
       undefined,
       { implicitRecipientId: "agent-spruce" },
     );
+  });
+
+  it("does not reselect a cleared Direct recipient when its display name changes", async () => {
+    const user = userEvent.setup();
+    const view = renderComposer({
+      ...baseProps,
+      destinationMode: "project-chat",
+      allowUnmentionedSend: true,
+      continueWith: {
+        agentId: "agent-spruce",
+        handle: "Spruce",
+        title: "Spruce",
+        selectionKey: "direct-one",
+      },
+    });
+
+    const selectedDestination = screen.getByRole("button", {
+      name: "To: Spruce. Press Delete or Backspace to clear.",
+    });
+    selectedDestination.focus();
+    await user.keyboard("{Backspace}");
+    view.rerenderComposer({
+      ...baseProps,
+      destinationMode: "project-chat",
+      allowUnmentionedSend: true,
+      continueWith: {
+        agentId: "agent-spruce",
+        handle: "Redwood",
+        title: "Redwood",
+        selectionKey: "direct-one",
+      },
+    });
+
+    expect(screen.queryByText("To: Redwood")).toBeNull();
+    expect(screen.getByText(
+      "Sending without a recipient starts a new Agent.",
+    )).toBeTruthy();
+
+    view.rerenderComposer({
+      ...baseProps,
+      destinationMode: "project-chat",
+      allowUnmentionedSend: true,
+      continueWith: {
+        agentId: "agent-spruce",
+        handle: "Redwood",
+        title: "Redwood",
+        selectionKey: "direct-two",
+      },
+    });
+    expect(screen.getByText("To: Redwood")).toBeTruthy();
   });
 });

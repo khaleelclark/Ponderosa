@@ -22,9 +22,9 @@ import {
   ChatMessageBody,
   CommunicationDocumentCard,
   chatMessageLayoutKey,
+  communicationVisibleText,
   individualChatSenderLabel,
   linkPreviewScopeForMessage,
-  stripLeadingAgentMentions,
   stripDocumentPrefixText,
 } from "./ChatMessages";
 import type { LinkPreviewScope } from "./ChatMessages";
@@ -83,15 +83,12 @@ function visibleAgentMessageText(message: MessageDto): string {
     message.text,
     Boolean(message.document),
   );
-  if (message.communicationIntent === "user_dm") {
-    return stripLeadingAgentMentions(text, message.agentMentions);
-  }
-  if (message.communicationIntent !== "broadcast") return text;
-  const withoutRoutingPrefix = text.replace(
-    /^\s*#broadcast(?:\s+|$)/iu,
-    "",
-  );
-  return withoutRoutingPrefix.trim() ? withoutRoutingPrefix : text;
+  return communicationVisibleText({
+    text,
+    intent: message.communicationIntent,
+    fromAgent: Boolean(message.authorAgentId),
+    agentMentions: message.agentMentions,
+  });
 }
 
 function ChatPaneComponent({

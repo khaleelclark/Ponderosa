@@ -458,7 +458,11 @@ export function ConversationView({
     const message = [...messages]
       .reverse()
       .find(candidate => candidate.communicationIntent === "user_dm");
-    const agentId = message?.authorAgentId ?? message?.directMessageAgents?.[0]?.id;
+    const agentId = message?.authorAgentId ?? (
+      message?.directMessageAgents?.length === 1
+        ? message.directMessageAgents[0]!.id
+        : undefined
+    );
     const agent = agentId ? agents.find(candidate => candidate.id === agentId) : undefined;
     return agent && message
       ? { agent, selectionKey: message.communicationEventId ?? message.id }

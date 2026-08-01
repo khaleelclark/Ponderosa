@@ -7,7 +7,7 @@ import LanguageIcon from "@mui/icons-material/Language";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, Tooltip, Typography, useTheme } from "@mui/material";
 import { unicodeCodePointLength } from "@ponderosa/core";
-import type { CommunicationDocumentReference, MessageDto, VerifiedCitationDto } from "@ponderosa/core";
+import type { CommunicationDocumentReference, CommunicationIntent, MessageDto, VerifiedCitationDto } from "@ponderosa/core";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
@@ -60,6 +60,38 @@ export function stripLeadingAgentMentions(
     stripped = true;
   }
   return stripped && visible.trim() ? visible.trimStart() : text;
+}
+
+function stripLeadingRoutingHandle(text: string, handle: string): string {
+  const visible = text.trimStart();
+  const match = visible.match(
+    /^#([\p{L}\p{N}_-]+)(?=$|\s|[.,!?;:])(?:[.,!?;:]?\s*)/u,
+  );
+  if (
+    !match ||
+    match[1]!.toLocaleLowerCase() !== handle.toLocaleLowerCase()
+  ) {
+    return text;
+  }
+  const remainder = visible.slice(match[0].length);
+  return remainder.trim() ? remainder.trimStart() : text;
+}
+
+/** Keep canonical routing tokens copyable while omitting redundant UI prose. */
+export function communicationVisibleText(input: {
+  text: string;
+  intent?: CommunicationIntent;
+  fromAgent: boolean;
+  agentMentions?: readonly { handle: string }[];
+}): string {
+  if (input.intent === "user_dm") {
+    return input.fromAgent
+      ? stripLeadingRoutingHandle(input.text, "user")
+      : stripLeadingAgentMentions(input.text, input.agentMentions);
+  }
+  return input.intent === "broadcast"
+    ? stripLeadingRoutingHandle(input.text, "broadcast")
+    : input.text;
 }
 
 function projectFileHref(projectId: string | undefined, href: string | undefined, mode: "preview" | "download"): string | undefined {

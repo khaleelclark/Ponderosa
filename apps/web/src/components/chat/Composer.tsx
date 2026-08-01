@@ -187,7 +187,7 @@ export function Composer({
   } = draftAttachments;
   useEffect(() => {
     setImplicitContinueSelected(Boolean(continueWith));
-  }, [continueWith?.handle, continueWith?.selectionKey]);
+  }, [continueWith?.selectionKey]);
   const submissionText = composerSubmissionText(text, pastedText);
   const mentionedHandles = useMemo(
     () => findMentionedHandles(submissionText, mentionHandles ?? []),

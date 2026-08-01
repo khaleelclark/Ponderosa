@@ -30,6 +30,7 @@ export interface ServerContext {
     | "getChangedFileDetail"
     | "getChangedFilePage"
     | "getConversation"
+    | "getCommunicationEvent"
     | "getProject"
     | "getRunOutputPage"
     | "getRunPage"

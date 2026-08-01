@@ -389,8 +389,19 @@ describe("ConversationView public behavior", () => {
           communicationIntent: "broadcast",
           conversationId: firstConversationId,
           role: "user",
-          text: "Shared update",
+          text: "#broadcast Shared update",
           createdAt: "2026-07-25T10:02:00.000Z",
+        },
+        {
+          id: "agent-direct-response",
+          communicationEventId: "agent-direct-communication",
+          communicationIntent: "user_dm",
+          directMessageAgents: [{ id: agent.id, title: agent.title }],
+          conversationId: firstConversationId,
+          role: "assistant",
+          authorAgentId: agent.id,
+          text: "#user Agent private response",
+          createdAt: "2026-07-25T10:03:00.000Z",
         },
       ]),
     );
@@ -399,12 +410,50 @@ describe("ConversationView public behavior", () => {
 
     expect(screen.getByText("Private hello")).toBeTruthy();
     expect(screen.queryByText("#Agent-One Private hello")).toBeNull();
+    expect(screen.getByText("Agent private response")).toBeTruthy();
+    expect(screen.queryByText("#user Agent private response")).toBeNull();
+    expect(screen.getByText("Shared update")).toBeTruthy();
+    expect(screen.queryByText("#broadcast Shared update")).toBeNull();
     expect(screen.queryByText(/Direct ·/u)).toBeNull();
     expect(screen.getByText("To: Agent One")).toBeTruthy();
     expect(screen.queryByText(
       "Sending without a recipient starts a new Agent.",
     )).toBeNull();
     expect(screen.getAllByText("Broadcast")).toHaveLength(1);
+
+    client.clear();
+  });
+
+  it("does not collapse a group Direct audience into one implicit recipient", () => {
+    const client = createClient();
+    client.setQueryData<ConversationDetailDto>(
+      queryKeys.conversations.detail(firstConversationId),
+      detail(conversation(firstConversationId, "First conversation"), [{
+        id: "group-direct-message",
+        communicationEventId: "group-direct-communication",
+        communicationIntent: "user_dm",
+        directMessageAgents: [
+          { id: agent.id, title: agent.title },
+          { id: "agent-two", title: "Agent Two" },
+        ],
+        conversationId: firstConversationId,
+        role: "user",
+        text: "#Agent-One #Agent-Two Private hello",
+        createdAt: "2026-07-25T10:01:00.000Z",
+        agentMentions: [
+          { agentId: agent.id, handle: "Agent-One" },
+          { agentId: "agent-two", handle: "Agent-Two" },
+        ],
+      }]),
+    );
+
+    render(view(client, <ConversationView {...props()} />));
+
+    expect(screen.getByText("Private hello")).toBeTruthy();
+    expect(screen.queryByText(/^To:/u)).toBeNull();
+    expect(screen.getByText(
+      "Sending without a recipient starts a new Agent.",
+    )).toBeTruthy();
 
     client.clear();
   });

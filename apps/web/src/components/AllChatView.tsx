@@ -34,7 +34,7 @@ import {
 import type { Route } from "../routing";
 import {
   ChatMessageBody,
-  stripLeadingAgentMentions,
+  communicationVisibleText,
 } from "./chat/ChatMessages";
 import { Composer } from "./chat/Composer";
 import { useMobileComposerAutoHide } from "../mobileChat";
@@ -807,14 +807,12 @@ export function AllChatView({
                   ariaLabel: allChatSourceAccessibleName(item),
                   body: (
                     <ChatMessageBody
-                      text={
-                        fromUser && item.communicationIntent === "user_dm"
-                          ? stripLeadingAgentMentions(
-                              item.text,
-                              item.agentMentions,
-                            )
-                          : item.text
-                      }
+                      text={communicationVisibleText({
+                        text: item.text,
+                        intent: item.communicationIntent,
+                        fromAgent: !fromUser,
+                        agentMentions: item.agentMentions,
+                      })}
                       collapseLongMessage
                       compactMarkdown
                       projectId={item.project.id}

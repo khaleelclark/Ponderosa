@@ -182,7 +182,6 @@ export function ComposerProjectDestinationAction({
       />
     );
   }
-  if (!continueWith) return null;
   const helperText = "Sending without a recipient starts a new Agent.";
   return (
     <Typography

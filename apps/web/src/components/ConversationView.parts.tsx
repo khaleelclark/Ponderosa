@@ -36,6 +36,7 @@ import { ResponseFileActivity } from "./activity/ResponseFileActivity";
 import {
   ChatMessageBody,
   CommunicationDocumentCard,
+  communicationVisibleText,
   stripLeadingAgentMentions,
   stripDocumentPrefixText,
 } from "./chat/ChatMessages";
@@ -91,9 +92,14 @@ function ConversationMessageComponent({
     Boolean(message.document),
   );
   const visibleText =
-    conversation === "collaboration" || message.communicationIntent === "user_dm"
+    conversation === "collaboration"
       ? stripLeadingAgentMentions(copyableText, message.agentMentions)
-      : copyableText;
+      : communicationVisibleText({
+          text: copyableText,
+          intent: message.communicationIntent,
+          fromAgent: Boolean(message.authorAgentId),
+          agentMentions: message.agentMentions,
+        });
   const senderName = fromManager
     ? (operatorProfile?.displayName ?? "You")
     : agentTitle(message.authorAgentId);
