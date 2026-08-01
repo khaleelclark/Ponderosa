@@ -167,6 +167,21 @@ function RecentChatItem({ recent, onSelect, active = false, id, onActive }: {
   />;
 }
 
+export function UnavailableGlobalSearchScopeChip({ scope }: { scope: "Projects" | "Files" }): JSX.Element {
+  const reason = `${scope} search is coming later because ${scope.toLocaleLowerCase()} discovery is not indexed yet`;
+  return <Tooltip title={reason}>
+    <Chip
+      label={`${scope} · Coming later`}
+      variant="outlined"
+      role="button"
+      aria-disabled="true"
+      aria-label={reason}
+      tabIndex={0}
+      sx={{ opacity: 0.62, cursor: "not-allowed" }}
+    />
+  </Tooltip>;
+}
+
 export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
   open: boolean;
   onClose(): void;
@@ -177,7 +192,7 @@ export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
   const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
   const notifications = useNotifications();
   const [query, setQuery] = useState("");
-  const [scope, setScope] = useState<"all" | "projects" | "chats" | "agents" | "files">("all");
+  const [scope, setScope] = useState<"all" | "chats" | "agents">("all");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(-1);
   const [resultLimit, setResultLimit] = useState(25);
@@ -275,10 +290,9 @@ export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
     </DialogTitle>
     <DialogContent sx={{ px: { xs: 1.5, sm: 2 }, pt: "16px !important", pb: 1.5, minHeight: { sm: 520 } }}>
       <Stack direction="row" spacing={.75} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
-        {(["all", "projects", "chats", "agents"] as const).map((value) => <Chip key={value} clickable label={value[0]!.toUpperCase() + value.slice(1)} color={scope === value ? "primary" : "default"} variant={scope === value ? "filled" : "outlined"} onClick={() => setScope(value)} />)}
-        <Tooltip title="File discovery is not indexed yet">
-          <span><Chip disabled label="Files · Coming later" variant="outlined" /></span>
-        </Tooltip>
+        {(["all", "chats", "agents"] as const).map((value) => <Chip key={value} clickable label={value[0]!.toUpperCase() + value.slice(1)} color={scope === value ? "primary" : "default"} variant={scope === value ? "filled" : "outlined"} onClick={() => setScope(value)} />)}
+        <UnavailableGlobalSearchScopeChip scope="Projects" />
+        <UnavailableGlobalSearchScopeChip scope="Files" />
       </Stack>
       {search.isFetching ? <LinearProgress aria-label="Searching chats" sx={{ mb: 1 }} /> : null}
       {search.isError ? <Alert severity="error" sx={{ mb: 1 }}>Search is unavailable. Check the server connection and try again.</Alert> : null}
@@ -328,7 +342,7 @@ export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
         </Box> : null}
       </>}
       </Box>
-      {debouncedQuery && !search.isFetching && visibleResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 2, textAlign: "center" }}>{scope === "projects" || scope === "files" ? `${scope === "projects" ? "Project" : "File"} discovery is not yet indexed; search matching messages instead.` : `No ${scope === "all" ? "messages" : scope} match “${debouncedQuery}”.`}</Typography> : null}
+      {debouncedQuery && !search.isFetching && visibleResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 2, textAlign: "center" }}>{`No ${scope === "all" ? "messages" : scope} match “${debouncedQuery}”.`}</Typography> : null}
       {!debouncedQuery && !search.isFetching && unread.length === 0 && (search.data?.recentChats.length ?? 0) === 0 ? <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: .5 }}>{openAttentionCount ? `${openAttentionCount} item${openAttentionCount === 1 ? "" : "s"} needs attention.` : "You’re all caught up."}</Typography> : null}
       {search.data?.truncated ? <Stack spacing={1} sx={{ mt: 1 }}>
         <Alert severity="info">Showing the newest matches from a bounded search. Add more terms to narrow the result.</Alert>
