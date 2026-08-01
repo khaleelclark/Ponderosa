@@ -10,7 +10,6 @@ import {
   PONDEROSA_ROLLOVER_TOOL,
   PONDEROSA_TEAM_DIRECTORY_TOOL,
   PONDEROSA_UPDATE_REQUEST_TOOL,
-  effectiveProviderPermissionMode,
   type AgentDto,
   type AgentEvent,
   type ChatMessage,
@@ -36,7 +35,6 @@ import type {
 import type { ContextCursor } from "../context-cursors.js";
 import { PROVIDER_DYNAMIC_TOOLS } from "../runtime-selection.js";
 import { cleanupRuntimeAttachments } from "../runtime-attachments.js";
-import { AUTO_ALLOWED_DECISION_OPTION_ID } from "../runtime-elicitation-broker.js";
 import type { AgentMessageRunContext } from "./agent-message-run.js";
 
 function humanizeProviderName(value: string): string {
@@ -332,22 +330,7 @@ export function startProviderRunExecution(
                 return { action: "cancel" };
               }
             }
-            const conversationAutoApproves =
-              Boolean(currentRun.conversationId) && (() => {
-                const conversation = store.getConversation(currentRun.conversationId!);
-                const project = conversation
-                  ? store.getProject(conversation.projectId)
-                  : undefined;
-                return Boolean(conversation && project &&
-                  effectiveProviderPermissionMode({
-                    conversation: conversation.providerPermissionMode,
-                    project: project.providerPermissionMode,
-                    workspace: workspace.getPreferences().providerPermissionMode,
-                  }) === "auto_confirmations");
-              })() &&
-              runtimeElicitations.canRememberForRun(request);
-            if (conversationAutoApproves ||
-                runtimeElicitations.allowsForRun(currentRun.runId, request)) {
+            if (runtimeElicitations.allowsForRun(currentRun.runId, request)) {
               return { action: "accept", content: {} };
             }
             const rememberableConfirmation = runtimeElicitations.canRememberForRun(request);
@@ -402,36 +385,6 @@ export function startProviderRunExecution(
               return { action: "cancel" };
             }
             const waiting = runtimeElicitations.wait(decision.id, request, currentRun.controller.signal);
-            // Close the tiny race where the Chat policy changes after the
-            // initial check but before this provider request enters the broker.
-            if (rememberableConfirmation &&
-                currentRun.conversationId &&
-                (() => {
-                  const conversation = store.getConversation(currentRun.conversationId!);
-                  const project = conversation
-                    ? store.getProject(conversation.projectId)
-                    : undefined;
-                  return Boolean(conversation && project &&
-                    effectiveProviderPermissionMode({
-                      conversation: conversation.providerPermissionMode,
-                      project: project.providerPermissionMode,
-                      workspace: workspace.getPreferences().providerPermissionMode,
-                    }) === "auto_confirmations");
-                })()) {
-              const resolved = workspace.resolveDecision(decision.id, {
-                optionId: AUTO_ALLOWED_DECISION_OPTION_ID,
-                text: "Allowed automatically by this Chat’s provider permissions.",
-                respondedAt: new Date().toISOString(),
-              });
-              if (resolved) {
-                runtimeElicitations.respond(decision.id, {
-                  action: "accept",
-                  content: {},
-                });
-                publishWorkspaceSince(cursor);
-                return waiting;
-              }
-            }
             workspace.createNotification({
               projectId: decision.projectId,
               conversationId: decision.conversationId,

@@ -2,10 +2,8 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type {
-  ConversationDto,
   CreateProjectRequest,
   ModelOption,
-  ProviderPermissionSetting,
   UpdateProjectRequest,
 } from "@ponderosa/core";
 import type { AgentStore, WorkspaceStore } from "@ponderosa/agents";
@@ -31,7 +29,6 @@ interface ProjectRoutesContext {
   organizationEnvelopeStates: Map<string, { sessionId: string; hash: string }>;
   cachedModelOptions(adapter: EngineRegistration["adapter"], projectId?: string): ModelOption[];
   appendWorkspace(event: Parameters<WorkspaceStore["append"]>[0]): unknown;
-  applyProviderPermissionMode(conversation: ConversationDto): void;
   refreshCommunicationReconciliation(projectId: string): void;
   clearAgentResumeSession(agentId: string, reason: string): void;
   persistentRuntimeForTermination(agentId: string): PersistentRuntime | undefined;
@@ -58,7 +55,6 @@ export function registerProjectRoutes(
     organizationEnvelopeStates,
     cachedModelOptions,
     appendWorkspace,
-    applyProviderPermissionMode,
     refreshCommunicationReconciliation,
     clearAgentResumeSession,
     persistentRuntimeForTermination,
@@ -166,14 +162,6 @@ export function registerProjectRoutes(
     const label = request.body?.label?.trim() ?? current.label;
     if (!label) return reply.code(400).send({ error: "label is required" });
     if (request.body.instructions !== undefined && typeof request.body.instructions !== "string") return reply.code(400).send({ error: "instructions must be a string" });
-    const permissionMode = request.body.providerPermissionMode;
-    if (permissionMode !== undefined && !([
-      "inherit",
-      "ask",
-      "auto_confirmations",
-    ] satisfies ProviderPermissionSetting[]).includes(permissionMode)) {
-      return reply.code(400).send({ error: "invalid provider permission mode" });
-    }
     const defaultEngine = request.body.defaultEngine ?? current.defaultEngine;
     const engineChanged = defaultEngine !== current.defaultEngine;
     if (!engines.has(defaultEngine)) return reply.code(400).send({ error: "unknown engine" });
@@ -193,9 +181,6 @@ export function registerProjectRoutes(
       defaultEngine,
       defaultModel: defaultModel ?? null,
       defaultEffort: defaultEffort ?? null,
-      ...(permissionMode !== undefined
-        ? { providerPermissionMode: permissionMode }
-        : {}),
       ...(request.body.instructions !== undefined ? { instructions: request.body.instructions } : {}),
     });
     if (!project) return reply.code(404).send({ error: "project not found" });
@@ -209,42 +194,6 @@ export function registerProjectRoutes(
       }
     }
     appendWorkspace({ type: "project_changed", projectId: project.id, action: "updated" });
-    if (permissionMode !== undefined &&
-        permissionMode !== current.providerPermissionMode) {
-      for (const conversation of store.listConversations(project.id)) {
-        if (conversation.providerPermissionMode === "inherit") {
-          applyProviderPermissionMode(conversation);
-        }
-      }
-    }
     return project;
   });
-
-  app.post<{ Params: { id: string } }>(
-    "/api/projects/:id/provider-permissions/apply",
-    async (request, reply) => {
-      const project = store.getProject(request.params.id);
-      if (!project) return reply.code(404).send({ error: "project not found" });
-      let updatedConversations = 0;
-      for (const current of store.listConversations(project.id)) {
-        const conversation = current.providerPermissionMode === "inherit"
-          ? current
-          : store.updateConversation(current.id, {
-              providerPermissionMode: "inherit",
-            });
-        if (!conversation) continue;
-        if (current.providerPermissionMode !== "inherit") {
-          updatedConversations += 1;
-          appendWorkspace({
-            type: "conversation_changed",
-            projectId: project.id,
-            conversationId: conversation.id,
-            action: "updated",
-          });
-        }
-        applyProviderPermissionMode(conversation);
-      }
-      return { updatedConversations };
-    },
-  );
 }

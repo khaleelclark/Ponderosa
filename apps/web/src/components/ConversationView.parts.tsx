@@ -36,6 +36,7 @@ import { ResponseFileActivity } from "./activity/ResponseFileActivity";
 import {
   ChatMessageBody,
   CommunicationDocumentCard,
+  stripLeadingAgentMentions,
   stripDocumentPrefixText,
 } from "./chat/ChatMessages";
 import { ProjectRelationshipLink } from "./HeaderRelationshipLinks";
@@ -43,35 +44,11 @@ import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { DecisionCard } from "./decisions/DecisionCard";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
-import { DirectMessageScope } from "./chat/DirectMessageScope";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 import {
   AUTO_ALLOWED_DECISION_OPTION_ID,
   type MainTimelineEntry,
 } from "./ConversationView.helpers";
-
-function stripLeadingAgentMentions(
-  text: string,
-  mentions: ConversationMessageDto["agentMentions"],
-): string {
-  if (!mentions?.length) return text;
-  const handles = new Set(
-    mentions.map(mention => mention.handle.toLocaleLowerCase()),
-  );
-  let visible = text.trimStart();
-  let stripped = false;
-  while (visible) {
-    const match = visible.match(
-      /^#([\p{L}\p{N}_-]+)(?=$|\s|[.,!?;:])(?:[.,!?;:]?\s*)/u,
-    );
-    if (!match || !handles.has(match[1]!.toLocaleLowerCase())) break;
-    visible = visible.slice(match[0].length);
-    stripped = true;
-  }
-  return stripped && visible.trim()
-    ? visible.trimStart()
-    : text;
-}
 
 function ConversationMessageComponent({
   message,
@@ -114,7 +91,7 @@ function ConversationMessageComponent({
     Boolean(message.document),
   );
   const visibleText =
-    conversation === "collaboration"
+    conversation === "collaboration" || message.communicationIntent === "user_dm"
       ? stripLeadingAgentMentions(copyableText, message.agentMentions)
       : copyableText;
   const senderName = fromManager
@@ -146,8 +123,8 @@ function ConversationMessageComponent({
             },
         createdAt: message.createdAt,
         source:
-          message.communicationIntent === "user_dm" && message.directMessageAgents?.length ? (
-            <DirectMessageScope agents={message.directMessageAgents} />
+          message.communicationIntent === "broadcast" ? (
+            <Chip size="small" variant="outlined" label="Broadcast" />
           ) : conversation === "collaboration" && recipientNames.length ? (
             <Typography
               component="span"
@@ -243,6 +220,7 @@ function ConversationMessageComponent({
               receipts={message.deliveryReceipts}
               recipientName={agentId => agentTitle(agentId)}
               onOpenAgent={onOpenAgent}
+              compactSuccess={message.communicationIntent === "user_dm"}
             />
           ) : undefined,
         actions: (

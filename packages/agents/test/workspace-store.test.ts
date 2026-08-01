@@ -59,6 +59,24 @@ describe("WorkspaceStore canonical replay", () => {
     });
   });
 
+  it("replays preferences written with the removed provider permission field", () => {
+    const { dir, store } = fixture();
+    store.updatePreferences({ projectSort: "custom" });
+    const eventsFile = path.join(dir, "workspace-events.jsonl");
+    const record = JSON.parse(readFileSync(eventsFile, "utf8")) as {
+      event: { preferences: Record<string, unknown> };
+    };
+    record.event.preferences.providerPermissionMode = "auto_confirmations";
+    writeFileSync(eventsFile, `${JSON.stringify(record)}\n`);
+
+    const preferences = new WorkspaceStore(dir).getPreferences() as Record<
+      string,
+      unknown
+    >;
+    expect(preferences.projectSort).toBe("custom");
+    expect(preferences).not.toHaveProperty("providerPermissionMode");
+  });
+
   it("deduplicates notifications and rotates/removes one device subscription", () => {
     const { dir, store } = fixture();
     const notification = store.createNotification({ projectId: "project", conversationId: "chat", communicationEventId: "event", kind: "mentions", title: "Agent", body: "Hello" });

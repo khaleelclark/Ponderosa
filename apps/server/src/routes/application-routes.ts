@@ -1,11 +1,9 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type {
-  ConversationDto,
   DecisionDto,
   GlobalChatSearchResponseDto,
 } from "@ponderosa/core";
-import { effectiveProviderPermissionMode } from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
 import {
   BrowserSessionError,
@@ -28,10 +26,7 @@ import {
 } from "../project-files.js";
 import { runtimeSelectionError } from "../runtime-selection.js";
 import type { ServerContext } from "../server-context.js";
-import {
-  AUTO_ALLOWED_DECISION_OPTION_ID,
-  type RuntimeElicitationBroker,
-} from "../runtime-elicitation-broker.js";
+import type { RuntimeElicitationBroker } from "../runtime-elicitation-broker.js";
 import { registerAgentAuditRoutes } from "./agent-audit.js";
 import { registerAgentCreationRoutes } from "./agent-creation.js";
 import { registerAgentMaintenanceRoutes } from "./agent-maintenance.js";
@@ -69,13 +64,12 @@ import { registerWorkspaceDirectoryRoutes } from "./workspace-directory.js";
 import { registerWorkspacePreferenceRoutes } from "./workspace-preferences.js";
 
 type ApplicationRoutesContext =
-  Omit<Parameters<typeof registerProjectRoutes>[1],
-    "applyProviderPermissionMode"> &
+  Parameters<typeof registerProjectRoutes>[1] &
   Omit<Parameters<typeof registerProjectDeletionRoutes>[1],
     "logError" | "projectDeletionCleanupFaults"> &
   Omit<Parameters<typeof registerConversationRoutes>[1],
     "hasActiveRun" | "handleAgentConversationRemoval" |
-    "applyProviderPermissionMode" | "refreshTriggers"> &
+    "refreshTriggers"> &
   Omit<Parameters<typeof registerConversationDeliveryRoutes>[1],
     "projectDeletionInProgress" | "assetMetadata"> &
   Parameters<typeof registerQueuedMessageRoutes>[1] &
@@ -86,8 +80,7 @@ type ApplicationRoutesContext =
   Parameters<typeof registerAgentMaintenanceRoutes>[1] &
   Omit<Parameters<typeof registerAgentMessageRunRoute>[1],
     "deploymentDraining" | "assetMetadata"> &
-  Omit<Parameters<typeof registerWorkspacePreferenceRoutes>[1],
-    "applyProviderPermissionMode"> &
+  Parameters<typeof registerWorkspacePreferenceRoutes>[1] &
   Parameters<typeof registerNotificationListRoute>[1] &
   Omit<Parameters<typeof registerPushRoutes>[1], "configuration"> &
   Omit<Parameters<typeof registerStreamRoutes>[1],
@@ -289,45 +282,6 @@ export function registerApplicationRoutes(
 
 registerLinkPreviewRoutes(app);
 
-const applyProviderPermissionMode = (conversation: ConversationDto): void => {
-  const project = store.getProject(conversation.projectId);
-  if (!project || effectiveProviderPermissionMode({
-    conversation: conversation.providerPermissionMode,
-    project: project.providerPermissionMode,
-    workspace: workspace.getPreferences().providerPermissionMode,
-  }) !== "auto_confirmations") return;
-  const cursor = workspace.cursor();
-  const affectedAgentIds = new Set<string>();
-  const respondedAt = new Date().toISOString();
-  for (const pending of workspace.listDecisions({
-    conversationId: conversation.id,
-    status: "pending",
-  })) {
-    if (!pending.runtimeAction) continue;
-    const liveRequest = runtimeElicitations.action(pending.id);
-    if (!liveRequest || !runtimeElicitations.canRememberForRun(liveRequest)) continue;
-    const resolved = workspace.resolveDecision(pending.id, {
-      optionId: AUTO_ALLOWED_DECISION_OPTION_ID,
-      text: "Allowed automatically by this Chat’s provider permissions.",
-      respondedAt,
-    });
-    if (!resolved) continue;
-    runtimeElicitations.respond(pending.id, {
-      action: "accept",
-      content: {},
-    });
-    const notification = workspace.listNotifications().find((item) =>
-      item.dedupeKey === `decision:${pending.id}` &&
-      (item.status ?? "open") === "open");
-    if (notification) workspace.setNotificationStatus(notification.id, "resolved");
-    affectedAgentIds.add(pending.agentId);
-  }
-  if (affectedAgentIds.size === 0) return;
-  publishWorkspaceSince(cursor);
-  for (const agentId of affectedAgentIds) publishMessageDeliveryChanged(agentId);
-  notifyScheduler();
-};
-
 registerProjectRoutes(app, {
   store,
   workspace,
@@ -339,7 +293,6 @@ registerProjectRoutes(app, {
   organizationEnvelopeStates,
   cachedModelOptions,
   appendWorkspace,
-  applyProviderPermissionMode,
   refreshCommunicationReconciliation,
   clearAgentResumeSession,
   persistentRuntimeForTermination,
@@ -402,7 +355,6 @@ registerConversationRoutes(app, {
   hasActiveRun: agentId => activeRuns.has(agentId),
   handleAgentConversationRemoval: (agentId, conversationId) =>
     coordinationV3.handleAgentConversationRemoval(agentId, conversationId),
-  applyProviderPermissionMode,
   refreshTriggers: () => triggerSources.refresh(),
   draftAttachmentSurfaceDir,
 });
@@ -646,7 +598,6 @@ registerWorkspacePreferenceRoutes(app, {
   opts, store, coordinationV3, workspace, engines, activeRuns, scheduledSessionRollovers,
   organizationEnvelopeStates, engineModelCatalogCache, cachedModelOptions,
   applyOperatorModelOptions, publishWorkspaceSince,
-  applyProviderPermissionMode,
   setMaxConcurrentRuns: setMaxConcurrentRuns,
   clearAgentResumeSession, persistentRuntimeForTermination, teardownPersistentRuntime,
 });

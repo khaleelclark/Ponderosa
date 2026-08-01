@@ -4,10 +4,8 @@ import type {
   Adapter,
   AgentDto,
   AgentHealthProjectionDto,
-  ConversationDto,
   ConversationDetailDto,
   ModelOption,
-  ProviderPermissionSetting,
   TeamDirectoryDto,
   UpdateConversationRequest,
 } from "@ponderosa/core";
@@ -36,7 +34,6 @@ export interface ConversationRouteDependencies {
   teamDirectory: (projectId: string) => TeamDirectoryDto;
   hasActiveRun: (agentId: string) => boolean;
   handleAgentConversationRemoval: (agentId: string, conversationId: string) => void;
-  applyProviderPermissionMode: (conversation: ConversationDto) => void;
   refreshTriggers: () => Promise<unknown>;
   draftAttachmentSurfaceDir: (draftId: string) => string;
 }
@@ -58,7 +55,6 @@ export function registerConversationRoutes(
     teamDirectory,
     hasActiveRun,
     handleAgentConversationRemoval,
-    applyProviderPermissionMode,
     refreshTriggers,
     draftAttachmentSurfaceDir,
   } = dependencies;
@@ -139,14 +135,6 @@ export function registerConversationRoutes(
   }>("/api/conversations/:id", async (request, reply) => {
     const current = store.getConversation(request.params.id);
     if (!current) return reply.code(404).send({ error: "conversation not found" });
-    const permissionMode = request.body?.providerPermissionMode;
-    if (permissionMode && !([
-      "ask",
-      "auto_confirmations",
-      "inherit",
-    ] satisfies ProviderPermissionSetting[]).includes(permissionMode)) {
-      return reply.code(400).send({ error: "invalid provider permission mode" });
-    }
     if (request.body?.defaultEngine && !engines.has(request.body.defaultEngine)) {
       return reply.code(400).send({ error: "unknown engine" });
     }
@@ -171,9 +159,6 @@ export function registerConversationRoutes(
     if (conversation) {
       if (request.body?.archived !== undefined) await refreshTriggers();
       appendWorkspace({ type: "conversation_changed", projectId: conversation.projectId, conversationId: conversation.id, action: "updated" });
-      if (permissionMode && permissionMode !== current.providerPermissionMode) {
-        applyProviderPermissionMode(conversation);
-      }
     }
     return conversation;
   });

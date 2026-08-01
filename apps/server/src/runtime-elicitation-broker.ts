@@ -19,9 +19,6 @@ const BARE_CONFIRMATION_SCHEMA_KEYS = new Set([
   "additionalProperties",
 ]);
 
-/** Reserved response identity for a server-applied provider permission. */
-export const AUTO_ALLOWED_DECISION_OPTION_ID = "auto_allowed";
-
 function confirmationKey(request: RuntimeElicitationRequest): string | undefined {
   if (request.mode === "url") return undefined;
   const schema = request.requestedSchema;

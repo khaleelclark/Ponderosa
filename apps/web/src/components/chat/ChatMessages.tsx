@@ -40,6 +40,28 @@ export function stripDocumentPrefixText(text: string, hasDocument: boolean): str
     : text;
 }
 
+/** Hide canonical leading routing handles when the destination is already visible. */
+export function stripLeadingAgentMentions(
+  text: string,
+  mentions: readonly { handle: string }[] | undefined,
+): string {
+  if (!mentions?.length) return text;
+  const handles = new Set(
+    mentions.map(mention => mention.handle.toLocaleLowerCase()),
+  );
+  let visible = text.trimStart();
+  let stripped = false;
+  while (visible) {
+    const match = visible.match(
+      /^#([\p{L}\p{N}_-]+)(?=$|\s|[.,!?;:])(?:[.,!?;:]?\s*)/u,
+    );
+    if (!match || !handles.has(match[1]!.toLocaleLowerCase())) break;
+    visible = visible.slice(match[0].length);
+    stripped = true;
+  }
+  return stripped && visible.trim() ? visible.trimStart() : text;
+}
+
 function projectFileHref(projectId: string | undefined, href: string | undefined, mode: "preview" | "download"): string | undefined {
   if (!projectId || !href) return undefined;
   if (/^(?:https?:|data:|blob:|ponderosa:|mailto:|#)/iu.test(href) || href.startsWith("/api/")) return undefined;

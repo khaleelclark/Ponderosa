@@ -17,7 +17,6 @@ import type {
   ProjectEngineCapabilitiesDto,
   ResponseFileActivityDto,
   AgentDto,
-  ProviderPermissionSetting,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -44,7 +43,6 @@ import { QueuedMessageTray } from "./chat/QueuedMessageTray";
 import { ChatSurface } from "./chat/ChatSurface";
 import { buildMarkdownTranscript } from "../chatTranscript";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
-import { ComposerProviderPermissions } from "./ComposerProviderPermissions";
 import { useMobileComposerAutoHide } from "../mobileChat";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 import { AttentionSurface } from "./AttentionSurface";
@@ -319,24 +317,6 @@ export function ConversationView({
       });
     },
   });
-  const persistProviderPermissions = useMutation({
-    mutationFn: (providerPermissionMode: ProviderPermissionSetting) =>
-      api.updateConversation(conversationId, { providerPermissionMode }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.conversations.detailPrefix(conversationId),
-      });
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.conversations.all,
-      });
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.notifications.all,
-      });
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.decisions.all,
-      });
-    },
-  });
 
   const rename = useMutation({
     mutationFn: (title: string) =>
@@ -474,13 +454,16 @@ export function ConversationView({
     },
     [agentTitle],
   );
-  const lastRespondingAgent = useMemo(() => {
-    const message = [...messages].reverse().find(candidate => Boolean(candidate.authorAgentId));
-    return message?.authorAgentId ? agents.find(agent => agent.id === message.authorAgentId) : undefined;
+  const lastDirectDestination = useMemo(() => {
+    const message = [...messages]
+      .reverse()
+      .find(candidate => candidate.communicationIntent === "user_dm");
+    const agentId = message?.authorAgentId ?? message?.directMessageAgents?.[0]?.id;
+    const agent = agentId ? agents.find(candidate => candidate.id === agentId) : undefined;
+    return agent && message
+      ? { agent, selectionKey: message.communicationEventId ?? message.id }
+      : undefined;
   }, [agents, messages]);
-  const lastRespondingAgentIsRunning =
-    Boolean(lastRespondingAgent) &&
-    Boolean(healthByAgentId.get(lastRespondingAgent!.id)?.runtimeActivity);
   const mainTranscriptMarkdown = useMemo(
     () =>
       conversation
@@ -659,24 +642,6 @@ export function ConversationView({
         }}
       />
     ) : null;
-  const providerPermissionControl =
-    activeView === "main" ? (
-      <ComposerProviderPermissions
-        mode={conversation.providerPermissionMode ?? "ask"}
-        inheritedMode={
-          project?.providerPermissionMode === "ask" ||
-          project?.providerPermissionMode === "auto_confirmations"
-            ? project.providerPermissionMode
-            : preferencesQuery.data?.providerPermissionMode ?? "ask"
-        }
-        pending={persistProviderPermissions.isPending}
-        error={persistProviderPermissions.error instanceof Error
-          ? persistProviderPermissions.error.message
-          : undefined}
-        onChange={next => persistProviderPermissions.mutate(next)}
-      />
-    ) : null;
-
   return (
     <Box
       data-testid="conversation"
@@ -993,14 +958,16 @@ export function ConversationView({
             )}
             conversationDraftId={conversationId}
             destinationMode="project-chat"
-            continueWith={lastRespondingAgent ? {
-              agentId: lastRespondingAgent.id,
-              handle: agentMentionHandle(lastRespondingAgent.title),
-              title: lastRespondingAgent.title,
-              responding: lastRespondingAgentIsRunning,
+            continueWith={lastDirectDestination ? {
+              agentId: lastDirectDestination.agent.id,
+              handle: agentMentionHandle(lastDirectDestination.agent.title),
+              title: lastDirectDestination.agent.title,
+              responding: Boolean(
+                healthByAgentId.get(lastDirectDestination.agent.id)?.runtimeActivity,
+              ),
+              selectionKey: lastDirectDestination.selectionKey,
             } : undefined}
             insertTextRequest={mentionInsertRequest}
-            leadingControls={providerPermissionControl}
             controls={runtimeControls}
             disabled={busy}
             running={operationRunning}

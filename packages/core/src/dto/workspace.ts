@@ -1,7 +1,7 @@
 import type { EngineId } from "../adapter.js";
 import type { AgentDto, AgentHealthDto } from "./agents.js";
 import type { BrowserControlOwner, BrowserSessionStatus } from "../events.js";
-import type { ConversationDto, ProviderPermissionMode } from "./conversations.js";
+import type { ConversationDto } from "./conversations.js";
 import type { HistoryWindowDto } from "./common.js";
 import type { ProjectDto, ProjectSort } from "./projects.js";
 import type { TriggerDefinitionDto } from "./triggers.js";
@@ -48,8 +48,6 @@ export interface WorkspacePreferencesDto {
   fontFamily: "inter" | "system" | "sans";
   /** Operator-controlled global runtime switches. Missing engines default to enabled. */
   providerAvailability: Record<string, boolean>;
-  /** Fallback provider confirmation policy for Projects and Chats that inherit. */
-  providerPermissionMode: ProviderPermissionMode;
   /** Provider whose subscription quota is shown by default when several are authenticated. */
   defaultUsageProvider?: EngineId;
   /** Concrete model/effort defaults chosen independently for each engine. */

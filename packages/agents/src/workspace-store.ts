@@ -73,7 +73,6 @@ const DEFAULT_PREFERENCES: WorkspacePreferencesDto = {
   notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false },
   fontFamily: "inter",
   providerAvailability: {},
-  providerPermissionMode: "ask",
   engineDefaults: {},
   claudeModelOptions: [],
   globalInstructions: "",
@@ -128,39 +127,45 @@ export class WorkspaceStore {
 
   private project(record: CanonicalWorkspaceEvent): void {
     this.projectResourceRecency(record);
-    if (record.event.type === "preferences_updated") this.preferences = {
-      ...DEFAULT_PREFERENCES,
-      ...record.event.preferences,
-      notifications: normalizeNotifications(record.event.preferences.notifications),
-      projectOrder: record.event.preferences.projectOrder ?? [],
-      homeOrder: record.event.preferences.homeOrder ?? [],
-      homeSort: record.event.preferences.homeSort ?? "last_used",
-      chatOrder: record.event.preferences.chatOrder ?? [],
-      chatSort: record.event.preferences.chatSort ?? "last_used",
-      agentOrder: record.event.preferences.agentOrder ?? [],
-      agentSort: record.event.preferences.agentSort ?? "last_used",
-      triggerOrder: record.event.preferences.triggerOrder ?? [],
-      triggerSort: record.event.preferences.triggerSort ?? "last_used",
-      starredResourceIds: record.event.preferences.starredResourceIds ?? [],
-      starredProjectIds: record.event.preferences.starredProjectIds ?? [],
-      providerAvailability: record.event.preferences.providerAvailability ?? {},
-      providerPermissionMode: record.event.preferences.providerPermissionMode === "auto_confirmations"
-        ? "auto_confirmations"
-        : "ask",
-      engineDefaults: record.event.preferences.engineDefaults ?? {},
-      claudeModelOptions: normalizeClaudeModelOptions(record.event.preferences.claudeModelOptions),
-      globalInstructions: record.event.preferences.globalInstructions ?? "",
-      maxConcurrentAgentRuns: record.event.preferences.maxConcurrentAgentRuns ?? DEFAULT_PREFERENCES.maxConcurrentAgentRuns,
-      contextRolloverEnabled: record.event.preferences.contextRolloverEnabled ?? DEFAULT_PREFERENCES.contextRolloverEnabled,
-      contextRolloverTokens: clampContextRolloverTokens(
-        record.event.preferences.contextRolloverTokens ?? DEFAULT_PREFERENCES.contextRolloverTokens,
-      ),
-      contextRolloverWindowFraction: clampContextRolloverWindowFraction(
-        record.event.preferences.contextRolloverWindowFraction ?? DEFAULT_PREFERENCES.contextRolloverWindowFraction,
-      ),
-      onboardingCompletedAt: record.event.preferences.onboardingCompletedAt ?? null,
-      profile: normalizeProfile(record.event.preferences.profile),
-    };
+    if (record.event.type === "preferences_updated") {
+      const persisted = record.event.preferences as WorkspacePreferencesDto & {
+        providerPermissionMode?: unknown;
+      };
+      const {
+        providerPermissionMode: _legacyProviderPermissionMode,
+        ...preferences
+      } = persisted;
+      this.preferences = {
+        ...DEFAULT_PREFERENCES,
+        ...preferences,
+        notifications: normalizeNotifications(preferences.notifications),
+        projectOrder: preferences.projectOrder ?? [],
+        homeOrder: preferences.homeOrder ?? [],
+        homeSort: preferences.homeSort ?? "last_used",
+        chatOrder: preferences.chatOrder ?? [],
+        chatSort: preferences.chatSort ?? "last_used",
+        agentOrder: preferences.agentOrder ?? [],
+        agentSort: preferences.agentSort ?? "last_used",
+        triggerOrder: preferences.triggerOrder ?? [],
+        triggerSort: preferences.triggerSort ?? "last_used",
+        starredResourceIds: preferences.starredResourceIds ?? [],
+        starredProjectIds: preferences.starredProjectIds ?? [],
+        providerAvailability: preferences.providerAvailability ?? {},
+        engineDefaults: preferences.engineDefaults ?? {},
+        claudeModelOptions: normalizeClaudeModelOptions(preferences.claudeModelOptions),
+        globalInstructions: preferences.globalInstructions ?? "",
+        maxConcurrentAgentRuns: preferences.maxConcurrentAgentRuns ?? DEFAULT_PREFERENCES.maxConcurrentAgentRuns,
+        contextRolloverEnabled: preferences.contextRolloverEnabled ?? DEFAULT_PREFERENCES.contextRolloverEnabled,
+        contextRolloverTokens: clampContextRolloverTokens(
+          preferences.contextRolloverTokens ?? DEFAULT_PREFERENCES.contextRolloverTokens,
+        ),
+        contextRolloverWindowFraction: clampContextRolloverWindowFraction(
+          preferences.contextRolloverWindowFraction ?? DEFAULT_PREFERENCES.contextRolloverWindowFraction,
+        ),
+        onboardingCompletedAt: preferences.onboardingCompletedAt ?? null,
+        profile: normalizeProfile(preferences.profile),
+      };
+    }
     if (record.mutation?.kind === "draft") this.drafts.set(this.draftKey(record.mutation.draft.conversationId, record.mutation.draft.ownerId), record.mutation.draft);
     if (record.mutation?.kind === "draft_conflict") {
       const conversationId = record.mutation.conflict.current.conversationId;
@@ -470,7 +475,6 @@ export class WorkspaceStore {
       starredResourceIds: patch.starredResourceIds ?? this.preferences.starredResourceIds,
       starredProjectIds: patch.starredProjectIds ?? this.preferences.starredProjectIds,
       providerAvailability: patch.providerAvailability ?? this.preferences.providerAvailability,
-      providerPermissionMode: patch.providerPermissionMode ?? this.preferences.providerPermissionMode,
       engineDefaults: patch.engineDefaults ?? this.preferences.engineDefaults,
       claudeModelOptions: patch.claudeModelOptions === undefined
         ? this.preferences.claudeModelOptions

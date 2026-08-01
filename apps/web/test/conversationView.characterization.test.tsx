@@ -367,6 +367,48 @@ describe("ConversationView public behavior", () => {
     client.clear();
   });
 
+  it("shows Direct routing only in the composer and keeps one Broadcast badge", () => {
+    const client = createClient();
+    client.setQueryData<ConversationDetailDto>(
+      queryKeys.conversations.detail(firstConversationId),
+      detail(conversation(firstConversationId, "First conversation"), [
+        {
+          id: "direct-message",
+          communicationEventId: "direct-communication",
+          communicationIntent: "user_dm",
+          directMessageAgents: [{ id: agent.id, title: agent.title }],
+          conversationId: firstConversationId,
+          role: "user",
+          text: "#Agent-One Private hello",
+          createdAt: "2026-07-25T10:01:00.000Z",
+          agentMentions: [{ agentId: agent.id, handle: "Agent-One" }],
+        },
+        {
+          id: "broadcast-message",
+          communicationEventId: "broadcast-communication",
+          communicationIntent: "broadcast",
+          conversationId: firstConversationId,
+          role: "user",
+          text: "Shared update",
+          createdAt: "2026-07-25T10:02:00.000Z",
+        },
+      ]),
+    );
+
+    render(view(client, <ConversationView {...props()} />));
+
+    expect(screen.getByText("Private hello")).toBeTruthy();
+    expect(screen.queryByText("#Agent-One Private hello")).toBeNull();
+    expect(screen.queryByText(/Direct ·/u)).toBeNull();
+    expect(screen.getByText("To: Agent One")).toBeTruthy();
+    expect(screen.queryByText(
+      "Sending without a recipient starts a new Agent.",
+    )).toBeNull();
+    expect(screen.getAllByText("Broadcast")).toHaveLength(1);
+
+    client.clear();
+  });
+
   it("keeps selected-view state on ordinary rerenders and resets it for a new conversation", async () => {
     const client = createClient();
     const user = userEvent.setup();

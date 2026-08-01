@@ -1,5 +1,4 @@
 import type { EngineId } from "../adapter.js";
-import type { ProviderPermissionSetting } from "./conversations.js";
 
 // ─── Projects ────────────────────────────────────────────────────────────────
 
@@ -16,8 +15,6 @@ export interface ProjectDto {
   /** Optional Project override. Missing values inherit the workspace engine default. */
   defaultModel?: string;
   defaultEffort?: string;
-  /** Provider confirmation default inherited by Chats unless they override it. */
-  providerPermissionMode: ProviderPermissionSetting;
   /** Most recently opened non-deleted Project chat. */
   lastConversationId?: string;
   /** Project-wide operator rules injected after global rules and before Agent instructions. */
@@ -64,11 +61,6 @@ export interface UpdateProjectRequest {
   /** Null clears the Project override and resumes inheriting the workspace default. */
   defaultModel?: string | null;
   defaultEffort?: string | null;
-  providerPermissionMode?: ProviderPermissionSetting;
-}
-
-export interface ApplyProjectProviderPermissionDefaultResponse {
-  updatedConversations: number;
 }
 
 export interface ProjectFolderOptionDto {

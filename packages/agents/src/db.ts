@@ -139,30 +139,6 @@ function establishReadIndexes(sqlite: Database.Database): void {
   `);
 }
 
-/** Additive columns preserve existing launch-baseline databases without
- * rebuilding canonical projections. */
-function establishAdditiveSchema(sqlite: Database.Database): void {
-  const projectColumns = sqlite
-    .prepare("PRAGMA table_info(projects)")
-    .all() as Array<{ name: string }>;
-  if (!projectColumns.some((column) => column.name === "provider_permission_mode")) {
-    sqlite.exec(
-      "ALTER TABLE projects ADD COLUMN provider_permission_mode TEXT NOT NULL DEFAULT 'inherit'",
-    );
-  }
-  const conversationColumns = sqlite
-    .prepare("PRAGMA table_info(conversations)")
-    .all() as Array<{ name: string }>;
-  if (!conversationColumns.some((column) => column.name === "provider_permission_mode")) {
-    sqlite.exec(`
-      ALTER TABLE conversations
-        ADD COLUMN provider_permission_mode TEXT NOT NULL DEFAULT 'inherit';
-      UPDATE conversations
-        SET provider_permission_mode = 'ask';
-    `);
-  }
-}
-
 /**
  * Open (or create) the projection DB at `file` and establish its launch schema.
  * Pass ":memory:" for isolated callers.
@@ -172,7 +148,6 @@ export function openDb(file: string): OpenedDb {
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("foreign_keys = ON");
   establishSchema(sqlite);
-  establishAdditiveSchema(sqlite);
   establishReadIndexes(sqlite);
   return { db: drizzle(sqlite, { schema }), client: sqlite };
 }
