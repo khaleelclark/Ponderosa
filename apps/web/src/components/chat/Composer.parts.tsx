@@ -176,7 +176,11 @@ export function ComposerProjectDestinationAction({
         }
         label={selectedLabel}
         title={selectedDestinationTitle}
-        aria-label={`${selectedLabel}. Press Delete or Backspace to clear.`}
+        aria-label={`${selectedLabel}${
+          explicitLabels.length > 1
+            ? `: ${explicitLabels.join(", ")}`
+            : ""
+        }. Press Delete or Backspace to clear.`}
         onDelete={chooseNewAgent}
         deleteIcon={<CloseIcon />}
         sx={{
