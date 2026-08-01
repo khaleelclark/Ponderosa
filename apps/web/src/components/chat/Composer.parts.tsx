@@ -4,7 +4,6 @@ import CloseIcon from "@mui/icons-material/Close";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
 import SubdirectoryArrowRightIcon from "@mui/icons-material/SubdirectoryArrowRight";
 import {
-  Box,
   Button,
   Chip,
   IconButton,
@@ -124,9 +123,9 @@ export function ComposerProjectDestinationAction({
     : explicitLabels.length > 1
       ? `${explicitLabels[0]} +${explicitLabels.length - 1}`
       : (explicitLabels[0] ?? "Destination");
-  const selectedDestinationLabels = continuing
-    ? [continueWith!.title]
-    : explicitLabels;
+  const selectedDestinationTitle = continuing || continuingHandleSelected
+    ? selectedLabel
+    : explicitLabels.join(" ");
   const clearExplicitDestinations = () => {
     clearDestination("broadcast");
     clearDestination("everyone");
@@ -176,10 +175,10 @@ export function ComposerProjectDestinationAction({
           hasBroadcastDestination ? <CampaignOutlinedIcon /> : undefined
         }
         label={selectedLabel}
-        title={selectedDestinationLabels.join(" ")}
-        aria-label={`Destinations: ${selectedDestinationLabels.join(", ")}`}
+        title={selectedDestinationTitle}
+        aria-label={`${selectedLabel}. Press Delete or Backspace to clear.`}
         onDelete={chooseNewAgent}
-        deleteIcon={<CloseIcon aria-label="Clear selected destination" />}
+        deleteIcon={<CloseIcon />}
         sx={{
           maxWidth: { xs: 124, sm: 240 },
           height: 34,
@@ -196,6 +195,7 @@ export function ComposerProjectDestinationAction({
   if (!continueWith) return null;
   const explanation =
     `Select ${continueWith.title} as the recipient. Sending without a recipient starts a new Agent.`;
+  const helperText = "Sending without a recipient starts a new Agent.";
   return (
     <Stack
       spacing={0.25}
@@ -244,7 +244,7 @@ export function ComposerProjectDestinationAction({
           lineHeight: 1.25,
         }}
       >
-        {explanation}
+        {helperText}
       </Typography>
     </Stack>
   );

@@ -282,7 +282,7 @@ describe("Composer behavior", () => {
 
     expect(screen.getByRole("button", { name: "Continue with Spruce" })).toBeTruthy();
     expect(screen.getByText(
-      "Select Spruce as the recipient. Sending without a recipient starts a new Agent.",
+      "Sending without a recipient starts a new Agent.",
     )).toBeTruthy();
     expect(screen.queryByText("To: Spruce")).toBeNull();
 
@@ -299,7 +299,12 @@ describe("Composer behavior", () => {
 
     await user.click(screen.getByRole("button", { name: "Continue with Spruce" }));
     expect(screen.getByText("To: Spruce")).toBeTruthy();
-    await user.click(screen.getByLabelText("Clear selected destination"));
+    const selectedDestination = screen.getByRole("button", {
+      name: "To: Spruce. Press Delete or Backspace to clear.",
+    });
+    expect(selectedDestination.getAttribute("title")).toBe("To: Spruce");
+    selectedDestination.focus();
+    await user.keyboard("{Backspace}");
     expect(screen.getByRole("button", { name: "Continue with Spruce" })).toBeTruthy();
     expect(screen.queryByText("To: Spruce")).toBeNull();
 
@@ -335,6 +340,9 @@ describe("Composer behavior", () => {
     });
 
     expect(screen.getByText("To: Spruce")).toBeTruthy();
+    expect(screen.getByRole("button", {
+      name: "To: Spruce. Press Delete or Backspace to clear.",
+    })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Continue with Spruce" })).toBeNull();
     await user.type(screen.getByRole("textbox", { name: "Message" }), "Steer this run");
     await user.click(screen.getByRole("button", { name: "Send message" }));

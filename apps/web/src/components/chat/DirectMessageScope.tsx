@@ -20,6 +20,7 @@ export function DirectMessageScope({
     <Tooltip title={DIRECT_SCOPE_EXPLANATION} describeChild>
       <Box
         component="span"
+        role="note"
         tabIndex={0}
         aria-label={`${label}. ${DIRECT_SCOPE_EXPLANATION}`}
         sx={{

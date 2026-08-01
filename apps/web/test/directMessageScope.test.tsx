@@ -61,9 +61,9 @@ describe("DirectMessageScope", () => {
         </ThemeProvider>,
       );
 
-      const scope = screen.getByLabelText(
-        `Direct · You ↔ Spruce, Cedar With A Long Display Name +1. ${DIRECT_SCOPE_EXPLANATION}`,
-      );
+      const scope = screen.getByRole("note", {
+        name: `Direct · You ↔ Spruce, Cedar With A Long Display Name +1. ${DIRECT_SCOPE_EXPLANATION}`,
+      });
       expect(scope).toBeTruthy();
       await user.hover(scope);
       expect((await screen.findByRole("tooltip")).textContent).toContain(
