@@ -26,7 +26,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import type { AgentDto, CreateTriggerRequest, TriggerBudgetPeriod, TriggerDefinitionDto, TriggerOccurrenceDto, TriggerSourceConfig, TriggerSourceKind } from "@ponderosa/core";
+import type { AgentDto, ConversationDto, CreateTriggerRequest, TriggerBudgetPeriod, TriggerDefinitionDto, TriggerOccurrenceDto, TriggerSourceConfig, TriggerSourceKind } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../api";
@@ -35,6 +35,23 @@ import { ConfirmDialog, ResourceDeletionDialog, TextInputDialog } from "./Confir
 
 function localFuture(minutes = 5): string {
   return isoToDatetimeLocal(new Date(Date.now() + minutes * 60_000).toISOString());
+}
+
+export function triggerChatLabel(
+  conversationId: string,
+  conversations: readonly Pick<ConversationDto, "id" | "title" | "deletedAt">[],
+): string {
+  const conversation = conversations.find((candidate) => candidate.id === conversationId);
+  if (!conversation || conversation.deletedAt) return "Unavailable Chat";
+  return conversation.title;
+}
+
+export function triggerScheduleStatus(trigger: Pick<TriggerDefinitionDto, "enabled" | "sourceKind" | "nextFireAt">): string | undefined {
+  if (trigger.sourceKind !== "schedule") return undefined;
+  if (!trigger.enabled) return "Not scheduled while disabled";
+  return trigger.nextFireAt
+    ? `Next scheduled occurrence: ${new Date(trigger.nextFireAt).toLocaleString()}`
+    : "Next scheduled occurrence is being calculated";
 }
 
 function isoToDatetimeLocal(value: string): string {
@@ -144,6 +161,13 @@ export function TriggersPane({
       : agent.conversationId ?? agent.conversationIds[0] ?? "";
   const queryKey = queryKeys.triggers.agent(agent.id);
   const triggers = useQuery({ queryKey, queryFn: () => api.listTriggers(agent.id) });
+  const conversations = useQuery({
+    queryKey: queryKeys.conversations.project(agent.projectId),
+    queryFn: () => api.listConversations(agent.projectId),
+  });
+  const currentChatLabel = (id: string): string => conversations.isLoading
+    ? "Loading Chat…"
+    : triggerChatLabel(id, conversations.data ?? []);
   const [createOpen, setCreateOpen] = useState(initialCreateOpen);
   const [editing, setEditing] = useState<TriggerDefinitionDto>();
   const [secret, setSecret] = useState<{ trigger: TriggerDefinitionDto; value: string }>();
@@ -346,7 +370,7 @@ export function TriggersPane({
       <Alert severity="warning">This automation will run unattended with full Agent access. Event payloads are untrusted data.</Alert>
       <TextField label="Name" value={name} onChange={(event) => setName(event.target.value)} inputProps={{ maxLength: 120 }} autoFocus required />
       <TextField label="Trusted instructions" value={instructions} onChange={(event) => setInstructions(event.target.value)} multiline minRows={3} required helperText="Describe the action. Do not rely on event payload text as instructions." />
-      {!fixedConversationId ? <FormControl fullWidth><InputLabel id="trigger-chat-label">Project chat</InputLabel><Select disabled={Boolean(editing)} labelId="trigger-chat-label" label="Project chat" value={conversationId} onChange={(event) => setConversationId(event.target.value)}>{agent.conversationIds.map((id) => <MenuItem key={id} value={id}>{id === agent.conversationId ? `Primary · ${id}` : id}</MenuItem>)}</Select></FormControl> : null}
+      {!fixedConversationId ? <FormControl fullWidth><InputLabel id="trigger-chat-label">Project chat</InputLabel><Select disabled={Boolean(editing)} labelId="trigger-chat-label" label="Project chat" value={conversationId} onChange={(event) => setConversationId(event.target.value)}>{agent.conversationIds.map((id) => <MenuItem key={id} value={id}>{currentChatLabel(id)}</MenuItem>)}</Select></FormControl> : null}
       <FormControl fullWidth><InputLabel id="trigger-source-label">Source</InputLabel><Select disabled={Boolean(editing)} labelId="trigger-source-label" label="Source" value={sourceKind} onChange={(event) => setSourceKind(event.target.value as TriggerSourceKind)}><MenuItem value="schedule">Schedule</MenuItem><MenuItem value="webhook">Signed Webhook</MenuItem><MenuItem value="filesystem">Project Folder Changes</MenuItem></Select></FormControl>
       {sourceKind === "schedule" ? <>
         <FormControl fullWidth><InputLabel id="schedule-kind-label">Schedule type</InputLabel><Select labelId="schedule-kind-label" label="Schedule type" value={scheduleKind} onChange={(event) => setScheduleKind(event.target.value as typeof scheduleKind)}><MenuItem value="interval">Interval</MenuItem><MenuItem value="once">One Time</MenuItem><MenuItem value="cron">Cron</MenuItem></Select></FormControl>
@@ -425,6 +449,7 @@ export function TriggersPane({
         const currentFailure = latestOccurrence?.lastError
           ?? (latestOccurrence?.state === "dead_lettered" ? "The latest occurrence could not start." : undefined);
         const lastOccurredAt = latestOccurrence?.occurredAt ?? trigger.lastFiredAt;
+        const scheduleStatus = triggerScheduleStatus(trigger);
         return <Card key={trigger.id} variant="outlined" aria-label={`${trigger.name} Trigger`}>
         <CardContent>
           <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
@@ -434,10 +459,11 @@ export function TriggersPane({
             {trigger.runBudget && trigger.budgetState ? <Chip size="small" color={trigger.budgetState.held ? "warning" : "default"} label={`${trigger.budgetState.used}/${trigger.runBudget.limit + trigger.budgetState.allowance} automatic Runs · ${trigger.runBudget.period}`} /> : <Chip size="small" label="Unlimited Runs" />}
           </Stack>
           <Typography variant="body2" sx={{ mt: 1, whiteSpace: "pre-wrap" }}>{trigger.instructions}</Typography>
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>Project chat: {currentChatLabel(trigger.conversationId)}</Typography>
           <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>Source configuration: <code>{JSON.stringify(trigger.sourceConfig)}</code></Typography>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={{ xs: 0.25, sm: 2 }} sx={{ mt: 1 }}>
             <Typography variant="caption" color="text.secondary">Last occurrence: {lastOccurredAt ? new Date(lastOccurredAt).toLocaleString() : "None yet"}</Typography>
-            {trigger.nextFireAt ? <Typography variant="caption" color="text.secondary">Next scheduled occurrence: {new Date(trigger.nextFireAt).toLocaleString()}</Typography> : null}
+            {scheduleStatus ? <Typography variant="caption" color="text.secondary">{scheduleStatus}</Typography> : null}
           </Stack>
           {currentFailure ? <Alert severity="error" sx={{ mt: 1 }}>Current failure: {currentFailure}</Alert> : null}
           {trigger.webhookPath ? <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1, overflowWrap: "anywhere" }}>Webhook: {trigger.webhookPath} · secret {trigger.secretFingerprint}</Typography> : null}
