@@ -2,7 +2,7 @@ import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
-import { Alert, Button, ButtonBase, Dialog, DialogActions, DialogContent, DialogTitle, Stack, Typography } from "@mui/material";
+import { Alert, Button, ButtonBase, Dialog, DialogActions, DialogContent, DialogTitle, Stack, Tooltip, Typography } from "@mui/material";
 import { alpha } from "@mui/material/styles";
 import type { MessageDeliveryReceiptDto } from "@ponderosa/core";
 import { useQueryClient } from "@tanstack/react-query";
@@ -68,11 +68,13 @@ export function MessageDeliveryStatus({
   receipts,
   recipientName,
   onOpenAgent,
+  compactSuccess = false,
 }: {
   projectId?: string;
   receipts?: MessageDeliveryReceiptDto[];
   recipientName(agentId: string): string;
   onOpenAgent?(agentId: string): void;
+  compactSuccess?: boolean;
 }): JSX.Element | null {
   const queryClient = useQueryClient();
   const [now, setNow] = useState(Date.now());
@@ -88,6 +90,25 @@ export function MessageDeliveryStatus({
     return () => window.clearInterval(timer);
   }, [hasCountdown]);
   if (!receipts?.length) return null;
+  if (
+    compactSuccess &&
+    receipts.every(receipt => severity(receipt) === "success")
+  ) {
+    const label = receipts
+      .map(receipt =>
+        deliveryLabel(receipt, recipientName(receipt.targetAgentId), now),
+      )
+      .join(" ");
+    return (
+      <Tooltip title={label}>
+        <CheckCircleOutlineIcon
+          role="status"
+          aria-label={label}
+          sx={{ fontSize: 14, color: "success.main" }}
+        />
+      </Tooltip>
+    );
+  }
   const letRunFinish = async (receipt: MessageDeliveryReceiptDto) => {
     if (!receipt.injectionId) return;
     setError(undefined);

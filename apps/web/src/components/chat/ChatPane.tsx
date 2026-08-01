@@ -1,5 +1,5 @@
 import TagIcon from "@mui/icons-material/Tag";
-import { ButtonBase, IconButton, Tooltip } from "@mui/material";
+import { ButtonBase, Chip, IconButton, Tooltip } from "@mui/material";
 import { PONDEROSA_MESSAGE_TOOL } from "@ponderosa/core";
 import type {
   AgentActivityDto,
@@ -18,11 +18,11 @@ import type { ActivityStreamEntry } from "../activity/activityStream";
 import { AgentWorkReceipt } from "./AgentWorkReceipt";
 import { ChatMessageFrame } from "./ChatMessageFrame";
 import { ChatSurface } from "./ChatSurface";
-import { DirectMessageScope } from "./DirectMessageScope";
 import {
   ChatMessageBody,
   CommunicationDocumentCard,
   chatMessageLayoutKey,
+  communicationVisibleText,
   individualChatSenderLabel,
   linkPreviewScopeForMessage,
   stripDocumentPrefixText,
@@ -40,13 +40,19 @@ function CommunicationSourceLink({
   onOpen(message: MessageDto): void;
 }): JSX.Element {
   const projectBroadcast = message.communicationIntent === "broadcast";
-  const sourceLabel = projectBroadcast
-    ? outgoing
-      ? "to Project Chat"
-      : "via Project Chat"
-    : outgoing
-      ? "to Team Chat"
-      : "via Team Chat";
+  if (projectBroadcast) {
+    return (
+      <Chip
+        size="small"
+        variant="outlined"
+        label="Broadcast"
+        clickable
+        onClick={() => onOpen(message)}
+        aria-label="Broadcast. Open source message."
+      />
+    );
+  }
+  const sourceLabel = outgoing ? "to Team Chat" : "via Team Chat";
   return (
     <ButtonBase
       onClick={() => onOpen(message)}
@@ -77,12 +83,12 @@ function visibleAgentMessageText(message: MessageDto): string {
     message.text,
     Boolean(message.document),
   );
-  if (message.communicationIntent !== "broadcast") return text;
-  const withoutRoutingPrefix = text.replace(
-    /^\s*#broadcast(?:\s+|$)/iu,
-    "",
-  );
-  return withoutRoutingPrefix.trim() ? withoutRoutingPrefix : text;
+  return communicationVisibleText({
+    text,
+    intent: message.communicationIntent,
+    fromAgent: Boolean(message.authorAgentId),
+    agentMentions: message.agentMentions,
+  });
 }
 
 function ChatPaneComponent({
@@ -405,9 +411,7 @@ function ChatPaneComponent({
                       : {}),
                   },
               createdAt: message.createdAt,
-              source: message.communicationIntent === "user_dm" && message.directMessageAgents?.length ? (
-                <DirectMessageScope agents={message.directMessageAgents} />
-              ) : fromSourceChat ? (
+              source: fromSourceChat ? (
                 <CommunicationSourceLink
                   message={message}
                   outgoing={outgoingTeamMessage}
@@ -464,6 +468,7 @@ function ChatPaneComponent({
                       agentNameForId?.(agentId) ?? agentName
                     }
                     onOpenAgent={onOpenAgent}
+                    compactSuccess={message.communicationIntent === "user_dm"}
                   />
                 ) : undefined,
               actions: (

@@ -3,6 +3,7 @@ import {
   Box,
   Button,
   ButtonBase,
+  Chip,
   CircularProgress,
   IconButton,
   Stack,
@@ -17,7 +18,6 @@ import type {
   AllChatItemDto,
   EngineCommand,
   EngineDto,
-  ProviderPermissionSetting,
   WorkspaceNotificationDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -32,7 +32,10 @@ import {
   useWorkspacePreferences,
 } from "../hooks/queries";
 import type { Route } from "../routing";
-import { ChatMessageBody } from "./chat/ChatMessages";
+import {
+  ChatMessageBody,
+  communicationVisibleText,
+} from "./chat/ChatMessages";
 import { Composer } from "./chat/Composer";
 import { useMobileComposerAutoHide } from "../mobileChat";
 import { copyText } from "../clipboard";
@@ -40,7 +43,6 @@ import { agentMentionHandle } from "../mentions";
 import { AttentionSurface } from "./AttentionSurface";
 import { notificationTechnicalFocusId } from "../technicalFocus";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
-import { DirectMessageScope } from "./chat/DirectMessageScope";
 import { ChatSurface } from "./chat/ChatSurface";
 import { uniqueBy } from "../collections";
 import TagIcon from "@mui/icons-material/Tag";
@@ -55,7 +57,6 @@ import {
   runtimeControlState,
 } from "../conversationEngine";
 import { useRuntimeControls } from "../hooks/useRuntimeControls";
-import { ComposerProviderPermissions } from "./ComposerProviderPermissions";
 import { AUTO_ALLOWED_DECISION_OPTION_ID } from "./ConversationView.helpers";
 
 function allChatSourceRoute(item: AllChatItemDto): Route {
@@ -336,29 +337,6 @@ export function AllChatView({
       });
       void queryClient.invalidateQueries({
         queryKey: queryKeys.agents.project(updated.projectId),
-      });
-    },
-  });
-  const persistProviderPermissions = useMutation({
-    mutationFn: ({
-      conversationId,
-      providerPermissionMode,
-    }: {
-      conversationId: string;
-      providerPermissionMode: ProviderPermissionSetting;
-    }) => api.updateConversation(conversationId, { providerPermissionMode }),
-    onSuccess: conversation => {
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.conversations.project(conversation.projectId),
-      });
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.conversations.detailPrefix(conversation.id),
-      });
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.notifications.all,
-      });
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.decisions.all,
       });
     },
   });
@@ -645,34 +623,6 @@ export function AllChatView({
         }}
       />
     ) : null;
-  const providerPermissionConversation = conversationsQuery.data?.find(
-    conversation =>
-      conversation.id === selectedAgent.data?.agent.conversationId,
-  );
-  const providerPermissionControl =
-    replyTarget && providerPermissionConversation ? (
-      <ComposerProviderPermissions
-        mode={providerPermissionConversation.providerPermissionMode ?? "ask"}
-        inheritedMode={
-          project?.providerPermissionMode === "ask" ||
-          project?.providerPermissionMode === "auto_confirmations"
-            ? project.providerPermissionMode
-            : workspacePreferences.data?.providerPermissionMode ?? "ask"
-        }
-        pending={persistProviderPermissions.isPending}
-        error={
-          persistProviderPermissions.error instanceof Error
-            ? persistProviderPermissions.error.message
-            : undefined
-        }
-        scopeDescription={`Applies to every Agent and subagent in “${providerPermissionConversation.title}”.`}
-        onChange={providerPermissionMode =>
-          persistProviderPermissions.mutate({
-            conversationId: providerPermissionConversation.id,
-            providerPermissionMode,
-          })}
-      />
-    ) : null;
   return (
     <Box
       sx={{
@@ -848,8 +798,8 @@ export function AllChatView({
                       },
                   createdAt: item.createdAt,
                   source:
-                    item.communicationIntent === "user_dm" && item.directMessageAgents?.length ? (
-                      <DirectMessageScope agents={item.directMessageAgents} />
+                    item.communicationIntent === "broadcast" ? (
+                      <Chip size="small" variant="outlined" label="Broadcast" />
                     ) : undefined,
                   attachments: item.attachments,
                   attachmentDensity: "compact",
@@ -857,7 +807,12 @@ export function AllChatView({
                   ariaLabel: allChatSourceAccessibleName(item),
                   body: (
                     <ChatMessageBody
-                      text={item.text}
+                      text={communicationVisibleText({
+                        text: item.text,
+                        intent: item.communicationIntent,
+                        fromAgent: !fromUser,
+                        agentMentions: item.agentMentions,
+                      })}
                       collapseLongMessage
                       compactMarkdown
                       projectId={item.project.id}
@@ -1022,7 +977,6 @@ export function AllChatView({
           }
           onCapabilitiesOpen={refreshSelectedCapabilities}
           onCommand={replyTarget ? invokeCommand : undefined}
-          leadingControls={providerPermissionControl}
           controls={runtimeControls}
           disabled={send.isPending || updateRuntimeEngine.isPending}
           running={false}

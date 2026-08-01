@@ -23,7 +23,7 @@ Addressing an exact Agent creates a private Direct Message. It remains visible o
 
 ## Composer controls
 
-The destination control above the draft defines where the message goes. With no recipient selected, Send starts a fresh Agent. **Continue with Agent** is an action that selects that Agent; the composer then shows **To: Agent** until the selection is cleared. `#Agent` selects exact Agent recipients, `#broadcast` adds durable shared Project context, and `@` references a Project file or folder.
+The destination control above the draft defines where the message goes. After a Direct exchange, the composer shows **To: Agent** until that selection is cleared. With no recipient selected, Send starts a fresh Agent. `#Agent` selects exact Agent recipients, `#broadcast` adds durable shared Project context, and `@` references a Project file or folder.
 
 When an addressed Agent is already responding, Enter and **Steer** send the draft into that active Run. **Queue** is always an explicit alternative that waits until the active response finishes. Agent Chat is already fixed to the Agent shown in its header, so it needs no additional recipient label.
 

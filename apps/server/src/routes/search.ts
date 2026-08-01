@@ -1,6 +1,10 @@
 import type { AllChatPageDto } from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
 import type { SearchRoutesContext } from "../server-context.js";
+import {
+  recipientMentionIdentities,
+  resolveAgentMentionBindings,
+} from "../mention-bindings.js";
 
 export function registerSearchRoutes(
   app: FastifyInstance,
@@ -40,6 +44,24 @@ export function registerSearchRoutes(
       const messagePage = combined?.messagesDone
         ? { items: [], history: { limit, hasMore: false } }
         : store.getAllChatPage({ limit, cursor: combined ? combined.messages : request.query.cursor });
+      const messageItems = messagePage.items.map(item => {
+        if (item.communicationIntent !== "user_dm") return item;
+        const recipientIds = item.directMessageAgents?.map(agent => agent.id) ?? [];
+        const communication = store.getCommunicationEvent(
+          item.project.id,
+          item.communicationEventId,
+        );
+        const agentMentions = resolveAgentMentionBindings(
+          item.text,
+          recipientIds,
+          recipientMentionIdentities(
+            recipientIds,
+            item.directMessageAgents ?? [],
+            communication?.identity?.recipientLabels,
+          ),
+        );
+        return agentMentions.length ? { ...item, agentMentions } : item;
+      });
       const decisionPage = combined?.decisionsDone
         ? { events: [], hasMore: false as const }
         : workspace.listDecisionEventPage({ limit, before: combined?.decisions });
@@ -70,7 +92,7 @@ export function registerSearchRoutes(
           : { decisionsDone: true }),
       };
       return {
-        items: messagePage.items,
+        items: messageItems,
         decisions,
         history: {
           limit,

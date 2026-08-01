@@ -17,7 +17,10 @@ import type {
 } from "@ponderosa/agents";
 import { projectAgentHealth, type ActiveRunObservation } from "./agent-health.js";
 import { decodeTimelineCursor, encodeTimelineCursor } from "./cursors.js";
-import { resolveAgentMentionBindings } from "./mention-bindings.js";
+import {
+  recipientMentionIdentities,
+  resolveAgentMentionBindings,
+} from "./mention-bindings.js";
 import type { ActiveRun, PersistentRuntime, RuntimeOwnershipState } from "./app-contracts.js";
 import {
   isRequestCommunicationHandoffKind,
@@ -111,7 +114,15 @@ export function createServerReadModels(context: ReadModelContext) {
             };
           })
         : [];
-      const agentMentions = resolveAgentMentionBindings(message.text, recipientAgentIds, projectAgents);
+      const agentMentions = resolveAgentMentionBindings(
+        message.text,
+        recipientAgentIds,
+        recipientMentionIdentities(
+          recipientAgentIds,
+          projectAgents,
+          communication?.identity?.recipientLabels,
+        ),
+      );
       const deliveryReceipts = deliveryReceiptsByEvent.get(message.communicationEventId) ?? [];
       return {
         ...message,

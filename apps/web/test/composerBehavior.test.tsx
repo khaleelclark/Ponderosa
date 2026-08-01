@@ -263,7 +263,7 @@ describe("Composer behavior", () => {
     ).toBeNull();
   });
 
-  it("presents continuation as an action and targets it only after selection", async () => {
+  it("keeps the latest Direct recipient selected until it is cleared", async () => {
     const user = userEvent.setup();
     const onSend = vi.fn();
     renderComposer({
@@ -276,17 +276,40 @@ describe("Composer behavior", () => {
         handle: "Spruce",
         title: "Spruce",
         responding: false,
+        selectionKey: "direct-inactive",
       },
       onSend,
     });
 
-    expect(screen.getByRole("button", { name: "Continue with Spruce" })).toBeTruthy();
+    expect(screen.getByText("To: Spruce")).toBeTruthy();
+    expect(screen.queryByText(
+      "Sending without a recipient starts a new Agent.",
+    )).toBeNull();
+    expect(screen.queryByRole("button", { name: "Continue with Spruce" })).toBeNull();
+
+    const input = screen.getByRole("combobox", { name: "Message" });
+    await user.type(input, "Continue this work");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    expect(onSend).toHaveBeenLastCalledWith(
+      "Continue this work",
+      [],
+      [],
+      undefined,
+      { implicitRecipientId: "agent-spruce" },
+    );
+
+    const selectedDestination = screen.getByRole("button", {
+      name: "To: Spruce. Press Delete or Backspace to clear.",
+    });
+    expect(selectedDestination.getAttribute("title")).toBe("To: Spruce");
+    selectedDestination.focus();
+    await user.keyboard("{Backspace}");
+    expect(screen.queryByText("To: Spruce")).toBeNull();
     expect(screen.getByText(
       "Sending without a recipient starts a new Agent.",
     )).toBeTruthy();
-    expect(screen.queryByText("To: Spruce")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Continue with Spruce" })).toBeNull();
 
-    const input = screen.getByRole("combobox", { name: "Message" });
     await user.type(input, "Start fresh");
     await user.click(screen.getByRole("button", { name: "Send message" }));
     expect(onSend).toHaveBeenLastCalledWith(
@@ -296,31 +319,6 @@ describe("Composer behavior", () => {
       undefined,
       undefined,
     );
-
-    await user.click(screen.getByRole("button", { name: "Continue with Spruce" }));
-    expect(screen.getByText("To: Spruce")).toBeTruthy();
-    const selectedDestination = screen.getByRole("button", {
-      name: "To: Spruce. Press Delete or Backspace to clear.",
-    });
-    expect(selectedDestination.getAttribute("title")).toBe("To: Spruce");
-    selectedDestination.focus();
-    await user.keyboard("{Backspace}");
-    expect(screen.getByRole("button", { name: "Continue with Spruce" })).toBeTruthy();
-    expect(screen.queryByText("To: Spruce")).toBeNull();
-
-    await user.click(screen.getByRole("button", { name: "Continue with Spruce" }));
-    await user.type(input, "Continue this run");
-    await user.click(screen.getByRole("button", { name: "Send message" }));
-    expect(onSend).toHaveBeenLastCalledWith(
-      "#Spruce Continue this run",
-      [],
-      [],
-      undefined,
-      undefined,
-    );
-
-    expect(screen.getByRole("button", { name: "Continue with Spruce" })).toBeTruthy();
-    expect(screen.queryByText("To: Spruce")).toBeNull();
   });
 
   it("keeps an active response visibly and canonically selected", async () => {
@@ -335,6 +333,7 @@ describe("Composer behavior", () => {
         handle: "Spruce",
         title: "Spruce",
         responding: true,
+        selectionKey: "direct-active",
       },
       onSend,
     });
@@ -353,5 +352,55 @@ describe("Composer behavior", () => {
       undefined,
       { implicitRecipientId: "agent-spruce" },
     );
+  });
+
+  it("does not reselect a cleared Direct recipient when its display name changes", async () => {
+    const user = userEvent.setup();
+    const view = renderComposer({
+      ...baseProps,
+      destinationMode: "project-chat",
+      allowUnmentionedSend: true,
+      continueWith: {
+        agentId: "agent-spruce",
+        handle: "Spruce",
+        title: "Spruce",
+        selectionKey: "direct-one",
+      },
+    });
+
+    const selectedDestination = screen.getByRole("button", {
+      name: "To: Spruce. Press Delete or Backspace to clear.",
+    });
+    selectedDestination.focus();
+    await user.keyboard("{Backspace}");
+    view.rerenderComposer({
+      ...baseProps,
+      destinationMode: "project-chat",
+      allowUnmentionedSend: true,
+      continueWith: {
+        agentId: "agent-spruce",
+        handle: "Redwood",
+        title: "Redwood",
+        selectionKey: "direct-one",
+      },
+    });
+
+    expect(screen.queryByText("To: Redwood")).toBeNull();
+    expect(screen.getByText(
+      "Sending without a recipient starts a new Agent.",
+    )).toBeTruthy();
+
+    view.rerenderComposer({
+      ...baseProps,
+      destinationMode: "project-chat",
+      allowUnmentionedSend: true,
+      continueWith: {
+        agentId: "agent-spruce",
+        handle: "Redwood",
+        title: "Redwood",
+        selectionKey: "direct-two",
+      },
+    });
+    expect(screen.getByText("To: Redwood")).toBeTruthy();
   });
 });

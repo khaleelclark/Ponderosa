@@ -874,6 +874,88 @@ describe("server public API behavior", () => {
     expect(obsoleteEdit.statusCode).toBe(404);
   });
 
+  it("preserves multi-Agent Direct mention bindings after recipients are renamed or deleted", async () => {
+    const project = store.createProject({ label: "Direct identity", hostPath: repoDir });
+    const conversationId = project.lastConversationId!;
+    const oak = store.createAgent(project.id, {
+      title: "Oak",
+      engine: "codex",
+      conversationId,
+    });
+    const pine = store.createAgent(project.id, {
+      title: "Pine",
+      engine: "codex",
+      conversationId,
+    });
+    const app = server({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      communicationV3: { maxConcurrentRuns: 0, pollMs: 60_000 },
+    });
+
+    const sent = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${conversationId}/direct-messages`,
+      payload: {
+        text: "#Oak #Pine Private update",
+        recipients: [{ agentId: oak.id }, { agentId: pine.id }],
+        idempotencyKey: randomUUID(),
+      },
+    });
+    expect(sent.statusCode).toBe(200);
+    const messageId = sent.json<{ messageId: string }>().messageId;
+    const message = store.getConversationMessages(conversationId, "main")
+      .find((candidate) => candidate.id === messageId);
+    expect(message?.communicationEventId).toBeTruthy();
+    const eventId = message!.communicationEventId!;
+    expect(store.getCommunicationEvent(project.id, eventId)?.identity).toEqual({
+      senderLabel: "User",
+      recipientLabels: { [oak.id]: "Oak", [pine.id]: "Pine" },
+    });
+
+    store.updateAgent(oak.id, { title: "Redwood" });
+    store.deleteAgent(pine.id);
+
+    const expectedBindings = expect.arrayContaining([
+      { handle: "Oak", agentId: oak.id },
+      { handle: "Pine", agentId: pine.id },
+    ]);
+    const detail = await app.inject({
+      method: "GET",
+      url: `/api/conversations/${conversationId}`,
+    });
+    expect(detail.statusCode).toBe(200);
+    const detailMessage = detail.json<{ messages: Array<{
+      communicationEventId?: string;
+      directMessageAgents?: Array<{ id: string; title: string }>;
+      agentMentions?: Array<{ handle: string; agentId: string }>;
+    }> }>().messages.find((candidate) => candidate.communicationEventId === eventId);
+    expect(detailMessage).toMatchObject({
+      directMessageAgents: expect.arrayContaining([
+        { id: oak.id, title: "Redwood" },
+        { id: pine.id, title: "Pine" },
+      ]),
+      agentMentions: expectedBindings,
+    });
+
+    const allChat = await app.inject({ method: "GET", url: "/api/all-chat" });
+    expect(allChat.statusCode).toBe(200);
+    const allChatMessage = allChat.json<{ items: Array<{
+      communicationEventId: string;
+      directMessageAgents?: Array<{ id: string; title: string }>;
+      agentMentions?: Array<{ handle: string; agentId: string }>;
+    }> }>().items.find((candidate) => candidate.communicationEventId === eventId);
+    expect(allChatMessage).toMatchObject({
+      directMessageAgents: expect.arrayContaining([
+        { id: oak.id, title: "Redwood" },
+        { id: pine.id, title: "Pine" },
+      ]),
+      agentMentions: expectedBindings,
+    });
+  });
+
   it("validates Agent preset CRUD through the public routes", async () => {
     const project = store.createProject({
       label: "Presets",

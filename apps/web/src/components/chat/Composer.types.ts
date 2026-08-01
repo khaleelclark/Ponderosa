@@ -31,5 +31,7 @@ export interface ComposerProps extends ChatComposerContract {
     handle: string;
     title: string;
     responding?: boolean;
+    /** Changes when a newly committed Direct message should restore selection. */
+    selectionKey: string;
   };
 }

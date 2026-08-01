@@ -16,18 +16,6 @@ import type { DecisionDto } from "./workspace.js";
 
 // ─── Conversations ────────────────────────────────────────────────────────────
 
-export type ProviderPermissionMode = "ask" | "auto_confirmations";
-export type ProviderPermissionSetting = "inherit" | ProviderPermissionMode;
-
-export function effectiveProviderPermissionMode(input: {
-  conversation: ProviderPermissionSetting;
-  project: ProviderPermissionSetting;
-  workspace: ProviderPermissionMode;
-}): ProviderPermissionMode {
-  if (input.conversation !== "inherit") return input.conversation;
-  return input.project === "inherit" ? input.workspace : input.project;
-}
-
 /** A model-agnostic project conversation that can include many agents. */
 export interface ConversationDto {
   id: string;
@@ -36,8 +24,6 @@ export interface ConversationDto {
   defaultEngine?: EngineId;
   defaultModel?: string;
   defaultEffort?: string;
-  /** Provider confirmation policy inherited by every Agent Run in this Chat. */
-  providerPermissionMode: ProviderPermissionSetting;
   createdAt: string;
   updatedAt: string;
   archived: boolean;
@@ -59,7 +45,6 @@ export interface UpdateConversationRequest {
   defaultEngine?: EngineId | null;
   defaultModel?: string | null;
   defaultEffort?: string | null;
-  providerPermissionMode?: ProviderPermissionSetting;
   archived?: boolean;
 }
 
@@ -646,6 +631,8 @@ export interface AllChatItemDto {
   communicationIntent: CommunicationIntent;
   /** Stable Direct-message participants resolved to their current display names. */
   directMessageAgents?: Array<Pick<AgentDto, "id" | "title">>;
+  /** Authored routing handles bound to their stable Direct recipients. */
+  agentMentions?: AgentMentionBindingDto[];
   project: Pick<ProjectDto, "id" | "label">;
   source: AllChatSourceDto;
   author: GlobalChatSearchAuthorDto;

@@ -19,7 +19,7 @@ import { readChatState, writeChatState } from "../../chatState";
 import { createClientId } from "../../clientId";
 import { findMentionedHandles, hasBroadcastMention } from "../../mentions";
 import { queryKeys } from "../../queryKeys";
-import { removeHandle, replaceDestination } from "./Composer.helpers";
+import { removeHandle } from "./Composer.helpers";
 import type { ComposerProps } from "./Composer.types";
 import {
   ComposerAttachmentList,
@@ -166,7 +166,7 @@ export function Composer({
   const appliedRemoveRequest = useRef<string>();
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const [implicitContinueSelected, setImplicitContinueSelected] = useState(
-    Boolean(continueWith?.responding),
+    Boolean(continueWith),
   );
   const draftAttachments = useComposerDraftAttachments({
     assetLimits,
@@ -186,8 +186,8 @@ export function Composer({
     uploadStates: draftUploadStates,
   } = draftAttachments;
   useEffect(() => {
-    setImplicitContinueSelected(Boolean(continueWith?.responding));
-  }, [continueWith?.handle, continueWith?.responding]);
+    setImplicitContinueSelected(Boolean(continueWith));
+  }, [continueWith?.selectionKey]);
   const submissionText = composerSubmissionText(text, pastedText);
   const mentionedHandles = useMemo(
     () => findMentionedHandles(submissionText, mentionHandles ?? []),
@@ -230,7 +230,7 @@ export function Composer({
   const implicitContinueHandle =
     destinationMode === "project-chat" &&
     implicitContinueSelected &&
-    continueWith?.responding &&
+    continueWith &&
     !hasBroadcastDestination &&
     !hasEveryoneDestination &&
     projectDestinations.length === 0
@@ -266,11 +266,6 @@ export function Composer({
         : destinationMode === "target-required" && unresolvedAmbiguousTarget
           ? `#${unresolvedAmbiguousTarget} matches more than one Agent. Use a message's # action to choose the exact Agent.`
           : undefined;
-  const setDestination = (handle: string) =>
-    update(
-      current =>
-        `#${handle} ${replaceDestination(current, undefined).trimStart()}`,
-    );
   const clearDestination = (handle: string) =>
     update(current => removeHandle(current, handle));
   const clearRequiredRecipient = () => {
@@ -862,7 +857,6 @@ export function Composer({
             implicitContinueSelected={Boolean(implicitContinueHandle)}
             projectDestinations={projectDestinations}
             selectImplicitContinue={setImplicitContinueSelected}
-            setDestination={setDestination}
           />
         ) : null}
         {leadingControls ? (

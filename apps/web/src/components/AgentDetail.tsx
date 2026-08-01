@@ -19,7 +19,6 @@ import type {
   AgentDetailDto,
   AgentDto,
   AgentTelemetryStream,
-  ProviderPermissionSetting,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -87,7 +86,6 @@ import { useAgentPackageActions } from "./useAgentPackageActions";
 import { useAgentRunCancellation } from "./useAgentRunCancellation";
 import { useAgentProviderCommands } from "./useAgentProviderCommands";
 import { AgentDetailSettingsController } from "./AgentDetailSettingsController";
-import { ComposerProviderPermissions } from "./ComposerProviderPermissions";
 
 export function AgentDetail({
   agentId,
@@ -517,29 +515,6 @@ export function AgentDetail({
       void queryClient.invalidateQueries({ queryKey: queryKeys.engines.all });
     },
   });
-  const persistProviderPermissions = useMutation({
-    mutationFn: ({
-      conversationId,
-      providerPermissionMode,
-    }: {
-      conversationId: string;
-      providerPermissionMode: ProviderPermissionSetting;
-    }) => api.updateConversation(conversationId, { providerPermissionMode }),
-    onSuccess: conversation => {
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.conversations.detailPrefix(conversation.id),
-      });
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.conversations.all,
-      });
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.notifications.all,
-      });
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.decisions.all,
-      });
-    },
-  });
   const {
     rename,
     updateManagementPermissions,
@@ -768,30 +743,6 @@ export function AgentDetail({
   const lineageAgent = relationships.lineageAgent;
   const lineageAgentId = relationships.lineageAgentId;
   const lineageLabel = relationships.lineageLabel;
-  const providerPermissionConversation = conversations.find(
-    conversation => conversation.id === detail.agent.conversationId,
-  );
-  const providerPermissionControl = providerPermissionConversation ? (
-    <ComposerProviderPermissions
-      mode={providerPermissionConversation.providerPermissionMode ?? "ask"}
-      inheritedMode={
-        project?.providerPermissionMode === "ask" ||
-        project?.providerPermissionMode === "auto_confirmations"
-          ? project.providerPermissionMode
-          : preferencesQuery.data?.providerPermissionMode ?? "ask"
-      }
-      pending={persistProviderPermissions.isPending}
-      error={persistProviderPermissions.error instanceof Error
-        ? persistProviderPermissions.error.message
-        : undefined}
-      scopeDescription={`Applies to every Agent and subagent in “${providerPermissionConversation.title}”.`}
-      onChange={providerPermissionMode =>
-        persistProviderPermissions.mutate({
-          conversationId: providerPermissionConversation.id,
-          providerPermissionMode,
-        })}
-    />
-  ) : null;
   const agentRuntimeControls = <AgentRuntimeControls
     engine={engine}
     engines={engines}
@@ -1063,7 +1014,6 @@ export function AgentDetail({
           draftStorageKey: chatStateKey("draft", `agent.${agentId}`),
           conversationDraftId: `agent:${agentId}`,
           insertTextRequest: mentionInsertRequest,
-          leadingControls: providerPermissionControl,
           controls: agentRuntimeControls,
           disabled: sendMessage.isPending || updateRuntimeSettings.isPending,
           running: false,
