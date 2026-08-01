@@ -1,5 +1,6 @@
 import CloseIcon from "@mui/icons-material/Close";
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
+import OpenInNewOutlinedIcon from "@mui/icons-material/OpenInNewOutlined";
 import {
   Box,
   Button,
@@ -12,17 +13,18 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { ImageAttachmentDto } from "@ponderosa/core";
+import type { CommunicationAttachmentDto } from "@ponderosa/core";
 import { useState } from "react";
 
 export function ChatAttachments({
   attachments,
   density = "comfortable",
 }: {
-  attachments: ImageAttachmentDto[];
+  attachments: CommunicationAttachmentDto[];
   density?: "comfortable" | "compact";
 }): JSX.Element | null {
-  const [preview, setPreview] = useState<ImageAttachmentDto>();
+  const [preview, setPreview] = useState<CommunicationAttachmentDto>();
+  const [failed, setFailed] = useState<Set<string>>(() => new Set());
   if (!attachments.length) return null;
   const imageWidth = density === "compact" ? 220 : 320;
   const imageHeight = density === "compact" ? 180 : 240;
@@ -32,9 +34,26 @@ export function ChatAttachments({
       <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: 1 }}>
         {attachments.map((attachment) => {
           const image = !attachment.mediaType || attachment.mediaType.startsWith("image/");
+          const previewUrl = attachment.previewUrl ?? attachment.url;
+          const downloadUrl = attachment.downloadUrl ?? attachment.url;
+          const unavailable = attachment.unavailable || failed.has(attachment.id) ||
+            (!previewUrl && !downloadUrl);
           return (
             <Box key={attachment.id} sx={{ maxWidth: "100%" }}>
-              {image ? (
+              {unavailable ? (
+                <Stack
+                  spacing={0.35}
+                  role="status"
+                  sx={{ p: 1, minWidth: 190, border: 1, borderColor: "divider", borderRadius: 1 }}
+                >
+                  <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>
+                    {attachment.name || "Artifact unavailable"}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Artifact unavailable
+                  </Typography>
+                </Stack>
+              ) : image && previewUrl ? (
                 <ButtonBase
                   aria-label={`Preview ${attachment.name}`}
                   onClick={() => setPreview(attachment)}
@@ -53,8 +72,9 @@ export function ChatAttachments({
                 >
                   <Box
                     component="img"
-                    src={attachment.previewUrl ?? attachment.url}
+                    src={previewUrl}
                     alt={attachment.name}
+                    onError={() => setFailed((current) => new Set(current).add(attachment.id))}
                     sx={{
                       display: "block",
                       width: "auto",
@@ -69,17 +89,29 @@ export function ChatAttachments({
                 <Stack spacing={0.5} sx={{ p: 0.75, border: 1, borderColor: "divider", borderRadius: 1 }}>
                   <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{attachment.name}</Typography>
                   <Typography variant="caption" color="text.secondary">{attachment.mediaType} · {attachment.size} bytes</Typography>
-                  <Button
-                    size="small"
-                    component="a"
-                    href={attachment.downloadUrl ?? attachment.url}
-                    download
-                    aria-label={`Download ${attachment.name}`}
-                    startIcon={<DownloadOutlinedIcon />}
-                    sx={{ alignSelf: "flex-start" }}
-                  >
-                    Download
-                  </Button>
+                  <Stack direction="row" spacing={0.5}>
+                    {previewUrl ? <Button
+                      size="small"
+                      component="a"
+                      href={previewUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label={`Preview ${attachment.name}`}
+                      startIcon={<OpenInNewOutlinedIcon />}
+                    >
+                      Preview
+                    </Button> : null}
+                    {downloadUrl ? <Button
+                      size="small"
+                      component="a"
+                      href={downloadUrl}
+                      download
+                      aria-label={`Download ${attachment.name}`}
+                      startIcon={<DownloadOutlinedIcon />}
+                    >
+                      Download
+                    </Button> : null}
+                  </Stack>
                 </Stack>
               )}
             </Box>
@@ -105,10 +137,10 @@ export function ChatAttachments({
           id={preview ? `chat-image-preview-${preview.id}` : undefined}
           sx={{ display: "flex", alignItems: "center", gap: 0.5, py: 1, pr: 1 }}
         >
-          <Typography variant="subtitle1" noWrap sx={{ flex: 1, minWidth: 0 }}>
+          <Typography component="span" variant="subtitle1" noWrap sx={{ flex: 1, minWidth: 0 }}>
             {preview?.name}
           </Typography>
-          {preview ? (
+          {preview && (preview.downloadUrl ?? preview.url) ? (
             <Tooltip title="Download">
               <IconButton
                 component="a"
@@ -138,11 +170,15 @@ export function ChatAttachments({
             overflow: "auto",
           }}
         >
-          {preview ? (
+          {preview && (preview.previewUrl ?? preview.url) ? (
             <Box
               component="img"
               src={preview.previewUrl ?? preview.url}
               alt={preview.name}
+              onError={() => {
+                setFailed((current) => new Set(current).add(preview.id));
+                setPreview(undefined);
+              }}
               sx={{
                 display: "block",
                 maxWidth: "100%",

@@ -47,6 +47,9 @@ export function collectReachableArtifactIds(value: unknown, found = new Set<stri
   if (!value || typeof value !== "object") return found;
   for (const [key, item] of Object.entries(value)) {
     if (key === "artifactId" && typeof item === "string" && item.trim()) found.add(item);
+    if (key === "artifactIds" && Array.isArray(item)) {
+      for (const id of item) if (typeof id === "string" && id.trim()) found.add(id);
+    }
     collectReachableArtifactIds(item, found);
   }
   return found;

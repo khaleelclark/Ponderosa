@@ -152,8 +152,13 @@ export class AgentCommunicationJournalAuthority {
         : input;
     if (!this.getProject(event.projectId)) throw new Error("communication project not found");
     if (event.schemaVersion !== 1 && event.schemaVersion !== 2) throw new Error("unsupported communication schema version");
-    if (!event.eventId || (!event.text.trim() && !event.attachments?.length && !event.document) || !event.createdAt) {
+    if (!event.eventId || (!event.text.trim() && !event.attachments?.length && !event.artifactIds?.length && !event.document) || !event.createdAt) {
       throw new Error("communication event is incomplete");
+    }
+    if (event.artifactIds && (event.artifactIds.length > 20 ||
+        new Set(event.artifactIds).size !== event.artifactIds.length ||
+        event.artifactIds.some((id) => !/^[A-Za-z0-9_-]{1,128}$/u.test(id)))) {
+      throw new Error("communication managed artifact attachments are invalid");
     }
     if (event.attachments) {
       if (new Set(event.attachments.map((attachment) => attachment.id)).size !== event.attachments.length) {
@@ -161,7 +166,8 @@ export class AgentCommunicationJournalAuthority {
       }
       for (const attachment of event.attachments) {
         if (!attachment.id || !attachment.agentId || !attachment.name.trim() || !attachment.mediaType ||
-            !Number.isSafeInteger(attachment.size) || attachment.size < 1 || !attachment.url.trim()) {
+            !Number.isSafeInteger(attachment.size) || attachment.size < 1 ||
+            typeof attachment.url !== "string" || !attachment.url.trim()) {
           throw new Error("communication attachment is incomplete");
         }
         const owner = this.getAgent(attachment.agentId);
@@ -235,6 +241,7 @@ export class AgentCommunicationJournalAuthority {
       const equivalent = idempotent.projectId === event.projectId && idempotent.conversationId === event.conversationId &&
         idempotent.intent === event.intent && JSON.stringify(idempotent.audience) === JSON.stringify(event.audience) &&
         idempotent.text === event.text && JSON.stringify(idempotent.attachments) === JSON.stringify(event.attachments) &&
+        JSON.stringify(idempotent.artifactIds) === JSON.stringify(event.artifactIds) &&
         JSON.stringify(idempotent.document) === JSON.stringify(event.document);
       if (!equivalent) throw new Error("communication idempotency collision");
       this.ensureCommunicationBehaviorProjections(idempotent);
@@ -347,7 +354,7 @@ export class AgentCommunicationJournalAuthority {
 
   appendConversationMessage(
     conversationId: string,
-    input: CreateConversationMessageRequest,
+    input: CreateConversationMessageRequest & { artifactIds?: string[] },
     authorAgentId?: string,
     channel: ConversationChannel = "main",
     deliveryIntents?: ConversationDeliveryIntent[],
@@ -379,6 +386,7 @@ export class AgentCommunicationJournalAuthority {
       createdAt: now,
       ...(authorAgentId ? { authorAgentId } : {}),
       ...(input.attachments?.length ? { attachments: input.attachments } : {}),
+      ...(input.artifactIds?.length ? { artifactIds: input.artifactIds } : {}),
       ...(deliveryIntents?.length ? { deliveryIntents } : {}),
       ...(messageReceiptKey ? { messageReceiptKey } : {}),
       orderKey: this.nextDeliveryOrderKey(now),
@@ -400,6 +408,7 @@ export class AgentCommunicationJournalAuthority {
         ...(authorAgentId ? { authorAgentId } : {}),
         ...(dispatch.attachments?.length ? { attachmentIds: dispatch.attachments.map((item) => item.id) } : {}),
         ...(dispatch.attachments?.length ? { attachments: dispatch.attachments } : {}),
+        ...(dispatch.artifactIds?.length ? { artifactIds: dispatch.artifactIds } : {}),
       },
     });
     this.db
@@ -419,6 +428,7 @@ export class AgentCommunicationJournalAuthority {
       createdAt: dispatch.createdAt,
       authorAgentId: authorAgentId ?? undefined,
       attachments: dispatch.attachments,
+      artifactIds: dispatch.artifactIds,
     };
   }
 

@@ -1,6 +1,6 @@
 /** Canonical communication contracts shared by persistence, routing, and UI. */
 
-import type { ImageAttachmentDto } from "./dto.js";
+import type { CommunicationAttachmentDto, ImageAttachmentDto } from "./dto.js";
 
 export type CommunicationIntent = "broadcast" | "direct_to_user" | "collaboration" | "user_dm";
 
@@ -46,6 +46,8 @@ interface CommunicationEventBase {
   text: string;
   /** Immutable, server-validated artifact references authored with this event. */
   attachments?: ImageAttachmentDto[];
+  /** Immutable identities of existing Project-managed artifacts attached by an Agent. */
+  artifactIds?: string[];
   document?: CommunicationDocumentRecord;
   citations?: VerifiedCitationRecord[];
   createdAt: string;
@@ -148,7 +150,9 @@ export function isCommunicationEvent(value: unknown): value is CommunicationEven
       (event.conversationId !== undefined && !nonEmptyString(event.conversationId)) ||
       !isCommunicationActor(event.sender) || !nonEmptyString(event.intent) ||
       !communicationIntentValues.has(event.intent) || !isCommunicationAudience(event.audience) ||
-      typeof event.text !== "string" || !nonEmptyString(event.createdAt)) return false;
+      typeof event.text !== "string" || !nonEmptyString(event.createdAt) ||
+      (event.artifactIds !== undefined && (!Array.isArray(event.artifactIds) ||
+        event.artifactIds.length === 0 || !event.artifactIds.every(nonEmptyString)))) return false;
 
   const audience = event.audience;
   if (event.schemaVersion === 1) {
@@ -327,7 +331,8 @@ export interface CommunicationProjection {
     sequence?: number;
     authorAgentId?: string;
     attachmentIds?: string[];
-    attachments?: ImageAttachmentDto[];
+    attachments?: CommunicationAttachmentDto[];
+    artifactIds?: string[];
   };
 }
 
@@ -344,7 +349,8 @@ export interface ProjectedCommunicationMessage {
   sequence?: number;
   authorAgentId?: string;
   attachmentIds?: string[];
-  attachments?: ImageAttachmentDto[];
+  attachments?: CommunicationAttachmentDto[];
+  artifactIds?: string[];
   document?: CommunicationDocumentReference;
   citations?: VerifiedCitationRecord[];
   executionId?: string;

@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { existsSync } from "node:fs";
 import type {
   ArtifactDto,
   ArtifactKind,
@@ -7,7 +8,7 @@ import type {
 import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
 import { artifactId } from "./ids.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";
-import { managedArtifactsLogPath } from "./paths.js";
+import { managedArtifactContentPath, managedArtifactsLogPath } from "./paths.js";
 import type {
   ArtifactProjectionReadRow,
   ManagedArtifactAccess,
@@ -295,6 +296,41 @@ export class AgentArtifactCatalog {
         originAgentId: string;
       },
     );
+  }
+
+  communicationAttachmentsForOperator(
+    projectId: string,
+    artifactIds: readonly string[],
+  ): import("@ponderosa/core").CommunicationAttachmentDto[] {
+    return artifactIds.map((artifactIdValue) => {
+      const artifact = this.getProjectArtifact(projectId, artifactIdValue);
+      const readable = artifact && this.operatorCanReadProjectArtifact(projectId, artifactIdValue);
+      const available = Boolean(
+        readable && artifact.size !== undefined && artifact.sha256 && artifact.mediaType &&
+        existsSync(managedArtifactContentPath(this.dataDir, projectId, artifactIdValue)),
+      );
+      if (!artifact || !readable || !available) {
+        return {
+          id: artifactIdValue,
+          agentId: artifact?.originAgentId ?? artifact?.agentId ?? "unavailable",
+          name: artifact?.summary ?? "Artifact unavailable",
+          mediaType: artifact?.mediaType ?? "application/octet-stream",
+          size: artifact?.size ?? 0,
+          unavailable: true,
+        };
+      }
+      return {
+        id: artifact.id,
+        agentId: artifact.originAgentId ?? artifact.agentId,
+        name: artifact.summary ?? artifact.path.split("/").at(-1) ?? artifact.id,
+        mediaType: artifact.mediaType!,
+        size: artifact.size!,
+        createdAt: artifact.createdAt,
+        url: artifact.previewUrl,
+        previewUrl: artifact.previewUrl,
+        downloadUrl: artifact.downloadUrl,
+      };
+    });
   }
 
   getProjectArtifactAccess(

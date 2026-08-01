@@ -2897,6 +2897,94 @@ describe("CoordinationV3Store scheduler", () => {
     expect(store.runtimeArtifact(userArtifact.id)).not.toHaveProperty("executionId");
   });
 
+  it("authorizes managed artifact attachments inside the fenced Communication transaction and hashes their identities", () => {
+    const firstArtifactId = randomUUID();
+    const secondArtifactId = randomUUID();
+    const authorized = new Set([firstArtifactId, secondArtifactId]);
+    const authorityCalls: string[][] = [];
+    store = new CoordinationV3Store(opened.client, {
+      managedArtifactAttachmentAuthority: (input) => {
+        authorityCalls.push(input.artifactIds);
+        expect(input).toMatchObject({
+          projectId,
+          sender: { kind: "agent", agentId: recipientA },
+          audience: { kind: "agents", agentIds: [recipientB] },
+        });
+        if (input.artifactIds.some((id) => !authorized.has(id))) {
+          throw new Error("managed artifact attachment is unavailable or unauthorized");
+        }
+      },
+    });
+    store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "managed-attachment-run",
+      scopeKey: `conversation:${conversationId}`,
+      kind: "ordinary", payload: { text: "Attach the screenshot" },
+    });
+    const run = store.leaseNextRun({ workerId: "managed-attachment-worker" })!;
+    acknowledgeLease(run);
+    const runAuthorization = {
+      runId: run.runId,
+      agentId: recipientA,
+      fencingToken: run.fencingToken,
+    };
+    const communication = (artifactIds: string[]): CommunicationEvent => ({
+      eventId: "managed-attachment-message",
+      schemaVersion: 2,
+      projectId,
+      conversationId,
+      sender: { kind: "agent", agentId: recipientA, executionId: run.runId },
+      intent: "collaboration",
+      audience: { kind: "agents", agentIds: [recipientB] },
+      text: "",
+      artifactIds,
+      createdAt: "2026-07-15T00:00:00.000Z",
+      idempotencyKey: "managed-attachment-key",
+    });
+    const record = (artifactIds: string[], id = "managed-attachment-message") => {
+      const event = { ...communication(artifactIds), eventId: id };
+      return store.recordRuntimeCommunication({
+        id,
+        projectId,
+        sender: event.sender,
+        intent: event.intent,
+        audience: event.audience,
+        payload: event,
+        scopeKey: `conversation:${conversationId}`,
+        runAuthorization,
+        activation: {
+          agentId: recipientB,
+          kind: "ordinary_message",
+          priority: 50,
+          dispatchPolicy: "next_run",
+          promptClass: "ordinary",
+        },
+        now: event.createdAt,
+      });
+    };
+
+    expect(record([firstArtifactId])).toMatchObject({ replayed: false });
+    expect(record([firstArtifactId])).toMatchObject({ replayed: true });
+    expect(() => record([secondArtifactId])).toThrow("runtime communication ID collision");
+    expect(opened.client.prepare(`
+      SELECT json_extract(payload_json, '$.artifactIds[0]') AS artifactId
+      FROM runtime_communications WHERE id = 'managed-attachment-message'
+    `).get()).toEqual({ artifactId: firstArtifactId });
+
+    const beforeUnauthorized = runtimeMutationState();
+    expect(() => record([randomUUID()], "managed-attachment-unauthorized"))
+      .toThrow("managed artifact attachment is unavailable or unauthorized");
+    expect(runtimeMutationState()).toEqual(beforeUnauthorized);
+
+    store.cancelAgentRun({
+      agentId: recipientA,
+      expectedRunId: run.runId,
+      idempotencyKey: "cancel-managed-attachment-run",
+    });
+    expect(() => record([firstArtifactId], "managed-attachment-after-cancel"))
+      .toThrow("no longer authoritative");
+    expect(authorityCalls.length).toBeGreaterThanOrEqual(3);
+  });
+
   it("applies the same artifact provenance admission before request-update and queued-edit mutation", () => {
     const foreign = seedAdditionalProject("Foreign alternate artifact path");
     const invalidAlternateArtifacts = [

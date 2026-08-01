@@ -320,6 +320,7 @@ export class AgentChatFeedProjection {
           ...(message.authorAgentId ? { authorAgentId: message.authorAgentId } : {}),
           ...(message.executionId ? { executionId: message.executionId } : {}),
           ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+          ...(message.artifactIds?.length ? { artifactIds: message.artifactIds } : {}),
           ...(message.document ? { document: message.document } : {}),
           ...(message.citations?.length ? { citations: message.citations } : {}),
         } satisfies MessageDto];
@@ -443,6 +444,8 @@ export class AgentChatFeedProjection {
         author,
         text: message.text,
         createdAt: message.createdAt,
+        ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+        ...(message.artifactIds?.length ? { artifactIds: message.artifactIds } : {}),
         ...(directMessageAgent ? {
           directMessageAgent: { id: directMessageAgent.id, title: directMessageAgent.title },
         } : {}),

@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import {
   communicationHasProjectionTarget,
   type AgentDto,
+  type CommunicationAttachmentDto,
   type CommunicationEvent,
   type CommunicationProjection,
   type CommunicationReconciliationReport,
@@ -80,6 +81,10 @@ export class AgentCommunicationProjectionLedger {
       stream: string,
       scope: string,
     ) => { orderKey: string; rowKey: string },
+    private readonly resolveManagedArtifactAttachments: (
+      projectId: string,
+      artifactIds: readonly string[],
+    ) => CommunicationAttachmentDto[],
   ) {}
 
   communicationProjectionAllowed(
@@ -265,8 +270,16 @@ export class AgentCommunicationProjectionLedger {
           ...(event.sender.kind === "agent" ? { executionId: event.sender.executionId } : {}),
           ...(event.correctionOfEventId ? { correctionOfEventId: event.correctionOfEventId } : {}),
           ...(latestRevision ? { editedAt: latestRevision.createdAt, editRevision: targetRevisions.length } : {}),
-          ...(message.attachmentIds?.length ? { attachmentIds: message.attachmentIds } : {}),
-          ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+          ...(message.attachmentIds?.length || event.artifactIds?.length
+            ? { attachmentIds: [...(message.attachmentIds ?? []), ...(event.artifactIds ?? [])] }
+            : {}),
+          ...(message.attachments?.length || event.artifactIds?.length
+            ? { attachments: [
+                ...(message.attachments ?? []),
+                ...this.resolveManagedArtifactAttachments(projectId, event.artifactIds ?? []),
+              ] }
+            : {}),
+          ...(event.artifactIds?.length ? { artifactIds: event.artifactIds } : {}),
           ...(!latestRevision && event.document ? { document: communicationDocumentReference(projectId, event.document) } : {}),
           ...(event.citations?.length ? { citations: event.citations } : {}),
         }];
@@ -354,6 +367,7 @@ export class AgentCommunicationProjectionLedger {
           ...(dispatch.authorAgentId ? { authorAgentId: dispatch.authorAgentId } : {}),
           ...(dispatch.attachments?.length ? { attachmentIds: dispatch.attachments.map((item) => item.id) } : {}),
           ...(dispatch.attachments?.length ? { attachments: dispatch.attachments } : {}),
+          ...(dispatch.artifactIds?.length ? { artifactIds: dispatch.artifactIds } : {}),
         },
       };
       if (this.communicationProjectionAllowed(projectId, projection)) {

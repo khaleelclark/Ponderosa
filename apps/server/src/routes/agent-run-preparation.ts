@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { copyFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import {
+  ASSET_MEDIA_TYPES,
   type AgentDto,
   type AgentMessageChannel,
   type ArtifactDto,
@@ -268,8 +269,7 @@ export async function prepareAgentRun(
     return [...ids].slice(0, 200).flatMap((id) => {
       const artifact = store.getProjectArtifact(project.id, id);
       if (!artifact || !store.agentCanReadProjectArtifact(project.id, id, agent.id) ||
-          (artifact.kind === "generated_file" &&
-          !assets.authoritativeGeneratedArtifact(project.id, artifact))) return [];
+          !assets.managedProjectArtifactIsAvailable(project.id, artifact)) return [];
       return [artifact];
     });
   };
@@ -284,7 +284,10 @@ export async function prepareAgentRun(
         : {}),
       attachments: [
         ...(await Promise.all(
-          message.attachments?.map(async (item) => ({
+          message.attachments?.filter((item): item is AssetDto =>
+            !message.artifactIds?.includes(item.id) &&
+            (ASSET_MEDIA_TYPES as readonly string[]).includes(item.mediaType)
+          ).map(async (item) => ({
             name: item.name,
             mediaType: item.mediaType,
             size: item.size,

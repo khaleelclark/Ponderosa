@@ -46,6 +46,17 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
         publish(scope.agentId, store.appendEvent(scope.agentId, event));
         return;
       }
+      if (event.type === "browser_screenshot") {
+        return persistRuntimeEvent(scope.agentId, run, event).then((stored) => {
+          if (!stored) throw new Error("screenshot lost exact Run authority before publication");
+        }).catch((error: unknown) => {
+          logWarn(
+            { err: error, agentId: scope.agentId, runId: scope.runId },
+            "browser screenshot publication failed",
+          );
+          throw error;
+        });
+      }
       void persistRuntimeEvent(scope.agentId, run, event).catch((error: unknown) => {
         logWarn(
           { err: error, agentId: scope.agentId, runId: scope.runId },
@@ -63,6 +74,21 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
       if (!grant || scope.actorAgentId !== grant.agentId || scope.actorRunId !== grant.runId) return;
       const run = activeRuns.get(grant.agentId);
       if (!run || run.runId !== grant.runId) return;
+      if (event.type === "browser_screenshot") {
+        return persistRuntimeEvent(
+          grant.agentId,
+          run,
+          { ...event, executionId: grant.runId },
+        ).then((stored) => {
+          if (!stored) throw new Error("screenshot lost exact Run authority before publication");
+        }).catch((error: unknown) => {
+          logWarn(
+            { err: error, agentId: grant.agentId, runId: grant.runId },
+            "Project browser screenshot publication failed",
+          );
+          throw error;
+        });
+      }
       void persistRuntimeEvent(
         grant.agentId,
         run,

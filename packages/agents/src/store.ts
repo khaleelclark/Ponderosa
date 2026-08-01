@@ -472,7 +472,7 @@ export class AgentStore extends AgentEventSessionFacade {
 
   appendConversationMessage(
     conversationId: string,
-    input: CreateConversationMessageRequest,
+    input: CreateConversationMessageRequest & { artifactIds?: string[] },
     authorAgentId?: string,
     channel: ConversationChannel = "main",
     deliveryIntents?: ConversationDeliveryIntent[],

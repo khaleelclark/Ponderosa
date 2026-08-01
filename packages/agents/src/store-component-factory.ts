@@ -309,6 +309,8 @@ export function createAgentStoreComponents(
       chatFeed.upsertGlobalChatSearchProjection(projectId, projection),
     ports.encodeHistoryCursor,
     ports.decodeHistoryCursor,
+    (projectId, artifactIds) =>
+      artifactCatalog.communicationAttachmentsForOperator(projectId, artifactIds),
   );
   const fileActivity = new AgentFileActivityReadModel(
     client,

@@ -163,7 +163,7 @@ export function registerAgentRuntimeToolRoutes(
         content = authoritative.body;
       } else {
         const managed = artifact
-          ? assets.authoritativeGeneratedArtifact(author.projectId, artifact)
+          ? assets.authoritativeManagedProjectArtifact(author.projectId, artifact)
           : undefined;
         if (!managed) return reply.code(404).send({ error: `artifact content is unavailable: ${ref}` });
         content = managed.body;

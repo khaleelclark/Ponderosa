@@ -600,6 +600,41 @@ export class AssetStore {
     return this.readGeneratedArtifact(registered);
   }
 
+  /** Resolve any cataloged managed artifact through immutable content checks.
+   * Generated files additionally retain their existing publication-ledger check. */
+  authoritativeManagedProjectArtifact(projectId: string, expected: ArtifactDto): {
+    body: Buffer;
+    localPath: string;
+    contentHash: string;
+    byteLength: number;
+  } | undefined {
+    if (expected.projectId !== projectId || expected.size === undefined || !expected.sha256) return undefined;
+    if (expected.kind === "generated_file") {
+      return this.authoritativeGeneratedArtifact(projectId, expected);
+    }
+    try {
+      const content = readManagedArtifactContent(
+        this.dataDir,
+        projectId,
+        expected.id,
+        expected.size,
+        expected.sha256,
+      );
+      return content ? {
+        body: content.body,
+        localPath: managedArtifactContentPath(this.dataDir, projectId, expected.id),
+        contentHash: content.sha256,
+        byteLength: content.size,
+      } : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  managedProjectArtifactIsAvailable(projectId: string, expected: ArtifactDto): boolean {
+    return Boolean(this.authoritativeManagedProjectArtifact(projectId, expected));
+  }
+
   /** Validate generated-file catalog/ledger agreement without synchronously
    * materializing the managed blob. */
   authoritativeGeneratedArtifactMetadata(

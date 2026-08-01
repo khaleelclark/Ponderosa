@@ -1,10 +1,10 @@
-import type { CommunicationDocumentReference, ImageAttachmentDto } from "@ponderosa/core";
+import type { CommunicationAttachmentDto, CommunicationDocumentReference } from "@ponderosa/core";
 
 export interface TranscriptMessage {
   author: string;
   text: string;
   createdAt?: string;
-  attachments?: ImageAttachmentDto[];
+  attachments?: CommunicationAttachmentDto[];
   document?: CommunicationDocumentReference;
 }
 
@@ -17,7 +17,7 @@ function linkLabel(value: string): string {
   return value.replace(/([\\\[\]])/g, "\\$1");
 }
 
-function attachmentReference(attachment: ImageAttachmentDto): string {
+function attachmentReference(attachment: CommunicationAttachmentDto): string {
   const url = attachment.downloadUrl ?? attachment.url;
   const label = `Attachment: ${linkLabel(attachment.name)}`;
   return url ? `- [${label}](<${url.replace(/>/g, "%3E")}>)` : `- ${label}`;
