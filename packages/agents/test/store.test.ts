@@ -1148,7 +1148,7 @@ describe("AgentStore — append + projection", () => {
     expect(readFileSync(managedArtifactContentPath(dir, projectId, artifactId), "utf8")).toContain("crash-boundary");
   });
 
-  itWithManagedArtifacts("rebuilds a file-change artifact when the provider supplied an empty diff", () => {
+  itWithManagedArtifacts("does not advertise whitespace-only legacy diff rows as previewable", () => {
     const { projectId, agentId } = seedAgent();
     store.close();
     const stored = new EventLog(eventsPath(dir, projectId, agentId)).append({
@@ -1157,12 +1157,25 @@ describe("AgentStore — append + projection", () => {
 
     store = new AgentStore(dir);
 
+    // Writers normalize empty diffs to NULL. Exercise the read-model hardening
+    // against a legacy or manually repaired row that retained blank text.
+    store.sqlite.prepare(`
+      UPDATE changed_file_projection SET diff = ? WHERE agent_id = ? AND path = ?
+    `).run("\n  \t", agentId, "unchanged.txt");
+
     const artifactId = `${agentId}:a:${stored.seq}:0`;
     expect(store.getProjectArtifact(projectId, artifactId)).toMatchObject({
       id: artifactId, kind: "diff", originAgentId: agentId, sha256: expect.any(String),
     });
     expect(readFileSync(managedArtifactContentPath(dir, projectId, artifactId), "utf8"))
       .toContain("No diff text was provided by the engine.");
+    expect(store.getChangedFilePage(agentId, { limit: 10 }).items).toEqual([
+      expect.objectContaining({ path: "unchanged.txt", diffAvailable: false }),
+    ]);
+    expect(store.getChangedFileDetail(agentId, "unchanged.txt")).toMatchObject({
+      diffAvailable: false,
+    });
+    expect(store.getChangedFileDetail(agentId, "unchanged.txt")).not.toHaveProperty("diff");
   });
 
   itWithManagedArtifacts("rebuilds every execution artifact association and retains deleted-Agent audit evidence", () => {
