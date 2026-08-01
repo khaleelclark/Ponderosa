@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { triggerChatLabel, triggerScheduleStatus } from "../src/components/TriggersPane";
+import { triggerChatLabel, triggerChatOptionLabel, triggerChatQueryLabel, triggerScheduleStatus } from "../src/components/TriggersPane";
 import { recordedPreviewLabel } from "../src/components/files/WorkspaceReviewPane";
 import { classifyWebPushState, webPushEnableBlockReason } from "../src/pushNotifications";
 
@@ -43,6 +43,9 @@ describe("verified UI state helpers", () => {
     const chats = [{ id: "chat-1", title: "Renamed UX Audit Chat" }];
     expect(triggerChatLabel("chat-1", chats)).toBe("Renamed UX Audit Chat");
     expect(triggerChatLabel("deleted-chat", chats)).toBe("Unavailable Chat");
+    expect(triggerChatLabel("chat-1", [{ ...chats[0]!, deletedAt: "2026-08-01T12:00:00.000Z" }])).toBe("Unavailable Chat");
+    expect(triggerChatQueryLabel("chat-1", chats, { isLoading: false, isError: true })).toBe("Chat name unavailable");
+    expect(triggerChatOptionLabel("Renamed UX Audit Chat", true)).toBe("Primary · Renamed UX Audit Chat");
   });
 
   it("never presents a disabled Trigger timestamp as upcoming", () => {
@@ -57,4 +60,5 @@ describe("verified UI state helpers", () => {
       nextFireAt: "2026-08-01T12:00:00.000Z",
     })).toContain("Next scheduled occurrence:");
   });
+
 });

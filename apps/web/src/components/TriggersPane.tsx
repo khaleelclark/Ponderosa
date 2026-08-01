@@ -46,6 +46,20 @@ export function triggerChatLabel(
   return conversation.title;
 }
 
+export function triggerChatQueryLabel(
+  conversationId: string,
+  conversations: readonly Pick<ConversationDto, "id" | "title" | "deletedAt">[],
+  state: { isLoading: boolean; isError: boolean },
+): string {
+  if (state.isLoading) return "Loading Chat…";
+  if (state.isError) return "Chat name unavailable";
+  return triggerChatLabel(conversationId, conversations);
+}
+
+export function triggerChatOptionLabel(label: string, primary: boolean): string {
+  return primary ? `Primary · ${label}` : label;
+}
+
 export function triggerScheduleStatus(trigger: Pick<TriggerDefinitionDto, "enabled" | "sourceKind" | "nextFireAt">): string | undefined {
   if (trigger.sourceKind !== "schedule") return undefined;
   if (!trigger.enabled) return "Not scheduled while disabled";
@@ -165,9 +179,11 @@ export function TriggersPane({
     queryKey: queryKeys.conversations.project(agent.projectId),
     queryFn: () => api.listConversations(agent.projectId),
   });
-  const currentChatLabel = (id: string): string => conversations.isLoading
-    ? "Loading Chat…"
-    : triggerChatLabel(id, conversations.data ?? []);
+  const currentChatLabel = (id: string): string => triggerChatQueryLabel(
+    id,
+    conversations.data ?? [],
+    { isLoading: conversations.isLoading, isError: conversations.isError },
+  );
   const [createOpen, setCreateOpen] = useState(initialCreateOpen);
   const [editing, setEditing] = useState<TriggerDefinitionDto>();
   const [secret, setSecret] = useState<{ trigger: TriggerDefinitionDto; value: string }>();
@@ -370,7 +386,7 @@ export function TriggersPane({
       <Alert severity="warning">This automation will run unattended with full Agent access. Event payloads are untrusted data.</Alert>
       <TextField label="Name" value={name} onChange={(event) => setName(event.target.value)} inputProps={{ maxLength: 120 }} autoFocus required />
       <TextField label="Trusted instructions" value={instructions} onChange={(event) => setInstructions(event.target.value)} multiline minRows={3} required helperText="Describe the action. Do not rely on event payload text as instructions." />
-      {!fixedConversationId ? <FormControl fullWidth><InputLabel id="trigger-chat-label">Project chat</InputLabel><Select disabled={Boolean(editing)} labelId="trigger-chat-label" label="Project chat" value={conversationId} onChange={(event) => setConversationId(event.target.value)}>{agent.conversationIds.map((id) => <MenuItem key={id} value={id}>{currentChatLabel(id)}</MenuItem>)}</Select></FormControl> : null}
+      {!fixedConversationId ? <FormControl fullWidth><InputLabel id="trigger-chat-label">Project chat</InputLabel><Select disabled={Boolean(editing)} labelId="trigger-chat-label" label="Project chat" value={conversationId} onChange={(event) => setConversationId(event.target.value)}>{agent.conversationIds.map((id) => <MenuItem key={id} value={id}>{triggerChatOptionLabel(currentChatLabel(id), id === agent.conversationId)}</MenuItem>)}</Select></FormControl> : null}
       <FormControl fullWidth><InputLabel id="trigger-source-label">Source</InputLabel><Select disabled={Boolean(editing)} labelId="trigger-source-label" label="Source" value={sourceKind} onChange={(event) => setSourceKind(event.target.value as TriggerSourceKind)}><MenuItem value="schedule">Schedule</MenuItem><MenuItem value="webhook">Signed Webhook</MenuItem><MenuItem value="filesystem">Project Folder Changes</MenuItem></Select></FormControl>
       {sourceKind === "schedule" ? <>
         <FormControl fullWidth><InputLabel id="schedule-kind-label">Schedule type</InputLabel><Select labelId="schedule-kind-label" label="Schedule type" value={scheduleKind} onChange={(event) => setScheduleKind(event.target.value as typeof scheduleKind)}><MenuItem value="interval">Interval</MenuItem><MenuItem value="once">One Time</MenuItem><MenuItem value="cron">Cron</MenuItem></Select></FormControl>
