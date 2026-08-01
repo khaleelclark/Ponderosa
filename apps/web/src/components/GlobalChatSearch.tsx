@@ -168,14 +168,15 @@ function RecentChatItem({ recent, onSelect, active = false, id, onActive }: {
 }
 
 export function UnavailableGlobalSearchScopeChip({ scope }: { scope: "Projects" | "Files" }): JSX.Element {
+  const label = `${scope} · Coming later`;
   const reason = `${scope} search is coming later because ${scope.toLocaleLowerCase()} discovery is not indexed yet`;
   return <Tooltip title={reason}>
     <Chip
-      label={`${scope} · Coming later`}
+      label={label}
       variant="outlined"
       role="button"
       aria-disabled="true"
-      aria-label={reason}
+      aria-label={`${label}. ${reason}`}
       tabIndex={0}
       sx={{ opacity: 0.62, cursor: "not-allowed" }}
     />
