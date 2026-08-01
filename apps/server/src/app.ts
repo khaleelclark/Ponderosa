@@ -136,6 +136,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       ? `durable work is unavailable: ${processContainment.detail}`
       : undefined;
   const assets = new AssetStore(opts.dataDir);
+  store.configureCommunicationAttachmentMetadataAuthority((projectId, artifact) =>
+    assets.managedProjectArtifactMetadataIsAuthoritative(projectId, artifact));
   const coordinationV3 = new CoordinationV3Store(store.sqlite, {
     attachmentAuthority: {
       resolve: (projectId, agentId, attachmentId) =>
@@ -192,6 +194,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
               throw new Error("managed artifact attachment audience is unauthorized");
             }
             break;
+          default: {
+            const unhandledAudience: never = audience;
+            void unhandledAudience;
+            throw new Error("managed artifact attachment audience is unsupported");
+          }
         }
       }
     },

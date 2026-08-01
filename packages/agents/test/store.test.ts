@@ -374,6 +374,20 @@ describe("AgentStore — canonical communication events", () => {
     });
     expect(auditMessage.attachments![0]).not.toHaveProperty("unavailable");
 
+    store.configureCommunicationAttachmentMetadataAuthority(() => false);
+    const ledgerMismatch = store.getConversationMessages(room.id, "main")[0]!;
+    expect(ledgerMismatch.attachments).toEqual([expect.objectContaining({
+      id: artifactId,
+      unavailable: true,
+    })]);
+    expect(ledgerMismatch.attachments![0]).not.toHaveProperty("previewUrl");
+    expect(ledgerMismatch.attachments![0]).not.toHaveProperty("downloadUrl");
+    expect(store.getAllChatPage().items[0]?.attachments).toEqual([expect.objectContaining({
+      id: artifactId,
+      unavailable: true,
+    })]);
+    store.configureCommunicationAttachmentMetadataAuthority(() => true);
+
     const managedPath = managedArtifactContentPath(dir, project.id, artifactId);
     writeFileSync(managedPath, "x");
     const corrupt = store.getConversationMessages(room.id, "main")[0]!;

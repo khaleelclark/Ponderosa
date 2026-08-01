@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import {
   communicationHasProjectionTarget,
   type AgentDto,
+  type ArtifactDto,
   type CommunicationAttachmentDto,
   type CommunicationEvent,
   type CommunicationProjection,
@@ -40,6 +41,11 @@ type ProjectionIndex = {
 };
 
 export class AgentCommunicationProjectionLedger {
+  private managedArtifactAttachmentMetadataAuthority?: (
+    projectId: string,
+    artifact: ArtifactDto,
+  ) => boolean;
+
   constructor(
     private readonly dataDir: string,
     private readonly client: Database.Database,
@@ -84,8 +90,15 @@ export class AgentCommunicationProjectionLedger {
     private readonly resolveManagedArtifactAttachments: (
       projectId: string,
       artifactIds: readonly string[],
+      metadataAuthority?: (projectId: string, artifact: ArtifactDto) => boolean,
     ) => CommunicationAttachmentDto[],
   ) {}
+
+  configureManagedArtifactAttachmentMetadataAuthority(
+    authority: (projectId: string, artifact: ArtifactDto) => boolean,
+  ): void {
+    this.managedArtifactAttachmentMetadataAuthority = authority;
+  }
 
   communicationProjectionAllowed(
     projectId: string,
@@ -276,7 +289,11 @@ export class AgentCommunicationProjectionLedger {
           ...(message.attachments?.length || event.artifactIds?.length
             ? { attachments: [
                 ...(message.attachments ?? []),
-                ...this.resolveManagedArtifactAttachments(projectId, event.artifactIds ?? []),
+                ...this.resolveManagedArtifactAttachments(
+                  projectId,
+                  event.artifactIds ?? [],
+                  this.managedArtifactAttachmentMetadataAuthority,
+                ),
               ] }
             : {}),
           ...(event.artifactIds?.length ? { artifactIds: event.artifactIds } : {}),

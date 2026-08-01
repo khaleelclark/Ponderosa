@@ -301,6 +301,7 @@ export class AgentArtifactCatalog {
   communicationAttachmentsForOperator(
     projectId: string,
     artifactIds: readonly string[],
+    metadataAuthority?: (projectId: string, artifact: ArtifactDto) => boolean,
   ): import("@ponderosa/core").CommunicationAttachmentDto[] {
     return artifactIds.map((artifactIdValue) => {
       const artifact = this.getProjectArtifact(projectId, artifactIdValue);
@@ -314,7 +315,10 @@ export class AgentArtifactCatalog {
           contentMetadataMatches = false;
         }
       }
-      const available = Boolean(readable && contentMetadataMatches);
+      const authoritativeMetadata = Boolean(
+        artifact && (!metadataAuthority || metadataAuthority(projectId, artifact)),
+      );
+      const available = Boolean(readable && contentMetadataMatches && authoritativeMetadata);
       if (!artifact || !readable || !available) {
         return {
           id: artifactIdValue,
