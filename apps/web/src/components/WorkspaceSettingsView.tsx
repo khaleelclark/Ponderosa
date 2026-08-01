@@ -17,6 +17,7 @@ import {
   Stack,
   Switch,
   TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import type { EngineDto, ProjectDto, ProjectEngineModelCatalogDto, WorkspacePreferencesDto } from "@ponderosa/core";
@@ -36,6 +37,7 @@ import {
   inspectWebPush,
   syncWebPush,
   disableWebPush,
+  webPushEnableBlockReason,
   type WebPushState,
 } from "../pushNotifications";
 import { queryKeys } from "../queryKeys";
@@ -331,6 +333,12 @@ function NotificationSettingsSection({
   onEnablePush(): void;
   onDisablePush(): void;
 }): JSX.Element {
+  const enableBlockReason = webPushEnableBlockReason(pushState);
+  const pushSeverity = pushState.kind === "active"
+    ? "success" as const
+    : pushState.kind === "permission_denied" || pushState.kind === "subscription_failed"
+      ? "error" as const
+      : "info" as const;
   return (
     <Paper variant="outlined" sx={{ p: 2.5 }}>
       <Typography variant="h6" fontWeight={800}>
@@ -366,10 +374,16 @@ function NotificationSettingsSection({
         })}
       </Stack>
       <Alert
-        severity={pushState.kind === "active" ? "success" : "info"}
+        severity={pushSeverity}
         sx={{ mt: 2 }}
+        aria-live="polite"
       >
         {pushState.message} In-app notifications remain available.
+        {pushState.kind === "host_unconfigured" && pushState.setupCommand ? (
+          <Box component="code" sx={{ display: "block", mt: 1, overflowWrap: "anywhere" }}>
+            {pushState.setupCommand}
+          </Box>
+        ) : null}
       </Alert>
       <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
         {pushState.kind === "active" ? (
@@ -381,9 +395,17 @@ function NotificationSettingsSection({
             Disable on This Device
           </Button>
         ) : (
-          <Button variant="outlined" disabled={pushBusy} onClick={onEnablePush}>
-            Enable Browser Push
-          </Button>
+          <Tooltip title={enableBlockReason ?? ""}>
+            <span>
+              <Button
+                variant="outlined"
+                disabled={pushBusy || Boolean(enableBlockReason)}
+                onClick={onEnablePush}
+              >
+                Enable Browser Push
+              </Button>
+            </span>
+          </Tooltip>
         )}
       </Stack>
     </Paper>
@@ -866,6 +888,10 @@ export function WorkspaceSettingsView({
     setPushBusy(true);
     void action()
       .then(setPushState)
+      .catch((error: unknown) => setPushState({
+        kind: "subscription_failed",
+        message: `Push request failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      }))
       .finally(() => setPushBusy(false));
   };
   return (

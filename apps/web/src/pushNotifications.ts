@@ -16,13 +16,26 @@ export type WebPushState =
   | { kind: "subscription_failed"; message: string }
   | { kind: "active"; message: string };
 
+/** A disabled action must explain the prerequisite that prevents it. */
+export function webPushEnableBlockReason(state: WebPushState): string | undefined {
+  switch (state.kind) {
+    case "host_unconfigured":
+    case "unsupported":
+    case "insecure_origin":
+    case "permission_denied":
+      return state.message;
+    default:
+      return undefined;
+  }
+}
+
 interface WebPushPrerequisites {
   supported: boolean;
   secure: boolean;
   permission: NotificationPermission | "unsupported";
 }
 
-function classifyWebPushState(
+export function classifyWebPushState(
   prerequisites: WebPushPrerequisites,
   host?: WebPushStatusDto,
   deviceActive = false,
