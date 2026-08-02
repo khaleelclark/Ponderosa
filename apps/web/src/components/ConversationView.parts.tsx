@@ -52,6 +52,7 @@ import {
   AUTO_ALLOWED_DECISION_OPTION_ID,
   type MainTimelineEntry,
 } from "./ConversationView.helpers";
+import { coalesceTeamOperationalEvents } from "./teamChatPresentation";
 
 function ConversationMessageComponent({
   message,
@@ -107,9 +108,9 @@ function ConversationMessageComponent({
     : agentTitle(message.authorAgentId);
   const recipientNames = [
     ...new Set(
-      (message.agentMentions ?? []).map(mention =>
-        agentTitle(mention.agentId),
-      ),
+      (message.collaborationRecipients?.length
+        ? message.collaborationRecipients.map(recipient => recipient.title)
+        : (message.agentMentions ?? []).map(mention => agentTitle(mention.agentId))),
     ),
   ];
   const visibleRecipients = recipientNames.slice(0, 2);
@@ -525,6 +526,13 @@ function CollaborationTimeline({
       linkedRequestEventIds.add(event.id);
     }
   }
+  const visibleOperations = coalesceTeamOperationalEvents(
+    operationalEvents.filter(
+      event =>
+        !linkedRequestEventIds.has(event.id) &&
+        event.attentionRequired,
+    ),
+  );
   const timeline = [
     ...collaborationMessages.map(message => ({
       kind: "message" as const,
@@ -532,12 +540,7 @@ function CollaborationTimeline({
       at: message.createdAt,
       message,
     })),
-    ...operationalEvents
-      .filter(
-        event =>
-          !linkedRequestEventIds.has(event.id) &&
-          event.attentionRequired,
-      )
+    ...visibleOperations
       .map(event => ({
         kind: "operation" as const,
         id: `operation:${event.id}`,
@@ -578,21 +581,27 @@ function CollaborationTimeline({
                 textAlign: "left",
               }}
             >
-              <Typography
-                variant="caption"
-                sx={{
-                  color:
-                    event.kind === "decision"
-                      ? "warning.light"
-                      : "error.light",
-                  fontWeight: 700,
-                  whiteSpace: "nowrap",
-                }}
+              <Tooltip
+                title={event.relatedLifecycleCount > 1
+                  ? `${event.relatedLifecycleCount} related lifecycle updates are shown once.`
+                  : ""}
               >
-                {event.kind === "decision"
-                  ? "Decision needed"
-                  : "Coordination issue"}
-              </Typography>
+                <Typography
+                  variant="caption"
+                  sx={{
+                    color:
+                      event.kind === "decision"
+                        ? "warning.light"
+                        : "error.light",
+                    fontWeight: 700,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {event.kind === "decision"
+                    ? "Decision needed"
+                    : "Coordination issue"}
+                </Typography>
+              </Tooltip>
               <Typography variant="body2" sx={{ flex: 1, minWidth: 0 }}>
                 {event.text}
               </Typography>

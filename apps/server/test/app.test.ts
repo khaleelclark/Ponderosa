@@ -956,6 +956,55 @@ describe("server public API behavior", () => {
     });
   });
 
+  it("projects collaboration reply destinations from the canonical audience without a visible mention", async () => {
+    const project = store.createProject({ label: "Collaboration recipients", hostPath: repoDir });
+    const conversationId = project.lastConversationId!;
+    const oak = store.createAgent(project.id, {
+      title: "Oak",
+      engine: "codex",
+      conversationId,
+    });
+    const pine = store.createAgent(project.id, {
+      title: "Pine",
+      engine: "codex",
+      conversationId,
+    });
+    const eventId = randomUUID();
+    store.appendCommunicationEvent({
+      eventId,
+      schemaVersion: 2,
+      projectId: project.id,
+      conversationId,
+      sender: { kind: "agent", agentId: oak.id, executionId: "run-oak" },
+      intent: "collaboration",
+      audience: { kind: "agents", agentIds: [pine.id] },
+      identity: { senderLabel: "Oak", recipientLabels: { [pine.id]: "Pine" } },
+      text: "The requested review is complete.",
+      createdAt: new Date().toISOString(),
+    });
+    store.appendConversationMessage(
+      conversationId,
+      { role: "assistant", text: "The requested review is complete." },
+      oak.id,
+      "collaboration",
+      undefined,
+      undefined,
+      eventId,
+    );
+
+    const response = await server().inject({
+      method: "GET",
+      url: `/api/conversations/${conversationId}/collaboration`,
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json<{ messages: Array<Record<string, unknown>> }>().messages).toEqual([
+      expect.objectContaining({
+        communicationEventId: eventId,
+        collaborationRecipients: [{ id: pine.id, title: "Pine" }],
+      }),
+    ]);
+  });
+
   it("validates Agent preset CRUD through the public routes", async () => {
     const project = store.createProject({
       label: "Presets",

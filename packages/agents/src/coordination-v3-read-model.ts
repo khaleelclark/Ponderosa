@@ -187,6 +187,7 @@ export class CoordinationV3ReadModel {
     }): Array<{
       id: string;
       kind: "run" | "activation" | "request" | "join" | "trigger";
+      operationGroupId: string;
       state: string;
       primaryAgentId: string;
       secondaryAgentId?: string;
@@ -211,7 +212,8 @@ export class CoordinationV3ReadModel {
       const scopeKey = `conversation:${input.conversationId}`;
       const rows = this.sqlite.prepare(`
         WITH request_records AS (
-          SELECT 'request:' || request.id AS id, 'request' AS kind, request.state,
+          SELECT 'request:' || request.id AS id, 'request' AS kind,
+            'request:' || request.id AS operation_group_id, request.state,
             COALESCE(request.requester_agent_id, request.recipient_agent_id) AS primary_agent_id,
             CASE WHEN request.requester_agent_id IS NOT NULL THEN request.recipient_agent_id END AS secondary_agent_id,
             NULL AS subtype, NULL AS completed, NULL AS total,
@@ -257,7 +259,8 @@ export class CoordinationV3ReadModel {
               OR (request.created_at = @beforeCreatedAt AND 'request:' || request.id < @beforeId))
           ORDER BY request.created_at DESC, 'request:' || request.id DESC LIMIT @limit
         ), join_records AS (
-          SELECT 'join:' || join_record.id, 'join', join_record.state, join_record.owner_agent_id, NULL, NULL,
+          SELECT 'join:' || join_record.id, 'join', 'join:' || join_record.id,
+            join_record.state, join_record.owner_agent_id, NULL, NULL,
             SUM(CASE WHEN request.state = 'completed' THEN 1 ELSE 0 END), COUNT(member.request_id),
             NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
             join_record.created_at, join_record.updated_at
@@ -270,7 +273,24 @@ export class CoordinationV3ReadModel {
           GROUP BY join_record.id
           ORDER BY join_record.created_at DESC, 'join:' || join_record.id DESC LIMIT @limit
         ), activation_records AS (
-          SELECT 'activation:' || activation.id, 'activation', activation.state, activation.agent_id, NULL,
+          SELECT 'activation:' || activation.id, 'activation',
+            COALESCE((
+              SELECT CASE
+                WHEN source.source_kind = 'request' THEN 'request:' || source.source_id
+                WHEN source.source_kind = 'request_update' THEN 'request:' || request_update.request_id
+                WHEN source.source_kind = 'join' THEN 'join:' || source.source_id
+              END
+              FROM activation_sources source
+              LEFT JOIN coordination_request_updates request_update
+                ON source.source_kind = 'request_update'
+                AND request_update.id = source.source_id
+              WHERE source.activation_id = activation.id
+              ORDER BY CASE source.source_kind
+                WHEN 'request' THEN 0 WHEN 'request_update' THEN 1 WHEN 'join' THEN 2 ELSE 3 END,
+                source.source_id
+              LIMIT 1
+            ), 'activation:' || activation.id),
+            activation.state, activation.agent_id, NULL,
             activation.kind, NULL, NULL,
             NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
             activation.created_at, activation.updated_at
@@ -280,7 +300,26 @@ export class CoordinationV3ReadModel {
               OR (activation.created_at = @beforeCreatedAt AND 'activation:' || activation.id < @beforeId))
           ORDER BY activation.created_at DESC, 'activation:' || activation.id DESC LIMIT @limit
         ), run_records AS (
-          SELECT 'run:' || COALESCE(provider.execution_id, scheduler.id), 'run', scheduler.status,
+          SELECT 'run:' || COALESCE(provider.execution_id, scheduler.id), 'run',
+            COALESCE((
+              SELECT CASE WHEN COUNT(DISTINCT CASE
+                  WHEN source.source_kind = 'request' THEN 'request:' || source.source_id
+                  WHEN source.source_kind = 'request_update' THEN 'request:' || request_update.request_id
+                  WHEN source.source_kind = 'join' THEN 'join:' || source.source_id
+                END) = 1 THEN MIN(CASE
+                  WHEN source.source_kind = 'request' THEN 'request:' || source.source_id
+                  WHEN source.source_kind = 'request_update' THEN 'request:' || request_update.request_id
+                  WHEN source.source_kind = 'join' THEN 'join:' || source.source_id
+                END) END
+              FROM scheduler_run_activations attachment
+              JOIN activation_sources source
+                ON source.activation_id = attachment.activation_id
+              LEFT JOIN coordination_request_updates request_update
+                ON source.source_kind = 'request_update'
+                AND request_update.id = source.source_id
+              WHERE attachment.run_id = scheduler.id
+            ), 'run:' || COALESCE(provider.execution_id, scheduler.id)),
+            scheduler.status,
             scheduler.agent_id, NULL, NULL, NULL, NULL,
             NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
             scheduler.created_at, scheduler.updated_at
@@ -292,7 +331,8 @@ export class CoordinationV3ReadModel {
                 AND 'run:' || COALESCE(provider.execution_id, scheduler.id) < @beforeId))
           ORDER BY scheduler.created_at DESC, 'run:' || COALESCE(provider.execution_id, scheduler.id) DESC LIMIT @limit
         ), trigger_records AS (
-          SELECT 'trigger:' || occurrence.id, 'trigger', occurrence.state, occurrence.agent_id, NULL,
+          SELECT 'trigger:' || occurrence.id, 'trigger', 'trigger:' || occurrence.id,
+            occurrence.state, occurrence.agent_id, NULL,
             COALESCE(definition.name,
               CASE WHEN json_valid(occurrence.trigger_snapshot_json)
                 THEN json_extract(occurrence.trigger_snapshot_json, '$.name') END),
@@ -321,7 +361,8 @@ export class CoordinationV3ReadModel {
         beforeId: input.before?.id ?? null,
         limit,
       }) as Array<{
-        id: string; kind: "run" | "activation" | "request" | "join" | "trigger"; state: string;
+        id: string; kind: "run" | "activation" | "request" | "join" | "trigger";
+        operation_group_id: string; state: string;
         primary_agent_id: string; secondary_agent_id: string | null; subtype: string | null;
         completed: number | null; total: number | null;
         requester_agent_id: string | null; recipient_agent_id: string | null;
@@ -333,7 +374,8 @@ export class CoordinationV3ReadModel {
       return rows.map((row) => {
         const requestPreview = boundedRequestPreview(row.request_payload_json);
         return {
-          id: row.id, kind: row.kind, state: row.state, primaryAgentId: row.primary_agent_id,
+          id: row.id, kind: row.kind, operationGroupId: row.operation_group_id,
+          state: row.state, primaryAgentId: row.primary_agent_id,
           ...(row.secondary_agent_id ? { secondaryAgentId: row.secondary_agent_id } : {}),
           ...(row.subtype ? { subtype: row.subtype } : {}),
           ...(row.completed !== null ? { completed: row.completed } : {}),

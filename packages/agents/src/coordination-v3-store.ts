@@ -627,6 +627,7 @@ export class CoordinationV3Store {
   }): Array<{
     id: string;
     kind: "run" | "activation" | "request" | "join" | "trigger";
+    operationGroupId: string;
     state: string;
     primaryAgentId: string;
     secondaryAgentId?: string;

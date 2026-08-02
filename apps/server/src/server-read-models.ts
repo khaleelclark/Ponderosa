@@ -114,6 +114,15 @@ export function createServerReadModels(context: ReadModelContext) {
             };
           })
         : [];
+      const collaborationRecipients = communication?.intent === "collaboration"
+        ? recipientAgentIds.map((agentId) => {
+            const agent = projectAgents.find((candidate) => candidate.id === agentId);
+            return {
+              id: agentId,
+              title: agent?.title ?? communication.identity?.recipientLabels?.[agentId] ?? "Deleted Agent",
+            };
+          })
+        : [];
       const agentMentions = resolveAgentMentionBindings(
         message.text,
         recipientAgentIds,
@@ -128,6 +137,7 @@ export function createServerReadModels(context: ReadModelContext) {
         ...message,
         ...(communication ? { communicationIntent: communication.intent } : {}),
         ...(directMessageAgents.length ? { directMessageAgents } : {}),
+        ...(collaborationRecipients.length ? { collaborationRecipients } : {}),
         ...(deliveryReceipts.length ? { deliveryReceipts } : {}),
         ...(agentMentions.length ? { agentMentions } : {}),
       };
@@ -262,6 +272,7 @@ export function createServerReadModels(context: ReadModelContext) {
       return {
         id: record.id,
         kind: record.kind,
+        operationGroupId: record.operationGroupId,
         state: record.state,
         attentionRequired: teamOperationNeedsAttention(
           record.kind,

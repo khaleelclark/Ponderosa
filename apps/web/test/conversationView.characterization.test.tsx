@@ -589,6 +589,31 @@ describe("ConversationView public behavior", () => {
     client.clear();
   });
 
+  it("shows the canonical destination on a Team Chat reply without a visible mention", async () => {
+    const client = createClient();
+    const recipient = { ...agent, id: "agent-two", title: "Pine" };
+    client.setQueryData(queryKeys.collaboration(firstConversationId), {
+      messages: [{
+        ...firstMessage,
+        text: "The requested review is complete.",
+        communicationIntent: "collaboration" as const,
+        collaborationRecipients: [{ id: recipient.id, title: recipient.title }],
+      }],
+      agents: [agent, recipient],
+      operations: [],
+      history: { hasMore: false },
+      operationHistory: { hasMore: false },
+    });
+    const user = userEvent.setup();
+    render(view(client, <ConversationView {...props()} />));
+
+    await user.click(screen.getByRole("tab", { name: "Team Chat" }));
+    expect(screen.getByText("→ Pine")).toBeTruthy();
+    expect(screen.getByText("The requested review is complete.")).toBeTruthy();
+
+    client.clear();
+  });
+
   it("shows Files & Results for every Agent in the Chat", async () => {
     const client = createClient();
     const user = userEvent.setup();
