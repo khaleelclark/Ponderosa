@@ -61,6 +61,11 @@ export class CoordinationV3SteeringAuthority {
         WHERE a.state IN ('pending', 'retry_pending')
           AND a.available_at <= ?
           AND a.dispatch_policy = 'steer_or_run'
+          AND (a.kind = 'context_rollover_handoff' OR NOT EXISTS (
+            SELECT 1 FROM context_rollovers rollover
+            WHERE rollover.agent_id = a.agent_id
+              AND rollover.state IN ('requested','handoff_committed','session_retiring','continuation_ready')
+          ))
           AND NOT EXISTS (
             SELECT 1 FROM activation_outbox audit
             WHERE audit.activation_id = a.id
@@ -89,6 +94,11 @@ export class CoordinationV3SteeringAuthority {
           AND state IN ('pending', 'retry_pending')
           AND available_at <= ?
           AND dispatch_policy = 'steer_or_run'
+          AND (kind = 'context_rollover_handoff' OR NOT EXISTS (
+            SELECT 1 FROM context_rollovers rollover
+            WHERE rollover.agent_id = agent_activations.agent_id
+              AND rollover.state IN ('requested','handoff_committed','session_retiring','continuation_ready')
+          ))
           AND NOT EXISTS (
             SELECT 1 FROM activation_outbox audit
             WHERE audit.activation_id = agent_activations.id

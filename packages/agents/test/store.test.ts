@@ -1024,6 +1024,88 @@ describe("AgentStore — canonical communication events", () => {
 });
 
 describe("AgentStore — multi-conversation membership", () => {
+  it("keeps bounded Agent-owned Direct history across chats without exposing other Agents or shared chat content", () => {
+    const project = store.createProject({ label: "Multi Chat", hostPath: "/multi-chat" });
+    const home = store.createConversation(project.id, { title: "Home" });
+    const blue = store.createConversation(project.id, { title: "Channel Blue" });
+    const red = store.createConversation(project.id, { title: "Channel Red" });
+    const agent = store.createAgent(project.id, { title: "Probe", engine: "codex", conversationId: home.id });
+    const other = store.createAgent(project.id, { title: "Other", engine: "codex", conversationId: red.id });
+    store.updateAgentConversationMemberships(agent.id, {
+      conversationIds: [home.id, blue.id],
+      primaryConversationId: home.id,
+    });
+
+    const blueDirect: CommunicationEvent = {
+      eventId: "blue-private", schemaVersion: 2, projectId: project.id, conversationId: blue.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id },
+      text: "Remember BLUE-ALBATROSS", createdAt: "2026-08-01T12:00:00.000Z",
+    };
+    store.appendCommunicationEvent(blueDirect);
+    store.appendEvent(agent.id, {
+      type: "user_message", text: blueDirect.text, communicationEventId: blueDirect.eventId,
+    });
+
+    const otherDirect: CommunicationEvent = {
+      eventId: "red-other-private", schemaVersion: 2, projectId: project.id, conversationId: red.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: other.id },
+      text: "OTHER-AGENT-SECRET", createdAt: "2026-08-01T12:01:00.000Z",
+    };
+    store.appendCommunicationEvent(otherDirect);
+    store.appendEvent(other.id, {
+      type: "user_message", text: otherDirect.text, communicationEventId: otherDirect.eventId,
+    });
+
+    const redBroadcast: CommunicationEvent = {
+      eventId: "red-broadcast", schemaVersion: 2, projectId: project.id, conversationId: red.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id },
+      text: "RED-SHARED-CONTENT", createdAt: "2026-08-01T12:02:00.000Z",
+    };
+    store.appendCommunicationEvent(redBroadcast);
+    store.appendCommunicationProjection(project.id, {
+      eventId: redBroadcast.eventId,
+      surface: "conversation",
+      projectionKey: red.id,
+      projectedAt: redBroadcast.createdAt,
+      message: { messageId: "red-broadcast-message", role: "user", createdAt: redBroadcast.createdAt },
+    });
+
+    expect(store.getAgentPrivateContextSourcePage(agent.id, {
+      limit: 20,
+      scope: "current_chat",
+      conversationId: home.id,
+      includeAuthoredBroadcasts: true,
+    }).items).toEqual([]);
+
+    const privateHistory = store.getAgentPrivateContextSourcePage(agent.id, {
+      limit: 20,
+      scope: "agent_private",
+      includeAuthoredBroadcasts: false,
+    });
+    expect(privateHistory.items).toEqual([
+      expect.objectContaining({
+        communicationEventId: blueDirect.eventId,
+        conversationId: blue.id,
+        text: blueDirect.text,
+      }),
+    ]);
+    expect(privateHistory.items.map((item) => item.text)).not.toContain(otherDirect.text);
+    expect(privateHistory.items.map((item) => item.text)).not.toContain(redBroadcast.text);
+
+    store.updateAgentConversationMemberships(agent.id, {
+      conversationIds: [home.id],
+      primaryConversationId: home.id,
+    });
+    expect(store.getAgentPrivateContextSourcePage(agent.id, {
+      limit: 20,
+      scope: "agent_private",
+      includeAuthoredBroadcasts: false,
+    }).items.map((item) => item.communicationEventId)).toEqual([blueDirect.eventId]);
+  });
+
   it("rebuilds membership and removes only a deleted room", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     const first = store.createConversation(project.id, { title: "First" });
@@ -1884,14 +1966,42 @@ describe("AgentStore — append + projection", () => {
       type: "continuation_handoff",
       handoffId: "handoff-from-failed-run",
       executionId: "failed-rollover-run",
-      text: "This must never seed a successor.",
+      text: "Exact durable rollover state may seed this once.",
     });
     store.appendEvent(agentId, {
       type: "agent_lifecycle", status: "failed", reason: "runtime_error", executionId: "failed-rollover-run",
     });
     expect(store.pendingContinuationHandoff(agentId)).toBeUndefined();
+    expect(store.continuationHandoffForRollover(
+      agentId,
+      "handoff-from-failed-run",
+      "failed-rollover-run",
+    )).toMatchObject({
+      id: "handoff-from-failed-run",
+      text: "Exact durable rollover state may seed this once.",
+    });
+    expect(store.continuationHandoffForRollover(
+      agentId,
+      "handoff-from-failed-run",
+      "another-run",
+    )).toBeUndefined();
     store.rebuildProjections();
     expect(store.pendingContinuationHandoff(agentId)).toBeUndefined();
+    expect(store.continuationHandoffForRollover(
+      agentId,
+      "handoff-from-failed-run",
+      "failed-rollover-run",
+    )).toMatchObject({ id: "handoff-from-failed-run" });
+    expect(store.consumeContinuationHandoff(
+      agentId,
+      "handoff-from-failed-run",
+      "rollover-continuation-run",
+    )).toBe(true);
+    expect(store.consumeContinuationHandoff(
+      agentId,
+      "handoff-from-failed-run",
+      "rollover-continuation-run",
+    )).toBe(false);
   });
 });
 

@@ -127,6 +127,72 @@ describe("Communication V3 agent deletion", () => {
     }
   });
 
+  it("terminalizes every active rollover state when deleting one Agent and keeps restart recovery idle", () => {
+    const directory = mkdtempSync(join(tmpdir(), "ponderosa-v3-rollover-agent-delete-"));
+    directories.push(directory);
+    const agents = new AgentStore(directory);
+    try {
+      const project = agents.createProject({ label: "Delete rollover Agents", hostPath: "/repo" });
+      let coordination = new CoordinationV3Store(agents.sqlite);
+      const states = ["requested", "handoff_committed", "session_retiring", "continuation_ready"] as const;
+      const rollovers = states.map((state, index) => {
+        const agent = agents.createAgent(project.id, {
+          title: `Rollover ${state}`,
+          engine: "codex",
+        });
+        const rollover = coordination.requestContextRollover({
+          projectId: project.id,
+          agentId: agent.id,
+          oldProviderSessionId: `agent-delete-session-${index}`,
+          providerSessionGeneration: `agent-delete-generation-${index}`,
+          detectedOccupancy: 80_000,
+          threshold: 75_000,
+          lowWaterMark: 45_000,
+          sourceRunId: `agent-delete-source-${index}`,
+          sourceActivationIds: [],
+          scopeKey: `agent:${agent.id}`,
+        }).rollover;
+        if (state !== "requested") {
+          coordination.commitContextRolloverHandoff(rollover.id, `agent-delete-handoff-${index}`);
+        }
+        if (state === "session_retiring" || state === "continuation_ready") {
+          coordination.beginContextRolloverRetirement(rollover.id);
+        }
+        if (state === "continuation_ready") {
+          coordination.prepareContextRolloverContinuation({
+            id: rollover.id,
+            visibleResponseCommitted: false,
+          });
+        }
+        expect(coordination.contextRollover(rollover.id)?.state).toBe(state);
+        expect(agents.deleteAgent(
+          agent.id,
+          (agentId) => coordination.handleAgentDeletion(agentId),
+        )).toBe(true);
+        return { agentId: agent.id, rolloverId: rollover.id };
+      });
+
+      coordination = new CoordinationV3Store(agents.sqlite);
+      for (const item of rollovers) {
+        expect(coordination.activeContextRollover(item.agentId)).toBeUndefined();
+        expect(coordination.contextRollover(item.rolloverId)).toMatchObject({
+          state: "failed",
+          lastError: "agent deletion fenced context rollover",
+        });
+        expect(agents.sqlite.prepare(`
+          SELECT COUNT(*) AS count
+          FROM agent_activations activation
+          JOIN activation_sources source ON source.activation_id = activation.id
+          WHERE source.source_kind = 'context_rollover' AND source.source_id = ?
+            AND activation.state IN ('pending','retry_pending','attached')
+        `).get(item.rolloverId)).toEqual({ count: 0 });
+      }
+      expect(coordination.leaseNextRun({ workerId: "restart-worker" })).toBeUndefined();
+    } finally {
+      agents.close();
+    }
+  });
+
   it("commits recipient_unavailable and the agent projection deletion in one transaction", () => {
     const directory = mkdtempSync(join(tmpdir(), "ponderosa-v3-delete-"));
     directories.push(directory);

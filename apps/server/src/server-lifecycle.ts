@@ -271,6 +271,95 @@ export function registerServerLifecycle(
       if (decision.continuationRequestIds?.length) ensureDecisionResponseActivation(decision);
     }
     coordinationV3.recoverOrphanedRuns(coordinationV3WorkerId);
+    for (const rollover of coordinationV3.cancelledContextRolloverReplacements()) {
+      if (
+        rollover.replacementSessionId &&
+        store.resumeSessionId(rollover.agentId) === rollover.replacementSessionId
+      ) {
+        store.clearResumeSession(rollover.agentId, "explicit_compaction");
+      }
+      createOperationalNotification({
+        dedupeKey: `context-rollover:${rollover.id}:confirmation-missing`,
+        category: "coordination",
+        severity: "attention",
+        title: "Context refresh was cancelled",
+        body: "The replacement Run was cancelled before refreshed context could be confirmed. Its bounded handoff is reserved for one authorized Retry Assignment and will not be used by unrelated work.",
+        projectId: rollover.projectId,
+        conversationId: rollover.conversationId,
+        agentId: rollover.agentId,
+        action: { kind: "open_agent", targetId: rollover.agentId },
+      });
+    }
+    for (const initial of coordinationV3.activeContextRollovers()) {
+      try {
+        let rollover = initial;
+        if (rollover.state === "requested") {
+          const handoff = store.continuationHandoffForRun(rollover.agentId, rollover.sourceRunId);
+          if (!handoff) {
+            coordinationV3.failContextRollover(
+              rollover.id,
+              "outcome_unknown",
+              "server restarted before the provider committed a bounded rollover handoff",
+            );
+            createOperationalNotification({
+              dedupeKey: `context-rollover:${rollover.id}:outcome-unknown`,
+              category: "coordination",
+              severity: "attention",
+              title: "Context refresh needs review",
+              body: "The server restarted before the Agent committed its continuation handoff. Existing scheduler recovery remains authoritative.",
+              projectId: rollover.projectId,
+              conversationId: rollover.conversationId,
+            });
+            continue;
+          }
+          rollover = coordinationV3.commitContextRolloverHandoff(rollover.id, handoff.id);
+        }
+        if (rollover.state === "handoff_committed") {
+          rollover = coordinationV3.beginContextRolloverRetirement(rollover.id);
+        }
+        if (rollover.state === "session_retiring") {
+          store.clearResumeSession(rollover.agentId, "explicit_compaction");
+          rollover = coordinationV3.prepareContextRolloverContinuation({
+            id: rollover.id,
+            visibleResponseCommitted: rollover.visibleResponseCommitted,
+          });
+        }
+        if (rollover.state === "continuation_ready" && rollover.replacementSessionId) {
+          store.clearResumeSession(rollover.agentId, "explicit_compaction");
+          coordinationV3.failContextRollover(
+            rollover.id,
+            "outcome_unknown",
+            "server restarted after the replacement session was recorded but before low-water context confirmation",
+          );
+          createOperationalNotification({
+            dedupeKey: `context-rollover:${rollover.id}:confirmation-missing`,
+            category: "coordination",
+            severity: "attention",
+            title: "Context refresh needs review",
+            body: "The replacement provider session ended with the server before safe context headroom was confirmed. Its exact bounded handoff remains recorded; review the Agent's work before retrying the original assignment.",
+            projectId: rollover.projectId,
+            conversationId: rollover.conversationId,
+            agentId: rollover.agentId,
+            action: { kind: "open_agent", targetId: rollover.agentId },
+          });
+        }
+      } catch (error) {
+        coordinationV3.failContextRollover(
+          initial.id,
+          "outcome_unknown",
+          error instanceof Error ? error.message : String(error),
+        );
+        createOperationalNotification({
+          dedupeKey: `context-rollover:${initial.id}:recovery-failed`,
+          category: "coordination",
+          severity: "attention",
+          title: "Context refresh recovery failed",
+          body: error instanceof Error ? error.message : String(error),
+          projectId: initial.projectId,
+          conversationId: initial.conversationId,
+        });
+      }
+    }
     coordinationV3.reconcileUnavailableActivationRecipients();
     coordinationV3.expireDue();
     if (!artifactFilesystem.ok || !processContainment.ok) await coordinationV3Scheduler.pauseLeasing();

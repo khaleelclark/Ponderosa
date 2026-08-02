@@ -9,6 +9,7 @@ import {
 import type { CreateActivationV3Input } from "./coordination-v3-runtime-communication-authority.js";
 import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runtime-scope-authority.js";
 import { isIso } from "./coordination-v3-runtime-validation.js";
+import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
 import type { CoordinationV3StoreSupport } from "./coordination-v3-store-support.js";
 import type {
   CoordinateV3Input,
@@ -65,6 +66,8 @@ export class CoordinationV3CoordinateAuthority {
       requesterAgentId: input.requesterAgentId,
       actorScope: input.actorScope,
       idempotencyKey: input.idempotencyKey,
+      rolloverRecoveryForRequestId:
+        input.rolloverRecoveryForRequestId ?? null,
       requests: input.requests.map((request) => ({
         ...request,
         requestId: request.requestId ?? null,
@@ -100,6 +103,21 @@ export class CoordinationV3CoordinateAuthority {
       if (input.runAuthorization && !input.conversationId) {
         throw new Error("provider coordination requires a Team Chat scope");
       }
+      if (input.rolloverRecoveryForRequestId) {
+        const retry = input.requests[0];
+        const retryOfRequestId = retry?.payload &&
+            typeof retry.payload === "object" &&
+            !Array.isArray(retry.payload)
+          ? (retry.payload as Record<string, unknown>).retryOfRequestId
+          : undefined;
+        if (
+          input.actorScope !== "user:local-operator" ||
+          input.requests.length !== 1 ||
+          retryOfRequestId !== input.rolloverRecoveryForRequestId
+        ) {
+          throw new Error("context rollover recovery requires one matching operator retry");
+        }
+      }
       if (input.conversationId) {
         this.support.requireConversation(
           input.projectId,
@@ -113,6 +131,7 @@ export class CoordinationV3CoordinateAuthority {
         }
       }
       const requestIds: string[] = [];
+      const requestActivationIds = new Map<string, string>();
       for (const request of input.requests) {
         this.support.requireAgent(
           input.projectId,
@@ -184,7 +203,7 @@ export class CoordinationV3CoordinateAuthority {
           now,
         );
         requestIds.push(requestId);
-        this.createActivation({
+        const activationId = this.createActivation({
           projectId: input.projectId,
           agentId: request.recipientAgentId,
           scopeKey: this.runtimeScopeAuthority.coordinationScopeKey(
@@ -204,6 +223,61 @@ export class CoordinationV3CoordinateAuthority {
           externalIntake: true,
           now,
         });
+        requestActivationIds.set(requestId, activationId);
+      }
+
+      if (input.rolloverRecoveryForRequestId) {
+        const retryRequestId = requestIds[0]!;
+        const retryActivationId = requestActivationIds.get(retryRequestId)!;
+        const original = this.support.getRequestRow(
+          input.rolloverRecoveryForRequestId,
+        );
+        const retry = this.support.getRequestRow(retryRequestId);
+        if (
+          original.project_id !== input.projectId ||
+          retry.project_id !== original.project_id ||
+          retry.recipient_agent_id !== original.recipient_agent_id ||
+          retry.requester_agent_id !== original.requester_agent_id ||
+          retry.conversation_id !== original.conversation_id
+        ) {
+          throw new Error("context rollover recovery request lineage is invalid");
+        }
+        const recovery = this.sqlite.prepare(`
+          ${REQUEST_SOURCE_LINEAGE_CTE}
+          SELECT rollover.id
+          FROM context_rollovers rollover
+          JOIN request_source_lineage lineage
+            ON lineage.activation_id = rollover.continuation_activation_id
+          JOIN coordination_requests lineage_request
+            ON lineage_request.id = lineage.request_id
+          WHERE rollover.project_id = ?
+            AND rollover.agent_id = ?
+            AND rollover.state IN ('failed','outcome_unknown')
+            AND rollover.handoff_event_id IS NOT NULL
+            AND rollover.last_error NOT LIKE 'rollover_seed_overflow:%'
+            AND lineage_request.id = ?
+            AND lineage_request.project_id = rollover.project_id
+            AND lineage_request.recipient_agent_id = rollover.agent_id
+            AND NOT EXISTS (
+              SELECT 1 FROM activation_sources claimed
+              WHERE claimed.source_kind = 'context_rollover_recovery'
+                AND claimed.source_id = rollover.id
+            )
+          ORDER BY rollover.terminal_at DESC, rollover.updated_at DESC,
+            rollover.id DESC
+          LIMIT 1
+        `).get(
+          input.projectId,
+          retry.recipient_agent_id,
+          input.rolloverRecoveryForRequestId,
+        ) as { id: string } | undefined;
+        if (recovery) {
+          this.sqlite.prepare(`
+            INSERT INTO activation_sources (
+              activation_id, source_kind, source_id
+            ) VALUES (?, 'context_rollover_recovery', ?)
+          `).run(retryActivationId, recovery.id);
+        }
       }
 
       let joinId: string | undefined;

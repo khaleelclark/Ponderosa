@@ -807,6 +807,7 @@ export class AgentStore extends AgentEventSessionFacade {
     agentId: string,
     input: {
       limit: number;
+      scope: "current_chat" | "agent_private";
       conversationId?: string;
       before?: ContextReadBoundary;
       excludeCommunicationEventId?: string;

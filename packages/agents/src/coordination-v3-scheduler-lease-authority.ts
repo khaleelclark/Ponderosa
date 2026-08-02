@@ -132,6 +132,11 @@ export class CoordinationV3SchedulerLeaseAuthority {
           AND a.available_at <= ?
           ${excludedClause}
           AND NOT EXISTS (
+            SELECT 1 FROM context_rollovers rollover
+            WHERE rollover.agent_id = a.agent_id
+              AND rollover.state IN ('requested','handoff_committed','session_retiring')
+          )
+          AND NOT EXISTS (
             SELECT 1 FROM activation_outbox audit
             WHERE audit.activation_id = a.id
               AND audit.event_kind = 'communication_revision'

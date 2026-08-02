@@ -41,6 +41,8 @@ export type {
   TriggerOccurrenceResult,
   TriggerOccurrenceState,
   TriggerFilesystemBurst,
+  ContextRolloverState,
+  ContextRolloverV3,
 } from "./coordination-v3-store.js";
 export type { ConversationDeliveryIntent, ManagedArtifactAccess } from "./store.js";
 export type { AgentDeletionReceipt, ProjectDeletionReceipt, AgentManagementAuthorization } from "./store.js";

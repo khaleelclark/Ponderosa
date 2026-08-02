@@ -4798,6 +4798,609 @@ describe("CoordinationV3Store scheduler", () => {
     expect(store.schedulerMetrics()).toMatchObject({ pendingActivations: 0, activeRuns: 0 });
   });
 
+  it("durably rolls one provider generation into one fresh continuation while retaining new work", () => {
+    const now = "2026-08-01T12:00:00.000Z";
+    store.enqueueMessageActivation({
+      projectId,
+      agentId: recipientA,
+      scopeKey: `conversation:${conversationId}`,
+      messageId: "rollover-source",
+      kind: "ordinary",
+      payload: {
+        text: "Long autonomous task",
+        replyAuthority: { intent: "direct_to_user" },
+      },
+      now,
+    });
+    const sourceRun = store.leaseNextRun({ workerId: "source-worker", now })!;
+    acknowledgeLease(sourceRun);
+
+    const requested = store.requestContextRollover({
+      projectId,
+      agentId: recipientA,
+      oldProviderSessionId: "old-session",
+      providerSessionGeneration: "old-session:generation-1",
+      detectedOccupancy: 80_000,
+      aggregateTokens: 10_193_417,
+      threshold: 75_000,
+      contextWindow: 200_000,
+      lowWaterMark: 45_000,
+      sourceRunId: sourceRun.runId,
+      sourceActivationIds: sourceRun.activationIds,
+      scopeKey: `conversation:${conversationId}`,
+      conversationId,
+      replyAuthority: { intent: "direct_to_user" },
+      now,
+    });
+    store = new CoordinationV3Store(opened.client);
+    const replay = store.requestContextRollover({
+      projectId,
+      agentId: recipientA,
+      oldProviderSessionId: "old-session",
+      providerSessionGeneration: "old-session:generation-1",
+      detectedOccupancy: 90_000,
+      threshold: 75_000,
+      lowWaterMark: 45_000,
+      sourceRunId: sourceRun.runId,
+      sourceActivationIds: sourceRun.activationIds,
+      scopeKey: `conversation:${conversationId}`,
+      conversationId,
+      now,
+    });
+    expect(requested.created).toBe(true);
+    expect(replay).toMatchObject({ created: false, rollover: { id: requested.rollover.id } });
+    expect(opened.client.prepare("SELECT COUNT(*) AS count FROM context_rollovers").get()).toEqual({ count: 1 });
+
+    const pendingUserActivation = store.enqueueMessageActivation({
+      projectId,
+      agentId: recipientA,
+      scopeKey: `conversation:${conversationId}`,
+      messageId: "arrived-during-rollover",
+      kind: "human",
+      payload: { text: "Also include the latest change" },
+      now: "2026-08-01T12:00:01.000Z",
+    });
+    const crossChatUserActivation = store.enqueueMessageActivation({
+      projectId,
+      agentId: recipientA,
+      scopeKey: "conversation:another-chat",
+      messageId: "arrived-in-another-chat-during-rollover",
+      kind: "human",
+      payload: { text: "Separate chat work must stay queued" },
+      now: "2026-08-01T12:00:01.000Z",
+    });
+    const steering = store.leaseNextSteering({ workerId: "source-worker", now: "2026-08-01T12:00:02.000Z" })!;
+    expect(steering.activations).toHaveLength(1);
+    expect(steering.activations[0]).toMatchObject({ kind: "context_rollover_handoff" });
+    expect(steering.activationIds).not.toContain(pendingUserActivation);
+    store.preparePromptInjection({
+      injectionId: steering.injectionId,
+      runId: steering.runId,
+      fencingToken: steering.fencingToken,
+      prompt: "Create the bounded handoff",
+    });
+    store.markPromptSubmitted({
+      injectionId: steering.injectionId,
+      runId: steering.runId,
+      fencingToken: steering.fencingToken,
+    });
+    store.acknowledgePromptInjection({
+      injectionId: steering.injectionId,
+      runId: steering.runId,
+      fencingToken: steering.fencingToken,
+    });
+
+    store.commitContextRolloverHandoff(requested.rollover.id, "handoff-event", "2026-08-01T12:00:03.000Z");
+    store = new CoordinationV3Store(opened.client);
+    expect(store.commitContextRolloverHandoff(
+      requested.rollover.id,
+      "handoff-event",
+      "2026-08-01T12:00:03.500Z",
+    ).handoffCommittedAt).toBe("2026-08-01T12:00:03.000Z");
+    store.completeRun(sourceRun.runId, sourceRun.fencingToken, "2026-08-01T12:00:04.000Z");
+    store.beginContextRolloverRetirement(requested.rollover.id, "2026-08-01T12:00:05.000Z");
+
+    // Recreate the authority facade to model process recovery between durable
+    // transitions. Repeating the continuation transition must not duplicate it.
+    store = new CoordinationV3Store(opened.client);
+    const continuation = store.prepareContextRolloverContinuation({
+      id: requested.rollover.id,
+      visibleResponseCommitted: false,
+      now: "2026-08-01T12:00:06.000Z",
+    });
+    expect(store.prepareContextRolloverContinuation({
+      id: requested.rollover.id,
+      visibleResponseCommitted: false,
+      now: "2026-08-01T12:00:07.000Z",
+    }).continuationActivationId).toBe(continuation.continuationActivationId);
+    expect(continuation).toMatchObject({
+      state: "continuation_ready",
+      conversationId,
+      replyAuthority: { intent: "direct_to_user" },
+      aggregateTokens: 10_193_417,
+    });
+
+    const freshRun = store.leaseNextRun({ workerId: "fresh-worker", now: "2026-08-01T12:00:08.000Z" })!;
+    expect(freshRun.activationIds).toEqual(expect.arrayContaining([
+      continuation.continuationActivationId!,
+      pendingUserActivation,
+    ]));
+    expect(freshRun.activationIds).not.toContain(crossChatUserActivation);
+    const continuationPayload = freshRun.activations.find(
+      (activation) => activation.kind === "context_rollover_continuation",
+    )?.payload;
+    expect(continuationPayload).toMatchObject({
+      rolloverId: requested.rollover.id,
+      replyAuthority: { intent: "direct_to_user" },
+    });
+    store.recordContextRolloverReplacementSession(
+      continuation.continuationActivationId!,
+      "fresh-session",
+      "2026-08-01T12:00:09.000Z",
+    );
+    store = new CoordinationV3Store(opened.client);
+    expect(store.observeContextRolloverReplacementOccupancy(
+      requested.rollover.id,
+      "fresh-session",
+      20_000,
+      "2026-08-01T12:00:10.000Z",
+    )).toMatchObject({ state: "completed", replacementSessionId: "fresh-session" });
+  });
+
+  it("transfers one managed Request and Join through rollover without replaying its source Activation", () => {
+    const now = "2026-08-01T13:00:00.000Z";
+    store.coordinate({
+      projectId,
+      requesterAgentId: requesterId,
+      actorScope: `agent:${requesterId}`,
+      idempotencyKey: "rollover-managed-request",
+      requests: [{
+        requestId: "rollover-owned-request",
+        recipientAgentId: recipientA,
+        lifetime: indefinite,
+        payload: { assignment: "Finish the managed work after refreshing context" },
+      }],
+      join: { id: "rollover-owned-join", mode: "all" },
+    }, now);
+    const sourceRun = store.leaseNextRun({ workerId: "source-worker", now })!;
+    acknowledgeLease(sourceRun);
+    expect(store.requestIdsAttachedToRun(sourceRun.runId, recipientA))
+      .toEqual(["rollover-owned-request"]);
+
+    const rollover = store.requestContextRollover({
+      projectId,
+      agentId: recipientA,
+      oldProviderSessionId: "managed-old-session",
+      providerSessionGeneration: "managed-generation",
+      detectedOccupancy: 80_000,
+      threshold: 75_000,
+      lowWaterMark: 45_000,
+      sourceRunId: sourceRun.runId,
+      sourceActivationIds: sourceRun.activationIds,
+      scopeKey: `conversation:${conversationId}`,
+      conversationId,
+    }).rollover;
+    store.commitContextRolloverHandoff(rollover.id, "managed-handoff");
+    // A crash can settle the source Run after the handoff commit but before
+    // continuation creation. The durable rollover already owns the lineage,
+    // so recovery must not orphan the Request in that interval.
+    store.completeRun(sourceRun.runId, sourceRun.fencingToken);
+    expect(store.getRequest("rollover-owned-request")?.state).toBe("open");
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM coordination_request_updates
+      WHERE request_id = 'rollover-owned-request' AND kind = 'outcome_unknown'
+    `).get()).toEqual({ count: 0 });
+    store.beginContextRolloverRetirement(rollover.id);
+    const continuation = store.prepareContextRolloverContinuation({
+      id: rollover.id,
+      visibleResponseCommitted: false,
+    });
+
+    const replacementRun = store.leaseNextRun({ workerId: "replacement-worker" })!;
+    expect(replacementRun.activationIds).toEqual([continuation.continuationActivationId]);
+    expect(replacementRun.activationIds).not.toEqual(expect.arrayContaining(sourceRun.activationIds));
+    expect(store.requestIdsAttachedToRun(replacementRun.runId, recipientA))
+      .toEqual(["rollover-owned-request"]);
+    expect(store.contextRolloverForContinuationRun(replacementRun.runId, recipientA))
+      .toMatchObject({ id: rollover.id, continuationActivationId: continuation.continuationActivationId });
+    acknowledgeLease(replacementRun);
+    const completed = store.updateRequest({
+      requestId: "rollover-owned-request",
+      updateId: "rollover-owned-result",
+      kind: "completed",
+      actor: { kind: "agent", id: recipientA },
+      runAuthorization: {
+        runId: replacementRun.runId,
+        agentId: recipientA,
+        fencingToken: replacementRun.fencingToken,
+      },
+      payload: { text: "Managed result committed once" },
+    });
+    expect(completed).toMatchObject({ state: "completed", replayed: false });
+    expect(store.updateRequest({
+      requestId: "rollover-owned-request",
+      updateId: "rollover-owned-result",
+      kind: "completed",
+      actor: { kind: "agent", id: recipientA },
+      runAuthorization: {
+        runId: replacementRun.runId,
+        agentId: recipientA,
+        fencingToken: replacementRun.fencingToken,
+      },
+      payload: { text: "Managed result committed once" },
+    })).toMatchObject({ state: "completed", replayed: true });
+    store.completeRun(replacementRun.runId, replacementRun.fencingToken);
+    expect(store.getRequest("rollover-owned-request")?.state).toBe("completed");
+    expect(opened.client.prepare(`
+      SELECT state FROM coordination_joins WHERE id = 'rollover-owned-join'
+    `).get()).toEqual({ state: "satisfied" });
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM coordination_request_updates
+      WHERE request_id = 'rollover-owned-request' AND kind = 'completed'
+    `).get()).toEqual({ count: 1 });
+  });
+
+  it.each([
+    { recordReplacementSession: false, timing: "before" },
+    { recordReplacementSession: true, timing: "after" },
+  ])(
+    "cancels a replacement Run transactionally $timing session and binds its handoff to only one operator retry",
+    ({ recordReplacementSession }) => {
+      const suffix = recordReplacementSession ? "after-session" : "before-session";
+      store.coordinate({
+        projectId,
+        requesterAgentId: requesterId,
+        actorScope: `agent:${requesterId}`,
+        idempotencyKey: `cancel-rollover-${suffix}`,
+        requests: [{
+          requestId: `cancel-rollover-request-${suffix}`,
+          recipientAgentId: recipientA,
+          lifetime: indefinite,
+          payload: { assignment: "Preserve exact progress during recovery" },
+        }],
+      });
+      const sourceRun = store.leaseNextRun({ workerId: "source-worker" })!;
+      acknowledgeLease(sourceRun);
+      const rollover = store.requestContextRollover({
+        projectId,
+        agentId: recipientA,
+        oldProviderSessionId: `cancel-old-${suffix}`,
+        providerSessionGeneration: `cancel-generation-${suffix}`,
+        detectedOccupancy: 80_000,
+        threshold: 75_000,
+        lowWaterMark: 45_000,
+        sourceRunId: sourceRun.runId,
+        sourceActivationIds: sourceRun.activationIds,
+        scopeKey: `conversation:${conversationId}`,
+        conversationId,
+      }).rollover;
+      store.commitContextRolloverHandoff(rollover.id, `cancel-handoff-${suffix}`);
+      store.completeRun(sourceRun.runId, sourceRun.fencingToken);
+      store.beginContextRolloverRetirement(rollover.id);
+      const continuation = store.prepareContextRolloverContinuation({
+        id: rollover.id,
+        visibleResponseCommitted: false,
+      });
+      const replacement = store.leaseNextRun({ workerId: "replacement-worker" })!;
+      acknowledgeLease(replacement);
+      if (recordReplacementSession) {
+        store.recordContextRolloverReplacementSession(
+          continuation.continuationActivationId!,
+          `cancel-replacement-${suffix}`,
+        );
+      }
+
+      expect(store.cancelAgentRun({
+        agentId: recipientA,
+        expectedRunId: replacement.runId,
+        idempotencyKey: `cancel-replacement-${suffix}`,
+      })).toMatchObject({ cancelled: true, runId: replacement.runId });
+      store = new CoordinationV3Store(opened.client);
+      expect(store.contextRollover(rollover.id)).toMatchObject({
+        state: "outcome_unknown",
+        lastError: expect.stringContaining("cancelled"),
+        ...(recordReplacementSession
+          ? { replacementSessionId: `cancel-replacement-${suffix}` }
+          : {}),
+      });
+      expect(store.activeContextRollover(recipientA)).toBeUndefined();
+      expect(opened.client.prepare(`
+        SELECT source_kind AS sourceKind, source_id AS sourceId
+        FROM activation_sources WHERE activation_id = ?
+        ORDER BY source_kind, source_id
+      `).all(continuation.continuationActivationId)).toEqual(expect.arrayContaining([
+        { sourceKind: "request", sourceId: `cancel-rollover-request-${suffix}` },
+      ]));
+
+      const retryRequestId = `cancel-rollover-retry-${suffix}`;
+      store.coordinate({
+        projectId,
+        requesterAgentId: requesterId,
+        actorScope: "user:local-operator",
+        idempotencyKey: `retry-rollover-${suffix}`,
+        rolloverRecoveryForRequestId: `cancel-rollover-request-${suffix}`,
+        requests: [{
+          requestId: retryRequestId,
+          recipientAgentId: recipientA,
+          lifetime: indefinite,
+          payload: {
+            retryOfRequestId: `cancel-rollover-request-${suffix}`,
+            recoveryInstruction: "Audit before continuing",
+          },
+        }],
+      });
+      const recoveryBinding = opened.client.prepare(`
+        SELECT source.activation_id AS activationId,
+          source.source_kind AS sourceKind, source.source_id AS sourceId
+        FROM activation_sources source
+        JOIN agent_activations activation ON activation.id = source.activation_id
+        WHERE activation.kind = 'coordination_request'
+          AND source.source_kind = 'context_rollover_recovery'
+        ORDER BY source.source_id
+      `).get() as { activationId: string; sourceKind: string; sourceId: string };
+      expect(recoveryBinding).toMatchObject({
+        sourceKind: "context_rollover_recovery",
+        sourceId: rollover.id,
+      });
+      const outcomeRun = store.leaseNextRun({ workerId: "outcome-worker" })!;
+      expect(outcomeRun.activations.map((activation) => activation.kind))
+        .toEqual(["coordination_outcome"]);
+      acknowledgeLease(outcomeRun);
+      store.completeRun(outcomeRun.runId, outcomeRun.fencingToken);
+      const recoveryRun = store.leaseNextRun({ workerId: "recovery-worker" })!;
+      expect(recoveryRun.activationIds).toContain(recoveryBinding.activationId);
+      expect(store.contextRolloverRecoveryForRun(recoveryRun.runId, recipientA))
+        .toMatchObject({ id: rollover.id, state: "outcome_unknown" });
+
+      store.cancelAgentRun({
+        agentId: recipientA,
+        expectedRunId: recoveryRun.runId,
+        idempotencyKey: `cancel-first-recovery-${suffix}`,
+      });
+      store.coordinate({
+        projectId,
+        requesterAgentId: requesterId,
+        actorScope: "user:local-operator",
+        idempotencyKey: `retry-rollover-again-${suffix}`,
+        rolloverRecoveryForRequestId: `cancel-rollover-request-${suffix}`,
+        requests: [{
+          requestId: `cancel-rollover-second-retry-${suffix}`,
+          recipientAgentId: recipientA,
+          lifetime: indefinite,
+          payload: { retryOfRequestId: `cancel-rollover-request-${suffix}` },
+        }],
+      });
+      const secondRecoveryRun = store.leaseNextRun({ workerId: "second-recovery-worker" })!;
+      expect(store.contextRolloverRecoveryForRun(secondRecoveryRun.runId, recipientA))
+        .toBeUndefined();
+    },
+  );
+
+  it("cancels an unclaimed manual handoff request and leases only the fresh continuation", () => {
+    const rollover = store.requestContextRollover({
+      projectId,
+      agentId: recipientA,
+      oldProviderSessionId: "manual-old-session",
+      providerSessionGeneration: "manual-generation",
+      detectedOccupancy: 80_000,
+      threshold: 75_000,
+      lowWaterMark: 45_000,
+      sourceRunId: "manual-source-run",
+      sourceActivationIds: [],
+      scopeKey: `conversation:${conversationId}`,
+      conversationId,
+    }).rollover;
+    expect(opened.client.prepare(`
+      SELECT state FROM agent_activations
+      WHERE kind = 'context_rollover_handoff' AND id IN (
+        SELECT activation_id FROM activation_sources
+        WHERE source_kind = 'context_rollover' AND source_id = ?
+      )
+    `).get(rollover.id)).toEqual({ state: "pending" });
+
+    store.commitContextRolloverHandoff(rollover.id, "manual-handoff");
+    expect(opened.client.prepare(`
+      SELECT state FROM agent_activations
+      WHERE kind = 'context_rollover_handoff' AND id IN (
+        SELECT activation_id FROM activation_sources
+        WHERE source_kind = 'context_rollover' AND source_id = ?
+      )
+    `).get(rollover.id)).toEqual({ state: "cancelled" });
+    store.beginContextRolloverRetirement(rollover.id);
+    const continuation = store.prepareContextRolloverContinuation({
+      id: rollover.id,
+      visibleResponseCommitted: false,
+    });
+    const replacementRun = store.leaseNextRun({ workerId: "replacement-worker" })!;
+    expect(replacementRun.activationIds).toEqual([continuation.continuationActivationId]);
+    expect(replacementRun.activations.map((activation) => activation.kind))
+      .toEqual(["context_rollover_continuation"]);
+  });
+
+  it("allows a controlled retry after terminal handoff failure but not after seed overflow", () => {
+    const input = {
+      projectId,
+      agentId: recipientA,
+      oldProviderSessionId: "retry-session",
+      providerSessionGeneration: "retry-generation",
+      detectedOccupancy: 80_000,
+      threshold: 75_000,
+      lowWaterMark: 45_000,
+      sourceRunId: "retry-source-one",
+      sourceActivationIds: [],
+      scopeKey: `conversation:${conversationId}`,
+      conversationId,
+    };
+    const first = store.requestContextRollover(input);
+    store.failContextRollover(first.rollover.id, "failed", "provider ended before handoff");
+    const retry = store.requestContextRollover({
+      ...input,
+      sourceRunId: "retry-source-two",
+    });
+    expect(retry).toMatchObject({ created: true, rollover: { sourceRunId: "retry-source-two" } });
+    expect(retry.rollover.id).not.toBe(first.rollover.id);
+    store.failContextRollover(
+      retry.rollover.id,
+      "failed",
+      "rollover_seed_overflow: reconstructed seed is too large",
+    );
+    expect(store.requestContextRollover({
+      ...input,
+      sourceRunId: "retry-source-three",
+    })).toMatchObject({ created: false, rollover: { id: retry.rollover.id } });
+  });
+
+  it("terminalizes and purges every active context rollover during Project deletion", () => {
+    const fourthAgent = randomUUID();
+    opened.client.prepare(`
+      INSERT INTO agents (id, project_id, title, active_engine, created_at, updated_at, archived)
+      VALUES (?, ?, 'D', 'codex', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z', 0)
+    `).run(fourthAgent, projectId);
+    const agents = [requesterId, recipientA, recipientB, fourthAgent];
+    const rollovers = agents.map((agentId, index) => store.requestContextRollover({
+      projectId,
+      agentId,
+      oldProviderSessionId: `delete-session-${index}`,
+      providerSessionGeneration: `delete-generation-${index}`,
+      detectedOccupancy: 80_000,
+      threshold: 75_000,
+      lowWaterMark: 45_000,
+      sourceRunId: `delete-source-${index}`,
+      sourceActivationIds: [],
+      scopeKey: `conversation:${conversationId}`,
+      conversationId,
+    }).rollover);
+    store.commitContextRolloverHandoff(rollovers[1]!.id, "delete-handoff-1");
+    store.commitContextRolloverHandoff(rollovers[2]!.id, "delete-handoff-2");
+    store.beginContextRolloverRetirement(rollovers[2]!.id);
+    store.commitContextRolloverHandoff(rollovers[3]!.id, "delete-handoff-3");
+    store.beginContextRolloverRetirement(rollovers[3]!.id);
+    store.prepareContextRolloverContinuation({
+      id: rollovers[3]!.id,
+      visibleResponseCommitted: false,
+    });
+    expect(store.activeContextRollovers(projectId).map((rollover) => rollover.state).sort())
+      .toEqual(["continuation_ready", "handoff_committed", "requested", "session_retiring"]);
+
+    store.prepareProjectDeletion(projectId, "2026-08-01T01:00:00.000Z");
+    expect(store.activeContextRollovers(projectId)).toEqual([]);
+    expect(opened.client.prepare(`
+      SELECT state, last_error AS lastError FROM context_rollovers
+      WHERE project_id = ? ORDER BY state, id
+    `).all(projectId)).toHaveLength(4);
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM context_rollovers
+      WHERE project_id = ? AND state = 'failed'
+        AND last_error = 'project deletion fenced context rollover'
+    `).get(projectId)).toEqual({ count: 4 });
+
+    store.purgeProject(projectId);
+    store = new CoordinationV3Store(opened.client);
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM context_rollovers WHERE project_id = ?
+    `).get(projectId)).toEqual({ count: 0 });
+    expect(store.activeContextRollovers(projectId)).toEqual([]);
+    expect(store.leaseNextRun({ workerId: "after-delete" })).toBeUndefined();
+  });
+
+  it("suppresses duplicate continuation after a visible response and terminalizes seed overflow without a loop", () => {
+    const createRollover = (generation: string, runId: string, visibleResponseCommitted = false) => store.requestContextRollover({
+      projectId,
+      agentId: recipientA,
+      oldProviderSessionId: generation,
+      providerSessionGeneration: generation,
+      detectedOccupancy: 80_000,
+      threshold: 75_000,
+      lowWaterMark: 45_000,
+      sourceRunId: runId,
+      sourceActivationIds: [],
+      scopeKey: `conversation:${conversationId}`,
+      conversationId,
+      visibleResponseCommitted,
+    }).rollover;
+
+    const completed = createRollover("generation-completed", "run-completed", true);
+    store.commitContextRolloverHandoff(completed.id, "completed-handoff");
+    store.beginContextRolloverRetirement(completed.id);
+    expect(store.prepareContextRolloverContinuation({
+      id: completed.id,
+      visibleResponseCommitted: false,
+    })).toMatchObject({ state: "completed", visibleResponseCommitted: true });
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations activation
+      JOIN activation_sources source ON source.activation_id = activation.id
+      WHERE activation.kind = 'context_rollover_continuation'
+        AND source.source_kind = 'context_rollover' AND source.source_id = ?
+    `).get(completed.id)).toEqual({ count: 0 });
+
+    const overflow = createRollover("generation-overflow", "run-overflow");
+    store.commitContextRolloverHandoff(overflow.id, "overflow-handoff");
+    store.beginContextRolloverRetirement(overflow.id);
+    const ready = store.prepareContextRolloverContinuation({ id: overflow.id, visibleResponseCommitted: false });
+    const firstReplacement = store.recordContextRolloverReplacementSession(
+      ready.continuationActivationId!,
+      "overflow-session",
+      "2026-08-01T12:30:00.000Z",
+    );
+    expect(store.recordContextRolloverReplacementSession(
+      ready.continuationActivationId!,
+      "overflow-session",
+      "2026-08-01T12:31:00.000Z",
+    )).toMatchObject({
+      replacementSessionId: "overflow-session",
+      replacementSessionAt: firstReplacement?.replacementSessionAt,
+    });
+    expect(() => store.recordContextRolloverReplacementSession(
+      ready.continuationActivationId!,
+      "conflicting-session",
+    )).toThrow("context rollover replacement session conflict");
+    expect(store.contextRollover(overflow.id)).toMatchObject({
+      replacementSessionId: "overflow-session",
+      replacementSessionAt: "2026-08-01T12:30:00.000Z",
+    });
+    expect(store.observeContextRolloverReplacementOccupancy(
+      overflow.id,
+      "overflow-session",
+      60_000,
+    )).toMatchObject({
+      state: "failed",
+      lastError: expect.stringContaining("rollover_seed_overflow"),
+    });
+    expect(store.contextRolloverForReplacementSession(recipientA, "overflow-session"))
+      .toMatchObject({ id: overflow.id, state: "failed" });
+
+    const noEquivalentOccupancy = store.requestContextRollover({
+      projectId,
+      agentId: recipientA,
+      oldProviderSessionId: "claude-session",
+      providerSessionGeneration: "claude-session",
+      detectedOccupancy: 0,
+      threshold: 75_000,
+      lowWaterMark: 45_000,
+      lowWaterConfirmationRequired: false,
+      sourceRunId: "run-manual-claude",
+      sourceActivationIds: [],
+      scopeKey: `conversation:${conversationId}`,
+      conversationId,
+    }).rollover;
+    store.commitContextRolloverHandoff(noEquivalentOccupancy.id, "claude-handoff");
+    store.beginContextRolloverRetirement(noEquivalentOccupancy.id);
+    const claudeReady = store.prepareContextRolloverContinuation({
+      id: noEquivalentOccupancy.id,
+      visibleResponseCommitted: false,
+    });
+    expect(store.recordContextRolloverReplacementSession(
+      claudeReady.continuationActivationId!,
+      "claude-fresh-session",
+    )).toMatchObject({
+      state: "completed",
+      lowWaterConfirmationRequired: false,
+      replacementSessionId: "claude-fresh-session",
+    });
+    expect(store.activeContextRollover(recipientA)).toBeUndefined();
+    expect(opened.client.prepare("SELECT COUNT(*) AS count FROM context_rollovers").get()).toEqual({ count: 3 });
+  });
+
   it("recovers a pre-injection lease after a process restart", () => {
     opened.client.close();
     const dir = mkdtempSync(join(tmpdir(), "ponderosa-v3-restart-"));

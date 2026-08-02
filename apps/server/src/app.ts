@@ -917,6 +917,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     stageCommunicationArtifact,
     communicationArtifactAccess,
     reconcileRuntimeCommunicationProjections,
+    resolveOperationalNotification,
     notifyScheduler: () => coordinationV3Scheduler.notify(),
     isClosed: () => closed,
   });
@@ -926,6 +927,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     serverContext,
     store,
     coordinationV3,
+    workspace,
     engines,
     activeRuns,
     agentMessageCapabilities,

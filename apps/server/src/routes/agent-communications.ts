@@ -65,6 +65,7 @@ interface AgentCommunicationRoutesContext {
     options?: { conversationIds?: string[] },
   ): void;
   publishWorkspaceSince(cursor: number): void;
+  resolveOperationalNotification(dedupeKey: string): void;
   notifyScheduler(): void;
   messageLifecycleFaults: CreateServerOptions["messageLifecycleFaults"];
   reconcileRuntimeCommunicationProjections(filter?: {
@@ -97,6 +98,7 @@ export function registerAgentCommunicationRoutes(
     stageCommunicationArtifact,
     publishCoordinationV3Changed,
     publishWorkspaceSince,
+    resolveOperationalNotification,
     notifyScheduler,
     messageLifecycleFaults,
     reconcileRuntimeCommunicationProjections,
@@ -289,7 +291,9 @@ export function registerAgentCommunicationRoutes(
     // The stable artifact reference remains in structured document metadata and
     // tool results. Do not leak the internal ponderosa:// URI into chat prose.
     const publishedText = messageArtifact ? "" : messageContent;
-    if (inferredReplyFingerprint) capability.inferredReplyFingerprint = inferredReplyFingerprint;
+    if (inferredReplyFingerprint) {
+      capability.inferredReplyFingerprint = inferredReplyFingerprint;
+    }
 
     if (intent === "direct_to_user") {
       const proposedCommunication: CommunicationEvent = {
@@ -323,6 +327,10 @@ export function registerAgentCommunicationRoutes(
         });
       } catch (error) {
         return reply.code(409).send({ error: error instanceof Error ? error.message : "message authorization failed" });
+      }
+      if (inferredReplyFingerprint) {
+        capability.inferredReplyCommunicationEventId = communicationEventId;
+        coordinationV3.markContextRolloverVisibleResponseCommitted(capability.agentId, capability.runId);
       }
       if (preparedArtifacts.length) await messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
         kind: "communication", ownerId: proposedCommunication.eventId,
@@ -472,6 +480,10 @@ export function registerAgentCommunicationRoutes(
       const message = error instanceof Error ? error.message : "message authorization failed";
       return reply.code(message.includes("scope") ? 409 : 403).send({ error: message });
     }
+    if (inferredReplyFingerprint) {
+      capability.inferredReplyCommunicationEventId = communicationEventId;
+      coordinationV3.markContextRolloverVisibleResponseCommitted(capability.agentId, capability.runId);
+    }
     if (preparedArtifacts.length) await messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
       kind: "communication", ownerId: proposedCommunication.eventId,
       artifactIds: preparedArtifacts.map((artifact) => artifact.id),
@@ -573,9 +585,18 @@ export function registerAgentCommunicationRoutes(
           requesterAgentId: requester.id,
           actorScope: "user:local-operator",
           idempotencyKey,
+          rolloverRecoveryForRequestId: original.id,
           requests: [{ requestId, recipientAgentId: recipient.id, lifetime: { kind: "indefinite" }, payload }],
           ...(request.body?.createJoin === false ? {} : { join: { id: `${requestId}:join`, mode: "all" as const } }),
         });
+        const recoveredRollover = coordinationV3.contextRolloverRecoveryForRequest(
+          requestId,
+        );
+        if (recoveredRollover) {
+          resolveOperationalNotification(
+            `context-rollover:${recoveredRollover.id}:confirmation-missing`,
+          );
+        }
         const notificationCursor = workspace.cursor();
         for (const notification of workspace.listNotifications()) {
           if ((notification.status ?? "open") === "open" && notification.resolution?.kind === "coordination_request"

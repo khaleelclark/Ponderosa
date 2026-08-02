@@ -125,6 +125,29 @@ export class AgentEventSessionAuthority {
     } : undefined;
   }
 
+  continuationHandoffForRollover(
+    agentId: string,
+    handoffId: string,
+    sourceExecutionId: string,
+  ): {
+    id: string; executionId: string; text: string; createdAt: string; consumedAt?: string;
+  } | undefined {
+    const row = this.db.select().from(continuationHandoffs)
+      .where(and(
+        eq(continuationHandoffs.id, handoffId),
+        eq(continuationHandoffs.agentId, agentId),
+        eq(continuationHandoffs.sourceExecutionId, sourceExecutionId),
+      ))
+      .get();
+    return row ? {
+      id: row.id,
+      executionId: row.sourceExecutionId,
+      text: row.text,
+      createdAt: row.createdAt,
+      ...(row.consumedAt ? { consumedAt: row.consumedAt } : {}),
+    } : undefined;
+  }
+
   pendingContinuationHandoff(agentId: string): {
     id: string; executionId: string; text: string; createdAt: string;
   } | undefined {
@@ -134,6 +157,11 @@ export class AgentEventSessionAuthority {
       JOIN runs source_run ON source_run.id = handoff.source_execution_id
       WHERE handoff.agent_id = ? AND handoff.consumed_at IS NULL
         AND source_run.status = 'completed'
+        AND NOT EXISTS (
+          SELECT 1 FROM context_rollovers rollover
+          WHERE rollover.handoff_event_id = handoff.id
+            AND rollover.state IN ('completed','failed','outcome_unknown')
+        )
       ORDER BY handoff.created_at ASC, handoff.id ASC LIMIT 1
     `).get(agentId) as { id: string; source_execution_id: string; text: string; created_at: string } | undefined;
     return row ? { id: row.id, executionId: row.source_execution_id, text: row.text, createdAt: row.created_at } : undefined;

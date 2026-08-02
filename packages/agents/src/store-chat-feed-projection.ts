@@ -249,6 +249,7 @@ export class AgentChatFeedProjection {
     agentId: string,
     input: {
       limit: number;
+      scope: "current_chat" | "agent_private";
       conversationId?: string;
       before?: ContextReadBoundary;
       excludeCommunicationEventId?: string;
@@ -257,12 +258,15 @@ export class AgentChatFeedProjection {
   ): ContextSourcePage<MessageDto> {
     const agent = this.getAgent(agentId);
     if (!agent) return { items: [], hasMore: false };
+    if (input.scope === "current_chat" && !input.conversationId) {
+      throw new Error("current-chat private context requires a conversation");
+    }
     const limit = Math.max(1, Math.min(input.limit, 100));
     const read = (intentPredicate: string, extra: unknown[] = []) => this.client.prepare(`
         SELECT communication_event_id AS eventId, timestamp AS createdAt, message_id AS messageId
         FROM chat_search_messages
         WHERE project_id = ? AND chat_kind = 'agent' AND chat_id = ?
-          AND ${input.conversationId ? "conversation_id = ?" : "conversation_id IS NULL"}
+          AND ${input.scope === "current_chat" ? "conversation_id = ?" : "1 = 1"}
           AND ${intentPredicate}
           ${input.excludeCommunicationEventId ? "AND communication_event_id <> ?" : ""}
           ${input.before ? "AND (timestamp < ? OR (timestamp = ? AND message_id < ?))" : ""}
@@ -270,14 +274,20 @@ export class AgentChatFeedProjection {
       `).all(...[
         agent.projectId,
         agentId,
-        ...(input.conversationId ? [input.conversationId] : []),
+        ...(input.scope === "current_chat" ? [input.conversationId!] : []),
         ...extra,
         ...(input.excludeCommunicationEventId ? [input.excludeCommunicationEventId] : []),
         ...(input.before ? [input.before.createdAt, input.before.createdAt, input.before.id] : []),
         limit + 1,
       ]) as Array<{ eventId: string; createdAt: string; messageId: string }>;
-    const privateRows = read("communication_intent IN ('user_dm', 'collaboration')");
-    const authoredBroadcastRows = input.includeAuthoredBroadcasts
+    // Agent-private continuity is exactly Direct communication projected to
+    // this Agent's audit identity. It deliberately excludes Collaboration and
+    // organizational Broadcasts from other chats. Current-chat retrieval keeps
+    // the historical behavior for chat-scoped Collaboration and authored posts.
+    const privateRows = read(input.scope === "agent_private"
+      ? "communication_intent = 'user_dm'"
+      : "communication_intent IN ('user_dm', 'collaboration')");
+    const authoredBroadcastRows = input.scope === "current_chat" && input.includeAuthoredBroadcasts
       ? read("communication_intent = 'broadcast' AND sender_agent_id = ?", [agentId])
       : [];
     const rows = [...privateRows, ...authoredBroadcastRows]

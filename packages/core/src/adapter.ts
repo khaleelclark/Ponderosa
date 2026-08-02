@@ -231,7 +231,12 @@ export interface RuntimeSession extends RuntimeProcessHandle {
   /** Best-effort current context occupancy for this provider session.
    * `usedTokens` counts everything occupying the provider's context window.
    * `windowTokens` is present only when the provider reports it. */
-  contextUsage?(): { usedTokens: number; windowTokens?: number } | undefined;
+  contextUsage?(): {
+    usedTokens: number;
+    windowTokens?: number;
+    aggregateTokens?: number;
+    providerSessionGeneration?: string;
+  } | undefined;
   /** Provider rate-limit lines already available through this authenticated
    * runtime transport. Implementations must not add an out-of-band API call. */
   rateLimitStatus?(): Promise<string[]>;

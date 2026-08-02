@@ -499,11 +499,16 @@ export function createServerReadModels(context: ReadModelContext) {
       }
     }
     const ownership = new Map<string, ActiveRunObservation>(activeRuns);
+    const durableRolloverAgents = new Map(
+      coordinationV3.activeContextRollovers(scope.type === "project" ? scope.id : undefined)
+        .filter((rollover) => agents.some((agent) => agent.id === rollover.agentId))
+        .map((rollover) => [rollover.agentId, rollover.updatedAt]),
+    );
     const projection = projectAgentHealth({
       scope,
       agents,
       activeRuns: ownership,
-      compactingAgents: scheduledSessionRollovers,
+      compactingAgents: new Map([...scheduledSessionRollovers, ...durableRolloverAgents]),
       availability: (agentId) => coordinationV3.getAgentAvailability(agentId),
       pendingDecisionAt: (agentId) => pendingDecisionAt.get(agentId),
       providerBlocked: (agentId) => coordinationV3.providerBlockedState(agentId),

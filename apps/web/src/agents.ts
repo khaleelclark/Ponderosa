@@ -120,7 +120,7 @@ export function agentStatusLabel(status: AgentStatus): string {
     case "blocked":
       return "Blocked";
     case "compacting":
-      return "Compacting";
+      return "Refreshing context";
     case "cancelled":
       return "Cancelled";
     case "failed":

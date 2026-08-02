@@ -60,9 +60,10 @@ async function handle(request: RpcRequest): Promise<void> {
     const isResult = params?.name === "result";
     const isRollover = params?.name === "rollover";
     const args = params?.arguments && typeof params.arguments === "object"
-      ? params.arguments as { agentId?: unknown; cursor?: unknown; limit?: unknown }
+      ? params.arguments as { agentId?: unknown; scope?: unknown; cursor?: unknown; limit?: unknown }
       : {};
     const contextQuery = new URLSearchParams();
+    if (args.scope === "current_chat" || args.scope === "agent_private") contextQuery.set("scope", args.scope);
     if (typeof args.cursor === "string" && args.cursor.trim()) contextQuery.set("cursor", args.cursor.trim());
     if (typeof args.limit === "number") contextQuery.set("limit", String(args.limit));
     const targetUrl = params?.name === "create_managed_agent"

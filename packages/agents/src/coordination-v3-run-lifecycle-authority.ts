@@ -677,6 +677,21 @@ export class CoordinationV3RunLifecycleAuthority {
         return { cancelled: false, replayed: false };
       }
       const fence = this.support.nextFence(input.agentId);
+      // Cancellation owns the rollover transition in the same transaction as
+      // the scheduler fence. The provider cleanup path may run later—or not at
+      // all after a crash—but restart recovery can never observe an active
+      // continuation whose Run and Activation are already terminal.
+      this.sqlite.prepare(`
+        UPDATE context_rollovers
+        SET state = 'outcome_unknown',
+          last_error = 'replacement Run was cancelled before low-water context confirmation',
+          updated_at = ?, terminal_at = COALESCE(terminal_at, ?)
+        WHERE state = 'continuation_ready'
+          AND continuation_activation_id IN (
+            SELECT activation_id FROM scheduler_run_activations
+            WHERE run_id = ?
+          )
+      `).run(now, now, run.id);
       this.sqlite.prepare(`
         UPDATE scheduler_runs
         SET status = 'cancelled', fencing_token = ?,
@@ -839,7 +854,10 @@ export class CoordinationV3RunLifecycleAuthority {
       ...new Map(
         [...rows, ...continuationRows].map((row) => [row.id, row]),
       ).values(),
-    ];
+    ].filter((row) => !this.requestOwnedByCommittedRollover(
+      row.id,
+      runId,
+    ));
     for (const row of related) {
       this.updateRequest({
         requestId: row.id,
@@ -858,5 +876,43 @@ export class CoordinationV3RunLifecycleAuthority {
         reason,
       );
     }
+  }
+
+  private requestOwnedByCommittedRollover(
+    requestId: string,
+    sourceRunId: string,
+  ): boolean {
+    const row = this.sqlite.prepare(`
+      SELECT 1 AS owned
+      FROM context_rollovers rollover
+      JOIN scheduler_runs source_run ON source_run.id = ?
+      JOIN json_each(rollover.source_activation_ids_json) source_activation_id
+      JOIN agent_activations source_activation
+        ON source_activation.id = source_activation_id.value
+      JOIN activation_sources source
+        ON source.activation_id = source_activation.id
+      LEFT JOIN coordination_request_updates request_update
+        ON source.source_kind = 'request_update'
+        AND request_update.id = source.source_id
+      LEFT JOIN coordination_joins join_record
+        ON source.source_kind = 'join' AND join_record.id = source.source_id
+      WHERE rollover.source_run_id = source_run.id
+        AND rollover.state IN ('handoff_committed','session_retiring','continuation_ready')
+        AND rollover.handoff_event_id IS NOT NULL
+        AND rollover.agent_id = source_run.agent_id
+        AND rollover.project_id = source_run.project_id
+        AND source_activation.agent_id = source_run.agent_id
+        AND source_activation.project_id = source_run.project_id
+        AND (
+          (source.source_kind = 'request' AND source.source_id = ?)
+          OR (source.source_kind = 'request_update' AND request_update.request_id = ?)
+          OR (source.source_kind = 'join' AND EXISTS (
+            SELECT 1 FROM json_each(join_record.continuation_request_ids_json) continuation_request
+            WHERE continuation_request.value = ?
+          ))
+        )
+      LIMIT 1
+    `).get(sourceRunId, requestId, requestId, requestId) as { owned: number } | undefined;
+    return Boolean(row);
   }
 }

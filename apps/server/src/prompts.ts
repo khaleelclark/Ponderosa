@@ -138,8 +138,10 @@ function teamDirectoryPrompt(directory: TeamDirectoryDto): string {
 
 function olderContextPrompt(): string {
   return contextSection("OLDER SCOPED CONTEXT", "ON-DEMAND REFERENCE", [
-    "Earlier messages in this Agent's current scoped history were omitted from the bounded provider input.",
-    "Fetch them only if the current request needs that history with ponderosa_context({}).",
+    "Earlier messages were omitted from the bounded provider input.",
+    "Use ponderosa_context({scope:\"current_chat\"}) for older history belonging to the current chat.",
+    "Use ponderosa_context({scope:\"agent_private\"}) for this Agent's own Direct history across Project chats.",
+    "The agent_private scope excludes other Agents' Direct messages and shared content from other chats.",
   ]);
 }
 

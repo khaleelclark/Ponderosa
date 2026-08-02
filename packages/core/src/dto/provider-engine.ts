@@ -58,6 +58,11 @@ export interface ProviderInputSourceManifestV3 {
     delivery: "submitted" | "retained_session";
     hash?: string;
     createdAt?: string;
+    /** Canonical origin retained for cross-chat Agent-private continuity. */
+    conversationId?: string;
+    conversationTitle?: string;
+    author?: string;
+    communicationIntent?: string;
   }>;
 }
 
