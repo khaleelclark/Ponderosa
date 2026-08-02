@@ -97,4 +97,62 @@ describe("All Messages mention presentation", () => {
       name: /\(#Oak\), \(#Pine\) Private update/u,
     }).textContent).toContain("(#Oak), (#Pine) Private update");
   });
+
+  it("does not offer a mention action on user-authored messages", () => {
+    const client = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, staleTime: Infinity },
+        mutations: { retry: false },
+      },
+    });
+    const page: AllChatPageDto = {
+      items: [
+        {
+          communicationEventId: "communication-from-user",
+          messageId: "message-from-user",
+          communicationIntent: "user_dm",
+          project: { id: project.id, label: project.label },
+          source: {
+            kind: "team",
+            conversationId: "conversation-one",
+            title: "Primary",
+          },
+          author: { kind: "user", label: "User" },
+          text: "Message sent by the user",
+          createdAt,
+          directMessageAgent: { id: "agent-oak", title: "Oak" },
+        },
+        {
+          communicationEventId: "communication-from-agent",
+          messageId: "message-from-agent",
+          communicationIntent: "direct_to_user",
+          project: { id: project.id, label: project.label },
+          source: {
+            kind: "agent",
+            agentId: "agent-pine",
+            title: "Pine",
+          },
+          author: { kind: "agent", agentId: "agent-pine", label: "Pine" },
+          text: "Message sent by an Agent",
+          createdAt,
+          directMessageAgent: { id: "agent-pine", title: "Pine" },
+        },
+      ],
+      decisions: [],
+      history: { limit: 50, hasMore: false },
+    };
+    client.setQueryData(queryKeys.allChat(50), page);
+    client.setQueryData(queryKeys.workspacePreferences.all, preferences);
+    client.setQueryData(queryKeys.engines.all, []);
+    client.setQueryData(queryKeys.projects.all, [project]);
+
+    render(
+      <QueryClientProvider client={client}>
+        <AllChatView onNavigate={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.queryByRole("button", { name: "Mention Oak" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Mention Pine" })).not.toBeNull();
+  });
 });

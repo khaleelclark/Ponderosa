@@ -15,7 +15,7 @@ import {
 import type { FastifyInstance } from "fastify";
 import {
   MAX_AGENT_MENTION_REPLAY_WINDOW,
-  agentMentionHandle,
+  renderDirectMessage,
   renderScopedMessage,
 } from "../agent-mentions.js";
 import {
@@ -545,7 +545,7 @@ export function registerAgentMessageRunRoute(
         } else {
           sourceMasterMessage = store.appendConversationMessage(directMessageConversationId, {
             role: "user",
-            text: sharedCommunication ? publishedText : `#${agentMentionHandle(agent.title)} ${publishedText}`,
+            text: sharedCommunication ? publishedText : renderDirectMessage(agent.title, publishedText),
             attachments: messageAttachments,
           }, undefined, "main", undefined, undefined, communicationEventId);
           if (sharedCommunication) {

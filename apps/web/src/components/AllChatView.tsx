@@ -923,7 +923,7 @@ export function AllChatView({
                           <ContentCopyOutlinedIcon fontSize="inherit" />
                         </IconButton>
                       </Tooltip>
-                      {item.directMessageAgent ? (
+                      {!fromUser && item.directMessageAgent ? (
                         <Tooltip
                           title={`Mention ${item.directMessageAgent.title}`}
                         >
