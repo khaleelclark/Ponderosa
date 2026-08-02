@@ -823,8 +823,16 @@ export class CoordinationV3ReadModel {
         JOIN coordination_joins join_record ON join_record.id = member.join_id
         WHERE join_record.project_id = ? AND (? IS NULL OR join_record.conversation_id = ?)
           ${joinLinkSelection.sql}
+        ORDER BY member.join_id, member.position
       `).all(input.projectId, input.conversationId ?? null, input.conversationId ?? null, ...joinLinkSelection.params) as Array<{ join_id: string; request_id: string }>;
-      for (const row of joinLinks) relate(`join:${row.join_id}`, `request:${row.request_id}`);
+      for (const row of joinLinks) {
+        relate(`join:${row.join_id}`, `request:${row.request_id}`);
+        const joinItem = items.get(`join:${row.join_id}`);
+        if (joinItem) joinItem.joinMemberRequestIds = [
+          ...(joinItem.joinMemberRequestIds ?? []),
+          row.request_id,
+        ];
+      }
 
       const continuationSelection = linkedSelection("join_record.id", loadedJoinIds, "continuation.value", loadedRequestIds);
       const continuationLinks = this.sqlite.prepare(`

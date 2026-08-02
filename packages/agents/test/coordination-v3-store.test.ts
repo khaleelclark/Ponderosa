@@ -2088,7 +2088,8 @@ describe("CoordinationV3Store scheduler", () => {
 
   it("retains provider-blocked work beyond the ordinary retry budget and resumes the same wake-up once", () => {
     const activationId = store.enqueueMessageActivation({
-      projectId, agentId: recipientA, messageId: "provider-blocked", kind: "ordinary", payload: { text: "Synthesize" },
+      projectId, agentId: recipientA, messageId: "provider-blocked", kind: "ordinary",
+      payload: { dispatch: { text: "Synthesize", model: "model-a", effort: "high", speed: "fast" } },
       now: "2026-07-15T00:00:00.000Z",
     });
     for (let attempt = 0; attempt < 6; attempt += 1) {
@@ -2131,14 +2132,58 @@ describe("CoordinationV3Store scheduler", () => {
           deliveryFailures: 6,
         },
       });
-    expect(store.resumeProviderBlockedAgent(recipientA, "2026-07-15T00:00:10.000Z")).toEqual({
+    const codexB = { activeEngine: "codex", model: "model-b", effort: "low" };
+    expect(store.resumeProviderBlockedAgent(recipientA, codexB, "2026-07-15T00:00:10.000Z")).toEqual({
       activationIds: [activationId], resumed: 1,
     });
-    expect(store.resumeProviderBlockedAgent(recipientA, "2026-07-15T00:00:10.000Z")).toEqual({
-      activationIds: [activationId], resumed: 0,
+    expect(store.resumeProviderBlockedAgent(recipientA, codexB, "2026-07-15T00:00:10.000Z")).toEqual({
+      activationIds: [], resumed: 0,
     });
-    expect(store.leaseNextRun({ workerId: "manual-resume", now: "2026-07-15T00:00:10.000Z" })?.activationIds)
-      .toEqual([activationId]);
+    const firstManualRecovery = store.leaseNextRun({
+      workerId: "manual-resume", now: "2026-07-15T00:00:10.000Z",
+    })!;
+    expect(firstManualRecovery.activationIds).toEqual([activationId]);
+    expect(firstManualRecovery.activations[0]?.payload).toMatchObject({
+      dispatch: { text: "Synthesize", speed: "fast" },
+      providerRecovery: {
+        runtimeSelectionHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        runtimeSelection: codexB,
+        reboundAt: "2026-07-15T00:00:10.000Z",
+      },
+    });
+    expect(firstManualRecovery.activations[0]?.payload).not.toMatchObject({
+      dispatch: { model: expect.anything() },
+    });
+    expect(firstManualRecovery.activations[0]?.payload).not.toMatchObject({
+      dispatch: { effort: expect.anything() },
+    });
+    expect(store.failRun({
+      runId: firstManualRecovery.runId,
+      fencingToken: firstManualRecovery.fencingToken,
+      workerId: "manual-resume",
+      sameRunResumable: false,
+      confirmedNotExecuted: true,
+      failureKind: "rate_limit",
+      error: "[rate_limit] Usage limit reached again",
+      retryDelayMs: 60_000,
+      now: "2026-07-15T00:00:11.000Z",
+    })).toBe("retry");
+    expect(store.resumeProviderBlockedAgent(recipientA, codexB, "2026-07-15T00:00:12.000Z"))
+      .toEqual({ activationIds: [], resumed: 0 });
+    expect(store.leaseNextRun({ workerId: "replayed-settings", now: "2026-07-15T00:00:12.000Z" }))
+      .toBeUndefined();
+
+    const claude = { activeEngine: "claude", model: "claude-opus", effort: "high" };
+    expect(store.resumeProviderBlockedAgent(recipientA, claude, "2026-07-15T00:00:13.000Z"))
+      .toEqual({ activationIds: [activationId], resumed: 1 });
+    const crossEngineRecovery = store.leaseNextRun({
+      workerId: "cross-engine", now: "2026-07-15T00:00:13.000Z",
+    })!;
+    expect(crossEngineRecovery.activationIds).toEqual([activationId]);
+    expect(crossEngineRecovery.activations[0]?.payload).toMatchObject({
+      dispatch: { text: "Synthesize", speed: "fast" },
+      providerRecovery: { runtimeSelection: claude },
+    });
   });
 
   it("terminalizes a permanent dispatch rejection with an operator-visible outcome", () => {

@@ -62,6 +62,7 @@ import {
   agentBelongsToConversation,
   agentStatusColor,
   agentStatusLabel,
+  isProviderBlockedHealth,
   orderedAgentOrganization,
   type AgentStatus,
 } from "../agents";
@@ -870,7 +871,9 @@ export function AgentsTab({
                       >
                         <Chip
                           size="small"
-                          label={healthByAgentId.get(agent.id)?.providerBlocked ? "Provider blocked" : agentStatusLabel(status)}
+                          label={isProviderBlockedHealth(healthByAgentId.get(agent.id))
+                            ? "Provider blocked"
+                            : agentStatusLabel(status)}
                           color={agentStatusColor(status)}
                         />
                         <Typography

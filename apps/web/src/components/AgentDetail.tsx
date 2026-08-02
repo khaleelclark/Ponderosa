@@ -29,6 +29,7 @@ import {
   agentStatusColor,
   agentStatusLabel,
   deriveAgentStatus,
+  isProviderBlockedHealth,
   type AgentStatus,
 } from "../agents";
 import { uniqueBy } from "../collections";
@@ -875,7 +876,7 @@ export function AgentDetail({
         lineageAgentId={lineageAgentId}
         lineageLabel={lineageLabel}
         status={status}
-        providerBlocked={Boolean(projectedHealth?.providerBlocked)}
+        providerBlocked={isProviderBlockedHealth(projectedHealth)}
         connected={stream.connected}
         startedAt={runtimeActivity?.startedAt}
         running={running}

@@ -886,9 +886,14 @@ export class CoordinationV3Store {
 
   resumeProviderBlockedAgent(
     agentId: string,
+    runtimeSelection: {
+      activeEngine: string;
+      model?: string;
+      effort?: string;
+    },
     now = new Date().toISOString(),
   ): { activationIds: string[]; resumed: number } {
-    return this.runLifecycleAuthority.resumeProviderBlockedAgent(agentId, now);
+    return this.runLifecycleAuthority.resumeProviderBlockedAgent(agentId, runtimeSelection, now);
   }
 
   cancelAgentRun(input: { agentId: string; idempotencyKey: string; expectedRunId?: string; now?: string }): CancellationResult {

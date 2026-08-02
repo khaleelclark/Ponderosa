@@ -32,12 +32,19 @@ describe("AgentWorkProjection recovery summaries", () => {
       record({
         id: "join:all", recordId: "all", kind: "join", state: "satisfied",
         agentIds: ["manager"], relatedItemIds: ["activation:wake", ...requestIds.map((id) => `request:${id}`)],
+        joinMemberRequestIds: requestIds,
       }),
       ...requestIds.map((id, index) => record({
         id: `request:${id}`, recordId: id, kind: "request", state: "completed",
         requesterAgentId: "manager", recipientAgentId: `child-${index + 1}`,
-        agentIds: ["manager", `child-${index + 1}`], relatedItemIds: ["join:all"],
+        agentIds: ["manager", `child-${index + 1}`],
+        relatedItemIds: ["join:all", ...(index === 0 ? ["request:historical"] : [])],
       })),
+      record({
+        id: "request:historical", recordId: "historical", kind: "request", state: "completed",
+        requesterAgentId: "manager", recipientAgentId: "child-1",
+        agentIds: ["manager", "child-1"], relatedItemIds: ["request:request-1"],
+      }),
     ];
     const agents = [
       { id: "manager", title: "Manager" },

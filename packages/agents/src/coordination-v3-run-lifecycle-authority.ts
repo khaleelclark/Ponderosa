@@ -569,26 +569,62 @@ export class CoordinationV3RunLifecycleAuthority {
    * never creates a second wake-up. */
   resumeProviderBlockedAgent(
     agentId: string,
+    runtimeSelection: {
+      activeEngine: string;
+      model?: string;
+      effort?: string;
+    },
     now = new Date().toISOString(),
   ): { activationIds: string[]; resumed: number } {
     return this.sqlite.transaction(() => {
       const rows = this.sqlite.prepare(`
-        SELECT id FROM agent_activations
+        SELECT id, payload_json FROM agent_activations
         WHERE agent_id = ? AND state = 'retry_pending'
           AND (last_delivery_error LIKE '[capacity] %'
             OR last_delivery_error LIKE '[rate_limit] %')
         ORDER BY id
-      `).all(agentId) as Array<{ id: string }>;
+      `).all(agentId) as Array<{ id: string; payload_json: string }>;
       if (!rows.length) return { activationIds: [], resumed: 0 };
-      const result = this.sqlite.prepare(`
+      const normalizedSelection = {
+        activeEngine: runtimeSelection.activeEngine,
+        model: runtimeSelection.model ?? null,
+        effort: runtimeSelection.effort ?? null,
+      };
+      const selectionHash = createHash("sha256")
+        .update(stableJson(normalizedSelection))
+        .digest("hex");
+      const update = this.sqlite.prepare(`
         UPDATE agent_activations
-        SET available_at = ?, updated_at = ?
-        WHERE agent_id = ? AND state = 'retry_pending'
-          AND available_at > ?
+        SET payload_json = ?, available_at = ?, updated_at = ?
+        WHERE id = ? AND agent_id = ? AND state = 'retry_pending'
           AND (last_delivery_error LIKE '[capacity] %'
             OR last_delivery_error LIKE '[rate_limit] %')
-      `).run(now, now, agentId, now);
-      return { activationIds: rows.map((row) => row.id), resumed: result.changes };
+      `);
+      const activationIds: string[] = [];
+      for (const row of rows) {
+        const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
+        const previousRecovery = payload.providerRecovery && typeof payload.providerRecovery === "object"
+          ? payload.providerRecovery as Record<string, unknown>
+          : undefined;
+        if (previousRecovery?.runtimeSelectionHash === selectionHash) continue;
+        const dispatch = payload.dispatch && typeof payload.dispatch === "object"
+          ? payload.dispatch as Record<string, unknown>
+          : undefined;
+        const { model: _oldModel, effort: _oldEffort, ...dispatchWithoutRuntimeOverrides } = dispatch ?? {};
+        const nextPayload = {
+          ...payload,
+          ...(dispatch ? { dispatch: dispatchWithoutRuntimeOverrides } : {}),
+          providerRecovery: {
+            runtimeSelectionHash: selectionHash,
+            runtimeSelection: normalizedSelection,
+            reboundAt: now,
+          },
+        };
+        if (update.run(stableJson(nextPayload), now, now, row.id, agentId).changes === 1) {
+          activationIds.push(row.id);
+        }
+      }
+      return { activationIds, resumed: activationIds.length };
     })();
   }
 

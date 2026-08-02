@@ -263,6 +263,8 @@ export interface AgentWorkItemDto {
   recipientAgentId?: string;
   /** Other canonical records structurally connected to this record. */
   relatedItemIds: string[];
+  /** Exact canonical member Requests for a Join. Continuations remain separate relationships. */
+  joinMemberRequestIds?: string[];
   /** Loaded on demand so the summary projection stays lightweight. */
   details?: Array<{ label: string; value: string }>;
   /** Present on the stable wake-up retained after a provider quota/capacity failure. */

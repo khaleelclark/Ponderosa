@@ -290,8 +290,13 @@ export class AgentWorkProjection {
       const counts = new Map<AgentWorkItemDto["kind"], number>();
       for (const item of ordered) counts.set(item.kind, (counts.get(item.kind) ?? 0) + 1);
       const providerBlockedActivations = ordered.filter((item) => item.kind === "activation" && item.providerRecovery);
-      const completedRequests = ordered.filter((item) => item.kind === "request" && item.state === "completed");
-      const joins = ordered.filter((item) => item.kind === "join");
+      const blockedJoinIds = new Set(providerBlockedActivations.flatMap((activation) =>
+        activation.relatedItemIds.filter((id) => componentById.get(id)?.kind === "join")));
+      const joins = ordered.filter((item) => item.kind === "join" && blockedJoinIds.has(item.id));
+      const joinMemberRequestIds = new Set(joins.flatMap((join) => join.joinMemberRequestIds ?? []));
+      const joinRequests = ordered.filter((item) =>
+        item.kind === "request" && joinMemberRequestIds.has(item.recordId));
+      const completedRequests = joinRequests.filter((item) => item.state === "completed");
       const blockedRecovery = providerBlockedActivations[0]?.providerRecovery;
       const synthesisPending = Boolean(blockedRecovery && joins.length > 0 && completedRequests.length > 0);
       const countSummary = kindOrder.flatMap((kind) => {
@@ -318,7 +323,7 @@ export class AgentWorkProjection {
           retryEligible: blockedRecovery.retryEligible,
           nextRetryAt: blockedRecovery.nextRetryAt,
           activationIds: providerBlockedActivations.map((item) => item.recordId),
-          requestIds: ordered.filter((item) => item.kind === "request").map((item) => item.recordId),
+          requestIds: joinRequests.map((item) => item.recordId),
           joinIds: joins.map((item) => item.recordId),
           completedChildResults: completedRequests.length,
         } } : {}),
