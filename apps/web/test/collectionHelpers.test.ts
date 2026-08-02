@@ -56,6 +56,8 @@ describe("Agent collection helpers", () => {
       .toBe(true);
     expect(matchesAgentStatusFilters(agent("assigned", undefined, ["chat"]), "idle", ["unassigned"]))
       .toBe(false);
+    expect(matchesAgentStatusFilters(agent("decision"), "needs_decision", ["needs_decision"]))
+      .toBe(true);
   });
 });
 

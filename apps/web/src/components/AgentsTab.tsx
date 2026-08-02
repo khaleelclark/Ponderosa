@@ -760,6 +760,7 @@ export function AgentsTab({
                 [
                   "running",
                   "waiting",
+                  "needs_decision",
                   "blocked",
                   "stalled",
                   "interrupted",

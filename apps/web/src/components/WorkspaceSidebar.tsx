@@ -376,7 +376,7 @@ export function WorkspaceSidebar({
             </ListItemIcon>
             <ListItemText
               primary={snapshot.project.label}
-              secondary={snapshot.project.hostPath}
+              secondary={snapshot.displayPath}
               primaryTypographyProps={{
                 noWrap: true,
                 fontSize: 13,

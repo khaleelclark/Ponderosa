@@ -89,6 +89,7 @@ export function projectHealthPresentation(
   const actionable = actionableProjectHealth(health, agents, engines).health;
   if (!actionable) return { label: "Checking", color: "text.disabled" };
   if (actionable.some((agent) => agent.status === "failed" || agent.status === "stalled")) return { label: "Needs attention", color: "error.main" };
+  if (actionable.some((agent) => agent.status === "needs_decision")) return { label: "Needs decision", color: "warning.main" };
   if (actionable.some((agent) => agent.status === "blocked" || agent.status === "interrupted")) return { label: "Blocked", color: "warning.main" };
   if (actionable.some((agent) => agent.status === "running" || agent.status === "compacting")) return { label: "Active", color: "info.main" };
   if (actionable.some((agent) => agent.status === "waiting")) return { label: "Waiting", color: "warning.main" };

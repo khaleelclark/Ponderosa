@@ -15,6 +15,10 @@ export interface HistoryPageDto<T> {
 export type AgentLifecycleStatus = "idle" | "running" | "stalled" | "interrupted" | "waiting" | "blocked" | "compacting" | "cancelled" | "completed" | "failed";
 export type AgentRunStatus = Exclude<AgentLifecycleStatus, "idle">;
 
+/** Current operator-facing state derived from canonical Run, coordination, and
+ * Decision authority. `needs_decision` is not a provider Run state. */
+export type AgentOperationalStatus = AgentLifecycleStatus | "needs_decision";
+
 export type AgentLifecycleReason =
   | "no_active_work" | "active_run" | "work_item_waiting_approval" | "queued_delivery"
   | "awaiting_reports"
@@ -22,3 +26,5 @@ export type AgentLifecycleReason =
   | "session_rollover_scheduled" | "agent_cancelled"
   | "execution_lease_expired" | "execution_interrupted" | "runtime_event_consumer_stalled"
   | "manager_report_missing";
+
+export type AgentOperationalReason = AgentLifecycleReason | "pending_user_decision";

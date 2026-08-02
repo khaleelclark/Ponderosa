@@ -9,6 +9,7 @@ const STATUS_FILTERS: Array<{
 }> = [
   { value: "running", label: "Running" },
   { value: "waiting", label: "Waiting" },
+  { value: "needs_decision", label: "Needs decision" },
   { value: "blocked", label: "Blocked" },
   { value: "stalled", label: "Stalled" },
   { value: "interrupted", label: "Interrupted" },
@@ -35,6 +36,7 @@ export function agentStatusFilterOptions(
         stalled: 0,
         interrupted: 0,
         waiting: 0,
+        needs_decision: 0,
         blocked: 0,
         compacting: 0,
         cancelled: 0,

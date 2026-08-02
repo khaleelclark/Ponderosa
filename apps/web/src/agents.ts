@@ -2,7 +2,7 @@
 // user-facing status vocabulary so the Agents tab, sidebar, and detail view
 // stay consistent. The underlying data model remains AgentDto/AgentDetailDto.
 
-import type { AgentLifecycleStatus, AgentDetailDto, AgentDto, AgentHealthDto } from "@ponderosa/core";
+import type { AgentOperationalStatus, AgentDetailDto, AgentDto, AgentHealthDto } from "@ponderosa/core";
 
 export interface AgentOrganizationRow {
   agent: AgentDto;
@@ -50,7 +50,7 @@ export function agentBelongsToConversation(agent: AgentDto, conversationId: stri
   return agent.conversationIds.includes(conversationId);
 }
 
-export type AgentStatus = AgentLifecycleStatus;
+export type AgentStatus = AgentOperationalStatus;
 
 export interface AgentLiveHints {
   /** Live SSE run in progress for this agent. */
@@ -76,7 +76,7 @@ export function deriveAgentStatus(
     return "running";
   }
   if ((detail?.workItems ?? []).some((item) => item.status === "waiting_approval")) {
-    return "waiting";
+    return "needs_decision";
   }
   if (hints.error) {
     return "failed";
@@ -113,6 +113,8 @@ export function agentStatusLabel(status: AgentStatus): string {
       return "Interrupted";
     case "waiting":
       return "Waiting";
+    case "needs_decision":
+      return "Needs decision";
     case "completed":
       return "Completed";
     case "blocked":
@@ -136,6 +138,7 @@ export function agentStatusColor(
     case "compacting":
       return "info";
     case "waiting":
+    case "needs_decision":
       return "warning";
     case "completed":
       return "success";

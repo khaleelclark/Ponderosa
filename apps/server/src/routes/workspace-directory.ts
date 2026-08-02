@@ -67,6 +67,7 @@ interface WorkspaceDirectoryRoutesContext {
     scope: AgentHealthProjectionDto["scope"],
     agents: AgentDto[],
   ): AgentHealthProjectionDto;
+  projectDisplayPath(hostPath: string): string;
 }
 
 function projectSummary(
@@ -307,6 +308,7 @@ export function registerWorkspaceDirectoryRoutes(
         item: {
           kind: "project",
           project,
+          displayPath: context.projectDisplayPath(project.hostPath),
         },
       }));
     } else if (kind === "conversation") {

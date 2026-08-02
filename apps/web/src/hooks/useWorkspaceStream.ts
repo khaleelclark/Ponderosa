@@ -416,6 +416,8 @@ export function useWorkspaceStream(): void {
         agentWorkInvalidator.schedule(event.projectId);
       }
       else if (event.type === "coordination_changed") {
+        agentStateInvalidator.schedule(event.projectId);
+        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("agent") });
         agentWorkInvalidator.schedule(event.projectId);
         collaborationChatInvalidator.schedule(event.conversationIds);
       }
@@ -453,6 +455,8 @@ export function useWorkspaceStream(): void {
       }
       else if (event.type === "notification_changed") {
         void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
+        invalidateActiveQueries(queryClient, queryKeys.agents.healthAll);
+        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("agent") });
         if (event.conversationId) {
           decisionConversationInvalidator.schedule(event.conversationId);
         }
