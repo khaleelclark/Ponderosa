@@ -874,6 +874,51 @@ describe("server public API behavior", () => {
     expect(obsoleteEdit.statusCode).toBe(404);
   });
 
+  it("does not duplicate an authored Agent mention in the All Messages projection", async () => {
+    const project = store.createProject({ label: "Direct mention", hostPath: repoDir });
+    const conversationId = project.lastConversationId!;
+    const agent = store.createAgent(project.id, {
+      title: "Crater Lake",
+      engine: "codex",
+      conversationId,
+    });
+    const app = server({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      communicationV3: { maxConcurrentRuns: 0, pollMs: 60_000 },
+    });
+
+    const sent = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "#Crater-Lake hey", idempotencyKey: randomUUID() },
+    });
+    expect(sent.statusCode, sent.body).toBe(202);
+    const communicationEventId = sent.json<{ communicationEventId: string }>().communicationEventId;
+
+    const sentWithoutMention = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "hey again", idempotencyKey: randomUUID() },
+    });
+    expect(sentWithoutMention.statusCode, sentWithoutMention.body).toBe(202);
+    const secondCommunicationEventId = sentWithoutMention
+      .json<{ communicationEventId: string }>().communicationEventId;
+
+    const allChat = await app.inject({ method: "GET", url: "/api/all-chat" });
+    expect(allChat.statusCode, allChat.body).toBe(200);
+    const messages = allChat.json<{ items: Array<{
+      communicationEventId: string;
+      text: string;
+    }> }>().items;
+    expect(messages.find((item) => item.communicationEventId === communicationEventId)?.text)
+      .toBe("#Crater-Lake hey");
+    expect(messages.find((item) => item.communicationEventId === secondCommunicationEventId)?.text)
+      .toBe("#Crater-Lake hey again");
+  });
+
   it("preserves multi-Agent Direct mention bindings after recipients are renamed or deleted", async () => {
     const project = store.createProject({ label: "Direct identity", hostPath: repoDir });
     const conversationId = project.lastConversationId!;

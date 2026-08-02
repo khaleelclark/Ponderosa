@@ -9,7 +9,7 @@ import type {
   CoordinationV3Store,
 } from "@ponderosa/agents";
 import type { AssetStore, AuthoritativeRuntimeAttachment } from "./assets.js";
-import { agentMentionHandle, renderScopedMessage } from "./agent-mentions.js";
+import { renderDirectMessage, renderScopedMessage } from "./agent-mentions.js";
 import type { createCommunicationArtifactAuthority } from "./communication-artifacts.js";
 
 type CommunicationArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>;
@@ -318,7 +318,7 @@ export function createCommunicationProjectionReconciler(
                     ? dispatch.targetAuthorAgentId
                     : recipientIds.length === 1 ? recipientIds[0] : undefined;
                   const target = targetAgentId ? store.getAgent(targetAgentId) : undefined;
-                  return target ? `#${agentMentionHandle(target.title)} ${dispatchText}`.trimEnd() : dispatchText;
+                  return target ? renderDirectMessage(target.title, dispatchText) : dispatchText;
                 })()
               : dispatchText;
         const roomTarget = projectionTargets.find((target) =>

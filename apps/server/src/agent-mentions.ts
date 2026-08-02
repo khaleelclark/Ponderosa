@@ -63,6 +63,14 @@ function renderScopedMessage(tag: "broadcast" | "user", text: string): string {
   return `#${tag} ${stripLeadingScopeTag(text, tag)}`.trimEnd();
 }
 
+function renderDirectMessage(agentTitle: string, text: string): string {
+  const handle = agentMentionHandle(agentTitle);
+  const leadingHandle = /^#([\p{L}\p{N}_-]+)(?=$|\s|[.,!?;:])/u.exec(text);
+  return leadingHandle?.[1]?.toLocaleLowerCase() === handle.toLocaleLowerCase()
+    ? text
+    : `#${handle} ${text}`.trimEnd();
+}
+
 function inboundContext(
   channel: AgentMessageChannel,
   author: string,
@@ -100,6 +108,7 @@ export {
   hasEveryoneMention,
   stripLeadingScopeTag,
   renderScopedMessage,
+  renderDirectMessage,
   inboundContext,
   messageContextPrompt,
 };
