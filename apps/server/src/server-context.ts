@@ -32,6 +32,7 @@ export interface ServerContext {
     | "getConversation"
     | "getCommunicationEvent"
     | "getProject"
+    | "listAgents"
     | "getRunOutputPage"
     | "getRunPage"
     | "getWorkItemPage"

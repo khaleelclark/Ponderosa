@@ -624,8 +624,7 @@ export class WorkspaceStore {
   }
 
   readAllNotifications(): number {
-    const unread = this.listNotifications().filter((item) => !item.readAt &&
-      ["direct_responses", "project_responses", "mentions", "all_messages", "everyone", "broadcasts"].includes(item.kind));
+    const unread = this.listNotifications().filter((item) => !item.readAt);
     if (unread.length === 0) return 0;
     this.append(
       { type: "notification_changed", action: "read" },

@@ -35,6 +35,39 @@ function fakeDriver(): BrowserDriver {
 }
 
 describe("BrowserSessionManager screenshot publication", () => {
+  it("lists only active private sessions in the requested Project and Chat", async () => {
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), "ponderosa-browser-list-"));
+    temporaryDirectories.push(dataDir);
+    const manager = new BrowserSessionManager(
+      dataDir,
+      async () => fakeDriver(),
+      async () => undefined,
+    );
+    const first: BrowserScope = {
+      projectId: "project-1",
+      agentId: "agent-1",
+      runId: "run-1",
+      conversationId: "conversation-1",
+    };
+    const second: BrowserScope = {
+      projectId: "project-1",
+      agentId: "agent-2",
+      runId: "run-2",
+      conversationId: "conversation-2",
+    };
+
+    await manager.open(first);
+    await manager.open(second);
+
+    expect(manager.listActive("project-1", "conversation-1")).toMatchObject([
+      { agentId: "agent-1", runId: "run-1", conversationId: "conversation-1", status: "ready" },
+    ]);
+    await manager.close(first);
+    expect(manager.listActive("project-1", "conversation-1")).toEqual([]);
+    expect(manager.listActive("project-1")).toHaveLength(1);
+    await manager.close(second);
+  });
+
   it("returns an attachable reference only after the managed artifact event commits", async () => {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "ponderosa-browser-artifact-"));
     temporaryDirectories.push(dataDir);

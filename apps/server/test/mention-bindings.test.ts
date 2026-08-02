@@ -41,4 +41,27 @@ describe("recipient mention bindings", () => {
       identities,
     )).toEqual([{ handle: "Redwood", agentId: "agent-oak" }]);
   });
+
+  it("binds group recipients across punctuation token boundaries", () => {
+    const recipientIds = ["agent-oak", "agent-pine"];
+    const identities = [
+      { id: "agent-oak", title: "Oak" },
+      { id: "agent-pine", title: "Pine" },
+    ];
+    const expected = [
+      { handle: "Oak", agentId: "agent-oak" },
+      { handle: "Pine", agentId: "agent-pine" },
+    ];
+
+    expect(resolveAgentMentionBindings(
+      "(#Oak), (#Pine) Private update",
+      recipientIds,
+      identities,
+    )).toEqual(expected);
+    expect(resolveAgentMentionBindings(
+      "#Oak/#Pine Private update",
+      recipientIds,
+      identities,
+    )).toEqual(expected);
+  });
 });

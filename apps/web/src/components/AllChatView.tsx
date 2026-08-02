@@ -34,7 +34,9 @@ import {
 import type { Route } from "../routing";
 import {
   ChatMessageBody,
+  authoredAgentMentionForHandle,
   communicationVisibleText,
+  showBroadcastBadge,
 } from "./chat/ChatMessages";
 import { Composer } from "./chat/Composer";
 import { useMobileComposerAutoHide } from "../mobileChat";
@@ -43,6 +45,7 @@ import { agentMentionHandle } from "../mentions";
 import { AttentionSurface } from "./AttentionSurface";
 import { notificationTechnicalFocusId } from "../technicalFocus";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
+import { TimedChatLiveBanner } from "./chat/ChatLiveBanner";
 import { ChatSurface } from "./chat/ChatSurface";
 import { uniqueBy } from "../collections";
 import TagIcon from "@mui/icons-material/Tag";
@@ -155,6 +158,15 @@ export function AllChatView({
   const [speed, setSpeed] = useState("");
   const initializedRuntime = useRef<string>();
   const [notice, setNotice] = useState<string>();
+  const [directSendConfirmation, setDirectSendConfirmation] = useState<{
+    id: number;
+    text: string;
+  }>();
+  const directSendConfirmationSequence = useRef(0);
+  const dismissDirectSendConfirmation = useCallback(
+    () => setDirectSendConfirmation(undefined),
+    [],
+  );
   const [mentionInsertRequest, setMentionInsertRequest] = useState<{
     id: string;
     text: string;
@@ -473,9 +485,12 @@ export function AllChatView({
       }
     },
     onSuccess: () => {
-      setNotice(
-        `Direct message sent to ${replyTarget?.title ?? "Agent"}.`,
-      );
+      setNotice(undefined);
+      directSendConfirmationSequence.current += 1;
+      setDirectSendConfirmation({
+        id: directSendConfirmationSequence.current,
+        text: `Direct message sent to ${replyTarget?.title ?? "Agent"}.`,
+      });
       void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
       if (replyTarget) {
         void queryClient.invalidateQueries({
@@ -490,6 +505,7 @@ export function AllChatView({
     setSelectedId(item.communicationEventId);
     setMentionInsertRequest(undefined);
     setNotice(undefined);
+    setDirectSendConfirmation(undefined);
     send.reset();
   };
   const clearReplyTarget = () => {
@@ -798,7 +814,10 @@ export function AllChatView({
                       },
                   createdAt: item.createdAt,
                   source:
-                    item.communicationIntent === "broadcast" ? (
+                    showBroadcastBadge(
+                      item.communicationIntent,
+                      item.communicationEventId,
+                    ) ? (
                       <Chip size="small" variant="outlined" label="Broadcast" />
                     ) : undefined,
                   attachments: item.attachments,
@@ -817,17 +836,24 @@ export function AllChatView({
                       compactMarkdown
                       projectId={item.project.id}
                       operatorHandle={workspacePreferences.data?.profile.handle}
-                      agentMentionForHandle={handle =>
-                        item.directMessageAgent &&
-                        agentMentionHandle(
-                          item.directMessageAgent.title,
-                        ).toLocaleLowerCase() === handle.toLocaleLowerCase()
+                      agentMentionForHandle={handle => {
+                        const binding = authoredAgentMentionForHandle(
+                          handle,
+                          item.agentMentions,
+                        );
+                        if (binding) return binding;
+                        return item.directMessageAgent &&
+                          agentMentionHandle(
+                            item.directMessageAgent.title,
+                          ).toLocaleLowerCase() === handle.toLocaleLowerCase()
                           ? {
                               agentId: item.directMessageAgent.id,
-                              label: item.directMessageAgent.title,
+                              label: agentMentionHandle(
+                                item.directMessageAgent.title,
+                              ),
                             }
-                          : undefined
-                      }
+                          : undefined;
+                      }}
                       onOpenAgent={agentId =>
                         onNavigate({
                           kind: "agent",
@@ -943,6 +969,27 @@ export function AllChatView({
         }}
         sx={{ minWidth: 0, bgcolor: "transparent" }}
       >
+        {directSendConfirmation ? (
+          <Box
+            sx={{
+              height: 28,
+              px: { xs: 1, sm: 1.5 },
+              mt: 1,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              overflow: "hidden",
+              pointerEvents: "none",
+            }}
+          >
+            <TimedChatLiveBanner
+              key={directSendConfirmation.id}
+              onDismiss={dismissDirectSendConfirmation}
+            >
+              {directSendConfirmation.text}
+            </TimedChatLiveBanner>
+          </Box>
+        ) : null}
         {notice ? (
           <Alert severity="success" sx={{ mx: 1.5, mt: 1 }}>
             {notice}

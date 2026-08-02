@@ -8,6 +8,7 @@ import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import TagIcon from "@mui/icons-material/Tag";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
+import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import {
   Box,
   Chip,
@@ -29,15 +30,15 @@ import {
   type Dispatch,
   type SetStateAction,
 } from "react";
-import { agentMentionHandle } from "../mentions";
 import { transcriptFileName } from "../chatTranscript";
 import { CopyMessageButton } from "./CopyMessageButton";
 import { ResponseFileActivity } from "./activity/ResponseFileActivity";
 import {
   ChatMessageBody,
   CommunicationDocumentCard,
+  authoredAgentMentionForHandle,
   communicationVisibleText,
-  stripLeadingAgentMentions,
+  showBroadcastBadge,
   stripDocumentPrefixText,
 } from "./chat/ChatMessages";
 import { ProjectRelationshipLink } from "./HeaderRelationshipLinks";
@@ -50,6 +51,7 @@ import {
   AUTO_ALLOWED_DECISION_OPTION_ID,
   type MainTimelineEntry,
 } from "./ConversationView.helpers";
+import { coalesceTeamOperationalEvents } from "./teamChatPresentation";
 
 function ConversationMessageComponent({
   message,
@@ -83,31 +85,25 @@ function ConversationMessageComponent({
   operatorProfile?: OperatorProfileDto;
 }): JSX.Element {
   const fromManager = !message.authorAgentId;
-  // Routing prefixes remain canonical and copyable. Team Chat can omit the
-  // redundant leading token because its stable recipient is shown in the
-  // sender → recipient header.
   const routedText = message.text;
   const copyableText = stripDocumentPrefixText(
     routedText,
     Boolean(message.document),
   );
-  const visibleText =
-    conversation === "collaboration"
-      ? stripLeadingAgentMentions(copyableText, message.agentMentions)
-      : communicationVisibleText({
-          text: copyableText,
-          intent: message.communicationIntent,
-          fromAgent: Boolean(message.authorAgentId),
-          agentMentions: message.agentMentions,
-        });
+  const visibleText = communicationVisibleText({
+    text: copyableText,
+    intent: message.communicationIntent,
+    fromAgent: Boolean(message.authorAgentId),
+    agentMentions: message.agentMentions,
+  });
   const senderName = fromManager
     ? (operatorProfile?.displayName ?? "You")
     : agentTitle(message.authorAgentId);
   const recipientNames = [
     ...new Set(
-      (message.agentMentions ?? []).map(mention =>
-        agentTitle(mention.agentId),
-      ),
+      (message.collaborationRecipients?.length
+        ? message.collaborationRecipients.map(recipient => recipient.title)
+        : (message.agentMentions ?? []).map(mention => agentTitle(mention.agentId))),
     ),
   ];
   const visibleRecipients = recipientNames.slice(0, 2);
@@ -129,7 +125,10 @@ function ConversationMessageComponent({
             },
         createdAt: message.createdAt,
         source:
-          message.communicationIntent === "broadcast" ? (
+          showBroadcastBadge(
+            message.communicationIntent,
+            message.communicationEventId,
+          ) ? (
             <Chip size="small" variant="outlined" label="Broadcast" />
           ) : conversation === "collaboration" && recipientNames.length ? (
             <Typography
@@ -157,19 +156,9 @@ function ConversationMessageComponent({
             compactMarkdown
             citations={message.citations}
             agentIdForHandle={agentIdForHandle}
-            agentMentionForHandle={handle => {
-              const binding = message.agentMentions?.find(
-                item =>
-                  item.handle.toLocaleLowerCase() ===
-                  handle.toLocaleLowerCase(),
-              );
-              return binding
-                ? {
-                    agentId: binding.agentId,
-                    label: agentMentionHandle(agentTitle(binding.agentId)),
-                  }
-                : undefined;
-            }}
+            agentMentionForHandle={handle =>
+              authoredAgentMentionForHandle(handle, message.agentMentions)
+            }
             operatorHandle={operatorProfile?.handle}
             onOpenAgent={onOpenAgent}
             projectId={projectId}
@@ -273,7 +262,7 @@ function ConversationHeader({
   setDeleteOpen,
   setActiveView,
 }: {
-  activeView: "main" | "collaboration" | "agents" | "triggers";
+  activeView: "main" | "collaboration" | "files" | "agents" | "triggers";
   agentWorkOpen: boolean;
   conversation: ConversationDto;
   projectLabel?: string;
@@ -287,7 +276,7 @@ function ConversationHeader({
   setImportOpen: Dispatch<SetStateAction<boolean>>;
   setDeleteOpen: Dispatch<SetStateAction<boolean>>;
   setActiveView: Dispatch<
-    SetStateAction<"main" | "collaboration" | "agents" | "triggers">
+    SetStateAction<"main" | "collaboration" | "files" | "agents" | "triggers">
   >;
 }): JSX.Element {
   return (
@@ -357,6 +346,11 @@ function ConversationHeader({
             value: "collaboration",
             label: "Team Chat",
             icon: <GroupsOutlinedIcon fontSize="small" />,
+          },
+          {
+            value: "files",
+            label: "Files & Results",
+            icon: <Inventory2OutlinedIcon fontSize="small" />,
           },
           {
             value: "agents",
@@ -515,6 +509,13 @@ function CollaborationTimeline({
       linkedRequestEventIds.add(event.id);
     }
   }
+  const visibleOperations = coalesceTeamOperationalEvents(
+    operationalEvents.filter(
+      event =>
+        !linkedRequestEventIds.has(event.id) &&
+        event.attentionRequired,
+    ),
+  );
   const timeline = [
     ...collaborationMessages.map(message => ({
       kind: "message" as const,
@@ -522,12 +523,7 @@ function CollaborationTimeline({
       at: message.createdAt,
       message,
     })),
-    ...operationalEvents
-      .filter(
-        event =>
-          !linkedRequestEventIds.has(event.id) &&
-          event.attentionRequired,
-      )
+    ...visibleOperations
       .map(event => ({
         kind: "operation" as const,
         id: `operation:${event.id}`,
@@ -568,21 +564,27 @@ function CollaborationTimeline({
                 textAlign: "left",
               }}
             >
-              <Typography
-                variant="caption"
-                sx={{
-                  color:
-                    event.kind === "decision"
-                      ? "warning.light"
-                      : "error.light",
-                  fontWeight: 700,
-                  whiteSpace: "nowrap",
-                }}
+              <Tooltip
+                title={event.relatedLifecycleCount > 1
+                  ? `${event.relatedLifecycleCount} related lifecycle updates are shown once.`
+                  : ""}
               >
-                {event.kind === "decision"
-                  ? "Decision needed"
-                  : "Coordination issue"}
-              </Typography>
+                <Typography
+                  variant="caption"
+                  sx={{
+                    color:
+                      event.kind === "decision"
+                        ? "warning.light"
+                        : "error.light",
+                    fontWeight: 700,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {event.kind === "decision"
+                    ? "Decision needed"
+                    : "Coordination issue"}
+                </Typography>
+              </Tooltip>
               <Typography variant="body2" sx={{ flex: 1, minWidth: 0 }}>
                 {event.text}
               </Typography>

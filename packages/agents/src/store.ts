@@ -871,7 +871,7 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.artifactCatalog.getProjectArtifacts(projectId);
   }
 
-  getProjectArtifactPage(projectId: string, input: { limit: number; cursor?: string }): HistoryPageDto<ArtifactDto> {
+  getProjectArtifactPage(projectId: string, input: { limit: number; cursor?: string; conversationId?: string }): HistoryPageDto<ArtifactDto> {
     return this.artifactCatalog.getProjectArtifactPage(projectId, input);
   }
 

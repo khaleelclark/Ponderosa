@@ -122,16 +122,24 @@ export function registerArtifactRoutes(
 
   app.get<{
     Params: { projectId: string };
-    Querystring: { limit?: string; cursor?: string };
+    Querystring: { limit?: string; cursor?: string; conversationId?: string };
   }>("/api/projects/:projectId/artifacts", async (request, reply) => {
     if (!store.getProject(request.params.projectId)) {
       return reply.code(404).send({ error: "project not found" });
+    }
+    const conversationId = request.query.conversationId?.trim() || undefined;
+    if (conversationId) {
+      const conversation = store.getConversation(conversationId);
+      if (!conversation || conversation.projectId !== request.params.projectId) {
+        return reply.code(404).send({ error: "conversation not found" });
+      }
     }
     const limit = Math.min(500, Math.max(1, Number(request.query.limit ?? 100) || 100));
     try {
       return store.getProjectArtifactPage(request.params.projectId, {
         limit,
         cursor: request.query.cursor,
+        conversationId,
       });
     } catch (error) {
       return reply.code(400).send({

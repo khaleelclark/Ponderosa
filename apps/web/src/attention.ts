@@ -7,7 +7,7 @@ export function isOpenAttention(item: WorkspaceNotificationDto): boolean {
 }
 
 export function visibleNotification(item: WorkspaceNotificationDto): boolean {
-  return (item.status ?? "open") === "open" && (!item.readAt || isOpenAttention(item));
+  return (item.status ?? "open") === "open";
 }
 
 export function scopedAttention(notifications: WorkspaceNotificationDto[], scope: {

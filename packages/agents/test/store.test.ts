@@ -1081,17 +1081,22 @@ describe("AgentStore — All Chat", () => {
       { surface: "direct_agent_audit", key: recipient.id },
     ]);
     append({
+      eventId: "user-team-note", schemaVersion: 2, projectId: project.id, conversationId: room.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
+      audience: { kind: "agents", agentIds: [recipient.id] }, text: "Please review", createdAt: "2026-07-19T10:02:30.000Z",
+    }, [{ surface: "collaboration_view", key: room.id }]);
+    append({
       eventId: "private-question", schemaVersion: 2, projectId: project.id, conversationId: room.id,
       sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
       audience: { kind: "user_agent", userId: "local-operator", agentId: recipient.id }, text: "Private question", createdAt: "2026-07-19T10:03:00.000Z",
     }, [{ surface: "conversation", key: room.id }, { surface: "direct_agent_audit", key: recipient.id }]);
 
     const recent = store.getAllChatPage({ limit: 2 });
-    expect(recent.items.map((item) => item.communicationEventId)).toEqual(["agent-update", "private-question"]);
+    expect(recent.items.map((item) => item.communicationEventId)).toEqual(["user-team-note", "private-question"]);
     expect(recent.items[0]).toMatchObject({
-      source: { kind: "project", conversationId: room.id },
-      directMessageAgent: { id: author.id, title: "Author" },
+      source: { kind: "team", conversationId: room.id },
     });
+    expect(recent.items[0]?.directMessageAgent).toBeUndefined();
     expect(recent.items[1]).toMatchObject({
       source: { kind: "project", conversationId: room.id },
       directMessageAgent: { id: recipient.id, title: "Recipient" },
@@ -1099,8 +1104,11 @@ describe("AgentStore — All Chat", () => {
     expect(recent.history).toMatchObject({ limit: 2, hasMore: true, cursor: expect.any(String) });
 
     const older = store.getAllChatPage({ limit: 2, cursor: recent.history.cursor });
-    expect(older.items.map((item) => item.communicationEventId)).toEqual(["broadcast"]);
+    expect(older.items.map((item) => item.communicationEventId)).toEqual(["broadcast", "agent-update"]);
     expect(older.items[0]?.directMessageAgent).toBeUndefined();
+    expect(older.items[1]).toMatchObject({
+      directMessageAgent: { id: author.id, title: "Author" },
+    });
     expect(older.history).toEqual({ limit: 2, hasMore: false });
     expect([...recent.items, ...older.items].some((item) => item.communicationEventId === "team-note")).toBe(false);
     expect(() => store.getAllChatPage({ cursor: `${recent.history.cursor}x` })).toThrow("invalid history cursor");
@@ -1440,6 +1448,43 @@ describe("AgentStore — append + projection", () => {
       expect.objectContaining({ id: artifact.id }),
     ]);
     expect(existsSync(importedAgentHistoryPath(dir, projectId, agentId))).toBe(true);
+  });
+
+  it("scopes Project artifact pages to canonical Chat membership", () => {
+    const project = store.createProject({ label: "Scoped files", hostPath: "/scoped-files" });
+    const alphaChat = store.createConversation(project.id, { title: "Alpha Chat" });
+    const betaChat = store.createConversation(project.id, { title: "Beta Chat" });
+    const alpha = store.createAgent(project.id, { title: "Alpha", engine: "codex", conversationId: alphaChat.id });
+    const beta = store.createAgent(project.id, { title: "Beta", engine: "codex", conversationId: betaChat.id });
+
+    store.appendEvent(alpha.id, { type: "file_change", path: "alpha.txt", kind: "create", diff: "+alpha" });
+    store.appendEvent(beta.id, { type: "file_change", path: "beta.txt", kind: "create", diff: "+beta" });
+    store.recordProjectArtifact({
+      id: "alpha-result", projectId: project.id, agentId: alpha.id, originAgentId: alpha.id,
+      kind: "document", path: "alpha.md", summary: "Alpha result", createdAt: "2026-07-30T12:00:00.000Z",
+      mediaType: "text/markdown", size: 5, sha256: "a".repeat(64), visibility: "project", pinned: false,
+    });
+    store.recordProjectArtifact({
+      id: "beta-result", projectId: project.id, agentId: beta.id, originAgentId: beta.id,
+      kind: "document", path: "beta.md", summary: "Beta result", createdAt: "2026-07-30T12:01:00.000Z",
+      mediaType: "text/markdown", size: 4, sha256: "b".repeat(64), visibility: "project", pinned: false,
+    });
+
+    const alphaArtifacts = store.getProjectArtifactPage(project.id, {
+      limit: 100,
+      conversationId: alphaChat.id,
+    }).items;
+    expect(alphaArtifacts.map(artifact => artifact.agentId)).toEqual([alpha.id, alpha.id]);
+    expect(alphaArtifacts.map(artifact => artifact.id)).toContain("alpha-result");
+    expect(alphaArtifacts.map(artifact => artifact.id)).not.toContain("beta-result");
+
+    const projectPage = store.getProjectArtifactPage(project.id, { limit: 1 });
+    expect(projectPage.history.cursor).toBeTruthy();
+    expect(() => store.getProjectArtifactPage(project.id, {
+      limit: 1,
+      cursor: projectPage.history.cursor,
+      conversationId: alphaChat.id,
+    })).toThrow("invalid history cursor");
   });
 
   it("preserves private managed-artifact identity and access across projection rebuilds", () => {

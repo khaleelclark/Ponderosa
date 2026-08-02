@@ -497,7 +497,44 @@ describe("CoordinationV3Store transactions", () => {
       "request:tied-request",
       expect.stringMatching(/^activation:/u),
     ]);
+    expect([...first, ...second].map((item) => item.operationGroupId)).toEqual([
+      "request:tied-request",
+      "request:tied-request",
+    ]);
     expect([...first, ...second].every((item) => item.createdAt === tiedAt)).toBe(true);
+  });
+
+  it("projects one canonical operation group across a Request, Activation, and single-source Run", () => {
+    const now = "2026-07-15T00:00:00.000Z";
+    store.enqueueMessageActivation({
+      projectId,
+      agentId: requesterId,
+      messageId: "grouped-requester-message",
+      kind: "human",
+      payload: { text: "Delegate" },
+      now,
+    });
+    const requesterRun = store.leaseNextRun({ workerId: "server", now })!;
+    acknowledgeLease(requesterRun);
+    store.coordinate({
+      projectId,
+      conversationId,
+      requesterAgentId: requesterId,
+      actorScope: `agent:${requesterId}`,
+      idempotencyKey: "grouped-operation",
+      requests: [{ requestId: "grouped-request", recipientAgentId: recipientA, lifetime: indefinite }],
+    }, now);
+    const recipientRun = store.leaseNextRun({ workerId: "server", now })!;
+    acknowledgeLease(recipientRun);
+
+    const records = store.teamOperationalRecords({ projectId, conversationId, limit: 10 });
+    const grouped = records.filter(record =>
+      record.id === "request:grouped-request" ||
+      ((record.kind === "run" || record.kind === "activation") &&
+        record.primaryAgentId === recipientA),
+    );
+    expect(grouped).toHaveLength(3);
+    expect(grouped.every(record => record.operationGroupId === "request:grouped-request")).toBe(true);
   });
 
   it("returns the 1,001st internal sentinel for a public 1,000-row page", () => {

@@ -1,5 +1,6 @@
 import type {
   AgentDto,
+  ArtifactDto,
   ConversationDetailDto,
   ConversationDto,
   ConversationMessageDto,
@@ -152,6 +153,20 @@ const secondMessage = message({
   at: "2026-07-25T10:02:00.000Z",
 });
 
+const chatArtifact: ArtifactDto = {
+  id: "artifact-one",
+  projectId,
+  agentId: agent.id,
+  originAgentId: agent.id,
+  kind: "document",
+  path: "results/brief.md",
+  summary: "Project brief",
+  createdAt: "2026-07-25T10:04:00.000Z",
+  mediaType: "text/markdown",
+  previewUrl: "/api/artifacts/artifact-one/preview",
+  downloadUrl: "/api/artifacts/artifact-one/download",
+};
+
 function detail(
   conversationValue: ConversationDto,
   messages: ConversationMessageDto[],
@@ -199,6 +214,13 @@ function createClient(): QueryClient {
       operationHistory: { hasMore: false },
     });
     client.setQueryData(queryKeys.queuedMessages.conversation(id), []);
+    client.setQueryData(
+      queryKeys.projectArtifacts.conversation(projectId, id),
+      {
+        items: id === firstConversationId ? [chatArtifact] : [],
+        history: { limit: 100, hasMore: false },
+      },
+    );
   }
   client.setQueryData(queryKeys.notifications.all, []);
   client.setQueryData(queryKeys.workspacePreferences.all, preferences);
@@ -367,7 +389,7 @@ describe("ConversationView public behavior", () => {
     client.clear();
   });
 
-  it("shows Direct routing only in the composer and keeps one Broadcast badge", () => {
+  it("highlights Direct participants in messages and keeps one Broadcast badge", () => {
     const client = createClient();
     client.setQueryData<ConversationDetailDto>(
       queryKeys.conversations.detail(firstConversationId),
@@ -408,10 +430,19 @@ describe("ConversationView public behavior", () => {
 
     render(view(client, <ConversationView {...props()} />));
 
-    expect(screen.getByText("Private hello")).toBeTruthy();
-    expect(screen.queryByText("#Agent-One Private hello")).toBeNull();
-    expect(screen.getByText("Agent private response")).toBeTruthy();
-    expect(screen.queryByText("#user Agent private response")).toBeNull();
+    const userDirect = document.getElementById("master-message-direct-message");
+    expect(userDirect?.textContent).toContain("#Agent-One Private hello");
+    expect(
+      userDirect?.querySelector('[aria-label="Open agent Agent-One"]')
+        ?.textContent,
+    ).toBe("#Agent-One");
+    const agentDirect = document.getElementById(
+      "master-message-agent-direct-response",
+    );
+    expect(agentDirect?.textContent).toContain("#operator Agent private response");
+    expect(
+      agentDirect?.querySelector('[data-message-tag="user"]')?.textContent,
+    ).toBe("#operator");
     expect(screen.getByText("Shared update")).toBeTruthy();
     expect(screen.queryByText("#broadcast Shared update")).toBeNull();
     expect(screen.queryByText(/Direct ·/u)).toBeNull();
@@ -420,11 +451,17 @@ describe("ConversationView public behavior", () => {
       "Sending without a recipient starts a new Agent.",
     )).toBeNull();
     expect(screen.getAllByText("Broadcast")).toHaveLength(1);
+    expect(
+      document
+        .getElementById("master-message-broadcast-message")
+        ?.querySelector(".chat-message-actions")
+        ?.getAttribute("data-action-alignment"),
+    ).toBe("end");
 
     client.clear();
   });
 
-  it("does not collapse a group Direct audience into one implicit recipient", () => {
+  it("preserves authored group Direct handles after rename and deletion", () => {
     const client = createClient();
     client.setQueryData<ConversationDetailDto>(
       queryKeys.conversations.detail(firstConversationId),
@@ -433,24 +470,82 @@ describe("ConversationView public behavior", () => {
         communicationEventId: "group-direct-communication",
         communicationIntent: "user_dm",
         directMessageAgents: [
-          { id: agent.id, title: agent.title },
-          { id: "agent-two", title: "Agent Two" },
+          { id: agent.id, title: "Redwood" },
+          { id: "agent-two", title: "Pine" },
         ],
         conversationId: firstConversationId,
         role: "user",
-        text: "#Agent-One #Agent-Two Private hello",
+        text: "(#Oak), (#Pine) Private hello",
         createdAt: "2026-07-25T10:01:00.000Z",
         agentMentions: [
-          { agentId: agent.id, handle: "Agent-One" },
-          { agentId: "agent-two", handle: "Agent-Two" },
+          { agentId: agent.id, handle: "Oak" },
+          { agentId: "agent-two", handle: "Pine" },
         ],
       }]),
     );
 
     render(view(client, <ConversationView {...props()} />));
 
-    expect(screen.getByText("Private hello")).toBeTruthy();
+    const message = document.getElementById(
+      "master-message-group-direct-message",
+    );
+    expect(message?.textContent).toContain("(#Oak), (#Pine) Private hello");
+    expect(
+      message?.querySelector('[aria-label="Open agent Oak"]')?.textContent,
+    ).toBe("#Oak");
+    expect(
+      message?.querySelector('[aria-label="Open agent Pine"]')?.textContent,
+    ).toBe("#Pine");
     expect(screen.queryByText(/^To:/u)).toBeNull();
+    expect(screen.getByText(
+      "Sending without a recipient starts a new Agent.",
+    )).toBeTruthy();
+
+    client.clear();
+  });
+
+  it("ties a fresh-Agent response to the composer without labeling its opening as Broadcast", async () => {
+    const client = createClient();
+    const user = userEvent.setup();
+    client.setQueryData<ConversationDetailDto>(
+      queryKeys.conversations.detail(firstConversationId),
+      detail(conversation(firstConversationId, "First conversation"), [
+        {
+          id: "fresh-agent-opening",
+          communicationEventId: `agent-opening:${agent.id}`,
+          communicationIntent: "broadcast",
+          conversationId: firstConversationId,
+          role: "user",
+          text: "Generate a pure white image",
+          createdAt: "2026-07-25T10:01:00.000Z",
+        },
+        {
+          id: "fresh-agent-response",
+          communicationEventId: "fresh-agent-response-event",
+          communicationIntent: "broadcast",
+          conversationId: firstConversationId,
+          role: "assistant",
+          authorAgentId: agent.id,
+          text: "#broadcast Here is the image.",
+          createdAt: "2026-07-25T10:02:00.000Z",
+        },
+      ]),
+    );
+
+    render(view(client, <ConversationView {...props()} />));
+
+    const opening = document.getElementById(
+      "master-message-fresh-agent-opening",
+    );
+    expect(opening?.textContent).not.toContain("Broadcast");
+    expect(screen.getByText("To: Agent One")).toBeTruthy();
+
+    const selectedDestination = screen.getByRole("button", {
+      name: "To: Agent One. Press Delete or Backspace to clear.",
+    });
+    selectedDestination.focus();
+    await user.keyboard("{Backspace}");
+    expect(screen.queryByText("To: Agent One")).toBeNull();
     expect(screen.getByText(
       "Sending without a recipient starts a new Agent.",
     )).toBeTruthy();
@@ -508,6 +603,70 @@ describe("ConversationView public behavior", () => {
     expect(
       screen.getByRole("tabpanel", { name: "Project chat messages" }).hidden,
     ).toBe(false);
+
+    client.clear();
+  });
+
+  it("shows and highlights the canonical destination on a Team Chat reply", async () => {
+    const client = createClient();
+    const recipient = { ...agent, id: "agent-two", title: "Redwood" };
+    client.setQueryData(queryKeys.collaboration(firstConversationId), {
+      messages: [{
+        ...firstMessage,
+        text: "#Oak The requested review is complete.",
+        communicationIntent: "collaboration" as const,
+        collaborationRecipients: [{ id: recipient.id, title: recipient.title }],
+        agentMentions: [{ agentId: recipient.id, handle: "Oak" }],
+      }],
+      agents: [agent, recipient],
+      operations: [],
+      history: { hasMore: false },
+      operationHistory: { hasMore: false },
+    });
+    const conversationDetail = client.getQueryData<ConversationDetailDto>(
+      queryKeys.conversations.detail(firstConversationId),
+    )!;
+    client.setQueryData<ConversationDetailDto>(
+      queryKeys.conversations.detail(firstConversationId),
+      { ...conversationDetail, agents: [agent, recipient] },
+    );
+    const user = userEvent.setup();
+    render(view(client, (
+      <ConversationView {...props()} projectAgents={[agent, recipient]} />
+    )));
+
+    await user.click(screen.getByRole("tab", { name: "Team Chat" }));
+    const teamPanel = screen.getByRole("tabpanel", {
+      name: "Team chat messages",
+    });
+    expect(within(teamPanel).getByText("→ Redwood")).toBeTruthy();
+    expect(
+      within(teamPanel).getByRole("button", { name: "Open agent Oak" })
+        .textContent,
+    ).toBe("#Oak");
+    expect(
+      within(teamPanel).getByText("The requested review is complete."),
+    ).toBeTruthy();
+
+    client.clear();
+  });
+
+  it("shows Files & Results for every Agent in the Chat", async () => {
+    const client = createClient();
+    const user = userEvent.setup();
+    render(view(client, <ConversationView {...props()} />));
+
+    await user.click(screen.getByRole("tab", { name: "Files & Results" }));
+
+    expect(
+      screen.getByRole("tab", { name: "Files & Results" }).getAttribute(
+        "aria-selected",
+      ),
+    ).toBe("true");
+    expect(screen.getByRole("tabpanel", { name: "Chat files and results" })).toBeTruthy();
+    expect(screen.getByText("Project brief")).toBeTruthy();
+    expect(screen.getByText(/1 item created by Agents in this Chat/)).toBeTruthy();
+    expect(screen.queryByPlaceholderText("Write a message…")).toBeNull();
 
     client.clear();
   });

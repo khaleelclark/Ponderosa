@@ -72,7 +72,7 @@ export type Route =
   | { kind: "project"; projectId: string; view?: ProjectDetailView }
   | { kind: "workspaceFile"; projectId: string; path: string }
   | { kind: "projectWork"; projectId: string; conversationId?: string; focusId?: string }
-  | { kind: "browser"; projectId: string; agentId?: string; runId?: string }
+  | { kind: "browser"; projectId: string; agentId?: string; runId?: string; conversationId?: string }
   | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel; urlDriven?: boolean }
   | { kind: "agents"; projectId: string }
   | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus; technicalFocusId?: string; view?: AgentDetailView; triggerId?: string }
@@ -146,7 +146,14 @@ export function parseRoute(pathname: string, search = ""): Route {
     return { kind: "projectWork", projectId, ...(conversationId ? { conversationId } : {}), ...(focusId ? { focusId } : {}) };
   }
   if (parts[2] === "agents" && parts[3] && parts[4] === "runs" && parts[5] && parts[6] === "browser") {
-    return { kind: "browser", projectId, agentId: decodeURIComponent(parts[3]), runId: decodeURIComponent(parts[5]) };
+    const conversationId = query.get("chat")?.trim() || undefined;
+    return {
+      kind: "browser",
+      projectId,
+      agentId: decodeURIComponent(parts[3]),
+      runId: decodeURIComponent(parts[5]),
+      ...(conversationId ? { conversationId } : {}),
+    };
   }
   if (parts[2] === "browser") return { kind: "browser", projectId };
   if (parts[2] === "chats" && parts[3]) {

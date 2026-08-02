@@ -67,9 +67,9 @@ export interface ResponseFileActivityDto {
 }
 
 export interface AgentMentionBindingDto {
-  /** Display handle captured when the message was authored. */
+  /** Immutable display handle captured when the message was authored. */
   handle: string;
-  /** Immutable recipient identity used to resolve its current name. */
+  /** Immutable recipient identity used for routing and navigation. */
   agentId: string;
 }
 
@@ -82,6 +82,8 @@ export interface ConversationMessageDto {
   communicationIntent?: CommunicationIntent;
   /** Stable Direct-message participants resolved to their current display names. */
   directMessageAgents?: Array<Pick<AgentDto, "id" | "title">>;
+  /** Stable collaboration recipients resolved from the canonical audience. */
+  collaborationRecipients?: Array<Pick<AgentDto, "id" | "title">>;
   conversationId: string;
   role: "user" | "assistant" | "system";
   text: string;
@@ -221,6 +223,8 @@ export interface CollaborationViewDto {
 export interface TeamOperationalEventDto {
   id: string;
   kind: "run" | "activation" | "request" | "join" | "trigger" | "decision" | "organization";
+  /** Canonical Request/Join root used only to coalesce linked lifecycle rows. */
+  operationGroupId?: string;
   state: string;
   /** Server-classified exception state. Presentation text never determines this. */
   attentionRequired: boolean;

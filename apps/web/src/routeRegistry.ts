@@ -191,10 +191,14 @@ const ROUTE_REGISTRY = {
     initialSidebarSection: "home",
   },
   browser: {
-    toPath: route =>
-      route.agentId && route.runId
+    toPath: route => {
+      const path = route.agentId && route.runId
         ? `/projects/${encodeURIComponent(route.projectId)}/agents/${encodeURIComponent(route.agentId)}/runs/${encodeURIComponent(route.runId)}/browser`
-        : `/projects/${encodeURIComponent(route.projectId)}/browser`,
+        : `/projects/${encodeURIComponent(route.projectId)}/browser`;
+      return route.conversationId
+        ? `${path}?chat=${encodeURIComponent(route.conversationId)}`
+        : path;
+    },
     workspaceTabKey: route =>
       `browser:${route.projectId}:${route.agentId ?? "project"}:${route.runId ?? "persistent"}`,
     tabLabel: () => "Interactive Browser",

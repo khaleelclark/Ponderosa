@@ -18,6 +18,7 @@ import type {
 import { projectAgentHealth, type ActiveRunObservation } from "./agent-health.js";
 import { decodeTimelineCursor, encodeTimelineCursor } from "./cursors.js";
 import {
+  communicationRecipientAgentIds,
   recipientMentionIdentities,
   resolveAgentMentionBindings,
 } from "./mention-bindings.js";
@@ -100,12 +101,17 @@ export function createServerReadModels(context: ReadModelContext) {
     return messages.map((message) => {
       if (!message.communicationEventId) return message;
       const communication = store.getCommunicationEvent(projectId, message.communicationEventId);
-      const recipientAgentIds = communication?.intent === "collaboration"
-        ? communication.audience.agentIds
-        : communication?.schemaVersion === 2 && communication.intent === "user_dm"
-          ? communication.audience.kind === "user_agent" ? [communication.audience.agentId] : communication.audience.agentIds
-          : [];
+      const recipientAgentIds = communicationRecipientAgentIds(communication);
       const directMessageAgents = communication?.schemaVersion === 2 && communication.intent === "user_dm"
+        ? recipientAgentIds.map((agentId) => {
+            const agent = projectAgents.find((candidate) => candidate.id === agentId);
+            return {
+              id: agentId,
+              title: agent?.title ?? communication.identity?.recipientLabels?.[agentId] ?? "Deleted Agent",
+            };
+          })
+        : [];
+      const collaborationRecipients = communication?.intent === "collaboration"
         ? recipientAgentIds.map((agentId) => {
             const agent = projectAgents.find((candidate) => candidate.id === agentId);
             return {
@@ -128,6 +134,7 @@ export function createServerReadModels(context: ReadModelContext) {
         ...message,
         ...(communication ? { communicationIntent: communication.intent } : {}),
         ...(directMessageAgents.length ? { directMessageAgents } : {}),
+        ...(collaborationRecipients.length ? { collaborationRecipients } : {}),
         ...(deliveryReceipts.length ? { deliveryReceipts } : {}),
         ...(agentMentions.length ? { agentMentions } : {}),
       };
@@ -262,6 +269,7 @@ export function createServerReadModels(context: ReadModelContext) {
       return {
         id: record.id,
         kind: record.kind,
+        operationGroupId: record.operationGroupId,
         state: record.state,
         attentionRequired: teamOperationNeedsAttention(
           record.kind,

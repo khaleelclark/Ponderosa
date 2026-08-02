@@ -239,6 +239,19 @@ export function registerBrowserRoutes(
 
   const browserRoute = "/api/projects/:projectId/agents/:id/runs/:runId/browser";
 
+  app.get<{
+    Params: { projectId: string };
+    Querystring: { conversationId?: string };
+  }>("/api/projects/:projectId/browser-sessions", async (request, reply) => {
+    if (!projectExists(request.params.projectId)) {
+      return reply.code(404).send({ error: "project not found" });
+    }
+    return browserSessions.listActive(
+      request.params.projectId,
+      request.query.conversationId,
+    );
+  });
+
   app.get<{ Params: BrowserRouteParams }>(browserRoute, async (request, reply) => {
     try {
       const scope = operatorBrowserScope(request.params);

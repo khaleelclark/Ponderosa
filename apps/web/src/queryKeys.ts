@@ -179,6 +179,13 @@ export const queryKeys = {
     project: (projectId: string | undefined) =>
       ["project-browser", projectId] as const,
   },
+  agentBrowsers: {
+    all: ["agent-browsers"] as const,
+    conversation: (projectId: string | undefined, conversationId: string | undefined) =>
+      ["agent-browsers", projectId, conversationId] as const,
+    session: (projectId: string, agentId: string, runId: string) =>
+      ["agent-browser", projectId, agentId, runId] as const,
+  },
   hostFolderBrowser: {
     all: ["host-folder-browser"] as const,
     path: (path: string | undefined) => ["host-folder-browser", path] as const,
@@ -190,7 +197,10 @@ export const queryKeys = {
     search: (query: string) => ["wiki", "search", query] as const,
   },
   projectArtifacts: {
+    all: ["project-artifacts"] as const,
     project: (projectId: string) => ["project-artifacts", projectId] as const,
+    conversation: (projectId: string, conversationId: string) =>
+      ["project-artifacts", projectId, "conversation", conversationId] as const,
     agentContent: (agentId: string, artifactId: string | undefined) =>
       ["artifact", agentId, artifactId] as const,
     recorded: (artifactId: string, agentId: string | undefined) =>

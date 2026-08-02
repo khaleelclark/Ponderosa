@@ -315,6 +315,7 @@ export function useWorkspaceStream(): void {
       void queryClient.invalidateQueries({ queryKey: queryKeys.collaborationAll });
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceStatus.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceFile.all });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.projectArtifacts.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.tokenUsage.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.providerUsage.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.globalSearch.all });
@@ -439,6 +440,7 @@ export function useWorkspaceStream(): void {
         if (event.category === "file" || event.category === "artifact" || event.category === "task") {
           void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceStatus.project(event.projectId) });
           void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceFile.project(event.projectId) });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.projectArtifacts.project(event.projectId) });
         }
         if (event.category === "usage") void queryClient.invalidateQueries({ queryKey: queryKeys.tokenUsage.all });
       }

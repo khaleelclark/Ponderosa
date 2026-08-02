@@ -31,6 +31,7 @@ import { ConversationView } from "./ConversationView";
 import { ProjectArtifactsView } from "./ProjectArtifactsView";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 import { ProjectBrowserDialog } from "./ProjectBrowserDialog";
+import { AgentBrowserDialog } from "./AgentBrowserDialog";
 import type { ProjectBrowserRequest } from "./ProjectBrowserContext";
 import { WorkspaceReviewPane } from "./files/WorkspaceReviewPane";
 import { WorkspaceFileView } from "./WorkspaceFileView";
@@ -262,7 +263,13 @@ export function ProjectShell({
           )}
         onOpenReview={openAgentReview}
         onOpenAgentWork={(focusId) => navigate({ kind: "projectWork", projectId, conversationId: route.conversationId, ...(focusId ? { focusId } : {}) })}
-        onOpenBrowser={() => navigate({ kind: "browser", projectId })}
+        onOpenBrowser={(agentId, runId) => navigate({
+          kind: "browser",
+          projectId,
+          agentId,
+          runId,
+          conversationId: route.conversationId,
+        })}
         onOpenFileActivity={openAgentFileActivity}
         onNewAgent={(master, managerAgentId) => onCreate("agent", {
           projectId,
@@ -344,15 +351,29 @@ export function ProjectShell({
       />
     );
 } else if (route.kind === "browser") {
-  main = <ProjectBrowserDialog
-    projectId={projectId}
-    open
-    embedded
-    request={browserRequest}
-    onRequestHandled={onBrowserRequestHandled}
-    backLabel={route.agentId ? "Back to Agent" : "Back to Project"}
-    onClose={() => navigate(route.agentId ? { kind: "agent", projectId, agentId: route.agentId } : { kind: "project", projectId })}
-  />;
+  const browserAgent = route.agentId ? agents.find(agent => agent.id === route.agentId) : undefined;
+  main = route.agentId && route.runId ? (
+    <AgentBrowserDialog
+      projectId={projectId}
+      agentId={route.agentId}
+      runId={route.runId}
+      agentTitle={browserAgent?.title ?? "Agent"}
+      backLabel={route.conversationId ? "Back to Chat" : "Back to Agent"}
+      onClose={() => navigate(route.conversationId
+        ? { kind: "conversation", projectId, conversationId: route.conversationId }
+        : { kind: "agent", projectId, agentId: route.agentId! })}
+    />
+  ) : (
+    <ProjectBrowserDialog
+      projectId={projectId}
+      open
+      embedded
+      request={browserRequest}
+      onRequestHandled={onBrowserRequestHandled}
+      backLabel="Back to Project"
+      onClose={() => navigate({ kind: "project", projectId })}
+    />
+  );
 } else if (route.kind === "agents") {
     main = agentDirectoryQuery.isLoading ? (
       <Box sx={{ p: 2 }}><LinearProgress /></Box>
@@ -460,7 +481,6 @@ export function ProjectShell({
           onResourceDeleted?.({ kind: "project", projectId });
         }}
         onOpenEngineStatus={onOpenEngineStatus}
-        onOpenBrowser={() => navigate({ kind: "browser", projectId })}
         onOpenArtifact={openProjectArtifact}
         onOpenArtifactInNewTab={(agentId, artifactId) => openInNewTab?.({ kind: "agent", projectId, agentId, focusTelemetry: { stream: "artifacts", id: artifactId } })}
         onOpenAgentWork={() => navigate({ kind: "projectWork", projectId })}

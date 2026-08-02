@@ -71,6 +71,8 @@ import { useConversationNotificationVisibility } from "./useConversationNotifica
 import { useConversationHistory } from "./useConversationHistory";
 import { useConversationMessagingController } from "./useConversationMessagingController";
 import { MasterRespondingIndicator } from "./ConversationComposerStatus";
+import { agentOpeningAgentId } from "./chat/ChatMessages";
+import { ConversationFilesResults } from "./ConversationFilesResults";
 
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { notificationTechnicalFocusId } from "../technicalFocus";
@@ -125,7 +127,7 @@ export function ConversationView({
   onAgentsDeleted(agentIds: string[]): void;
   onOpenReview?(agentId: string): void;
   onOpenAgentWork(focusId?: string): void;
-  onOpenBrowser(): void;
+  onOpenBrowser(agentId: string, runId: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
   onNewAgent(master: ConversationDto, managerAgentId?: string): void;
   preferences: WorkspacePreferencesDto;
@@ -207,12 +209,12 @@ export function ConversationView({
   useConversationActiveViewPersistence(activeView, conversationId);
 
   const conversation = detailQuery.data?.conversation;
-  const projectBrowser = useQuery({
-    queryKey: queryKeys.projectBrowser.project(conversation?.projectId),
-    queryFn: () => api.getProjectBrowser(conversation!.projectId),
+  const activeBrowsers = useQuery({
+    queryKey: queryKeys.agentBrowsers.conversation(conversation?.projectId, conversationId),
+    queryFn: () => api.listActiveBrowserSessions(conversation!.projectId, conversationId),
     enabled: Boolean(conversation?.projectId),
     retry: false,
-    staleTime: 5_000,
+    refetchInterval: 2_500,
   });
   const conversationAgents = useMemo(
     () =>
@@ -454,10 +456,19 @@ export function ConversationView({
     },
     [agentTitle],
   );
-  const lastDirectDestination = useMemo(() => {
+  const lastContinuationDestination = useMemo(() => {
+    const freshAgentIds = new Set(messages.flatMap(message => {
+      const agentId = agentOpeningAgentId(message.communicationEventId);
+      return agentId ? [agentId] : [];
+    }));
     const message = [...messages]
       .reverse()
-      .find(candidate => candidate.communicationIntent === "user_dm");
+      .find(candidate =>
+        candidate.communicationIntent === "user_dm" ||
+        (candidate.communicationIntent === "broadcast" &&
+          candidate.authorAgentId !== undefined &&
+          freshAgentIds.has(candidate.authorAgentId)),
+      );
     const agentId = message?.authorAgentId ?? (
       message?.directMessageAgents?.length === 1
         ? message.directMessageAgents[0]!.id
@@ -735,27 +746,30 @@ export function ConversationView({
                     before spawning agents.
                   </Alert>
                 ) : null}
-                {projectBrowser.data?.status === "ready" ? (
-                  <Alert
-                    severity="info"
-                    action={
-                      <Button
-                        color="inherit"
-                        size="small"
-                        onClick={onOpenBrowser}
+                {(activeBrowsers.data ?? [])
+                  .filter(session => conversationAgents.some(agent => agent.id === session.agentId))
+                  .map(session => {
+                    const agentTitle = conversationAgents.find(agent => agent.id === session.agentId)?.title ?? "Agent";
+                    return (
+                      <Alert
+                        key={session.id}
+                        severity="info"
+                        action={
+                          <Button
+                            color="inherit"
+                            size="small"
+                            onClick={() => onOpenBrowser(session.agentId, session.runId)}
+                          >
+                            View Browser
+                          </Button>
+                        }
+                        sx={{ mb: 1.5 }}
                       >
-                        Open Tab
-                      </Button>
-                    }
-                    sx={{ mb: 1.5 }}
-                  >
-                    Interactive Browser is active
-                    {projectBrowser.data.title
-                      ? ` · ${projectBrowser.data.title}`
-                      : ""}
-                    .
-                  </Alert>
-                ) : null}
+                        {agentTitle} is using the browser
+                        {session.title ? ` · ${session.title}` : ""}.
+                      </Alert>
+                    );
+                  })}
               </>
             }
           >
@@ -835,6 +849,12 @@ export function ConversationView({
             conversationId={conversationId}
             focus={agentWorkFocus ? { id: agentWorkFocus } : undefined}
             onClose={() => setAgentWorkOpen(false)}
+          />
+        ) : activeView === "files" ? (
+          <ConversationFilesResults
+            projectId={conversation.projectId}
+            conversationId={conversation.id}
+            agents={conversationAgents}
           />
         ) : activeView === "agents" ? (
           <AgentsTab
@@ -962,14 +982,14 @@ export function ConversationView({
             )}
             conversationDraftId={conversationId}
             destinationMode="project-chat"
-            continueWith={lastDirectDestination ? {
-              agentId: lastDirectDestination.agent.id,
-              handle: agentMentionHandle(lastDirectDestination.agent.title),
-              title: lastDirectDestination.agent.title,
+            continueWith={lastContinuationDestination ? {
+              agentId: lastContinuationDestination.agent.id,
+              handle: agentMentionHandle(lastContinuationDestination.agent.title),
+              title: lastContinuationDestination.agent.title,
               responding: Boolean(
-                healthByAgentId.get(lastDirectDestination.agent.id)?.runtimeActivity,
+                healthByAgentId.get(lastContinuationDestination.agent.id)?.runtimeActivity,
               ),
-              selectionKey: lastDirectDestination.selectionKey,
+              selectionKey: lastContinuationDestination.selectionKey,
             } : undefined}
             insertTextRequest={mentionInsertRequest}
             controls={runtimeControls}

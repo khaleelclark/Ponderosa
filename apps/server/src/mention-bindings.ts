@@ -1,10 +1,29 @@
-import type { AgentDto } from "@ponderosa/core";
+import {
+  messageTagTokens,
+  type AgentDto,
+  type CommunicationEvent,
+} from "@ponderosa/core";
 
 const RESERVED_HANDLES = new Set(["broadcast", "everyone", "user"]);
 const NUMERIC_HANDLE_PATTERN = /^\p{N}+$/u;
 
 function mentionHandle(title: string): string {
   return title.trim().replace(/\s+/gu, "-").replace(/[^\p{L}\p{N}_-]/gu, "");
+}
+
+/** Canonical Agent audience for mention presentation; prose never supplies it. */
+export function communicationRecipientAgentIds(
+  communication: CommunicationEvent | undefined,
+): string[] {
+  if (communication?.intent === "collaboration") {
+    return communication.audience.agentIds;
+  }
+  if (communication?.schemaVersion !== 2 || communication.intent !== "user_dm") {
+    return [];
+  }
+  return communication.audience.kind === "user_agent"
+    ? [communication.audience.agentId]
+    : communication.audience.agentIds;
 }
 
 /** Current names and immutable send-time labels are aliases for one recipient. */
@@ -33,8 +52,8 @@ export function resolveAgentMentionBindings(
   agents: readonly Pick<AgentDto, "id" | "title">[],
 ): Array<{ handle: string; agentId: string }> {
   const recipients = agents.filter(agent => recipientAgentIds.includes(agent.id));
-  const handles = [...new Set([...text.matchAll(/(?:^|\s)#([\p{L}\p{N}_-]+)(?=$|\s|[.,!?;:])/gu)]
-    .map((match) => match[1]!)
+  const handles = [...new Set(messageTagTokens(text)
+    .map(token => token.handle)
     .filter((handle) => !RESERVED_HANDLES.has(handle.toLocaleLowerCase())))];
   const bound = new Map<string, string>();
   const usedAgentIds = new Set<string>();
