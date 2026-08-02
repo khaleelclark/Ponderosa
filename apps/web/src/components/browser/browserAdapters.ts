@@ -49,3 +49,30 @@ export function projectBrowserAdapter(projectId: string): BrowserEndpointAdapter
     getFrame: () => api.getProjectBrowserFrame(projectId),
   };
 }
+
+export function agentBrowserAdapter(
+  projectId: string,
+  agentId: string,
+  runId: string,
+): BrowserEndpointAdapter<BrowserSessionDto> {
+  return {
+    queryKey: queryKeys.agentBrowsers.session(projectId, agentId, runId),
+    get: () => api.getBrowserSession(projectId, agentId, runId),
+    open: () => api.openBrowserSession(projectId, agentId, runId),
+    reconnect: () => api.reconnectBrowserSession(projectId, agentId, runId),
+    close: () => api.closeBrowserSession(projectId, agentId, runId),
+    setControl: ({ owner }, expectedControlEpoch) => api.setBrowserControl(
+      projectId,
+      agentId,
+      runId,
+      { owner, expectedControlEpoch },
+    ),
+    sendInput: (input, expectedControlEpoch) => api.sendBrowserInput(
+      projectId,
+      agentId,
+      runId,
+      { ...input, expectedControlEpoch } as BrowserOperatorInputRequest,
+    ),
+    getFrame: () => api.getBrowserFrame(projectId, agentId, runId),
+  };
+}

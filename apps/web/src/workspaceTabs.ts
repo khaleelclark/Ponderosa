@@ -121,6 +121,8 @@ function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute {
     case "browser":
       return typeof candidate.projectId === "string" &&
         Boolean(candidate.projectId) &&
+        (candidate.conversationId === undefined ||
+          typeof candidate.conversationId === "string") &&
         ((candidate.agentId === undefined && candidate.runId === undefined) ||
           (typeof candidate.agentId === "string" &&
             Boolean(candidate.agentId) &&

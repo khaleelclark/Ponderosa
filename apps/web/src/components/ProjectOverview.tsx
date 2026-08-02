@@ -3,7 +3,6 @@ import AddIcon from "@mui/icons-material/Add";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
-import LanguageIcon from "@mui/icons-material/Language";
 import SearchIcon from "@mui/icons-material/Search";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
@@ -143,7 +142,6 @@ export function ProjectOverview({
   onOpenConversationInNewTab,
   onRenameConversation,
   onDeleteConversation,
-  onOpenBrowser,
   onOpenAgentWork,
   onOpenProjectFiles,
   onOpenImportantArtifact,
@@ -161,7 +159,6 @@ export function ProjectOverview({
   onOpenConversationInNewTab?(conversationId: string): void;
   onRenameConversation(conversation: ConversationDto): void;
   onDeleteConversation(conversation: ConversationDto): void;
-  onOpenBrowser(): void;
   onOpenAgentWork(): void;
   onOpenProjectFiles(): void;
   onOpenImportantArtifact(artifact: ArtifactDto): void;
@@ -185,13 +182,6 @@ export function ProjectOverview({
     queryFn: () => api.listDecisions({ projectId: project.id, status: "pending" }),
     staleTime: 10_000,
   });
-  const browser = useQuery({
-    queryKey: queryKeys.projectBrowser.project(project.id),
-    queryFn: () => api.getProjectBrowser(project.id),
-    retry: false,
-    staleTime: 5_000,
-  });
-
   const activeAgents = agents.filter((agent) => {
     const status = healthByAgentId.get(agent.id)?.status;
     return status === "running" || status === "compacting";
@@ -238,11 +228,6 @@ export function ProjectOverview({
           </Box>
           <Divider />
           <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
-            <Box sx={{ flex: 1, minWidth: 0 }}>
-              <Typography variant="overline" color="text.secondary">Interactive Browser</Typography>
-              <Typography variant="body2" color="text.secondary">{browser.data?.status === "ready" ? browser.data.title || browser.data.url || "Browser session active" : "No active browser session."}</Typography>
-              <Button size="small" startIcon={<LanguageIcon />} onClick={onOpenBrowser} sx={{ mt: 0.5 }}>{browser.data?.status === "ready" ? "Open Tab" : "Open Browser"}</Button>
-            </Box>
             <Box sx={{ flex: 1, minWidth: 0 }}>
               <Typography variant="overline" color="text.secondary">Current activity</Typography>
               {activeWork.length ? <Stack spacing={0.35}>{activeWork.slice(0, 3).map((trace) => <Typography key={trace.id} variant="body2" noWrap>{trace.title}</Typography>)}</Stack>

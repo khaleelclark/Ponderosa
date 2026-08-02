@@ -110,7 +110,6 @@ export function ProjectArtifactsView({
   onOpenArtifactInNewTab,
   onOpenAgentWork,
   conversations,
-  onOpenBrowser = () => undefined,
   initialView,
   onViewChange,
 }: {
@@ -143,7 +142,6 @@ export function ProjectArtifactsView({
   onOpenArtifactInNewTab?(agentId: string, artifactId: string): void;
   onOpenAgentWork(): void;
   conversations: ConversationDto[];
-  onOpenBrowser?(): void;
   initialView?: ProjectDetailView;
   onViewChange(view: ProjectDetailView): void;
 }): JSX.Element {
@@ -397,7 +395,6 @@ export function ProjectArtifactsView({
                 onOpenConversationInNewTab={onOpenConversationInNewTab}
                 onRenameConversation={onRenameConversation}
                 onDeleteConversation={onDeleteConversation}
-                onOpenBrowser={onOpenBrowser}
                 onOpenAgentWork={onOpenAgentWork}
                 onOpenProjectFiles={() =>
                   document

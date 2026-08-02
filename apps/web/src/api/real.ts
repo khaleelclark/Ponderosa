@@ -722,6 +722,11 @@ export const realApi = {
   getBrowserSession(projectId: string, agentId: string, runId: string): Promise<BrowserSessionDto> {
     return requestJson<BrowserSessionDto>(browserPath(projectId, agentId, runId));
   },
+  listActiveBrowserSessions(projectId: string, conversationId?: string): Promise<BrowserSessionDto[]> {
+    return requestJson<BrowserSessionDto[]>(
+      `/api/projects/${encodeURIComponent(projectId)}/browser-sessions${toQuery({ conversationId })}`,
+    );
+  },
   openBrowserSession(projectId: string, agentId: string, runId: string): Promise<BrowserSessionDto> {
     return requestJson<BrowserSessionDto>(browserPath(projectId, agentId, runId), { method: "POST" });
   },

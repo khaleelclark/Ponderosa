@@ -132,6 +132,17 @@ export class BrowserSessionManager {
     return session ? publicDto(session) : undefined;
   }
 
+  listActive(projectId: string, conversationId?: string): BrowserSessionDto[] {
+    return [...this.sessions.values()]
+      .map(publicDto)
+      .filter((session) =>
+        session.projectId === projectId
+        && (conversationId === undefined || session.conversationId === conversationId)
+        && (session.status === "opening" || session.status === "ready"),
+      )
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+
   authorityStatus(): { openings: number; active: number; pendingCleanup: number; retainedFailures: number } {
     const sessions = [...this.sessions.values()];
     return {
