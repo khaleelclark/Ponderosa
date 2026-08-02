@@ -20,6 +20,8 @@ interface ConversationDialogsProps {
   conversation: ConversationDto;
   engines: EngineDto[];
   importOpen: boolean;
+  stopPending: boolean;
+  stopError?: string;
   stopConfirmation?: {
     targets: { agentId: string; runId: string }[];
     names: string;
@@ -49,6 +51,8 @@ export function ConversationDialogs({
   conversation,
   engines,
   importOpen,
+  stopPending,
+  stopError,
   stopConfirmation,
   renameOpen,
   renameValue,
@@ -81,6 +85,9 @@ export function ConversationDialogs({
 
       <ConfirmDialog
         open={Boolean(stopConfirmation)}
+        pending={stopPending}
+        pendingLabel="Cancelling…"
+        error={stopError}
         title="Stop Operation Tree?"
         confirmLabel="Stop Operation"
         onCancel={onStopCancel}

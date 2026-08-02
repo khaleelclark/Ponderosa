@@ -71,7 +71,10 @@ export function useConversationMessagingController({
     targets: { agentId: string; runId: string }[];
     names: string;
   }>();
+  const [cancelOperationPending, setCancelOperationPending] = useState(false);
+  const [cancelOperationError, setCancelOperationError] = useState<Error>();
   const stopOperationRequestId = useRef<string>();
+  const stopOperationPending = useRef(false);
 
   const invalidate = () => {
     void queryClient.invalidateQueries({
@@ -359,26 +362,50 @@ export function useConversationMessagingController({
   const cancelOperationTargets = async (
     targets: { agentId: string; runId: string }[],
   ) => {
+    if (stopOperationPending.current) return;
+    stopOperationPending.current = true;
+    setCancelOperationPending(true);
+    setCancelOperationError(undefined);
     const requestId = stopOperationRequestId.current ?? createClientId();
     stopOperationRequestId.current = requestId;
-    await Promise.allSettled(
-      targets.map(({ agentId, runId }) =>
-        api.cancelRun(agentId, {
-          targetRunId: runId,
-          idempotencyKey: `${requestId}:${runId}`,
-        }),
-      ),
-    );
-    stopOperationRequestId.current = undefined;
-    setStopConfirmation(undefined);
-    invalidate();
+    try {
+      const results = await Promise.allSettled(
+        targets.map(({ agentId, runId }) =>
+          api.cancelRun(agentId, {
+            targetRunId: runId,
+            idempotencyKey: `${requestId}:${runId}`,
+          }),
+        ),
+      );
+      const rejected = results.find(
+        (result): result is PromiseRejectedResult =>
+          result.status === "rejected",
+      );
+      if (rejected) {
+        throw rejected.reason instanceof Error
+          ? rejected.reason
+          : new Error(String(rejected.reason));
+      }
+      setStopConfirmation(undefined);
+    } catch (error) {
+      setCancelOperationError(
+        error instanceof Error ? error : new Error(String(error)),
+      );
+    } finally {
+      stopOperationRequestId.current = undefined;
+      stopOperationPending.current = false;
+      setCancelOperationPending(false);
+      invalidate();
+    }
   };
   const stopOperation = async () => {
+    if (stopOperationPending.current) return;
     const targets = (activeOperation?.agentIds ?? []).flatMap(agentId => {
       const runId = healthByAgentId.get(agentId)?.runtimeActivity?.executionId;
       return runId ? [{ agentId, runId }] : [];
     });
     if (targets.length === 0) return;
+    setCancelOperationError(undefined);
     const names = targets.map(({ agentId }) => agentTitle(agentId)).join(", ");
     if (targets.length > 1) {
       setStopConfirmation({ targets, names });
@@ -455,6 +482,8 @@ export function useConversationMessagingController({
 
   return {
     busy,
+    cancelOperationError,
+    cancelOperationPending,
     cancelOperationTargets,
     cancelQueued,
     editQueued,

@@ -397,6 +397,8 @@ export function ConversationView({
   );
   const {
     busy,
+    cancelOperationError,
+    cancelOperationPending,
     cancelOperationTargets,
     cancelQueued,
     editQueued,
@@ -943,6 +945,11 @@ export function ConversationView({
             Message not sent. {String(sendError)}
           </Alert>
         ) : null}
+        {cancelOperationError ? (
+          <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
+            Cancellation failed. {cancelOperationError.message}
+          </Alert>
+        ) : null}
         {activeView === "main" ? (
           <QueuedMessageTray
             messages={queuedMessagesQuery.data ?? []}
@@ -1046,6 +1053,7 @@ export function ConversationView({
             agentResponding={false}
             projectId={conversation.projectId}
             onCancel={stopOperation}
+            cancelPending={cancelOperationPending}
           />
         ) : null}
       </Box>
@@ -1054,6 +1062,8 @@ export function ConversationView({
         conversation={conversation}
         engines={engines}
         importOpen={importOpen}
+        stopError={cancelOperationError?.message}
+        stopPending={cancelOperationPending}
         stopConfirmation={stopConfirmation}
         renameOpen={renameOpen}
         renameValue={renameValue}
@@ -1068,7 +1078,9 @@ export function ConversationView({
         }
         onImportClose={() => setImportOpen(false)}
         onImported={agentId => onOpenAgent(agentId)}
-        onStopCancel={() => setStopConfirmation(undefined)}
+        onStopCancel={() => {
+          if (!cancelOperationPending) setStopConfirmation(undefined);
+        }}
         onStopConfirm={targets => void cancelOperationTargets(targets)}
         onRenameClose={() => setRenameOpen(false)}
         onRenameValueChange={setRenameValue}

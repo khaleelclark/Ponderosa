@@ -205,7 +205,7 @@ export function AgentDetailHeader({
               onClick={onStop}
               sx={{ minHeight: 36 }}
             >
-              {stopping ? "Stopping…" : "Stop"}
+              {stopping ? "Cancelling…" : "Stop"}
             </Button>
           ) : null}
           <ChatOverflowMenu

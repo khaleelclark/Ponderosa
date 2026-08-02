@@ -386,7 +386,16 @@ export function TriggersPane({
       <Alert severity="warning">This automation will run unattended with full Agent access. Event payloads are untrusted data.</Alert>
       <TextField label="Name" value={name} onChange={(event) => setName(event.target.value)} inputProps={{ maxLength: 120 }} autoFocus required />
       <TextField label="Trusted instructions" value={instructions} onChange={(event) => setInstructions(event.target.value)} multiline minRows={3} required helperText="Describe the action. Do not rely on event payload text as instructions." />
-      {!fixedConversationId ? <FormControl fullWidth><InputLabel id="trigger-chat-label">Project chat</InputLabel><Select disabled={Boolean(editing)} labelId="trigger-chat-label" label="Project chat" value={conversationId} onChange={(event) => setConversationId(event.target.value)}>{agent.conversationIds.map((id) => <MenuItem key={id} value={id}>{triggerChatOptionLabel(currentChatLabel(id), id === agent.conversationId)}</MenuItem>)}</Select></FormControl> : null}
+      {!fixedConversationId ? editing ? (
+        <TextField
+          label="Project chat"
+          value={triggerChatOptionLabel(currentChatLabel(conversationId), conversationId === agent.conversationId)}
+          disabled
+          helperText="This Trigger stays attached to its current Project chat."
+        />
+      ) : (
+        <FormControl fullWidth><InputLabel id="trigger-chat-label">Project chat</InputLabel><Select labelId="trigger-chat-label" label="Project chat" value={conversationId} onChange={(event) => setConversationId(event.target.value)}>{agent.conversationIds.map((id) => <MenuItem key={id} value={id}>{triggerChatOptionLabel(currentChatLabel(id), id === agent.conversationId)}</MenuItem>)}</Select></FormControl>
+      ) : null}
       <FormControl fullWidth><InputLabel id="trigger-source-label">Source</InputLabel><Select disabled={Boolean(editing)} labelId="trigger-source-label" label="Source" value={sourceKind} onChange={(event) => setSourceKind(event.target.value as TriggerSourceKind)}><MenuItem value="schedule">Schedule</MenuItem><MenuItem value="webhook">Signed Webhook</MenuItem><MenuItem value="filesystem">Project Folder Changes</MenuItem></Select></FormControl>
       {sourceKind === "schedule" ? <>
         <FormControl fullWidth><InputLabel id="schedule-kind-label">Schedule type</InputLabel><Select labelId="schedule-kind-label" label="Schedule type" value={scheduleKind} onChange={(event) => setScheduleKind(event.target.value as typeof scheduleKind)}><MenuItem value="interval">Interval</MenuItem><MenuItem value="once">One Time</MenuItem><MenuItem value="cron">Cron</MenuItem></Select></FormControl>

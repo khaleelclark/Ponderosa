@@ -140,7 +140,12 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
                 : selectedProvenanceQuery.isError ? <Alert severity="error">Recorded change details could not be loaded. {String(selectedProvenanceQuery.error)}</Alert>
                   : recordedDiff ? <UnifiedDiffViewer diff={recordedDiff} />
                     : selectedProvenance?.diffAvailable
-                      ? <Alert severity="info">A text preview was recorded. Open this change from its Agent’s Review to view it.</Alert>
+                      ? <Alert
+                        severity="info"
+                        action={<Button color="inherit" size="small" onClick={() => void selectedProvenanceQuery.refetch()}>Reload recorded preview</Button>}
+                      >
+                        The recorded text preview did not load in this review.
+                      </Alert>
                       : <Alert severity="info">No text preview was recorded for this change. Its canonical path and execution provenance remain available.</Alert>}
             </Paper>
           </Box>}

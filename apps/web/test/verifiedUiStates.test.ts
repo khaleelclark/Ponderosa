@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { triggerChatLabel, triggerChatOptionLabel, triggerChatQueryLabel, triggerScheduleStatus } from "../src/components/TriggersPane";
 import { recordedPreviewLabel } from "../src/components/files/WorkspaceReviewPane";
 import { receiptActivityEntry } from "../src/components/chat/AgentWorkReceipt";
-import { coalesceTeamOperationalEvents } from "../src/components/teamChatPresentation";
+import {
+  coalesceTeamOperationalEvents,
+  routineTeamLifecycleEvent,
+} from "../src/components/teamChatPresentation";
 import { classifyWebPushState, webPushEnableBlockReason } from "../src/pushNotifications";
 
 describe("verified UI state helpers", () => {
@@ -48,6 +51,13 @@ describe("verified UI state helpers", () => {
     expect(triggerChatLabel("chat-1", [{ ...chats[0]!, deletedAt: "2026-08-01T12:00:00.000Z" }])).toBe("Unavailable Chat");
     expect(triggerChatQueryLabel("chat-1", chats, { isLoading: false, isError: true })).toBe("Chat name unavailable");
     expect(triggerChatOptionLabel("Renamed UX Audit Chat", true)).toBe("Primary · Renamed UX Audit Chat");
+    const unavailableId = "f0ac4f97-ebb8-42b4-b864-cb6570f50a63";
+    const unavailableLabel = triggerChatOptionLabel(
+      triggerChatQueryLabel(unavailableId, [], { isLoading: false, isError: false }),
+      false,
+    );
+    expect(unavailableLabel).toBe("Unavailable Chat");
+    expect(unavailableLabel).not.toContain(unavailableId);
   });
 
   it("never presents a disabled Trigger timestamp as upcoming", () => {
@@ -111,7 +121,33 @@ describe("verified UI state helpers", () => {
     ]);
     expect(presented).toHaveLength(2);
     expect(presented.map(item => item.relatedLifecycleCount)).toEqual([2, 2]);
+    expect(presented.flatMap(item => item.relatedLifecycleEvents)).toHaveLength(4);
     expect(presented.map(item => item.kind)).toEqual(["request", "request"]);
+  });
+
+  it("collapses routine churn without demoting actionable failures", () => {
+    const event = (
+      kind: "activation" | "run" | "request" | "decision",
+      state: string,
+    ) => ({
+      id: `${kind}:${state}`,
+      kind,
+      state,
+      attentionRequired: state !== "pending",
+      text: `${kind} ${state}`,
+      agentIds: ["agent-1"],
+      createdAt: "2026-08-02T12:00:00.000Z",
+      updatedAt: "2026-08-02T12:00:00.000Z",
+    });
+
+    expect(routineTeamLifecycleEvent(event("activation", "pending"))).toBe(true);
+    expect(routineTeamLifecycleEvent(event("activation", "cancelled"))).toBe(true);
+    expect(routineTeamLifecycleEvent(event("run", "interrupted"))).toBe(true);
+    expect(routineTeamLifecycleEvent(event("request", "superseded"))).toBe(true);
+    expect(routineTeamLifecycleEvent(event("run", "failed"))).toBe(false);
+    expect(routineTeamLifecycleEvent(event("run", "blocked"))).toBe(false);
+    expect(routineTeamLifecycleEvent(event("run", "outcome_unknown"))).toBe(false);
+    expect(routineTeamLifecycleEvent(event("decision", "pending"))).toBe(false);
   });
 
 });

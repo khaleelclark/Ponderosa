@@ -51,7 +51,11 @@ import {
   AUTO_ALLOWED_DECISION_OPTION_ID,
   type MainTimelineEntry,
 } from "./ConversationView.helpers";
-import { coalesceTeamOperationalEvents } from "./teamChatPresentation";
+import {
+  coalesceTeamOperationalEvents,
+  routineTeamLifecycleEvent,
+  type PresentedTeamOperationalEvent,
+} from "./teamChatPresentation";
 
 function ConversationMessageComponent({
   message,
@@ -513,7 +517,7 @@ function CollaborationTimeline({
     operationalEvents.filter(
       event =>
         !linkedRequestEventIds.has(event.id) &&
-        event.attentionRequired,
+        (event.attentionRequired || routineTeamLifecycleEvent(event)),
     ),
   );
   const timeline = [
@@ -534,6 +538,34 @@ function CollaborationTimeline({
     (left, right) =>
       left.at.localeCompare(right.at) || left.id.localeCompare(right.id),
   );
+  type TimelineEntry = typeof timeline[number];
+  type RoutineTimelineEntry = {
+    kind: "routine";
+    id: string;
+    at: string;
+    lastAt: string;
+    events: PresentedTeamOperationalEvent[];
+  };
+  const groupedTimeline: Array<TimelineEntry | RoutineTimelineEntry> = [];
+  for (const entry of timeline) {
+    if (entry.kind !== "operation" || !routineTeamLifecycleEvent(entry.event)) {
+      groupedTimeline.push(entry);
+      continue;
+    }
+    const previous = groupedTimeline.at(-1);
+    if (previous?.kind === "routine") {
+      previous.events.push(entry.event);
+      previous.lastAt = entry.at;
+      continue;
+    }
+    groupedTimeline.push({
+      kind: "routine",
+      id: `routine:${entry.id}`,
+      at: entry.at,
+      lastAt: entry.at,
+      events: [entry.event],
+    });
+  }
 
   return (
     <Stack spacing={0} sx={{ mb: 2 }}>
@@ -547,7 +579,56 @@ function CollaborationTimeline({
           </Typography>
         </Box>
       ) : null}
-      {timeline.map(entry => {
+      {groupedTimeline.map(entry => {
+        if (entry.kind === "routine") {
+          const underlyingEvents = entry.events.flatMap(
+            event => event.relatedLifecycleEvents,
+          );
+          return (
+            <Box
+              component="details"
+              key={entry.id}
+              sx={{ borderTop: 1, borderColor: "divider", color: "text.secondary" }}
+            >
+              <Box
+                component="summary"
+                sx={{
+                  alignItems: "center",
+                  cursor: "pointer",
+                  display: "flex",
+                  gap: 1.25,
+                  listStyle: "none",
+                  py: 1,
+                  "&::-webkit-details-marker": { display: "none" },
+                }}
+              >
+                <Typography variant="caption" sx={{ fontWeight: 700 }}>
+                  Operational updates
+                </Typography>
+                <Typography variant="body2" sx={{ flex: 1, minWidth: 0 }}>
+                  {underlyingEvents.length} queued or stopped transition{underlyingEvents.length === 1 ? "" : "s"}
+                </Typography>
+                <Typography variant="caption" sx={{ whiteSpace: "nowrap" }}>
+                  {new Date(entry.lastAt).toLocaleTimeString([], {
+                    hour: "numeric",
+                    minute: "2-digit",
+                  })}
+                </Typography>
+              </Box>
+              <Stack spacing={0.75} sx={{ pb: 1, pl: { xs: 2, sm: 3 } }}>
+                {underlyingEvents.map((event, index) => (
+                  <Stack key={`${event.id}:${index}`} direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
+                    <Typography variant="caption" sx={{ minWidth: 72 }}>{event.state.replaceAll("_", " ")}</Typography>
+                    <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>{event.text}</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {new Date(event.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                    </Typography>
+                  </Stack>
+                ))}
+              </Stack>
+            </Box>
+          );
+        }
         if (entry.kind === "operation") {
           const event = entry.event;
           return (
