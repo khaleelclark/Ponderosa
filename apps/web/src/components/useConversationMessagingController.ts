@@ -12,6 +12,7 @@ import {
   hasEveryoneMention,
 } from "../mentions";
 import { api } from "../api";
+import { ApiRequestError } from "../api/types";
 import { createClientId } from "../clientId";
 import {
   effortSelectionIsCompatible,
@@ -73,7 +74,7 @@ export function useConversationMessagingController({
   }>();
   const [cancelOperationPending, setCancelOperationPending] = useState(false);
   const [cancelOperationError, setCancelOperationError] = useState<Error>();
-  const stopOperationRequestId = useRef<string>();
+  const stopOperationRequestIds = useRef<Map<string, string>>(new Map());
   const stopOperationPending = useRef(false);
 
   const invalidate = () => {
@@ -366,33 +367,57 @@ export function useConversationMessagingController({
     stopOperationPending.current = true;
     setCancelOperationPending(true);
     setCancelOperationError(undefined);
-    const requestId = stopOperationRequestId.current ?? createClientId();
-    stopOperationRequestId.current = requestId;
+    const attempts = targets.map(target => {
+      const targetKey = `${target.agentId}:${target.runId}`;
+      const idempotencyKey =
+        stopOperationRequestIds.current.get(targetKey) ?? createClientId();
+      stopOperationRequestIds.current.set(targetKey, idempotencyKey);
+      return { target, targetKey, idempotencyKey };
+    });
     try {
       const results = await Promise.allSettled(
-        targets.map(({ agentId, runId }) =>
-          api.cancelRun(agentId, {
-            targetRunId: runId,
-            idempotencyKey: `${requestId}:${runId}`,
+        attempts.map(({ target, idempotencyKey }) =>
+          api.cancelRun(target.agentId, {
+            targetRunId: target.runId,
+            idempotencyKey,
           }),
         ),
       );
-      const rejected = results.find(
-        (result): result is PromiseRejectedResult =>
-          result.status === "rejected",
-      );
-      if (rejected) {
-        throw rejected.reason instanceof Error
-          ? rejected.reason
-          : new Error(String(rejected.reason));
+      const unresolved: { agentId: string; runId: string }[] = [];
+      let unresolvedError: Error | undefined;
+      results.forEach((result, index) => {
+        const attempt = attempts[index]!;
+        const alreadyInactive =
+          result.status === "rejected" &&
+          result.reason instanceof ApiRequestError &&
+          result.reason.status === 409;
+        if (result.status === "fulfilled" || alreadyInactive) {
+          stopOperationRequestIds.current.delete(attempt.targetKey);
+          return;
+        }
+        unresolved.push(attempt.target);
+        unresolvedError ??=
+          result.reason instanceof Error
+            ? result.reason
+            : new Error(String(result.reason));
+      });
+      if (unresolved.length === 0) {
+        setStopConfirmation(undefined);
+        setCancelOperationError(undefined);
+      } else {
+        setStopConfirmation(current =>
+          current
+            ? {
+                targets: unresolved,
+                names: unresolved
+                  .map(({ agentId }) => agentTitle(agentId))
+                  .join(", "),
+              }
+            : current,
+        );
+        setCancelOperationError(unresolvedError);
       }
-      setStopConfirmation(undefined);
-    } catch (error) {
-      setCancelOperationError(
-        error instanceof Error ? error : new Error(String(error)),
-      );
     } finally {
-      stopOperationRequestId.current = undefined;
       stopOperationPending.current = false;
       setCancelOperationPending(false);
       invalidate();

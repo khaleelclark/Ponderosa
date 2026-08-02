@@ -211,15 +211,15 @@ export function TriggersPane({
     if (initialCreateOpen && agent.conversationIds.length > 0) setCreateOpen(true);
   }, [agent.id, agent.conversationIds.length, initialCreateOpen]);
   useEffect(() => {
-    setConversationId(preferredConversationId);
-  }, [agent.id, fixedConversationId]);
+    if (!editing) setConversationId(preferredConversationId);
+  }, [agent.id, editing, fixedConversationId, preferredConversationId]);
   const filesystemErrors = filesystemWindowErrors(quietSeconds, maxWindowSeconds);
   const sourceConfigurationInvalid = sourceKind === "filesystem" && Boolean(filesystemErrors.quiet || filesystemErrors.max);
 
   useEffect(() => {
-    if (!agent.conversationIds.includes(conversationId))
+    if (!editing && !agent.conversationIds.includes(conversationId))
       setConversationId(preferredConversationId);
-  }, [agent, conversationId, preferredConversationId]);
+  }, [agent, conversationId, editing, preferredConversationId]);
 
   const sourceConfig = (): CreateTriggerRequest["sourceConfig"] => {
     if (sourceKind === "webhook") {
@@ -389,7 +389,10 @@ export function TriggersPane({
       {!fixedConversationId ? editing ? (
         <TextField
           label="Project chat"
-          value={triggerChatOptionLabel(currentChatLabel(conversationId), conversationId === agent.conversationId)}
+          value={triggerChatOptionLabel(
+            currentChatLabel(editing.conversationId),
+            editing.conversationId === agent.conversationId,
+          )}
           disabled
           helperText="This Trigger stays attached to its current Project chat."
         />
