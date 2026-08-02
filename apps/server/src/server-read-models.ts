@@ -492,6 +492,12 @@ export function createServerReadModels(context: ReadModelContext) {
       const persisted = run.lastEventPersistedAt ? Date.parse(run.lastEventPersistedAt) : 0;
       if (received > persisted && now - received >= runtimeStallAfterMs) transitionRun(agentId, run, "stalled");
     }
+    const pendingDecisionAt = new Map<string, string>();
+    for (const decision of workspace.listDecisions({ status: "pending" })) {
+      if (!pendingDecisionAt.has(decision.agentId)) {
+        pendingDecisionAt.set(decision.agentId, decision.updatedAt);
+      }
+    }
     const ownership = new Map<string, ActiveRunObservation>(activeRuns);
     const projection = projectAgentHealth({
       scope,
@@ -499,6 +505,7 @@ export function createServerReadModels(context: ReadModelContext) {
       activeRuns: ownership,
       compactingAgents: scheduledSessionRollovers,
       availability: (agentId) => coordinationV3.getAgentAvailability(agentId),
+      pendingDecisionAt: (agentId) => pendingDecisionAt.get(agentId),
       latestEvent: (agentId) => store.latestHealthObservation(agentId),
     });
     return {

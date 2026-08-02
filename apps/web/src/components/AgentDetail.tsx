@@ -489,15 +489,7 @@ export function AgentDetail({
   const runtimeActivity = projectedHealth?.runtimeActivity;
   const running = Boolean(runtimeActivity) || sendMessage.isPending;
 
-  const errorHint = useMemo(
-    () => stream.timeline.at(-1)?.event.type === "error",
-    [stream.timeline],
-  );
-  const status = runtimeActivity
-    ? "running"
-    : errorHint
-      ? "failed"
-      : (projectedStatus ?? deriveAgentStatus(detail));
+  const status = projectedStatus ?? (runtimeActivity ? "running" : deriveAgentStatus(detail));
   const mcp = mcpPresentation(engineCapability?.mcpServers);
 
   const { cancelRun, stopActiveRun } = useAgentRunCancellation(

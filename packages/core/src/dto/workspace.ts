@@ -82,6 +82,8 @@ export type WorkspaceDirectoryKind = "project" | "conversation" | "agent" | "tri
 export interface WorkspaceProjectDirectoryItemDto {
   kind: "project";
   project: ProjectDto;
+  /** Presentation-only host path. The exact authoritative path remains on `project.hostPath`. */
+  displayPath: string;
   recentConversation?: Pick<ConversationDto, "id" | "title" | "updatedAt">;
   conversationCount: number;
   runningAgentCount: number;

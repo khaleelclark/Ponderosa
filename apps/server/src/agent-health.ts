@@ -1,4 +1,12 @@
-import type { AgentHealthDto, AgentHealthProjectionDto, AgentLifecycleReason, AgentLifecycleStatus, AgentDto } from "@ponderosa/core";
+import type {
+  AgentDto,
+  AgentHealthDto,
+  AgentHealthProjectionDto,
+  AgentLifecycleReason,
+  AgentLifecycleStatus,
+  AgentOperationalReason,
+  AgentOperationalStatus,
+} from "@ponderosa/core";
 
 export interface ActiveRunObservation { startedAt: string; executionId?: string; leaseExpiresAt?: string; ownershipState?: "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted" }
 export interface QueuedDeliveryObservation { createdAt: string }
@@ -8,10 +16,25 @@ export interface AgentHealthProjectionInput {
   activeRuns: ReadonlyMap<string, ActiveRunObservation>;
   compactingAgents?: ReadonlyMap<string, string>;
   availability?: (agentId: string) => "running" | "runnable" | "waiting" | "idle";
+  pendingDecisionAt?: (agentId: string) => string | undefined;
   latestEvent: (agentId: string) => StatusObservation | undefined;
   now?: string;
 }
 export interface StatusObservation { status: AgentLifecycleStatus; statusTimestamp: string; reason: AgentLifecycleReason; executionId?: string }
+
+type OperationalObservation = {
+  status: AgentOperationalStatus;
+  statusTimestamp: string;
+  reason: AgentOperationalReason;
+  executionId?: string;
+};
+
+const RETAINED_TERMINAL_STATUSES: ReadonlySet<AgentLifecycleStatus> = new Set([
+  "blocked",
+  "cancelled",
+  "failed",
+  "interrupted",
+]);
 
 export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHealthProjectionDto {
   const agentIds = new Set(input.agents.map((agent) => agent.id));
@@ -27,13 +50,15 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
     const active = input.activeRuns.get(agent.id);
     const compactingAt = input.compactingAgents?.get(agent.id);
     const availability = input.availability?.(agent.id);
+    const pendingDecisionAt = input.pendingDecisionAt?.(agent.id);
     const latestEvent = input.latestEvent(agent.id);
     const activeEvent = active && latestEvent && latestEvent.statusTimestamp >= active.startedAt &&
       (latestEvent.executionId === active.executionId || latestEvent.statusTimestamp > active.startedAt)
       ? latestEvent : undefined;
     const managerAgentId = agent.managerAgentId && agentIds.has(agent.managerAgentId) ? agent.managerAgentId : undefined;
-    let observation: StatusObservation;
-    if (compactingAt) observation = { status: "compacting", statusTimestamp: compactingAt, reason: "session_rollover_scheduled" };
+    let observation: OperationalObservation;
+    if (pendingDecisionAt) observation = { status: "needs_decision", statusTimestamp: pendingDecisionAt, reason: "pending_user_decision" };
+    else if (compactingAt) observation = { status: "compacting", statusTimestamp: compactingAt, reason: "session_rollover_scheduled" };
     else if (active?.ownershipState === "stalled") observation = { status: "stalled", statusTimestamp: active.startedAt, reason: "runtime_event_consumer_stalled" };
     else if (active?.ownershipState === "interrupted") observation = { status: "interrupted", statusTimestamp: active.startedAt, reason: "execution_interrupted" };
     else if (active?.leaseExpiresAt && active.leaseExpiresAt < (input.now ?? new Date().toISOString())) {
@@ -41,8 +66,13 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
     }
     else if (active) observation = activeEvent && activeEvent.status !== "completed" && activeEvent.status !== "idle"
       ? activeEvent : { status: "running", statusTimestamp: active.startedAt, reason: "active_run" };
-    else if (availability === "waiting" || availability === "runnable") observation = { status: "waiting", statusTimestamp: agent.updatedAt, reason: availability === "waiting" ? "awaiting_reports" : "queued_delivery" };
-    else observation = latestEvent ?? { status: "idle", statusTimestamp: agent.updatedAt, reason: "no_active_work" };
+    else if (availability === "waiting") observation = { status: "waiting", statusTimestamp: agent.updatedAt, reason: "awaiting_reports" };
+    else if (latestEvent && RETAINED_TERMINAL_STATUSES.has(latestEvent.status)) observation = latestEvent;
+    else observation = {
+      status: "idle",
+      statusTimestamp: agent.updatedAt,
+      reason: availability === "runnable" ? "queued_delivery" : "no_active_work",
+    };
     return {
       agentId: agent.id,
       ...(managerAgentId ? { managerAgentId } : {}),

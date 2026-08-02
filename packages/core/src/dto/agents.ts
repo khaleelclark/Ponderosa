@@ -1,6 +1,9 @@
 import type { EngineId } from "../adapter.js";
 import type { ArtifactKind } from "./artifacts.js";
-import type { AgentLifecycleReason, AgentLifecycleStatus } from "./common.js";
+import type {
+  AgentOperationalReason,
+  AgentOperationalStatus,
+} from "./common.js";
 import type { AgentPresetDto } from "./projects.js";
 import type { CreateTriggerRequest } from "./triggers.js";
 
@@ -141,7 +144,7 @@ export interface TeamDirectoryAgentDto {
   displayName: string;
   role: string;
   description: string;
-  status: AgentLifecycleStatus;
+  status: AgentOperationalStatus;
   currentActivity?: string;
   managerAgentId?: string;
   childAgentIds: string[];
@@ -249,10 +252,10 @@ export interface AgentHealthDto {
   agentId: string;
   managerAgentId?: string;
   childAgentIds: string[];
-  status: AgentLifecycleStatus;
+  status: AgentOperationalStatus;
   /** Timestamp of the authoritative observation that selected `status`. */
   statusTimestamp: string;
-  reason: AgentLifecycleReason;
+  reason: AgentOperationalReason;
   /** Runtime generation and bounded liveness window, when work is active. */
   executionId?: string;
   leaseExpiresAt?: string;

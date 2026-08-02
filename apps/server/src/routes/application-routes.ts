@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type {
   DecisionDto,
@@ -25,6 +26,7 @@ import {
   safeRelativePath,
 } from "../project-files.js";
 import { runtimeSelectionError } from "../runtime-selection.js";
+import { displayProjectPath } from "../project-path-display.js";
 import type { ServerContext } from "../server-context.js";
 import type { RuntimeElicitationBroker } from "../runtime-elicitation-broker.js";
 import { registerAgentAuditRoutes } from "./agent-audit.js";
@@ -470,6 +472,11 @@ registerWorkspaceDirectoryRoutes(app, {
   coordination: coordinationV3,
   workspace,
   agentHealth,
+  projectDisplayPath: (hostPath) => displayProjectPath({
+    hostPath,
+    homePath: os.homedir(),
+    managedWorkspacesRoot: path.resolve(opts.dataDir, "workspaces"),
+  }),
 });
 
 app.get<{ Params: { id: string } }>("/api/agent-trigger-occurrences/:id", async (request, reply) => {

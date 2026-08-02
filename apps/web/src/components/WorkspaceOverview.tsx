@@ -129,7 +129,7 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
         return <ResourceRow
           key={snapshot.project.id}
           label={snapshot.project.label}
-          description={`${snapshot.project.hostPath}${recent ? " · Recent chat" : " · No Project chats"}`}
+          description={`${snapshot.displayPath}${recent ? " · Recent chat" : " · No Project chats"}`}
           icon={<FolderOutlinedIcon />}
           meta={
             <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
