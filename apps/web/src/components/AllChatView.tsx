@@ -34,6 +34,7 @@ import {
 import type { Route } from "../routing";
 import {
   ChatMessageBody,
+  authoredAgentMentionForHandle,
   communicationVisibleText,
   showBroadcastBadge,
 } from "./chat/ChatMessages";
@@ -836,22 +837,11 @@ export function AllChatView({
                       projectId={item.project.id}
                       operatorHandle={workspacePreferences.data?.profile.handle}
                       agentMentionForHandle={handle => {
-                        const binding = item.agentMentions?.find(
-                          mention =>
-                            mention.handle.toLocaleLowerCase() ===
-                            handle.toLocaleLowerCase(),
+                        const binding = authoredAgentMentionForHandle(
+                          handle,
+                          item.agentMentions,
                         );
-                        if (binding) {
-                          const recipient = item.directMessageAgents?.find(
-                            agent => agent.id === binding.agentId,
-                          );
-                          return {
-                            agentId: binding.agentId,
-                            label: agentMentionHandle(
-                              recipient?.title ?? binding.handle,
-                            ),
-                          };
-                        }
+                        if (binding) return binding;
                         return item.directMessageAgent &&
                           agentMentionHandle(
                             item.directMessageAgent.title,

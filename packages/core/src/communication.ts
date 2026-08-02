@@ -2,6 +2,33 @@
 
 import type { CommunicationAttachmentDto, ImageAttachmentDto } from "./dto.js";
 
+export interface MessageTagToken {
+  /** Authored handle without the leading hash. */
+  handle: string;
+  /** UTF-16 string offset of the leading hash. */
+  start: number;
+  /** Exclusive UTF-16 string offset after the handle. */
+  end: number;
+}
+
+const MESSAGE_TAG_PATTERN = /(^|[^\p{L}\p{N}_-])#([\p{L}\p{N}_-]+)/gu;
+
+/**
+ * Find authored #handles using the same punctuation-aware token boundaries on
+ * every projection and presentation surface.
+ */
+export function messageTagTokens(text: string): MessageTagToken[] {
+  return [...text.matchAll(MESSAGE_TAG_PATTERN)].map(match => {
+    const boundaryLength = (match[1] ?? "").length;
+    const start = (match.index ?? 0) + boundaryLength;
+    return {
+      handle: match[2]!,
+      start,
+      end: start + match[2]!.length + 1,
+    };
+  });
+}
+
 export type CommunicationIntent = "broadcast" | "direct_to_user" | "collaboration" | "user_dm";
 
 export type CommunicationActor =

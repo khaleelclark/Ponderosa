@@ -10,7 +10,6 @@ import type {
   RunOutputDto,
 } from "@ponderosa/core";
 import { Fragment, memo, useMemo } from "react";
-import { agentMentionHandle } from "../../mentions";
 import { CopyMessageButton } from "../CopyMessageButton";
 import { MessageDeliveryStatus } from "../MessageDeliveryStatus";
 import { buildActivityStream } from "../activity/activityStream";
@@ -21,6 +20,7 @@ import { ChatSurface } from "./ChatSurface";
 import {
   ChatMessageBody,
   CommunicationDocumentCard,
+  authoredAgentMentionForHandle,
   chatMessageLayoutKey,
   communicationVisibleText,
   individualChatSenderLabel,
@@ -429,22 +429,12 @@ function ChatPaneComponent({
                   collapseLongMessage={receivedInput}
                   compactMarkdown
                   agentIdForHandle={agentIdForHandle}
-                  agentMentionForHandle={handle => {
-                    const binding = message.agentMentions?.find(
-                      item =>
-                        item.handle.toLocaleLowerCase() ===
-                        handle.toLocaleLowerCase(),
-                    );
-                    const title = binding
-                      ? agentNameForId?.(binding.agentId)
-                      : undefined;
-                    return binding && title
-                      ? {
-                          agentId: binding.agentId,
-                          label: agentMentionHandle(title),
-                        }
-                      : undefined;
-                  }}
+                  agentMentionForHandle={handle =>
+                    authoredAgentMentionForHandle(
+                      handle,
+                      message.agentMentions,
+                    )
+                  }
                   operatorHandle={operatorProfile?.handle}
                   onOpenAgent={onOpenAgent}
                   previewScope={linkPreviewScopeForMessage(

@@ -1,4 +1,4 @@
-import type { AgentDto } from "@ponderosa/core";
+import { messageTagTokens, type AgentDto } from "@ponderosa/core";
 
 const RESERVED_HANDLES = new Set(["broadcast", "everyone", "user"]);
 const NUMERIC_HANDLE_PATTERN = /^\p{N}+$/u;
@@ -33,8 +33,8 @@ export function resolveAgentMentionBindings(
   agents: readonly Pick<AgentDto, "id" | "title">[],
 ): Array<{ handle: string; agentId: string }> {
   const recipients = agents.filter(agent => recipientAgentIds.includes(agent.id));
-  const handles = [...new Set([...text.matchAll(/(?:^|\s)#([\p{L}\p{N}_-]+)(?=$|\s|[.,!?;:])/gu)]
-    .map((match) => match[1]!)
+  const handles = [...new Set(messageTagTokens(text)
+    .map(token => token.handle)
     .filter((handle) => !RESERVED_HANDLES.has(handle.toLocaleLowerCase())))];
   const bound = new Map<string, string>();
   const usedAgentIds = new Set<string>();

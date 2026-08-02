@@ -1,10 +1,27 @@
 import { describe, expect, it } from "vitest";
 import {
+  authoredAgentMentionForHandle,
   communicationVisibleText,
   showBroadcastBadge,
 } from "../src/components/chat/ChatMessages";
 
 describe("communicationVisibleText", () => {
+  it("keeps the authored label after its bound Agent is renamed or deleted", () => {
+    const bindings = [
+      { handle: "Oak", agentId: "agent-oak" },
+      { handle: "Pine", agentId: "agent-pine" },
+    ];
+
+    expect(authoredAgentMentionForHandle("Oak", bindings)).toEqual({
+      agentId: "agent-oak",
+      label: "Oak",
+    });
+    expect(authoredAgentMentionForHandle("Pine", bindings)).toEqual({
+      agentId: "agent-pine",
+      label: "Pine",
+    });
+  });
+
   it("preserves Agent and operator Direct mentions for visible highlighting", () => {
     expect(communicationVisibleText({
       text: "#Oak #Pine Private update",

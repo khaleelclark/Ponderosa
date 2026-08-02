@@ -30,13 +30,13 @@ import {
   type Dispatch,
   type SetStateAction,
 } from "react";
-import { agentMentionHandle } from "../mentions";
 import { transcriptFileName } from "../chatTranscript";
 import { CopyMessageButton } from "./CopyMessageButton";
 import { ResponseFileActivity } from "./activity/ResponseFileActivity";
 import {
   ChatMessageBody,
   CommunicationDocumentCard,
+  authoredAgentMentionForHandle,
   communicationVisibleText,
   showBroadcastBadge,
   stripDocumentPrefixText,
@@ -156,19 +156,9 @@ function ConversationMessageComponent({
             compactMarkdown
             citations={message.citations}
             agentIdForHandle={agentIdForHandle}
-            agentMentionForHandle={handle => {
-              const binding = message.agentMentions?.find(
-                item =>
-                  item.handle.toLocaleLowerCase() ===
-                  handle.toLocaleLowerCase(),
-              );
-              return binding
-                ? {
-                    agentId: binding.agentId,
-                    label: agentMentionHandle(agentTitle(binding.agentId)),
-                  }
-                : undefined;
-            }}
+            agentMentionForHandle={handle =>
+              authoredAgentMentionForHandle(handle, message.agentMentions)
+            }
             operatorHandle={operatorProfile?.handle}
             onOpenAgent={onOpenAgent}
             projectId={projectId}

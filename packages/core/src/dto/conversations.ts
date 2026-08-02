@@ -67,9 +67,9 @@ export interface ResponseFileActivityDto {
 }
 
 export interface AgentMentionBindingDto {
-  /** Display handle captured when the message was authored. */
+  /** Immutable display handle captured when the message was authored. */
   handle: string;
-  /** Immutable recipient identity used to resolve its current name. */
+  /** Immutable recipient identity used for routing and navigation. */
   agentId: string;
 }
 

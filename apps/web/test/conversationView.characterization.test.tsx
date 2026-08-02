@@ -461,7 +461,7 @@ describe("ConversationView public behavior", () => {
     client.clear();
   });
 
-  it("does not collapse a group Direct audience into one implicit recipient", () => {
+  it("preserves authored group Direct handles after rename and deletion", () => {
     const client = createClient();
     client.setQueryData<ConversationDetailDto>(
       queryKeys.conversations.detail(firstConversationId),
@@ -470,23 +470,32 @@ describe("ConversationView public behavior", () => {
         communicationEventId: "group-direct-communication",
         communicationIntent: "user_dm",
         directMessageAgents: [
-          { id: agent.id, title: agent.title },
-          { id: "agent-two", title: "Agent Two" },
+          { id: agent.id, title: "Redwood" },
+          { id: "agent-two", title: "Pine" },
         ],
         conversationId: firstConversationId,
         role: "user",
-        text: "#Agent-One #Agent-Two Private hello",
+        text: "(#Oak), (#Pine) Private hello",
         createdAt: "2026-07-25T10:01:00.000Z",
         agentMentions: [
-          { agentId: agent.id, handle: "Agent-One" },
-          { agentId: "agent-two", handle: "Agent-Two" },
+          { agentId: agent.id, handle: "Oak" },
+          { agentId: "agent-two", handle: "Pine" },
         ],
       }]),
     );
 
     render(view(client, <ConversationView {...props()} />));
 
-    expect(screen.getByText("Private hello")).toBeTruthy();
+    const message = document.getElementById(
+      "master-message-group-direct-message",
+    );
+    expect(message?.textContent).toContain("(#Oak), (#Pine) Private hello");
+    expect(
+      message?.querySelector('[aria-label="Open agent Oak"]')?.textContent,
+    ).toBe("#Oak");
+    expect(
+      message?.querySelector('[aria-label="Open agent Pine"]')?.textContent,
+    ).toBe("#Pine");
     expect(screen.queryByText(/^To:/u)).toBeNull();
     expect(screen.getByText(
       "Sending without a recipient starts a new Agent.",
@@ -600,14 +609,14 @@ describe("ConversationView public behavior", () => {
 
   it("shows and highlights the canonical destination on a Team Chat reply", async () => {
     const client = createClient();
-    const recipient = { ...agent, id: "agent-two", title: "Pine" };
+    const recipient = { ...agent, id: "agent-two", title: "Redwood" };
     client.setQueryData(queryKeys.collaboration(firstConversationId), {
       messages: [{
         ...firstMessage,
-        text: "#Pine The requested review is complete.",
+        text: "#Oak The requested review is complete.",
         communicationIntent: "collaboration" as const,
         collaborationRecipients: [{ id: recipient.id, title: recipient.title }],
-        agentMentions: [{ agentId: recipient.id, handle: "Pine" }],
+        agentMentions: [{ agentId: recipient.id, handle: "Oak" }],
       }],
       agents: [agent, recipient],
       operations: [],
@@ -630,11 +639,11 @@ describe("ConversationView public behavior", () => {
     const teamPanel = screen.getByRole("tabpanel", {
       name: "Team chat messages",
     });
-    expect(within(teamPanel).getByText("→ Pine")).toBeTruthy();
+    expect(within(teamPanel).getByText("→ Redwood")).toBeTruthy();
     expect(
-      within(teamPanel).getByRole("button", { name: "Open agent Pine" })
+      within(teamPanel).getByRole("button", { name: "Open agent Oak" })
         .textContent,
-    ).toBe("#Pine");
+    ).toBe("#Oak");
     expect(
       within(teamPanel).getByText("The requested review is complete."),
     ).toBeTruthy();

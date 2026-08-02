@@ -899,7 +899,7 @@ describe("server public API behavior", () => {
       method: "POST",
       url: `/api/conversations/${conversationId}/direct-messages`,
       payload: {
-        text: "#Oak #Pine Private update",
+        text: "(#Oak), (#Pine) Private update",
         recipients: [{ agentId: oak.id }, { agentId: pine.id }],
         idempotencyKey: randomUUID(),
       },

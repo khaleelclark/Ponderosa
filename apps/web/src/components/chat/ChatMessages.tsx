@@ -6,8 +6,8 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import LanguageIcon from "@mui/icons-material/Language";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, Tooltip, Typography, useTheme } from "@mui/material";
-import { unicodeCodePointLength } from "@ponderosa/core";
-import type { CommunicationDocumentReference, CommunicationIntent, MessageDto, VerifiedCitationDto } from "@ponderosa/core";
+import { messageTagTokens, unicodeCodePointLength } from "@ponderosa/core";
+import type { AgentMentionBindingDto, CommunicationDocumentReference, CommunicationIntent, MessageDto, VerifiedCitationDto } from "@ponderosa/core";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
@@ -65,6 +65,20 @@ export function communicationVisibleText(input: {
   return input.intent === "broadcast"
     ? stripLeadingRoutingHandle(input.text, "broadcast")
     : input.text;
+}
+
+/** Preserve the immutable authored label while navigating by stable Agent ID. */
+export function authoredAgentMentionForHandle(
+  handle: string,
+  mentions: readonly AgentMentionBindingDto[] | undefined,
+): { agentId: string; label: string } | undefined {
+  const binding = mentions?.find(
+    mention =>
+      mention.handle.toLocaleLowerCase() === handle.toLocaleLowerCase(),
+  );
+  return binding
+    ? { agentId: binding.agentId, label: binding.handle }
+    : undefined;
 }
 
 const AGENT_OPENING_EVENT_PREFIX = "agent-opening:";
@@ -271,7 +285,18 @@ interface MarkdownAstNode {
 }
 
 const MESSAGE_TAG_PREFIX = "#ponderosa-tag:";
-const MESSAGE_TAG_PATTERN = /(^|[^\p{L}\p{N}_-])#([\p{L}\p{N}_-]+)/gu;
+
+export const messageMentionSx = {
+  display: "inline",
+  px: 0.45,
+  py: 0.1,
+  borderRadius: 0.75,
+  bgcolor: "action.selected",
+  color: "primary.main",
+  fontWeight: 700,
+  textDecoration: "none",
+  boxShadow: "inset 0 0 0 1px rgba(127, 196, 142, .18)",
+} as const;
 
 /** Mark #tags in Markdown text nodes without touching code or existing links. */
 function remarkMessageTags() {
@@ -286,17 +311,15 @@ function remarkMessageTags() {
           continue;
         }
         let cursor = 0;
-        for (const match of child.value.matchAll(MESSAGE_TAG_PATTERN)) {
-          const boundary = match[1] ?? "";
-          const handle = match[2]!;
-          const tagStart = (match.index ?? 0) + boundary.length;
+        for (const token of messageTagTokens(child.value)) {
+          const { handle, start: tagStart, end: tagEnd } = token;
           if (tagStart > cursor) next.push({ type: "text", value: child.value.slice(cursor, tagStart) });
           next.push({
             type: "link",
             url: `${MESSAGE_TAG_PREFIX}${encodeURIComponent(handle)}`,
             children: [{ type: "text", value: `#${handle}` }],
           });
-          cursor = tagStart + handle.length + 1;
+          cursor = tagEnd;
         }
         if (cursor === 0) next.push(child);
         else if (cursor < child.value.length) next.push({ type: "text", value: child.value.slice(cursor) });
@@ -393,16 +416,15 @@ function ChatMarkdown({
             const visibleLabel = operatorMention && handle.toLocaleLowerCase() !== "pto" && operatorHandle
               ? `#${operatorHandle}`
               : boundMention ? `#${boundMention.label}` : label;
-            const mentionSx = { display: "inline", px: 0.45, py: 0.1, borderRadius: 0.75, bgcolor: "action.selected", color: "primary.light", fontWeight: 700, textDecoration: "none", boxShadow: "inset 0 0 0 1px rgba(127, 196, 142, .18)" } as const;
-            if (operatorMention) return <Box component="span" data-message-tag={handle.toLocaleLowerCase()} sx={mentionSx}>{visibleLabel}</Box>;
+            if (operatorMention) return <Box component="span" data-message-tag={handle.toLocaleLowerCase()} sx={messageMentionSx}>{visibleLabel}</Box>;
             if (!agentId) {
               if (["broadcast", "everyone"].includes(handle.toLocaleLowerCase())) {
-                return <Box component="span" data-message-tag={handle.toLocaleLowerCase()} sx={mentionSx}>{label}</Box>;
+                return <Box component="span" data-message-tag={handle.toLocaleLowerCase()} sx={messageMentionSx}>{label}</Box>;
               }
               return <>{label}</>;
             }
-            if (!onOpenAgent) return <Box component="span" data-message-tag={handle.toLocaleLowerCase()} sx={mentionSx}>{visibleLabel}</Box>;
-            return <Box className="chat-text-navigation" component="button" type="button" aria-label={`Open agent ${boundMention?.label ?? handle}`} onClick={() => onOpenAgent(agentId)} sx={{ ...mentionSx, border: 0, font: "inherit", cursor: "pointer" }}>{visibleLabel}</Box>;
+            if (!onOpenAgent) return <Box component="span" data-message-tag={handle.toLocaleLowerCase()} sx={messageMentionSx}>{visibleLabel}</Box>;
+            return <Box className="chat-text-navigation" component="button" type="button" aria-label={`Open agent ${boundMention?.label ?? handle}`} onClick={() => onOpenAgent(agentId)} sx={{ ...messageMentionSx, border: 0, font: "inherit", cursor: "pointer" }}>{visibleLabel}</Box>;
           },
         }}
       >
