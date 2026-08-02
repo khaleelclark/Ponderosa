@@ -6,6 +6,7 @@ import type {
   AgentLifecycleStatus,
   AgentOperationalReason,
   AgentOperationalStatus,
+  ProviderBlockedWorkDto,
 } from "@ponderosa/core";
 
 export interface ActiveRunObservation { startedAt: string; executionId?: string; leaseExpiresAt?: string; ownershipState?: "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted" }
@@ -17,6 +18,7 @@ export interface AgentHealthProjectionInput {
   compactingAgents?: ReadonlyMap<string, string>;
   availability?: (agentId: string) => "running" | "runnable" | "waiting" | "idle";
   pendingDecisionAt?: (agentId: string) => string | undefined;
+  providerBlocked?: (agentId: string) => ProviderBlockedWorkDto | undefined;
   latestEvent: (agentId: string) => StatusObservation | undefined;
   now?: string;
 }
@@ -51,6 +53,7 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
     const compactingAt = input.compactingAgents?.get(agent.id);
     const availability = input.availability?.(agent.id);
     const pendingDecisionAt = input.pendingDecisionAt?.(agent.id);
+    const providerBlocked = input.providerBlocked?.(agent.id);
     const latestEvent = input.latestEvent(agent.id);
     const activeEvent = active && latestEvent && latestEvent.statusTimestamp >= active.startedAt &&
       (latestEvent.executionId === active.executionId || latestEvent.statusTimestamp > active.startedAt)
@@ -66,6 +69,11 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
     }
     else if (active) observation = activeEvent && activeEvent.status !== "completed" && activeEvent.status !== "idle"
       ? activeEvent : { status: "running", statusTimestamp: active.startedAt, reason: "active_run" };
+    else if (providerBlocked) observation = {
+      status: "blocked",
+      statusTimestamp: providerBlocked.blockedAt,
+      reason: "provider_capacity_unavailable",
+    };
     else if (availability === "waiting") observation = { status: "waiting", statusTimestamp: agent.updatedAt, reason: "awaiting_reports" };
     else if (latestEvent && RETAINED_TERMINAL_STATUSES.has(latestEvent.status)) observation = latestEvent;
     else observation = {
@@ -85,6 +93,7 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
       ...(active && (active.ownershipState === undefined || active.ownershipState === "running") && active.executionId
         ? { runtimeActivity: { state: "responding" as const, executionId: active.executionId, startedAt: active.startedAt } }
         : {}),
+      ...(providerBlocked ? { providerBlocked } : {}),
     };
   });
   return { scope: input.scope, generatedAt: input.now ?? new Date().toISOString(), agents: agents.sort((a, b) => a.agentId.localeCompare(b.agentId)) };

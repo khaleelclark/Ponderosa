@@ -36,6 +36,7 @@ import type { ContextCursor } from "../context-cursors.js";
 import { PROVIDER_DYNAMIC_TOOLS } from "../runtime-selection.js";
 import { cleanupRuntimeAttachments } from "../runtime-attachments.js";
 import type { AgentMessageRunContext } from "./agent-message-run.js";
+import { derivedRunActionKey } from "../security.js";
 
 function humanizeProviderName(value: string): string {
   return value
@@ -826,6 +827,43 @@ export function startProviderRunExecution(
         publish(agent.id, cancelled);
       }
       if (owned && !isClosed() && !controller.signal.aborted) {
+        if (!schedulerCancelled && !runError && finalText.trim() && activeRun.v3SchedulerRunId && v3FencingToken !== undefined) {
+          const attachedRequestIds = coordinationV3!.requestIdsAttachedToRun(
+            activeRun.v3SchedulerRunId,
+            agent.id,
+          );
+          const attachedRequest = attachedRequestIds.length === 1
+            ? coordinationV3!.getRequest(attachedRequestIds[0]!)
+            : undefined;
+          if (
+            attachedRequest?.recipientAgentId === agent.id
+            && ["open", "in_progress"].includes(attachedRequest.state)
+          ) {
+            try {
+              const updateId = derivedRunActionKey(runId, "terminal-result", {
+                requestId: attachedRequest.id,
+                text: finalText.trim(),
+              });
+              const response = await app.inject({
+                method: "POST",
+                url: "/api/agent-request-updates",
+                headers: { authorization: `Bearer ${messageCapability}` },
+                payload: {
+                  requestId: attachedRequest.id,
+                  updateId,
+                  text: finalText.trim(),
+                },
+              });
+              if (response.statusCode >= 400) {
+                const body = response.json() as { error?: unknown };
+                throw new Error(typeof body.error === "string" ? body.error : `request update returned ${response.statusCode}`);
+              }
+            } catch (error) {
+              runError = `managed Request result could not be committed: ${error instanceof Error ? error.message : String(error)}`;
+              await persistRuntimeEvent(agent.id, activeRun, { type: "error", message: runError });
+            }
+          }
+        }
         if (!schedulerCancelled && !runError && finalText.trim() && firstTextSeq !== undefined && lastTextSeq !== undefined) {
           const output = store.appendEvent(agent.id, {
             type: "agent_output",

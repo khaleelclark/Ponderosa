@@ -4,14 +4,12 @@ import type {
   CoordinationV3Store,
   WorkspaceStore,
 } from "@ponderosa/agents";
-import { classifyProviderFailure } from "@ponderosa/engines";
 import type { AssetStore } from "./assets.js";
 import {
   type ActiveRun,
   type AgentMessageCapability,
   type AgentRuntimeAuthority,
   type CreateServerOptions,
-  type EngineRegistration,
   type PersistentRuntime,
   type PonderosaServer,
 } from "./app-contracts.js";
@@ -28,7 +26,6 @@ interface CoordinationSchedulerContext {
   assets: AssetStore;
   coordinationV3: CoordinationV3Store;
   workspace: WorkspaceStore;
-  engines: ReadonlyMap<string, EngineRegistration>;
   activeRuns: Map<string, ActiveRun>;
   runtimeAuthorities: Map<string, AgentRuntimeAuthority>;
   engineAvailability: EngineAvailabilityStore;
@@ -73,7 +70,6 @@ export function createCoordinationScheduler(
     assets,
     coordinationV3,
     workspace,
-    engines,
     activeRuns,
     runtimeAuthorities,
     engineAvailability,
@@ -175,12 +171,6 @@ return new CoordinationV3Scheduler(
       ? dispatch.sourceConversationId
       : typeof dispatch?.conversationId === "string" ? dispatch.conversationId : leaseConversationId;
     const sourceChannel = dispatch?.sourceChannel === "main" ? "main" : undefined;
-    const retryingCapacity = lease.activations.some((activation) =>
-      activation.deliveryFailures >= 2 && classifyProviderFailure(activation.lastDeliveryError ?? "") === "capacity");
-    const retryAgent = store.getAgent(lease.agentId);
-    const failoverModel = retryingCapacity && !dispatch?.model && !retryAgent?.model && !retryAgent?.presetSnapshot?.model
-      ? engines.get(retryAgent?.activeEngine ?? "")?.adapter.listModels().find((option) => option.id)?.id
-      : undefined;
     const response = await app.inject({
       method: "POST",
       url: `/api/agents/${encodeURIComponent(lease.agentId)}/messages`,
@@ -190,7 +180,7 @@ return new CoordinationV3Scheduler(
       },
       payload: {
         text: dispatchText,
-        ...(typeof dispatch?.model === "string" ? { model: dispatch.model } : failoverModel ? { model: failoverModel } : {}),
+        ...(typeof dispatch?.model === "string" ? { model: dispatch.model } : {}),
         ...(typeof dispatch?.effort === "string" ? { effort: dispatch.effort } : {}),
         ...(typeof dispatch?.speed === "string"
           ? { speed: dispatch.speed }

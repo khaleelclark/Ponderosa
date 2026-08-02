@@ -124,6 +124,9 @@ function TechnicalRecord({ projectId, conversationId, item, elementId, focused =
       <Chip size="small" label={agentWorkStateLabel(item.state)} />
     </Stack>
     <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75, overflowWrap: "anywhere" }}>{item.summary}</Typography>
+    {item.providerRecovery ? <Typography variant="caption" color="warning.main" sx={{ display: "block", mt: 0.5 }}>
+      Retry eligible · next retry {new Date(item.providerRecovery.nextRetryAt).toLocaleString()} · {item.providerRecovery.deliveryFailures} failed attempt{item.providerRecovery.deliveryFailures === 1 ? "" : "s"}
+    </Typography> : null}
     <Stack direction="row" spacing={0.5} sx={{ mt: 0.5, alignItems: "center", minWidth: 0 }}>
       <Typography variant="caption" color="text.secondary" sx={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>
         {new Date(item.createdAt).toLocaleString()} · ID {item.recordId}
@@ -218,6 +221,8 @@ export function AgentWorkInspector({
     if (trace.state in counts) counts[trace.state] += 1;
     return counts;
   }, { active: 0, attention: 0, finished: 0 }) ?? { active: 0, attention: 0, finished: 0 };
+  const synthesisPendingCount = query.data?.traces.filter((trace) =>
+    trace.coordinationRecovery?.state === "synthesis_pending").length ?? 0;
 
   if (!open) return <></>;
   const orderedItems = [...(query.data?.items ?? [])].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
@@ -266,6 +271,8 @@ export function AgentWorkInspector({
                 <Typography variant="body2" fontWeight={800}>
                   {stateCounts.attention
                     ? `${stateCounts.attention} workflow${stateCounts.attention === 1 ? "" : "s"} need attention`
+                    : synthesisPendingCount
+                      ? `${synthesisPendingCount} workflow${synthesisPendingCount === 1 ? " has" : "s have"} child results ready and synthesis pending`
                     : stateCounts.active
                       ? `${stateCounts.active} workflow${stateCounts.active === 1 ? " is" : "s are"} still active`
                       : "No unresolved workflow problems in this evidence window"}
@@ -318,10 +325,20 @@ export function AgentWorkInspector({
                 sx={{ minWidth: 0, px: 1.5, minHeight: 64, "& .MuiAccordionSummary-content": { minWidth: 0, my: 1.25 } }}
               >
                 <Stack direction="row" spacing={1} sx={{ width: "100%", minWidth: 0, alignItems: "center" }}>
-                  <Chip size="small" color={trace.state === "attention" ? "warning" : trace.state === "active" ? "info" : "default"} label={trace.state === "attention" ? "Needs attention" : trace.state === "active" ? "Active" : "Finished"} />
+                  <Chip
+                    size="small"
+                    color={trace.coordinationRecovery ? "warning" : trace.state === "attention" ? "warning" : trace.state === "active" ? "info" : "default"}
+                    label={trace.coordinationRecovery?.state === "synthesis_pending"
+                      ? "Synthesis pending"
+                      : trace.coordinationRecovery ? "Provider blocked"
+                        : trace.state === "attention" ? "Needs attention" : trace.state === "active" ? "Active" : "Finished"}
+                  />
                   <Box sx={{ flex: 1, minWidth: 0 }}>
                     <Typography variant="subtitle2" fontWeight={750} noWrap>{trace.title}</Typography>
-                    <Typography variant="body2" color="text.secondary" noWrap>{trace.summary}</Typography>
+                    <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{trace.summary}</Typography>
+                    {trace.coordinationRecovery ? <Typography variant="caption" color="warning.main">
+                      Retry eligible · next retry {new Date(trace.coordinationRecovery.nextRetryAt).toLocaleString()}. Changing this Agent’s engine or model resumes the retained wake-up immediately.
+                    </Typography> : null}
                   </Box>
                   <Typography variant="caption" color="text.secondary">{traceItems.length} records</Typography>
                   <Typography variant="caption" color="text.secondary">{new Date(trace.updatedAt).toLocaleString()}</Typography>

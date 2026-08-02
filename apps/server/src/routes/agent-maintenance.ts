@@ -96,6 +96,14 @@ export function registerAgentMaintenanceRoutes(
         runtimePatch = { activeEngine, model: model ?? null, effort: effort ?? null };
       }
       const agent = store.updateAgent(request.params.id, { ...body, ...runtimePatch });
+      if (agent && runtimeSettingsChanged) {
+        const recovery = coordinationV3.resumeProviderBlockedAgent(agent.id, {
+          activeEngine: agent.activeEngine,
+          ...(agent.model ? { model: agent.model } : {}),
+          ...(agent.effort ? { effort: agent.effort } : {}),
+        });
+        if (recovery.activationIds.length > 0) notifyScheduler();
+      }
       if (agent && request.body?.archived !== undefined) await triggerSources.refresh();
       return agent!;
     },

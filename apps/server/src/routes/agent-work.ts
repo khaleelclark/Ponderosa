@@ -50,7 +50,9 @@ export class AgentWorkProjection {
             ? `${agentName(item.agentIds[0])} received the required results`
             : `${agentName(item.agentIds[0])}'s wait ended ${item.state.replaceAll("_", " ")}`;
       } else if (item.kind === "activation") {
-        item.title = ["pending", "retry_pending"].includes(item.state)
+        item.title = item.providerRecovery
+          ? `${agentName(item.agentIds[0])} is provider-blocked`
+          : ["pending", "retry_pending"].includes(item.state)
           ? `${agentName(item.agentIds[0])} has a queued wake-up`
           : ["leased", "attached"].includes(item.state)
             ? `${agentName(item.agentIds[0])}'s wake-up is being attached`
@@ -287,12 +289,27 @@ export class AgentWorkProjection {
         : active ? "active" : "finished";
       const counts = new Map<AgentWorkItemDto["kind"], number>();
       for (const item of ordered) counts.set(item.kind, (counts.get(item.kind) ?? 0) + 1);
-      const summary = kindOrder.flatMap((kind) => {
+      const providerBlockedActivations = ordered.filter((item) => item.kind === "activation" && item.providerRecovery);
+      const blockedJoinIds = new Set(providerBlockedActivations.flatMap((activation) =>
+        activation.relatedItemIds.filter((id) => componentById.get(id)?.kind === "join")));
+      const joins = ordered.filter((item) => item.kind === "join" && blockedJoinIds.has(item.id));
+      const joinMemberRequestIds = new Set(joins.flatMap((join) => join.joinMemberRequestIds ?? []));
+      const joinRequests = ordered.filter((item) =>
+        item.kind === "request" && joinMemberRequestIds.has(item.recordId));
+      const completedRequests = joinRequests.filter((item) => item.state === "completed");
+      const blockedRecovery = providerBlockedActivations[0]?.providerRecovery;
+      const synthesisPending = Boolean(blockedRecovery && joins.length > 0 && completedRequests.length > 0);
+      const countSummary = kindOrder.flatMap((kind) => {
         const count = counts.get(kind);
         return count
           ? [`${count} ${kind === "activation" ? "wake-up" : kind}${count === 1 ? "" : "s"}`]
           : [];
       }).join(" · ");
+      const summary = blockedRecovery
+        ? synthesisPending
+          ? `${completedRequests.length} child result${completedRequests.length === 1 ? " is" : "s are"} ready. ${agentName(providerBlockedActivations[0]?.agentIds[0])} synthesis is pending because the provider is unavailable.`
+          : `${agentName(providerBlockedActivations[0]?.agentIds[0])} is provider-blocked. The same wake-up remains eligible for retry.`
+        : countSummary;
       traces.push({
         id: `trace:${headline.id}`,
         state,
@@ -300,6 +317,16 @@ export class AgentWorkProjection {
         summary,
         agentIds: [...new Set(ordered.flatMap((item) => item.agentIds))],
         itemIds: ordered.map((item) => item.id),
+        ...(blockedRecovery ? { coordinationRecovery: {
+          state: synthesisPending ? "synthesis_pending" as const : "provider_blocked" as const,
+          classification: blockedRecovery.classification,
+          retryEligible: blockedRecovery.retryEligible,
+          nextRetryAt: blockedRecovery.nextRetryAt,
+          activationIds: providerBlockedActivations.map((item) => item.recordId),
+          requestIds: joinRequests.map((item) => item.recordId),
+          joinIds: joins.map((item) => item.recordId),
+          completedChildResults: completedRequests.length,
+        } } : {}),
         createdAt: ordered[0]!.createdAt,
         updatedAt: ordered.reduce(
           (latest, item) => item.updatedAt > latest ? item.updatedAt : latest,

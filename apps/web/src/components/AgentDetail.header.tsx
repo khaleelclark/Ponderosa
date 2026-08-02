@@ -46,15 +46,19 @@ export const AGENT_DETAIL_TABS: Array<{
 
 function AgentRunState({
   status,
+  providerBlocked,
   connected,
   startedAt,
 }: {
   status: AgentStatus;
+  providerBlocked?: boolean;
   connected: boolean;
   startedAt?: string;
 }): JSX.Element {
   const now = useAgentRunClock(startedAt);
-  const runState = startedAt
+  const runState = providerBlocked
+    ? "Provider blocked"
+    : startedAt
     ? `${agentStatusLabel(status)} · ${formatExecutionElapsed(startedAt, now)}`
     : agentStatusLabel(status);
   const connectionState = connected ? "Live" : "Reconnecting";
@@ -77,6 +81,7 @@ interface AgentDetailHeaderProps {
   lineageAgentId?: string;
   lineageLabel: string;
   status: AgentStatus;
+  providerBlocked?: boolean;
   connected: boolean;
   startedAt?: string;
   running: boolean;
@@ -108,6 +113,7 @@ export function AgentDetailHeader({
   lineageAgentId,
   lineageLabel,
   status,
+  providerBlocked,
   connected,
   startedAt,
   running,
@@ -177,6 +183,7 @@ export function AgentDetailHeader({
       status={
         <AgentRunState
           status={status}
+          providerBlocked={providerBlocked}
           connected={connected}
           startedAt={startedAt}
         />

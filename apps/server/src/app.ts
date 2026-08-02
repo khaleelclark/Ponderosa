@@ -713,7 +713,6 @@ app.server.on("upgrade", linkPreviewUpgrade);
     assets,
     coordinationV3,
     workspace,
-    engines,
     activeRuns,
     runtimeAuthorities,
     engineAvailability,
