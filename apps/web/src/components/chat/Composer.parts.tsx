@@ -10,7 +10,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { RefObject } from "react";
+import { memo, type RefObject } from "react";
 import { ComposerAttachment } from "./ComposerAttachment";
 import type { DraftUploadStatus } from "./ComposerAttachment";
 import type { ComposerProps } from "./Composer.types";
@@ -208,7 +208,7 @@ interface ComposerAttachmentListProps {
   retryDraftUpload(file: File): void;
 }
 
-export function ComposerAttachmentList({
+function ComposerAttachmentListView({
   draftUploadStates,
   files,
   removeFile,
@@ -238,6 +238,9 @@ export function ComposerAttachmentList({
     </Stack>
   ) : null;
 }
+
+/** Keep mounted image previews untouched while only composer text changes. */
+export const ComposerAttachmentList = memo(ComposerAttachmentListView);
 
 interface ComposerMentionStatusProps {
   destinationMode: ComposerProps["destinationMode"];
