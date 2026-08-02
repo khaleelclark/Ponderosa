@@ -65,6 +65,7 @@ interface AgentCommunicationRoutesContext {
     options?: { conversationIds?: string[] },
   ): void;
   publishWorkspaceSince(cursor: number): void;
+  resolveOperationalNotification(dedupeKey: string): void;
   notifyScheduler(): void;
   messageLifecycleFaults: CreateServerOptions["messageLifecycleFaults"];
   reconcileRuntimeCommunicationProjections(filter?: {
@@ -97,6 +98,7 @@ export function registerAgentCommunicationRoutes(
     stageCommunicationArtifact,
     publishCoordinationV3Changed,
     publishWorkspaceSince,
+    resolveOperationalNotification,
     notifyScheduler,
     messageLifecycleFaults,
     reconcileRuntimeCommunicationProjections,
@@ -587,6 +589,14 @@ export function registerAgentCommunicationRoutes(
           requests: [{ requestId, recipientAgentId: recipient.id, lifetime: { kind: "indefinite" }, payload }],
           ...(request.body?.createJoin === false ? {} : { join: { id: `${requestId}:join`, mode: "all" as const } }),
         });
+        const recoveredRollover = coordinationV3.contextRolloverRecoveryForRequest(
+          requestId,
+        );
+        if (recoveredRollover) {
+          resolveOperationalNotification(
+            `context-rollover:${recoveredRollover.id}:confirmation-missing`,
+          );
+        }
         const notificationCursor = workspace.cursor();
         for (const notification of workspace.listNotifications()) {
           if ((notification.status ?? "open") === "open" && notification.resolution?.kind === "coordination_request"

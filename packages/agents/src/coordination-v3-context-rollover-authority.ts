@@ -149,6 +149,25 @@ export class CoordinationV3ContextRolloverAuthority {
     return row ? this.view(row) : undefined;
   }
 
+  recoveryForRequest(requestId: string): ContextRolloverV3 | undefined {
+    const row = this.sqlite.prepare(`
+      SELECT rollover.*
+      FROM agent_activations activation
+      JOIN activation_sources request_source
+        ON request_source.activation_id = activation.id
+        AND request_source.source_kind = 'request'
+        AND request_source.source_id = ?
+      JOIN activation_sources recovery
+        ON recovery.activation_id = activation.id
+        AND recovery.source_kind = 'context_rollover_recovery'
+      JOIN context_rollovers rollover ON rollover.id = recovery.source_id
+      ORDER BY rollover.terminal_at DESC, rollover.updated_at DESC,
+        rollover.id DESC
+      LIMIT 1
+    `).get(requestId) as RolloverRow | undefined;
+    return row ? this.view(row) : undefined;
+  }
+
   active(projectId?: string): ContextRolloverV3[] {
     const rows = this.sqlite.prepare(`
       SELECT * FROM context_rollovers

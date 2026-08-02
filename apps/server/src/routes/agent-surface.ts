@@ -55,6 +55,7 @@ interface AgentSurfaceContext {
   stageCommunicationArtifact: RequestRoutes["stageCommunicationArtifact"];
   communicationArtifactAccess: CommunicationRoutes["communicationArtifactAccess"];
   reconcileRuntimeCommunicationProjections: CommunicationRoutes["reconcileRuntimeCommunicationProjections"];
+  resolveOperationalNotification: CommunicationRoutes["resolveOperationalNotification"];
   notifyScheduler(): void;
   isClosed(): boolean;
 }
@@ -99,6 +100,7 @@ export function registerAgentSurface(
     stageCommunicationArtifact,
     communicationArtifactAccess,
     reconcileRuntimeCommunicationProjections,
+    resolveOperationalNotification,
     notifyScheduler,
     isClosed,
   } = context;
@@ -239,6 +241,7 @@ registerAgentCommunicationRoutes(app, {
   notifyScheduler: notifyScheduler,
   messageLifecycleFaults: opts.messageLifecycleFaults,
   reconcileRuntimeCommunicationProjections,
+  resolveOperationalNotification,
   publish,
 });
 

@@ -9,6 +9,7 @@ import {
 import type { CreateActivationV3Input } from "./coordination-v3-runtime-communication-authority.js";
 import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runtime-scope-authority.js";
 import { isIso } from "./coordination-v3-runtime-validation.js";
+import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
 import type { CoordinationV3StoreSupport } from "./coordination-v3-store-support.js";
 import type {
   CoordinateV3Input,
@@ -242,17 +243,21 @@ export class CoordinationV3CoordinateAuthority {
           throw new Error("context rollover recovery request lineage is invalid");
         }
         const recovery = this.sqlite.prepare(`
+          ${REQUEST_SOURCE_LINEAGE_CTE}
           SELECT rollover.id
           FROM context_rollovers rollover
-          JOIN activation_sources source
-            ON source.activation_id = rollover.continuation_activation_id
+          JOIN request_source_lineage lineage
+            ON lineage.activation_id = rollover.continuation_activation_id
+          JOIN coordination_requests lineage_request
+            ON lineage_request.id = lineage.request_id
           WHERE rollover.project_id = ?
             AND rollover.agent_id = ?
             AND rollover.state IN ('failed','outcome_unknown')
             AND rollover.handoff_event_id IS NOT NULL
             AND rollover.last_error NOT LIKE 'rollover_seed_overflow:%'
-            AND source.source_kind = 'request'
-            AND source.source_id = ?
+            AND lineage_request.id = ?
+            AND lineage_request.project_id = rollover.project_id
+            AND lineage_request.recipient_agent_id = rollover.agent_id
             AND NOT EXISTS (
               SELECT 1 FROM activation_sources claimed
               WHERE claimed.source_kind = 'context_rollover_recovery'

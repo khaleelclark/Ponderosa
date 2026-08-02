@@ -973,6 +973,10 @@ export class CoordinationV3Store {
     return this.contextRolloverAuthority.recoveryForRun(runId, agentId);
   }
 
+  contextRolloverRecoveryForRequest(requestId: string): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.recoveryForRequest(requestId);
+  }
+
   activeContextRollovers(projectId?: string): ContextRolloverV3[] {
     return this.contextRolloverAuthority.active(projectId);
   }

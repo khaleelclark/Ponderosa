@@ -487,6 +487,100 @@ class PassiveClaudeAdapter extends BehavioralAdapter {
   override readonly displayName = "Passive Claude adapter";
 }
 
+class BoundRolloverRecoveryAdapter implements Adapter {
+  readonly id = "codex";
+  readonly displayName = "Bound rollover recovery adapter";
+  openCount = 0;
+  prompts: string[] = [];
+  readonly result = "Recovered lineage work completed from the exact handoff.";
+
+  listModels() { return [{ id: "test-model", label: "Test model" }]; }
+  listEfforts() { return [{ id: "high", label: "High" }]; }
+  async *seed(_options: SeedOptions): AsyncIterable<AgentEvent> {
+    throw new Error("bound recovery fixture must use openSession");
+  }
+  async *continue(_options: ContinueOptions): AsyncIterable<AgentEvent> {
+    throw new Error("bound recovery fixture must use openSession");
+  }
+
+  async openSession(options: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
+    this.openCount += 1;
+    const stage = this.openCount;
+    const sessionId = `bound-recovery-session-${stage}`;
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => { started = resolve; });
+    let closed!: () => void;
+    const closedPromise = new Promise<void>((resolve) => { closed = resolve; });
+    let alive = true;
+    const fixture = this;
+    const session: RuntimeSession = {
+      engineAgentId: sessionId,
+      events: {
+        async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
+          yield { type: "session", sessionId };
+          await startedPromise;
+          if (stage === 1) {
+            yield {
+              type: "error",
+              message: "replacement failed after accepting lineage handoff",
+            };
+          } else {
+            yield { type: "text", delta: fixture.result };
+            yield { type: "turn_done" };
+          }
+          await closedPromise;
+        },
+      },
+      startTurn: async (input) => {
+        fixture.prompts.push(input.prompt);
+        started();
+        return { turnId: `bound-recovery-turn-${stage}` };
+      },
+      contextUsage: () => ({
+        usedTokens: 20_000,
+        aggregateTokens: 120_000,
+        windowTokens: 200_000,
+        providerSessionGeneration: `bound-recovery-generation-${stage}`,
+      }),
+      steer: async () => ({ status: "not_active" }),
+      interrupt: async () => undefined,
+      isAlive: () => alive,
+      close: async () => {
+        alive = false;
+        closed();
+      },
+    };
+    options.onRuntimeSpawned(session);
+    return session;
+  }
+}
+
+function acknowledgeCoordinationLease(
+  coordination: CoordinationV3Store,
+  lease: NonNullable<ReturnType<CoordinationV3Store["leaseNextRun"]>>,
+): void {
+  coordination.preparePromptInjection({
+    injectionId: lease.injectionId,
+    runId: lease.runId,
+    fencingToken: lease.fencingToken,
+    prompt: "test provider input",
+  });
+  coordination.markRunStarted(lease.runId, lease.fencingToken);
+  coordination.markPromptSubmitted({
+    injectionId: lease.injectionId,
+    runId: lease.runId,
+    fencingToken: lease.fencingToken,
+    providerSessionId: `session:${lease.runId}`,
+  });
+  coordination.acknowledgePromptInjection({
+    injectionId: lease.injectionId,
+    runId: lease.runId,
+    fencingToken: lease.fencingToken,
+    providerSessionId: `session:${lease.runId}`,
+    providerTurnId: `turn:${lease.runId}`,
+  });
+}
+
 describe("server public API behavior", () => {
   let dataDir: string;
   let repoDir: string;
@@ -1792,6 +1886,12 @@ describe("server public API behavior", () => {
       handoffId: expect.any(String),
       state: "outcome_unknown",
     });
+    expect(new WorkspaceStore(dataDir).listNotifications()).toContainEqual(
+      expect.objectContaining({
+        dedupeKey: `context-rollover:${terminalRollover.id}:confirmation-missing`,
+        status: "open",
+      }),
+    );
 
     const retryResponse = await app.inject({
       method: "POST",
@@ -1838,7 +1938,261 @@ describe("server public API behavior", () => {
       SELECT COUNT(*) AS count FROM activation_sources
       WHERE source_kind = 'context_rollover_recovery' AND source_id = ?
     `).get(terminalRollover.id)).toEqual({ count: 1 });
+    expect(new WorkspaceStore(dataDir).listNotifications().filter((item) =>
+      item.dedupeKey === `context-rollover:${terminalRollover.id}:confirmation-missing` &&
+      (item.status ?? "open") === "open"
+    )).toEqual([]);
   });
+
+  it.each(["request_update", "join"] as const)(
+    "recovers the exact rollover handoff from a %s-derived continuation",
+    async (lineageKind) => {
+      const prefix = `lineage-recovery-${lineageKind}`;
+      const adapter = new BoundRolloverRecoveryAdapter();
+      const project = store.createProject({
+        label: `Rollover ${lineageKind} recovery`,
+        hostPath: repoDir,
+        defaultEngine: "codex",
+      });
+      const manager = store.createAgent(project.id, {
+        title: "Lineage Manager",
+        engine: "claude",
+      });
+      const worker = store.createAgent(project.id, {
+        title: "Lineage Worker",
+        engine: "codex",
+      });
+      const helper = store.createAgent(project.id, {
+        title: "Lineage Helper",
+        engine: "claude",
+      });
+      const coordination = new CoordinationV3Store(store.sqlite);
+      const originalRequestId = `${prefix}-original`;
+      coordination.coordinate({
+        projectId: project.id,
+        requesterAgentId: manager.id,
+        actorScope: `agent:${manager.id}`,
+        idempotencyKey: `${prefix}-assignment`,
+        requests: [{
+          requestId: originalRequestId,
+          recipientAgentId: worker.id,
+          lifetime: { kind: "indefinite" },
+          payload: { assignment: "Finish after dependency resolution and rollover" },
+        }],
+      });
+      const initialWorkerRun = coordination.leaseNextRun({
+        workerId: `${prefix}-initial-worker`,
+        excludedAgentIds: [manager.id, helper.id],
+      })!;
+      expect(initialWorkerRun.agentId).toBe(worker.id);
+      acknowledgeCoordinationLease(coordination, initialWorkerRun);
+
+      let sourceRun: NonNullable<ReturnType<CoordinationV3Store["leaseNextRun"]>>;
+      if (lineageKind === "request_update") {
+        const questionId = `${prefix}-question`;
+        coordination.updateRequest({
+          requestId: originalRequestId,
+          updateId: questionId,
+          kind: "question",
+          actor: { kind: "agent", id: worker.id },
+          runAuthorization: {
+            runId: initialWorkerRun.runId,
+            agentId: worker.id,
+            fencingToken: initialWorkerRun.fencingToken,
+          },
+          payload: { text: "Which contract should I use?" },
+        });
+        coordination.completeRun(
+          initialWorkerRun.runId,
+          initialWorkerRun.fencingToken,
+        );
+        coordination.updateRequest({
+          requestId: originalRequestId,
+          updateId: `${prefix}-answer`,
+          kind: "answer",
+          actor: { kind: "agent", id: manager.id },
+          inReplyToUpdateId: questionId,
+          payload: { text: "Use contract B" },
+        });
+        sourceRun = coordination.leaseNextRun({
+          workerId: `${prefix}-answer-worker`,
+          excludedAgentIds: [manager.id, helper.id],
+        })!;
+      } else {
+        const helperRequestId = `${prefix}-helper-request`;
+        coordination.coordinate({
+          projectId: project.id,
+          requesterAgentId: worker.id,
+          actorScope: `agent:${worker.id}`,
+          idempotencyKey: `${prefix}-dependency`,
+          requests: [{
+            requestId: helperRequestId,
+            recipientAgentId: helper.id,
+            lifetime: { kind: "indefinite" },
+            payload: { assignment: "Resolve the dependency" },
+          }],
+          join: {
+            id: `${prefix}-dependency-join`,
+            mode: "all",
+            continuationRequestIds: [originalRequestId],
+          },
+        });
+        coordination.completeRun(
+          initialWorkerRun.runId,
+          initialWorkerRun.fencingToken,
+        );
+        const helperRun = coordination.leaseNextRun({
+          workerId: `${prefix}-helper-worker`,
+          excludedAgentIds: [manager.id, worker.id],
+        })!;
+        expect(helperRun.agentId).toBe(helper.id);
+        acknowledgeCoordinationLease(coordination, helperRun);
+        coordination.updateRequest({
+          requestId: helperRequestId,
+          updateId: `${prefix}-helper-complete`,
+          kind: "completed",
+          actor: { kind: "agent", id: helper.id },
+          runAuthorization: {
+            runId: helperRun.runId,
+            agentId: helper.id,
+            fencingToken: helperRun.fencingToken,
+          },
+          payload: { text: "Dependency resolved" },
+        });
+        coordination.completeRun(helperRun.runId, helperRun.fencingToken);
+        sourceRun = coordination.leaseNextRun({
+          workerId: `${prefix}-join-worker`,
+          excludedAgentIds: [manager.id, helper.id],
+        })!;
+      }
+      expect(sourceRun.agentId).toBe(worker.id);
+      expect(store.sqlite.prepare(`
+        SELECT DISTINCT source_kind AS sourceKind
+        FROM scheduler_run_activations attached
+        JOIN activation_sources source
+          ON source.activation_id = attached.activation_id
+        WHERE attached.run_id = ?
+      `).all(sourceRun.runId)).toContainEqual({ sourceKind: lineageKind });
+      expect(coordination.requestIdsAttachedToRun(sourceRun.runId, worker.id))
+        .toContain(originalRequestId);
+      acknowledgeCoordinationLease(coordination, sourceRun);
+
+      const handoffId = `${prefix}-handoff`;
+      const sentinel = `EXACT-${lineageKind.toUpperCase()}-ROLLOVER-HANDOFF`;
+      store.appendEvent(worker.id, {
+        type: "agent_lifecycle",
+        status: "running",
+        reason: "active_run",
+        executionId: sourceRun.runId,
+      });
+      store.appendEvent(worker.id, {
+        type: "continuation_handoff",
+        handoffId,
+        executionId: sourceRun.runId,
+        text: `${sentinel} ${Array.from({ length: 300 }, (_, index) => `lineage-${index + 1}`).join(" ")}`,
+      });
+      const rollover = coordination.requestContextRollover({
+        projectId: project.id,
+        agentId: worker.id,
+        oldProviderSessionId: `${prefix}-old-session`,
+        providerSessionGeneration: `${prefix}-old-generation`,
+        detectedOccupancy: 80_000,
+        threshold: 75_000,
+        lowWaterMark: 45_000,
+        sourceRunId: sourceRun.runId,
+        sourceActivationIds: sourceRun.activationIds,
+        scopeKey: `agent:${worker.id}`,
+      }).rollover;
+      coordination.commitContextRolloverHandoff(rollover.id, handoffId);
+      coordination.completeRun(sourceRun.runId, sourceRun.fencingToken);
+      store.appendEvent(worker.id, {
+        type: "agent_lifecycle",
+        status: "completed",
+        reason: "turn_completed",
+        executionId: sourceRun.runId,
+      });
+      coordination.beginContextRolloverRetirement(rollover.id);
+      coordination.prepareContextRolloverContinuation({
+        id: rollover.id,
+        visibleResponseCommitted: false,
+      });
+
+      const app = server({
+        dataDir,
+        store,
+        engines: [
+          {
+            adapter,
+            authStatus: async () => ({ authenticated: true, detail: "test subscription" }),
+          },
+          {
+            adapter: new PassiveClaudeAdapter(),
+            authStatus: async () => ({ authenticated: true, detail: "test subscription" }),
+          },
+        ],
+        logger: false,
+        communicationV3: { pollMs: 5 },
+      });
+      await app.ready();
+      const failureDeadline = Date.now() + 5_000;
+      while (
+        coordination.getRequest(originalRequestId)?.state !== "outcome_unknown" &&
+        Date.now() < failureDeadline
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(coordination.getRequest(originalRequestId)?.state).toBe("outcome_unknown");
+      expect(adapter.openCount).toBe(1);
+      expect(new WorkspaceStore(dataDir).listNotifications()).toContainEqual(
+        expect.objectContaining({
+          dedupeKey: `context-rollover:${rollover.id}:confirmation-missing`,
+          status: "open",
+        }),
+      );
+
+      const retryResponse = await app.inject({
+        method: "POST",
+        url: `/api/requests/${originalRequestId}/retry`,
+        payload: { idempotencyKey: `${prefix}-authorized-retry` },
+      });
+      expect(retryResponse.statusCode).toBe(200);
+      const retry = retryResponse.json() as { requestIds: string[]; joinId: string };
+      const completionDeadline = Date.now() + 5_000;
+      while (
+        coordination.getRequest(retry.requestIds[0]!)?.state !== "completed" &&
+        Date.now() < completionDeadline
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(coordination.getRequest(retry.requestIds[0]!)?.state).toBe("completed");
+      expect(store.sqlite.prepare(`
+        SELECT state FROM coordination_joins WHERE id = ?
+      `).get(retry.joinId)).toEqual({ state: "satisfied" });
+      expect(adapter.prompts[1]!.split(sentinel)).toHaveLength(2);
+
+      const manifest = store.sqlite.prepare(`
+        SELECT input.source_manifest_json AS sourceManifest
+        FROM provider_inputs input
+        JOIN scheduler_run_activations attached
+          ON attached.run_id = input.scheduler_run_id
+        JOIN activation_sources source
+          ON source.activation_id = attached.activation_id
+        WHERE source.source_kind = 'request' AND source.source_id = ?
+        ORDER BY input.created_at DESC LIMIT 1
+      `).get(retry.requestIds[0]!) as { sourceManifest: string };
+      expect(JSON.parse(manifest.sourceManifest)).toMatchObject({
+        sources: expect.arrayContaining([expect.objectContaining({
+          kind: "continuation_handoff",
+          ref: handoffId,
+          delivery: "submitted",
+        })]),
+      });
+      expect(new WorkspaceStore(dataDir).listNotifications().filter((item) =>
+        item.dedupeKey === `context-rollover:${rollover.id}:confirmation-missing` &&
+        (item.status ?? "open") === "open"
+      )).toEqual([]);
+    },
+  );
 
   it("terminalizes an unconfirmed recorded replacement session during daemon restart", async () => {
     const project = store.createProject({

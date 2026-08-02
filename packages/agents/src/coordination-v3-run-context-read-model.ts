@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
 
 export class CoordinationV3RunContextReadModel {
   constructor(private readonly sqlite: Database.Database) {}
@@ -12,43 +13,29 @@ export class CoordinationV3RunContextReadModel {
   }
 
   requestIdsAttachedToRun(runId: string, agentId: string): string[] {
-    const directRows = this.sqlite.prepare(`
+    const rows = this.sqlite.prepare(`
+      ${REQUEST_SOURCE_LINEAGE_CTE}
       SELECT DISTINCT request.id, request.created_at
       FROM scheduler_runs run
       JOIN scheduler_run_activations attached ON attached.run_id = run.id
-      JOIN activation_sources source ON source.activation_id = attached.activation_id
-      LEFT JOIN coordination_request_updates request_update
-        ON source.source_kind = 'request_update' AND request_update.id = source.source_id
-      JOIN coordination_requests request ON request.id = CASE
-        WHEN source.source_kind = 'request' THEN source.source_id
-        WHEN source.source_kind = 'request_update' THEN request_update.request_id
-      END
-      WHERE run.id = ? AND run.agent_id = ? AND request.project_id = run.project_id
-        AND source.source_kind IN ('request', 'request_update')
-      ORDER BY request.created_at, request.id
-    `).all(runId, agentId) as Array<{ id: string; created_at: string }>;
-    const continuationRows = this.sqlite.prepare(`
-      SELECT DISTINCT request.id, request.created_at
-      FROM scheduler_runs run
-      JOIN scheduler_run_activations attached ON attached.run_id = run.id
-      JOIN activation_sources source
-        ON source.activation_id = attached.activation_id AND source.source_kind = 'join'
-      JOIN coordination_joins join_record ON join_record.id = source.source_id
-      JOIN json_each(join_record.continuation_request_ids_json) continuation
-      JOIN coordination_requests request ON request.id = continuation.value
+      JOIN request_source_lineage lineage
+        ON lineage.activation_id = attached.activation_id
+      JOIN coordination_requests request ON request.id = lineage.request_id
       WHERE run.id = ? AND run.agent_id = ? AND request.project_id = run.project_id
         AND (
-          request.recipient_agent_id = run.agent_id
-          OR (request.requester_agent_id = run.agent_id
-            AND request.state = 'awaiting_answer')
+          lineage.source_kind IN ('request', 'request_update')
+          OR (
+            lineage.source_kind = 'join'
+            AND (
+              request.recipient_agent_id = run.agent_id
+              OR (request.requester_agent_id = run.agent_id
+                AND request.state = 'awaiting_answer')
+            )
+          )
         )
+      ORDER BY request.created_at, request.id
     `).all(runId, agentId) as Array<{ id: string; created_at: string }>;
-    return [...new Map(
-      [...directRows, ...continuationRows].map((row) => [row.id, row]),
-    ).values()]
-      .sort((left, right) =>
-        left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id))
-      .map((row) => row.id);
+    return rows.map((row) => row.id);
   }
 
   outboundAwaitingQuestionRequestIdsAttachedToRun(
