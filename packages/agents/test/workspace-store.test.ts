@@ -116,12 +116,13 @@ describe("WorkspaceStore canonical replay", () => {
     const { dir, store } = fixture();
     store.createNotification({ projectId: "project", conversationId: "one", communicationEventId: "one", kind: "mentions", title: "One", body: "First" });
     store.createNotification({ projectId: "project", conversationId: "two", communicationEventId: "two", kind: "direct_responses", title: "Two", body: "Second" });
+    store.createNotification({ projectId: "project", kind: "operational", title: "Three", body: "Third" });
 
-    expect(store.readAllNotifications()).toBe(2);
+    expect(store.readAllNotifications()).toBe(3);
     expect(store.readAllNotifications()).toBe(0);
     expect(new WorkspaceStore(dir).listNotifications().every((item) => Boolean(item.readAt))).toBe(true);
 
-    expect(store.clearNotifications()).toBe(2);
+    expect(store.clearNotifications()).toBe(3);
     expect(store.clearNotifications()).toBe(0);
     expect(new WorkspaceStore(dir).listNotifications()).toEqual([]);
   });
