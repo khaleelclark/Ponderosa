@@ -27,4 +27,18 @@ export type AgentLifecycleReason =
   | "execution_lease_expired" | "execution_interrupted" | "runtime_event_consumer_stalled"
   | "manager_report_missing";
 
-export type AgentOperationalReason = AgentLifecycleReason | "pending_user_decision";
+/** Durable retry state for provider quota/capacity failures. The Activation IDs
+ * remain stable while the scheduler backs off or an operator changes runtime settings. */
+export interface ProviderBlockedWorkDto {
+  classification: "capacity" | "rate_limit";
+  activationIds: string[];
+  retryEligible: boolean;
+  blockedAt: string;
+  nextRetryAt: string;
+  deliveryFailures: number;
+}
+
+export type AgentOperationalReason =
+  | AgentLifecycleReason
+  | "pending_user_decision"
+  | "provider_capacity_unavailable";

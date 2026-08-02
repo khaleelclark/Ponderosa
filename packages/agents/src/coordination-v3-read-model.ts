@@ -692,7 +692,7 @@ export class CoordinationV3ReadModel {
 
       const activationSelection = selection("activation", "id");
       const activationRows = trimUnscopedOverflow(this.sqlite.prepare(`
-        SELECT id, agent_id, kind, state, created_at, updated_at
+        SELECT id, agent_id, kind, state, delivery_failures, last_delivery_error, available_at, created_at, updated_at
         FROM agent_activations
         WHERE project_id = ? AND (? IS NULL OR scope_key = ?) ${activationSelection.sql}
         ORDER BY CASE WHEN state IN ('pending', 'retry_pending', 'attached') THEN 0 ELSE 1 END,
@@ -701,19 +701,36 @@ export class CoordinationV3ReadModel {
         input.projectId, scopeKey ?? null, scopeKey ?? null,
         ...activationSelection.params, queryLimit,
       ) as Array<{
-        id: string; agent_id: string; kind: string; state: string; created_at: string; updated_at: string;
+        id: string; agent_id: string; kind: string; state: string;
+        delivery_failures: number; last_delivery_error: string | null; available_at: string;
+        created_at: string; updated_at: string;
       }>);
-      for (const row of activationRows) add({
-        id: `activation:${row.id}`, recordId: row.id, referenceIds: [row.id], kind: "activation", state: row.state,
-        title: row.kind === "coordination_late_result" ? "Late result needs audit" : "Queued wake-up",
-        summary: row.kind === "coordination_late_result"
-          ? "A recipient finished after the original outcome became uncertain. Audit current state; do not redo the work."
-          : ["pending", "retry_pending", "attached"].includes(row.state)
-          ? "Work is queued or being attached to a Run." : row.state === "consumed" ? "The wake-up was consumed by its Run."
-            : `The wake-up ended ${row.state.replaceAll("_", " ")}.`,
-        agentIds: [row.agent_id], relatedItemIds: [],
-        createdAt: row.created_at, updatedAt: row.updated_at,
-      });
+      for (const row of activationRows) {
+        const providerFailure = /^\[(capacity|rate_limit)\]\s/u.exec(row.last_delivery_error ?? "")?.[1] as
+          | "capacity" | "rate_limit" | undefined;
+        const providerRecovery = row.state === "retry_pending" && providerFailure ? {
+          classification: providerFailure,
+          activationIds: [row.id],
+          retryEligible: true,
+          blockedAt: row.updated_at,
+          nextRetryAt: row.available_at,
+          deliveryFailures: row.delivery_failures,
+        } : undefined;
+        add({
+          id: `activation:${row.id}`, recordId: row.id, referenceIds: [row.id], kind: "activation", state: row.state,
+          title: row.kind === "coordination_late_result" ? "Late result needs audit" : "Queued wake-up",
+          summary: providerRecovery
+            ? `Provider ${providerRecovery.classification === "capacity" ? "capacity" : "quota"} is unavailable; this wake-up is retained for retry.`
+            : row.kind === "coordination_late_result"
+              ? "A recipient finished after the original outcome became uncertain. Audit current state; do not redo the work."
+              : ["pending", "retry_pending", "attached"].includes(row.state)
+                ? "Work is queued or being attached to a Run." : row.state === "consumed" ? "The wake-up was consumed by its Run."
+                  : `The wake-up ended ${row.state.replaceAll("_", " ")}.`,
+          agentIds: [row.agent_id], relatedItemIds: [],
+          ...(providerRecovery ? { providerRecovery } : {}),
+          createdAt: row.created_at, updatedAt: row.updated_at,
+        });
+      }
 
       const runSelection = selection("run", "scheduler.id");
       const runRows = trimUnscopedOverflow(this.sqlite.prepare(`

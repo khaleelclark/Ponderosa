@@ -1290,6 +1290,46 @@ describe("CoordinationV3Store transactions", () => {
     }).replayed).toBe(true);
   });
 
+  it("rolls back a terminal result, Request, Join, and wake together when wake persistence fails", () => {
+    store.coordinate({
+      projectId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,
+      idempotencyKey: "atomic-terminal", requests: [
+        { requestId: "atomic-child", recipientAgentId: recipientA, lifetime: indefinite },
+      ],
+      join: { id: "atomic-join", mode: "all" },
+    });
+    opened.client.exec(`
+      CREATE TRIGGER fail_atomic_join_wake
+      BEFORE INSERT ON agent_activations
+      WHEN NEW.kind = 'coordination_join_satisfied'
+      BEGIN SELECT RAISE(ABORT, 'simulated crash before wake commit'); END;
+    `);
+    expect(() => store.updateRequest({
+      requestId: "atomic-child", updateId: "atomic-result", kind: "completed",
+      actor: { kind: "agent", id: recipientA }, payload: { text: "Result is durable only atomically." },
+    })).toThrow("simulated crash");
+    expect(store.getRequest("atomic-child")).toMatchObject({ state: "open" });
+    expect(opened.client.prepare("SELECT state FROM coordination_joins WHERE id = 'atomic-join'").get())
+      .toEqual({ state: "open" });
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM coordination_request_updates WHERE id = 'atomic-result'
+    `).get()).toEqual({ count: 0 });
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations WHERE kind = 'coordination_join_satisfied'
+    `).get()).toEqual({ count: 0 });
+
+    opened.client.exec("DROP TRIGGER fail_atomic_join_wake");
+    expect(store.updateRequest({
+      requestId: "atomic-child", updateId: "atomic-result", kind: "completed",
+      actor: { kind: "agent", id: recipientA }, payload: { text: "Result is durable only atomically." },
+    })).toMatchObject({ state: "completed", replayed: false });
+    expect(opened.client.prepare("SELECT state FROM coordination_joins WHERE id = 'atomic-join'").get())
+      .toEqual({ state: "satisfied" });
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations WHERE kind = 'coordination_join_satisfied'
+    `).get()).toEqual({ count: 1 });
+  });
+
   it("streams aggregate join progress once per terminal member before one final wake", () => {
     store.coordinate({
       projectId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,
@@ -2044,6 +2084,61 @@ describe("CoordinationV3Store scheduler", () => {
     expect(opened.client.prepare(`SELECT state FROM scheduler_prompt_injections WHERE id = ?`).get(lease.injectionId)).toEqual({ state: "cancelled" });
     expect(store.leaseNextRun({ workerId: "worker-2", now: "2026-07-15T00:00:02.999Z" })).toBeUndefined();
     expect(store.leaseNextRun({ workerId: "worker-2", now: "2026-07-15T00:00:03.000Z" })?.activationIds).toEqual(lease.activationIds);
+  });
+
+  it("retains provider-blocked work beyond the ordinary retry budget and resumes the same wake-up once", () => {
+    const activationId = store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "provider-blocked", kind: "ordinary", payload: { text: "Synthesize" },
+      now: "2026-07-15T00:00:00.000Z",
+    });
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const now = `2026-07-15T00:00:0${attempt}.000Z`;
+      const lease = store.leaseNextRun({ workerId: `worker-${attempt}`, now })!;
+      expect(lease.activationIds).toEqual([activationId]);
+      expect(store.failRun({
+        runId: lease.runId,
+        fencingToken: lease.fencingToken,
+        workerId: `worker-${attempt}`,
+        sameRunResumable: false,
+        confirmedNotExecuted: true,
+        failureKind: "rate_limit",
+        error: "[rate_limit] Usage limit reached",
+        maxDeliveryFailures: 2,
+        retryDelayMs: attempt === 5 ? 60_000 : 0,
+        now,
+      })).toBe("retry");
+    }
+    expect(opened.client.prepare(`
+      SELECT state, delivery_failures, terminal_outcome FROM agent_activations WHERE id = ?
+    `).get(activationId)).toEqual({
+      state: "retry_pending", delivery_failures: 6, terminal_outcome: null,
+    });
+    expect(store.providerBlockedState(recipientA)).toEqual({
+      classification: "rate_limit",
+      activationIds: [activationId],
+      retryEligible: true,
+      blockedAt: "2026-07-15T00:00:05.000Z",
+      nextRetryAt: "2026-07-15T00:01:05.000Z",
+      deliveryFailures: 6,
+    });
+    expect(store.agentWorkItems({ projectId }).items.find((item) => item.id === `activation:${activationId}`))
+      .toMatchObject({
+        state: "retry_pending",
+        providerRecovery: {
+          classification: "rate_limit",
+          activationIds: [activationId],
+          retryEligible: true,
+          deliveryFailures: 6,
+        },
+      });
+    expect(store.resumeProviderBlockedAgent(recipientA, "2026-07-15T00:00:10.000Z")).toEqual({
+      activationIds: [activationId], resumed: 1,
+    });
+    expect(store.resumeProviderBlockedAgent(recipientA, "2026-07-15T00:00:10.000Z")).toEqual({
+      activationIds: [activationId], resumed: 0,
+    });
+    expect(store.leaseNextRun({ workerId: "manual-resume", now: "2026-07-15T00:00:10.000Z" })?.activationIds)
+      .toEqual([activationId]);
   });
 
   it("terminalizes a permanent dispatch rejection with an operator-visible outcome", () => {

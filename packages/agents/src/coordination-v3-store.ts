@@ -573,6 +573,10 @@ export class CoordinationV3Store {
     return this.schedulerStatusReadModel.getAgentAvailability(agentId);
   }
 
+  providerBlockedState(agentId: string): import("@ponderosa/core").ProviderBlockedWorkDto | undefined {
+    return this.schedulerStatusReadModel.providerBlockedState(agentId);
+  }
+
   activeRunCount(): number {
     return this.schedulerStatusReadModel.activeRunCount();
   }
@@ -878,6 +882,13 @@ export class CoordinationV3Store {
     };
   }): "retry" | "terminal" | "resume_same_run" | "outcome_unknown" {
     return this.runLifecycleAuthority.failRun(input);
+  }
+
+  resumeProviderBlockedAgent(
+    agentId: string,
+    now = new Date().toISOString(),
+  ): { activationIds: string[]; resumed: number } {
+    return this.runLifecycleAuthority.resumeProviderBlockedAgent(agentId, now);
   }
 
   cancelAgentRun(input: { agentId: string; idempotencyKey: string; expectedRunId?: string; now?: string }): CancellationResult {

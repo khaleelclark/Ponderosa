@@ -3,6 +3,7 @@ import type { ArtifactKind } from "./artifacts.js";
 import type {
   AgentOperationalReason,
   AgentOperationalStatus,
+  ProviderBlockedWorkDto,
 } from "./common.js";
 import type { AgentPresetDto } from "./projects.js";
 import type { CreateTriggerRequest } from "./triggers.js";
@@ -268,6 +269,8 @@ export interface AgentHealthDto {
   };
   /** A provider process currently owns this Agent's resumable session. */
   providerSessionLive?: boolean;
+  /** Present while canonical work is retained for provider quota/capacity retry. */
+  providerBlocked?: ProviderBlockedWorkDto;
 }
 
 export interface AgentHealthProjectionDto {

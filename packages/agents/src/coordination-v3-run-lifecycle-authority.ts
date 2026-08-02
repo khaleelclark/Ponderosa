@@ -408,6 +408,7 @@ export class CoordinationV3RunLifecycleAuthority {
         const terminalOutcome = input.retryable === false
           ? input.terminalOutcome ?? "permanent_failure"
           : undefined;
+        const providerUnavailable = input.failureKind === "capacity" || input.failureKind === "rate_limit";
         const currentFailures = (this.sqlite.prepare(`
           SELECT COALESCE(MAX(delivery_failures), 0) AS failures
           FROM agent_activations
@@ -438,17 +439,17 @@ export class CoordinationV3RunLifecycleAuthority {
           SET delivery_failures = delivery_failures + 1,
             last_delivery_error = ?,
             state = CASE
-              WHEN ? IS NOT NULL OR delivery_failures + 1 >= ?
+              WHEN ? IS NOT NULL OR (? = 1 AND delivery_failures + 1 >= ?)
                 THEN 'failed'
               ELSE 'retry_pending'
             END,
             terminal_outcome = CASE
               WHEN ? IS NOT NULL THEN ?
-              WHEN delivery_failures + 1 >= ? THEN 'retry_exhausted'
+              WHEN ? = 1 AND delivery_failures + 1 >= ? THEN 'retry_exhausted'
               ELSE NULL
             END,
             terminal_at = CASE
-              WHEN ? IS NOT NULL OR delivery_failures + 1 >= ?
+              WHEN ? IS NOT NULL OR (? = 1 AND delivery_failures + 1 >= ?)
                 THEN ?
               ELSE NULL
             END,
@@ -460,11 +461,14 @@ export class CoordinationV3RunLifecycleAuthority {
         `).run(
           error,
           terminalOutcome ?? null,
+          providerUnavailable ? 0 : 1,
           maximum,
           terminalOutcome ?? null,
           terminalOutcome ?? null,
+          providerUnavailable ? 0 : 1,
           maximum,
           terminalOutcome ?? null,
+          providerUnavailable ? 0 : 1,
           maximum,
           now,
           availableAt,
@@ -557,6 +561,34 @@ export class CoordinationV3RunLifecycleAuthority {
         );
       }
       return disposition;
+    })();
+  }
+
+  /** Make retained provider-blocked work immediately eligible after an explicit
+   * operator runtime change. This advances the existing Activations only; it
+   * never creates a second wake-up. */
+  resumeProviderBlockedAgent(
+    agentId: string,
+    now = new Date().toISOString(),
+  ): { activationIds: string[]; resumed: number } {
+    return this.sqlite.transaction(() => {
+      const rows = this.sqlite.prepare(`
+        SELECT id FROM agent_activations
+        WHERE agent_id = ? AND state = 'retry_pending'
+          AND (last_delivery_error LIKE '[capacity] %'
+            OR last_delivery_error LIKE '[rate_limit] %')
+        ORDER BY id
+      `).all(agentId) as Array<{ id: string }>;
+      if (!rows.length) return { activationIds: [], resumed: 0 };
+      const result = this.sqlite.prepare(`
+        UPDATE agent_activations
+        SET available_at = ?, updated_at = ?
+        WHERE agent_id = ? AND state = 'retry_pending'
+          AND available_at > ?
+          AND (last_delivery_error LIKE '[capacity] %'
+            OR last_delivery_error LIKE '[rate_limit] %')
+      `).run(now, now, agentId, now);
+      return { activationIds: rows.map((row) => row.id), resumed: result.changes };
     })();
   }
 

@@ -6,6 +6,7 @@ import {
   type CoordinationJoinState,
   type CoordinationJoinWakePolicy,
   type DerivedAgentAvailability,
+  type ProviderBlockedWorkDto,
 } from "@ponderosa/core";
 
 export class CoordinationV3SchedulerStatusReadModel {
@@ -33,6 +34,34 @@ export class CoordinationV3SchedulerStatusReadModel {
       WHERE recipient_agent_id = ? AND state IN ('awaiting_answer', 'waiting_dependency') LIMIT 1
     `).get(agentId));
     return deriveAgentAvailability({ hasActiveRun, hasActionableActivation, ownsOpenJoin, hasSuspendedRecipientRequest });
+  }
+
+  providerBlockedState(agentId: string): ProviderBlockedWorkDto | undefined {
+    const rows = this.sqlite.prepare(`
+      SELECT id, delivery_failures, last_delivery_error, available_at, updated_at
+      FROM agent_activations
+      WHERE agent_id = ? AND state = 'retry_pending'
+        AND (last_delivery_error LIKE '[capacity] %'
+          OR last_delivery_error LIKE '[rate_limit] %')
+      ORDER BY available_at, id
+    `).all(agentId) as Array<{
+      id: string;
+      delivery_failures: number;
+      last_delivery_error: string;
+      available_at: string;
+      updated_at: string;
+    }>;
+    if (!rows.length) return undefined;
+    return {
+      classification: rows.some((row) => row.last_delivery_error.startsWith("[capacity]"))
+        ? "capacity"
+        : "rate_limit",
+      activationIds: rows.map((row) => row.id),
+      retryEligible: true,
+      blockedAt: rows.reduce((latest, row) => row.updated_at > latest ? row.updated_at : latest, rows[0]!.updated_at),
+      nextRetryAt: rows[0]!.available_at,
+      deliveryFailures: Math.max(...rows.map((row) => row.delivery_failures)),
+    };
   }
 
   activeRunCount(): number {

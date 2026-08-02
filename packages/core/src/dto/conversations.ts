@@ -10,7 +10,7 @@ import type {
 } from "../coordination-v3.js";
 import type { AgentDto } from "./agents.js";
 import type { ArtifactKind, CommunicationAttachmentDto, ImageAttachmentDto } from "./artifacts.js";
-import type { HistoryWindowDto } from "./common.js";
+import type { HistoryWindowDto, ProviderBlockedWorkDto } from "./common.js";
 import type { ProjectDto } from "./projects.js";
 import type { DecisionDto } from "./workspace.js";
 
@@ -265,6 +265,8 @@ export interface AgentWorkItemDto {
   relatedItemIds: string[];
   /** Loaded on demand so the summary projection stays lightweight. */
   details?: Array<{ label: string; value: string }>;
+  /** Present on the stable wake-up retained after a provider quota/capacity failure. */
+  providerRecovery?: ProviderBlockedWorkDto;
   createdAt: string;
   updatedAt: string;
 }
@@ -277,6 +279,16 @@ export interface AgentWorkTraceDto {
   summary: string;
   agentIds: string[];
   itemIds: string[];
+  coordinationRecovery?: {
+    state: "provider_blocked" | "synthesis_pending";
+    classification: "capacity" | "rate_limit";
+    retryEligible: boolean;
+    nextRetryAt: string;
+    activationIds: string[];
+    requestIds: string[];
+    joinIds: string[];
+    completedChildResults: number;
+  };
   createdAt: string;
   updatedAt: string;
 }

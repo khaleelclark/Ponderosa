@@ -875,6 +875,7 @@ export function AgentDetail({
         lineageAgentId={lineageAgentId}
         lineageLabel={lineageLabel}
         status={status}
+        providerBlocked={Boolean(projectedHealth?.providerBlocked)}
         connected={stream.connected}
         startedAt={runtimeActivity?.startedAt}
         running={running}

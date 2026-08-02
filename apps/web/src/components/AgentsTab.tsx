@@ -870,7 +870,7 @@ export function AgentsTab({
                       >
                         <Chip
                           size="small"
-                          label={agentStatusLabel(status)}
+                          label={healthByAgentId.get(agent.id)?.providerBlocked ? "Provider blocked" : agentStatusLabel(status)}
                           color={agentStatusColor(status)}
                         />
                         <Typography

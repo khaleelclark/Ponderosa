@@ -506,6 +506,7 @@ export function createServerReadModels(context: ReadModelContext) {
       compactingAgents: scheduledSessionRollovers,
       availability: (agentId) => coordinationV3.getAgentAvailability(agentId),
       pendingDecisionAt: (agentId) => pendingDecisionAt.get(agentId),
+      providerBlocked: (agentId) => coordinationV3.providerBlockedState(agentId),
       latestEvent: (agentId) => store.latestHealthObservation(agentId),
     });
     return {
