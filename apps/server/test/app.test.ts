@@ -14,11 +14,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type {
   Adapter,
   AgentEvent,
+  CommunicationEvent,
   ContinueOptions,
   SeedOptions,
 } from "@ponderosa/core";
 import { DEFAULT_ASSET_LIMITS } from "@ponderosa/core";
-import { AgentStore, WorkspaceStore } from "@ponderosa/agents";
+import { AgentStore, CoordinationV3Store, WorkspaceStore } from "@ponderosa/agents";
 import { ClaudeAdapter } from "@ponderosa/engines";
 import { secureFileAuthoritySupported } from "@ponderosa/native-host";
 import { createServer, type EngineRegistration } from "../src/app.js";
@@ -917,6 +918,115 @@ describe("server public API behavior", () => {
       .toBe("#Crater-Lake hey");
     expect(messages.find((item) => item.communicationEventId === secondCommunicationEventId)?.text)
       .toBe("#Crater-Lake hey again");
+  });
+
+  it("reconciles Direct recipient handles from send-time identity after rename or deletion", async () => {
+    const project = store.createProject({ label: "Recovered Direct mentions", hostPath: repoDir });
+    const conversationId = project.lastConversationId!;
+    const renamedAgent = store.createAgent(project.id, {
+      title: "Crater Lake",
+      engine: "codex",
+      conversationId,
+    });
+    const deletedAgent = store.createAgent(project.id, {
+      title: "Timber",
+      engine: "codex",
+      conversationId,
+    });
+    const coordination = new CoordinationV3Store(store.sqlite);
+    const seedInterruptedProjection = (input: {
+      eventId: string;
+      agentId: string;
+      recipientLabel: string;
+      text: string;
+    }) => {
+      const createdAt = new Date().toISOString();
+      const communication: CommunicationEvent = {
+        eventId: input.eventId,
+        schemaVersion: 2,
+        projectId: project.id,
+        conversationId,
+        sender: { kind: "user", userId: "local-operator" },
+        intent: "user_dm",
+        audience: {
+          kind: "user_agent",
+          userId: "local-operator",
+          agentId: input.agentId,
+        },
+        text: input.text,
+        identity: {
+          senderLabel: "User",
+          recipientLabels: { [input.agentId]: input.recipientLabel },
+        },
+        createdAt,
+      };
+      store.appendCommunicationEvent(communication);
+      coordination.recordRuntimeCommunication({
+        id: `dispatch:${input.eventId}:${input.agentId}`,
+        projectId: project.id,
+        sender: communication.sender,
+        intent: communication.intent,
+        audience: communication.audience,
+        payload: {
+          communication,
+          dispatch: {
+            text: input.text,
+            communicationEventId: input.eventId,
+            sourceConversationId: null,
+            sourceChannel: null,
+            shareWithOrganization: false,
+            activeRunDelivery: "steer",
+            attachments: [],
+            model: null,
+            effort: null,
+            speed: null,
+          },
+        },
+        now: createdAt,
+      });
+    };
+    seedInterruptedProjection({
+      eventId: "direct-before-rename",
+      agentId: renamedAgent.id,
+      recipientLabel: "Crater Lake",
+      text: "#Crater-Lake hey",
+    });
+    seedInterruptedProjection({
+      eventId: "direct-before-deletion",
+      agentId: deletedAgent.id,
+      recipientLabel: "Timber",
+      text: "hello",
+    });
+
+    store.updateAgent(renamedAgent.id, { title: "Ridge" });
+    store.deleteAgent(deletedAgent.id);
+
+    const app = server({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      communicationV3: { maxConcurrentRuns: 0, pollMs: 60_000 },
+    });
+    await app.ready();
+    const deadline = Date.now() + 2_000;
+    while (
+      !store.getProjectedConversationMessageById(conversationId, "main", "direct-before-deletion") &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    expect(store.getProjectedConversationMessageById(
+      conversationId,
+      "main",
+      "direct-before-rename",
+    )?.text).toBe("#Crater-Lake hey");
+    expect(store.getProjectedConversationMessageById(
+      conversationId,
+      "main",
+      "direct-before-deletion",
+    )?.text).toBe("#Timber hello");
   });
 
   it("preserves multi-Agent Direct mention bindings after recipients are renamed or deleted", async () => {

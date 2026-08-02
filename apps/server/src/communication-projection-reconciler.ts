@@ -318,7 +318,10 @@ export function createCommunicationProjectionReconciler(
                     ? dispatch.targetAuthorAgentId
                     : recipientIds.length === 1 ? recipientIds[0] : undefined;
                   const target = targetAgentId ? store.getAgent(targetAgentId) : undefined;
-                  return target ? renderDirectMessage(target.title, dispatchText) : dispatchText;
+                  const targetLabel = targetAgentId
+                    ? canonical.identity?.recipientLabels?.[targetAgentId] ?? target?.title
+                    : undefined;
+                  return targetLabel ? renderDirectMessage(targetLabel, dispatchText) : dispatchText;
                 })()
               : dispatchText;
         const roomTarget = projectionTargets.find((target) =>
