@@ -188,6 +188,7 @@ export function ComposerProjectDestinationAction({
       variant="caption"
       color="text.secondary"
       sx={{
+        display: { xs: "none", sm: "block" },
         maxWidth: 360,
         fontSize: 11,
         lineHeight: 1.25,
