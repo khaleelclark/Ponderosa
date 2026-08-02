@@ -60,18 +60,14 @@ describe("All Messages mention presentation", () => {
       items: [{
         communicationEventId: "communication-one",
         messageId: "message-one",
-        communicationIntent: "user_dm",
-        directMessageAgents: [
-          { id: "agent-oak", title: "Redwood" },
-          { id: "agent-pine", title: "Pine" },
-        ],
+        communicationIntent: "collaboration",
         agentMentions: [
           { handle: "Oak", agentId: "agent-oak" },
           { handle: "Pine", agentId: "agent-pine" },
         ],
         project: { id: project.id, label: project.label },
         source: {
-          kind: "project",
+          kind: "team",
           conversationId: "conversation-one",
           title: "Primary",
         },

@@ -1,10 +1,29 @@
-import { messageTagTokens, type AgentDto } from "@ponderosa/core";
+import {
+  messageTagTokens,
+  type AgentDto,
+  type CommunicationEvent,
+} from "@ponderosa/core";
 
 const RESERVED_HANDLES = new Set(["broadcast", "everyone", "user"]);
 const NUMERIC_HANDLE_PATTERN = /^\p{N}+$/u;
 
 function mentionHandle(title: string): string {
   return title.trim().replace(/\s+/gu, "-").replace(/[^\p{L}\p{N}_-]/gu, "");
+}
+
+/** Canonical Agent audience for mention presentation; prose never supplies it. */
+export function communicationRecipientAgentIds(
+  communication: CommunicationEvent | undefined,
+): string[] {
+  if (communication?.intent === "collaboration") {
+    return communication.audience.agentIds;
+  }
+  if (communication?.schemaVersion !== 2 || communication.intent !== "user_dm") {
+    return [];
+  }
+  return communication.audience.kind === "user_agent"
+    ? [communication.audience.agentId]
+    : communication.audience.agentIds;
 }
 
 /** Current names and immutable send-time labels are aliases for one recipient. */

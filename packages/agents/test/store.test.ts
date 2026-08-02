@@ -1081,17 +1081,22 @@ describe("AgentStore — All Chat", () => {
       { surface: "direct_agent_audit", key: recipient.id },
     ]);
     append({
+      eventId: "user-team-note", schemaVersion: 2, projectId: project.id, conversationId: room.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
+      audience: { kind: "agents", agentIds: [recipient.id] }, text: "Please review", createdAt: "2026-07-19T10:02:30.000Z",
+    }, [{ surface: "collaboration_view", key: room.id }]);
+    append({
       eventId: "private-question", schemaVersion: 2, projectId: project.id, conversationId: room.id,
       sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
       audience: { kind: "user_agent", userId: "local-operator", agentId: recipient.id }, text: "Private question", createdAt: "2026-07-19T10:03:00.000Z",
     }, [{ surface: "conversation", key: room.id }, { surface: "direct_agent_audit", key: recipient.id }]);
 
     const recent = store.getAllChatPage({ limit: 2 });
-    expect(recent.items.map((item) => item.communicationEventId)).toEqual(["agent-update", "private-question"]);
+    expect(recent.items.map((item) => item.communicationEventId)).toEqual(["user-team-note", "private-question"]);
     expect(recent.items[0]).toMatchObject({
-      source: { kind: "project", conversationId: room.id },
-      directMessageAgent: { id: author.id, title: "Author" },
+      source: { kind: "team", conversationId: room.id },
     });
+    expect(recent.items[0]?.directMessageAgent).toBeUndefined();
     expect(recent.items[1]).toMatchObject({
       source: { kind: "project", conversationId: room.id },
       directMessageAgent: { id: recipient.id, title: "Recipient" },
@@ -1099,8 +1104,11 @@ describe("AgentStore — All Chat", () => {
     expect(recent.history).toMatchObject({ limit: 2, hasMore: true, cursor: expect.any(String) });
 
     const older = store.getAllChatPage({ limit: 2, cursor: recent.history.cursor });
-    expect(older.items.map((item) => item.communicationEventId)).toEqual(["broadcast"]);
+    expect(older.items.map((item) => item.communicationEventId)).toEqual(["broadcast", "agent-update"]);
     expect(older.items[0]?.directMessageAgent).toBeUndefined();
+    expect(older.items[1]).toMatchObject({
+      directMessageAgent: { id: author.id, title: "Author" },
+    });
     expect(older.history).toEqual({ limit: 2, hasMore: false });
     expect([...recent.items, ...older.items].some((item) => item.communicationEventId === "team-note")).toBe(false);
     expect(() => store.getAllChatPage({ cursor: `${recent.history.cursor}x` })).toThrow("invalid history cursor");

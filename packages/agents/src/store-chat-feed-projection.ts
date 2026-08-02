@@ -397,7 +397,10 @@ export class AgentChatFeedProjection {
       LEFT JOIN agents chat_agent ON search.chat_kind = 'agent' AND chat_agent.id = search.chat_id
       LEFT JOIN agents author_agent ON author_agent.id = search.author_agent_id
       WHERE 1 = 1
-        AND search.communication_intent IN ('broadcast', 'direct_to_user', 'user_dm')
+        AND (
+          search.communication_intent IN ('broadcast', 'direct_to_user', 'user_dm')
+          OR (search.communication_intent = 'collaboration' AND search.sender_kind = 'user')
+        )
         ${boundary ? "AND (feed.order_key < ? OR (feed.order_key = ? AND feed.row_key < ?))" : ""}
       ORDER BY feed.order_key DESC, feed.row_key DESC
       LIMIT ?

@@ -2,6 +2,7 @@ import type { AllChatPageDto } from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
 import type { SearchRoutesContext } from "../server-context.js";
 import {
+  communicationRecipientAgentIds,
   recipientMentionIdentities,
   resolveAgentMentionBindings,
 } from "../mention-bindings.js";
@@ -45,18 +46,19 @@ export function registerSearchRoutes(
         ? { items: [], history: { limit, hasMore: false } }
         : store.getAllChatPage({ limit, cursor: combined ? combined.messages : request.query.cursor });
       const messageItems = messagePage.items.map(item => {
-        if (item.communicationIntent !== "user_dm") return item;
-        const recipientIds = item.directMessageAgents?.map(agent => agent.id) ?? [];
         const communication = store.getCommunicationEvent(
           item.project.id,
           item.communicationEventId,
         );
+        const recipientIds = communicationRecipientAgentIds(communication);
+        if (!recipientIds.length) return item;
+        const projectAgents = store.listAgents(item.project.id);
         const agentMentions = resolveAgentMentionBindings(
           item.text,
           recipientIds,
           recipientMentionIdentities(
             recipientIds,
-            item.directMessageAgents ?? [],
+            projectAgents,
             communication?.identity?.recipientLabels,
           ),
         );
