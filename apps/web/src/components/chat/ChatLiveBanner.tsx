@@ -1,7 +1,7 @@
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import { Stack, Typography } from "@mui/material";
 import { alpha } from "@mui/material/styles";
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 export function ChatLiveBanner({ children }: { children?: ReactNode }): JSX.Element | null {
   if (!children) return null;
@@ -35,4 +35,24 @@ export function ChatLiveBanner({ children }: { children?: ReactNode }): JSX.Elem
       </Typography>
     </Stack>
   );
+}
+
+export function TimedChatLiveBanner({
+  children,
+  durationMs = 3_000,
+  onDismiss,
+}: {
+  children?: ReactNode;
+  durationMs?: number;
+  onDismiss?(): void;
+}): JSX.Element | null {
+  const [visible, setVisible] = useState(true);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setVisible(false);
+      onDismiss?.();
+    }, durationMs);
+    return () => window.clearTimeout(timer);
+  }, [durationMs, onDismiss]);
+  return visible ? <ChatLiveBanner>{children}</ChatLiveBanner> : null;
 }

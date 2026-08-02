@@ -43,6 +43,7 @@ import { agentMentionHandle } from "../mentions";
 import { AttentionSurface } from "./AttentionSurface";
 import { notificationTechnicalFocusId } from "../technicalFocus";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
+import { TimedChatLiveBanner } from "./chat/ChatLiveBanner";
 import { ChatSurface } from "./chat/ChatSurface";
 import { uniqueBy } from "../collections";
 import TagIcon from "@mui/icons-material/Tag";
@@ -155,6 +156,15 @@ export function AllChatView({
   const [speed, setSpeed] = useState("");
   const initializedRuntime = useRef<string>();
   const [notice, setNotice] = useState<string>();
+  const [directSendConfirmation, setDirectSendConfirmation] = useState<{
+    id: number;
+    text: string;
+  }>();
+  const directSendConfirmationSequence = useRef(0);
+  const dismissDirectSendConfirmation = useCallback(
+    () => setDirectSendConfirmation(undefined),
+    [],
+  );
   const [mentionInsertRequest, setMentionInsertRequest] = useState<{
     id: string;
     text: string;
@@ -473,9 +483,12 @@ export function AllChatView({
       }
     },
     onSuccess: () => {
-      setNotice(
-        `Direct message sent to ${replyTarget?.title ?? "Agent"}.`,
-      );
+      setNotice(undefined);
+      directSendConfirmationSequence.current += 1;
+      setDirectSendConfirmation({
+        id: directSendConfirmationSequence.current,
+        text: `Direct message sent to ${replyTarget?.title ?? "Agent"}.`,
+      });
       void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
       if (replyTarget) {
         void queryClient.invalidateQueries({
@@ -490,6 +503,7 @@ export function AllChatView({
     setSelectedId(item.communicationEventId);
     setMentionInsertRequest(undefined);
     setNotice(undefined);
+    setDirectSendConfirmation(undefined);
     send.reset();
   };
   const clearReplyTarget = () => {
@@ -943,6 +957,27 @@ export function AllChatView({
         }}
         sx={{ minWidth: 0, bgcolor: "transparent" }}
       >
+        {directSendConfirmation ? (
+          <Box
+            sx={{
+              height: 28,
+              px: { xs: 1, sm: 1.5 },
+              mt: 1,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              overflow: "hidden",
+              pointerEvents: "none",
+            }}
+          >
+            <TimedChatLiveBanner
+              key={directSendConfirmation.id}
+              onDismiss={dismissDirectSendConfirmation}
+            >
+              {directSendConfirmation.text}
+            </TimedChatLiveBanner>
+          </Box>
+        ) : null}
         {notice ? (
           <Alert severity="success" sx={{ mx: 1.5, mt: 1 }}>
             {notice}
