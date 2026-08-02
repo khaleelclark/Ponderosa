@@ -16,16 +16,25 @@ function pathImplementation(value: string): typeof path.posix | typeof path.win3
  * continue to use the unmodified absolute host path. */
 export function displayProjectPath(input: ProjectPathDisplayContext): string {
   const implementation = pathImplementation(input.hostPath);
-  const hostPath = implementation.normalize(input.hostPath);
-  const homePath = implementation.normalize(input.homePath);
-  const managedRoot = implementation.normalize(input.managedWorkspacesRoot);
+  const normalizeComparisonPath = (value: string): string => {
+    let normalized = implementation.normalize(value);
+    const root = implementation.parse(normalized).root;
+    while (normalized.length > root.length && normalized.endsWith(implementation.sep)) {
+      normalized = normalized.slice(0, -implementation.sep.length);
+    }
+    return normalized;
+  };
+  const hostPath = normalizeComparisonPath(input.hostPath);
+  const homePath = normalizeComparisonPath(input.homePath);
+  const managedRoot = normalizeComparisonPath(input.managedWorkspacesRoot);
   const caseFold = implementation === path.win32
     ? (value: string) => value.toLocaleLowerCase()
     : (value: string) => value;
   const equal = (left: string, right: string) => caseFold(left) === caseFold(right);
   const inside = (candidate: string, root: string): string | undefined => {
     const relative = implementation.relative(root, candidate);
-    return relative && !relative.startsWith("..") && !implementation.isAbsolute(relative)
+    return relative && relative !== ".." && !relative.startsWith(`..${implementation.sep}`)
+      && !implementation.isAbsolute(relative)
       ? relative
       : undefined;
   };

@@ -43,6 +43,47 @@ describe("displayProjectPath", () => {
     })).toBe("Private workspace");
   });
 
+  it("ignores trailing separators when comparing homes and managed workspaces", () => {
+    expect(displayProjectPath({
+      hostPath: "/home/phoenix/",
+      homePath: "/home/phoenix",
+      managedWorkspacesRoot: "/var/lib/ponderosa/workspaces/",
+    })).toBe("~");
+    expect(displayProjectPath({
+      hostPath: "/home/phoenix/projects/demo/",
+      homePath: "/home/phoenix/",
+      managedWorkspacesRoot: "/var/lib/ponderosa/workspaces",
+    })).toBe("~/projects/demo");
+    expect(displayProjectPath({
+      hostPath: `/home/phoenix/.ponderosa/workspaces/project-${uuid}/`,
+      homePath: "/home/phoenix/",
+      managedWorkspacesRoot: "/home/phoenix/.ponderosa/workspaces/",
+    })).toBe("Private workspace");
+    expect(displayProjectPath({
+      hostPath: "C:\\Users\\Pat\\",
+      homePath: "c:\\users\\pat",
+      managedWorkspacesRoot: "C:\\ProgramData\\Ponderosa\\workspaces\\",
+    })).toBe("~");
+    expect(displayProjectPath({
+      hostPath: `C:\\Users\\Pat\\AppData\\Local\\Ponderosa\\workspaces\\project-${uuid}\\`,
+      homePath: "C:\\Users\\Pat\\",
+      managedWorkspacesRoot: "C:\\Users\\Pat\\AppData\\Local\\Ponderosa\\workspaces\\",
+    })).toBe("Private workspace");
+  });
+
+  it("humanizes valid home children whose names begin with two dots", () => {
+    expect(displayProjectPath({
+      hostPath: "/home/phoenix/..project",
+      homePath: "/home/phoenix",
+      managedWorkspacesRoot: "/var/lib/ponderosa/workspaces",
+    })).toBe("~/..project");
+    expect(displayProjectPath({
+      hostPath: "C:\\Users\\Pat\\..project",
+      homePath: "C:\\Users\\Pat",
+      managedWorkspacesRoot: "C:\\ProgramData\\Ponderosa\\workspaces",
+    })).toBe("~\\..project");
+  });
+
   it("does not hide named managed folders", () => {
     expect(displayProjectPath({
       hostPath: "/home/phoenix/.ponderosa/workspaces/client-demo",
