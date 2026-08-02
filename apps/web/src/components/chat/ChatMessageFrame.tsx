@@ -216,6 +216,7 @@ export function ChatMessageFrame({
           </Box>
           {message.belowBody}
           <MessageActionsAndTimestamp
+            actionAlign={fromOperator ? "end" : "start"}
             mobileTimestampAlign={fromOperator ? "end" : "start"}
             mobileTimestampRevealed={mobileTimestampRevealed}
             showTimestamp={false}

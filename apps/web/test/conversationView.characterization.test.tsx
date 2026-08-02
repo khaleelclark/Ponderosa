@@ -420,6 +420,12 @@ describe("ConversationView public behavior", () => {
       "Sending without a recipient starts a new Agent.",
     )).toBeNull();
     expect(screen.getAllByText("Broadcast")).toHaveLength(1);
+    expect(
+      document
+        .getElementById("master-message-broadcast-message")
+        ?.querySelector(".chat-message-actions")
+        ?.getAttribute("data-action-alignment"),
+    ).toBe("end");
 
     client.clear();
   });
