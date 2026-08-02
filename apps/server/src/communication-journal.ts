@@ -58,7 +58,6 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
     communicationReconciliationTimer.unref();
   };
   const withSendTimeIdentity = (event: CommunicationEvent): CommunicationEvent => {
-    if (event.identity) return event;
     const recipientAgentIds = event.intent === "collaboration"
       ? event.audience.agentIds
       : event.schemaVersion === 2 && event.intent === "user_dm"
@@ -68,19 +67,27 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
       const title = store.getAgent(agentId)?.title;
       return title ? [[agentId, title]] : [];
     }));
-    const senderLabel = event.sender.kind === "agent"
-      ? store.getAgent(event.sender.agentId)?.title ?? "Agent"
-      : event.sender.kind === "user"
-        ? workspace.getPreferences().profile.displayName
-        : "Ponderosa";
-    const conversationLabel = event.conversationId
-      ? store.getConversation(event.conversationId)?.title
-      : undefined;
+    const mergedRecipientLabels = {
+      ...recipientLabels,
+      ...event.identity?.recipientLabels,
+    };
+    const senderLabel = event.identity?.senderLabel ?? (
+      event.sender.kind === "agent"
+        ? store.getAgent(event.sender.agentId)?.title ?? "Agent"
+        : event.sender.kind === "user"
+          ? workspace.getPreferences().profile.displayName
+          : "Ponderosa"
+    );
+    const conversationLabel = event.identity?.conversationLabel
+      ?? (event.conversationId ? store.getConversation(event.conversationId)?.title : undefined);
     return {
       ...event,
       identity: {
+        ...event.identity,
         senderLabel,
-        ...(Object.keys(recipientLabels).length ? { recipientLabels } : {}),
+        ...(Object.keys(mergedRecipientLabels).length
+          ? { recipientLabels: mergedRecipientLabels }
+          : {}),
         ...(conversationLabel ? { conversationLabel } : {}),
       },
     };

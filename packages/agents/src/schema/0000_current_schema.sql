@@ -97,8 +97,7 @@ CREATE TABLE context_rollovers (
   last_error TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  terminal_at TEXT,
-  UNIQUE (agent_id, provider_session_generation)
+  terminal_at TEXT
 );
 CREATE TABLE agent_conversation_memberships (
   agent_id TEXT NOT NULL, conversation_id TEXT NOT NULL, position INTEGER NOT NULL,
@@ -661,6 +660,12 @@ CREATE UNIQUE INDEX idx_continuation_handoff_source_run
   ON continuation_handoffs (agent_id, source_execution_id);
 CREATE INDEX idx_context_rollovers_agent_state
   ON context_rollovers (agent_id, state, updated_at DESC);
+CREATE UNIQUE INDEX idx_context_rollovers_generation_owner
+  ON context_rollovers (agent_id, provider_session_generation)
+  WHERE state IN (
+    'requested', 'handoff_committed', 'session_retiring',
+    'continuation_ready', 'completed'
+  );
 CREATE UNIQUE INDEX idx_context_rollovers_continuation_activation
   ON context_rollovers (continuation_activation_id)
   WHERE continuation_activation_id IS NOT NULL;

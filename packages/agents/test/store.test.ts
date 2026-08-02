@@ -1966,14 +1966,42 @@ describe("AgentStore — append + projection", () => {
       type: "continuation_handoff",
       handoffId: "handoff-from-failed-run",
       executionId: "failed-rollover-run",
-      text: "This must never seed a successor.",
+      text: "Exact durable rollover state may seed this once.",
     });
     store.appendEvent(agentId, {
       type: "agent_lifecycle", status: "failed", reason: "runtime_error", executionId: "failed-rollover-run",
     });
     expect(store.pendingContinuationHandoff(agentId)).toBeUndefined();
+    expect(store.continuationHandoffForRollover(
+      agentId,
+      "handoff-from-failed-run",
+      "failed-rollover-run",
+    )).toMatchObject({
+      id: "handoff-from-failed-run",
+      text: "Exact durable rollover state may seed this once.",
+    });
+    expect(store.continuationHandoffForRollover(
+      agentId,
+      "handoff-from-failed-run",
+      "another-run",
+    )).toBeUndefined();
     store.rebuildProjections();
     expect(store.pendingContinuationHandoff(agentId)).toBeUndefined();
+    expect(store.continuationHandoffForRollover(
+      agentId,
+      "handoff-from-failed-run",
+      "failed-rollover-run",
+    )).toMatchObject({ id: "handoff-from-failed-run" });
+    expect(store.consumeContinuationHandoff(
+      agentId,
+      "handoff-from-failed-run",
+      "rollover-continuation-run",
+    )).toBe(true);
+    expect(store.consumeContinuationHandoff(
+      agentId,
+      "handoff-from-failed-run",
+      "rollover-continuation-run",
+    )).toBe(false);
   });
 });
 

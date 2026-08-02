@@ -165,11 +165,16 @@ function establishReadIndexes(sqlite: Database.Database): void {
       last_error TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      terminal_at TEXT,
-      UNIQUE (agent_id, provider_session_generation)
+      terminal_at TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_context_rollovers_agent_state
       ON context_rollovers (agent_id, state, updated_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_context_rollovers_generation_owner
+      ON context_rollovers (agent_id, provider_session_generation)
+      WHERE state IN (
+        'requested', 'handoff_committed', 'session_retiring',
+        'continuation_ready', 'completed'
+      );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_context_rollovers_continuation_activation
       ON context_rollovers (continuation_activation_id)
       WHERE continuation_activation_id IS NOT NULL;

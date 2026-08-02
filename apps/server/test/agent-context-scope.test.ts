@@ -35,10 +35,15 @@ describe("Agent context scopes", () => {
       schemaVersion: 2,
       projectId: project.id,
       conversationId: blue.id,
-      sender: { kind: "user", userId: "local-operator" },
+      sender: { kind: "agent", agentId: agent.id },
       intent: "user_dm",
       audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id },
       text: "Remember BLUE-ALBATROSS",
+      identity: {
+        senderLabel: "Probe",
+        recipientLabels: { [agent.id]: "Probe" },
+        conversationLabel: "Channel Blue",
+      },
       createdAt: "2026-08-01T12:00:00.000Z",
     };
     store.appendCommunicationEvent(event);
@@ -47,6 +52,8 @@ describe("Agent context scopes", () => {
       text: event.text,
       communicationEventId: event.eventId,
     });
+    store.updateAgent(agent.id, { title: "Renamed Probe" });
+    store.updateConversation(blue.id, { title: "Renamed Blue" });
 
     const token = "agent-context-token";
     const capability: AgentMessageCapability = {
@@ -96,7 +103,7 @@ describe("Agent context scopes", () => {
           originConversationId: blue.id,
           originConversationTitle: blue.title,
           timestamp: event.createdAt,
-          author: { kind: "user", id: "local-operator" },
+          author: { kind: "agent", id: agent.id, displayName: "Probe" },
           communicationType: "user_dm",
         },
       }],

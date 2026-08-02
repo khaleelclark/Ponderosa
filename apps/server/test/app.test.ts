@@ -51,6 +51,23 @@ class BehavioralAdapter implements Adapter {
   }
 }
 
+class MissingRolloverHandoffAdapter extends BehavioralAdapter {
+  override async *seed(options: SeedOptions): AsyncIterable<AgentEvent> {
+    this.seedCalls += 1;
+    this.seedOptions.push(options);
+    yield { type: "session", sessionId: "missing-handoff-session" };
+    yield {
+      type: "context_usage",
+      providerSessionId: "missing-handoff-session",
+      providerSessionGeneration: "missing-handoff-generation",
+      usedTokens: 80_000,
+      aggregateTokens: 10_000_000,
+      windowTokens: 200_000,
+    };
+    yield { type: "turn_done" };
+  }
+}
+
 class CrossChatPersistentAdapter implements Adapter {
   readonly id = "codex";
   readonly displayName = "Cross-chat persistent adapter";
@@ -97,6 +114,83 @@ class CrossChatPersistentAdapter implements Adapter {
         started();
         return { turnId: "cross-chat-turn" };
       },
+      steer: async () => ({ status: "not_active" }),
+      interrupt: async () => undefined,
+      isAlive: () => alive,
+      close: async () => {
+        alive = false;
+        closed();
+      },
+    };
+    options.onRuntimeSpawned(session);
+    return session;
+  }
+}
+
+class ManualRolloverPersistentAdapter implements Adapter {
+  readonly id = "codex";
+  readonly displayName = "Manual rollover persistent adapter";
+  openCount = 0;
+  rolloverCalls = 0;
+  toolResult?: { success: boolean; text: string };
+  readonly handoff = Array.from({ length: 300 }, (_, index) => `handoff-${index + 1}`).join(" ");
+
+  listModels() { return [{ id: "test-model", label: "Test model" }]; }
+  listEfforts() { return [{ id: "high", label: "High" }]; }
+  async *seed(_options: SeedOptions): AsyncIterable<AgentEvent> {
+    throw new Error("manual rollover fixture must use openSession");
+  }
+  async *continue(_options: ContinueOptions): AsyncIterable<AgentEvent> {
+    throw new Error("manual rollover fixture must use openSession");
+  }
+
+  async openSession(options: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
+    this.openCount += 1;
+    const generation = this.openCount === 1 ? "manual-old-generation" : "manual-fresh-generation";
+    const sessionId = this.openCount === 1 ? "manual-old-session" : "manual-fresh-session";
+    const shouldRequestRollover = this.openCount === 1;
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => { started = resolve; });
+    let closed!: () => void;
+    const closedPromise = new Promise<void>((resolve) => { closed = resolve; });
+    let alive = true;
+    const fixture = this;
+    const session: RuntimeSession = {
+      engineAgentId: sessionId,
+      events: {
+        async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
+          yield { type: "session", sessionId };
+          await startedPromise;
+          if (shouldRequestRollover) {
+            fixture.rolloverCalls += 1;
+            fixture.toolResult = await options.handleDynamicToolCall?.({
+              name: "ponderosa_rollover",
+              arguments: { handoff: fixture.handoff },
+            });
+          } else {
+            yield {
+              type: "context_usage",
+              providerSessionId: sessionId,
+              providerSessionGeneration: generation,
+              usedTokens: 20_000,
+              aggregateTokens: 120_000,
+              windowTokens: 200_000,
+            };
+          }
+          yield { type: "turn_done" };
+          await closedPromise;
+        },
+      },
+      startTurn: async () => {
+        started();
+        return { turnId: `${generation}-turn` };
+      },
+      contextUsage: () => ({
+        usedTokens: shouldRequestRollover ? 80_000 : 20_000,
+        aggregateTokens: 10_000_000,
+        windowTokens: 200_000,
+        providerSessionGeneration: generation,
+      }),
       steer: async () => ({ status: "not_active" }),
       interrupt: async () => undefined,
       isAlive: () => alive,
@@ -591,23 +685,46 @@ describe("server public API behavior", () => {
       conversationIds: [homeId, blue.id],
       primaryConversationId: homeId,
     });
-    const blueDirect: CommunicationEvent = {
-      eventId: "blue-albatross-source",
-      schemaVersion: 2,
-      projectId: project.id,
-      conversationId: blue.id,
-      sender: { kind: "user", userId: "local-operator" },
-      intent: "user_dm",
-      audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id },
-      text: "Remember the private token BLUE-ALBATROSS.",
-      createdAt: "2026-08-01T12:00:00.000Z",
-    };
-    store.appendCommunicationEvent(blueDirect);
-    store.appendEvent(agent.id, {
-      type: "user_message",
-      text: blueDirect.text,
-      communicationEventId: blueDirect.eventId,
+    const app = server({
+      dataDir,
+      store,
+      engines: [{
+        adapter,
+        authStatus: async () => ({ authenticated: true, detail: "test subscription" }),
+      }],
+      logger: false,
+      communicationV3: { pollMs: 5 },
     });
+    const blueSent = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${blue.id}/direct-messages`,
+      payload: {
+        text: "Remember the private token BLUE-ALBATROSS.",
+        recipients: [{ agentId: agent.id }],
+        idempotencyKey: randomUUID(),
+      },
+    });
+    expect(blueSent.statusCode, blueSent.body).toBe(200);
+    const blueMessageId = blueSent.json<{ messageId: string }>().messageId;
+    const blueDirectMessage = store.getConversationMessages(blue.id, "main")
+      .find((message) => message.id === blueMessageId)!;
+    const blueDirect = store.getCommunicationEvent(
+      project.id,
+      blueDirectMessage.communicationEventId!,
+    )!;
+    const blueDeadline = Date.now() + 3_000;
+    while (!adapter.toolResult && Date.now() < blueDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(adapter.toolResult?.success).toBe(true);
+    const blueAgentResponseId = JSON.parse(adapter.toolResult!.text) as { eventId: string };
+    expect(store.getCommunicationEvent(project.id, blueAgentResponseId.eventId)?.identity).toMatchObject({
+      senderLabel: "Multi-Chat Probe",
+      conversationLabel: "Channel Blue",
+    });
+    adapter.toolResult = undefined;
+    store.updateConversation(blue.id, { title: "Renamed Blue" });
+    store.updateAgent(agent.id, { title: "Renamed Probe" });
     const otherDirect: CommunicationEvent = {
       eventId: "red-other-source",
       schemaVersion: 2,
@@ -645,16 +762,6 @@ describe("server public API behavior", () => {
       message: { messageId: "red-shared-message", role: "user", createdAt: redBroadcast.createdAt },
     });
 
-    const app = server({
-      dataDir,
-      store,
-      engines: [{
-        adapter,
-        authStatus: async () => ({ authenticated: true, detail: "test subscription" }),
-      }],
-      logger: false,
-      communicationV3: { pollMs: 5 },
-    });
     const sent = await app.inject({
       method: "POST",
       url: `/api/conversations/${homeId}/direct-messages`,
@@ -667,33 +774,43 @@ describe("server public API behavior", () => {
     expect(sent.statusCode, sent.body).toBe(200);
 
     const deadline = Date.now() + 3_000;
-    while (adapter.startCalls === 0 && Date.now() < deadline) {
+    while (adapter.startCalls < 2 && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    expect(adapter.startCalls).toBe(1);
-    const submittedHistory = adapter.openOptions[0]!.history.map((message) => message.text).join("\n");
+    expect(adapter.startCalls).toBe(2);
+    const submittedHistory = adapter.openOptions[1]!.history.map((message) => message.text).join("\n");
     expect(submittedHistory).toContain("BLUE-ALBATROSS");
     expect(submittedHistory).toContain(`origin chat: Channel Blue (${blue.id})`);
+    expect(submittedHistory).toContain("author: Multi-Chat Probe");
     expect(submittedHistory).not.toContain(otherDirect.text);
     expect(submittedHistory).not.toContain(redBroadcast.text);
 
     const runDeadline = Date.now() + 3_000;
     let providerInput = store.getRuns(agent.id)
       .map((run) => store.getProviderInput(run.id, true))
-      .find(Boolean);
+      .find((input) => input?.exactPrompt.includes("What private token did I give you"));
     while (!providerInput && Date.now() < runDeadline) {
       await new Promise((resolve) => setTimeout(resolve, 10));
       providerInput = store.getRuns(agent.id)
         .map((run) => store.getProviderInput(run.id, true))
-        .find(Boolean);
+        .find((input) => input?.exactPrompt.includes("What private token did I give you"));
     }
     expect(providerInput?.sourceManifest.communicationEventIds).toContain(blueDirect.eventId);
+    expect(providerInput?.sourceManifest.communicationEventIds).toContain(blueAgentResponseId.eventId);
     expect(providerInput?.sourceManifest.sources).toContainEqual(expect.objectContaining({
       kind: "communication",
       ref: blueDirect.eventId,
       conversationId: blue.id,
       conversationTitle: blue.title,
       author: "User",
+      communicationIntent: "user_dm",
+    }));
+    expect(providerInput?.sourceManifest.sources).toContainEqual(expect.objectContaining({
+      kind: "communication",
+      ref: blueAgentResponseId.eventId,
+      conversationId: blue.id,
+      conversationTitle: "Channel Blue",
+      author: "Multi-Chat Probe",
       communicationIntent: "user_dm",
     }));
     expect(providerInput?.exactPrompt).toContain("BLUE-ALBATROSS");
@@ -719,6 +836,279 @@ describe("server public API behavior", () => {
       .messages.find((message) => message.communicationEventId === responseEventId.eventId)?.text)
       .toBe(`#user ${adapter.responseText}`);
   });
+
+  it("fails visibly when pressure-triggered rollover ends without its required handoff", async () => {
+    const workspace = new WorkspaceStore(dataDir);
+    workspace.updatePreferences({
+      contextRolloverEnabled: true,
+      contextRolloverTokens: 75_000,
+      contextRolloverWindowFraction: 0.7,
+    });
+    const adapter = new MissingRolloverHandoffAdapter();
+    const project = store.createProject({
+      label: "Missing rollover handoff",
+      hostPath: repoDir,
+      defaultEngine: "codex",
+    });
+    const agent = store.createAgent(project.id, {
+      title: "Handoff Probe",
+      engine: "codex",
+      conversationId: project.lastConversationId,
+    });
+    const app = server({
+      dataDir,
+      store,
+      engines: [{
+        adapter,
+        authStatus: async () => ({ authenticated: true, detail: "test subscription" }),
+      }],
+      logger: false,
+      communicationV3: { pollMs: 5 },
+    });
+    const sent = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "Continue the long task", idempotencyKey: randomUUID() },
+    });
+    expect(sent.statusCode, sent.body).toBe(202);
+
+    const deadline = Date.now() + 3_000;
+    let failure = store.readEvents(agent.id).find((stored) =>
+      stored.event.type === "error"
+      && stored.event.message.includes("before committing the required bounded handoff"));
+    while (!failure && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      failure = store.readEvents(agent.id).find((stored) =>
+        stored.event.type === "error"
+        && stored.event.message.includes("before committing the required bounded handoff"));
+    }
+    expect(failure).toBeDefined();
+    expect(store.latestHealthObservation(agent.id)).toMatchObject({
+      status: "failed",
+      reason: "runtime_error",
+    });
+    const rollover = (store.sqlite.prepare(`
+      SELECT id, state, last_error AS lastError FROM context_rollovers
+      WHERE agent_id = ? ORDER BY rowid DESC LIMIT 1
+    `).get(agent.id) as { id: string; state: string; lastError: string });
+    expect(rollover).toMatchObject({
+      state: "failed",
+      lastError: expect.stringContaining("before committing the required bounded handoff"),
+    });
+    const notifications = await app.inject({ method: "GET", url: "/api/notifications" });
+    expect(notifications.json<Array<{ dedupeKey?: string; title: string; body: string }>>())
+      .toContainEqual(expect.objectContaining({
+        dedupeKey: `context-rollover:${rollover.id}:handoff-missing`,
+        title: "Handoff Probe could not refresh context",
+        body: expect.stringContaining("Retry the task"),
+      }));
+
+    const coordination = new CoordinationV3Store(store.sqlite);
+    const retry = coordination.requestContextRollover({
+      projectId: project.id,
+      agentId: agent.id,
+      oldProviderSessionId: "missing-handoff-session",
+      providerSessionGeneration: "missing-handoff-generation",
+      detectedOccupancy: 80_000,
+      threshold: 75_000,
+      contextWindow: 200_000,
+      lowWaterMark: 45_000,
+      sourceRunId: "bounded-manual-retry",
+      sourceActivationIds: [],
+      scopeKey: `conversation:${project.lastConversationId}`,
+      conversationId: project.lastConversationId,
+    });
+    expect(retry).toMatchObject({ created: true });
+    coordination.commitContextRolloverHandoff(retry.rollover.id, "bounded-manual-retry-handoff");
+    expect(coordination.commitContextRolloverHandoff(
+      retry.rollover.id,
+      "bounded-manual-retry-handoff",
+    )).toMatchObject({ id: retry.rollover.id, state: "handoff_committed" });
+    expect(store.sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations
+      WHERE kind = 'context_rollover_handoff' AND state IN ('pending','retry_pending')
+        AND id IN (
+          SELECT activation_id FROM activation_sources
+          WHERE source_kind = 'context_rollover' AND source_id = ?
+        )
+    `).get(retry.rollover.id)).toEqual({ count: 0 });
+  });
+
+  it("retries a failed provider generation through one bounded manual rollover tool call", async () => {
+    const adapter = new ManualRolloverPersistentAdapter();
+    const project = store.createProject({
+      label: "Manual rollover retry",
+      hostPath: repoDir,
+      defaultEngine: "codex",
+    });
+    const agent = store.createAgent(project.id, {
+      title: "Manual Retry Probe",
+      engine: "codex",
+      conversationId: project.lastConversationId,
+    });
+    const coordination = new CoordinationV3Store(store.sqlite);
+    const failed = coordination.requestContextRollover({
+      projectId: project.id,
+      agentId: agent.id,
+      oldProviderSessionId: "manual-old-session",
+      providerSessionGeneration: "manual-old-generation",
+      detectedOccupancy: 80_000,
+      threshold: 75_000,
+      contextWindow: 200_000,
+      lowWaterMark: 45_000,
+      sourceRunId: "previous-failed-run",
+      sourceActivationIds: [],
+      scopeKey: `conversation:${project.lastConversationId}`,
+      conversationId: project.lastConversationId,
+    }).rollover;
+    coordination.failContextRollover(
+      failed.id,
+      "failed",
+      "provider ended before handoff",
+    );
+
+    const app = server({
+      dataDir,
+      store,
+      engines: [{
+        adapter,
+        authStatus: async () => ({ authenticated: true, detail: "test subscription" }),
+      }],
+      logger: false,
+      communicationV3: { pollMs: 5 },
+    });
+    const sent = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "Resume after the failed refresh", idempotencyKey: randomUUID() },
+    });
+    expect(sent.statusCode, sent.body).toBe(202);
+    const deadline = Date.now() + 3_000;
+    while ((adapter.openCount < 2 || !adapter.toolResult) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(adapter.toolResult).toMatchObject({ success: true });
+    expect(adapter.rolloverCalls).toBe(1);
+    expect(adapter.handoff.split(/\s+/u)).toHaveLength(300);
+    expect(adapter.openCount).toBe(2);
+
+    const attempts = store.sqlite.prepare(`
+      SELECT id, state, source_run_id AS sourceRunId, handoff_event_id AS handoffEventId
+      FROM context_rollovers
+      WHERE agent_id = ? AND provider_session_generation = 'manual-old-generation'
+      ORDER BY rowid
+    `).all(agent.id) as Array<{
+      id: string; state: string; sourceRunId: string; handoffEventId: string | null;
+    }>;
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]).toMatchObject({ id: failed.id, state: "failed" });
+    expect(attempts[1]).toMatchObject({ state: "completed" });
+    expect(attempts[1]!.handoffEventId).toEqual(expect.any(String));
+    expect(store.continuationHandoffForRollover(
+      agent.id,
+      attempts[1]!.handoffEventId!,
+      attempts[1]!.sourceRunId,
+    )?.text).toBe(adapter.handoff);
+    expect(store.sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations
+      WHERE kind = 'context_rollover_handoff' AND state IN ('pending','retry_pending')
+        AND id IN (
+          SELECT activation_id FROM activation_sources
+          WHERE source_kind = 'context_rollover' AND source_id = ?
+        )
+    `).get(attempts[1]!.id)).toEqual({ count: 0 });
+  });
+
+  it.each(["handoff_committed", "session_retiring"] as const)(
+    "recovers %s with the exact crashed-Run handoff in fresh provider input",
+    async (restartState) => {
+      const adapter = new BehavioralAdapter();
+      const project = store.createProject({
+        label: `Rollover restart ${restartState}`,
+        hostPath: repoDir,
+        defaultEngine: "codex",
+      });
+      const agent = store.createAgent(project.id, {
+        title: "Restart Probe",
+        engine: "codex",
+        conversationId: project.lastConversationId,
+      });
+      const sourceRunId = `crashed-source-${restartState}`;
+      const handoffId = `crashed-handoff-${restartState}`;
+      const exactHandoff = `EXACT-${restartState}-HANDOFF preserve the verified next action once.`;
+      store.appendEvent(agent.id, {
+        type: "agent_lifecycle",
+        status: "running",
+        reason: "active_run",
+        executionId: sourceRunId,
+      });
+      store.appendEvent(agent.id, {
+        type: "session_snapshot",
+        sessionId: `old-session-${restartState}`,
+        artifactIds: [],
+      });
+      store.appendEvent(agent.id, {
+        type: "continuation_handoff",
+        handoffId,
+        executionId: sourceRunId,
+        text: exactHandoff,
+      });
+      const coordination = new CoordinationV3Store(store.sqlite);
+      const rollover = coordination.requestContextRollover({
+        projectId: project.id,
+        agentId: agent.id,
+        oldProviderSessionId: `old-session-${restartState}`,
+        providerSessionGeneration: `old-generation-${restartState}`,
+        detectedOccupancy: 80_000,
+        threshold: 75_000,
+        lowWaterMark: 45_000,
+        sourceRunId,
+        sourceActivationIds: [],
+        scopeKey: `conversation:${project.lastConversationId}`,
+        conversationId: project.lastConversationId,
+      }).rollover;
+      coordination.commitContextRolloverHandoff(rollover.id, handoffId);
+      if (restartState === "session_retiring") {
+        coordination.beginContextRolloverRetirement(rollover.id);
+      }
+
+      const app = server({
+        dataDir,
+        store,
+        engines: [{
+          adapter,
+          authStatus: async () => ({ authenticated: true, detail: "test subscription" }),
+        }],
+        logger: false,
+        communicationV3: { pollMs: 5 },
+      });
+      await app.ready();
+      const deadline = Date.now() + 3_000;
+      while (adapter.seedCalls === 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(adapter.seedCalls).toBe(1);
+      expect(adapter.seedOptions[0]?.prompt).toContain(exactHandoff);
+      expect(store.readEvents(agent.id)).toContainEqual(expect.objectContaining({
+        event: expect.objectContaining({
+          type: "agent_lifecycle",
+          status: "failed",
+          reason: "execution_interrupted",
+          executionId: sourceRunId,
+        }),
+      }));
+      const consumptionDeadline = Date.now() + 3_000;
+      while (!store.continuationHandoffForRun(agent.id, sourceRunId)?.consumedAt &&
+          Date.now() < consumptionDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(store.continuationHandoffForRun(agent.id, sourceRunId)?.consumedAt)
+        .toEqual(expect.any(String));
+      expect(store.readEvents(agent.id).filter((stored) =>
+        stored.event.type === "continuation_handoff_consumed"
+        && stored.event.handoffId === handoffId)).toHaveLength(1);
+    },
+  );
 
   it("exposes bounded Engine diagnostics only to its native launcher", async () => {
     const launcherDataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-engine-data-"));

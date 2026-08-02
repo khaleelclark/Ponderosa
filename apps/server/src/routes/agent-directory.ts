@@ -122,19 +122,25 @@ export function registerAgentDirectoryRoutes(
         ? {
             kind: "agent" as const,
             id: communication.sender.agentId,
-            displayName: store.getAgent(communication.sender.agentId)?.title
-              ?? communication.identity?.senderLabel
+            displayName: communication.identity?.senderLabel
+              ?? store.getAgent(communication.sender.agentId)?.title
               ?? "Deleted Agent",
           }
-        : { kind: communication.sender.kind, id: communication.sender.kind === "user" ? communication.sender.userId : undefined };
+        : {
+            kind: communication.sender.kind,
+            id: communication.sender.kind === "user" ? communication.sender.userId : undefined,
+            ...(communication.sender.kind === "user" && communication.identity?.senderLabel
+              ? { displayName: communication.identity.senderLabel }
+              : {}),
+          };
       return {
         ...message,
         provenance: {
           communicationEventId: communication.eventId,
           ...(communication.conversationId ? {
             originConversationId: communication.conversationId,
-            originConversationTitle: originConversation?.title
-              ?? communication.identity?.conversationLabel
+            originConversationTitle: communication.identity?.conversationLabel
+              ?? originConversation?.title
               ?? "Deleted Chat",
           } : {}),
           timestamp: communication.createdAt,

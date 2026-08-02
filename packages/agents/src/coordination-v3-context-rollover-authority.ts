@@ -39,8 +39,14 @@ export class CoordinationV3ContextRolloverAuthority {
       const existing = this.sqlite.prepare(`
         SELECT * FROM context_rollovers
         WHERE agent_id = ? AND provider_session_generation = ?
+        ORDER BY created_at DESC, rowid DESC LIMIT 1
       `).get(input.agentId, input.providerSessionGeneration) as RolloverRow | undefined;
-      if (existing) return { rollover: this.view(existing), created: false };
+      const retryableTerminalFailure = existing
+        && (existing.state === "failed" || existing.state === "outcome_unknown")
+        && !existing.last_error?.startsWith("rollover_seed_overflow:");
+      if (existing && !retryableTerminalFailure) {
+        return { rollover: this.view(existing), created: false };
+      }
       const id = randomUUID();
       this.sqlite.prepare(`
         INSERT INTO context_rollovers (
@@ -120,12 +126,25 @@ export class CoordinationV3ContextRolloverAuthority {
   }
 
   commitHandoff(id: string, handoffEventId: string, now = new Date().toISOString()): ContextRolloverV3 {
-    this.sqlite.prepare(`
-      UPDATE context_rollovers SET state = 'handoff_committed', handoff_event_id = ?,
-        handoff_committed_at = COALESCE(handoff_committed_at, ?), updated_at = ?
-      WHERE id = ? AND state IN ('requested','handoff_committed')
-        AND (handoff_event_id IS NULL OR handoff_event_id = ?)
-    `).run(handoffEventId, now, now, id, handoffEventId);
+    this.sqlite.transaction(() => {
+      this.sqlite.prepare(`
+        UPDATE context_rollovers SET state = 'handoff_committed', handoff_event_id = ?,
+          handoff_committed_at = COALESCE(handoff_committed_at, ?), updated_at = ?
+        WHERE id = ? AND state IN ('requested','handoff_committed')
+          AND (handoff_event_id IS NULL OR handoff_event_id = ?)
+      `).run(handoffEventId, now, now, id, handoffEventId);
+      // A manual rollover already supplied the bounded handoff. Retire only
+      // the still-unclaimed request Activation so it cannot be coalesced into
+      // the replacement Run alongside the continuation Activation.
+      this.sqlite.prepare(`
+        UPDATE agent_activations SET state = 'cancelled', updated_at = ?, terminal_at = ?
+        WHERE kind = 'context_rollover_handoff' AND state IN ('pending','retry_pending')
+          AND id IN (
+            SELECT activation_id FROM activation_sources
+            WHERE source_kind = 'context_rollover' AND source_id = ?
+          )
+      `).run(now, now, id);
+    })();
     const result = this.get(id);
     if (!result?.handoffEventId || result.handoffEventId !== handoffEventId) throw new Error("context rollover handoff conflict");
     return result;
@@ -201,16 +220,29 @@ export class CoordinationV3ContextRolloverAuthority {
   }
 
   recordReplacementSession(continuationActivationId: string, replacementSessionId: string, now = new Date().toISOString()): ContextRolloverV3 | undefined {
-    this.sqlite.prepare(`
-      UPDATE context_rollovers SET replacement_session_id = ?,
-        replacement_session_at = ?, updated_at = ?,
-        state = CASE WHEN low_water_confirmation_required = 0 THEN 'completed' ELSE state END,
-        terminal_at = CASE WHEN low_water_confirmation_required = 0 THEN ? ELSE terminal_at END
-      WHERE continuation_activation_id = ? AND state = 'continuation_ready'
-    `).run(replacementSessionId, now, now, now, continuationActivationId);
-    const row = this.sqlite.prepare(`SELECT * FROM context_rollovers WHERE continuation_activation_id = ?`)
-      .get(continuationActivationId) as RolloverRow | undefined;
-    return row ? this.view(row) : undefined;
+    return this.sqlite.transaction(() => {
+      const current = this.sqlite.prepare(`
+        SELECT * FROM context_rollovers WHERE continuation_activation_id = ?
+      `).get(continuationActivationId) as RolloverRow | undefined;
+      if (!current) return undefined;
+      if (current.replacement_session_id) {
+        if (current.replacement_session_id !== replacementSessionId) {
+          throw new Error("context rollover replacement session conflict");
+        }
+        return this.view(current);
+      }
+      if (current.state !== "continuation_ready") {
+        throw new Error("context rollover is not ready for a replacement session");
+      }
+      this.sqlite.prepare(`
+        UPDATE context_rollovers SET replacement_session_id = ?,
+          replacement_session_at = COALESCE(replacement_session_at, ?), updated_at = ?,
+          state = CASE WHEN low_water_confirmation_required = 0 THEN 'completed' ELSE state END,
+          terminal_at = CASE WHEN low_water_confirmation_required = 0 THEN ? ELSE terminal_at END
+        WHERE id = ? AND replacement_session_id IS NULL AND state = 'continuation_ready'
+      `).run(replacementSessionId, now, now, now, current.id);
+      return this.get(current.id)!;
+    })();
   }
 
   observeReplacementOccupancy(id: string, replacementSessionId: string, usedTokens: number, now = new Date().toISOString()): ContextRolloverV3 {

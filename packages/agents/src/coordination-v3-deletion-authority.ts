@@ -221,6 +221,13 @@ export class CoordinationV3DeletionAuthority {
         });
       }
       this.sqlite.prepare(`
+        UPDATE context_rollovers
+        SET state = 'failed', last_error = 'project deletion fenced context rollover',
+          updated_at = ?, terminal_at = COALESCE(terminal_at, ?)
+        WHERE project_id = ?
+          AND state IN ('requested','handoff_committed','session_retiring','continuation_ready')
+      `).run(now, now, projectId);
+      this.sqlite.prepare(`
         UPDATE coordination_joins
         SET state = 'cancelled', updated_at = ?, terminal_at = ?
         WHERE project_id = ? AND state = 'open'
@@ -244,6 +251,11 @@ export class CoordinationV3DeletionAuthority {
 
   purgeProject(projectId: string): void {
     this.sqlite.transaction(() => {
+      // Remove rollover ownership before its source Runs and Activations so no
+      // restart recovery can observe a partially purged Project transition.
+      this.sqlite.prepare(`
+        DELETE FROM context_rollovers WHERE project_id = ?
+      `).run(projectId);
       this.sqlite.prepare(`
         DELETE FROM trigger_filesystem_bursts WHERE project_id = ?
       `).run(projectId);

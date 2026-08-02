@@ -199,12 +199,32 @@ export async function prepareAgentRun(
   // handle confirms exit. Never start a replacement beside it.
   await reconcileAgentRuntimeAuthority(agent.id);
   let resumeSessionState = store.resumeSessionState(agent.id);
-  const eligibleContinuationHandoff = store.pendingContinuationHandoff(agent.id);
+  const attachedActivationIds = v3SchedulerRunId
+    ? coordinationV3.activationIdsAttachedToRun(v3SchedulerRunId, agent.id)
+    : [];
+  const activeRollover = coordinationV3.activeContextRollover(agent.id);
+  const rolloverOwnsThisContinuation = Boolean(
+    activeRollover?.state === "continuation_ready"
+    && activeRollover.continuationActivationId
+    && attachedActivationIds.includes(activeRollover.continuationActivationId),
+  );
+  const rolloverContinuationHandoff = rolloverOwnsThisContinuation
+    && activeRollover?.handoffEventId
+    ? store.continuationHandoffForRollover(
+        agent.id,
+        activeRollover.handoffEventId,
+        activeRollover.sourceRunId,
+      )
+    : undefined;
+  if (rolloverOwnsThisContinuation && !rolloverContinuationHandoff) {
+    throw new Error("durable context rollover continuation handoff is unavailable");
+  }
+  const eligibleContinuationHandoff = rolloverContinuationHandoff
+    ?? store.pendingContinuationHandoff(agent.id);
   if (eligibleContinuationHandoff) {
-    // The source Run completed successfully, but the daemon may have died
-    // before its in-memory rollover request cleared the native session.
-    // Durable handoff eligibility therefore owns the restart boundary too:
-    // retire the opaque cache before constructing the fresh target prompt.
+    // The rollover's exact handoff remains eligible even when startup had to
+    // classify its unterminated source Run as interrupted. Durable rollover
+    // identity, not the recovered lifecycle label, owns this restart boundary.
     const staleRuntime = reusableRuntime(agent.id);
     scheduledSessionRollovers.delete(agent.id);
     clearAgentResumeSession(agent.id, "explicit_compaction");
@@ -309,14 +329,16 @@ export async function prepareAgentRun(
       const sourceConversation = sourceCommunication?.conversationId
         ? store.getConversation(sourceCommunication.conversationId)
         : undefined;
-      const sourceConversationTitle = sourceConversation?.title
-        ?? sourceCommunication?.identity?.conversationLabel
+      const sourceConversationTitle = sourceCommunication?.identity?.conversationLabel
+        ?? sourceConversation?.title
         ?? "Deleted Chat";
       const sourceAuthor = sourceCommunication?.sender.kind === "agent"
-        ? store.getAgent(sourceCommunication.sender.agentId)?.title
-          ?? sourceCommunication.identity?.senderLabel
+        ? sourceCommunication.identity?.senderLabel
+          ?? store.getAgent(sourceCommunication.sender.agentId)?.title
           ?? "Deleted Agent"
-        : sourceCommunication?.sender.kind === "user" ? "User" : undefined;
+        : sourceCommunication?.sender.kind === "user"
+          ? sourceCommunication.identity?.senderLabel ?? "User"
+          : undefined;
       const crossChat = Boolean(sourceCommunication?.conversationId &&
         sourceCommunication.conversationId !== routingConversationId);
       const provenance = crossChat && sourceCommunication?.conversationId

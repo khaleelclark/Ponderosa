@@ -889,6 +889,23 @@ export function startProviderRunExecution(
         owned && localRolloverRequested && !runRollover &&
         !isClosed() && !controller.signal.aborted && !schedulerCancelled && !runError,
       );
+      if (owned && runRollover?.state === "requested" &&
+          !isClosed() && !controller.signal.aborted && !schedulerCancelled && !runError) {
+        runError = "context rollover failed: provider ended before committing the required bounded handoff";
+        await persistRuntimeEvent(agent.id, activeRun, {
+          type: "error",
+          message: runError,
+        });
+        createOperationalNotification({
+          dedupeKey: `context-rollover:${runRollover.id}:handoff-missing`,
+          category: "coordination",
+          severity: "attention",
+          title: `${agent.title} could not refresh context`,
+          body: "The provider ended before committing its continuation handoff. Retry the task or request another context refresh; the old provider generation may be retried safely.",
+          projectId: agent.projectId,
+          conversationId: routingConversationId,
+        });
+      }
       if (schedulerCancelled && !owned && !isClosed() && store.getRuns(agent.id).some((run) => run.id === runId && run.status === "running")) {
         const cancelled = store.appendEvent(agent.id, {
           type: "agent_lifecycle",
