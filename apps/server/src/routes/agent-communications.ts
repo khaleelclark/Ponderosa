@@ -583,6 +583,7 @@ export function registerAgentCommunicationRoutes(
           requesterAgentId: requester.id,
           actorScope: "user:local-operator",
           idempotencyKey,
+          rolloverRecoveryForRequestId: original.id,
           requests: [{ requestId, recipientAgentId: recipient.id, lifetime: { kind: "indefinite" }, payload }],
           ...(request.body?.createJoin === false ? {} : { join: { id: `${requestId}:join`, mode: "all" as const } }),
         });

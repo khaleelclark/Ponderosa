@@ -969,8 +969,16 @@ export class CoordinationV3Store {
     return this.contextRolloverAuthority.forContinuationRun(runId, agentId);
   }
 
+  contextRolloverRecoveryForRun(runId: string, agentId: string): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.recoveryForRun(runId, agentId);
+  }
+
   activeContextRollovers(projectId?: string): ContextRolloverV3[] {
     return this.contextRolloverAuthority.active(projectId);
+  }
+
+  cancelledContextRolloverReplacements(): ContextRolloverV3[] {
+    return this.contextRolloverAuthority.cancelledReplacements();
   }
 
   commitContextRolloverHandoff(id: string, handoffEventId: string, now?: string): ContextRolloverV3 {

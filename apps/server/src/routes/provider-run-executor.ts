@@ -910,17 +910,33 @@ export function startProviderRunExecution(
           conversationId: routingConversationId,
         });
       }
-      if (owned && replacementRunRollover?.state === "continuation_ready" &&
-          !isClosed() && !controller.signal.aborted && !schedulerCancelled) {
-        const missingObservation = replacementRunRollover.replacementSessionId
-          ? `replacement session ${replacementRunRollover.replacementSessionId} ended before reporting the required low-water context observation`
-          : "replacement Run ended before identifying and confirming a low-water provider session";
-        coordinationV3.failContextRollover(
-          replacementRunRollover.id,
-          runError ? "outcome_unknown" : "failed",
-          missingObservation,
-        );
-        clearAgentResumeSession(agent.id, "context_rollover_confirmation_missing");
+      const replacementCancelled = Boolean(
+        replacementRunRollover && schedulerCancelled && !isClosed(),
+      );
+      const replacementMissingConfirmation = Boolean(
+        owned && replacementRunRollover?.state === "continuation_ready" &&
+        !isClosed() && !controller.signal.aborted && !schedulerCancelled,
+      );
+      if (replacementRunRollover &&
+          (replacementCancelled || replacementMissingConfirmation)) {
+        if (replacementMissingConfirmation) {
+          const missingObservation = replacementRunRollover.replacementSessionId
+            ? `replacement session ${replacementRunRollover.replacementSessionId} ended before reporting the required low-water context observation`
+            : "replacement Run ended before identifying and confirming a low-water provider session";
+          coordinationV3.failContextRollover(
+            replacementRunRollover.id,
+            runError ? "outcome_unknown" : "failed",
+            missingObservation,
+          );
+        }
+        if (replacementCancelled && replacementRunRollover.handoffEventId) {
+          store.consumeContinuationHandoff(
+            agent.id,
+            replacementRunRollover.handoffEventId,
+            runId,
+          );
+        }
+        clearAgentResumeSession(agent.id, "explicit_compaction");
         organizationEnvelopeStates.delete(agent.id);
         const unconfirmedRuntime = reusableRuntime(agent.id);
         if (unconfirmedRuntime) {
@@ -944,9 +960,11 @@ export function startProviderRunExecution(
           category: "coordination",
           severity: "attention",
           title: `${agent.title} could not confirm refreshed context`,
-          body: runError
-            ? "The replacement Run ended before confirming safe context headroom. Its exact bounded handoff remains recorded. Review the Agent's work and retry the original assignment if it is still unfinished."
-            : "The replacement Run completed its task but did not report the required context headroom. Ponderosa discarded that provider session; the next task will start from canonical context.",
+          body: replacementCancelled
+            ? "The replacement Run was cancelled before refreshed context could be confirmed. Its bounded handoff is reserved for one authorized Retry Assignment and will not leak into unrelated work."
+            : runError
+              ? "The replacement Run ended before confirming safe context headroom. Its exact bounded handoff is reserved for one authorized Retry Assignment."
+              : "The replacement Run completed its task but did not report the required context headroom. Ponderosa discarded that provider session; the next task will start from canonical context.",
           projectId: agent.projectId,
           conversationId: routingConversationId,
           agentId: agent.id,

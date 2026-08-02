@@ -31,6 +31,9 @@ export interface CoordinateV3Input {
   requesterAgentId?: string;
   actorScope: string;
   idempotencyKey: string;
+  /** Server-derived authorization to bind one operator retry to the exact
+   * terminal context-rollover handoff owned by the original Request. */
+  rolloverRecoveryForRequestId?: string;
   /** Required for provider-authored mutations. Checked in the same SQLite
    * transaction as the mutation so cancellation cannot race authorization. */
   runAuthorization?: RunAuthorizationV3;

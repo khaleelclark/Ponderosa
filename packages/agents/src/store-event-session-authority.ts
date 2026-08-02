@@ -157,6 +157,11 @@ export class AgentEventSessionAuthority {
       JOIN runs source_run ON source_run.id = handoff.source_execution_id
       WHERE handoff.agent_id = ? AND handoff.consumed_at IS NULL
         AND source_run.status = 'completed'
+        AND NOT EXISTS (
+          SELECT 1 FROM context_rollovers rollover
+          WHERE rollover.handoff_event_id = handoff.id
+            AND rollover.state IN ('completed','failed','outcome_unknown')
+        )
       ORDER BY handoff.created_at ASC, handoff.id ASC LIMIT 1
     `).get(agentId) as { id: string; source_execution_id: string; text: string; created_at: string } | undefined;
     return row ? { id: row.id, executionId: row.source_execution_id, text: row.text, createdAt: row.created_at } : undefined;

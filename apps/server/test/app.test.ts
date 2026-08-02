@@ -339,6 +339,154 @@ class NoUsageReplacementAdapter implements Adapter {
   }
 }
 
+class CancellableReplacementAdapter implements Adapter {
+  readonly id = "codex";
+  readonly displayName = "Cancellable replacement adapter";
+  readonly ready: Promise<void>;
+  private signalReady!: () => void;
+  private release!: () => void;
+  interrupted = false;
+
+  constructor(readonly emitSession: boolean) {
+    this.ready = new Promise<void>((resolve) => {
+      this.signalReady = resolve;
+    });
+  }
+
+  listModels() { return [{ id: "test-model", label: "Test model" }]; }
+  listEfforts() { return [{ id: "high", label: "High" }]; }
+  async *seed(_options: SeedOptions): AsyncIterable<AgentEvent> {
+    throw new Error("cancellation fixture must use openSession");
+  }
+  async *continue(_options: ContinueOptions): AsyncIterable<AgentEvent> {
+    throw new Error("cancellation fixture must use openSession");
+  }
+
+  async openSession(options: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => { started = resolve; });
+    const interruptedPromise = new Promise<void>((resolve) => { this.release = resolve; });
+    let alive = true;
+    const fixture = this;
+    const sessionId = "cancelled-replacement-session";
+    const session: RuntimeSession = {
+      engineAgentId: sessionId,
+      events: {
+        async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
+          await startedPromise;
+          if (fixture.emitSession) {
+            yield { type: "session", sessionId };
+          }
+          fixture.signalReady();
+          await interruptedPromise;
+        },
+      },
+      startTurn: async () => {
+        started();
+        return { turnId: "cancelled-replacement-turn" };
+      },
+      steer: async () => ({ status: "not_active" }),
+      interrupt: async () => {
+        fixture.interrupted = true;
+        fixture.release();
+      },
+      isAlive: () => alive,
+      close: async () => {
+        alive = false;
+        fixture.release();
+      },
+    };
+    options.onRuntimeSpawned(session);
+    return session;
+  }
+}
+
+class ManagedRequestRolloverRecoveryAdapter implements Adapter {
+  readonly id = "codex";
+  readonly displayName = "Managed Request rollover recovery adapter";
+  openCount = 0;
+  rolloverCalls = 0;
+  prompts: string[] = [];
+  readonly sentinel = "EXACT-RECOVERY-HANDOFF-SENTINEL";
+  readonly handoff = `${this.sentinel} ${Array.from(
+    { length: 300 },
+    (_, index) => `recovery-handoff-${index + 1}`,
+  ).join(" ")}`;
+  readonly result = "Recovered managed Request completed from the exact handoff.";
+
+  listModels() { return [{ id: "test-model", label: "Test model" }]; }
+  listEfforts() { return [{ id: "high", label: "High" }]; }
+  async *seed(_options: SeedOptions): AsyncIterable<AgentEvent> {
+    throw new Error("recovery fixture must use openSession");
+  }
+  async *continue(_options: ContinueOptions): AsyncIterable<AgentEvent> {
+    throw new Error("recovery fixture must use openSession");
+  }
+
+  async openSession(options: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
+    this.openCount += 1;
+    const stage = this.openCount;
+    const sessionId = `managed-recovery-session-${stage}`;
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => { started = resolve; });
+    let closed!: () => void;
+    const closedPromise = new Promise<void>((resolve) => { closed = resolve; });
+    let alive = true;
+    const fixture = this;
+    const session: RuntimeSession = {
+      engineAgentId: sessionId,
+      events: {
+        async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
+          yield { type: "session", sessionId };
+          await startedPromise;
+          if (stage === 1) {
+            fixture.rolloverCalls += 1;
+            await options.handleDynamicToolCall?.({
+              name: "ponderosa_rollover",
+              arguments: { handoff: fixture.handoff },
+            });
+          } else if (stage === 2) {
+            yield {
+              type: "error",
+              message: "replacement provider failed after accepting the exact handoff",
+            };
+          } else {
+            yield { type: "text", delta: fixture.result };
+            yield { type: "turn_done" };
+          }
+          if (stage === 1) yield { type: "turn_done" };
+          await closedPromise;
+        },
+      },
+      startTurn: async (input) => {
+        fixture.prompts.push(input.prompt);
+        started();
+        return { turnId: `managed-recovery-turn-${stage}` };
+      },
+      contextUsage: () => ({
+        usedTokens: stage === 1 ? 80_000 : 20_000,
+        aggregateTokens: stage === 1 ? 10_000_000 : 120_000,
+        windowTokens: 200_000,
+        providerSessionGeneration: `managed-recovery-generation-${stage}`,
+      }),
+      steer: async () => ({ status: "not_active" }),
+      interrupt: async () => undefined,
+      isAlive: () => alive,
+      close: async () => {
+        alive = false;
+        closed();
+      },
+    };
+    options.onRuntimeSpawned(session);
+    return session;
+  }
+}
+
+class PassiveClaudeAdapter extends BehavioralAdapter {
+  override readonly id = "claude";
+  override readonly displayName = "Passive Claude adapter";
+}
+
 describe("server public API behavior", () => {
   let dataDir: string;
   let repoDir: string;
@@ -1346,10 +1494,351 @@ describe("server public API behavior", () => {
         action: { kind: "open_agent", targetId: agent.id },
       });
       expect(notification?.body).toContain(
-        outcome === "error" ? "exact bounded handoff remains recorded" : "discarded that provider session",
+        outcome === "error" ? "reserved for one authorized Retry Assignment" : "discarded that provider session",
       );
     },
   );
+
+  it.each([
+    { afterSession: false, timing: "before" },
+    { afterSession: true, timing: "after" },
+  ])(
+    "cancels a replacement Run $timing its session without leaking the handoff after restart",
+    async ({ afterSession }) => {
+      const adapter = new CancellableReplacementAdapter(afterSession);
+      const project = store.createProject({
+        label: `Cancelled rollover ${afterSession ? "after" : "before"} session`,
+        hostPath: repoDir,
+        defaultEngine: "codex",
+      });
+      const agent = store.createAgent(project.id, {
+        title: "Cancelled Rollover",
+        engine: "codex",
+      });
+      const sourceRunId = `cancelled-rollover-source-${afterSession}`;
+      const handoffId = `cancelled-rollover-handoff-${afterSession}`;
+      const sentinel = `CANCELLED-ROLLOVER-SENTINEL-${afterSession}`;
+      store.appendEvent(agent.id, {
+        type: "agent_lifecycle",
+        status: "running",
+        reason: "active_run",
+        executionId: sourceRunId,
+      });
+      store.appendEvent(agent.id, {
+        type: "continuation_handoff",
+        handoffId,
+        executionId: sourceRunId,
+        text: `${sentinel} ${Array.from({ length: 300 }, (_, index) => `cancelled-${index + 1}`).join(" ")}`,
+      });
+      store.appendEvent(agent.id, {
+        type: "agent_lifecycle",
+        status: "completed",
+        reason: "turn_completed",
+        executionId: sourceRunId,
+      });
+      const coordination = new CoordinationV3Store(store.sqlite);
+      const rollover = coordination.requestContextRollover({
+        projectId: project.id,
+        agentId: agent.id,
+        oldProviderSessionId: `cancelled-old-${afterSession}`,
+        providerSessionGeneration: `cancelled-generation-${afterSession}`,
+        detectedOccupancy: 80_000,
+        threshold: 75_000,
+        lowWaterMark: 45_000,
+        sourceRunId,
+        sourceActivationIds: [],
+        scopeKey: `agent:${agent.id}`,
+      }).rollover;
+      coordination.commitContextRolloverHandoff(rollover.id, handoffId);
+      coordination.beginContextRolloverRetirement(rollover.id);
+      coordination.prepareContextRolloverContinuation({
+        id: rollover.id,
+        visibleResponseCommitted: false,
+      });
+      const firstApp = server({
+        dataDir,
+        store,
+        engines: [{
+          adapter,
+          authStatus: async () => ({ authenticated: true, detail: "test subscription" }),
+        }],
+        logger: false,
+        communicationV3: { pollMs: 5 },
+      });
+      await firstApp.ready();
+      await adapter.ready;
+      const activeRun = coordination.agentSnapshot(agent.id).activeRun!;
+      const cancelled = await firstApp.inject({
+        method: "POST",
+        url: `/api/agents/${agent.id}/cancel`,
+        payload: {
+          targetRunId: activeRun.id,
+          idempotencyKey: `cancel-replacement-${afterSession}`,
+        },
+      });
+      expect(cancelled.statusCode).toBe(200);
+
+      const cancellationDeadline = Date.now() + 5_000;
+      while (!adapter.interrupted && Date.now() < cancellationDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(adapter.interrupted).toBe(true);
+      expect(coordination.contextRollover(rollover.id)).toMatchObject({
+        state: "outcome_unknown",
+        ...(afterSession
+          ? { replacementSessionId: "cancelled-replacement-session" }
+          : {}),
+      });
+      expect(coordination.activeContextRollover(agent.id)).toBeUndefined();
+      expect(store.pendingContinuationHandoff(agent.id)).toBeUndefined();
+
+      await firstApp.close();
+      store = new AgentStore(dataDir);
+      const restartedCoordination = new CoordinationV3Store(store.sqlite);
+      const restartAdapter = new BehavioralAdapter();
+      const restarted = server({
+        dataDir,
+        store,
+        engines: [{
+          adapter: restartAdapter,
+          authStatus: async () => ({ authenticated: true, detail: "test subscription" }),
+        }],
+        logger: false,
+        communicationV3: { pollMs: 5 },
+      });
+      await restarted.ready();
+      restartedCoordination.enqueueMessageActivation({
+        projectId: project.id,
+        agentId: agent.id,
+        messageId: `unrelated-after-cancel-${afterSession}`,
+        kind: "human",
+        payload: { text: "Perform an unrelated task after restart." },
+      });
+      const unrelatedDeadline = Date.now() + 5_000;
+      while (restartAdapter.seedCalls === 0 && Date.now() < unrelatedDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(restartAdapter.seedCalls).toBe(1);
+      expect(JSON.stringify(restartAdapter.seedOptions[0])).not.toContain(sentinel);
+      expect(restartedCoordination.activeContextRollover(agent.id)).toBeUndefined();
+    },
+  );
+
+  it("discards a cancelled replacement session during restart even if provider cleanup never ran", async () => {
+    const project = store.createProject({
+      label: "Crash after rollover cancellation",
+      hostPath: repoDir,
+      defaultEngine: "codex",
+    });
+    const agent = store.createAgent(project.id, {
+      title: "Crash Recovery Rollover",
+      engine: "codex",
+    });
+    const sourceRunId = "crash-cancel-source";
+    const handoffId = "crash-cancel-handoff";
+    const sentinel = "CRASH-CANCEL-HANDOFF-MUST-NOT-LEAK";
+    store.appendEvent(agent.id, {
+      type: "agent_lifecycle",
+      status: "running",
+      reason: "active_run",
+      executionId: sourceRunId,
+    });
+    store.appendEvent(agent.id, {
+      type: "continuation_handoff",
+      handoffId,
+      executionId: sourceRunId,
+      text: `${sentinel} preserve only for an explicit retry`,
+    });
+    store.appendEvent(agent.id, {
+      type: "agent_lifecycle",
+      status: "completed",
+      reason: "turn_completed",
+      executionId: sourceRunId,
+    });
+    const coordination = new CoordinationV3Store(store.sqlite);
+    const rollover = coordination.requestContextRollover({
+      projectId: project.id,
+      agentId: agent.id,
+      oldProviderSessionId: "crash-cancel-old-session",
+      providerSessionGeneration: "crash-cancel-generation",
+      detectedOccupancy: 80_000,
+      threshold: 75_000,
+      lowWaterMark: 45_000,
+      sourceRunId,
+      sourceActivationIds: [],
+      scopeKey: `agent:${agent.id}`,
+    }).rollover;
+    coordination.commitContextRolloverHandoff(rollover.id, handoffId);
+    coordination.beginContextRolloverRetirement(rollover.id);
+    const continuation = coordination.prepareContextRolloverContinuation({
+      id: rollover.id,
+      visibleResponseCommitted: false,
+    });
+    const replacement = coordination.leaseNextRun({ workerId: "crashed-worker" })!;
+    coordination.recordContextRolloverReplacementSession(
+      continuation.continuationActivationId!,
+      "crash-cancel-replacement-session",
+    );
+    store.appendEvent(agent.id, {
+      type: "session_snapshot",
+      sessionId: "crash-cancel-replacement-session",
+      artifactIds: [],
+    });
+    expect(store.resumeSessionId(agent.id)).toBe("crash-cancel-replacement-session");
+    coordination.cancelAgentRun({
+      agentId: agent.id,
+      expectedRunId: replacement.runId,
+      idempotencyKey: "crash-cancel-replacement",
+    });
+
+    const adapter = new BehavioralAdapter();
+    const app = server({
+      dataDir,
+      store,
+      engines: [{
+        adapter,
+        authStatus: async () => ({ authenticated: true, detail: "test subscription" }),
+      }],
+      logger: false,
+      communicationV3: { pollMs: 5 },
+    });
+    await app.ready();
+    expect(store.resumeSessionId(agent.id)).toBeUndefined();
+    expect(new WorkspaceStore(dataDir).listNotifications()).toContainEqual(expect.objectContaining({
+      dedupeKey: `context-rollover:${rollover.id}:confirmation-missing`,
+      status: "open",
+      agentId: agent.id,
+    }));
+
+    coordination.enqueueMessageActivation({
+      projectId: project.id,
+      agentId: agent.id,
+      messageId: "unrelated-after-crash-cancel",
+      kind: "human",
+      payload: { text: "Perform unrelated work after crash recovery." },
+    });
+    const deadline = Date.now() + 5_000;
+    while (adapter.seedCalls === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(adapter.seedCalls).toBe(1);
+    expect(JSON.stringify(adapter.seedOptions[0])).not.toContain(sentinel);
+  });
+
+  it("injects one terminal rollover handoff into one authorized Retry Assignment and completes its Join", async () => {
+    const adapter = new ManagedRequestRolloverRecoveryAdapter();
+    const project = store.createProject({
+      label: "Managed rollover recovery",
+      hostPath: repoDir,
+      defaultEngine: "codex",
+    });
+    const manager = store.createAgent(project.id, {
+      title: "Recovery Manager",
+      engine: "claude",
+    });
+    const worker = store.createAgent(project.id, {
+      title: "Recovery Worker",
+      engine: "codex",
+    });
+    const coordination = new CoordinationV3Store(store.sqlite);
+    coordination.coordinate({
+      projectId: project.id,
+      requesterAgentId: manager.id,
+      actorScope: `agent:${manager.id}`,
+      idempotencyKey: "managed-recovery-original",
+      requests: [{
+        requestId: "managed-recovery-original-request",
+        recipientAgentId: worker.id,
+        lifetime: { kind: "indefinite" },
+        payload: { assignment: "Complete this work across a context rollover" },
+      }],
+      join: { id: "managed-recovery-original-join", mode: "all" },
+    });
+    const app = server({
+      dataDir,
+      store,
+      engines: [
+        {
+          adapter,
+          authStatus: async () => ({ authenticated: true, detail: "test subscription" }),
+        },
+        {
+          adapter: new PassiveClaudeAdapter(),
+          authStatus: async () => ({ authenticated: true, detail: "test subscription" }),
+        },
+      ],
+      logger: false,
+      communicationV3: { pollMs: 5 },
+    });
+    await app.ready();
+
+    const failureDeadline = Date.now() + 5_000;
+    while (
+      coordination.getRequest("managed-recovery-original-request")?.state !== "outcome_unknown" &&
+      Date.now() < failureDeadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(adapter.rolloverCalls).toBe(1);
+    expect(adapter.openCount).toBe(2);
+    expect(coordination.getRequest("managed-recovery-original-request")?.state)
+      .toBe("outcome_unknown");
+    const terminalRollover = store.sqlite.prepare(`
+      SELECT id, handoff_event_id AS handoffId, state
+      FROM context_rollovers WHERE agent_id = ?
+      ORDER BY created_at DESC, rowid DESC LIMIT 1
+    `).get(worker.id) as { id: string; handoffId: string; state: string };
+    expect(terminalRollover).toMatchObject({
+      handoffId: expect.any(String),
+      state: "outcome_unknown",
+    });
+
+    const retryResponse = await app.inject({
+      method: "POST",
+      url: "/api/requests/managed-recovery-original-request/retry",
+      payload: { idempotencyKey: "managed-recovery-authorized-retry" },
+    });
+    expect(retryResponse.statusCode).toBe(200);
+    const retry = retryResponse.json() as { requestIds: string[]; joinId: string };
+    expect(retry.requestIds).toHaveLength(1);
+    expect(retry.joinId).toBeTruthy();
+
+    const completionDeadline = Date.now() + 5_000;
+    while (
+      coordination.getRequest(retry.requestIds[0]!)?.state !== "completed" &&
+      Date.now() < completionDeadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(adapter.openCount).toBe(3);
+    expect(coordination.getRequest(retry.requestIds[0]!)?.state).toBe("completed");
+    expect(store.sqlite.prepare(`
+      SELECT state FROM coordination_joins WHERE id = ?
+    `).get(retry.joinId)).toEqual({ state: "satisfied" });
+    expect(adapter.prompts[2]!.split(adapter.sentinel)).toHaveLength(2);
+
+    const retryProviderInput = store.sqlite.prepare(`
+      SELECT input.source_manifest_json AS sourceManifest
+      FROM provider_inputs input
+      JOIN scheduler_run_activations attached
+        ON attached.run_id = input.scheduler_run_id
+      JOIN activation_sources source
+        ON source.activation_id = attached.activation_id
+      WHERE source.source_kind = 'request' AND source.source_id = ?
+      ORDER BY input.created_at DESC LIMIT 1
+    `).get(retry.requestIds[0]!) as { sourceManifest: string };
+    expect(JSON.parse(retryProviderInput.sourceManifest)).toMatchObject({
+      sources: expect.arrayContaining([expect.objectContaining({
+        kind: "continuation_handoff",
+        ref: terminalRollover.handoffId,
+        delivery: "submitted",
+      })]),
+    });
+    expect(store.sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM activation_sources
+      WHERE source_kind = 'context_rollover_recovery' AND source_id = ?
+    `).get(terminalRollover.id)).toEqual({ count: 1 });
+  });
 
   it("terminalizes an unconfirmed recorded replacement session during daemon restart", async () => {
     const project = store.createProject({

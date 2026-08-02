@@ -271,6 +271,25 @@ export function registerServerLifecycle(
       if (decision.continuationRequestIds?.length) ensureDecisionResponseActivation(decision);
     }
     coordinationV3.recoverOrphanedRuns(coordinationV3WorkerId);
+    for (const rollover of coordinationV3.cancelledContextRolloverReplacements()) {
+      if (
+        rollover.replacementSessionId &&
+        store.resumeSessionId(rollover.agentId) === rollover.replacementSessionId
+      ) {
+        store.clearResumeSession(rollover.agentId, "explicit_compaction");
+      }
+      createOperationalNotification({
+        dedupeKey: `context-rollover:${rollover.id}:confirmation-missing`,
+        category: "coordination",
+        severity: "attention",
+        title: "Context refresh was cancelled",
+        body: "The replacement Run was cancelled before refreshed context could be confirmed. Its bounded handoff is reserved for one authorized Retry Assignment and will not be used by unrelated work.",
+        projectId: rollover.projectId,
+        conversationId: rollover.conversationId,
+        agentId: rollover.agentId,
+        action: { kind: "open_agent", targetId: rollover.agentId },
+      });
+    }
     for (const initial of coordinationV3.activeContextRollovers()) {
       try {
         let rollover = initial;

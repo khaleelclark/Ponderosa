@@ -677,6 +677,21 @@ export class CoordinationV3RunLifecycleAuthority {
         return { cancelled: false, replayed: false };
       }
       const fence = this.support.nextFence(input.agentId);
+      // Cancellation owns the rollover transition in the same transaction as
+      // the scheduler fence. The provider cleanup path may run later—or not at
+      // all after a crash—but restart recovery can never observe an active
+      // continuation whose Run and Activation are already terminal.
+      this.sqlite.prepare(`
+        UPDATE context_rollovers
+        SET state = 'outcome_unknown',
+          last_error = 'replacement Run was cancelled before low-water context confirmation',
+          updated_at = ?, terminal_at = COALESCE(terminal_at, ?)
+        WHERE state = 'continuation_ready'
+          AND continuation_activation_id IN (
+            SELECT activation_id FROM scheduler_run_activations
+            WHERE run_id = ?
+          )
+      `).run(now, now, run.id);
       this.sqlite.prepare(`
         UPDATE scheduler_runs
         SET status = 'cancelled', fencing_token = ?,

@@ -5040,6 +5040,142 @@ describe("CoordinationV3Store scheduler", () => {
     `).get()).toEqual({ count: 1 });
   });
 
+  it.each([
+    { recordReplacementSession: false, timing: "before" },
+    { recordReplacementSession: true, timing: "after" },
+  ])(
+    "cancels a replacement Run transactionally $timing session and binds its handoff to only one operator retry",
+    ({ recordReplacementSession }) => {
+      const suffix = recordReplacementSession ? "after-session" : "before-session";
+      store.coordinate({
+        projectId,
+        requesterAgentId: requesterId,
+        actorScope: `agent:${requesterId}`,
+        idempotencyKey: `cancel-rollover-${suffix}`,
+        requests: [{
+          requestId: `cancel-rollover-request-${suffix}`,
+          recipientAgentId: recipientA,
+          lifetime: indefinite,
+          payload: { assignment: "Preserve exact progress during recovery" },
+        }],
+      });
+      const sourceRun = store.leaseNextRun({ workerId: "source-worker" })!;
+      acknowledgeLease(sourceRun);
+      const rollover = store.requestContextRollover({
+        projectId,
+        agentId: recipientA,
+        oldProviderSessionId: `cancel-old-${suffix}`,
+        providerSessionGeneration: `cancel-generation-${suffix}`,
+        detectedOccupancy: 80_000,
+        threshold: 75_000,
+        lowWaterMark: 45_000,
+        sourceRunId: sourceRun.runId,
+        sourceActivationIds: sourceRun.activationIds,
+        scopeKey: `conversation:${conversationId}`,
+        conversationId,
+      }).rollover;
+      store.commitContextRolloverHandoff(rollover.id, `cancel-handoff-${suffix}`);
+      store.completeRun(sourceRun.runId, sourceRun.fencingToken);
+      store.beginContextRolloverRetirement(rollover.id);
+      const continuation = store.prepareContextRolloverContinuation({
+        id: rollover.id,
+        visibleResponseCommitted: false,
+      });
+      const replacement = store.leaseNextRun({ workerId: "replacement-worker" })!;
+      acknowledgeLease(replacement);
+      if (recordReplacementSession) {
+        store.recordContextRolloverReplacementSession(
+          continuation.continuationActivationId!,
+          `cancel-replacement-${suffix}`,
+        );
+      }
+
+      expect(store.cancelAgentRun({
+        agentId: recipientA,
+        expectedRunId: replacement.runId,
+        idempotencyKey: `cancel-replacement-${suffix}`,
+      })).toMatchObject({ cancelled: true, runId: replacement.runId });
+      store = new CoordinationV3Store(opened.client);
+      expect(store.contextRollover(rollover.id)).toMatchObject({
+        state: "outcome_unknown",
+        lastError: expect.stringContaining("cancelled"),
+        ...(recordReplacementSession
+          ? { replacementSessionId: `cancel-replacement-${suffix}` }
+          : {}),
+      });
+      expect(store.activeContextRollover(recipientA)).toBeUndefined();
+      expect(opened.client.prepare(`
+        SELECT source_kind AS sourceKind, source_id AS sourceId
+        FROM activation_sources WHERE activation_id = ?
+        ORDER BY source_kind, source_id
+      `).all(continuation.continuationActivationId)).toEqual(expect.arrayContaining([
+        { sourceKind: "request", sourceId: `cancel-rollover-request-${suffix}` },
+      ]));
+
+      const retryRequestId = `cancel-rollover-retry-${suffix}`;
+      store.coordinate({
+        projectId,
+        requesterAgentId: requesterId,
+        actorScope: "user:local-operator",
+        idempotencyKey: `retry-rollover-${suffix}`,
+        rolloverRecoveryForRequestId: `cancel-rollover-request-${suffix}`,
+        requests: [{
+          requestId: retryRequestId,
+          recipientAgentId: recipientA,
+          lifetime: indefinite,
+          payload: {
+            retryOfRequestId: `cancel-rollover-request-${suffix}`,
+            recoveryInstruction: "Audit before continuing",
+          },
+        }],
+      });
+      const recoveryBinding = opened.client.prepare(`
+        SELECT source.activation_id AS activationId,
+          source.source_kind AS sourceKind, source.source_id AS sourceId
+        FROM activation_sources source
+        JOIN agent_activations activation ON activation.id = source.activation_id
+        WHERE activation.kind = 'coordination_request'
+          AND source.source_kind = 'context_rollover_recovery'
+        ORDER BY source.source_id
+      `).get() as { activationId: string; sourceKind: string; sourceId: string };
+      expect(recoveryBinding).toMatchObject({
+        sourceKind: "context_rollover_recovery",
+        sourceId: rollover.id,
+      });
+      const outcomeRun = store.leaseNextRun({ workerId: "outcome-worker" })!;
+      expect(outcomeRun.activations.map((activation) => activation.kind))
+        .toEqual(["coordination_outcome"]);
+      acknowledgeLease(outcomeRun);
+      store.completeRun(outcomeRun.runId, outcomeRun.fencingToken);
+      const recoveryRun = store.leaseNextRun({ workerId: "recovery-worker" })!;
+      expect(recoveryRun.activationIds).toContain(recoveryBinding.activationId);
+      expect(store.contextRolloverRecoveryForRun(recoveryRun.runId, recipientA))
+        .toMatchObject({ id: rollover.id, state: "outcome_unknown" });
+
+      store.cancelAgentRun({
+        agentId: recipientA,
+        expectedRunId: recoveryRun.runId,
+        idempotencyKey: `cancel-first-recovery-${suffix}`,
+      });
+      store.coordinate({
+        projectId,
+        requesterAgentId: requesterId,
+        actorScope: "user:local-operator",
+        idempotencyKey: `retry-rollover-again-${suffix}`,
+        rolloverRecoveryForRequestId: `cancel-rollover-request-${suffix}`,
+        requests: [{
+          requestId: `cancel-rollover-second-retry-${suffix}`,
+          recipientAgentId: recipientA,
+          lifetime: indefinite,
+          payload: { retryOfRequestId: `cancel-rollover-request-${suffix}` },
+        }],
+      });
+      const secondRecoveryRun = store.leaseNextRun({ workerId: "second-recovery-worker" })!;
+      expect(store.contextRolloverRecoveryForRun(secondRecoveryRun.runId, recipientA))
+        .toBeUndefined();
+    },
+  );
+
   it("cancels an unclaimed manual handoff request and leases only the fresh continuation", () => {
     const rollover = store.requestContextRollover({
       projectId,

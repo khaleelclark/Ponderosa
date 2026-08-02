@@ -219,7 +219,21 @@ export async function prepareAgentRun(
   if (rolloverOwnsThisContinuation && !rolloverContinuationHandoff) {
     throw new Error("durable context rollover continuation handoff is unavailable");
   }
+  const rolloverRecovery = v3SchedulerRunId
+    ? coordinationV3.contextRolloverRecoveryForRun(v3SchedulerRunId, agent.id)
+    : undefined;
+  const rolloverRecoveryHandoff = rolloverRecovery?.handoffEventId
+    ? store.continuationHandoffForRollover(
+        agent.id,
+        rolloverRecovery.handoffEventId,
+        rolloverRecovery.sourceRunId,
+      )
+    : undefined;
+  if (rolloverRecovery && !rolloverRecoveryHandoff) {
+    throw new Error("authorized context rollover recovery handoff is unavailable");
+  }
   const eligibleContinuationHandoff = rolloverContinuationHandoff
+    ?? rolloverRecoveryHandoff
     ?? store.pendingContinuationHandoff(agent.id);
   if (eligibleContinuationHandoff) {
     // The rollover's exact handoff remains eligible even when startup had to

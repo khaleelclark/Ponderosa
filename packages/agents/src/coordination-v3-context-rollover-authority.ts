@@ -129,6 +129,26 @@ export class CoordinationV3ContextRolloverAuthority {
     return row ? this.view(row) : undefined;
   }
 
+  recoveryForRun(runId: string, agentId: string): ContextRolloverV3 | undefined {
+    const row = this.sqlite.prepare(`
+      SELECT rollover.*
+      FROM scheduler_run_activations attached
+      JOIN scheduler_runs run ON run.id = attached.run_id
+      JOIN activation_sources recovery
+        ON recovery.activation_id = attached.activation_id
+        AND recovery.source_kind = 'context_rollover_recovery'
+      JOIN context_rollovers rollover ON rollover.id = recovery.source_id
+      WHERE attached.run_id = ? AND run.agent_id = ?
+        AND rollover.agent_id = run.agent_id
+        AND rollover.state IN ('failed','outcome_unknown')
+        AND rollover.handoff_event_id IS NOT NULL
+      ORDER BY rollover.terminal_at DESC, rollover.updated_at DESC,
+        rollover.id DESC
+      LIMIT 1
+    `).get(runId, agentId) as RolloverRow | undefined;
+    return row ? this.view(row) : undefined;
+  }
+
   active(projectId?: string): ContextRolloverV3[] {
     const rows = this.sqlite.prepare(`
       SELECT * FROM context_rollovers
@@ -136,6 +156,16 @@ export class CoordinationV3ContextRolloverAuthority {
         AND (? IS NULL OR project_id = ?)
       ORDER BY updated_at, id
     `).all(projectId ?? null, projectId ?? null) as RolloverRow[];
+    return rows.map((row) => this.view(row));
+  }
+
+  cancelledReplacements(): ContextRolloverV3[] {
+    const rows = this.sqlite.prepare(`
+      SELECT * FROM context_rollovers
+      WHERE state = 'outcome_unknown'
+        AND last_error = 'replacement Run was cancelled before low-water context confirmation'
+      ORDER BY terminal_at, id
+    `).all() as RolloverRow[];
     return rows.map((row) => this.view(row));
   }
 
