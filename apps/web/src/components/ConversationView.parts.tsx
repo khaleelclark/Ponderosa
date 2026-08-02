@@ -39,7 +39,6 @@ import {
   CommunicationDocumentCard,
   communicationVisibleText,
   showBroadcastBadge,
-  stripLeadingAgentMentions,
   stripDocumentPrefixText,
 } from "./chat/ChatMessages";
 import { ProjectRelationshipLink } from "./HeaderRelationshipLinks";
@@ -86,23 +85,17 @@ function ConversationMessageComponent({
   operatorProfile?: OperatorProfileDto;
 }): JSX.Element {
   const fromManager = !message.authorAgentId;
-  // Routing prefixes remain canonical and copyable. Team Chat can omit the
-  // redundant leading token because its stable recipient is shown in the
-  // sender → recipient header.
   const routedText = message.text;
   const copyableText = stripDocumentPrefixText(
     routedText,
     Boolean(message.document),
   );
-  const visibleText =
-    conversation === "collaboration"
-      ? stripLeadingAgentMentions(copyableText, message.agentMentions)
-      : communicationVisibleText({
-          text: copyableText,
-          intent: message.communicationIntent,
-          fromAgent: Boolean(message.authorAgentId),
-          agentMentions: message.agentMentions,
-        });
+  const visibleText = communicationVisibleText({
+    text: copyableText,
+    intent: message.communicationIntent,
+    fromAgent: Boolean(message.authorAgentId),
+    agentMentions: message.agentMentions,
+  });
   const senderName = fromManager
     ? (operatorProfile?.displayName ?? "You")
     : agentTitle(message.authorAgentId);

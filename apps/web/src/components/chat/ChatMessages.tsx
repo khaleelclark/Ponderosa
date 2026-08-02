@@ -40,28 +40,6 @@ export function stripDocumentPrefixText(text: string, hasDocument: boolean): str
     : text;
 }
 
-/** Hide canonical leading routing handles when the destination is already visible. */
-export function stripLeadingAgentMentions(
-  text: string,
-  mentions: readonly { handle: string }[] | undefined,
-): string {
-  if (!mentions?.length) return text;
-  const handles = new Set(
-    mentions.map(mention => mention.handle.toLocaleLowerCase()),
-  );
-  let visible = text.trimStart();
-  let stripped = false;
-  while (visible) {
-    const match = visible.match(
-      /^#([\p{L}\p{N}_-]+)(?=$|\s|[.,!?;:])(?:[.,!?;:]?\s*)/u,
-    );
-    if (!match || !handles.has(match[1]!.toLocaleLowerCase())) break;
-    visible = visible.slice(match[0].length);
-    stripped = true;
-  }
-  return stripped && visible.trim() ? visible.trimStart() : text;
-}
-
 function stripLeadingRoutingHandle(text: string, handle: string): string {
   const visible = text.trimStart();
   const match = visible.match(
@@ -77,18 +55,13 @@ function stripLeadingRoutingHandle(text: string, handle: string): string {
   return remainder.trim() ? remainder.trimStart() : text;
 }
 
-/** Keep canonical routing tokens copyable while omitting redundant UI prose. */
+/** Keep recipient handles visible; only the separately badged Broadcast route is redundant. */
 export function communicationVisibleText(input: {
   text: string;
   intent?: CommunicationIntent;
   fromAgent: boolean;
   agentMentions?: readonly { handle: string }[];
 }): string {
-  if (input.intent === "user_dm") {
-    return input.fromAgent
-      ? stripLeadingRoutingHandle(input.text, "user")
-      : stripLeadingAgentMentions(input.text, input.agentMentions);
-  }
   return input.intent === "broadcast"
     ? stripLeadingRoutingHandle(input.text, "broadcast")
     : input.text;

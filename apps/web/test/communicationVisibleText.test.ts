@@ -5,18 +5,18 @@ import {
 } from "../src/components/chat/ChatMessages";
 
 describe("communicationVisibleText", () => {
-  it("removes operator and Agent Direct routing without changing ordinary text", () => {
+  it("preserves Agent and operator Direct mentions for visible highlighting", () => {
     expect(communicationVisibleText({
       text: "#Oak #Pine Private update",
       intent: "user_dm",
       fromAgent: false,
       agentMentions: [{ handle: "Oak" }, { handle: "Pine" }],
-    })).toBe("Private update");
+    })).toBe("#Oak #Pine Private update");
     expect(communicationVisibleText({
       text: "#user Finished the review",
       intent: "user_dm",
       fromAgent: true,
-    })).toBe("Finished the review");
+    })).toBe("#user Finished the review");
     expect(communicationVisibleText({
       text: "Ordinary response",
       intent: "user_dm",

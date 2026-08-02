@@ -389,7 +389,7 @@ describe("ConversationView public behavior", () => {
     client.clear();
   });
 
-  it("shows Direct routing only in the composer and keeps one Broadcast badge", () => {
+  it("highlights Direct participants in messages and keeps one Broadcast badge", () => {
     const client = createClient();
     client.setQueryData<ConversationDetailDto>(
       queryKeys.conversations.detail(firstConversationId),
@@ -430,10 +430,19 @@ describe("ConversationView public behavior", () => {
 
     render(view(client, <ConversationView {...props()} />));
 
-    expect(screen.getByText("Private hello")).toBeTruthy();
-    expect(screen.queryByText("#Agent-One Private hello")).toBeNull();
-    expect(screen.getByText("Agent private response")).toBeTruthy();
-    expect(screen.queryByText("#user Agent private response")).toBeNull();
+    const userDirect = document.getElementById("master-message-direct-message");
+    expect(userDirect?.textContent).toContain("#Agent-One Private hello");
+    expect(
+      userDirect?.querySelector('[aria-label="Open agent Agent-One"]')
+        ?.textContent,
+    ).toBe("#Agent-One");
+    const agentDirect = document.getElementById(
+      "master-message-agent-direct-response",
+    );
+    expect(agentDirect?.textContent).toContain("#operator Agent private response");
+    expect(
+      agentDirect?.querySelector('[data-message-tag="user"]')?.textContent,
+    ).toBe("#operator");
     expect(screen.getByText("Shared update")).toBeTruthy();
     expect(screen.queryByText("#broadcast Shared update")).toBeNull();
     expect(screen.queryByText(/Direct ·/u)).toBeNull();
@@ -589,27 +598,46 @@ describe("ConversationView public behavior", () => {
     client.clear();
   });
 
-  it("shows the canonical destination on a Team Chat reply without a visible mention", async () => {
+  it("shows and highlights the canonical destination on a Team Chat reply", async () => {
     const client = createClient();
     const recipient = { ...agent, id: "agent-two", title: "Pine" };
     client.setQueryData(queryKeys.collaboration(firstConversationId), {
       messages: [{
         ...firstMessage,
-        text: "The requested review is complete.",
+        text: "#Pine The requested review is complete.",
         communicationIntent: "collaboration" as const,
         collaborationRecipients: [{ id: recipient.id, title: recipient.title }],
+        agentMentions: [{ agentId: recipient.id, handle: "Pine" }],
       }],
       agents: [agent, recipient],
       operations: [],
       history: { hasMore: false },
       operationHistory: { hasMore: false },
     });
+    const conversationDetail = client.getQueryData<ConversationDetailDto>(
+      queryKeys.conversations.detail(firstConversationId),
+    )!;
+    client.setQueryData<ConversationDetailDto>(
+      queryKeys.conversations.detail(firstConversationId),
+      { ...conversationDetail, agents: [agent, recipient] },
+    );
     const user = userEvent.setup();
-    render(view(client, <ConversationView {...props()} />));
+    render(view(client, (
+      <ConversationView {...props()} projectAgents={[agent, recipient]} />
+    )));
 
     await user.click(screen.getByRole("tab", { name: "Team Chat" }));
-    expect(screen.getByText("→ Pine")).toBeTruthy();
-    expect(screen.getByText("The requested review is complete.")).toBeTruthy();
+    const teamPanel = screen.getByRole("tabpanel", {
+      name: "Team chat messages",
+    });
+    expect(within(teamPanel).getByText("→ Pine")).toBeTruthy();
+    expect(
+      within(teamPanel).getByRole("button", { name: "Open agent Pine" })
+        .textContent,
+    ).toBe("#Pine");
+    expect(
+      within(teamPanel).getByText("The requested review is complete."),
+    ).toBeTruthy();
 
     client.clear();
   });
