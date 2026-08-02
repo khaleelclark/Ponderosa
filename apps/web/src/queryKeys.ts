@@ -190,7 +190,10 @@ export const queryKeys = {
     search: (query: string) => ["wiki", "search", query] as const,
   },
   projectArtifacts: {
+    all: ["project-artifacts"] as const,
     project: (projectId: string) => ["project-artifacts", projectId] as const,
+    conversation: (projectId: string, conversationId: string) =>
+      ["project-artifacts", projectId, "conversation", conversationId] as const,
     agentContent: (agentId: string, artifactId: string | undefined) =>
       ["artifact", agentId, artifactId] as const,
     recorded: (artifactId: string, agentId: string | undefined) =>

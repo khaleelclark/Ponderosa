@@ -1,5 +1,6 @@
 import type {
   AgentDto,
+  ArtifactDto,
   ConversationDetailDto,
   ConversationDto,
   ConversationMessageDto,
@@ -152,6 +153,20 @@ const secondMessage = message({
   at: "2026-07-25T10:02:00.000Z",
 });
 
+const chatArtifact: ArtifactDto = {
+  id: "artifact-one",
+  projectId,
+  agentId: agent.id,
+  originAgentId: agent.id,
+  kind: "document",
+  path: "results/brief.md",
+  summary: "Project brief",
+  createdAt: "2026-07-25T10:04:00.000Z",
+  mediaType: "text/markdown",
+  previewUrl: "/api/artifacts/artifact-one/preview",
+  downloadUrl: "/api/artifacts/artifact-one/download",
+};
+
 function detail(
   conversationValue: ConversationDto,
   messages: ConversationMessageDto[],
@@ -199,6 +214,13 @@ function createClient(): QueryClient {
       operationHistory: { hasMore: false },
     });
     client.setQueryData(queryKeys.queuedMessages.conversation(id), []);
+    client.setQueryData(
+      queryKeys.projectArtifacts.conversation(projectId, id),
+      {
+        items: id === firstConversationId ? [chatArtifact] : [],
+        history: { limit: 100, hasMore: false },
+      },
+    );
   }
   client.setQueryData(queryKeys.notifications.all, []);
   client.setQueryData(queryKeys.workspacePreferences.all, preferences);
@@ -563,6 +585,26 @@ describe("ConversationView public behavior", () => {
     expect(
       screen.getByRole("tabpanel", { name: "Project chat messages" }).hidden,
     ).toBe(false);
+
+    client.clear();
+  });
+
+  it("shows Files & Results for every Agent in the Chat", async () => {
+    const client = createClient();
+    const user = userEvent.setup();
+    render(view(client, <ConversationView {...props()} />));
+
+    await user.click(screen.getByRole("tab", { name: "Files & Results" }));
+
+    expect(
+      screen.getByRole("tab", { name: "Files & Results" }).getAttribute(
+        "aria-selected",
+      ),
+    ).toBe("true");
+    expect(screen.getByRole("tabpanel", { name: "Chat files and results" })).toBeTruthy();
+    expect(screen.getByText("Project brief")).toBeTruthy();
+    expect(screen.getByText(/1 item created by Agents in this Chat/)).toBeTruthy();
+    expect(screen.queryByPlaceholderText("Write a message…")).toBeNull();
 
     client.clear();
   });

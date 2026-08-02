@@ -94,6 +94,9 @@ export function useAgentDetailAdministration({
       void queryClient.invalidateQueries({
         queryKey: queryKeys.conversations.detailAll,
       });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.projectArtifacts.project(updated.projectId),
+      });
     },
   });
 

@@ -8,6 +8,7 @@ import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import TagIcon from "@mui/icons-material/Tag";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
+import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import {
   Box,
   Chip,
@@ -277,7 +278,7 @@ function ConversationHeader({
   setDeleteOpen,
   setActiveView,
 }: {
-  activeView: "main" | "collaboration" | "agents" | "triggers";
+  activeView: "main" | "collaboration" | "files" | "agents" | "triggers";
   agentWorkOpen: boolean;
   conversation: ConversationDto;
   projectLabel?: string;
@@ -291,7 +292,7 @@ function ConversationHeader({
   setImportOpen: Dispatch<SetStateAction<boolean>>;
   setDeleteOpen: Dispatch<SetStateAction<boolean>>;
   setActiveView: Dispatch<
-    SetStateAction<"main" | "collaboration" | "agents" | "triggers">
+    SetStateAction<"main" | "collaboration" | "files" | "agents" | "triggers">
   >;
 }): JSX.Element {
   return (
@@ -361,6 +362,11 @@ function ConversationHeader({
             value: "collaboration",
             label: "Team Chat",
             icon: <GroupsOutlinedIcon fontSize="small" />,
+          },
+          {
+            value: "files",
+            label: "Files & Results",
+            icon: <Inventory2OutlinedIcon fontSize="small" />,
           },
           {
             value: "agents",

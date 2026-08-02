@@ -72,6 +72,7 @@ import { useConversationHistory } from "./useConversationHistory";
 import { useConversationMessagingController } from "./useConversationMessagingController";
 import { MasterRespondingIndicator } from "./ConversationComposerStatus";
 import { agentOpeningAgentId } from "./chat/ChatMessages";
+import { ConversationFilesResults } from "./ConversationFilesResults";
 
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { notificationTechnicalFocusId } from "../technicalFocus";
@@ -845,6 +846,12 @@ export function ConversationView({
             conversationId={conversationId}
             focus={agentWorkFocus ? { id: agentWorkFocus } : undefined}
             onClose={() => setAgentWorkOpen(false)}
+          />
+        ) : activeView === "files" ? (
+          <ConversationFilesResults
+            projectId={conversation.projectId}
+            conversationId={conversation.id}
+            agents={conversationAgents}
           />
         ) : activeView === "agents" ? (
           <AgentsTab

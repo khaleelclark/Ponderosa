@@ -212,11 +212,15 @@ export class AgentArtifactCatalog {
    * the same stable key before the response page is formed. */
   getProjectArtifactPage(
     projectId: string,
-    input: { limit: number; cursor?: string },
+    input: { limit: number; cursor?: string; conversationId?: string },
   ): HistoryPageDto<ArtifactDto> {
     const limit = Math.max(1, Math.min(input.limit, 500));
+    const conversationId = input.conversationId?.trim() || undefined;
+    const cursorScope = conversationId
+      ? `${projectId}:conversation:${conversationId}`
+      : projectId;
     const boundary = input.cursor
-      ? this.decodeHistoryCursor(input.cursor, "project:artifacts", projectId)
+      ? this.decodeHistoryCursor(input.cursor, "project:artifacts", cursorScope)
       : undefined;
     const rows = this.client.prepare(`
       SELECT artifact.id, artifact.agent_id, artifact.execution_id, artifact.kind, artifact.path,
@@ -225,12 +229,17 @@ export class AgentArtifactCatalog {
       FROM artifacts artifact
       JOIN agents agent ON agent.id = artifact.agent_id
       WHERE agent.project_id = ?
+        ${conversationId ? `AND EXISTS (
+          SELECT 1 FROM agent_conversation_memberships membership
+          WHERE membership.agent_id = artifact.agent_id
+            AND membership.conversation_id = ?
+        )` : ""}
         ${boundary ? "AND (artifact.created_at < ? OR (artifact.created_at = ? AND artifact.id < ?))" : ""}
       ORDER BY artifact.created_at DESC, artifact.id DESC LIMIT ?
     `).all(...(
       boundary
-        ? [projectId, boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
-        : [projectId, limit + 1]
+        ? [projectId, ...(conversationId ? [conversationId] : []), boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
+        : [projectId, ...(conversationId ? [conversationId] : []), limit + 1]
     )) as ArtifactProjectionReadRow[];
     const executionArtifacts = rows.flatMap((row) => {
       const artifact = this.artifactDtoFromProjectionRow(row.agent_id, row);
@@ -239,12 +248,17 @@ export class AgentArtifactCatalog {
     const managedRows = this.client.prepare(`
       SELECT artifact_json FROM managed_artifact_projection
       WHERE project_id = ? AND json_extract(audience_json, '$.kind') = 'organization'
+        ${conversationId ? `AND EXISTS (
+          SELECT 1 FROM agent_conversation_memberships membership
+          WHERE membership.agent_id = json_extract(artifact_json, '$.originAgentId')
+            AND membership.conversation_id = ?
+        )` : ""}
         ${boundary ? "AND (created_at < ? OR (created_at = ? AND artifact_id < ?))" : ""}
       ORDER BY created_at DESC, artifact_id DESC LIMIT ?
     `).all(...(
       boundary
-        ? [projectId, boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
-        : [projectId, limit + 1]
+        ? [projectId, ...(conversationId ? [conversationId] : []), boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
+        : [projectId, ...(conversationId ? [conversationId] : []), limit + 1]
     )) as Array<{ artifact_json: string }>;
     const managed = managedRows.map((row) =>
       this.withProjectUrls(
@@ -273,7 +287,7 @@ export class AgentArtifactCatalog {
           ? {
             cursor: this.encodeHistoryCursor({
               stream: "project:artifacts",
-              scope: projectId,
+              scope: cursorScope,
               orderKey: oldest.createdAt,
               rowKey: oldest.id,
             }),

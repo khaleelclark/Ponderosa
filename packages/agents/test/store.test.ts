@@ -1442,6 +1442,43 @@ describe("AgentStore — append + projection", () => {
     expect(existsSync(importedAgentHistoryPath(dir, projectId, agentId))).toBe(true);
   });
 
+  it("scopes Project artifact pages to canonical Chat membership", () => {
+    const project = store.createProject({ label: "Scoped files", hostPath: "/scoped-files" });
+    const alphaChat = store.createConversation(project.id, { title: "Alpha Chat" });
+    const betaChat = store.createConversation(project.id, { title: "Beta Chat" });
+    const alpha = store.createAgent(project.id, { title: "Alpha", engine: "codex", conversationId: alphaChat.id });
+    const beta = store.createAgent(project.id, { title: "Beta", engine: "codex", conversationId: betaChat.id });
+
+    store.appendEvent(alpha.id, { type: "file_change", path: "alpha.txt", kind: "create", diff: "+alpha" });
+    store.appendEvent(beta.id, { type: "file_change", path: "beta.txt", kind: "create", diff: "+beta" });
+    store.recordProjectArtifact({
+      id: "alpha-result", projectId: project.id, agentId: alpha.id, originAgentId: alpha.id,
+      kind: "document", path: "alpha.md", summary: "Alpha result", createdAt: "2026-07-30T12:00:00.000Z",
+      mediaType: "text/markdown", size: 5, sha256: "a".repeat(64), visibility: "project", pinned: false,
+    });
+    store.recordProjectArtifact({
+      id: "beta-result", projectId: project.id, agentId: beta.id, originAgentId: beta.id,
+      kind: "document", path: "beta.md", summary: "Beta result", createdAt: "2026-07-30T12:01:00.000Z",
+      mediaType: "text/markdown", size: 4, sha256: "b".repeat(64), visibility: "project", pinned: false,
+    });
+
+    const alphaArtifacts = store.getProjectArtifactPage(project.id, {
+      limit: 100,
+      conversationId: alphaChat.id,
+    }).items;
+    expect(alphaArtifacts.map(artifact => artifact.agentId)).toEqual([alpha.id, alpha.id]);
+    expect(alphaArtifacts.map(artifact => artifact.id)).toContain("alpha-result");
+    expect(alphaArtifacts.map(artifact => artifact.id)).not.toContain("beta-result");
+
+    const projectPage = store.getProjectArtifactPage(project.id, { limit: 1 });
+    expect(projectPage.history.cursor).toBeTruthy();
+    expect(() => store.getProjectArtifactPage(project.id, {
+      limit: 1,
+      cursor: projectPage.history.cursor,
+      conversationId: alphaChat.id,
+    })).toThrow("invalid history cursor");
+  });
+
   it("preserves private managed-artifact identity and access across projection rebuilds", () => {
     const project = store.createProject({ label: "Private artifacts", hostPath: "/private-artifacts" });
     const sender = store.createAgent(project.id, { title: "Sender", engine: "codex" });

@@ -544,6 +544,9 @@ export const realApi = {
   listProjectArtifacts(projectId: string, limit: number = 100, cursor?: string): Promise<HistoryPageDto<ArtifactDto>> {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/artifacts${toQuery({ limit: String(limit), cursor })}`);
   },
+  listConversationArtifacts(projectId: string, conversationId: string, limit: number = 100, cursor?: string): Promise<HistoryPageDto<ArtifactDto>> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/artifacts${toQuery({ conversationId, limit: String(limit), cursor })}`);
+  },
   updateProjectArtifact(projectId: string, artifactId: string, input: { pinned?: boolean; visibility?: "project" | "published" }): Promise<ArtifactDto> {
     return requestJson<ArtifactDto>(`/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}`, {
       method: "PATCH",

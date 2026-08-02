@@ -11,6 +11,7 @@ import { chatStateKey, readChatState, writeChatState } from "../chatState";
 export type ConversationActiveView =
   | "main"
   | "collaboration"
+  | "files"
   | "agents"
   | "triggers";
 
@@ -27,6 +28,7 @@ export function useConversationActiveViewState(
       chatStateKey("view", `conversation.${conversationId}`),
     );
     return saved === "collaboration" ||
+      saved === "files" ||
       saved === "agents" ||
       saved === "triggers"
       ? saved
@@ -66,6 +68,7 @@ export function useConversationResetEffect({
     setActiveView(
       initialView ??
         (saved === "collaboration" ||
+        saved === "files" ||
         saved === "agents" ||
         saved === "triggers"
           ? saved
