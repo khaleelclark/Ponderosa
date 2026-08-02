@@ -880,6 +880,10 @@ export function startProviderRunExecution(
       const localRolloverRequested = scheduledSessionRollovers.delete(agent.id);
       const durableRollover = coordinationV3.activeContextRollover(agent.id);
       const runRollover = durableRollover?.sourceRunId === runId ? durableRollover : undefined;
+      const replacementRunRollover = coordinationV3.contextRolloverForContinuationRun(
+        runId,
+        agent.id,
+      );
       const rolloverRequested = owned && Boolean(localRolloverRequested || runRollover);
       const rolloverSucceeded = Boolean(
         rolloverRequested && runRollover?.state === "handoff_committed" &&
@@ -904,6 +908,49 @@ export function startProviderRunExecution(
           body: "The provider ended before committing its continuation handoff. Retry the task or request another context refresh; the old provider generation may be retried safely.",
           projectId: agent.projectId,
           conversationId: routingConversationId,
+        });
+      }
+      if (owned && replacementRunRollover?.state === "continuation_ready" &&
+          !isClosed() && !controller.signal.aborted && !schedulerCancelled) {
+        const missingObservation = replacementRunRollover.replacementSessionId
+          ? `replacement session ${replacementRunRollover.replacementSessionId} ended before reporting the required low-water context observation`
+          : "replacement Run ended before identifying and confirming a low-water provider session";
+        coordinationV3.failContextRollover(
+          replacementRunRollover.id,
+          runError ? "outcome_unknown" : "failed",
+          missingObservation,
+        );
+        clearAgentResumeSession(agent.id, "context_rollover_confirmation_missing");
+        organizationEnvelopeStates.delete(agent.id);
+        const unconfirmedRuntime = reusableRuntime(agent.id);
+        if (unconfirmedRuntime) {
+          activeRun.persistentRuntimeIdentity = undefined;
+          try {
+            await teardownPersistentRuntime(
+              agent.id,
+              unconfirmedRuntime,
+              "context rollover replacement lacked low-water confirmation",
+              project.id,
+            );
+          } catch (error) {
+            app.log.error(
+              { err: error, agentId: agent.id, runId },
+              "unconfirmed rollover replacement teardown remains pending",
+            );
+          }
+        }
+        createOperationalNotification({
+          dedupeKey: `context-rollover:${replacementRunRollover.id}:confirmation-missing`,
+          category: "coordination",
+          severity: "attention",
+          title: `${agent.title} could not confirm refreshed context`,
+          body: runError
+            ? "The replacement Run ended before confirming safe context headroom. Its exact bounded handoff remains recorded. Review the Agent's work and retry the original assignment if it is still unfinished."
+            : "The replacement Run completed its task but did not report the required context headroom. Ponderosa discarded that provider session; the next task will start from canonical context.",
+          projectId: agent.projectId,
+          conversationId: routingConversationId,
+          agentId: agent.id,
+          action: { kind: "open_agent", targetId: agent.id },
         });
       }
       if (schedulerCancelled && !owned && !isClosed() && store.getRuns(agent.id).some((run) => run.id === runId && run.status === "running")) {

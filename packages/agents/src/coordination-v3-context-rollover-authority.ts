@@ -115,6 +115,20 @@ export class CoordinationV3ContextRolloverAuthority {
     return row ? this.view(row) : undefined;
   }
 
+  forContinuationRun(runId: string, agentId: string): ContextRolloverV3 | undefined {
+    const row = this.sqlite.prepare(`
+      SELECT rollover.*
+      FROM context_rollovers rollover
+      JOIN scheduler_run_activations attached
+        ON attached.activation_id = rollover.continuation_activation_id
+      JOIN scheduler_runs run ON run.id = attached.run_id
+      WHERE attached.run_id = ? AND run.agent_id = ?
+        AND rollover.agent_id = run.agent_id
+      ORDER BY rollover.updated_at DESC, rollover.id DESC LIMIT 1
+    `).get(runId, agentId) as RolloverRow | undefined;
+    return row ? this.view(row) : undefined;
+  }
+
   active(projectId?: string): ContextRolloverV3[] {
     const rows = this.sqlite.prepare(`
       SELECT * FROM context_rollovers
@@ -210,6 +224,29 @@ export class CoordinationV3ContextRolloverAuthority {
         sourceId: current.id,
         now,
       });
+      if (current.sourceActivationIds.length > 0) {
+        const placeholders = current.sourceActivationIds.map(() => "?").join(", ");
+        // The continuation executes only its bounded handoff Activation, but
+        // inherits the source Run's canonical lineage. Request capability,
+        // wake/source projections, automatic result publication, and terminal
+        // settlement can therefore follow durable sources without attaching
+        // or re-executing the original Activations.
+        this.sqlite.prepare(`
+          INSERT OR IGNORE INTO activation_sources (
+            activation_id, source_kind, source_id
+          )
+          SELECT ?, source.source_kind, source.source_id
+          FROM activation_sources source
+          JOIN agent_activations original ON original.id = source.activation_id
+          WHERE source.activation_id IN (${placeholders})
+            AND original.project_id = ? AND original.agent_id = ?
+        `).run(
+          activationId,
+          ...current.sourceActivationIds,
+          current.projectId,
+          current.agentId,
+        );
+      }
       this.sqlite.prepare(`
         UPDATE context_rollovers SET state = 'continuation_ready', continuation_activation_id = ?,
           continuation_ready_at = COALESCE(continuation_ready_at, ?), updated_at = ?

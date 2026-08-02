@@ -965,6 +965,10 @@ export class CoordinationV3Store {
     return this.contextRolloverAuthority.forReplacementSession(agentId, replacementSessionId);
   }
 
+  contextRolloverForContinuationRun(runId: string, agentId: string): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.forContinuationRun(runId, agentId);
+  }
+
   activeContextRollovers(projectId?: string): ContextRolloverV3[] {
     return this.contextRolloverAuthority.active(projectId);
   }

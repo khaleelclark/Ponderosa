@@ -40,6 +40,13 @@ export class CoordinationV3DeletionAuthority {
         idempotencyKey: `agent-delete:${agentId}`,
         now,
       });
+      this.sqlite.prepare(`
+        UPDATE context_rollovers
+        SET state = 'failed', last_error = 'agent deletion fenced context rollover',
+          updated_at = ?, terminal_at = COALESCE(terminal_at, ?)
+        WHERE agent_id = ?
+          AND state IN ('requested','handoff_committed','session_retiring','continuation_ready')
+      `).run(now, now, agentId);
       const owned = this.sqlite.prepare(`
         SELECT id FROM coordination_joins
         WHERE owner_agent_id = ? AND state = 'open'

@@ -839,7 +839,10 @@ export class CoordinationV3RunLifecycleAuthority {
       ...new Map(
         [...rows, ...continuationRows].map((row) => [row.id, row]),
       ).values(),
-    ];
+    ].filter((row) => !this.requestOwnedByCommittedRollover(
+      row.id,
+      runId,
+    ));
     for (const row of related) {
       this.updateRequest({
         requestId: row.id,
@@ -858,5 +861,43 @@ export class CoordinationV3RunLifecycleAuthority {
         reason,
       );
     }
+  }
+
+  private requestOwnedByCommittedRollover(
+    requestId: string,
+    sourceRunId: string,
+  ): boolean {
+    const row = this.sqlite.prepare(`
+      SELECT 1 AS owned
+      FROM context_rollovers rollover
+      JOIN scheduler_runs source_run ON source_run.id = ?
+      JOIN json_each(rollover.source_activation_ids_json) source_activation_id
+      JOIN agent_activations source_activation
+        ON source_activation.id = source_activation_id.value
+      JOIN activation_sources source
+        ON source.activation_id = source_activation.id
+      LEFT JOIN coordination_request_updates request_update
+        ON source.source_kind = 'request_update'
+        AND request_update.id = source.source_id
+      LEFT JOIN coordination_joins join_record
+        ON source.source_kind = 'join' AND join_record.id = source.source_id
+      WHERE rollover.source_run_id = source_run.id
+        AND rollover.state IN ('handoff_committed','session_retiring','continuation_ready')
+        AND rollover.handoff_event_id IS NOT NULL
+        AND rollover.agent_id = source_run.agent_id
+        AND rollover.project_id = source_run.project_id
+        AND source_activation.agent_id = source_run.agent_id
+        AND source_activation.project_id = source_run.project_id
+        AND (
+          (source.source_kind = 'request' AND source.source_id = ?)
+          OR (source.source_kind = 'request_update' AND request_update.request_id = ?)
+          OR (source.source_kind = 'join' AND EXISTS (
+            SELECT 1 FROM json_each(join_record.continuation_request_ids_json) continuation_request
+            WHERE continuation_request.value = ?
+          ))
+        )
+      LIMIT 1
+    `).get(sourceRunId, requestId, requestId, requestId) as { owned: number } | undefined;
+    return Boolean(row);
   }
 }

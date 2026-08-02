@@ -300,9 +300,28 @@ export function registerServerLifecycle(
         }
         if (rollover.state === "session_retiring") {
           store.clearResumeSession(rollover.agentId, "explicit_compaction");
-          coordinationV3.prepareContextRolloverContinuation({
+          rollover = coordinationV3.prepareContextRolloverContinuation({
             id: rollover.id,
             visibleResponseCommitted: rollover.visibleResponseCommitted,
+          });
+        }
+        if (rollover.state === "continuation_ready" && rollover.replacementSessionId) {
+          store.clearResumeSession(rollover.agentId, "explicit_compaction");
+          coordinationV3.failContextRollover(
+            rollover.id,
+            "outcome_unknown",
+            "server restarted after the replacement session was recorded but before low-water context confirmation",
+          );
+          createOperationalNotification({
+            dedupeKey: `context-rollover:${rollover.id}:confirmation-missing`,
+            category: "coordination",
+            severity: "attention",
+            title: "Context refresh needs review",
+            body: "The replacement provider session ended with the server before safe context headroom was confirmed. Its exact bounded handoff remains recorded; review the Agent's work before retrying the original assignment.",
+            projectId: rollover.projectId,
+            conversationId: rollover.conversationId,
+            agentId: rollover.agentId,
+            action: { kind: "open_agent", targetId: rollover.agentId },
           });
         }
       } catch (error) {

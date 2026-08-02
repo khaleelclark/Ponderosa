@@ -658,6 +658,7 @@ export async function prepareAgentRun(
   const freshExactProviderInput = renderSeedPrompt(seedHistory, freshPrompt);
   const manifestActivationIds = coordinationV3.activationIdsForInjection(v3InjectionId!, runId);
   const manifestActivationPayloads = coordinationV3.activationPayloads(agent.id, manifestActivationIds, runId);
+  const manifestRequestIds = coordinationV3.requestIdsAttachedToRun(runId, agent.id);
   const manifestTriggerOccurrences = manifestActivationPayloads.flatMap(({ payload }) => {
     if (!payload || typeof payload !== "object") return [];
     const occurrence = (payload as { occurrence?: { id?: unknown; artifactId?: unknown } }).occurrence;
@@ -671,7 +672,8 @@ export async function prepareAgentRun(
         payload && typeof payload === "object" && "decision" in payload,
       ))
       ? "decision" as const
-      : manifestActivationPayloads.some(({ kind }) => kind.startsWith("coordination_"))
+      : manifestRequestIds.length > 0 ||
+          manifestActivationPayloads.some(({ kind }) => kind.startsWith("coordination_"))
         ? "coordination" as const
       : undefined;
   const activationCommunicationEventIds = manifestActivationPayloads.flatMap(({ payload }) => {

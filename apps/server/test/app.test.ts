@@ -204,6 +204,141 @@ class ManualRolloverPersistentAdapter implements Adapter {
   }
 }
 
+class ManagedRequestRolloverAdapter implements Adapter {
+  readonly id = "codex";
+  readonly displayName = "Managed Request rollover adapter";
+  openCount = 0;
+  rolloverCalls = 0;
+  toolResult?: { success: boolean; text: string };
+  readonly handoff = Array.from(
+    { length: 300 },
+    (_, index) => `managed-handoff-${index + 1}`,
+  ).join(" ");
+  readonly result = "The managed Request completed exactly once after context rollover.";
+
+  listModels() { return [{ id: "test-model", label: "Test model" }]; }
+  listEfforts() { return [{ id: "high", label: "High" }]; }
+  async *seed(_options: SeedOptions): AsyncIterable<AgentEvent> {
+    throw new Error("managed rollover fixture must use openSession");
+  }
+  async *continue(_options: ContinueOptions): AsyncIterable<AgentEvent> {
+    throw new Error("managed rollover fixture must use openSession");
+  }
+
+  async openSession(options: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
+    this.openCount += 1;
+    const source = this.openCount === 1;
+    const sessionId = source ? "managed-source-session" : "managed-replacement-session";
+    const generation = source ? "managed-source-generation" : "managed-replacement-generation";
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => { started = resolve; });
+    let closed!: () => void;
+    const closedPromise = new Promise<void>((resolve) => { closed = resolve; });
+    let alive = true;
+    const fixture = this;
+    const session: RuntimeSession = {
+      engineAgentId: sessionId,
+      events: {
+        async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
+          yield { type: "session", sessionId };
+          await startedPromise;
+          if (source) {
+            fixture.rolloverCalls += 1;
+            fixture.toolResult = await options.handleDynamicToolCall?.({
+              name: "ponderosa_rollover",
+              arguments: { handoff: fixture.handoff },
+            });
+          } else {
+            yield {
+              type: "context_usage",
+              providerSessionId: sessionId,
+              providerSessionGeneration: generation,
+              usedTokens: 20_000,
+              aggregateTokens: 120_000,
+              windowTokens: 200_000,
+            };
+            yield { type: "text", delta: fixture.result };
+          }
+          yield { type: "turn_done" };
+          await closedPromise;
+        },
+      },
+      startTurn: async () => {
+        started();
+        return { turnId: `${generation}-turn` };
+      },
+      contextUsage: () => ({
+        usedTokens: source ? 80_000 : 20_000,
+        aggregateTokens: source ? 10_000_000 : 120_000,
+        windowTokens: 200_000,
+        providerSessionGeneration: generation,
+      }),
+      steer: async () => ({ status: "not_active" }),
+      interrupt: async () => undefined,
+      isAlive: () => alive,
+      close: async () => {
+        alive = false;
+        closed();
+      },
+    };
+    options.onRuntimeSpawned(session);
+    return session;
+  }
+}
+
+class NoUsageReplacementAdapter implements Adapter {
+  readonly id = "codex";
+  readonly displayName = "No-usage replacement adapter";
+  constructor(readonly outcome: "error" | "completed") {}
+
+  listModels() { return [{ id: "test-model", label: "Test model" }]; }
+  listEfforts() { return [{ id: "high", label: "High" }]; }
+  async *seed(_options: SeedOptions): AsyncIterable<AgentEvent> {
+    throw new Error("replacement fixture must use openSession");
+  }
+  async *continue(_options: ContinueOptions): AsyncIterable<AgentEvent> {
+    throw new Error("replacement fixture must use openSession");
+  }
+
+  async openSession(options: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => { started = resolve; });
+    let closed!: () => void;
+    const closedPromise = new Promise<void>((resolve) => { closed = resolve; });
+    let alive = true;
+    const outcome = this.outcome;
+    const session: RuntimeSession = {
+      engineAgentId: `no-usage-${outcome}-session`,
+      events: {
+        async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
+          yield { type: "session", sessionId: `no-usage-${outcome}-session` };
+          await startedPromise;
+          if (outcome === "error") {
+            yield { type: "error", message: "replacement provider failed before usage telemetry" };
+          } else {
+            yield { type: "text", delta: "Replacement task completed without usage telemetry." };
+            yield { type: "turn_done" };
+          }
+          await closedPromise;
+        },
+      },
+      startTurn: async () => {
+        started();
+        return { turnId: `no-usage-${outcome}-turn` };
+      },
+      steer: async () => ({ status: "not_active" }),
+      interrupt: async () => undefined,
+      isAlive: () => alive,
+      close: async () => {
+        alive = false;
+        closed();
+      },
+    };
+    options.onRuntimeSpawned(session);
+    return session;
+  }
+}
+
 describe("server public API behavior", () => {
   let dataDir: string;
   let repoDir: string;
@@ -1017,6 +1152,273 @@ describe("server public API behavior", () => {
           WHERE source_kind = 'context_rollover' AND source_id = ?
         )
     `).get(attempts[1]!.id)).toEqual({ count: 0 });
+  });
+
+  it("carries one managed Request through rollover and completes its original Join exactly once", async () => {
+    const adapter = new ManagedRequestRolloverAdapter();
+    const project = store.createProject({
+      label: "Managed Request rollover",
+      hostPath: repoDir,
+      defaultEngine: "codex",
+    });
+    const manager = store.createAgent(project.id, {
+      title: "Rollover Manager",
+      engine: "codex",
+    });
+    const worker = store.createAgent(project.id, {
+      title: "Rollover Worker",
+      engine: "codex",
+    });
+    const coordination = new CoordinationV3Store(store.sqlite);
+    coordination.coordinate({
+      projectId: project.id,
+      requesterAgentId: manager.id,
+      actorScope: `agent:${manager.id}`,
+      idempotencyKey: "managed-rollover-assignment",
+      requests: [{
+        requestId: "managed-rollover-request",
+        recipientAgentId: worker.id,
+        lifetime: { kind: "indefinite" },
+        payload: { assignment: "Finish this managed task after refreshing context" },
+      }],
+      join: { id: "managed-rollover-join", mode: "all" },
+    });
+    const app = server({
+      dataDir,
+      store,
+      engines: [{
+        adapter,
+        authStatus: async () => ({ authenticated: true, detail: "test subscription" }),
+      }],
+      logger: false,
+      communicationV3: { pollMs: 5 },
+    });
+    await app.ready();
+
+    const deadline = Date.now() + 5_000;
+    while (coordination.getRequest("managed-rollover-request")?.state !== "completed" &&
+        Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(adapter.toolResult).toMatchObject({ success: true });
+    expect(adapter.rolloverCalls).toBe(1);
+    expect(adapter.openCount).toBe(2);
+    expect(coordination.getRequest("managed-rollover-request")?.state).toBe("completed");
+    expect(store.sqlite.prepare(`
+      SELECT state FROM coordination_joins WHERE id = 'managed-rollover-join'
+    `).get()).toEqual({ state: "satisfied" });
+    expect(store.sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM coordination_request_updates
+      WHERE request_id = 'managed-rollover-request' AND kind = 'completed'
+    `).get()).toEqual({ count: 1 });
+    expect(store.sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM coordination_request_updates
+      WHERE request_id = 'managed-rollover-request' AND kind = 'outcome_unknown'
+    `).get()).toEqual({ count: 0 });
+
+    const schedulerRuns = store.sqlite.prepare(`
+      SELECT id, status FROM scheduler_runs WHERE agent_id = ? ORDER BY created_at, rowid
+    `).all(worker.id) as Array<{ id: string; status: string }>;
+    expect(schedulerRuns.map((run) => run.status)).toEqual(["completed", "completed"]);
+    const replacementRun = schedulerRuns[1]!;
+    expect(coordination.requestIdsAttachedToRun(replacementRun.id, worker.id))
+      .toEqual(["managed-rollover-request"]);
+    const replacementActivationIds = coordination.activationIdsAttachedToRun(
+      replacementRun.id,
+      worker.id,
+    );
+    expect(replacementActivationIds).toHaveLength(1);
+    expect(store.sqlite.prepare(`
+      SELECT kind FROM agent_activations WHERE id = ?
+    `).get(replacementActivationIds[0]!)).toEqual({ kind: "context_rollover_continuation" });
+    expect(store.sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM activation_sources
+      WHERE activation_id = ? AND source_kind = 'request'
+        AND source_id = 'managed-rollover-request'
+    `).get(replacementActivationIds[0]!)).toEqual({ count: 1 });
+    const providerInput = store.sqlite.prepare(`
+      SELECT source_manifest_json AS sourceManifest FROM provider_inputs
+      WHERE scheduler_run_id = ?
+    `).get(replacementRun.id) as { sourceManifest: string };
+    expect(JSON.parse(providerInput.sourceManifest)).toMatchObject({
+      activationIds: replacementActivationIds,
+      sources: expect.arrayContaining([
+        expect.objectContaining({ kind: "activation", ref: replacementActivationIds[0] }),
+      ]),
+    });
+    expect(store.getRuns(worker.id).filter((run) =>
+      schedulerRuns.some((schedulerRun) => schedulerRun.id === run.id))
+      .map((run) => run.wakeCause)).toEqual(["coordination", "coordination"]);
+  });
+
+  it.each(["error", "completed"] as const)(
+    "terminalizes a %s replacement Run that never reports low-water usage",
+    async (outcome) => {
+      const adapter = new NoUsageReplacementAdapter(outcome);
+      const project = store.createProject({
+        label: `No usage ${outcome}`,
+        hostPath: repoDir,
+        defaultEngine: "codex",
+      });
+      const agent = store.createAgent(project.id, {
+        title: `No Usage ${outcome}`,
+        engine: "codex",
+      });
+      const sourceRunId = `no-usage-source-${outcome}`;
+      const handoffId = `no-usage-handoff-${outcome}`;
+      const exactHandoff = Array.from(
+        { length: 300 },
+        (_, index) => `recovery-${outcome}-${index + 1}`,
+      ).join(" ");
+      store.appendEvent(agent.id, {
+        type: "agent_lifecycle",
+        status: "running",
+        reason: "active_run",
+        executionId: sourceRunId,
+      });
+      store.appendEvent(agent.id, {
+        type: "continuation_handoff",
+        handoffId,
+        executionId: sourceRunId,
+        text: exactHandoff,
+      });
+      store.appendEvent(agent.id, {
+        type: "agent_lifecycle",
+        status: "completed",
+        reason: "turn_completed",
+        executionId: sourceRunId,
+      });
+      const coordination = new CoordinationV3Store(store.sqlite);
+      const rollover = coordination.requestContextRollover({
+        projectId: project.id,
+        agentId: agent.id,
+        oldProviderSessionId: `no-usage-old-${outcome}`,
+        providerSessionGeneration: `no-usage-generation-${outcome}`,
+        detectedOccupancy: 80_000,
+        threshold: 75_000,
+        lowWaterMark: 45_000,
+        sourceRunId,
+        sourceActivationIds: [],
+        scopeKey: `agent:${agent.id}`,
+      }).rollover;
+      coordination.commitContextRolloverHandoff(rollover.id, handoffId);
+      coordination.beginContextRolloverRetirement(rollover.id);
+      coordination.prepareContextRolloverContinuation({
+        id: rollover.id,
+        visibleResponseCommitted: false,
+      });
+      const app = server({
+        dataDir,
+        store,
+        engines: [{
+          adapter,
+          authStatus: async () => ({ authenticated: true, detail: "test subscription" }),
+        }],
+        logger: false,
+        communicationV3: { pollMs: 5 },
+      });
+      await app.ready();
+
+      const deadline = Date.now() + 5_000;
+      while (coordination.activeContextRollover(agent.id) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(coordination.activeContextRollover(agent.id)).toBeUndefined();
+      const terminal = coordination.contextRollover(rollover.id)!;
+      expect(terminal).toMatchObject({
+        state: outcome === "error" ? "outcome_unknown" : "failed",
+        replacementSessionId: `no-usage-${outcome}-session`,
+        lastError: expect.stringContaining("required low-water context observation"),
+      });
+      expect(store.continuationHandoffForRollover(
+        agent.id,
+        handoffId,
+        sourceRunId,
+      )).toMatchObject({ text: exactHandoff, consumedAt: expect.any(String) });
+      expect(store.resumeSessionId(agent.id)).toBeUndefined();
+      const notification = new WorkspaceStore(dataDir).listNotifications().find(
+        (item) => item.dedupeKey === `context-rollover:${rollover.id}:confirmation-missing`,
+      );
+      expect(notification).toMatchObject({
+        status: "open",
+        severity: "attention",
+        agentId: agent.id,
+        action: { kind: "open_agent", targetId: agent.id },
+      });
+      expect(notification?.body).toContain(
+        outcome === "error" ? "exact bounded handoff remains recorded" : "discarded that provider session",
+      );
+    },
+  );
+
+  it("terminalizes an unconfirmed recorded replacement session during daemon restart", async () => {
+    const project = store.createProject({
+      label: "Restarted replacement",
+      hostPath: repoDir,
+      defaultEngine: "codex",
+    });
+    const agent = store.createAgent(project.id, {
+      title: "Restarted Replacement",
+      engine: "codex",
+    });
+    const sourceRunId = "restart-unconfirmed-source";
+    const handoffId = "restart-unconfirmed-handoff";
+    store.appendEvent(agent.id, {
+      type: "agent_lifecycle",
+      status: "running",
+      reason: "active_run",
+      executionId: sourceRunId,
+    });
+    store.appendEvent(agent.id, {
+      type: "continuation_handoff",
+      handoffId,
+      executionId: sourceRunId,
+      text: Array.from({ length: 300 }, (_, index) => `restart-handoff-${index + 1}`).join(" "),
+    });
+    store.appendEvent(agent.id, {
+      type: "agent_lifecycle",
+      status: "completed",
+      reason: "turn_completed",
+      executionId: sourceRunId,
+    });
+    const coordination = new CoordinationV3Store(store.sqlite);
+    const rollover = coordination.requestContextRollover({
+      projectId: project.id,
+      agentId: agent.id,
+      oldProviderSessionId: "restart-old-session",
+      providerSessionGeneration: "restart-old-generation",
+      detectedOccupancy: 80_000,
+      threshold: 75_000,
+      lowWaterMark: 45_000,
+      sourceRunId,
+      sourceActivationIds: [],
+      scopeKey: `agent:${agent.id}`,
+    }).rollover;
+    coordination.commitContextRolloverHandoff(rollover.id, handoffId);
+    coordination.beginContextRolloverRetirement(rollover.id);
+    const continuation = coordination.prepareContextRolloverContinuation({
+      id: rollover.id,
+      visibleResponseCommitted: false,
+    });
+    coordination.recordContextRolloverReplacementSession(
+      continuation.continuationActivationId!,
+      "restart-unconfirmed-replacement",
+    );
+
+    const app = server({ dataDir, store, engines, logger: false, communicationV3: { pollMs: 5 } });
+    await app.ready();
+    expect(coordination.contextRollover(rollover.id)).toMatchObject({
+      state: "outcome_unknown",
+      replacementSessionId: "restart-unconfirmed-replacement",
+      lastError: expect.stringContaining("server restarted"),
+    });
+    expect(coordination.activeContextRollover(agent.id)).toBeUndefined();
+    expect(coordination.leaseNextRun({ workerId: "post-restart" })).toBeUndefined();
+    expect(new WorkspaceStore(dataDir).listNotifications()).toContainEqual(expect.objectContaining({
+      dedupeKey: `context-rollover:${rollover.id}:confirmation-missing`,
+      status: "open",
+      action: { kind: "open_agent", targetId: agent.id },
+    }));
   });
 
   it.each(["handoff_committed", "session_retiring"] as const)(
