@@ -18,4 +18,25 @@ describe("composer spacing policy", () => {
     );
     expect(composerStyles).not.toMatch(/\b(?:mt|marginTop)\s*:/u);
   });
+
+  it("keeps the responding pill in the chat overlay without reserving composer height", () => {
+    const conversationView = readFileSync(
+      resolve(process.cwd(), "src/components/ConversationView.tsx"),
+      "utf8",
+    );
+    const composerStart = conversationView.indexOf(
+      'className="mobile-chat-chrome mobile-chat-composer"',
+    );
+    const composerEnd = conversationView.indexOf("<Composer", composerStart);
+
+    expect(composerStart).toBeGreaterThan(-1);
+    expect(composerEnd).toBeGreaterThan(composerStart);
+    expect(conversationView.slice(0, composerStart)).toMatch(
+      /activeView === "main" && !agentWorkOpen[\s\S]*?position: "absolute",[\s\S]*?insetInline: 0,[\s\S]*?bottom: 2,[\s\S]*?<MasterRespondingIndicator/u,
+    );
+
+    const composerChrome = conversationView.slice(composerStart, composerEnd);
+    expect(composerChrome).not.toContain("MasterRespondingIndicator");
+    expect(composerChrome).not.toMatch(/\bheight:\s*28\b/u);
+  });
 });
