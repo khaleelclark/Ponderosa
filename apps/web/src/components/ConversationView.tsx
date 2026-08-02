@@ -71,6 +71,7 @@ import { useConversationNotificationVisibility } from "./useConversationNotifica
 import { useConversationHistory } from "./useConversationHistory";
 import { useConversationMessagingController } from "./useConversationMessagingController";
 import { MasterRespondingIndicator } from "./ConversationComposerStatus";
+import { agentOpeningAgentId } from "./chat/ChatMessages";
 
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { notificationTechnicalFocusId } from "../technicalFocus";
@@ -454,10 +455,19 @@ export function ConversationView({
     },
     [agentTitle],
   );
-  const lastDirectDestination = useMemo(() => {
+  const lastContinuationDestination = useMemo(() => {
+    const freshAgentIds = new Set(messages.flatMap(message => {
+      const agentId = agentOpeningAgentId(message.communicationEventId);
+      return agentId ? [agentId] : [];
+    }));
     const message = [...messages]
       .reverse()
-      .find(candidate => candidate.communicationIntent === "user_dm");
+      .find(candidate =>
+        candidate.communicationIntent === "user_dm" ||
+        (candidate.communicationIntent === "broadcast" &&
+          candidate.authorAgentId !== undefined &&
+          freshAgentIds.has(candidate.authorAgentId)),
+      );
     const agentId = message?.authorAgentId ?? (
       message?.directMessageAgents?.length === 1
         ? message.directMessageAgents[0]!.id
@@ -962,14 +972,14 @@ export function ConversationView({
             )}
             conversationDraftId={conversationId}
             destinationMode="project-chat"
-            continueWith={lastDirectDestination ? {
-              agentId: lastDirectDestination.agent.id,
-              handle: agentMentionHandle(lastDirectDestination.agent.title),
-              title: lastDirectDestination.agent.title,
+            continueWith={lastContinuationDestination ? {
+              agentId: lastContinuationDestination.agent.id,
+              handle: agentMentionHandle(lastContinuationDestination.agent.title),
+              title: lastContinuationDestination.agent.title,
               responding: Boolean(
-                healthByAgentId.get(lastDirectDestination.agent.id)?.runtimeActivity,
+                healthByAgentId.get(lastContinuationDestination.agent.id)?.runtimeActivity,
               ),
-              selectionKey: lastDirectDestination.selectionKey,
+              selectionKey: lastContinuationDestination.selectionKey,
             } : undefined}
             insertTextRequest={mentionInsertRequest}
             controls={runtimeControls}

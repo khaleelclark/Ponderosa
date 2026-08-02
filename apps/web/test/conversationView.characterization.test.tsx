@@ -464,6 +464,55 @@ describe("ConversationView public behavior", () => {
     client.clear();
   });
 
+  it("ties a fresh-Agent response to the composer without labeling its opening as Broadcast", async () => {
+    const client = createClient();
+    const user = userEvent.setup();
+    client.setQueryData<ConversationDetailDto>(
+      queryKeys.conversations.detail(firstConversationId),
+      detail(conversation(firstConversationId, "First conversation"), [
+        {
+          id: "fresh-agent-opening",
+          communicationEventId: `agent-opening:${agent.id}`,
+          communicationIntent: "broadcast",
+          conversationId: firstConversationId,
+          role: "user",
+          text: "Generate a pure white image",
+          createdAt: "2026-07-25T10:01:00.000Z",
+        },
+        {
+          id: "fresh-agent-response",
+          communicationEventId: "fresh-agent-response-event",
+          communicationIntent: "broadcast",
+          conversationId: firstConversationId,
+          role: "assistant",
+          authorAgentId: agent.id,
+          text: "#broadcast Here is the image.",
+          createdAt: "2026-07-25T10:02:00.000Z",
+        },
+      ]),
+    );
+
+    render(view(client, <ConversationView {...props()} />));
+
+    const opening = document.getElementById(
+      "master-message-fresh-agent-opening",
+    );
+    expect(opening?.textContent).not.toContain("Broadcast");
+    expect(screen.getByText("To: Agent One")).toBeTruthy();
+
+    const selectedDestination = screen.getByRole("button", {
+      name: "To: Agent One. Press Delete or Backspace to clear.",
+    });
+    selectedDestination.focus();
+    await user.keyboard("{Backspace}");
+    expect(screen.queryByText("To: Agent One")).toBeNull();
+    expect(screen.getByText(
+      "Sending without a recipient starts a new Agent.",
+    )).toBeTruthy();
+
+    client.clear();
+  });
+
   it("keeps selected-view state on ordinary rerenders and resets it for a new conversation", async () => {
     const client = createClient();
     const user = userEvent.setup();

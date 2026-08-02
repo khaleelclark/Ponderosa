@@ -35,6 +35,7 @@ import type { Route } from "../routing";
 import {
   ChatMessageBody,
   communicationVisibleText,
+  showBroadcastBadge,
 } from "./chat/ChatMessages";
 import { Composer } from "./chat/Composer";
 import { useMobileComposerAutoHide } from "../mobileChat";
@@ -812,7 +813,10 @@ export function AllChatView({
                       },
                   createdAt: item.createdAt,
                   source:
-                    item.communicationIntent === "broadcast" ? (
+                    showBroadcastBadge(
+                      item.communicationIntent,
+                      item.communicationEventId,
+                    ) ? (
                       <Chip size="small" variant="outlined" label="Broadcast" />
                     ) : undefined,
                   attachments: item.attachments,

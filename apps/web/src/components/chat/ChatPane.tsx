@@ -25,6 +25,7 @@ import {
   communicationVisibleText,
   individualChatSenderLabel,
   linkPreviewScopeForMessage,
+  showBroadcastBadge,
   stripDocumentPrefixText,
 } from "./ChatMessages";
 import type { LinkPreviewScope } from "./ChatMessages";
@@ -38,9 +39,12 @@ function CommunicationSourceLink({
   message: MessageDto;
   outgoing: boolean;
   onOpen(message: MessageDto): void;
-}): JSX.Element {
-  const projectBroadcast = message.communicationIntent === "broadcast";
-  if (projectBroadcast) {
+}): JSX.Element | null {
+  if (message.communicationIntent === "broadcast") {
+    if (!showBroadcastBadge(
+      message.communicationIntent,
+      message.communicationEventId,
+    )) return null;
     return (
       <Chip
         size="small"

@@ -37,6 +37,7 @@ import {
   ChatMessageBody,
   CommunicationDocumentCard,
   communicationVisibleText,
+  showBroadcastBadge,
   stripLeadingAgentMentions,
   stripDocumentPrefixText,
 } from "./chat/ChatMessages";
@@ -129,7 +130,10 @@ function ConversationMessageComponent({
             },
         createdAt: message.createdAt,
         source:
-          message.communicationIntent === "broadcast" ? (
+          showBroadcastBadge(
+            message.communicationIntent,
+            message.communicationEventId,
+          ) ? (
             <Chip size="small" variant="outlined" label="Broadcast" />
           ) : conversation === "collaboration" && recipientNames.length ? (
             <Typography

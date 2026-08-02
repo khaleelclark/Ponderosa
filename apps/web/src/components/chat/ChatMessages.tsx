@@ -94,6 +94,24 @@ export function communicationVisibleText(input: {
     : input.text;
 }
 
+const AGENT_OPENING_EVENT_PREFIX = "agent-opening:";
+
+export function agentOpeningAgentId(
+  communicationEventId: string | undefined,
+): string | undefined {
+  return communicationEventId?.startsWith(AGENT_OPENING_EVENT_PREFIX)
+    ? communicationEventId.slice(AGENT_OPENING_EVENT_PREFIX.length) || undefined
+    : undefined;
+}
+
+/** Fresh-Agent openings are shared context, but not an explicit Broadcast action. */
+export function showBroadcastBadge(
+  intent: CommunicationIntent | undefined,
+  communicationEventId: string | undefined,
+): boolean {
+  return intent === "broadcast" && !agentOpeningAgentId(communicationEventId);
+}
+
 function projectFileHref(projectId: string | undefined, href: string | undefined, mode: "preview" | "download"): string | undefined {
   if (!projectId || !href) return undefined;
   if (/^(?:https?:|data:|blob:|ponderosa:|mailto:|#)/iu.test(href) || href.startsWith("/api/")) return undefined;
