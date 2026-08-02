@@ -99,6 +99,7 @@ export function Composer({
   onQueue,
   agentResponding = false,
   onCancel,
+  cancelPending = false,
   draftStorageKey,
   conversationDraftId,
   leadingControls,
@@ -930,6 +931,7 @@ export function Composer({
         <ComposerSendActions
           allowSendWhileRunning={allowSendWhileRunning}
           canCancel={canCancel}
+          cancelPending={cancelPending}
           canSend={canSend}
           destinationError={destinationError}
           destinationMode={destinationMode}

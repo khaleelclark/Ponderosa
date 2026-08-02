@@ -12,6 +12,7 @@ import {
   hasEveryoneMention,
 } from "../mentions";
 import { api } from "../api";
+import { ApiRequestError } from "../api/types";
 import { createClientId } from "../clientId";
 import {
   effortSelectionIsCompatible,
@@ -71,7 +72,10 @@ export function useConversationMessagingController({
     targets: { agentId: string; runId: string }[];
     names: string;
   }>();
-  const stopOperationRequestId = useRef<string>();
+  const [cancelOperationPending, setCancelOperationPending] = useState(false);
+  const [cancelOperationError, setCancelOperationError] = useState<Error>();
+  const stopOperationRequestIds = useRef<Map<string, string>>(new Map());
+  const stopOperationPending = useRef(false);
 
   const invalidate = () => {
     void queryClient.invalidateQueries({
@@ -359,26 +363,74 @@ export function useConversationMessagingController({
   const cancelOperationTargets = async (
     targets: { agentId: string; runId: string }[],
   ) => {
-    const requestId = stopOperationRequestId.current ?? createClientId();
-    stopOperationRequestId.current = requestId;
-    await Promise.allSettled(
-      targets.map(({ agentId, runId }) =>
-        api.cancelRun(agentId, {
-          targetRunId: runId,
-          idempotencyKey: `${requestId}:${runId}`,
-        }),
-      ),
-    );
-    stopOperationRequestId.current = undefined;
-    setStopConfirmation(undefined);
-    invalidate();
+    if (stopOperationPending.current) return;
+    stopOperationPending.current = true;
+    setCancelOperationPending(true);
+    setCancelOperationError(undefined);
+    const attempts = targets.map(target => {
+      const targetKey = `${target.agentId}:${target.runId}`;
+      const idempotencyKey =
+        stopOperationRequestIds.current.get(targetKey) ?? createClientId();
+      stopOperationRequestIds.current.set(targetKey, idempotencyKey);
+      return { target, targetKey, idempotencyKey };
+    });
+    try {
+      const results = await Promise.allSettled(
+        attempts.map(({ target, idempotencyKey }) =>
+          api.cancelRun(target.agentId, {
+            targetRunId: target.runId,
+            idempotencyKey,
+          }),
+        ),
+      );
+      const unresolved: { agentId: string; runId: string }[] = [];
+      let unresolvedError: Error | undefined;
+      results.forEach((result, index) => {
+        const attempt = attempts[index]!;
+        const alreadyInactive =
+          result.status === "rejected" &&
+          result.reason instanceof ApiRequestError &&
+          result.reason.status === 409;
+        if (result.status === "fulfilled" || alreadyInactive) {
+          stopOperationRequestIds.current.delete(attempt.targetKey);
+          return;
+        }
+        unresolved.push(attempt.target);
+        unresolvedError ??=
+          result.reason instanceof Error
+            ? result.reason
+            : new Error(String(result.reason));
+      });
+      if (unresolved.length === 0) {
+        setStopConfirmation(undefined);
+        setCancelOperationError(undefined);
+      } else {
+        setStopConfirmation(current =>
+          current
+            ? {
+                targets: unresolved,
+                names: unresolved
+                  .map(({ agentId }) => agentTitle(agentId))
+                  .join(", "),
+              }
+            : current,
+        );
+        setCancelOperationError(unresolvedError);
+      }
+    } finally {
+      stopOperationPending.current = false;
+      setCancelOperationPending(false);
+      invalidate();
+    }
   };
   const stopOperation = async () => {
+    if (stopOperationPending.current) return;
     const targets = (activeOperation?.agentIds ?? []).flatMap(agentId => {
       const runId = healthByAgentId.get(agentId)?.runtimeActivity?.executionId;
       return runId ? [{ agentId, runId }] : [];
     });
     if (targets.length === 0) return;
+    setCancelOperationError(undefined);
     const names = targets.map(({ agentId }) => agentTitle(agentId)).join(", ");
     if (targets.length > 1) {
       setStopConfirmation({ targets, names });
@@ -455,6 +507,8 @@ export function useConversationMessagingController({
 
   return {
     busy,
+    cancelOperationError,
+    cancelOperationPending,
     cancelOperationTargets,
     cancelQueued,
     editQueued,

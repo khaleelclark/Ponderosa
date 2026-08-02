@@ -2,6 +2,7 @@ import type { TeamOperationalEventDto } from "@ponderosa/core";
 
 export type PresentedTeamOperationalEvent = TeamOperationalEventDto & {
   relatedLifecycleCount: number;
+  relatedLifecycleEvents: TeamOperationalEventDto[];
 };
 
 const OPERATION_PRIORITY: Record<TeamOperationalEventDto["kind"], number> = {
@@ -13,6 +14,20 @@ const OPERATION_PRIORITY: Record<TeamOperationalEventDto["kind"], number> = {
   organization: 1,
   decision: 0,
 };
+
+const ROUTINE_LIFECYCLE_STATES = new Set([
+  "cancelled",
+  "interrupted",
+  "superseded",
+]);
+
+export function routineTeamLifecycleEvent(
+  event: TeamOperationalEventDto,
+): boolean {
+  if (event.kind === "decision") return false;
+  if (event.kind === "activation" && ["pending", "queued", "retry_pending"].includes(event.state)) return true;
+  return ROUTINE_LIFECYCLE_STATES.has(event.state);
+}
 
 function sharesAgent(
   left: readonly string[],
@@ -43,7 +58,11 @@ export function coalesceTeamOperationalEvents(
           sharesAgent(group.agentIds, event.agentIds),
         );
     if (groupIndex < 0) {
-      groups.push({ ...event, relatedLifecycleCount: 1 });
+      groups.push({
+        ...event,
+        relatedLifecycleCount: 1,
+        relatedLifecycleEvents: [event],
+      });
       continue;
     }
     const group = groups[groupIndex]!;
@@ -54,6 +73,10 @@ export function coalesceTeamOperationalEvents(
       ...preferred,
       agentIds: [...new Set([...group.agentIds, ...event.agentIds])],
       relatedLifecycleCount: group.relatedLifecycleCount + 1,
+      relatedLifecycleEvents: [
+        ...group.relatedLifecycleEvents,
+        event,
+      ],
     };
   }
   return groups;

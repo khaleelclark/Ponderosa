@@ -15,6 +15,7 @@ export interface ComposerProps extends ChatComposerContract {
   allowUnmentionedSend?: boolean;
   agentResponding?: boolean;
   onCancel?(): void;
+  cancelPending?: boolean;
   draftStorageKey?: string;
   conversationDraftId?: string;
   insertTextRequest?: { id: string; text: string };

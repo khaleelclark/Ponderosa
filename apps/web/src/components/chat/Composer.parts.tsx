@@ -279,6 +279,7 @@ export function ComposerMentionStatus({
 interface ComposerSendActionsProps {
   allowSendWhileRunning: boolean;
   canCancel: boolean;
+  cancelPending: boolean;
   canSend: boolean;
   destinationError: string | undefined;
   destinationMode: ComposerProps["destinationMode"];
@@ -295,6 +296,7 @@ interface ComposerSendActionsProps {
 export function ComposerSendActions({
   allowSendWhileRunning,
   canCancel,
+  cancelPending,
   canSend,
   destinationError,
   destinationMode,
@@ -342,14 +344,17 @@ export function ComposerSendActions({
         </Tooltip>
       ) : null}
       {canCancel ? (
-        <Tooltip title="Cancel Run">
-          <IconButton
-            color="error"
-            onClick={onCancel}
-            aria-label="Cancel run"
-          >
-            <StopCircleIcon />
-          </IconButton>
+        <Tooltip title={cancelPending ? "Cancelling…" : "Cancel Run"}>
+          <span>
+            <IconButton
+              color="error"
+              disabled={cancelPending}
+              onClick={onCancel}
+              aria-label={cancelPending ? "Cancelling…" : "Cancel run"}
+            >
+              <StopCircleIcon />
+            </IconButton>
+          </span>
         </Tooltip>
       ) : null}
       {!showQueue && (!canCancel || allowSendWhileRunning) ? (

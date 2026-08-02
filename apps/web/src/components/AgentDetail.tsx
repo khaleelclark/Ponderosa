@@ -970,7 +970,7 @@ export function AgentDetail({
         queuedMessageNotice={queueDeliveryNotice ?? queuedMessageNotice}
         sendError={
           sendMessage.isError || cancelRun.isError
-            ? `${sendMessage.isError ? "Message not sent." : "The agent could not be stopped."} ${String(
+            ? `${sendMessage.isError ? "Message not sent." : "The active Run could not be cancelled."} ${String(
                 sendMessage.error ?? cancelRun.error,
               )}`
             : undefined
