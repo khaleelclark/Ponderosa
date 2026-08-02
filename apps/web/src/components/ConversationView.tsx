@@ -900,6 +900,22 @@ export function ConversationView({
             }
           />
         ) : null}
+        {activeView === "main" && !agentWorkOpen ? (
+          <Box
+            sx={{
+              position: "absolute",
+              insetInline: 0,
+              bottom: 2,
+              zIndex: 2,
+              pointerEvents: "none",
+            }}
+          >
+            <MasterRespondingIndicator
+              agents={agents}
+              healthByAgentId={healthByAgentId}
+            />
+          </Box>
+        ) : null}
       </Box>
 
       <Box
@@ -917,28 +933,6 @@ export function ConversationView({
         }}
         sx={{ bgcolor: "transparent" }}
       >
-        {activeView === "main" ? (
-          <Box
-            sx={{
-              height: 28,
-              px: { xs: 1, sm: 1.5 },
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              overflow: "hidden",
-              pointerEvents: "none",
-            }}
-          >
-            {agents.some(agent =>
-              Boolean(healthByAgentId.get(agent.id)?.runtimeActivity),
-            ) ? (
-              <MasterRespondingIndicator
-                agents={agents}
-                healthByAgentId={healthByAgentId}
-              />
-            ) : null}
-          </Box>
-        ) : null}
         {activeView === "main" && queuedMessageNotice ? (
           <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>
             {queuedMessageNotice}
