@@ -22,6 +22,7 @@ import {
   type CreateActivationV3Input,
 } from "./coordination-v3-runtime-communication-authority.js";
 import { CoordinationV3ActivationFactory } from "./coordination-v3-activation-factory.js";
+import { CoordinationV3ContextRolloverAuthority } from "./coordination-v3-context-rollover-authority.js";
 import { CoordinationV3ActivationLifecycleAuthority } from "./coordination-v3-activation-lifecycle-authority.js";
 import { CoordinationV3StoreSupport } from "./coordination-v3-store-support.js";
 import { CoordinationV3DeletionAuthority } from "./coordination-v3-deletion-authority.js";
@@ -65,6 +66,7 @@ import type {
   RecordTriggerOccurrenceInput,
   TriggerOccurrenceResult,
   CoordinationV3StoreOptions,
+  ContextRolloverV3,
 } from "./coordination-v3-types.js";
 export type {
   RunAuthorizationV3,
@@ -106,6 +108,8 @@ export type {
   RecordTriggerOccurrenceInput,
   TriggerOccurrenceResult,
   CoordinationV3StoreOptions,
+  ContextRolloverState,
+  ContextRolloverV3,
 } from "./coordination-v3-types.js";
 
 /** Transactional authority for Communication V3. Runtime telemetry may mirror
@@ -135,6 +139,7 @@ export class CoordinationV3Store {
   private readonly schedulerLeaseAuthority: CoordinationV3SchedulerLeaseAuthority;
   private readonly requestAuthority: CoordinationV3RequestAuthority;
   private readonly runLifecycleAuthority: CoordinationV3RunLifecycleAuthority;
+  private readonly contextRolloverAuthority: CoordinationV3ContextRolloverAuthority;
 
   constructor(
     sqlite: Database.Database,
@@ -142,6 +147,10 @@ export class CoordinationV3Store {
   ) {
     this.activationReadModel = new CoordinationV3ActivationReadModel(sqlite);
     this.activationFactory = new CoordinationV3ActivationFactory(sqlite, options);
+    this.contextRolloverAuthority = new CoordinationV3ContextRolloverAuthority(
+      sqlite,
+      input => this.createActivation(input),
+    );
     this.support = new CoordinationV3StoreSupport(sqlite);
     this.readModel = new CoordinationV3ReadModel(sqlite);
     this.requestReadModel = new CoordinationV3RequestReadModel(sqlite);
@@ -425,6 +434,10 @@ export class CoordinationV3Store {
 
   activationIdsAttachedToRun(runId: string, agentId: string): string[] {
     return this.activationReadModel.activationIdsAttachedToRun(runId, agentId);
+  }
+
+  runScopeKey(runId: string, agentId: string): string {
+    return this.runContextReadModel.scopeKey(runId, agentId);
   }
 
   requestIdsAttachedToRun(runId: string, agentId: string): string[] {
@@ -934,6 +947,54 @@ export class CoordinationV3Store {
 
   resetExpiredTriggerBudgets(now = new Date().toISOString()): number {
     return this.triggerOccurrenceAuthority.resetExpiredTriggerBudgets(now);
+  }
+
+  requestContextRollover(input: Parameters<CoordinationV3ContextRolloverAuthority["request"]>[0]): ReturnType<CoordinationV3ContextRolloverAuthority["request"]> {
+    return this.contextRolloverAuthority.request(input);
+  }
+
+  contextRollover(id: string): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.get(id);
+  }
+
+  activeContextRollover(agentId: string): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.activeForAgent(agentId);
+  }
+
+  contextRolloverForReplacementSession(agentId: string, replacementSessionId: string): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.forReplacementSession(agentId, replacementSessionId);
+  }
+
+  activeContextRollovers(projectId?: string): ContextRolloverV3[] {
+    return this.contextRolloverAuthority.active(projectId);
+  }
+
+  commitContextRolloverHandoff(id: string, handoffEventId: string, now?: string): ContextRolloverV3 {
+    return this.contextRolloverAuthority.commitHandoff(id, handoffEventId, now);
+  }
+
+  beginContextRolloverRetirement(id: string, now?: string): ContextRolloverV3 {
+    return this.contextRolloverAuthority.beginRetiring(id, now);
+  }
+
+  markContextRolloverVisibleResponseCommitted(agentId: string, sourceRunId: string, now?: string): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.markVisibleResponseCommitted(agentId, sourceRunId, now);
+  }
+
+  prepareContextRolloverContinuation(input: { id: string; visibleResponseCommitted: boolean; now?: string }): ContextRolloverV3 {
+    return this.contextRolloverAuthority.prepareContinuation(input);
+  }
+
+  recordContextRolloverReplacementSession(continuationActivationId: string, replacementSessionId: string, now?: string): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.recordReplacementSession(continuationActivationId, replacementSessionId, now);
+  }
+
+  observeContextRolloverReplacementOccupancy(id: string, replacementSessionId: string, usedTokens: number, now?: string): ContextRolloverV3 {
+    return this.contextRolloverAuthority.observeReplacementOccupancy(id, replacementSessionId, usedTokens, now);
+  }
+
+  failContextRollover(id: string, state: "failed" | "outcome_unknown", error: string, now?: string): ContextRolloverV3 {
+    return this.contextRolloverAuthority.fail(id, state, error, now);
   }
 
   private createActivation(input: CreateActivationV3Input): string {

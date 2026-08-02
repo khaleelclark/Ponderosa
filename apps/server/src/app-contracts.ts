@@ -388,6 +388,8 @@ export interface AgentMessageCapability {
   };
   /** One material inferred reply is allowed; exact retries replay it. */
   inferredReplyFingerprint?: string;
+  /** Canonical visible reply committed by this Run, used to suppress rollover duplicates. */
+  inferredReplyCommunicationEventId?: string;
   /** Project artifacts explicitly submitted to this Run's provider context. */
   reachableArtifactIds: string[];
 }

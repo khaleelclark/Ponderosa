@@ -29,7 +29,7 @@ const RUN_OUTPUT_TEXT_MAX_BYTES = 8 * 1_024 * 1_024;
 const RUN_OUTPUT_BREAKING_TYPES = [
   "command", "tool_call", "tool_result", "file_change", "test_result", "error",
   "browser_session", "browser_action", "browser_console", "browser_screenshot",
-  "context_rollover_triggered",
+  "context_rollover_triggered", "context_rollover_seed_overflow", "context_rollover_completed",
 ] as const;
 
 export class AgentTelemetryReadModel {

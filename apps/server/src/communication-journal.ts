@@ -73,11 +73,15 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
       : event.sender.kind === "user"
         ? workspace.getPreferences().profile.displayName
         : "Ponderosa";
+    const conversationLabel = event.conversationId
+      ? store.getConversation(event.conversationId)?.title
+      : undefined;
     return {
       ...event,
       identity: {
         senderLabel,
         ...(Object.keys(recipientLabels).length ? { recipientLabels } : {}),
+        ...(conversationLabel ? { conversationLabel } : {}),
       },
     };
   };

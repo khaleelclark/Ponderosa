@@ -16,6 +16,8 @@ import type {
   AgentEvent,
   CommunicationEvent,
   ContinueOptions,
+  OpenRuntimeSessionOptions,
+  RuntimeSession,
   SeedOptions,
 } from "@ponderosa/core";
 import { DEFAULT_ASSET_LIMITS } from "@ponderosa/core";
@@ -28,6 +30,7 @@ class BehavioralAdapter implements Adapter {
   readonly id = "codex";
   readonly displayName = "Behavioral adapter";
   seedCalls = 0;
+  seedOptions: SeedOptions[] = [];
 
   listModels() {
     return [{ id: "test-model", label: "Test model" }];
@@ -37,13 +40,73 @@ class BehavioralAdapter implements Adapter {
     return [{ id: "high", label: "High" }];
   }
 
-  async *seed(_options: SeedOptions): AsyncIterable<AgentEvent> {
+  async *seed(options: SeedOptions): AsyncIterable<AgentEvent> {
     this.seedCalls += 1;
+    this.seedOptions.push(options);
     yield { type: "turn_done" };
   }
 
   async *continue(_options: ContinueOptions): AsyncIterable<AgentEvent> {
     yield { type: "turn_done" };
+  }
+}
+
+class CrossChatPersistentAdapter implements Adapter {
+  readonly id = "codex";
+  readonly displayName = "Cross-chat persistent adapter";
+  openOptions: OpenRuntimeSessionOptions[] = [];
+  startCalls = 0;
+  toolResult?: { success: boolean; text: string };
+  readonly responseText = "The private token is BLUE-ALBATROSS.";
+
+  listModels() { return [{ id: "test-model", label: "Test model" }]; }
+  listEfforts() { return [{ id: "high", label: "High" }]; }
+
+  async *seed(_options: SeedOptions): AsyncIterable<AgentEvent> {
+    throw new Error("persistent fixture must use openSession");
+  }
+
+  async *continue(_options: ContinueOptions): AsyncIterable<AgentEvent> {
+    throw new Error("persistent fixture must use openSession");
+  }
+
+  async openSession(options: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
+    this.openOptions.push(options);
+    const adapter = this;
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => { started = resolve; });
+    let closed!: () => void;
+    const closedPromise = new Promise<void>((resolve) => { closed = resolve; });
+    let alive = true;
+    const session: RuntimeSession = {
+      engineAgentId: "cross-chat-session",
+      events: {
+        async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
+          yield { type: "session", sessionId: "cross-chat-session" };
+          await startedPromise;
+          adapter.toolResult = await options.handleDynamicToolCall?.({
+            name: "ponderosa_message",
+            arguments: { text: "The private token is BLUE-ALBATROSS." },
+          });
+          yield { type: "turn_done" };
+          await closedPromise;
+        },
+      },
+      startTurn: async () => {
+        this.startCalls += 1;
+        started();
+        return { turnId: "cross-chat-turn" };
+      },
+      steer: async () => ({ status: "not_active" }),
+      interrupt: async () => undefined,
+      isAlive: () => alive,
+      close: async () => {
+        alive = false;
+        closed();
+      },
+    };
+    options.onRuntimeSpawned(session);
+    return session;
   }
 }
 
@@ -502,6 +565,159 @@ describe("server public API behavior", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     expect(adapter.seedCalls).toBe(1);
+  });
+
+  it("reseeds cross-chat Agent-private Direct history, records its source, and replies in the requesting chat", async () => {
+    const adapter = new CrossChatPersistentAdapter();
+    const project = store.createProject({
+      label: "Multi Chat",
+      hostPath: repoDir,
+      defaultEngine: "codex",
+    });
+    const homeId = project.lastConversationId!;
+    const blue = store.createConversation(project.id, { title: "Channel Blue" });
+    const red = store.createConversation(project.id, { title: "Channel Red" });
+    const agent = store.createAgent(project.id, {
+      title: "Multi-Chat Probe",
+      engine: "codex",
+      conversationId: homeId,
+    });
+    const other = store.createAgent(project.id, {
+      title: "Other Agent",
+      engine: "codex",
+      conversationId: red.id,
+    });
+    store.updateAgentConversationMemberships(agent.id, {
+      conversationIds: [homeId, blue.id],
+      primaryConversationId: homeId,
+    });
+    const blueDirect: CommunicationEvent = {
+      eventId: "blue-albatross-source",
+      schemaVersion: 2,
+      projectId: project.id,
+      conversationId: blue.id,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id },
+      text: "Remember the private token BLUE-ALBATROSS.",
+      createdAt: "2026-08-01T12:00:00.000Z",
+    };
+    store.appendCommunicationEvent(blueDirect);
+    store.appendEvent(agent.id, {
+      type: "user_message",
+      text: blueDirect.text,
+      communicationEventId: blueDirect.eventId,
+    });
+    const otherDirect: CommunicationEvent = {
+      eventId: "red-other-source",
+      schemaVersion: 2,
+      projectId: project.id,
+      conversationId: red.id,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: other.id },
+      text: "OTHER-AGENT-SECRET",
+      createdAt: "2026-08-01T12:01:00.000Z",
+    };
+    store.appendCommunicationEvent(otherDirect);
+    store.appendEvent(other.id, {
+      type: "user_message",
+      text: otherDirect.text,
+      communicationEventId: otherDirect.eventId,
+    });
+    const redBroadcast: CommunicationEvent = {
+      eventId: "red-shared-source",
+      schemaVersion: 2,
+      projectId: project.id,
+      conversationId: red.id,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id },
+      text: "RED-SHARED-CONTENT",
+      createdAt: "2026-08-01T12:02:00.000Z",
+    };
+    store.appendCommunicationEvent(redBroadcast);
+    store.appendCommunicationProjection(project.id, {
+      eventId: redBroadcast.eventId,
+      surface: "conversation",
+      projectionKey: red.id,
+      projectedAt: redBroadcast.createdAt,
+      message: { messageId: "red-shared-message", role: "user", createdAt: redBroadcast.createdAt },
+    });
+
+    const app = server({
+      dataDir,
+      store,
+      engines: [{
+        adapter,
+        authStatus: async () => ({ authenticated: true, detail: "test subscription" }),
+      }],
+      logger: false,
+      communicationV3: { pollMs: 5 },
+    });
+    const sent = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${homeId}/direct-messages`,
+      payload: {
+        text: "What private token did I give you in Channel Blue?",
+        recipients: [{ agentId: agent.id }],
+        idempotencyKey: randomUUID(),
+      },
+    });
+    expect(sent.statusCode, sent.body).toBe(200);
+
+    const deadline = Date.now() + 3_000;
+    while (adapter.startCalls === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(adapter.startCalls).toBe(1);
+    const submittedHistory = adapter.openOptions[0]!.history.map((message) => message.text).join("\n");
+    expect(submittedHistory).toContain("BLUE-ALBATROSS");
+    expect(submittedHistory).toContain(`origin chat: Channel Blue (${blue.id})`);
+    expect(submittedHistory).not.toContain(otherDirect.text);
+    expect(submittedHistory).not.toContain(redBroadcast.text);
+
+    const runDeadline = Date.now() + 3_000;
+    let providerInput = store.getRuns(agent.id)
+      .map((run) => store.getProviderInput(run.id, true))
+      .find(Boolean);
+    while (!providerInput && Date.now() < runDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      providerInput = store.getRuns(agent.id)
+        .map((run) => store.getProviderInput(run.id, true))
+        .find(Boolean);
+    }
+    expect(providerInput?.sourceManifest.communicationEventIds).toContain(blueDirect.eventId);
+    expect(providerInput?.sourceManifest.sources).toContainEqual(expect.objectContaining({
+      kind: "communication",
+      ref: blueDirect.eventId,
+      conversationId: blue.id,
+      conversationTitle: blue.title,
+      author: "User",
+      communicationIntent: "user_dm",
+    }));
+    expect(providerInput?.exactPrompt).toContain("BLUE-ALBATROSS");
+
+    expect(adapter.toolResult?.success).toBe(true);
+    const responseEventId = JSON.parse(adapter.toolResult!.text) as { eventId: string };
+    const responseDeadline = Date.now() + 3_000;
+    let response = store.getConversationMessages(homeId, "main")
+      .find((message) => message.communicationEventId === responseEventId.eventId);
+    while (!response && Date.now() < responseDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      response = store.getConversationMessages(homeId, "main")
+        .find((message) => message.communicationEventId === responseEventId.eventId);
+    }
+    expect(response, adapter.toolResult?.text).toMatchObject({ role: "assistant", authorAgentId: agent.id });
+    expect(store.getCommunicationEvent(project.id, response!.communicationEventId!)).toMatchObject({
+      conversationId: homeId,
+      intent: "user_dm",
+      sender: { kind: "agent", agentId: agent.id },
+    });
+    const home = await app.inject({ method: "GET", url: `/api/conversations/${homeId}` });
+    expect(home.json<{ messages: Array<{ communicationEventId?: string; text: string }> }>()
+      .messages.find((message) => message.communicationEventId === responseEventId.eventId)?.text)
+      .toBe(`#user ${adapter.responseText}`);
   });
 
   it("exposes bounded Engine diagnostics only to its native launcher", async () => {
@@ -1068,6 +1284,7 @@ describe("server public API behavior", () => {
     expect(store.getCommunicationEvent(project.id, eventId)?.identity).toEqual({
       senderLabel: "User",
       recipientLabels: { [oak.id]: "Oak", [pine.id]: "Pine" },
+      conversationLabel: store.getConversation(conversationId)!.title,
     });
 
     store.updateAgent(oak.id, { title: "Redwood" });

@@ -46,6 +46,34 @@ export type ProviderErrorCode =
  */
 export type AgentEvent =
   | { type: "session"; sessionId: string } // persist for resume
+  | {
+      /** Current provider-context occupancy, distinct from aggregate billing usage. */
+      type: "context_usage";
+      providerSessionId: string;
+      /** Stable provider session generation; fresh sessions receive a new value. */
+      providerSessionGeneration: string;
+      usedTokens: number;
+      aggregateTokens?: number;
+      windowTokens?: number;
+    }
+  | {
+      type: "context_rollover_seed_overflow";
+      executionId: string;
+      rolloverId: string;
+      usedTokens: number;
+      lowWaterMark: number;
+      seedPromptUtf8Bytes: number;
+      /** Canonical source-manifest counts identify which reconstructed sections dominated. */
+      contextSections: Array<{ kind: string; count: number }>;
+    }
+  | {
+      type: "context_rollover_completed";
+      executionId: string;
+      rolloverId: string;
+      previousProviderSessionId: string;
+      replacementProviderSessionId: string;
+      startingOccupancy: number;
+    }
   | { type: "text"; delta: string } // ordinary response delta → Work log
   | { type: "reasoning"; delta: string } // transient reasoning → Work log
   | { type: "tool_call"; id: string; name: string; input: unknown }

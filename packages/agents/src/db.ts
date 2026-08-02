@@ -132,6 +132,47 @@ function establishSchema(sqlite: Database.Database): void {
  * baselined databases without rewriting canonical rows. */
 function establishReadIndexes(sqlite: Database.Database): void {
   sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS context_rollovers (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (state IN (
+        'requested', 'handoff_committed', 'session_retiring',
+        'continuation_ready', 'completed', 'failed', 'outcome_unknown'
+      )),
+      old_provider_session_id TEXT NOT NULL,
+      provider_session_generation TEXT NOT NULL,
+      detected_occupancy INTEGER NOT NULL CHECK (detected_occupancy >= 0),
+      aggregate_tokens INTEGER,
+      threshold INTEGER NOT NULL CHECK (threshold > 0),
+      context_window INTEGER,
+      low_water_mark INTEGER NOT NULL CHECK (low_water_mark >= 0),
+      low_water_confirmation_required INTEGER NOT NULL DEFAULT 1,
+      source_run_id TEXT NOT NULL,
+      source_activation_ids_json TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      conversation_id TEXT,
+      reply_authority_json TEXT,
+      handoff_event_id TEXT,
+      continuation_activation_id TEXT,
+      replacement_session_id TEXT,
+      visible_response_committed INTEGER NOT NULL DEFAULT 0,
+      handoff_committed_at TEXT,
+      session_retiring_at TEXT,
+      continuation_ready_at TEXT,
+      replacement_session_at TEXT,
+      visible_response_committed_at TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      terminal_at TEXT,
+      UNIQUE (agent_id, provider_session_generation)
+    );
+    CREATE INDEX IF NOT EXISTS idx_context_rollovers_agent_state
+      ON context_rollovers (agent_id, state, updated_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_context_rollovers_continuation_activation
+      ON context_rollovers (continuation_activation_id)
+      WHERE continuation_activation_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_coordination_request_updates_request_created
       ON coordination_request_updates (request_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_runtime_artifacts_owner

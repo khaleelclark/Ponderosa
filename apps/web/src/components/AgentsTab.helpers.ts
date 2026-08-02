@@ -13,7 +13,7 @@ const STATUS_FILTERS: Array<{
   { value: "blocked", label: "Blocked" },
   { value: "stalled", label: "Stalled" },
   { value: "interrupted", label: "Interrupted" },
-  { value: "compacting", label: "Compacting" },
+  { value: "compacting", label: "Refreshing context" },
   { value: "failed", label: "Failed" },
   { value: "cancelled", label: "Cancelled" },
   { value: "completed", label: "Completed" },

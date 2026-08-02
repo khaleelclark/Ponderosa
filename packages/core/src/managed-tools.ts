@@ -129,10 +129,14 @@ export const PONDEROSA_TEAM_DIRECTORY_TOOL: RuntimeDynamicToolSpec = {
 
 export const PONDEROSA_CONTEXT_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_context",
-  description: "Retrieve older scoped history only when the current Run contains an OLDER SCOPED CONTEXT reference. This run-fenced tool returns canonical messages without relying on shell access to localhost.",
+  description: "Retrieve older bounded canonical history only when the current Run contains an OLDER SCOPED CONTEXT reference. Use current_chat for this chat's shared/private history, or agent_private for this Agent's own Direct history across Project chats. It never grants Project-wide access.",
   inputSchema: {
     type: "object", additionalProperties: false,
     properties: {
+      scope: {
+        type: "string", enum: ["current_chat", "agent_private"],
+        description: "Defaults to current_chat for historical compatibility. agent_private returns only Direct history belonging to this Agent across chats.",
+      },
       cursor: {
         type: "string", minLength: 1, maxLength: 4096,
         description: "Opaque continuation cursor returned by the preceding call. Reuse it unchanged for the same scoped history.",
@@ -157,7 +161,7 @@ export const PONDEROSA_ROLLOVER_TOOL: RuntimeDynamicToolSpec = {
         type: "string",
         minLength: 1,
         maxLength: 20_000,
-        description: "Continuation handoff, up to 20,000 Unicode code points. Do not summarize the entire conversation; preserve only working state needed by the next provider session.",
+        description: "Continuation handoff of 300–500 words, up to 20,000 Unicode code points. Do not summarize the entire conversation; preserve only working state needed by the next provider session.",
       },
     },
   },

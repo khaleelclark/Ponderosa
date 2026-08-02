@@ -135,6 +135,48 @@ export type ActivationDispatchPolicy = "steer_or_run" | "next_run";
 
 export type ActivationPromptClass = "human" | "blocker" | "coordination" | "ordinary";
 
+export type ContextRolloverState =
+  | "requested"
+  | "handoff_committed"
+  | "session_retiring"
+  | "continuation_ready"
+  | "completed"
+  | "failed"
+  | "outcome_unknown";
+
+export interface ContextRolloverV3 {
+  id: string;
+  projectId: string;
+  agentId: string;
+  state: ContextRolloverState;
+  oldProviderSessionId: string;
+  providerSessionGeneration: string;
+  detectedOccupancy: number;
+  aggregateTokens?: number;
+  threshold: number;
+  contextWindow?: number;
+  lowWaterMark: number;
+  lowWaterConfirmationRequired: boolean;
+  sourceRunId: string;
+  sourceActivationIds: string[];
+  scopeKey: string;
+  conversationId?: string;
+  replyAuthority?: CoordinationReplyAuthority;
+  handoffEventId?: string;
+  continuationActivationId?: string;
+  replacementSessionId?: string;
+  visibleResponseCommitted: boolean;
+  handoffCommittedAt?: string;
+  sessionRetiringAt?: string;
+  continuationReadyAt?: string;
+  replacementSessionAt?: string;
+  visibleResponseCommittedAt?: string;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+  terminalAt?: string;
+}
+
 export type ActivationTerminalOutcome = "recipient_unavailable" | "permanent_failure" | "retry_exhausted";
 
 interface RuntimeCommunicationV3InputBase {

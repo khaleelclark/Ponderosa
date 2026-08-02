@@ -926,6 +926,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     serverContext,
     store,
     coordinationV3,
+    workspace,
     engines,
     activeRuns,
     agentMessageCapabilities,

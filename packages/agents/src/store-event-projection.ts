@@ -36,7 +36,7 @@ const ACTIVITY_OUTPUT_PREVIEW_BYTES = 4_096;
 const ACTIVITY_EVENT_TYPES = new Set([
   "command", "file_change", "test_result", "tool_call", "tool_result", "error",
   "browser_session", "browser_action", "browser_console", "browser_screenshot",
-  "context_rollover_triggered",
+  "context_rollover_triggered", "context_rollover_seed_overflow", "context_rollover_completed",
 ]);
 
 type ManagedArtifact = ArtifactDto & {

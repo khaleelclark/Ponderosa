@@ -3,6 +3,14 @@ import type Database from "better-sqlite3";
 export class CoordinationV3RunContextReadModel {
   constructor(private readonly sqlite: Database.Database) {}
 
+  scopeKey(runId: string, agentId: string): string {
+    const row = this.sqlite.prepare(`
+      SELECT scope_key FROM scheduler_runs WHERE id = ? AND agent_id = ?
+    `).get(runId, agentId) as { scope_key: string } | undefined;
+    if (!row) throw new Error("run not found");
+    return row.scope_key;
+  }
+
   requestIdsAttachedToRun(runId: string, agentId: string): string[] {
     const directRows = this.sqlite.prepare(`
       SELECT DISTINCT request.id, request.created_at
@@ -91,15 +99,12 @@ export class CoordinationV3RunContextReadModel {
   }
 
   runChangesScope(runId: string, agentId: string): boolean {
-    const current = this.sqlite.prepare(`
-      SELECT scope_key FROM scheduler_runs WHERE id = ? AND agent_id = ?
-    `).get(runId, agentId) as { scope_key: string } | undefined;
-    if (!current) throw new Error("run not found");
+    const currentScopeKey = this.scopeKey(runId, agentId);
     const previous = this.sqlite.prepare(`
       SELECT scope_key FROM scheduler_runs
       WHERE agent_id = ? AND id <> ?
       ORDER BY created_at DESC, rowid DESC LIMIT 1
     `).get(agentId, runId) as { scope_key: string } | undefined;
-    return Boolean(previous && previous.scope_key !== current.scope_key);
+    return Boolean(previous && previous.scope_key !== currentScopeKey);
   }
 }

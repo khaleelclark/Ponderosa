@@ -64,6 +64,42 @@ CREATE TABLE agent_activations (
   )), terminal_at TEXT,
   UNIQUE (project_id, agent_id, dedupe_key)
 );
+CREATE TABLE context_rollovers (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN (
+    'requested', 'handoff_committed', 'session_retiring',
+    'continuation_ready', 'completed', 'failed', 'outcome_unknown'
+  )),
+  old_provider_session_id TEXT NOT NULL,
+  provider_session_generation TEXT NOT NULL,
+  detected_occupancy INTEGER NOT NULL CHECK (detected_occupancy >= 0),
+  aggregate_tokens INTEGER,
+  threshold INTEGER NOT NULL CHECK (threshold > 0),
+  context_window INTEGER,
+  low_water_mark INTEGER NOT NULL CHECK (low_water_mark >= 0),
+  low_water_confirmation_required INTEGER NOT NULL DEFAULT 1,
+  source_run_id TEXT NOT NULL,
+  source_activation_ids_json TEXT NOT NULL,
+  scope_key TEXT NOT NULL,
+  conversation_id TEXT,
+  reply_authority_json TEXT,
+  handoff_event_id TEXT,
+  continuation_activation_id TEXT,
+  replacement_session_id TEXT,
+  visible_response_committed INTEGER NOT NULL DEFAULT 0,
+  handoff_committed_at TEXT,
+  session_retiring_at TEXT,
+  continuation_ready_at TEXT,
+  replacement_session_at TEXT,
+  visible_response_committed_at TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  terminal_at TEXT,
+  UNIQUE (agent_id, provider_session_generation)
+);
 CREATE TABLE agent_conversation_memberships (
   agent_id TEXT NOT NULL, conversation_id TEXT NOT NULL, position INTEGER NOT NULL,
   PRIMARY KEY (agent_id, conversation_id)
@@ -623,6 +659,11 @@ CREATE INDEX idx_continuation_handoff_pending
   ON continuation_handoffs (agent_id, consumed_at, created_at DESC);
 CREATE UNIQUE INDEX idx_continuation_handoff_source_run
   ON continuation_handoffs (agent_id, source_execution_id);
+CREATE INDEX idx_context_rollovers_agent_state
+  ON context_rollovers (agent_id, state, updated_at DESC);
+CREATE UNIQUE INDEX idx_context_rollovers_continuation_activation
+  ON context_rollovers (continuation_activation_id)
+  WHERE continuation_activation_id IS NOT NULL;
 CREATE INDEX idx_conversations_global_recent
   ON conversations (updated_at DESC, id);
 CREATE INDEX idx_conversations_project ON conversations (project_id);

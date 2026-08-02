@@ -32,6 +32,7 @@ import type {
   OpeningPersistentRuntime,
   PersistentRuntime,
 } from "../app-contracts.js";
+import { evaluateContextRolloverPressure } from "../context-rollover-pressure.js";
 import type { ContextCursor } from "../context-cursors.js";
 import { PROVIDER_DYNAMIC_TOOLS } from "../runtime-selection.js";
 import { cleanupRuntimeAttachments } from "../runtime-attachments.js";
@@ -219,7 +220,6 @@ export function startProviderRunExecution(
     let schedulerCancelled = false;
     let usedFreshFallback = false;
     let projectWorkspaceUnavailable = false;
-    let contextRolloverMeasured = false;
     try {
       const environment = {
         PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
@@ -261,7 +261,7 @@ export function startProviderRunExecution(
               ? call.arguments as { agentId?: unknown }
               : {};
             const contextArguments = call.arguments && typeof call.arguments === "object"
-              ? call.arguments as { cursor?: unknown; limit?: unknown }
+              ? call.arguments as { scope?: unknown; cursor?: unknown; limit?: unknown }
               : {};
             const isDirectory = call.name === PONDEROSA_TEAM_DIRECTORY_TOOL.name;
             const isContext = call.name === PONDEROSA_CONTEXT_TOOL.name;
@@ -269,6 +269,7 @@ export function startProviderRunExecution(
             const isDocs = call.name === PONDEROSA_DOCS_TOOL.name;
             const isRollover = call.name === PONDEROSA_ROLLOVER_TOOL.name;
             const contextQuery = new URLSearchParams();
+            if (contextArguments.scope === "current_chat" || contextArguments.scope === "agent_private") contextQuery.set("scope", contextArguments.scope);
             if (typeof contextArguments.cursor === "string" && contextArguments.cursor.trim()) contextQuery.set("cursor", contextArguments.cursor.trim());
             if (typeof contextArguments.limit === "number") contextQuery.set("limit", String(contextArguments.limit));
             const url = call.name === PONDEROSA_CREATE_MANAGED_AGENT_TOOL.name
@@ -670,7 +671,9 @@ export function startProviderRunExecution(
               app.log.warn({ err: error, projectId: project.id, engineId: runtimeEngineId }, "model-start rejection refresh failed");
             });
           }
-          if (event.type !== "error" && event.type !== "session") providerWorkObserved = true;
+          if (event.type !== "error" && event.type !== "session" && event.type !== "context_usage") {
+            providerWorkObserved = true;
+          }
           if (activeRun.v3SchedulerRunId && activeRun.v3FencingToken !== undefined && !v3PromptInjected && event.type !== "error") {
             coordinationV3!.acknowledgePromptInjection({
               injectionId: v3InjectionId!,
@@ -749,48 +752,107 @@ export function startProviderRunExecution(
             firstTextSeq ??= stored.seq;
             lastTextSeq = stored.seq;
           }
-          if (event.type === "turn_done" && !contextRolloverMeasured &&
-              ownsActiveRun(agent.id, activeRun) && activeRun.runtimeSession) {
-            contextRolloverMeasured = true;
-            const preferences = workspace.getPreferences();
-            if (preferences.contextRolloverEnabled &&
-                !store.continuationHandoffForRun(agent.id, runId)) {
-              const usage = activeRun.runtimeSession.contextUsage?.();
-              const absoluteThresholdReached = usage !== undefined &&
-                usage.usedTokens >= preferences.contextRolloverTokens;
-              const windowThreshold = usage?.windowTokens === undefined
-                ? undefined
-                : Math.max(
-                    75_000,
-                    usage.windowTokens * preferences.contextRolloverWindowFraction,
-                  );
-              const windowThresholdReached = usage !== undefined &&
-                windowThreshold !== undefined &&
-                usage.usedTokens >= windowThreshold;
-              const effectiveThreshold = windowThreshold === undefined
-                ? preferences.contextRolloverTokens
-                : Math.min(preferences.contextRolloverTokens, windowThreshold);
-              if (usage && (absoluteThresholdReached || windowThresholdReached)) {
-                const providerSessionId = store.resumeSessionId(agent.id);
-                if (providerSessionId) {
-                  contextRolloverPending.set(agent.id, {
-                    sessionId: providerSessionId,
-                    usedTokens: usage.usedTokens,
-                    at: new Date().toISOString(),
-                  });
-                  await persistRuntimeEvent(agent.id, activeRun, {
-                    type: "context_rollover_triggered",
-                    executionId: runId,
-                    usedTokens: usage.usedTokens,
-                    threshold: effectiveThreshold,
-                  });
-                  app.log.info({
+          if (event.type === "session") {
+            for (const activationId of coordinationV3.activationIdsAttachedToRun(runId, agent.id)) {
+              coordinationV3.recordContextRolloverReplacementSession(activationId, event.sessionId);
+            }
+          }
+          if (event.type === "context_usage" && ownsActiveRun(agent.id, activeRun)) {
+            const replacementRollover = coordinationV3.contextRolloverForReplacementSession(
+              agent.id,
+              event.providerSessionId,
+            );
+            let suppressPressureForSeedOverflow = false;
+            if (replacementRollover?.state === "continuation_ready") {
+              const observed = coordinationV3.observeContextRolloverReplacementOccupancy(
+                replacementRollover.id,
+                event.providerSessionId,
+                event.usedTokens,
+              );
+              if (observed.state === "failed") {
+                suppressPressureForSeedOverflow = true;
+                const sourceCounts = new Map<string, number>();
+                for (const source of freshProviderInputManifest.sources) {
+                  sourceCounts.set(source.kind, (sourceCounts.get(source.kind) ?? 0) + 1);
+                }
+                await persistRuntimeEvent(agent.id, activeRun, {
+                  type: "context_rollover_seed_overflow",
+                  executionId: runId,
+                  rolloverId: observed.id,
+                  usedTokens: event.usedTokens,
+                  lowWaterMark: observed.lowWaterMark,
+                  seedPromptUtf8Bytes: Buffer.byteLength(freshExactProviderInput, "utf8"),
+                  contextSections: [...sourceCounts]
+                    .map(([kind, count]) => ({ kind, count }))
+                    .sort((left, right) => right.count - left.count || left.kind.localeCompare(right.kind)),
+                });
+                createOperationalNotification({
+                  dedupeKey: `context-rollover:${observed.id}:seed-overflow`,
+                  category: "coordination",
+                  severity: "attention",
+                  title: `${agent.title} could not refresh context safely`,
+                  body: observed.lastError ?? "Fresh context did not restore enough headroom.",
+                  projectId: agent.projectId,
+                  conversationId: routingConversationId,
+                });
+              } else if (observed.state === "completed") {
+                await persistRuntimeEvent(agent.id, activeRun, {
+                  type: "context_rollover_completed",
+                  executionId: runId,
+                  rolloverId: observed.id,
+                  previousProviderSessionId: observed.oldProviderSessionId,
+                  replacementProviderSessionId: event.providerSessionId,
+                  startingOccupancy: event.usedTokens,
+                });
+              }
+            } else if (replacementRollover?.state === "failed" &&
+                replacementRollover.lastError?.startsWith("rollover_seed_overflow:")) {
+              // A seed already above the low-water mark needs operator action.
+              // Do not manufacture an infinite succession of fresh sessions.
+              suppressPressureForSeedOverflow = true;
+            }
+            if (!suppressPressureForSeedOverflow &&
+                replacementRollover?.state !== "continuation_ready") {
+              const preferences = workspace.getPreferences();
+              if (preferences.contextRolloverEnabled &&
+                  !store.continuationHandoffForRun(agent.id, runId)) {
+                const pressure = evaluateContextRolloverPressure(event, preferences);
+                if (pressure.shouldRequest) {
+                  const capability = agentMessageCapabilities.get(messageCapability);
+                  const requested = coordinationV3.requestContextRollover({
+                    projectId: project.id,
                     agentId: agent.id,
-                    runId,
-                    providerSessionId,
-                    usedTokens: usage.usedTokens,
-                    threshold: effectiveThreshold,
-                  }, "provider context rollover marked for the next Run");
+                    oldProviderSessionId: event.providerSessionId,
+                    providerSessionGeneration: event.providerSessionGeneration,
+                    detectedOccupancy: event.usedTokens,
+                    ...(event.aggregateTokens !== undefined ? { aggregateTokens: event.aggregateTokens } : {}),
+                    threshold: pressure.threshold,
+                    ...(event.windowTokens !== undefined ? { contextWindow: event.windowTokens } : {}),
+                    lowWaterMark: pressure.lowWaterMark,
+                    sourceRunId: runId,
+                    sourceActivationIds: coordinationV3.activationIdsAttachedToRun(runId, agent.id),
+                    scopeKey: coordinationV3.runScopeKey(runId, agent.id),
+                    ...(routingConversationId ? { conversationId: routingConversationId } : {}),
+                    ...(capability?.defaultReply ? { replyAuthority: capability.defaultReply } : {}),
+                    visibleResponseCommitted: Boolean(capability?.inferredReplyCommunicationEventId),
+                  });
+                  if (requested.created) {
+                    await persistRuntimeEvent(agent.id, activeRun, {
+                      type: "context_rollover_triggered",
+                      executionId: runId,
+                      usedTokens: event.usedTokens,
+                      threshold: pressure.threshold,
+                    });
+                    app.log.info({
+                      agentId: agent.id,
+                      runId,
+                      providerSessionId: event.providerSessionId,
+                      aggregateTokens: event.aggregateTokens,
+                      usedTokens: event.usedTokens,
+                      threshold: pressure.threshold,
+                    }, "provider context rollover requested during active work");
+                    notifyScheduler();
+                  }
                 }
               }
             }
@@ -815,8 +877,18 @@ export function startProviderRunExecution(
       runtimeElicitations.clearRun(runId);
       const owned = ownsActiveRunForAuditDrain(agent.id, activeRun);
       schedulerCancelled ||= Boolean(!isClosed() && activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));
-      const rolloverRequested = owned && scheduledSessionRollovers.delete(agent.id);
-      const rolloverSucceeded = Boolean(rolloverRequested && !isClosed() && !controller.signal.aborted && !schedulerCancelled && !runError);
+      const localRolloverRequested = scheduledSessionRollovers.delete(agent.id);
+      const durableRollover = coordinationV3.activeContextRollover(agent.id);
+      const runRollover = durableRollover?.sourceRunId === runId ? durableRollover : undefined;
+      const rolloverRequested = owned && Boolean(localRolloverRequested || runRollover);
+      const rolloverSucceeded = Boolean(
+        rolloverRequested && runRollover?.state === "handoff_committed" &&
+        !isClosed() && !controller.signal.aborted && !schedulerCancelled && !runError,
+      );
+      const policyRefreshSucceeded = Boolean(
+        owned && localRolloverRequested && !runRollover &&
+        !isClosed() && !controller.signal.aborted && !schedulerCancelled && !runError,
+      );
       if (schedulerCancelled && !owned && !isClosed() && store.getRuns(agent.id).some((run) => run.id === runId && run.status === "running")) {
         const cancelled = store.appendEvent(agent.id, {
           type: "agent_lifecycle",
@@ -883,6 +955,7 @@ export function startProviderRunExecution(
         publish(agent.id, terminal);
         refreshProviderUsageAfterRun(runtimeEngineId);
         if (rolloverSucceeded) {
+          coordinationV3.beginContextRolloverRetirement(runRollover!.id);
           clearAgentResumeSession(agent.id, "explicit_compaction");
           organizationEnvelopeStates.delete(agent.id);
           const staleRuntime = reusableRuntime(agent.id);
@@ -900,10 +973,38 @@ export function startProviderRunExecution(
               app.log.error({ err: error, agentId: agent.id, runId }, "continuation rollover teardown remains pending");
             }
           }
+          const capability = agentMessageCapabilities.get(messageCapability);
+          const continued = coordinationV3.prepareContextRolloverContinuation({
+            id: runRollover!.id,
+            visibleResponseCommitted: Boolean(capability?.inferredReplyCommunicationEventId),
+          });
+          if (continued.state === "continuation_ready") notifyScheduler();
+        } else if (policyRefreshSucceeded) {
+          // Workspace/Project policy changes still invalidate the retained
+          // provider cache after the current clean Run. They do not represent
+          // unfinished work and therefore need no continuation Activation.
+          clearAgentResumeSession(agent.id, "request_context_rollover");
+          organizationEnvelopeStates.delete(agent.id);
+          const staleRuntime = reusableRuntime(agent.id);
+          if (staleRuntime) {
+            activeRun.persistentRuntimeIdentity = undefined;
+            try {
+              await teardownPersistentRuntime(agent.id, staleRuntime, "policy context refresh", project.id);
+            } catch (error) {
+              app.log.error({ err: error, agentId: agent.id, runId }, "policy context refresh teardown remains pending");
+            }
+          }
         } else if (rolloverRequested) {
           const abandonedHandoff = store.continuationHandoffForRun(agent.id, runId);
           if (abandonedHandoff && !abandonedHandoff.consumedAt) {
             store.consumeContinuationHandoff(agent.id, abandonedHandoff.id, runId);
+          }
+          if (runRollover && ["requested", "handoff_committed"].includes(runRollover.state)) {
+            coordinationV3.failContextRollover(
+              runRollover.id,
+              controller.signal.aborted || schedulerCancelled ? "outcome_unknown" : "failed",
+              runError ?? "provider Run ended before a safe context rollover handoff could continue",
+            );
           }
         }
         const acceptedSessionId = !runError && !schedulerCancelled ? store.resumeSessionId(agent.id) : undefined;

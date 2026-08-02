@@ -289,7 +289,9 @@ export function registerAgentCommunicationRoutes(
     // The stable artifact reference remains in structured document metadata and
     // tool results. Do not leak the internal ponderosa:// URI into chat prose.
     const publishedText = messageArtifact ? "" : messageContent;
-    if (inferredReplyFingerprint) capability.inferredReplyFingerprint = inferredReplyFingerprint;
+    if (inferredReplyFingerprint) {
+      capability.inferredReplyFingerprint = inferredReplyFingerprint;
+    }
 
     if (intent === "direct_to_user") {
       const proposedCommunication: CommunicationEvent = {
@@ -323,6 +325,10 @@ export function registerAgentCommunicationRoutes(
         });
       } catch (error) {
         return reply.code(409).send({ error: error instanceof Error ? error.message : "message authorization failed" });
+      }
+      if (inferredReplyFingerprint) {
+        capability.inferredReplyCommunicationEventId = communicationEventId;
+        coordinationV3.markContextRolloverVisibleResponseCommitted(capability.agentId, capability.runId);
       }
       if (preparedArtifacts.length) await messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
         kind: "communication", ownerId: proposedCommunication.eventId,
@@ -471,6 +477,10 @@ export function registerAgentCommunicationRoutes(
     } catch (error) {
       const message = error instanceof Error ? error.message : "message authorization failed";
       return reply.code(message.includes("scope") ? 409 : 403).send({ error: message });
+    }
+    if (inferredReplyFingerprint) {
+      capability.inferredReplyCommunicationEventId = communicationEventId;
+      coordinationV3.markContextRolloverVisibleResponseCommitted(capability.agentId, capability.runId);
     }
     if (preparedArtifacts.length) await messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
       kind: "communication", ownerId: proposedCommunication.eventId,

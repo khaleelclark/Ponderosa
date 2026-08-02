@@ -175,6 +175,25 @@ function activityCandidate(item: AgentActivityDto): Candidate | undefined {
           detail: `${event.usedTokens.toLocaleString()} context tokens used · threshold ${event.threshold.toLocaleString()}`,
         },
       };
+    case "context_rollover_completed":
+      return {
+        executionId: item.executionId,
+        entry: {
+          ...base,
+          kind: "notice",
+          title: "Agent refreshed its working context and continued.",
+          detail: `Fresh context started at ${event.startingOccupancy.toLocaleString()} tokens`,
+        },
+      };
+    case "context_rollover_seed_overflow":
+      return {
+        executionId: item.executionId,
+        entry: {
+          ...base,
+          kind: "error",
+          message: `Fresh context remained too large (${event.usedTokens.toLocaleString()} tokens; required below ${event.lowWaterMark.toLocaleString()}). ${event.contextSections.map((section) => `${section.kind}: ${section.count}`).join(" · ")}`,
+        },
+      };
     case "tool_result":
       return undefined;
   }

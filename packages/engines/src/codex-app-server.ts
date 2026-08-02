@@ -302,9 +302,32 @@ export async function discoverCodexAppServerCapabilities(opts: {
     await rpc.close();
   }
 }
-interface CodexContextUsage {
-  totalTokens: number;
+export interface CodexContextUsage {
+  usedTokens: number;
+  aggregateTokens?: number;
   modelContextWindow?: number;
+}
+
+/** Codex reports cumulative traffic and last-request occupancy together. Keep
+ * those meanings separate so aggregate billing telemetry can never trigger a
+ * context rollover. */
+export function codexContextUsageSnapshot(tokenUsage: {
+  total?: unknown;
+  last?: unknown;
+  modelContextWindow?: unknown;
+} | undefined): CodexContextUsage | undefined {
+  const aggregate = mapCodexTokenUsage(tokenUsage?.total);
+  const last = mapCodexTokenUsage(tokenUsage?.last);
+  if (!last) return undefined;
+  const modelContextWindow = typeof tokenUsage?.modelContextWindow === "number" &&
+    Number.isFinite(tokenUsage.modelContextWindow) && tokenUsage.modelContextWindow > 0
+    ? tokenUsage.modelContextWindow
+    : undefined;
+  return {
+    usedTokens: last.totalTokens ?? (last.inputTokens ?? 0) + (last.outputTokens ?? 0),
+    ...(aggregate?.totalTokens !== undefined ? { aggregateTokens: aggregate.totalTokens } : {}),
+    ...(modelContextWindow ? { modelContextWindow } : {}),
+  };
 }
 
 function rateWindowLabel(window: Record<string, unknown>): string | undefined {
@@ -333,10 +356,10 @@ export function formatCodexStatus(input: {
 }): string {
   const parts = [`Codex session ${input.sessionId}`, `Model ${input.model ?? "provider default"}`];
   if (input.context?.modelContextWindow) {
-    const usedPercent = Math.min(100, (input.context.totalTokens / input.context.modelContextWindow) * 100);
-    parts.push(`Context ${Math.round(usedPercent)}% used (${input.context.totalTokens.toLocaleString()} of ${input.context.modelContextWindow.toLocaleString()} tokens)`);
+    const usedPercent = Math.min(100, (input.context.usedTokens / input.context.modelContextWindow) * 100);
+    parts.push(`Context ${Math.round(usedPercent)}% used (${input.context.usedTokens.toLocaleString()} of ${input.context.modelContextWindow.toLocaleString()} tokens)`);
   } else if (input.context) {
-    parts.push(`Thread usage ${input.context.totalTokens.toLocaleString()} tokens; context-window size not reported`);
+    parts.push(`Context occupancy ${input.context.usedTokens.toLocaleString()} tokens; context-window size not reported`);
   } else {
     parts.push("Context usage not yet reported");
   }
@@ -547,13 +570,17 @@ export class CodexAppServerSession implements RuntimeSession {
     throw new Error(`unsupported Codex runtime command: ${name}`);
   }
 
-  contextUsage(): { usedTokens: number; windowTokens?: number } | undefined {
+  contextUsage(): { usedTokens: number; windowTokens?: number; aggregateTokens?: number; providerSessionGeneration: string } | undefined {
     if (!this.latestContextUsage) return undefined;
     return {
-      usedTokens: this.latestContextUsage.totalTokens,
+      usedTokens: this.latestContextUsage.usedTokens,
       ...(this.latestContextUsage.modelContextWindow
         ? { windowTokens: this.latestContextUsage.modelContextWindow }
         : {}),
+      ...(this.latestContextUsage.aggregateTokens !== undefined
+        ? { aggregateTokens: this.latestContextUsage.aggregateTokens }
+        : {}),
+      providerSessionGeneration: this.engineAgentId,
     };
   }
 
@@ -670,22 +697,21 @@ export class CodexAppServerSession implements RuntimeSession {
         const params = notification.params as { turnId?: unknown; tokenUsage?: { total?: unknown; last?: unknown; modelContextWindow?: unknown } } | undefined;
         if (typeof params?.turnId === "string") {
           const total = mapCodexTokenUsage(params.tokenUsage?.total);
-          if (total) {
-            const modelContextWindow = typeof params.tokenUsage?.modelContextWindow === "number" && params.tokenUsage.modelContextWindow > 0
-              ? params.tokenUsage.modelContextWindow
-              : undefined;
-            this.latestContextUsage = { totalTokens: total.totalTokens ?? 0, ...(modelContextWindow ? { modelContextWindow } : {}) };
+          const requestUsage = mapCodexTokenUsage(params.tokenUsage?.last);
+          if (total || requestUsage) {
+            const contextUsage = codexContextUsageSnapshot(params.tokenUsage);
+            const modelContextWindow = contextUsage?.modelContextWindow;
+            if (contextUsage) this.latestContextUsage = contextUsage;
 
             // A resumed thread replays its prior cumulative total before the new
             // turn's events. That checkpoint is the durable interval baseline.
-            if (params.turnId !== this.activeTurnId) {
+            if (total && params.turnId !== this.activeTurnId) {
               this.baselineTotal = total;
               this.latestTotal = total;
-            } else {
+            } else if (total) {
               const usage = this.baselineTotal ? subtractUsage(total, this.baselineTotal) : undefined;
               if (usage) this.usageByTurnId.set(params.turnId, usage);
               else this.usageByTurnId.delete(params.turnId);
-              const requestUsage = mapCodexTokenUsage(params.tokenUsage?.last);
               if (requestUsage) {
                 const checkpoint = usageCheckpointKey(total);
                 const seen = this.usageCheckpointsByTurnId.get(params.turnId) ?? new Set<string>();
@@ -699,6 +725,19 @@ export class CodexAppServerSession implements RuntimeSession {
               }
               this.latestTotal = total;
             }
+            // A resumed thread first replays old token checkpoints. Preserve
+            // those for aggregate baselining/status, but only emit pressure
+            // observations for the currently accepted provider turn.
+            if (requestUsage && this.latestContextUsage && params.turnId === this.activeTurnId) yield {
+              type: "context_usage",
+              providerSessionId: this.engineAgentId,
+              providerSessionGeneration: this.engineAgentId,
+              usedTokens: this.latestContextUsage.usedTokens,
+              ...(this.latestContextUsage.aggregateTokens !== undefined
+                ? { aggregateTokens: this.latestContextUsage.aggregateTokens }
+                : {}),
+              ...(modelContextWindow ? { windowTokens: modelContextWindow } : {}),
+            };
           }
         }
         continue;

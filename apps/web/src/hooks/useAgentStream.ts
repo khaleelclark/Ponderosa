@@ -41,6 +41,8 @@ const executionTypes: ReadonlySet<string> = new Set([
   "browser_console",
   "browser_screenshot",
   "context_rollover_triggered",
+  "context_rollover_seed_overflow",
+  "context_rollover_completed",
 ]);
 
 function runningAfterAgentEvent(current: boolean, event: SseEventEnvelope["event"]): boolean {

@@ -247,17 +247,38 @@ export async function prepareAgentRun(
   // A resumed provider normally retains them, but a provider-confirmed
   // pre-sampling failure must be able to replace that opaque session with a
   // truthful fresh seed without replaying the failed continuation packet.
-  const privateHistoryPage = store.getAgentPrivateContextSourcePage(agent.id, {
+  const agentPrivateHistoryPage = store.getAgentPrivateContextSourcePage(agent.id, {
     limit: historySourceLimit,
-    ...(routingConversationId ? { conversationId: routingConversationId } : {}),
+    scope: "agent_private",
     ...(communicationEventId ? { excludeCommunicationEventId: communicationEventId } : {}),
-    includeAuthoredBroadcasts: sourceChannel !== "main",
+    includeAuthoredBroadcasts: false,
   });
+  const currentChatPrivateHistoryPage = routingConversationId
+    ? store.getAgentPrivateContextSourcePage(agent.id, {
+        limit: historySourceLimit,
+        scope: "current_chat",
+        conversationId: routingConversationId,
+        ...(communicationEventId ? { excludeCommunicationEventId: communicationEventId } : {}),
+        includeAuthoredBroadcasts: sourceChannel !== "main",
+      })
+    : { items: [], hasMore: false };
   const importedHistoryPage = store.getImportedHistoryMessagePage(agent.id, { limit: historySourceLimit });
-  const mergedPrivateHistory = mergeScopedContextSources(
-    [privateHistoryPage, importedHistoryPage],
+  const secondaryPrivateHistory = mergeScopedContextSources(
+    [agentPrivateHistoryPage, importedHistoryPage],
     historySourceLimit,
   );
+  const currentChatIds = new Set(currentChatPrivateHistoryPage.items.map((message) =>
+    message.communicationEventId ?? message.id));
+  const mergedPrivateHistory = {
+    newest: [
+      ...currentChatPrivateHistoryPage.items,
+      ...secondaryPrivateHistory.newest.filter((message) =>
+        !currentChatIds.has(message.communicationEventId ?? message.id)),
+    ].slice(0, historySourceLimit).sort((left, right) =>
+      right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id)),
+    hasMore: currentChatPrivateHistoryPage.hasMore || secondaryPrivateHistory.hasMore ||
+      currentChatPrivateHistoryPage.items.length + secondaryPrivateHistory.newest.length > historySourceLimit,
+  };
   const referencedProjectArtifacts = (message: ScopedContextMessage): ArtifactDto[] => {
     const ids = collectReachableArtifactIds(message);
     let tokens = 0;
@@ -273,30 +294,63 @@ export async function prepareAgentRun(
       return [artifact];
     });
   };
-  type SeedHistoryCandidate = ChatMessage & { sourceCommunicationEventId?: string };
+  type SeedHistoryCandidate = ChatMessage & {
+    sourceCommunicationEventId?: string;
+    sourceConversationId?: string;
+    sourceConversationTitle?: string;
+    sourceAuthor?: string;
+    sourceCommunicationIntent?: CommunicationEvent["intent"];
+  };
   const fullHistory: SeedHistoryCandidate[] = await Promise.all(
-    [...mergedPrivateHistory.newest].reverse().map(async (message) => ({
-      role: message.role === "assistant" ? "assistant" : "user",
-      text: message.text,
-      createdAt: message.createdAt,
-      ...(message.communicationEventId
-        ? { sourceCommunicationEventId: message.communicationEventId }
-        : {}),
-      attachments: [
-        ...(await Promise.all(
-          message.attachments?.filter((item): item is AssetDto =>
-            !message.artifactIds?.includes(item.id) &&
-            (ASSET_MEDIA_TYPES as readonly string[]).includes(item.mediaType)
-          ).map(async (item) => ({
-            name: item.name,
-            mediaType: item.mediaType,
-            size: item.size,
-            ...(await materializeRuntimeAttachment(item)),
-          })) ?? [],
-        )),
-        ...referencedProjectArtifacts(message).map(generatedArtifactReference),
-      ],
-    })),
+    [...mergedPrivateHistory.newest].reverse().map(async (message) => {
+      const sourceCommunication = message.communicationEventId
+        ? store.getCommunicationEvent(project.id, message.communicationEventId)
+        : undefined;
+      const sourceConversation = sourceCommunication?.conversationId
+        ? store.getConversation(sourceCommunication.conversationId)
+        : undefined;
+      const sourceConversationTitle = sourceConversation?.title
+        ?? sourceCommunication?.identity?.conversationLabel
+        ?? "Deleted Chat";
+      const sourceAuthor = sourceCommunication?.sender.kind === "agent"
+        ? store.getAgent(sourceCommunication.sender.agentId)?.title
+          ?? sourceCommunication.identity?.senderLabel
+          ?? "Deleted Agent"
+        : sourceCommunication?.sender.kind === "user" ? "User" : undefined;
+      const crossChat = Boolean(sourceCommunication?.conversationId &&
+        sourceCommunication.conversationId !== routingConversationId);
+      const provenance = crossChat && sourceCommunication?.conversationId
+        ? `[AGENT PRIVATE HISTORY · origin chat: ${sourceConversationTitle} (${sourceCommunication.conversationId}) · communication: ${sourceCommunication.intent} · event: ${sourceCommunication.eventId} · timestamp: ${sourceCommunication.createdAt} · author: ${sourceAuthor ?? sourceCommunication.sender.kind}]\n`
+        : "";
+      return {
+        role: message.role === "assistant" ? "assistant" : "user",
+        text: `${provenance}${message.text}`,
+        createdAt: message.createdAt,
+        ...(sourceCommunication ? {
+          sourceCommunicationEventId: sourceCommunication.eventId,
+          ...(sourceCommunication.conversationId ? {
+            sourceConversationId: sourceCommunication.conversationId,
+            sourceConversationTitle,
+          } : {}),
+          ...(sourceAuthor ? { sourceAuthor } : {}),
+          sourceCommunicationIntent: sourceCommunication.intent,
+        } : {}),
+        attachments: [
+          ...(await Promise.all(
+            message.attachments?.filter((item): item is AssetDto =>
+              !message.artifactIds?.includes(item.id) &&
+              (ASSET_MEDIA_TYPES as readonly string[]).includes(item.mediaType)
+            ).map(async (item) => ({
+              name: item.name,
+              mediaType: item.mediaType,
+              size: item.size,
+              ...(await materializeRuntimeAttachment(item)),
+            })) ?? [],
+          )),
+          ...referencedProjectArtifacts(message).map(generatedArtifactReference),
+        ],
+      };
+    }),
   );
   const contextArtifacts = store.getProjectContextArtifacts(project.id, 100).filter((artifact) =>
     artifact.kind === "generated_file" && Boolean(assets.authoritativeGeneratedArtifact(project.id, artifact)));
@@ -308,8 +362,18 @@ export async function prepareAgentRun(
   const boundedHistoryCandidates = boundedSeedHistory(fullHistory);
   const seedHistoryCommunicationEventIds = new Set(boundedHistoryCandidates.flatMap((message) =>
     message.sourceCommunicationEventId ? [message.sourceCommunicationEventId] : []));
-  const seedHistorySourceEventIds = boundedHistoryCandidates.map((message) => message.sourceCommunicationEventId);
-  const seedHistory: ChatMessage[] = boundedHistoryCandidates.map(({ sourceCommunicationEventId: _, ...message }) => message);
+  const seedHistorySources = boundedHistoryCandidates.map((message) => ({
+    communicationEventId: message.sourceCommunicationEventId,
+    conversationId: message.sourceConversationId,
+    conversationTitle: message.sourceConversationTitle,
+    author: message.sourceAuthor,
+    communicationIntent: message.sourceCommunicationIntent,
+  }));
+  const seedHistory: ChatMessage[] = boundedHistoryCandidates.map(({
+    sourceCommunicationEventId: _, sourceConversationId: _conversationId,
+    sourceConversationTitle: _conversationTitle, sourceAuthor: _author,
+    sourceCommunicationIntent: _communicationIntent, ...message
+  }) => message);
   const history = resumeSessionId ? [] : seedHistory;
   const privateSeedHistoryOmitted = mergedPrivateHistory.hasMore ||
     boundedHistoryOmitted(fullHistory, boundedHistoryCandidates);
@@ -629,7 +693,13 @@ export async function prepareAgentRun(
   const policyDelivery = sessionEnvelope ? "submitted" as const : "retained_session" as const;
   const buildProviderInputManifest = (input: {
     submittedHistory: ChatMessage[];
-    historyCommunicationEventIds: Array<string | undefined>;
+    historySources: Array<{
+      communicationEventId?: string;
+      conversationId?: string;
+      conversationTitle?: string;
+      author?: string;
+      communicationIntent?: CommunicationEvent["intent"];
+    }>;
     contextMessages: ConversationMessageDto[];
     policyDelivery: "submitted" | "retained_session";
     disposition: "fresh_task" | "continued_session" | "reseeded";
@@ -638,7 +708,8 @@ export async function prepareAgentRun(
   }): ProviderInputSourceManifest => {
     const contextCommunicationEventIds = input.contextMessages.flatMap((message) =>
       message.communicationEventId ? [message.communicationEventId] : []);
-    const historyCommunicationEventIds = input.historyCommunicationEventIds.flatMap((id) => id ? [id] : []);
+    const historyCommunicationEventIds = input.historySources.flatMap((source) =>
+      source.communicationEventId ? [source.communicationEventId] : []);
     const communicationEventIds = [...new Set([
       ...(communicationEventId ? [communicationEventId] : []),
       ...activationCommunicationEventIds,
@@ -702,13 +773,21 @@ export async function prepareAgentRun(
           createdAt: continuationHandoff.createdAt,
           delivery: "submitted" as const,
         }] : []),
-        ...input.submittedHistory.map((message, index) => input.historyCommunicationEventIds[index]
+        ...input.submittedHistory.map((message, index) => input.historySources[index]?.communicationEventId
           ? {
               kind: "communication" as const,
-              ref: input.historyCommunicationEventIds[index]!,
+              ref: input.historySources[index]!.communicationEventId!,
               delivery: "submitted" as const,
               hash: createHash("sha256").update(message.text).digest("hex"),
               ...(message.createdAt ? { createdAt: message.createdAt } : {}),
+              ...(input.historySources[index]!.conversationId ? {
+                conversationId: input.historySources[index]!.conversationId,
+                conversationTitle: input.historySources[index]!.conversationTitle,
+              } : {}),
+              ...(input.historySources[index]!.author ? { author: input.historySources[index]!.author } : {}),
+              ...(input.historySources[index]!.communicationIntent ? {
+                communicationIntent: input.historySources[index]!.communicationIntent,
+              } : {}),
             }
           : {
               kind: "history_message" as const,
@@ -747,7 +826,7 @@ export async function prepareAgentRun(
   };
   const providerInputManifest = buildProviderInputManifest({
     submittedHistory: history,
-    historyCommunicationEventIds: resumeSessionId ? [] : seedHistorySourceEventIds,
+    historySources: resumeSessionId ? [] : seedHistorySources,
     contextMessages: [...roomMessages, ...initialBroadcastContext],
     policyDelivery,
     disposition: providerSessionDisposition,
@@ -756,7 +835,7 @@ export async function prepareAgentRun(
   });
   const freshProviderInputManifest = buildProviderInputManifest({
     submittedHistory: seedHistory,
-    historyCommunicationEventIds: seedHistorySourceEventIds,
+    historySources: seedHistorySources,
     contextMessages: [...freshRoomMessages, ...freshBroadcastContext],
     policyDelivery: "submitted",
     disposition: resumeSessionId ? "reseeded" : providerSessionDisposition,

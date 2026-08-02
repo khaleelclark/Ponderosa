@@ -55,7 +55,7 @@ export function registerAgentDirectoryRoutes(
     return entry ?? reply.code(404).send({ error: "agent not found in this Team Chat" });
   });
 
-  app.get<{ Querystring: { cursor?: string; limit?: string } }>("/api/agent-context", async (request, reply) => {
+  app.get<{ Querystring: { scope?: string; cursor?: string; limit?: string } }>("/api/agent-context", async (request, reply) => {
     const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
     const capability = token ? agentMessageCapabilities.get(token) : undefined;
     const active = capability ? activeRuns.get(capability.agentId) : undefined;
@@ -67,7 +67,14 @@ export function registerAgentDirectoryRoutes(
     if (!Number.isSafeInteger(rawLimit) || rawLimit < 1 || rawLimit > 50) {
       return reply.code(400).send({ error: "limit must be an integer from 1 to 50" });
     }
-    const contextScope = `${agent.id}:${capability.conversationId ?? "private"}`;
+    const requestedScope = request.query.scope ?? "current_chat";
+    if (requestedScope !== "current_chat" && requestedScope !== "agent_private") {
+      return reply.code(400).send({ error: "scope must be current_chat or agent_private" });
+    }
+    if (requestedScope === "current_chat" && !capability.conversationId) {
+      return reply.code(409).send({ error: "this Run has no current Project chat" });
+    }
+    const contextScope = `${agent.id}:${requestedScope}:${requestedScope === "current_chat" ? capability.conversationId : "private"}`;
     let boundary: { createdAt: string; id: string } | undefined;
     try {
       boundary = request.query.cursor
@@ -80,31 +87,71 @@ export function registerAgentDirectoryRoutes(
     const sourceLimit = rawLimit + 1;
     const privatePage = store.getAgentPrivateContextSourcePage(agent.id, {
       limit: sourceLimit,
-      ...(capability.conversationId ? { conversationId: capability.conversationId } : {}),
+      scope: requestedScope,
+      ...(requestedScope === "current_chat" ? { conversationId: capability.conversationId! } : {}),
       ...(boundary ? { before: boundary } : {}),
-      includeAuthoredBroadcasts: true,
+      includeAuthoredBroadcasts: requestedScope === "current_chat",
     });
     const importedPage = store.getImportedHistoryMessagePage(agent.id, {
       limit: sourceLimit,
       ...(boundary ? { before: boundary } : {}),
     });
-    const sharedPage = capability.conversationId
+    const sharedPage = requestedScope === "current_chat" && capability.conversationId
       ? store.getOrganizationalConversationContextSourcePage(capability.conversationId, {
           limit: sourceLimit,
           ...(boundary ? { before: boundary } : {}),
         })
       : { items: [], hasMore: false };
-    const merged = mergeScopedContextSources([privatePage, importedPage, sharedPage], sourceLimit);
+    const merged = mergeScopedContextSources(
+      requestedScope === "agent_private"
+        ? [privatePage, importedPage]
+        : [privatePage, importedPage, sharedPage],
+      sourceLimit,
+    );
     const rowBounded = merged.newest.slice(0, rawLimit);
-    const byteBounded = byteBoundScopedContext(rowBounded);
+    // Add provenance before enforcing the serialized response budget. Cross-chat
+    // metadata is part of the provider-visible page, not free out-of-band data.
+    const provenanceBounded = rowBounded.map((message) => {
+      if (!message.communicationEventId) return message;
+      const communication = store.getCommunicationEvent(agent.projectId, message.communicationEventId);
+      if (!communication) return message;
+      const originConversation = communication.conversationId
+        ? store.getConversation(communication.conversationId)
+        : undefined;
+      const author = communication.sender.kind === "agent"
+        ? {
+            kind: "agent" as const,
+            id: communication.sender.agentId,
+            displayName: store.getAgent(communication.sender.agentId)?.title
+              ?? communication.identity?.senderLabel
+              ?? "Deleted Agent",
+          }
+        : { kind: communication.sender.kind, id: communication.sender.kind === "user" ? communication.sender.userId : undefined };
+      return {
+        ...message,
+        provenance: {
+          communicationEventId: communication.eventId,
+          ...(communication.conversationId ? {
+            originConversationId: communication.conversationId,
+            originConversationTitle: originConversation?.title
+              ?? communication.identity?.conversationLabel
+              ?? "Deleted Chat",
+          } : {}),
+          timestamp: communication.createdAt,
+          author,
+          communicationType: communication.intent,
+        },
+      };
+    });
+    const byteBounded = byteBoundScopedContext(provenanceBounded);
     const selected = byteBounded.messages;
     const hasMore = selected.length > 0 && (merged.hasMore || merged.newest.length > rawLimit || byteBounded.truncated);
     const messages = [...selected].reverse();
     const oldest = selected.at(-1);
     return {
-      scope: capability.conversationId
+      scope: requestedScope === "current_chat"
         ? { kind: "project_chat", conversationId: capability.conversationId }
-        : { kind: "agent_private" },
+        : { kind: "agent_private", agentId: agent.id },
       messages,
       hasMore,
       ...(hasMore && oldest ? {

@@ -22,7 +22,9 @@ export function workspaceAgentEventCategory(event: LogEvent): Extract<WorkspaceE
     case "browser_session":
     case "browser_action":
     case "browser_console":
-    case "context_rollover_triggered": return "task";
+    case "context_rollover_triggered":
+    case "context_rollover_seed_overflow":
+    case "context_rollover_completed": return "task";
     case "browser_screenshot": return "artifact";
     case "session":
     case "session_reset": return "state";
