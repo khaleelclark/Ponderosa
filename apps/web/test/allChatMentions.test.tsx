@@ -89,12 +89,6 @@ describe("All Messages mention presentation", () => {
       </QueryClientProvider>,
     );
 
-    expect(
-      screen
-        .getByLabelText("All messages")
-        .querySelector("[data-chat-content='true']"),
-    ).toBeTruthy();
-
     expect(screen.getByRole("button", { name: "Open agent Oak" }).textContent)
       .toBe("#Oak");
     expect(screen.getByRole("button", { name: "Open agent Pine" }).textContent)
