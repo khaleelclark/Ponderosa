@@ -123,11 +123,21 @@ export class AgentStore extends AgentEventSessionFacade {
   private readonly support: AgentStoreSupport;
   private ownership?: DataDirectoryOwnership;
   private closed = false;
+  private startupProfileData: {
+    mode: "clean" | "recovery";
+    openMs: number;
+    componentsMs: number;
+    recoveryMs: number;
+    totalMs: number;
+    projectCount: number;
+  } = { mode: "recovery", openMs: 0, componentsMs: 0, recoveryMs: 0, totalMs: 0, projectCount: 0 };
 
   constructor(private readonly dataDir: string) {
     super();
+    const startupStartedAt = performance.now();
     this.support = new AgentStoreSupport(dataDir);
     const opened = openAgentStoreData(dataDir);
+    const openedAt = performance.now();
     this.db = opened.db;
     this.client = opened.client;
     this.ownership = opened.ownership;
@@ -185,16 +195,30 @@ export class AgentStore extends AgentEventSessionFacade {
       };
       const components = createAgentStoreComponents(dataDir, opened, ports);
       Object.assign(this, components);
-      // Canonical files are written before their SQLite projections. Rebuilding
-      // on startup closes the crash window where a durable append succeeded but
-      // the projection write did not, and keeps every read path deterministic.
+      const componentsCreatedAt = performance.now();
+      // Canonical files are written before their SQLite projections. Rebuild
+      // transactionally on every startup so a crash or torn append cannot leave
+      // a partially repaired projection visible to ordinary requests.
       this.rebuildProjections();
       for (const project of this.listProjects()) this.ensureCommunicationProjectionLedger(project.id);
+      const completedAt = performance.now();
+      this.startupProfileData = {
+        mode: "recovery",
+        openMs: Math.round((openedAt - startupStartedAt) * 10) / 10,
+        componentsMs: Math.round((componentsCreatedAt - openedAt) * 10) / 10,
+        recoveryMs: Math.round((completedAt - componentsCreatedAt) * 10) / 10,
+        totalMs: Math.round((completedAt - startupStartedAt) * 10) / 10,
+        projectCount: this.listProjects().length,
+      };
     } catch (error) {
       releaseDataDirectoryOwnership(this.ownership);
       this.ownership = undefined;
       throw error;
     }
+  }
+
+  startupProfile(): Readonly<typeof this.startupProfileData> {
+    return { ...this.startupProfileData };
   }
 
   nextDeliveryOrderKey(createdAt = new Date().toISOString()): string {

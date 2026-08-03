@@ -633,6 +633,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       },
     },
   }) as unknown as PonderosaServer;
+  app.log.info(store.startupProfile(), "agent store startup completed");
   const limits = { ...ASSET_LIMITS, maxAttachmentsPerMessage: ASSET_LIMITS.maxAssetsPerMessage };
   const serverContext: ServerContext = { opts, documentationReferences, limits, agentDetail, store, tokenUsage };
   const {

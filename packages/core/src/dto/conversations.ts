@@ -371,7 +371,14 @@ export interface ConversationDecisionEventDto {
 export interface ConversationDetailDto {
   conversation: ConversationDto;
   messages: ConversationMessageDto[];
+  /** Bounded initial member page. Use the scoped members endpoint for more. */
   agents: AgentDto[];
+  members?: {
+    total: number;
+    limit: number;
+    hasMore: boolean;
+    cursor?: string;
+  };
   /** Canonical Decision events for this Chat; they are not Communications. */
   decisionEvents?: ConversationDecisionEventDto[];
   history?: HistoryWindowDto;

@@ -182,6 +182,16 @@ function establishReadIndexes(sqlite: Database.Database): void {
       ON coordination_request_updates (request_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_runtime_artifacts_owner
       ON runtime_artifacts (owner_kind, owner_id, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_projects_directory
+      ON projects (last_used_at DESC, created_at DESC, label, id);
+    CREATE INDEX IF NOT EXISTS idx_conversations_project_directory
+      ON conversations (project_id, updated_at DESC, title, id);
+    CREATE INDEX IF NOT EXISTS idx_agents_project_directory
+      ON agents (project_id, deleted_at, archived, updated_at DESC, title, id);
+    CREATE INDEX IF NOT EXISTS idx_trigger_definitions_project_directory
+      ON trigger_definitions (project_id, updated_at DESC, name, id);
+    CREATE INDEX IF NOT EXISTS idx_trigger_definitions_agent_directory
+      ON trigger_definitions (agent_id, updated_at DESC, name, id);
   `);
 }
 

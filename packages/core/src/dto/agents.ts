@@ -157,6 +157,9 @@ export interface TeamDirectoryDto {
   projectId: string;
   generatedAt: string;
   agents: TeamDirectoryAgentDto[];
+  totalAgents?: number;
+  hasMoreAgents?: boolean;
+  agentCursor?: string;
 }
 
 /** POST /api/projects/:id/agents body. */

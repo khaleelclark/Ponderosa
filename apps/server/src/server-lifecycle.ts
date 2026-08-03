@@ -159,7 +159,7 @@ export function registerServerLifecycle(
       startupProjectionRecoveryImmediate = undefined;
       if (isClosed()) return;
       startupProjectionRecovery = reconcileRuntimeCommunicationProjections(undefined, {
-        yieldEvery: 25,
+        yieldEvery: 1,
         shouldContinue: () => !isClosed(),
       }).then((repaired) => {
         if (!isClosed()) {
@@ -199,6 +199,14 @@ export function registerServerLifecycle(
     }
   };
   app.addHook("onReady", async () => {
+    const lifecycleStartedAt = performance.now();
+    let lifecyclePhaseStartedAt = lifecycleStartedAt;
+    const lifecyclePhases: Record<string, number> = {};
+    const completeLifecyclePhase = (name: string): void => {
+      const now = performance.now();
+      lifecyclePhases[name] = Math.round((now - lifecyclePhaseStartedAt) * 10) / 10;
+      lifecyclePhaseStartedAt = now;
+    };
     const orphanGraceBoundary = Date.now() - 60 * 60 * 1_000;
     const runtimeArtifacts = coordinationV3.runtimeArtifacts();
     if (artifactFilesystem.ok) {
@@ -246,6 +254,7 @@ export function registerServerLifecycle(
         body: artifactFilesystem.detail,
       });
     }
+    completeLifecyclePhase("artifact_authority");
     if (processContainment.ok) {
       resolveOperationalNotification("startup:process-containment-capability");
     } else {
@@ -360,27 +369,35 @@ export function registerServerLifecycle(
         });
       }
     }
+    completeLifecyclePhase("runtime_recovery");
     coordinationV3.reconcileUnavailableActivationRecipients();
     coordinationV3.expireDue();
     if (!artifactFilesystem.ok || !processContainment.ok) await coordinationV3Scheduler.pauseLeasing();
     coordinationV3Scheduler.start();
     await triggerSources.start();
+    completeLifecyclePhase("scheduler_and_triggers");
     reconcileTriggerOperationalNotifications();
     reconcileProjectDeletionOperationalNotifications();
     await drainAgentDeletionCleanup();
+    completeLifecyclePhase("operational_recovery");
     agentDeletionCleanupSweep = setInterval(() => { void drainAgentDeletionCleanup(); }, 30_000);
     agentDeletionCleanupSweep.unref();
     webPushDelivery?.start();
     const reconcileAssets = async () => {
+      let processedAgents = 0;
       for (const project of store.listProjects()) {
         for (const agent of store.listAgents(project.id)) {
           const associated = new Set(store.getMessages(agent.id).flatMap((message) => message.attachments?.map((item) => item.id) ?? []));
           await assets.reconcile(project.id, agent.id, associated);
+          processedAgents += 1;
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          if (isClosed()) return;
         }
       }
     };
-    await reconcileAssets();
-    for (const project of store.listProjects()) refreshCommunicationReconciliation(project.id);
+    // Projection recovery above is authoritative. Orphan asset cleanup remains
+    // periodic maintenance so it cannot delay startup or monopolize ordinary
+    // requests immediately after the server begins accepting traffic.
     assetSweep = setInterval(() => { if (!isClosed()) void reconcileAssets(); }, 60 * 60 * 1000);
     assetSweep.unref();
     linkPreviewSweep = setInterval(() => {
@@ -416,6 +433,11 @@ export function registerServerLifecycle(
       }
     }, linkPreviewHeartbeatMs);
     linkPreviewSweep.unref();
+    completeLifecyclePhase("maintenance_scheduling");
+    app.log.info({
+      phases: lifecyclePhases,
+      totalMs: Math.round((performance.now() - lifecycleStartedAt) * 10) / 10,
+    }, "server lifecycle readiness completed");
   });
 
   app.addHook("preClose", async () => {

@@ -35,6 +35,7 @@ import { registerAgentMaintenanceRoutes } from "./agent-maintenance.js";
 import { registerAgentMessageRunRoute } from "./agent-message-run.js";
 import { registerAgentPackageRoutes } from "./agent-packages.js";
 import { registerAgentPresetRoutes } from "./agent-presets.js";
+import { applyCollectionPageHeaders, sqliteCollectionPage, type CollectionQuery } from "../collection-page.js";
 import { registerAgentUsageRoute, registerUsageRoutes } from "./usage.js";
 import { registerAgentWorkRoutes } from "./agent-work.js";
 import { registerArtifactRoutes } from "./artifacts.js";
@@ -414,9 +415,29 @@ registerCollaborationRoutes(app, {
   afterCommunicationArtifactCommit: opts.messageLifecycleFaults?.afterCommunicationArtifactCommit,
 });
 
-app.get<{ Params: { id: string } }>("/api/projects/:id/agents", async (request, reply) => {
+app.get<{ Params: { id: string }; Querystring: CollectionQuery }>("/api/projects/:id/agents", async (request, reply) => {
   if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
-  return store.listAgents(request.params.id);
+  try {
+    const normalizedSearch = request.query.search?.trim().toLocaleLowerCase() ?? "";
+    const page = sqliteCollectionPage(store.sqlite, request.query, {
+      baseSql: `
+        SELECT id, title, updated_at
+        FROM agents
+        WHERE project_id = ? AND deleted_at IS NULL
+          ${normalizedSearch ? "AND lower(title || ' ' || active_engine || ' ' || COALESCE(model, '')) LIKE ? ESCAPE '\\\\'" : ""}
+      `,
+      params: normalizedSearch
+        ? [request.params.id, `%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
+        : [request.params.id],
+      orderBy: "updated_at DESC, lower(title) ASC, id ASC",
+      scope: `project-agents:${request.params.id}`,
+      hydrate: id => store.getAgent(id),
+    });
+    applyCollectionPageHeaders(reply, page);
+    return page.items;
+  } catch (error) {
+    return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid collection cursor" });
+  }
 });
 
 registerAgentPresetRoutes(app, {

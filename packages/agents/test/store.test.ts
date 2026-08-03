@@ -2071,6 +2071,7 @@ describe("AgentStore — rebuild is byte-identical (the property)", () => {
     store.close();
 
     store = new AgentStore(dir);
+    expect(store.startupProfile().mode).toBe("recovery");
     expect(snapshot(store)).toEqual(before);
   });
 
