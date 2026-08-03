@@ -213,6 +213,9 @@ export const realApi = {
   listProjects(): Promise<ProjectDto[]> {
     return requestJson<ProjectDto[]>("/api/projects");
   },
+  getProject(projectId: string): Promise<ProjectDto> {
+    return requestJson<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`);
+  },
   createProject(request: CreateProjectRequest): Promise<ProjectDto> {
     return requestJson<ProjectDto>("/api/projects", {
       method: "POST",

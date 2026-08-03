@@ -20,6 +20,7 @@ export const queryKeys = {
   },
   projects: {
     all: ["projects"] as const,
+    detail: (projectId: string | undefined) => ["project", projectId] as const,
   },
   workspaceDirectory: {
     all: ["workspace-directory"] as const,
