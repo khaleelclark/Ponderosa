@@ -65,6 +65,21 @@ function writeHeaderCollapsed(collapsed: boolean): void {
   workspaceHeaderListeners.forEach(listener => listener());
 }
 
+export function useWorkspaceHeaderCollapse(): {
+  collapsed: boolean;
+  toggleCollapsed(): void;
+} {
+  const collapsed = useSyncExternalStore(
+    subscribeHeaderCollapsed,
+    readHeaderCollapsed,
+    () => false,
+  );
+  return {
+    collapsed,
+    toggleCollapsed: () => writeHeaderCollapsed(!collapsed),
+  };
+}
+
 export interface TabbedWorkspaceFrameProps<T extends string> {
   icon: ReactElement;
   title: string;
@@ -145,16 +160,10 @@ export function TabbedWorkspaceFrame<T extends string>({
   actions,
   tabs,
 }: TabbedWorkspaceFrameProps<T>): JSX.Element {
-  const collapsed = useSyncExternalStore(
-    subscribeHeaderCollapsed,
-    readHeaderCollapsed,
-    () => false,
-  );
+  const { collapsed, toggleCollapsed } = useWorkspaceHeaderCollapse();
   const activeLabel =
     tabs.activeLabel ??
     tabs.items.find(item => item.value === tabs.value)?.label;
-  const toggleCollapsed = () => writeHeaderCollapsed(!collapsed);
-
   return (
     <Box
       className="mobile-chat-chrome mobile-chat-header"

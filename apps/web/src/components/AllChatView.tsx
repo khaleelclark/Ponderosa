@@ -13,6 +13,8 @@ import {
   useTheme,
 } from "@mui/material";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
+import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
+import KeyboardArrowUpIcon from "@mui/icons-material/KeyboardArrowUp";
 import type {
   AllChatDecisionEventDto,
   AllChatItemDto,
@@ -61,6 +63,7 @@ import {
 } from "../conversationEngine";
 import { useRuntimeControls } from "../hooks/useRuntimeControls";
 import { AUTO_ALLOWED_DECISION_OPTION_ID } from "./ConversationView.helpers";
+import { useWorkspaceHeaderCollapse } from "./WorkspaceFrame";
 
 function allChatSourceRoute(item: AllChatItemDto): Route {
   if (item.source.kind === "agent") {
@@ -176,6 +179,8 @@ export function AllChatView({
     text: string;
   }>();
   const theme = useTheme();
+  const { collapsed: headerCollapsed, toggleCollapsed: toggleHeaderCollapsed } =
+    useWorkspaceHeaderCollapse();
   const mobileViewport = useMediaQuery(theme.breakpoints.down("sm"));
   const mobileComposer = useMobileComposerAutoHide(mobileViewport);
   const items = useMemo(
@@ -654,8 +659,9 @@ export function AllChatView({
         direction="row"
         spacing={1.5}
         sx={{
-          px: { xs: 2, md: 3 },
-          py: 2,
+          px: headerCollapsed ? { xs: 1, sm: 1.5 } : { xs: 2, md: 3 },
+          py: headerCollapsed ? 0 : 2,
+          minHeight: headerCollapsed ? { xs: 44, sm: 40 } : undefined,
           alignItems: "center",
           borderBottom: 1,
           borderColor: "divider",
@@ -663,13 +669,38 @@ export function AllChatView({
         }}
       >
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography variant="h5" component="h1" fontWeight={800}>
-            Messages Across Ponderosa
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Everything sent to or from you across Ponderosa.
-          </Typography>
+          {headerCollapsed ? (
+            <Typography variant="body2" component="h1" fontWeight={700} noWrap>
+              Messages Across Ponderosa
+            </Typography>
+          ) : (
+            <>
+              <Typography variant="h5" component="h1" fontWeight={800}>
+                Messages Across Ponderosa
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Everything sent to or from you across Ponderosa.
+              </Typography>
+            </>
+          )}
         </Box>
+        <Tooltip
+          title={headerCollapsed ? "Expand workspace header" : "Collapse workspace header"}
+        >
+          <IconButton
+            size="small"
+            aria-label={headerCollapsed ? "Expand workspace header" : "Collapse workspace header"}
+            aria-expanded={!headerCollapsed}
+            onClick={toggleHeaderCollapsed}
+            sx={{
+              flexShrink: 0,
+              width: { xs: 44, sm: 36 },
+              height: { xs: 44, sm: 36 },
+            }}
+          >
+            {headerCollapsed ? <KeyboardArrowDownIcon /> : <KeyboardArrowUpIcon />}
+          </IconButton>
+        </Tooltip>
       </Stack>
       <Box data-chat-attention-slot sx={{ minWidth: 0 }}>
           <AttentionSurface
