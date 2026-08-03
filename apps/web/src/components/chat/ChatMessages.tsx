@@ -21,7 +21,7 @@ function isLoopbackLink(url: URL): boolean {
   return url.protocol === "http:" && Boolean(url.port) && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname.toLowerCase());
 }
 
-function linkPresentation(href: string): { url: URL; hostname: string; destination: string; loopback: boolean } | undefined {
+export function linkPresentation(href: string): { url: URL; hostname: string; destination: string; loopback: boolean } | undefined {
   let url: URL;
   try { url = new URL(href); } catch { return undefined; }
   if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;

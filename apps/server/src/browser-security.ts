@@ -80,9 +80,34 @@ export function redactBrowserUrl(value: string): RedactedBrowserUrl {
   };
 }
 
+function splitTrailingUrlPunctuation(candidate: string): { url: string; suffix: string } {
+  let end = candidate.length;
+  while (end > 0) {
+    const trailing = candidate[end - 1]!;
+    if (/[.,!?;:\]}]/u.test(trailing)) {
+      end -= 1;
+      continue;
+    }
+    if (trailing === ")") {
+      const prefix = candidate.slice(0, end);
+      const openings = (prefix.match(/\(/gu) ?? []).length;
+      const closings = (prefix.match(/\)/gu) ?? []).length;
+      if (closings > openings) {
+        end -= 1;
+        continue;
+      }
+    }
+    break;
+  }
+  return { url: candidate.slice(0, end), suffix: candidate.slice(end) };
+}
+
 export function redactBrowserText(value: string): string {
   return value
-    .replace(/https?:\/\/[^\s<>"']+/gi, (candidate) => redactBrowserUrl(candidate).url)
+    .replace(/https?:\/\/[^\s<>"'\x60]+/gi, (candidate) => {
+      const { url, suffix } = splitTrailingUrlPunctuation(candidate);
+      return redactBrowserUrl(url).url + suffix;
+    })
     .replace(BEARER_CREDENTIAL, "$1[REDACTED]")
     .replace(SENSITIVE_TEXT_ASSIGNMENT, (match, prefix: string, credential: string) =>
       /^(?:\[REDACTED\]|%5Bredacted%5D)$/i.test(credential) ? match : `${prefix}[REDACTED]`);
