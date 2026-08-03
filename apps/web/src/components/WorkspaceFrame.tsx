@@ -11,6 +11,8 @@ import {
 } from "@mui/material";
 import {
   useEffect,
+  useLayoutEffect,
+  useRef,
   useSyncExternalStore,
   useState,
   type ReactElement,
@@ -236,9 +238,21 @@ export function TabbedWorkspaceFrame<T extends string>({
   tabs,
 }: TabbedWorkspaceFrameProps<T>): JSX.Element {
   const { collapsed, toggleCollapsed } = useWorkspaceHeaderCollapse();
+  const toggleButtonRef = useRef<HTMLButtonElement>(null);
+  const restoreToggleFocusRef = useRef(false);
   const activeLabel =
     tabs.activeLabel ??
     tabs.items.find(item => item.value === tabs.value)?.label;
+  const handleToggleCollapsed = () => {
+    restoreToggleFocusRef.current =
+      document.activeElement === toggleButtonRef.current;
+    toggleCollapsed();
+  };
+  useLayoutEffect(() => {
+    if (!restoreToggleFocusRef.current) return;
+    toggleButtonRef.current?.focus();
+    restoreToggleFocusRef.current = false;
+  }, [collapsed]);
 
   if (collapsed) {
     return (
@@ -249,10 +263,11 @@ export function TabbedWorkspaceFrame<T extends string>({
         action={(
           <Tooltip title="Expand workspace header">
             <IconButton
+              ref={toggleButtonRef}
               size="small"
               aria-label="Expand workspace header"
               aria-expanded={false}
-              onClick={toggleCollapsed}
+              onClick={handleToggleCollapsed}
               sx={{
                 flexShrink: 0,
                 width: { xs: 44, sm: 36 },
@@ -307,10 +322,11 @@ export function TabbedWorkspaceFrame<T extends string>({
             {actions}
             <Tooltip title="Collapse workspace header">
               <IconButton
+                ref={toggleButtonRef}
                 size="small"
                 aria-label="Collapse workspace header"
                 aria-expanded
-                onClick={toggleCollapsed}
+                onClick={handleToggleCollapsed}
                 sx={{
                   flexShrink: 0,
                   width: { xs: 44, sm: 36 },
