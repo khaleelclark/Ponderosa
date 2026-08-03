@@ -288,6 +288,7 @@ export function AgentDetailHeader({
         </Stack>
       }
       tabs={{
+        activeLabel: tab === "technical" ? "Technical details" : undefined,
         label: "Agent details",
         value: tab === "technical" ? false : tab,
         onChange: onTabChange,

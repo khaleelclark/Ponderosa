@@ -334,6 +334,7 @@ function ConversationHeader({
         </>
       }
       tabs={{
+        activeLabel: agentWorkOpen ? "Work" : undefined,
         label: "Chat views",
         value: agentWorkOpen ? false : activeView,
         onChange: next => {

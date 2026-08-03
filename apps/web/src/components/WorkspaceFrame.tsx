@@ -11,6 +11,7 @@ import {
 } from "@mui/material";
 import {
   useEffect,
+  useSyncExternalStore,
   useState,
   type ReactElement,
   type ReactNode,
@@ -20,14 +21,48 @@ import { IconTitle } from "./IconTitle";
 type WorkspaceTabItem<T extends string> = { value: T; label: string; icon?: ReactElement };
 
 const WORKSPACE_HEADER_COLLAPSED_KEY = "ponderosa.workspace-header.collapsed.v1";
+const workspaceHeaderListeners = new Set<() => void>();
+let memoryHeaderCollapsed = false;
 
-function initialHeaderCollapsed(): boolean {
+function readHeaderCollapsed(): boolean {
   try {
-    return typeof window !== "undefined" &&
-      window.localStorage.getItem(WORKSPACE_HEADER_COLLAPSED_KEY) === "true";
+    if (typeof window === "undefined") return memoryHeaderCollapsed;
+    const stored = window.localStorage.getItem(WORKSPACE_HEADER_COLLAPSED_KEY);
+    return stored === null ? memoryHeaderCollapsed : stored === "true";
   } catch {
-    return false;
+    return memoryHeaderCollapsed;
   }
+}
+
+function subscribeHeaderCollapsed(listener: () => void): () => void {
+  workspaceHeaderListeners.add(listener);
+  const handleStorage = (event: StorageEvent) => {
+    if (event.key !== WORKSPACE_HEADER_COLLAPSED_KEY) return;
+    memoryHeaderCollapsed = event.newValue === "true";
+    listener();
+  };
+  if (typeof window !== "undefined") {
+    window.addEventListener("storage", handleStorage);
+  }
+  return () => {
+    workspaceHeaderListeners.delete(listener);
+    if (typeof window !== "undefined") {
+      window.removeEventListener("storage", handleStorage);
+    }
+  };
+}
+
+function writeHeaderCollapsed(collapsed: boolean): void {
+  memoryHeaderCollapsed = collapsed;
+  try {
+    window.localStorage.setItem(
+      WORKSPACE_HEADER_COLLAPSED_KEY,
+      String(collapsed),
+    );
+  } catch {
+    // The in-memory preference keeps controls usable without device storage.
+  }
+  workspaceHeaderListeners.forEach(listener => listener());
 }
 
 export interface TabbedWorkspaceFrameProps<T extends string> {
@@ -38,6 +73,7 @@ export interface TabbedWorkspaceFrameProps<T extends string> {
   status?: ReactNode;
   actions?: ReactNode;
   tabs: {
+    activeLabel?: string;
     value: T | false;
     items: readonly WorkspaceTabItem<T>[];
     onChange(value: T): void;
@@ -109,119 +145,154 @@ export function TabbedWorkspaceFrame<T extends string>({
   actions,
   tabs,
 }: TabbedWorkspaceFrameProps<T>): JSX.Element {
-  const [collapsed, setCollapsed] = useState(initialHeaderCollapsed);
-  const activeTab = tabs.items.find(item => item.value === tabs.value);
-  const toggleCollapsed = () => {
-    setCollapsed(current => {
-      const next = !current;
-      try {
-        window.localStorage.setItem(
-          WORKSPACE_HEADER_COLLAPSED_KEY,
-          String(next),
-        );
-      } catch {
-        // Header controls remain usable when device storage is unavailable.
-      }
-      return next;
-    });
-  };
+  const collapsed = useSyncExternalStore(
+    subscribeHeaderCollapsed,
+    readHeaderCollapsed,
+    () => false,
+  );
+  const activeLabel =
+    tabs.activeLabel ??
+    tabs.items.find(item => item.value === tabs.value)?.label;
+  const toggleCollapsed = () => writeHeaderCollapsed(!collapsed);
 
-  if (collapsed) {
-    return <Box
+  return (
+    <Box
       className="mobile-chat-chrome mobile-chat-header"
       sx={{
         minWidth: 0,
         bgcolor: "background.default",
-        borderBottom: 1,
+        borderBottom: collapsed ? 1 : 0,
         borderColor: "divider",
       }}
     >
-      <Stack
-        direction="row"
-        spacing={1}
+      <Box
         sx={{
-          minHeight: { xs: 44, sm: 40 },
-          px: { xs: 1, sm: 1.5 },
-          alignItems: "center",
-          minWidth: 0,
+          px: collapsed
+            ? { xs: 1, sm: 1.5 }
+            : { xs: 1.5, sm: 2, md: 2.5 },
+          py: collapsed ? 0 : { xs: 1, sm: 1.25 },
         }}
       >
-        <Box sx={{ color: "text.secondary", display: "flex", flexShrink: 0 }}>
-          {icon}
-        </Box>
-        <Typography variant="body2" fontWeight={700} noWrap sx={{ minWidth: 0 }}>
-          {title}
-        </Typography>
-        {activeTab ? <Typography
-          variant="caption"
-          color="text.secondary"
-          noWrap
-          sx={{ minWidth: 0 }}
-        >
-          · {activeTab.label}
-        </Typography> : null}
-        <Box sx={{ flexGrow: 1 }} />
-        <Tooltip title="Expand workspace header">
-          <IconButton
-            size="small"
-            aria-label="Expand workspace header"
-            aria-expanded="false"
-            onClick={toggleCollapsed}
-            sx={{ flexShrink: 0 }}
-          >
-            <KeyboardArrowDownIcon />
-          </IconButton>
-        </Tooltip>
-      </Stack>
-    </Box>;
-  }
-
-  return <Box className="mobile-chat-chrome mobile-chat-header" sx={{ minWidth: 0, bgcolor: "background.default" }}>
-    <Box sx={{ px: { xs: 1.5, sm: 2, md: 2.5 }, py: { xs: 1, sm: 1.25 } }}>
-      <Stack
-        direction="row"
-        spacing={1}
-        useFlexGap
-        flexWrap={{ xs: "wrap", sm: "nowrap" }}
-        sx={{ alignItems: { xs: "flex-start", sm: "center" }, minWidth: 0 }}
-      >
-        <Box sx={{
-          minWidth: 0,
-          flexGrow: 1,
-          flexShrink: 1,
-          flexBasis: { xs: "auto", sm: 0 },
-        }}>
-          <IconTitle icon={icon} title={title} component="h1" />
-          {context ? <Box sx={{ mt: 0.15, minWidth: 0 }}>{context}</Box> : null}
-          {meta ? <Box sx={{ mt: 0.15, minWidth: 0 }}>{meta}</Box> : null}
-        </Box>
         <Stack
           direction="row"
           spacing={1}
           useFlexGap
+          flexWrap={collapsed ? "nowrap" : { xs: "wrap", sm: "nowrap" }}
           sx={{
-            alignItems: "center",
-            justifyContent: "flex-end",
-            flexWrap: "nowrap",
-            flexShrink: 0,
+            minHeight: collapsed ? { xs: 44, sm: 40 } : undefined,
+            alignItems: collapsed
+              ? "center"
+              : { xs: "flex-start", sm: "center" },
+            minWidth: 0,
           }}
         >
-          {status}
-          {actions}
-          <Tooltip title="Collapse workspace header">
-            <IconButton
-              size="small"
-              aria-label="Collapse workspace header"
-              aria-expanded="true"
-              onClick={toggleCollapsed}
-              sx={{ flexShrink: 0 }}
+          <Box
+            sx={
+              collapsed
+                ? {
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 1,
+                    minWidth: 0,
+                    flexGrow: 1,
+                  }
+                : {
+                    minWidth: 0,
+                    flexGrow: 1,
+                    flexShrink: 1,
+                    flexBasis: { xs: "auto", sm: 0 },
+                  }
+            }
+          >
+            {collapsed ? (
+              <>
+                <Box
+                  sx={{
+                    color: "text.secondary",
+                    display: "flex",
+                    flexShrink: 0,
+                  }}
+                >
+                  {icon}
+                </Box>
+                <Typography
+                  variant="body2"
+                  fontWeight={700}
+                  noWrap
+                  sx={{ minWidth: 0, flexShrink: 1 }}
+                >
+                  {title}
+                </Typography>
+                {activeLabel ? (
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    noWrap
+                    sx={{ flexShrink: 0 }}
+                  >
+                    · {activeLabel}
+                  </Typography>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <IconTitle icon={icon} title={title} component="h1" />
+                {context ? (
+                  <Box sx={{ mt: 0.15, minWidth: 0 }}>{context}</Box>
+                ) : null}
+                {meta ? (
+                  <Box sx={{ mt: 0.15, minWidth: 0 }}>{meta}</Box>
+                ) : null}
+              </>
+            )}
+          </Box>
+          <Stack
+            direction="row"
+            spacing={1}
+            useFlexGap
+            sx={{
+              alignItems: "center",
+              justifyContent: "flex-end",
+              flexWrap: "nowrap",
+              flexShrink: 0,
+            }}
+          >
+            {collapsed ? null : status}
+            {collapsed ? null : actions}
+            <Tooltip
+              key="workspace-header-toggle"
+              title={
+                collapsed
+                  ? "Expand workspace header"
+                  : "Collapse workspace header"
+              }
             >
-              <KeyboardArrowUpIcon />
-            </IconButton>
-          </Tooltip>
+              <IconButton
+                size="small"
+                aria-label={
+                  collapsed
+                    ? "Expand workspace header"
+                    : "Collapse workspace header"
+                }
+                aria-expanded={!collapsed}
+                onClick={toggleCollapsed}
+                sx={{
+                  flexShrink: 0,
+                  width: { xs: 44, sm: 36 },
+                  height: { xs: 44, sm: 36 },
+                }}
+              >
+                {collapsed ? (
+                  <KeyboardArrowDownIcon />
+                ) : (
+                  <KeyboardArrowUpIcon />
+                )}
+              </IconButton>
+            </Tooltip>
+          </Stack>
         </Stack>
-      </Stack>
+      </Box>
+      {collapsed ? null : <WorkspaceTabBar {...tabs} />}
     </Box>
-    <WorkspaceTabBar {...tabs} />
-  </Box>;
+  );
 }
