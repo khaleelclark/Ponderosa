@@ -111,8 +111,9 @@ export function MessageActionsAndTimestamp({
     <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ alignItems: "flex-start", minWidth: 0, minHeight: { xs: 44, sm: 28 } }}>
       {actionAlign === "start" ? actionButtons : null}
       {footer ? <Box sx={{ flex: 1, minWidth: 0 }}>{footer}</Box> : <Box sx={{ flex: 1 }} />}
+      {actionAlign === "end" && status ? actionButtons : null}
       {status ? <Box sx={{ display: "flex", minWidth: 0, justifyContent: "flex-end" }}>{status}</Box> : showTimestamp ? <MessageTimestamp value={value} desktopOnly /> : null}
-      {actionAlign === "end" ? actionButtons : null}
+      {actionAlign === "end" && !status ? actionButtons : null}
     </Stack>
     {status && showTimestamp ? <Box sx={{ color: "text.secondary", mt: 0.1 }}><MessageTimestamp value={value} desktopOnly /></Box> : null}
   </Box>;
