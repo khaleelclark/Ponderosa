@@ -5,6 +5,7 @@ import type { ChatFollowLatest } from "./contracts";
 
 export interface ChatScrollController {
   scrollRef: RefObject<HTMLDivElement>;
+  contentRef: RefObject<HTMLDivElement>;
   showScrollToLatest: boolean;
   onScroll(): void;
   scrollToLatest(): void;
@@ -16,6 +17,7 @@ export function useChatScroll(
   follow: ChatFollowLatest = { kind: "latest" },
 ): ChatScrollController {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const followLatest = useRef(true);
   const firstLayout = useRef(true);
   const restoredStorageKey = useRef<string>();
@@ -59,8 +61,10 @@ export function useChatScroll(
 
   useLayoutEffect(() => {
     const element = scrollRef.current;
+    const content = contentRef.current;
     if (
       !element ||
+      !content ||
       follow.followResizes === false ||
       typeof ResizeObserver === "undefined"
     )
@@ -68,7 +72,7 @@ export function useChatScroll(
     const observer = new ResizeObserver(() => {
       if (followLatest.current) scrollChatToBottom(element);
     });
-    observer.observe(element);
+    observer.observe(content);
     return () => observer.disconnect();
   }, [follow.followResizes]);
 
@@ -103,5 +107,12 @@ export function useChatScroll(
     if (element) restoreDistance.current = element.scrollHeight - element.scrollTop;
   }, []);
 
-  return { scrollRef, showScrollToLatest, onScroll, scrollToLatest, preparePrepend };
+  return {
+    scrollRef,
+    contentRef,
+    showScrollToLatest,
+    onScroll,
+    scrollToLatest,
+    preparePrepend,
+  };
 }
