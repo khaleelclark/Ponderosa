@@ -5,6 +5,7 @@ import type {
   ProjectEngineCapabilitiesDto,
   TeamOperationalEventDto,
   ConversationDecisionEventDto,
+  QueuedConversationMessageDto,
 } from "@ponderosa/core";
 import { uniqueBy } from "../collections";
 import { engineIsAvailable } from "../conversationEngine";
@@ -29,6 +30,48 @@ type MainTimelineEntry =
   | { kind: "message"; id: string; at: string; message: ConversationMessageDto }
   | { kind: "decision"; id: string; at: string; event: ConversationDecisionEventDto }
   | { kind: "decision-response"; id: string; at: string; event: ConversationDecisionEventDto; choice: string };
+
+function reconcileQueuedProjectMessages(
+  timeline: MainTimelineEntry[],
+  queuedMessages: QueuedConversationMessageDto[],
+): {
+  queuedMessages: QueuedConversationMessageDto[];
+  timeline: MainTimelineEntry[];
+} {
+  const canonicalMessages = timeline.flatMap(entry =>
+    entry.kind === "message" ? [entry.message] : [],
+  );
+  const canonicalByIdentity = new Map(
+    canonicalMessages.flatMap(message => [
+      [message.id, message] as const,
+      ...(message.communicationEventId
+        ? [[message.communicationEventId, message] as const]
+        : []),
+    ]),
+  );
+  const currentQueuedMessages = queuedMessages.filter(queued => {
+    const canonical = canonicalByIdentity.get(queued.messageId);
+    const canonicalReceipt = canonical?.deliveryReceipts?.find(
+      receipt => receipt.activationId === queued.deliveryId,
+    );
+    return !canonicalReceipt || canonicalReceipt.state === "queued";
+  });
+  const queuedMessageIds = new Set(
+    currentQueuedMessages.map(message => message.messageId),
+  );
+  return {
+    queuedMessages: currentQueuedMessages,
+    timeline: timeline.filter(
+      entry =>
+        entry.kind !== "message" ||
+        (!queuedMessageIds.has(entry.message.id) &&
+          !(
+            entry.message.communicationEventId &&
+            queuedMessageIds.has(entry.message.communicationEventId)
+          )),
+    ),
+  };
+}
 
 function decisionChoice(decision: ConversationDecisionEventDto["decision"]): string | undefined {
   if (
@@ -93,5 +136,6 @@ export {
   mergeConversationMessages,
   mergeDecisionEvents,
   mergeOperationalEvents,
+  reconcileQueuedProjectMessages,
 };
 export type { MainTimelineEntry };

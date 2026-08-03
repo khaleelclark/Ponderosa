@@ -1,11 +1,13 @@
 import type {
   AgentDto,
+  AgentHealthDto,
   ArtifactDto,
   ConversationDetailDto,
   ConversationDto,
   ConversationMessageDto,
   EngineDto,
   ProjectDto,
+  QueuedConversationMessageDto,
   WorkspaceNotificationDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
@@ -325,6 +327,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
   delete (HTMLElement.prototype as Partial<HTMLElement>).scrollTo;
   vi.restoreAllMocks();
@@ -332,6 +335,149 @@ afterEach(() => {
 });
 
 describe("ConversationView public behavior", () => {
+  it("keeps responding-time updates outside the Project Chat content viewport", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-02T00:00:59.000Z"));
+    const client = createClient();
+    const health: AgentHealthDto = {
+      agentId: agent.id,
+      childAgentIds: [],
+      status: "running",
+      statusTimestamp: "2026-08-02T00:00:59.000Z",
+      reason: "active_run",
+      executionId: "run-responding",
+      runtimeOwnership: "running",
+      runtimeActivity: {
+        state: "responding",
+        executionId: "run-responding",
+        startedAt: "2026-08-02T00:00:00.000Z",
+      },
+    };
+    render(view(client, <ConversationView
+      {...props()}
+      healthByAgentId={new Map([[agent.id, health]])}
+    />));
+
+    const viewport = document.querySelector<HTMLElement>(
+      ".chat-scroll-region[aria-label='Project chat messages']",
+    )!;
+    const content = viewport.querySelector("[data-chat-content='true']");
+    const status = screen.getByRole("status");
+    expect(content?.contains(status)).toBe(false);
+    expect(status.textContent).toContain("0:59");
+
+    viewport.scrollTop = 127;
+    act(() => vi.advanceTimersByTime(1_000));
+    expect(screen.getByRole("status").textContent).toContain("1:00");
+    expect(viewport.scrollTop).toBe(127);
+
+    client.clear();
+  });
+
+  it("reconciles queued and canonical messages monotonically across stale refetches", async () => {
+    const client = createClient();
+    const queuedMessage: QueuedConversationMessageDto = {
+      deliveryId: "activation-queued-message",
+      messageId: "communication-queued-message",
+      conversationId: firstConversationId,
+      targetAgentId: agent.id,
+      text: "Keep this message stable",
+      position: 1,
+      createdAt: "2026-07-25T10:05:00.000Z",
+      status: "queued",
+    };
+    const canonicalMessage: ConversationMessageDto = {
+      id: "message-queued-message",
+      communicationEventId: queuedMessage.messageId,
+      communicationIntent: "user_dm",
+      directMessageAgents: [{ id: agent.id, title: agent.title }],
+      conversationId: firstConversationId,
+      role: "user",
+      text: queuedMessage.text,
+      createdAt: queuedMessage.createdAt,
+      deliveryReceipts: [{
+        activationId: queuedMessage.deliveryId,
+        targetAgentId: agent.id,
+        state: "queued",
+        updatedAt: queuedMessage.createdAt,
+        attemptCount: 0,
+      }],
+    };
+
+    client.setQueryData<ConversationDetailDto>(
+      queryKeys.conversations.detail(firstConversationId),
+      detail(conversation(firstConversationId, "First conversation"), []),
+    );
+    client.setQueryData(
+      queryKeys.queuedMessages.conversation(firstConversationId),
+      [queuedMessage],
+    );
+    render(view(client, <ConversationView {...props()} />));
+
+    expect(screen.getAllByText(queuedMessage.text)).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Edit queued message 1" }))
+      .toBeTruthy();
+    expect(screen.getByRole("button", { name: "Steer" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Delete queued message 1" }))
+      .toBeTruthy();
+
+    act(() => {
+      client.setQueryData<ConversationDetailDto>(
+        queryKeys.conversations.detail(firstConversationId),
+        detail(
+          conversation(firstConversationId, "First conversation"),
+          [canonicalMessage],
+        ),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getAllByText(queuedMessage.text)).toHaveLength(1);
+      expect(screen.getByRole("button", { name: "Edit queued message 1" }))
+        .toBeTruthy();
+    });
+
+    const startedMessage: ConversationMessageDto = {
+      ...canonicalMessage,
+      deliveryReceipts: canonicalMessage.deliveryReceipts?.map(receipt => ({
+        ...receipt,
+        state: "started",
+        updatedAt: "2026-07-25T10:06:00.000Z",
+      })),
+    };
+    act(() => {
+      client.setQueryData<ConversationDetailDto>(
+        queryKeys.conversations.detail(firstConversationId),
+        detail(
+          conversation(firstConversationId, "First conversation"),
+          [startedMessage],
+        ),
+      );
+      client.setQueryData(
+        queryKeys.queuedMessages.conversation(firstConversationId),
+        [],
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getAllByText(queuedMessage.text)).toHaveLength(1);
+      expect(screen.queryByLabelText("Queued messages")).toBeNull();
+    });
+
+    for (const position of [1, 2]) {
+      act(() => {
+        client.setQueryData(
+          queryKeys.queuedMessages.conversation(firstConversationId),
+          [{ ...queuedMessage, position }],
+        );
+      });
+      await waitFor(() => {
+        expect(screen.getAllByText(queuedMessage.text)).toHaveLength(1);
+        expect(screen.queryByLabelText("Queued messages")).toBeNull();
+      });
+    }
+
+    client.clear();
+  });
+
   it("renders actual messages and preserves message-local state across keyed reordering", async () => {
     const client = createClient();
     const user = userEvent.setup();
@@ -561,6 +707,12 @@ describe("ConversationView public behavior", () => {
       view(client, <ConversationView {...firstProps} />),
     );
 
+    expect(
+      document
+        .querySelector(".chat-scroll-region[aria-label='Project chat messages']")
+        ?.querySelector("[data-chat-content='true']"),
+    ).toBeTruthy();
+
     await user.click(screen.getByRole("tab", { name: "Team Chat" }));
     expect(
       screen.getByRole("tab", { name: "Team Chat" }).getAttribute(
@@ -570,6 +722,11 @@ describe("ConversationView public behavior", () => {
     expect(
       screen.getByRole("tabpanel", { name: "Team chat messages" }).hidden,
     ).toBe(false);
+    expect(
+      document
+        .querySelector(".chat-scroll-region[aria-label='Team chat messages']")
+        ?.querySelector("[data-chat-content='true']"),
+    ).toBeTruthy();
 
     result.rerender(
       view(

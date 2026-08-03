@@ -50,7 +50,10 @@ import { queryKeys } from "../queryKeys";
 import { AgentsTab } from "./AgentsTab";
 import { AllTriggersWorkspace } from "./WorkspaceResourceViews";
 import type { Route } from "../routing";
-import { conversationComposerRuntime } from "./ConversationView.helpers";
+import {
+  conversationComposerRuntime,
+  reconcileQueuedProjectMessages,
+} from "./ConversationView.helpers";
 import {
   CollaborationTimeline,
   ConversationHeader,
@@ -427,20 +430,14 @@ export function ConversationView({
     healthByAgentId,
     agentTitle,
   });
-  const visibleMainTimeline = useMemo(() => {
-    const queuedMessageIds = new Set(
-      (queuedMessagesQuery.data ?? []).map(message => message.messageId),
-    );
-    return mainTimeline.filter(
-      entry =>
-        entry.kind !== "message" ||
-        (!queuedMessageIds.has(entry.message.id) &&
-          !(
-            entry.message.communicationEventId &&
-            queuedMessageIds.has(entry.message.communicationEventId)
-          )),
-    );
-  }, [mainTimeline, queuedMessagesQuery.data]);
+  const reconciledQueuedMessages = useMemo(
+    () => reconcileQueuedProjectMessages(
+      mainTimeline,
+      queuedMessagesQuery.data ?? [],
+    ),
+    [mainTimeline, queuedMessagesQuery.data],
+  );
+  const visibleMainTimeline = reconciledQueuedMessages.timeline;
   const visibleMessageLayoutKey = visibleMainTimeline
     .map(entry => entry.id)
     .join(":");
@@ -952,7 +949,7 @@ export function ConversationView({
         ) : null}
         {activeView === "main" ? (
           <QueuedMessageTray
-            messages={queuedMessagesQuery.data ?? []}
+            messages={reconciledQueuedMessages.queuedMessages}
             agentNameForId={agentTitle}
             busy={
               cancelQueued.isPending ||

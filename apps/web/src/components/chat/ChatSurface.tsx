@@ -57,21 +57,32 @@ export function ChatSurface({
           minHeight: 0,
           overflowY: "auto",
           overflowX: "hidden",
-          overflowAnchor: follow?.followResizes === false ? "none" : undefined,
+          overflowAnchor: "none",
           overscrollBehavior: "contain",
-          "& > *": { width: `min(${contentWidth}px, 100%)`, alignSelf: "center" },
         }}
       >
-        {beforeMessages}
-        <ChatPagination page={history ? {
-          ...history,
-          onLoadEarlier: () => {
-            scroll.preparePrepend();
-            history.onLoadEarlier();
-          },
-        } : undefined} />
-        {children}
-        {isEmpty && empty ? typeof empty === "string" ? <Alert severity="info">{empty}</Alert> : empty : null}
+        <Stack
+          ref={scroll.contentRef}
+          data-chat-content="true"
+          spacing={0}
+          sx={{
+            width: `min(${contentWidth}px, 100%)`,
+            minWidth: 0,
+            flexShrink: 0,
+            alignSelf: "center",
+          }}
+        >
+          {beforeMessages}
+          <ChatPagination page={history ? {
+            ...history,
+            onLoadEarlier: () => {
+              scroll.preparePrepend();
+              history.onLoadEarlier();
+            },
+          } : undefined} />
+          {children}
+          {isEmpty && empty ? typeof empty === "string" ? <Alert severity="info">{empty}</Alert> : empty : null}
+        </Stack>
       </Stack>
       <ScrollToLatestButton visible={scroll.showScrollToLatest} onClick={scroll.scrollToLatest} />
     </Box>
