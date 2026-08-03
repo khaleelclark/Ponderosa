@@ -1,5 +1,6 @@
 import type { AssetLimitsDto, DraftAttachmentDto } from "@ponderosa/core";
 import {
+  useCallback,
   useRef,
   useState,
   type Dispatch,
@@ -98,7 +99,7 @@ export function useComposerDraftAttachments({
     }
   };
 
-  const queueUploads = (candidates: File[]) => {
+  const queueUploads = useCallback((candidates: File[]) => {
     if (!conversationDraftId || candidates.length === 0) return;
     setUploadStates(current => {
       const next = new Map(current);
@@ -107,24 +108,24 @@ export function useComposerDraftAttachments({
     });
     pendingUploads.current.push(...candidates);
     window.queueMicrotask(() => pumpUploads.current());
-  };
+  }, [conversationDraftId]);
 
-  const addFiles = (candidates: File[]) => {
+  const addFiles = useCallback((candidates: File[]) => {
     const selection = selectComposerFiles(files, candidates, assetLimits);
     dispatch({ type: "add", candidates, limits: assetLimits });
     queueUploads(selection.accepted);
-  };
+  }, [assetLimits, dispatch, files, queueUploads]);
 
-  const retryUpload = (file: File) => {
+  const retryUpload = useCallback((file: File) => {
     if (!conversationDraftId || attachmentIds.current.has(file)) return;
     setUploadStates(current =>
       new Map(current).set(file, { status: "queued" }),
     );
     pendingUploads.current.push(file);
     pumpUploads.current();
-  };
+  }, [conversationDraftId]);
 
-  const removeFile = (index: number) => {
+  const removeFile = useCallback((index: number) => {
     const file = files[index];
     if (!file) return;
     const id = attachmentIds.current.get(file);
@@ -144,9 +145,9 @@ export function useComposerDraftAttachments({
         .deleteDraftAttachment(conversationDraftId, draftOwnerId, id)
         .catch(() => undefined);
     }
-  };
+  }, [conversationDraftId, dispatch, draftOwnerId, files]);
 
-  const clear = () => {
+  const clear = useCallback(() => {
     generation.current += 1;
     attachmentIds.current.clear();
     pendingUploads.current = [];
@@ -154,9 +155,9 @@ export function useComposerDraftAttachments({
     setUploadStates(new Map());
     dispatch({ type: "clear" });
     setAttachmentVersion(value => value + 1);
-  };
+  }, [dispatch]);
 
-  const replaceRestored = (restored: RestoredDraftAttachment[]) => {
+  const replaceRestored = useCallback((restored: RestoredDraftAttachment[]) => {
     generation.current += 1;
     pendingUploads.current = [];
     activeUploads.current = 0;
@@ -176,7 +177,7 @@ export function useComposerDraftAttachments({
       files: restored.map(({ file }) => file),
     });
     setAttachmentVersion(value => value + 1);
-  };
+  }, [dispatch]);
 
   return {
     addFiles,

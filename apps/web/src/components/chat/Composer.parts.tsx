@@ -10,7 +10,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { RefObject } from "react";
+import { memo, type RefObject } from "react";
 import { ComposerAttachment } from "./ComposerAttachment";
 import type { DraftUploadStatus } from "./ComposerAttachment";
 import type { ComposerProps } from "./Composer.types";
@@ -188,6 +188,7 @@ export function ComposerProjectDestinationAction({
       variant="caption"
       color="text.secondary"
       sx={{
+        display: { xs: "none", sm: "block" },
         maxWidth: 360,
         fontSize: 11,
         lineHeight: 1.25,
@@ -208,7 +209,19 @@ interface ComposerAttachmentListProps {
   retryDraftUpload(file: File): void;
 }
 
-export function ComposerAttachmentList({
+const composerAttachmentKeys = new WeakMap<File, string>();
+let nextComposerAttachmentKey = 0;
+
+function composerAttachmentKey(file: File): string {
+  const existing = composerAttachmentKeys.get(file);
+  if (existing) return existing;
+  nextComposerAttachmentKey += 1;
+  const key = `composer-attachment-${nextComposerAttachmentKey}`;
+  composerAttachmentKeys.set(file, key);
+  return key;
+}
+
+function ComposerAttachmentListView({
   draftUploadStates,
   files,
   removeFile,
@@ -226,7 +239,7 @@ export function ComposerAttachmentList({
         const upload = draftUploadStates.get(file);
         return (
           <ComposerAttachment
-            key={`${file.name}-${file.size}-${file.lastModified}-${index}`}
+            key={composerAttachmentKey(file)}
             file={file}
             status={upload?.status}
             error={upload?.error}
@@ -238,6 +251,9 @@ export function ComposerAttachmentList({
     </Stack>
   ) : null;
 }
+
+/** Keep mounted image previews untouched while only composer text changes. */
+export const ComposerAttachmentList = memo(ComposerAttachmentListView);
 
 interface ComposerMentionStatusProps {
   destinationMode: ComposerProps["destinationMode"];
