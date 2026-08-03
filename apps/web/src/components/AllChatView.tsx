@@ -13,6 +13,7 @@ import {
   useTheme,
 } from "@mui/material";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
+import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import type {
   AllChatDecisionEventDto,
   AllChatItemDto,
@@ -61,6 +62,7 @@ import {
 } from "../conversationEngine";
 import { useRuntimeControls } from "../hooks/useRuntimeControls";
 import { AUTO_ALLOWED_DECISION_OPTION_ID } from "./ConversationView.helpers";
+import { CompactWorkspaceHeader } from "./WorkspaceFrame";
 
 function allChatSourceRoute(item: AllChatItemDto): Route {
   if (item.source.kind === "agent") {
@@ -650,27 +652,10 @@ export function AllChatView({
         bgcolor: "background.default",
       }}
     >
-      <Stack
-        direction="row"
-        spacing={1.5}
-        sx={{
-          px: { xs: 2, md: 3 },
-          py: 2,
-          alignItems: "center",
-          borderBottom: 1,
-          borderColor: "divider",
-          bgcolor: "background.paper",
-        }}
-      >
-        <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography variant="h5" component="h1" fontWeight={800}>
-            Messages Across Ponderosa
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Everything sent to or from you across Ponderosa.
-          </Typography>
-        </Box>
-      </Stack>
+      <CompactWorkspaceHeader
+        icon={<ChatBubbleOutlineIcon fontSize="small" />}
+        title="Messages Across Ponderosa"
+      />
       <Box data-chat-attention-slot sx={{ minWidth: 0 }}>
           <AttentionSurface
             notifications={notifications.filter((item) => item.kind !== "decision")}

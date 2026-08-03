@@ -231,7 +231,7 @@ function RailButton({
   return (
     <Tooltip title={label} placement="right">
       <IconButton
-        aria-label={label}
+        aria-label={badge ? label + ", " + badge : label}
         onClick={onClick}
         sx={{
           width: 48,
@@ -249,7 +249,12 @@ function RailButton({
           },
         }}
       >
-        <Badge color={badgeColor} badgeContent={badge} max={99}>
+        <Badge
+          color={badgeColor}
+          badgeContent={badge}
+          max={99}
+          slotProps={{ badge: { "aria-hidden": true } }}
+        >
           {children}
         </Badge>
       </IconButton>

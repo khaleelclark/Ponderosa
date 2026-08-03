@@ -11,6 +11,8 @@ import {
 } from "@mui/material";
 import {
   useEffect,
+  useLayoutEffect,
+  useRef,
   useSyncExternalStore,
   useState,
   type ReactElement,
@@ -63,6 +65,21 @@ function writeHeaderCollapsed(collapsed: boolean): void {
     // The in-memory preference keeps controls usable without device storage.
   }
   workspaceHeaderListeners.forEach(listener => listener());
+}
+
+export function useWorkspaceHeaderCollapse(): {
+  collapsed: boolean;
+  toggleCollapsed(): void;
+} {
+  const collapsed = useSyncExternalStore(
+    subscribeHeaderCollapsed,
+    readHeaderCollapsed,
+    () => false,
+  );
+  return {
+    collapsed,
+    toggleCollapsed: () => writeHeaderCollapsed(!collapsed),
+  };
 }
 
 export interface TabbedWorkspaceFrameProps<T extends string> {
@@ -131,6 +148,81 @@ function WorkspaceTabBar<T extends string>({ value, items, onChange, label }: {
   </Box>;
 }
 
+export function CompactWorkspaceHeader({
+  icon,
+  title,
+  context,
+  action,
+}: {
+  icon: ReactElement;
+  title: string;
+  context?: ReactNode;
+  action?: ReactNode;
+}): JSX.Element {
+  return (
+    <Box
+      className="mobile-chat-chrome mobile-chat-header"
+      sx={{
+        minWidth: 0,
+        bgcolor: "background.default",
+        borderBottom: 1,
+        borderColor: "divider",
+      }}
+    >
+      <Stack
+        direction="row"
+        spacing={1}
+        sx={{
+          minHeight: { xs: 44, sm: 40 },
+          px: { xs: 1, sm: 1.5 },
+          alignItems: "center",
+          minWidth: 0,
+        }}
+      >
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 1,
+            minWidth: 0,
+            flexGrow: 1,
+          }}
+        >
+          <Box
+            sx={{
+              color: "text.secondary",
+              display: "flex",
+              flexShrink: 0,
+            }}
+          >
+            {icon}
+          </Box>
+          <Typography
+            variant="body2"
+            component="h1"
+            fontWeight={700}
+            noWrap
+            sx={{ minWidth: 0, flexShrink: 1 }}
+          >
+            {title}
+          </Typography>
+          {context ? (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              noWrap
+              sx={{ flexShrink: 0 }}
+            >
+              · {context}
+            </Typography>
+          ) : null}
+        </Box>
+        {action}
+      </Stack>
+    </Box>
+  );
+}
+
 /**
  * The owning identity-and-navigation chrome for Home, Create, Project, Chat and
  * Agent workplaces. Keeping both rows together prevents padded or duplicated
@@ -145,106 +237,75 @@ export function TabbedWorkspaceFrame<T extends string>({
   actions,
   tabs,
 }: TabbedWorkspaceFrameProps<T>): JSX.Element {
-  const collapsed = useSyncExternalStore(
-    subscribeHeaderCollapsed,
-    readHeaderCollapsed,
-    () => false,
-  );
+  const { collapsed, toggleCollapsed } = useWorkspaceHeaderCollapse();
+  const toggleButtonRef = useRef<HTMLButtonElement>(null);
+  const restoreToggleFocusRef = useRef(false);
   const activeLabel =
     tabs.activeLabel ??
     tabs.items.find(item => item.value === tabs.value)?.label;
-  const toggleCollapsed = () => writeHeaderCollapsed(!collapsed);
+  const handleToggleCollapsed = () => {
+    restoreToggleFocusRef.current =
+      document.activeElement === toggleButtonRef.current;
+    toggleCollapsed();
+  };
+  useLayoutEffect(() => {
+    if (!restoreToggleFocusRef.current) return;
+    toggleButtonRef.current?.focus();
+    restoreToggleFocusRef.current = false;
+  }, [collapsed]);
+
+  if (collapsed) {
+    return (
+      <CompactWorkspaceHeader
+        icon={icon}
+        title={title}
+        context={activeLabel}
+        action={(
+          <Tooltip title="Expand workspace header">
+            <IconButton
+              ref={toggleButtonRef}
+              size="small"
+              aria-label="Expand workspace header"
+              aria-expanded={false}
+              onClick={handleToggleCollapsed}
+              sx={{
+                flexShrink: 0,
+                width: { xs: 44, sm: 36 },
+                height: { xs: 44, sm: 36 },
+              }}
+            >
+              <KeyboardArrowDownIcon />
+            </IconButton>
+          </Tooltip>
+        )}
+      />
+    );
+  }
 
   return (
     <Box
       className="mobile-chat-chrome mobile-chat-header"
-      sx={{
-        minWidth: 0,
-        bgcolor: "background.default",
-        borderBottom: collapsed ? 1 : 0,
-        borderColor: "divider",
-      }}
+      sx={{ minWidth: 0, bgcolor: "background.default" }}
     >
-      <Box
-        sx={{
-          px: collapsed
-            ? { xs: 1, sm: 1.5 }
-            : { xs: 1.5, sm: 2, md: 2.5 },
-          py: collapsed ? 0 : { xs: 1, sm: 1.25 },
-        }}
-      >
+      <Box sx={{ px: { xs: 1.5, sm: 2, md: 2.5 }, py: { xs: 1, sm: 1.25 } }}>
         <Stack
           direction="row"
           spacing={1}
           useFlexGap
-          flexWrap={collapsed ? "nowrap" : { xs: "wrap", sm: "nowrap" }}
-          sx={{
-            minHeight: collapsed ? { xs: 44, sm: 40 } : undefined,
-            alignItems: collapsed
-              ? "center"
-              : { xs: "flex-start", sm: "center" },
-            minWidth: 0,
-          }}
+          flexWrap={{ xs: "wrap", sm: "nowrap" }}
+          sx={{ alignItems: { xs: "flex-start", sm: "center" }, minWidth: 0 }}
         >
           <Box
-            sx={
-              collapsed
-                ? {
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 1,
-                    minWidth: 0,
-                    flexGrow: 1,
-                  }
-                : {
-                    minWidth: 0,
-                    flexGrow: 1,
-                    flexShrink: 1,
-                    flexBasis: { xs: "auto", sm: 0 },
-                  }
-            }
+            sx={{
+              minWidth: 0,
+              flexGrow: 1,
+              flexShrink: 1,
+              flexBasis: { xs: "auto", sm: 0 },
+            }}
           >
-            {collapsed ? (
-              <>
-                <Box
-                  sx={{
-                    color: "text.secondary",
-                    display: "flex",
-                    flexShrink: 0,
-                  }}
-                >
-                  {icon}
-                </Box>
-                <Typography
-                  variant="body2"
-                  fontWeight={700}
-                  noWrap
-                  sx={{ minWidth: 0, flexShrink: 1 }}
-                >
-                  {title}
-                </Typography>
-                {activeLabel ? (
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    noWrap
-                    sx={{ flexShrink: 0 }}
-                  >
-                    · {activeLabel}
-                  </Typography>
-                ) : null}
-              </>
-            ) : (
-              <>
-                <IconTitle icon={icon} title={title} component="h1" />
-                {context ? (
-                  <Box sx={{ mt: 0.15, minWidth: 0 }}>{context}</Box>
-                ) : null}
-                {meta ? (
-                  <Box sx={{ mt: 0.15, minWidth: 0 }}>{meta}</Box>
-                ) : null}
-              </>
-            )}
+            <IconTitle icon={icon} title={title} component="h1" />
+            {context ? <Box sx={{ mt: 0.15, minWidth: 0 }}>{context}</Box> : null}
+            {meta ? <Box sx={{ mt: 0.15, minWidth: 0 }}>{meta}</Box> : null}
           </Box>
           <Stack
             direction="row"
@@ -257,42 +318,28 @@ export function TabbedWorkspaceFrame<T extends string>({
               flexShrink: 0,
             }}
           >
-            {collapsed ? null : status}
-            {collapsed ? null : actions}
-            <Tooltip
-              key="workspace-header-toggle"
-              title={
-                collapsed
-                  ? "Expand workspace header"
-                  : "Collapse workspace header"
-              }
-            >
+            {status}
+            {actions}
+            <Tooltip title="Collapse workspace header">
               <IconButton
+                ref={toggleButtonRef}
                 size="small"
-                aria-label={
-                  collapsed
-                    ? "Expand workspace header"
-                    : "Collapse workspace header"
-                }
-                aria-expanded={!collapsed}
-                onClick={toggleCollapsed}
+                aria-label="Collapse workspace header"
+                aria-expanded
+                onClick={handleToggleCollapsed}
                 sx={{
                   flexShrink: 0,
                   width: { xs: 44, sm: 36 },
                   height: { xs: 44, sm: 36 },
                 }}
               >
-                {collapsed ? (
-                  <KeyboardArrowDownIcon />
-                ) : (
-                  <KeyboardArrowUpIcon />
-                )}
+                <KeyboardArrowUpIcon />
               </IconButton>
             </Tooltip>
           </Stack>
         </Stack>
       </Box>
-      {collapsed ? null : <WorkspaceTabBar {...tabs} />}
+      <WorkspaceTabBar {...tabs} />
     </Box>
   );
 }

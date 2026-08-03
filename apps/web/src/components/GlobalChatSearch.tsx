@@ -29,6 +29,7 @@ import { queryKeys } from "../queryKeys";
 import type { Route } from "../routing";
 import { useNotifications } from "../hooks/queries";
 import { isOpenAttention } from "../attention";
+import { linkPresentation } from "./chat/ChatMessages";
 
 export type GlobalSearchSelection =
   | { projectId: string; chat: GlobalChatSearchResultDto["chat"]; messageId: string }
@@ -59,6 +60,33 @@ function globalSearchKeyboardAction(
   return undefined;
 }
 
+const MARKDOWN_LINK = /\[([^\]\r\n]+)\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/gu;
+const INTERNAL_URL_PLACEHOLDER = /\binvalid-browser-url\b/gu;
+
+function plainGlobalSearchSnippet(snippet: string): string {
+  return snippet
+    .replace(MARKDOWN_LINK, (_match, label: string, href: string) => {
+      if (!linkPresentation(href)) return label;
+      return label.trim() === href ? href : label + " (" + href + ")";
+    })
+    .replace(INTERNAL_URL_PLACEHOLDER, "Link unavailable");
+}
+
+function queryHighlightRanges(snippet: string, query: string): SearchHighlightRangeDto[] {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return [];
+  const source = snippet.toLocaleLowerCase();
+  const ranges: SearchHighlightRangeDto[] = [];
+  let cursor = 0;
+  while (cursor < source.length) {
+    const start = source.indexOf(needle, cursor);
+    if (start < 0) break;
+    ranges.push({ start, length: needle.length });
+    cursor = start + needle.length;
+  }
+  return ranges;
+}
+
 function highlightedSnippetSegments(snippet: string, ranges: SearchHighlightRangeDto[]): Array<{ text: string; highlighted: boolean }> {
   const ordered = [...ranges]
     .filter((range) => range.length > 0 && range.start >= 0 && range.start < snippet.length)
@@ -76,9 +104,11 @@ function highlightedSnippetSegments(snippet: string, ranges: SearchHighlightRang
   return segments.length ? segments : [{ text: snippet, highlighted: false }];
 }
 
-function SearchSnippet({ snippet, ranges }: { snippet: string; ranges: SearchHighlightRangeDto[] }): JSX.Element {
+function SearchSnippet({ snippet, ranges, query }: { snippet: string; ranges: SearchHighlightRangeDto[]; query: string }): JSX.Element {
+  const visibleSnippet = plainGlobalSearchSnippet(snippet);
+  const visibleRanges = visibleSnippet === snippet ? ranges : queryHighlightRanges(visibleSnippet, query);
   return <Typography component="span" variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
-    {highlightedSnippetSegments(snippet, ranges).map((segment, index) => segment.highlighted
+    {highlightedSnippetSegments(visibleSnippet, visibleRanges).map((segment, index) => segment.highlighted
       ? <Box component="mark" key={index} sx={{ bgcolor: "warning.light", color: "text.primary", borderRadius: .5, px: .25 }}>{segment.text}</Box>
       : <Box component="span" key={index}>{segment.text}</Box>)}
   </Typography>;
@@ -118,8 +148,9 @@ function SearchResultRow({
   </ListItemButton>;
 }
 
-function GlobalSearchResultItem({ result, onSelect, active = false, id, onActive }: {
+function GlobalSearchResultItem({ result, query, onSelect, active = false, id, onActive }: {
   result: GlobalChatSearchResultDto;
+  query: string;
   onSelect(openInNewTab?: boolean): void;
   active?: boolean;
   id?: string;
@@ -138,7 +169,7 @@ function GlobalSearchResultItem({ result, onSelect, active = false, id, onActive
       </Stack>}
     secondary={<Stack spacing={.25} component="span">
         <Typography component="span" variant="caption" color="text.secondary">{result.project.label} · {result.chat.kind === "agent" ? "Agent" : "Project chat"} · {result.author.label}</Typography>
-        <SearchSnippet snippet={result.snippet} ranges={result.highlights} />
+        <SearchSnippet snippet={result.snippet} ranges={result.highlights} query={query} />
       </Stack>}
   />;
 }
@@ -162,7 +193,7 @@ function RecentChatItem({ recent, onSelect, active = false, id, onActive }: {
       </Stack>}
     secondary={<Stack component="span" spacing={.25}>
         <Typography component="span" variant="caption" color="text.secondary">{recent.project.label} · {recent.chat.kind === "agent" ? "Agent" : "Project chat"}</Typography>
-        {recent.snippet ? <Typography component="span" variant="body2" color="text.secondary" noWrap>{recent.snippet}</Typography> : null}
+        {recent.snippet ? <Typography component="span" variant="body2" color="text.secondary" noWrap>{plainGlobalSearchSnippet(recent.snippet)}</Typography> : null}
       </Stack>}
   />;
 }
@@ -308,6 +339,7 @@ export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
             active={activeIndex === index}
             onActive={() => setActiveIndex(index)}
             result={result}
+            query={debouncedQuery}
             onSelect={(openInNewTab) => chooseResult(result, openInNewTab)}
           />)}
         </List>
@@ -321,6 +353,7 @@ export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
               active={activeIndex === index}
               onActive={() => setActiveIndex(index)}
               result={result}
+              query=""
               onSelect={(openInNewTab) => chooseResult(result, openInNewTab)}
             />)}
           </List>
