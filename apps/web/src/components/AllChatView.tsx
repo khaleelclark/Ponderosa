@@ -13,8 +13,7 @@ import {
   useTheme,
 } from "@mui/material";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
-import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
-import KeyboardArrowUpIcon from "@mui/icons-material/KeyboardArrowUp";
+import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import type {
   AllChatDecisionEventDto,
   AllChatItemDto,
@@ -63,7 +62,7 @@ import {
 } from "../conversationEngine";
 import { useRuntimeControls } from "../hooks/useRuntimeControls";
 import { AUTO_ALLOWED_DECISION_OPTION_ID } from "./ConversationView.helpers";
-import { useWorkspaceHeaderCollapse } from "./WorkspaceFrame";
+import { CompactWorkspaceHeader } from "./WorkspaceFrame";
 
 function allChatSourceRoute(item: AllChatItemDto): Route {
   if (item.source.kind === "agent") {
@@ -179,8 +178,6 @@ export function AllChatView({
     text: string;
   }>();
   const theme = useTheme();
-  const { collapsed: headerCollapsed, toggleCollapsed: toggleHeaderCollapsed } =
-    useWorkspaceHeaderCollapse();
   const mobileViewport = useMediaQuery(theme.breakpoints.down("sm"));
   const mobileComposer = useMobileComposerAutoHide(mobileViewport);
   const items = useMemo(
@@ -655,53 +652,10 @@ export function AllChatView({
         bgcolor: "background.default",
       }}
     >
-      <Stack
-        direction="row"
-        spacing={1.5}
-        sx={{
-          px: headerCollapsed ? { xs: 1, sm: 1.5 } : { xs: 2, md: 3 },
-          py: headerCollapsed ? 0 : 2,
-          minHeight: headerCollapsed ? { xs: 44, sm: 40 } : undefined,
-          alignItems: "center",
-          borderBottom: 1,
-          borderColor: "divider",
-          bgcolor: "background.paper",
-        }}
-      >
-        <Box sx={{ flex: 1, minWidth: 0 }}>
-          {headerCollapsed ? (
-            <Typography variant="body2" component="h1" fontWeight={700} noWrap>
-              Messages Across Ponderosa
-            </Typography>
-          ) : (
-            <>
-              <Typography variant="h5" component="h1" fontWeight={800}>
-                Messages Across Ponderosa
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                Everything sent to or from you across Ponderosa.
-              </Typography>
-            </>
-          )}
-        </Box>
-        <Tooltip
-          title={headerCollapsed ? "Expand workspace header" : "Collapse workspace header"}
-        >
-          <IconButton
-            size="small"
-            aria-label={headerCollapsed ? "Expand workspace header" : "Collapse workspace header"}
-            aria-expanded={!headerCollapsed}
-            onClick={toggleHeaderCollapsed}
-            sx={{
-              flexShrink: 0,
-              width: { xs: 44, sm: 36 },
-              height: { xs: 44, sm: 36 },
-            }}
-          >
-            {headerCollapsed ? <KeyboardArrowDownIcon /> : <KeyboardArrowUpIcon />}
-          </IconButton>
-        </Tooltip>
-      </Stack>
+      <CompactWorkspaceHeader
+        icon={<ChatBubbleOutlineIcon fontSize="small" />}
+        title="Messages Across Ponderosa"
+      />
       <Box data-chat-attention-slot sx={{ minWidth: 0 }}>
           <AttentionSurface
             notifications={notifications.filter((item) => item.kind !== "decision")}
