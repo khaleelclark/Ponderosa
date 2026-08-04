@@ -292,7 +292,7 @@ export function TabbedWorkspaceFrame<T extends string>({
           direction="row"
           spacing={1}
           useFlexGap
-          flexWrap={{ xs: "wrap", sm: "nowrap" }}
+          flexWrap="nowrap"
           sx={{ alignItems: { xs: "flex-start", sm: "center" }, minWidth: 0 }}
         >
           <Box
@@ -300,7 +300,8 @@ export function TabbedWorkspaceFrame<T extends string>({
               minWidth: 0,
               flexGrow: 1,
               flexShrink: 1,
-              flexBasis: { xs: "auto", sm: 0 },
+              flexBasis: 0,
+              overflow: "hidden",
             }}
           >
             <IconTitle icon={icon} title={title} component="h1" />
