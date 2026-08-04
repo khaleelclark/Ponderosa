@@ -167,14 +167,17 @@ export function CollectionToolbar({
   reorderHint = false,
   children,
 }: CollectionToolbarProps): JSX.Element {
-  return <Stack
+  return <Box
     component="section"
     aria-label="Collection controls"
-    direction={{ xs: "column", md: "row" }}
-    spacing={1.25}
-    useFlexGap
-    flexWrap="wrap"
-    sx={{ px: { xs: 2, md: 3 }, py: 1.5, alignItems: { md: "center" } }}
+    sx={{
+      px: { xs: 2, md: 3 },
+      py: 1.5,
+      display: "grid",
+      gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "minmax(160px, 1fr) auto" },
+      alignItems: "center",
+      gap: 1.25,
+    }}
   >
     <TextField
       size="small"
@@ -184,33 +187,40 @@ export function CollectionToolbar({
       inputProps={{ "aria-label": searchLabel }}
       InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> }}
       sx={{
-        flex: {
-          xs: "0 0 auto",
-          md: searchMaxWidth ? "1 1 320px" : 1,
-        },
-        width: { xs: "100%", md: "auto" },
-        minWidth: { md: 240 },
-        maxWidth: searchMaxWidth ? { md: searchMaxWidth } : undefined,
+        width: "100%",
+        minWidth: 0,
+        maxWidth: searchMaxWidth ? { lg: searchMaxWidth } : undefined,
       }}
     />
     {children ? (
       <Box
         sx={theme => ({
-          display: { xs: "flex", md: "contents" },
-          width: { xs: "100%", md: "auto" },
+          display: { xs: "grid", lg: "flex" },
+          gridTemplateColumns: {
+            xs: "minmax(0, 1fr)",
+            sm: "repeat(2, minmax(0, 1fr))",
+            md: "repeat(3, minmax(0, 1fr))",
+          },
+          width: "100%",
           minWidth: 0,
           gap: 1,
           alignItems: "center",
-          flexWrap: "wrap",
-          [theme.breakpoints.down("md")]: {
+          flexWrap: "nowrap",
+          [theme.breakpoints.down("lg")]: {
             "& > .MuiFormControl-root": {
-              width: "auto",
-              minWidth: 140,
-              flex: "1 1 140px",
+              width: "100%",
+              minWidth: 0,
             },
             "& > [data-collection-toolbar-actions]": {
-              flex: "1 1 100%",
+              gridColumn: "1 / -1",
               justifyContent: "flex-start",
+            },
+            "& > [role='group']": {
+              width: "100%",
+              justifyContent: "center",
+            },
+            "& > .MuiButton-root": {
+              minWidth: 0,
             },
           },
         })}
@@ -222,12 +232,12 @@ export function CollectionToolbar({
       <Typography
         variant="caption"
         color="text.secondary"
-        sx={{ width: { xs: "100%", md: "auto" }, whiteSpace: "nowrap" }}
+        sx={{ gridColumn: "1 / -1", whiteSpace: "nowrap" }}
       >
         Reorder: Alt+Shift+↑/↓
       </Typography>
     ) : null}
-  </Stack>;
+  </Box>;
 }
 
 export function CollectionDirectoryControls({
@@ -251,7 +261,7 @@ export function CollectionDirectoryControls({
       <FormControl
         size="small"
         sx={{
-          minWidth: compact ? 145 : 190,
+          minWidth: compact ? 132 : 190,
           width: { xs: "100%", sm: "auto" },
         }}
       >
@@ -274,7 +284,7 @@ export function CollectionDirectoryControls({
     <FormControl
       size="small"
       sx={{
-        minWidth: compact ? 150 : 170,
+        minWidth: compact ? 138 : 170,
         width: { xs: "100%", sm: "auto" },
       }}
     >
