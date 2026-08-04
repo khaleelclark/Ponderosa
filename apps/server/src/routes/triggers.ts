@@ -13,6 +13,7 @@ import {
   TriggerSourceService,
   normalizeTriggerSourceConfig,
 } from "../trigger-service.js";
+import { applyCollectionPageHeaders, sqliteCollectionPage, type CollectionQuery } from "../collection-page.js";
 import {
   parseCreateTrigger,
   parseUpdateTrigger,
@@ -27,7 +28,7 @@ interface TriggerChangedEvent {
 }
 
 export interface TriggerRoutesContext {
-  readonly store: Pick<AgentStore, "getAgent" | "getProject">;
+  readonly store: Pick<AgentStore, "sqlite" | "getAgent" | "getProject">;
   readonly coordination: CoordinationV3Store;
   readonly sources: TriggerSourceService;
   readonly webhookRawBodies: WeakMap<IncomingMessage, Buffer>;
@@ -57,15 +58,68 @@ export function registerTriggerRoutes(
     webhookRawBodies,
   } = context;
 
-  app.get("/api/triggers", async () => coordination.listTriggerDefinitions());
+  app.get<{ Querystring: CollectionQuery & { projectId?: string; agentId?: string } }>("/api/triggers", async (request, reply) => {
+    try {
+      const normalizedSearch = request.query.search?.trim().toLocaleLowerCase() ?? "";
+      const conditions: string[] = [];
+      const params: unknown[] = [];
+      if (request.query.agentId) {
+        conditions.push("agent_id = ?");
+        params.push(request.query.agentId);
+      }
+      if (request.query.projectId) {
+        conditions.push("project_id = ?");
+        params.push(request.query.projectId);
+      }
+      if (normalizedSearch) {
+        conditions.push("lower(name || ' ' || instructions || ' ' || source_kind) LIKE ? ESCAPE '\\\\'");
+        params.push(`%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`);
+      }
+      const page = sqliteCollectionPage(store.sqlite, request.query, {
+        baseSql: `
+          SELECT id, name AS title, updated_at
+          FROM trigger_definitions
+          ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}
+        `,
+        params,
+        order: "updated",
+        scope: `triggers:${request.query.projectId ?? "*"}:${request.query.agentId ?? "*"}`,
+        hydrate: id => coordination.getTriggerDefinition(id),
+      });
+      applyCollectionPageHeaders(reply, page);
+      return page.items;
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid collection cursor" });
+    }
+  });
 
-  app.get<{ Params: { id: string } }>(
+  app.get<{ Params: { id: string }; Querystring: CollectionQuery }>(
     "/api/agents/:id/triggers",
     async (request, reply) => {
       if (!store.getAgent(request.params.id)) {
         return reply.code(404).send({ error: "agent not found" });
       }
-      return coordination.listTriggerDefinitions(request.params.id);
+      try {
+        const normalizedSearch = request.query.search?.trim().toLocaleLowerCase() ?? "";
+        const page = sqliteCollectionPage(store.sqlite, request.query, {
+          baseSql: `
+            SELECT id, name AS title, updated_at
+            FROM trigger_definitions
+            WHERE agent_id = ?
+              ${normalizedSearch ? "AND lower(name || ' ' || instructions || ' ' || source_kind) LIKE ? ESCAPE '\\\\'" : ""}
+          `,
+          params: normalizedSearch
+            ? [request.params.id, `%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
+            : [request.params.id],
+          order: "updated",
+          scope: `agent-triggers:${request.params.id}`,
+          hydrate: id => coordination.getTriggerDefinition(id),
+        });
+        applyCollectionPageHeaders(reply, page);
+        return page.items;
+      } catch (error) {
+        return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid collection cursor" });
+      }
     },
   );
 
@@ -106,7 +160,7 @@ export function registerTriggerRoutes(
           secretCiphertext: webhookSecret?.ciphertext,
           secretFingerprint: webhookSecret?.fingerprint,
         });
-        await sources.refresh();
+        await sources.applyDefinitionChange(undefined, trigger);
         appendWorkspace({
           type: "trigger_changed",
           projectId: trigger.projectId,
@@ -154,7 +208,7 @@ export function registerTriggerRoutes(
               }
             : {}),
         });
-        await sources.refresh();
+        await sources.applyDefinitionChange(current, trigger);
         reconcileOperationalNotifications();
         if (body.enabled === false) {
           resolveOperationalNotification(
@@ -191,7 +245,7 @@ export function registerTriggerRoutes(
       }
       if (rejectQuarantinedMutation(current, reply)) return reply;
       coordination.deleteTriggerDefinition(current.id);
-      await sources.refresh();
+      await sources.applyDefinitionChange(current, undefined);
       reconcileOperationalNotifications();
       appendWorkspace({
         type: "trigger_changed",

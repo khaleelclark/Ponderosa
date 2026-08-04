@@ -659,6 +659,154 @@ describe("server public API behavior", () => {
     });
   });
 
+  it("bounds ordinary readiness while retaining an explicit deep runtime diagnostic", async () => {
+    const slowEngines: EngineRegistration[] = [{
+      adapter: new BehavioralAdapter(),
+      authStatus: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 1_200));
+        return { authenticated: true, detail: "slow test subscription" };
+      },
+    }];
+    const app = server({
+      dataDir,
+      store,
+      engines: slowEngines,
+      logger: false,
+    });
+
+    const boundedStartedAt = performance.now();
+    const bounded = await app.inject({ method: "GET", url: "/api/ready" });
+    const boundedDuration = performance.now() - boundedStartedAt;
+    expect(boundedDuration).toBeLessThan(1_000);
+    expect(bounded.headers["x-ponderosa-readiness-mode"]).toBe("bounded");
+    expect(bounded.statusCode).toBe(503);
+    expect(bounded.json()).toMatchObject({
+      runtimes: [{ id: "codex", available: false }],
+    });
+
+    const diagnostic = await app.inject({
+      method: "GET",
+      url: "/api/diagnostics/ready",
+    });
+    expect(diagnostic.headers["x-ponderosa-readiness-mode"]).toBe("deep");
+    expect(diagnostic.statusCode).toBe(200);
+    expect(diagnostic.json()).toMatchObject({
+      runtimes: [{ id: "codex", authenticated: true }],
+    });
+  });
+
+  it("pages and searches the workspace directory without materializing the full result", async () => {
+    for (let index = 0; index < 115; index += 1) {
+      store.createProject({
+        label: index === 114
+          ? "Zebra outside the first window"
+          : `Directory project ${String(index).padStart(3, "0")}`,
+        hostPath: path.join(repoDir, `directory-${index}`),
+      });
+    }
+    const app = server();
+
+    const first = await app.inject({
+      method: "GET",
+      url: "/api/workspace/directory/project?limit=25&sort=alphabetical",
+    });
+    expect(first.statusCode).toBe(200);
+    const firstPage = first.json<{
+      items: Array<{ project: { id: string } }>;
+      total: number;
+      history: { hasMore: boolean; cursor: string };
+    }>();
+    expect(firstPage.items).toHaveLength(25);
+    expect(firstPage.total).toBe(115);
+    expect(firstPage.history.hasMore).toBe(true);
+    expect(Buffer.byteLength(first.body, "utf8")).toBeLessThan(150_000);
+
+    const second = await app.inject({
+      method: "GET",
+      url: `/api/workspace/directory/project?limit=25&sort=alphabetical&cursor=${encodeURIComponent(firstPage.history.cursor)}`,
+    });
+    expect(second.statusCode).toBe(200);
+    const secondIds = second.json<{
+      items: Array<{ project: { id: string } }>;
+    }>().items.map(item => item.project.id);
+    expect(secondIds).toHaveLength(25);
+    expect(secondIds.some(id =>
+      firstPage.items.some(item => item.project.id === id)
+    )).toBe(false);
+
+    const searched = await app.inject({
+      method: "GET",
+      url: "/api/workspace/directory/project?limit=25&search=Zebra",
+    });
+    expect(searched.statusCode).toBe(200);
+    expect(searched.json<{
+      items: Array<{ project: { label: string } }>;
+    }>().items.map(item => item.project.label)).toEqual([
+      "Zebra outside the first window",
+    ]);
+  });
+
+  it("keeps custom directory cursors scoped and rejects relevant membership changes", async () => {
+    const project = store.createProject({
+      label: "Custom directory",
+      hostPath: path.join(repoDir, "custom-directory"),
+    });
+    const agents = Array.from({ length: 30 }, (_, index) =>
+      store.createAgent(project.id, {
+        title: `Custom agent ${String(index).padStart(2, "0")}`,
+        engine: "codex",
+        conversationId: project.lastConversationId,
+      })
+    );
+    const app = server();
+    const preferences = await app.inject({
+      method: "PATCH",
+      url: "/api/workspace/preferences",
+      payload: {
+        agentSort: "custom",
+        agentOrder: agents.map(agent => agent.id),
+      },
+    });
+    expect(preferences.statusCode).toBe(200);
+
+    const first = await app.inject({
+      method: "GET",
+      url: `/api/workspace/directory/agent?projectId=${project.id}&limit=25&sort=custom`,
+    });
+    expect(first.statusCode).toBe(200);
+    const firstPage = first.json<{
+      items: Array<{ agent: { id: string } }>;
+      history: { hasMore: boolean; cursor: string };
+    }>();
+    expect(firstPage.items).toHaveLength(25);
+    expect(firstPage.history.hasMore).toBe(true);
+
+    store.sqlite.exec("CREATE TABLE unrelated_runtime_events (id INTEGER PRIMARY KEY, note TEXT NOT NULL)");
+    store.sqlite.prepare("INSERT INTO unrelated_runtime_events (note) VALUES (?)").run("lease heartbeat");
+    const unaffectedContinuation = await app.inject({
+      method: "GET",
+      url: `/api/workspace/directory/agent?projectId=${project.id}&limit=25&sort=custom&cursor=${encodeURIComponent(firstPage.history.cursor)}`,
+    });
+    expect(unaffectedContinuation.statusCode).toBe(200);
+    const unaffectedIds = unaffectedContinuation.json<{
+      items: Array<{ agent: { id: string } }>;
+    }>().items.map(item => item.agent.id);
+    expect(unaffectedIds).toHaveLength(5);
+    expect(unaffectedIds.some(id =>
+      firstPage.items.some(item => item.agent.id === id)
+    )).toBe(false);
+
+    store.sqlite.prepare(
+      "UPDATE agents SET archived = 1 WHERE id = ?",
+    ).run(firstPage.items[0]!.agent.id);
+    const continuation = await app.inject({
+      method: "GET",
+      url: `/api/workspace/directory/agent?projectId=${project.id}&limit=25&sort=custom&cursor=${encodeURIComponent(firstPage.history.cursor)}`,
+    });
+    expect(continuation.statusCode).toBe(400);
+    expect(continuation.json()).toEqual({ error: "stale directory cursor" });
+  });
+
   it("survives a missing Claude executable during model discovery", async () => {
     const project = store.createProject({
       label: "Missing Claude",

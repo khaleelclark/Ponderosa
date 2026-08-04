@@ -630,6 +630,8 @@ CREATE UNIQUE INDEX idx_agents_agent_spawn_idempotency
 CREATE INDEX idx_agents_conversation ON agents (conversation_id);
 CREATE INDEX idx_agents_manager ON agents (manager_agent_id);
 CREATE INDEX idx_agents_project ON agents (project_id);
+CREATE INDEX idx_agents_project_directory
+  ON agents (project_id, deleted_at, archived, updated_at DESC, title, id);
 CREATE INDEX idx_all_chat_feed_keyset
   ON all_chat_feed_projection (order_key DESC, row_key DESC);
 CREATE INDEX idx_artifact_source_projection
@@ -669,9 +671,13 @@ CREATE UNIQUE INDEX idx_context_rollovers_generation_owner
 CREATE UNIQUE INDEX idx_context_rollovers_continuation_activation
   ON context_rollovers (continuation_activation_id)
   WHERE continuation_activation_id IS NOT NULL;
+CREATE INDEX idx_projects_directory
+  ON projects (last_used_at DESC, created_at DESC, label, id);
 CREATE INDEX idx_conversations_global_recent
   ON conversations (updated_at DESC, id);
 CREATE INDEX idx_conversations_project ON conversations (project_id);
+CREATE INDEX idx_conversations_project_directory
+  ON conversations (project_id, updated_at DESC, title, id);
 CREATE INDEX idx_coordination_joins_conversation_created
   ON coordination_joins (project_id, conversation_id, created_at DESC, id DESC);
 CREATE INDEX idx_coordination_joins_conversation_updated
@@ -739,6 +745,10 @@ CREATE INDEX scheduler_steering_recoveries_due
   WHERE state = 'grace_period';
 CREATE INDEX trigger_definitions_agent
   ON trigger_definitions(agent_id, conversation_id, created_at);
+CREATE INDEX idx_trigger_definitions_project_directory
+  ON trigger_definitions(project_id, updated_at DESC, name, id);
+CREATE INDEX idx_trigger_definitions_agent_directory
+  ON trigger_definitions(agent_id, updated_at DESC, name, id);
 CREATE INDEX trigger_definitions_budget
   ON trigger_definitions(run_budget_period, run_budget_period_started_at)
   WHERE run_budget_limit IS NOT NULL;

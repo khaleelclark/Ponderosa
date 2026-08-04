@@ -16,6 +16,7 @@ import type {
   WorkspaceStore,
 } from "@ponderosa/agents";
 import { projectAgentHealth, type ActiveRunObservation } from "./agent-health.js";
+import { sqliteCollectionPage } from "./collection-page.js";
 import { decodeTimelineCursor, encodeTimelineCursor } from "./cursors.js";
 import {
   communicationRecipientAgentIds,
@@ -188,9 +189,27 @@ export function createServerReadModels(context: ReadModelContext) {
         ? { decisions: { createdAt: oldestDecisionEvent.createdAt, id: oldestDecisionEvent.id } }
         : { decisionsDone: true }),
     };
+    const memberPage = sqliteCollectionPage(store.sqlite, { limit: "100" }, {
+      baseSql: `
+        SELECT agent.id, agent.title, agent.updated_at
+        FROM agent_conversation_memberships membership
+        JOIN agents agent ON agent.id = membership.agent_id
+        WHERE membership.conversation_id = ? AND agent.deleted_at IS NULL
+      `,
+      params: [conversationId],
+      order: "title",
+      scope: `conversation-members:${conversationId}`,
+      hydrate: id => store.getAgent(id),
+    });
     return {
       conversation,
-      agents: store.listAgents(conversation.projectId).filter((agent) => agent.conversationIds.includes(conversationId)),
+      agents: memberPage.items,
+      members: {
+        total: memberPage.total,
+        limit: memberPage.limit,
+        hasMore: memberPage.hasMore,
+        ...(memberPage.cursor ? { cursor: memberPage.cursor } : {}),
+      },
       messages: withMessagePresentation(conversation.projectId, page.messages),
       decisionEvents: decisionPage.events,
       history: {
@@ -526,8 +545,19 @@ export function createServerReadModels(context: ReadModelContext) {
     };
   }
 
-  function teamDirectory(projectId: string, conversationId?: string, fallbackAgentId?: string): TeamDirectoryDto {
-    const agents = store.listAgents(projectId).filter((agent) =>
+  function teamDirectory(
+    projectId: string,
+    conversationId?: string,
+    fallbackAgentId?: string,
+    selectedAgentIds?: readonly string[],
+  ): TeamDirectoryDto {
+    const selectedAgents = selectedAgentIds
+      ? selectedAgentIds.flatMap((agentId) => {
+        const agent = store.getAgent(agentId);
+        return agent?.projectId === projectId ? [agent] : [];
+      })
+      : store.listAgents(projectId);
+    const agents = selectedAgents.filter((agent) =>
       !agent.archived && (conversationId
         ? agent.conversationIds.includes(conversationId)
         : fallbackAgentId ? agent.id === fallbackAgentId : true));

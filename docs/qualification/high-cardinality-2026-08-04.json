@@ -1,0 +1,227 @@
+{
+  "recordedAt": "2026-08-04T01:40:41.393Z",
+  "hardware": {
+    "cpu": "AMD Ryzen 5 5500",
+    "logicalCpuCount": 12,
+    "totalMemoryBytes": 32956293120
+  },
+  "fixture": {
+    "projects": 250,
+    "targetChats": 1251,
+    "totalChats": 1500,
+    "agents": 1000,
+    "triggers": 1000,
+    "messages": 1250
+  },
+  "startup": {
+    "healthMs": 2674.37,
+    "restartHealthMs": 2724,
+    "profile": [
+      "{\"level\":30,\"time\":1785807635823,\"pid\":1689942,\"hostname\":\"pine\",\"mode\":\"recovery\",\"openMs\":5.3,\"componentsMs\":0.7,\"recoveryMs\":1293.9,\"totalMs\":1299.9,\"projectCount\":250,\"msg\":\"agent store startup completed\"}",
+      "{\"level\":30,\"time\":1785807636194,\"pid\":1689942,\"hostname\":\"pine\",\"phases\":{\"artifact_authority\":14.8,\"runtime_recovery\":0.5,\"scheduler_and_triggers\":275.4,\"operational_recovery\":7.7,\"maintenance_scheduling\":0},\"totalMs\":298.6,\"msg\":\"server lifecycle readiness completed\"}",
+      "{\"level\":30,\"time\":1785807640669,\"pid\":1690229,\"hostname\":\"pine\",\"mode\":\"recovery\",\"openMs\":5.7,\"componentsMs\":0.7,\"recoveryMs\":1347.5,\"totalMs\":1353.9,\"projectCount\":250,\"msg\":\"agent store startup completed\"}",
+      "{\"level\":30,\"time\":1785807641054,\"pid\":1690229,\"hostname\":\"pine\",\"phases\":{\"artifact_authority\":14.9,\"runtime_recovery\":0.5,\"scheduler_and_triggers\":286.9,\"operational_recovery\":7.9,\"maintenance_scheduling\":0},\"totalMs\":310.3,\"msg\":\"server lifecycle readiness completed\"}"
+    ]
+  },
+  "health": {
+    "p50": 0.66,
+    "p95": 2.37,
+    "max": 4.1
+  },
+  "ready": {
+    "p50": 0.98,
+    "p95": 1.22,
+    "max": 1.29
+  },
+  "triggerMutation": {
+    "timing": {
+      "p50": 21.84,
+      "p95": 29.81,
+      "max": 30.6
+    },
+    "statuses": [
+      201,
+      201,
+      201,
+      201,
+      201,
+      201,
+      201,
+      201,
+      201,
+      201,
+      201,
+      201,
+      201,
+      201,
+      201,
+      201,
+      201,
+      201,
+      201,
+      201
+    ]
+  },
+  "passiveMessages": {
+    "timing": {
+      "p50": 38.92,
+      "p95": 66.94,
+      "max": 69.54
+    },
+    "statuses": [
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200
+    ],
+    "replayStatus": 200,
+    "conflictStatus": 409
+  },
+  "mixed": {
+    "timing": {
+      "p50": 982.09,
+      "p95": 1422.03,
+      "max": 1513.64
+    },
+    "statuses": [
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200
+    ]
+  },
+  "payloads": {
+    "projects": {
+      "ms": 4.417945000000145,
+      "status": 200,
+      "bytes": 8826,
+      "nextCursor": "eyJ2IjozLCJzY29wZSI6IlZSdy1BZHdRb25aamNzU0l2TlVsd2U4RyIsIm9yZGVyIjoidXBkYXRlZCIsImdlbmVyYXRpb24iOnsidG90YWwiOjI1MCwibWF4VXBkYXRlZEF0IjoiMjAyNi0wOC0wNFQwMToxMjowMi43NzNaIn0sInVwZGF0ZWRBdCI6IjIwMjYtMDgtMDRUMDE6MTE6NTkuMTU0WiIsInRpdGxlIjoiaGMgcHJvamVjdCAyMjYiLCJpZCI6ImE1MGRhOGUyLTAyMGEtNDAxNi05NmNjLTkzYjE2YzMxNDJiNCJ9",
+      "totalCount": "250"
+    },
+    "conversations": {
+      "ms": 3.3592909999997573,
+      "status": 200,
+      "bytes": 5976,
+      "nextCursor": "eyJ2IjozLCJzY29wZSI6InNLREJjeTlPTVcyVl9KellnbkVrMjc0YSIsIm9yZGVyIjoidXBkYXRlZCIsImdlbmVyYXRpb24iOnsidG90YWwiOjEyNTEsIm1heFVwZGF0ZWRBdCI6IjIwMjYtMDgtMDRUMDE6MTI6MDIuNzcxWiJ9LCJ1cGRhdGVkQXQiOiIyMDI2LTA4LTA0VDAxOjEyOjAyLjcwNVoiLCJ0aXRsZSI6ImhjIGNoYXQgMTIyNiIsImlkIjoiZDg1Njc4NGQtMTIzYy00YmMxLTkwNTItZTQyYmZhMDg3ZWEzIn0",
+      "totalCount": "1251"
+    },
+    "agents": {
+      "ms": 6.659779000000071,
+      "status": 200,
+      "bytes": 11976,
+      "nextCursor": "eyJ2IjozLCJzY29wZSI6IjNMRDlQc2xzd2U4ejBPcnpMUDIxTzk1MiIsIm9yZGVyIjoidXBkYXRlZCIsImdlbmVyYXRpb24iOnsidG90YWwiOjEwMDAsIm1heFVwZGF0ZWRBdCI6IjIwMjYtMDgtMDRUMDE6MTI6MDQuMzk3WiJ9LCJ1cGRhdGVkQXQiOiIyMDI2LTA4LTA0VDAxOjEyOjA0LjM2MloiLCJ0aXRsZSI6ImhjIGFnZW50IDA5NzUiLCJpZCI6ImZiYjYxNjIzLTE1YmQtNGE0Zi05Njk4LWM2NDM2ZjkxNjQ2OCJ9",
+      "totalCount": "1000"
+    },
+    "triggers": {
+      "ms": 2.0965299999998024,
+      "status": 200,
+      "bytes": 12501,
+      "nextCursor": "eyJ2IjozLCJzY29wZSI6Imx6TUt1TDF1bzE5LUtHcTdTM05tVE9ybiIsIm9yZGVyIjoidXBkYXRlZCIsImdlbmVyYXRpb24iOnsidG90YWwiOjEwMDAsIm1heFVwZGF0ZWRBdCI6IjIwMjYtMDgtMDRUMDE6MTI6MDQuNjEzWiJ9LCJ1cGRhdGVkQXQiOiIyMDI2LTA4LTA0VDAxOjEyOjA0LjYwOFoiLCJ0aXRsZSI6ImhjIHRyaWdnZXIgMDk3MiIsImlkIjoiaGMtdHJpZ2dlci0wOTcyIn0",
+      "totalCount": "1000"
+    },
+    "directoryProjects": {
+      "ms": 6.484408000000258,
+      "status": 200,
+      "bytes": 17076,
+      "nextCursor": null,
+      "totalCount": null
+    },
+    "directoryConversations": {
+      "ms": 104.91640499999994,
+      "status": 200,
+      "bytes": 12555,
+      "nextCursor": null,
+      "totalCount": null
+    },
+    "directoryAgents": {
+      "ms": 20.488882999999987,
+      "status": 200,
+      "bytes": 23055,
+      "nextCursor": null,
+      "totalCount": null
+    },
+    "directoryTriggers": {
+      "ms": 8.026617999999871,
+      "status": 200,
+      "bytes": 20740,
+      "nextCursor": null,
+      "totalCount": null
+    }
+  },
+  "counts": {
+    "initial": {
+      "projects": 250,
+      "conversations": 1500,
+      "agents": 1000,
+      "triggers": 1000,
+      "messages": 1250,
+      "activations": 0,
+      "runs": 0
+    },
+    "afterWorkload": {
+      "projects": 250,
+      "conversations": 1500,
+      "agents": 1000,
+      "triggers": 1020,
+      "messages": 1270,
+      "activations": 0,
+      "runs": 0
+    },
+    "afterRestart": {
+      "projects": 250,
+      "conversations": 1500,
+      "agents": 1000,
+      "triggers": 1020,
+      "messages": 1270,
+      "activations": 0,
+      "runs": 0
+    }
+  },
+  "authority": {
+    "activations": 0,
+    "runs": 0
+  },
+  "rssBytes": 191803392
+}

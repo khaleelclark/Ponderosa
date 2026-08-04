@@ -69,7 +69,6 @@ import {
   navigateWorkspaceTab,
   openWorkspaceTab,
   openWorkspaceTabInBackground,
-  removeProjectWorkspaceTabs,
   removeProjectWorkspaceTabsWithFallback,
   removeWorkspaceRouteWithFallback,
   renameWorkspaceTab,
@@ -133,11 +132,26 @@ export default function App({
     }
   });
   const projectsQuery = useProjects();
+  const routedProjectId = routeProjectId(route);
+  const projectPage = projectsQuery.data ?? [];
+  const routedProjectQuery = useQuery({
+    queryKey: queryKeys.projects.detail(routedProjectId),
+    queryFn: () => api.getProject(routedProjectId ?? ""),
+    enabled: Boolean(routedProjectId) &&
+      !projectPage.some(project => project.id === routedProjectId),
+    retry: false,
+  });
   const enginesQuery = useEngines();
   const preferencesQuery = useWorkspacePreferences();
   const notificationsQuery = useNotifications();
   const projectOrder = preferencesQuery.data?.projectOrder ?? [];
-  const projects = [...(projectsQuery.data ?? [])].sort((a, b) => {
+  const projects = [
+    ...projectPage,
+    ...(routedProjectQuery.data &&
+    !projectPage.some(project => project.id === routedProjectQuery.data.id)
+      ? [routedProjectQuery.data]
+      : []),
+  ].sort((a, b) => {
     if (preferencesQuery.data?.projectSort === "alphabetical")
       return a.label.localeCompare(b.label);
     if (preferencesQuery.data?.projectSort === "custom") {
@@ -268,15 +282,6 @@ export default function App({
   }, [workspaceTabs, activeWorkspaceTabKey, navigate]);
 
   useEffect(() => {
-    if (!projectsQuery.isSuccess) return;
-    const projectIds = new Set(projects.map(project => project.id));
-    setWorkspaceTabs(current => {
-      const next = removeProjectWorkspaceTabs(current, projectIds);
-      return next.length === current.length ? current : next;
-    });
-  }, [projectsQuery.isSuccess, projectsQuery.data]);
-
-  useEffect(() => {
     const refresh = () => {
       void inspectWebPush();
     };
@@ -301,7 +306,6 @@ export default function App({
     void closeReadPushNotifications(notificationsQuery.data ?? []);
   }, [notificationsQuery.data]);
 
-  const routedProjectId = routeProjectId(route);
   const selectedProjectId =
     routedProjectId && projects.some(project => project.id === routedProjectId)
       ? routedProjectId
@@ -314,6 +318,12 @@ export default function App({
       return;
     }
     if (!isProjectRoute(route)) return;
+    if (
+      routedProjectId &&
+      !projectPage.some(project => project.id === routedProjectId) &&
+      routedProjectQuery.isPending
+    )
+      return;
     // Every project-scoped route is already a concrete destination. In
     // particular, Project overview intentionally uses the bare project route;
     // treating it like an unresolved landing page caused it to flash and then
@@ -346,7 +356,15 @@ export default function App({
     return () => {
       cancelled = true;
     };
-  }, [projects, selectedProjectId, navigate, route.kind]);
+  }, [
+    projects,
+    routedProjectId,
+    routedProjectQuery.isFetching,
+    routedProjectQuery.isLoading,
+    selectedProjectId,
+    navigate,
+    route.kind,
+  ]);
 
   const openSidebarConversationAction = (
     kind: "rename" | "delete",

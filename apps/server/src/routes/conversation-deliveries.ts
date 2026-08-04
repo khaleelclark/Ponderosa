@@ -120,6 +120,7 @@ export function registerConversationDeliveryRoutes(
     Params: { id: string };
     Body: CreateConversationMessageRequest;
   }>("/api/conversations/:id/messages", async (request, reply) => {
+    const messageStartedAt = performance.now();
     const requestedText = request.body?.text?.trim();
     const rawText = requestedText ? stripLeadingScopeTag(requestedText, "broadcast") : "";
     const requestedAssets = request.body?.attachments ?? [];
@@ -204,6 +205,7 @@ export function registerConversationDeliveryRoutes(
       : randomUUID();
     const existingRuntime = coordinationV3.runtimeCommunication(eventId);
     const createdAt = existingRuntime?.createdAt ?? new Date().toISOString();
+    const validationCompletedAt = performance.now();
     let prepared: Awaited<ReturnType<typeof prepareUserCommunicationText>>;
     try {
       prepared = await prepareUserCommunicationText({ projectId: master.projectId, communicationId: eventId, text: rawText, createdAt });
@@ -211,6 +213,7 @@ export function registerConversationDeliveryRoutes(
       const status = error instanceof AssetError ? error.statusCode : 409;
       return reply.code(status).send({ error: error instanceof Error ? error.message : "long-text artifact staging failed" });
     }
+    const artifactPreparationCompletedAt = performance.now();
     const communicationInput: CommunicationEvent = {
       eventId,
       schemaVersion: 2,
@@ -276,10 +279,12 @@ export function registerConversationDeliveryRoutes(
     } catch (error) {
       return reply.code(409).send({ error: error instanceof Error ? error.message : "broadcast conflict" });
     }
+    const sqliteIntakeCompletedAt = performance.now();
     if (prepared.artifact) await afterCommunicationArtifactCommit?.({
       kind: "communication", ownerId: eventId, artifactIds: [prepared.artifact.id],
     });
     const communication = recordCommunication(communicationInput);
+    const canonicalAppendCompletedAt = performance.now();
     if (intake.replayed) await reconcileRuntimeCommunicationProjections({
       projectId: communicationInput.projectId,
       communicationEventId: communicationInput.eventId,
@@ -290,7 +295,7 @@ export function registerConversationDeliveryRoutes(
       prepared.artifact,
       communicationArtifactAccess(communication),
     );
-    const replayedMessage = communication && idempotencyKey
+    const replayedMessage = communication && idempotencyKey && intake.replayed
       ? store.getConversationMessages(master.id).find((candidate) => candidate.communicationEventId === communication.eventId)
       : undefined;
     const message = replayedMessage ?? store.appendConversationMessage(request.params.id, {
@@ -298,6 +303,7 @@ export function registerConversationDeliveryRoutes(
       text: renderScopedMessage("broadcast", prepared.publishedText),
       attachments: validatedAssets,
     }, undefined, "main", undefined, undefined, communication?.eventId);
+    const projectionCompletedAt = performance.now();
     const assetsByAgent = new Map<string, Set<string>>();
     for (const asset of [
       ...validatedAssets,
@@ -334,6 +340,29 @@ export function registerConversationDeliveryRoutes(
       });
     }
     if (recipientAgentIds.length) notifyScheduler();
+    const completedAt = performance.now();
+    const phase = (end: number, start: number) => Math.round((end - start) * 10) / 10;
+    reply.header("Server-Timing", [
+      `validation;dur=${phase(validationCompletedAt, messageStartedAt)}`,
+      `artifact;dur=${phase(artifactPreparationCompletedAt, validationCompletedAt)}`,
+      `sqlite;dur=${phase(sqliteIntakeCompletedAt, artifactPreparationCompletedAt)}`,
+      `canonical;dur=${phase(canonicalAppendCompletedAt, sqliteIntakeCompletedAt)}`,
+      `projection;dur=${phase(projectionCompletedAt, canonicalAppendCompletedAt)}`,
+      `publish;dur=${phase(completedAt, projectionCompletedAt)}`,
+      `total;dur=${phase(completedAt, messageStartedAt)}`,
+    ].join(", "));
+    app.log.debug({
+      durationMs: phase(completedAt, messageStartedAt),
+      validationMs: phase(validationCompletedAt, messageStartedAt),
+      artifactMs: phase(artifactPreparationCompletedAt, validationCompletedAt),
+      sqliteMs: phase(sqliteIntakeCompletedAt, artifactPreparationCompletedAt),
+      canonicalMs: phase(canonicalAppendCompletedAt, sqliteIntakeCompletedAt),
+      projectionMs: phase(projectionCompletedAt, canonicalAppendCompletedAt),
+      publishMs: phase(completedAt, projectionCompletedAt),
+      recipientCount: recipientAgentIds.length,
+      replayed: intake.replayed,
+      passive: recipientAgentIds.length === 0,
+    }, "conversation message persisted");
     return message ?? reply.code(404).send({ error: "conversation not found" });
   });
 

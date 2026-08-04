@@ -185,6 +185,20 @@ function isLongChatMessage(text: string): boolean {
   return unicodeCodePointLength(text) > 6_400 || text.split("\n").length > 72;
 }
 
+const COLLAPSED_MESSAGE_PREVIEW_CODE_POINTS = 3_200;
+const COLLAPSED_MESSAGE_PREVIEW_LINES = 36;
+
+/** Bound the Markdown source before parsing so a collapsed long response does
+ * not retain the complete rich-render tree in the DOM. */
+export function collapsedLongMessagePreview(text: string): string {
+  const lineBounded = text.split("\n").slice(0, COLLAPSED_MESSAGE_PREVIEW_LINES).join("\n");
+  const codePoints = [...lineBounded];
+  const preview = codePoints.length > COLLAPSED_MESSAGE_PREVIEW_CODE_POINTS
+    ? codePoints.slice(0, COLLAPSED_MESSAGE_PREVIEW_CODE_POINTS).join("")
+    : lineBounded;
+  return preview.length < text.length ? `${preview.trimEnd()}\n\n…` : preview;
+}
+
 export function individualChatSenderLabel(
   role: MessageDto["role"],
   agentName: string,
@@ -468,7 +482,9 @@ export function ChatMessageBody({ text, citations, collapseLongMessage = true, a
           } : {}),
         }}
       >
-        <ChatMarkdown agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} projectId={projectId} operatorHandle={operatorHandle} compact={compactMarkdown} small={smallText}>{text}</ChatMarkdown>
+        <ChatMarkdown agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} projectId={projectId} operatorHandle={operatorHandle} compact={compactMarkdown} small={smallText}>
+          {collapsible && !expanded ? collapsedLongMessagePreview(text) : text}
+        </ChatMarkdown>
       </Box>
       {collapsible ? (
         <Button

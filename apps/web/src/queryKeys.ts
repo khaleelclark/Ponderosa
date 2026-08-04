@@ -20,6 +20,7 @@ export const queryKeys = {
   },
   projects: {
     all: ["projects"] as const,
+    detail: (projectId: string | undefined) => ["project", projectId] as const,
   },
   workspaceDirectory: {
     all: ["workspace-directory"] as const,
@@ -74,6 +75,8 @@ export const queryKeys = {
     detailPrefix: (conversationId: string) => ["conversation", conversationId] as const,
     detail: (conversationId: string | undefined, limit = 100) =>
       ["conversation", conversationId, limit] as const,
+    members: (conversationId: string | undefined, search = "") =>
+      ["conversation-members", conversationId, search] as const,
   },
   agents: {
     all: ["agents"] as const,

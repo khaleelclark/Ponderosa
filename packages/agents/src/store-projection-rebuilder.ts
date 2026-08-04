@@ -59,6 +59,10 @@ export class AgentProjectionRebuilder {
   ) {}
 
   rebuildProjections(): void {
+    this.client.transaction(() => this.rebuildProjectionsInTransaction())();
+  }
+
+  private rebuildProjectionsInTransaction(): void {
     this.recoverProjectDeletionDirectories();
     this.recoverAgentDeletionDirectories();
     this.client.prepare(`DELETE FROM all_chat_feed_projection`).run();

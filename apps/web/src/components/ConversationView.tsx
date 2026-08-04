@@ -19,7 +19,7 @@ import type {
   AgentDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { agentBelongsToConversation, type AgentStatus } from "../agents";
@@ -181,6 +181,7 @@ export function ConversationView({
     text: string;
   }>();
   const [commandTargetHandle, setCommandTargetHandle] = useState<string>();
+  const [memberSearch, setMemberSearch] = useState("");
   // The engine/model/effort/speed currently selected for this conversation. Model-agnostic:
   // it can change any time and only affects agents spawned *after* the change —
   // already-running agents keep the model they were spawned with.
@@ -219,24 +220,53 @@ export function ConversationView({
     retry: false,
     refetchInterval: 2_500,
   });
-  const conversationAgents = useMemo(
-    () =>
-      projectAgents.filter(agent =>
-        agentBelongsToConversation(agent, conversationId),
-      ),
-    [conversationId, projectAgents],
-  );
-  const commandTargetAgents = useMemo(
-    () =>
-      commandTargetHandle
-        ? conversationAgents.filter(
-            agent =>
-              agentMentionHandle(agent.title).toLocaleLowerCase() ===
-              commandTargetHandle.toLocaleLowerCase(),
-          )
-        : [],
-    [commandTargetHandle, conversationAgents],
-  );
+  const membersQuery = useInfiniteQuery({
+    queryKey: queryKeys.conversations.members(conversationId, memberSearch),
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) =>
+      api.listConversationMembersPage(conversationId, {
+        limit: 100,
+        cursor: pageParam,
+        search: memberSearch || undefined,
+      }),
+    getNextPageParam: page =>
+      page.hasMore ? page.cursor : undefined,
+  });
+  const conversationAgents = useMemo(() => {
+    const byId = new Map<string, AgentDto>();
+    if (!memberSearch) {
+      for (const agent of detailQuery.data?.agents ?? []) byId.set(agent.id, agent);
+    }
+    for (const page of membersQuery.data?.pages ?? []) {
+      for (const agent of page.items) byId.set(agent.id, agent);
+    }
+    return [...byId.values()];
+  }, [detailQuery.data?.agents, memberSearch, membersQuery.data?.pages]);
+  const commandTargetMembersQuery = useQuery({
+    queryKey: queryKeys.conversations.members(
+      conversationId,
+      commandTargetHandle ? "target:" + commandTargetHandle : "",
+    ),
+    queryFn: () =>
+      api.listConversationMembersPage(conversationId, {
+        limit: 100,
+        search: commandTargetHandle?.replaceAll("-", " "),
+      }),
+    enabled: Boolean(commandTargetHandle),
+    staleTime: 30_000,
+  });
+  const commandTargetAgents = useMemo(() => {
+    if (!commandTargetHandle) return [];
+    const byId = new Map(conversationAgents.map(agent => [agent.id, agent]));
+    for (const agent of commandTargetMembersQuery.data?.items ?? []) {
+      byId.set(agent.id, agent);
+    }
+    return [...byId.values()].filter(
+      agent =>
+        agentMentionHandle(agent.title).toLocaleLowerCase() ===
+        commandTargetHandle.toLocaleLowerCase(),
+    );
+  }, [commandTargetHandle, commandTargetMembersQuery.data?.items, conversationAgents]);
   const commandTargetAgent =
     commandTargetAgents.length === 1 ? commandTargetAgents[0] : undefined;
   const commandCapabilitiesQuery = useQuery({
@@ -857,6 +887,8 @@ export function ConversationView({
           />
         ) : activeView === "agents" ? (
           <AgentsTab
+            searchValue={memberSearch}
+            onSearchValueChange={setMemberSearch}
             agents={conversationAgents}
             projectId={conversation.projectId}
             engines={engines}
@@ -874,16 +906,26 @@ export function ConversationView({
             }
             collection={{
               title: `${conversation.title} Agents`,
-              detail: `${conversationAgents.length} ${conversationAgents.length === 1 ? "Agent" : "Agents"}`,
+              detail: String(membersQuery.data?.pages[0]?.total ?? detailQuery.data?.members?.total ?? conversationAgents.length) + " Agents",
+              totalCount: membersQuery.data?.pages[0]?.total ?? detailQuery.data?.members?.total,
               variant: "embedded",
             }}
+            collectionFooter={
+              membersQuery.hasNextPage ? (
+                <Button
+                  disabled={membersQuery.isFetchingNextPage}
+                  onClick={() => void membersQuery.fetchNextPage()}
+                >
+                  {membersQuery.isFetchingNextPage ? "Loading..." : "Load more Agents"}
+                </Button>
+              ) : undefined
+            }
           />
         ) : activeView === "triggers" ? (
           <AllTriggersWorkspace
             projects={project ? [project] : []}
             filterProjectId={conversation.projectId}
             filterConversationId={conversation.id}
-            filterAgentIds={conversationAgents.map(agent => agent.id)}
             scopeTitle={`${conversation.title} Triggers`}
             embedded
             preferences={preferences}

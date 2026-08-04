@@ -162,7 +162,27 @@ export class TriggerSourceService {
     return operation;
   }
 
-  private async refreshNow(): Promise<void> {
+  /**
+   * Apply one durable Trigger definition change without reconciling unrelated
+   * sources. Webhooks are resolved from SQLite at intake and schedules are
+   * discovered by the existing due-time query, so neither needs a registry
+   * rebuild. Filesystem mutations use the serialized repair path.
+   */
+  async applyDefinitionChange(
+    previous: TriggerDefinitionDto | undefined,
+    next: TriggerDefinitionDto | undefined,
+  ): Promise<void> {
+    const affectsFilesystem = [previous, next].some(
+      (trigger) => trigger?.sourceKind === "filesystem" && trigger.enabled,
+    );
+    if (!affectsFilesystem || this.stopping || !this.started) return;
+    const projectId = next?.projectId ?? previous!.projectId;
+    const operation = this.refreshChain.then(() => this.refreshNow(projectId));
+    this.refreshChain = operation.catch(() => undefined);
+    await operation;
+  }
+
+  private async refreshNow(onlyProjectId?: string): Promise<void> {
     if (this.stopping) return;
     if (!this.sourceAvailable()) {
       this.stopSchedulePolling();
@@ -170,6 +190,7 @@ export class TriggerSourceService {
       return;
     }
     const desired = this.options.coordination.listTriggerDefinitions()
+      .filter((trigger) => !onlyProjectId || trigger.projectId === onlyProjectId)
       .filter((trigger) => {
         const agent = this.options.store.getAgent(trigger.agentId);
         const conversation = this.options.store.getConversation(trigger.conversationId);
@@ -192,6 +213,7 @@ export class TriggerSourceService {
     }
 
     for (const [projectId, active] of this.watchers) {
+      if (onlyProjectId && projectId !== onlyProjectId) continue;
       const project = this.options.store.getProject(projectId);
       const routes = routesByProject.get(projectId);
       if (!project || !routes || active.projectPath !== project.hostPath) {
@@ -257,9 +279,11 @@ export class TriggerSourceService {
       });
       this.watchers.set(projectId, active);
     }
-    this.restorePendingFileBursts();
-    this.ensureSchedulePolling();
-    await this.processDueSchedules();
+    if (!onlyProjectId) {
+      this.restorePendingFileBursts();
+      this.ensureSchedulePolling();
+      await this.processDueSchedules();
+    }
   }
 
   /** Deterministic qualification seam; production CRUD does not wait for a

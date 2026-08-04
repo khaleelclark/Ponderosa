@@ -11,6 +11,7 @@ import type {
 } from "@ponderosa/core";
 import type { AgentStore, WorkspaceStore } from "@ponderosa/agents";
 import { concreteRuntimeSelection, runtimeSelectionError } from "../runtime-selection.js";
+import { applyCollectionPageHeaders, sqliteCollectionPage, type CollectionQuery } from "../collection-page.js";
 
 interface EngineRegistration {
   adapter: Adapter;
@@ -31,7 +32,7 @@ export interface ConversationRouteDependencies {
     scope: AgentHealthProjectionDto["scope"],
     agents: AgentDto[],
   ) => AgentHealthProjectionDto;
-  teamDirectory: (projectId: string) => TeamDirectoryDto;
+  teamDirectory: (projectId: string, conversationId?: string, fallbackAgentId?: string, selectedAgentIds?: readonly string[]) => TeamDirectoryDto;
   hasActiveRun: (agentId: string) => boolean;
   handleAgentConversationRemoval: (agentId: string, conversationId: string) => void;
   refreshTriggers: () => Promise<unknown>;
@@ -58,15 +59,86 @@ export function registerConversationRoutes(
     refreshTriggers,
     draftAttachmentSurfaceDir,
   } = dependencies;
-  app.get<{ Params: { id: string } }>("/api/projects/:id/team-directory", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: CollectionQuery }>("/api/projects/:id/team-directory", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
-    return teamDirectory(request.params.id);
+    try {
+      const normalizedSearch = request.query.search?.trim().toLocaleLowerCase() ?? "";
+      const page = sqliteCollectionPage(store.sqlite, request.query, {
+        baseSql: `
+          SELECT id, title, updated_at
+          FROM agents
+          WHERE project_id = ? AND deleted_at IS NULL AND archived = 0
+            ${normalizedSearch ? "AND lower(title || ' ' || active_engine || ' ' || COALESCE(model, '')) LIKE ? ESCAPE '\\\\'" : ""}
+        `,
+        params: normalizedSearch
+          ? [request.params.id, `%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
+          : [request.params.id],
+        order: "title",
+        scope: `team-directory:${request.params.id}`,
+        hydrate: id => store.getAgent(id),
+      });
+      const directory = teamDirectory(request.params.id, undefined, undefined, page.items.map(agent => agent.id));
+      applyCollectionPageHeaders(reply, page);
+      return { ...directory, totalAgents: page.total, hasMoreAgents: page.hasMore, ...(page.cursor ? { agentCursor: page.cursor } : {}) };
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid collection cursor" });
+    }
   });
 
-  app.get<{ Params: { id: string } }>("/api/projects/:id/conversations", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: CollectionQuery }>("/api/projects/:id/conversations", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
-    return store.listConversations(request.params.id);
+    try {
+      const normalizedSearch = request.query.search?.trim().toLocaleLowerCase() ?? "";
+      const page = sqliteCollectionPage(store.sqlite, request.query, {
+        baseSql: `
+          SELECT id, title, updated_at
+          FROM conversations
+          WHERE project_id = ?
+            ${normalizedSearch ? "AND lower(title) LIKE ? ESCAPE '\\\\'" : ""}
+        `,
+        params: normalizedSearch
+          ? [request.params.id, `%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
+          : [request.params.id],
+        order: "updated",
+        scope: `project-conversations:${request.params.id}`,
+        hydrate: id => store.getConversation(id),
+      });
+      applyCollectionPageHeaders(reply, page);
+      return page.items;
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid collection cursor" });
+    }
   });
+
+  app.get<{ Params: { id: string }; Querystring: CollectionQuery }>(
+    "/api/conversations/:id/members",
+    async (request, reply) => {
+      const conversation = store.getConversation(request.params.id);
+      if (!conversation) return reply.code(404).send({ error: "conversation not found" });
+      try {
+        const normalizedSearch = request.query.search?.trim().toLocaleLowerCase() ?? "";
+        const page = sqliteCollectionPage(store.sqlite, request.query, {
+          baseSql: `
+            SELECT agent.id, agent.title, agent.updated_at
+            FROM agents agent
+            JOIN agent_conversation_memberships membership ON membership.agent_id = agent.id
+            WHERE membership.conversation_id = ? AND agent.deleted_at IS NULL
+              ${normalizedSearch ? "AND lower(agent.title || ' ' || agent.active_engine || ' ' || COALESCE(agent.model, '')) LIKE ? ESCAPE '\\\\'" : ""}
+          `,
+          params: normalizedSearch
+            ? [conversation.id, `%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
+            : [conversation.id],
+          order: "title",
+          scope: `conversation-members:${conversation.id}`,
+          hydrate: id => store.getAgent(id),
+        });
+        applyCollectionPageHeaders(reply, page);
+        return page.items;
+      } catch (error) {
+        return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid collection cursor" });
+      }
+    },
+  );
 
   app.post<{
     Params: { id: string };

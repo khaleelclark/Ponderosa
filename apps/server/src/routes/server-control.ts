@@ -26,6 +26,8 @@ import { evaluateContextRolloverPressure } from "../context-rollover-pressure.js
 import type { CoordinationV3Scheduler } from "../coordination-v3-scheduler.js";
 import type { ServerContext } from "../server-context.js";
 import { registerHealthRoutes } from "./health.js";
+import { applyCollectionPageHeaders, sqliteCollectionPage, type CollectionQuery } from "../collection-page.js";
+import { projectedProjectCount } from "../readiness.js";
 
 interface ServerControlRoutesContext {
   opts: CreateServerOptions;
@@ -77,6 +79,7 @@ interface ServerControlRoutesContext {
 }
 
 const ENGINE_LOG_TAIL_BYTES = 64 * 1024;
+const READINESS_RUNTIME_BUDGET_MS = 500;
 
 async function engineLogTail(
   pathname: string | undefined,
@@ -466,6 +469,112 @@ app.post<{
 });
 
 app.get("/api/ready", async (_request, reply): Promise<ReadinessDto> => {
+  const startedAt = performance.now();
+  reply.header("Cache-Control", "no-store");
+  reply.header("X-Ponderosa-Readiness-Mode", "bounded");
+  let dataDirectory: ReadinessDto["checks"]["dataDirectory"];
+  try {
+    await fs.access(opts.dataDir, fsConstants.R_OK | fsConstants.W_OK);
+    dataDirectory = { ok: true, detail: "data directory is readable and writable" };
+  } catch (error) {
+    dataDirectory = { ok: false, detail: `data directory unavailable: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  let projections: ReadinessDto["checks"]["projections"];
+  let projectCount = 0;
+  try {
+    projectCount = projectedProjectCount(store.sqlite);
+    projections = { ok: true, detail: "projection database query succeeded" };
+  } catch (error) {
+    projections = { ok: false, detail: `projection database unavailable: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  const runtimeStatuses = await Promise.all([...engines.entries()].map(async ([id, registration]) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error("runtime check exceeded readiness budget")), READINESS_RUNTIME_BUDGET_MS);
+      timer.unref?.();
+    });
+    try {
+      const status = await Promise.race([runtimeStatus(id, registration), timeout]);
+      return {
+        id,
+        configured: true as const,
+        authenticated: status.authenticated,
+        available: status.available,
+        ...((status.available ? status.authDetail : status.availabilityDetail)
+          ? { detail: status.available ? status.authDetail : status.availabilityDetail }
+          : {}),
+      };
+    } catch (error) {
+      return {
+        id,
+        configured: true as const,
+        authenticated: false,
+        available: false,
+        detail: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }));
+  const available = runtimeStatuses.filter((runtime) => runtime.available).length;
+  const runtimes = {
+    ok: available > 0,
+    detail: engines.size === 0
+      ? "no runtimes are configured"
+      : `${available} of ${engines.size} configured runtimes available`,
+  };
+  const evidence = [...communicationReconciliation.values()];
+  const driftedProjects = evidence.filter((item) => item.state === "verified" && !item.report.ok).length;
+  const pendingProjects = Math.max(0, projectCount - evidence.length) +
+    evidence.filter((item) => item.state === "pending").length;
+  const communicationParity = driftedProjects === 0 && pendingProjects === 0;
+  const communicationMigration = {
+    ok: communicationParity,
+    detail: communicationParity
+      ? "canonical communication projections=ok"
+      : pendingProjects > 0
+        ? `canonical communication projection verification pending for ${pendingProjects} project(s); new work remains available`
+        : `canonical communication projections=drift in ${driftedProjects} quarantined project(s); new work remains available`,
+  };
+  const acceptingDurableIntake = !isClosed() && dataDirectory.ok && projections.ok &&
+    artifactFilesystem.ok && processContainment.ok;
+  const leasingRuns = coordinationV3Scheduler.isLeasingRuns();
+  const canAcceptWork = acceptingDurableIntake && leasingRuns && runtimes.ok;
+  const body: ReadinessDto = {
+    status: canAcceptWork ? "ready" : "not_ready",
+    service: "ponderosa",
+    version: opts.buildVersion?.trim() || "0.0.0",
+    canAcceptWork,
+    networkSecurity,
+    acceptingDurableIntake,
+    leasingRuns,
+    deploymentDrain: deploymentDrainSnapshot(),
+    checks: {
+      daemon: { ok: !isClosed(), detail: isClosed() ? "daemon is shutting down" : "daemon request loop is running" },
+      dataDirectory,
+      projections,
+      artifactFilesystem,
+      processContainment,
+      runtimes,
+      communicationMigration,
+    },
+    runtimes: runtimeStatuses,
+  };
+  app.log.info({
+    readinessMode: "bounded",
+    durationMs: Math.round((performance.now() - startedAt) * 10) / 10,
+    projectCount,
+    configuredRuntimeCount: engines.size,
+    availableRuntimeCount: available,
+  }, "readiness check completed");
+  if (!canAcceptWork) reply.code(503);
+  return body;
+});
+
+app.get("/api/diagnostics/ready", async (_request, reply): Promise<ReadinessDto> => {
+  const startedAt = performance.now();
+  reply.header("Cache-Control", "no-store");
+  reply.header("X-Ponderosa-Readiness-Mode", "deep");
   let dataDirectory: ReadinessDto["checks"]["dataDirectory"];
   try {
     await fs.access(opts.dataDir, fsConstants.R_OK | fsConstants.W_OK);
@@ -554,9 +663,37 @@ app.get("/api/ready", async (_request, reply): Promise<ReadinessDto> => {
     },
     runtimes: runtimeStatuses,
   };
+  app.log.info({
+    readinessMode: "deep",
+    durationMs: Math.round((performance.now() - startedAt) * 10) / 10,
+    projectCount: communicationStates.length,
+    configuredRuntimeCount: engines.size,
+    availableRuntimeCount: available,
+  }, "readiness diagnostic completed");
   if (!canAcceptWork) reply.code(503);
   return body;
 });
 
-app.get("/api/projects", async () => store.listProjects());
+app.get<{ Querystring: CollectionQuery }>("/api/projects", async (request, reply) => {
+  try {
+    const normalizedSearch = request.query.search?.trim().toLocaleLowerCase() ?? "";
+    const page = sqliteCollectionPage(store.sqlite, request.query, {
+      baseSql: `
+        SELECT id, label AS title, COALESCE(last_used_at, created_at) AS updated_at
+        FROM projects
+        ${normalizedSearch ? "WHERE lower(label || ' ' || host_path) LIKE ? ESCAPE '\\\\'" : ""}
+      `,
+      params: normalizedSearch
+        ? [`%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
+        : [],
+      order: "updated",
+      scope: "projects",
+      hydrate: id => store.getProject(id),
+    });
+    applyCollectionPageHeaders(reply, page);
+    return page.items;
+  } catch (error) {
+    return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid collection cursor" });
+  }
+});
 }

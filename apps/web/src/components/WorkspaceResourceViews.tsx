@@ -207,9 +207,14 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
   const agentDirectory = workspaceDirectoryItems(agentDirectoryQuery.data?.pages, preferences);
   const rows = [...agentDirectory.starredItems, ...agentDirectory.items];
   const loadedAgentIds = new Set(rows.map(row => row.agent.id));
-  const agents = agentContextQueries
-    .flatMap(query => query.data ?? [])
-    .filter(agent => !agent.archived);
+  const agentsById = new Map(
+    agentContextQueries
+      .flatMap(query => query.data ?? [])
+      .filter(agent => !agent.archived)
+      .map(agent => [agent.id, agent] as const),
+  );
+  for (const row of rows) agentsById.set(row.agent.id, row.agent);
+  const agents = [...agentsById.values()];
   const conversations = conversationContextQueries.flatMap(
     query => query.data ?? [],
   );
@@ -221,12 +226,15 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
   const allHealth = [...healthByAgentId.values()];
   const statusByAgentId = mergeAgentStatuses(agents, allHealth, new Map());
   const projectByAgentId = new Map(
-    scopedProjects.flatMap(project =>
-      agents
-        .filter(agent => agent.projectId === project.id)
-        .map(agent => [agent.id, { id: project.id, label: project.label }] as const),
-    ),
+    rows.map(row => [row.agent.id, { id: row.project.id, label: row.project.label }] as const),
   );
+  for (const project of scopedProjects) {
+    for (const agent of agents) {
+      if (agent.projectId === project.id && !projectByAgentId.has(agent.id)) {
+        projectByAgentId.set(agent.id, { id: project.id, label: project.label });
+      }
+    }
+  }
   const starredIds = starredWorkspaceResources(preferences);
   const scopedProject = projectId
     ? projects.find(project => project.id === projectId)

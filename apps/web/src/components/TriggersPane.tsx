@@ -27,8 +27,8 @@ import {
   Typography,
 } from "@mui/material";
 import type { AgentDto, ConversationDto, CreateTriggerRequest, TriggerBudgetPeriod, TriggerDefinitionDto, TriggerOccurrenceDto, TriggerSourceConfig, TriggerSourceKind } from "@ponderosa/core";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import { ConfirmDialog, ResourceDeletionDialog, TextInputDialog } from "./ConfirmationDialogs";
@@ -174,7 +174,16 @@ export function TriggersPane({
       ? fixedConversationId
       : agent.conversationId ?? agent.conversationIds[0] ?? "";
   const queryKey = queryKeys.triggers.agent(agent.id);
-  const triggers = useQuery({ queryKey, queryFn: () => api.listTriggers(agent.id) });
+  const triggers = useInfiniteQuery({
+    queryKey,
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) => api.listTriggersPage(agent.id, { limit: 100, cursor: pageParam }),
+    getNextPageParam: page => page.hasMore ? page.cursor : undefined,
+  });
+  const triggerItems = useMemo(
+    () => triggers.data?.pages.flatMap(page => page.items) ?? [],
+    [triggers.data?.pages],
+  );
   const conversations = useQuery({
     queryKey: queryKeys.conversations.project(agent.projectId),
     queryFn: () => api.listConversations(agent.projectId),
@@ -285,9 +294,9 @@ export function TriggersPane({
   };
   useEffect(() => {
     if (!settingsTriggerId || editing?.id === settingsTriggerId) return;
-    const trigger = triggers.data?.find(candidate => candidate.id === settingsTriggerId);
+    const trigger = triggerItems.find(candidate => candidate.id === settingsTriggerId);
     if (trigger) openEditor(trigger);
-  }, [editing?.id, settingsTriggerId, triggers.data]);
+  }, [editing?.id, settingsTriggerId, triggerItems]);
   const inlineSettings = Boolean(
     settingsTriggerId && editing?.id === settingsTriggerId,
   );
@@ -364,7 +373,7 @@ export function TriggersPane({
     queryFn: () => api.listAgentTriggerOccurrences(agent.id, 100),
   });
   const latestOccurrences = latestOccurrenceByTrigger(allOccurrences.data ?? []);
-  const deletedTriggerOccurrences = (allOccurrences.data ?? []).filter((occurrence) => !(triggers.data ?? []).some((trigger) => trigger.id === occurrence.triggerId));
+  const deletedTriggerOccurrences = (allOccurrences.data ?? []).filter((occurrence) => !(triggerItems).some((trigger) => trigger.id === occurrence.triggerId));
 
   const copy = async (value: string): Promise<void> => {
     await navigator.clipboard.writeText(value);
@@ -471,8 +480,8 @@ export function TriggersPane({
       {agent.conversationIds.length === 0 ? <Alert severity="info">Assign this Agent to a Project chat before creating a Trigger.</Alert> : null}
       {triggers.isLoading ? <Typography color="text.secondary">Loading Triggers…</Typography> : null}
       {triggers.isError ? <Alert severity="error">{triggers.error.message}</Alert> : null}
-      {(triggers.data ?? []).length === 0 && !triggers.isLoading ? <Typography color="text.secondary">No Triggers yet.</Typography> : null}
-      {(triggers.data ?? []).map((trigger) => {
+      {(triggerItems).length === 0 && !triggers.isLoading ? <Typography color="text.secondary">No Triggers yet.</Typography> : null}
+      {(triggerItems).map((trigger) => {
         const latestOccurrence = latestOccurrences.get(trigger.id);
         const currentFailure = latestOccurrence?.lastError
           ?? (latestOccurrence?.state === "dead_lettered" ? "The latest occurrence could not start." : undefined);
@@ -521,6 +530,7 @@ export function TriggersPane({
         </Collapse>
       </Card>;
       })}
+      {triggers.hasNextPage ? <Button disabled={triggers.isFetchingNextPage} onClick={() => void triggers.fetchNextPage()}>{triggers.isFetchingNextPage ? "Loading..." : "Load more Triggers"}</Button> : null}
       {deletedTriggerOccurrences.length ? <Card variant="outlined">
         <CardContent>
           <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>Deleted Trigger history</Typography>

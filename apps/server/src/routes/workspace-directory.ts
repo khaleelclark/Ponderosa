@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
+import type Database from "better-sqlite3";
 import type {
   AgentDto,
+  AgentHealthDto,
   AgentHealthProjectionDto,
   ProjectDto,
   ProjectSort,
@@ -19,6 +21,7 @@ import type {
   WorkspaceStore,
 } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
+import { sqliteCollectionRevision } from "../collection-page.js";
 
 const DEFAULT_DIRECTORY_LIMIT = 25;
 const MAX_DIRECTORY_LIMIT = 100;
@@ -33,35 +36,40 @@ type DirectoryQuery = {
   sort?: string;
 };
 
-type DirectorySeed = {
-  id: string;
-  title: string;
-  updatedAt: string;
-  projectId: string;
-  agentId?: string;
-  conversationId?: string;
-  searchText: string;
-  item: WorkspaceDirectoryItemDto |
-    Omit<WorkspaceAgentDirectoryItemDto, "health"> |
-    Omit<WorkspaceProjectDirectoryItemDto,
-      "recentConversation" | "conversationCount" | "runningAgentCount"
-    >;
-};
-
 type CursorPosition =
-  | { kind: "offset"; offset: number }
+  | { kind: "custom"; rank: number; title: string; id: string }
   | { kind: "alphabetical"; title: string; id: string }
   | { kind: "last_used"; updatedAt: string; id: string };
 
 type CursorPayload = {
-  v: 2;
+  v: 4;
   scope: string;
+  revision: string;
   position: CursorPosition;
 };
 
+type ResourceRow = {
+  id: string;
+  title: string;
+  updated_at: string;
+  project_id: string;
+  agent_id: string | null;
+  conversation_id: string | null;
+  conversation_count: number | null;
+  recent_conversation_id: string | null;
+  recent_conversation_title: string | null;
+  recent_conversation_updated_at: string | null;
+  running_agent_count: number | null;
+  custom_rank?: number;
+  sort_title?: string;
+};
+
 interface WorkspaceDirectoryRoutesContext {
-  store: Pick<AgentStore, "listProjects" | "listConversations" | "listAgents">;
-  coordination: Pick<CoordinationV3Store, "listTriggerDefinitions">;
+  store: Pick<
+    AgentStore,
+    "sqlite" | "getProject" | "getConversation" | "getAgent"
+  >;
+  coordination: Pick<CoordinationV3Store, "getTriggerDefinition">;
   workspace: Pick<WorkspaceStore, "getPreferences">;
   agentHealth(
     scope: AgentHealthProjectionDto["scope"],
@@ -89,9 +97,13 @@ function parseLimit(value: string | undefined): number {
   return parsed;
 }
 
-function encodeCursor(position: CursorPosition, scope: string): string {
+function encodeCursor(
+  position: CursorPosition,
+  scope: string,
+  revision: string,
+): string {
   return Buffer.from(
-    JSON.stringify({ v: 2, position, scope } satisfies CursorPayload),
+    JSON.stringify({ v: 4, position, scope, revision } satisfies CursorPayload),
     "utf8",
   ).toString("base64url");
 }
@@ -100,19 +112,22 @@ function decodeCursor(
   value: string,
   scope: string,
   sort: ProjectSort,
+  revision: string,
 ): CursorPosition {
   try {
     if (!value || value.length > 4096) throw new Error();
     const parsed = JSON.parse(
       Buffer.from(value, "base64url").toString("utf8"),
     ) as Partial<CursorPayload>;
-    if (parsed.v !== 2 || parsed.scope !== scope || !parsed.position) {
+    if (parsed.v !== 4 || parsed.scope !== scope || !parsed.position) {
       throw new Error();
     }
+    if (parsed.revision !== revision) throw new Error("stale directory cursor");
     const position = parsed.position;
     if (
-      sort === "custom" && position.kind === "offset" &&
-      Number.isSafeInteger(position.offset) && position.offset >= 0
+      sort === "custom" && position.kind === "custom" &&
+      Number.isSafeInteger(position.rank) && position.rank >= 0 &&
+      typeof position.title === "string" && typeof position.id === "string"
     ) return position;
     if (
       sort === "alphabetical" && position.kind === "alphabetical" &&
@@ -123,40 +138,10 @@ function decodeCursor(
       typeof position.updatedAt === "string" && typeof position.id === "string"
     ) return position;
     throw new Error();
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.message === "stale directory cursor") throw error;
     throw new Error("invalid directory cursor");
   }
-}
-
-function rowsAfterCursor(
-  rows: DirectorySeed[],
-  position: CursorPosition,
-): DirectorySeed[] {
-  if (position.kind === "offset") return rows.slice(position.offset);
-  if (position.kind === "alphabetical") {
-    return rows.filter(row =>
-      row.title.localeCompare(position.title) > 0 ||
-      (row.title.localeCompare(position.title) === 0 &&
-        row.id.localeCompare(position.id) > 0),
-    );
-  }
-  return rows.filter(row =>
-    row.updatedAt.localeCompare(position.updatedAt) < 0 ||
-    (row.updatedAt === position.updatedAt &&
-      row.id.localeCompare(position.id) > 0),
-  );
-}
-
-function nextCursorPosition(
-  row: DirectorySeed,
-  sort: ProjectSort,
-  nextOffset: number,
-): CursorPosition {
-  if (sort === "custom") return { kind: "offset", offset: nextOffset };
-  if (sort === "alphabetical") {
-    return { kind: "alphabetical", title: row.title, id: row.id };
-  }
-  return { kind: "last_used", updatedAt: row.updatedAt, id: row.id };
 }
 
 function resourceSettings(
@@ -164,10 +149,7 @@ function resourceSettings(
   kind: WorkspaceDirectoryKind,
 ): { sort: ProjectSort; order: readonly string[] } {
   if (kind === "project") {
-    return {
-      sort: preferences.projectSort,
-      order: preferences.projectOrder,
-    };
+    return { sort: preferences.projectSort, order: preferences.projectOrder };
   }
   if (kind === "conversation") {
     return {
@@ -187,45 +169,311 @@ function resourceSettings(
   };
 }
 
-function sortSeeds(
-  rows: DirectorySeed[],
-  sort: ProjectSort,
-  order: readonly string[],
-): DirectorySeed[] {
-  if (sort === "alphabetical") {
-    return rows.sort(
-      (left, right) =>
-        left.title.localeCompare(right.title) || left.id.localeCompare(right.id),
-    );
-  }
-  if (sort === "last_used") {
-    return rows.sort(
-      (left, right) =>
-        right.updatedAt.localeCompare(left.updatedAt) ||
-        left.id.localeCompare(right.id),
-    );
-  }
-  const rank = new Map(order.map((id, index) => [id, index] as const));
-  return rows.sort((left, right) => {
-    const leftRank = rank.get(left.id);
-    const rightRank = rank.get(right.id);
-    if (leftRank === undefined && rightRank === undefined) {
-      return (
-        left.title.localeCompare(right.title) ||
-        left.id.localeCompare(right.id)
-      );
-    }
-    if (leftRank === undefined) return 1;
-    if (rightRank === undefined) return -1;
-    return leftRank - rightRank;
-  });
-}
-
 function starredKeys(preferences: WorkspacePreferencesDto): Set<string> {
   return new Set([
     ...(preferences.starredResourceIds ?? []),
     ...preferences.starredProjectIds.map(id => `project:${id}`),
   ]);
+}
+
+function likePattern(value: string): string {
+  return `%${value.replace(/[\\%_]/g, match => `\\${match}`)}%`;
+}
+
+function placeholders(count: number): string {
+  return Array.from({ length: count }, () => "?").join(", ");
+}
+
+function baseDirectoryQuery(
+  kind: WorkspaceDirectoryKind,
+  query: DirectoryQuery,
+  normalizedSearch: string,
+  filteredAgentIds: readonly string[],
+): { sql: string; params: unknown[] } {
+  const where: string[] = [];
+  const params: unknown[] = [];
+  const pattern = likePattern(normalizedSearch);
+
+  if (kind === "project") {
+    if (query.projectId) {
+      where.push("p.id = ?");
+      params.push(query.projectId);
+    }
+    if (normalizedSearch) {
+      where.push(`(
+        lower(p.label || ' ' || p.host_path) LIKE ? ESCAPE '\\'
+        OR EXISTS (
+          SELECT 1 FROM conversations search_conversation
+          WHERE search_conversation.project_id = p.id
+            AND search_conversation.archived = 0
+            AND lower(search_conversation.title) LIKE ? ESCAPE '\\'
+        )
+      )`);
+      params.push(pattern, pattern);
+    }
+    return {
+      sql: `
+        SELECT
+          p.id,
+          p.label AS title,
+          COALESCE(p.last_used_at, p.created_at) AS updated_at,
+          p.id AS project_id,
+          NULL AS agent_id,
+          NULL AS conversation_id,
+          (
+            SELECT COUNT(*) FROM conversations count_conversation
+            WHERE count_conversation.project_id = p.id
+              AND count_conversation.archived = 0
+          ) AS conversation_count,
+          (
+            SELECT recent.id FROM conversations recent
+            WHERE recent.project_id = p.id AND recent.archived = 0
+            ORDER BY recent.updated_at DESC, recent.id ASC LIMIT 1
+          ) AS recent_conversation_id,
+          (
+            SELECT recent.title FROM conversations recent
+            WHERE recent.project_id = p.id AND recent.archived = 0
+            ORDER BY recent.updated_at DESC, recent.id ASC LIMIT 1
+          ) AS recent_conversation_title,
+          (
+            SELECT recent.updated_at FROM conversations recent
+            WHERE recent.project_id = p.id AND recent.archived = 0
+            ORDER BY recent.updated_at DESC, recent.id ASC LIMIT 1
+          ) AS recent_conversation_updated_at,
+          (
+            SELECT COUNT(*) FROM agents active_agent
+            WHERE active_agent.project_id = p.id
+              AND active_agent.archived = 0
+              AND active_agent.deleted_at IS NULL
+              AND (
+                EXISTS (
+                  SELECT 1 FROM scheduler_runs active_run
+                  WHERE active_run.agent_id = active_agent.id
+                    AND active_run.status IN ('leased', 'running')
+                )
+                OR EXISTS (
+                  SELECT 1 FROM context_rollovers active_rollover
+                  WHERE active_rollover.agent_id = active_agent.id
+                    AND active_rollover.state IN (
+                      'requested', 'handoff_committed',
+                      'session_retiring', 'continuation_ready'
+                    )
+                )
+              )
+          ) AS running_agent_count
+        FROM projects p
+        ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
+      `,
+      params,
+    };
+  }
+
+  if (kind === "conversation") {
+    where.push("c.archived = 0");
+    if (query.projectId) {
+      where.push("c.project_id = ?");
+      params.push(query.projectId);
+    }
+    if (query.conversationId) {
+      where.push("c.id = ?");
+      params.push(query.conversationId);
+    }
+    if (normalizedSearch) {
+      where.push(
+        "lower(c.title || ' ' || p.label || ' ' || p.host_path) LIKE ? ESCAPE '\\'",
+      );
+      params.push(pattern);
+    }
+    return {
+      sql: `
+        SELECT c.id, c.title, c.updated_at, c.project_id,
+          NULL AS agent_id, c.id AS conversation_id,
+          NULL AS conversation_count, NULL AS recent_conversation_id,
+          NULL AS recent_conversation_title,
+          NULL AS recent_conversation_updated_at,
+          NULL AS running_agent_count
+        FROM conversations c
+        JOIN projects p ON p.id = c.project_id
+        WHERE ${where.join(" AND ")}
+      `,
+      params,
+    };
+  }
+
+  if (kind === "agent") {
+    where.push("a.archived = 0", "a.deleted_at IS NULL");
+    if (query.projectId) {
+      where.push("a.project_id = ?");
+      params.push(query.projectId);
+    }
+    if (filteredAgentIds.length > 0) {
+      where.push(`a.id IN (${placeholders(filteredAgentIds.length)})`);
+      params.push(...filteredAgentIds);
+    }
+    if (query.conversationId) {
+      where.push(`EXISTS (
+        SELECT 1 FROM agent_conversation_memberships membership
+        WHERE membership.agent_id = a.id
+          AND membership.conversation_id = ?
+      )`);
+      params.push(query.conversationId);
+    }
+    if (normalizedSearch) {
+      where.push(
+        "lower(a.title || ' ' || a.active_engine || ' ' || p.label || ' ' || p.host_path) LIKE ? ESCAPE '\\'",
+      );
+      params.push(pattern);
+    }
+    return {
+      sql: `
+        SELECT a.id, a.title, a.updated_at, a.project_id,
+          a.id AS agent_id, a.conversation_id,
+          NULL AS conversation_count, NULL AS recent_conversation_id,
+          NULL AS recent_conversation_title,
+          NULL AS recent_conversation_updated_at,
+          NULL AS running_agent_count
+        FROM agents a
+        JOIN projects p ON p.id = a.project_id
+        WHERE ${where.join(" AND ")}
+      `,
+      params,
+    };
+  }
+
+  if (query.projectId) {
+    where.push("t.project_id = ?");
+    params.push(query.projectId);
+  }
+  if (filteredAgentIds.length > 0) {
+    where.push(`t.agent_id IN (${placeholders(filteredAgentIds.length)})`);
+    params.push(...filteredAgentIds);
+  }
+  if (query.conversationId) {
+    where.push("t.conversation_id = ?");
+    params.push(query.conversationId);
+  }
+  if (normalizedSearch) {
+    where.push(`lower(
+      t.name || ' ' || t.instructions || ' ' || t.source_kind ||
+      ' ' || a.title || ' ' || p.label
+    ) LIKE ? ESCAPE '\\'`);
+    params.push(pattern);
+  }
+  return {
+    sql: `
+      SELECT t.id, t.name AS title, t.updated_at, t.project_id,
+        t.agent_id, t.conversation_id,
+        NULL AS conversation_count, NULL AS recent_conversation_id,
+        NULL AS recent_conversation_title,
+        NULL AS recent_conversation_updated_at,
+        NULL AS running_agent_count
+      FROM trigger_definitions t
+      JOIN agents a ON a.id = t.agent_id
+        AND a.archived = 0 AND a.deleted_at IS NULL
+      JOIN projects p ON p.id = t.project_id
+      ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
+    `,
+    params,
+  };
+}
+
+function orderingSql(
+  sort: ProjectSort,
+  order: readonly string[],
+): { sql: string; rankSql: string; rankParams: unknown[] } {
+  if (sort === "alphabetical") {
+    return { sql: "lower(title) ASC, id ASC", rankSql: "0", rankParams: [] };
+  }
+  if (sort === "last_used") {
+    return { sql: "updated_at DESC, id ASC", rankSql: "0", rankParams: [] };
+  }
+  if (order.length === 0) {
+    return {
+      sql: "custom_rank ASC, sort_title ASC, id ASC",
+      rankSql: "0",
+      rankParams: [],
+    };
+  }
+  const cases = order.map((_, index) => `WHEN ? THEN ${index}`).join(" ");
+  return {
+    sql: "custom_rank ASC, sort_title ASC, id ASC",
+    rankSql: `CASE id ${cases} ELSE ${order.length} END`,
+    rankParams: [...order],
+  };
+}
+
+function cursorSql(
+  position: CursorPosition | undefined,
+): { sql: string; params: unknown[] } {
+  if (!position) return { sql: "", params: [] };
+  if (position.kind === "custom") {
+    return {
+      sql: `(
+        custom_rank > ? OR
+        (custom_rank = ? AND (
+          sort_title > ? OR
+          (sort_title = ? AND id > ?)
+        ))
+      )`,
+      params: [position.rank, position.rank, position.title, position.title, position.id],
+    };
+  }
+  if (position.kind === "alphabetical") {
+    return {
+      sql: "(lower(title) > lower(?) OR (lower(title) = lower(?) AND id > ?))",
+      params: [position.title, position.title, position.id],
+    };
+  }
+  return {
+    sql: "(updated_at < ? OR (updated_at = ? AND id > ?))",
+    params: [position.updatedAt, position.updatedAt, position.id],
+  };
+}
+
+function nextCursorPosition(
+  row: ResourceRow,
+  sort: ProjectSort,
+): CursorPosition {
+  if (sort === "custom") {
+    return {
+      kind: "custom",
+      rank: row.custom_rank ?? 0,
+      title: row.sort_title ?? row.title.toLocaleLowerCase(),
+      id: row.id,
+    };
+  }
+  if (sort === "alphabetical") {
+    return { kind: "alphabetical", title: row.title, id: row.id };
+  }
+  return {
+    kind: "last_used",
+    updatedAt: row.updated_at,
+    id: row.id,
+  };
+}
+
+function workspaceActiveAgentCount(sqlite: Database.Database): number {
+  const row = sqlite.prepare(`
+    SELECT COUNT(*) AS count
+    FROM agents a
+    WHERE a.archived = 0
+      AND a.deleted_at IS NULL
+      AND (
+        EXISTS (
+          SELECT 1 FROM scheduler_runs r
+          WHERE r.agent_id = a.id AND r.status IN ('leased', 'running')
+        )
+        OR EXISTS (
+          SELECT 1 FROM context_rollovers c
+          WHERE c.agent_id = a.id
+            AND c.state IN (
+              'requested', 'handoff_committed',
+              'session_retiring', 'continuation_ready'
+            )
+        )
+      )
+  `).get() as { count: number };
+  return row.count;
 }
 
 export function registerWorkspaceDirectoryRoutes(
@@ -252,176 +500,33 @@ export function registerWorkspaceDirectoryRoutes(
     } catch (error) {
       return reply.code(400).send({ error: (error as Error).message });
     }
+
     const requestedSort = request.query.sort;
     if (
       requestedSort !== undefined &&
       requestedSort !== "alphabetical" &&
       requestedSort !== "last_used" &&
       requestedSort !== "custom"
-    ) return reply.code(400).send({ error: "invalid directory sort" });
-
-    const preferences = context.workspace.getPreferences();
-    const projects = context.store.listProjects();
-    const projectById = new Map(projects.map(project => [project.id, project]));
-    const projectAgents = new Map<string, AgentDto[]>();
-    const projectConversations = new Map<
-      string,
-      ReturnType<AgentStore["listConversations"]>
-    >();
-    const projectHealth = new Map<string, AgentHealthProjectionDto>();
-    const agentsForProject = (projectId: string): AgentDto[] => {
-      const cached = projectAgents.get(projectId);
-      if (cached) return cached;
-      const agents = context.store.listAgents(projectId);
-      projectAgents.set(projectId, agents);
-      return agents;
-    };
-    const conversationsForProject = (projectId: string) => {
-      const cached = projectConversations.get(projectId);
-      if (cached) return cached;
-      const conversations = context.store.listConversations(projectId);
-      projectConversations.set(projectId, conversations);
-      return conversations;
-    };
-    const healthForProject = (projectId: string) => {
-      const cached = projectHealth.get(projectId);
-      if (cached) return cached;
-      const health = context.agentHealth(
-        { type: "project", id: projectId },
-        agentsForProject(projectId),
-      );
-      projectHealth.set(projectId, health);
-      return health;
-    };
-    const directoryProjects = request.query.projectId
-      ? projects.filter(project => project.id === request.query.projectId)
-      : projects;
-
-    let rows: DirectorySeed[];
-    if (kind === "project") {
-      rows = projects.map(project => ({
-        id: project.id,
-        title: project.label,
-        updatedAt: project.lastUsedAt ?? project.createdAt,
-        projectId: project.id,
-        searchText: `${project.label} ${project.hostPath}`,
-        item: {
-          kind: "project",
-          project,
-          displayPath: context.projectDisplayPath(project.hostPath),
-        },
-      }));
-    } else if (kind === "conversation") {
-      rows = directoryProjects.flatMap(project =>
-        conversationsForProject(project.id)
-          .filter(conversation => !conversation.archived)
-          .map(conversation => ({
-            id: conversation.id,
-            title: conversation.title,
-            updatedAt: conversation.updatedAt,
-            projectId: project.id,
-            searchText: `${conversation.title} ${project.label} ${project.hostPath}`,
-            item: {
-              kind: "conversation",
-              project: projectSummary(project),
-              conversation,
-            } satisfies WorkspaceConversationDirectoryItemDto,
-          })),
-      );
-    } else if (kind === "agent") {
-      rows = directoryProjects.flatMap(project =>
-        agentsForProject(project.id)
-          .filter(agent => !agent.archived)
-          .map(agent => ({
-            id: agent.id,
-            title: agent.title,
-            updatedAt: agent.updatedAt,
-            projectId: project.id,
-            searchText: `${agent.title} ${agent.activeEngine} ${project.label} ${project.hostPath}`,
-            item: {
-              kind: "agent",
-              project: projectSummary(project),
-              agent,
-            },
-          })),
-      );
-    } else {
-      const agentById = new Map(
-        projects.flatMap(project =>
-          agentsForProject(project.id).map(
-            agent => [agent.id, { agent, project }] as const,
-          ),
-        ),
-      );
-      rows = context.coordination
-        .listTriggerDefinitions()
-        .flatMap(trigger => {
-          const destination = agentById.get(trigger.agentId);
-          if (!destination) return [];
-          return [{
-            id: trigger.id,
-            title: trigger.name,
-            updatedAt: trigger.updatedAt,
-            projectId: destination.project.id,
-            agentId: destination.agent.id,
-            conversationId: trigger.conversationId,
-            searchText: [
-              trigger.name,
-              trigger.instructions,
-              trigger.sourceKind,
-              destination.agent.title,
-              destination.project.label,
-            ].join(" "),
-            item: {
-              kind: "trigger",
-              project: projectSummary(destination.project),
-              agent: {
-                id: destination.agent.id,
-                title: destination.agent.title,
-              },
-              trigger,
-            } satisfies WorkspaceTriggerDirectoryItemDto,
-          }];
-        });
+    ) {
+      return reply.code(400).send({ error: "invalid directory sort" });
     }
 
+    const preferences = context.workspace.getPreferences();
+    const settings = resourceSettings(preferences, kind);
+    const sort = requestedSort ?? settings.sort;
+    const sqlite = context.store.sqlite;
+    const order = settings.order;
     const normalizedSearch = (request.query.search ?? "")
       .trim()
       .toLocaleLowerCase();
-    if (kind === "project" && normalizedSearch) {
-      for (const row of rows) {
-        row.searchText += ` ${conversationsForProject(row.projectId)
-          .filter(conversation => !conversation.archived)
-          .map(conversation => conversation.title)
-          .join(" ")}`;
-      }
-    }
-    const filteredAgentIds = new Set(
-      (request.query.agentIds ?? "").split(",").filter(Boolean),
-    );
-    rows = rows.filter(row =>
-      (!request.query.projectId || row.projectId === request.query.projectId) &&
-      (filteredAgentIds.size === 0 ||
-        Boolean(row.agentId && filteredAgentIds.has(row.agentId))) &&
-      (!request.query.conversationId ||
-        row.conversationId === request.query.conversationId) &&
-      (!normalizedSearch ||
-        row.searchText.toLocaleLowerCase().includes(normalizedSearch)),
-    );
+    const filteredAgentIds = [
+      ...new Set((request.query.agentIds ?? "").split(",").filter(Boolean)),
+    ];
 
-    const settings = resourceSettings(preferences, kind);
-    const sort = requestedSort ?? settings.sort;
-    const order = settings.order;
-    sortSeeds(rows, sort, order);
-    const stars = starredKeys(preferences);
-    const starredRows = rows.filter(row => stars.has(`${kind}:${row.id}`));
-    const unstarredRows = rows.filter(
-      row => !stars.has(`${kind}:${row.id}`),
-    );
     const directorySettingsHash = createHash("sha256")
       .update(JSON.stringify({
         order,
-        stars: [...stars]
+        stars: [...starredKeys(preferences)]
           .filter(key => key.startsWith(`${kind}:`))
           .sort(),
       }))
@@ -436,102 +541,178 @@ export function registerWorkspaceDirectoryRoutes(
       directorySettingsHash,
     });
 
+    const base = baseDirectoryQuery(
+      kind,
+      request.query,
+      normalizedSearch,
+      filteredAgentIds,
+    );
+    const collection = sqliteCollectionRevision(sqlite, base.sql, base.params);
+    const revision = collection.revision;
+    const total = collection.total;
+
     let cursorPosition: CursorPosition | undefined;
     if (request.query.cursor) {
       try {
-        cursorPosition = decodeCursor(request.query.cursor, scope, sort);
+        cursorPosition = decodeCursor(request.query.cursor, scope, sort, revision);
       } catch (error) {
         return reply.code(400).send({ error: (error as Error).message });
       }
     }
-    const candidateRows = cursorPosition
-      ? rowsAfterCursor(unstarredRows, cursorPosition)
-      : unstarredRows;
-    const pageRows = candidateRows.slice(0, limit);
-    const hasMore = pageRows.length < candidateRows.length;
-    const previousOffset = cursorPosition?.kind === "offset"
-      ? cursorPosition.offset
-      : 0;
-    const includeStarred = !request.query.cursor;
 
-    let starredItems = includeStarred
-      ? starredRows.map(row => row.item) as WorkspaceDirectoryItemDto[]
-      : [];
-    let items = pageRows.map(row => row.item) as WorkspaceDirectoryItemDto[];
-    let activeCount: number | undefined;
-    if (kind === "project") {
-      const withSummary = (
-        row: DirectorySeed,
-      ): WorkspaceProjectDirectoryItemDto => {
-        const item = row.item as Omit<
-          WorkspaceProjectDirectoryItemDto,
-          "recentConversation" | "conversationCount" | "runningAgentCount"
-        >;
-        const conversations = conversationsForProject(item.project.id)
-          .filter(conversation => !conversation.archived)
-          .sort((left, right) =>
-            right.updatedAt.localeCompare(left.updatedAt),
-          );
-        const health = healthForProject(item.project.id).agents;
-        const recent = conversations[0];
-        return {
-          ...item,
-          ...(recent ? {
-            recentConversation: {
-              id: recent.id,
-              title: recent.title,
-              updatedAt: recent.updatedAt,
-            },
-          } : {}),
-          conversationCount: conversations.length,
-          runningAgentCount: health.filter(agent =>
-            agent.status === "running" || agent.status === "compacting"
-          ).length,
-        };
-      };
-      starredItems = includeStarred ? starredRows.map(withSummary) : [];
-      items = pageRows.map(withSummary);
-    } else if (kind === "agent") {
-      const allHealth = projects.flatMap(project =>
-        healthForProject(project.id).agents,
+    const stars = [...starredKeys(preferences)]
+      .filter(key => key.startsWith(`${kind}:`))
+      .map(key => key.slice(kind.length + 1));
+    let starredRows: ResourceRow[] = [];
+    if (!request.query.cursor && stars.length > 0) {
+      starredRows = sqlite.prepare(`
+        SELECT * FROM (${base.sql}) resources
+        WHERE id IN (${placeholders(stars.length)})
+      `).all(...base.params, ...stars) as ResourceRow[];
+      const rank = new Map(stars.map((id, index) => [id, index] as const));
+      starredRows.sort(
+        (left, right) =>
+          (rank.get(left.id) ?? Number.MAX_SAFE_INTEGER) -
+          (rank.get(right.id) ?? Number.MAX_SAFE_INTEGER),
       );
-      const healthByAgentId = new Map(
-        allHealth.map(health => [health.agentId, health] as const),
-      );
-      activeCount = allHealth.filter(
-        health => health.status === "running" || health.status === "compacting",
-      ).length;
-      const withHealth = (
-        row: DirectorySeed,
-      ): WorkspaceAgentDirectoryItemDto => {
-        const item = row.item as Omit<WorkspaceAgentDirectoryItemDto, "health">;
-        return {
-          ...item,
-          health: healthByAgentId.get(item.agent.id)!,
-        };
-      };
-      starredItems = includeStarred ? starredRows.map(withHealth) : [];
-      items = pageRows.map(withHealth);
     }
+
+    const ordering = orderingSql(sort, order);
+    const pageWhere: string[] = [];
+    const pageParams: unknown[] = [...ordering.rankParams, ...base.params];
+    if (stars.length > 0) {
+      pageWhere.push(`id NOT IN (${placeholders(stars.length)})`);
+      pageParams.push(...stars);
+    }
+    const cursor = cursorSql(cursorPosition);
+    if (cursor.sql) {
+      pageWhere.push(cursor.sql);
+      pageParams.push(...cursor.params);
+    }
+    pageParams.push(limit + 1);
+
+    const candidateRows = sqlite.prepare(`
+      SELECT * FROM (
+        SELECT resources.*, lower(title) AS sort_title,
+          ${ordering.rankSql} AS custom_rank
+        FROM (${base.sql}) resources
+      ) ranked_resources
+      ${pageWhere.length > 0 ? `WHERE ${pageWhere.join(" AND ")}` : ""}
+      ORDER BY ${ordering.sql}
+      LIMIT ?
+    `).all(...pageParams) as ResourceRow[];
+    const hasMore = candidateRows.length > limit;
+    const pageRows = candidateRows.slice(0, limit);
+
+    const projectCache = new Map<string, ProjectDto>();
+    const getProject = (id: string): ProjectDto | undefined => {
+      if (projectCache.has(id)) return projectCache.get(id);
+      const project = context.store.getProject(id);
+      if (project) projectCache.set(id, project);
+      return project;
+    };
+
+    const agentHealthById = new Map<string, AgentHealthDto>();
+    if (kind === "agent") {
+      const agentsByProject = new Map<string, AgentDto[]>();
+      for (const row of [...starredRows, ...pageRows]) {
+        const agent = context.store.getAgent(row.id);
+        if (!agent) continue;
+        const group = agentsByProject.get(agent.projectId) ?? [];
+        group.push(agent);
+        agentsByProject.set(agent.projectId, group);
+      }
+      for (const [projectId, agents] of agentsByProject) {
+        for (const health of context.agentHealth(
+          { type: "project", id: projectId },
+          agents,
+        ).agents) {
+          agentHealthById.set(health.agentId, health);
+        }
+      }
+    }
+
+    const hydrate = (row: ResourceRow): WorkspaceDirectoryItemDto | undefined => {
+      const project = getProject(row.project_id);
+      if (!project) return undefined;
+      if (kind === "project") {
+        return {
+          kind: "project",
+          project,
+          displayPath: context.projectDisplayPath(project.hostPath),
+          ...(row.recent_conversation_id &&
+          row.recent_conversation_title &&
+          row.recent_conversation_updated_at
+            ? {
+                recentConversation: {
+                  id: row.recent_conversation_id,
+                  title: row.recent_conversation_title,
+                  updatedAt: row.recent_conversation_updated_at,
+                },
+              }
+            : {}),
+          conversationCount: row.conversation_count ?? 0,
+          runningAgentCount: row.running_agent_count ?? 0,
+        } satisfies WorkspaceProjectDirectoryItemDto;
+      }
+      if (kind === "conversation") {
+        const conversation = context.store.getConversation(row.id);
+        if (!conversation) return undefined;
+        return {
+          kind: "conversation",
+          project: projectSummary(project),
+          conversation,
+        } satisfies WorkspaceConversationDirectoryItemDto;
+      }
+      if (kind === "agent") {
+        const agent = context.store.getAgent(row.id);
+        const health = agentHealthById.get(row.id);
+        if (!agent || !health) return undefined;
+        return {
+          kind: "agent",
+          project: projectSummary(project),
+          agent,
+          health,
+        } satisfies WorkspaceAgentDirectoryItemDto;
+      }
+      const trigger = context.coordination.getTriggerDefinition(row.id);
+      const agent = row.agent_id
+        ? context.store.getAgent(row.agent_id)
+        : undefined;
+      if (!trigger || !agent) return undefined;
+      return {
+        kind: "trigger",
+        project: projectSummary(project),
+        agent: { id: agent.id, title: agent.title },
+        trigger,
+      } satisfies WorkspaceTriggerDirectoryItemDto;
+    };
+
+    const starredItems = starredRows
+      .map(hydrate)
+      .filter((item): item is WorkspaceDirectoryItemDto => Boolean(item));
+    const items = pageRows
+      .map(hydrate)
+      .filter((item): item is WorkspaceDirectoryItemDto => Boolean(item));
+    const lastRow = pageRows[pageRows.length - 1];
 
     return {
       kind,
       starredItems,
       items,
-      total: rows.length,
-      ...(activeCount === undefined ? {} : { activeCount }),
+      total,
+      ...(kind === "agent"
+        ? { activeCount: workspaceActiveAgentCount(sqlite) }
+        : {}),
       history: {
         limit,
         hasMore,
-        ...(hasMore
+        ...(hasMore && lastRow
           ? {
               cursor: encodeCursor(
-                nextCursorPosition(
-                  pageRows[pageRows.length - 1]!,
-                  sort,
-                  previousOffset + pageRows.length,
-                ),
+                nextCursorPosition(lastRow, sort),
                 scope,
+                revision,
               ),
             }
           : {}),
