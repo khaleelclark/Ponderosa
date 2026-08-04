@@ -101,7 +101,11 @@ export function ProjectShell({
     ...agentDirectory.items,
   ];
   const conversations = conversationsQuery.data ?? [];
-  const agents = agentsQuery.data ?? agentDirectoryRows.map(item => item.agent);
+  const agents = useMemo(() => {
+    const byId = new Map((agentsQuery.data ?? []).map(agent => [agent.id, agent]));
+    for (const item of agentDirectoryRows) byId.set(item.agent.id, item.agent);
+    return [...byId.values()];
+  }, [agentDirectoryRows, agentsQuery.data]);
   const projectedHealth = healthQuery.data?.agents ??
     agentDirectoryRows.map(item => item.health);
   const visibleAgentIds = new Set(
@@ -201,18 +205,6 @@ export function ProjectShell({
   };
 
   const loading = conversationsQuery.isLoading || agentsQuery.isLoading;
-
-  useEffect(() => {
-    if (loading) return;
-    const missingMaster = route.kind === "conversation" && !conversations.some((master) => master.id === route.conversationId);
-    const missingAgent = (route.kind === "agent" || route.kind === "review") && !agents.some((agent) => agent.id === route.agentId);
-    if (missingMaster || missingAgent) {
-      const fallback = conversations[0];
-      navigate(fallback
-        ? { kind: "conversation", projectId, conversationId: fallback.id }
-        : { kind: "agents", projectId }, { replace: true });
-    }
-  }, [agents, loading, conversations, navigate, projectId, route]);
 
   if (conversationsQuery.isError || agentsQuery.isError) {
     return (

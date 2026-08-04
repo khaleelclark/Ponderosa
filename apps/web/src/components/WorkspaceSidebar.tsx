@@ -204,6 +204,7 @@ export function WorkspaceSidebar({
     ...triggerItems.map(item => item.project.id),
   ]);
   const projectById = new Map(projects.map(project => [project.id, project]));
+  for (const item of projectItems) projectById.set(item.project.id, item.project);
   const snapshots = [...homeProjectIds].flatMap(projectId => {
     const project = projectById.get(projectId);
     if (!project) return [];

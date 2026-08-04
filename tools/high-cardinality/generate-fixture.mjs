@@ -1,8 +1,17 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { AgentStore, CoordinationV3Store } from "../../packages/agents/dist/index.js";
+
+export const FIXTURE_SENTINEL = ".ponderosa-high-cardinality-fixture.json";
 
 function option(name, fallback) {
   const prefix = `--${name}=`;
@@ -17,27 +26,79 @@ function countOption(name, fallback) {
 function pad(value, width = 4) {
   return String(value).padStart(width, "0");
 }
+function isInside(parent, child) {
+  const path = relative(parent, child);
+  return path !== "" && path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path);
+}
+function protectedDataDirectories() {
+  return [
+    resolve(homedir(), ".ponderosa"),
+    ...(process.env.PONDEROSA_DATA_DIR
+      ? [resolve(process.env.PONDEROSA_DATA_DIR)]
+      : []),
+  ];
+}
+function assertSafeFixtureTarget(target, repoRoot) {
+  const resolved = resolve(target);
+  const forbiddenExact = new Set(["/", resolve(homedir()), resolve(repoRoot)]);
+  if (forbiddenExact.has(resolved)) {
+    throw new Error(`refusing to replace protected directory: ${resolved}`);
+  }
+  for (const protectedPath of protectedDataDirectories()) {
+    if (
+      resolved === protectedPath ||
+      isInside(resolved, protectedPath) ||
+      isInside(protectedPath, resolved)
+    ) {
+      throw new Error(`refusing to overlap Ponderosa data directory: ${resolved}`);
+    }
+  }
+}
+function readFixtureSentinel(target) {
+  const path = resolve(target, FIXTURE_SENTINEL);
+  if (!existsSync(path)) return undefined;
+  try {
+    const value = JSON.parse(readFileSync(path, "utf8"));
+    return value?.kind === "ponderosa-high-cardinality-fixture" &&
+      value?.version === 1 ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const dataDir = resolve(option("data-dir", resolve(repoRoot, ".high-cardinality-fixture")));
 const hostRoot = resolve(option("host-root", resolve(dataDir, "host-workspaces")));
 const metadataPath = resolve(option("metadata", resolve(dataDir, "fixture.json")));
 const projectCount = countOption("projects", 250);
-const targetChatCount = countOption("chats", 1002);
+const targetChatCount = countOption("chats", 1251);
 const agentCount = countOption("agents", 1000);
 const triggerCount = countOption("triggers", 1000);
 const messageCount = countOption("messages", 1250);
 const force = process.argv.includes("--force");
 
+assertSafeFixtureTarget(dataDir, repoRoot);
+if (!isInside(dataDir, hostRoot) || !isInside(dataDir, metadataPath)) {
+  throw new Error("--host-root and --metadata must be inside --data-dir");
+}
 if (existsSync(dataDir)) {
   if (!force) throw new Error(`${dataDir} already exists; pass --force to replace this synthetic fixture`);
+  if (!readFixtureSentinel(dataDir)) {
+    throw new Error(`refusing to replace ${dataDir}: benchmark fixture sentinel is missing or invalid`);
+  }
   rmSync(dataDir, { recursive: true, force: true });
 }
 mkdirSync(dataDir, { recursive: true });
 mkdirSync(hostRoot, { recursive: true });
+mkdirSync(dirname(metadataPath), { recursive: true });
 
 const startedAt = performance.now();
 const store = new AgentStore(dataDir);
+writeFileSync(resolve(dataDir, FIXTURE_SENTINEL), `${JSON.stringify({
+  kind: "ponderosa-high-cardinality-fixture",
+  version: 1,
+  createdAt: new Date().toISOString(),
+})}\n`);
 try {
   const projects = [];
   for (let index = 0; index < projectCount; index += 1) {
@@ -53,12 +114,11 @@ try {
   const targetProject = projects[0];
   const defaultConversation = store.getConversation(targetProject.lastConversationId);
   if (!defaultConversation) throw new Error("target Project has no default Chat");
-  const conversations = [defaultConversation];
   for (let index = 1; index < targetChatCount; index += 1) {
-    conversations.push(store.createConversation(targetProject.id, {
+    store.createConversation(targetProject.id, {
       title: `HC Chat ${pad(index)}`,
       defaultEngine: "codex",
-    }));
+    });
   }
 
   const agents = [];

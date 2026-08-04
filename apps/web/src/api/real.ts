@@ -165,6 +165,47 @@ async function requestJson<T>(path: string, init?: RequestInit, acceptedErrorSta
   return (body ? JSON.parse(body) : undefined) as T;
 }
 
+export interface CollectionPage<T> {
+  items: T[];
+  total: number;
+  limit: number;
+  hasMore: boolean;
+  cursor?: string;
+}
+
+async function requestCollectionPage<T>(path: string): Promise<CollectionPage<T>> {
+  const response = await fetch(`${API_BASE}${path}`);
+  if (!response.ok) {
+    let message = `${response.status} ${response.statusText}`;
+    try {
+      const body = await response.json() as { error?: unknown };
+      if (typeof body.error === "string" && body.error.trim()) message = body.error.trim();
+    } catch {
+      // Preserve the stable HTTP fallback for malformed errors.
+    }
+    throw new ApiRequestError(response.status, message);
+  }
+  const items = await response.json() as T[];
+  const total = Number(response.headers.get("x-total-count") ?? items.length);
+  const limit = Number(response.headers.get("x-page-limit") ?? items.length);
+  const hasMore = response.headers.get("x-collection-has-more") === "true";
+  const cursor = response.headers.get("x-next-cursor") ?? undefined;
+  return { items, total, limit, hasMore, ...(cursor ? { cursor } : {}) };
+}
+
+async function collectCollectionPages<T>(path: string): Promise<T[]> {
+  const items: T[] = [];
+  let cursor: string | undefined;
+  do {
+    const query = new URLSearchParams({ limit: "100" });
+    if (cursor) query.set("cursor", cursor);
+    const page = await requestCollectionPage<T>(path + (path.includes("?") ? "&" : "?") + query.toString());
+    items.push(...page.items);
+    cursor = page.hasMore ? page.cursor : undefined;
+  } while (cursor);
+  return items;
+}
+
 async function requestText(path: string, init?: RequestInit): Promise<string> {
   const response = await fetch(`${API_BASE}${path}`, init);
   if (!response.ok) {
@@ -211,7 +252,10 @@ export const realApi = {
     return requestJson<WikiSearchResponseDto>(`/api/wiki/search${toQuery({ q: query, limit, cursor })}`);
   },
   listProjects(): Promise<ProjectDto[]> {
-    return requestJson<ProjectDto[]>("/api/projects");
+    return collectCollectionPages<ProjectDto>("/api/projects");
+  },
+  listProjectsPage(options: { limit?: number; cursor?: string; search?: string } = {}): Promise<CollectionPage<ProjectDto>> {
+    return requestCollectionPage<ProjectDto>(`/api/projects${toQuery({ limit: options.limit, cursor: options.cursor, search: options.search })}`);
   },
   getProject(projectId: string): Promise<ProjectDto> {
     return requestJson<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`);
@@ -289,7 +333,13 @@ export const realApi = {
     return requestJson<AllChatPageDto>(`/api/all-chat${toQuery({ limit: String(limit), cursor })}`);
   },
   listConversations(projectId: string): Promise<ConversationDto[]> {
-    return requestJson<ConversationDto[]>("/api/projects/" + encodeURIComponent(projectId) + "/conversations");
+    return collectCollectionPages<ConversationDto>("/api/projects/" + encodeURIComponent(projectId) + "/conversations");
+  },
+  listConversationsPage(projectId: string, options: { limit?: number; cursor?: string; search?: string } = {}): Promise<CollectionPage<ConversationDto>> {
+    return requestCollectionPage<ConversationDto>(`/api/projects/${encodeURIComponent(projectId)}/conversations${toQuery({ limit: options.limit, cursor: options.cursor, search: options.search })}`);
+  },
+  listConversationMembersPage(conversationId: string, options: { limit?: number; cursor?: string; search?: string } = {}): Promise<CollectionPage<AgentDto>> {
+    return requestCollectionPage<AgentDto>(`/api/conversations/${encodeURIComponent(conversationId)}/members${toQuery({ limit: options.limit, cursor: options.cursor, search: options.search })}`);
   },
   createConversation(projectId: string, request: CreateConversationRequest): Promise<ConversationDto> {
     return requestJson<ConversationDto>("/api/projects/" + encodeURIComponent(projectId) + "/conversations", {
@@ -472,7 +522,10 @@ export const realApi = {
     });
   },
   listAgents(projectId: string): Promise<AgentDto[]> {
-    return requestJson<AgentDto[]>(`/api/projects/${encodeURIComponent(projectId)}/agents`);
+    return collectCollectionPages<AgentDto>(`/api/projects/${encodeURIComponent(projectId)}/agents`);
+  },
+  listAgentsPage(projectId: string, options: { limit?: number; cursor?: string; search?: string } = {}): Promise<CollectionPage<AgentDto>> {
+    return requestCollectionPage<AgentDto>(`/api/projects/${encodeURIComponent(projectId)}/agents${toQuery({ limit: options.limit, cursor: options.cursor, search: options.search })}`);
   },
   createAgentRecord(projectId: string, request: CreateAgentRequest): Promise<AgentDto> {
     return requestJson<AgentDto>(`/api/projects/${encodeURIComponent(projectId)}/agents`, {
@@ -599,10 +652,13 @@ export const realApi = {
     );
   },
   listTriggers(agentId: string): Promise<TriggerDefinitionDto[]> {
-    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/triggers`);
+    return collectCollectionPages<TriggerDefinitionDto>(`/api/agents/${encodeURIComponent(agentId)}/triggers`);
+  },
+  listTriggersPage(agentId: string, options: { limit?: number; cursor?: string; search?: string } = {}): Promise<CollectionPage<TriggerDefinitionDto>> {
+    return requestCollectionPage<TriggerDefinitionDto>(`/api/agents/${encodeURIComponent(agentId)}/triggers${toQuery({ limit: options.limit, cursor: options.cursor, search: options.search })}`);
   },
   listAllTriggers(): Promise<TriggerDefinitionDto[]> {
-    return requestJson("/api/triggers");
+    return collectCollectionPages<TriggerDefinitionDto>("/api/triggers");
   },
   createTrigger(agentId: string, request: CreateTriggerRequest): Promise<CreateTriggerResponse> {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/triggers`, { method: "POST", body: JSON.stringify(request) });

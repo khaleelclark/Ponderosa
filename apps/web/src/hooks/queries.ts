@@ -67,10 +67,9 @@ export function useAgents(projectId: string | undefined, enabled = true) {
     queryKey: queryKeys.agents.project(projectId),
     queryFn: () => api.listAgents(projectId ?? ""),
     enabled: Boolean(projectId) && enabled,
-    // Managed agents can be created or cascade-deleted by another agent. Poll
-    // the roster so hierarchy, authorship, counts, and statuses stay coherent
-    // without requiring a page refresh.
-    refetchInterval: 4000,
+    // The query follows every server page so no first-page snapshot becomes
+    // authoritative. Agent health provides the high-frequency live status path.
+    refetchInterval: 30_000,
   });
 }
 export function useAgentPresets(projectId: string | undefined) {

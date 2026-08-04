@@ -73,7 +73,7 @@ export function registerConversationRoutes(
         params: normalizedSearch
           ? [request.params.id, `%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
           : [request.params.id],
-        orderBy: "lower(title) ASC, id ASC",
+        order: "title",
         scope: `team-directory:${request.params.id}`,
         hydrate: id => store.getAgent(id),
       });
@@ -99,7 +99,7 @@ export function registerConversationRoutes(
         params: normalizedSearch
           ? [request.params.id, `%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
           : [request.params.id],
-        orderBy: "updated_at DESC, lower(title) ASC, id ASC",
+        order: "updated",
         scope: `project-conversations:${request.params.id}`,
         hydrate: id => store.getConversation(id),
       });
@@ -128,7 +128,7 @@ export function registerConversationRoutes(
           params: normalizedSearch
             ? [conversation.id, `%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
             : [conversation.id],
-          orderBy: "lower(title) ASC, id ASC",
+          order: "title",
           scope: `conversation-members:${conversation.id}`,
           hydrate: id => store.getAgent(id),
         });

@@ -389,6 +389,37 @@ describe("ConversationView public behavior", () => {
     client.clear();
   });
 
+  it("loads and renders Chat members beyond the first server page", async () => {
+    const client = createClient();
+    const user = userEvent.setup();
+    const laterAgent: AgentDto = {
+      ...agent,
+      id: "agent-one-hundred-one",
+      title: "Later Page Agent",
+    };
+    vi.spyOn(api, "listConversationMembersPage")
+      .mockResolvedValueOnce({
+        items: [agent],
+        total: 101,
+        limit: 100,
+        hasMore: true,
+        cursor: "members-next",
+      })
+      .mockResolvedValueOnce({
+        items: [laterAgent],
+        total: 101,
+        limit: 100,
+        hasMore: false,
+      });
+
+    render(view(client, <ConversationView {...props()} />));
+    await user.click(screen.getByRole("tab", { name: "Agents" }));
+    await user.click(await screen.findByRole("button", { name: "Load more Agents" }));
+
+    expect(await screen.findByText("Later Page Agent")).toBeTruthy();
+    client.clear();
+  });
+
   it("highlights Direct participants in messages and keeps one Broadcast badge", () => {
     const client = createClient();
     client.setQueryData<ConversationDetailDto>(

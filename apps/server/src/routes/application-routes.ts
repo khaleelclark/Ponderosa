@@ -429,7 +429,7 @@ app.get<{ Params: { id: string }; Querystring: CollectionQuery }>("/api/projects
       params: normalizedSearch
         ? [request.params.id, `%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
         : [request.params.id],
-      orderBy: "updated_at DESC, lower(title) ASC, id ASC",
+      order: "updated",
       scope: `project-agents:${request.params.id}`,
       hydrate: id => store.getAgent(id),
     });

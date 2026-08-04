@@ -16,6 +16,23 @@ export interface CollectionPage<T> {
   cursor?: string;
 }
 
+type CollectionOrder = "updated" | "title";
+
+interface CollectionGeneration {
+  total: number;
+  maxUpdatedAt: string | null;
+}
+
+interface CollectionCursor {
+  v: 3;
+  scope: string;
+  order: CollectionOrder;
+  generation: CollectionGeneration;
+  updatedAt?: string;
+  title: string;
+  id: string;
+}
+
 function parseLimit(query: CollectionQuery, fallback: number, maximum: number): number {
   const parsed = Number(query.limit ?? fallback);
   return Math.min(maximum, Math.max(1, Number.isFinite(parsed) ? Math.floor(parsed) : fallback));
@@ -28,25 +45,45 @@ function queryScope(scope: string, query: CollectionQuery): string {
     .slice(0, 24);
 }
 
-export function encodeCollectionCursor(scopeName: string, query: CollectionQuery, offset: number): string {
-  const scope = queryScope(scopeName, query);
-  return Buffer.from(JSON.stringify({ v: 2, offset, scope })).toString("base64url");
+function encodeCollectionCursor(cursor: CollectionCursor): string {
+  return Buffer.from(JSON.stringify(cursor)).toString("base64url");
 }
 
-function decodeSqlOffset(cursor: string | undefined, scope: string): number {
-  if (!cursor) return 0;
+function decodeCollectionCursor(
+  value: string | undefined,
+  expected: {
+    scope: string;
+    order: CollectionOrder;
+    generation: CollectionGeneration;
+  },
+): CollectionCursor | undefined {
+  if (!value) return undefined;
   try {
-    const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as {
-      v?: unknown;
-      offset?: unknown;
-      scope?: unknown;
-    };
+    const cursor = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Partial<CollectionCursor>;
+    const generation = cursor.generation;
     if (
-      value.v !== 2 || value.scope !== scope ||
-      !Number.isSafeInteger(value.offset) || Number(value.offset) < 0
-    ) throw new Error();
-    return Number(value.offset);
-  } catch {
+      cursor.v !== 3 ||
+      cursor.scope !== expected.scope ||
+      cursor.order !== expected.order ||
+      !generation ||
+      !Number.isSafeInteger(generation.total) ||
+      generation.total < 0 ||
+      (generation.maxUpdatedAt !== null && typeof generation.maxUpdatedAt !== "string") ||
+      typeof cursor.title !== "string" ||
+      typeof cursor.id !== "string" ||
+      (expected.order === "updated" && typeof cursor.updatedAt !== "string")
+    ) {
+      throw new Error();
+    }
+    if (
+      generation.total !== expected.generation.total ||
+      generation.maxUpdatedAt !== expected.generation.maxUpdatedAt
+    ) {
+      throw new Error("stale collection cursor");
+    }
+    return cursor as CollectionCursor;
+  } catch (error) {
+    if (error instanceof Error && error.message === "stale collection cursor") throw error;
     throw new Error("invalid collection cursor");
   }
 }
@@ -55,10 +92,10 @@ export function sqliteCollectionPage<T>(
   sqlite: Database.Database,
   query: CollectionQuery,
   options: {
-    /** SQL selecting at least an id column plus every column referenced by orderBy. */
+    /** SQL selecting id, title, and updated_at. */
     baseSql: string;
     params?: readonly unknown[];
-    orderBy: string;
+    order: CollectionOrder;
     scope: string;
     hydrate: (id: string) => T | undefined;
     defaultLimit?: number;
@@ -68,29 +105,78 @@ export function sqliteCollectionPage<T>(
   const maximum = options.maxLimit ?? 100;
   const limit = parseLimit(query, options.defaultLimit ?? maximum, maximum);
   const scope = queryScope(options.scope, query);
-  const offset = decodeSqlOffset(query.cursor, scope);
   const params = [...(options.params ?? [])];
-  const total = (sqlite.prepare(`SELECT COUNT(*) AS count FROM (${options.baseSql}) bounded_collection`)
-    .get(...params) as { count: number }).count;
-  if (offset > total) throw new Error("invalid collection cursor");
+  const aggregate = sqlite.prepare(`
+    SELECT COUNT(*) AS total, MAX(updated_at) AS max_updated_at
+    FROM (${options.baseSql}) bounded_collection
+  `).get(...params) as { total: number; max_updated_at: string | null };
+  const generation: CollectionGeneration = {
+    total: aggregate.total,
+    maxUpdatedAt: aggregate.max_updated_at,
+  };
+  const cursor = decodeCollectionCursor(query.cursor, {
+    scope,
+    order: options.order,
+    generation,
+  });
+  const cursorSql = !cursor
+    ? ""
+    : options.order === "updated"
+      ? `WHERE (
+          updated_at < ? OR
+          (updated_at = ? AND (
+            lower(title) > ? OR
+            (lower(title) = ? AND id > ?)
+          ))
+        )`
+      : `WHERE (
+          lower(title) > ? OR
+          (lower(title) = ? AND id > ?)
+        )`;
+  const cursorParams = !cursor
+    ? []
+    : options.order === "updated"
+      ? [cursor.updatedAt, cursor.updatedAt, cursor.title, cursor.title, cursor.id]
+      : [cursor.title, cursor.title, cursor.id];
+  const orderBy = options.order === "updated"
+    ? "updated_at DESC, lower(title) ASC, id ASC"
+    : "lower(title) ASC, id ASC";
   const rows = sqlite.prepare(`
-    SELECT id FROM (${options.baseSql}) bounded_collection
-    ORDER BY ${options.orderBy}
-    LIMIT ? OFFSET ?
-  `).all(...params, limit, offset) as Array<{ id: string }>;
-  const items = rows.flatMap(({ id }) => {
+    SELECT id, title, lower(title) AS sort_title, updated_at
+    FROM (${options.baseSql}) bounded_collection
+    ${cursorSql}
+    ORDER BY ${orderBy}
+    LIMIT ?
+  `).all(...params, ...cursorParams, limit + 1) as Array<{
+    id: string;
+    title: string;
+    sort_title: string;
+    updated_at: string;
+  }>;
+  const pageRows = rows.slice(0, limit);
+  const items = pageRows.flatMap(({ id }) => {
     const item = options.hydrate(id);
     return item ? [item] : [];
   });
-  const nextOffset = offset + rows.length;
-  const hasMore = nextOffset < total;
+  const hasMore = rows.length > limit;
+  const last = pageRows.at(-1);
   return {
     items,
-    total,
+    total: generation.total,
     limit,
     hasMore,
-    ...(hasMore
-      ? { cursor: encodeCollectionCursor(options.scope, query, nextOffset) }
+    ...(hasMore && last
+      ? {
+          cursor: encodeCollectionCursor({
+            v: 3,
+            scope,
+            order: options.order,
+            generation,
+            ...(options.order === "updated" ? { updatedAt: last.updated_at } : {}),
+            title: last.sort_title,
+            id: last.id,
+          }),
+        }
       : {}),
   };
 }

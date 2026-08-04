@@ -82,7 +82,7 @@ export function registerTriggerRoutes(
           ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}
         `,
         params,
-        orderBy: "updated_at DESC, lower(title) ASC, id ASC",
+        order: "updated",
         scope: `triggers:${request.query.projectId ?? "*"}:${request.query.agentId ?? "*"}`,
         hydrate: id => coordination.getTriggerDefinition(id),
       });
@@ -111,7 +111,7 @@ export function registerTriggerRoutes(
           params: normalizedSearch
             ? [request.params.id, `%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
             : [request.params.id],
-          orderBy: "updated_at DESC, lower(title) ASC, id ASC",
+          order: "updated",
           scope: `agent-triggers:${request.params.id}`,
           hydrate: id => coordination.getTriggerDefinition(id),
         });

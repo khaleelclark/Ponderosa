@@ -27,6 +27,7 @@ import type { CoordinationV3Scheduler } from "../coordination-v3-scheduler.js";
 import type { ServerContext } from "../server-context.js";
 import { registerHealthRoutes } from "./health.js";
 import { applyCollectionPageHeaders, sqliteCollectionPage, type CollectionQuery } from "../collection-page.js";
+import { projectedProjectCount } from "../readiness.js";
 
 interface ServerControlRoutesContext {
   opts: CreateServerOptions;
@@ -481,7 +482,7 @@ app.get("/api/ready", async (_request, reply): Promise<ReadinessDto> => {
   let projections: ReadinessDto["checks"]["projections"];
   let projectCount = 0;
   try {
-    projectCount = store.listProjects().length;
+    projectCount = projectedProjectCount(store.sqlite);
     projections = { ok: true, detail: "projection database query succeeded" };
   } catch (error) {
     projections = { ok: false, detail: `projection database unavailable: ${error instanceof Error ? error.message : String(error)}` };
@@ -685,7 +686,7 @@ app.get<{ Querystring: CollectionQuery }>("/api/projects", async (request, reply
       params: normalizedSearch
         ? [`%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
         : [],
-      orderBy: "updated_at DESC, lower(title) ASC, id ASC",
+      order: "updated",
       scope: "projects",
       hydrate: id => store.getProject(id),
     });

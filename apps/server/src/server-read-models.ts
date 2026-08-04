@@ -16,7 +16,7 @@ import type {
   WorkspaceStore,
 } from "@ponderosa/agents";
 import { projectAgentHealth, type ActiveRunObservation } from "./agent-health.js";
-import { encodeCollectionCursor } from "./collection-page.js";
+import { sqliteCollectionPage } from "./collection-page.js";
 import { decodeTimelineCursor, encodeTimelineCursor } from "./cursors.js";
 import {
   communicationRecipientAgentIds,
@@ -189,35 +189,26 @@ export function createServerReadModels(context: ReadModelContext) {
         ? { decisions: { createdAt: oldestDecisionEvent.createdAt, id: oldestDecisionEvent.id } }
         : { decisionsDone: true }),
     };
-    const memberLimit = 100;
-    const memberTotal = (store.sqlite.prepare(`
-      SELECT COUNT(*) AS count
-      FROM agent_conversation_memberships membership
-      JOIN agents agent ON agent.id = membership.agent_id
-      WHERE membership.conversation_id = ? AND agent.deleted_at IS NULL
-    `).get(conversationId) as { count: number }).count;
-    const initialMembers = (store.sqlite.prepare(`
-      SELECT agent.id
-      FROM agent_conversation_memberships membership
-      JOIN agents agent ON agent.id = membership.agent_id
-      WHERE membership.conversation_id = ? AND agent.deleted_at IS NULL
-      ORDER BY lower(agent.title) ASC, agent.id ASC
-      LIMIT ?
-    `).all(conversationId, memberLimit) as Array<{ id: string }>)
-      .flatMap(({ id }) => {
-        const agent = store.getAgent(id);
-        return agent ? [agent] : [];
-      });
+    const memberPage = sqliteCollectionPage(store.sqlite, { limit: "100" }, {
+      baseSql: `
+        SELECT agent.id, agent.title, agent.updated_at
+        FROM agent_conversation_memberships membership
+        JOIN agents agent ON agent.id = membership.agent_id
+        WHERE membership.conversation_id = ? AND agent.deleted_at IS NULL
+      `,
+      params: [conversationId],
+      order: "title",
+      scope: `conversation-members:${conversationId}`,
+      hydrate: id => store.getAgent(id),
+    });
     return {
       conversation,
-      agents: initialMembers,
+      agents: memberPage.items,
       members: {
-        total: memberTotal,
-        limit: memberLimit,
-        hasMore: memberTotal > memberLimit,
-        ...(memberTotal > memberLimit
-          ? { cursor: encodeCollectionCursor(`conversation-members:${conversationId}`, {}, memberLimit) }
-          : {}),
+        total: memberPage.total,
+        limit: memberPage.limit,
+        hasMore: memberPage.hasMore,
+        ...(memberPage.cursor ? { cursor: memberPage.cursor } : {}),
       },
       messages: withMessagePresentation(conversation.projectId, page.messages),
       decisionEvents: decisionPage.events,
