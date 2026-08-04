@@ -50,6 +50,8 @@ function SharedSidebarPanel({
   starredRows,
   allRows,
   empty,
+  collectionFeedback,
+  busy = false,
   loadMoreLabel,
   onLoadMore,
   loadingMore = false,
@@ -66,7 +68,7 @@ function SharedSidebarPanel({
 }: {
   icon: ReactNode;
   title: string;
-  total: number;
+  total?: number;
   searchLabel: string;
   searchValue: string;
   onSearchValueChange(value: string): void;
@@ -74,6 +76,8 @@ function SharedSidebarPanel({
   starredRows: ReactNode;
   allRows: ReactNode;
   empty?: ReactNode;
+  collectionFeedback?: ReactNode;
+  busy?: boolean;
   loadMoreLabel?: string;
   onLoadMore?(): void;
   loadingMore?: boolean;
@@ -114,9 +118,9 @@ function SharedSidebarPanel({
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <IconTitle icon={icon} title={title} />
         </Box>
-        <Typography variant="caption" color="text.secondary">
+        {total == null ? null : <Typography variant="caption" color="text.secondary">
           {total} total
-        </Typography>
+        </Typography>}
       </Stack>
       <Box sx={{ px: 1.75, pb: 1.5 }}>
         <TextField
@@ -137,6 +141,7 @@ function SharedSidebarPanel({
       </Box>
       <Box
         data-testid="workspace-navigation-scroll"
+        aria-busy={busy}
         className="ponderosa-scroll"
         sx={{ minHeight: 0, overflowY: "auto", px: 1.25, pb: 1.5 }}
       >
@@ -154,6 +159,7 @@ function SharedSidebarPanel({
           <List disablePadding>{allRows}</List>
         </Box>
         {empty}
+        {collectionFeedback}
         {loadMoreLabel && onLoadMore ? (
           <Button
             fullWidth

@@ -27,6 +27,7 @@ import {
 } from "./HeaderRelationshipLinks";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 import { useAgentRunClock } from "./useAgentRunClock";
+import type { WorkspaceConnectionStatus } from "../hooks/useWorkspaceStream";
 
 export const AGENT_DETAIL_TABS: Array<{
   value: AgentTab;
@@ -47,12 +48,12 @@ export const AGENT_DETAIL_TABS: Array<{
 function AgentRunState({
   status,
   providerBlocked,
-  connected,
+  connectionStatus,
   startedAt,
 }: {
   status: AgentStatus;
   providerBlocked?: boolean;
-  connected: boolean;
+  connectionStatus: WorkspaceConnectionStatus;
   startedAt?: string;
 }): JSX.Element {
   const now = useAgentRunClock(startedAt);
@@ -61,13 +62,21 @@ function AgentRunState({
     : startedAt
     ? `${agentStatusLabel(status)} · ${formatExecutionElapsed(startedAt, now)}`
     : agentStatusLabel(status);
-  const connectionState = connected ? "Live" : "Reconnecting";
+  const connectionState = connectionStatus === "live"
+    ? "Live"
+    : connectionStatus === "stale"
+      ? "Stale"
+      : connectionStatus === "unavailable"
+        ? "Unavailable"
+        : connectionStatus === "connecting"
+          ? "Connecting"
+          : "Reconnecting";
   return (
     <Chip
       size="small"
       label={`${runState} · ${connectionState}`}
-      color={connected ? agentStatusColor(status) : "warning"}
-      variant={connected ? "filled" : "outlined"}
+      color={connectionStatus === "live" ? agentStatusColor(status) : "warning"}
+      variant={connectionStatus === "live" ? "filled" : "outlined"}
       aria-label={`Agent status: ${runState}; ${connectionState.toLocaleLowerCase()}`}
     />
   );
@@ -82,7 +91,7 @@ interface AgentDetailHeaderProps {
   lineageLabel: string;
   status: AgentStatus;
   providerBlocked?: boolean;
-  connected: boolean;
+  connectionStatus: WorkspaceConnectionStatus;
   startedAt?: string;
   running: boolean;
   stopping: boolean;
@@ -114,7 +123,7 @@ export function AgentDetailHeader({
   lineageLabel,
   status,
   providerBlocked,
-  connected,
+  connectionStatus,
   startedAt,
   running,
   stopping,
@@ -184,7 +193,7 @@ export function AgentDetailHeader({
         <AgentRunState
           status={status}
           providerBlocked={providerBlocked}
-          connected={connected}
+          connectionStatus={connectionStatus}
           startedAt={startedAt}
         />
       }

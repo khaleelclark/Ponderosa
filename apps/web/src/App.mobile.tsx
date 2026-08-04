@@ -106,7 +106,7 @@ export function MobileWorkspaceHeader({
         <Box aria-label="Ponderosa" sx={{ flex: 1, minWidth: 0 }}>
           <Typography
             variant="h6"
-            component="h1"
+            component="div"
             sx={{ fontWeight: 800, minWidth: 0 }}
             noWrap
           >
@@ -289,7 +289,7 @@ interface MobileWorkspaceDrawerProps {
   notifications: WorkspaceNotificationDto[];
   onOpenChange(open: boolean): void;
   onNavigate(route: Route): void;
-  onOpenInNewTab(route: Route): void;
+  onOpenInNewTab?(route: Route): void;
   onCreate(kind: "project" | "chat" | "agent" | "trigger"): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onConversationAction(
@@ -355,10 +355,6 @@ export function MobileWorkspaceDrawer({
           onNavigate={next => {
             close();
             onNavigate(next);
-          }}
-          onOpenInNewTab={next => {
-            close();
-            onOpenInNewTab(next);
           }}
           onCreate={kind => {
             close();

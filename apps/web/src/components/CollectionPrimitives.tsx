@@ -1,10 +1,12 @@
 import SearchIcon from "@mui/icons-material/Search";
 import {
+  Alert,
   Box,
   Button,
   FormControl,
   InputAdornment,
   InputLabel,
+  LinearProgress,
   MenuItem,
   Paper,
   Select,
@@ -14,6 +16,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { ProjectDto, ProjectSort } from "@ponderosa/core";
+import type { WorkspaceDirectoryRequestState } from "../hooks/useWorkspaceDirectory";
 import {
   createContext,
   useContext,
@@ -36,6 +39,7 @@ export interface CollectionWorkspaceProps {
   children: ReactNode;
   listLabel: string;
   variant?: "page" | "embedded";
+  busy?: boolean;
 }
 
 const CollectionAnnouncementContext = createContext<(message: string) => void>(
@@ -95,6 +99,7 @@ export function CollectionWorkspace({
   children,
   listLabel,
   variant = "page",
+  busy = false,
 }: CollectionWorkspaceProps): JSX.Element {
   const embedded = variant === "embedded";
   const [reorderAnnouncement, setReorderAnnouncement] = useState("");
@@ -118,6 +123,7 @@ export function CollectionWorkspace({
         className={embedded ? "ponderosa-scroll" : undefined}
         component="section"
         aria-label={listLabel}
+        aria-busy={busy}
         spacing={0.75}
         sx={{
           minHeight: 0,
@@ -322,6 +328,79 @@ export function CollectionEmptyState({
   </Stack>;
 }
 
+
+export function CollectionStateFeedback({
+  request,
+  itemCount,
+  filtersActive,
+  resourceLabel,
+  emptyTitle,
+  emptyDetail,
+  noMatchTitle,
+  noMatchDetail,
+  onClearFilters,
+  compact = false,
+}: {
+  request: WorkspaceDirectoryRequestState;
+  itemCount: number;
+  filtersActive: boolean;
+  resourceLabel: string;
+  emptyTitle: string;
+  emptyDetail?: string;
+  noMatchTitle?: string;
+  noMatchDetail?: string;
+  onClearFilters?(): void;
+  compact?: boolean;
+}): JSX.Element | null {
+  if (request.isInitialLoading) {
+    return <Stack
+      role="status"
+      aria-live="polite"
+      spacing={1}
+      sx={{ py: compact ? 2 : 4, px: compact ? 1 : 2 }}
+    >
+      <LinearProgress />
+      <Typography variant="body2" color="text.secondary">
+        {"Loading " + resourceLabel + "…"}
+      </Typography>
+    </Stack>;
+  }
+  if (request.isInitialError) {
+    return <Alert
+      severity="error"
+      action={<Button size="small" onClick={() => void request.retry()}>Retry</Button>}
+      sx={{ my: compact ? 1 : 2 }}
+    >
+      {"Could not load " + resourceLabel + "."}
+    </Alert>;
+  }
+  const empty = request.hasResolved && itemCount === 0;
+  return <>
+    {request.isRefreshing ? <Box role="status" aria-live="polite" sx={{ py: 0.5 }}>
+      <LinearProgress aria-label={"Refreshing " + resourceLabel} />
+    </Box> : null}
+    {empty ? <CollectionEmptyState
+      title={filtersActive ? (noMatchTitle ?? "No matching " + resourceLabel) : emptyTitle}
+      detail={filtersActive ? noMatchDetail : emptyDetail}
+      action={filtersActive && onClearFilters ? { label: "Clear filters", onClick: onClearFilters } : undefined}
+    /> : null}
+    {request.isPaginationError ? <Alert
+      severity="warning"
+      action={<Button size="small" onClick={() => void request.fetchNextPage()}>Retry</Button>}
+      sx={{ my: 1 }}
+    >
+      {"Could not load more " + resourceLabel + ". Existing results are still available."}
+    </Alert> : null}
+    {!empty && request.hasNextPage && !request.isPaginationError ? <Button
+      size="small"
+      disabled={request.isFetchingNextPage}
+      onClick={() => void request.fetchNextPage()}
+      sx={{ alignSelf: "center", my: 1 }}
+    >
+      {request.isFetchingNextPage ? "Loading…" : "Load more " + resourceLabel}
+    </Button> : null}
+  </>;
+}
 /**
  * Shared directory timestamp treatment. Relative time is easier to scan across
  * mixed resources, while the tooltip preserves the exact local timestamp.

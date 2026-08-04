@@ -1,5 +1,5 @@
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   WorkspaceEvent,
   WorkspaceEventEnvelope,
@@ -16,6 +16,22 @@ const CURSOR_KEY = "ponderosa.workspace.cursor.v2";
 const INSTANCE_KEY = "ponderosa.workspace.instance.v1";
 const INSTANCE_MISMATCH_INITIAL_DELAY_MS = 50;
 const INSTANCE_MISMATCH_MAX_DELAY_MS = 2_000;
+const RECONNECTING_NOTICE_DELAY_MS = 1_000;
+const STALE_NOTICE_DELAY_MS = 8_000;
+
+export type WorkspaceConnectionStatus =
+  | "connecting"
+  | "live"
+  | "reconnecting"
+  | "stale"
+  | "unavailable";
+
+export interface WorkspaceConnectionState {
+  status: WorkspaceConnectionStatus;
+  lastSuccessfulSyncAt?: string;
+  prolongedDisconnect: boolean;
+  announcement?: string;
+}
 
 function initialCursor(): number {
   try {
@@ -286,10 +302,14 @@ function createDecisionConversationInvalidator(
 }
 
 /** One authoritative live stream invalidates only caches affected by each event. */
-export function useWorkspaceStream(): void {
+export function useWorkspaceStream(): WorkspaceConnectionState {
   const queryClient = useQueryClient();
   const cursor = useRef(initialCursor());
   const instanceId = useRef(initialInstanceId());
+  const [connection, setConnection] = useState<WorkspaceConnectionState>({
+    status: "connecting",
+    prolongedDisconnect: false,
+  });
 
   useEffect(() => {
     const agentWorkInvalidator = createAgentWorkInvalidator(queryClient);
@@ -466,7 +486,56 @@ export function useWorkspaceStream(): void {
     let stopped = false;
     let subscription: StreamSubscription | undefined;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    let reconnectingNoticeTimer: ReturnType<typeof setTimeout> | undefined;
+    let staleNoticeTimer: ReturnType<typeof setTimeout> | undefined;
+    let connectedOnce = false;
+    let disconnected = false;
     let instanceMismatchDelay = INSTANCE_MISMATCH_INITIAL_DELAY_MS;
+    const clearConnectionTimers = () => {
+      if (reconnectingNoticeTimer) clearTimeout(reconnectingNoticeTimer);
+      if (staleNoticeTimer) clearTimeout(staleNoticeTimer);
+      reconnectingNoticeTimer = undefined;
+      staleNoticeTimer = undefined;
+    };
+    const noteDisconnect = () => {
+      if (stopped || disconnected) return;
+      disconnected = true;
+      reconnectingNoticeTimer = setTimeout(() => {
+        reconnectingNoticeTimer = undefined;
+        if (!stopped && disconnected) {
+          setConnection(current => ({
+            ...current,
+            status: connectedOnce ? "reconnecting" : "connecting",
+          }));
+        }
+      }, RECONNECTING_NOTICE_DELAY_MS);
+      staleNoticeTimer = setTimeout(() => {
+        staleNoticeTimer = undefined;
+        if (!stopped && disconnected) {
+          setConnection(current => ({
+            ...current,
+            status: connectedOnce ? "stale" : "unavailable",
+            prolongedDisconnect: true,
+            announcement: "Live workspace updates are unavailable.",
+          }));
+        }
+      }, STALE_NOTICE_DELAY_MS);
+    };
+    const noteConnected = () => {
+      const wasDisconnected = disconnected;
+      disconnected = false;
+      clearConnectionTimers();
+      setConnection(current => ({
+        status: "live",
+        lastSuccessfulSyncAt: new Date().toISOString(),
+        prolongedDisconnect: false,
+        announcement: current.prolongedDisconnect
+          ? "Live workspace updates have resumed."
+          : undefined,
+      }));
+      if (connectedOnce && wasDisconnected) invalidateAll();
+      connectedOnce = true;
+    };
     const connect = (lastSeenId: number) => {
       if (stopped) return;
       const nextSubscription = api.subscribeWorkspace(lastSeenId, {
@@ -494,6 +563,7 @@ export function useWorkspaceStream(): void {
             }
             return;
           }
+          noteConnected();
           instanceMismatchDelay = INSTANCE_MISMATCH_INITIAL_DELAY_MS;
           if (status.reset || cursor.current > status.cursor) {
             cursor.current = 0;
@@ -502,7 +572,7 @@ export function useWorkspaceStream(): void {
           instanceId.current = status.instanceId;
           persistWorkspaceCursor(cursor.current, status.instanceId);
         },
-        onError: () => undefined,
+        onError: noteDisconnect,
       });
       subscription = nextSubscription;
     };
@@ -511,6 +581,7 @@ export function useWorkspaceStream(): void {
       stopped = true;
       subscription?.close();
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      clearConnectionTimers();
       if (replayReconcileTimer) clearTimeout(replayReconcileTimer);
       agentWorkInvalidator.dispose();
       agentDetailInvalidator.dispose();
@@ -519,4 +590,5 @@ export function useWorkspaceStream(): void {
       decisionConversationInvalidator.dispose();
     };
   }, [queryClient]);
+  return connection;
 }

@@ -39,7 +39,9 @@ export function useWorkspaceSidebarNavigation(route: Route) {
     const section = routeSynchronizedSidebarSection(route);
     if (section) {
       setSidebarSection(section);
-      setFilter("");
+      if (routeSynchronizedSidebarSection(previous) !== section) {
+        setFilter("");
+      }
       return;
     }
     // Only the global Create flow owns the Create sidebar. Contextual creation

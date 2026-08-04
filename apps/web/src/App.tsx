@@ -7,10 +7,13 @@ import type { ConversationDto, ProjectDto } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
+import { ApiRequestError } from "./api/types";
 import { ProjectShell } from "./components/ProjectShell";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
+import { WorkspaceConnectionNotice } from "./components/WorkspaceConnectionNotice";
+import { WorkspaceConnectionProvider } from "./components/WorkspaceConnectionContext";
 import { ProviderStatusFlow } from "./components/ProviderStatusFlow";
 import {
   GlobalChatSearch,
@@ -34,7 +37,6 @@ import {
 } from "./hooks/queries";
 import { useWorkspaceStream } from "./hooks/useWorkspaceStream";
 import {
-  loadLastProjectId,
   parseRoute,
   routeProjectId,
   saveLastProjectId,
@@ -103,7 +105,7 @@ export default function App({
   onToggleColorMode(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
-  useWorkspaceStream();
+  const workspaceConnection = useWorkspaceStream();
   const { route, navigate } = useRoute();
   const [initialWorkspaceSession] = useState(() => {
     try {
@@ -246,12 +248,14 @@ export default function App({
   const preferredQuotaProvider =
     activeAgentQuery.data?.agent.activeEngine;
   useEffect(() => {
+    if (mobileWorkspace) return;
     setWorkspaceTabs(current =>
       navigateWorkspaceTab(current, activeWorkspaceTabKey, route),
     );
-  }, [route, activeWorkspaceTabKey]);
+  }, [route, activeWorkspaceTabKey, mobileWorkspace]);
 
   useEffect(() => {
+    if (mobileWorkspace) return;
     try {
       window.localStorage.setItem(
         WORKSPACE_TABS_STORAGE_KEY,
@@ -260,7 +264,7 @@ export default function App({
     } catch {
       // Tabs remain available for this session when storage is unavailable.
     }
-  }, [workspaceTabs, activeWorkspaceTabKey]);
+  }, [workspaceTabs, activeWorkspaceTabKey, mobileWorkspace]);
 
   useEffect(() => {
     try {
@@ -274,12 +278,13 @@ export default function App({
   }, [sidebarPresentation]);
 
   useEffect(() => {
+    if (mobileWorkspace) return;
     if (workspaceTabs.some(tab => tab.key === activeWorkspaceTabKey)) return;
     const next = workspaceTabs[0];
     if (!next) return;
     setActiveWorkspaceTabKey(next.key);
     navigate(next.route, { replace: true });
-  }, [workspaceTabs, activeWorkspaceTabKey, navigate]);
+  }, [workspaceTabs, activeWorkspaceTabKey, navigate, mobileWorkspace]);
 
   useEffect(() => {
     const refresh = () => {
@@ -311,60 +316,15 @@ export default function App({
       ? routedProjectId
       : undefined;
 
-  // Land on a concrete project: honour the URL, else the last-used project, else
-  // the first available. Uses replace so the initial redirect isn't a history step.
-  useEffect(() => {
-    if (projects.length === 0) {
-      return;
-    }
-    if (!isProjectRoute(route)) return;
-    if (
-      routedProjectId &&
-      !projectPage.some(project => project.id === routedProjectId) &&
-      routedProjectQuery.isPending
-    )
-      return;
-    // Every project-scoped route is already a concrete destination. In
-    // particular, Project overview intentionally uses the bare project route;
-    // treating it like an unresolved landing page caused it to flash and then
-    // redirect back to the most recent chat.
-    if (selectedProjectId) return;
-    const preferred = selectedProjectId ?? loadLastProjectId();
-    const target =
-      projects.find(project => project.id === preferred) ?? projects[0];
-    if (!target) return;
-    let cancelled = false;
-    void api.listConversations(target.id).then(items => {
-      if (cancelled) return;
-      const active = items.filter(item => !item.archived);
-      const conversation =
-        active.find(item => item.id === target.lastConversationId) ?? active[0];
-      saveLastProjectId(target.id);
-      if (conversation) {
-        void api.markProjectUsed(target.id, conversation.id);
-        navigate(
-          {
-            kind: "conversation",
-            projectId: target.id,
-            conversationId: conversation.id,
-          },
-          { replace: true },
-        );
-      } else
-        navigate({ kind: "agents", projectId: target.id }, { replace: true });
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    projects,
-    routedProjectId,
-    routedProjectQuery.isFetching,
-    routedProjectQuery.isLoading,
-    selectedProjectId,
-    navigate,
-    route.kind,
-  ]);
+  const projectResolution = !isProjectRoute(route) || selectedProjectId
+    ? undefined
+    : routedProjectQuery.isPending || projectsQuery.isPending
+      ? "loading"
+      : routedProjectQuery.error instanceof ApiRequestError &&
+          routedProjectQuery.error.status === 404
+        ? "missing"
+        : "unavailable";
+
 
   const openSidebarConversationAction = (
     kind: "rename" | "delete",
@@ -459,6 +419,11 @@ export default function App({
     }
   };
   const navigateWorkspace = (next: Route) => {
+    if (mobileWorkspace) {
+      recordWorkspaceRouteUse(next);
+      navigate(next);
+      return;
+    }
     if (next.kind !== "create") {
       creationOriginByWorkspace.current.delete(activeWorkspaceTabKey);
     }
@@ -474,6 +439,11 @@ export default function App({
     navigate(next);
   };
   const replaceActiveWorkspace = (next: Route) => {
+    if (mobileWorkspace) {
+      recordWorkspaceRouteUse(next);
+      navigate(next, { replace: true });
+      return;
+    }
     if (next.kind !== "create") {
       creationOriginByWorkspace.current.delete(activeWorkspaceTabKey);
     }
@@ -500,6 +470,11 @@ export default function App({
     navigate(tab.route);
   };
   const openWorkspaceRoute = (next: Route) => {
+    if (mobileWorkspace) {
+      recordWorkspaceRouteUse(next);
+      navigate(next);
+      return;
+    }
     recordWorkspaceRouteUse(next);
     const tab = createWorkspaceTab(next);
     setWorkspaceTabs(current =>
@@ -676,6 +651,7 @@ export default function App({
     removeWorkspaceView({ kind: "project", projectId });
   };
   useEffect(() => {
+    if (mobileWorkspace) return;
     const onWorkspaceTabShortcut = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
       if (event.key.toLowerCase() === "t") {
@@ -700,7 +676,7 @@ export default function App({
     };
     window.addEventListener("keydown", onWorkspaceTabShortcut);
     return () => window.removeEventListener("keydown", onWorkspaceTabShortcut);
-  }, [workspaceTabs, activeWorkspaceTabKey]);
+  }, [workspaceTabs, activeWorkspaceTabKey, mobileWorkspace]);
   const openSettings = () => {
     navigateWorkspace({ kind: "settings", section: "general" });
   };
@@ -836,42 +812,64 @@ export default function App({
                 preferredProvider={displayedQuotaProvider}
               />
             ) : null}
-            <WorkspaceErrorBoundary
-              title="This workspace view could not be displayed."
-              resetKey={`${activeWorkspaceTabKey}:${JSON.stringify(route)}`}
+            <Box
+              sx={{
+                minHeight: 0,
+                minWidth: 0,
+                display: "grid",
+                gridTemplateRows: "auto minmax(0, 1fr)",
+                position: "relative",
+              }}
             >
-              <WorkspaceRouteOutlet
-                route={route}
-                selectedProjectId={selectedProjectId}
-                projects={projects}
-                engines={engines}
-                notifications={notificationsQuery.data ?? []}
-                preferences={preferences}
-                colorMode={colorMode}
-                projectBrowserRequest={projectBrowserRequest}
-                loadError={projectsQuery.isError || enginesQuery.isError}
-                onRetryLoad={() => {
-                  void projectsQuery.refetch();
-                  void enginesQuery.refetch();
-                }}
-                onNavigate={navigateWorkspace}
-                onOpenInNewTab={openWorkspaceRouteInBackground}
-                onPreferences={savePreferences}
-                onCreate={openCreationForm}
-                onCancelCreate={cancelCreationWorkspace}
-                onOpenInbox={() => setNotificationPanelOpen(true)}
-                onProjectDeleted={handleProjectDeleted}
-                onConversationAction={openSidebarConversationAction}
-                onOpenEngineStatus={() => setEngineStatusOpen(true)}
-                onBrowserRequestHandled={requestId =>
-                  setProjectBrowserRequest(current =>
-                    consumeProjectBrowserRequest(current, requestId),
-                  )
-                }
-                onResourceDeleted={removeWorkspaceView}
-                onToggleColorMode={onToggleColorMode}
-              />
-            </WorkspaceErrorBoundary>
+              <WorkspaceConnectionNotice connection={workspaceConnection} />
+              <WorkspaceConnectionProvider value={workspaceConnection}>
+                <WorkspaceErrorBoundary
+                  title="This workspace view could not be displayed."
+                  resetKey={`${activeWorkspaceTabKey}:${JSON.stringify(route)}`}
+                >
+                  <WorkspaceRouteOutlet
+                    route={route}
+                    selectedProjectId={selectedProjectId}
+                    projectResolution={projectResolution}
+                    onRetryProject={() => void routedProjectQuery.refetch()}
+                    projects={projects}
+                    engines={engines}
+                    notifications={notificationsQuery.data ?? []}
+                    preferences={preferences}
+                    colorMode={colorMode}
+                    projectBrowserRequest={projectBrowserRequest}
+                    loadError={
+                      enginesQuery.isError ||
+                      (!isProjectRoute(route) && projectsQuery.isError)
+                    }
+                    onRetryLoad={() => {
+                      void projectsQuery.refetch();
+                      void enginesQuery.refetch();
+                    }}
+                    onNavigate={navigateWorkspace}
+                    onOpenInNewTab={
+                      mobileWorkspace
+                        ? undefined
+                        : openWorkspaceRouteInBackground
+                    }
+                    onPreferences={savePreferences}
+                    onCreate={openCreationForm}
+                    onCancelCreate={cancelCreationWorkspace}
+                    onOpenInbox={() => setNotificationPanelOpen(true)}
+                    onProjectDeleted={handleProjectDeleted}
+                    onConversationAction={openSidebarConversationAction}
+                    onOpenEngineStatus={() => setEngineStatusOpen(true)}
+                    onBrowserRequestHandled={requestId =>
+                      setProjectBrowserRequest(current =>
+                        consumeProjectBrowserRequest(current, requestId),
+                      )
+                    }
+                    onResourceDeleted={removeWorkspaceView}
+                    onToggleColorMode={onToggleColorMode}
+                  />
+                </WorkspaceErrorBoundary>
+              </WorkspaceConnectionProvider>
+            </Box>
           </Box>
         </Box>
 
@@ -883,7 +881,6 @@ export default function App({
           notifications={notificationsQuery.data ?? []}
           onOpenChange={setMobileNavOpen}
           onNavigate={navigateWorkspace}
-          onOpenInNewTab={openWorkspaceRoute}
           onCreate={replaceWorkspaceWithCreationForm}
           onPreferences={savePreferences}
           onConversationAction={openSidebarConversationAction}
@@ -916,7 +913,7 @@ export default function App({
             recordWorkspaceRouteUse(destination);
             navigate(destination);
           }}
-          onOpenInNewTab={selection => {
+          onOpenInNewTab={mobileWorkspace ? undefined : selection => {
             saveLastProjectId(selection.projectId);
             if (selection.chat.kind === "conversation") {
               void api.markProjectUsed(selection.projectId, selection.chat.id);

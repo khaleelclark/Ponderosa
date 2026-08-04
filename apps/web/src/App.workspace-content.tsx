@@ -1,4 +1,4 @@
-import { Alert, Box, Button } from "@mui/material";
+import { Alert, Box, Button, LinearProgress, Stack, Typography } from "@mui/material";
 import type {
   ConversationDto,
   EngineDto,
@@ -29,6 +29,8 @@ import type { ColorMode } from "./theme";
 interface WorkspaceRouteOutletProps {
   route: Route;
   selectedProjectId?: string;
+  projectResolution?: "loading" | "missing" | "unavailable";
+  onRetryProject(): void;
   projects: ProjectDto[];
   engines: EngineDto[];
   notifications: WorkspaceNotificationDto[];
@@ -38,7 +40,7 @@ interface WorkspaceRouteOutletProps {
   loadError: boolean;
   onRetryLoad(): void;
   onNavigate(route: Route): void;
-  onOpenInNewTab(route: Route): void;
+  onOpenInNewTab?(route: Route): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onCreate(
     kind: "project" | "chat" | "agent" | "trigger",
@@ -65,6 +67,8 @@ interface WorkspaceRouteOutletProps {
 export function WorkspaceRouteOutlet({
   route,
   selectedProjectId,
+  projectResolution,
+  onRetryProject,
   projects,
   engines,
   notifications,
@@ -231,8 +235,34 @@ export function WorkspaceRouteOutlet({
             onResourceDeleted={onResourceDeleted}
             onCreate={(kind, context) => onCreate(kind, context)}
           />
+        ) : projectResolution === "loading" ? (
+          <Stack role="status" aria-live="polite" spacing={1} sx={{ p: 3 }}>
+            <LinearProgress />
+            <Typography color="text.secondary">Loading Project...</Typography>
+          </Stack>
+        ) : projectResolution === "missing" ? (
+          <Box sx={{ p: 3 }}>
+            <Alert
+              severity="warning"
+              action={
+                <Button onClick={() => onNavigate({ kind: "projects" })}>
+                  View Projects
+                </Button>
+              }
+            >
+              This Project could not be found. It may have been deleted.
+            </Alert>
+          </Box>
         ) : (
-          <Box />
+          <Box sx={{ p: 3 }}>
+            <Alert
+              severity="error"
+              action={<Button onClick={onRetryProject}>Retry</Button>}
+            >
+              This Project is temporarily unavailable. Your URL has been
+              preserved.
+            </Alert>
+          </Box>
         )
       ) : (
         assertNeverRoute(route)
