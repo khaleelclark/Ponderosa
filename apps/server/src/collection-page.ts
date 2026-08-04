@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { FastifyReply } from "fastify";
 
@@ -18,9 +18,10 @@ export interface CollectionPage<T> {
 
 type CollectionOrder = "updated" | "title";
 
+const collectionProcessId = randomUUID();
+
 interface CollectionGeneration {
-  total: number;
-  maxUpdatedAt: string | null;
+  revision: string;
 }
 
 interface CollectionCursor {
@@ -45,6 +46,14 @@ function queryScope(scope: string, query: CollectionQuery): string {
     .slice(0, 24);
 }
 
+export function sqliteCollectionRevision(sqlite: Database.Database): string {
+  const dataVersion = sqlite.pragma("data_version", { simple: true }) as number;
+  const totalChanges = (sqlite.prepare(
+    "SELECT total_changes() AS count",
+  ).get() as { count: number }).count;
+  return `${collectionProcessId}:${dataVersion}:${totalChanges}`;
+}
+
 function encodeCollectionCursor(cursor: CollectionCursor): string {
   return Buffer.from(JSON.stringify(cursor)).toString("base64url");
 }
@@ -66,9 +75,7 @@ function decodeCollectionCursor(
       cursor.scope !== expected.scope ||
       cursor.order !== expected.order ||
       !generation ||
-      !Number.isSafeInteger(generation.total) ||
-      generation.total < 0 ||
-      (generation.maxUpdatedAt !== null && typeof generation.maxUpdatedAt !== "string") ||
+      typeof generation.revision !== "string" ||
       typeof cursor.title !== "string" ||
       typeof cursor.id !== "string" ||
       (expected.order === "updated" && typeof cursor.updatedAt !== "string")
@@ -76,8 +83,7 @@ function decodeCollectionCursor(
       throw new Error();
     }
     if (
-      generation.total !== expected.generation.total ||
-      generation.maxUpdatedAt !== expected.generation.maxUpdatedAt
+      generation.revision !== expected.generation.revision
     ) {
       throw new Error("stale collection cursor");
     }
@@ -106,13 +112,12 @@ export function sqliteCollectionPage<T>(
   const limit = parseLimit(query, options.defaultLimit ?? maximum, maximum);
   const scope = queryScope(options.scope, query);
   const params = [...(options.params ?? [])];
-  const aggregate = sqlite.prepare(`
-    SELECT COUNT(*) AS total, MAX(updated_at) AS max_updated_at
+  const total = (sqlite.prepare(`
+    SELECT COUNT(*) AS total
     FROM (${options.baseSql}) bounded_collection
-  `).get(...params) as { total: number; max_updated_at: string | null };
+  `).get(...params) as { total: number }).total;
   const generation: CollectionGeneration = {
-    total: aggregate.total,
-    maxUpdatedAt: aggregate.max_updated_at,
+    revision: sqliteCollectionRevision(sqlite),
   };
   const cursor = decodeCollectionCursor(query.cursor, {
     scope,
@@ -162,7 +167,7 @@ export function sqliteCollectionPage<T>(
   const last = pageRows.at(-1);
   return {
     items,
-    total: generation.total,
+    total,
     limit,
     hasMore,
     ...(hasMore && last

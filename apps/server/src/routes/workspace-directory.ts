@@ -21,6 +21,7 @@ import type {
   WorkspaceStore,
 } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
+import { sqliteCollectionRevision } from "../collection-page.js";
 
 const DEFAULT_DIRECTORY_LIMIT = 25;
 const MAX_DIRECTORY_LIMIT = 100;
@@ -36,13 +37,14 @@ type DirectoryQuery = {
 };
 
 type CursorPosition =
-  | { kind: "offset"; offset: number }
+  | { kind: "custom"; rank: number; title: string; id: string }
   | { kind: "alphabetical"; title: string; id: string }
   | { kind: "last_used"; updatedAt: string; id: string };
 
 type CursorPayload = {
-  v: 3;
+  v: 4;
   scope: string;
+  revision: string;
   position: CursorPosition;
 };
 
@@ -58,6 +60,8 @@ type ResourceRow = {
   recent_conversation_title: string | null;
   recent_conversation_updated_at: string | null;
   running_agent_count: number | null;
+  custom_rank?: number;
+  sort_title?: string;
 };
 
 interface WorkspaceDirectoryRoutesContext {
@@ -93,9 +97,13 @@ function parseLimit(value: string | undefined): number {
   return parsed;
 }
 
-function encodeCursor(position: CursorPosition, scope: string): string {
+function encodeCursor(
+  position: CursorPosition,
+  scope: string,
+  revision: string,
+): string {
   return Buffer.from(
-    JSON.stringify({ v: 3, position, scope } satisfies CursorPayload),
+    JSON.stringify({ v: 4, position, scope, revision } satisfies CursorPayload),
     "utf8",
   ).toString("base64url");
 }
@@ -104,19 +112,22 @@ function decodeCursor(
   value: string,
   scope: string,
   sort: ProjectSort,
+  revision: string,
 ): CursorPosition {
   try {
     if (!value || value.length > 4096) throw new Error();
     const parsed = JSON.parse(
       Buffer.from(value, "base64url").toString("utf8"),
     ) as Partial<CursorPayload>;
-    if (parsed.v !== 3 || parsed.scope !== scope || !parsed.position) {
+    if (parsed.v !== 4 || parsed.scope !== scope || !parsed.position) {
       throw new Error();
     }
+    if (parsed.revision !== revision) throw new Error("stale directory cursor");
     const position = parsed.position;
     if (
-      sort === "custom" && position.kind === "offset" &&
-      Number.isSafeInteger(position.offset) && position.offset >= 0
+      sort === "custom" && position.kind === "custom" &&
+      Number.isSafeInteger(position.rank) && position.rank >= 0 &&
+      typeof position.title === "string" && typeof position.id === "string"
     ) return position;
     if (
       sort === "alphabetical" && position.kind === "alphabetical" &&
@@ -127,7 +138,8 @@ function decodeCursor(
       typeof position.updatedAt === "string" && typeof position.id === "string"
     ) return position;
     throw new Error();
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.message === "stale directory cursor") throw error;
     throw new Error("invalid directory cursor");
   }
 }
@@ -368,50 +380,68 @@ function baseDirectoryQuery(
 function orderingSql(
   sort: ProjectSort,
   order: readonly string[],
-): { sql: string; params: unknown[] } {
+): { sql: string; rankSql: string; rankParams: unknown[] } {
   if (sort === "alphabetical") {
-    return { sql: "lower(title) ASC, id ASC", params: [] };
+    return { sql: "lower(title) ASC, id ASC", rankSql: "0", rankParams: [] };
   }
   if (sort === "last_used") {
-    return { sql: "updated_at DESC, id ASC", params: [] };
+    return { sql: "updated_at DESC, id ASC", rankSql: "0", rankParams: [] };
   }
   if (order.length === 0) {
-    return { sql: "lower(title) ASC, id ASC", params: [] };
+    return {
+      sql: "custom_rank ASC, sort_title ASC, id ASC",
+      rankSql: "0",
+      rankParams: [],
+    };
   }
   const cases = order.map((_, index) => `WHEN ? THEN ${index}`).join(" ");
   return {
-    sql: `CASE id ${cases} ELSE ${order.length} END ASC, lower(title) ASC, id ASC`,
-    params: [...order],
+    sql: "custom_rank ASC, sort_title ASC, id ASC",
+    rankSql: `CASE id ${cases} ELSE ${order.length} END`,
+    rankParams: [...order],
   };
 }
 
 function cursorSql(
   position: CursorPosition | undefined,
-): { sql: string; params: unknown[]; offset: number } {
-  if (!position) return { sql: "", params: [], offset: 0 };
-  if (position.kind === "offset") {
-    return { sql: "", params: [], offset: position.offset };
+): { sql: string; params: unknown[] } {
+  if (!position) return { sql: "", params: [] };
+  if (position.kind === "custom") {
+    return {
+      sql: `(
+        custom_rank > ? OR
+        (custom_rank = ? AND (
+          sort_title > ? OR
+          (sort_title = ? AND id > ?)
+        ))
+      )`,
+      params: [position.rank, position.rank, position.title, position.title, position.id],
+    };
   }
   if (position.kind === "alphabetical") {
     return {
       sql: "(lower(title) > lower(?) OR (lower(title) = lower(?) AND id > ?))",
       params: [position.title, position.title, position.id],
-      offset: 0,
     };
   }
   return {
     sql: "(updated_at < ? OR (updated_at = ? AND id > ?))",
     params: [position.updatedAt, position.updatedAt, position.id],
-    offset: 0,
   };
 }
 
 function nextCursorPosition(
   row: ResourceRow,
   sort: ProjectSort,
-  nextOffset: number,
 ): CursorPosition {
-  if (sort === "custom") return { kind: "offset", offset: nextOffset };
+  if (sort === "custom") {
+    return {
+      kind: "custom",
+      rank: row.custom_rank ?? 0,
+      title: row.sort_title ?? row.title.toLocaleLowerCase(),
+      id: row.id,
+    };
+  }
   if (sort === "alphabetical") {
     return { kind: "alphabetical", title: row.title, id: row.id };
   }
@@ -484,6 +514,8 @@ export function registerWorkspaceDirectoryRoutes(
     const preferences = context.workspace.getPreferences();
     const settings = resourceSettings(preferences, kind);
     const sort = requestedSort ?? settings.sort;
+    const sqlite = context.store.sqlite;
+    const revision = sqliteCollectionRevision(sqlite);
     const order = settings.order;
     const normalizedSearch = (request.query.search ?? "")
       .trim()
@@ -513,7 +545,7 @@ export function registerWorkspaceDirectoryRoutes(
     let cursorPosition: CursorPosition | undefined;
     if (request.query.cursor) {
       try {
-        cursorPosition = decodeCursor(request.query.cursor, scope, sort);
+        cursorPosition = decodeCursor(request.query.cursor, scope, sort, revision);
       } catch (error) {
         return reply.code(400).send({ error: (error as Error).message });
       }
@@ -525,7 +557,6 @@ export function registerWorkspaceDirectoryRoutes(
       normalizedSearch,
       filteredAgentIds,
     );
-    const sqlite = context.store.sqlite;
     const total = (sqlite.prepare(
       `SELECT COUNT(*) AS count FROM (${base.sql}) resources`,
     ).get(...base.params) as { count: number }).count;
@@ -547,8 +578,9 @@ export function registerWorkspaceDirectoryRoutes(
       );
     }
 
+    const ordering = orderingSql(sort, order);
     const pageWhere: string[] = [];
-    const pageParams: unknown[] = [...base.params];
+    const pageParams: unknown[] = [...ordering.rankParams, ...base.params];
     if (stars.length > 0) {
       pageWhere.push(`id NOT IN (${placeholders(stars.length)})`);
       pageParams.push(...stars);
@@ -558,24 +590,20 @@ export function registerWorkspaceDirectoryRoutes(
       pageWhere.push(cursor.sql);
       pageParams.push(...cursor.params);
     }
-    const ordering = orderingSql(sort, order);
-    pageParams.push(...ordering.params, limit + 1);
-    const offsetClause = sort === "custom" && cursor.offset > 0
-      ? " OFFSET ?"
-      : "";
-    if (offsetClause) pageParams.push(cursor.offset);
+    pageParams.push(limit + 1);
 
     const candidateRows = sqlite.prepare(`
-      SELECT * FROM (${base.sql}) resources
+      SELECT * FROM (
+        SELECT resources.*, lower(title) AS sort_title,
+          ${ordering.rankSql} AS custom_rank
+        FROM (${base.sql}) resources
+      ) ranked_resources
       ${pageWhere.length > 0 ? `WHERE ${pageWhere.join(" AND ")}` : ""}
       ORDER BY ${ordering.sql}
-      LIMIT ?${offsetClause}
+      LIMIT ?
     `).all(...pageParams) as ResourceRow[];
     const hasMore = candidateRows.length > limit;
     const pageRows = candidateRows.slice(0, limit);
-    const previousOffset = cursorPosition?.kind === "offset"
-      ? cursorPosition.offset
-      : 0;
 
     const projectCache = new Map<string, ProjectDto>();
     const getProject = (id: string): ProjectDto | undefined => {
@@ -683,12 +711,9 @@ export function registerWorkspaceDirectoryRoutes(
         ...(hasMore && lastRow
           ? {
               cursor: encodeCursor(
-                nextCursorPosition(
-                  lastRow,
-                  sort,
-                  previousOffset + pageRows.length,
-                ),
+                nextCursorPosition(lastRow, sort),
                 scope,
+                revision,
               ),
             }
           : {}),

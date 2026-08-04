@@ -41,4 +41,34 @@ describe("collection keyset pagination", () => {
     ).toThrow("stale collection cursor");
     sqlite.close();
   });
+
+  it("rejects a same-timestamp ordering mutation", () => {
+    const sqlite = new Database(":memory:");
+    sqlite.exec("CREATE TABLE records (id TEXT PRIMARY KEY, title TEXT NOT NULL, updated_at TEXT NOT NULL)");
+    const insert = sqlite.prepare("INSERT INTO records (id, title, updated_at) VALUES (?, ?, ?)");
+    const timestamp = "2026-08-03T00:00:00.000Z";
+    insert.run("a", "A", timestamp);
+    insert.run("b", "B", timestamp);
+    insert.run("c", "C", timestamp);
+    const options = {
+      baseSql: "SELECT id, title, updated_at FROM records",
+      order: "title" as const,
+      scope: "same-timestamp-records",
+      hydrate: (id: string): Item | undefined => {
+        const row = sqlite.prepare("SELECT id, title, updated_at FROM records WHERE id = ?").get(id) as
+          | { id: string; title: string; updated_at: string }
+          | undefined;
+        return row ? { id: row.id, title: row.title, updatedAt: row.updated_at } : undefined;
+      },
+    };
+
+    const first = sqliteCollectionPage(sqlite, { limit: "1" }, options);
+    expect(first.items.map(item => item.id)).toEqual(["a"]);
+    sqlite.prepare("UPDATE records SET title = ? WHERE id = ?").run("0", "b");
+
+    expect(() =>
+      sqliteCollectionPage(sqlite, { limit: "1", cursor: first.cursor }, options)
+    ).toThrow("stale collection cursor");
+    sqlite.close();
+  });
 });

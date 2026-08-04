@@ -746,6 +746,52 @@ describe("server public API behavior", () => {
     ]);
   });
 
+  it("rejects a custom directory cursor after an earlier resource is removed", async () => {
+    const project = store.createProject({
+      label: "Custom directory",
+      hostPath: path.join(repoDir, "custom-directory"),
+    });
+    const agents = Array.from({ length: 30 }, (_, index) =>
+      store.createAgent(project.id, {
+        title: `Custom agent ${String(index).padStart(2, "0")}`,
+        engine: "codex",
+        conversationId: project.lastConversationId,
+      })
+    );
+    const app = server();
+    const preferences = await app.inject({
+      method: "PATCH",
+      url: "/api/workspace/preferences",
+      payload: {
+        agentSort: "custom",
+        agentOrder: agents.map(agent => agent.id),
+      },
+    });
+    expect(preferences.statusCode).toBe(200);
+
+    const first = await app.inject({
+      method: "GET",
+      url: `/api/workspace/directory/agent?projectId=${project.id}&limit=25&sort=custom`,
+    });
+    expect(first.statusCode).toBe(200);
+    const firstPage = first.json<{
+      items: Array<{ agent: { id: string } }>;
+      history: { hasMore: boolean; cursor: string };
+    }>();
+    expect(firstPage.items).toHaveLength(25);
+    expect(firstPage.history.hasMore).toBe(true);
+
+    store.sqlite.prepare(
+      "UPDATE agents SET archived = 1 WHERE id = ?",
+    ).run(firstPage.items[0]!.agent.id);
+    const continuation = await app.inject({
+      method: "GET",
+      url: `/api/workspace/directory/agent?projectId=${project.id}&limit=25&sort=custom&cursor=${encodeURIComponent(firstPage.history.cursor)}`,
+    });
+    expect(continuation.statusCode).toBe(400);
+    expect(continuation.json()).toEqual({ error: "stale directory cursor" });
+  });
+
   it("survives a missing Claude executable during model discovery", async () => {
     const project = store.createProject({
       label: "Missing Claude",
