@@ -756,6 +756,7 @@ export default function App({
           profile={preferences.profile}
           onOpenNavigation={() => setMobileNavOpen(true)}
           onOpenEngineStatus={() => setEngineStatusOpen(true)}
+          onOpenSearch={() => setGlobalSearchOpen(true)}
           onOpenNotifications={() => setNotificationPanelOpen(true)}
           onOpenProfile={openOperatorProfile}
           onOpenSettings={openSettings}

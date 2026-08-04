@@ -5,6 +5,7 @@ import MenuIcon from "@mui/icons-material/Menu";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
 import NotificationsOutlinedIcon from "@mui/icons-material/NotificationsOutlined";
 import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
+import SearchIcon from "@mui/icons-material/Search";
 import SettingsIcon from "@mui/icons-material/Settings";
 import SpeedOutlinedIcon from "@mui/icons-material/SpeedOutlined";
 import {
@@ -47,6 +48,7 @@ interface MobileWorkspaceHeaderProps {
   profile?: OperatorProfileDto;
   onOpenNavigation(): void;
   onOpenEngineStatus(): void;
+  onOpenSearch(): void;
   onOpenNotifications(): void;
   onOpenProfile(): void;
   onOpenSettings(): void;
@@ -59,6 +61,7 @@ export function MobileWorkspaceHeader({
   profile,
   onOpenNavigation,
   onOpenEngineStatus,
+  onOpenSearch,
   onOpenNotifications,
   onOpenProfile,
   onOpenSettings,
@@ -110,12 +113,25 @@ export function MobileWorkspaceHeader({
             Ponderosa
           </Typography>
         </Box>
-        <Box sx={{ display: { xs: "none", sm: "block" } }}>
-          <ProviderQuotaIndicator
-            preferredProvider={preferredQuotaProvider}
-            mobile
-          />
-        </Box>
+        <Tooltip title="Search">
+          <IconButton aria-label="Search Ponderosa" onClick={onOpenSearch}>
+            <SearchIcon />
+          </IconButton>
+        </Tooltip>
+        <ProviderQuotaIndicator
+          preferredProvider={preferredQuotaProvider}
+          mobile
+          renderTrigger={openUsage => (
+            <Tooltip title="Provider usage">
+              <IconButton
+                aria-label="Open provider usage"
+                onClick={event => openUsage(event.currentTarget)}
+              >
+                <DataUsageOutlinedIcon />
+              </IconButton>
+            </Tooltip>
+          )}
+        />
         <Tooltip title="Notifications">
           <IconButton aria-label="Open notifications" onClick={onOpenNotifications}>
             <Badge color="primary" badgeContent={unreadNotifications}>
@@ -235,22 +251,6 @@ export function MobileWorkspaceHeader({
             secondary={engineAvailability.label}
           />
         </MenuItem>
-        <ProviderQuotaIndicator
-          preferredProvider={preferredQuotaProvider}
-          mobile
-          renderTrigger={openUsage => (
-            <MenuItem
-              onClick={event => {
-                const usageAnchor = overflowAnchor ?? event.currentTarget;
-                setOverflowAnchor(undefined);
-                openUsage(usageAnchor);
-              }}
-            >
-              <ListItemIcon><DataUsageOutlinedIcon /></ListItemIcon>
-              <ListItemText>Provider Usage</ListItemText>
-            </MenuItem>
-          )}
-        />
         <Divider />
         <MenuItem
           onClick={() => {
