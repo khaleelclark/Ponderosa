@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { FastifyReply } from "fastify";
 
@@ -17,8 +17,6 @@ export interface CollectionPage<T> {
 }
 
 type CollectionOrder = "updated" | "title";
-
-const collectionProcessId = randomUUID();
 
 interface CollectionGeneration {
   revision: string;
@@ -46,12 +44,30 @@ function queryScope(scope: string, query: CollectionQuery): string {
     .slice(0, 24);
 }
 
-export function sqliteCollectionRevision(sqlite: Database.Database): string {
-  const dataVersion = sqlite.pragma("data_version", { simple: true }) as number;
-  const totalChanges = (sqlite.prepare(
-    "SELECT total_changes() AS count",
-  ).get() as { count: number }).count;
-  return `${collectionProcessId}:${dataVersion}:${totalChanges}`;
+export function sqliteCollectionRevision(
+  sqlite: Database.Database,
+  baseSql: string,
+  params: readonly unknown[] = [],
+): { revision: string; total: number } {
+  const hash = createHash("sha256");
+  let total = 0;
+  const rows = sqlite.prepare(`
+    SELECT id, title, updated_at
+    FROM (${baseSql}) revision_collection
+    ORDER BY id ASC
+  `).iterate(...params) as Iterable<{
+    id: string;
+    title: string;
+    updated_at: string;
+  }>;
+  for (const row of rows) {
+    total += 1;
+    for (const value of [row.id, row.title, row.updated_at]) {
+      const encoded = Buffer.from(value, "utf8");
+      hash.update(String(encoded.length)).update(":").update(encoded).update(";");
+    }
+  }
+  return { revision: hash.digest("base64url"), total };
 }
 
 function encodeCollectionCursor(cursor: CollectionCursor): string {
@@ -112,12 +128,9 @@ export function sqliteCollectionPage<T>(
   const limit = parseLimit(query, options.defaultLimit ?? maximum, maximum);
   const scope = queryScope(options.scope, query);
   const params = [...(options.params ?? [])];
-  const total = (sqlite.prepare(`
-    SELECT COUNT(*) AS total
-    FROM (${options.baseSql}) bounded_collection
-  `).get(...params) as { total: number }).total;
+  const collection = sqliteCollectionRevision(sqlite, options.baseSql, params);
   const generation: CollectionGeneration = {
-    revision: sqliteCollectionRevision(sqlite),
+    revision: collection.revision,
   };
   const cursor = decodeCollectionCursor(query.cursor, {
     scope,
@@ -167,7 +180,7 @@ export function sqliteCollectionPage<T>(
   const last = pageRows.at(-1);
   return {
     items,
-    total,
+    total: collection.total,
     limit,
     hasMore,
     ...(hasMore && last

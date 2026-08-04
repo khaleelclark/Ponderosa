@@ -515,7 +515,6 @@ export function registerWorkspaceDirectoryRoutes(
     const settings = resourceSettings(preferences, kind);
     const sort = requestedSort ?? settings.sort;
     const sqlite = context.store.sqlite;
-    const revision = sqliteCollectionRevision(sqlite);
     const order = settings.order;
     const normalizedSearch = (request.query.search ?? "")
       .trim()
@@ -542,6 +541,16 @@ export function registerWorkspaceDirectoryRoutes(
       directorySettingsHash,
     });
 
+    const base = baseDirectoryQuery(
+      kind,
+      request.query,
+      normalizedSearch,
+      filteredAgentIds,
+    );
+    const collection = sqliteCollectionRevision(sqlite, base.sql, base.params);
+    const revision = collection.revision;
+    const total = collection.total;
+
     let cursorPosition: CursorPosition | undefined;
     if (request.query.cursor) {
       try {
@@ -550,16 +559,6 @@ export function registerWorkspaceDirectoryRoutes(
         return reply.code(400).send({ error: (error as Error).message });
       }
     }
-
-    const base = baseDirectoryQuery(
-      kind,
-      request.query,
-      normalizedSearch,
-      filteredAgentIds,
-    );
-    const total = (sqlite.prepare(
-      `SELECT COUNT(*) AS count FROM (${base.sql}) resources`,
-    ).get(...base.params) as { count: number }).count;
 
     const stars = [...starredKeys(preferences)]
       .filter(key => key.startsWith(`${kind}:`))

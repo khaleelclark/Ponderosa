@@ -746,7 +746,7 @@ describe("server public API behavior", () => {
     ]);
   });
 
-  it("rejects a custom directory cursor after an earlier resource is removed", async () => {
+  it("keeps custom directory cursors scoped and rejects relevant membership changes", async () => {
     const project = store.createProject({
       label: "Custom directory",
       hostPath: path.join(repoDir, "custom-directory"),
@@ -780,6 +780,21 @@ describe("server public API behavior", () => {
     }>();
     expect(firstPage.items).toHaveLength(25);
     expect(firstPage.history.hasMore).toBe(true);
+
+    store.sqlite.exec("CREATE TABLE unrelated_runtime_events (id INTEGER PRIMARY KEY, note TEXT NOT NULL)");
+    store.sqlite.prepare("INSERT INTO unrelated_runtime_events (note) VALUES (?)").run("lease heartbeat");
+    const unaffectedContinuation = await app.inject({
+      method: "GET",
+      url: `/api/workspace/directory/agent?projectId=${project.id}&limit=25&sort=custom&cursor=${encodeURIComponent(firstPage.history.cursor)}`,
+    });
+    expect(unaffectedContinuation.statusCode).toBe(200);
+    const unaffectedIds = unaffectedContinuation.json<{
+      items: Array<{ agent: { id: string } }>;
+    }>().items.map(item => item.agent.id);
+    expect(unaffectedIds).toHaveLength(5);
+    expect(unaffectedIds.some(id =>
+      firstPage.items.some(item => item.agent.id === id)
+    )).toBe(false);
 
     store.sqlite.prepare(
       "UPDATE agents SET archived = 1 WHERE id = ?",

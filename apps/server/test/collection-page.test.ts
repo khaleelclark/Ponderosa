@@ -71,4 +71,42 @@ describe("collection keyset pagination", () => {
     ).toThrow("stale collection cursor");
     sqlite.close();
   });
+
+  it("continues every page while unrelated tables change", () => {
+    const sqlite = new Database(":memory:");
+    sqlite.exec(`
+      CREATE TABLE records (id TEXT PRIMARY KEY, title TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE runtime_events (id INTEGER PRIMARY KEY AUTOINCREMENT, note TEXT NOT NULL);
+    `);
+    const insert = sqlite.prepare("INSERT INTO records (id, title, updated_at) VALUES (?, ?, ?)");
+    for (let index = 0; index < 5; index += 1) {
+      insert.run(String(index), "Record " + index, "2026-08-03T00:00:0" + index + ".000Z");
+    }
+    const options = {
+      baseSql: "SELECT id, title, updated_at FROM records",
+      order: "updated" as const,
+      scope: "records-with-unrelated-writes",
+      hydrate: (id: string): Item | undefined => {
+        const row = sqlite.prepare("SELECT id, title, updated_at FROM records WHERE id = ?").get(id) as
+          | { id: string; title: string; updated_at: string }
+          | undefined;
+        return row ? { id: row.id, title: row.title, updatedAt: row.updated_at } : undefined;
+      },
+    };
+
+    const ids: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = sqliteCollectionPage(sqlite, { limit: "2", cursor }, options);
+      ids.push(...page.items.map(item => item.id));
+      cursor = page.cursor;
+      if (cursor) {
+        sqlite.prepare("INSERT INTO runtime_events (note) VALUES (?)").run("lease heartbeat");
+      }
+    } while (cursor);
+
+    expect(ids).toEqual(["4", "3", "2", "1", "0"]);
+    expect(new Set(ids).size).toBe(5);
+    sqlite.close();
+  });
 });
