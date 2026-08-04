@@ -22,24 +22,25 @@ export const ponderosaLayoutTokens = {
 
 const ponderosaColorTokens = {
   light: {
-    background: "#F7F9F8",
+    background: "#FBFCFB",
     rail: "#17221E",
     topbar: "#1D2A26",
     railBorder: "#354542",
     railForeground: "#B2BBB4",
     railForegroundActive: "#7CBF8A",
-    sidebar: "#E7ECE9",
-    surface: "#F2F5F3",
-    surfaceSecondary: "#E9EEEB",
-    delegatedSurface: "#E3EBE6",
-    delegatedHover: "#D6E3DB",
-    elevated: "#FAFBFA",
-    hover: "#E1E6E3",
-    selected: "#DCE6E1",
-    border: "#CDD5D1",
+    sidebar: "#E5ECE8",
+    surface: "#F1F5F2",
+    surfaceSecondary: "#E8EFEB",
+    inputSurface: "#FFFFFF",
+    delegatedSurface: "#DFE9E3",
+    delegatedHover: "#D2E0D8",
+    elevated: "#FFFFFF",
+    hover: "#E2EAE5",
+    selected: "#D5E3DB",
+    border: "#C6D1CB",
     textPrimary: "#10231C",
-    textSecondary: "#53645D",
-    textMuted: "#7A8982",
+    textSecondary: "#455B51",
+    textMuted: "#66796F",
     brand: "#123126",
     brandHover: "#1B4536",
     accent: "#47785D",
@@ -58,6 +59,7 @@ const ponderosaColorTokens = {
     sidebar: "#171C1A",
     surface: "#1C211F",
     surfaceSecondary: "#222725",
+    inputSurface: "#1C211F",
     delegatedSurface: "#26302B",
     delegatedHover: "#303D36",
     elevated: "#292E2C",
@@ -171,6 +173,7 @@ export function createPonderosaTheme(mode: ColorMode) {
             "--ponderosa-activity-label": colors.activityLabel,
             "--ponderosa-star": colors.star,
             "--ponderosa-surface-secondary": colors.surfaceSecondary,
+            "--ponderosa-input-surface": colors.inputSurface,
             "--ponderosa-delegated-surface": colors.delegatedSurface,
             "--ponderosa-delegated-hover": colors.delegatedHover,
             "--ponderosa-elevated": colors.elevated,
@@ -250,7 +253,7 @@ export function createPonderosaTheme(mode: ColorMode) {
               zIndex: 1,
               marginLeft: -4,
               paddingInline: 4,
-              backgroundColor: colors.surface,
+              backgroundColor: colors.inputSurface,
             },
           },
         },
@@ -258,7 +261,7 @@ export function createPonderosaTheme(mode: ColorMode) {
       MuiOutlinedInput: {
         styleOverrides: {
           root: {
-            backgroundColor: dark ? colors.surface : colors.surface,
+            backgroundColor: colors.inputSurface,
             borderRadius: 10,
             "& fieldset": {
               borderColor: dark ? colors.textMuted : colors.border,
@@ -293,6 +296,8 @@ export function createPonderosaTheme(mode: ColorMode) {
             borderRadius: 8,
             "&.Mui-selected": {
               backgroundColor: colors.selected,
+              color: colors.textPrimary,
+              boxShadow: dark ? "none" : `inset 3px 0 0 ${colors.accent}`,
               "&:hover": { backgroundColor: colors.hover },
             },
           },
@@ -305,7 +310,17 @@ export function createPonderosaTheme(mode: ColorMode) {
       },
       MuiToggleButton: {
         styleOverrides: {
-          root: { minHeight: 44, borderRadius: 8 },
+          root: {
+            minHeight: 44,
+            borderRadius: 8,
+            ...(!dark ? {
+              "&.Mui-selected": {
+                backgroundColor: colors.selected,
+                color: colors.textPrimary,
+                "&:hover": { backgroundColor: colors.hover },
+              },
+            } : {}),
+          },
         },
       },
     },
