@@ -129,9 +129,7 @@ export function AgentWorkReceipt({
     [visibleEntries],
   );
   const hasVisibleActivity = displayEntries.length > 0;
-  const activityCount = visibleEntries.filter(
-    entry => entry.kind !== "thinking" && entry.kind !== "response",
-  ).length;
+  const activityCount = visibleEntries.length;
   const status = run ? receiptStatus(run) : undefined;
   const activitySummary = activityCount === 1
     ? "1 activity"
