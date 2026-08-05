@@ -76,8 +76,13 @@ export function createOperationalNotifications(context: OperationalNotifications
     return issue;
   };
   const reconcileCommunicationFailureNotifications = (): void => {
+    const reconciledKeys = new Map<string, boolean>();
     for (const failure of coordinationV3.terminalActivations(undefined, 500)) {
-      if (failure.state === "cancelled") continue;
+      const key = `communication-delivery:${failure.id}:${failure.outcome}`;
+      if (failure.supersededByRetry || failure.state === "cancelled") {
+        reconciledKeys.set(key, false);
+        continue;
+      }
       if (!["human_message", "urgent_message", "ordinary_message"].includes(failure.kind)) continue;
       // Intent, not priority or rendered text, keeps internal Collaboration out
       // of the operator notification tree.
@@ -87,8 +92,9 @@ export function createOperationalNotifications(context: OperationalNotifications
         : undefined;
       const conversation = conversationId ? store.getConversation(conversationId) : undefined;
       const issue = failure.lastDeliveryError ?? failure.outcome.replaceAll("_", " ");
+      reconciledKeys.set(key, true);
       createOperationalNotification({
-        dedupeKey: `communication-delivery:${failure.id}:${failure.outcome}`,
+        dedupeKey: key,
         category: "communication",
         severity: "urgent",
         title: "Message delivery needs your help",
@@ -100,6 +106,13 @@ export function createOperationalNotifications(context: OperationalNotifications
           ? { kind: "open_conversation", targetId: conversation.id }
           : { kind: "open_project", targetId: failure.projectId },
       });
+    }
+    for (const notification of workspace.listNotifications()) {
+      const key = notification.dedupeKey;
+      if (!key?.startsWith("communication-delivery:")
+        || (notification.status ?? "open") !== "open"
+        || reconciledKeys.get(key) !== false) continue;
+      resolveOperationalNotification(key);
     }
   };
   const agentWorkProjection = new AgentWorkProjection(store, coordinationV3, workspace);
