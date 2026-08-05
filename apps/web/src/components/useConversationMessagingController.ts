@@ -165,7 +165,11 @@ export function useConversationMessagingController({
         })),
         idempotencyKey: requestId,
         activeRunDelivery,
-        ...runConfig,
+        // A shared Project-chat selection cannot safely override recipients
+        // with different engines or durable models. Single-target sends keep
+        // the explicit composer selection; multi-target sends let each Agent
+        // use its own persisted runtime.
+        ...(agentIds.length === 1 ? runConfig : {}),
       });
     },
     onSuccess: (response, variables) => {
