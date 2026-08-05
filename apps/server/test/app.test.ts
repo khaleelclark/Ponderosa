@@ -29,6 +29,7 @@ import { createServer, type EngineRegistration } from "../src/app.js";
 class BehavioralAdapter implements Adapter {
   readonly id = "codex";
   readonly displayName = "Behavioral adapter";
+  readonly trustedSystemPromptChannel = "developer" as const;
   seedCalls = 0;
   seedOptions: SeedOptions[] = [];
 
@@ -71,6 +72,7 @@ class MissingRolloverHandoffAdapter extends BehavioralAdapter {
 class CrossChatPersistentAdapter implements Adapter {
   readonly id = "codex";
   readonly displayName = "Cross-chat persistent adapter";
+  readonly trustedSystemPromptChannel = "developer" as const;
   openOptions: OpenRuntimeSessionOptions[] = [];
   startCalls = 0;
   toolResult?: { success: boolean; text: string };
@@ -130,6 +132,7 @@ class CrossChatPersistentAdapter implements Adapter {
 class ManualRolloverPersistentAdapter implements Adapter {
   readonly id = "codex";
   readonly displayName = "Manual rollover persistent adapter";
+  readonly trustedSystemPromptChannel = "developer" as const;
   openCount = 0;
   rolloverCalls = 0;
   toolResult?: { success: boolean; text: string };
@@ -207,6 +210,7 @@ class ManualRolloverPersistentAdapter implements Adapter {
 class ManagedRequestRolloverAdapter implements Adapter {
   readonly id = "codex";
   readonly displayName = "Managed Request rollover adapter";
+  readonly trustedSystemPromptChannel = "developer" as const;
   openCount = 0;
   rolloverCalls = 0;
   toolResult?: { success: boolean; text: string };
@@ -289,6 +293,7 @@ class ManagedRequestRolloverAdapter implements Adapter {
 class NoUsageReplacementAdapter implements Adapter {
   readonly id = "codex";
   readonly displayName = "No-usage replacement adapter";
+  readonly trustedSystemPromptChannel = "developer" as const;
   constructor(readonly outcome: "error" | "completed") {}
 
   listModels() { return [{ id: "test-model", label: "Test model" }]; }
@@ -342,6 +347,7 @@ class NoUsageReplacementAdapter implements Adapter {
 class CancellableReplacementAdapter implements Adapter {
   readonly id = "codex";
   readonly displayName = "Cancellable replacement adapter";
+  readonly trustedSystemPromptChannel = "developer" as const;
   readonly ready: Promise<void>;
   private signalReady!: () => void;
   private release!: () => void;
@@ -404,6 +410,7 @@ class CancellableReplacementAdapter implements Adapter {
 class ManagedRequestRolloverRecoveryAdapter implements Adapter {
   readonly id = "codex";
   readonly displayName = "Managed Request rollover recovery adapter";
+  readonly trustedSystemPromptChannel = "developer" as const;
   openCount = 0;
   rolloverCalls = 0;
   prompts: string[] = [];
@@ -490,6 +497,7 @@ class PassiveClaudeAdapter extends BehavioralAdapter {
 class BoundRolloverRecoveryAdapter implements Adapter {
   readonly id = "codex";
   readonly displayName = "Bound rollover recovery adapter";
+  readonly trustedSystemPromptChannel = "developer" as const;
   openCount = 0;
   prompts: string[] = [];
   readonly result = "Recovered lineage work completed from the exact handoff.";

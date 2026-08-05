@@ -204,6 +204,7 @@ export class CodexAdapter implements Adapter {
     description: "Show Codex subscription limits",
   };
   readonly modelSpecificEfforts = true;
+  readonly trustedSystemPromptChannel = "developer" as const;
 
   private readonly bin: string;
   private readonly spawnFn: SpawnFn;
@@ -299,13 +300,14 @@ export class CodexAdapter implements Adapter {
   }
 
   /** Config overrides accepted by BOTH `exec` and `exec resume`. */
-  private configArgs(model?: string, effort?: string, speed?: string): string[] {
+  private configArgs(model?: string, effort?: string, speed?: string, systemPrompt?: string): string[] {
     const args = [
       "-c",
       `sandbox_mode=${JSON.stringify(this.sandboxMode)}`,
       "-c",
       'approval_policy="never"',
     ];
+    if (systemPrompt) args.push("-c", `developer_instructions=${JSON.stringify(systemPrompt)}`);
     if (model) args.push("-m", model);
     if (effort) args.push("-c", `model_reasoning_effort=${JSON.stringify(effort)}`);
     if (speed) {
@@ -328,7 +330,7 @@ export class CodexAdapter implements Adapter {
       "exec",
       "--json",
       "--skip-git-repo-check",
-      ...this.configArgs(opts.model, opts.effort, opts.speed),
+      ...this.configArgs(opts.model, opts.effort, opts.speed, opts.systemPrompt),
       "-",
     ];
     return this.run(args, opts.cwd, opts.signal, opts.environment, prompt, opts.onRuntimeRootExit, opts.onRuntimeSpawned);
@@ -341,7 +343,7 @@ export class CodexAdapter implements Adapter {
       opts.resumeSessionId,
       "--json",
       "--skip-git-repo-check",
-      ...this.configArgs(opts.model, opts.effort, opts.speed),
+      ...this.configArgs(opts.model, opts.effort, opts.speed, opts.systemPrompt),
       "-",
     ];
     return this.run(args, opts.cwd, opts.signal, opts.environment, opts.prompt, opts.onRuntimeRootExit, opts.onRuntimeSpawned);

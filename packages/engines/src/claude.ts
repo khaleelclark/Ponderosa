@@ -130,6 +130,7 @@ const DEFAULT_EFFORTS: EffortOption[] = [
 export class ClaudeAdapter implements Adapter {
   readonly id = "claude";
   readonly displayName = "Claude";
+  readonly trustedSystemPromptChannel = "system" as const;
   readonly providerUsageCommand = {
     name: "usage",
     description: "Show Claude subscription usage",

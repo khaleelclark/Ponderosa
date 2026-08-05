@@ -411,6 +411,8 @@ export interface Adapter {
   readonly providerUsageCommand?: { name: string; description: string };
   /** True when effort compatibility varies by model and missing metadata means unknown. */
   readonly modelSpecificEfforts?: boolean;
+  /** Native provider channel used for host-owned trusted runtime instructions. */
+  readonly trustedSystemPromptChannel: "developer" | "system";
   listModels(): ModelOption[];
   /** Host-configured provider model pins, excluding built-in aliases. */
   configuredModelOptions?(): ModelOption[];

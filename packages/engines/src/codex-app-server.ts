@@ -477,6 +477,7 @@ export class CodexAppServerSession implements RuntimeSession {
           serviceTier: serviceTierForSpeed(opts.speed),
           approvalPolicy: "never",
           sandbox: opts.sandboxMode,
+          developerInstructions: opts.systemPrompt ?? null,
         })
       : await rpc.request<ThreadResponse>("thread/start", {
           cwd: opts.cwd,
@@ -484,6 +485,7 @@ export class CodexAppServerSession implements RuntimeSession {
           serviceTier: serviceTierForSpeed(opts.speed),
           approvalPolicy: "never",
           sandbox: opts.sandboxMode,
+          developerInstructions: opts.systemPrompt ?? null,
           ephemeral: false,
           experimentalRawEvents: false,
           dynamicTools: opts.dynamicTools?.map((tool) => ({
