@@ -11,6 +11,7 @@ import type {
   UpdateAgentRequest,
 } from "@ponderosa/core";
 import type { Db } from "./db.js";
+import { normalizeAgentTitle } from "./agent-identity.js";
 import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
 import { requireManagementPermissions } from "./store-agent-management.js";
 import { readJson, writeJson } from "./store-filesystem.js";
@@ -145,7 +146,7 @@ export class AgentManagementAuthority {
     const row = this.db.select().from(agents).where(eq(agents.id, id)).get();
     if (!row || row.deletedAt) return undefined;
     const now = new Date().toISOString();
-    const title = patch.title ?? row.title;
+    const title = patch.title === undefined ? row.title : normalizeAgentTitle(patch.title);
     const archived = patch.archived ?? row.archived === 1;
     const activeEngine = patch.activeEngine?.trim() || row.activeEngine;
     const model = patch.model === undefined ? row.model ?? undefined : patch.model?.trim() || undefined;
