@@ -20,7 +20,7 @@ import type {
   ConversationDto,
   EngineDto,
 } from "@ponderosa/core";
-import type { Dispatch, SetStateAction } from "react";
+import { useEffect, useRef, type Dispatch, type SetStateAction } from "react";
 import type { RuntimeControlState } from "../conversationEngine";
 import { conversationDisplayTitle } from "../conversationLabels";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
@@ -117,44 +117,66 @@ function AgentRenameDialog({
   setRenameValue: StateSetter<string>;
   rename: StringMutation;
 }): JSX.Element {
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (rename.isError) inputRef.current?.focus();
+  }, [rename.isError]);
+
+  const submit = () => {
+    const name = renameValue.trim();
+    if (!name || rename.isPending) return;
+    rename.mutate(name);
+  };
+
   return (
     <Dialog
       open={renameOpen}
-      onClose={() => setRenameOpen(false)}
+      onClose={() => {
+        if (!rename.isPending) setRenameOpen(false);
+      }}
       fullWidth
       maxWidth="xs"
     >
-      <DialogTitle>Rename agent</DialogTitle>
-      <DialogContent>
-        <TextField
-          autoFocus
-          fullWidth
-          value={renameValue}
-          onChange={event => setRenameValue(event.target.value)}
-          helperText="Spaces are supported; tag multi-word names with hyphens (for example, #Grand-Teton)."
-          sx={{ mt: 1 }}
-        />
-        {rename.isError ? (
-          <Alert severity="error" sx={{ mt: 1 }}>
-            {String(rename.error)}
-          </Alert>
-        ) : null}
-      </DialogContent>
-      <DialogActions>
-        <Button
-          onClick={() => setRenameOpen(false)}
-          disabled={rename.isPending}
-        >
-          Cancel
-        </Button>
-        <Button
-          variant="contained"
-          disabled={!renameValue.trim() || rename.isPending}
-          onClick={() => rename.mutate(renameValue.trim())}
-        >
-          Save
-        </Button>
-      </DialogActions>
+      <form
+        onSubmit={event => {
+          event.preventDefault();
+          submit();
+        }}
+      >
+        <DialogTitle>Rename agent</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            fullWidth
+            inputRef={inputRef}
+            label="Agent name"
+            value={renameValue}
+            onChange={event => setRenameValue(event.target.value)}
+            helperText="Spaces are supported; tag multi-word names with hyphens (for example, #Grand-Teton)."
+            sx={{ mt: 1 }}
+          />
+          {rename.isError ? (
+            <Alert severity="error" sx={{ mt: 1 }}>
+              {String(rename.error)}
+            </Alert>
+          ) : null}
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => setRenameOpen(false)}
+            disabled={rename.isPending}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            variant="contained"
+            disabled={!renameValue.trim() || rename.isPending}
+          >
+            Save
+          </Button>
+        </DialogActions>
+      </form>
     </Dialog>
   );
 }

@@ -31,11 +31,41 @@ import type {
   WorkspaceNotificationDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
-import type { Route } from "./routing";
+import { routeProjectId, type Route } from "./routing";
 import { OperatorAvatar } from "./components/OperatorAvatar";
 import { ProviderQuotaIndicator } from "./components/ProviderUsageCenter";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { useMobileWorkspaceActions } from "./components/MobileWorkspaceActionsContext";
+
+export function mobileCreationReturnRoute(origin?: Route): Route {
+  return origin ?? { kind: "home" };
+}
+
+export function mobileRouteAfterResourceRemoval(
+  current: Route,
+  removed: Route,
+): Route | undefined {
+  if (removed.kind === "project") {
+    return routeProjectId(current) === removed.projectId
+      ? { kind: "projects" }
+      : undefined;
+  }
+  if (
+    removed.kind === "conversation" &&
+    current.kind === "conversation" &&
+    current.projectId === removed.projectId &&
+    current.conversationId === removed.conversationId
+  ) {
+    return { kind: "project", projectId: removed.projectId };
+  }
+  if (
+    removed.kind === "agent" && current.kind === "agent" &&
+    current.projectId === removed.projectId && current.agentId === removed.agentId
+  ) {
+    return { kind: "agents", projectId: removed.projectId };
+  }
+  return undefined;
+}
 
 interface MobileWorkspaceHeaderProps {
   preferredQuotaProvider?: string;
@@ -106,7 +136,7 @@ export function MobileWorkspaceHeader({
         <Box aria-label="Ponderosa" sx={{ flex: 1, minWidth: 0 }}>
           <Typography
             variant="h6"
-            component="h1"
+            component="div"
             sx={{ fontWeight: 800, minWidth: 0 }}
             noWrap
           >
@@ -289,7 +319,7 @@ interface MobileWorkspaceDrawerProps {
   notifications: WorkspaceNotificationDto[];
   onOpenChange(open: boolean): void;
   onNavigate(route: Route): void;
-  onOpenInNewTab(route: Route): void;
+  onOpenInNewTab?(route: Route): void;
   onCreate(kind: "project" | "chat" | "agent" | "trigger"): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onConversationAction(
@@ -355,10 +385,6 @@ export function MobileWorkspaceDrawer({
           onNavigate={next => {
             close();
             onNavigate(next);
-          }}
-          onOpenInNewTab={next => {
-            close();
-            onOpenInNewTab(next);
           }}
           onCreate={kind => {
             close();

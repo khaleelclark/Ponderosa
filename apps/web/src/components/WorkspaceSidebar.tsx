@@ -39,6 +39,7 @@ import type { Route } from "../routing";
 import {
   reorderStableIds,
   resourcePreferenceKey,
+  sortWorkspaceResources,
   starredWorkspaceResources,
   toggleWorkspaceResourceStar,
   workspaceResourceSort,
@@ -57,6 +58,7 @@ import {
   sidebarSurface,
   starColor,
 } from "./WorkspaceSidebar.helpers";
+import { CollectionStateFeedback } from "./CollectionPrimitives";
 import {
   SharedSidebarPanel,
 } from "./WorkspaceSidebar.parts";
@@ -184,10 +186,24 @@ export function WorkspaceSidebar({
     triggerDirectoryQuery.data?.pages,
     preferences,
   );
-  const projectItems = [
-    ...projectDirectory.starredItems,
-    ...projectDirectory.items,
-  ];
+  const projectFallbackItems: WorkspaceProjectDirectoryItemDto[] =
+    sortWorkspaceResources(
+      projects,
+      preferences.projectSort ?? "last_used",
+      preferences.projectOrder,
+      project => project.id,
+      project => project.label,
+      project => project.createdAt,
+    ).map(project => ({
+      kind: "project",
+      project,
+      displayPath: project.hostPath,
+      conversationCount: 0,
+      runningAgentCount: 0,
+    }));
+  const projectItems = projectDirectoryQuery.requestState.hasResolved
+    ? [...projectDirectory.starredItems, ...projectDirectory.items]
+    : projectFallbackItems;
   const chatItems = [...chatDirectory.starredItems, ...chatDirectory.items];
   const agentItems = [
     ...agentDirectory.starredItems,
@@ -198,6 +214,7 @@ export function WorkspaceSidebar({
     ...triggerDirectory.items,
   ];
   const homeProjectIds = new Set([
+    ...projects.map(project => project.id),
     ...projectItems.map(item => item.project.id),
     ...chatItems.map(item => item.project.id),
     ...agentItems.map(item => item.project.id),
@@ -408,35 +425,24 @@ export function WorkspaceSidebar({
         </Stack>
       );
     });
-  const starredProjects = projectDirectory.starredItems;
-  const unstarredProjects = projectDirectory.items;
+  const starredProjects = projectItems.filter(item =>
+    starredResourceIds.has(resourcePreferenceKey("project", item.project.id))
+  );
+  const unstarredProjects = projectItems.filter(item =>
+    !starredResourceIds.has(resourcePreferenceKey("project", item.project.id))
+  );
   const projectsPanel = (
     <SharedSidebarPanel
       icon={<FolderOutlinedIcon />}
       title="Projects"
-      total={projectDirectory.total}
+      total={projectDirectoryQuery.requestState.hasResolved ? projectDirectory.total : undefined}
+      busy={projectDirectoryQuery.requestState.isInitialLoading || projectDirectoryQuery.requestState.isRefreshing || projectDirectoryQuery.requestState.isFetchingNextPage}
       searchLabel="Search projects"
       searchValue={filter}
       onSearchValueChange={setFilter}
       starredRows={projectResourceRows(starredProjects)}
       allRows={projectResourceRows(unstarredProjects)}
-      empty={
-        !projectDirectoryQuery.isLoading && projectList.length === 0 ? (
-          <Typography
-            variant="body2"
-            color="text.secondary"
-            sx={{ p: 2, textAlign: "center" }}
-          >
-            {filter.trim()
-              ? `No projects match “${filter.trim()}”.`
-              : "No projects yet."}
-          </Typography>
-        ) : undefined
-      }
-      loadMoreLabel={projectDirectoryQuery.hasNextPage ?
-        (preferences.projectSort === "last_used" ? "Load older Projects" : "Load more Projects") : undefined}
-      onLoadMore={() => void projectDirectoryQuery.fetchNextPage()}
-      loadingMore={projectDirectoryQuery.isFetchingNextPage}
+      collectionFeedback={<CollectionStateFeedback request={projectDirectoryQuery.requestState} itemCount={projectList.length} filtersActive={Boolean(filter.trim())} resourceLabel="Projects" emptyTitle="No Projects Yet" noMatchTitle={"No Projects match “" + filter.trim() + "”."} onClearFilters={() => setFilter("")} compact />}
       viewAllLabel="View All Projects"
       viewAllIcon={<FolderOutlinedIcon />}
       onViewAll={openAllProjects}
@@ -537,7 +543,8 @@ export function WorkspaceSidebar({
     <SharedSidebarPanel
       icon={<ChatBubbleOutlineIcon />}
       title="Chats"
-      total={chatDirectory.total}
+      total={chatDirectoryQuery.requestState.hasResolved ? chatDirectory.total : undefined}
+      busy={chatDirectoryQuery.requestState.isInitialLoading || chatDirectoryQuery.requestState.isRefreshing || chatDirectoryQuery.requestState.isFetchingNextPage}
       searchLabel="Search chats"
       searchValue={filter}
       onSearchValueChange={setFilter}
@@ -556,23 +563,7 @@ export function WorkspaceSidebar({
             ),
         ),
       )}
-      empty={
-        !chatDirectoryQuery.isLoading && chatRows.length === 0 ? (
-          <Typography
-            variant="body2"
-            color="text.secondary"
-            sx={{ p: 2, textAlign: "center" }}
-          >
-            {filter.trim()
-              ? `No chats match “${filter.trim()}”.`
-              : "No Project Chats yet."}
-          </Typography>
-        ) : undefined
-      }
-      loadMoreLabel={chatDirectoryQuery.hasNextPage ?
-        (workspaceResourceSort(preferences, "chat") === "last_used" ? "Load older Chats" : "Load more Chats") : undefined}
-      onLoadMore={() => void chatDirectoryQuery.fetchNextPage()}
-      loadingMore={chatDirectoryQuery.isFetchingNextPage}
+      collectionFeedback={<CollectionStateFeedback request={chatDirectoryQuery.requestState} itemCount={chatRows.length} filtersActive={Boolean(filter.trim())} resourceLabel="Chats" emptyTitle="No Project Chats Yet" noMatchTitle={"No Chats match “" + filter.trim() + "”."} onClearFilters={() => setFilter("")} compact />}
       viewAllLabel="View All Chats"
       viewAllIcon={<ChatBubbleOutlineIcon />}
       onViewAll={() => onNavigate({ kind: "allChats" })}
@@ -677,7 +668,8 @@ export function WorkspaceSidebar({
     <SharedSidebarPanel
       icon={<SmartToyOutlinedIcon />}
       title="Agents"
-      total={agentDirectory.total}
+      total={agentDirectoryQuery.requestState.hasResolved ? agentDirectory.total : undefined}
+      busy={agentDirectoryQuery.requestState.isInitialLoading || agentDirectoryQuery.requestState.isRefreshing || agentDirectoryQuery.requestState.isFetchingNextPage}
       searchLabel="Search agents"
       searchValue={filter}
       onSearchValueChange={setFilter}
@@ -692,23 +684,7 @@ export function WorkspaceSidebar({
             !starredResourceIds.has(resourcePreferenceKey("agent", agent.id)),
         ),
       )}
-      empty={
-        !agentDirectoryQuery.isLoading && agentRows.length === 0 ? (
-          <Typography
-            variant="body2"
-            color="text.secondary"
-            sx={{ p: 2, textAlign: "center" }}
-          >
-            {filter.trim()
-              ? `No agents match “${filter.trim()}”.`
-              : "No active agents."}
-          </Typography>
-        ) : undefined
-      }
-      loadMoreLabel={agentDirectoryQuery.hasNextPage ?
-        (workspaceResourceSort(preferences, "agent") === "last_used" ? "Load older Agents" : "Load more Agents") : undefined}
-      onLoadMore={() => void agentDirectoryQuery.fetchNextPage()}
-      loadingMore={agentDirectoryQuery.isFetchingNextPage}
+      collectionFeedback={<CollectionStateFeedback request={agentDirectoryQuery.requestState} itemCount={agentRows.length} filtersActive={Boolean(filter.trim())} resourceLabel="Agents" emptyTitle="No Active Agents" noMatchTitle={"No Agents match “" + filter.trim() + "”."} onClearFilters={() => setFilter("")} compact />}
       viewAllLabel="View All Agents"
       viewAllIcon={<SmartToyOutlinedIcon />}
       onViewAll={() => onNavigate({ kind: "allAgents" })}
@@ -818,21 +794,11 @@ export function WorkspaceSidebar({
     <SharedSidebarPanel
       icon={<BoltOutlinedIcon />}
       title="Triggers"
-      total={triggerDirectory.total}
+      total={triggerDirectoryQuery.requestState.hasResolved ? triggerDirectory.total : undefined}
+      busy={triggerDirectoryQuery.requestState.isInitialLoading || triggerDirectoryQuery.requestState.isRefreshing || triggerDirectoryQuery.requestState.isFetchingNextPage}
       searchLabel="Search triggers or agents"
       searchValue={filter}
       onSearchValueChange={setFilter}
-      topContent={
-        triggerDirectoryQuery.isLoading ? (
-          <Typography variant="body2" color="text.secondary" sx={{ p: 1 }}>
-            Loading triggers…
-          </Typography>
-        ) : triggerDirectoryQuery.isError ? (
-          <Typography variant="body2" color="error" sx={{ p: 1 }}>
-            Triggers could not be loaded.
-          </Typography>
-        ) : undefined
-      }
       starredRows={triggerResourceRows(
         filteredTriggers.filter(({ trigger }) =>
           starredResourceIds.has(resourcePreferenceKey("trigger", trigger.id)),
@@ -846,23 +812,7 @@ export function WorkspaceSidebar({
             ),
         ),
       )}
-      empty={
-        !triggerDirectoryQuery.isLoading && filteredTriggers.length === 0 ? (
-          <Typography
-            variant="body2"
-            color="text.secondary"
-            sx={{ px: 1, py: 1 }}
-          >
-            {filter.trim()
-              ? "No configured triggers match."
-              : "No triggers configured yet."}
-          </Typography>
-        ) : undefined
-      }
-      loadMoreLabel={triggerDirectoryQuery.hasNextPage ?
-        (workspaceResourceSort(preferences, "trigger") === "last_used" ? "Load older Triggers" : "Load more Triggers") : undefined}
-      onLoadMore={() => void triggerDirectoryQuery.fetchNextPage()}
-      loadingMore={triggerDirectoryQuery.isFetchingNextPage}
+      collectionFeedback={<CollectionStateFeedback request={triggerDirectoryQuery.requestState} itemCount={filteredTriggers.length} filtersActive={Boolean(filter.trim())} resourceLabel="Triggers" emptyTitle="No Triggers Configured Yet" noMatchTitle="No configured Triggers match" onClearFilters={() => setFilter("")} compact />}
       viewAllLabel="View All Triggers"
       viewAllIcon={<BoltOutlinedIcon />}
       onViewAll={() => onNavigate({ kind: "allTriggers" })}
@@ -903,7 +853,6 @@ export function WorkspaceSidebar({
       onFilterChange={setFilter}
       onLoadMoreSearchResults={() => void wikiSearchQuery.fetchNextPage()}
       onNavigateArticle={articleId => {
-        setFilter("");
         onNavigate({ kind: "wiki", articleId });
       }}
       onOpenArticleMenu={(anchor, articleId) => {

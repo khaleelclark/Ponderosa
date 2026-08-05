@@ -40,6 +40,7 @@ import {
   useWorkspacePreferences,
 } from "../hooks/queries";
 import { useAgentStream } from "../hooks/useAgentStream";
+import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
 import { agentIdForMentionHandle, agentMentionHandle } from "../mentions";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import {
@@ -135,6 +136,10 @@ export function AgentDetail({
   const [loadingOlder, setLoadingOlder] = useState(false);
   const focusedTelemetryRef = useRef<string>();
   const stream = useAgentStream(agentId, projectId);
+  const workspaceConnection = useWorkspaceConnection();
+  const agentConnectionStatus = workspaceConnection.status === "live" && !stream.connected
+    ? "reconnecting"
+    : workspaceConnection.status;
   const [tab, setTab] = useState<AgentTab>(() => {
     if (initialView) return initialView === "activity" ? "chat" : initialView;
     const saved = readChatState(chatStateKey("view", `agent.${agentId}`));
@@ -877,7 +882,7 @@ export function AgentDetail({
         lineageLabel={lineageLabel}
         status={status}
         providerBlocked={isProviderBlockedHealth(projectedHealth)}
-        connected={stream.connected}
+        connectionStatus={agentConnectionStatus}
         startedAt={runtimeActivity?.startedAt}
         running={running}
         stopping={cancelRun.isPending}

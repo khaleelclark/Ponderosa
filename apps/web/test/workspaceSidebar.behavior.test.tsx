@@ -10,11 +10,13 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceSidebar } from "../src/components/WorkspaceSidebar";
+import { api } from "../src/api";
 import type { Route } from "../src/routing";
 
 const preferences = {
@@ -124,6 +126,7 @@ interface SidebarTestProps {
   width?: number;
   onCollapsedChange?(collapsed: boolean): void;
   onWidthChange?(width: number): void;
+  onNavigate?(route: Route): void;
 }
 
 function sidebar({
@@ -135,6 +138,7 @@ function sidebar({
   width = 390,
   onCollapsedChange,
   onWidthChange,
+  onNavigate = vi.fn(),
 }: SidebarTestProps): ReactElement {
   return (
     <QueryClientProvider client={client}>
@@ -143,7 +147,7 @@ function sidebar({
         preferences={workspacePreferences}
         route={route}
         notifications={[]}
-        onNavigate={vi.fn()}
+        onNavigate={onNavigate}
         onCreateProject={vi.fn()}
         onPreferences={vi.fn()}
         onRenameConversation={vi.fn()}
@@ -210,6 +214,54 @@ describe("WorkspaceSidebar public behavior", () => {
     expect((
       screen.getByRole("textbox", { name: "Search Wiki" }) as HTMLInputElement
     ).value).toBe("");
+    client.clear();
+  });
+
+  it("keeps a Wiki query and its result list while selecting multiple articles", async () => {
+    vi.spyOn(api, "searchWiki").mockResolvedValue({
+      query: "guide",
+      results: [
+        {
+          article: { id: "overview", title: "Overview", summary: "Start here" },
+          snippet: "Overview guide",
+          score: 2,
+        },
+        {
+          article: { id: "runtime", title: "Runtime", summary: "Run behavior" },
+          snippet: "Runtime guide",
+          score: 1,
+        },
+      ],
+      total: 2,
+      limit: 20,
+    });
+    const client = workspaceClient();
+    const user = userEvent.setup();
+    const onNavigate = vi.fn();
+    render(sidebar({
+      client,
+      route: { kind: "wiki", articleId: "overview" },
+      onNavigate,
+    }));
+
+    const filter = screen.getByRole("textbox", { name: "Search Wiki" });
+    await user.type(filter, "guide");
+    await waitFor(() => expect(screen.getByText("2 Results")).not.toBeNull());
+
+    await user.click(screen.getByText("Runtime"));
+    expect((filter as HTMLInputElement).value).toBe("guide");
+    expect(screen.getByText("Overview")).not.toBeNull();
+
+    await user.click(screen.getByText("Overview"));
+    expect((filter as HTMLInputElement).value).toBe("guide");
+    expect(onNavigate).toHaveBeenNthCalledWith(1, {
+      kind: "wiki",
+      articleId: "runtime",
+    });
+    expect(onNavigate).toHaveBeenNthCalledWith(2, {
+      kind: "wiki",
+      articleId: "overview",
+    });
     client.clear();
   });
 

@@ -16,6 +16,35 @@ import {
 
 export const WORKSPACE_DIRECTORY_PAGE_SIZE = 25;
 
+export interface WorkspaceDirectoryRequestState {
+  hasResolved: boolean;
+  isInitialLoading: boolean;
+  isRefreshing: boolean;
+  isInitialError: boolean;
+  isPaginationError: boolean;
+  isFetchingNextPage: boolean;
+  hasNextPage: boolean;
+
+  retry(): Promise<unknown>;
+  fetchNextPage(): Promise<unknown>;
+}
+
+export function combineWorkspaceDirectoryRequestStates(
+  states: readonly WorkspaceDirectoryRequestState[],
+): WorkspaceDirectoryRequestState {
+  return {
+    hasResolved: states.every(state => state.hasResolved),
+    isInitialLoading: states.some(state => state.isInitialLoading),
+    isRefreshing: states.some(state => state.isRefreshing),
+    isInitialError: states.some(state => state.isInitialError),
+    isPaginationError: states.some(state => state.isPaginationError),
+    isFetchingNextPage: states.some(state => state.isFetchingNextPage),
+    hasNextPage: states.some(state => state.hasNextPage),
+    retry: () => Promise.all(states.map(state => state.retry())),
+    fetchNextPage: () => Promise.all(states.filter(state => state.isPaginationError || state.hasNextPage).map(state => state.fetchNextPage())),
+  };
+}
+
 export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
   kind: WorkspaceDirectoryKind,
   options: {
@@ -64,6 +93,7 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     placeholderData: keepPreviousData,
     staleTime: 5_000,
   });
+  const hasResolved = Boolean(query.data);
   return {
     data: query.data,
     fetchNextPage: query.fetchNextPage,
@@ -71,6 +101,20 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     isError: query.isError,
     isFetchingNextPage: query.isFetchingNextPage,
     isLoading: query.isLoading,
+    requestState: {
+      hasResolved,
+      isInitialLoading: !hasResolved && query.isPending,
+      isRefreshing:
+        hasResolved && query.isFetching && !query.isFetchingNextPage,
+      isInitialError: !hasResolved && query.isError,
+      isPaginationError: hasResolved && query.isFetchNextPageError,
+      isFetchingNextPage: query.isFetchingNextPage,
+      hasNextPage: Boolean(
+        !query.isPlaceholderData && query.hasNextPage,
+      ),
+      retry: query.refetch,
+      fetchNextPage: query.fetchNextPage,
+    } satisfies WorkspaceDirectoryRequestState,
   };
 }
 

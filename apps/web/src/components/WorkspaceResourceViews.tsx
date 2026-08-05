@@ -41,7 +41,7 @@ import { AgentsTab } from "./AgentsTab";
 import { mergeAgentStatuses } from "../agents";
 import {
   CollectionDirectoryControls,
-  CollectionEmptyState,
+  CollectionStateFeedback,
   CollectionHeader,
   CollectionTimestamp,
   CollectionToolbar,
@@ -59,7 +59,7 @@ type ChatDirectoryResource = {
 
 export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPreferences, onNavigate, onOpenInNewTab, onCreate, onConversationAction }: {
   projects: ProjectDto[]; filterProjectId?: string; preferences: WorkspacePreferencesDto;
-  onPreferences(patch: Partial<WorkspacePreferencesDto>): void; onNavigate(route: Route): void; onOpenInNewTab(route: Route): void; onCreate(projectId?: string): void;
+  onPreferences(patch: Partial<WorkspacePreferencesDto>): void; onNavigate(route: Route): void; onOpenInNewTab?(route: Route): void; onCreate(projectId?: string): void;
   onConversationAction(kind: "rename" | "delete", conversation: ConversationDto): void;
 }): JSX.Element {
   const [search, setSearch] = useState(""); const [projectId, setProjectId] = useState(filterProjectId ?? ""); const [dragged, setDragged] = useState<string>(); const [menu, setMenu] = useState<ResourceContextMenuState<ChatDirectoryResource>>();
@@ -80,11 +80,13 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
     icon={<ChatBubbleOutlineIcon />}
     title="All Chats"
     detail={
-      scopedProject
-        ? `${directory.total} ${directory.total === 1 ? "Chat" : "Chats"} in ${scopedProject.label}`
-        : filtersActive
-          ? `${directory.total} matching Project ${directory.total === 1 ? "Chat" : "Chats"}`
-          : `${directory.total} Project ${directory.total === 1 ? "Chat" : "Chats"} across Ponderosa`
+      directoryQuery.requestState.hasResolved
+        ? scopedProject
+          ? `${directory.total} ${directory.total === 1 ? "Chat" : "Chats"} in ${scopedProject.label}`
+          : filtersActive
+            ? `${directory.total} matching Project ${directory.total === 1 ? "Chat" : "Chats"}`
+            : `${directory.total} Project ${directory.total === 1 ? "Chat" : "Chats"} across Ponderosa`
+        : undefined
     }
     primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={() => onCreate(projectId || undefined)}>New Chat</Button>}
     toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Chats" reorderHint>
@@ -97,6 +99,7 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
       />
     </CollectionToolbar>}
     listLabel="All Chats"
+    busy={directoryQuery.requestState.isInitialLoading || directoryQuery.requestState.isRefreshing || directoryQuery.requestState.isFetchingNextPage}
   >
     {ordered.map(({ project, conversation }, index) => {
       const route: Route = { kind: "conversation", projectId: project.id, conversationId: conversation.id };
@@ -139,30 +142,21 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
         }}
       />;
     })}
-    {directoryQuery.hasNextPage ? <Button
-      color="inherit"
-      disabled={directoryQuery.isFetchingNextPage}
-      onClick={() => void directoryQuery.fetchNextPage()}
-    >
-      {directoryQuery.isFetchingNextPage
-        ? "Loading…"
-        : sort === "last_used" ? "Load older Chats" : "Load more Chats"}
-    </Button> : null}
-    {!directoryQuery.isLoading && ordered.length === 0 ? <CollectionEmptyState
-      title={directory.total === 0 && !filtersActive ? "No Chats Yet" : "No Chats match these filters"}
-      detail={directory.total === 0 && !filtersActive ? "Create a Chat to get started." : `Try a different search${filterProjectId ? "." : " or Project filter."}`}
-      action={filtersActive ? {
-        label: "Clear Filters",
-        onClick: () => {
-          setSearch("");
-          if (!filterProjectId) setProjectId("");
-        },
-      } : undefined}
-    /> : null}
+    <CollectionStateFeedback
+      request={directoryQuery.requestState}
+      itemCount={ordered.length}
+      filtersActive={filtersActive}
+      resourceLabel="Chats"
+      emptyTitle="No Chats Yet"
+      emptyDetail="Create a Chat to get started."
+      noMatchTitle="No Chats match these filters"
+      noMatchDetail={filterProjectId ? "Try a different search." : "Try a different search or Project filter."}
+      onClearFilters={() => { setSearch(""); if (!filterProjectId) setProjectId(""); }}
+    />
     <ResourceContextMenu
       state={menu}
       onClose={() => setMenu(undefined)}
-      onOpenInNewTab={({ route }) => onOpenInNewTab(route)}
+      onOpenInNewTab={onOpenInNewTab ? ({ route }) => onOpenInNewTab(route) : undefined}
       actions={[
         {
           id: "rename",
@@ -185,7 +179,7 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
 export function AllAgentsWorkspace({ projects, engines, filterProjectId, preferences, onPreferences, onNavigate, onOpenInNewTab, onCreate, onAgentsDeleted }: {
   projects: ProjectDto[]; engines: EngineDto[]; filterProjectId?: string; preferences: WorkspacePreferencesDto;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
-  onNavigate(route: Route): void; onOpenInNewTab(route: Route): void;
+  onNavigate(route: Route): void; onOpenInNewTab?(route: Route): void;
   onCreate(projectId?: string, managerAgentId?: string): void;
   onAgentsDeleted(projectId: string, agentIds: string[]): void;
 }): JSX.Element {
@@ -245,7 +239,6 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
     ...healthContextQueries,
   ];
   if (
-    agentDirectoryQuery.isLoading ||
     contextQueries.some(query => query.isLoading)
   ) {
     return <Box sx={{ p: 2 }}><LinearProgress /></Box>;
@@ -266,25 +259,27 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
     <AgentsTab
       collection={{
         title: "All Agents",
-        detail: scopedProject
-          ? `${agentDirectory.total} ${agentDirectory.total === 1 ? "Agent" : "Agents"} in ${scopedProject.label}`
-          : `${agentDirectory.total} ${agentDirectory.total === 1 ? "Agent" : "Agents"} across Ponderosa`,
-        totalCount: agentDirectory.total,
+        detail: agentDirectoryQuery.requestState.hasResolved
+          ? scopedProject
+            ? `${agentDirectory.total} ${agentDirectory.total === 1 ? "Agent" : "Agents"} in ${scopedProject.label}`
+            : `${agentDirectory.total} ${agentDirectory.total === 1 ? "Agent" : "Agents"} across Ponderosa`
+          : undefined,
+        totalCount: agentDirectoryQuery.requestState.hasResolved ? agentDirectory.total : undefined,
       }}
       searchValue={search}
       onSearchValueChange={setSearch}
-      collectionFooter={agentDirectoryQuery.hasNextPage ? (
-        <Button
-          color="inherit"
-          disabled={agentDirectoryQuery.isFetchingNextPage}
-          onClick={() => void agentDirectoryQuery.fetchNextPage()}
-          sx={{ alignSelf: "center", my: 1 }}
-        >
-          {agentDirectoryQuery.isFetchingNextPage
-            ? "Loading…"
-            : sort === "last_used" ? "Load older Agents" : "Load more Agents"}
-        </Button>
-      ) : null}
+      collectionRequest={agentDirectoryQuery.requestState}
+      collectionFooter={(filteredCount) => <CollectionStateFeedback
+        request={agentDirectoryQuery.requestState}
+        itemCount={filteredCount}
+        filtersActive={Boolean(search.trim() || projectId)}
+        resourceLabel="Agents"
+        emptyTitle="No Agents Yet"
+        emptyDetail="Create an Agent to get started."
+        noMatchTitle="No Agents match these filters"
+        noMatchDetail="Try a different search, status, Project, or Chat filter."
+        onClearFilters={() => { setSearch(""); if (!filterProjectId) setProjectId(""); }}
+      />}
       toolbarControls={<>
         <CollectionDirectoryControls
           projects={projects}
@@ -295,7 +290,7 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
           compact
         />
       </>}
-      agents={agents} renderedAgentIds={agentDirectoryQuery.data ? loadedAgentIds : undefined} projectId={projectId || undefined} engines={engines} conversations={conversations} statusByAgentId={statusByAgentId} healthByAgentId={healthByAgentId} projectByAgentId={projectByAgentId} displayOrder={rows.map(row => row.agent.id)} selectionAllowed onReorder={(sourceId, targetId, position) => onPreferences({ agentSort: "custom", agentOrder: reorderStableIds(preferences.agentOrder, rows.map(row => row.agent.id), sourceId, targetId, position) })} starredAgentIds={starredIds} onToggleStar={(agentId) => onPreferences(toggleWorkspaceResourceStar(preferences, "agent", agentId))} onOpenAgent={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentInNewTab={(agentId) => { const project = projectByAgentId.get(agentId)!; onOpenInNewTab({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentSettings={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId, view: "settings" }); }} onNewAgent={(managerAgentId) => onCreate(
+      agents={agents} renderedAgentIds={loadedAgentIds} projectId={projectId || undefined} engines={engines} conversations={conversations} statusByAgentId={statusByAgentId} healthByAgentId={healthByAgentId} projectByAgentId={projectByAgentId} displayOrder={rows.map(row => row.agent.id)} selectionAllowed onReorder={(sourceId, targetId, position) => onPreferences({ agentSort: "custom", agentOrder: reorderStableIds(preferences.agentOrder, rows.map(row => row.agent.id), sourceId, targetId, position) })} starredAgentIds={starredIds} onToggleStar={(agentId) => onPreferences(toggleWorkspaceResourceStar(preferences, "agent", agentId))} onOpenAgent={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentInNewTab={onOpenInNewTab ? (agentId) => { const project = projectByAgentId.get(agentId)!; onOpenInNewTab({ kind: "agent", projectId: project.id, agentId }); } : undefined} onOpenAgentSettings={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId, view: "settings" }); }} onNewAgent={(managerAgentId) => onCreate(
       managerAgentId
         ? projectByAgentId.get(managerAgentId)?.id
         : projectId || undefined,
@@ -328,7 +323,7 @@ export function AllTriggersWorkspace({
   filterAgentIds?: readonly string[];
   scopeTitle?: string;
   embedded?: boolean;
-  onNavigate(route: Route): void; onOpenInNewTab(route: Route): void; onCreate(): void;
+  onNavigate(route: Route): void; onOpenInNewTab?(route: Route): void; onCreate(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState(""); const [projectId, setProjectId] = useState(filterProjectId ?? ""); const [dragged, setDragged] = useState<string>(); const [menu, setMenu] = useState<ResourceContextMenuState<TriggerDirectoryResource>>();
@@ -379,11 +374,13 @@ export function AllTriggersWorkspace({
     icon={<BoltOutlinedIcon />}
     title={scopeTitle ?? (scopedProject ? "Project Triggers" : "All Triggers")}
     detail={
-      scopedProject
-        ? `${directory.total} ${directory.total === 1 ? "Trigger" : "Triggers"} in ${scopedProject.label}`
-        : filtersActive
-          ? `${directory.total} matching ${directory.total === 1 ? "Trigger" : "Triggers"}`
-          : `${directory.total} ${directory.total === 1 ? "Trigger" : "Triggers"} across Ponderosa`
+      directoryQuery.requestState.hasResolved
+        ? scopedProject
+          ? `${directory.total} ${directory.total === 1 ? "Trigger" : "Triggers"} in ${scopedProject.label}`
+          : filtersActive
+            ? `${directory.total} matching ${directory.total === 1 ? "Trigger" : "Triggers"}`
+            : `${directory.total} ${directory.total === 1 ? "Trigger" : "Triggers"} across Ponderosa`
+        : undefined
     }
     primaryAction={createButton}
     toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Triggers" reorderHint>
@@ -397,6 +394,7 @@ export function AllTriggersWorkspace({
       {embedded ? createButton : null}
     </CollectionToolbar>}
     listLabel={scopeTitle ?? "All Triggers"}
+    busy={directoryQuery.requestState.isInitialLoading || directoryQuery.requestState.isRefreshing || directoryQuery.requestState.isFetchingNextPage}
     variant={embedded ? "embedded" : "page"}
   >
     {ordered.map(({ project, agent, trigger }, index) => {
@@ -451,30 +449,21 @@ export function AllTriggersWorkspace({
         }}
       />;
     })}
-    {directoryQuery.hasNextPage ? <Button
-      color="inherit"
-      disabled={directoryQuery.isFetchingNextPage}
-      onClick={() => void directoryQuery.fetchNextPage()}
-    >
-      {directoryQuery.isFetchingNextPage
-        ? "Loading…"
-        : sort === "last_used" ? "Load older Triggers" : "Load more Triggers"}
-    </Button> : null}
-    {!directoryQuery.isLoading && ordered.length === 0 ? <CollectionEmptyState
-      title={directory.total === 0 && !filtersActive ? "No Triggers Yet" : "No Triggers match these filters"}
-      detail={directory.total === 0 && !filtersActive ? "Create a Trigger to automate Agent work." : `Try a different search${filterProjectId ? "." : " or Project filter."}`}
-      action={filtersActive ? {
-        label: "Clear Filters",
-        onClick: () => {
-          setSearch("");
-          if (!filterProjectId) setProjectId("");
-        },
-      } : undefined}
-    /> : null}
+    <CollectionStateFeedback
+      request={directoryQuery.requestState}
+      itemCount={ordered.length}
+      filtersActive={filtersActive}
+      resourceLabel="Triggers"
+      emptyTitle="No Triggers Yet"
+      emptyDetail="Create a Trigger to automate Agent work."
+      noMatchTitle="No Triggers match these filters"
+      noMatchDetail={filterProjectId ? "Try a different search." : "Try a different search or Project filter."}
+      onClearFilters={() => { setSearch(""); if (!filterProjectId) setProjectId(""); }}
+    />
     <ResourceContextMenu
       state={menu}
       onClose={() => setMenu(undefined)}
-      onOpenInNewTab={({ route }) => onOpenInNewTab(route)}
+      onOpenInNewTab={onOpenInNewTab ? ({ route }) => onOpenInNewTab(route) : undefined}
       actions={[
         {
           id: "settings",

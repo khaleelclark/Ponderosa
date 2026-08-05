@@ -106,10 +106,10 @@ export function ResourceContextMenu<T>({
           onCloseRef.current();
         }}
       >
-        <MenuItem disabled={!onOpenInNewTab} onClick={() => onOpenInNewTab && select(onOpenInNewTab)}>
+        {onOpenInNewTab ? <MenuItem onClick={() => select(onOpenInNewTab)}>
           <OpenInNewIcon fontSize="small" sx={{ mr: 1 }} />
           Open in New Ponderosa Tab
-        </MenuItem>
+        </MenuItem> : null}
         {actions.map((action) => <MenuItem
           key={action.id}
           disabled={action.disabled}

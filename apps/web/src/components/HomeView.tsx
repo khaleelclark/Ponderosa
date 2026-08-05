@@ -32,6 +32,7 @@ import type {
 import { useQueryClient } from "@tanstack/react-query";
 import { useState, type MouseEvent, type ReactElement } from "react";
 import {
+  combineWorkspaceDirectoryRequestStates,
   useWorkspaceDirectory,
   workspaceDirectoryItems,
 } from "../hooks/useWorkspaceDirectory";
@@ -39,6 +40,7 @@ import { engineAvailabilityPresentation } from "../conversationEngine";
 import type { Route } from "../routing";
 import { isOpenAttention } from "../attention";
 import { sortWorkspaceResources, starredWorkspaceResources, toggleWorkspaceResourceStar } from "../resourcePreferences";
+import { CollectionStateFeedback } from "./CollectionPrimitives";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 import {
@@ -118,7 +120,7 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
   notifications: WorkspaceNotificationDto[];
   preferences: WorkspacePreferencesDto;
   onNavigate(route: Route): void;
-  onOpenInNewTab(route: Route): void;
+  onOpenInNewTab?(route: Route): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onCreateProject(): void;
   onCreateChat(): void;
@@ -149,7 +151,20 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
   const conversationItems = [...conversationDirectory.starredItems, ...conversationDirectory.items];
   const agentItems = [...agentDirectory.starredItems, ...agentDirectory.items];
   const triggerItems = [...triggerDirectory.starredItems, ...triggerDirectory.items];
-  const activeAgents = agentDirectoryQuery.data?.pages.at(-1)?.activeCount ?? 0;
+  const homeDirectoryRequest = combineWorkspaceDirectoryRequestStates([
+    projectDirectoryQuery.requestState,
+    conversationDirectoryQuery.requestState,
+    agentDirectoryQuery.requestState,
+    triggerDirectoryQuery.requestState,
+  ]);
+  const recentDirectoryRequest = {
+    ...homeDirectoryRequest,
+    hasNextPage: false,
+    isPaginationError: false,
+  };
+  const activeAgents = agentDirectoryQuery.requestState.hasResolved
+    ? agentDirectoryQuery.data?.pages.at(-1)?.activeCount ?? 0
+    : "—";
   const needsAttention = notifications.filter(isOpenAttention).length;
   const unread = notifications.filter((item) => !item.readAt && (item.status ?? "open") === "open").length;
   const provider = engineAvailabilityPresentation(engines);
@@ -178,7 +193,7 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
     onNavigate(item.route);
   };
 
-  return <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto" }}>
+  return <Box className="ponderosa-scroll" aria-busy={homeDirectoryRequest.isInitialLoading || homeDirectoryRequest.isRefreshing} sx={{ minHeight: 0, overflowY: "auto" }}>
     <TabbedWorkspaceFrame<"overview" | "work">
       icon={<HomeOutlinedIcon />}
       title="Home"
@@ -288,9 +303,9 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
 
       <Box component="section">
         <Typography variant="h6" fontWeight={800} sx={{ mb: 1 }}>Recent</Typography>
-        <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", md: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
+        <CollectionStateFeedback request={recentDirectoryRequest} itemCount={recent.length} filtersActive={false} resourceLabel="recent work" emptyTitle="Your Recent Work Will Appear Here" emptyDetail="Create a Project to begin." />
+        <Box sx={{ display: homeDirectoryRequest.hasResolved && recent.length ? "grid" : "none", gridTemplateColumns: { xs: "minmax(0, 1fr)", md: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
           {recent.map((item) => <Paper key={item.id} variant="outlined" onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, resource: item.route }); }}><ButtonBase onClick={() => openResource(item)} sx={{ width: "100%", p: 1.5, gap: 1.25, justifyContent: "flex-start", textAlign: "left" }}><Box sx={{ width: 34, height: 34, borderRadius: 1.5, bgcolor: "action.selected", display: "grid", placeItems: "center", flexShrink: 0 }}>{item.icon}</Box><Box sx={{ minWidth: 0 }}><Typography fontWeight={750} noWrap>{item.title}</Typography><Typography variant="caption" color="text.secondary" noWrap>{item.detail}</Typography></Box></ButtonBase></Paper>)}
-          {!recent.length ? <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}><AddIcon color="disabled" /><Typography fontWeight={750}>Your recent work will appear here</Typography><Typography variant="body2" color="text.secondary">Create a Project to begin.</Typography></Paper> : null}
         </Box>
       </Box></> : null}
     </Stack>

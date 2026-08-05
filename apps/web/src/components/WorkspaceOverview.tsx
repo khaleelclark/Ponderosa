@@ -27,7 +27,7 @@ import { ProjectDeletionDialog } from "./ProjectDeletionDialog";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 import {
   CollectionDirectoryControls,
-  CollectionEmptyState,
+  CollectionStateFeedback,
   CollectionTimestamp,
   CollectionToolbar,
   CollectionWorkspace,
@@ -111,7 +111,11 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
   return <CollectionWorkspace
     icon={<FolderOutlinedIcon />}
     title="All Projects"
-    detail={filter.trim() ? `${directory.total} matching ${directory.total === 1 ? "Project" : "Projects"}` : `${directory.total} ${directory.total === 1 ? "Project" : "Projects"} across Ponderosa`}
+    detail={directoryQuery.requestState.hasResolved
+      ? filter.trim()
+        ? `${directory.total} matching ${directory.total === 1 ? "Project" : "Projects"}`
+        : `${directory.total} ${directory.total === 1 ? "Project" : "Projects"} across Ponderosa`
+      : undefined}
     primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={onCreateProject} sx={{ whiteSpace: "nowrap" }}>New Project</Button>}
     toolbar={<CollectionToolbar search={filter} onSearch={setFilter} searchLabel="Search Projects" reorderHint>
       <CollectionDirectoryControls
@@ -120,6 +124,7 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
       />
     </CollectionToolbar>}
     listLabel="All Projects"
+    busy={directoryQuery.requestState.isInitialLoading || directoryQuery.requestState.isRefreshing || directoryQuery.requestState.isFetchingNextPage}
   >
     {filteredSnapshots.map((snapshot, index) => {
         const recent = snapshot.recentConversation;
@@ -205,25 +210,17 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
           }
         />;
       })}
-    {directoryQuery.hasNextPage ? <Button
-      color="inherit"
-      disabled={directoryQuery.isFetchingNextPage}
-      onClick={() => void directoryQuery.fetchNextPage()}
-    >
-      {directoryQuery.isFetchingNextPage
-        ? "Loading…"
-        : preferences.projectSort === "last_used"
-          ? "Load older Projects"
-          : "Load more Projects"}
-    </Button> : null}
-    {filteredSnapshots.length === 0 ? <CollectionEmptyState
-      title={directory.total === 0 && !filter.trim() ? "No Projects Yet" : `No Projects match “${filter.trim()}”`}
-      detail={directory.total === 0 && !filter.trim() ? "Create a Project to get started." : "Try a Project name, folder, or Chat title."}
-      action={filter.trim() ? {
-        label: "Clear Search",
-        onClick: () => setFilter(""),
-      } : undefined}
-    /> : null}
+    <CollectionStateFeedback
+      request={directoryQuery.requestState}
+      itemCount={filteredSnapshots.length}
+      filtersActive={Boolean(filter.trim())}
+      resourceLabel="Projects"
+      emptyTitle="No Projects Yet"
+      emptyDetail="Create a Project to get started."
+      noMatchTitle={"No Projects match “" + filter.trim() + "”"}
+      noMatchDetail="Try a Project name, folder, or Chat title."
+      onClearFilters={() => setFilter("")}
+    />
     <ResourceContextMenu
       state={tabMenu}
       onClose={() => setTabMenu(undefined)}

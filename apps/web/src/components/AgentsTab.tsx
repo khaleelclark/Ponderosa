@@ -51,6 +51,7 @@ import {
   ResourceContextMenu,
   type ResourceContextMenuState,
 } from "./ResourceContextMenu";
+import type { WorkspaceDirectoryRequestState } from "../hooks/useWorkspaceDirectory";
 import {
   CollectionEmptyState,
   CollectionTimestamp,
@@ -76,6 +77,7 @@ import {
 
 function AgentRosterShell({
   collection,
+  collectionRequest,
   scopeLabel,
   headerActions,
   toolbar,
@@ -83,10 +85,11 @@ function AgentRosterShell({
 }: {
   collection?: {
     title: string;
-    detail: string;
+    detail?: string;
     totalCount?: number;
     variant?: "page" | "embedded";
   };
+  collectionRequest?: WorkspaceDirectoryRequestState;
   scopeLabel?: string;
   headerActions: ReactNode;
   toolbar: ReactNode;
@@ -104,6 +107,7 @@ function AgentRosterShell({
         toolbar={toolbar}
         listLabel={collection.title}
         variant={collection.variant}
+        busy={Boolean(collectionRequest?.isInitialLoading || collectionRequest?.isRefreshing || collectionRequest?.isFetchingNextPage)}
       >
         {children}
       </CollectionWorkspace>
@@ -177,6 +181,7 @@ export function AgentsTab({
   scopeLabel,
   collection,
   collectionFooter,
+  collectionRequest,
   visibleLimit,
   renderedAgentIds,
   organizationRootAgentId,
@@ -209,11 +214,12 @@ export function AgentsTab({
   scopeLabel?: string;
   collection?: {
     title: string;
-    detail: string;
+    detail?: string;
     totalCount?: number;
     variant?: "page" | "embedded";
   };
   collectionFooter?: ReactNode | ((filteredCount: number) => ReactNode);
+  collectionRequest?: WorkspaceDirectoryRequestState;
   /** Bound large embedded rosters while retaining full hierarchy context. */
   visibleLimit?: number;
   /** Bound rendered rows while retaining the complete organization as
@@ -567,6 +573,7 @@ export function AgentsTab({
   return (
     <AgentRosterShell
       collection={collectionPresentation}
+      collectionRequest={collectionRequest}
       scopeLabel={scopeLabel}
       headerActions={headerActions}
       toolbar={
@@ -711,7 +718,7 @@ export function AgentsTab({
           pt: 0,
         }}
       >
-        {filtered.length === 0 ? (
+        {filtered.length === 0 && collectionRequest && !collectionRequest.hasResolved ? null : filtered.length === 0 ? (
           <CollectionEmptyState
             title={
               scopedAgents.length === 0
