@@ -500,7 +500,7 @@ export function ProjectShell({
   // and its title/engine chat-creation form must never become a second flow.
   if (isMobile) {
     return (
-      <Box sx={{ width: "100%", maxWidth: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
+      <Box sx={{ width: "100%", maxWidth: "100%", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
         {loading ? <LinearProgress /> : <Box />}
         <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}><WorkspaceErrorBoundary title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
         {dialogs}
@@ -509,8 +509,8 @@ export function ProjectShell({
   }
 
   return (
-    <Box sx={{ width: "100%", maxWidth: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid" }}>
-      <Box component="section" aria-label="Project workspace" sx={{ minHeight: 0, minWidth: 0, display: "grid", bgcolor: "background.default" }}><WorkspaceErrorBoundary title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
+    <Box sx={{ width: "100%", maxWidth: "100%", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid" }}>
+      <Box component="section" aria-label="Project workspace" sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", bgcolor: "background.default" }}><WorkspaceErrorBoundary title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
       {dialogs}
     </Box>
   );
