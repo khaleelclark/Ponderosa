@@ -849,6 +849,14 @@ export default function App({
               }}
             >
               <WorkspaceConnectionNotice connection={workspaceConnection} />
+              <Box
+                sx={{
+                  gridRow: 2,
+                  minHeight: 0,
+                  minWidth: 0,
+                  display: "grid",
+                }}
+              >
               <WorkspaceConnectionProvider value={workspaceConnection}>
                 <WorkspaceErrorBoundary
                   title="This workspace view could not be displayed."
@@ -896,6 +904,7 @@ export default function App({
                   />
                 </WorkspaceErrorBoundary>
               </WorkspaceConnectionProvider>
+              </Box>
             </Box>
           </Box>
         </Box>
