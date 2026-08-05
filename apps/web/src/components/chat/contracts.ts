@@ -33,6 +33,8 @@ export interface ChatMessagePresentation {
   author: ChatAuthor;
   createdAt: string;
   body: ReactNode;
+  /** Context rendered immediately above the author row. */
+  beforeHeader?: ReactNode;
   /** Quiet cross-surface context rendered beside the author and timestamp. */
   source?: ReactNode;
   attachments?: CommunicationAttachmentDto[];
