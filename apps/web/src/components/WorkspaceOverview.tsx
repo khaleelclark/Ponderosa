@@ -111,7 +111,11 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
   return <CollectionWorkspace
     icon={<FolderOutlinedIcon />}
     title="All Projects"
-    detail={filter.trim() ? `${directory.total} matching ${directory.total === 1 ? "Project" : "Projects"}` : `${directory.total} ${directory.total === 1 ? "Project" : "Projects"} across Ponderosa`}
+    detail={directoryQuery.requestState.hasResolved
+      ? filter.trim()
+        ? `${directory.total} matching ${directory.total === 1 ? "Project" : "Projects"}`
+        : `${directory.total} ${directory.total === 1 ? "Project" : "Projects"} across Ponderosa`
+      : undefined}
     primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={onCreateProject} sx={{ whiteSpace: "nowrap" }}>New Project</Button>}
     toolbar={<CollectionToolbar search={filter} onSearch={setFilter} searchLabel="Search Projects" reorderHint>
       <CollectionDirectoryControls

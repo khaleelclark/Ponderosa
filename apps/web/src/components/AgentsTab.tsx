@@ -85,7 +85,7 @@ function AgentRosterShell({
 }: {
   collection?: {
     title: string;
-    detail: string;
+    detail?: string;
     totalCount?: number;
     variant?: "page" | "embedded";
   };
@@ -214,7 +214,7 @@ export function AgentsTab({
   scopeLabel?: string;
   collection?: {
     title: string;
-    detail: string;
+    detail?: string;
     totalCount?: number;
     variant?: "page" | "embedded";
   };

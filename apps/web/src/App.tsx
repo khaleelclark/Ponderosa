@@ -85,7 +85,12 @@ import {
   serializeWorkspaceSidebarState,
 } from "./workspaceSidebarState";
 import { queryKeys } from "./queryKeys";
-import { MobileWorkspaceDrawer, MobileWorkspaceHeader } from "./App.mobile";
+import {
+  MobileWorkspaceDrawer,
+  MobileWorkspaceHeader,
+  mobileCreationReturnRoute,
+  mobileRouteAfterResourceRemoval,
+} from "./App.mobile";
 import { WorkspaceRouteOutlet } from "./App.workspace-content";
 import {
   markWorkspaceResourceUsed,
@@ -192,6 +197,7 @@ export default function App({
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [sidebarConversationAction, setSidebarConversationAction] =
     useState<SidebarConversationAction>();
+  const mobileCreationOrigin = useRef<Route>();
   const [projectBrowserRequest, setProjectBrowserRequest] =
     useState<ProjectBrowserRequest>();
   const projectBrowserRequestId = useRef(0);
@@ -493,7 +499,8 @@ export default function App({
     },
   ) => {
     if (route.kind !== "create") {
-      creationOriginByWorkspace.current.set(activeWorkspaceTabKey, route);
+      if (mobileWorkspace) mobileCreationOrigin.current = route;
+      else creationOriginByWorkspace.current.set(activeWorkspaceTabKey, route);
     }
     const destination: Route = {
       kind: "create",
@@ -514,7 +521,8 @@ export default function App({
     kind: "project" | "chat" | "agent" | "trigger",
   ) => {
     if (route.kind !== "create") {
-      creationOriginByWorkspace.current.set(activeWorkspaceTabKey, route);
+      if (mobileWorkspace) mobileCreationOrigin.current = route;
+      else creationOriginByWorkspace.current.set(activeWorkspaceTabKey, route);
     }
     replaceActiveWorkspace({
       kind: "create",
@@ -570,6 +578,14 @@ export default function App({
     }
   };
   const cancelCreationWorkspace = () => {
+    if (mobileWorkspace) {
+      const destination = mobileCreationReturnRoute(
+        mobileCreationOrigin.current,
+      );
+      mobileCreationOrigin.current = undefined;
+      replaceActiveWorkspace(destination);
+      return;
+    }
     const origin = creationOriginByWorkspace.current.get(
       activeWorkspaceTabKey,
     );
@@ -600,6 +616,17 @@ export default function App({
     );
   };
   const removeWorkspaceView = (removedRoute: Route) => {
+    if (mobileWorkspace) {
+      const fallbackRoute = mobileRouteAfterResourceRemoval(
+        route,
+        removedRoute,
+      );
+      if (fallbackRoute) {
+        recordWorkspaceRouteUse(fallbackRoute);
+        navigate(fallbackRoute, { replace: true });
+      }
+      return;
+    }
     if (removedRoute.kind === "project") {
       const fallbackRoute: Route = { kind: "projects" };
       const activeRoute = workspaceTabs.find(

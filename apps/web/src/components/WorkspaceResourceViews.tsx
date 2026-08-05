@@ -80,11 +80,13 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
     icon={<ChatBubbleOutlineIcon />}
     title="All Chats"
     detail={
-      scopedProject
-        ? `${directory.total} ${directory.total === 1 ? "Chat" : "Chats"} in ${scopedProject.label}`
-        : filtersActive
-          ? `${directory.total} matching Project ${directory.total === 1 ? "Chat" : "Chats"}`
-          : `${directory.total} Project ${directory.total === 1 ? "Chat" : "Chats"} across Ponderosa`
+      directoryQuery.requestState.hasResolved
+        ? scopedProject
+          ? `${directory.total} ${directory.total === 1 ? "Chat" : "Chats"} in ${scopedProject.label}`
+          : filtersActive
+            ? `${directory.total} matching Project ${directory.total === 1 ? "Chat" : "Chats"}`
+            : `${directory.total} Project ${directory.total === 1 ? "Chat" : "Chats"} across Ponderosa`
+        : undefined
     }
     primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={() => onCreate(projectId || undefined)}>New Chat</Button>}
     toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Chats" reorderHint>
@@ -257,10 +259,12 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
     <AgentsTab
       collection={{
         title: "All Agents",
-        detail: scopedProject
-          ? `${agentDirectory.total} ${agentDirectory.total === 1 ? "Agent" : "Agents"} in ${scopedProject.label}`
-          : `${agentDirectory.total} ${agentDirectory.total === 1 ? "Agent" : "Agents"} across Ponderosa`,
-        totalCount: agentDirectory.total,
+        detail: agentDirectoryQuery.requestState.hasResolved
+          ? scopedProject
+            ? `${agentDirectory.total} ${agentDirectory.total === 1 ? "Agent" : "Agents"} in ${scopedProject.label}`
+            : `${agentDirectory.total} ${agentDirectory.total === 1 ? "Agent" : "Agents"} across Ponderosa`
+          : undefined,
+        totalCount: agentDirectoryQuery.requestState.hasResolved ? agentDirectory.total : undefined,
       }}
       searchValue={search}
       onSearchValueChange={setSearch}
@@ -370,11 +374,13 @@ export function AllTriggersWorkspace({
     icon={<BoltOutlinedIcon />}
     title={scopeTitle ?? (scopedProject ? "Project Triggers" : "All Triggers")}
     detail={
-      scopedProject
-        ? `${directory.total} ${directory.total === 1 ? "Trigger" : "Triggers"} in ${scopedProject.label}`
-        : filtersActive
-          ? `${directory.total} matching ${directory.total === 1 ? "Trigger" : "Triggers"}`
-          : `${directory.total} ${directory.total === 1 ? "Trigger" : "Triggers"} across Ponderosa`
+      directoryQuery.requestState.hasResolved
+        ? scopedProject
+          ? `${directory.total} ${directory.total === 1 ? "Trigger" : "Triggers"} in ${scopedProject.label}`
+          : filtersActive
+            ? `${directory.total} matching ${directory.total === 1 ? "Trigger" : "Triggers"}`
+            : `${directory.total} ${directory.total === 1 ? "Trigger" : "Triggers"} across Ponderosa`
+        : undefined
     }
     primaryAction={createButton}
     toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Triggers" reorderHint>
