@@ -130,6 +130,7 @@ const DEFAULT_EFFORTS: EffortOption[] = [
 export class ClaudeAdapter implements Adapter {
   readonly id = "claude";
   readonly displayName = "Claude";
+  readonly trustedSystemPromptChannel = "system" as const;
   readonly providerUsageCommand = {
     name: "usage",
     description: "Show Claude subscription usage",
@@ -286,7 +287,7 @@ export class ClaudeAdapter implements Adapter {
   }
 
   /** Flags shared by seed + continue. */
-  private baseArgs(prompt: string, model?: string, effort?: string): string[] {
+  private baseArgs(prompt: string, systemPrompt?: string, model?: string, effort?: string): string[] {
     const args = [
       "-p",
       prompt,
@@ -296,6 +297,7 @@ export class ClaudeAdapter implements Adapter {
       "--permission-mode",
       this.permissionMode,
     ];
+    if (systemPrompt) args.push("--append-system-prompt", systemPrompt);
     if (model) args.push("--model", model);
     if (effort) args.push("--effort", effort);
     return args;
@@ -304,7 +306,7 @@ export class ClaudeAdapter implements Adapter {
   seed(opts: SeedOptions): AsyncIterable<AgentEvent> {
     const prompt = renderSeedPrompt(opts.history, opts.prompt);
     return this.run(
-      this.baseArgs(prompt, opts.model, opts.effort),
+      this.baseArgs(prompt, opts.systemPrompt, opts.model, opts.effort),
       opts.cwd,
       opts.signal,
       opts.environment,
@@ -315,7 +317,7 @@ export class ClaudeAdapter implements Adapter {
 
   continue(opts: ContinueOptions): AsyncIterable<AgentEvent> {
     const args = [
-      ...this.baseArgs(opts.prompt, opts.model, opts.effort),
+      ...this.baseArgs(opts.prompt, opts.systemPrompt, opts.model, opts.effort),
       "--resume",
       opts.resumeSessionId,
     ];

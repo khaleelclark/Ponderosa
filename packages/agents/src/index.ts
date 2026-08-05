@@ -3,6 +3,7 @@
 // from packages/engines except AgentEvent (re-exported through core).
 
 export { AgentStore, AgentDeletionConflictError } from "./store.js";
+export { normalizeAgentTitle } from "./agent-identity.js";
 export { WorkspaceStore } from "./workspace-store.js";
 export type { PushDeliveryRecord } from "./workspace-store.js";
 export { highlightedSearchSnippet, searchProjectedChatMessages } from "./chat-search.js";

@@ -182,9 +182,9 @@ export function ConversationView({
   }>();
   const [commandTargetHandle, setCommandTargetHandle] = useState<string>();
   const [memberSearch, setMemberSearch] = useState("");
-  // The engine/model/effort/speed currently selected for this conversation. Model-agnostic:
-  // it can change any time and only affects agents spawned *after* the change —
-  // already-running agents keep the model they were spawned with.
+  // The runtime shown by the composer. With one exact Agent destination this
+  // mirrors that Agent's durable next-Run selection; otherwise it is the
+  // Project Chat default used for newly spawned Agents.
   const [engine, setEngine] = useState("");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
@@ -335,6 +335,35 @@ export function ConversationView({
     setSpeed(resolved.speed ?? "");
   }, [conversation, engines, preferencesQuery.data, projectsQuery.data]);
 
+  const applyPersistedRuntime = (source: {
+    engine?: EngineDto["id"];
+    model?: string | null;
+    effort?: string | null;
+    speedKey: string;
+  }): void => {
+    if (!conversation || !preferencesQuery.data || !projectsQuery.data) return;
+    const currentProject = projectsQuery.data.find(
+      candidate => candidate.id === conversation.projectId,
+    );
+    const restoredEngine = resolveConversationEngine(source.engine, engines);
+    const restoredAdapter = engines.find(candidate => candidate.id === restoredEngine);
+    if (!restoredEngine || !restoredAdapter) return;
+    const restored = resolveRuntimeSelection(
+      restoredAdapter,
+      preferencesQuery.data,
+      currentProject,
+      {
+        model: source.model ?? undefined,
+        effort: source.effort ?? undefined,
+        speed: readChatState(chatStateKey("runtime", source.speedKey)),
+      },
+    );
+    setEngine(restoredEngine);
+    setModel(restored.model);
+    setEffort(restored.effort);
+    setSpeed(restored.speed ?? "");
+  };
+
   // Persist the selection so "the model selected for this conversation" survives
   // reloads and prefills the New Agent dialog.
   const persistDefaults = useMutation({
@@ -351,7 +380,111 @@ export function ConversationView({
         queryKey: queryKeys.conversations.all,
       });
     },
+    onError: () => {
+      if (!conversation) return;
+      const currentProject = projectsQuery.data?.find(
+        candidate => candidate.id === conversation.projectId,
+      );
+      applyPersistedRuntime({
+        engine: conversation.defaultEngine ?? currentProject?.defaultEngine,
+        model: conversation.defaultModel,
+        effort: conversation.defaultEffort,
+        speedKey: `conversation.${conversation.id}.speed`,
+      });
+    },
   });
+
+  const persistTargetRuntime = useMutation({
+    mutationFn: ({
+      agentId,
+      activeEngine,
+      model,
+      effort,
+    }: {
+      agentId: string;
+      activeEngine: EngineDto["id"];
+      model: string | null;
+      effort: string | null;
+    }) => api.updateAgent(agentId, { activeEngine, model, effort }),
+    onSuccess: updated => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.detailPrefix(updated.id),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.project(updated.projectId),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.conversations.detailPrefix(conversationId),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.conversations.members(conversationId),
+      });
+    },
+    onError: (_error, variables) => {
+      const persisted = agents.find(agent => agent.id === variables.agentId)
+        ?? detailQuery.data?.agents.find(agent => agent.id === variables.agentId);
+      if (!persisted) return;
+      applyPersistedRuntime({
+        engine: persisted.activeEngine,
+        model: persisted.model,
+        effort: persisted.effort,
+        speedKey: `agent.${persisted.id}.speed`,
+      });
+    },
+  });
+
+  const runtimeTargetAgentId = commandTargetAgent?.id;
+  useEffect(() => {
+    if (!conversation || !preferencesQuery.data || !projectsQuery.data) return;
+    const project = projectsQuery.data.find(
+      candidate => candidate.id === conversation.projectId,
+    );
+    const source = commandTargetAgent
+      ? {
+          engine: commandTargetAgent.activeEngine,
+          model: commandTargetAgent.model,
+          effort: commandTargetAgent.effort,
+          speedKey: `agent.${commandTargetAgent.id}.speed`,
+        }
+      : {
+          engine: conversation.defaultEngine ?? project?.defaultEngine,
+          model: conversation.defaultModel,
+          effort: conversation.defaultEffort,
+          speedKey: `conversation.${conversation.id}.speed`,
+        };
+    const resolvedEngine = resolveConversationEngine(source.engine, engines);
+    const selectedEngine = engines.find(
+      candidate => candidate.id === resolvedEngine,
+    );
+    if (!resolvedEngine || !selectedEngine) return;
+    const resolved = resolveRuntimeSelection(
+      selectedEngine,
+      preferencesQuery.data,
+      project,
+      {
+        model: source.model,
+        effort: source.effort,
+        speed: readChatState(chatStateKey("runtime", source.speedKey)),
+      },
+    );
+    setEngine(resolvedEngine);
+    setModel(resolved.model);
+    setEffort(resolved.effort);
+    setSpeed(resolved.speed ?? "");
+  }, [
+    conversation?.defaultEffort,
+    conversation?.defaultEngine,
+    conversation?.defaultModel,
+    conversation?.id,
+    conversation?.projectId,
+    commandTargetAgent?.activeEngine,
+    commandTargetAgent?.effort,
+    commandTargetAgent?.model,
+    engines,
+    preferencesQuery.data,
+    projectsQuery.data,
+    runtimeTargetAgentId,
+  ]);
 
   const rename = useMutation({
     mutationFn: (title: string) =>
@@ -418,7 +551,12 @@ export function ConversationView({
       setEffort(next.effort);
       setSpeed(next.speed ?? "");
       writeChatState(
-        chatStateKey("runtime", `conversation.${conversationId}.speed`),
+        chatStateKey(
+          "runtime",
+          commandTargetAgent
+            ? `agent.${commandTargetAgent.id}.speed`
+            : `conversation.${conversationId}.speed`,
+        ),
         next.speed ?? "",
       );
     },
@@ -649,6 +787,7 @@ export function ConversationView({
         efforts={efforts}
         speed={selectedRuntime.speed}
         speeds={speeds}
+        disabled={persistTargetRuntime.isPending || persistDefaults.isPending}
         onEngineChange={next => {
           const nextEngine = engines.find(candidate => candidate.id === next);
           const resolved = resolveRuntimeSelection(
@@ -661,25 +800,57 @@ export function ConversationView({
           setEffort(resolved.effort);
           setSpeed(resolved.speed ?? "");
           writeChatState(
-            chatStateKey("runtime", `conversation.${conversationId}.speed`),
+            chatStateKey(
+              "runtime",
+              commandTargetAgent
+                ? `agent.${commandTargetAgent.id}.speed`
+                : `conversation.${conversationId}.speed`,
+            ),
             resolved.speed ?? "",
           );
-          persistDefaults.mutate({
-            defaultEngine: next as EngineDto["id"],
-            defaultModel: resolved.model || null,
-            defaultEffort: resolved.effort || null,
-          });
+          if (commandTargetAgent) {
+            persistTargetRuntime.mutate({
+              agentId: commandTargetAgent.id,
+              activeEngine: next as EngineDto["id"],
+              model: resolved.model || null,
+              effort: resolved.effort || null,
+            });
+          } else {
+            persistDefaults.mutate({
+              defaultEngine: next as EngineDto["id"],
+              defaultModel: resolved.model || null,
+              defaultEffort: resolved.effort || null,
+            });
+          }
         }}
         onModelChange={next => {
           const resolved = selectedRuntime.selectModel(next);
-          persistDefaults.mutate({
-            defaultModel: resolved.model,
-            defaultEffort: resolved.effort || null,
-          });
+          if (commandTargetAgent) {
+            persistTargetRuntime.mutate({
+              agentId: commandTargetAgent.id,
+              activeEngine: engine as EngineDto["id"],
+              model: resolved.model || null,
+              effort: resolved.effort || null,
+            });
+          } else {
+            persistDefaults.mutate({
+              defaultModel: resolved.model,
+              defaultEffort: resolved.effort || null,
+            });
+          }
         }}
         onEffortChange={next => {
           const resolved = selectedRuntime.selectEffort(next);
-          persistDefaults.mutate({ defaultEffort: resolved.effort });
+          if (commandTargetAgent) {
+            persistTargetRuntime.mutate({
+              agentId: commandTargetAgent.id,
+              activeEngine: engine as EngineDto["id"],
+              model: resolved.model || null,
+              effort: resolved.effort || null,
+            });
+          } else {
+            persistDefaults.mutate({ defaultEffort: resolved.effort });
+          }
         }}
         onSpeedChange={next => {
           selectedRuntime.selectSpeed(next);
@@ -984,6 +1155,11 @@ export function ConversationView({
             Message not sent. {String(sendError)}
           </Alert>
         ) : null}
+        {persistTargetRuntime.error || persistDefaults.error ? (
+          <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
+            Runtime selection was not saved. The last saved selection was restored.
+          </Alert>
+        ) : null}
         {cancelOperationError ? (
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
             Cancellation failed. {cancelOperationError.message}
@@ -1033,7 +1209,11 @@ export function ConversationView({
             } : undefined}
             insertTextRequest={mentionInsertRequest}
             controls={runtimeControls}
-            disabled={busy}
+            disabled={
+              busy ||
+              persistTargetRuntime.isPending ||
+              persistDefaults.isPending
+            }
             running={operationRunning}
             allowSendWhileRunning
             mentionHandles={mentionHandles}

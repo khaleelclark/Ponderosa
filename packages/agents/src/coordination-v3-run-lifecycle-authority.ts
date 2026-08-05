@@ -61,6 +61,7 @@ export class CoordinationV3RunLifecycleAuthority {
     agentId: string;
     projectId: string;
     prompt: string;
+    systemPrompt?: string;
     sourceManifest: ProviderInputSourceManifest;
     now?: string;
   }): void {
@@ -78,15 +79,21 @@ export class CoordinationV3RunLifecycleAuthority {
       );
     }
     const hash = createHash("sha256").update(input.prompt).digest("hex");
+    const systemPrompt = input.systemPrompt ?? "";
+    const systemPromptHash = systemPrompt
+      ? createHash("sha256").update(systemPrompt).digest("hex")
+      : "";
     this.sqlite.prepare(`
       INSERT INTO provider_inputs (
         execution_id, scheduler_run_id, agent_id, project_id,
-        provider_prompt, prompt_hash, source_manifest_json,
+        provider_prompt, prompt_hash, provider_system_prompt, system_prompt_hash, source_manifest_json,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(execution_id) DO UPDATE SET
         provider_prompt = excluded.provider_prompt,
         prompt_hash = excluded.prompt_hash,
+        provider_system_prompt = excluded.provider_system_prompt,
+        system_prompt_hash = excluded.system_prompt_hash,
         source_manifest_json = excluded.source_manifest_json,
         updated_at = excluded.updated_at
     `).run(
@@ -96,6 +103,8 @@ export class CoordinationV3RunLifecycleAuthority {
       input.projectId,
       input.prompt,
       hash,
+      systemPrompt,
+      systemPromptHash,
       stableJson(input.sourceManifest),
       now,
       now,

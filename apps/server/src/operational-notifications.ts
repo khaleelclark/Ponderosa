@@ -77,7 +77,8 @@ export function createOperationalNotifications(context: OperationalNotifications
   };
   const reconcileCommunicationFailureNotifications = (): void => {
     for (const failure of coordinationV3.terminalActivations(undefined, 500)) {
-      if (failure.state === "cancelled") continue;
+      const key = `communication-delivery:${failure.id}:${failure.outcome}`;
+      if (failure.supersededByRetry || failure.state === "cancelled") continue;
       if (!["human_message", "urgent_message", "ordinary_message"].includes(failure.kind)) continue;
       // Intent, not priority or rendered text, keeps internal Collaboration out
       // of the operator notification tree.
@@ -88,7 +89,7 @@ export function createOperationalNotifications(context: OperationalNotifications
       const conversation = conversationId ? store.getConversation(conversationId) : undefined;
       const issue = failure.lastDeliveryError ?? failure.outcome.replaceAll("_", " ");
       createOperationalNotification({
-        dedupeKey: `communication-delivery:${failure.id}:${failure.outcome}`,
+        dedupeKey: key,
         category: "communication",
         severity: "urgent",
         title: "Message delivery needs your help",
@@ -100,6 +101,17 @@ export function createOperationalNotifications(context: OperationalNotifications
           ? { kind: "open_conversation", targetId: conversation.id }
           : { kind: "open_project", targetId: failure.projectId },
       });
+    }
+    for (const notification of workspace.listNotifications()) {
+      const key = notification.dedupeKey;
+      if (!key?.startsWith("communication-delivery:")
+        || (notification.status ?? "open") !== "open") continue;
+      const activationId = /^communication-delivery:([^:]+):/u.exec(key)?.[1];
+      if (!activationId) continue;
+      const disposition = coordinationV3.terminalActivationDisposition(activationId);
+      if (!disposition
+        || (!disposition.supersededByRetry && disposition.state !== "cancelled")) continue;
+      resolveOperationalNotification(key);
     }
   };
   const agentWorkProjection = new AgentWorkProjection(store, coordinationV3, workspace);

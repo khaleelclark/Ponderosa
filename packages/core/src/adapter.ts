@@ -108,6 +108,9 @@ export interface RunOptionsBase {
   cwd: string;
   /** The next user message driving this turn. */
   prompt: string;
+  /** Host-owned trusted instructions supplied through the provider's system
+   * channel. They are never rendered as authored user content. */
+  systemPrompt?: string;
   model?: string;
   effort?: string;
   /** "standard" clears any provider tier override; other values are provider IDs. */
@@ -262,6 +265,9 @@ export interface OpenRuntimeSessionOptions {
   cwd: string;
   resumeSessionId?: string;
   history: ChatMessage[];
+  /** Host-owned trusted instructions supplied through the provider's system
+   * channel. They are never rendered as authored user content. */
+  systemPrompt?: string;
   model?: string;
   effort?: string;
   /** "standard" clears any provider tier override; other values are provider IDs. */
@@ -405,6 +411,8 @@ export interface Adapter {
   readonly providerUsageCommand?: { name: string; description: string };
   /** True when effort compatibility varies by model and missing metadata means unknown. */
   readonly modelSpecificEfforts?: boolean;
+  /** Native provider channel used for host-owned trusted runtime instructions. */
+  readonly trustedSystemPromptChannel: "developer" | "system";
   listModels(): ModelOption[];
   /** Host-configured provider model pins, excluding built-in aliases. */
   configuredModelOptions?(): ModelOption[];

@@ -38,6 +38,33 @@ export class CoordinationV3ActivationReadModel {
     }));
   }
 
+  terminalActivationDisposition(activationId: string): {
+    id: string;
+    state: TerminalActivationV3View["state"];
+    supersededByRetry: boolean;
+  } | undefined {
+    const row = this.sqlite.prepare(`
+      SELECT id, state,
+        EXISTS (
+          SELECT 1 FROM activation_delivery_retry_lineage retry
+          WHERE retry.predecessor_activation_id = agent_activations.id
+        ) AS superseded_by_retry
+      FROM agent_activations
+      WHERE id = ? AND terminal_outcome IS NOT NULL
+    `).get(activationId) as {
+      id: string;
+      state: TerminalActivationV3View["state"];
+      superseded_by_retry: number;
+    } | undefined;
+    return row
+      ? {
+          id: row.id,
+          state: row.state,
+          supersededByRetry: Boolean(row.superseded_by_retry),
+        }
+      : undefined;
+  }
+
   terminalActivations(projectId?: string, limit = 100): TerminalActivationV3View[] {
     const rows = this.sqlite.prepare(`
       SELECT id, project_id, agent_id, kind, state, scope_key, terminal_outcome, delivery_failures,
@@ -50,6 +77,10 @@ export class CoordinationV3ActivationReadModel {
           JOIN runtime_communications runtime ON runtime.id = source.source_id
           WHERE source.activation_id = agent_activations.id AND source.source_kind = 'communication'
           ORDER BY runtime.created_at, runtime.id LIMIT 1) AS communication_intent,
+        EXISTS (
+          SELECT 1 FROM activation_delivery_retry_lineage retry
+          WHERE retry.predecessor_activation_id = agent_activations.id
+        ) AS superseded_by_retry,
         last_delivery_error, terminal_at
       FROM agent_activations
       WHERE terminal_outcome IS NOT NULL AND (? IS NULL OR project_id = ?)
@@ -67,6 +98,7 @@ export class CoordinationV3ActivationReadModel {
       scope_key: string | null;
       communication_event_id: string | null;
       communication_intent: string | null;
+      superseded_by_retry: number;
       terminal_outcome: ActivationTerminalOutcome;
       delivery_failures: number;
       last_delivery_error: string | null;
@@ -85,6 +117,7 @@ export class CoordinationV3ActivationReadModel {
       ...(row.communication_intent
         ? { communicationIntent: row.communication_intent }
         : {}),
+      ...(row.superseded_by_retry ? { supersededByRetry: true } : {}),
       outcome: row.terminal_outcome,
       deliveryFailures: row.delivery_failures,
       ...(row.last_delivery_error ? { lastDeliveryError: row.last_delivery_error } : {}),

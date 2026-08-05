@@ -12,6 +12,7 @@ import type {
   UpdateAgentOrganizationRequest,
 } from "@ponderosa/core";
 import type { Db } from "./db.js";
+import { normalizeAgentTitle } from "./agent-identity.js";
 import { requireManagementPermissions } from "./store-agent-management.js";
 import { readJson, writeJson } from "./store-filesystem.js";
 import type {
@@ -44,6 +45,7 @@ export class AgentCatalogAuthority {
   createAgent(projectId: string, input: CreateAgentRequest, origin?: AgentSpawnOrigin): AgentDto {
     const id = randomUUID();
     const now = new Date().toISOString();
+    const title = normalizeAgentTitle(input.title);
     const preset = input.presetId ? this.getAgentPreset(input.presetId) : undefined;
     if (input.presetId && (!preset || preset.projectId !== projectId || !preset.enabled)) throw new Error("invalid preset");
     const presetSnapshot = preset ? { id: preset.id, name: preset.name, description: preset.description, guidance: preset.guidance, engine: preset.engine, model: preset.model, effort: preset.effort } : undefined;
@@ -57,7 +59,7 @@ export class AgentCatalogAuthority {
       projectId,
       conversationId: input.conversationId,
       conversationIds: input.conversationId ? [input.conversationId] : [],
-      title: input.title,
+      title,
       activeEngine: input.engine,
       model,
       effort,
@@ -81,7 +83,7 @@ export class AgentCatalogAuthority {
         id,
         projectId,
         conversationId: input.conversationId ?? null,
-        title: input.title,
+        title,
         activeEngine: input.engine,
         model: model ?? null,
         effort: effort ?? null,

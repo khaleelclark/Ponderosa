@@ -336,6 +336,7 @@ export interface TerminalActivationV3View {
   scopeKey?: string;
   communicationEventId?: string;
   communicationIntent?: string;
+  supersededByRetry?: boolean;
   outcome: ActivationTerminalOutcome;
   deliveryFailures: number;
   lastDeliveryError?: string;

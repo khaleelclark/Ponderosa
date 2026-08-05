@@ -77,6 +77,19 @@ export function useConversationMessagingController({
   const stopOperationRequestIds = useRef<Map<string, string>>(new Map());
   const stopOperationPending = useRef(false);
 
+  const selectedEngine = engines.find(candidate => candidate.id === engine);
+  const compatibleModel = modelSelectionIsCompatible(selectedEngine, model)
+    ? model
+    : "";
+  const compatibleEffort = effortSelectionIsCompatible(
+    selectedEngine,
+    compatibleModel,
+    effort,
+  )
+    ? effort
+    : "";
+  const runConfig = selectedRunConfig(compatibleModel, compatibleEffort, speed);
+
   const invalidate = () => {
     void queryClient.invalidateQueries({
       queryKey: queryKeys.conversations.detailPrefix(conversationId),
@@ -105,22 +118,6 @@ export function useConversationMessagingController({
       draftOwnerId?: string;
     }) => {
       if (!conversation) throw new Error("Project chat not loaded");
-      const selectedEngine = engines.find(candidate => candidate.id === engine);
-      const compatibleModel = modelSelectionIsCompatible(selectedEngine, model)
-        ? model
-        : "";
-      const compatibleEffort = effortSelectionIsCompatible(
-        selectedEngine,
-        compatibleModel,
-        effort,
-      )
-        ? effort
-        : "";
-      const runConfig = selectedRunConfig(
-        compatibleModel,
-        compatibleEffort,
-        speed,
-      );
       setActiveOperation({ agentIds: [], state: "starting" });
       const agent = await api.createAgent(
         conversation.projectId,
@@ -168,6 +165,11 @@ export function useConversationMessagingController({
         })),
         idempotencyKey: requestId,
         activeRunDelivery,
+        // A shared Project-chat selection cannot safely override recipients
+        // with different engines or durable models. Single-target sends keep
+        // the explicit composer selection; multi-target sends let each Agent
+        // use its own persisted runtime.
+        ...(agentIds.length === 1 ? runConfig : {}),
       });
     },
     onSuccess: (response, variables) => {
@@ -258,6 +260,7 @@ export function useConversationMessagingController({
           })),
           activeRunDelivery,
           idempotencyKey: requestId,
+          ...(agentIds.length === 1 ? runConfig : {}),
         });
       } catch (error) {
         await Promise.allSettled(

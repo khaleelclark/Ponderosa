@@ -367,6 +367,14 @@ export class CoordinationV3Store {
     return this.activationReadModel.pendingActivations(projectId);
   }
 
+  terminalActivationDisposition(activationId: string): {
+    id: string;
+    state: TerminalActivationV3View["state"];
+    supersededByRetry: boolean;
+  } | undefined {
+    return this.activationReadModel.terminalActivationDisposition(activationId);
+  }
+
   terminalActivations(projectId?: string, limit = 100): TerminalActivationV3View[] {
     return this.activationReadModel.terminalActivations(projectId, limit);
   }
@@ -834,6 +842,7 @@ export class CoordinationV3Store {
     agentId: string;
     projectId: string;
     prompt: string;
+    systemPrompt?: string;
     sourceManifest: import("@ponderosa/core").ProviderInputSourceManifest;
     now?: string;
   }): void {

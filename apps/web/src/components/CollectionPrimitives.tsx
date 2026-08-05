@@ -376,9 +376,6 @@ export function CollectionStateFeedback({
   }
   const empty = request.hasResolved && itemCount === 0;
   return <>
-    {request.isRefreshing ? <Box role="status" aria-live="polite" sx={{ py: 0.5 }}>
-      <LinearProgress aria-label={"Refreshing " + resourceLabel} />
-    </Box> : null}
     {empty ? <CollectionEmptyState
       title={filtersActive ? (noMatchTitle ?? "No matching " + resourceLabel) : emptyTitle}
       detail={filtersActive ? noMatchDetail : emptyDetail}

@@ -29,6 +29,7 @@ import { createServer, type EngineRegistration } from "../src/app.js";
 class BehavioralAdapter implements Adapter {
   readonly id = "codex";
   readonly displayName = "Behavioral adapter";
+  readonly trustedSystemPromptChannel = "developer" as const;
   seedCalls = 0;
   seedOptions: SeedOptions[] = [];
 
@@ -71,6 +72,7 @@ class MissingRolloverHandoffAdapter extends BehavioralAdapter {
 class CrossChatPersistentAdapter implements Adapter {
   readonly id = "codex";
   readonly displayName = "Cross-chat persistent adapter";
+  readonly trustedSystemPromptChannel = "developer" as const;
   openOptions: OpenRuntimeSessionOptions[] = [];
   startCalls = 0;
   toolResult?: { success: boolean; text: string };
@@ -130,6 +132,7 @@ class CrossChatPersistentAdapter implements Adapter {
 class ManualRolloverPersistentAdapter implements Adapter {
   readonly id = "codex";
   readonly displayName = "Manual rollover persistent adapter";
+  readonly trustedSystemPromptChannel = "developer" as const;
   openCount = 0;
   rolloverCalls = 0;
   toolResult?: { success: boolean; text: string };
@@ -207,6 +210,7 @@ class ManualRolloverPersistentAdapter implements Adapter {
 class ManagedRequestRolloverAdapter implements Adapter {
   readonly id = "codex";
   readonly displayName = "Managed Request rollover adapter";
+  readonly trustedSystemPromptChannel = "developer" as const;
   openCount = 0;
   rolloverCalls = 0;
   toolResult?: { success: boolean; text: string };
@@ -289,6 +293,7 @@ class ManagedRequestRolloverAdapter implements Adapter {
 class NoUsageReplacementAdapter implements Adapter {
   readonly id = "codex";
   readonly displayName = "No-usage replacement adapter";
+  readonly trustedSystemPromptChannel = "developer" as const;
   constructor(readonly outcome: "error" | "completed") {}
 
   listModels() { return [{ id: "test-model", label: "Test model" }]; }
@@ -342,6 +347,7 @@ class NoUsageReplacementAdapter implements Adapter {
 class CancellableReplacementAdapter implements Adapter {
   readonly id = "codex";
   readonly displayName = "Cancellable replacement adapter";
+  readonly trustedSystemPromptChannel = "developer" as const;
   readonly ready: Promise<void>;
   private signalReady!: () => void;
   private release!: () => void;
@@ -404,6 +410,7 @@ class CancellableReplacementAdapter implements Adapter {
 class ManagedRequestRolloverRecoveryAdapter implements Adapter {
   readonly id = "codex";
   readonly displayName = "Managed Request rollover recovery adapter";
+  readonly trustedSystemPromptChannel = "developer" as const;
   openCount = 0;
   rolloverCalls = 0;
   prompts: string[] = [];
@@ -490,6 +497,7 @@ class PassiveClaudeAdapter extends BehavioralAdapter {
 class BoundRolloverRecoveryAdapter implements Adapter {
   readonly id = "codex";
   readonly displayName = "Bound rollover recovery adapter";
+  readonly trustedSystemPromptChannel = "developer" as const;
   openCount = 0;
   prompts: string[] = [];
   readonly result = "Recovered lineage work completed from the exact handoff.";
@@ -657,6 +665,83 @@ describe("server public API behavior", () => {
       },
       runtimes: [{ id: "codex", authenticated: true }],
     });
+  });
+
+  it("applies Project Chat runtime selection to existing Agent deliveries", async () => {
+    const adapter = new BehavioralAdapter();
+    const project = store.createProject({
+      label: "Runtime selection",
+      hostPath: repoDir,
+      defaultEngine: adapter.id,
+    });
+    const conversationId = project.lastConversationId!;
+    const directAgent = store.createAgent(project.id, {
+      title: "Direct target",
+      engine: adapter.id,
+      conversationId,
+    });
+    const broadcastAgent = store.createAgent(project.id, {
+      title: "Broadcast target",
+      engine: adapter.id,
+      conversationId,
+    });
+    const app = server({
+      dataDir,
+      store,
+      engines: [{
+        adapter,
+        authStatus: async () => ({
+          authenticated: true,
+          detail: "test subscription",
+        }),
+      }],
+      logger: false,
+      communicationV3: { pollMs: 5 },
+    });
+
+    const direct = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${conversationId}/direct-messages`,
+      payload: {
+        text: "Use the selected runtime directly.",
+        recipients: [{ agentId: directAgent.id }],
+        idempotencyKey: randomUUID(),
+        model: "test-model",
+        effort: "high",
+      },
+    });
+    expect(direct.statusCode, direct.body).toBe(200);
+
+    const broadcast = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${conversationId}/messages`,
+      payload: {
+        text: "Use the selected runtime for shared work.",
+        recipientAgentIds: [broadcastAgent.id],
+        idempotencyKey: randomUUID(),
+        model: "test-model",
+        effort: "high",
+      },
+    });
+    expect(broadcast.statusCode, broadcast.body).toBe(200);
+
+    const deadline = Date.now() + 3_000;
+    while (adapter.seedCalls < 2 && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(adapter.seedCalls).toBe(2);
+    expect(adapter.seedOptions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        agentId: directAgent.id,
+        model: "test-model",
+        effort: "high",
+      }),
+      expect.objectContaining({
+        agentId: broadcastAgent.id,
+        model: "test-model",
+        effort: "high",
+      }),
+    ]));
   });
 
   it("bounds ordinary readiness while retaining an explicit deep runtime diagnostic", async () => {

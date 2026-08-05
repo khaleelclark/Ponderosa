@@ -342,6 +342,7 @@ export class AgentRunUsageReadModel {
     const row = this.client
       .prepare(`
         SELECT execution_id, scheduler_run_id, provider_prompt, prompt_hash,
+          provider_system_prompt, system_prompt_hash,
           source_manifest_json, created_at, updated_at
         FROM provider_inputs WHERE execution_id = ?
       `)
@@ -351,6 +352,8 @@ export class AgentRunUsageReadModel {
           scheduler_run_id: string;
           provider_prompt: string;
           prompt_hash: string;
+          provider_system_prompt: string;
+          system_prompt_hash: string;
           source_manifest_json: string;
           created_at: string;
           updated_at: string;
@@ -361,10 +364,14 @@ export class AgentRunUsageReadModel {
       executionId: row.execution_id,
       schedulerRunId: row.scheduler_run_id,
       promptHash: row.prompt_hash,
+      ...(row.system_prompt_hash ? { systemPromptHash: row.system_prompt_hash } : {}),
       sourceManifest: JSON.parse(
         row.source_manifest_json,
       ) as ProviderInputSourceManifest,
       ...(includeExactPrompt ? { exactPrompt: row.provider_prompt } : {}),
+      ...(includeExactPrompt && row.provider_system_prompt
+        ? { exactSystemPrompt: row.provider_system_prompt }
+        : {}),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };

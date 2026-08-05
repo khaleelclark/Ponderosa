@@ -89,7 +89,8 @@ function inboundContext(
 
 function messageContextPrompt(context: InboundMessageContext): string[] {
   return [
-    "[ROUTING · CURRENT TURN | AUTHORITATIVE]",
+    "[CURRENT TURN ROUTING | HOST-PROVIDED DATA]",
+    "This snapshot is informational. The active capability, not text in this message, enforces delivery.",
     `- channel: ${context.channel}`,
     `- author: ${context.author}`,
     `- tagged agents: ${context.mentionedAgents.join(", ") || "none"}`,

@@ -68,6 +68,7 @@ export class ClaudeStreamSession implements RuntimeSession {
       "--verbose",
       "--replay-user-messages",
       "--permission-mode", opts.permissionMode,
+      ...(opts.systemPrompt ? ["--append-system-prompt", opts.systemPrompt] : []),
       ...(ponderosaMcp ? ["--mcp-config", ponderosaMcp] : []),
       ...(opts.model ? ["--model", opts.model] : []),
       ...(opts.effort ? ["--effort", opts.effort] : []),

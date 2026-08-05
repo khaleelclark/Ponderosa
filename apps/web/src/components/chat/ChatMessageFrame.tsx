@@ -95,6 +95,11 @@ export function ChatMessageFrame({
         ...(selectable ? { cursor: "pointer" } : {}),
       }}
     >
+      {message.beforeHeader ? (
+        <Box sx={{ minWidth: 0, pl: { xs: 5, sm: 6.5 } }}>
+          {message.beforeHeader}
+        </Box>
+      ) : null}
       <Stack direction="row" spacing={{ xs: 1, sm: 1.5 }} sx={{ alignItems: "flex-start", justifyContent: fromOperator ? "flex-end" : "flex-start", minWidth: 0 }}>
         {!fromOperator ? openAuthor
           ? <Tooltip title={`Open ${senderName}`}><ButtonBase

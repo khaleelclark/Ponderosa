@@ -15,7 +15,7 @@ import {
   Stack,
   Typography,
 } from "@mui/material";
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 
 export interface ComposerRuntimeOption {
   id: string;
@@ -37,6 +37,7 @@ export function ComposerRuntimeSelector({
   speed,
   speeds = [],
   engineLocked = false,
+  disabled = false,
   onEngineChange,
   onModelChange,
   onEffortChange,
@@ -51,6 +52,7 @@ export function ComposerRuntimeSelector({
   speed?: string;
   speeds?: ComposerRuntimeOption[];
   engineLocked?: boolean;
+  disabled?: boolean;
   onEngineChange?(id: string): void;
   onModelChange(id: string): void;
   onEffortChange(id: string): void;
@@ -65,6 +67,9 @@ export function ComposerRuntimeSelector({
   const selectedSpeed = speeds.find(option => option.id === speed);
   const selectedModelLabel = selectedModel?.label ?? "Model unavailable";
   const close = () => { setAnchor(null); setSection(null); };
+  useEffect(() => {
+    if (disabled) close();
+  }, [disabled]);
   const canSwitchEngine = !engineLocked && Boolean(onEngineChange) && engines.length > 1;
   const sections: Array<{
     id: RuntimeSection;
@@ -102,6 +107,7 @@ export function ComposerRuntimeSelector({
       aria-haspopup="menu"
       aria-controls={anchor ? menuId : undefined}
       aria-expanded={Boolean(anchor)}
+      disabled={disabled}
       onClick={(event) => {
         if (anchor) {
           close();

@@ -674,6 +674,8 @@ export function registerAgentMessageRunRoute(
         broadcastDeltaOmitted,
         routingHash,
         policySnapshotHash,
+        systemPrompt,
+        runtimeSessionContractHash: effectiveRuntimeSessionContractHash,
         rolloverInstructionPrompt,
         prompt,
         freshPrompt,
@@ -714,6 +716,7 @@ export function registerAgentMessageRunRoute(
           agentId: agent.id,
           projectId: project.id,
           prompt: exactProviderInput,
+          systemPrompt,
           sourceManifest: providerInputManifest,
         });
         publishCoordinationV3Changed(agent.id, {
@@ -849,11 +852,12 @@ export function registerAgentMessageRunRoute(
         routingHash,
         runId,
         runtimeEngineId,
-        runtimeSessionContractHash,
+        runtimeSessionContractHash: effectiveRuntimeSessionContractHash,
         runtimeAttachmentDirectory,
         runtimeAttachmentCleanupAfterRun,
         seedHistory,
         sourceChannel,
+        systemPrompt,
         v3FencingToken,
         v3InjectionId,
       });
