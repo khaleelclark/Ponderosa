@@ -335,6 +335,35 @@ export function ConversationView({
     setSpeed(resolved.speed ?? "");
   }, [conversation, engines, preferencesQuery.data, projectsQuery.data]);
 
+  const applyPersistedRuntime = (source: {
+    engine?: EngineDto["id"];
+    model?: string | null;
+    effort?: string | null;
+    speedKey: string;
+  }): void => {
+    if (!conversation || !preferencesQuery.data || !projectsQuery.data) return;
+    const currentProject = projectsQuery.data.find(
+      candidate => candidate.id === conversation.projectId,
+    );
+    const restoredEngine = resolveConversationEngine(source.engine, engines);
+    const restoredAdapter = engines.find(candidate => candidate.id === restoredEngine);
+    if (!restoredEngine || !restoredAdapter) return;
+    const restored = resolveRuntimeSelection(
+      restoredAdapter,
+      preferencesQuery.data,
+      currentProject,
+      {
+        model: source.model ?? undefined,
+        effort: source.effort ?? undefined,
+        speed: readChatState(chatStateKey("runtime", source.speedKey)),
+      },
+    );
+    setEngine(restoredEngine);
+    setModel(restored.model);
+    setEffort(restored.effort);
+    setSpeed(restored.speed ?? "");
+  };
+
   // Persist the selection so "the model selected for this conversation" survives
   // reloads and prefills the New Agent dialog.
   const persistDefaults = useMutation({
@@ -349,6 +378,18 @@ export function ConversationView({
       });
       void queryClient.invalidateQueries({
         queryKey: queryKeys.conversations.all,
+      });
+    },
+    onError: () => {
+      if (!conversation) return;
+      const currentProject = projectsQuery.data?.find(
+        candidate => candidate.id === conversation.projectId,
+      );
+      applyPersistedRuntime({
+        engine: conversation.defaultEngine ?? currentProject?.defaultEngine,
+        model: conversation.defaultModel,
+        effort: conversation.defaultEffort,
+        speedKey: `conversation.${conversation.id}.speed`,
       });
     },
   });
@@ -377,6 +418,17 @@ export function ConversationView({
       });
       void queryClient.invalidateQueries({
         queryKey: queryKeys.conversations.members(conversationId),
+      });
+    },
+    onError: (_error, variables) => {
+      const persisted = agents.find(agent => agent.id === variables.agentId)
+        ?? detailQuery.data?.agents.find(agent => agent.id === variables.agentId);
+      if (!persisted) return;
+      applyPersistedRuntime({
+        engine: persisted.activeEngine,
+        model: persisted.model,
+        effort: persisted.effort,
+        speedKey: `agent.${persisted.id}.speed`,
       });
     },
   });
@@ -735,6 +787,7 @@ export function ConversationView({
         efforts={efforts}
         speed={selectedRuntime.speed}
         speeds={speeds}
+        disabled={persistTargetRuntime.isPending || persistDefaults.isPending}
         onEngineChange={next => {
           const nextEngine = engines.find(candidate => candidate.id === next);
           const resolved = resolveRuntimeSelection(
@@ -1102,6 +1155,11 @@ export function ConversationView({
             Message not sent. {String(sendError)}
           </Alert>
         ) : null}
+        {persistTargetRuntime.error || persistDefaults.error ? (
+          <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
+            Runtime selection was not saved. The last saved selection was restored.
+          </Alert>
+        ) : null}
         {cancelOperationError ? (
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
             Cancellation failed. {cancelOperationError.message}
@@ -1151,7 +1209,11 @@ export function ConversationView({
             } : undefined}
             insertTextRequest={mentionInsertRequest}
             controls={runtimeControls}
-            disabled={busy || persistTargetRuntime.isPending}
+            disabled={
+              busy ||
+              persistTargetRuntime.isPending ||
+              persistDefaults.isPending
+            }
             running={operationRunning}
             allowSendWhileRunning
             mentionHandles={mentionHandles}
