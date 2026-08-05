@@ -53,6 +53,8 @@ function AgentRuntimeControls({
   speeds,
   selectedRuntime,
   onEngineChange,
+  onModelChange,
+  onEffortChange,
 }: {
   engine?: EngineDto;
   engines: EngineDto[];
@@ -68,6 +70,8 @@ function AgentRuntimeControls({
     selectSpeed(nextSpeed: string): void;
   };
   onEngineChange(nextEngine: string): void;
+  onModelChange?(nextModel: string): void;
+  onEffortChange?(nextEffort: string): void;
 }): JSX.Element {
   return (
     <ComposerRuntimeSelector
@@ -91,11 +95,11 @@ function AgentRuntimeControls({
       speed={speed}
       speeds={speeds}
       onEngineChange={onEngineChange}
-      onModelChange={(nextModel) => {
-        selectedRuntime.selectModel(nextModel);
+      onModelChange={nextModel => {
+        (onModelChange ?? selectedRuntime.selectModel)(nextModel);
       }}
-      onEffortChange={(nextEffort) => {
-        selectedRuntime.selectEffort(nextEffort);
+      onEffortChange={nextEffort => {
+        (onEffortChange ?? selectedRuntime.selectEffort)(nextEffort);
       }}
       onSpeedChange={(nextSpeed) => {
         selectedRuntime.selectSpeed(nextSpeed);

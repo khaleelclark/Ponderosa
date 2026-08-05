@@ -792,6 +792,46 @@ export function AgentDetail({
         },
       );
     }}
+    onModelChange={next => {
+      if (!engine || !detail) return;
+      const resolved = selectedRuntime.selectModel(next);
+      setSettingsEngine(engine.id);
+      setSettingsModel(resolved.model);
+      setSettingsEffort(resolved.effort);
+      updateRuntimeSettings.mutate(
+        {
+          activeEngine: engine.id,
+          model: resolved.model || null,
+          effort: resolved.effort || null,
+        },
+        {
+          onError: () => {
+            setModel(persistedModel);
+            setEffort(persistedEffort);
+          },
+        },
+      );
+    }}
+    onEffortChange={next => {
+      if (!engine || !detail) return;
+      const resolved = selectedRuntime.selectEffort(next);
+      setSettingsEngine(engine.id);
+      setSettingsModel(resolved.model);
+      setSettingsEffort(resolved.effort);
+      updateRuntimeSettings.mutate(
+        {
+          activeEngine: engine.id,
+          model: resolved.model || null,
+          effort: resolved.effort || null,
+        },
+        {
+          onError: () => {
+            setModel(persistedModel);
+            setEffort(persistedEffort);
+          },
+        },
+      );
+    }}
   />;
 
   const openTechnicalDetails = (focusId?: string) => {
