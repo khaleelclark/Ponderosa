@@ -260,7 +260,7 @@ export function useConversationMessagingController({
           })),
           activeRunDelivery,
           idempotencyKey: requestId,
-          ...runConfig,
+          ...(agentIds.length === 1 ? runConfig : {}),
         });
       } catch (error) {
         await Promise.allSettled(
