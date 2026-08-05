@@ -9,6 +9,7 @@ function communicationV3Prompt(): string[] {
   return [
     "Your ordinary runtime response is Work log only; use a Ponderosa capability when another participant needs the result.",
     "Common reply: ponderosa_message({text}). Ponderosa inherits an unambiguous incoming audience and stable idempotency.",
+    "If Ponderosa capabilities require discovery, load the Ponderosa message capability specifically. Never substitute a generic or provider-native SendMessage tool: only ponderosa_message creates the canonical reply.",
     "Common delegation: ponderosa_coordinate({recipientAgentId,text}), or use delegations for fan-out. Ponderosa creates one aggregate Join and wakes you as each new result arrives while preserving the open parent workflow.",
     "A message, ordinary runtime output, or completed Run does not schedule future work. Never promise a later follow-up unless a capability response in this Run explicitly confirms that it created a durable wake source.",
     "When no durable wake source was confirmed, finish the work now or state that you cannot self-resume and what the user must do next.",

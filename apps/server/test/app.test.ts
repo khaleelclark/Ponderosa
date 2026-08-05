@@ -659,6 +659,83 @@ describe("server public API behavior", () => {
     });
   });
 
+  it("applies Project Chat runtime selection to existing Agent deliveries", async () => {
+    const adapter = new BehavioralAdapter();
+    const project = store.createProject({
+      label: "Runtime selection",
+      hostPath: repoDir,
+      defaultEngine: adapter.id,
+    });
+    const conversationId = project.lastConversationId!;
+    const directAgent = store.createAgent(project.id, {
+      title: "Direct target",
+      engine: adapter.id,
+      conversationId,
+    });
+    const broadcastAgent = store.createAgent(project.id, {
+      title: "Broadcast target",
+      engine: adapter.id,
+      conversationId,
+    });
+    const app = server({
+      dataDir,
+      store,
+      engines: [{
+        adapter,
+        authStatus: async () => ({
+          authenticated: true,
+          detail: "test subscription",
+        }),
+      }],
+      logger: false,
+      communicationV3: { pollMs: 5 },
+    });
+
+    const direct = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${conversationId}/direct-messages`,
+      payload: {
+        text: "Use the selected runtime directly.",
+        recipients: [{ agentId: directAgent.id }],
+        idempotencyKey: randomUUID(),
+        model: "test-model",
+        effort: "high",
+      },
+    });
+    expect(direct.statusCode, direct.body).toBe(200);
+
+    const broadcast = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${conversationId}/messages`,
+      payload: {
+        text: "Use the selected runtime for shared work.",
+        recipientAgentIds: [broadcastAgent.id],
+        idempotencyKey: randomUUID(),
+        model: "test-model",
+        effort: "high",
+      },
+    });
+    expect(broadcast.statusCode, broadcast.body).toBe(200);
+
+    const deadline = Date.now() + 3_000;
+    while (adapter.seedCalls < 2 && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(adapter.seedCalls).toBe(2);
+    expect(adapter.seedOptions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        agentId: directAgent.id,
+        model: "test-model",
+        effort: "high",
+      }),
+      expect.objectContaining({
+        agentId: broadcastAgent.id,
+        model: "test-model",
+        effort: "high",
+      }),
+    ]));
+  });
+
   it("bounds ordinary readiness while retaining an explicit deep runtime diagnostic", async () => {
     const slowEngines: EngineRegistration[] = [{
       adapter: new BehavioralAdapter(),

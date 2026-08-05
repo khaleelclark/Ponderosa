@@ -93,6 +93,26 @@ export interface ConversationDeliveryRouteDependencies {
 
 const MAX_ATTACHMENTS_PER_MESSAGE = ASSET_LIMITS.maxAssetsPerMessage;
 
+function requestedRuntimeSelection(body: {
+  model?: unknown;
+  effort?: unknown;
+  speed?: unknown;
+}): { model?: string; effort?: string; speed?: string } | undefined {
+  const values = [body.model, body.effort, body.speed];
+  if (values.some(value =>
+    value !== undefined &&
+    (typeof value !== "string" || value.trim().length > 200)
+  )) return undefined;
+  const model = typeof body.model === "string" ? body.model.trim() : "";
+  const effort = typeof body.effort === "string" ? body.effort.trim() : "";
+  const speed = typeof body.speed === "string" ? body.speed.trim() : "";
+  return {
+    ...(model ? { model } : {}),
+    ...(effort ? { effort } : {}),
+    ...(speed ? { speed } : {}),
+  };
+}
+
 export function registerConversationDeliveryRoutes(
   app: FastifyInstance,
   dependencies: ConversationDeliveryRouteDependencies,
@@ -127,6 +147,10 @@ export function registerConversationDeliveryRoutes(
     const recipientAgentIds = request.body?.recipientAgentIds ?? [];
     const requestedRecipientAttachments = request.body?.recipientAttachments ?? [];
     const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
+    const runtimeSelection = requestedRuntimeSelection(request.body ?? {});
+    if (!runtimeSelection) {
+      return reply.code(400).send({ error: "model, effort, and speed must be strings of at most 200 characters" });
+    }
     if (!rawText && (!Array.isArray(requestedAssets) || requestedAssets.length === 0)) {
       return reply.code(400).send({ error: "broadcast text or an attachment is required" });
     }
@@ -251,6 +275,7 @@ export function registerConversationDeliveryRoutes(
                 resultRef: `ponderosa://artifact/${prepared.artifact.id}`,
               } : {}),
               activeRunDelivery,
+              ...runtimeSelection,
               recipients: recipientAgentIds.map((agentId) => ({
                 agentId,
                 attachments: (recipientAssets.get(agentId) ?? []).map((item) => ({
@@ -373,6 +398,10 @@ export function registerConversationDeliveryRoutes(
       const recipients = request.body?.recipients ?? [];
       const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
       const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
+      const runtimeSelection = requestedRuntimeSelection(request.body ?? {});
+      if (!runtimeSelection) {
+        return reply.code(400).send({ error: "model, effort, and speed must be strings of at most 200 characters" });
+      }
       if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
         return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
       }
@@ -449,6 +478,7 @@ export function registerConversationDeliveryRoutes(
                 resultRef: `ponderosa://artifact/${prepared.artifact.id}`,
               } : {}),
               activeRunDelivery,
+              ...runtimeSelection,
               recipients: recipients.map((recipient, index) => ({
                 agentId: recipient.agentId,
                 attachments: (attachmentsByAgent[index] ?? []).map((item) => ({

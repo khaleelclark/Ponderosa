@@ -393,6 +393,10 @@ export interface CreateConversationMessageRequest {
   recipientAgentIds?: string[];
   /** Target-owned asset copies for safe delivery to each activated Agent. */
   recipientAttachments?: Array<{ agentId: string; attachmentIds: string[] }>;
+  /** Per-turn runtime selection for every Agent activated by this message. */
+  model?: string;
+  effort?: string;
+  speed?: string;
   /** Active recipients steer by default; queue preserves an explicit turn boundary. */
   activeRunDelivery?: "steer" | "queue";
   /** Stable across transport retries; absent is accepted for legacy clients. */
@@ -423,6 +427,10 @@ export interface CreateMultiAgentDirectMessageRequest {
   /** Stable across retries; one user action creates one message and N deliveries. */
   idempotencyKey: string;
   activeRunDelivery?: "steer" | "queue";
+  /** Per-turn runtime selection for every Agent receiving this message. */
+  model?: string;
+  effort?: string;
+  speed?: string;
 }
 
 export interface MultiAgentDirectMessageResponse {
