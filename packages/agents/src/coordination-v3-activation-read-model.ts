@@ -38,6 +38,33 @@ export class CoordinationV3ActivationReadModel {
     }));
   }
 
+  terminalActivationDisposition(activationId: string): {
+    id: string;
+    state: TerminalActivationV3View["state"];
+    supersededByRetry: boolean;
+  } | undefined {
+    const row = this.sqlite.prepare(`
+      SELECT id, state,
+        EXISTS (
+          SELECT 1 FROM activation_delivery_retry_lineage retry
+          WHERE retry.predecessor_activation_id = agent_activations.id
+        ) AS superseded_by_retry
+      FROM agent_activations
+      WHERE id = ? AND terminal_outcome IS NOT NULL
+    `).get(activationId) as {
+      id: string;
+      state: TerminalActivationV3View["state"];
+      superseded_by_retry: number;
+    } | undefined;
+    return row
+      ? {
+          id: row.id,
+          state: row.state,
+          supersededByRetry: Boolean(row.superseded_by_retry),
+        }
+      : undefined;
+  }
+
   terminalActivations(projectId?: string, limit = 100): TerminalActivationV3View[] {
     const rows = this.sqlite.prepare(`
       SELECT id, project_id, agent_id, kind, state, scope_key, terminal_outcome, delivery_failures,
