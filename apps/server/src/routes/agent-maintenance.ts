@@ -8,6 +8,7 @@ import type {
 } from "@ponderosa/core";
 import {
   AgentDeletionConflictError,
+  normalizeAgentTitle,
   type AgentManagementAuthorization,
   type AgentStore,
   type CoordinationV3Store,
@@ -63,6 +64,19 @@ export function registerAgentMaintenanceRoutes(
       if (Object.keys(body).some((key) => !allowedFields.has(key))) {
         return reply.code(400).send({ error: "unknown agent field" });
       }
+      let normalizedTitle: string | undefined;
+      if (body.title !== undefined) {
+        if (typeof body.title !== "string") {
+          return reply.code(400).send({ error: "title must be a string" });
+        }
+        try {
+          normalizedTitle = normalizeAgentTitle(body.title);
+        } catch (error) {
+          return reply.code(400).send({
+            error: error instanceof Error ? error.message : "invalid Agent title",
+          });
+        }
+      }
       const permissions = request.body?.managementPermissions;
       if (permissions && (
         typeof permissions.allowAutomaticDescendantDeletion !== "boolean"
@@ -95,7 +109,11 @@ export function registerAgentMaintenanceRoutes(
         if (selectionError) return reply.code(400).send({ error: selectionError });
         runtimePatch = { activeEngine, model: model ?? null, effort: effort ?? null };
       }
-      const agent = store.updateAgent(request.params.id, { ...body, ...runtimePatch });
+      const agent = store.updateAgent(request.params.id, {
+        ...body,
+        ...runtimePatch,
+        ...(normalizedTitle !== undefined ? { title: normalizedTitle } : {}),
+      });
       if (agent && runtimeSettingsChanged) {
         const recovery = coordinationV3.resumeProviderBlockedAgent(agent.id, {
           activeEngine: agent.activeEngine,
