@@ -108,6 +108,9 @@ export interface RunOptionsBase {
   cwd: string;
   /** The next user message driving this turn. */
   prompt: string;
+  /** Host-owned trusted instructions supplied through the provider's system
+   * channel. They are never rendered as authored user content. */
+  systemPrompt?: string;
   model?: string;
   effort?: string;
   /** "standard" clears any provider tier override; other values are provider IDs. */
@@ -262,6 +265,9 @@ export interface OpenRuntimeSessionOptions {
   cwd: string;
   resumeSessionId?: string;
   history: ChatMessage[];
+  /** Host-owned trusted instructions supplied through the provider's system
+   * channel. They are never rendered as authored user content. */
+  systemPrompt?: string;
   model?: string;
   effort?: string;
   /** "standard" clears any provider tier override; other values are provider IDs. */

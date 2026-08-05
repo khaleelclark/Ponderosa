@@ -39,6 +39,7 @@ import {
   mergeScopedContextSources,
   olderContextPrompt,
   runtimeIdentityPrompt,
+  runtimeSystemPrompt,
   sharedBroadcastContextPrompt,
   sharedRequestCompletionPrompt,
   teamDirectoryPrompt,
@@ -166,6 +167,24 @@ export async function prepareAgentRun(
     retrievalUrl: `ponderosa://artifact/${artifact.id}`,
   });
   const runId = v3SchedulerRunId ?? randomUUID();
+  const workspacePreferences = workspace.getPreferences();
+  const globalInstructions = workspacePreferences.globalInstructions.trim();
+  const operatorProfile = workspacePreferences.profile;
+  const projectInstructions = project.instructions?.trim() ?? "";
+  const managedRules = contextSection("POLICY · SESSION SNAPSHOT", "AUTHORITATIVE", [
+    "Ponderosa instruction precedence: runtime identity, security, communication, and capability rules are authoritative; then global rules; then Project rules; then Agent preset guidance; then the current work request.",
+    `The local operator is ${operatorProfile.displayName} and their stable Ponderosa handle is #${operatorProfile.handle}. Address them as ${operatorProfile.displayName} unless they ask otherwise.`,
+    ...(globalInstructions ? [`Global operator rules:\n${globalInstructions}`] : []),
+    ...(projectInstructions ? [`Project rules:\n${projectInstructions}`] : []),
+    "",
+    ...communicationV3Prompt(),
+  ]);
+  const systemPrompt = runtimeSystemPrompt(agent, managedRules);
+  const systemPromptHash = createHash("sha256").update(systemPrompt).digest("hex");
+  const effectiveRuntimeSessionContractHash = createHash("sha256").update(JSON.stringify({
+    runtimeSessionContractHash,
+    systemPromptHash,
+  })).digest("hex");
   const runtimeAttachmentsFollowSession = Boolean(engine.adapter.openSession);
   let runtimeAttachmentDirectory: string | undefined;
   const runtimeAttachmentCopies = new Map<
@@ -257,7 +276,7 @@ export async function prepareAgentRun(
     organizationEnvelopeStates.delete(agent.id);
     resumeSessionState = undefined;
     if (staleRuntime) await teardownPersistentRuntime(agent.id, staleRuntime, "request context rollover", project.id);
-  } else if (resumeSessionState && resumeSessionState.toolContractHash !== runtimeSessionContractHash) {
+  } else if (resumeSessionState && resumeSessionState.toolContractHash !== effectiveRuntimeSessionContractHash) {
     // A provider session is a cache of both context and its immutable
     // provider, model, reasoning, and tool contract. Missing hashes are
     // intentionally incompatible: canonical Agent state survives while
@@ -607,18 +626,6 @@ export async function prepareAgentRun(
   const completionContract = sharedTaskTurn
     ? sharedRequestCompletionPrompt()
     : directUserTaskTurn ? directUserRequestCompletionPrompt() : "";
-  const workspacePreferences = workspace.getPreferences();
-  const globalInstructions = workspacePreferences.globalInstructions.trim();
-  const operatorProfile = workspacePreferences.profile;
-  const projectInstructions = project.instructions?.trim() ?? "";
-  const managedRules = contextSection("POLICY · SESSION SNAPSHOT", "AUTHORITATIVE", [
-    "Ponderosa instruction precedence: runtime identity, security, communication, and capability rules are authoritative; then global rules; then Project rules; then Agent preset guidance; then the current work request.",
-    `The local operator is ${operatorProfile.displayName} and their stable Ponderosa handle is #${operatorProfile.handle}. Address them as ${operatorProfile.displayName} unless they ask otherwise.`,
-    ...(globalInstructions ? [`Global operator rules:\n${globalInstructions}`] : []),
-    ...(projectInstructions ? [`Project rules:\n${projectInstructions}`] : []),
-    "",
-    ...communicationV3Prompt(),
-  ]);
   const policySnapshotHash = createHash("sha256").update(JSON.stringify({
     contract: "context-and-coordination-v3.4.3",
     toolContractHash: PROVIDER_TOOL_CONTRACT_HASH,
@@ -907,6 +914,9 @@ export async function prepareAgentRun(
     broadcastDeltaOmitted,
     routingHash,
     policySnapshotHash,
+    systemPrompt,
+    systemPromptHash,
+    runtimeSessionContractHash: effectiveRuntimeSessionContractHash,
     rolloverInstructionPrompt,
     prompt,
     freshPrompt,

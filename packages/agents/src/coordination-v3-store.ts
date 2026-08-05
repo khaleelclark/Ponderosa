@@ -834,6 +834,7 @@ export class CoordinationV3Store {
     agentId: string;
     projectId: string;
     prompt: string;
+    systemPrompt?: string;
     sourceManifest: import("@ponderosa/core").ProviderInputSourceManifest;
     now?: string;
   }): void {

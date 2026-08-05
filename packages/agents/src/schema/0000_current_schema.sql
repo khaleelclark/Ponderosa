@@ -365,6 +365,8 @@ CREATE TABLE provider_inputs (
   project_id TEXT NOT NULL,
   provider_prompt TEXT NOT NULL,
   prompt_hash TEXT NOT NULL,
+  provider_system_prompt TEXT NOT NULL DEFAULT '',
+  system_prompt_hash TEXT NOT NULL DEFAULT '',
   source_manifest_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL

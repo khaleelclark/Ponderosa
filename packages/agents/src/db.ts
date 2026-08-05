@@ -131,6 +131,16 @@ function establishSchema(sqlite: Database.Database): void {
 /** Additive read indexes are safe to establish for both adopted and already
  * baselined databases without rewriting canonical rows. */
 function establishReadIndexes(sqlite: Database.Database): void {
+  const providerInputColumns = new Set(
+    (sqlite.pragma("table_info(provider_inputs)") as Array<{ name: string }>)
+      .map((column) => column.name),
+  );
+  if (!providerInputColumns.has("provider_system_prompt")) {
+    sqlite.exec("ALTER TABLE provider_inputs ADD COLUMN provider_system_prompt TEXT NOT NULL DEFAULT ''");
+  }
+  if (!providerInputColumns.has("system_prompt_hash")) {
+    sqlite.exec("ALTER TABLE provider_inputs ADD COLUMN system_prompt_hash TEXT NOT NULL DEFAULT ''");
+  }
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS context_rollovers (
       id TEXT PRIMARY KEY,

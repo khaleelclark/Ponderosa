@@ -73,8 +73,10 @@ export interface ProviderInputDto {
   executionId: string;
   schedulerRunId: string;
   promptHash: string;
+  systemPromptHash?: string;
   sourceManifest: ProviderInputSourceManifest;
   exactPrompt?: string;
+  exactSystemPrompt?: string;
   createdAt: string;
   updatedAt: string;
 }

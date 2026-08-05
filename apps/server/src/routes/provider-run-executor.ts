@@ -94,6 +94,7 @@ export interface ProviderRunExecutionInput {
   runtimeAttachmentCleanupAfterRun: boolean;
   seedHistory: ChatMessage[];
   sourceChannel: "main" | "individual";
+  systemPrompt: string;
   v3FencingToken: number | undefined;
   v3InjectionId: string | undefined;
 }
@@ -203,6 +204,7 @@ export function startProviderRunExecution(
     runtimeAttachmentCleanupAfterRun,
     seedHistory,
     sourceChannel,
+    systemPrompt,
     v3FencingToken,
     v3InjectionId,
   } = input;
@@ -248,6 +250,7 @@ export function startProviderRunExecution(
           cwd: project.hostPath,
           resumeSessionId: sessionResumeId,
           history: sessionResumeId ? [] : seedHistory,
+          systemPrompt,
           model: effectiveModel,
           effort: effectiveEffort,
           speed: effectiveSpeed,
@@ -569,6 +572,7 @@ export function startProviderRunExecution(
               agentId: agent.id,
               cwd: project.hostPath,
               prompt,
+              systemPrompt,
               resumeSessionId: sessionId,
               model: effectiveModel,
               effort: effectiveEffort,
@@ -609,6 +613,7 @@ export function startProviderRunExecution(
               cwd: project.hostPath,
               prompt: freshPrompt,
               history: seedHistory,
+              systemPrompt,
               model: effectiveModel,
               effort: effectiveEffort,
               speed: effectiveSpeed,
@@ -707,6 +712,7 @@ export function startProviderRunExecution(
               agentId: agent.id,
               projectId: project.id,
               prompt: freshExactProviderInput,
+              systemPrompt,
               sourceManifest: freshProviderInputManifest,
             });
             manifestArtifactIds.splice(0, manifestArtifactIds.length, ...freshProviderInputManifest.artifactIds);
