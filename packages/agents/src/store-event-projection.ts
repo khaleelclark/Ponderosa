@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type Database from "better-sqlite3";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 import type {
   ArtifactDto,
   ArtifactKind,
@@ -402,6 +402,10 @@ export class AgentEventProjectionStore {
               .where(and(
                 eq(continuationHandoffs.id, op.id),
                 eq(continuationHandoffs.agentId, agentId),
+                or(
+                  isNull(continuationHandoffs.consumedAt),
+                  eq(continuationHandoffs.consumedByExecutionId, op.executionId),
+                ),
               ))
               .run();
             break;

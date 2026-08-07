@@ -46,3 +46,16 @@ PR descriptions and qualification reports must use the terms **conditionally
 authorized** and **prompt-guided**. They must not claim conditional
 provider-visible exposure, per-Run schema hiding, or the schema-token savings
 measured by research configurations that recreated provider sessions.
+
+## Automatic rollover continuity
+
+An automatic rollover may reach `completed` after its source Run already
+committed the visible reply, because no extra continuation Run is owed for that
+reply. Its durable handoff is still mandatory session-bridge state: until one
+compatible fresh Run consumes it, the oldest unconsumed completed-rollover
+handoff takes precedence over ordinary recent-history reconstruction. That Run
+submits the handoff and its current Activation together, records the handoff in
+the exact provider-input manifest, and consumes it idempotently under its own
+execution ID only after provider prompt acknowledgement. A stale or competing
+execution cannot replace the recorded consumer, and later Runs cannot receive
+the handoff again.

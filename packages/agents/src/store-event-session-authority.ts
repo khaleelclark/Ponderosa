@@ -165,7 +165,7 @@ export class AgentEventSessionAuthority {
         AND NOT EXISTS (
           SELECT 1 FROM context_rollovers rollover
           WHERE rollover.handoff_event_id = handoff.id
-            AND rollover.state IN ('completed','failed','outcome_unknown')
+            AND rollover.state IN ('failed','outcome_unknown')
         )
       ORDER BY handoff.created_at ASC, handoff.id ASC LIMIT 1
     `).get(agentId) as { id: string; source_execution_id: string; text: string; created_at: string } | undefined;
@@ -173,13 +173,23 @@ export class AgentEventSessionAuthority {
   }
 
   consumeContinuationHandoff(agentId: string, handoffId: string, executionId: string): boolean {
-    const pending = this.client.prepare(`
-      SELECT 1 FROM continuation_handoffs
-      WHERE id = ? AND agent_id = ? AND consumed_at IS NULL
-    `).get(handoffId, agentId);
-    if (!pending) return false;
+    const current = this.client.prepare(`
+      SELECT consumed_at, consumed_by_execution_id
+      FROM continuation_handoffs
+      WHERE id = ? AND agent_id = ?
+    `).get(handoffId, agentId) as {
+      consumed_at: string | null;
+      consumed_by_execution_id: string | null;
+    } | undefined;
+    if (!current) return false;
+    if (current.consumed_at) return current.consumed_by_execution_id === executionId;
     this.appendEvent(agentId, { type: "continuation_handoff_consumed", handoffId, executionId });
-    return true;
+    const consumed = this.client.prepare(`
+      SELECT consumed_by_execution_id
+      FROM continuation_handoffs
+      WHERE id = ? AND agent_id = ? AND consumed_at IS NOT NULL
+    `).get(handoffId, agentId) as { consumed_by_execution_id: string | null } | undefined;
+    return consumed?.consumed_by_execution_id === executionId;
   }
 
   /** Durable compatibility and reachability state for the accepted provider session. */

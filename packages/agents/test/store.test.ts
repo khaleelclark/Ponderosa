@@ -1953,11 +1953,25 @@ describe("AgentStore — append + projection", () => {
     expect(store.pendingContinuationHandoff(agentId)?.id).toBe("handoff-1");
     expect(store.consumeContinuationHandoff(agentId, "handoff-1", "run-after-rollover")).toBe(true);
     expect(store.pendingContinuationHandoff(agentId)).toBeUndefined();
-    expect(store.consumeContinuationHandoff(agentId, "handoff-1", "run-after-rollover")).toBe(false);
+    expect(store.consumeContinuationHandoff(agentId, "handoff-1", "run-after-rollover")).toBe(true);
+    expect(store.consumeContinuationHandoff(agentId, "handoff-1", "stale-run-after-rollover")).toBe(false);
+    store.appendEvent(agentId, {
+      type: "continuation_handoff_consumed",
+      handoffId: "handoff-1",
+      executionId: "stale-run-after-rollover",
+    });
+    expect(store.sqlite.prepare(`
+      SELECT consumed_by_execution_id AS executionId
+      FROM continuation_handoffs WHERE id = 'handoff-1'
+    `).get()).toEqual({ executionId: "run-after-rollover" });
 
     store.rebuildProjections();
     expect(store.pendingContinuationHandoff(agentId)).toBeUndefined();
     expect(store.continuationHandoffForRun(agentId, "run-before-rollover")?.consumedAt).toBeTruthy();
+    expect(store.sqlite.prepare(`
+      SELECT consumed_by_execution_id AS executionId
+      FROM continuation_handoffs WHERE id = 'handoff-1'
+    `).get()).toEqual({ executionId: "run-after-rollover" });
 
     store.appendEvent(agentId, {
       type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "failed-rollover-run",
@@ -2001,6 +2015,11 @@ describe("AgentStore — append + projection", () => {
       agentId,
       "handoff-from-failed-run",
       "rollover-continuation-run",
+    )).toBe(true);
+    expect(store.consumeContinuationHandoff(
+      agentId,
+      "handoff-from-failed-run",
+      "stale-rollover-continuation-run",
     )).toBe(false);
   });
 });

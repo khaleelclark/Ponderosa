@@ -149,8 +149,11 @@ class ManualRolloverPersistentAdapter implements Adapter {
   openCount = 0;
   handoffEmissions = 0;
   prompts: string[] = [];
+  visibleResponseResult?: { success: boolean; text: string };
   readonly sourceAnswer = "The ordinary source answer completed before the deferred handoff Run.";
   readonly handoff = Array.from({ length: 300 }, (_, index) => `handoff-${index + 1}`).join(" ");
+
+  constructor(readonly options: { commitVisibleResponse?: boolean } = {}) {}
 
   listModels() { return [{ id: "test-model", label: "Test model" }]; }
   listEfforts() { return [{ id: "high", label: "High" }]; }
@@ -188,12 +191,20 @@ class ManualRolloverPersistentAdapter implements Adapter {
                 aggregateTokens: 10_000_000,
                 windowTokens: 200_000,
               };
-              yield { type: "text", delta: fixture.sourceAnswer };
+              if (fixture.options.commitVisibleResponse) {
+                fixture.visibleResponseResult = await options.handleDynamicToolCall?.({
+                  name: "ponderosa_message",
+                  arguments: { text: "VISIBLE-ROLLOVER-RESPONSE" },
+                });
+              } else {
+                yield { type: "text", delta: fixture.sourceAnswer };
+              }
             } else if (shouldRequestRollover) {
               expect(turn.prompt).toContain("300–500-word");
               fixture.handoffEmissions += 1;
               yield { type: "text", delta: fixture.handoff };
             } else {
+              fixture.prompts.push(turn.prompt);
               yield {
                 type: "context_usage",
                 providerSessionId: sessionId,
@@ -208,7 +219,7 @@ class ManualRolloverPersistentAdapter implements Adapter {
         },
       },
       startTurn: async (input) => {
-        fixture.prompts.push(input.prompt);
+        if (shouldRequestRollover) fixture.prompts.push(input.prompt);
         turns.push({ prompt: input.prompt });
         return { turnId: `${generation}-turn` };
       },
@@ -1602,6 +1613,118 @@ describe("server public API behavior", () => {
       SELECT status FROM scheduler_runs WHERE agent_id = ? ORDER BY created_at, rowid
     `).all(agent.id) as Array<{ status: string }>;
     expect(runs.map((run) => run.status)).toEqual(["completed", "completed", "completed"]);
+  });
+
+  it("injects a completed visible-response rollover handoff into the next human Run exactly once", async () => {
+    const workspace = new WorkspaceStore(dataDir);
+    workspace.updatePreferences({
+      contextRolloverEnabled: true,
+      contextRolloverTokens: 75_000,
+      contextRolloverWindowFraction: 0.7,
+    });
+    const adapter = new ManualRolloverPersistentAdapter({ commitVisibleResponse: true });
+    const project = store.createProject({
+      label: "Visible response rollover continuity",
+      hostPath: repoDir,
+      defaultEngine: "codex",
+    });
+    const agent = store.createAgent(project.id, {
+      title: "Visible Rollover Probe",
+      engine: "codex",
+      conversationId: project.lastConversationId,
+    });
+    const app = server({
+      dataDir,
+      store,
+      engines: [{
+        adapter,
+        authStatus: async () => ({ authenticated: true, detail: "test subscription" }),
+      }],
+      logger: false,
+      communicationV3: { pollMs: 5 },
+    });
+    const submit = async (text: string) => {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/agents/${agent.id}/messages`,
+        payload: { text, idempotencyKey: randomUUID() },
+      });
+      expect(response.statusCode, response.body).toBe(202);
+    };
+
+    await submit("Trigger pressure and commit the visible response.");
+    const coordination = new CoordinationV3Store(store.sqlite);
+    const rolloverDeadline = Date.now() + 4_000;
+    let rollover: ReturnType<CoordinationV3Store["contextRollover"]>;
+    while (Date.now() < rolloverDeadline) {
+      const row = store.sqlite.prepare(`
+        SELECT id FROM context_rollovers WHERE agent_id = ? AND state = 'completed'
+        ORDER BY rowid DESC LIMIT 1
+      `).get(agent.id) as { id: string } | undefined;
+      if (row) {
+        rollover = coordination.contextRollover(row.id);
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(adapter.visibleResponseResult).toMatchObject({ success: true });
+    expect(adapter.handoffEmissions).toBe(1);
+    expect(adapter.openCount).toBe(1);
+    expect(rollover).toMatchObject({ state: "completed" });
+    const handoffId = rollover!.handoffEventId!;
+    expect(store.pendingContinuationHandoff(agent.id)?.id).toBe(handoffId);
+
+    await submit("NEXT-HUMAN-ACTIVATION");
+    const consumptionDeadline = Date.now() + 4_000;
+    let consumption: { consumedAt: string | null; consumedByExecutionId: string | null } | undefined;
+    while (Date.now() < consumptionDeadline) {
+      consumption = store.sqlite.prepare(`
+        SELECT consumed_at AS consumedAt, consumed_by_execution_id AS consumedByExecutionId
+        FROM continuation_handoffs WHERE id = ?
+      `).get(handoffId) as typeof consumption;
+      if (consumption?.consumedAt) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(adapter.openCount).toBe(2);
+    expect(consumption).toMatchObject({
+      consumedAt: expect.any(String),
+      consumedByExecutionId: expect.any(String),
+    });
+    const replacementPrompt = adapter.prompts.find((prompt) =>
+      prompt.includes("NEXT-HUMAN-ACTIVATION"));
+    expect(replacementPrompt).toContain("CONTINUATION HANDOFF · PRIOR PROVIDER SESSION");
+    expect(replacementPrompt?.match(/NEXT-HUMAN-ACTIVATION/gu)).toHaveLength(1);
+    expect(replacementPrompt).toContain(adapter.handoff);
+    const providerInput = store.sqlite.prepare(`
+      SELECT source_manifest_json AS sourceManifest
+      FROM provider_inputs WHERE scheduler_run_id = ?
+    `).get(consumption!.consumedByExecutionId) as { sourceManifest: string };
+    expect(JSON.parse(providerInput.sourceManifest)).toMatchObject({
+      activationIds: [expect.any(String)],
+      sources: expect.arrayContaining([
+        expect.objectContaining({ kind: "continuation_handoff", ref: handoffId }),
+      ]),
+    });
+    expect(store.readEvents(agent.id).filter((stored) =>
+      stored.event.type === "continuation_handoff_consumed" &&
+      stored.event.handoffId === handoffId)).toHaveLength(1);
+
+    await submit("SUBSEQUENT-HUMAN-ACTIVATION");
+    const subsequentDeadline = Date.now() + 4_000;
+    while (!adapter.prompts.some((prompt) => prompt.includes("SUBSEQUENT-HUMAN-ACTIVATION")) &&
+        Date.now() < subsequentDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const subsequentPrompt = adapter.prompts.find((prompt) =>
+      prompt.includes("SUBSEQUENT-HUMAN-ACTIVATION"));
+    expect(subsequentPrompt).not.toContain("CONTINUATION HANDOFF · PRIOR PROVIDER SESSION");
+    expect(subsequentPrompt).not.toContain(adapter.handoff);
+    expect(store.pendingContinuationHandoff(agent.id)).toBeUndefined();
+    expect(store.consumeContinuationHandoff(
+      agent.id,
+      handoffId,
+      "stale-retry-execution",
+    )).toBe(false);
   });
 
   it("retries a failed provider generation through one bounded runtime-owned rollover handoff", async () => {
