@@ -13,14 +13,16 @@ import {
   type ConversationMessageDto,
   type ProjectDto,
   type ProviderInputSourceManifest,
+  type RuntimeDynamicToolSpec,
   type TeamDirectoryDto,
+  unicodeCodePointLength,
 } from "@ponderosa/core";
 import { attachmentsDir } from "@ponderosa/agents";
+import type { CommunicationV4NextRunDelivery } from "@ponderosa/agents";
 import { renderSeedPrompt } from "@ponderosa/engines";
 import { inboundContext } from "../agent-mentions.js";
 import { collectReachableArtifactIds } from "../artifact-refs.js";
 import {
-  CONTEXT_ROLLOVER_INSTRUCTION,
   type AgentMessageCapability,
   type EngineRegistration,
   type PendingTurn,
@@ -42,10 +44,11 @@ import {
   type ScopedContextMessage,
 } from "../prompts.js";
 import {
-  PROVIDER_TOOL_CONTRACT_HASH,
   communicationV3Prompt,
+  providerDynamicTools,
+  providerSessionContractHash,
+  providerToolContractHash,
 } from "../runtime-selection.js";
-import { documentationReferences } from "../documentation-reference/index.js";
 import {
   runtimeAttachmentDirectoryForRun,
   runtimeAttachmentDirectoryForSession,
@@ -64,7 +67,7 @@ interface PrepareAgentRunInput {
   v3FreshProviderSession: boolean | undefined;
   v3ActivationPrompt: string | undefined;
   effectiveModel: string | undefined;
-  runtimeSessionContractHash: string;
+  effectiveEffort: string | undefined;
   messageAttachments: AssetDto[];
   sourceConversationId: string | undefined;
   communicationEventId: string | undefined;
@@ -89,6 +92,74 @@ const RUNTIME_ATTACHMENT_EXTENSIONS: Readonly<Record<string, string>> = {
   "application/pdf": ".pdf",
   "application/zip": ".zip",
 };
+
+export const NEXT_RUN_DELIVERY_BATCH_LIMIT = 20;
+export const NEXT_RUN_DELIVERY_INLINE_CHARACTER_LIMIT = 20_000;
+export const NEXT_RUN_DELIVERY_PROMPT_UTF8_BYTE_LIMIT = 96 * 1024;
+
+export interface CompiledNextRunDeliveryBatch {
+  deliveries: Array<{
+    delivery: CommunicationV4NextRunDelivery;
+    inlineText: string;
+  }>;
+  hasMore: boolean;
+  nextPendingDeliveryId?: string;
+}
+
+export function renderNextRunDeliveryContext(batch: CompiledNextRunDeliveryBatch): string {
+  if (!batch.deliveries.length) return "";
+  return [
+    "[NEXT-RUN INFORMATION · PASSIVE DELIVERY]",
+    "These complete items were addressed to you earlier. Consume them as information; no reply or acknowledgement is expected.",
+    `- batchCount: ${batch.deliveries.length}`,
+    `- hasMore: ${batch.hasMore}`,
+    ...(batch.nextPendingDeliveryId ? [
+      `- nextPendingDeliveryId: ${batch.nextPendingDeliveryId}`,
+      "- continuation: More pending items were intentionally omitted from this bounded provider input and remain pending for a later otherwise-authorized Run.",
+    ] : []),
+    ...batch.deliveries.map(({ delivery, inlineText }) => {
+      const publisher = delivery.publisherAgentId
+        ? `${delivery.publisherLabel} (${delivery.publisherAgentId})`
+        : delivery.publisherLabel;
+      return [
+        `Delivery ${delivery.id}:`,
+        `- publisher: ${publisher}`,
+        `- text: ${inlineText}`,
+      ].join("\n");
+    }),
+  ].join("\n");
+}
+
+/** Compile only complete delivery rows whose bounded representation enters this
+ * provider input. A row that does not fit stays pending for a later
+ * otherwise-authorized Run instead of being truncated and falsely settled. */
+export function compileNextRunDeliveryBatch(
+  candidates: readonly CommunicationV4NextRunDelivery[],
+): CompiledNextRunDeliveryBatch {
+  let remainingCharacters = NEXT_RUN_DELIVERY_INLINE_CHARACTER_LIMIT;
+  const deliveries: CompiledNextRunDeliveryBatch["deliveries"] = [];
+  for (const delivery of candidates) {
+    if (deliveries.length >= NEXT_RUN_DELIVERY_BATCH_LIMIT || remainingCharacters <= 0) break;
+    const textCharacters = unicodeCodePointLength(delivery.text);
+    if (textCharacters > remainingCharacters) break;
+    const nextDeliveries = [...deliveries, { delivery, inlineText: delivery.text }];
+    const nextPendingDelivery = candidates[nextDeliveries.length];
+    const rendered = renderNextRunDeliveryContext({
+      deliveries: nextDeliveries,
+      hasMore: Boolean(nextPendingDelivery),
+      ...(nextPendingDelivery ? { nextPendingDeliveryId: nextPendingDelivery.id } : {}),
+    });
+    if (Buffer.byteLength(rendered, "utf8") > NEXT_RUN_DELIVERY_PROMPT_UTF8_BYTE_LIMIT) break;
+    deliveries.push({ delivery, inlineText: delivery.text });
+    remainingCharacters -= textCharacters;
+  }
+  const nextPendingDelivery = candidates[deliveries.length];
+  return {
+    deliveries,
+    hasMore: Boolean(nextPendingDelivery),
+    ...(nextPendingDelivery ? { nextPendingDeliveryId: nextPendingDelivery.id } : {}),
+  };
+}
 
 const extensionForMediaType = (mediaType: string): string =>
   RUNTIME_ATTACHMENT_EXTENSIONS[mediaType] ?? "";
@@ -115,7 +186,6 @@ export async function prepareAgentRun(
     contextCursors,
     organizationEnvelopeStates,
     scheduledSessionRollovers,
-    contextRolloverPending,
     reusableRuntime,
     clearAgentResumeSession,
     cancelRuntimeIdleClose,
@@ -137,7 +207,7 @@ export async function prepareAgentRun(
     v3FreshProviderSession,
     v3ActivationPrompt,
     effectiveModel,
-    runtimeSessionContractHash,
+    effectiveEffort,
     messageAttachments,
     sourceConversationId,
     communicationEventId,
@@ -167,6 +237,131 @@ export async function prepareAgentRun(
     retrievalUrl: `ponderosa://artifact/${artifact.id}`,
   });
   const runId = v3SchedulerRunId ?? randomUUID();
+  const historySourceLimit = MAX_SEED_HISTORY_MESSAGES + 1;
+  // Snapshot the same canonical scopes used by the bounded seed before the
+  // provider session decision. Conditional tool availability must be a stable
+  // property of this compiled Run, not of an opaque provider cache.
+  const agentPrivateHistoryPage = store.getAgentPrivateContextSourcePage(agent.id, {
+    limit: historySourceLimit,
+    scope: "agent_private",
+    ...(communicationEventId ? { excludeCommunicationEventId: communicationEventId } : {}),
+    includeAuthoredBroadcasts: false,
+  });
+  const currentChatPrivateHistoryPage = routingConversationId
+    ? store.getAgentPrivateContextSourcePage(agent.id, {
+        limit: historySourceLimit,
+        scope: "current_chat",
+        conversationId: routingConversationId,
+        ...(communicationEventId ? { excludeCommunicationEventId: communicationEventId } : {}),
+        includeAuthoredBroadcasts: sourceChannel !== "main",
+      })
+    : { items: [], hasMore: false };
+  const importedHistoryPage = store.getImportedHistoryMessagePage(agent.id, { limit: historySourceLimit });
+  const secondaryPrivateHistory = mergeScopedContextSources(
+    [agentPrivateHistoryPage, importedHistoryPage],
+    historySourceLimit,
+  );
+  const currentChatIds = new Set(currentChatPrivateHistoryPage.items.map((message) =>
+    message.communicationEventId ?? message.id));
+  const mergedPrivateHistory = {
+    newest: [
+      ...currentChatPrivateHistoryPage.items,
+      ...secondaryPrivateHistory.newest.filter((message) =>
+        !currentChatIds.has(message.communicationEventId ?? message.id)),
+    ].slice(0, historySourceLimit).sort((left, right) =>
+      right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id)),
+    hasMore: currentChatPrivateHistoryPage.hasMore || secondaryPrivateHistory.hasMore ||
+      currentChatPrivateHistoryPage.items.length + secondaryPrivateHistory.newest.length > historySourceLimit,
+  };
+  const freshScopedConversationPage = routingConversationId
+    ? store.getOrganizationalConversationContextSourcePage(routingConversationId, {
+        limit: historySourceLimit,
+        ...(communicationEventId ? { excludeCommunicationEventId: communicationEventId } : {}),
+      })
+    : { items: [], hasMore: false };
+  const organizationalContextProbe = routingConversationId
+    ? store.getOrganizationalConversationContextSourcePage(routingConversationId, {
+        limit: MAX_SEED_HISTORY_MESSAGES + 1,
+        ...(communicationEventId ? { excludeCommunicationEventId: communicationEventId } : {}),
+      })
+    : { items: [], hasMore: false };
+  const hasOlderScopedContext = mergedPrivateHistory.hasMore ||
+    mergedPrivateHistory.newest.length > MAX_SEED_HISTORY_MESSAGES ||
+    freshScopedConversationPage.hasMore ||
+    freshScopedConversationPage.items.length > MAX_SEED_HISTORY_MESSAGES ||
+    organizationalContextProbe.hasMore ||
+    organizationalContextProbe.items.length > MAX_SEED_HISTORY_MESSAGES;
+  const referencedProjectArtifacts = (message: ScopedContextMessage): ArtifactDto[] => {
+    const ids = collectReachableArtifactIds(message);
+    let tokens = 0;
+    for (const match of message.text.matchAll(/[A-Za-z0-9](?:[A-Za-z0-9._:-]{0,254}[A-Za-z0-9])?/gu)) {
+      if (tokens >= 200) break;
+      ids.add(match[0]);
+      tokens += 1;
+    }
+    return [...ids].slice(0, 200).flatMap((id) => {
+      const artifact = store.getProjectArtifact(project.id, id);
+      if (!artifact || !store.agentCanReadProjectArtifact(project.id, id, agent.id) ||
+          !assets.managedProjectArtifactIsAvailable(project.id, artifact)) return [];
+      return [artifact];
+    });
+  };
+  const contextArtifacts = store.getProjectContextArtifacts(project.id, 100).filter((artifact) =>
+    artifact.kind === "generated_file" && Boolean(assets.authoritativeGeneratedArtifact(project.id, artifact)));
+  const manifestActivationIds = coordinationV3.activationIdsForInjection(v3InjectionId!, runId);
+  const manifestActivationPayloads = coordinationV3.activationPayloads(agent.id, manifestActivationIds, runId);
+  const boundedPrivateReferenceSources = boundedSeedHistory(
+    [...mergedPrivateHistory.newest].reverse(),
+  );
+  const boundedConversationReferenceSources = boundedSeedHistory(
+    [...freshScopedConversationPage.items].reverse(),
+  );
+  const resultArtifactCandidates = collectReachableArtifactIds([
+    communication,
+    ...manifestActivationPayloads.map(({ payload }) => payload),
+    ...boundedPrivateReferenceSources,
+    ...boundedConversationReferenceSources,
+  ]);
+  const hasReachableResultArtifact = [...resultArtifactCandidates].some((id) => {
+    const artifact = store.getProjectArtifact(project.id, id);
+    if (artifact && store.agentCanReadProjectArtifact(project.id, id, agent.id) &&
+        assets.managedProjectArtifactIsAvailable(project.id, artifact)) return true;
+    const runtime = coordinationV3.runtimeArtifact(id);
+    return Boolean(runtime?.projectId === project.id && agentCanReadRuntimeArtifact(runtime, agent.id) &&
+      assets.authoritativeRuntimeArtifact(project.id, runtime));
+  });
+  const hasActivationResultReference = Boolean(
+    manifestActivationIds.length && v3ActivationPrompt?.includes("fullResultRef: ponderosa://activation/"),
+  );
+  const retrievalAvailability = {
+    context: hasOlderScopedContext,
+    result: hasActivationResultReference || hasReachableResultArtifact,
+  };
+  const availableRuntimeTools: RuntimeDynamicToolSpec[] = providerDynamicTools(retrievalAvailability);
+  const communicationPrompt = communicationV3Prompt(retrievalAvailability);
+  const providerToolHash = providerToolContractHash(availableRuntimeTools, communicationPrompt);
+  const runtimeSessionContractHash = providerSessionContractHash(
+    runtimeEngineId,
+    effectiveModel,
+    effectiveEffort,
+    providerToolHash,
+  );
+  const pendingCommunicationV4NextRunDeliveryCandidates = routingConversationId
+    ? coordinationV3.pendingCommunicationV4NextRunDeliveries({
+        projectId: project.id,
+        conversationId: routingConversationId,
+        agentId: agent.id,
+        limit: NEXT_RUN_DELIVERY_BATCH_LIMIT + 1,
+      })
+    : [];
+  const pendingCommunicationV4NextRunDeliveryBatch = compileNextRunDeliveryBatch(
+    pendingCommunicationV4NextRunDeliveryCandidates,
+  );
+  const pendingCommunicationV4NextRunDeliveries =
+    pendingCommunicationV4NextRunDeliveryBatch.deliveries.map(({ delivery }) => delivery);
+  const communicationV4NextRunDeliveryContext = renderNextRunDeliveryContext(
+    pendingCommunicationV4NextRunDeliveryBatch,
+  );
   const workspacePreferences = workspace.getPreferences();
   const globalInstructions = workspacePreferences.globalInstructions.trim();
   const operatorProfile = workspacePreferences.profile;
@@ -177,7 +372,7 @@ export async function prepareAgentRun(
     ...(globalInstructions ? [`Global operator rules:\n${globalInstructions}`] : []),
     ...(projectInstructions ? [`Project rules:\n${projectInstructions}`] : []),
     "",
-    ...communicationV3Prompt(),
+    ...communicationPrompt,
   ]);
   const systemPrompt = runtimeSystemPrompt(agent, managedRules);
   const systemPromptHash = createHash("sha256").update(systemPrompt).digest("hex");
@@ -295,58 +490,10 @@ export async function prepareAgentRun(
   const retainedSessionArtifactIds = resumeSessionState?.artifactIds ?? [];
   const continuationHandoff = resumeSessionId ? undefined : eligibleContinuationHandoff;
   const mode = resumeSessionId ? "continue" : "seed";
-  const historySourceLimit = MAX_SEED_HISTORY_MESSAGES + 1;
   // Always snapshot the bounded canonical seed sources at the turn boundary.
   // A resumed provider normally retains them, but a provider-confirmed
   // pre-sampling failure must be able to replace that opaque session with a
   // truthful fresh seed without replaying the failed continuation packet.
-  const agentPrivateHistoryPage = store.getAgentPrivateContextSourcePage(agent.id, {
-    limit: historySourceLimit,
-    scope: "agent_private",
-    ...(communicationEventId ? { excludeCommunicationEventId: communicationEventId } : {}),
-    includeAuthoredBroadcasts: false,
-  });
-  const currentChatPrivateHistoryPage = routingConversationId
-    ? store.getAgentPrivateContextSourcePage(agent.id, {
-        limit: historySourceLimit,
-        scope: "current_chat",
-        conversationId: routingConversationId,
-        ...(communicationEventId ? { excludeCommunicationEventId: communicationEventId } : {}),
-        includeAuthoredBroadcasts: sourceChannel !== "main",
-      })
-    : { items: [], hasMore: false };
-  const importedHistoryPage = store.getImportedHistoryMessagePage(agent.id, { limit: historySourceLimit });
-  const secondaryPrivateHistory = mergeScopedContextSources(
-    [agentPrivateHistoryPage, importedHistoryPage],
-    historySourceLimit,
-  );
-  const currentChatIds = new Set(currentChatPrivateHistoryPage.items.map((message) =>
-    message.communicationEventId ?? message.id));
-  const mergedPrivateHistory = {
-    newest: [
-      ...currentChatPrivateHistoryPage.items,
-      ...secondaryPrivateHistory.newest.filter((message) =>
-        !currentChatIds.has(message.communicationEventId ?? message.id)),
-    ].slice(0, historySourceLimit).sort((left, right) =>
-      right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id)),
-    hasMore: currentChatPrivateHistoryPage.hasMore || secondaryPrivateHistory.hasMore ||
-      currentChatPrivateHistoryPage.items.length + secondaryPrivateHistory.newest.length > historySourceLimit,
-  };
-  const referencedProjectArtifacts = (message: ScopedContextMessage): ArtifactDto[] => {
-    const ids = collectReachableArtifactIds(message);
-    let tokens = 0;
-    for (const match of message.text.matchAll(/[A-Za-z0-9](?:[A-Za-z0-9._:-]{0,254}[A-Za-z0-9])?/gu)) {
-      if (tokens >= 200) break;
-      ids.add(match[0]);
-      tokens += 1;
-    }
-    return [...ids].slice(0, 200).flatMap((id) => {
-      const artifact = store.getProjectArtifact(project.id, id);
-      if (!artifact || !store.agentCanReadProjectArtifact(project.id, id, agent.id) ||
-          !assets.managedProjectArtifactIsAvailable(project.id, artifact)) return [];
-      return [artifact];
-    });
-  };
   type SeedHistoryCandidate = ChatMessage & {
     sourceCommunicationEventId?: string;
     sourceConversationId?: string;
@@ -407,8 +554,6 @@ export async function prepareAgentRun(
       };
     }),
   );
-  const contextArtifacts = store.getProjectContextArtifacts(project.id, 100).filter((artifact) =>
-    artifact.kind === "generated_file" && Boolean(assets.authoritativeGeneratedArtifact(project.id, artifact)));
   if (contextArtifacts.length) fullHistory.push({
     role: "assistant",
     text: "Pinned or published project artifacts available to this session:",
@@ -430,8 +575,6 @@ export async function prepareAgentRun(
     sourceCommunicationIntent: _communicationIntent, ...message
   }) => message);
   const history = resumeSessionId ? [] : seedHistory;
-  const privateSeedHistoryOmitted = mergedPrivateHistory.hasMore ||
-    boundedHistoryOmitted(fullHistory, boundedHistoryCandidates);
   // An omitted model/effort means "keep this agent's current provider
   // identity", not "forget how this run should be attributed". Recover the
   // latest explicit selection so collaboration wake-ups and restarts remain
@@ -565,17 +708,6 @@ export async function prepareAgentRun(
     boundedHistoryOmitted(pendingRoomMessages, roomMessages);
   const broadcastDeltaOmitted = Boolean(broadcastDeltaPage?.hasMore || broadcastSeedPage?.hasMore) ||
     boundedHistoryOmitted(pendingBroadcastMessages, initialBroadcastContext);
-  const hasOmittedScopedContext = (
-    (!resumeSessionId && privateSeedHistoryOmitted) ||
-    roomDeltaOmitted ||
-    broadcastDeltaOmitted
-  );
-  const freshRoomHistoryOmitted = Boolean(freshRoomSeedPage?.hasMore) ||
-    boundedHistoryOmitted(pendingFreshRoomMessages, freshRoomMessages);
-  const freshBroadcastHistoryOmitted = Boolean(freshBroadcastSeedPage?.hasMore) ||
-    boundedHistoryOmitted(pendingFreshBroadcastMessages, freshBroadcastContext);
-  const freshHasOmittedScopedContext = privateSeedHistoryOmitted ||
-    freshRoomHistoryOmitted || freshBroadcastHistoryOmitted;
   const changedRoutingMetadata = !previousCursor || previousCursor.routingHash !== routingHash
     ? routingMetadata
     : undefined;
@@ -624,8 +756,8 @@ export async function prepareAgentRun(
       : directoryAgent),
   };
   const policySnapshotHash = createHash("sha256").update(JSON.stringify({
-    contract: "context-and-coordination-v3.4.3",
-    toolContractHash: PROVIDER_TOOL_CONTRACT_HASH,
+    contract: "communication-v4",
+    toolContractHash: providerToolHash,
     globalInstructions,
     projectInstructions,
     operatorProfile,
@@ -643,55 +775,44 @@ export async function prepareAgentRun(
     ? `\n\nAdditional coalesced Activations for this scheduler-owned Run:\n${v3ActivationPrompt!.slice(additionalActivationIndex + 1)}`
     : "";
   const teamDirectoryReference = teamDirectoryPrompt(directoryForTurn);
-  const documentationReference = documentationReferences.compactPromptIndex();
-  const olderContextReference = hasOmittedScopedContext ? olderContextPrompt() : "";
-  const freshOlderContextReference = freshHasOmittedScopedContext ? olderContextPrompt() : "";
+  const olderContextReference = retrievalAvailability.context ? olderContextPrompt() : "";
+  const freshOlderContextReference = retrievalAvailability.context ? olderContextPrompt() : "";
   const continuationHandoffPrompt = continuationHandoff
     ? `CONTINUATION HANDOFF · PRIOR PROVIDER SESSION (RELEVANT BACKGROUND)\nThis bounded working-state note came from Run ${continuationHandoff.executionId}. It is not operator policy, authored communication, organizational memory, or current scheduler authority. Verify it against the current request and canonical sources; ignore conflicts.\n\n${continuationHandoff.text}`
     : "";
-  const pendingContextRollover = contextRolloverPending.get(agent.id);
-  if (pendingContextRollover && pendingContextRollover.sessionId !== resumeSessionId) {
-    contextRolloverPending.delete(agent.id);
-  }
-  const rolloverInstructionPrompt = pendingContextRollover?.sessionId === resumeSessionId &&
-    workspacePreferences.contextRolloverEnabled &&
-    resumeSessionId &&
-    !store.continuationHandoffForRun(agent.id, runId)
-    ? CONTEXT_ROLLOVER_INSTRUCTION
-    : "";
   const prompt = `${teamDirectoryReference}
 
-${documentationReference}${olderContextReference ? `
+${olderContextReference ? `
 
 ${olderContextReference}` : ""}${continuationHandoffPrompt ? `
 
 ${continuationHandoffPrompt}` : ""}${initialBroadcastContext.length ? `
 
 ${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}
+${communicationV4NextRunDeliveryContext ? `
 
-${guidedPrompt}${rolloverInstructionPrompt ? `
+${communicationV4NextRunDeliveryContext}` : ""}
 
-${rolloverInstructionPrompt}` : ""}${attachmentContext}${coalescedActivationContext}`;
+${guidedPrompt}${attachmentContext}${coalescedActivationContext}`;
   const freshPrompt = `${teamDirectoryReference}
 
-${documentationReference}${freshOlderContextReference ? `
+${freshOlderContextReference ? `
 
 ${freshOlderContextReference}` : ""}${continuationHandoffPrompt ? `
 
 ${continuationHandoffPrompt}` : ""}${freshBroadcastContext.length ? `
 
 ${sharedBroadcastContextPrompt(freshBroadcastContext, conversation?.agents ?? [])}` : ""}
+${communicationV4NextRunDeliveryContext ? `
 
-${freshGuidedPrompt}${rolloverInstructionPrompt ? `
+${communicationV4NextRunDeliveryContext}` : ""}
 
-${rolloverInstructionPrompt}` : ""}${attachmentContext}${coalescedActivationContext}`;
+${freshGuidedPrompt}${attachmentContext}${coalescedActivationContext}`;
   const providerSessionDisposition = requestContextRollover
     ? coordinationV3.runChangesScope(runId, agent.id) ? "reseeded" as const : "fresh_task" as const
     : resumeSessionId ? "continued_session" as const : "fresh_task" as const;
   const exactProviderInput = resumeSessionId ? prompt : renderSeedPrompt(seedHistory, freshPrompt);
   const freshExactProviderInput = renderSeedPrompt(seedHistory, freshPrompt);
-  const manifestActivationIds = coordinationV3.activationIdsForInjection(v3InjectionId!, runId);
-  const manifestActivationPayloads = coordinationV3.activationPayloads(agent.id, manifestActivationIds, runId);
   const manifestRequestIds = coordinationV3.requestIdsAttachedToRun(runId, agent.id);
   const manifestTriggerOccurrences = manifestActivationPayloads.flatMap(({ payload }) => {
     if (!payload || typeof payload !== "object") return [];
@@ -812,12 +933,6 @@ ${rolloverInstructionPrompt}` : ""}${attachmentContext}${coalescedActivationCont
           hash: createHash("sha256").update(teamDirectoryReference).digest("hex"),
           delivery: "submitted",
         },
-        {
-          kind: "context_reference",
-          ref: `product-docs:${documentationReferences.version}`,
-          hash: createHash("sha256").update(documentationReference).digest("hex"),
-          delivery: "submitted",
-        },
         ...(input.olderContextReference ? [{
           kind: "context_reference" as const,
           ref: routingConversationId ?? agent.id,
@@ -862,6 +977,13 @@ ${rolloverInstructionPrompt}` : ""}${attachmentContext}${coalescedActivationCont
           createdAt: message.createdAt,
         }] : []),
         ...manifestActivationIds.map((id) => ({ kind: "activation" as const, ref: id, delivery: "submitted" as const })),
+        ...pendingCommunicationV4NextRunDeliveries.map((delivery) => ({
+          kind: "context_reference" as const,
+          ref: `ponderosa://next-run-delivery/${delivery.id}`,
+          hash: createHash("sha256").update(delivery.text).digest("hex"),
+          createdAt: delivery.createdAt,
+          delivery: "submitted" as const,
+        })),
         ...manifestTriggerOccurrences.map((occurrence) => ({
           kind: "trigger_occurrence" as const,
           ref: occurrence.artifactId,
@@ -930,7 +1052,7 @@ ${rolloverInstructionPrompt}` : ""}${attachmentContext}${coalescedActivationCont
     systemPrompt,
     systemPromptHash,
     runtimeSessionContractHash: effectiveRuntimeSessionContractHash,
-    rolloverInstructionPrompt,
+    availableRuntimeTools,
     prompt,
     freshPrompt,
     providerSessionDisposition,
@@ -944,5 +1066,7 @@ ${rolloverInstructionPrompt}` : ""}${attachmentContext}${coalescedActivationCont
     manifestArtifactIds,
     runtimeAttachmentDirectory,
     runtimeAttachmentCleanupAfterRun: !runtimeAttachmentsFollowSession,
+    pendingCommunicationV4NextRunDeliveryIds:
+      pendingCommunicationV4NextRunDeliveries.map((delivery) => delivery.id),
   };
 }

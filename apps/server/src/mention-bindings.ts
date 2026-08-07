@@ -7,7 +7,7 @@ import {
 const RESERVED_HANDLES = new Set(["broadcast", "everyone", "user"]);
 const NUMERIC_HANDLE_PATTERN = /^\p{N}+$/u;
 
-function mentionHandle(title: string): string {
+export function agentMentionHandle(title: string): string {
   return title.trim().replace(/\s+/gu, "-").replace(/[^\p{L}\p{N}_-]/gu, "");
 }
 
@@ -61,7 +61,7 @@ export function resolveAgentMentionBindings(
   for (const handle of handles) {
     const matches = [...new Set(recipients
       .filter(agent =>
-        mentionHandle(agent.title).toLocaleLowerCase() ===
+        agentMentionHandle(agent.title).toLocaleLowerCase() ===
           handle.toLocaleLowerCase())
       .map(agent => agent.id))];
     if (matches.length !== 1) continue;

@@ -34,6 +34,15 @@ import { CoordinationV3SchedulerLeaseAuthority } from "./coordination-v3-schedul
 import { CoordinationV3RequestAuthority } from "./coordination-v3-request-authority.js";
 import { CoordinationV3RunLifecycleAuthority } from "./coordination-v3-run-lifecycle-authority.js";
 import { CoordinationV3TriggerRegistry } from "./coordination-v3-trigger-registry.js";
+import {
+  CommunicationV4NextRunDeliveryAuthority,
+  type CommunicationV4NextRunDelivery,
+  type NextRunDeliveryMaintenanceResult,
+  type OperatorNextRunDeliveryReceipt,
+  type PublishAgentNextRunDeliveryInput,
+  type PublishNextRunDeliveryResult,
+  type PublishOperatorNextRunDeliveryInput,
+} from "./communication-v4-next-run-delivery-authority.js";
 import type {
   CoordinateV3Input,
   CoordinateV3Result,
@@ -68,6 +77,14 @@ import type {
   CoordinationV3StoreOptions,
   ContextRolloverV3,
 } from "./coordination-v3-types.js";
+export type {
+  CommunicationV4NextRunDelivery,
+  NextRunDeliveryMaintenanceResult,
+  OperatorNextRunDeliveryReceipt,
+  PublishAgentNextRunDeliveryInput,
+  PublishNextRunDeliveryResult,
+  PublishOperatorNextRunDeliveryInput,
+} from "./communication-v4-next-run-delivery-authority.js";
 export type {
   RunAuthorizationV3,
   CoordinateV3Input,
@@ -140,6 +157,7 @@ export class CoordinationV3Store {
   private readonly requestAuthority: CoordinationV3RequestAuthority;
   private readonly runLifecycleAuthority: CoordinationV3RunLifecycleAuthority;
   private readonly contextRolloverAuthority: CoordinationV3ContextRolloverAuthority;
+  private readonly communicationV4NextRunDeliveries: CommunicationV4NextRunDeliveryAuthority;
 
   constructor(
     sqlite: Database.Database,
@@ -152,6 +170,11 @@ export class CoordinationV3Store {
       input => this.createActivation(input),
     );
     this.support = new CoordinationV3StoreSupport(sqlite);
+    this.communicationV4NextRunDeliveries = new CommunicationV4NextRunDeliveryAuthority(
+      sqlite,
+      (authorization, expectedScopeKey) =>
+        this.support.requireAuthorizedRun(authorization, expectedScopeKey),
+    );
     this.readModel = new CoordinationV3ReadModel(sqlite);
     this.requestReadModel = new CoordinationV3RequestReadModel(sqlite);
     this.runtimeAttachmentAuthority = new CoordinationV3RuntimeAttachmentAuthority(sqlite, options);
@@ -305,6 +328,61 @@ export class CoordinationV3Store {
 
   recordRuntimeCommunication(input: RuntimeCommunicationV3Input): RuntimeCommunicationV3Result {
     return this.runtimeCommunicationAuthority.recordRuntimeCommunication(input);
+  }
+
+  publishAgentNextRunDelivery(
+    input: PublishAgentNextRunDeliveryInput,
+  ): PublishNextRunDeliveryResult {
+    return this.communicationV4NextRunDeliveries.publishAgent(input);
+  }
+
+  publishOperatorNextRunDelivery(
+    input: PublishOperatorNextRunDeliveryInput,
+  ): PublishNextRunDeliveryResult {
+    return this.communicationV4NextRunDeliveries.publishOperator(input);
+  }
+
+  operatorNextRunDeliveryReceipts(input: {
+    projectId: string;
+    conversationId: string;
+    publisherUserId: string;
+    limit?: number;
+    now?: string;
+  }): OperatorNextRunDeliveryReceipt[] {
+    return this.communicationV4NextRunDeliveries.listOperatorReceipts(input);
+  }
+
+  communicationV4NextRunDelivery(
+    deliveryId: string,
+  ): CommunicationV4NextRunDelivery | undefined {
+    return this.communicationV4NextRunDeliveries.get(deliveryId);
+  }
+
+  pendingCommunicationV4NextRunDeliveries(input: {
+    projectId: string;
+    conversationId: string;
+    agentId: string;
+    limit?: number;
+    now?: string;
+  }): CommunicationV4NextRunDelivery[] {
+    return this.communicationV4NextRunDeliveries.pendingForNextRun(input);
+  }
+
+  markCommunicationV4NextRunDeliveriesDelivered(input: {
+    projectId: string;
+    conversationId: string;
+    agentId: string;
+    runId: string;
+    deliveryIds: string[];
+    now?: string;
+  }): number {
+    return this.communicationV4NextRunDeliveries.markDelivered(input);
+  }
+
+  maintainCommunicationV4NextRunDeliveries(
+    now?: string,
+  ): NextRunDeliveryMaintenanceResult {
+    return this.communicationV4NextRunDeliveries.maintain(now);
   }
 
   runtimeCommunications(projectId?: string): RuntimeCommunicationV3View[] {
@@ -774,6 +852,10 @@ export class CoordinationV3Store {
    * SQLite transaction that deletes the canonical project projections. */
   purgeProject(projectId: string): void {
     this.deletionAuthority.purgeProject(projectId);
+  }
+
+  purgeCommunicationV4Conversation(conversationId: string): void {
+    this.deletionAuthority.purgeCommunicationV4Conversation(conversationId);
   }
 
   leaseNextRun(input: {

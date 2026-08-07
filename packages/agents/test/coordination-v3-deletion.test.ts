@@ -54,6 +54,15 @@ describe("Communication V3 agent deletion", () => {
         conversationIds: [chatB.id, chatA.id], primaryConversationId: chatB.id,
       });
       const coordination = new CoordinationV3Store(agents.sqlite, { maxPendingActivationsPerAgent: 1 });
+      const targeted = coordination.publishOperatorNextRunDelivery({
+        projectId: project.id,
+        conversationId: chatA.id,
+        publisherUserId: "local-operator",
+        publisherLabel: "Operator",
+        idempotencyKey: "membership-removal-delivery",
+        text: "Keep the receipt when this membership becomes unavailable.",
+        recipientAgentIds: [recipient.id],
+      });
       coordination.coordinate({
         projectId: project.id, conversationId: chatA.id,
         requesterAgentId: requester.id, actorScope: `agent:${requester.id}`,
@@ -91,6 +100,18 @@ describe("Communication V3 agent deletion", () => {
         SELECT state, terminal_outcome FROM agent_activations
         WHERE agent_id = ? AND scope_key = ?
       `).get(recipient.id, `conversation:${chatA.id}`)).toEqual({ state: "failed", terminal_outcome: "recipient_unavailable" });
+      expect(coordination.operatorNextRunDeliveryReceipts({
+        projectId: project.id,
+        conversationId: chatA.id,
+        publisherUserId: "local-operator",
+      })).toEqual([expect.objectContaining({
+        deliveryId: targeted.delivery.id,
+        recipients: [expect.objectContaining({
+          agentId: recipient.id,
+          state: "unavailable",
+          unavailableReason: "recipient left the Team Chat",
+        })],
+      })]);
     } finally {
       agents.close();
     }

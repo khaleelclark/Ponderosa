@@ -1,4 +1,4 @@
-import type { TeamDirectoryDto } from "@ponderosa/core";
+import { PONDEROSA_CONTEXT_TOOL, type TeamDirectoryDto } from "@ponderosa/core";
 import type { AgentStore } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
 import type { ActiveRun, AgentMessageCapability } from "../app-contracts.js";
@@ -62,6 +62,9 @@ export function registerAgentDirectoryRoutes(
     const agent = capability ? store.getAgent(capability.agentId) : undefined;
     if (!capability || !capabilityOwnsAuthoritativeRun(capability, active) || active!.messageCapability !== token || !agent) {
       return reply.code(401).send({ error: "invalid or expired agent context capability" });
+    }
+    if (!capability.availableToolNames.includes(PONDEROSA_CONTEXT_TOOL.name)) {
+      return reply.code(403).send({ error: "older scoped context is unavailable for this Run" });
     }
     const rawLimit = request.query.limit === undefined ? 20 : Number(request.query.limit);
     if (!Number.isSafeInteger(rawLimit) || rawLimit < 1 || rawLimit > 50) {

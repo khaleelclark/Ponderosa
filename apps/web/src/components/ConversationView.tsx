@@ -46,6 +46,7 @@ import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 import { useMobileComposerAutoHide } from "../mobileChat";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 import { AttentionSurface } from "./AttentionSurface";
+import { TargetedNextRunReceipts } from "./TargetedNextRunReceipts";
 import { queryKeys } from "../queryKeys";
 import { AgentsTab } from "./AgentsTab";
 import { AllTriggersWorkspace } from "./WorkspaceResourceViews";
@@ -219,6 +220,11 @@ export function ConversationView({
     enabled: Boolean(conversation?.projectId),
     retry: false,
     refetchInterval: 2_500,
+  });
+  const targetedNextRunReceipts = useQuery({
+    queryKey: queryKeys.conversations.targetedNextRun(conversationId),
+    queryFn: () => api.getTargetedNextRunReceipts(conversationId, 20),
+    staleTime: 5_000,
   });
   const membersQuery = useInfiniteQuery({
     queryKey: queryKeys.conversations.members(conversationId, memberSearch),
@@ -760,6 +766,11 @@ export function ConversationView({
           ),
       ),
   ];
+  const mentionBindings = agents
+    .filter(agent => !agent.archived)
+    .map(agent => ({ handle: agentMentionHandle(agent.title), agentId: agent.id }))
+    .filter(binding => binding.handle &&
+      !["broadcast", "user", "everyone"].includes(binding.handle.toLocaleLowerCase()));
   const findMentioned = (text: string): AgentDto[] =>
     findMentionedAgents(text, agents);
 
@@ -1190,6 +1201,9 @@ export function ConversationView({
             onDelete={message => cancelQueued.mutateAsync(message.deliveryId)}
           />
         ) : null}
+        {activeView === "main" && targetedNextRunReceipts.data ? (
+          <TargetedNextRunReceipts receipts={targetedNextRunReceipts.data.receipts} />
+        ) : null}
         {activeView === "main" ? (
           <Composer
             draftStorageKey={chatStateKey(
@@ -1217,6 +1231,7 @@ export function ConversationView({
             running={operationRunning}
             allowSendWhileRunning
             mentionHandles={mentionHandles}
+            mentionBindings={mentionBindings}
             commands={composerCommands}
             onCommandTargetHandleChange={setCommandTargetHandle}
             capabilities={composerRuntime.capabilities}
@@ -1257,6 +1272,7 @@ export function ConversationView({
                 stagedIds,
                 draftOwnerId,
                 context?.implicitRecipientId,
+                context?.mentionedAgents,
               )
             }
             onQueue={(text, files, stagedIds, draftOwnerId, context) =>
@@ -1267,6 +1283,7 @@ export function ConversationView({
                 stagedIds,
                 draftOwnerId,
                 context?.implicitRecipientId,
+                context?.mentionedAgents,
               )
             }
             agentResponding={false}

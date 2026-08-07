@@ -82,7 +82,7 @@ export class CoordinationV3ContextRolloverAuthority {
           rolloverId: id,
           detectedOccupancy: input.detectedOccupancy,
           threshold: input.threshold,
-          instruction: "Context pressure crossed the safe threshold. Finish the current non-interruptible operation, do not begin substantial new work, then call ponderosa_rollover exactly once with a 300–500-word bounded handoff covering the objective, completed work, unfinished work, blockers, exact next action, verified facts versus assumptions, and relevant file or artifact references.",
+          instruction: "Context pressure crossed the safe threshold. Finish the current non-interruptible operation, do not begin substantial new work, then end the Work log with one self-contained 300–500-word bounded handoff covering the objective, completed work, unfinished work, blockers, exact next action, verified facts versus assumptions, and relevant file or artifact references. The Ponderosa runtime, not a provider tool call, owns session replacement.",
         },
         sourceKind: "context_rollover",
         sourceId: id,

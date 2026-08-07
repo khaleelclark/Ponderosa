@@ -321,6 +321,45 @@ describe("Composer behavior", () => {
     );
   });
 
+  it("submits multiple broadcast Agent mentions with their canonical bindings", async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    renderComposer({
+      ...baseProps,
+      destinationMode: "project-chat",
+      allowUnmentionedSend: true,
+      mentionHandles: ["broadcast", "Spruce", "Pine"],
+      mentionBindings: [
+        { handle: "Spruce", agentId: "agent-spruce" },
+        { handle: "Pine", agentId: "agent-pine" },
+      ],
+      onSend,
+    });
+
+    await user.type(
+      screen.getByRole("combobox", { name: "Message" }),
+      "#broadcast #Spruce #Pine use this on your next run",
+    );
+    expect(screen.getByText("Next run: #Spruce +1")).toBeTruthy();
+    expect(screen.getByTitle(
+      "Deliver on next run to #Spruce, #Pine. Passive delivery; no Run or reply requested.",
+    )).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(onSend).toHaveBeenCalledWith(
+      "#broadcast #Spruce #Pine use this on your next run",
+      [],
+      [],
+      undefined,
+      {
+        mentionedAgents: [
+          { handle: "Spruce", agentId: "agent-spruce" },
+          { handle: "Pine", agentId: "agent-pine" },
+        ],
+      },
+    );
+  });
+
   it("keeps an active response visibly and canonically selected", async () => {
     const user = userEvent.setup();
     const onSend = vi.fn();

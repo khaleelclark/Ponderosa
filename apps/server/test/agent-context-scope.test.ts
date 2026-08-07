@@ -65,6 +65,7 @@ describe("Agent context scopes", () => {
       mentionDepth: 0,
       mentionTrail: [],
       reachableArtifactIds: [],
+      availableToolNames: ["ponderosa_context"],
     };
     const active = { messageCapability: token } as ActiveRun;
     const app = Fastify();
@@ -108,6 +109,14 @@ describe("Agent context scopes", () => {
         },
       }],
     });
+    capability.availableToolNames = [];
+    const unavailable = await app.inject({
+      method: "GET",
+      url: "/api/agent-context?scope=agent_private",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(unavailable.statusCode).toBe(403);
+    expect(unavailable.json()).toEqual({ error: "older scoped context is unavailable for this Run" });
     await app.close();
   });
 });

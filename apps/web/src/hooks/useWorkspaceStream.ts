@@ -327,6 +327,7 @@ export function useWorkspaceStream(): WorkspaceConnectionState {
       decisionConversationInvalidator.dispose();
       void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.all });
+      void queryClient.invalidateQueries({ queryKey: ["targeted-next-run"] });
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
       invalidateActiveQueries(queryClient, queryKeys.agents.all);
@@ -440,6 +441,11 @@ export function useWorkspaceStream(): WorkspaceConnectionState {
         void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("agent") });
         agentWorkInvalidator.schedule(event.projectId);
         collaborationChatInvalidator.schedule(event.conversationIds);
+        for (const conversationId of event.conversationIds ?? []) {
+          void queryClient.invalidateQueries({
+            queryKey: queryKeys.conversations.targetedNextRun(conversationId),
+          });
+        }
       }
       else if (event.type === "trigger_changed") {
         void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.agent(event.agentId) });

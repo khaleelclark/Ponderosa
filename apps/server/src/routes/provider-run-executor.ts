@@ -3,11 +3,9 @@ import {
   PONDEROSA_COORDINATE_TOOL,
   PONDEROSA_CREATE_MANAGED_AGENT_TOOL,
   PONDEROSA_DECISION_TOOL,
-  PONDEROSA_DOCS_TOOL,
   PONDEROSA_MANAGE_TOOL,
   PONDEROSA_MESSAGE_TOOL,
   PONDEROSA_RESULT_TOOL,
-  PONDEROSA_ROLLOVER_TOOL,
   PONDEROSA_TEAM_DIRECTORY_TOOL,
   PONDEROSA_UPDATE_REQUEST_TOOL,
   type AgentDto,
@@ -16,7 +14,9 @@ import {
   type ConversationMessageDto,
   type ProjectDto,
   type ProviderInputSourceManifest,
+  type RuntimeDynamicToolSpec,
   type RuntimeProcessHandle,
+  unicodeCodePointLength,
 } from "@ponderosa/core";
 import { randomUUID } from "node:crypto";
 import type { LogEvent } from "@ponderosa/agents";
@@ -34,7 +34,6 @@ import type {
 } from "../app-contracts.js";
 import { evaluateContextRolloverPressure } from "../context-rollover-pressure.js";
 import type { ContextCursor } from "../context-cursors.js";
-import { PROVIDER_DYNAMIC_TOOLS } from "../runtime-selection.js";
 import { cleanupRuntimeAttachments } from "../runtime-attachments.js";
 import type { AgentMessageRunContext } from "./agent-message-run.js";
 import { derivedRunActionKey } from "../security.js";
@@ -47,6 +46,7 @@ function humanizeProviderName(value: string): string {
 
 export interface ProviderRunExecutionInput {
   activeRun: ActiveRun;
+  availableRuntimeTools: RuntimeDynamicToolSpec[];
   agent: AgentDto;
   agentMessageUrl: string;
   broadcastCanonicalTipId: string | undefined;
@@ -75,13 +75,13 @@ export interface ProviderRunExecutionInput {
   manifestArtifactIds: string[];
   messageCapability: string;
   policySnapshotHash: string;
+  pendingCommunicationV4NextRunDeliveryIds: string[];
   previousBroadcastCursor: ContextCursor | undefined;
   previousCursor: ContextCursor | undefined;
   project: ProjectDto;
   prompt: string;
   resumeSessionId: string | undefined;
   reusablePersistentRuntime: PersistentRuntime | undefined;
-  rolloverInstructionPrompt: string;
   roomCanonicalTipId: string | undefined;
   roomDeltaOmitted: boolean;
   roomMessages: ConversationMessageDto[];
@@ -162,6 +162,7 @@ export function startProviderRunExecution(
   } = context;
   const {
     activeRun,
+    availableRuntimeTools,
     agent,
     agentMessageUrl,
     broadcastCanonicalTipId,
@@ -185,13 +186,13 @@ export function startProviderRunExecution(
     manifestArtifactIds,
     messageCapability,
     policySnapshotHash,
+    pendingCommunicationV4NextRunDeliveryIds,
     previousBroadcastCursor,
     previousCursor,
     project,
     prompt,
     resumeSessionId,
     reusablePersistentRuntime,
-    rolloverInstructionPrompt,
     roomCanonicalTipId,
     roomDeltaOmitted,
     roomMessages,
@@ -230,14 +231,13 @@ export function startProviderRunExecution(
         PONDEROSA_AGENT_CONTEXT_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-context`,
         PONDEROSA_AGENT_COORDINATE_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-coordinate`,
         PONDEROSA_AGENT_RESULT_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-results`,
-        PONDEROSA_AGENT_DOCS_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-docs`,
         PONDEROSA_AGENT_UPDATE_REQUEST_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-request-updates`,
         PONDEROSA_AGENT_BROWSER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-browser`,
         PONDEROSA_AGENT_SPAWN_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-spawn`,
         PONDEROSA_AGENT_DECISION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-decisions`,
         PONDEROSA_AGENT_MANAGE_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-management`,
         PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapability,
-        PONDEROSA_AGENT_ROLLOVER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-session/rollover`,
+        PONDEROSA_AGENT_TOOL_NAMES: JSON.stringify(availableRuntimeTools.map((tool) => tool.name)),
         PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
       };
       const openPersistentRuntime = async (
@@ -255,8 +255,11 @@ export function startProviderRunExecution(
           effort: effectiveEffort,
           speed: effectiveSpeed,
           environment,
-          dynamicTools: PROVIDER_DYNAMIC_TOOLS,
+          dynamicTools: availableRuntimeTools,
           handleDynamicToolCall: async (call) => {
+            if (!availableRuntimeTools.some((tool) => tool.name === call.name)) {
+              return { success: false, text: `Unavailable Ponderosa tool for this Run: ${call.name}` };
+            }
             const browserOperation = call.name.startsWith("ponderosa_browser_")
               ? call.name.slice("ponderosa_browser_".length)
               : undefined;
@@ -269,8 +272,6 @@ export function startProviderRunExecution(
             const isDirectory = call.name === PONDEROSA_TEAM_DIRECTORY_TOOL.name;
             const isContext = call.name === PONDEROSA_CONTEXT_TOOL.name;
             const isResult = call.name === PONDEROSA_RESULT_TOOL.name;
-            const isDocs = call.name === PONDEROSA_DOCS_TOOL.name;
-            const isRollover = call.name === PONDEROSA_ROLLOVER_TOOL.name;
             const contextQuery = new URLSearchParams();
             if (contextArguments.scope === "current_chat" || contextArguments.scope === "agent_private") contextQuery.set("scope", contextArguments.scope);
             if (typeof contextArguments.cursor === "string" && contextArguments.cursor.trim()) contextQuery.set("cursor", contextArguments.cursor.trim());
@@ -285,10 +286,6 @@ export function startProviderRunExecution(
               ? "/api/agent-coordinate"
               : isResult
                 ? "/api/agent-results"
-              : isDocs
-                ? "/api/agent-docs"
-              : isRollover
-                ? "/api/agent-session/rollover"
               : call.name === PONDEROSA_UPDATE_REQUEST_TOOL.name
                 ? "/api/agent-request-updates"
                 : call.name === PONDEROSA_MESSAGE_TOOL.name
@@ -686,7 +683,6 @@ export function startProviderRunExecution(
               fencingToken: activeRun.v3FencingToken,
               providerSessionId: sessionId ?? persistentRuntime?.session.engineAgentId,
             });
-            if (rolloverInstructionPrompt) contextRolloverPending.delete(agent.id);
             v3PromptInjected = true;
             if (continuationHandoff && !continuationHandoffConsumed) {
               continuationHandoffConsumed = store.consumeContinuationHandoff(
@@ -885,7 +881,28 @@ export function startProviderRunExecution(
       schedulerCancelled ||= Boolean(!isClosed() && activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));
       const localRolloverRequested = scheduledSessionRollovers.delete(agent.id);
       const durableRollover = coordinationV3.activeContextRollover(agent.id);
-      const runRollover = durableRollover?.sourceRunId === runId ? durableRollover : undefined;
+      let runRollover = durableRollover?.sourceRunId === runId ? durableRollover : undefined;
+      if (owned && runRollover?.state === "requested" && !runError &&
+          !isClosed() && !controller.signal.aborted && !schedulerCancelled) {
+        const handoff = finalText.trim();
+        const handoffWords = handoff.split(/\s+/u).filter(Boolean).length;
+        if (handoffWords >= 300 && handoffWords <= 500 && unicodeCodePointLength(handoff) <= 20_000) {
+          const existing = store.continuationHandoffForRun(agent.id, runId);
+          const handoffId = existing?.id ?? randomUUID();
+          if (!existing) {
+            const event = store.appendEvent(agent.id, {
+              type: "continuation_handoff",
+              handoffId,
+              executionId: runId,
+              text: handoff,
+            });
+            publish(agent.id, event);
+          }
+          coordinationV3.commitContextRolloverHandoff(runRollover.id, handoffId);
+          scheduledSessionRollovers.set(agent.id, new Date().toISOString());
+          runRollover = coordinationV3.activeContextRollover(agent.id);
+        }
+      }
       const replacementRunRollover = coordinationV3.contextRolloverForContinuationRun(
         runId,
         agent.id,
@@ -987,7 +1004,7 @@ export function startProviderRunExecution(
         publish(agent.id, cancelled);
       }
       if (owned && !isClosed() && !controller.signal.aborted) {
-        if (!schedulerCancelled && !runError && finalText.trim() && activeRun.v3SchedulerRunId && v3FencingToken !== undefined) {
+        if (!rolloverSucceeded && !schedulerCancelled && !runError && finalText.trim() && activeRun.v3SchedulerRunId && v3FencingToken !== undefined) {
           const attachedRequestIds = coordinationV3!.requestIdsAttachedToRun(
             activeRun.v3SchedulerRunId,
             agent.id,
@@ -1161,7 +1178,22 @@ export function startProviderRunExecution(
             },
           });
           }
-          else coordinationV3!.completeRun(activeRun.v3SchedulerRunId, activeRun.v3FencingToken);
+          else {
+            coordinationV3!.completeRun(activeRun.v3SchedulerRunId, activeRun.v3FencingToken);
+            if (routingConversationId && pendingCommunicationV4NextRunDeliveryIds.length > 0) {
+              // runId identifies the exact provider-input manifest used as
+              // proof. Delivery authority persists provider.scheduler_run_id as
+              // delivered_run_id, so operator links always target scheduler
+              // Run authority rather than a provider execution identifier.
+              coordinationV3!.markCommunicationV4NextRunDeliveriesDelivered({
+                projectId: project.id,
+                conversationId: routingConversationId,
+                agentId: agent.id,
+                runId,
+                deliveryIds: pendingCommunicationV4NextRunDeliveryIds,
+              });
+            }
+          }
         } catch (error) {
           app.log.error({ err: error, runId }, "Communication V3 terminal transition failed");
         }

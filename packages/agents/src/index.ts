@@ -44,6 +44,12 @@ export type {
   TriggerFilesystemBurst,
   ContextRolloverState,
   ContextRolloverV3,
+  CommunicationV4NextRunDelivery,
+  NextRunDeliveryMaintenanceResult,
+  OperatorNextRunDeliveryReceipt,
+  PublishAgentNextRunDeliveryInput,
+  PublishNextRunDeliveryResult,
+  PublishOperatorNextRunDeliveryInput,
 } from "./coordination-v3-store.js";
 export type { ConversationDeliveryIntent, ManagedArtifactAccess } from "./store.js";
 export type { AgentDeletionReceipt, ProjectDeletionReceipt, AgentManagementAuthorization } from "./store.js";

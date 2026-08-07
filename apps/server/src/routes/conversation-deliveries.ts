@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type {
+  AgentMentionBindingDto,
   AssetDto,
   CommunicationEvent,
   CreateConversationMessageRequest,
@@ -9,6 +10,7 @@ import type {
   MultiAgentDirectMessageResponse,
   QueuedConversationMessageDto,
 } from "@ponderosa/core";
+import { messageTagTokens, unicodeCodePointLength } from "@ponderosa/core";
 import type {
   AgentStore,
   ConversationDeliveryIntent,
@@ -18,6 +20,7 @@ import type {
 } from "@ponderosa/agents";
 import { ASSET_LIMITS, AssetError, type AssetStore } from "../assets.js";
 import { renderScopedMessage, stripLeadingScopeTag } from "../agent-mentions.js";
+import { agentMentionHandle } from "../mention-bindings.js";
 
 export interface PreparedCommunicationArtifact {
   id: string;
@@ -144,7 +147,8 @@ export function registerConversationDeliveryRoutes(
     const requestedText = request.body?.text?.trim();
     const rawText = requestedText ? stripLeadingScopeTag(requestedText, "broadcast") : "";
     const requestedAssets = request.body?.attachments ?? [];
-    const recipientAgentIds = request.body?.recipientAgentIds ?? [];
+    const legacyRecipientAgentIds = request.body?.recipientAgentIds ?? [];
+    const requestedRecipientAgentMentions: unknown = request.body?.recipientAgentMentions;
     const requestedRecipientAttachments = request.body?.recipientAttachments ?? [];
     const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
     const runtimeSelection = requestedRuntimeSelection(request.body ?? {});
@@ -157,10 +161,26 @@ export function registerConversationDeliveryRoutes(
     if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
       return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
     }
-    if (!Array.isArray(recipientAgentIds) || recipientAgentIds.length > 100 ||
-        recipientAgentIds.some((id) => typeof id !== "string" || !id.trim()) ||
-        new Set(recipientAgentIds).size !== recipientAgentIds.length) {
-      return reply.code(400).send({ error: "broadcast recipient Agent IDs must be unique and limited to 100" });
+    if (!Array.isArray(legacyRecipientAgentIds) || legacyRecipientAgentIds.length > 0) {
+      return reply.code(400).send({ error: "targeted next-run delivery requires canonical Agent mention bindings" });
+    }
+    if (requestedRecipientAgentMentions !== undefined &&
+        (!Array.isArray(requestedRecipientAgentMentions) ||
+        requestedRecipientAgentMentions.length > 100 ||
+        requestedRecipientAgentMentions.some((binding) => !binding ||
+          typeof binding.agentId !== "string" || !binding.agentId.trim() ||
+          typeof binding.handle !== "string" || !binding.handle.trim()))) {
+      return reply.code(400).send({ error: "targeted next-run Agent bindings must be unique and limited to 100" });
+    }
+    const recipientAgentMentions =
+      (requestedRecipientAgentMentions ?? []) as AgentMentionBindingDto[];
+    const recipientAgentIds = recipientAgentMentions.map((binding) => binding.agentId);
+    if (
+        new Set(recipientAgentIds).size !== recipientAgentIds.length ||
+        new Set(recipientAgentMentions.map((binding) => binding.handle.toLocaleLowerCase())).size !==
+          recipientAgentMentions.length
+    ) {
+      return reply.code(400).send({ error: "targeted next-run Agent bindings must be unique and limited to 100" });
     }
     if (!Array.isArray(requestedRecipientAttachments) ||
         requestedRecipientAttachments.length > recipientAgentIds.length ||
@@ -178,12 +198,71 @@ export function registerConversationDeliveryRoutes(
     const master = store.getConversation(request.params.id);
     if (!master) return reply.code(404).send({ error: "conversation not found" });
     if (projectDeletionInProgress(master.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
+    const agentIdsByHandle = new Map<string, string[]>();
+    for (const agent of store.listAgents(master.projectId)) {
+      if (agent.archived || !agent.conversationIds.includes(master.id)) continue;
+      const handle = agentMentionHandle(agent.title).toLocaleLowerCase();
+      if (!handle || ["broadcast", "everyone", "user"].includes(handle)) continue;
+      agentIdsByHandle.set(handle, [...(agentIdsByHandle.get(handle) ?? []), agent.id]);
+    }
+    const authoredAgentHandles = [...new Set(messageTagTokens(requestedText ?? "")
+      .map((token) => token.handle.toLocaleLowerCase())
+      .filter((handle) => agentIdsByHandle.has(handle)))].sort();
+    const boundHandles = recipientAgentMentions
+      .map((binding) => binding.handle.toLocaleLowerCase())
+      .sort();
+    if (authoredAgentHandles.join("\0") !== boundHandles.join("\0")) {
+      return reply.code(400).send({ error: "every targeted #Agent mention must have one canonical binding" });
+    }
+    if (recipientAgentMentions.some((binding) => {
+      const matches = agentIdsByHandle.get(binding.handle.toLocaleLowerCase()) ?? [];
+      return matches.length !== 1 || matches[0] !== binding.agentId;
+    })) {
+      return reply.code(400).send({ error: "targeted next-run Agent binding is stale, ambiguous, or invalid" });
+    }
     const recipientAgents = recipientAgentIds.map((agentId) => store.getAgent(agentId));
     if (recipientAgents.some((agent) =>
       !agent || agent.archived || agent.projectId !== master.projectId ||
       !agent.conversationIds.includes(master.id)
     )) {
       return reply.code(404).send({ error: "broadcast recipient not found" });
+    }
+    if (recipientAgentIds.length > 0) {
+      if (requestedAssets.length > 0 || requestedRecipientAttachments.length > 0) {
+        return reply.code(400).send({ error: "targeted next-run delivery accepts message text only" });
+      }
+      if (!rawText || unicodeCodePointLength(rawText) > 20_000) {
+        return reply.code(400).send({ error: "targeted next-run text must contain 1 to 20000 Unicode code points" });
+      }
+      if (!idempotencyKey) {
+        return reply.code(400).send({ error: "targeted next-run delivery requires an idempotencyKey" });
+      }
+      try {
+        const result = coordinationV3.publishOperatorNextRunDelivery({
+          projectId: master.projectId,
+          conversationId: master.id,
+          publisherUserId: "local-operator",
+          publisherLabel: "Operator",
+          idempotencyKey,
+          text: rawText,
+          recipientAgentIds,
+        });
+        for (const agentId of recipientAgentIds) {
+          publishCoordinationV3Changed(agentId, { conversationIds: [master.id] });
+        }
+        const receipt = coordinationV3.operatorNextRunDeliveryReceipts({
+          projectId: master.projectId,
+          conversationId: master.id,
+          publisherUserId: "local-operator",
+          limit: 50,
+        }).find((candidate) => candidate.deliveryId === result.delivery.id);
+        if (!receipt) throw new Error("targeted next-run receipt was not committed");
+        return { receipt, replayed: result.replayed };
+      } catch (error) {
+        return reply.code(409).send({
+          error: error instanceof Error ? error.message : "targeted next-run delivery failed",
+        });
+      }
     }
     if (!Array.isArray(requestedAssets) || requestedAssets.length > MAX_ATTACHMENTS_PER_MESSAGE) return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} assets are allowed` });
     const validatedAssets: AssetDto[] = [];
@@ -389,6 +468,26 @@ export function registerConversationDeliveryRoutes(
       passive: recipientAgentIds.length === 0,
     }, "conversation message persisted");
     return message ?? reply.code(404).send({ error: "conversation not found" });
+  });
+
+  app.get<{
+    Params: { id: string };
+    Querystring: { limit?: string };
+  }>("/api/conversations/:id/next-run-deliveries", async (request, reply) => {
+    const conversation = store.getConversation(request.params.id);
+    if (!conversation) return reply.code(404).send({ error: "conversation not found" });
+    const limit = request.query.limit === undefined ? 20 : Number(request.query.limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+      return reply.code(400).send({ error: "limit must be an integer from 1 to 50" });
+    }
+    return {
+      receipts: coordinationV3.operatorNextRunDeliveryReceipts({
+        projectId: conversation.projectId,
+        conversationId: conversation.id,
+        publisherUserId: "local-operator",
+        limit,
+      }),
+    };
   });
 
   app.post<{ Params: { id: string }; Body: CreateMultiAgentDirectMessageRequest }>(

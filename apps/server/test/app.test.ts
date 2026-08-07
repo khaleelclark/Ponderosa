@@ -134,8 +134,7 @@ class ManualRolloverPersistentAdapter implements Adapter {
   readonly displayName = "Manual rollover persistent adapter";
   readonly trustedSystemPromptChannel = "developer" as const;
   openCount = 0;
-  rolloverCalls = 0;
-  toolResult?: { success: boolean; text: string };
+  handoffEmissions = 0;
   readonly handoff = Array.from({ length: 300 }, (_, index) => `handoff-${index + 1}`).join(" ");
 
   listModels() { return [{ id: "test-model", label: "Test model" }]; }
@@ -165,11 +164,16 @@ class ManualRolloverPersistentAdapter implements Adapter {
           yield { type: "session", sessionId };
           await startedPromise;
           if (shouldRequestRollover) {
-            fixture.rolloverCalls += 1;
-            fixture.toolResult = await options.handleDynamicToolCall?.({
-              name: "ponderosa_rollover",
-              arguments: { handoff: fixture.handoff },
-            });
+            fixture.handoffEmissions += 1;
+            yield {
+              type: "context_usage",
+              providerSessionId: sessionId,
+              providerSessionGeneration: generation,
+              usedTokens: 80_000,
+              aggregateTokens: 10_000_000,
+              windowTokens: 200_000,
+            };
+            yield { type: "text", delta: fixture.handoff };
           } else {
             yield {
               type: "context_usage",
@@ -212,8 +216,7 @@ class ManagedRequestRolloverAdapter implements Adapter {
   readonly displayName = "Managed Request rollover adapter";
   readonly trustedSystemPromptChannel = "developer" as const;
   openCount = 0;
-  rolloverCalls = 0;
-  toolResult?: { success: boolean; text: string };
+  handoffEmissions = 0;
   readonly handoff = Array.from(
     { length: 300 },
     (_, index) => `managed-handoff-${index + 1}`,
@@ -247,11 +250,16 @@ class ManagedRequestRolloverAdapter implements Adapter {
           yield { type: "session", sessionId };
           await startedPromise;
           if (source) {
-            fixture.rolloverCalls += 1;
-            fixture.toolResult = await options.handleDynamicToolCall?.({
-              name: "ponderosa_rollover",
-              arguments: { handoff: fixture.handoff },
-            });
+            fixture.handoffEmissions += 1;
+            yield {
+              type: "context_usage",
+              providerSessionId: sessionId,
+              providerSessionGeneration: generation,
+              usedTokens: 80_000,
+              aggregateTokens: 10_000_000,
+              windowTokens: 200_000,
+            };
+            yield { type: "text", delta: fixture.handoff };
           } else {
             yield {
               type: "context_usage",
@@ -412,7 +420,7 @@ class ManagedRequestRolloverRecoveryAdapter implements Adapter {
   readonly displayName = "Managed Request rollover recovery adapter";
   readonly trustedSystemPromptChannel = "developer" as const;
   openCount = 0;
-  rolloverCalls = 0;
+  handoffEmissions = 0;
   prompts: string[] = [];
   readonly sentinel = "EXACT-RECOVERY-HANDOFF-SENTINEL";
   readonly handoff = `${this.sentinel} ${Array.from(
@@ -447,11 +455,16 @@ class ManagedRequestRolloverRecoveryAdapter implements Adapter {
           yield { type: "session", sessionId };
           await startedPromise;
           if (stage === 1) {
-            fixture.rolloverCalls += 1;
-            await options.handleDynamicToolCall?.({
-              name: "ponderosa_rollover",
-              arguments: { handoff: fixture.handoff },
-            });
+            fixture.handoffEmissions += 1;
+            yield {
+              type: "context_usage",
+              providerSessionId: sessionId,
+              providerSessionGeneration: `managed-recovery-generation-${stage}`,
+              usedTokens: 80_000,
+              aggregateTokens: 10_000_000,
+              windowTokens: 200_000,
+            };
+            yield { type: "text", delta: fixture.handoff };
           } else if (stage === 2) {
             yield {
               type: "error",
@@ -667,7 +680,7 @@ describe("server public API behavior", () => {
     });
   });
 
-  it("applies Project Chat runtime selection to existing Agent deliveries", async () => {
+  it("keeps operator targeted next-run delivery passive despite composer runtime selection", async () => {
     const adapter = new BehavioralAdapter();
     const project = store.createProject({
       label: "Runtime selection",
@@ -712,36 +725,76 @@ describe("server public API behavior", () => {
     });
     expect(direct.statusCode, direct.body).toBe(200);
 
-    const broadcast = await app.inject({
+    const malformedBindings = await app.inject({
       method: "POST",
       url: `/api/conversations/${conversationId}/messages`,
       payload: {
-        text: "Use the selected runtime for shared work.",
-        recipientAgentIds: [broadcastAgent.id],
+        text: "#Broadcast-target malformed binding payload",
+        recipientAgentMentions: { handle: "Broadcast-target", agentId: broadcastAgent.id },
+        idempotencyKey: randomUUID(),
+      },
+    });
+    expect(malformedBindings.statusCode, malformedBindings.body).toBe(400);
+
+    const staleBinding = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${conversationId}/messages`,
+      payload: {
+        text: "#Direct-target stale binding payload",
+        recipientAgentMentions: [{
+          handle: "Direct-target",
+          agentId: broadcastAgent.id,
+        }],
+        idempotencyKey: randomUUID(),
+      },
+    });
+    expect(staleBinding.statusCode, staleBinding.body).toBe(400);
+    expect(staleBinding.json()).toEqual({
+      error: "targeted next-run Agent binding is stale, ambiguous, or invalid",
+    });
+
+    const targeted = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${conversationId}/messages`,
+      payload: {
+        text: "#Broadcast-target Keep #release context on your next run.",
+        recipientAgentMentions: [{
+          handle: "Broadcast-target",
+          agentId: broadcastAgent.id,
+        }],
         idempotencyKey: randomUUID(),
         model: "test-model",
         effort: "high",
       },
     });
-    expect(broadcast.statusCode, broadcast.body).toBe(200);
+    expect(targeted.statusCode, targeted.body).toBe(200);
 
     const deadline = Date.now() + 3_000;
-    while (adapter.seedCalls < 2 && Date.now() < deadline) {
+    while (adapter.seedCalls < 1 && Date.now() < deadline) {
       await new Promise(resolve => setTimeout(resolve, 10));
     }
-    expect(adapter.seedCalls).toBe(2);
-    expect(adapter.seedOptions).toEqual(expect.arrayContaining([
+    expect(adapter.seedCalls).toBe(1);
+    expect(adapter.seedOptions).toEqual([
       expect.objectContaining({
         agentId: directAgent.id,
         model: "test-model",
         effort: "high",
       }),
-      expect.objectContaining({
-        agentId: broadcastAgent.id,
-        model: "test-model",
-        effort: "high",
-      }),
-    ]));
+    ]);
+    const receipts = await app.inject({
+      method: "GET",
+      url: `/api/conversations/${conversationId}/next-run-deliveries`,
+    });
+    expect(receipts.statusCode, receipts.body).toBe(200);
+    expect(receipts.json()).toEqual({
+      receipts: [expect.objectContaining({
+        text: "#Broadcast-target Keep #release context on your next run.",
+        recipients: [expect.objectContaining({
+          agentId: broadcastAgent.id,
+          state: "pending",
+        })],
+      })],
+    });
   });
 
   it("bounds ordinary readiness while retaining an explicit deep runtime diagnostic", async () => {
@@ -1544,7 +1597,12 @@ describe("server public API behavior", () => {
     `).get(retry.rollover.id)).toEqual({ count: 0 });
   });
 
-  it("retries a failed provider generation through one bounded manual rollover tool call", async () => {
+  it("retries a failed provider generation through one bounded runtime-owned rollover handoff", async () => {
+    new WorkspaceStore(dataDir).updatePreferences({
+      contextRolloverEnabled: true,
+      contextRolloverTokens: 75_000,
+      contextRolloverWindowFraction: 0.7,
+    });
     const adapter = new ManualRolloverPersistentAdapter();
     const project = store.createProject({
       label: "Manual rollover retry",
@@ -1594,11 +1652,10 @@ describe("server public API behavior", () => {
     });
     expect(sent.statusCode, sent.body).toBe(202);
     const deadline = Date.now() + 3_000;
-    while ((adapter.openCount < 2 || !adapter.toolResult) && Date.now() < deadline) {
+    while (adapter.openCount < 2 && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    expect(adapter.toolResult).toMatchObject({ success: true });
-    expect(adapter.rolloverCalls).toBe(1);
+    expect(adapter.handoffEmissions).toBe(1);
     expect(adapter.handoff.split(/\s+/u)).toHaveLength(300);
     expect(adapter.openCount).toBe(2);
 
@@ -1630,6 +1687,11 @@ describe("server public API behavior", () => {
   });
 
   it("carries one managed Request through rollover and completes its original Join exactly once", async () => {
+    new WorkspaceStore(dataDir).updatePreferences({
+      contextRolloverEnabled: true,
+      contextRolloverTokens: 75_000,
+      contextRolloverWindowFraction: 0.7,
+    });
     const adapter = new ManagedRequestRolloverAdapter();
     const project = store.createProject({
       label: "Managed Request rollover",
@@ -1675,8 +1737,7 @@ describe("server public API behavior", () => {
         Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    expect(adapter.toolResult).toMatchObject({ success: true });
-    expect(adapter.rolloverCalls).toBe(1);
+    expect(adapter.handoffEmissions).toBe(1);
     expect(adapter.openCount).toBe(2);
     expect(coordination.getRequest("managed-rollover-request")?.state).toBe("completed");
     expect(store.sqlite.prepare(`
@@ -2053,6 +2114,11 @@ describe("server public API behavior", () => {
   });
 
   it("injects one terminal rollover handoff into one authorized Retry Assignment and completes its Join", async () => {
+    new WorkspaceStore(dataDir).updatePreferences({
+      contextRolloverEnabled: true,
+      contextRolloverTokens: 75_000,
+      contextRolloverWindowFraction: 0.7,
+    });
     const adapter = new ManagedRequestRolloverRecoveryAdapter();
     const project = store.createProject({
       label: "Managed rollover recovery",
@@ -2106,7 +2172,7 @@ describe("server public API behavior", () => {
     ) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    expect(adapter.rolloverCalls).toBe(1);
+    expect(adapter.handoffEmissions).toBe(1);
     expect(adapter.openCount).toBe(2);
     expect(coordination.getRequest("managed-recovery-original-request")?.state)
       .toBe("outcome_unknown");

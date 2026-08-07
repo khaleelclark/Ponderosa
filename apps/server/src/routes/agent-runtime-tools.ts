@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import type { AgentStore, CoordinationV3Store, RuntimeArtifactV3 } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
+import { PONDEROSA_RESULT_TOOL, unicodeCodePointLength } from "@ponderosa/core";
 import type { AssetStore } from "../assets.js";
 import {
   BrowserSessionError,
@@ -13,7 +14,6 @@ import type {
   ActiveRun,
   AgentMessageCapability,
 } from "../app-contracts.js";
-import { documentationReferences } from "../documentation-reference/index.js";
 import {
   RESULT_PAGE_DEFAULT_BYTES,
   RESULT_PAGE_MAX_BYTES,
@@ -43,6 +43,67 @@ interface AgentRuntimeToolRoutesContext {
   agentCanReadRuntimeArtifact(artifact: RuntimeArtifactV3, agentId: string): boolean;
 }
 
+const RESULT_QUERY_MAX_MATCHES = 20;
+const RESULT_QUERY_CONTEXT_BEFORE_CODE_UNITS = 240;
+const RESULT_QUERY_CONTEXT_AFTER_CODE_UNITS = 480;
+
+const literalQueryRegex = (query: string): RegExp => new RegExp(
+  query.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"),
+  "giu",
+);
+
+const codePointAlignedStart = (text: string, index: number): number =>
+  index > 0 && index < text.length && /[\uDC00-\uDFFF]/u.test(text[index]!) ? index - 1 : index;
+
+const codePointAlignedEnd = (text: string, index: number): number =>
+  index > 0 && index < text.length && /[\uDC00-\uDFFF]/u.test(text[index]!) ? index + 1 : index;
+
+interface ResultRetrievalSource {
+  ref: string;
+  title: string;
+  mediaType: string;
+  content: Buffer;
+  encoding: "utf8" | "base64";
+}
+
+function nextLiteralQueryMatch(
+  sources: readonly ResultRetrievalSource[],
+  query: string,
+  from: { itemIndex: number; byteOffset: number },
+): {
+  itemIndex: number;
+  startUtf8Byte: number;
+  endUtf8Byte: number;
+  startCodeUnit: number;
+  endCodeUnit: number;
+  matchedText: string;
+  fullText: string;
+} | undefined {
+  for (let itemIndex = from.itemIndex; itemIndex < sources.length; itemIndex += 1) {
+    const source = sources[itemIndex]!;
+    if (source.encoding !== "utf8") continue;
+    const byteOffset = itemIndex === from.itemIndex ? from.byteOffset : 0;
+    const prefixText = source.content.subarray(0, byteOffset).toString("utf8");
+    const suffixText = source.content.subarray(byteOffset).toString("utf8");
+    const match = literalQueryRegex(query).exec(suffixText);
+    if (!match || match.index === undefined) continue;
+    const prefixUtf8Bytes = Buffer.byteLength(suffixText.slice(0, match.index), "utf8");
+    const startUtf8Byte = byteOffset + prefixUtf8Bytes;
+    const endUtf8Byte = startUtf8Byte + Buffer.byteLength(match[0], "utf8");
+    const startCodeUnit = prefixText.length + match.index;
+    return {
+      itemIndex,
+      startUtf8Byte,
+      endUtf8Byte,
+      startCodeUnit,
+      endCodeUnit: startCodeUnit + match[0].length,
+      matchedText: match[0],
+      fullText: `${prefixText}${suffixText}`,
+    };
+  }
+  return undefined;
+}
+
 export function registerAgentRuntimeToolRoutes(
   app: FastifyInstance,
   context: AgentRuntimeToolRoutesContext,
@@ -63,33 +124,7 @@ export function registerAgentRuntimeToolRoutes(
   } = context;
 
   app.post<{
-    Body: { refs?: string[]; cursor?: string; maxBytes?: number };
-  }>("/api/agent-docs", async (request, reply) => {
-    const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-    const capability = token ? agentMessageCapabilities.get(token) : undefined;
-    const active = capability ? activeRuns.get(capability.agentId) : undefined;
-    const author = capability ? store.getAgent(capability.agentId) : undefined;
-    if (!capability || !author || !capabilityOwnsAuthoritativeRun(capability, active) || active!.messageCapability !== token) {
-      return reply.code(401).send({ error: "documentation capability is not authorized for an active Run" });
-    }
-    const body = request.body ?? {};
-    if (Object.keys(body).some((key) => !["refs", "cursor", "maxBytes"].includes(key))) {
-      return reply.code(400).send({ error: "documentation retrieval accepts only refs, cursor, and maxBytes" });
-    }
-    if (!Array.isArray(body.refs) || body.refs.some((ref) => typeof ref !== "string") ||
-        (body.cursor !== undefined && typeof body.cursor !== "string") ||
-        (body.maxBytes !== undefined && typeof body.maxBytes !== "number")) {
-      return reply.code(400).send({ error: "documentation retrieval fields do not match the published tool schema" });
-    }
-    try {
-      return documentationReferences.documentationPage(body.refs, body.cursor, body.maxBytes);
-    } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : "documentation retrieval failed" });
-    }
-  });
-
-  app.post<{
-    Body: { refs?: string[]; cursor?: string; maxBytes?: number };
+    Body: { refs?: string[]; cursor?: string; maxBytes?: number; query?: string };
   }>("/api/agent-results", async (request, reply) => {
     const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
     const capability = token ? agentMessageCapabilities.get(token) : undefined;
@@ -98,9 +133,12 @@ export function registerAgentRuntimeToolRoutes(
     if (!capability || !author || !capabilityOwnsAuthoritativeRun(capability, active) || active!.messageCapability !== token) {
       return reply.code(401).send({ error: "result capability is not authorized for an active Run" });
     }
+    if (!capability.availableToolNames.includes(PONDEROSA_RESULT_TOOL.name)) {
+      return reply.code(403).send({ error: "result retrieval is unavailable for this Run" });
+    }
     const body = request.body ?? {};
-    if (Object.keys(body).some((key) => !["refs", "cursor", "maxBytes"].includes(key))) {
-      return reply.code(400).send({ error: "result retrieval accepts only refs, cursor, and maxBytes" });
+    if (Object.keys(body).some((key) => !["refs", "cursor", "maxBytes", "query"].includes(key))) {
+      return reply.code(400).send({ error: "result retrieval accepts only refs, cursor, maxBytes, and query" });
     }
     if (!Array.isArray(body.refs) || body.refs.length === 0 || body.refs.length > 20 ||
         new Set(body.refs).size !== body.refs.length || body.refs.some((ref) => typeof ref !== "string" || !parseResultRef(ref))) {
@@ -108,6 +146,9 @@ export function registerAgentRuntimeToolRoutes(
     }
     if (body.cursor !== undefined && (typeof body.cursor !== "string" || !body.cursor || body.cursor.length > 4096)) {
       return reply.code(400).send({ error: "cursor must be a non-empty opaque string of at most 4096 characters" });
+    }
+    if (body.query !== undefined && (typeof body.query !== "string" || !body.query.trim() || unicodeCodePointLength(body.query) > 256)) {
+      return reply.code(400).send({ error: "query must be a non-empty string of at most 256 Unicode code points" });
     }
     const decodedCursor = body.cursor ? decodeResultCursor(body.cursor, resultCursorSecret) : undefined;
     if (body.cursor && !decodedCursor) return reply.code(400).send({ error: "result cursor is invalid or has been tampered with" });
@@ -129,7 +170,7 @@ export function registerAgentRuntimeToolRoutes(
       collectReachableArtifactIds(activation.payload, reachableArtifactIds);
     }
 
-    const sources: Array<{ ref: string; title: string; mediaType: string; content: Buffer; encoding: "utf8" | "base64" }> = [];
+    const sources: ResultRetrievalSource[] = [];
     for (const { ref, parsed } of parsedRefs) {
       if (parsed.kind === "activation") {
         const activation = activationById.get(parsed.id)!;
@@ -177,7 +218,10 @@ export function registerAgentRuntimeToolRoutes(
       });
     }
 
-    const refsHash = createHash("sha256").update(JSON.stringify(body.refs)).digest("hex");
+    const refsHash = createHash("sha256").update(JSON.stringify({
+      refs: body.refs,
+      query: body.query ?? null,
+    })).digest("hex");
     const versionsHash = createHash("sha256").update(JSON.stringify(sources.map((source) => ({
       ref: source.ref,
       hash: createHash("sha256").update(source.content).digest("hex"),
@@ -190,6 +234,90 @@ export function registerAgentRuntimeToolRoutes(
     let byteOffset = decodedCursor?.byteOffset ?? 0;
     if (itemIndex > sources.length || (itemIndex < sources.length && byteOffset > sources[itemIndex]!.content.length)) {
       return reply.code(409).send({ error: "result cursor is outside the durable result boundary" });
+    }
+    if (body.query !== undefined) {
+      if (itemIndex < sources.length && byteOffset < sources[itemIndex]!.content.length &&
+          (sources[itemIndex]!.content[byteOffset]! & 0xc0) === 0x80) {
+        return reply.code(409).send({ error: "result cursor is not on a UTF-8 boundary" });
+      }
+      let remaining = maxBytes;
+      let position = { itemIndex, byteOffset };
+      const matches: Array<{
+        ref: string;
+        title: string;
+        mediaType: string;
+        match: string;
+        matchRange: { startUtf8Byte: number; endUtf8Byte: number };
+        excerptRange: { startUtf8Byte: number; endUtf8Byte: number };
+        excerpt: string;
+      }> = [];
+      let nextPosition: { itemIndex: number; byteOffset: number } | undefined;
+      while (matches.length < RESULT_QUERY_MAX_MATCHES && remaining > 0) {
+        const found = nextLiteralQueryMatch(sources, body.query, position);
+        if (!found) break;
+        const source = sources[found.itemIndex]!;
+        const excerptStartCodeUnit = codePointAlignedStart(
+          found.fullText,
+          Math.max(0, found.startCodeUnit - RESULT_QUERY_CONTEXT_BEFORE_CODE_UNITS),
+        );
+        const excerptEndCodeUnit = codePointAlignedEnd(
+          found.fullText,
+          Math.min(found.fullText.length, found.endCodeUnit + RESULT_QUERY_CONTEXT_AFTER_CODE_UNITS),
+        );
+        const excerpt = found.fullText.slice(excerptStartCodeUnit, excerptEndCodeUnit);
+        const excerptUtf8Bytes = Buffer.byteLength(excerpt, "utf8");
+        if (excerptUtf8Bytes > remaining && matches.length > 0) {
+          nextPosition = { itemIndex: found.itemIndex, byteOffset: found.startUtf8Byte };
+          break;
+        }
+        const excerptStartUtf8Byte = Buffer.byteLength(
+          found.fullText.slice(0, excerptStartCodeUnit),
+          "utf8",
+        );
+        matches.push({
+          ref: source.ref,
+          title: source.title,
+          mediaType: source.mediaType,
+          match: found.matchedText,
+          matchRange: {
+            startUtf8Byte: found.startUtf8Byte,
+            endUtf8Byte: found.endUtf8Byte,
+          },
+          excerptRange: {
+            startUtf8Byte: excerptStartUtf8Byte,
+            endUtf8Byte: excerptStartUtf8Byte + excerptUtf8Bytes,
+          },
+          excerpt,
+        });
+        remaining -= excerptUtf8Bytes;
+        position = { itemIndex: found.itemIndex, byteOffset: found.endUtf8Byte };
+      }
+      if (!nextPosition) {
+        const next = nextLiteralQueryMatch(sources, body.query, position);
+        if (next) nextPosition = { itemIndex: next.itemIndex, byteOffset: next.startUtf8Byte };
+      }
+      const nextCursor = nextPosition
+        ? encodeResultCursor({
+            runId: capability.runId,
+            refsHash,
+            versionsHash,
+            maxBytes,
+            itemIndex: nextPosition.itemIndex,
+            byteOffset: nextPosition.byteOffset,
+          }, resultCursorSecret)
+        : undefined;
+      return {
+        query: body.query,
+        matching: "case_insensitive_literal",
+        matches,
+        skipped: sources
+          .filter((source) => source.encoding !== "utf8")
+          .map((source) => ({ ref: source.ref, reason: "non_utf8_content" as const })),
+        maxBytes,
+        maxMatchesPerPage: RESULT_QUERY_MAX_MATCHES,
+        complete: !nextCursor,
+        ...(nextCursor ? { nextCursor } : {}),
+      };
     }
     let remaining = maxBytes;
     const items: Array<{

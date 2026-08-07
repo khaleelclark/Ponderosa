@@ -1,6 +1,7 @@
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
 import CloseIcon from "@mui/icons-material/Close";
+import ScheduleSendOutlinedIcon from "@mui/icons-material/ScheduleSendOutlined";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
 import {
   Button,
@@ -22,9 +23,9 @@ interface ComposerDestinationBarProps {
 
 export function ComposerDestinationBar({
   destinationError,
-  destinationMode,
+  destinationMode: _destinationMode,
 }: ComposerDestinationBarProps): JSX.Element | null {
-  return destinationMode === "target-required" && destinationError ? (
+  return destinationError ? (
     <Typography
       variant="caption"
       color="error.main"
@@ -115,12 +116,18 @@ export function ComposerProjectDestinationAction({
     projectDestinations.length === 1 &&
     projectDestinations[0]!.handle.toLocaleLowerCase() ===
       continueWith.handle.toLocaleLowerCase();
-  const selectedLabel = continuing || continuingHandleSelected
+  const targetedNextRun = hasBroadcastDestination && projectDestinations.length > 0;
+  const targetedLabels = projectDestinations.map(destination => `#${destination.handle}`);
+  const selectedLabel = targetedNextRun
+    ? `Next run: ${targetedLabels[0]}${targetedLabels.length > 1 ? ` +${targetedLabels.length - 1}` : ""}`
+    : continuing || continuingHandleSelected
     ? `To: ${continueWith!.title}`
     : explicitLabels.length > 1
       ? `${explicitLabels[0]} +${explicitLabels.length - 1}`
       : (explicitLabels[0] ?? "Destination");
-  const selectedDestinationTitle = continuing || continuingHandleSelected
+  const selectedDestinationTitle = targetedNextRun
+    ? `Deliver on next run to ${targetedLabels.join(", ")}. Passive delivery; no Run or reply requested.`
+    : continuing || continuingHandleSelected
     ? selectedLabel
     : explicitLabels.join(" ");
   const clearExplicitDestinations = () => {
@@ -151,14 +158,18 @@ export function ComposerProjectDestinationAction({
       <Chip
         size="small"
         color={
-          hasBroadcastDestination
+          targetedNextRun || hasBroadcastDestination
             ? "info"
             : hasEveryoneDestination
               ? "secondary"
               : "primary"
         }
         icon={
-          hasBroadcastDestination ? <CampaignOutlinedIcon /> : undefined
+          targetedNextRun
+            ? <ScheduleSendOutlinedIcon />
+            : hasBroadcastDestination
+              ? <CampaignOutlinedIcon />
+              : undefined
         }
         label={selectedLabel}
         title={selectedDestinationTitle}

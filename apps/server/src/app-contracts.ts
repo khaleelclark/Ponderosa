@@ -392,6 +392,8 @@ export interface AgentMessageCapability {
   inferredReplyCommunicationEventId?: string;
   /** Project artifacts explicitly submitted to this Run's provider context. */
   reachableArtifactIds: string[];
+  /** Exact host-owned tools compiled into this Run's provider contract. */
+  availableToolNames: string[];
 }
 
 export type Subscriber = (stored: StoredLogEvent) => void;
@@ -401,7 +403,6 @@ export const MAX_SSE_SUBSCRIBERS_PER_STREAM = 20;
 export const MAX_ATTACHMENTS_PER_MESSAGE = ASSET_LIMITS.maxAssetsPerMessage;
 export const MIN_CONFIGURABLE_AGENT_RUN_CONCURRENCY = 1;
 export const MAX_CONFIGURABLE_AGENT_RUN_CONCURRENCY = 64;
-export const CONTEXT_ROLLOVER_INSTRUCTION = "Your provider session is approaching its practical context limit. Before ending this Run, call `ponderosa_rollover` once with a 300–500 word handoff for the fresh session that will replace you. The handoff must explicitly separate: (1) the objective; (2) work completed; (3) unblocked work that should continue now; (4) blocked work and what blocks it; (5) the exact next action; (6) verified facts versus assumptions; (7) references to relevant files and artifacts. Do not summarize the whole conversation — carry only working state the next session needs. Then finish or safely stop your current work as normal.";
 
 export function agentMessageEndpoint(
   _request: { protocol: string; headers: Record<string, unknown> },

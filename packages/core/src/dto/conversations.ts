@@ -391,6 +391,8 @@ export interface CreateConversationMessageRequest {
   attachments?: ImageAttachmentDto[];
   /** Stable Agent IDs to activate for this organizational Broadcast. */
   recipientAgentIds?: string[];
+  /** Immutable #handle-to-Agent bindings for targeted passive next-run delivery. */
+  recipientAgentMentions?: AgentMentionBindingDto[];
   /** Target-owned asset copies for safe delivery to each activated Agent. */
   recipientAttachments?: Array<{ agentId: string; attachmentIds: string[] }>;
   /** Per-turn runtime selection for every Agent activated by this message. */
@@ -401,6 +403,38 @@ export interface CreateConversationMessageRequest {
   activeRunDelivery?: "steer" | "queue";
   /** Stable across transport retries; absent is accepted for legacy clients. */
   idempotencyKey?: string;
+}
+
+export type TargetedNextRunDeliveryState =
+  | "pending"
+  | "delivered"
+  | "expired"
+  | "unavailable";
+
+export interface TargetedNextRunReceiptDto {
+  deliveryId: string;
+  projectId: string;
+  conversationId: string;
+  text: string;
+  createdAt: string;
+  expiresAt?: string;
+  recipients: Array<{
+    agentId: string;
+    agentTitle: string;
+    state: TargetedNextRunDeliveryState;
+    deliveredRunId?: string;
+    settledAt?: string;
+    unavailableReason?: string;
+  }>;
+}
+
+export interface CreateTargetedNextRunDeliveryResponse {
+  receipt: TargetedNextRunReceiptDto;
+  replayed: boolean;
+}
+
+export interface TargetedNextRunReceiptListDto {
+  receipts: TargetedNextRunReceiptDto[];
 }
 
 /** POST /api/conversations/:id/collaboration/messages body. */
@@ -584,8 +618,7 @@ interface AgentMessageRequestBase {
   idempotencyKey?: string;
 }
 
-/** POST /api/agent-messages body. The server derives the author from the capability. */
-export type SendAgentMessageRequest = AgentMessageRequestBase & (
+type ImmediateAgentMessageRequest = AgentMessageRequestBase & (
   | { intent?: undefined; recipientAgentIds?: never }
   | { intent: "broadcast"; recipientAgentIds?: never }
   | { intent: "direct_to_user"; recipientAgentIds?: never }
@@ -596,7 +629,24 @@ export type SendAgentMessageRequest = AgentMessageRequestBase & (
       /** Urgent collaboration may steer; ordinary collaboration queues. */
       urgency?: "ordinary" | "urgent";
     }
-);
+) & { delivery?: never; expiresAt?: never };
+
+type NextRunAgentMessageRequest = Omit<
+  AgentMessageRequestBase,
+  "artifactIds" | "document" | "citations"
+> & {
+  delivery: "next_run";
+  text: string;
+  recipientAgentIds: string[];
+  expiresAt?: string;
+  intent?: never;
+  urgency?: never;
+};
+
+/** POST /api/agent-messages body. The server derives the author from the capability. */
+export type SendAgentMessageRequest =
+  | ImmediateAgentMessageRequest
+  | NextRunAgentMessageRequest;
 
 export interface CommunicationDocumentContentDto extends CommunicationDocumentReference {
   content: string;
