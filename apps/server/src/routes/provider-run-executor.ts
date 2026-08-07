@@ -881,26 +881,67 @@ export function startProviderRunExecution(
       schedulerCancelled ||= Boolean(!isClosed() && activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));
       const localRolloverRequested = scheduledSessionRollovers.delete(agent.id);
       const durableRollover = coordinationV3.activeContextRollover(agent.id);
-      let runRollover = durableRollover?.sourceRunId === runId ? durableRollover : undefined;
+      const attachedActivationPayloads = coordinationV3.activationPayloads(
+        agent.id,
+        coordinationV3.activationIdsAttachedToRun(runId, agent.id),
+        runId,
+      );
+      const attachedHandoffActivation = attachedActivationPayloads.find((activation) =>
+        activation.kind === "context_rollover_handoff" &&
+        Boolean(activation.payload && typeof activation.payload === "object" &&
+          typeof (activation.payload as { rolloverId?: unknown }).rolloverId === "string"));
+      const attachedRolloverId = attachedHandoffActivation &&
+        typeof attachedHandoffActivation.payload === "object" && attachedHandoffActivation.payload
+        ? (attachedHandoffActivation.payload as { rolloverId: string }).rolloverId
+        : undefined;
+      const attachedRollover = attachedRolloverId
+        ? coordinationV3.contextRollover(attachedRolloverId)
+        : undefined;
+      let runRollover = attachedRollover?.agentId === agent.id && attachedRollover.state === "requested"
+        ? attachedRollover
+        : durableRollover?.sourceRunId === runId ? durableRollover : undefined;
+      let handoffActivationAcknowledged = false;
       if (owned && runRollover?.state === "requested" && !runError &&
           !isClosed() && !controller.signal.aborted && !schedulerCancelled) {
-        const handoff = finalText.trim();
-        const handoffWords = handoff.split(/\s+/u).filter(Boolean).length;
-        if (handoffWords >= 300 && handoffWords <= 500 && unicodeCodePointLength(handoff) <= 20_000) {
-          const existing = store.continuationHandoffForRun(agent.id, runId);
-          const handoffId = existing?.id ?? randomUUID();
-          if (!existing) {
-            const event = store.appendEvent(agent.id, {
-              type: "continuation_handoff",
-              handoffId,
-              executionId: runId,
-              text: handoff,
-            });
-            publish(agent.id, event);
+        const handoffActivation = attachedActivationPayloads.find((activation) => {
+          if (activation.kind !== "context_rollover_handoff" ||
+              !activation.payload || typeof activation.payload !== "object") return false;
+          return (activation.payload as { rolloverId?: unknown }).rolloverId === runRollover?.id;
+        });
+        const handoffInjection = handoffActivation
+          ? coordinationV3.promptInjectionForActivation(runId, handoffActivation.id)
+          : undefined;
+        handoffActivationAcknowledged = handoffInjection?.state === "acknowledged";
+        if (handoffActivationAcknowledged) {
+          const handoff = finalText.trim();
+          const handoffWords = handoff.split(/\s+/u).filter(Boolean).length;
+          if (handoffWords >= 300 && handoffWords <= 500 && unicodeCodePointLength(handoff) <= 20_000) {
+            const existing = store.continuationHandoffForRun(agent.id, runId);
+            const handoffId = existing?.id ?? randomUUID();
+            if (!existing) {
+              const event = store.appendEvent(agent.id, {
+                type: "continuation_handoff",
+                handoffId,
+                executionId: runId,
+                text: handoff,
+              });
+              publish(agent.id, event);
+            }
+            coordinationV3.commitContextRolloverHandoff(runRollover.id, handoffId);
+            scheduledSessionRollovers.set(agent.id, new Date().toISOString());
+            runRollover = coordinationV3.activeContextRollover(agent.id);
           }
-          coordinationV3.commitContextRolloverHandoff(runRollover.id, handoffId);
-          scheduledSessionRollovers.set(agent.id, new Date().toISOString());
-          runRollover = coordinationV3.activeContextRollover(agent.id);
+        } else if (handoffInjection &&
+            ["pending", "submitted"].includes(handoffInjection.state)) {
+          // The provider did not acknowledge this exact handoff instruction.
+          // Preserve the ordinary answer and retry the durable handoff at the
+          // next safe scheduler boundary instead of reclassifying finalText.
+          coordinationV3.deferSteering({
+            injectionId: handoffInjection.id,
+            runId,
+            fencingToken: v3FencingToken!,
+            preserveSteering: false,
+          });
         }
       }
       const replacementRunRollover = coordinationV3.contextRolloverForContinuationRun(
@@ -916,7 +957,7 @@ export function startProviderRunExecution(
         owned && localRolloverRequested && !runRollover &&
         !isClosed() && !controller.signal.aborted && !schedulerCancelled && !runError,
       );
-      if (owned && runRollover?.state === "requested" &&
+      if (owned && handoffActivationAcknowledged && runRollover?.state === "requested" &&
           !isClosed() && !controller.signal.aborted && !schedulerCancelled && !runError) {
         runError = "context rollover failed: provider ended before committing the required bounded handoff";
         await persistRuntimeEvent(agent.id, activeRun, {
@@ -1041,7 +1082,8 @@ export function startProviderRunExecution(
             }
           }
         }
-        if (!schedulerCancelled && !runError && finalText.trim() && firstTextSeq !== undefined && lastTextSeq !== undefined) {
+        if (!rolloverSucceeded && !schedulerCancelled && !runError && finalText.trim() &&
+            firstTextSeq !== undefined && lastTextSeq !== undefined) {
           const output = store.appendEvent(agent.id, {
             type: "agent_output",
             executionId: runId,
@@ -1099,7 +1141,8 @@ export function startProviderRunExecution(
               app.log.error({ err: error, agentId: agent.id, runId }, "policy context refresh teardown remains pending");
             }
           }
-        } else if (rolloverRequested) {
+        } else if (rolloverRequested &&
+            (controller.signal.aborted || schedulerCancelled || handoffActivationAcknowledged)) {
           const abandonedHandoff = store.continuationHandoffForRun(agent.id, runId);
           if (abandonedHandoff && !abandonedHandoff.consumedAt) {
             store.consumeContinuationHandoff(agent.id, abandonedHandoff.id, runId);
@@ -1238,8 +1281,10 @@ export function startProviderRunExecution(
         }
       }
       const retainedRuntime = reusableRuntime(agent.id);
+      const pendingRolloverRetainsRuntime = coordinationV3.activeContextRollover(agent.id)?.state === "requested";
       if (released && retainedRuntime && !isClosed() && !controller.signal.aborted &&
-          !deploymentDraining() && !deletingAgentIds.has(agent.id) && store.getAgent(agent.id)?.projectId === project.id) {
+          !pendingRolloverRetainsRuntime && !deploymentDraining() && !deletingAgentIds.has(agent.id) &&
+          store.getAgent(agent.id)?.projectId === project.id) {
         scheduleRuntimeIdleClose(agent.id, retainedRuntime);
       } else if (released && retainedRuntime && (isClosed() || deploymentDraining() || controller.signal.aborted || deletingAgentIds.has(agent.id))) {
         teardownPersistentRuntimeInBackground(agent.id, retainedRuntime, "Run authority ended during teardown");

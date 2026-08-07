@@ -390,6 +390,8 @@ export function formatActivationPrompt(
     ...(hasOverflow ? [
       "Full payloads remain durable. Use ponderosa_result({refs:[fullResultRef]}) when the bounded preview is insufficient; use its nextCursor to continue a paginated result.",
     ] : []),
+    "[RETRIEVAL REFERENCES | HOST-PROVIDED DATA]",
+    `- activationResultRefs: ${hasOverflow}`,
     ...materialized,
   ].join("\n");
 }

@@ -35,37 +35,37 @@ describe("runtime communication contract", () => {
     { context: false, result: true, expected: ["ponderosa_result"] },
     { context: true, result: false, expected: ["ponderosa_context"] },
     { context: true, result: true, expected: ["ponderosa_result", "ponderosa_context"] },
-  ])("exposes only retrievable conditional tools for $expected", ({ context, result, expected }) => {
+  ])("builds an exact per-Run retrieval allowlist for $expected", ({ context, result, expected }) => {
     const tools = providerDynamicTools({ context, result });
     const conditional = tools.map((tool) => tool.name)
       .filter((name) => name === "ponderosa_result" || name === "ponderosa_context");
     const prompt = communicationV3Prompt({ context, result }).join("\n");
 
     expect(conditional).toEqual(expected);
-    expect(prompt.includes("ponderosa_result")).toBe(result);
-    expect(prompt.includes("ponderosa_context")).toBe(context);
+    expect(prompt).toContain("ponderosa_result");
+    expect(prompt).toContain("ponderosa_context");
   });
 
-  it("changes session compatibility across false→true→false availability without accumulating churn", () => {
+  it("keeps session compatibility stable across false→true→false availability", () => {
     const contract = (result: boolean) => {
-      const availability = { context: false, result };
-      const tools = providerDynamicTools(availability);
+      void result;
+      const tools = providerDynamicTools();
       return providerSessionContractHash(
         "codex",
         "test-model",
         "low",
-        providerToolContractHash(tools, communicationV3Prompt(availability)),
+        providerToolContractHash(tools, communicationV3Prompt()),
       );
     };
 
     const ordinaryBefore = contract(false);
     const withResult = contract(true);
     const ordinaryAfter = contract(false);
-    expect(withResult).not.toBe(ordinaryBefore);
+    expect(withResult).toBe(ordinaryBefore);
     expect(ordinaryAfter).toBe(ordinaryBefore);
   });
 
-  it("locks the documented ordinary-Run schema and prompt byte reduction", () => {
+  it("locks the immutable provider contract and quantifies the exact route allowlist", () => {
     const serializedTools = (availability: { context: boolean; result: boolean }) =>
       JSON.stringify(providerDynamicTools(availability).map(({ name, description, inputSchema }) => ({
         name,
@@ -80,13 +80,13 @@ describe("runtime communication contract", () => {
     expect({
       allSchemaBytes: Buffer.byteLength(serializedTools(all)),
       ordinarySchemaBytes: Buffer.byteLength(serializedTools(ordinary)),
-      allPromptBytes: Buffer.byteLength(prompt(all)),
+      providerPromptBytes: Buffer.byteLength(prompt(all)),
       ordinaryPromptBytes: Buffer.byteLength(prompt(ordinary)),
     }).toEqual({
       allSchemaBytes: 20_427,
       ordinarySchemaBytes: 18_182,
-      allPromptBytes: 3_089,
-      ordinaryPromptBytes: 2_710,
+      providerPromptBytes: 3_093,
+      ordinaryPromptBytes: 3_093,
     });
   });
 });

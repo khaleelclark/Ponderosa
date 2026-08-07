@@ -10,7 +10,7 @@ import type {
   MultiAgentDirectMessageResponse,
   QueuedConversationMessageDto,
 } from "@ponderosa/core";
-import { messageTagTokens, unicodeCodePointLength } from "@ponderosa/core";
+import { messageTagTokens, normalizeCanonicalText, unicodeCodePointLength } from "@ponderosa/core";
 import type {
   AgentStore,
   ConversationDeliveryIntent,
@@ -144,7 +144,9 @@ export function registerConversationDeliveryRoutes(
     Body: CreateConversationMessageRequest;
   }>("/api/conversations/:id/messages", async (request, reply) => {
     const messageStartedAt = performance.now();
-    const requestedText = request.body?.text?.trim();
+    const requestedText = typeof request.body?.text === "string"
+      ? normalizeCanonicalText(request.body.text).trim()
+      : undefined;
     const rawText = requestedText ? stripLeadingScopeTag(requestedText, "broadcast") : "";
     const requestedAssets = request.body?.attachments ?? [];
     const legacyRecipientAgentIds = request.body?.recipientAgentIds ?? [];

@@ -14,9 +14,11 @@ import type {
 import {
   AgentStore,
   CoordinationV3Store,
+  publishManagedArtifactContent,
   type CommunicationV4NextRunDelivery,
 } from "@ponderosa/agents";
 import { createServer } from "../src/app.js";
+import { AssetStore } from "../src/assets.js";
 import {
   NEXT_RUN_DELIVERY_BATCH_LIMIT,
   NEXT_RUN_DELIVERY_INLINE_CHARACTER_LIMIT,
@@ -25,6 +27,36 @@ import {
   renderNextRunDeliveryContext,
 } from "../src/routes/agent-run-preparation.js";
 import { CoordinationV3Scheduler } from "../src/coordination-v3-scheduler.js";
+
+class FixtureTurnQueue {
+  private queued: Array<{ prompt: string }> = [];
+  private waiter: ((turn: { prompt: string } | undefined) => void) | undefined;
+  private closed = false;
+
+  push(turn: { prompt: string }): void {
+    if (this.closed) throw new Error("fixture runtime is closed");
+    if (this.waiter) {
+      const waiter = this.waiter;
+      this.waiter = undefined;
+      waiter(turn);
+    } else {
+      this.queued.push(turn);
+    }
+  }
+
+  next(): Promise<{ prompt: string } | undefined> {
+    const queued = this.queued.shift();
+    if (queued) return Promise.resolve(queued);
+    if (this.closed) return Promise.resolve(undefined);
+    return new Promise((resolve) => { this.waiter = resolve; });
+  }
+
+  close(): void {
+    this.closed = true;
+    this.waiter?.(undefined);
+    this.waiter = undefined;
+  }
+}
 
 class NextRunDeliveryFixtureAdapter implements Adapter {
   readonly id = "codex";
@@ -46,6 +78,8 @@ class NextRunDeliveryFixtureAdapter implements Adapter {
   resultQuery?: string;
   resultQueryResult?: { success: boolean; text: string };
   resultQueryResults: Array<{ success: boolean; text: string }> = [];
+  probeResultAuthorization = false;
+  resultAuthorizationHistory: boolean[] = [];
 
   listModels() { return [{ id: "test-model", label: "Test model" }]; }
   listEfforts() { return [{ id: "low", label: "Low" }]; }
@@ -60,11 +94,7 @@ class NextRunDeliveryFixtureAdapter implements Adapter {
     this.dynamicToolNames = (options.dynamicTools ?? []).map((tool) => tool.name);
     this.dynamicToolHistory.push(this.dynamicToolNames);
     this.resumeSessionIds.push(options.resumeSessionId);
-    let turnInput: { prompt: string } | undefined;
-    let startTurn!: () => void;
-    const started = new Promise<void>((resolve) => { startTurn = resolve; });
-    let finishClose!: () => void;
-    const closed = new Promise<void>((resolve) => { finishClose = resolve; });
+    const turns = new FixtureTurnQueue();
     let alive = true;
     const fixture = this;
     const session: RuntimeSession = {
@@ -72,65 +102,75 @@ class NextRunDeliveryFixtureAdapter implements Adapter {
       events: {
         async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
           yield { type: "session", sessionId: `next-run-delivery-session:${options.agentId}` };
-          await started;
-          if (options.agentId === fixture.publisherId) {
-            if (fixture.publisherAction === "coordinate") {
-              fixture.coordinateResult = await options.handleDynamicToolCall?.({
-                name: "ponderosa_coordinate",
-                arguments: {
-                  recipientAgentId: fixture.recipientId,
-                  text: "Return a tracked rollback plan.",
-                  completionMode: "record",
-                  lifetime: { kind: "deadline", at: "2026-08-07T23:59:59Z" },
-                },
-              });
-            } else {
-              fixture.deliveryResult = await options.handleDynamicToolCall?.({
-                name: "ponderosa_message",
-                arguments: {
-                  delivery: "next_run",
-                  text: "Require hardware-backed authentication for privileged access.",
-                  recipientAgentIds: [fixture.recipientId],
-                },
-              });
-            }
-          } else if (options.agentId === fixture.recipientId) {
-            fixture.recipientPrompt = turnInput?.prompt;
-            fixture.recipientPrompts.push(turnInput?.prompt ?? "");
-            if (fixture.resultQuery) {
-              const ref = /Full message:\s*(ponderosa:\/\/artifact\/[^\s]+)/u.exec(turnInput?.prompt ?? "")?.[1];
-              if (!ref) throw new Error("result query fixture did not receive a full-message reference");
-              let cursor: string | undefined;
-              do {
-                const result = await options.handleDynamicToolCall?.({
-                  name: "ponderosa_result",
-                  arguments: { refs: [ref], query: fixture.resultQuery, ...(cursor ? { cursor } : {}) },
+          while (alive) {
+            const turnInput = await turns.next();
+            if (!turnInput) break;
+            if (options.agentId === fixture.publisherId) {
+              if (fixture.publisherAction === "coordinate") {
+                fixture.coordinateResult = await options.handleDynamicToolCall?.({
+                  name: "ponderosa_coordinate",
+                  arguments: {
+                    recipientAgentId: fixture.recipientId,
+                    text: "Return a tracked rollback plan.",
+                    completionMode: "record",
+                    lifetime: { kind: "deadline", at: "2026-08-07T23:59:59Z" },
+                  },
                 });
-                if (!result) break;
-                fixture.resultQueryResult ??= result;
-                fixture.resultQueryResults.push(result);
-                const parsed = result.success ? JSON.parse(result.text) as { nextCursor?: string } : {};
-                cursor = parsed.nextCursor;
-              } while (cursor && fixture.resultQueryResults.length < 10);
+              } else {
+                fixture.deliveryResult = await options.handleDynamicToolCall?.({
+                  name: "ponderosa_message",
+                  arguments: {
+                    delivery: "next_run",
+                    text: "Require hardware-backed authentication for privileged access.",
+                    recipientAgentIds: [fixture.recipientId],
+                  },
+                });
+              }
+            } else if (options.agentId === fixture.recipientId) {
+              fixture.recipientPrompt = turnInput.prompt;
+              fixture.recipientPrompts.push(turnInput.prompt);
+              if (fixture.probeResultAuthorization) {
+                const probe = await options.handleDynamicToolCall?.({
+                  name: "ponderosa_result",
+                  arguments: { refs: ["ponderosa://activation/not-reachable"] },
+                });
+                fixture.resultAuthorizationHistory.push(
+                  Boolean(probe && !probe.text.includes("result retrieval is unavailable for this Run")),
+                );
+              }
+              if (fixture.resultQuery) {
+                const ref = /Full message:\s*(ponderosa:\/\/artifact\/[^\s]+)/u.exec(turnInput.prompt)?.[1];
+                if (!ref) throw new Error("result query fixture did not receive a full-message reference");
+                let cursor: string | undefined;
+                do {
+                  const result = await options.handleDynamicToolCall?.({
+                    name: "ponderosa_result",
+                    arguments: { refs: [ref], query: fixture.resultQuery, ...(cursor ? { cursor } : {}) },
+                  });
+                  if (!result) break;
+                  fixture.resultQueryResult ??= result;
+                  fixture.resultQueryResults.push(result);
+                  const parsed = result.success ? JSON.parse(result.text) as { nextCursor?: string } : {};
+                  cursor = parsed.nextCursor;
+                } while (cursor && fixture.resultQueryResults.length < 10);
+              }
+              if (fixture.attemptUnavailableResult) {
+                fixture.unavailableResult = await options.handleDynamicToolCall?.({
+                  name: "ponderosa_result",
+                  arguments: { refs: ["ponderosa://activation/not-reachable"] },
+                });
+              }
+              if (fixture.recipientFailuresRemaining > 0) {
+                fixture.recipientFailuresRemaining -= 1;
+                throw new Error("simulated provider failure after prompt submission");
+              }
             }
-            if (fixture.attemptUnavailableResult) {
-              fixture.unavailableResult = await options.handleDynamicToolCall?.({
-                name: "ponderosa_result",
-                arguments: { refs: ["ponderosa://activation/not-reachable"] },
-              });
-            }
-            if (fixture.recipientFailuresRemaining > 0) {
-              fixture.recipientFailuresRemaining -= 1;
-              throw new Error("simulated provider failure after prompt submission");
-            }
+            yield { type: "turn_done" };
           }
-          yield { type: "turn_done" };
-          await closed;
         },
       },
       startTurn: async (input) => {
-        turnInput = input;
-        startTurn();
+        turns.push({ prompt: input.prompt });
         return { turnId: `turn:${options.agentId}` };
       },
       steer: async () => ({ status: "not_active" }),
@@ -138,7 +178,7 @@ class NextRunDeliveryFixtureAdapter implements Adapter {
       isAlive: () => alive,
       close: async () => {
         alive = false;
-        finishClose();
+        turns.close();
       },
     };
     options.onRuntimeSpawned(session);
@@ -223,11 +263,12 @@ describe("Communication V4 next-run delivery provider path", () => {
   });
 
   it.each([
-    { label: "ordinary", historyCount: 0, textSize: 20, expected: [] },
-    { label: "result reference", historyCount: 0, textSize: 8_000, expected: ["ponderosa_result"] },
-    { label: "older context", historyCount: 41, textSize: 20, expected: ["ponderosa_context"] },
-    { label: "both references", historyCount: 41, textSize: 8_000, expected: ["ponderosa_result", "ponderosa_context"] },
-  ])("compiles the exact conditional retrieval tools for a $label Run", async ({ historyCount, textSize, expected }) => {
+    { label: "ordinary", historyCount: 0, historyTextSize: 20, textSize: 20, expected: [] },
+    { label: "result reference", historyCount: 0, historyTextSize: 20, textSize: 12_000, expected: ["ponderosa_result"] },
+    { label: "row-bounded older context", historyCount: 41, historyTextSize: 20, textSize: 20, expected: ["ponderosa_context"] },
+    { label: "character-bounded older context", historyCount: 20, historyTextSize: 2_000, textSize: 20, expected: ["ponderosa_context"] },
+    { label: "both references", historyCount: 41, historyTextSize: 20, textSize: 12_000, expected: ["ponderosa_result", "ponderosa_context"] },
+  ])("compiles exact retrieval references for a $label Run", async ({ historyCount, historyTextSize, textSize, expected }) => {
     const adapter = new NextRunDeliveryFixtureAdapter();
     const project = store.createProject({
       label: "Conditional retrieval tools",
@@ -252,12 +293,12 @@ describe("Communication V4 next-run delivery provider path", () => {
         sender: { kind: "user", userId: "local-operator" },
         intent: "user_dm",
         audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id },
-        text: `Historical message ${index}`,
+        text: `Historical message ${index} ${"h".repeat(historyTextSize)}`,
         createdAt: new Date(Date.UTC(2026, 7, 6, 0, 0, index)).toISOString(),
       });
       store.appendEvent(agent.id, {
         type: "user_message",
-        text: `Historical message ${index}`,
+        text: `Historical message ${index} ${"h".repeat(historyTextSize)}`,
         communicationEventId: eventId,
       });
     }
@@ -270,6 +311,7 @@ describe("Communication V4 next-run delivery provider path", () => {
       }],
       logger: false,
       communicationV3: { pollMs: 5 },
+      runtimeSessionScheduling: { maxIdleSessions: 1 },
     });
 
     const response = await app.inject({
@@ -285,11 +327,102 @@ describe("Communication V4 next-run delivery provider path", () => {
     await waitFor(() => adapter.recipientPrompt !== undefined);
     const conditional = adapter.dynamicToolNames.filter((name) =>
       name === "ponderosa_result" || name === "ponderosa_context");
-    expect(conditional).toEqual(expected);
-    expect(adapter.recipientPrompt!.includes("OLDER SCOPED CONTEXT")).toBe(historyCount > 40);
+    expect(conditional).toEqual(["ponderosa_result", "ponderosa_context"]);
+    expect(adapter.recipientPrompt!.includes("OLDER SCOPED CONTEXT"))
+      .toBe(expected.includes("ponderosa_context"));
+    expect(
+      adapter.recipientPrompt!.includes("fullResultRef: ponderosa://activation/") ||
+      adapter.recipientPrompt!.includes("Full message: ponderosa://artifact/"),
+    )
+      .toBe(expected.includes("ponderosa_result"));
+    expect(adapter.recipientPrompt!.includes("ponderosa_result is authorized"))
+      .toBe(expected.includes("ponderosa_result"));
+    expect(adapter.recipientPrompt!.includes("ponderosa_context is authorized"))
+      .toBe(expected.includes("ponderosa_context"));
   });
 
-  it("rolls the provider session safely across false→true→false result availability", async () => {
+  it("authorizes result retrieval for a pinned generated artifact and a retained session artifact", async () => {
+    const adapter = new NextRunDeliveryFixtureAdapter();
+    const project = store.createProject({
+      label: "Pinned and retained retrieval",
+      hostPath: repoDir,
+      defaultEngine: adapter.id,
+    });
+    const conversationId = project.lastConversationId!;
+    const agent = store.createAgent(project.id, {
+      title: "Artifact recipient",
+      engine: adapter.id,
+      conversationId,
+    });
+    const generatedPath = "generated/pinned-reference.txt";
+    const publication = publishManagedArtifactContent(
+      dataDir,
+      project.id,
+      "pinned-reference",
+      "pinned evidence",
+    );
+    const pinnedArtifact = {
+      id: "pinned-reference",
+      projectId: project.id,
+      agentId: agent.id,
+      originAgentId: agent.id,
+      executionId: "pinned-source-run",
+      kind: "generated_file" as const,
+      path: generatedPath,
+      sourcePath: "pinned-reference.txt",
+      summary: "pinned-reference.txt",
+      createdAt: "2026-08-07T00:00:00.000Z",
+      mediaType: "text/plain",
+      size: Buffer.byteLength("pinned evidence"),
+      visibility: "published",
+      sha256: publication.sha256,
+      pinned: true,
+    };
+    new AssetStore(dataDir).registerPublishedGeneratedArtifact(pinnedArtifact, publication);
+    store.recordProjectArtifact(pinnedArtifact);
+    expect(store.getProjectContextArtifacts(project.id)).toContainEqual(
+      expect.objectContaining({ id: "pinned-reference", pinned: true }),
+    );
+    adapter.publisherId = "not-this-agent";
+    adapter.recipientId = agent.id;
+    adapter.probeResultAuthorization = true;
+    app = createServer({
+      dataDir,
+      store,
+      engines: [{
+        adapter,
+        authStatus: async () => ({ authenticated: true, detail: "test subscription" }),
+      }],
+      logger: false,
+      communicationV3: { pollMs: 5 },
+      runtimeSessionScheduling: { maxIdleSessions: 1 },
+    });
+    const submit = async (text: string, expectedTurns: number) => {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/conversations/${conversationId}/direct-messages`,
+        payload: {
+          text,
+          recipients: [{ agentId: agent.id }],
+          idempotencyKey: randomUUID(),
+        },
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      await waitFor(() => adapter.recipientPrompts.length === expectedTurns);
+    };
+
+    await submit("Read the pinned Project context.", 1);
+    expect(adapter.recipientPrompts[0]).toContain("ponderosa_result is authorized");
+    await submit("x".repeat(12_000), 2);
+    expect(adapter.recipientPrompts[1]).toContain("Full message: ponderosa://artifact/");
+    await submit("Continue with the retained source.", 3);
+    expect(adapter.recipientPrompts[2]).not.toContain("Full message: ponderosa://artifact/");
+    expect(adapter.recipientPrompts[2]).toContain("ponderosa_result is authorized");
+    expect(adapter.resultAuthorizationHistory).toEqual([true, true, true]);
+    expect(adapter.dynamicToolHistory).toHaveLength(1);
+  });
+
+  it("reuses one immutable provider session while exact result authorization flips false→true→false", async () => {
     const adapter = new NextRunDeliveryFixtureAdapter();
     const project = store.createProject({
       label: "Alternating result availability",
@@ -304,6 +437,7 @@ describe("Communication V4 next-run delivery provider path", () => {
     });
     adapter.publisherId = "not-this-agent";
     adapter.recipientId = agent.id;
+    adapter.probeResultAuthorization = true;
     app = createServer({
       dataDir,
       store,
@@ -313,8 +447,9 @@ describe("Communication V4 next-run delivery provider path", () => {
       }],
       logger: false,
       communicationV3: { pollMs: 5 },
+      runtimeSessionScheduling: { maxIdleSessions: 1 },
     });
-    const submit = async (text: string, expectedSessions: number) => {
+    const submit = async (text: string, expectedTurns: number) => {
       const response = await app.inject({
         method: "POST",
         url: `/api/conversations/${conversationId}/direct-messages`,
@@ -325,16 +460,29 @@ describe("Communication V4 next-run delivery provider path", () => {
         },
       });
       expect(response.statusCode, response.body).toBe(200);
-      await waitFor(() => adapter.dynamicToolHistory.length === expectedSessions);
+      await waitFor(() => adapter.recipientPrompts.length === expectedTurns);
     };
 
     await submit("ordinary", 1);
-    await submit("x".repeat(8_000), 2);
+    const coordination = new CoordinationV3Store(store.sqlite);
+    coordination.enqueueMessageActivation({
+      projectId: project.id,
+      agentId: agent.id,
+      scopeKey: `conversation:${conversationId}`,
+      messageId: "structured-overflow-result-reference",
+      kind: "ordinary",
+      payload: { text: "x".repeat(30_000) },
+    });
+    await waitFor(() => adapter.recipientPrompts.length === 2);
     await submit("ordinary again", 3);
 
-    expect(adapter.dynamicToolHistory.map((tools) => tools.includes("ponderosa_result")))
-      .toEqual([false, true, false]);
-    expect(adapter.resumeSessionIds).toEqual([undefined, undefined, undefined]);
+    expect(adapter.dynamicToolHistory).toHaveLength(1);
+    expect(adapter.dynamicToolHistory[0]).toEqual(expect.arrayContaining([
+      "ponderosa_result",
+      "ponderosa_context",
+    ]));
+    expect(adapter.resumeSessionIds).toEqual([undefined]);
+    expect(adapter.resultAuthorizationHistory).toEqual([false, true, false]);
   });
 
   it("keeps a UTF-8-bounded operator prefix and retrieves literal query excerpts from the durable full message", async () => {
@@ -447,7 +595,7 @@ describe("Communication V4 next-run delivery provider path", () => {
     await waitFor(() => adapter.unavailableResult !== undefined);
     expect(adapter.unavailableResult).toEqual({
       success: false,
-      text: "Unavailable Ponderosa tool for this Run: ponderosa_result",
+      text: JSON.stringify({ error: "result retrieval is unavailable for this Run" }),
     });
   });
 
@@ -495,8 +643,8 @@ describe("Communication V4 next-run delivery provider path", () => {
     await waitFor(() => Boolean(adapter.deliveryResult));
     expect(adapter.dynamicToolNames).toContain("ponderosa_message");
     expect(adapter.dynamicToolNames).not.toContain("ponderosa_signal");
-    expect(adapter.dynamicToolNames).not.toContain("ponderosa_result");
-    expect(adapter.dynamicToolNames).not.toContain("ponderosa_context");
+    expect(adapter.dynamicToolNames).toContain("ponderosa_result");
+    expect(adapter.dynamicToolNames).toContain("ponderosa_context");
     expect(adapter.deliveryResult, adapter.deliveryResult?.text).toMatchObject({ success: true });
     const published = JSON.parse(adapter.deliveryResult!.text) as {
       delivery: "next_run";

@@ -671,6 +671,7 @@ export function registerAgentMessageRunRoute(
         systemPrompt,
         runtimeSessionContractHash: effectiveRuntimeSessionContractHash,
         availableRuntimeTools,
+        availableRuntimeToolNames,
         prompt,
         freshPrompt,
         providerSessionDisposition,
@@ -804,7 +805,7 @@ export function registerAgentMessageRunRoute(
         mentionDepth: mentionDepth ?? 0,
         mentionTrail,
         reachableArtifactIds: manifestArtifactIds,
-        availableToolNames: availableRuntimeTools.map((tool) => tool.name),
+        availableToolNames: availableRuntimeToolNames,
         ...(sharedTaskTurn ? { plainSharedReply: true } : {}),
         ...(defaultReply ? { defaultReply } : {}),
       });

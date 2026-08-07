@@ -52,23 +52,6 @@ class BehavioralAdapter implements Adapter {
   }
 }
 
-class MissingRolloverHandoffAdapter extends BehavioralAdapter {
-  override async *seed(options: SeedOptions): AsyncIterable<AgentEvent> {
-    this.seedCalls += 1;
-    this.seedOptions.push(options);
-    yield { type: "session", sessionId: "missing-handoff-session" };
-    yield {
-      type: "context_usage",
-      providerSessionId: "missing-handoff-session",
-      providerSessionGeneration: "missing-handoff-generation",
-      usedTokens: 80_000,
-      aggregateTokens: 10_000_000,
-      windowTokens: 200_000,
-    };
-    yield { type: "turn_done" };
-  }
-}
-
 class CrossChatPersistentAdapter implements Adapter {
   readonly id = "codex";
   readonly displayName = "Cross-chat persistent adapter";
@@ -129,12 +112,44 @@ class CrossChatPersistentAdapter implements Adapter {
   }
 }
 
+class FixtureTurnQueue {
+  private queued: Array<{ prompt: string }> = [];
+  private waiter: ((turn: { prompt: string } | undefined) => void) | undefined;
+  private closed = false;
+
+  push(turn: { prompt: string }): void {
+    if (this.closed) throw new Error("fixture runtime is closed");
+    if (this.waiter) {
+      const waiter = this.waiter;
+      this.waiter = undefined;
+      waiter(turn);
+    } else {
+      this.queued.push(turn);
+    }
+  }
+
+  next(): Promise<{ prompt: string } | undefined> {
+    const queued = this.queued.shift();
+    if (queued) return Promise.resolve(queued);
+    if (this.closed) return Promise.resolve(undefined);
+    return new Promise((resolve) => { this.waiter = resolve; });
+  }
+
+  close(): void {
+    this.closed = true;
+    this.waiter?.(undefined);
+    this.waiter = undefined;
+  }
+}
+
 class ManualRolloverPersistentAdapter implements Adapter {
   readonly id = "codex";
   readonly displayName = "Manual rollover persistent adapter";
   readonly trustedSystemPromptChannel = "developer" as const;
   openCount = 0;
   handoffEmissions = 0;
+  prompts: string[] = [];
+  readonly sourceAnswer = "The ordinary source answer completed before the deferred handoff Run.";
   readonly handoff = Array.from({ length: 300 }, (_, index) => `handoff-${index + 1}`).join(" ");
 
   listModels() { return [{ id: "test-model", label: "Test model" }]; }
@@ -151,10 +166,7 @@ class ManualRolloverPersistentAdapter implements Adapter {
     const generation = this.openCount === 1 ? "manual-old-generation" : "manual-fresh-generation";
     const sessionId = this.openCount === 1 ? "manual-old-session" : "manual-fresh-session";
     const shouldRequestRollover = this.openCount === 1;
-    let started!: () => void;
-    const startedPromise = new Promise<void>((resolve) => { started = resolve; });
-    let closed!: () => void;
-    const closedPromise = new Promise<void>((resolve) => { closed = resolve; });
+    const turns = new FixtureTurnQueue();
     let alive = true;
     const fixture = this;
     const session: RuntimeSession = {
@@ -162,34 +174,42 @@ class ManualRolloverPersistentAdapter implements Adapter {
       events: {
         async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
           yield { type: "session", sessionId };
-          await startedPromise;
-          if (shouldRequestRollover) {
-            fixture.handoffEmissions += 1;
-            yield {
-              type: "context_usage",
-              providerSessionId: sessionId,
-              providerSessionGeneration: generation,
-              usedTokens: 80_000,
-              aggregateTokens: 10_000_000,
-              windowTokens: 200_000,
-            };
-            yield { type: "text", delta: fixture.handoff };
-          } else {
-            yield {
-              type: "context_usage",
-              providerSessionId: sessionId,
-              providerSessionGeneration: generation,
-              usedTokens: 20_000,
-              aggregateTokens: 120_000,
-              windowTokens: 200_000,
-            };
+          let turnIndex = 0;
+          while (alive) {
+            const turn = await turns.next();
+            if (!turn) break;
+            turnIndex += 1;
+            if (shouldRequestRollover && turnIndex === 1) {
+              yield {
+                type: "context_usage",
+                providerSessionId: sessionId,
+                providerSessionGeneration: generation,
+                usedTokens: 80_000,
+                aggregateTokens: 10_000_000,
+                windowTokens: 200_000,
+              };
+              yield { type: "text", delta: fixture.sourceAnswer };
+            } else if (shouldRequestRollover) {
+              expect(turn.prompt).toContain("300–500-word");
+              fixture.handoffEmissions += 1;
+              yield { type: "text", delta: fixture.handoff };
+            } else {
+              yield {
+                type: "context_usage",
+                providerSessionId: sessionId,
+                providerSessionGeneration: generation,
+                usedTokens: 20_000,
+                aggregateTokens: 120_000,
+                windowTokens: 200_000,
+              };
+            }
+            yield { type: "turn_done" };
           }
-          yield { type: "turn_done" };
-          await closedPromise;
         },
       },
-      startTurn: async () => {
-        started();
+      startTurn: async (input) => {
+        fixture.prompts.push(input.prompt);
+        turns.push({ prompt: input.prompt });
         return { turnId: `${generation}-turn` };
       },
       contextUsage: () => ({
@@ -203,7 +223,7 @@ class ManualRolloverPersistentAdapter implements Adapter {
       isAlive: () => alive,
       close: async () => {
         alive = false;
-        closed();
+        turns.close();
       },
     };
     options.onRuntimeSpawned(session);
@@ -237,10 +257,7 @@ class ManagedRequestRolloverAdapter implements Adapter {
     const source = this.openCount === 1;
     const sessionId = source ? "managed-source-session" : "managed-replacement-session";
     const generation = source ? "managed-source-generation" : "managed-replacement-generation";
-    let started!: () => void;
-    const startedPromise = new Promise<void>((resolve) => { started = resolve; });
-    let closed!: () => void;
-    const closedPromise = new Promise<void>((resolve) => { closed = resolve; });
+    const turns = new FixtureTurnQueue();
     let alive = true;
     const fixture = this;
     const session: RuntimeSession = {
@@ -248,35 +265,41 @@ class ManagedRequestRolloverAdapter implements Adapter {
       events: {
         async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
           yield { type: "session", sessionId };
-          await startedPromise;
-          if (source) {
-            fixture.handoffEmissions += 1;
-            yield {
-              type: "context_usage",
-              providerSessionId: sessionId,
-              providerSessionGeneration: generation,
-              usedTokens: 80_000,
-              aggregateTokens: 10_000_000,
-              windowTokens: 200_000,
-            };
-            yield { type: "text", delta: fixture.handoff };
-          } else {
-            yield {
-              type: "context_usage",
-              providerSessionId: sessionId,
-              providerSessionGeneration: generation,
-              usedTokens: 20_000,
-              aggregateTokens: 120_000,
-              windowTokens: 200_000,
-            };
-            yield { type: "text", delta: fixture.result };
+          let turnIndex = 0;
+          while (alive) {
+            const turn = await turns.next();
+            if (!turn) break;
+            turnIndex += 1;
+            if (source && turnIndex === 1) {
+              yield {
+                type: "context_usage",
+                providerSessionId: sessionId,
+                providerSessionGeneration: generation,
+                usedTokens: 80_000,
+                aggregateTokens: 10_000_000,
+                windowTokens: 200_000,
+              };
+            } else if (source) {
+              expect(turn.prompt).toContain("300–500-word");
+              fixture.handoffEmissions += 1;
+              yield { type: "text", delta: fixture.handoff };
+            } else {
+              yield {
+                type: "context_usage",
+                providerSessionId: sessionId,
+                providerSessionGeneration: generation,
+                usedTokens: 20_000,
+                aggregateTokens: 120_000,
+                windowTokens: 200_000,
+              };
+              yield { type: "text", delta: fixture.result };
+            }
+            yield { type: "turn_done" };
           }
-          yield { type: "turn_done" };
-          await closedPromise;
         },
       },
-      startTurn: async () => {
-        started();
+      startTurn: async (input) => {
+        turns.push({ prompt: input.prompt });
         return { turnId: `${generation}-turn` };
       },
       contextUsage: () => ({
@@ -290,7 +313,7 @@ class ManagedRequestRolloverAdapter implements Adapter {
       isAlive: () => alive,
       close: async () => {
         alive = false;
-        closed();
+        turns.close();
       },
     };
     options.onRuntimeSpawned(session);
@@ -442,10 +465,7 @@ class ManagedRequestRolloverRecoveryAdapter implements Adapter {
     this.openCount += 1;
     const stage = this.openCount;
     const sessionId = `managed-recovery-session-${stage}`;
-    let started!: () => void;
-    const startedPromise = new Promise<void>((resolve) => { started = resolve; });
-    let closed!: () => void;
-    const closedPromise = new Promise<void>((resolve) => { closed = resolve; });
+    const turns = new FixtureTurnQueue();
     let alive = true;
     const fixture = this;
     const session: RuntimeSession = {
@@ -453,34 +473,41 @@ class ManagedRequestRolloverRecoveryAdapter implements Adapter {
       events: {
         async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
           yield { type: "session", sessionId };
-          await startedPromise;
-          if (stage === 1) {
-            fixture.handoffEmissions += 1;
-            yield {
-              type: "context_usage",
-              providerSessionId: sessionId,
-              providerSessionGeneration: `managed-recovery-generation-${stage}`,
-              usedTokens: 80_000,
-              aggregateTokens: 10_000_000,
-              windowTokens: 200_000,
-            };
-            yield { type: "text", delta: fixture.handoff };
-          } else if (stage === 2) {
-            yield {
-              type: "error",
-              message: "replacement provider failed after accepting the exact handoff",
-            };
-          } else {
-            yield { type: "text", delta: fixture.result };
-            yield { type: "turn_done" };
+          let turnIndex = 0;
+          while (alive) {
+            const turn = await turns.next();
+            if (!turn) break;
+            turnIndex += 1;
+            if (stage === 1 && turnIndex === 1) {
+              yield {
+                type: "context_usage",
+                providerSessionId: sessionId,
+                providerSessionGeneration: `managed-recovery-generation-${stage}`,
+                usedTokens: 80_000,
+                aggregateTokens: 10_000_000,
+                windowTokens: 200_000,
+              };
+              yield { type: "turn_done" };
+            } else if (stage === 1) {
+              expect(turn.prompt).toContain("300–500-word");
+              fixture.handoffEmissions += 1;
+              yield { type: "text", delta: fixture.handoff };
+              yield { type: "turn_done" };
+            } else if (stage === 2) {
+              yield {
+                type: "error",
+                message: "replacement provider failed after accepting the exact handoff",
+              };
+            } else {
+              yield { type: "text", delta: fixture.result };
+              yield { type: "turn_done" };
+            }
           }
-          if (stage === 1) yield { type: "turn_done" };
-          await closedPromise;
         },
       },
       startTurn: async (input) => {
         fixture.prompts.push(input.prompt);
-        started();
+        turns.push({ prompt: input.prompt });
         return { turnId: `managed-recovery-turn-${stage}` };
       },
       contextUsage: () => ({
@@ -494,7 +521,7 @@ class ManagedRequestRolloverRecoveryAdapter implements Adapter {
       isAlive: () => alive,
       close: async () => {
         alive = false;
-        closed();
+        turns.close();
       },
     };
     options.onRuntimeSpawned(session);
@@ -753,21 +780,38 @@ describe("server public API behavior", () => {
       error: "targeted next-run Agent binding is stale, ambiguous, or invalid",
     });
 
+    const targetedIdempotencyKey = randomUUID();
     const targeted = await app.inject({
       method: "POST",
       url: `/api/conversations/${conversationId}/messages`,
       payload: {
-        text: "#Broadcast-target Keep #release context on your next run.",
+        text: "#Broadcast-target Cafe\u0301\r\nKeep #release context on your next run.",
         recipientAgentMentions: [{
           handle: "Broadcast-target",
           agentId: broadcastAgent.id,
         }],
-        idempotencyKey: randomUUID(),
+        idempotencyKey: targetedIdempotencyKey,
         model: "test-model",
         effort: "high",
       },
     });
     expect(targeted.statusCode, targeted.body).toBe(200);
+    const canonicalRetry = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${conversationId}/messages`,
+      payload: {
+        text: "#Broadcast-target Café\nKeep #release context on your next run.",
+        recipientAgentMentions: [{
+          handle: "Broadcast-target",
+          agentId: broadcastAgent.id,
+        }],
+        idempotencyKey: targetedIdempotencyKey,
+        model: "test-model",
+        effort: "high",
+      },
+    });
+    expect(canonicalRetry.statusCode, canonicalRetry.body).toBe(200);
+    expect(canonicalRetry.json()).toMatchObject({ replayed: true });
 
     const deadline = Date.now() + 3_000;
     while (adapter.seedCalls < 1 && Date.now() < deadline) {
@@ -788,7 +832,7 @@ describe("server public API behavior", () => {
     expect(receipts.statusCode, receipts.body).toBe(200);
     expect(receipts.json()).toEqual({
       receipts: [expect.objectContaining({
-        text: "#Broadcast-target Keep #release context on your next run.",
+        text: "#Broadcast-target Café\nKeep #release context on your next run.",
         recipients: [expect.objectContaining({
           agentId: broadcastAgent.id,
           state: "pending",
@@ -1317,7 +1361,7 @@ describe("server public API behavior", () => {
     });
     expect(sent.statusCode).toBe(202);
 
-    const deadline = Date.now() + 2_000;
+    const deadline = Date.now() + 4_000;
     while (adapter.seedCalls === 0 && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
@@ -1500,21 +1544,21 @@ describe("server public API behavior", () => {
       .toBe(`#user ${adapter.responseText}`);
   });
 
-  it("fails visibly when pressure-triggered rollover ends without its required handoff", async () => {
+  it("preserves a normal answer when the pressure handoff was not acknowledged and runs the handoff separately", async () => {
     const workspace = new WorkspaceStore(dataDir);
     workspace.updatePreferences({
       contextRolloverEnabled: true,
       contextRolloverTokens: 75_000,
       contextRolloverWindowFraction: 0.7,
     });
-    const adapter = new MissingRolloverHandoffAdapter();
+    const adapter = new ManualRolloverPersistentAdapter();
     const project = store.createProject({
-      label: "Missing rollover handoff",
+      label: "Deferred rollover handoff",
       hostPath: repoDir,
       defaultEngine: "codex",
     });
     const agent = store.createAgent(project.id, {
-      title: "Handoff Probe",
+      title: "Deferred Handoff Probe",
       engine: "codex",
       conversationId: project.lastConversationId,
     });
@@ -1535,66 +1579,29 @@ describe("server public API behavior", () => {
     });
     expect(sent.statusCode, sent.body).toBe(202);
 
-    const deadline = Date.now() + 3_000;
-    let failure = store.readEvents(agent.id).find((stored) =>
-      stored.event.type === "error"
-      && stored.event.message.includes("before committing the required bounded handoff"));
-    while (!failure && Date.now() < deadline) {
+    const deadline = Date.now() + 4_000;
+    while (adapter.openCount < 2 && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 10));
-      failure = store.readEvents(agent.id).find((stored) =>
-        stored.event.type === "error"
-        && stored.event.message.includes("before committing the required bounded handoff"));
     }
-    expect(failure).toBeDefined();
-    expect(store.latestHealthObservation(agent.id)).toMatchObject({
-      status: "failed",
-      reason: "runtime_error",
-    });
+    expect(adapter.openCount).toBe(2);
+    expect(adapter.handoffEmissions).toBe(1);
+    expect(adapter.prompts.filter((prompt) => prompt.includes("300–500-word"))).toHaveLength(1);
+    const outputs = store.readEvents(agent.id).flatMap((stored) =>
+      stored.event.type === "agent_output" ? [stored.event.text] : []);
+    expect(outputs).toContain(adapter.sourceAnswer);
+    expect(outputs).not.toContain(adapter.handoff);
     const rollover = (store.sqlite.prepare(`
       SELECT id, state, last_error AS lastError FROM context_rollovers
       WHERE agent_id = ? ORDER BY rowid DESC LIMIT 1
     `).get(agent.id) as { id: string; state: string; lastError: string });
     expect(rollover).toMatchObject({
-      state: "failed",
-      lastError: expect.stringContaining("before committing the required bounded handoff"),
+      state: "completed",
+      lastError: null,
     });
-    const notifications = await app.inject({ method: "GET", url: "/api/notifications" });
-    expect(notifications.json<Array<{ dedupeKey?: string; title: string; body: string }>>())
-      .toContainEqual(expect.objectContaining({
-        dedupeKey: `context-rollover:${rollover.id}:handoff-missing`,
-        title: "Handoff Probe could not refresh context",
-        body: expect.stringContaining("Retry the task"),
-      }));
-
-    const coordination = new CoordinationV3Store(store.sqlite);
-    const retry = coordination.requestContextRollover({
-      projectId: project.id,
-      agentId: agent.id,
-      oldProviderSessionId: "missing-handoff-session",
-      providerSessionGeneration: "missing-handoff-generation",
-      detectedOccupancy: 80_000,
-      threshold: 75_000,
-      contextWindow: 200_000,
-      lowWaterMark: 45_000,
-      sourceRunId: "bounded-manual-retry",
-      sourceActivationIds: [],
-      scopeKey: `conversation:${project.lastConversationId}`,
-      conversationId: project.lastConversationId,
-    });
-    expect(retry).toMatchObject({ created: true });
-    coordination.commitContextRolloverHandoff(retry.rollover.id, "bounded-manual-retry-handoff");
-    expect(coordination.commitContextRolloverHandoff(
-      retry.rollover.id,
-      "bounded-manual-retry-handoff",
-    )).toMatchObject({ id: retry.rollover.id, state: "handoff_committed" });
-    expect(store.sqlite.prepare(`
-      SELECT COUNT(*) AS count FROM agent_activations
-      WHERE kind = 'context_rollover_handoff' AND state IN ('pending','retry_pending')
-        AND id IN (
-          SELECT activation_id FROM activation_sources
-          WHERE source_kind = 'context_rollover' AND source_id = ?
-        )
-    `).get(retry.rollover.id)).toEqual({ count: 0 });
+    const runs = store.sqlite.prepare(`
+      SELECT status FROM scheduler_runs WHERE agent_id = ? ORDER BY created_at, rowid
+    `).all(agent.id) as Array<{ status: string }>;
+    expect(runs.map((run) => run.status)).toEqual(["completed", "completed", "completed"]);
   });
 
   it("retries a failed provider generation through one bounded runtime-owned rollover handoff", async () => {
@@ -1674,7 +1681,6 @@ describe("server public API behavior", () => {
     expect(store.continuationHandoffForRollover(
       agent.id,
       attempts[1]!.handoffEventId!,
-      attempts[1]!.sourceRunId,
     )?.text).toBe(adapter.handoff);
     expect(store.sqlite.prepare(`
       SELECT COUNT(*) AS count FROM agent_activations
@@ -1755,8 +1761,8 @@ describe("server public API behavior", () => {
     const schedulerRuns = store.sqlite.prepare(`
       SELECT id, status FROM scheduler_runs WHERE agent_id = ? ORDER BY created_at, rowid
     `).all(worker.id) as Array<{ id: string; status: string }>;
-    expect(schedulerRuns.map((run) => run.status)).toEqual(["completed", "completed"]);
-    const replacementRun = schedulerRuns[1]!;
+    expect(schedulerRuns.map((run) => run.status)).toEqual(["completed", "completed", "completed"]);
+    const replacementRun = schedulerRuns[2]!;
     expect(coordination.requestIdsAttachedToRun(replacementRun.id, worker.id))
       .toEqual(["managed-rollover-request"]);
     const replacementActivationIds = coordination.activationIdsAttachedToRun(
@@ -1784,7 +1790,7 @@ describe("server public API behavior", () => {
     });
     expect(store.getRuns(worker.id).filter((run) =>
       schedulerRuns.some((schedulerRun) => schedulerRun.id === run.id))
-      .map((run) => run.wakeCause)).toEqual(["coordination", "coordination"]);
+      .map((run) => run.wakeCause)).toEqual(["coordination", "coordination", "coordination"]);
   });
 
   it.each(["error", "completed"] as const)(

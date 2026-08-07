@@ -4889,6 +4889,8 @@ describe("CoordinationV3Store scheduler", () => {
       runId: steering.runId,
       fencingToken: steering.fencingToken,
     });
+    expect(store.promptInjectionForActivation(sourceRun.runId, steering.activationIds[0]!))
+      .toMatchObject({ id: steering.injectionId, kind: "steer", state: "acknowledged" });
 
     store.commitContextRolloverHandoff(requested.rollover.id, "handoff-event", "2026-08-01T12:00:03.000Z");
     store = new CoordinationV3Store(opened.client);
@@ -4945,6 +4947,116 @@ describe("CoordinationV3Store scheduler", () => {
       20_000,
       "2026-08-01T12:00:10.000Z",
     )).toMatchObject({ state: "completed", replacementSessionId: "fresh-session" });
+  });
+
+  it("runs an unacknowledged pressure handoff separately without admitting unrelated work", () => {
+    const now = "2026-08-01T12:30:00.000Z";
+    store.enqueueMessageActivation({
+      projectId,
+      agentId: recipientA,
+      scopeKey: `conversation:${conversationId}`,
+      messageId: "deferred-rollover-source",
+      kind: "ordinary",
+      payload: { text: "Finish the current boundary first" },
+      now,
+    });
+    const sourceRun = store.leaseNextRun({ workerId: "source-worker", now })!;
+    acknowledgeLease(sourceRun);
+    const rollover = store.requestContextRollover({
+      projectId,
+      agentId: recipientA,
+      oldProviderSessionId: "deferred-old-session",
+      providerSessionGeneration: "deferred-generation",
+      detectedOccupancy: 80_000,
+      threshold: 75_000,
+      lowWaterMark: 45_000,
+      sourceRunId: sourceRun.runId,
+      sourceActivationIds: sourceRun.activationIds,
+      scopeKey: `conversation:${conversationId}`,
+      conversationId,
+      now,
+    }).rollover;
+    const unrelated = store.enqueueMessageActivation({
+      projectId,
+      agentId: recipientA,
+      scopeKey: `conversation:${conversationId}`,
+      messageId: "queued-behind-rollover",
+      kind: "human",
+      payload: { text: "Wait behind the checkpoint" },
+      now: "2026-08-01T12:30:01.000Z",
+    });
+    const steering = store.leaseNextSteering({
+      workerId: "source-worker",
+      now: "2026-08-01T12:30:02.000Z",
+    })!;
+    store.preparePromptInjection({
+      injectionId: steering.injectionId,
+      runId: steering.runId,
+      fencingToken: steering.fencingToken,
+      prompt: "Create the bounded handoff",
+    });
+    store.markPromptSubmitted({
+      injectionId: steering.injectionId,
+      runId: steering.runId,
+      fencingToken: steering.fencingToken,
+    });
+    expect(store.promptInjectionForActivation(sourceRun.runId, steering.activationIds[0]!))
+      .toMatchObject({ id: steering.injectionId, state: "submitted" });
+    store.deferSteering({
+      injectionId: steering.injectionId,
+      runId: sourceRun.runId,
+      fencingToken: sourceRun.fencingToken,
+      preserveSteering: false,
+      now: "2026-08-01T12:30:03.000Z",
+    });
+    store.completeRun(sourceRun.runId, sourceRun.fencingToken, "2026-08-01T12:30:04.000Z");
+
+    const handoffRun = store.leaseNextRun({
+      workerId: "handoff-worker",
+      now: "2026-08-01T12:30:05.000Z",
+    })!;
+    expect(handoffRun.activations).toHaveLength(1);
+    expect(handoffRun.activations[0]).toMatchObject({
+      id: steering.activationIds[0],
+      kind: "context_rollover_handoff",
+      dispatchPolicy: "next_run",
+      payload: { rolloverId: rollover.id },
+    });
+    expect(handoffRun.activationIds).not.toContain(unrelated);
+    store.preparePromptInjection({
+      injectionId: handoffRun.injectionId,
+      runId: handoffRun.runId,
+      fencingToken: handoffRun.fencingToken,
+      prompt: "Create the bounded handoff in a dedicated Run",
+    });
+    store.markPromptSubmitted({
+      injectionId: handoffRun.injectionId,
+      runId: handoffRun.runId,
+      fencingToken: handoffRun.fencingToken,
+      now: "2026-08-01T12:30:06.000Z",
+    });
+    expect(store.promptInjectionForActivation(
+      handoffRun.runId,
+      handoffRun.activationIds[0]!,
+    )).toMatchObject({ kind: "turn", state: "submitted" });
+    store.deferSteering({
+      injectionId: handoffRun.injectionId,
+      runId: handoffRun.runId,
+      fencingToken: handoffRun.fencingToken,
+      preserveSteering: false,
+      now: "2026-08-01T12:30:07.000Z",
+    });
+    store.completeRun(
+      handoffRun.runId,
+      handoffRun.fencingToken,
+      "2026-08-01T12:30:08.000Z",
+    );
+    const retriedHandoffRun = store.leaseNextRun({
+      workerId: "handoff-retry-worker",
+      now: "2026-08-01T12:30:09.000Z",
+    })!;
+    expect(retriedHandoffRun.activationIds).toEqual(handoffRun.activationIds);
+    expect(retriedHandoffRun.activationIds).not.toContain(unrelated);
   });
 
   it("transfers one managed Request and Join through rollover without replaying its source Activation", () => {

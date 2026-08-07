@@ -931,8 +931,6 @@ app.server.on("upgrade", linkPreviewUpgrade);
     workspace,
     engines,
     activeRuns,
-    agentMessageCapabilities,
-    scheduledSessionRollovers,
     launcherNow,
     launcherRandomToken,
     launcherBootstrapTtlMs,
@@ -951,7 +949,6 @@ app.server.on("upgrade", linkPreviewUpgrade);
     deploymentDrainSnapshot,
     drainDeploymentIdleAuthorities,
     refreshTriggerSources: () => triggerSources.refresh(),
-    capabilityOwnsAuthoritativeRun,
     runtimeStatus,
   });
 

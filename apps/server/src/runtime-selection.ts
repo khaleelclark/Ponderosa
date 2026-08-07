@@ -27,7 +27,7 @@ export function providerDynamicTools(
 }
 
 function communicationV3Prompt(
-  availability: ConditionalRetrievalAvailability = ALL_RETRIEVAL_TOOLS,
+  _availability: ConditionalRetrievalAvailability = ALL_RETRIEVAL_TOOLS,
 ): string[] {
   return [
     "Your ordinary runtime response is Work log only; use a Ponderosa capability when another participant needs the result.",
@@ -46,12 +46,8 @@ function communicationV3Prompt(
     "A terminal Request result is the final handoff. Do not send a duplicate message or acknowledgment afterward.",
     "Do not poll or sleep. End the turn after creating a Join when no independent work remains.",
     "Live Team identities are retrievable with ponderosa_team_directory.",
-    ...(availability.result ? [
-      "This Run has a retrievable omitted or artifact result reference. Use ponderosa_result({refs:[ref],query:\"distinctive literal\"}) for targeted excerpts, or omit query for bounded full-content pages; continue only with the returned nextCursor.",
-    ] : []),
-    ...(availability.context ? [
-      "This Run has older scoped canonical context available through ponderosa_context. Retrieve it only when the bounded input is insufficient.",
-    ] : []),
+    "Use ponderosa_result only when this Run's bounded input advertises a retrievable activation or artifact reference; the server rejects references outside the exact Run capability. Pass query for targeted literal excerpts, or omit it for bounded full-content pages.",
+    "Use ponderosa_context only when this Run includes the OLDER SCOPED CONTEXT reference; the server rejects it otherwise.",
     "Visible workers/reviewers/Agents are created only with ponderosa_create_managed_agent. Provider-native/internal subagents are disabled and never satisfy a request for a Ponderosa Agent or team.",
     "Discover stable teammate IDs with ponderosa_team_directory({}).",
   ];

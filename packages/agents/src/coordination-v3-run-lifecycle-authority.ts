@@ -157,6 +157,24 @@ export class CoordinationV3RunLifecycleAuthority {
     return row ? JSON.parse(row.activation_ids_json) as string[] : [];
   }
 
+  promptInjectionForActivation(
+    runId: string,
+    activationId: string,
+  ): { id: string; kind: "turn" | "steer"; state: string } | undefined {
+    return this.sqlite.prepare(`
+      SELECT injection.id, injection.kind, injection.state
+      FROM scheduler_prompt_injections injection,
+        json_each(injection.activation_ids_json) activation
+      WHERE injection.run_id = ? AND activation.value = ?
+      ORDER BY injection.sequence DESC, injection.created_at DESC
+      LIMIT 1
+    `).get(runId, activationId) as {
+      id: string;
+      kind: "turn" | "steer";
+      state: string;
+    } | undefined;
+  }
+
   markPromptSubmitted(input: {
     injectionId: string;
     runId: string;
@@ -863,7 +881,7 @@ export class CoordinationV3RunLifecycleAuthority {
       ...new Map(
         [...rows, ...continuationRows].map((row) => [row.id, row]),
       ).values(),
-    ].filter((row) => !this.requestOwnedByCommittedRollover(
+    ].filter((row) => !this.requestOwnedByActiveRollover(
       row.id,
       runId,
     ));
@@ -887,7 +905,7 @@ export class CoordinationV3RunLifecycleAuthority {
     }
   }
 
-  private requestOwnedByCommittedRollover(
+  private requestOwnedByActiveRollover(
     requestId: string,
     sourceRunId: string,
   ): boolean {
@@ -906,8 +924,8 @@ export class CoordinationV3RunLifecycleAuthority {
       LEFT JOIN coordination_joins join_record
         ON source.source_kind = 'join' AND join_record.id = source.source_id
       WHERE rollover.source_run_id = source_run.id
-        AND rollover.state IN ('handoff_committed','session_retiring','continuation_ready')
-        AND rollover.handoff_event_id IS NOT NULL
+        AND rollover.state IN ('requested','handoff_committed','session_retiring','continuation_ready')
+        AND (rollover.state = 'requested' OR rollover.handoff_event_id IS NOT NULL)
         AND rollover.agent_id = source_run.agent_id
         AND rollover.project_id = source_run.project_id
         AND source_activation.agent_id = source_run.agent_id

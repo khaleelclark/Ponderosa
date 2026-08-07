@@ -941,6 +941,14 @@ export class CoordinationV3Store {
     return this.runLifecycleAuthority.activationIdsForInjection(injectionId, runId);
   }
 
+  promptInjectionForActivation(runId: string, activationId: string): {
+    id: string;
+    kind: "turn" | "steer";
+    state: string;
+  } | undefined {
+    return this.runLifecycleAuthority.promptInjectionForActivation(runId, activationId);
+  }
+
   markPromptSubmitted(input: {
     injectionId: string; runId: string; fencingToken: number; providerSessionId?: string; now?: string;
   }): void {

@@ -22,7 +22,6 @@ export const AGENT_API_ROUTES = [
   { path: "/api/agent-management", match: "exact", audience: "agent" },
   { path: "/api/agent-directory", match: "exact", audience: "agent" },
   { path: "/api/agent-context", match: "exact", audience: "agent" },
-  { path: "/api/agent-session/rollover", match: "exact", audience: "agent" },
   { path: "/api/agent-documents/", match: "prefix", audience: "agent" },
   {
     path: "/api/agent-trigger-occurrences/",

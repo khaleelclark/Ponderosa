@@ -50,7 +50,7 @@ export abstract class AgentEventSessionFacade {
   continuationHandoffForRollover(
     agentId: string,
     handoffId: string,
-    sourceExecutionId: string,
+    sourceExecutionId?: string,
   ): {
     id: string;
     executionId: string;

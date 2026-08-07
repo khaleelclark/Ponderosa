@@ -128,7 +128,10 @@ export class AgentEventSessionAuthority {
   continuationHandoffForRollover(
     agentId: string,
     handoffId: string,
-    sourceExecutionId: string,
+    // The rollover row and Agent are already authority-bound by the caller.
+    // A dedicated handoff Run intentionally has a different execution ID from
+    // the pressure-detecting source Run, so that source is optional here.
+    sourceExecutionId?: string,
   ): {
     id: string; executionId: string; text: string; createdAt: string; consumedAt?: string;
   } | undefined {
@@ -136,7 +139,9 @@ export class AgentEventSessionAuthority {
       .where(and(
         eq(continuationHandoffs.id, handoffId),
         eq(continuationHandoffs.agentId, agentId),
-        eq(continuationHandoffs.sourceExecutionId, sourceExecutionId),
+        ...(sourceExecutionId
+          ? [eq(continuationHandoffs.sourceExecutionId, sourceExecutionId)]
+          : []),
       ))
       .get();
     return row ? {
