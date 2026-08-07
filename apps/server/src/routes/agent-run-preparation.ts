@@ -66,6 +66,7 @@ interface PrepareAgentRunInput {
   v3InjectionId: string | undefined;
   v3FreshProviderSession: boolean | undefined;
   v3ActivationPrompt: string | undefined;
+  v3ActivationResultRefs: boolean | undefined;
   effectiveModel: string | undefined;
   effectiveEffort: string | undefined;
   messageAttachments: AssetDto[];
@@ -206,6 +207,7 @@ export async function prepareAgentRun(
     v3InjectionId,
     v3FreshProviderSession,
     v3ActivationPrompt,
+    v3ActivationResultRefs,
     effectiveModel,
     effectiveEffort,
     messageAttachments,
@@ -753,8 +755,7 @@ export async function prepareAgentRun(
     retainedArtifactIds: [],
   });
   const hasActivationResultReference = Boolean(
-    manifestActivationIds.length &&
-    v3ActivationPrompt?.includes("\n- activationResultRefs: true\n"),
+    manifestActivationIds.length && v3ActivationResultRefs,
   );
   const retrievalAvailability = {
     context: mergedPrivateHistory.hasMore ||

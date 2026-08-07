@@ -214,6 +214,8 @@ export function registerAgentMessageRunRoute(
       v3FreshProviderSession?: boolean;
       /** Server-only durable activation bundle assembled by the scheduler. */
       v3ActivationPrompt?: string;
+      /** Server-only structured provenance for omitted Activation payloads. */
+      v3ActivationResultRefs?: boolean;
       /** Server-only canonical authored communication referenced by the activation. */
       v3CommunicationEventId?: string;
     };
@@ -229,7 +231,7 @@ export function registerAgentMessageRunRoute(
         "text", "idempotencyKey", "model", "effort", "speed", "agentMentionDepth", "agentMentionTrail", "sourceChannel",
               "shareWithOrganization", "activeRunDelivery", "sourceConversationId",
         "attachmentIds", "draftAttachmentIds", "draftId", "draftOwnerId", "v3SchedulerRunId", "v3FencingToken", "v3InjectionId",
-        "v3FreshProviderSession", "v3ActivationPrompt", "v3CommunicationEventId",
+        "v3FreshProviderSession", "v3ActivationPrompt", "v3ActivationResultRefs", "v3CommunicationEventId",
       ]);
       if (Object.keys(request.body ?? {}).some((key) => !allowedMessageFields.has(key))) {
         return reply.code(400).send({ error: "unknown message field" });
@@ -255,14 +257,17 @@ export function registerAgentMessageRunRoute(
       const v3InjectionId = request.body.v3InjectionId;
       const v3FreshProviderSession = request.body.v3FreshProviderSession;
       const v3ActivationPrompt = request.body.v3ActivationPrompt;
+      const v3ActivationResultRefs = request.body.v3ActivationResultRefs;
       const v3CommunicationEventId = request.body.v3CommunicationEventId;
       if ((v3SchedulerRunId !== undefined || v3FencingToken !== undefined || v3InjectionId !== undefined ||
           v3FreshProviderSession !== undefined || v3ActivationPrompt !== undefined ||
+          v3ActivationResultRefs !== undefined ||
           v3CommunicationEventId !== undefined) && !internalV3Dispatch) {
         return reply.code(403).send({ error: "V3 scheduler identity is server-controlled" });
       }
       if (internalV3Dispatch && (!v3SchedulerRunId || !Number.isSafeInteger(v3FencingToken) || !v3InjectionId ||
-          typeof v3FreshProviderSession !== "boolean" || !v3ActivationPrompt)) {
+          typeof v3FreshProviderSession !== "boolean" || !v3ActivationPrompt ||
+          typeof v3ActivationResultRefs !== "boolean")) {
         return reply.code(400).send({ error: "V3 scheduler run, fencing token, injection ID, and provider-session disposition are required" });
       }
       if (internalV3Dispatch) {
@@ -629,6 +634,7 @@ export function registerAgentMessageRunRoute(
         v3InjectionId,
         v3FreshProviderSession,
         v3ActivationPrompt,
+        v3ActivationResultRefs,
         effectiveModel,
         effectiveEffort,
         messageAttachments,

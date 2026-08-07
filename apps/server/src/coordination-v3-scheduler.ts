@@ -27,6 +27,11 @@ export interface CoordinationV3SchedulerMetrics {
 
 export const DISPATCH_LATENCY_SAMPLE_LIMIT = 256;
 
+export interface ActivationPromptCompilation {
+  prompt: string;
+  hasResultRefs: boolean;
+}
+
 export class CoordinationV3Scheduler {
   private timer?: NodeJS.Timeout;
   private draining = false;
@@ -48,7 +53,11 @@ export class CoordinationV3Scheduler {
 
   constructor(
     private readonly store: CoordinationV3Store,
-    private readonly dispatch: (lease: SchedulerLease, prompt: string) => Promise<CoordinationV3DispatchResult>,
+    private readonly dispatch: (
+      lease: SchedulerLease,
+      prompt: string,
+      compilation: ActivationPromptCompilation,
+    ) => Promise<CoordinationV3DispatchResult>,
     private readonly options: {
       workerId: string;
       maxConcurrentRuns?: number;
@@ -60,7 +69,11 @@ export class CoordinationV3Scheduler {
       now?: () => number;
       setTimer?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
       clearTimer?: (timer: NodeJS.Timeout) => void;
-      dispatchSteering?: (lease: SteeringLease, prompt: string) => Promise<CoordinationV3DispatchResult>;
+      dispatchSteering?: (
+        lease: SteeringLease,
+        prompt: string,
+        compilation: ActivationPromptCompilation,
+      ) => Promise<CoordinationV3DispatchResult>;
       dispatchProviderOperation?: (operation: ProviderOperation) => Promise<CoordinationV3DispatchResult>;
       /** Project authoritative SQLite outbox effects before the related
        * Activation can be leased. Handlers must be idempotent across retries. */
@@ -179,7 +192,8 @@ export class CoordinationV3Scheduler {
         while (true) {
           const steering = this.store.leaseNextSteering({ workerId: this.options.workerId, now });
           if (!steering) break;
-          const prompt = formatActivationPrompt(steering);
+          const compilation = compileActivationPrompt(steering);
+          const { prompt } = compilation;
           try {
             this.store.preparePromptInjection({
               injectionId: steering.injectionId,
@@ -195,7 +209,7 @@ export class CoordinationV3Scheduler {
           }
           let result: CoordinationV3DispatchResult;
           try {
-            result = await this.options.dispatchSteering(steering, prompt);
+            result = await this.options.dispatchSteering(steering, prompt, compilation);
           } catch (error) {
             result = { accepted: false, retryable: true, error: error instanceof Error ? error.message : String(error) };
           }
@@ -235,7 +249,8 @@ export class CoordinationV3Scheduler {
         dispatched += 1;
         this.metrics.claimedRuns += 1;
         const started = (this.options.now ?? Date.now)();
-        const prompt = formatActivationPrompt(lease);
+        const compilation = compileActivationPrompt(lease);
+        const { prompt } = compilation;
         try {
           this.store.preparePromptInjection({
             injectionId: lease.injectionId,
@@ -249,7 +264,7 @@ export class CoordinationV3Scheduler {
         }
         let result: CoordinationV3DispatchResult;
         try {
-          result = await this.dispatch(lease, prompt);
+          result = await this.dispatch(lease, prompt, compilation);
         } catch (error) {
           result = { accepted: false, retryable: true, error: error instanceof Error ? error.message : String(error) };
         }
@@ -330,6 +345,13 @@ export function formatActivationPrompt(
   lease: SchedulerLease | SteeringLease,
   limits: { maxChars?: number; maxInlineChars?: number } = {},
 ): string {
+  return compileActivationPrompt(lease, limits).prompt;
+}
+
+export function compileActivationPrompt(
+  lease: SchedulerLease | SteeringLease,
+  limits: { maxChars?: number; maxInlineChars?: number } = {},
+): ActivationPromptCompilation {
   const maxChars = Math.max(4_000, limits.maxChars ?? 24_000);
   const maxInlineChars = Math.max(500, limits.maxInlineChars ?? 6_000);
   const classOrder = { human: 0, blocker: 1, coordination: 2, ordinary: 3 } as const;
@@ -372,7 +394,7 @@ export function formatActivationPrompt(
       ] : []),
     ].join("\n");
   });
-  return [
+  const prompt = [
     "[ACTIVE WORK · SCHEDULER | AUTHORITATIVE]",
     `Run: ${lease.runId}. Prompt injection fence: ${lease.injectionId}.`,
     `After acknowledging this prompt, include steeringInjectionId:${lease.injectionId} in any ponderosa_message call.`,
@@ -394,4 +416,5 @@ export function formatActivationPrompt(
     `- activationResultRefs: ${hasOverflow}`,
     ...materialized,
   ].join("\n");
+  return { prompt, hasResultRefs: hasOverflow };
 }
