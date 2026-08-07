@@ -33,7 +33,7 @@ export interface ConversationDto {
 
 /** POST /api/projects/:id/conversations body. */
 export interface CreateConversationRequest {
-  title: string;
+  title?: string;
   defaultEngine?: EngineId;
   defaultModel?: string;
   defaultEffort?: string;

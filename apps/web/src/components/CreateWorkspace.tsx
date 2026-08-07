@@ -300,9 +300,8 @@ function ChatCreateForm({
       ? initialProjectId!
       : projects[0]?.id ?? "",
   );
-  const [title, setTitle] = useState("");
   const create = useMutation({
-    mutationFn: () => api.createConversation(projectId, { title: title.trim() }),
+    mutationFn: () => api.createConversation(projectId, {}),
     onSuccess: async conversation => {
       await api.markProjectUsed(projectId, conversation.id);
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.project(projectId) });
@@ -313,16 +312,15 @@ function ChatCreateForm({
     <Stack spacing={2.25}>
       <FormControl fullWidth>
         <InputLabel id="create-chat-project-label">Project</InputLabel>
-        <Select labelId="create-chat-project-label" label="Project" value={projectId} onChange={event => setProjectId(event.target.value)}>
+        <Select autoFocus labelId="create-chat-project-label" label="Project" value={projectId} onChange={event => setProjectId(event.target.value)}>
           {projects.map(project => <MenuItem key={project.id} value={project.id}>{project.label}</MenuItem>)}
         </Select>
       </FormControl>
-      <TextField label="Chat Name" value={title} onChange={event => setTitle(event.target.value)} autoFocus fullWidth />
       {!projects.length ? <Alert severity="info">Create a Project before creating a Chat.</Alert> : null}
       {create.isError ? <Alert severity="error">{String(create.error)}</Alert> : null}
       <Stack direction="row" spacing={1} sx={{ justifyContent: "flex-end" }}>
         <Button disabled={create.isPending} onClick={onCancel}>Cancel</Button>
-        <Button variant="contained" disabled={!projectId || !title.trim() || create.isPending} onClick={() => create.mutate()}>
+        <Button variant="contained" disabled={!projectId || create.isPending} onClick={() => create.mutate()}>
           {create.isPending ? "Creating…" : "Create Chat"}
         </Button>
       </Stack>

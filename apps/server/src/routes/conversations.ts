@@ -142,7 +142,7 @@ export function registerConversationRoutes(
 
   app.post<{
     Params: { id: string };
-    Body: { title: string; defaultEngine?: string; defaultModel?: string; defaultEffort?: string };
+    Body: { title?: string; defaultEngine?: string; defaultModel?: string; defaultEffort?: string };
   }>("/api/projects/:id/conversations", async (request, reply) => {
     const project = store.getProject(request.params.id);
     if (!project) return reply.code(404).send({ error: "project not found" });
