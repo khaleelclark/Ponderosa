@@ -554,7 +554,7 @@ export default function App({
         return;
       const target = new URL(event.data.url, window.location.origin);
       if (target.origin !== window.location.origin) return;
-      openWorkspaceRoute(parseRoute(target.pathname, target.search));
+      navigateWorkspace(parseRoute(target.pathname, target.search));
     };
     navigator.serviceWorker?.addEventListener("message", openNotificationRoute);
     return () =>
@@ -990,7 +990,7 @@ export default function App({
           projects={projects}
           notifications={notificationsQuery.data ?? []}
           onClose={() => setNotificationPanelOpen(false)}
-          onNavigate={openWorkspaceRoute}
+          onNavigate={navigateWorkspace}
           onOpenSettings={openSettings}
         />
         <ProviderStatusFlow
