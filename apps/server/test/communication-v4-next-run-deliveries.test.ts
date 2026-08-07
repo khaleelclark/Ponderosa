@@ -271,7 +271,7 @@ describe("Communication V4 next-run delivery provider path", () => {
   ])("compiles exact retrieval references for a $label Run", async ({ historyCount, historyTextSize, textSize, expected }) => {
     const adapter = new NextRunDeliveryFixtureAdapter();
     const project = store.createProject({
-      label: "Conditional retrieval tools",
+      label: "Conditionally authorized retrieval",
       hostPath: repoDir,
       defaultEngine: adapter.id,
     });
@@ -566,7 +566,7 @@ describe("Communication V4 next-run delivery provider path", () => {
     expect(secondPage.matches.every((match) => match.match === "needle[42]")).toBe(true);
   });
 
-  it("fails closed when an absent conditional tool is invoked by a stale provider client", async () => {
+  it("fails closed when absent retrieval authorization is invoked by a stale provider client", async () => {
     const adapter = new NextRunDeliveryFixtureAdapter();
     const project = store.createProject({
       label: "Absent tool fail closed",

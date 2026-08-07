@@ -241,8 +241,8 @@ export async function prepareAgentRun(
   const runId = v3SchedulerRunId ?? randomUUID();
   const historySourceLimit = MAX_SEED_HISTORY_MESSAGES + 1;
   // Snapshot the same canonical scopes used by the bounded seed before the
-  // provider session decision. Conditional tool availability must be a stable
-  // property of this compiled Run, not of an opaque provider cache.
+  // provider session decision. Retrieval authorization must be a stable
+  // property of this compiled Run, not inferred from an opaque provider cache.
   const agentPrivateHistoryPage = store.getAgentPrivateContextSourcePage(agent.id, {
     limit: historySourceLimit,
     scope: "agent_private",
