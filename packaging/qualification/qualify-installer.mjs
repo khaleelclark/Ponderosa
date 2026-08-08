@@ -118,7 +118,8 @@ try {
     if (!artifact.endsWith(".exe")) throw new Error("Windows installer qualification requires an .exe.");
     const installDirectory = path.join(disposable, "Programs", "Ponderosa Beta");
     run(artifact, ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", `/DIR=${installDirectory}`]);
-    installedRoot = installDirectory;
+    installedApplication = installDirectory;
+    installedRoot = path.join(installDirectory, "resources", "Ponderosa");
     uninstall = () => {
       const uninstaller = readdirSync(installDirectory)
         .find((name) => /^unins\d+\.exe$/iu.test(name));
