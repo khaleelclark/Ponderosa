@@ -56,7 +56,25 @@ const output = path.join(repositoryRoot, "dist", "node-runtime", target);
 mkdirSync(temporary, { recursive: true, mode: 0o700 });
 try {
   writeFileSync(archivePath, archive, { mode: 0o600 });
-  execFileSync("tar", ["-xf", archivePath, "-C", temporary], { stdio: "inherit", windowsHide: true });
+  if (platform === "win32") {
+    execFileSync("powershell.exe", [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Expand-Archive -LiteralPath $env:PONDEROSA_NODE_ARCHIVE -DestinationPath $env:PONDEROSA_NODE_DESTINATION -Force",
+    ], {
+      env: {
+        ...process.env,
+        PONDEROSA_NODE_ARCHIVE: archivePath,
+        PONDEROSA_NODE_DESTINATION: temporary,
+      },
+      stdio: "inherit",
+      windowsHide: true,
+    });
+  } else {
+    execFileSync("tar", ["-xf", archivePath, "-C", temporary], { stdio: "inherit", windowsHide: true });
+  }
   rmSync(output, { recursive: true, force: true });
   mkdirSync(output, { recursive: true });
   const executableName = platform === "win32" ? "node.exe" : "node";
