@@ -48,6 +48,10 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         AND request.conversation_id IS NOT NULL
         AND request.requester_agent_id IS NOT NULL
         AND request.communication_event_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM runtime_communications runtime_communication
+          WHERE runtime_communication.id = request.communication_event_id
+        )
         AND (
           NOT EXISTS (
             SELECT 1 FROM messages sender_projection
