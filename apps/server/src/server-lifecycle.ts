@@ -303,7 +303,10 @@ export function registerServerLifecycle(
       try {
         let rollover = initial;
         if (rollover.state === "requested") {
-          const handoff = store.continuationHandoffForRun(rollover.agentId, rollover.sourceRunId);
+          const handoff = store.continuationHandoffForContextRollover(
+            rollover.agentId,
+            rollover.id,
+          );
           if (!handoff) {
             coordinationV3.failContextRollover(
               rollover.id,

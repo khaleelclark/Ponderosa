@@ -153,6 +153,55 @@ export class AgentEventSessionAuthority {
     } : undefined;
   }
 
+  continuationHandoffForContextRollover(
+    agentId: string,
+    rolloverId: string,
+  ): {
+    id: string; executionId: string; text: string; createdAt: string; consumedAt?: string;
+  } | undefined {
+    const row = this.client.prepare(`
+      SELECT handoff.id, handoff.source_execution_id, handoff.text,
+        handoff.created_at, handoff.consumed_at
+      FROM context_rollovers rollover
+      JOIN activation_sources source
+        ON source.source_kind = 'context_rollover'
+        AND source.source_id = rollover.id
+      JOIN agent_activations activation
+        ON activation.id = source.activation_id
+        AND activation.kind = 'context_rollover_handoff'
+        AND activation.agent_id = rollover.agent_id
+      JOIN scheduler_run_activations attached
+        ON attached.activation_id = activation.id
+      JOIN provider_inputs provider
+        ON provider.scheduler_run_id = attached.run_id
+        AND provider.agent_id = rollover.agent_id
+      JOIN scheduler_prompt_injections injection
+        ON injection.run_id = attached.run_id
+        AND injection.state = 'acknowledged'
+      JOIN json_each(injection.activation_ids_json) injected_activation
+        ON injected_activation.value = activation.id
+      JOIN continuation_handoffs handoff
+        ON handoff.agent_id = rollover.agent_id
+        AND handoff.source_execution_id = provider.execution_id
+      WHERE rollover.id = ? AND rollover.agent_id = ?
+      ORDER BY handoff.created_at, handoff.id
+      LIMIT 1
+    `).get(rolloverId, agentId) as {
+      id: string;
+      source_execution_id: string;
+      text: string;
+      created_at: string;
+      consumed_at: string | null;
+    } | undefined;
+    return row ? {
+      id: row.id,
+      executionId: row.source_execution_id,
+      text: row.text,
+      createdAt: row.created_at,
+      ...(row.consumed_at ? { consumedAt: row.consumed_at } : {}),
+    } : undefined;
+  }
+
   pendingContinuationHandoff(agentId: string): {
     id: string; executionId: string; text: string; createdAt: string;
   } | undefined {
@@ -161,7 +210,18 @@ export class AgentEventSessionAuthority {
       FROM continuation_handoffs handoff
       JOIN runs source_run ON source_run.id = handoff.source_execution_id
       WHERE handoff.agent_id = ? AND handoff.consumed_at IS NULL
-        AND source_run.status = 'completed'
+        AND (
+          source_run.status = 'completed'
+          OR EXISTS (
+            SELECT 1 FROM context_rollovers committed_rollover
+            WHERE committed_rollover.handoff_event_id = handoff.id
+              AND committed_rollover.agent_id = handoff.agent_id
+              AND committed_rollover.state IN (
+                'handoff_committed', 'session_retiring',
+                'continuation_ready', 'completed'
+              )
+          )
+        )
         AND NOT EXISTS (
           SELECT 1 FROM context_rollovers rollover
           WHERE rollover.handoff_event_id = handoff.id

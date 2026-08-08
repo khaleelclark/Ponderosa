@@ -65,6 +65,22 @@ export abstract class AgentEventSessionFacade {
     );
   }
 
+  continuationHandoffForContextRollover(
+    agentId: string,
+    rolloverId: string,
+  ): {
+    id: string;
+    executionId: string;
+    text: string;
+    createdAt: string;
+    consumedAt?: string;
+  } | undefined {
+    return this.eventSession.continuationHandoffForContextRollover(
+      agentId,
+      rolloverId,
+    );
+  }
+
   pendingContinuationHandoff(agentId: string): {
     id: string;
     executionId: string;
