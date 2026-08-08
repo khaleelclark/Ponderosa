@@ -40,22 +40,30 @@ export class ProviderProcessAuthority {
       }
       return;
     }
-    this.pruneExited();
-    this.sqlite.prepare(`
-      INSERT INTO provider_process_authority (
-        id, worker_id, purpose, project_id, agent_id, run_id,
-        pid, pgid, birth_marker, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(worker_id, pid, birth_marker) DO UPDATE SET
-        purpose = excluded.purpose,
-        project_id = COALESCE(excluded.project_id, provider_process_authority.project_id),
-        agent_id = COALESCE(excluded.agent_id, provider_process_authority.agent_id),
-        run_id = COALESCE(excluded.run_id, provider_process_authority.run_id)
-    `).run(
-      randomUUID(), this.workerId, scope.purpose,
-      scope.projectId ?? null, scope.agentId ?? null, scope.runId ?? null,
-      identity.pid, identity.pgid, identity.birthMarker, new Date().toISOString(),
-    );
+    try {
+      this.pruneExited();
+      this.sqlite.prepare(`
+        INSERT INTO provider_process_authority (
+          id, worker_id, purpose, project_id, agent_id, run_id,
+          pid, pgid, birth_marker, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(worker_id, pid, birth_marker) DO UPDATE SET
+          purpose = excluded.purpose,
+          project_id = COALESCE(excluded.project_id, provider_process_authority.project_id),
+          agent_id = COALESCE(excluded.agent_id, provider_process_authority.agent_id),
+          run_id = COALESCE(excluded.run_id, provider_process_authority.run_id)
+      `).run(
+        randomUUID(), this.workerId, scope.purpose,
+        scope.projectId ?? null, scope.agentId ?? null, scope.runId ?? null,
+        identity.pid, identity.pgid, identity.birthMarker, new Date().toISOString(),
+      );
+    } catch (error) {
+      // Admission cannot continue without durable restart authority. Begin
+      // teardown immediately; the caller's in-memory authority retains the
+      // same handle and will also await/retry cleanup on the rejected open.
+      void handle.close().catch(() => undefined);
+      throw error;
+    }
   }
 
   async recoverPreviousWorkers(): Promise<number> {

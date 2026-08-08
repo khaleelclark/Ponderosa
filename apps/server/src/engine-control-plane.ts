@@ -294,12 +294,12 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     };
     engineCapabilityDiscoveryAuthorities.add(authority);
     const registerProcess = (handle: RuntimeProcessHandle): void => {
+      const state: CapabilityDiscoveryProcess = { handle };
+      authority.processes.add(state);
       providerProcessAuthority.register(handle, {
         purpose: `${adapter.id} capability discovery`,
         projectId,
       });
-      const state: CapabilityDiscoveryProcess = { handle };
-      authority.processes.add(state);
       if (isClosed() || deletingProjectIds.has(projectId) || authority.controller.signal.aborted) {
         void closeCapabilityDiscoveryProcess(state).catch((error) => {
           app.log.error({ err: error, projectId, engineId: adapter.id }, "late capability-discovery process cleanup remains pending");
@@ -500,12 +500,12 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     };
     engineModelCatalogDiscoveryAuthorities.add(authority);
     const registerProcess = (handle: RuntimeProcessHandle): void => {
+      const state: CapabilityDiscoveryProcess = { handle };
+      authority.processes.add(state);
       providerProcessAuthority.register(handle, {
         purpose: `${adapter.id} model catalog discovery`,
         projectId: project.id,
       });
-      const state: CapabilityDiscoveryProcess = { handle };
-      authority.processes.add(state);
       if (isClosed() || deletingProjectIds.has(project.id) || authority.controller.signal.aborted) {
         void closeCapabilityDiscoveryProcess(state).catch((error) => {
           app.log.error({ err: error, projectId: project.id, engineId: adapter.id }, "late model-catalog process cleanup remains pending");
@@ -583,12 +583,12 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     };
     engineModelCatalogDiscoveryAuthorities.add(authority);
     const registerProcess = (handle: RuntimeProcessHandle): void => {
+      const state: CapabilityDiscoveryProcess = { handle };
+      authority.processes.add(state);
       providerProcessAuthority.register(handle, {
         purpose: `${adapter.id} model validation`,
         projectId: project.id,
       });
-      const state: CapabilityDiscoveryProcess = { handle };
-      authority.processes.add(state);
       if (isClosed() || deletingProjectIds.has(project.id) || authority.controller.signal.aborted) {
         void closeCapabilityDiscoveryProcess(state).catch((error) => {
           app.log.error(

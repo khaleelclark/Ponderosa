@@ -548,11 +548,11 @@ export function registerWorkspaceDirectoryRoutes(
       filteredAgentIds,
     );
     const generationKeys = kind === "project"
-      ? ["projects", "conversations", "agents", "scheduler_runs", "context_rollovers"]
+      ? ["projects", "conversations"]
       : kind === "conversation"
         ? ["conversations", "projects"]
         : kind === "agent"
-          ? ["agents", "projects", "scheduler_runs", "context_rollovers"]
+          ? ["agents", "projects"]
           : ["triggers", "agents", "projects"];
     const collection = sqliteCollectionRevision(sqlite, base.sql, base.params, generationKeys);
     const revision = collection.revision;

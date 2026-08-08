@@ -90,8 +90,8 @@ export class ProviderUsageCache {
         signal: authority.controller.signal,
         timeoutMs: this.timeoutMs,
         onRuntimeSpawned: (handle) => {
-          this.registerProcess?.(handle, target.adapter.id);
           authority.processes.add(handle);
+          this.registerProcess?.(handle, target.adapter.id);
           if (this.closed || authority.controller.signal.aborted) {
             void handle.close().catch(() => undefined);
           }
