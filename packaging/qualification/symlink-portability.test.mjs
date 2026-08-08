@@ -136,6 +136,15 @@ test("Debian artifact preserves an internal relative link and omits the build-ho
     commit: "fixture",
     target: { platform: "linux", arch: "x64" },
   })}\n`);
+  const desktop = path.join(bundle, "app", "engine-desktop");
+  mkdirSync(desktop, { recursive: true });
+  writeFileSync(path.join(desktop, "package.json"), `${JSON.stringify({
+    name: "ponderosa-portability-fixture",
+    version: "0.0.0",
+    author: "Ponderosa",
+    main: "main.js",
+  })}\n`);
+  writeFileSync(path.join(desktop, "main.js"), "\n");
 
   execFileSync(process.execPath, [
     path.resolve("packaging/package-beta.mjs"),
@@ -147,7 +156,13 @@ test("Debian artifact preserves an internal relative link and omits the build-ho
   const artifact = path.join(output, "Ponderosa-0.0.0-beta.portability-linux-x64.deb");
   assert.equal(existsSync(artifact), true);
   execFileSync("dpkg-deb", ["--extract", artifact, extracted]);
-  const installedRoot = path.join(extracted, "opt", "ponderosa-beta");
+  const installedRoot = path.join(
+    extracted,
+    "opt",
+    "ponderosa-engine",
+    "resources",
+    "Ponderosa",
+  );
   const audit = auditPortableSymlinkTree(installedRoot, { label: "extracted fixture artifact" });
   const copiedTarget = readlinkSync(path.join(installedRoot, "value-link"));
 
