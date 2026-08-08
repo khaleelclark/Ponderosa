@@ -105,7 +105,7 @@ function pnpmCli() {
   for (const candidate of candidates) {
     if (!candidate || !existsSync(candidate)) continue;
     const resolved = realpathSync(candidate);
-    if (/pnpm(?:\.c?js|\.mjs)?$/iu.test(resolved)) return resolved;
+    if (/pnpm(?:\.(?:cmd|c?js|mjs))?$/iu.test(resolved)) return resolved;
   }
   throw new Error("Could not locate the pnpm CLI needed to deploy production dependencies.");
 }
@@ -213,28 +213,32 @@ const runtimeBuildEnvironment = {
   npm_node_execpath: nodeBinary,
 };
 
-execFileSync(nodeBinary, [pnpmCli(),
+function runPnpm(args) {
+  const cli = pnpmCli();
+  const javascriptCli = /\.(?:c?js|mjs)$/iu.test(cli);
+  execFileSync(javascriptCli ? nodeBinary : cli, javascriptCli ? [cli, ...args] : args, {
+    cwd: repositoryRoot,
+    stdio: "inherit",
+    env: runtimeBuildEnvironment,
+    windowsHide: true,
+    shell: process.platform === "win32" && !javascriptCli,
+  });
+}
+
+runPnpm([
   "--config.verify-deps-before-run=false",
   "--config.node-linker=hoisted",
   "--filter", "@ponderosa/server",
   "deploy", "--prod", "--legacy", serverTarget,
-], {
-  cwd: repositoryRoot,
-  stdio: "inherit",
-  env: runtimeBuildEnvironment,
-});
+]);
 
 const launcherTarget = path.join(bundleRoot, "app", "launcher");
-execFileSync(nodeBinary, [pnpmCli(),
+runPnpm([
   "--config.verify-deps-before-run=false",
   "--config.node-linker=hoisted",
   "--filter", "@ponderosa/launcher",
   "deploy", "--prod", "--legacy", launcherTarget,
-], {
-  cwd: repositoryRoot,
-  stdio: "inherit",
-  env: runtimeBuildEnvironment,
-});
+]);
 
 function removeDeployedWorkspaceSelfLink(packageTarget, packageName) {
   const selfLink = path.join(
