@@ -1,6 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
 import type { RuntimeProcessHandle, RuntimeProcessIdentity } from "@ponderosa/core";
+import { darwinProcessBirthMarker } from "@ponderosa/native-host";
 
 export interface ObservedProcessTerminationOptions {
   label: string;
@@ -107,7 +108,8 @@ export function isRestartRecoverableProcessIdentity(
   identity: RuntimeProcessIdentity,
   platform: NodeJS.Platform = process.platform,
 ): boolean {
-  return platform === "linux" && identity.birthMarker.startsWith("linux:");
+  return (platform === "linux" && /^linux:\d+$/u.test(identity.birthMarker)) ||
+    (platform === "darwin" && /^darwin:\d+:\d{1,6}$/u.test(identity.birthMarker));
 }
 
 /** Reconstitute a retryable process-group handle after daemon restart. */
@@ -146,6 +148,10 @@ function processBirthMarker(pid: number): string | undefined {
     } catch {
       return undefined;
     }
+  }
+  if (process.platform === "darwin") {
+    const marker = darwinProcessBirthMarker(pid);
+    return marker ? `darwin:${marker}` : undefined;
   }
   return undefined;
 }

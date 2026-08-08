@@ -6,6 +6,7 @@ import { Worker } from "node:worker_threads";
 
 interface NativeJobBinding {
   windowsJobObjectsSupported(): boolean;
+  darwinProcessBirthMarker(pid: number): string | null;
   createWindowsJob(): unknown;
   assignWindowsJob(job: unknown, pid: number): void;
   terminateWindowsJob(job: unknown): void;
@@ -55,6 +56,20 @@ export function windowsJobObjectsSupported(platform: NodeJS.Platform = process.p
     return binding().windowsJobObjectsSupported();
   } catch {
     return false;
+  }
+}
+
+/** High-resolution, immutable Darwin process start time from proc_pidinfo. */
+export function darwinProcessBirthMarker(
+  pid: number,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  if (platform !== "darwin" || !Number.isSafeInteger(pid) || pid <= 0) return undefined;
+  try {
+    const marker = binding().darwinProcessBirthMarker(pid);
+    return marker && /^\d+:\d{1,6}$/u.test(marker) ? marker : undefined;
+  } catch {
+    return undefined;
   }
 }
 

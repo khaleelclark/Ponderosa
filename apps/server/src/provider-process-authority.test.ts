@@ -10,6 +10,7 @@ import { recoveredRuntimeProcessHandle, runtimeProcessIdentity } from "@ponderos
 import { ProviderProcessAuthority } from "./provider-process-authority.js";
 
 const linuxTest = process.platform === "linux" ? test : test.skip;
+const darwinTest = process.platform === "darwin" ? test : test.skip;
 
 function liveDetachedProcess() {
   const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
@@ -30,6 +31,28 @@ function liveDetachedProcess() {
 }
 
 describe("durable provider process authority", () => {
+  darwinTest("admits and cancels a current-boot provider with native Darwin identity", async () => {
+    const opened = openDb(":memory:");
+    const runtime = liveDetachedProcess();
+    try {
+      expect(runtime.identity.birthMarker).toMatch(/^darwin:\d+:\d{1,6}$/u);
+      const authority = new ProviderProcessAuthority(opened.client, "server:darwin-boot");
+      expect(() => authority.register(runtime.handle, {
+        purpose: "Darwin provider smoke",
+        projectId: "project-darwin",
+        agentId: "agent-darwin",
+        runId: "run-darwin",
+      })).not.toThrow();
+      expect(runtime.handle.isAlive()).toBe(true);
+      expect(authority.count({ runId: "run-darwin" })).toBe(1);
+      expect(await authority.terminateRun("run-darwin")).toBe(1);
+      expect(runtime.handle.isAlive()).toBe(false);
+    } finally {
+      if (runtime.handle.isAlive()) await runtime.handle.close();
+      opened.client.close();
+    }
+  });
+
   linuxTest("recovers a crashed boot and qualifies cancellation plus Agent/Project deletion", async () => {
     const opened = openDb(":memory:");
     const cleanup = new Set<ReturnType<typeof liveDetachedProcess>["handle"]>();
