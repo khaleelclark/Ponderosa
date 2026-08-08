@@ -33,6 +33,10 @@ export class StaleCollectionCursorError extends Error {
   constructor(message = "stale collection cursor") { super(message); }
 }
 
+export function collectionGenerationKey(collection: string, scope: string): string {
+  return `${collection}:${scope}`;
+}
+
 interface CollectionCursor {
   v: 3;
   scope: string;

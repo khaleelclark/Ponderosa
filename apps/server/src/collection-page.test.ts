@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { describe, expect, test } from "vitest";
-import { sqliteCollectionGeneration, sqliteCollectionPage, StaleCollectionCursorError } from "./collection-page.js";
+import { openDb } from "@ponderosa/agents";
+import { collectionGenerationKey, sqliteCollectionGeneration, sqliteCollectionPage, StaleCollectionCursorError } from "./collection-page.js";
 
 describe("collection generation pagination", () => {
   test("keeps a generation stable across reads and invalidates it in O(1) after writes", () => {
@@ -40,6 +41,53 @@ describe("collection generation pagination", () => {
       })).toThrow(StaleCollectionCursorError);
     } finally {
       sqlite.close();
+    }
+  });
+
+  test("makes bounded progress while an unrelated Agent scope mutates continuously", () => {
+    const opened = openDb(":memory:");
+    try {
+      const insertProject = opened.client.prepare(`
+        INSERT INTO projects (id, label, host_path, created_at, default_engine)
+        VALUES (?, ?, ?, ?, 'codex')
+      `);
+      insertProject.run("project-a", "Project A", "/tmp/project-a", "2026-08-08T00:00:00.000Z");
+      insertProject.run("project-b", "Project B", "/tmp/project-b", "2026-08-08T00:00:00.000Z");
+      const insertAgent = opened.client.prepare(`
+        INSERT INTO agents (id, project_id, title, active_engine, created_at, updated_at)
+        VALUES (?, ?, ?, 'codex', ?, ?)
+      `);
+      for (let index = 0; index < 100; index += 1) {
+        const id = String(index).padStart(3, "0");
+        insertAgent.run(`agent-a-${id}`, "project-a", `Agent ${id}`, "2026-08-08T00:00:00.000Z", "2026-08-08T00:00:00.000Z");
+      }
+      insertAgent.run("agent-b", "project-b", "Unrelated 0", "2026-08-08T00:00:00.000Z", "2026-08-08T00:00:00.000Z");
+
+      const baseSql = "SELECT id, title, updated_at FROM agents WHERE project_id = ?";
+      const generationKeys = [collectionGenerationKey("agents", "project:project-a")];
+      const collected: string[] = [];
+      let cursor: string | undefined;
+      for (let pageIndex = 0; pageIndex < 20; pageIndex += 1) {
+        const page = sqliteCollectionPage(opened.client, { limit: "7", ...(cursor ? { cursor } : {}) }, {
+          baseSql,
+          params: ["project-a"],
+          order: "title",
+          scope: "project-a-agents",
+          generationKeys,
+          hydrate: id => id,
+        });
+        collected.push(...page.items);
+        if (!page.cursor) break;
+        cursor = page.cursor;
+        opened.client.prepare("UPDATE agents SET title = ? WHERE id = 'agent-b'")
+          .run(`Unrelated ${pageIndex + 1}`);
+      }
+
+      expect(collected).toHaveLength(100);
+      expect(new Set(collected).size).toBe(100);
+      expect(cursor).toBeTruthy();
+    } finally {
+      opened.client.close();
     }
   });
 });

@@ -35,7 +35,7 @@ import { registerAgentMaintenanceRoutes } from "./agent-maintenance.js";
 import { registerAgentMessageRunRoute } from "./agent-message-run.js";
 import { registerAgentPackageRoutes } from "./agent-packages.js";
 import { registerAgentPresetRoutes } from "./agent-presets.js";
-import { applyCollectionPageHeaders, sendCollectionPageError, sqliteCollectionPage, type CollectionQuery } from "../collection-page.js";
+import { applyCollectionPageHeaders, collectionGenerationKey, sendCollectionPageError, sqliteCollectionPage, type CollectionQuery } from "../collection-page.js";
 import { registerAgentUsageRoute, registerUsageRoutes } from "./usage.js";
 import { registerAgentWorkRoutes } from "./agent-work.js";
 import { registerArtifactRoutes } from "./artifacts.js";
@@ -435,7 +435,7 @@ app.get<{ Params: { id: string }; Querystring: CollectionQuery }>("/api/projects
         : [request.params.id],
       order: "updated",
       scope: `project-agents:${request.params.id}`,
-      generationKeys: ["agents"],
+      generationKeys: [collectionGenerationKey("agents", `project:${request.params.id}`)],
       hydrate: id => store.getAgent(id),
     });
     applyCollectionPageHeaders(reply, page);

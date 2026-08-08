@@ -13,7 +13,7 @@ import {
   TriggerSourceService,
   normalizeTriggerSourceConfig,
 } from "../trigger-service.js";
-import { applyCollectionPageHeaders, sendCollectionPageError, sqliteCollectionPage, type CollectionQuery } from "../collection-page.js";
+import { applyCollectionPageHeaders, collectionGenerationKey, sendCollectionPageError, sqliteCollectionPage, type CollectionQuery } from "../collection-page.js";
 import {
   parseCreateTrigger,
   parseUpdateTrigger,
@@ -84,7 +84,13 @@ export function registerTriggerRoutes(
         params,
         order: "updated",
         scope: `triggers:${request.query.projectId ?? "*"}:${request.query.agentId ?? "*"}`,
-        generationKeys: ["triggers"],
+        generationKeys: [
+          request.query.agentId
+            ? collectionGenerationKey("triggers", `agent:${request.query.agentId}`)
+            : request.query.projectId
+              ? collectionGenerationKey("triggers", `project:${request.query.projectId}`)
+              : "triggers",
+        ],
         hydrate: id => coordination.getTriggerDefinition(id),
       });
       applyCollectionPageHeaders(reply, page);
@@ -114,7 +120,7 @@ export function registerTriggerRoutes(
             : [request.params.id],
           order: "updated",
           scope: `agent-triggers:${request.params.id}`,
-          generationKeys: ["triggers"],
+          generationKeys: [collectionGenerationKey("triggers", `agent:${request.params.id}`)],
           hydrate: id => coordination.getTriggerDefinition(id),
         });
         applyCollectionPageHeaders(reply, page);

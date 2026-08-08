@@ -21,7 +21,7 @@ import type {
   WorkspaceStore,
 } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
-import { sendCollectionPageError, sqliteCollectionRevision, StaleCollectionCursorError } from "../collection-page.js";
+import { collectionGenerationKey, sendCollectionPageError, sqliteCollectionRevision, StaleCollectionCursorError } from "../collection-page.js";
 
 const DEFAULT_DIRECTORY_LIMIT = 25;
 const MAX_DIRECTORY_LIMIT = 100;
@@ -547,13 +547,26 @@ export function registerWorkspaceDirectoryRoutes(
       normalizedSearch,
       filteredAgentIds,
     );
+    const projectScope = request.query.projectId;
+    const scoped = (collection: string): string => projectScope
+      ? collectionGenerationKey(collection, `project:${projectScope}`)
+      : collection;
+    const projectKey = projectScope
+      ? collectionGenerationKey("projects", `id:${projectScope}`)
+      : "projects";
     const generationKeys = kind === "project"
-      ? ["projects", "conversations"]
+      ? [projectKey, scoped("conversations")]
       : kind === "conversation"
-        ? ["conversations", "projects"]
+        ? [scoped("conversations"), projectKey]
         : kind === "agent"
-          ? ["agents", "projects"]
-          : ["triggers", "agents", "projects"];
+          ? [
+              scoped("agents"),
+              projectKey,
+              ...(request.query.conversationId
+                ? [collectionGenerationKey("memberships", `conversation:${request.query.conversationId}`)]
+                : []),
+            ]
+          : [scoped("triggers"), scoped("agents"), projectKey];
     const collection = sqliteCollectionRevision(sqlite, base.sql, base.params, generationKeys);
     const revision = collection.revision;
     const total = collection.total;

@@ -11,7 +11,7 @@ import type {
 } from "@ponderosa/core";
 import type { AgentStore, WorkspaceStore } from "@ponderosa/agents";
 import { concreteRuntimeSelection, runtimeSelectionError } from "../runtime-selection.js";
-import { applyCollectionPageHeaders, sendCollectionPageError, sqliteCollectionPage, type CollectionQuery } from "../collection-page.js";
+import { applyCollectionPageHeaders, collectionGenerationKey, sendCollectionPageError, sqliteCollectionPage, type CollectionQuery } from "../collection-page.js";
 
 interface EngineRegistration {
   adapter: Adapter;
@@ -77,7 +77,7 @@ export function registerConversationRoutes(
           : [request.params.id],
         order: "title",
         scope: `team-directory:${request.params.id}`,
-        generationKeys: ["agents"],
+        generationKeys: [collectionGenerationKey("agents", `project:${request.params.id}`)],
         hydrate: id => store.getAgent(id),
       });
       const directory = teamDirectory(request.params.id, undefined, undefined, page.items.map(agent => agent.id));
@@ -104,7 +104,7 @@ export function registerConversationRoutes(
           : [request.params.id],
         order: "updated",
         scope: `project-conversations:${request.params.id}`,
-        generationKeys: ["conversations"],
+        generationKeys: [collectionGenerationKey("conversations", `project:${request.params.id}`)],
         hydrate: id => store.getConversation(id),
       });
       applyCollectionPageHeaders(reply, page);
@@ -134,7 +134,10 @@ export function registerConversationRoutes(
             : [conversation.id],
           order: "title",
           scope: `conversation-members:${conversation.id}`,
-          generationKeys: ["agents", "memberships"],
+          generationKeys: [
+            collectionGenerationKey("agents", `project:${conversation.projectId}`),
+            collectionGenerationKey("memberships", `conversation:${conversation.id}`),
+          ],
           hydrate: id => store.getAgent(id),
         });
         applyCollectionPageHeaders(reply, page);
