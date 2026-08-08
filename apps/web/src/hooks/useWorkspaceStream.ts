@@ -8,6 +8,10 @@ import type {
 import { api } from "../api";
 import type { StreamSubscription } from "../api/types";
 import { queryKeys } from "../queryKeys";
+import {
+  browserPageIsVisible,
+  invalidateForBrowserPage,
+} from "../queryVisibility";
 import { changedWorkspaceDirectoryKinds } from "../resourcePreferences";
 import { hasLiveAgentStream } from "./agentStreamRegistry";
 import { reconcileCursor } from "./streamCursor";
@@ -122,9 +126,14 @@ function persistWorkspaceCursor(cursor: number, instanceId?: string): void {
 }
 
 function invalidateActiveQueries(queryClient: QueryClient, queryKey: readonly unknown[]): void {
+  const visible = browserPageIsVisible();
   for (const query of queryClient.getQueryCache().findAll({ queryKey })) {
     if (query.getObserversCount() > 0) {
-      void queryClient.invalidateQueries({ queryKey: query.queryKey, exact: true });
+      void queryClient.invalidateQueries({
+        queryKey: query.queryKey,
+        exact: true,
+        ...(visible ? {} : { refetchType: "none" as const }),
+      });
     }
   }
 }
@@ -176,9 +185,10 @@ function createAgentDetailInvalidator(
     if (timer) clearTimeout(timer);
     timer = undefined;
     for (const agentId of agentIds) {
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.agents.detailPrefix(agentId),
-      });
+      invalidateForBrowserPage(
+        queryClient,
+        queryKeys.agents.detailPrefix(agentId),
+      );
     }
     agentIds.clear();
   };
@@ -418,7 +428,10 @@ export function useWorkspaceStream(): WorkspaceConnectionState {
         void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailPrefix(event.conversationId) });
       }
       else if (event.type === "message_delivery_changed") {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(event.agentId) });
+        invalidateForBrowserPage(
+          queryClient,
+          queryKeys.agents.detailPrefix(event.agentId),
+        );
         void queryClient.invalidateQueries({
           queryKey: queryKeys.queuedMessages.agent(event.agentId),
         });

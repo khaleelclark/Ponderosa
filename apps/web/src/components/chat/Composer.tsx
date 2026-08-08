@@ -16,7 +16,7 @@ import { useEffect, useId, useMemo, useReducer, useRef, useState } from "react";
 import { api } from "../../api";
 import { ApiRequestError } from "../../api/types";
 import { readChatState, writeChatState } from "../../chatState";
-import { createClientId } from "../../clientId";
+import { createClientId, pageClientId } from "../../clientId";
 import { findMentionedHandles, hasBroadcastMention } from "../../mentions";
 import { queryKeys } from "../../queryKeys";
 import { removeHandle } from "./Composer.helpers";
@@ -147,7 +147,7 @@ export function Composer({
   const previousConversationDraftId = useRef(conversationDraftId);
   const draftRevision = useRef(0);
   const draftReady = useRef(false);
-  const draftClientId = useRef<string>();
+  const draftClientId = useRef(pageClientId());
   const draftWriteChain = useRef<Promise<void>>(Promise.resolve());
   const draftGeneration = useRef(0);
   const draftEditVersion = useRef(0);
@@ -400,14 +400,6 @@ export function Composer({
       draftRevision.current = 0;
       clearDraftAttachments();
     }
-    if (!conversationDraftId || typeof window === "undefined") return;
-    const key = "ponderosa.draft.client.v1";
-    let clientId = window.sessionStorage.getItem(key);
-    if (!clientId) {
-      clientId = createClientId();
-      window.sessionStorage.setItem(key, clientId);
-    }
-    draftClientId.current = clientId;
   }, [conversationDraftId]);
 
   useEffect(() => {

@@ -506,7 +506,12 @@ export class WorkspaceStore {
     const current = this.getDraft(conversationId, ownerId);
     const attachmentIds = [...new Set(input.attachmentIds)];
     if (current.text === input.text && JSON.stringify(current.attachmentIds) === JSON.stringify(attachmentIds)) return current;
-    if (current.revision !== input.expectedRevision) {
+    // A page can lose a successful response while its serialized write chain
+    // continues. Its next write is safe to fast-forward because page client
+    // identities are not shared with duplicated or restored browser pages.
+    const provenSamePage = input.clientId.startsWith("page:")
+      && current.clientId === input.clientId;
+    if (current.revision !== input.expectedRevision && !provenSamePage) {
       const displaced: ConversationDraftConflictDto["displaced"] = {
         conversationId,
         text: input.text,
