@@ -26,6 +26,7 @@ The ordinary peer/passive/integration subsets are small and mixed individually. 
 | Early V4 | `e502f1388593549989cf0d21c5ccad84d54f2fb3` | prior V4 comparator |
 | Final V4 common matrix | `21cacaf138f7d13722ef795c01a179f0d67b041b` | simplified provider surface and automatic result transport |
 | Final V4 strict rollover | `45af7ac3091185e1efb16e2dcc38baff03dc5a67` | same final arm plus the affected-only safe-boundary handoff correction |
+| Final V4 crash recovery | `3612fb51b182e6b4ebbcbd20ad20ad078095bc0d` | exact rollover-Activation reconciliation and post-crash eligibility |
 
 The final rollover correction was rerun only for the affected rollover arm. It does not change ordinary coordination or result transport.
 
@@ -94,6 +95,16 @@ Final V4's proof observed:
 
 The initial final probe that merely retained a fact while context grew to about 85K was rejected as insufficient. Development probes r1–r4 are excluded. The corrected implementation uses a dedicated handoff-only Run at a safe boundary on the retained old session, validates required semantic sections with a bounded 150–500-word envelope, commits the handoff, retires the session, and consumes the handoff idempotently on the first compatible fresh Run. The one-Run rollover cost is accepted because it converts an unproven/broken lifecycle into a durable transition.
 
+Independent exact-head review then found a crash-only identity gap: startup reconciliation still searched by the pressure source Run even though the dedicated handoff was appended under a different provider execution. The correction resolves the handoff through the exact rollover-owned `context_rollover_handoff` Activation, its attached scheduler Run, acknowledged injection, and provider-input execution. Once that exact handoff is committed to a nonfailed rollover, it remains eligible for the first fresh Run even if crash recovery marks its source provider execution failed.
+
+A deterministic crash-boundary replay used the retained real Codex event sequence truncated immediately after sequence 143 (`continuation_handoff`) and before `commitContextRolloverHandoff`. Before restart, the rollover was `requested`, its `handoff_event_id` was null, and pressure source Run `d79b524c...` differed from handoff execution `88cb4f71...`. After restart:
+
+- reconciliation committed and completed the exact rollover without `outcome_unknown`;
+- the interrupted handoff execution was durably `failed`, proving eligibility did not depend on a false completed status;
+- the first fresh Run `1099e06f...` received the exact `continuation_handoff` manifest source, returned the preserved continuity fact, and consumed the handoff once;
+- provider generation changed from `019fdfd4...` to `019fdffa...`, with first occupancy 19,504 versus the 83,417 old-session peak;
+- subsequent Run `3468e987...` reused the fresh session, returned `AFTER-CRASH-OK`, had zero handoff sources, and did not change the handoff consumer.
+
 ## Provider surface and product tradeoffs
 
 | Variant | Provider tools | Tool-schema bytes | Communication prompt bytes |
@@ -128,6 +139,7 @@ Key files:
 - `evidence/codex-valid-matrix-aggregate.json`
 - `evidence/codex-rollover-r5-final-strict.json`
 - `evidence/codex-rollover-r5-v3-strict.json`
+- `evidence/codex-rollover-crash-recovery-final.json`
 - `raw/` and `data/`
 
 The aggregate JSON preserves per-trial provider dispositions, usage categories, latency, makespan, outcomes, quality predicates, project IDs, and evidence paths. The early V4 rollover failure is preserved in its raw log and SQLite store even though the harness stopped immediately after the terminal failure.
