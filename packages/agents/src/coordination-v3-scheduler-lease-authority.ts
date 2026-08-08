@@ -131,10 +131,18 @@ export class CoordinationV3SchedulerLeaseAuthority {
         WHERE a.state IN ('pending', 'retry_pending')
           AND a.available_at <= ?
           ${excludedClause}
-          AND NOT EXISTS (
-            SELECT 1 FROM context_rollovers rollover
-            WHERE rollover.agent_id = a.agent_id
-              AND rollover.state IN ('requested','handoff_committed','session_retiring')
+          AND (
+            (a.kind = 'context_rollover_handoff' AND EXISTS (
+              SELECT 1 FROM context_rollovers rollover
+              WHERE rollover.agent_id = a.agent_id
+                AND rollover.id = json_extract(a.payload_json, '$.rolloverId')
+                AND rollover.state = 'requested'
+            ))
+            OR (a.kind <> 'context_rollover_handoff' AND NOT EXISTS (
+              SELECT 1 FROM context_rollovers rollover
+              WHERE rollover.agent_id = a.agent_id
+                AND rollover.state IN ('requested','handoff_committed','session_retiring')
+            ))
           )
           AND NOT EXISTS (
             SELECT 1 FROM activation_outbox audit
@@ -170,6 +178,19 @@ export class CoordinationV3SchedulerLeaseAuthority {
         SELECT * FROM agent_activations
         WHERE agent_id = ? AND scope_key = ?
           AND state IN ('pending', 'retry_pending') AND available_at <= ?
+          AND (
+            (kind = 'context_rollover_handoff' AND EXISTS (
+              SELECT 1 FROM context_rollovers rollover
+              WHERE rollover.agent_id = agent_activations.agent_id
+                AND rollover.id = json_extract(agent_activations.payload_json, '$.rolloverId')
+                AND rollover.state = 'requested'
+            ))
+            OR (kind <> 'context_rollover_handoff' AND NOT EXISTS (
+              SELECT 1 FROM context_rollovers rollover
+              WHERE rollover.agent_id = agent_activations.agent_id
+                AND rollover.state IN ('requested','handoff_committed','session_retiring')
+            ))
+          )
           AND NOT EXISTS (
             SELECT 1 FROM activation_outbox audit
             WHERE audit.activation_id = agent_activations.id

@@ -19,7 +19,7 @@ const REQUEST_LIFETIME_SCHEMA = {
  * lifetimes, quorum conditions, and exact recovery. */
 export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_coordinate",
-  description: "Delegate common tracked work to one Agent with {recipientAgentId,text} or fan out atomically with {delegations:[...]}. Every new Request is ordinary next-Run work: it never steers, pauses, cancels, or interrupts a recipient's active Run. Never create a second Request to tell a busy Agent to stop. Cancel your exact original outbound Request with ponderosa_update_request({requestId,kind:\"cancelled\"}); a manager that must enforceably stop an active descendant Run uses ponderosa_manage stop_agent. Ponderosa supplies stable idempotency, indefinite lifetimes, and one all-results Join whose default wakePolicy each_result reactivates you as new results arrive while preserving the open parent workflow. For ordinary final-only fan-out, keep the common form and set completionMode:\"join\" with wakePolicy:\"final_only\". Use completionMode:\"record\" only for genuine fire-and-observe work; completionMode:\"callback\" preserves the legacy ungrouped per-result wake. Use the advanced requests/join form only for quorum/any conditions, custom per-request lifetimes, existing-request recovery, or custom satisfying outcomes. A returned joinId already exists; do not create it again.",
+  description: "Delegate common tracked work to one Agent with {recipientAgentId,text} or fan out atomically with {delegations:[...]}. Every new Request is ordinary next-Run work: it never steers, pauses, cancels, or interrupts a recipient's active Run. Never create a second Request to tell a busy Agent to stop. Cancel your exact original outbound Request with ponderosa_update_request({requestId,kind:\"cancelled\"}); a manager that must enforceably stop an active descendant Run uses ponderosa_manage stop_agent. Ponderosa supplies stable idempotency, an indefinite lifetime by default, and one all-results Join whose default wakePolicy each_result reactivates you as new results arrive while preserving the open parent workflow. For a deadline in the common form, add lifetime:{kind:\"deadline\",at:\"<ISO timestamp>\"}. For ordinary final-only fan-out, keep the common form and set completionMode:\"join\" with wakePolicy:\"final_only\". Use completionMode:\"record\" only for genuine fire-and-observe work; completionMode:\"callback\" preserves the legacy ungrouped per-result wake. Use the advanced requests/join form only for quorum/any conditions, different per-request lifetimes, existing-request recovery, or custom satisfying outcomes. A returned joinId already exists; do not create it again.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -52,7 +52,10 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
         description: "For completionMode join, defaults each_result. each_result wakes on newly terminal members and again only as needed until the Join is terminal; final_only wakes only when the Join condition ends.",
       },
       awaitResult: { type: "boolean", description: "Legacy common-form alias: true means completionMode join; false means callback. Prefer completionMode." },
-      deadlineAt: { type: "string", description: "Optional common-request deadline. Omit for an indefinite lifetime." },
+      lifetime: {
+        ...REQUEST_LIFETIME_SCHEMA,
+        description: "Optional common lifetime applied to every delegation. Omit for indefinite; for a deadline use {kind:\"deadline\",at:\"<ISO timestamp>\"}.",
+      },
       requests: {
         type: "array", minItems: 0, maxItems: 100,
         description: "New requests. Use an empty array only when join.requestIds names existing requests owned by you.",
@@ -90,107 +93,12 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
   },
 };
 
-/** Read-only retrieval for durable result references advertised to the current
- * Run. The byte budget is provider-visible so models can paginate deliberately
- * instead of discovering response-size limits through rejected calls. */
-export const PONDEROSA_RESULT_TOOL: RuntimeDynamicToolSpec = {
-  name: "ponderosa_result",
-  description: "Retrieve durable result references that are reachable from the current authoritative Run. Use refs from fullResultRef or artifact references in this Run; references stay stable, while access is recomputed per Run. Results are ordered and paginated without creating Runs, Activations, Requests, Joins, messages, or artifacts.",
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["refs"],
-    properties: {
-      refs: {
-        type: "array", minItems: 1, maxItems: 20, uniqueItems: true,
-        items: { type: "string", pattern: "^ponderosa://(activation|artifact)/[^/]+$", maxLength: 260 },
-        description: "One to twenty stable ponderosa://activation/<id> or ponderosa://artifact/<id> references, in desired return order.",
-      },
-      cursor: {
-        type: "string", minLength: 1, maxLength: 4096,
-        description: "Opaque continuation cursor returned by the preceding call. Reuse it with the exact same refs and maxBytes.",
-      },
-      maxBytes: {
-        type: "integer", minimum: 4096, maximum: 262144,
-        description: "Overall raw-content byte budget for this page. Defaults to 65536 bytes; valid range is 4096 through 262144.",
-      },
-    },
-  },
-};
-
 export const PONDEROSA_TEAM_DIRECTORY_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_team_directory",
   description: "Retrieve the current run-scoped Team Chat directory through Ponderosa. Use this instead of localhost HTTP, browser access, or reading Ponderosa storage directly. Omit agentId for the visible roster; provide one stable ID for a focused entry.",
   inputSchema: {
     type: "object", additionalProperties: false,
     properties: { agentId: { type: "string", minLength: 1, maxLength: 200 } },
-  },
-};
-
-export const PONDEROSA_CONTEXT_TOOL: RuntimeDynamicToolSpec = {
-  name: "ponderosa_context",
-  description: "Retrieve older bounded canonical history only when the current Run contains an OLDER SCOPED CONTEXT reference. Use current_chat for this chat's shared/private history, or agent_private for this Agent's own Direct history across Project chats. It never grants Project-wide access.",
-  inputSchema: {
-    type: "object", additionalProperties: false,
-    properties: {
-      scope: {
-        type: "string", enum: ["current_chat", "agent_private"],
-        description: "Defaults to current_chat for historical compatibility. agent_private returns only Direct history belonging to this Agent across chats.",
-      },
-      cursor: {
-        type: "string", minLength: 1, maxLength: 4096,
-        description: "Opaque continuation cursor returned by the preceding call. Reuse it unchanged for the same scoped history.",
-      },
-      limit: { type: "integer", minimum: 1, maximum: 50, description: "Defaults 20." },
-    },
-  },
-};
-
-/** A bounded, non-authoritative bridge between two provider sessions. The
- * canonical Agent log, coordination state, and artifacts remain authoritative;
- * this merely preserves the current worker's useful working understanding. */
-export const PONDEROSA_ROLLOVER_TOOL: RuntimeDynamicToolSpec = {
-  name: "ponderosa_rollover",
-  description: "Schedule a fresh provider session after this Run and carry one bounded continuation handoff into it. Use only when the current provider context should be replaced. Describe the current objective, changed state, completed work, important discoveries, decisions, failed approaches, risks, next action, and relevant file/artifact references. The handoff is a temporary relevance bridge, not authoritative history or organizational memory.",
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["handoff"],
-    properties: {
-      handoff: {
-        type: "string",
-        minLength: 1,
-        maxLength: 20_000,
-        description: "Continuation handoff of 300–500 words, up to 20,000 Unicode code points. Do not summarize the entire conversation; preserve only working state needed by the next provider session.",
-      },
-    },
-  },
-};
-
-/** Read-only access to the version-controlled product wiki. Prompts receive a
- * compact reference index; article bodies stay behind this run-scoped tool. */
-export const PONDEROSA_DOCS_TOOL: RuntimeDynamicToolSpec = {
-  name: "ponderosa_docs",
-  description: "Retrieve version-controlled Ponderosa product documentation by the stable ponderosa://docs/<id> references advertised in the current prompt. Full articles are returned only on demand and paginated within a byte budget.",
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["refs"],
-    properties: {
-      refs: {
-        type: "array", minItems: 1, maxItems: 10, uniqueItems: true,
-        items: { type: "string", pattern: "^ponderosa://docs/[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 160 },
-        description: "One to ten stable documentation references from the compact PRODUCT DOCUMENTATION index, in desired order.",
-      },
-      cursor: {
-        type: "string", minLength: 1, maxLength: 4096,
-        description: "Opaque continuation cursor from the previous call. Reuse it with the same refs and maxBytes.",
-      },
-      maxBytes: {
-        type: "integer", minimum: 4096, maximum: 65536,
-        description: "Overall UTF-8 content budget for this page. Defaults to 32768 bytes.",
-      },
-    },
   },
 };
 
@@ -221,15 +129,39 @@ export const PONDEROSA_UPDATE_REQUEST_TOOL: RuntimeDynamicToolSpec = {
 
 export const PONDEROSA_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_message",
-  description: "Reply to the current uncorrelated activation with text, existing managed artifactIds, or both. Ponderosa inherits the audience, conversation, visibility, and stable idempotency when there is one unambiguous reply target. Use the artifact ID returned alongside ponderosa://artifact/<id> references by Ponderosa artifact-producing tools; paths cannot be attached. Use explicit intent only to publish a separate organizational Broadcast, contact different Agents, or resolve an ambiguous/non-message activation. Use coordinate for tracked work and update_request for a correlated result.",
+  description: "Send immediate communication, or set delivery to next_run for one-way information to explicit recipientAgentIds. Immediate delivery is the default and inherits an unambiguous incoming audience; use explicit intent only for a different audience. Recipients receive the submitted payload, not your hidden prompt or provider-session context; include the facts and context needed to act. next_run creates no chat message, Run, Request, Join, reply obligation, or acknowledgement. Use coordinate for tracked work and update_request for a correlated result.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
-    anyOf: [{ required: ["text"] }, { required: ["artifactIds"] }],
+    oneOf: [
+      {
+        not: { anyOf: [{ required: ["delivery"] }, { required: ["expiresAt"] }] },
+        anyOf: [{ required: ["text"] }, { required: ["artifactIds"] }],
+      },
+      {
+        required: ["delivery", "text", "recipientAgentIds"],
+        properties: {
+          text: { type: "string", minLength: 1, maxLength: 20_000 },
+        },
+        not: {
+          anyOf: [
+            { required: ["intent"] },
+            { required: ["urgency"] },
+            { required: ["artifactIds"] },
+            { required: ["document"] },
+            { required: ["citations"] },
+          ],
+        },
+      },
+    ],
     properties: {
       intent: {
         type: "string", enum: ["broadcast", "direct_to_user", "collaboration"],
         description: "Exact routing enum. Use direct_to_user for a private user reply; user_dm is not a tool value.",
+      },
+      delivery: {
+        const: "next_run",
+        description: "Optional passive delivery. Omit for immediate communication.",
       },
       text: { type: "string", minLength: 1, description: `Complete message text. Content above 10,000 Unicode code points is stored as one durable artifact; maximum ${LONG_TEXT_MAX_UTF8_BYTES} UTF-8 bytes.` },
       artifactIds: {
@@ -239,13 +171,18 @@ export const PONDEROSA_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
       },
       steeringInjectionId: {
         type: "string", minLength: 1,
-        description: "When the current Run has received steering, copy the exact steeringInjectionId from the newest Ponderosa activation prompt. Ponderosa rejects output fenced behind an acknowledged steer.",
+        description: "When the current Run has received steering, copy the exact steeringInjectionId from the newest Ponderosa activation prompt for immediate or next_run delivery. Ponderosa rejects output fenced behind an acknowledged steer.",
       },
       recipientAgentIds: {
-        type: "array", minItems: 1, maxItems: 100, uniqueItems: true, items: { type: "string" },
-        description: "Required for collaboration. Always an array, including one recipient.",
+        type: "array", minItems: 1, maxItems: 100, uniqueItems: true,
+        items: { type: "string", minLength: 1, maxLength: 200 },
+        description: "Stable Agent IDs. Required for collaboration and next_run, including one recipient.",
       },
       urgency: { type: "string", enum: ["ordinary", "urgent"] },
+      expiresAt: {
+        type: "string", minLength: 1, maxLength: 100, format: "date-time",
+        description: "Optional future expiry for next_run only.",
+      },
       idempotencyKey: { type: "string", minLength: 1, maxLength: 200, description: "Advanced override. The server derives a stable key for an inferred reply." },
       document: {
         type: "object", additionalProperties: false, required: ["title", "content"],
@@ -266,10 +203,12 @@ export const PONDEROSA_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
         },
       },
     },
-    allOf: [{
-      if: { properties: { intent: { const: "collaboration" } }, required: ["intent"] },
-      then: { required: ["recipientAgentIds"] },
-    }],
+    allOf: [
+      {
+        if: { properties: { intent: { const: "collaboration" } }, required: ["intent"] },
+        then: { required: ["recipientAgentIds"] },
+      },
+    ],
   },
 };
 
@@ -403,12 +342,8 @@ export const PONDEROSA_RUNTIME_TOOLS: RuntimeDynamicToolSpec[] = [
   PONDEROSA_DECISION_TOOL,
   PONDEROSA_MANAGE_TOOL,
   PONDEROSA_COORDINATE_TOOL,
-  PONDEROSA_RESULT_TOOL,
   PONDEROSA_UPDATE_REQUEST_TOOL,
   PONDEROSA_MESSAGE_TOOL,
   PONDEROSA_TEAM_DIRECTORY_TOOL,
-  PONDEROSA_CONTEXT_TOOL,
-  PONDEROSA_ROLLOVER_TOOL,
-  PONDEROSA_DOCS_TOOL,
   ...PONDEROSA_BROWSER_TOOLS,
 ];

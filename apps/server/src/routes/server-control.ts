@@ -1,11 +1,8 @@
-import { randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
 import type { FastifyReply } from "fastify";
 import {
-  canonicalizeProviderText,
   type EngineLogDto,
-  unicodeCodePointLength,
   type CommunicationReconciliationReport,
   type ReadinessCheckDto,
   type ReadinessDto,
@@ -17,12 +14,10 @@ import type {
 } from "@ponderosa/agents";
 import type {
   ActiveRun,
-  AgentMessageCapability,
   CreateServerOptions,
   EngineRegistration,
   PonderosaServer,
 } from "../app-contracts.js";
-import { evaluateContextRolloverPressure } from "../context-rollover-pressure.js";
 import type { CoordinationV3Scheduler } from "../coordination-v3-scheduler.js";
 import type { ServerContext } from "../server-context.js";
 import { registerHealthRoutes } from "./health.js";
@@ -37,8 +32,6 @@ interface ServerControlRoutesContext {
   workspace: WorkspaceStore;
   engines: ReadonlyMap<string, EngineRegistration>;
   activeRuns: Map<string, ActiveRun>;
-  agentMessageCapabilities: Map<string, AgentMessageCapability>;
-  scheduledSessionRollovers: Map<string, string>;
   launcherNow(): number;
   launcherRandomToken(): string;
   launcherBootstrapTtlMs: number;
@@ -62,10 +55,6 @@ interface ServerControlRoutesContext {
   deploymentDrainSnapshot(): ReadinessDto["deploymentDrain"];
   drainDeploymentIdleAuthorities(): void;
   refreshTriggerSources(): Promise<void>;
-  capabilityOwnsAuthoritativeRun(
-    capability: AgentMessageCapability,
-    run: ActiveRun | undefined,
-  ): boolean;
   runtimeStatus(
     id: string,
     registration: EngineRegistration,
@@ -142,8 +131,6 @@ export function registerServerControlRoutes(
     workspace,
     engines,
     activeRuns,
-    agentMessageCapabilities,
-    scheduledSessionRollovers,
     launcherNow,
     launcherRandomToken,
     launcherBootstrapTtlMs,
@@ -162,87 +149,8 @@ export function registerServerControlRoutes(
     deploymentDrainSnapshot,
     drainDeploymentIdleAuthorities,
     refreshTriggerSources,
-    capabilityOwnsAuthoritativeRun,
     runtimeStatus,
   } = context;
-
-app.post<{ Body: { handoff?: string } }>("/api/agent-session/rollover", async (request, reply) => {
-  const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-  const capability = token ? agentMessageCapabilities.get(token) : undefined;
-  if (!capability) return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
-  const active = activeRuns.get(capability.agentId);
-  if (!capabilityOwnsAuthoritativeRun(capability, active) || active!.messageCapability !== token) {
-    return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
-  }
-  const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
-    ? request.body as Record<string, unknown>
-    : {};
-  if (Object.keys(body).some((key) => key !== "handoff")) {
-    return reply.code(400).send({ error: "unknown rollover field" });
-  }
-  if (typeof body.handoff !== "string") return reply.code(400).send({ error: "handoff is required" });
-  const handoff = canonicalizeProviderText(
-    body.handoff,
-    coordinationV3.steeringInjectionIds(capability.runId),
-  ).trim();
-  if (!handoff) return reply.code(400).send({ error: "handoff is required" });
-  if (unicodeCodePointLength(handoff) > 20_000) {
-    return reply.code(400).send({ error: "handoff must be at most 20000 Unicode code points" });
-  }
-  const handoffWords = handoff.split(/\s+/u).filter(Boolean).length;
-  if (handoffWords < 300 || handoffWords > 500) {
-    return reply.code(400).send({ error: "handoff must be 300 to 500 words" });
-  }
-  const author = store.getAgent(capability.agentId);
-  if (!author) return reply.code(409).send({ error: "agent is no longer available" });
-  let rollover = coordinationV3.activeContextRollover(capability.agentId);
-  if (!rollover) {
-    const usage = active!.runtimeSession?.contextUsage?.();
-    const preferences = workspace.getPreferences();
-    const pressure = evaluateContextRolloverPressure({
-      usedTokens: usage?.usedTokens ?? 0,
-      ...(usage?.aggregateTokens !== undefined ? { aggregateTokens: usage.aggregateTokens } : {}),
-      ...(usage?.windowTokens !== undefined ? { windowTokens: usage.windowTokens } : {}),
-    }, preferences);
-    const sessionId = active!.runtimeSession?.engineAgentId ?? store.resumeSessionId(capability.agentId);
-    if (!sessionId) return reply.code(409).send({ error: "provider session is unavailable for rollover" });
-    rollover = coordinationV3.requestContextRollover({
-      projectId: author.projectId,
-      agentId: author.id,
-      oldProviderSessionId: sessionId,
-      providerSessionGeneration: usage?.providerSessionGeneration ?? sessionId,
-      detectedOccupancy: usage?.usedTokens ?? 0,
-      ...(usage?.aggregateTokens !== undefined ? { aggregateTokens: usage.aggregateTokens } : {}),
-      threshold: pressure.threshold,
-      ...(usage?.windowTokens !== undefined ? { contextWindow: usage.windowTokens } : {}),
-      lowWaterMark: pressure.lowWaterMark,
-      lowWaterConfirmationRequired: usage?.providerSessionGeneration !== undefined,
-      sourceRunId: capability.runId,
-      sourceActivationIds: coordinationV3.activationIdsAttachedToRun(capability.runId, capability.agentId),
-      scopeKey: coordinationV3.runScopeKey(capability.runId, capability.agentId),
-      ...(capability.conversationId ? { conversationId: capability.conversationId } : {}),
-      ...(capability.defaultReply ? { replyAuthority: capability.defaultReply } : {}),
-      visibleResponseCommitted: Boolean(capability.inferredReplyCommunicationEventId),
-    }).rollover;
-  }
-  if (rollover.sourceRunId !== capability.runId) {
-    return reply.code(409).send({ error: "another Run owns the pending context rollover" });
-  }
-  const existing = store.continuationHandoffForRun(capability.agentId, capability.runId);
-  if (existing && existing.text !== handoff) {
-    return reply.code(409).send({ error: "this Run already scheduled a different continuation handoff" });
-  }
-  const handoffId = existing?.id ?? randomUUID();
-  if (!existing) store.appendEvent(capability.agentId, {
-    type: "continuation_handoff",
-    handoffId,
-    executionId: capability.runId,
-    text: handoff,
-  });
-  coordinationV3.commitContextRolloverHandoff(rollover.id, handoffId);
-  scheduledSessionRollovers.set(capability.agentId, new Date().toISOString());
-  return { scheduled: true, afterRunId: capability.runId, handoffId, rolloverId: rollover.id };
-});
 
 registerHealthRoutes(app, serverContext);
 

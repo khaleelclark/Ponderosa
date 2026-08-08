@@ -322,7 +322,11 @@ export class AgentWorkspaceCatalogAuthority {
   }
 
   /** Permanently remove a conversation while preserving its agents as unassigned agents. */
-  deleteConversation(id: string, beforeMembershipDelete?: (agentId: string, conversationId: string) => void): boolean {
+  deleteConversation(
+    id: string,
+    beforeMembershipDelete?: (agentId: string, conversationId: string) => void,
+    beforeProjectionDelete?: (conversationId: string) => void,
+  ): boolean {
     const row = this.db.select().from(conversations).where(eq(conversations.id, id)).get();
     if (!row) return false;
     const linkedAgents = this.listAgents(row.projectId).filter((agent) => agent.conversationIds.includes(id));
@@ -330,6 +334,7 @@ export class AgentWorkspaceCatalogAuthority {
       // Communication V3 shares this SQLite connection, so Trigger deletion,
       // pending-work cancellation, and membership removal commit atomically.
       for (const agent of linkedAgents) beforeMembershipDelete?.(agent.id, id);
+      beforeProjectionDelete?.(id);
       tx.delete(agentConversationMemberships).where(eq(agentConversationMemberships.conversationId, id)).run();
       tx.delete(conversations).where(eq(conversations.id, id)).run();
     });

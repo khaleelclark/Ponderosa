@@ -85,6 +85,7 @@ export function Composer({
   placeholder,
   projectId,
   mentionHandles,
+  mentionBindings,
   mentionSuggestionHandles,
   ambiguousMentionHandles,
   commands,
@@ -228,6 +229,8 @@ export function Composer({
   const hasEveryoneDestination =
     destinationMode === "project-chat" &&
     mentionedHandles.some(handle => handle.toLocaleLowerCase() === "everyone");
+  const targetedNextRunDelivery =
+    hasBroadcastDestination && projectDestinations.length > 0;
   const implicitContinueHandle =
     destinationMode === "project-chat" &&
     implicitContinueSelected &&
@@ -257,7 +260,9 @@ export function Composer({
     onCommandTargetHandleChange?.(commandTargetHandle);
   }, [commandTargetHandle, onCommandTargetHandleChange]);
   const destinationError =
-    destinationMode === "target-required" && hasBroadcastDestination
+    targetedNextRunDelivery && files.length > 0
+      ? "Targeted next-run delivery supports message text only. Remove attachments to send."
+      : destinationMode === "target-required" && hasBroadcastDestination
       ? targetRequiredDestinations.length > 0
         ? "Broadcast is only available in a Project Chat."
         : "#broadcast is not available in Messages Across Ponderosa. Choose an Agent."
@@ -328,6 +333,10 @@ export function Composer({
         allowUnmentionedSend &&
         files.length > 0));
   const canCancel = running && Boolean(onCancel);
+  const composerAttachmentsEnabled = attachmentsEnabled && !targetedNextRunDelivery;
+  const composerAttachmentsUnavailableReason = targetedNextRunDelivery
+    ? "Targeted next-run delivery supports message text only."
+    : attachmentsUnavailableReason;
 
   const draftQuery = useQuery({
     queryKey: queryKeys.conversationDraft.detail(
@@ -685,7 +694,10 @@ export function Composer({
       selectedFiles: File[],
       stagedAttachmentIds?: string[],
       stagedDraftOwnerId?: string,
-      context?: { implicitRecipientId?: string },
+      context?: {
+        implicitRecipientId?: string;
+        mentionedAgents?: import("@ponderosa/core").AgentMentionBindingDto[];
+      },
     ) => Promise<unknown> | unknown,
   ) => {
     if (sendingRef.current || !canSend) return;
@@ -716,6 +728,20 @@ export function Composer({
     const stagedIds = files
       .map(file => draftAttachmentIds.current.get(file))
       .filter((id): id is string => Boolean(id));
+    const mentionedAgents = projectDestinationHandles.flatMap((handle) => {
+      const binding = mentionBindings?.find((candidate) =>
+        candidate.handle.toLocaleLowerCase() === handle.toLocaleLowerCase());
+      return binding ? [binding] : [];
+    });
+    const submissionContext =
+      implicitContinueHandle || mentionedAgents.length > 0
+        ? {
+            ...(implicitContinueHandle
+              ? { implicitRecipientId: continueWith!.agentId }
+              : {}),
+            ...(mentionedAgents.length > 0 ? { mentionedAgents } : {}),
+          }
+        : undefined;
     const operation =
       slash && slash.command.invocation === "runtime"
         ? onCommand!(slash.command, slash.argumentsText)
@@ -724,9 +750,7 @@ export function Composer({
             files,
             stagedIds,
             conversationDraftId ? draftOwnerId : undefined,
-            implicitContinueHandle
-              ? { implicitRecipientId: continueWith!.agentId }
-              : undefined,
+            submissionContext,
           );
     void Promise.resolve(operation)
       .then(() => {
@@ -822,8 +846,8 @@ export function Composer({
           menuAnchor={capabilityMenuAnchor}
           listId={capabilityListId}
           filter={capabilityFilter}
-          attachmentsEnabled={attachmentsEnabled}
-          attachmentsUnavailableReason={attachmentsUnavailableReason}
+          attachmentsEnabled={composerAttachmentsEnabled}
+          attachmentsUnavailableReason={composerAttachmentsUnavailableReason}
           fileCount={files.length}
           assetLimits={assetLimits}
           capabilities={capabilities}
@@ -882,7 +906,7 @@ export function Composer({
             menuOpen={menuOpen}
             listId={mentionListId}
             highlighted={highlighted}
-            attachmentsEnabled={attachmentsEnabled}
+            attachmentsEnabled={composerAttachmentsEnabled}
             pastedText={pastedText}
             menuSuggestions={menuSuggestions}
             destinationMode={destinationMode}

@@ -14,16 +14,12 @@ interface AgentApiRouteClassification {
 export const AGENT_API_ROUTES = [
   { path: "/api/agent-messages", match: "exact", audience: "agent" },
   { path: "/api/agent-coordinate", match: "exact", audience: "agent" },
-  { path: "/api/agent-results", match: "exact", audience: "agent" },
-  { path: "/api/agent-docs", match: "exact", audience: "agent" },
   { path: "/api/agent-request-updates", match: "exact", audience: "agent" },
   { path: "/api/agent-spawn", match: "exact", audience: "agent" },
   { path: "/api/agent-browser", match: "exact", audience: "agent" },
   { path: "/api/agent-decisions", match: "exact", audience: "agent" },
   { path: "/api/agent-management", match: "exact", audience: "agent" },
   { path: "/api/agent-directory", match: "exact", audience: "agent" },
-  { path: "/api/agent-context", match: "exact", audience: "agent" },
-  { path: "/api/agent-session/rollover", match: "exact", audience: "agent" },
   { path: "/api/agent-documents/", match: "prefix", audience: "agent" },
   {
     path: "/api/agent-trigger-occurrences/",

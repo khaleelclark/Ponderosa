@@ -1,4 +1,5 @@
 import type { ChatComposerContract } from "./composerContracts";
+import type { AgentMentionBindingDto } from "@ponderosa/core";
 
 export interface ComposerProps extends ChatComposerContract {
   /** Keep the composer available while other Agents in this shared chat are working. */
@@ -6,6 +7,8 @@ export interface ComposerProps extends ChatComposerContract {
   placeholder?: string;
   projectId?: string;
   mentionHandles?: string[];
+  /** Stable recipient identities corresponding to selectable Agent handles. */
+  mentionBindings?: AgentMentionBindingDto[];
   mentionSuggestionHandles?: string[];
   ambiguousMentionHandles?: string[];
   onCapabilitiesOpen?(): Promise<unknown> | unknown;

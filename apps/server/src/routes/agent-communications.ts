@@ -75,6 +75,42 @@ interface AgentCommunicationRoutesContext {
   publish(agentId: string, stored: StoredLogEvent): void;
 }
 
+const AGENT_MESSAGE_FIELDS = new Set([
+  "intent", "text", "artifactIds", "steeringInjectionId", "recipientAgentIds",
+  "urgency", "idempotencyKey", "document", "citations", "delivery", "expiresAt",
+]);
+
+export function validateAgentMessageBodyShape(body: unknown): string | undefined {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return "message body must be an object";
+  const candidate = body as Record<string, unknown>;
+  const unknownKeys = Object.keys(candidate).filter((key) => !AGENT_MESSAGE_FIELDS.has(key));
+  if (unknownKeys.length > 0) {
+    return `unknown message field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.join(", ")}; collaboration recipients must use recipientAgentIds as an array`;
+  }
+  if (candidate.delivery !== undefined && candidate.delivery !== "next_run") {
+    return "delivery must be next_run when supplied";
+  }
+    if (candidate.delivery === "next_run") {
+      if (candidate.intent !== undefined || candidate.urgency !== undefined ||
+        candidate.artifactIds !== undefined || candidate.document !== undefined ||
+        candidate.citations !== undefined) {
+      return "next_run accepts only text, recipientAgentIds, optional expiresAt, idempotencyKey, and steeringInjectionId";
+    }
+    if (candidate.expiresAt !== undefined && typeof candidate.expiresAt !== "string") {
+      return "expiresAt must be a string";
+    }
+    return undefined;
+  }
+  if (candidate.expiresAt !== undefined) return "expiresAt is valid only for next_run";
+  if (candidate.recipientAgentIds !== undefined && candidate.intent !== "collaboration") {
+    return "recipientAgentIds is valid only when intent is collaboration";
+  }
+  if (candidate.urgency !== undefined && candidate.intent !== "collaboration") {
+    return "urgency is valid only when intent is collaboration";
+  }
+  return undefined;
+}
+
 export function registerAgentCommunicationRoutes(
   app: FastifyInstance,
   context: AgentCommunicationRoutesContext,
@@ -115,19 +151,111 @@ export function registerAgentCommunicationRoutes(
     if (!capabilityOwnsAuthoritativeRun(capability, active) || active!.messageCapability !== token) {
       return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
     }
+    const bodyShapeError = validateAgentMessageBodyShape(request.body);
+    if (bodyShapeError) return reply.code(400).send({ error: bodyShapeError });
     const steeringInjectionIds = coordinationV3.steeringInjectionIds(capability.runId);
+    const requiredSteeringFence = coordinationV3.latestAcknowledgedSteeringInjection(capability.runId);
     const inferredReply = request.body?.intent === undefined;
     const candidateIntent = request.body?.intent ?? capability.defaultReply?.intent;
     const text = request.body?.text === undefined
       ? ""
       : canonicalizeProviderText(request.body.text, steeringInjectionIds).trim();
-    const artifactIds = request.body?.artifactIds;
+    const artifactIds = request.body && "artifactIds" in request.body
+      ? request.body.artifactIds
+      : undefined;
     if (artifactIds !== undefined && (!Array.isArray(artifactIds) || artifactIds.length === 0 ||
         artifactIds.length > 20 || new Set(artifactIds).size !== artifactIds.length ||
         artifactIds.some((id) => typeof id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/u.test(id)))) {
       return reply.code(400).send({ error: "artifactIds must contain 1 to 20 unique managed artifact IDs" });
     }
     const v3Urgency = (request.body as SendAgentMessageRequest & { urgency?: "ordinary" | "urgent" })?.urgency;
+    const currentAuthor = store.getAgent(capability.agentId);
+    if (request.body?.delivery === "next_run") {
+      const suppliedSteeringFence = request.body.steeringInjectionId?.trim();
+      if (requiredSteeringFence && suppliedSteeringFence !== requiredSteeringFence) {
+        return reply.code(409).send({
+          error: "output is fenced behind acknowledged steering; reconsider the newest steering prompt and retry with its exact steeringInjectionId",
+          requiredSteeringInjectionId: requiredSteeringFence,
+        });
+      }
+      const recipientAgentIds = request.body.recipientAgentIds;
+      if (!Array.isArray(recipientAgentIds) || recipientAgentIds.length < 1 ||
+          recipientAgentIds.length > 100) {
+        return reply.code(400).send({ error: "next_run requires 1 to 100 recipientAgentIds" });
+      }
+      const normalizedRecipients: string[] = [];
+      for (let index = 0; index < recipientAgentIds.length; index += 1) {
+        const recipient = recipientAgentIds[index];
+        if (typeof recipient !== "string" || !recipient.trim() ||
+            unicodeCodePointLength(recipient.trim()) > 200) {
+          return reply.code(400).send({
+            error: `recipientAgentIds[${index}] must contain 1 to 200 Unicode code points`,
+          });
+        }
+        normalizedRecipients.push(recipient.trim());
+      }
+      if (new Set(normalizedRecipients).size !== normalizedRecipients.length) {
+        return reply.code(400).send({ error: "next_run recipientAgentIds must be unique" });
+      }
+      if (!text || unicodeCodePointLength(text) > 20_000) {
+        return reply.code(400).send({
+          error: "next_run text must contain 1 to 20000 Unicode code points",
+        });
+      }
+      const expiresAt = request.body.expiresAt?.trim();
+      if (expiresAt && (
+        unicodeCodePointLength(expiresAt) > 100 ||
+        !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/u.test(expiresAt) ||
+        !Number.isFinite(Date.parse(expiresAt))
+      )) {
+        return reply.code(400).send({ error: "expiresAt must be a valid ISO timestamp" });
+      }
+      if (!currentAuthor || currentAuthor.archived) {
+        return reply.code(409).send({ error: "agent is no longer available" });
+      }
+      if (!capability.conversationId ||
+          !currentAuthor.conversationIds.includes(capability.conversationId)) {
+        return reply.code(409).send({ error: "next_run requires an active Team Chat scope" });
+      }
+      const requestedIdempotencyKey = request.body.idempotencyKey?.trim();
+      if (requestedIdempotencyKey && unicodeCodePointLength(requestedIdempotencyKey) > 200) {
+        return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
+      }
+      const idempotencyKey = requestedIdempotencyKey ?? derivedRunActionKey(
+        capability.runId,
+        "message-next-run",
+        { text, recipientAgentIds: [...normalizedRecipients].sort(), expiresAt: expiresAt ?? null },
+      );
+      try {
+        const result = coordinationV3.publishAgentNextRunDelivery({
+          projectId: currentAuthor.projectId,
+          conversationId: capability.conversationId,
+          publisherAgentId: currentAuthor.id,
+          sourceRunId: capability.runId,
+          runAuthorization: runAuthorization(capability),
+          idempotencyKey,
+          text,
+          recipientAgentIds: normalizedRecipients,
+          ...(expiresAt ? { expiresAt } : {}),
+        });
+        for (const recipientAgentId of normalizedRecipients) {
+          publishCoordinationV3Changed(recipientAgentId, {
+            conversationIds: [capability.conversationId],
+          });
+        }
+        return {
+          delivery: "next_run",
+          deliveryId: result.delivery.id,
+          recipientAgentIds: result.delivery.recipientAgentIds,
+          replayed: result.replayed,
+          executionDirective: "Information will enter each recipient's next otherwise-authorized Run; no Run or reply was created.",
+        };
+      } catch (error) {
+        return reply.code(409).send({
+          error: error instanceof Error ? error.message : "next-run delivery failed",
+        });
+      }
+    }
     if (!candidateIntent || !(["broadcast", "direct_to_user", "collaboration"] as const).includes(candidateIntent)) {
       return reply.code(400).send({
         error: 'this Run has no unambiguous reply route; use intent "broadcast", "direct_to_user", or "collaboration" explicitly',
@@ -137,7 +265,6 @@ export function registerAgentCommunicationRoutes(
     if (v3Urgency !== undefined && v3Urgency !== "ordinary" && v3Urgency !== "urgent") {
       return reply.code(400).send({ error: "urgency must be ordinary or urgent" });
     }
-    const currentAuthor = store.getAgent(capability.agentId);
     if (intent === "broadcast" && currentAuthor?.managerAgentId) {
       return reply.code(409).send({
         error: "managed agents cannot broadcast; use collaboration with the agents who need the information",
@@ -214,7 +341,6 @@ export function registerAgentCommunicationRoutes(
       : undefined;
     const replayCommunication = replayPayload?.communication ?? replay?.payload as CommunicationEvent | undefined;
 
-    const requiredSteeringFence = coordinationV3.latestAcknowledgedSteeringInjection(capability.runId);
     const suppliedSteeringFence = request.body?.steeringInjectionId?.trim();
     if (!replay && requiredSteeringFence && suppliedSteeringFence !== requiredSteeringFence) {
       return reply.code(409).send({

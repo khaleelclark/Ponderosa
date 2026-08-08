@@ -53,7 +53,6 @@ import type { RuntimeElicitationBroker } from "../runtime-elicitation-broker.js"
 import {
   concreteRuntimeSelection,
   normalizedRuntimeSelection,
-  providerSessionContractHash,
   runtimeSelectionError,
   runtimeSpeedSelectionError,
 } from "../runtime-selection.js";
@@ -322,11 +321,6 @@ export function registerAgentMessageRunRoute(
       }
       const effectiveSpeed =
         hasSpeedOverride && requestedSpeed ? requestedSpeed : "standard";
-      const runtimeSessionContractHash = providerSessionContractHash(
-        runtimeEngineId,
-        effectiveModel,
-        effectiveEffort,
-      );
       const providerSlash = !internalV3Dispatch ? /^\/([\p{L}\p{N}_:-]+)(?:\s|$)/u.exec(text) : undefined;
       if (providerSlash) {
         const runtimeSession = activeRuns.get(agent.id)?.runtimeSession ?? reusableRuntime(agent.id)?.session;
@@ -636,7 +630,7 @@ export function registerAgentMessageRunRoute(
         v3FreshProviderSession,
         v3ActivationPrompt,
         effectiveModel,
-        runtimeSessionContractHash,
+        effectiveEffort,
         messageAttachments,
         sourceConversationId,
         communicationEventId,
@@ -676,7 +670,8 @@ export function registerAgentMessageRunRoute(
         policySnapshotHash,
         systemPrompt,
         runtimeSessionContractHash: effectiveRuntimeSessionContractHash,
-        rolloverInstructionPrompt,
+        availableRuntimeTools,
+        availableRuntimeToolNames,
         prompt,
         freshPrompt,
         providerSessionDisposition,
@@ -688,6 +683,7 @@ export function registerAgentMessageRunRoute(
         providerInputManifest,
         freshProviderInputManifest,
         manifestArtifactIds,
+        pendingCommunicationV4NextRunDeliveryIds,
         runtimeAttachmentDirectory,
         runtimeAttachmentCleanupAfterRun,
       } = preparedRun;
@@ -809,6 +805,7 @@ export function registerAgentMessageRunRoute(
         mentionDepth: mentionDepth ?? 0,
         mentionTrail,
         reachableArtifactIds: manifestArtifactIds,
+        availableToolNames: availableRuntimeToolNames,
         ...(sharedTaskTurn ? { plainSharedReply: true } : {}),
         ...(defaultReply ? { defaultReply } : {}),
       });
@@ -838,13 +835,13 @@ export function registerAgentMessageRunRoute(
         manifestArtifactIds,
         messageCapability,
         policySnapshotHash,
+        pendingCommunicationV4NextRunDeliveryIds,
         previousBroadcastCursor,
         previousCursor,
         project,
         prompt,
         resumeSessionId,
         reusablePersistentRuntime,
-        rolloverInstructionPrompt,
         roomCanonicalTipId,
         roomDeltaOmitted,
         roomMessages,
@@ -853,6 +850,7 @@ export function registerAgentMessageRunRoute(
         runId,
         runtimeEngineId,
         runtimeSessionContractHash: effectiveRuntimeSessionContractHash,
+        availableRuntimeTools,
         runtimeAttachmentDirectory,
         runtimeAttachmentCleanupAfterRun,
         seedHistory,

@@ -35,6 +35,7 @@ export interface ConversationRouteDependencies {
   teamDirectory: (projectId: string, conversationId?: string, fallbackAgentId?: string, selectedAgentIds?: readonly string[]) => TeamDirectoryDto;
   hasActiveRun: (agentId: string) => boolean;
   handleAgentConversationRemoval: (agentId: string, conversationId: string) => void;
+  purgeCommunicationV4Conversation: (conversationId: string) => void;
   refreshTriggers: () => Promise<unknown>;
   draftAttachmentSurfaceDir: (draftId: string) => string;
 }
@@ -56,6 +57,7 @@ export function registerConversationRoutes(
     teamDirectory,
     hasActiveRun,
     handleAgentConversationRemoval,
+    purgeCommunicationV4Conversation,
     refreshTriggers,
     draftAttachmentSurfaceDir,
   } = dependencies;
@@ -244,7 +246,7 @@ export function registerConversationRoutes(
     }
     const deleted = store.deleteConversation(request.params.id, (agentId, conversationId) => {
       handleAgentConversationRemoval(agentId, conversationId);
-    });
+    }, purgeCommunicationV4Conversation);
     if (deleted && current) {
       await refreshTriggers();
       const cursor = workspace.cursor();

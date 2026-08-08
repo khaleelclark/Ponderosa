@@ -105,6 +105,12 @@ export class CoordinationV3DeletionAuthority {
           updated_at = ?
         WHERE agent_id = ? AND state IN ('pending', 'retry_pending')
       `).run(now, "activation recipient was deleted", now, agentId);
+      this.sqlite.prepare(`
+        UPDATE communication_v4_next_run_recipients
+        SET state = 'unavailable', unavailable_at = ?,
+          unavailable_reason = 'recipient Agent was deleted'
+        WHERE agent_id = ? AND state = 'pending'
+      `).run(now, agentId);
       const ownedTriggers = this.sqlite.prepare(`
         SELECT id FROM trigger_definitions WHERE agent_id = ?
       `).all(agentId) as Array<{ id: string }>;
@@ -199,6 +205,14 @@ export class CoordinationV3DeletionAuthority {
         agentId,
         scopeKey,
       );
+      this.sqlite.prepare(`
+        UPDATE communication_v4_next_run_recipients
+        SET state = 'unavailable', unavailable_at = ?,
+          unavailable_reason = 'recipient left the Team Chat'
+        WHERE agent_id = ? AND state = 'pending' AND delivery_id IN (
+          SELECT id FROM communication_v4_next_run_deliveries WHERE conversation_id = ?
+        )
+      `).run(now, agentId, conversationId);
       const scopedTriggers = this.sqlite.prepare(`
         SELECT id FROM trigger_definitions
         WHERE agent_id = ? AND conversation_id = ?
@@ -260,6 +274,14 @@ export class CoordinationV3DeletionAuthority {
     this.sqlite.transaction(() => {
       // Remove rollover ownership before its source Runs and Activations so no
       // restart recovery can observe a partially purged Project transition.
+      this.sqlite.prepare(`
+        DELETE FROM communication_v4_next_run_recipients WHERE delivery_id IN (
+          SELECT id FROM communication_v4_next_run_deliveries WHERE project_id = ?
+        )
+      `).run(projectId);
+      this.sqlite.prepare(`
+        DELETE FROM communication_v4_next_run_deliveries WHERE project_id = ?
+      `).run(projectId);
       this.sqlite.prepare(`
         DELETE FROM context_rollovers WHERE project_id = ?
       `).run(projectId);
@@ -342,6 +364,19 @@ export class CoordinationV3DeletionAuthority {
           SELECT id FROM agents WHERE project_id = ?
         )
       `).run(projectId);
+    })();
+  }
+
+  purgeCommunicationV4Conversation(conversationId: string): void {
+    this.sqlite.transaction(() => {
+      this.sqlite.prepare(`
+        DELETE FROM communication_v4_next_run_recipients WHERE delivery_id IN (
+          SELECT id FROM communication_v4_next_run_deliveries WHERE conversation_id = ?
+        )
+      `).run(conversationId);
+      this.sqlite.prepare(`
+        DELETE FROM communication_v4_next_run_deliveries WHERE conversation_id = ?
+      `).run(conversationId);
     })();
   }
 }

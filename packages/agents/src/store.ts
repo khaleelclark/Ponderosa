@@ -490,8 +490,16 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.workspaceCatalog.updateConversation(id, patch);
   }
 
-  deleteConversation(id: string, beforeMembershipDelete?: (agentId: string, conversationId: string) => void): boolean {
-    return this.workspaceCatalog.deleteConversation(id, beforeMembershipDelete);
+  deleteConversation(
+    id: string,
+    beforeMembershipDelete?: (agentId: string, conversationId: string) => void,
+    beforeProjectionDelete?: (conversationId: string) => void,
+  ): boolean {
+    return this.workspaceCatalog.deleteConversation(
+      id,
+      beforeMembershipDelete,
+      beforeProjectionDelete,
+    );
   }
 
   appendConversationMessage(

@@ -21,6 +21,7 @@ export interface OpenedDb {
 
 const schemaDir = join(dirname(fileURLToPath(import.meta.url)), "schema");
 const baselineName = "0000_current_schema.sql";
+const schemaExtensions = ["0001_communication_v4_next_run_deliveries.sql"] as const;
 const legacyMigrationTable = "_migrations";
 const schemaVersionTable = "_schema_version";
 const latestLegacyMigration = "0035_coordination_question_suspensions.sql";
@@ -128,6 +129,26 @@ function establishSchema(sqlite: Database.Database): void {
   })();
 }
 
+/** Apply explicit post-baseline extensions in order. Every extension and its
+ * marker commit together, so an interrupted open is safe to retry. Extension
+ * SQL is also idempotent to support fresh baselines that already include the
+ * latest tables. */
+function establishSchemaExtensions(sqlite: Database.Database): void {
+  for (const extensionName of schemaExtensions) {
+    const sql = readFileSync(join(schemaDir, extensionName), "utf8");
+    const applied = sqlite
+      .prepare(`SELECT 1 FROM ${schemaVersionTable} WHERE name = ?`)
+      .get(extensionName) !== undefined;
+    if (applied) continue;
+    sqlite.transaction(() => {
+      sqlite.exec(sql);
+      sqlite
+        .prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
+        .run(extensionName, new Date().toISOString());
+    })();
+  }
+}
+
 /** Additive read indexes are safe to establish for both adopted and already
  * baselined databases without rewriting canonical rows. */
 function establishReadIndexes(sqlite: Database.Database): void {
@@ -214,6 +235,7 @@ export function openDb(file: string): OpenedDb {
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("foreign_keys = ON");
   establishSchema(sqlite);
+  establishSchemaExtensions(sqlite);
   establishReadIndexes(sqlite);
   return { db: drizzle(sqlite, { schema }), client: sqlite };
 }

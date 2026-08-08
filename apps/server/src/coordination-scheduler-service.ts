@@ -13,12 +13,21 @@ import {
   type PersistentRuntime,
   type PonderosaServer,
 } from "./app-contracts.js";
-import { CoordinationV3Scheduler } from "./coordination-v3-scheduler.js";
+import { collectReachableArtifactIds } from "./artifact-refs.js";
+import {
+  compileActivationPrompt,
+  CoordinationV3Scheduler,
+} from "./coordination-v3-scheduler.js";
 import type { createCommunicationArtifactAuthority } from "./communication-artifacts.js";
 import type { EngineAvailabilityStore } from "./engine-availability-store.js";
 import type { QueuedEditRevisionOutboxPayload } from "./routes/queued-messages.js";
 
 type ArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>;
+
+/** One scheduler packet gets a bounded share of the provider context. Results
+ * above this hard UTF-8 envelope use their already-durable, validated artifact
+ * file instead of risking a provider request/context rejection. */
+const AUTOMATIC_RESULT_PROVIDER_PACKET_UTF8_LIMIT = 256 * 1024;
 
 interface CoordinationSchedulerContext {
   opts: CreateServerOptions;
@@ -267,6 +276,31 @@ return new CoordinationV3Scheduler(
         };
       }
     },
+    compilePrompt: (lease) => compileActivationPrompt(lease, {
+      maxUtf8Bytes: AUTOMATIC_RESULT_PROVIDER_PACKET_UTF8_LIMIT,
+      resolveResultArtifacts: (activation) => {
+        if (!activation.kind.startsWith("coordination_")) return [];
+        return [...collectReachableArtifactIds(activation.payload)].flatMap((artifactId) => {
+          const artifact = coordinationV3.runtimeArtifact(artifactId);
+          if (!artifact || artifact.ownerKind !== "request_update" || artifact.projectId !== lease.projectId) {
+            return [];
+          }
+          const authoritative = assets.authoritativeRuntimeArtifact(lease.projectId, artifact);
+          if (!authoritative) {
+            throw new Error(`correlated result artifact is unavailable: ${artifactId}`);
+          }
+          return [{
+            artifactId,
+            title: artifact.title,
+            mediaType: artifact.mediaType,
+            byteLength: authoritative.byteLength,
+            sha256: authoritative.contentHash,
+            content: authoritative.body.toString("utf8"),
+            localPath: authoritative.localPath,
+          }];
+        });
+      },
+    }),
     dispatchProviderOperation: async (operation) => {
       const entry = [...activeRuns.entries()].find(([, run]) => run.runId === operation.runId);
       if (!entry) return { accepted: true };

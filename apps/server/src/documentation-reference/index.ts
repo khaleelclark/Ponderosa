@@ -317,15 +317,6 @@ export class DocumentationReferenceIndex {
     };
   }
 
-  compactPromptIndex(): string {
-    const lines = this.index().sections.map((section) => `${section.title}: ${section.articles.map((article) => article.ref).join(", ")}`);
-    return [
-      "[PRODUCT DOCUMENTATION | ON-DEMAND REFERENCE]",
-      `Version-controlled Ponderosa product documentation index (${this.records.length} articles; version ${this.version}).`,
-      ...lines,
-      "Retrieve only needed full articles with ponderosa_docs({refs:[\"ponderosa://docs/<id>\"]}); continue with nextCursor when returned.",
-    ].join("\n");
-  }
 }
 
 export const documentationReferences = new DocumentationReferenceIndex();

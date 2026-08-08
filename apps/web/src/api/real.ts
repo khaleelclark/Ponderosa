@@ -52,6 +52,7 @@ import type {
   EditQueuedMessageResponse,
   EngineDto,
   EngineModelValidationDto,
+  TargetedNextRunReceiptListDto,
   FilesResponse,
   GenerateConversationTitleResponse,
   GlobalChatSearchResponseDto,
@@ -369,6 +370,11 @@ export const realApi = {
       method: "POST",
       body: JSON.stringify(request satisfies CreateConversationMessageRequest),
     });
+  },
+  getTargetedNextRunReceipts(conversationId: string, limit = 20): Promise<TargetedNextRunReceiptListDto> {
+    return requestJson<TargetedNextRunReceiptListDto>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/next-run-deliveries${toQuery({ limit })}`,
+    );
   },
   getConversationDraft(conversationId: string, ownerId: string): Promise<ConversationDraftDto> {
     return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft?ownerId=${encodeURIComponent(ownerId)}`);

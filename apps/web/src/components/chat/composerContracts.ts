@@ -1,4 +1,5 @@
 import type {
+  AgentMentionBindingDto,
   EngineCommand,
   EngineComposerCapability,
 } from "@ponderosa/core";
@@ -12,14 +13,20 @@ export interface ChatComposerContract {
     files: File[],
     stagedAttachmentIds?: string[],
     draftOwnerId?: string,
-    context?: { implicitRecipientId?: string },
+    context?: {
+      implicitRecipientId?: string;
+      mentionedAgents?: AgentMentionBindingDto[];
+    },
   ): Promise<unknown> | unknown;
   onQueue?(
     text: string,
     files: File[],
     stagedAttachmentIds?: string[],
     draftOwnerId?: string,
-    context?: { implicitRecipientId?: string },
+    context?: {
+      implicitRecipientId?: string;
+      mentionedAgents?: AgentMentionBindingDto[];
+    },
   ): Promise<unknown> | unknown;
   onCommand?(command: EngineCommand, argumentsText?: string): Promise<unknown> | unknown;
   commands?: EngineCommand[];

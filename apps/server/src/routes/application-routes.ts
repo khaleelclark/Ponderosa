@@ -72,7 +72,7 @@ type ApplicationRoutesContext =
     "logError" | "projectDeletionCleanupFaults"> &
   Omit<Parameters<typeof registerConversationRoutes>[1],
     "hasActiveRun" | "handleAgentConversationRemoval" |
-    "refreshTriggers"> &
+    "purgeCommunicationV4Conversation" | "refreshTriggers"> &
   Omit<Parameters<typeof registerConversationDeliveryRoutes>[1],
     "projectDeletionInProgress" | "assetMetadata"> &
   Parameters<typeof registerQueuedMessageRoutes>[1] &
@@ -358,6 +358,8 @@ registerConversationRoutes(app, {
   hasActiveRun: agentId => activeRuns.has(agentId),
   handleAgentConversationRemoval: (agentId, conversationId) =>
     coordinationV3.handleAgentConversationRemoval(agentId, conversationId),
+  purgeCommunicationV4Conversation: conversationId =>
+    coordinationV3.purgeCommunicationV4Conversation(conversationId),
   refreshTriggers: () => triggerSources.refresh(),
   draftAttachmentSurfaceDir,
 });

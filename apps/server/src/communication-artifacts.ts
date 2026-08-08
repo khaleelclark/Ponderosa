@@ -12,7 +12,10 @@ import {
   type ManagedArtifactAccess,
 } from "@ponderosa/agents";
 import { AssetError, type AssetStore } from "./assets.js";
+import { boundedUtf8Preview } from "./static-content.js";
 import type { PreparedCommunicationArtifact } from "./routes/conversation-deliveries.js";
+
+const OPERATOR_MESSAGE_PREVIEW_UTF8_BYTES = 4_000;
 
 interface CommunicationArtifactContext {
   dataDir: string;
@@ -172,9 +175,13 @@ export function createCommunicationArtifactAuthority(context: CommunicationArtif
       content: canonicalText,
       createdAt: input.createdAt,
     });
+    const preview = boundedUtf8Preview(
+      Buffer.from(canonicalText, "utf8"),
+      OPERATOR_MESSAGE_PREVIEW_UTF8_BYTES,
+    )?.toString("utf8") ?? "";
     return {
       canonicalText,
-      publishedText: `Full message: ponderosa://artifact/${artifact.id}`,
+      publishedText: `Message preview (first ${OPERATOR_MESSAGE_PREVIEW_UTF8_BYTES.toLocaleString("en-US")} UTF-8 bytes):\n${preview}\n\nFull message: ponderosa://artifact/${artifact.id}`,
       artifact,
       document: {
         id: artifact.id,

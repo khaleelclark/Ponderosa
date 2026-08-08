@@ -52,8 +52,8 @@ export function boundedSeedHistory<T extends { text: string }>(
  * pages. Unlike a seed (which intentionally selects the newest tail), a
  * continuation must never jump over an older unseen message merely to fit the
  * prompt budget. Canonical messages larger than the entire page are represented
- * by a bounded preview; their complete content remains available through the
- * older-context/artifact retrieval surface.
+ * by a bounded preview. Their complete content remains durable, but V4 exposes
+ * no provider history-retrieval capability.
  */
 export function boundedContinuationHistory<T extends { text: string }>(
   messages: T[],
@@ -71,7 +71,7 @@ export function boundedContinuationHistory<T extends { text: string }>(
       continue;
     }
     if (selected.length > 0) break;
-    const marker = "\n[Remaining content is available from the older-context reference]";
+    const marker = "\n[Remaining durable history omitted at this session boundary]";
     const available = Math.max(0, remaining - unicodeCodePointLength(marker));
     selected.push({
       ...message,
@@ -135,15 +135,6 @@ function teamDirectoryPrompt(directory: TeamDirectoryDto): string {
   return contextSection("TEAM DIRECTORY", "ON-DEMAND REFERENCE", [
     `${directory.agents.length} visible Agent${directory.agents.length === 1 ? "" : "s"} are currently in scope.`,
     "Fetch current identities, reporting lines, and status only when needed with ponderosa_team_directory({}).",
-  ]);
-}
-
-function olderContextPrompt(): string {
-  return contextSection("OLDER SCOPED CONTEXT", "ON-DEMAND REFERENCE", [
-    "Earlier messages were omitted from the bounded provider input.",
-    "Use ponderosa_context({scope:\"current_chat\"}) for older history belonging to the current chat.",
-    "Use ponderosa_context({scope:\"agent_private\"}) for this Agent's own Direct history across Project chats.",
-    "The agent_private scope excludes other Agents' Direct messages and shared content from other chats.",
   ]);
 }
 
@@ -360,7 +351,6 @@ export {
   individualChatPrompt,
   managerRelationshipPrompt,
   mergeScopedContextSources,
-  olderContextPrompt,
   sharedBroadcastContextPrompt,
   sharedRequestCompletionPrompt,
   teamDirectoryPrompt,

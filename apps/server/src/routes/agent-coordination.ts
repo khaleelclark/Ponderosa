@@ -196,6 +196,7 @@ export function registerAgentCoordinationRoutes(
       completionMode?: "join" | "callback" | "record";
       wakePolicy?: "each_result" | "final_only";
       awaitResult?: boolean;
+      lifetime?: RequestLifetime;
       deadlineAt?: string;
       requests?: Array<{ requestId?: string; recipientAgentId?: string; text?: string; lifetime?: RequestLifetime }>;
       join?: { id?: string; mode?: "all" | "any" | "quorum"; quorum?: number; deadlineAt?: string; satisfyingOutcomes?: CoordinationRequestState[]; requestIds?: string[]; wakePolicy?: "each_result" | "final_only" };
@@ -212,7 +213,7 @@ export function registerAgentCoordinationRoutes(
     const steeringInjectionIds = coordinationV3.steeringInjectionIds(capability.runId);
     const body = request.body ?? {};
     const unknownTopLevel = Object.keys(body).filter((key) =>
-      !["idempotencyKey", "recipientAgentId", "text", "delegations", "completionMode", "wakePolicy", "awaitResult", "deadlineAt", "requests", "join"].includes(key));
+      !["idempotencyKey", "recipientAgentId", "text", "delegations", "completionMode", "wakePolicy", "awaitResult", "lifetime", "deadlineAt", "requests", "join"].includes(key));
     if (unknownTopLevel.length) {
       return reply.code(400).send({ error: `unknown coordinate field(s): ${unknownTopLevel.join(", ")}` });
     }
@@ -226,7 +227,8 @@ export function registerAgentCoordinationRoutes(
       return reply.code(400).send({ error: "idempotencyKey must be a string" });
     }
     const shorthand = body.recipientAgentId !== undefined || body.text !== undefined || body.delegations !== undefined ||
-      body.completionMode !== undefined || body.wakePolicy !== undefined || body.awaitResult !== undefined || body.deadlineAt !== undefined;
+      body.completionMode !== undefined || body.wakePolicy !== undefined || body.awaitResult !== undefined ||
+      body.lifetime !== undefined || body.deadlineAt !== undefined;
     if (shorthand && (body.requests !== undefined || body.join !== undefined)) {
       return reply.code(400).send({ error: "common delegation fields cannot be combined with requests or join" });
     }
@@ -256,9 +258,24 @@ export function registerAgentCoordinationRoutes(
     if (body.completionMode !== undefined && body.awaitResult !== undefined) {
       return reply.code(400).send({ error: "completionMode cannot be combined with legacy awaitResult" });
     }
+    if (body.lifetime !== undefined && body.deadlineAt !== undefined) {
+      return reply.code(400).send({ error: "lifetime cannot be combined with legacy deadlineAt" });
+    }
     if ((body.awaitResult !== undefined && typeof body.awaitResult !== "boolean") ||
         (body.deadlineAt !== undefined && typeof body.deadlineAt !== "string")) {
       return reply.code(400).send({ error: "awaitResult must be boolean and deadlineAt must be an ISO timestamp" });
+    }
+    if (body.lifetime !== undefined) {
+      if (!body.lifetime || typeof body.lifetime !== "object" || Array.isArray(body.lifetime) ||
+          (body.lifetime.kind !== "deadline" && body.lifetime.kind !== "indefinite") ||
+          (body.lifetime.kind === "deadline" && (typeof body.lifetime.at !== "string" || !body.lifetime.at.trim()))) {
+        return reply.code(400).send({ error: "lifetime must be indefinite or a deadline with an ISO at timestamp" });
+      }
+      const allowedLifetime = body.lifetime.kind === "deadline" ? ["kind", "at"] : ["kind"];
+      const unknownLifetime = Object.keys(body.lifetime).filter((key) => !allowedLifetime.includes(key));
+      if (unknownLifetime.length) {
+        return reply.code(400).send({ error: `unknown common lifetime field(s): ${unknownLifetime.join(", ")}` });
+      }
     }
     for (const candidate of body.requests ?? []) {
       if (!candidate || typeof candidate !== "object") {
@@ -321,9 +338,11 @@ export function registerAgentCoordinationRoutes(
     if (shorthand && completionMode !== "join" && body.wakePolicy !== undefined) {
       return reply.code(400).send({ error: "wakePolicy is only valid when completionMode is join" });
     }
-    const commonLifetime = body.deadlineAt?.trim()
-      ? { kind: "deadline" as const, at: body.deadlineAt.trim() }
-      : { kind: "indefinite" as const };
+    const commonLifetime = body.lifetime?.kind === "deadline"
+      ? { kind: "deadline" as const, at: body.lifetime.at.trim() }
+      : body.lifetime ?? (body.deadlineAt?.trim()
+        ? { kind: "deadline" as const, at: body.deadlineAt.trim() }
+        : { kind: "indefinite" as const });
     const requests: Array<{ requestId?: string; recipientAgentId?: string; text?: string; lifetime?: RequestLifetime }> = shorthand ? commonDelegations.map((delegation) => ({
       recipientAgentId: delegation.recipientAgentId,
       text: delegation.text,
@@ -341,7 +360,7 @@ export function registerAgentCoordinationRoutes(
           })),
           completionMode,
           wakePolicy: join?.wakePolicy ?? null,
-          deadlineAt: body.deadlineAt?.trim() || null,
+          lifetime: commonLifetime,
         })
       : undefined);
     if (!idempotencyKey || idempotencyKey.length > 200 || requests.length > 100 ||

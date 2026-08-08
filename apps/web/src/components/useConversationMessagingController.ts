@@ -1,16 +1,13 @@
 import type {
   AgentDto,
   AgentHealthDto,
+  AgentMentionBindingDto,
   ConversationDto,
   EngineDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import {
-  findMentionedAgents,
-  hasBroadcastMention,
-  hasEveryoneMention,
-} from "../mentions";
+import { hasBroadcastMention, hasEveryoneMention } from "../mentions";
 import { api } from "../api";
 import { ApiRequestError } from "../api/types";
 import { createClientId } from "../clientId";
@@ -99,6 +96,9 @@ export function useConversationMessagingController({
     });
     void queryClient.invalidateQueries({
       queryKey: queryKeys.collaborationPrefix(conversationId),
+    });
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.conversations.targetedNextRun(conversationId),
     });
     if (conversation) {
       void queryClient.invalidateQueries({
@@ -214,15 +214,19 @@ export function useConversationMessagingController({
       text,
       files,
       requestId,
-      agentIds,
+      agentMentions,
       activeRunDelivery,
     }: {
       text: string;
       files: File[];
       requestId: string;
-      agentIds: string[];
+      agentMentions: AgentMentionBindingDto[];
       activeRunDelivery: "steer" | "queue";
     }) => {
+      const agentIds = agentMentions.map(binding => binding.agentId);
+      if (agentIds.length > 0 && files.length > 0) {
+        throw new Error("Targeted next-run delivery accepts message text only.");
+      }
       const owner = agents.find(agent => !agent.archived);
       if (files.length && !owner) {
         throw new Error(
@@ -251,7 +255,7 @@ export function useConversationMessagingController({
         return await api.sendConversationMessage(conversationId, {
           text,
           attachments,
-          recipientAgentIds: agentIds,
+          ...(agentMentions.length ? { recipientAgentMentions: agentMentions } : {}),
           recipientAttachments: agentIds.map(agentId => ({
             agentId,
             attachmentIds: (attachmentsByAgent.get(agentId) ?? []).map(
@@ -260,7 +264,6 @@ export function useConversationMessagingController({
           })),
           activeRunDelivery,
           idempotencyKey: requestId,
-          ...(agentIds.length === 1 ? runConfig : {}),
         });
       } catch (error) {
         await Promise.allSettled(
@@ -449,11 +452,16 @@ export function useConversationMessagingController({
     draftAttachmentIds: string[] = [],
     draftOwnerId?: string,
     implicitTargetAgentId?: string,
+    mentionedAgents: AgentMentionBindingDto[] = [],
   ) => {
     const broadcastMentioned = hasBroadcastMention(text);
     const broadcastText = managerBroadcastText(text);
     const everyoneMentioned = hasEveryoneMention(text);
-    const explicitlyMentionedAgents = findMentionedAgents(text, agents);
+    const explicitlyMentionedAgents = mentionedAgents.flatMap(binding => {
+      const agent = agents.find(candidate =>
+        candidate.id === binding.agentId && !candidate.archived);
+      return agent ? [agent] : [];
+    });
     const implicitTarget =
       implicitTargetAgentId &&
       !everyoneMentioned &&
@@ -479,7 +487,7 @@ export function useConversationMessagingController({
         text: broadcastText,
         files,
         requestId: createClientId(),
-        agentIds: targets.map(target => target.id),
+        agentMentions: broadcastMentioned ? mentionedAgents : [],
         activeRunDelivery,
       });
       return;
