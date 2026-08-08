@@ -96,7 +96,7 @@ test("rejects absolute, escaping, and dangling links", async (t) => {
       const directory = fixture(t);
       const root = path.join(directory, scenario.name);
       mkdirSync(root);
-      symlinkSync(scenario.target(root), path.join(root, "unsafe-link"));
+      symlinkSync(scenario.target(root), path.join(root, "unsafe-link"), "file");
       assert.throws(
         () => auditPortableSymlinkTree(root, { label: scenario.name }),
         scenario.expected,
