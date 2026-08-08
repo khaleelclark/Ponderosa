@@ -42,6 +42,24 @@ function humanizeProviderName(value: string): string {
     .replaceAll(/\b\p{L}/gu, (letter) => letter.toLocaleUpperCase());
 }
 
+function validContextRolloverHandoff(text: string): boolean {
+  const handoff = text.trim();
+  const words = handoff.split(/\s+/u).filter(Boolean).length;
+  if (words < 150 || words > 500 || unicodeCodePointLength(handoff) > 20_000) return false;
+  const normalized = handoff.toLocaleLowerCase();
+  const requiredLabels = [
+    "objective:",
+    "completed work:",
+    "unfinished work:",
+    "blockers:",
+    "exact next action:",
+    "verified facts:",
+    "assumptions:",
+  ];
+  return requiredLabels.every((label) => normalized.includes(label)) &&
+    /\b(?:artifact|file|path|reference)s?\b/u.test(normalized);
+}
+
 export interface ProviderRunExecutionInput {
   activeRun: ActiveRun;
   availableRuntimeTools: RuntimeDynamicToolSpec[];
@@ -897,8 +915,7 @@ export function startProviderRunExecution(
         handoffActivationAcknowledged = handoffInjection?.state === "acknowledged";
         if (handoffActivationAcknowledged) {
           const handoff = finalText.trim();
-          const handoffWords = handoff.split(/\s+/u).filter(Boolean).length;
-          if (handoffWords >= 300 && handoffWords <= 500 && unicodeCodePointLength(handoff) <= 20_000) {
+          if (validContextRolloverHandoff(handoff)) {
             const existing = store.continuationHandoffForRun(agent.id, runId);
             const handoffId = existing?.id ?? randomUUID();
             if (!existing) {

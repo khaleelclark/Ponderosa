@@ -86,7 +86,7 @@ export class CoordinationV3ContextRolloverAuthority {
           rolloverId: id,
           detectedOccupancy: input.detectedOccupancy,
           threshold: input.threshold,
-          instruction: "The pressure source Run has ended. Produce only one self-contained 300–500-word bounded handoff covering the objective, completed work, unfinished work, blockers, exact next action, verified facts versus assumptions, and relevant file or artifact references. Do not resume the task or repeat its output contract. The Ponderosa runtime, not a provider tool call, owns session replacement.",
+          instruction: "The pressure source Run has ended. Produce only one self-contained 150–500-word bounded handoff using these exact labels: Objective:, Completed work:, Unfinished work:, Blockers:, Exact next action:, Verified facts:, Assumptions:. Include relevant file, path, artifact, or reference identifiers. Do not call a tool, send a message, resume the task, or repeat its output contract; place the handoff only in the Work log. The Ponderosa runtime, not a provider tool call, owns session replacement.",
         },
         sourceKind: "context_rollover",
         sourceId: id,
