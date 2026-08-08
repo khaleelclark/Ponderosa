@@ -136,6 +136,7 @@ if (!reportOption) {
   throw new Error("GUI launch qualification requires a non-empty report path.");
 }
 const reportPath = canonicalPath(reportOption);
+const skipProviderQualification = process.argv.includes("--skip-provider-qualification");
 
 const appExecutable = path.join(application, "Contents", "MacOS", "Ponderosa Engine");
 const installedLauncherDist = path.join(installRoot, "app", "launcher", "dist");
@@ -173,6 +174,9 @@ const guiEnvironment = Object.fromEntries(Object.entries({
 }).filter((entry) => typeof entry[1] === "string"));
 assert(typeof guiEnvironment.HOME === "string", "Normal GUI qualification requires HOME.");
 const checks = [];
+const releaseBlockers = skipProviderQualification
+  ? ["Authenticated Codex/Claude provider discovery requires a manual macOS qualification host"]
+  : [];
 let started = false;
 let launchAttempted = false;
 const observedPids = new Set();
@@ -398,7 +402,14 @@ try {
     "content-type": "application/json",
   };
 
-  const enginesResponse = await fetch(`${baseUrl}/api/engines`, {
+  if (skipProviderQualification) {
+    checks.push({
+      id: "macos-gui-provider-survival",
+      status: "manual",
+      detail: "authenticated Codex/Claude discovery and provider execution deferred to a manual macOS gate",
+    });
+  } else {
+    const enginesResponse = await fetch(`${baseUrl}/api/engines`, {
     headers: { cookie },
     signal: AbortSignal.timeout(15_000),
   });
@@ -487,15 +498,16 @@ try {
     signal: AbortSignal.timeout(5_000),
   });
   assert(postDiscoveryHealth.ok, "Provider discovery/model probing terminated the GUI-launched daemon.");
-  checks.push({
-    id: "macos-gui-provider-survival",
-    status: "pass",
-    detail: expectedClaude?.providerClass === "claude-desktop"
-      ? `Codex capabilities and Claude Desktop ${expectedClaude.version} models resolved; daemon remained healthy`
-      : claudeModels.ok
-        ? "Codex capabilities and a non-Desktop Claude model provider resolved; daemon remained healthy"
-        : "Codex capabilities resolved; Claude was proven absent or unusable and returned 503 without terminating the daemon",
-  });
+    checks.push({
+      id: "macos-gui-provider-survival",
+      status: "pass",
+      detail: expectedClaude?.providerClass === "claude-desktop"
+        ? `Codex capabilities and Claude Desktop ${expectedClaude.version} models resolved; daemon remained healthy`
+        : claudeModels.ok
+          ? "Codex capabilities and a non-Desktop Claude model provider resolved; daemon remained healthy"
+          : "Codex capabilities resolved; Claude was proven absent or unusable and returned 503 without terminating the daemon",
+    });
+  }
 
   launcherCall("stop");
   started = false;
@@ -531,6 +543,8 @@ try {
     platform: process.platform,
     arch: process.arch,
     checks,
+    releaseQualified: releaseBlockers.length === 0,
+    releaseBlockers,
   }, null, 2)}\n`, { mode: 0o600 });
   process.stdout.write(`Normal macOS GUI launch qualification passed; report=${reportPath}\n`);
 } catch (error) {

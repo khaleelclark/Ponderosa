@@ -132,7 +132,11 @@ jobs:
           artifact="$(find dist/installers -maxdepth 1 -type f -name '*.${{ matrix.format }}' -print -quit)"
           test -n "$artifact"
           report="dist/qualification/native-installed-artifact.json"
-          node packaging/qualification/qualify-installer.mjs --artifact "$artifact" --report "$report"
+          qualifier_args=(--artifact "$artifact" --report "$report")
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            qualifier_args+=(--skip-provider-qualification)
+          fi
+          node packaging/qualification/qualify-installer.mjs "${qualifier_args[@]}"
           node --input-type=module --eval "
             import { appendFileSync, readFileSync } from 'node:fs';
             const result = JSON.parse(readFileSync(process.argv[1], 'utf8'));
