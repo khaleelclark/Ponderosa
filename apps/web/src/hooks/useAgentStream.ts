@@ -634,7 +634,12 @@ export function useAgentStream(
             detail ? updateAgentDetail(agentId, envelope, detail) : detail,
           );
 
-          if (envelope.event.type === "turn_done") {
+          if (envelope.event.type === "coordination_v3_changed") {
+            // Request summaries are embedded in the canonical message
+            // projection, not the compact coordination event. Reconcile after
+            // the burst so Agent Chat cards reflect new and terminal Requests.
+            scheduleReconciliation({ detail: true });
+          } else if (envelope.event.type === "turn_done") {
             scheduleReconciliation({ detail: true, roster: true, health: true, usage: true });
           } else if (envelope.event.type === "agent_lifecycle" || envelope.event.type === "error") {
             scheduleReconciliation({ roster: true, health: true });

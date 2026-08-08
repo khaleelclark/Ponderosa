@@ -9,6 +9,8 @@ import { inspectorDetails, inspectorJson, inspectorWakePolicy } from "./coordina
 import type { CoordinationWaitCycleV3 } from "./coordination-v3-types.js";
 
 const REQUEST_PREVIEW_CHARACTERS = 280;
+const REQUEST_LIFECYCLE_UPDATE_LIMIT = 100;
+const REQUEST_LIFECYCLE_TEXT_LIMIT = 32_000;
 const ARTIFACT_REF = /ponderosa:\/\/artifact\/[A-Za-z0-9._:-]+/gu;
 
 function parseStoredJson(value: string): unknown {
@@ -36,6 +38,16 @@ function payloadText(payload: unknown): string | undefined {
     }
   }
   return undefined;
+}
+
+function boundedLifecycleText(payload: unknown): { text?: string; truncated?: true } {
+  const text = payloadText(payload);
+  if (!text) return {};
+  if (text.length <= REQUEST_LIFECYCLE_TEXT_LIMIT) return { text };
+  return {
+    text: `${text.slice(0, REQUEST_LIFECYCLE_TEXT_LIMIT - 1).trimEnd()}…`,
+    truncated: true,
+  };
 }
 
 function payloadRefs(payload: unknown): string[] {
@@ -175,6 +187,85 @@ export class CoordinationV3ReadModel {
           oldestRequestAt: cycleEdges.map((edge) => edge.created_at).sort()[0]!,
         };
       });
+    }
+
+  /** Read-only projection of the authoritative coordination graph. Relationships
+     * come from foreign-key/link tables, never from prompt or chat text. */
+    requestSummariesForCommunications(
+      projectId: string,
+      communicationEventIds: string[],
+    ): Map<string, import("@ponderosa/core").CoordinationRequestSummaryDto[]> {
+      const uniqueEventIds = [...new Set(communicationEventIds.filter(Boolean))];
+      const result = new Map<string, import("@ponderosa/core").CoordinationRequestSummaryDto[]>();
+      if (uniqueEventIds.length === 0) return result;
+      const placeholders = uniqueEventIds.map(() => "?").join(", ");
+      const rows = this.sqlite.prepare(`
+        SELECT request.id, request.state, request.requester_agent_id,
+          request.recipient_agent_id, request.conversation_id,
+          request.communication_event_id, request.payload_json,
+          request.updated_at,
+          EXISTS (
+            SELECT 1 FROM coordination_request_updates request_update
+            WHERE request_update.request_id = request.id
+          ) AS has_updates,
+          (
+            SELECT request_update.kind
+            FROM coordination_request_updates request_update
+            WHERE request_update.request_id = request.id
+            ORDER BY request_update.created_at DESC, request_update.id DESC
+            LIMIT 1
+          ) AS latest_update_kind,
+          (
+            SELECT request_update.created_at
+            FROM coordination_request_updates request_update
+            WHERE request_update.request_id = request.id
+            ORDER BY request_update.created_at DESC, request_update.id DESC
+            LIMIT 1
+          ) AS latest_update_at,
+          EXISTS (
+            SELECT 1 FROM coordination_request_updates request_update
+            WHERE request_update.request_id = request.id
+              AND request_update.kind IN ('completed', 'blocked', 'failed')
+          ) AS has_result
+        FROM coordination_requests request
+        WHERE request.project_id = ?
+          AND request.communication_event_id IN (${placeholders})
+        ORDER BY request.created_at ASC, request.id ASC
+      `).all(projectId, ...uniqueEventIds) as Array<{
+        id: string;
+        state: CoordinationRequestState;
+        requester_agent_id: string | null;
+        recipient_agent_id: string;
+        conversation_id: string | null;
+        communication_event_id: string;
+        payload_json: string | null;
+        updated_at: string;
+        has_updates: number;
+        latest_update_kind: CoordinationRequestUpdateKind | null;
+        latest_update_at: string | null;
+        has_result: number;
+      }>;
+      for (const row of rows) {
+        const preview = boundedRequestPreview(row.payload_json);
+        const summary: import("@ponderosa/core").CoordinationRequestSummaryDto = {
+          recordId: row.id,
+          state: row.state,
+          ...(row.requester_agent_id ? { requesterAgentId: row.requester_agent_id } : {}),
+          recipientAgentId: row.recipient_agent_id,
+          ...(row.conversation_id ? { conversationId: row.conversation_id } : {}),
+          communicationEventId: row.communication_event_id,
+          ...(preview ? { preview } : {}),
+          hasUpdates: row.has_updates === 1,
+          ...(row.latest_update_kind ? { latestUpdateKind: row.latest_update_kind } : {}),
+          ...(row.latest_update_at ? { latestUpdateAt: row.latest_update_at } : {}),
+          hasResult: row.has_result === 1,
+          updatedAt: row.updated_at,
+        };
+        const existing = result.get(row.communication_event_id);
+        if (existing) existing.push(summary);
+        else result.set(row.communication_event_id, [summary]);
+      }
+      return result;
     }
 
   /** Read-only projection of the authoritative coordination graph. Relationships
@@ -930,13 +1021,17 @@ export class CoordinationV3ReadModel {
       } | undefined;
       if (!request) return undefined;
 
-      const updateRows = this.sqlite.prepare(`
-        SELECT id, kind, actor_kind, actor_id, in_reply_to_update_id,
-          payload_json, resulting_state, resulting_version, created_at
-        FROM coordination_request_updates
-        WHERE request_id = ?
+      const selectedUpdateRows = this.sqlite.prepare(`
+        SELECT * FROM (
+          SELECT id, kind, actor_kind, actor_id, in_reply_to_update_id,
+            payload_json, resulting_state, resulting_version, created_at
+          FROM coordination_request_updates
+          WHERE request_id = ?
+          ORDER BY created_at DESC, id DESC
+          LIMIT ?
+        ) recent_updates
         ORDER BY created_at, id
-      `).all(request.id) as Array<{
+      `).all(request.id, REQUEST_LIFECYCLE_UPDATE_LIMIT + 1) as Array<{
         id: string;
         kind: CoordinationRequestUpdateKind;
         actor_kind: "agent" | "user" | "system" | "supervisor";
@@ -947,6 +1042,8 @@ export class CoordinationV3ReadModel {
         resulting_version: number;
         created_at: string;
       }>;
+      const updatesTruncated = selectedUpdateRows.length > REQUEST_LIFECYCLE_UPDATE_LIMIT;
+      const updateRows = updatesTruncated ? selectedUpdateRows.slice(1) : selectedUpdateRows;
       const artifactsByUpdate = new Map<
         string,
         CoordinationRequestLifecycleDto["updates"][number]["artifacts"]
@@ -978,7 +1075,7 @@ export class CoordinationV3ReadModel {
       }
 
       const requestPayload = parseStoredJson(request.payload_json);
-      const requestText = payloadText(requestPayload);
+      const requestText = boundedLifecycleText(requestPayload);
       return {
         request: {
           id: request.id,
@@ -988,7 +1085,8 @@ export class CoordinationV3ReadModel {
           recipientAgentId: request.recipient_agent_id,
           state: request.state,
           version: request.version,
-          ...(requestText ? { text: requestText } : {}),
+          ...(requestText.text ? { text: requestText.text } : {}),
+          ...(requestText.truncated ? { textTruncated: true as const } : {}),
           refs: payloadRefs(requestPayload),
           ...(request.communication_event_id
             ? { communicationEventId: request.communication_event_id }
@@ -998,7 +1096,7 @@ export class CoordinationV3ReadModel {
         },
         updates: updateRows.map((row) => {
           const payload = parseStoredJson(row.payload_json);
-          const text = payloadText(payload);
+          const text = boundedLifecycleText(payload);
           const artifacts = artifactsByUpdate.get(row.id) ?? [];
           return {
             id: row.id,
@@ -1008,7 +1106,8 @@ export class CoordinationV3ReadModel {
             ...(row.in_reply_to_update_id
               ? { inReplyToUpdateId: row.in_reply_to_update_id }
               : {}),
-            ...(text ? { text } : {}),
+            ...(text.text ? { text: text.text } : {}),
+            ...(text.truncated ? { textTruncated: true as const } : {}),
             refs: [
               ...new Set([
                 ...payloadRefs(payload),
@@ -1021,6 +1120,7 @@ export class CoordinationV3ReadModel {
             createdAt: row.created_at,
           };
         }),
+        ...(updatesTruncated ? { updatesTruncated: true as const } : {}),
       };
     }
 

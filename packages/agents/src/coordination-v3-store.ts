@@ -389,6 +389,10 @@ export class CoordinationV3Store {
     return this.runtimeCommunicationReadModel.runtimeCommunications(projectId);
   }
 
+  requestCommunicationsNeedingProjection(projectId?: string): RuntimeCommunicationV3View[] {
+    return this.runtimeCommunicationReadModel.requestCommunicationsNeedingProjection(projectId);
+  }
+
   runtimeCommunication(id: string): RuntimeCommunicationV3View | undefined {
     return this.runtimeCommunicationReadModel.runtimeCommunication(id);
   }
@@ -718,6 +722,15 @@ export class CoordinationV3Store {
     minimumAgeMs = 5 * 60_000,
   ): CoordinationWaitCycleV3[] {
     return this.readModel.waitGraphCycles(now, minimumAgeMs);
+  }
+
+  /** Read-only projection of the authoritative coordination graph. Relationships
+   * come from foreign-key/link tables, never from prompt or chat text. */
+  requestSummariesForCommunications(
+    projectId: string,
+    communicationEventIds: string[],
+  ): Map<string, import("@ponderosa/core").CoordinationRequestSummaryDto[]> {
+    return this.readModel.requestSummariesForCommunications(projectId, communicationEventIds);
   }
 
   /** Read-only projection of the authoritative coordination graph. Relationships

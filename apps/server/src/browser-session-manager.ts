@@ -15,11 +15,12 @@ import type {
   BrowserSpawnPublicationOptions,
   BrowserTerminationHandle,
 } from "./chrome-cdp-driver.js";
+import { BrowserDriverActionError } from "./chrome-cdp-driver.js";
 import {
+  boundBrowserSnapshot,
   BrowserSessionError,
   redactBrowserText,
   redactPageInfo,
-  redactSnapshot,
   validateBrowserUrl,
 } from "./browser-security.js";
 
@@ -634,8 +635,8 @@ export class BrowserSessionManager {
         type: "browser_action", sessionId: session.dto.id, executionId: scope.runId,
         actor: "agent", action: "inspect", summary: `inspected ${session.dto.url}`, url: session.dto.url,
       });
-      return { snapshot: redactSnapshot(snapshot), info };
-    }).then(({ snapshot }) => snapshot.slice(0, MAX_SNAPSHOT_TEXT));
+      return { snapshot: boundBrowserSnapshot(snapshot, MAX_SNAPSHOT_TEXT), info };
+    }).then(({ snapshot }) => snapshot);
   }
 
   async act(scope: BrowserScope, input: { action?: unknown; selector?: unknown; text?: unknown; key?: unknown }): Promise<BrowserSessionDto> {
@@ -656,7 +657,21 @@ export class BrowserSessionManager {
     } else {
       throw new BrowserSessionError("browser action requires click(selector), fill(selector,text), or key(key)");
     }
-    return this.pageAction(scope, session, "agent", undefined, work, (info) => {
+    const contextualWork = async (driver: BrowserDriver): Promise<BrowserPageInfo> => {
+      try {
+        return await work(driver);
+      } catch (error) {
+        if (!(error instanceof BrowserDriverActionError)) throw error;
+        const selector = typeof input.selector === "string" ? input.selector : "";
+        const detail = error.reason === "invalid_selector"
+          ? "is not valid CSS"
+          : error.reason === "selector_not_found"
+            ? "matched no element"
+            : "is not editable";
+        throw new BrowserSessionError(`browser ${String(action)} selector ${JSON.stringify(selector)} ${detail}`);
+      }
+    };
+    return this.pageAction(scope, session, "agent", undefined, contextualWork, (info) => {
       this.updateInfo(session, info);
       this.emit(scope, {
         type: "browser_action", sessionId: session.dto.id, executionId: scope.runId,

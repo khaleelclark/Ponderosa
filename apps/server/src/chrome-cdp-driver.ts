@@ -9,6 +9,15 @@ const VIEWPORT = { width: 1280, height: 720 } as const;
 const MAX_SNAPSHOT_TEXT = 16_000;
 const MAX_BROWSER_LAUNCH_ERROR = 4_000;
 
+export class BrowserDriverActionError extends Error {
+  constructor(
+    readonly reason: "invalid_selector" | "selector_not_found" | "selector_not_editable",
+  ) {
+    super(reason);
+    this.name = "BrowserDriverActionError";
+  }
+}
+
 export interface BrowserPageInfo {
   url: string;
   title: string;
@@ -286,7 +295,20 @@ class ChromeCdpDriver implements BrowserDriver {
   }
 
   private async selectorPoint(selector: string): Promise<{ x: number; y: number }> {
-    return this.evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) throw new Error('selector not found'); el.scrollIntoView({block:'center',inline:'center'}); const r=el.getBoundingClientRect(); return {x:r.left+r.width/2,y:r.top+r.height/2}; })()`);
+    const result = await this.evaluate<
+      { status: "ok"; x: number; y: number }
+      | { status: "invalid_selector" | "selector_not_found" }
+    >(`(() => {
+      let el;
+      try { el = document.querySelector(${JSON.stringify(selector)}); }
+      catch { return {status:'invalid_selector'}; }
+      if (!el) return {status:'selector_not_found'};
+      el.scrollIntoView({block:'center',inline:'center'});
+      const r=el.getBoundingClientRect();
+      return {status:'ok',x:r.left+r.width/2,y:r.top+r.height/2};
+    })()`);
+    if (result.status !== "ok") throw new BrowserDriverActionError(result.status);
+    return { x: result.x, y: result.y };
   }
 
   async click(selector: string): Promise<BrowserPageInfo> {
@@ -296,7 +318,18 @@ class ChromeCdpDriver implements BrowserDriver {
   }
 
   async fill(selector: string, text: string): Promise<BrowserPageInfo> {
-    await this.evaluate(`(() => { const el=document.querySelector(${JSON.stringify(selector)}); if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable)) throw new Error('selector is not editable'); el.focus(); if ('value' in el) { el.value=''; el.dispatchEvent(new Event('input',{bubbles:true})); } else { el.textContent=''; } return true; })()`);
+    const result = await this.evaluate<"ok" | "invalid_selector" | "selector_not_found" | "selector_not_editable">(`(() => {
+      let el;
+      try { el=document.querySelector(${JSON.stringify(selector)}); }
+      catch { return 'invalid_selector'; }
+      if (!el) return 'selector_not_found';
+      if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable)) return 'selector_not_editable';
+      el.focus();
+      if ('value' in el) { el.value=''; el.dispatchEvent(new Event('input',{bubbles:true})); }
+      else { el.textContent=''; }
+      return 'ok';
+    })()`);
+    if (result !== "ok") throw new BrowserDriverActionError(result);
     await this.connection.send("Input.insertText", { text }, this.cdpSessionId);
     await this.evaluate(`(() => { const el=document.activeElement; el?.dispatchEvent(new Event('input',{bubbles:true})); el?.dispatchEvent(new Event('change',{bubbles:true})); return true; })()`);
     return this.pageInfo();

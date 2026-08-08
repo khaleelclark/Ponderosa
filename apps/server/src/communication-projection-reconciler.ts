@@ -9,7 +9,7 @@ import type {
   CoordinationV3Store,
 } from "@ponderosa/agents";
 import type { AssetStore, AuthoritativeRuntimeAttachment } from "./assets.js";
-import { renderDirectMessage, renderScopedMessage } from "./agent-mentions.js";
+import { agentMentionHandle, renderDirectMessage, renderScopedMessage } from "./agent-mentions.js";
 import type { createCommunicationArtifactAuthority } from "./communication-artifacts.js";
 
 type CommunicationArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>;
@@ -95,7 +95,11 @@ export function createCommunicationProjectionReconciler(
     const repairedProjectIds = new Set<string>();
     const exactCanonicalEvents = new Map<string, CommunicationEvent>();
     const exactRecipientAgentIds = new Map<string, string[]>();
-    for (const row of coordinationV3.runtimeCommunications()) {
+    const sources = [
+      ...coordinationV3.runtimeCommunications(),
+      ...coordinationV3.requestCommunicationsNeedingProjection(),
+    ];
+    for (const row of sources) {
       if (filter?.projectId && row.projectId !== filter.projectId) continue;
       if (options.shouldContinue && !options.shouldContinue()) break;
       scanned += 1;
@@ -118,7 +122,9 @@ export function createCommunicationProjectionReconciler(
       ) continue;
       const communicationEventId = event.eventId;
       if (filter?.communicationEventId && communicationEventId !== filter.communicationEventId) continue;
-      const runtimeArtifacts = coordinationV3.runtimeArtifacts("communication", row.id);
+      const runtimeArtifacts = row.sourceKind === "request"
+        ? []
+        : coordinationV3.runtimeArtifacts("communication", row.id);
       let artifactsAvailable = true;
       for (const artifact of runtimeArtifacts) {
         if (!assets.authoritativeRuntimeArtifact(row.projectId, artifact)) {
@@ -134,7 +140,8 @@ export function createCommunicationProjectionReconciler(
         ? payload.dispatch as Record<string, unknown>
         : undefined;
 
-      const recipientAgentIds = coordinationV3.communicationRecipientAgentIds(row.projectId, row.id);
+      const recipientAgentIds = row.recipientAgentIds
+        ?? coordinationV3.communicationRecipientAgentIds(row.projectId, row.id);
       const expectedAttachmentOwners = new Map<string, string>();
       let attachmentEnvelopeValid = true;
       const expectAttachment = (owner: unknown, raw: unknown): void => {
@@ -304,7 +311,15 @@ export function createCommunicationProjectionReconciler(
               recipient.kind === "agent" ? [recipient.agentId] : []);
         const roomAttachments = canonical.attachments ?? firstRecoveredAttachments;
         const role = canonical.sender.kind === "user" ? "user" : canonical.sender.kind === "system" ? "system" : "assistant";
-        const dispatchText = typeof dispatch?.text === "string" ? dispatch.text : canonical.text;
+        const requestProjectionText = row.sourceKind === "request"
+          ? `${recipientAgentIds.flatMap((agentId) => {
+              const recipient = store.getAgent(agentId);
+              return recipient ? [`#${agentMentionHandle(recipient.title)}`] : [];
+            }).join(" ")} ${canonical.text}`.trim()
+          : undefined;
+        const dispatchText = typeof dispatch?.text === "string"
+          ? dispatch.text
+          : requestProjectionText ?? canonical.text;
         const conversationText = canonical.intent === "broadcast"
           ? canonical.sender.kind === "agent" || dispatch?.shareWithOrganization === true
             ? dispatchText

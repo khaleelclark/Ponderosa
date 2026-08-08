@@ -736,6 +736,8 @@ CREATE INDEX idx_coordination_requests_conversation_created
   ON coordination_requests (project_id, conversation_id, created_at DESC, id DESC);
 CREATE INDEX idx_coordination_requests_conversation_updated
   ON coordination_requests (project_id, conversation_id, updated_at DESC, id DESC);
+CREATE INDEX idx_coordination_requests_communication
+  ON coordination_requests (project_id, communication_event_id, created_at, id);
 CREATE INDEX idx_events_agent_seq ON events (agent_id, seq);
 CREATE INDEX idx_events_agent_type_seq
   ON events (agent_id, type, seq DESC);

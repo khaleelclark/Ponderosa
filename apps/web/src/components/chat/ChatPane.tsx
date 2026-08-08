@@ -1,5 +1,5 @@
 import TagIcon from "@mui/icons-material/Tag";
-import { ButtonBase, Chip, IconButton, Tooltip } from "@mui/material";
+import { Box, ButtonBase, Chip, IconButton, Stack, Tooltip } from "@mui/material";
 import { PONDEROSA_MESSAGE_TOOL } from "@ponderosa/core";
 import type {
   AgentActivityDto,
@@ -12,6 +12,7 @@ import type {
 import { Fragment, memo, useMemo } from "react";
 import { CopyMessageButton } from "../CopyMessageButton";
 import { MessageDeliveryStatus } from "../MessageDeliveryStatus";
+import { RequestLifecycleCard } from "../RequestLifecycleCard";
 import { buildActivityStream } from "../activity/activityStream";
 import type { ActivityStreamEntry } from "../activity/activityStream";
 import { AgentWorkReceipt } from "./AgentWorkReceipt";
@@ -467,6 +468,30 @@ function ChatPaneComponent({
                 <>
                   {message.document ? (
                     <CommunicationDocumentCard document={message.document} />
+                  ) : null}
+                  {projectId && message.coordinationRequests?.length ? (
+                    <Box sx={{ mt: 1 }}>
+                      <Stack spacing={0.75}>
+                        {message.coordinationRequests.map(request => (
+                          <RequestLifecycleCard
+                            key={request.recordId}
+                            projectId={projectId}
+                            conversationId={request.conversationId ?? message.conversationId}
+                            requestId={request.recordId}
+                            state={request.state}
+                            requesterAgentId={request.requesterAgentId}
+                            recipientAgentId={request.recipientAgentId}
+                            requestText={request.preview}
+                            hasUpdates={request.hasUpdates}
+                            hasResult={request.hasResult}
+                            updatedAt={request.updatedAt}
+                            agentTitle={agentId => agentId
+                              ? agentNameForId?.(agentId) ?? "Deleted Agent"
+                              : "You"}
+                          />
+                        ))}
+                      </Stack>
+                    </Box>
                   ) : null}
                 </>
               ),

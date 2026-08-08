@@ -93,11 +93,17 @@ export function createServerReadModels(context: ReadModelContext) {
     isClosed,
   } = context;
 
-  function withMessagePresentation<T extends { communicationEventId?: string; text: string; deliveryReceipts?: import("@ponderosa/core").MessageDeliveryReceiptDto[]; agentMentions?: import("@ponderosa/core").AgentMentionBindingDto[] }>(projectId: string, messages: T[]): T[] {
+  function withMessagePresentation<T extends { communicationEventId?: string; text: string; deliveryReceipts?: import("@ponderosa/core").MessageDeliveryReceiptDto[]; agentMentions?: import("@ponderosa/core").AgentMentionBindingDto[]; coordinationRequests?: import("@ponderosa/core").CoordinationRequestSummaryDto[] }>(projectId: string, messages: T[]): T[] {
     const projectAgents = store.listAgents(projectId);
+    const communicationEventIds = messages.flatMap((message) =>
+      message.communicationEventId ? [message.communicationEventId] : []);
     const deliveryReceiptsByEvent = coordinationV3.deliveryReceiptsForCommunications(
       projectId,
-      messages.flatMap((message) => message.communicationEventId ? [message.communicationEventId] : []),
+      communicationEventIds,
+    );
+    const requestsByEvent = coordinationV3.requestSummariesForCommunications(
+      projectId,
+      communicationEventIds,
     );
     return messages.map((message) => {
       if (!message.communicationEventId) return message;
@@ -131,12 +137,14 @@ export function createServerReadModels(context: ReadModelContext) {
         ),
       );
       const deliveryReceipts = deliveryReceiptsByEvent.get(message.communicationEventId) ?? [];
+      const coordinationRequests = requestsByEvent.get(message.communicationEventId) ?? [];
       return {
         ...message,
         ...(communication ? { communicationIntent: communication.intent } : {}),
         ...(directMessageAgents.length ? { directMessageAgents } : {}),
         ...(collaborationRecipients.length ? { collaborationRecipients } : {}),
         ...(deliveryReceipts.length ? { deliveryReceipts } : {}),
+        ...(coordinationRequests.length ? { coordinationRequests } : {}),
         ...(agentMentions.length ? { agentMentions } : {}),
       };
     });
@@ -301,10 +309,12 @@ export function createServerReadModels(context: ReadModelContext) {
           ? {
               request: {
                 recordId: record.id.slice("request:".length),
+                state: record.state as import("@ponderosa/core").CoordinationRequestState,
                 ...(record.requesterAgentId
                   ? { requesterAgentId: record.requesterAgentId }
                   : {}),
                 recipientAgentId: record.recipientAgentId,
+                conversationId,
                 ...(record.communicationEventId
                   ? { communicationEventId: record.communicationEventId }
                   : {}),
@@ -317,6 +327,7 @@ export function createServerReadModels(context: ReadModelContext) {
                   ? { latestUpdateAt: record.latestUpdateAt }
                   : {}),
                 hasResult: record.hasResult ?? false,
+                updatedAt: record.updatedAt,
               },
             }
           : {}),

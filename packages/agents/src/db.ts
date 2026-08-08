@@ -211,6 +211,8 @@ function establishReadIndexes(sqlite: Database.Database): void {
       WHERE continuation_activation_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_coordination_request_updates_request_created
       ON coordination_request_updates (request_id, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_coordination_requests_communication
+      ON coordination_requests (project_id, communication_event_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_runtime_artifacts_owner
       ON runtime_artifacts (owner_kind, owner_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_projects_directory
