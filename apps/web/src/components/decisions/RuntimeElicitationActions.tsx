@@ -49,7 +49,7 @@ function describeForm(action: RuntimeElicitationActionDto | undefined): FormDesc
     : []);
   let supported = schema.required === undefined ||
     (Array.isArray(schema.required) && schema.required.every((item) => typeof item === "string"));
-  const fields = Object.entries(properties).flatMap(([name, raw]) => {
+  const fields = Object.entries(properties).flatMap<FormField>(([name, raw]) => {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
       supported = false;
       return [];
