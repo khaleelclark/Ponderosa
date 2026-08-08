@@ -40,6 +40,7 @@ export class ProviderUsageCache {
     private readonly cwd: string,
     private readonly staleMs = DEFAULT_STALE_MS,
     private readonly timeoutMs = 15_000,
+    private readonly registerProcess?: (handle: RuntimeProcessHandle, providerId: string) => void,
   ) {}
 
   state(target: ProviderUsageTarget): ProviderUsageStateDto {
@@ -89,6 +90,7 @@ export class ProviderUsageCache {
         signal: authority.controller.signal,
         timeoutMs: this.timeoutMs,
         onRuntimeSpawned: (handle) => {
+          this.registerProcess?.(handle, target.adapter.id);
           authority.processes.add(handle);
           if (this.closed || authority.controller.signal.aborted) {
             void handle.close().catch(() => undefined);

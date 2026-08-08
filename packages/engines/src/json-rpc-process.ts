@@ -2,7 +2,7 @@ import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import type { ProviderRootExitDetail, RuntimeProcessHandle } from "@ponderosa/core";
 import { spawnContainedCli } from "./contained-spawn.js";
 import type { SpawnFn } from "./process.js";
-import { processGroupAlive, terminateProcessGroup } from "./process-termination.js";
+import { processGroupAlive, runtimeProcessIdentity, terminateProcessGroup } from "./process-termination.js";
 import type { NativeProcessTreeAuthority } from "./process-termination.js";
 import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, LineBuffer } from "./jsonl.js";
 import { runtimeEnvironment } from "./runtime-environment.js";
@@ -78,6 +78,7 @@ export class JsonRpcProcess {
   private closed = false;
   private closePromise?: Promise<void>;
   private readonly nativeAuthority?: NativeProcessTreeAuthority;
+  readonly processIdentity;
 
   readonly notifications: AsyncIterable<JsonRpcNotification> = this.queue;
 
@@ -94,6 +95,7 @@ export class JsonRpcProcess {
     });
     this.child = contained.child;
     this.nativeAuthority = contained.authority;
+    this.processIdentity = contained.authority ? undefined : runtimeProcessIdentity(this.child);
     opts.onRuntimeSpawned(this);
     let rootExitReported = false;
     const reportRootExit = (detail?: ProviderRootExitDetail) => {

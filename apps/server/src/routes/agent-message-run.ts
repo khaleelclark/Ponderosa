@@ -50,6 +50,7 @@ import type { createOperationalNotifications } from "../operational-notification
 import type { createCommunicationDocumentAuthority } from "../communication-document-authority.js";
 import type { ContextCursorStore } from "../context-cursors.js";
 import type { RuntimeElicitationBroker } from "../runtime-elicitation-broker.js";
+import type { ProviderProcessAuthority } from "../provider-process-authority.js";
 import {
   concreteRuntimeSelection,
   normalizedRuntimeSelection,
@@ -149,6 +150,7 @@ export type AgentMessageRunContext =
     drainDeploymentIdleAuthorities(): void;
     publishWorkspaceSince(cursor: number): void;
     runtimeElicitations: RuntimeElicitationBroker;
+    providerProcessAuthority: ProviderProcessAuthority;
   };
 
 export function registerAgentMessageRunRoute(

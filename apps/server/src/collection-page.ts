@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { FastifyReply } from "fastify";
 
@@ -20,6 +20,17 @@ type CollectionOrder = "updated" | "title";
 
 interface CollectionGeneration {
   revision: string;
+}
+
+const sqliteGenerationIds = new WeakMap<Database.Database, string>();
+const DEFAULT_COLLECTION_GENERATION_KEYS = [
+  "projects", "conversations", "agents", "memberships", "triggers",
+  "scheduler_runs", "context_rollovers",
+] as const;
+
+export class StaleCollectionCursorError extends Error {
+  readonly code = "stale_collection_cursor";
+  constructor(message = "stale collection cursor") { super(message); }
 }
 
 interface CollectionCursor {
@@ -48,26 +59,33 @@ export function sqliteCollectionRevision(
   sqlite: Database.Database,
   baseSql: string,
   params: readonly unknown[] = [],
+  generationKeys: readonly string[] = DEFAULT_COLLECTION_GENERATION_KEYS,
 ): { revision: string; total: number } {
-  const hash = createHash("sha256");
-  let total = 0;
-  const rows = sqlite.prepare(`
-    SELECT id, title, updated_at
-    FROM (${baseSql}) revision_collection
-    ORDER BY id ASC
-  `).iterate(...params) as Iterable<{
-    id: string;
-    title: string;
-    updated_at: string;
-  }>;
-  for (const row of rows) {
-    total += 1;
-    for (const value of [row.id, row.title, row.updated_at]) {
-      const encoded = Buffer.from(value, "utf8");
-      hash.update(String(encoded.length)).update(":").update(encoded).update(";");
-    }
+  const revision = sqliteCollectionGeneration(sqlite, generationKeys);
+  const total = (sqlite.prepare(`SELECT COUNT(*) AS value FROM (${baseSql}) revision_collection`)
+    .get(...params) as { value: number }).value;
+  return { revision, total };
+}
+
+/** O(1) collection generation. The per-connection nonce prevents a cursor
+ * from a prior daemon boot from colliding after SQLite resets total_changes. */
+export function sqliteCollectionGeneration(
+  sqlite: Database.Database,
+  generationKeys: readonly string[] = DEFAULT_COLLECTION_GENERATION_KEYS,
+): string {
+  let generationId = sqliteGenerationIds.get(sqlite);
+  if (!generationId) {
+    generationId = randomUUID();
+    sqliteGenerationIds.set(sqlite, generationId);
   }
-  return { revision: hash.digest("base64url"), total };
+  const keys = [...new Set(generationKeys)].sort();
+  if (keys.length === 0) return generationId;
+  const rows = sqlite.prepare(`
+    SELECT name, generation FROM collection_generations
+    WHERE name IN (${keys.map(() => "?").join(", ")})
+  `).all(...keys) as Array<{ name: string; generation: number }>;
+  const generations = new Map(rows.map((row) => [row.name, row.generation]));
+  return `${generationId}:${keys.map((key) => `${key}=${generations.get(key) ?? 0}`).join(",")}`;
 }
 
 function encodeCollectionCursor(cursor: CollectionCursor): string {
@@ -101,13 +119,24 @@ function decodeCollectionCursor(
     if (
       generation.revision !== expected.generation.revision
     ) {
-      throw new Error("stale collection cursor");
+      throw new StaleCollectionCursorError();
     }
     return cursor as CollectionCursor;
   } catch (error) {
-    if (error instanceof Error && error.message === "stale collection cursor") throw error;
+    if (error instanceof StaleCollectionCursorError) throw error;
     throw new Error("invalid collection cursor");
   }
+}
+
+export function sendCollectionPageError(
+  reply: FastifyReply,
+  error: unknown,
+  fallback = "invalid collection cursor",
+): unknown {
+  if (error instanceof StaleCollectionCursorError) {
+    return reply.code(409).send({ error: error.message, code: error.code });
+  }
+  return reply.code(400).send({ error: error instanceof Error ? error.message : fallback });
 }
 
 export function sqliteCollectionPage<T>(
@@ -122,13 +151,14 @@ export function sqliteCollectionPage<T>(
     hydrate: (id: string) => T | undefined;
     defaultLimit?: number;
     maxLimit?: number;
+    generationKeys?: readonly string[];
   },
 ): CollectionPage<T> {
   const maximum = options.maxLimit ?? 100;
   const limit = parseLimit(query, options.defaultLimit ?? maximum, maximum);
   const scope = queryScope(options.scope, query);
   const params = [...(options.params ?? [])];
-  const collection = sqliteCollectionRevision(sqlite, options.baseSql, params);
+  const collection = sqliteCollectionRevision(sqlite, options.baseSql, params, options.generationKeys);
   const generation: CollectionGeneration = {
     revision: collection.revision,
   };

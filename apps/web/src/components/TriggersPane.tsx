@@ -28,6 +28,7 @@ import {
 } from "@mui/material";
 import type { AgentDto, ConversationDto, CreateTriggerRequest, TriggerBudgetPeriod, TriggerDefinitionDto, TriggerOccurrenceDto, TriggerSourceConfig, TriggerSourceKind } from "@ponderosa/core";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { normalizeResetPages } from "../collections";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
@@ -179,6 +180,7 @@ export function TriggersPane({
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam }) => api.listTriggersPage(agent.id, { limit: 100, cursor: pageParam }),
     getNextPageParam: page => page.hasMore ? page.cursor : undefined,
+    select: normalizeResetPages,
   });
   const triggerItems = useMemo(
     () => triggers.data?.pages.flatMap(page => page.items) ?? [],

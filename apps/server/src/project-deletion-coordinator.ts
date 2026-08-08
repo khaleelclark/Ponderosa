@@ -23,6 +23,7 @@ import type {
   CreateServerOptions,
 } from "./app-contracts.js";
 import type { createOperationalNotifications } from "./operational-notifications.js";
+import type { ProviderProcessAuthority } from "./provider-process-authority.js";
 
 type OperationalNotifications = ReturnType<typeof createOperationalNotifications>;
 
@@ -68,6 +69,7 @@ interface ProjectDeletionCoordinatorContext {
   ): AgentHealthProjectionDto;
   logError(meta: Record<string, unknown>, message: string): void;
   projectDeletionCleanupFaults: CreateServerOptions["projectDeletionCleanupFaults"];
+  providerProcessAuthority: ProviderProcessAuthority;
 }
 
 export function registerProjectDeletionRoutes(
@@ -110,6 +112,7 @@ export function registerProjectDeletionRoutes(
     agentHealth,
     logError,
     projectDeletionCleanupFaults,
+    providerProcessAuthority,
   } = context;
 
   app.delete<{ Params: { id: string } }>("/api/projects/:id", async (request, reply) => {
@@ -205,6 +208,7 @@ export function registerProjectDeletionRoutes(
       const barriers = await Promise.allSettled([
         ...browserClosures,
         drainProviderRuntimeAuthority("Project deletion", agentIds),
+        providerProcessAuthority.terminateProject(project.id, "Project deletion"),
         drainEngineCapabilityDiscoveries(project.id),
         drainEngineModelCatalogDiscoveries(project.id),
       ]);

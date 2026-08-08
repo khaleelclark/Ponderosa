@@ -16,6 +16,7 @@ import type { FastifyInstance } from "fastify";
 import type { EngineAuthStatusCache } from "./engine-auth-cache.js";
 import type { EngineAvailabilityStore } from "./engine-availability-store.js";
 import type { ProviderUsageCache, ProviderUsageTarget } from "./provider-usage-cache.js";
+import type { ProviderProcessAuthority } from "./provider-process-authority.js";
 import type {
   CapabilityDiscoveryAuthority,
   CapabilityDiscoveryProcess,
@@ -41,6 +42,7 @@ interface EngineControlPlaneContext {
   app: FastifyInstance;
   deletingProjectIds: ReadonlySet<string>;
   isClosed(): boolean;
+  providerProcessAuthority: ProviderProcessAuthority;
 }
 
 export function createEngineControlPlane(context: EngineControlPlaneContext) {
@@ -60,6 +62,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     app,
     deletingProjectIds,
     isClosed,
+    providerProcessAuthority,
   } = context;
 
   const runtimeFailureDetail = (engineId: string): string | undefined => {
@@ -291,6 +294,10 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     };
     engineCapabilityDiscoveryAuthorities.add(authority);
     const registerProcess = (handle: RuntimeProcessHandle): void => {
+      providerProcessAuthority.register(handle, {
+        purpose: `${adapter.id} capability discovery`,
+        projectId,
+      });
       const state: CapabilityDiscoveryProcess = { handle };
       authority.processes.add(state);
       if (isClosed() || deletingProjectIds.has(projectId) || authority.controller.signal.aborted) {
@@ -493,6 +500,10 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     };
     engineModelCatalogDiscoveryAuthorities.add(authority);
     const registerProcess = (handle: RuntimeProcessHandle): void => {
+      providerProcessAuthority.register(handle, {
+        purpose: `${adapter.id} model catalog discovery`,
+        projectId: project.id,
+      });
       const state: CapabilityDiscoveryProcess = { handle };
       authority.processes.add(state);
       if (isClosed() || deletingProjectIds.has(project.id) || authority.controller.signal.aborted) {
@@ -572,6 +583,10 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     };
     engineModelCatalogDiscoveryAuthorities.add(authority);
     const registerProcess = (handle: RuntimeProcessHandle): void => {
+      providerProcessAuthority.register(handle, {
+        purpose: `${adapter.id} model validation`,
+        projectId: project.id,
+      });
       const state: CapabilityDiscoveryProcess = { handle };
       authority.processes.add(state);
       if (isClosed() || deletingProjectIds.has(project.id) || authority.controller.signal.aborted) {

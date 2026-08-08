@@ -27,6 +27,7 @@ import {
   providerSessionContractHash,
 } from "../runtime-selection.js";
 import type { ServerContext } from "../server-context.js";
+import type { ProviderProcessAuthority } from "../provider-process-authority.js";
 import { registerAgentRunHistoryRoute } from "./agent-audit.js";
 
 interface ProviderCommandRoutesContext {
@@ -65,6 +66,7 @@ interface ProviderCommandRoutesContext {
     refresh?: "none" | "stale" | "force",
   ): Promise<ProviderUsageStateDto>;
   reportRuntimeCapabilitiesChanged(projectId: string, engineId: string): void;
+  providerProcessAuthority: ProviderProcessAuthority;
 }
 
 export function registerProviderCommandRoutes(
@@ -96,6 +98,7 @@ export function registerProviderCommandRoutes(
     closeCapabilityDiscoveryProcess,
     providerUsageState,
     reportRuntimeCapabilitiesChanged,
+    providerProcessAuthority,
   } = context;
 
 app.post<{ Params: { id: string }; Body?: CancelAgentRunRequest }>("/api/agents/:id/cancel", async (request, reply) => {
@@ -186,6 +189,10 @@ app.post<{
     settled: false,
   };
   const registerProcess = (handle: RuntimeProcessHandle): void => {
+    providerProcessAuthority.register(handle, {
+      purpose: `${engineId} Project provider command`,
+      projectId: project.id,
+    });
     const state: CapabilityDiscoveryProcess = { handle };
     authority.processes.add(state);
     if (isClosed() || deletingProjectIds.has(project.id) || authority.controller.signal.aborted) {
@@ -356,6 +363,11 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
       settled: false,
     };
     const registerProcess = (handle: RuntimeProcessHandle): void => {
+      providerProcessAuthority.register(handle, {
+        purpose: `${engine.adapter.id} Agent provider command`,
+        projectId: project.id,
+        agentId: agent.id,
+      });
       const state: CapabilityDiscoveryProcess = { handle };
       authority.processes.add(state);
       if (isClosed() || deletingProjectIds.has(project.id) || deletingAgentIds.has(agent.id) || authority.controller.signal.aborted) {

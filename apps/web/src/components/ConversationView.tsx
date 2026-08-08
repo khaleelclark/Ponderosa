@@ -20,6 +20,7 @@ import type {
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { normalizeResetPages } from "../collections";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { agentBelongsToConversation, type AgentStatus } from "../agents";
@@ -225,6 +226,9 @@ export function ConversationView({
     queryKey: queryKeys.conversations.targetedNextRun(conversationId),
     queryFn: () => api.getTargetedNextRunReceipts(conversationId, 20),
     staleTime: 5_000,
+    refetchInterval: query => query.state.data?.receipts.some(receipt =>
+      receipt.recipients.some(recipient => recipient.state === "pending")
+    ) ? 5_000 : false,
   });
   const membersQuery = useInfiniteQuery({
     queryKey: queryKeys.conversations.members(conversationId, memberSearch),
@@ -237,6 +241,7 @@ export function ConversationView({
       }),
     getNextPageParam: page =>
       page.hasMore ? page.cursor : undefined,
+    select: normalizeResetPages,
   });
   const conversationAgents = useMemo(() => {
     const byId = new Map<string, AgentDto>();

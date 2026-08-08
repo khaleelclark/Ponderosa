@@ -3,6 +3,8 @@ import type {
   AgentStore,
   CoordinationV3Store,
   WorkspaceStore,
+  RuntimeArtifactV3,
+  SchedulerLease,
 } from "@ponderosa/agents";
 import type { AssetStore } from "./assets.js";
 import {
@@ -15,12 +17,14 @@ import {
 } from "./app-contracts.js";
 import { collectReachableArtifactIds } from "./artifact-refs.js";
 import {
+  type AutomaticResultMaterial,
   compileActivationPrompt,
   CoordinationV3Scheduler,
 } from "./coordination-v3-scheduler.js";
 import type { createCommunicationArtifactAuthority } from "./communication-artifacts.js";
 import type { EngineAvailabilityStore } from "./engine-availability-store.js";
 import type { QueuedEditRevisionOutboxPayload } from "./routes/queued-messages.js";
+import type { ProviderProcessAuthority } from "./provider-process-authority.js";
 
 type ArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>;
 
@@ -28,6 +32,80 @@ type ArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>
  * above this hard UTF-8 envelope use their already-durable, validated artifact
  * file instead of risking a provider request/context rejection. */
 const AUTOMATIC_RESULT_PROVIDER_PACKET_UTF8_LIMIT = 256 * 1024;
+
+export function exactCorrelatedResultArtifactOwners(
+  activation: SchedulerLease["activations"][number],
+): Map<string, string | null> {
+  const owners = new Map<string, string | null>();
+  const payload = activation.payload && typeof activation.payload === "object"
+    ? activation.payload as Record<string, unknown>
+    : {};
+  const add = (value: unknown, ownerId: unknown): void => {
+    const expectedOwner = typeof ownerId === "string" && ownerId ? ownerId : null;
+    for (const artifactId of collectReachableArtifactIds(value)) owners.set(artifactId, expectedOwner);
+  };
+  if (activation.kind === "coordination_outcome") {
+    add(payload.update, payload.updateId);
+  } else if (activation.kind === "coordination_late_result") {
+    const late = payload.lateResult && typeof payload.lateResult === "object"
+      ? payload.lateResult as Record<string, unknown>
+      : {};
+    add(late.update, late.updateId);
+  } else if (activation.kind.startsWith("coordination_join_")) {
+    for (const item of Array.isArray(payload.outcomes) ? payload.outcomes : []) {
+      const outcome = item && typeof item === "object" ? item as Record<string, unknown> : {};
+      const update = outcome.update && typeof outcome.update === "object"
+        ? outcome.update as Record<string, unknown>
+        : {};
+      add(update.payload, update.id);
+    }
+  } else if (
+    activation.kind === "coordination_question" ||
+    activation.kind === "coordination_answer" ||
+    activation.kind === "coordination_dependency_resolved"
+  ) {
+    add(payload.update, payload.updateId ?? payload.inReplyToUpdateId);
+  }
+  return owners;
+}
+
+export function resolveCoordinationResultArtifacts(input: {
+  activation: SchedulerLease["activations"][number];
+  projectId: string;
+  runtimeArtifact(artifactId: string): RuntimeArtifactV3 | undefined;
+  authoritative(artifact: RuntimeArtifactV3): {
+    byteLength: number;
+    contentHash: string;
+    body: Buffer;
+    localPath: string;
+  } | undefined;
+}): AutomaticResultMaterial[] {
+  if (!input.activation.kind.startsWith("coordination_")) return [];
+  const exactOwners = exactCorrelatedResultArtifactOwners(input.activation);
+  return [...collectReachableArtifactIds(input.activation.payload)].flatMap((artifactId) => {
+    const artifact = input.runtimeArtifact(artifactId);
+    const exactOwnerId = exactOwners.get(artifactId);
+    const exactReference = exactOwners.has(artifactId);
+    if (!artifact || artifact.ownerKind !== "request_update" || artifact.projectId !== input.projectId ||
+        (exactOwnerId !== undefined && exactOwnerId !== null && artifact.ownerId !== exactOwnerId)) {
+      if (exactReference) {
+        throw new Error(`exact correlated result artifact contract mismatch: ${artifactId}`);
+      }
+      return [];
+    }
+    const authoritative = input.authoritative(artifact);
+    if (!authoritative) throw new Error(`correlated result artifact is unavailable: ${artifactId}`);
+    return [{
+      artifactId,
+      title: artifact.title,
+      mediaType: artifact.mediaType,
+      byteLength: authoritative.byteLength,
+      sha256: authoritative.contentHash,
+      content: authoritative.body.toString("utf8"),
+      localPath: authoritative.localPath,
+    }];
+  });
+}
 
 interface CoordinationSchedulerContext {
   opts: CreateServerOptions;
@@ -67,6 +145,7 @@ interface CoordinationSchedulerContext {
   drainDeploymentIdleAuthorities(): void;
   communicationArtifactAccess: ArtifactAuthority["communicationArtifactAccess"];
   projectCommunicationArtifact: ArtifactAuthority["projectCommunicationArtifact"];
+  providerProcessAuthority: ProviderProcessAuthority;
 }
 
 export function createCoordinationScheduler(
@@ -102,6 +181,7 @@ export function createCoordinationScheduler(
     drainDeploymentIdleAuthorities,
     communicationArtifactAccess,
     projectCommunicationArtifact,
+    providerProcessAuthority,
   } = context;
 
 return new CoordinationV3Scheduler(
@@ -278,32 +358,23 @@ return new CoordinationV3Scheduler(
     },
     compilePrompt: (lease) => compileActivationPrompt(lease, {
       maxUtf8Bytes: AUTOMATIC_RESULT_PROVIDER_PACKET_UTF8_LIMIT,
-      resolveResultArtifacts: (activation) => {
-        if (!activation.kind.startsWith("coordination_")) return [];
-        return [...collectReachableArtifactIds(activation.payload)].flatMap((artifactId) => {
-          const artifact = coordinationV3.runtimeArtifact(artifactId);
-          if (!artifact || artifact.ownerKind !== "request_update" || artifact.projectId !== lease.projectId) {
-            return [];
-          }
-          const authoritative = assets.authoritativeRuntimeArtifact(lease.projectId, artifact);
-          if (!authoritative) {
-            throw new Error(`correlated result artifact is unavailable: ${artifactId}`);
-          }
-          return [{
-            artifactId,
-            title: artifact.title,
-            mediaType: artifact.mediaType,
-            byteLength: authoritative.byteLength,
-            sha256: authoritative.contentHash,
-            content: authoritative.body.toString("utf8"),
-            localPath: authoritative.localPath,
-          }];
-        });
-      },
+      resolveResultArtifacts: (activation) => resolveCoordinationResultArtifacts({
+        activation,
+        projectId: lease.projectId,
+        runtimeArtifact: artifactId => coordinationV3.runtimeArtifact(artifactId),
+        authoritative: artifact => assets.authoritativeRuntimeArtifact(lease.projectId, artifact),
+      }),
     }),
     dispatchProviderOperation: async (operation) => {
       const entry = [...activeRuns.entries()].find(([, run]) => run.runId === operation.runId);
-      if (!entry) return { accepted: true };
+      if (!entry) {
+        try {
+          await providerProcessAuthority.terminateRun(operation.runId);
+          return { accepted: true };
+        } catch (error) {
+          return { accepted: false, retryable: true, error: error instanceof Error ? error.message : String(error) };
+        }
+      }
       const [agentId, run] = entry;
       void closeRunBrowser(agentId, run, "run_cancelled");
       closeLinkPreviewsForAgent(agentId, "run cancelled");
@@ -320,6 +391,10 @@ return new CoordinationV3Scheduler(
       const runtime = persistentRuntimeForTermination(agentId);
       const terminationError = await terminateRuntimeHandle(agentId, run, runtime);
       if (terminationError) return { accepted: false, retryable: true, error: terminationError };
+      try { await providerProcessAuthority.terminateRun(operation.runId); }
+      catch (error) {
+        return { accepted: false, retryable: true, error: error instanceof Error ? error.message : String(error) };
+      }
       if (activeRuns.get(agentId) === run) {
         activeRuns.delete(agentId);
         drainDeploymentIdleAuthorities();

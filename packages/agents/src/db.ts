@@ -21,7 +21,11 @@ export interface OpenedDb {
 
 const schemaDir = join(dirname(fileURLToPath(import.meta.url)), "schema");
 const baselineName = "0000_current_schema.sql";
-const schemaExtensions = ["0001_communication_v4_next_run_deliveries.sql"] as const;
+const schemaExtensions = [
+  "0001_communication_v4_next_run_deliveries.sql",
+  "0002_provider_process_authority.sql",
+  "0003_collection_generations.sql",
+] as const;
 const legacyMigrationTable = "_migrations";
 const schemaVersionTable = "_schema_version";
 const latestLegacyMigration = "0035_coordination_question_suspensions.sql";

@@ -14,7 +14,7 @@ import { spawnContainedCli } from "./contained-spawn.js";
 import { mapClaudeAssistantUsage, mapClaudeEvent } from "./claude-events.js";
 import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, parseJsonlChunks } from "./jsonl.js";
 import type { SpawnFn } from "./process.js";
-import { terminateProcessGroup } from "./process-termination.js";
+import { runtimeProcessIdentity, terminateProcessGroup } from "./process-termination.js";
 import type { NativeProcessTreeAuthority } from "./process-termination.js";
 import { runtimeEnvironment } from "./runtime-environment.js";
 import { renderSeedPrompt } from "./seed-history.js";
@@ -43,6 +43,7 @@ export class ClaudeStreamSession implements RuntimeSession {
   private readonly modelInitializationRequestId = `ponderosa-models-${randomUUID()}`;
   private latestContextOccupancy?: number;
   private readonly nativeAuthority?: NativeProcessTreeAuthority;
+  readonly processIdentity;
 
   constructor(private readonly opts: ClaudeStreamSessionOptions) {
     if (!opts.onRuntimeSpawned) {
@@ -86,6 +87,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     });
     this.child = contained.child;
     this.nativeAuthority = contained.authority;
+    this.processIdentity = contained.authority ? undefined : runtimeProcessIdentity(this.child);
     opts.onRuntimeSpawned(this);
     let rootExitReported = false;
     let postExitDrainTimer: NodeJS.Timeout | undefined;

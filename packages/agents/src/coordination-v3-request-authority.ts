@@ -798,6 +798,7 @@ export class CoordinationV3RequestAuthority {
         payload: {
           requestId: request.id,
           state: nextState,
+          updateId,
           update: updatePayload ?? null,
           ...(replyAuthority ? { replyAuthority } : {}),
         },

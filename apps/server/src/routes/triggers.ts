@@ -13,7 +13,7 @@ import {
   TriggerSourceService,
   normalizeTriggerSourceConfig,
 } from "../trigger-service.js";
-import { applyCollectionPageHeaders, sqliteCollectionPage, type CollectionQuery } from "../collection-page.js";
+import { applyCollectionPageHeaders, sendCollectionPageError, sqliteCollectionPage, type CollectionQuery } from "../collection-page.js";
 import {
   parseCreateTrigger,
   parseUpdateTrigger,
@@ -84,12 +84,13 @@ export function registerTriggerRoutes(
         params,
         order: "updated",
         scope: `triggers:${request.query.projectId ?? "*"}:${request.query.agentId ?? "*"}`,
+        generationKeys: ["triggers"],
         hydrate: id => coordination.getTriggerDefinition(id),
       });
       applyCollectionPageHeaders(reply, page);
       return page.items;
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid collection cursor" });
+      return sendCollectionPageError(reply, error);
     }
   });
 
@@ -113,12 +114,13 @@ export function registerTriggerRoutes(
             : [request.params.id],
           order: "updated",
           scope: `agent-triggers:${request.params.id}`,
+          generationKeys: ["triggers"],
           hydrate: id => coordination.getTriggerDefinition(id),
         });
         applyCollectionPageHeaders(reply, page);
         return page.items;
       } catch (error) {
-        return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid collection cursor" });
+        return sendCollectionPageError(reply, error);
       }
     },
   );

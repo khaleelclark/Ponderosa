@@ -412,6 +412,7 @@ export class CodexAppServerSession implements RuntimeSession {
   private providerModelGeneration = 0;
   private readonly mcpStartup = new Map<string, { status: string; error?: string }>();
   readonly events: AsyncIterable<AgentEvent>;
+  get processIdentity() { return this.rpc.processIdentity; }
 
   private constructor(
     readonly engineAgentId: string,

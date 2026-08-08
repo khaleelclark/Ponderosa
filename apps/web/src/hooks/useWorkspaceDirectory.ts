@@ -9,6 +9,7 @@ import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
+import { normalizeResetPages } from "../collections";
 import {
   resourcePreferenceKey,
   starredWorkspaceResources,
@@ -91,6 +92,7 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     ) => lastPage.history.cursor,
     enabled: options.enabled ?? true,
     placeholderData: keepPreviousData,
+    select: normalizeResetPages,
     staleTime: 5_000,
   });
   const hasResolved = Boolean(query.data);

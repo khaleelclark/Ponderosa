@@ -21,7 +21,7 @@ import type {
   WorkspaceStore,
 } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
-import { sqliteCollectionRevision } from "../collection-page.js";
+import { sendCollectionPageError, sqliteCollectionRevision, StaleCollectionCursorError } from "../collection-page.js";
 
 const DEFAULT_DIRECTORY_LIMIT = 25;
 const MAX_DIRECTORY_LIMIT = 100;
@@ -122,7 +122,7 @@ function decodeCursor(
     if (parsed.v !== 4 || parsed.scope !== scope || !parsed.position) {
       throw new Error();
     }
-    if (parsed.revision !== revision) throw new Error("stale directory cursor");
+    if (parsed.revision !== revision) throw new StaleCollectionCursorError("stale directory cursor");
     const position = parsed.position;
     if (
       sort === "custom" && position.kind === "custom" &&
@@ -139,7 +139,7 @@ function decodeCursor(
     ) return position;
     throw new Error();
   } catch (error) {
-    if (error instanceof Error && error.message === "stale directory cursor") throw error;
+    if (error instanceof StaleCollectionCursorError) throw error;
     throw new Error("invalid directory cursor");
   }
 }
@@ -547,7 +547,14 @@ export function registerWorkspaceDirectoryRoutes(
       normalizedSearch,
       filteredAgentIds,
     );
-    const collection = sqliteCollectionRevision(sqlite, base.sql, base.params);
+    const generationKeys = kind === "project"
+      ? ["projects", "conversations", "agents", "scheduler_runs", "context_rollovers"]
+      : kind === "conversation"
+        ? ["conversations", "projects"]
+        : kind === "agent"
+          ? ["agents", "projects", "scheduler_runs", "context_rollovers"]
+          : ["triggers", "agents", "projects"];
+    const collection = sqliteCollectionRevision(sqlite, base.sql, base.params, generationKeys);
     const revision = collection.revision;
     const total = collection.total;
 
@@ -556,7 +563,7 @@ export function registerWorkspaceDirectoryRoutes(
       try {
         cursorPosition = decodeCursor(request.query.cursor, scope, sort, revision);
       } catch (error) {
-        return reply.code(400).send({ error: (error as Error).message });
+        return sendCollectionPageError(reply, error, "invalid directory cursor");
       }
     }
 

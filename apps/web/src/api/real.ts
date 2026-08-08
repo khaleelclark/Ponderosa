@@ -172,17 +172,30 @@ export interface CollectionPage<T> {
   limit: number;
   hasMore: boolean;
   cursor?: string;
+  /** Client-only marker: a stale continuation was transparently restarted. */
+  reset?: boolean;
 }
 
-async function requestCollectionPage<T>(path: string): Promise<CollectionPage<T>> {
+function withoutCursor(path: string): string {
+  const parsed = new URL(path, "http://ponderosa.local");
+  parsed.searchParams.delete("cursor");
+  return `${parsed.pathname}${parsed.search}`;
+}
+
+async function requestCollectionPage<T>(path: string, resetOnStale = true): Promise<CollectionPage<T>> {
   const response = await fetch(`${API_BASE}${path}`);
   if (!response.ok) {
     let message = `${response.status} ${response.statusText}`;
+    let code: string | undefined;
     try {
-      const body = await response.json() as { error?: unknown };
+      const body = await response.json() as { error?: unknown; code?: unknown };
       if (typeof body.error === "string" && body.error.trim()) message = body.error.trim();
+      if (typeof body.code === "string") code = body.code;
     } catch {
       // Preserve the stable HTTP fallback for malformed errors.
+    }
+    if (resetOnStale && response.status === 409 && code === "stale_collection_cursor") {
+      return { ...(await requestCollectionPage<T>(withoutCursor(path), false)), reset: true };
     }
     throw new ApiRequestError(response.status, message);
   }
@@ -201,6 +214,7 @@ async function collectCollectionPages<T>(path: string): Promise<T[]> {
     const query = new URLSearchParams({ limit: "100" });
     if (cursor) query.set("cursor", cursor);
     const page = await requestCollectionPage<T>(path + (path.includes("?") ? "&" : "?") + query.toString());
+    if (page.reset) items.splice(0);
     items.push(...page.items);
     cursor = page.hasMore ? page.cursor : undefined;
   } while (cursor);
@@ -422,8 +436,7 @@ export const realApi = {
       sort?: ProjectSort;
     } = {},
   ): Promise<WorkspaceDirectoryPageDto<T>> {
-    return requestJson<WorkspaceDirectoryPageDto<T>>(
-      `/api/workspace/directory/${encodeURIComponent(kind)}${toQuery({
+    const path = `/api/workspace/directory/${encodeURIComponent(kind)}${toQuery({
         limit: options.limit,
         cursor: options.cursor,
         search: options.search,
@@ -431,8 +444,12 @@ export const realApi = {
         agentIds: options.agentIds,
         conversationId: options.conversationId,
         sort: options.sort,
-      })}`,
-    );
+      })}`;
+    return requestJson<WorkspaceDirectoryPageDto<T>>(path).catch(async (error) => {
+      if (!(error instanceof ApiRequestError) || error.status !== 409 || !options.cursor) throw error;
+      const fresh = await requestJson<WorkspaceDirectoryPageDto<T>>(withoutCursor(path));
+      return { ...fresh, reset: true };
+    });
   },
   updateWorkspacePreferences(request: UpdateWorkspacePreferencesRequest): Promise<WorkspacePreferencesDto> { return requestJson<WorkspacePreferencesDto>("/api/workspace/preferences", { method: "PATCH", body: JSON.stringify(request satisfies UpdateWorkspacePreferencesRequest) }); },
   getWorkspaceResourceRecency(): Promise<WorkspaceResourceRecencyListDto> { return requestJson<WorkspaceResourceRecencyListDto>("/api/workspace/recent-resources"); },

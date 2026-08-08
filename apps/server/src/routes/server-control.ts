@@ -21,7 +21,7 @@ import type {
 import type { CoordinationV3Scheduler } from "../coordination-v3-scheduler.js";
 import type { ServerContext } from "../server-context.js";
 import { registerHealthRoutes } from "./health.js";
-import { applyCollectionPageHeaders, sqliteCollectionPage, type CollectionQuery } from "../collection-page.js";
+import { applyCollectionPageHeaders, sendCollectionPageError, sqliteCollectionPage, type CollectionQuery } from "../collection-page.js";
 import { projectedProjectCount } from "../readiness.js";
 
 interface ServerControlRoutesContext {
@@ -596,12 +596,13 @@ app.get<{ Querystring: CollectionQuery }>("/api/projects", async (request, reply
         : [],
       order: "updated",
       scope: "projects",
+      generationKeys: ["projects"],
       hydrate: id => store.getProject(id),
     });
     applyCollectionPageHeaders(reply, page);
     return page.items;
   } catch (error) {
-    return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid collection cursor" });
+    return sendCollectionPageError(reply, error);
   }
 });
 }
