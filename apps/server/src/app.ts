@@ -6,7 +6,7 @@ import type {
   WorkspaceEventEnvelope
 } from "@ponderosa/core";
 import Fastify, { type FastifyReply } from "fastify";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { createAgentDeletionAuthority } from "./agent-deletion-authority.js";
 import {
@@ -211,7 +211,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       }
     },
   });
-  const resultCursorSecret = randomBytes(32);
   const {
     communicationArtifactAccess,
     prepareUserCommunicationText,
@@ -904,7 +903,6 @@ app.server.on("upgrade", linkPreviewUpgrade);
     publicManagementOperations,
     commitAgentDeletion,
     assets,
-    resultCursorSecret,
     browserSessions,
     projectBrowserSessions,
     projectBrowserGrants,

@@ -1,4 +1,4 @@
-import { PONDEROSA_RESULT_TOOL, type CommunicationEvent } from "@ponderosa/core";
+import type { CommunicationEvent } from "@ponderosa/core";
 import type {
   AgentStore,
   CoordinationV3Store,
@@ -13,12 +13,21 @@ import {
   type PersistentRuntime,
   type PonderosaServer,
 } from "./app-contracts.js";
-import { CoordinationV3Scheduler } from "./coordination-v3-scheduler.js";
+import { collectReachableArtifactIds } from "./artifact-refs.js";
+import {
+  compileActivationPrompt,
+  CoordinationV3Scheduler,
+} from "./coordination-v3-scheduler.js";
 import type { createCommunicationArtifactAuthority } from "./communication-artifacts.js";
 import type { EngineAvailabilityStore } from "./engine-availability-store.js";
 import type { QueuedEditRevisionOutboxPayload } from "./routes/queued-messages.js";
 
 type ArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>;
+
+/** One scheduler packet gets a bounded share of the provider context. Results
+ * above this hard UTF-8 envelope use their already-durable, validated artifact
+ * file instead of risking a provider request/context rejection. */
+const AUTOMATIC_RESULT_PROVIDER_PACKET_UTF8_LIMIT = 256 * 1024;
 
 interface CoordinationSchedulerContext {
   opts: CreateServerOptions;
@@ -97,7 +106,7 @@ export function createCoordinationScheduler(
 
 return new CoordinationV3Scheduler(
   coordinationV3,
-  async (lease, prompt, activationPrompt) => {
+  async (lease, prompt) => {
     const activationPayloads = lease.activations
       .map((activation) => activation.payload)
       .filter((payload): payload is Record<string, unknown> => Boolean(payload) && typeof payload === "object");
@@ -197,7 +206,6 @@ return new CoordinationV3Scheduler(
         v3FreshProviderSession: coordinationV3.runStartsNewRecipientRequest(lease.runId, lease.agentId) ||
           coordinationV3.runChangesScope(lease.runId, lease.agentId),
         v3ActivationPrompt: prompt,
-        v3ActivationResultRefs: activationPrompt.hasResultRefs,
         ...(communication?.eventId ? { v3CommunicationEventId: communication.eventId } : {}),
       },
     });
@@ -221,7 +229,7 @@ return new CoordinationV3Scheduler(
     leaseMs: coordinationV3LeaseMs,
     maxDeliveryFailures: opts.communicationV3?.maxDeliveryFailures,
     steeringRecoveryGraceMs: opts.communicationV3?.steeringRecoveryGraceMs,
-    dispatchSteering: async (lease, prompt, activationPrompt) => {
+    dispatchSteering: async (lease, prompt) => {
       const run = activeRuns.get(lease.agentId);
       if (!run || run.v3SchedulerRunId !== lease.runId || run.v3FencingToken !== lease.fencingToken || !run.runtimeSession) {
         return {
@@ -229,17 +237,6 @@ return new CoordinationV3Scheduler(
           retryable: true,
           retrySteering: true,
           error: "authoritative run is not currently steerable",
-        };
-      }
-      const resultCapability = activationPrompt.hasResultRefs
-        ? agentMessageCapabilities.get(run.messageCapability)
-        : undefined;
-      if (activationPrompt.hasResultRefs && !resultCapability) {
-        return {
-          accepted: false,
-          retryable: true,
-          retrySteering: true,
-          error: "authoritative result capability is unavailable",
         };
       }
       coordinationV3.markPromptSubmitted({
@@ -262,12 +259,6 @@ return new CoordinationV3Scheduler(
             error: result.reason ?? result.status,
           };
         }
-        if (resultCapability && !resultCapability.availableToolNames.includes(PONDEROSA_RESULT_TOOL.name)) {
-          agentMessageCapabilities.set(run.messageCapability, {
-            ...resultCapability,
-            availableToolNames: [...resultCapability.availableToolNames, PONDEROSA_RESULT_TOOL.name],
-          });
-        }
         coordinationV3.acknowledgePromptInjection({
           injectionId: lease.injectionId,
           runId: lease.runId,
@@ -285,6 +276,31 @@ return new CoordinationV3Scheduler(
         };
       }
     },
+    compilePrompt: (lease) => compileActivationPrompt(lease, {
+      maxUtf8Bytes: AUTOMATIC_RESULT_PROVIDER_PACKET_UTF8_LIMIT,
+      resolveResultArtifacts: (activation) => {
+        if (!activation.kind.startsWith("coordination_")) return [];
+        return [...collectReachableArtifactIds(activation.payload)].flatMap((artifactId) => {
+          const artifact = coordinationV3.runtimeArtifact(artifactId);
+          if (!artifact || artifact.ownerKind !== "request_update" || artifact.projectId !== lease.projectId) {
+            return [];
+          }
+          const authoritative = assets.authoritativeRuntimeArtifact(lease.projectId, artifact);
+          if (!authoritative) {
+            throw new Error(`correlated result artifact is unavailable: ${artifactId}`);
+          }
+          return [{
+            artifactId,
+            title: artifact.title,
+            mediaType: artifact.mediaType,
+            byteLength: authoritative.byteLength,
+            sha256: authoritative.contentHash,
+            content: authoritative.body.toString("utf8"),
+            localPath: authoritative.localPath,
+          }];
+        });
+      },
+    }),
     dispatchProviderOperation: async (operation) => {
       const entry = [...activeRuns.entries()].find(([, run]) => run.runId === operation.runId);
       if (!entry) return { accepted: true };

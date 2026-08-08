@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { CreateServerOptions } from "../app-contracts.js";
+import type { AssetStore } from "../assets.js";
 import { createAgentEventService } from "../agent-event-service.js";
 import { createCommunicationDocumentAuthority } from "../communication-document-authority.js";
 import { registerAgentCommunicationRoutes } from "./agent-communications.js";
@@ -40,8 +41,7 @@ interface AgentSurfaceContext {
   cachedModelOptions: ManagementRoutes["cachedModelOptions"];
   publicManagementOperations: ManagementRoutes["publicManagementOperations"];
   commitAgentDeletion: ManagementRoutes["commitAgentDeletion"];
-  assets: RuntimeToolRoutes["assets"];
-  resultCursorSecret: RuntimeToolRoutes["resultCursorSecret"];
+  assets: AssetStore;
   browserSessions: RuntimeToolRoutes["browserSessions"];
   projectBrowserSessions: RuntimeToolRoutes["projectBrowserSessions"];
   projectBrowserGrants: RuntimeToolRoutes["projectBrowserGrants"];
@@ -86,7 +86,6 @@ export function registerAgentSurface(
     publicManagementOperations,
     commitAgentDeletion,
     assets,
-    resultCursorSecret,
     browserSessions,
     projectBrowserSessions,
     projectBrowserGrants,
@@ -160,9 +159,6 @@ registerAgentManagementRoutes(app, {
 
 registerAgentRuntimeToolRoutes(app, {
   store,
-  coordinationV3,
-  assets,
-  resultCursorSecret,
   agentMessageCapabilities,
   activeRuns,
   browserSessions,
@@ -170,8 +166,6 @@ registerAgentRuntimeToolRoutes(app, {
   projectBrowserGrants,
   projectBrowserScope,
   capabilityOwnsAuthoritativeRun,
-  agentCanReadRuntimeArtifact: (artifact, agentId) =>
-    agentCanReadRuntimeArtifact(artifact, agentId),
 });
 
 registerAgentDirectoryRoutes(app, {

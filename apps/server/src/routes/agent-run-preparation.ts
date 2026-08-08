@@ -37,7 +37,6 @@ import {
   conversationPrompt,
   individualChatPrompt,
   mergeScopedContextSources,
-  olderContextPrompt,
   runtimeSystemPrompt,
   sharedBroadcastContextPrompt,
   teamDirectoryPrompt,
@@ -66,7 +65,6 @@ interface PrepareAgentRunInput {
   v3InjectionId: string | undefined;
   v3FreshProviderSession: boolean | undefined;
   v3ActivationPrompt: string | undefined;
-  v3ActivationResultRefs: boolean | undefined;
   effectiveModel: string | undefined;
   effectiveEffort: string | undefined;
   messageAttachments: AssetDto[];
@@ -207,7 +205,6 @@ export async function prepareAgentRun(
     v3InjectionId,
     v3FreshProviderSession,
     v3ActivationPrompt,
-    v3ActivationResultRefs,
     effectiveModel,
     effectiveEffort,
     messageAttachments,
@@ -230,14 +227,17 @@ export async function prepareAgentRun(
   const sourceChannel: AgentMessageChannel = requestedSourceChannel === "main"
     ? "main"
     : "individual";
-  const generatedArtifactReference = (artifact: ArtifactDto) => ({
-    name: artifact.summary ?? path.basename(artifact.path),
-    mediaType: artifact.mediaType ?? "application/octet-stream",
-    size: artifact.size ?? 0,
-    available: false,
-    artifactId: artifact.id,
-    retrievalUrl: `ponderosa://artifact/${artifact.id}`,
-  });
+  const generatedArtifactReference = (artifact: ArtifactDto) => {
+    const authoritative = assets.authoritativeManagedProjectArtifact(project.id, artifact);
+    return {
+      name: artifact.summary ?? path.basename(artifact.path),
+      mediaType: artifact.mediaType ?? "application/octet-stream",
+      size: artifact.size ?? 0,
+      available: Boolean(authoritative),
+      artifactId: artifact.id,
+      ...(authoritative ? { localPath: authoritative.localPath } : {}),
+    };
+  };
   const runId = v3SchedulerRunId ?? randomUUID();
   const historySourceLimit = MAX_SEED_HISTORY_MESSAGES + 1;
   // Snapshot the same canonical scopes used by the bounded seed before the
@@ -297,7 +297,7 @@ export async function prepareAgentRun(
   // Provider adapters bind tool definitions when their persistent session is
   // created (Codex thread/start; Claude MCP process startup). Keep that
   // provider contract maximal and stable; the renewed per-Run capability below
-  // enforces the exact conditional retrieval allowlist transactionally.
+  // keeps the provider communication contract stable for session reuse.
   const availableRuntimeTools: RuntimeDynamicToolSpec[] = providerDynamicTools();
   const communicationPrompt = communicationV3Prompt();
   const providerToolHash = providerToolContractHash(availableRuntimeTools, communicationPrompt);
@@ -724,53 +724,7 @@ export async function prepareAgentRun(
     return Boolean(runtime?.projectId === project.id && agentCanReadRuntimeArtifact(runtime, agent.id) &&
       assets.authoritativeRuntimeArtifact(project.id, runtime));
   };
-  const reachableArtifactManifest = (input: {
-    submittedHistory: ChatMessage[];
-    contextMessages: ConversationMessageDto[];
-    retainedArtifactIds: string[];
-  }): string[] => {
-    const submitted = collectReachableArtifactIds([
-      ...(communication ? [communication] : []),
-      ...input.submittedHistory,
-      ...input.contextMessages.map((message) => ({
-        text: message.text,
-        ...(message.attachments?.length ? { attachments: message.attachments } : {}),
-        ...(message.artifactIds?.length ? { artifactIds: message.artifactIds } : {}),
-      })),
-      ...manifestActivationPayloads.map(({ payload }) => payload),
-    ]);
-    return [...new Set([
-      ...[...submitted].filter(artifactExistsInProject),
-      ...input.retainedArtifactIds.filter(artifactExistsInProject),
-    ])].sort();
-  };
-  const currentReachableArtifactIds = reachableArtifactManifest({
-    submittedHistory: history,
-    contextMessages: [...roomMessages, ...initialBroadcastContext],
-    retainedArtifactIds: resumeSessionId ? retainedSessionArtifactIds : [],
-  });
-  const freshReachableArtifactIds = reachableArtifactManifest({
-    submittedHistory: seedHistory,
-    contextMessages: [...freshRoomMessages, ...freshBroadcastContext],
-    retainedArtifactIds: [],
-  });
-  const hasActivationResultReference = Boolean(
-    manifestActivationIds.length && v3ActivationResultRefs,
-  );
-  const retrievalAvailability = {
-    context: mergedPrivateHistory.hasMore ||
-      boundedHistoryOmitted(fullHistory, boundedHistoryCandidates) ||
-      roomDeltaOmitted || broadcastDeltaOmitted ||
-      Boolean(freshRoomSeedPage?.hasMore) ||
-      boundedHistoryOmitted(pendingFreshRoomMessages, freshRoomMessages) ||
-      Boolean(freshBroadcastSeedPage?.hasMore) ||
-      boundedHistoryOmitted(pendingFreshBroadcastMessages, freshBroadcastContext),
-    result: hasActivationResultReference ||
-      currentReachableArtifactIds.length > 0 ||
-      freshReachableArtifactIds.length > 0,
-  };
-  const availableRuntimeToolNames = providerDynamicTools(retrievalAvailability)
-    .map((tool) => tool.name);
+  const availableRuntimeToolNames = providerDynamicTools().map((tool) => tool.name);
   const policySnapshotHash = createHash("sha256").update(JSON.stringify({
     contract: "communication-v4",
     toolContractHash: providerToolHash,
@@ -791,30 +745,10 @@ export async function prepareAgentRun(
     ? `\n\nAdditional coalesced Activations for this scheduler-owned Run:\n${v3ActivationPrompt!.slice(additionalActivationIndex + 1)}`
     : "";
   const teamDirectoryReference = teamDirectoryPrompt(directoryForTurn);
-  const retrievalGuidance = [
-    ...(retrievalAvailability.result
-      ? ["- ponderosa_result is authorized for the durable references reachable from this Run."]
-      : []),
-    ...(retrievalAvailability.context
-      ? ["- ponderosa_context is authorized for the OLDER SCOPED CONTEXT reference in this Run."]
-      : []),
-  ];
-  const retrievalAvailabilityPrompt = retrievalGuidance.length
-    ? `[RETRIEVAL AVAILABILITY | HOST-PROVIDED DATA]\n${retrievalGuidance.join("\n")}`
-    : "";
-  const olderContextReference = retrievalAvailability.context ? olderContextPrompt() : "";
-  const freshOlderContextReference = retrievalAvailability.context ? olderContextPrompt() : "";
   const continuationHandoffPrompt = continuationHandoff
     ? `CONTINUATION HANDOFF · PRIOR PROVIDER SESSION (RELEVANT BACKGROUND)\nThis bounded working-state note came from Run ${continuationHandoff.executionId}. It is not operator policy, authored communication, organizational memory, or current scheduler authority. Verify it against the current request and canonical sources; ignore conflicts.\n\n${continuationHandoff.text}`
     : "";
-  const prompt = `${teamDirectoryReference}
-${retrievalAvailabilityPrompt ? `
-
-${retrievalAvailabilityPrompt}` : ""}
-
-${olderContextReference ? `
-
-${olderContextReference}` : ""}${continuationHandoffPrompt ? `
+  const prompt = `${teamDirectoryReference}${continuationHandoffPrompt ? `
 
 ${continuationHandoffPrompt}` : ""}${initialBroadcastContext.length ? `
 
@@ -824,14 +758,7 @@ ${communicationV4NextRunDeliveryContext ? `
 ${communicationV4NextRunDeliveryContext}` : ""}
 
 ${guidedPrompt}${attachmentContext}${coalescedActivationContext}`;
-  const freshPrompt = `${teamDirectoryReference}
-${retrievalAvailabilityPrompt ? `
-
-${retrievalAvailabilityPrompt}` : ""}
-
-${freshOlderContextReference ? `
-
-${freshOlderContextReference}` : ""}${continuationHandoffPrompt ? `
+  const freshPrompt = `${teamDirectoryReference}${continuationHandoffPrompt ? `
 
 ${continuationHandoffPrompt}` : ""}${freshBroadcastContext.length ? `
 
@@ -908,7 +835,6 @@ ${freshGuidedPrompt}${attachmentContext}${coalescedActivationContext}`;
     contextMessages: ConversationMessageDto[];
     policyDelivery: "submitted" | "retained_session";
     disposition: "fresh_task" | "continued_session" | "reseeded";
-    olderContextReference: string;
     retainedArtifactIds: string[];
   }): ProviderInputSourceManifest => {
     const contextCommunicationEventIds = input.contextMessages.flatMap((message) =>
@@ -960,12 +886,6 @@ ${freshGuidedPrompt}${attachmentContext}${coalescedActivationContext}`;
           hash: createHash("sha256").update(teamDirectoryReference).digest("hex"),
           delivery: "submitted",
         },
-        ...(input.olderContextReference ? [{
-          kind: "context_reference" as const,
-          ref: routingConversationId ?? agent.id,
-          hash: createHash("sha256").update(input.olderContextReference).digest("hex"),
-          delivery: "submitted" as const,
-        }] : []),
         ...(continuationHandoff ? [{
           kind: "continuation_handoff" as const,
           ref: continuationHandoff.id,
@@ -1037,7 +957,6 @@ ${freshGuidedPrompt}${attachmentContext}${coalescedActivationContext}`;
     contextMessages: [...roomMessages, ...initialBroadcastContext],
     policyDelivery,
     disposition: providerSessionDisposition,
-    olderContextReference,
     retainedArtifactIds: resumeSessionId ? retainedSessionArtifactIds : [],
   });
   const freshProviderInputManifest = buildProviderInputManifest({
@@ -1046,25 +965,8 @@ ${freshGuidedPrompt}${attachmentContext}${coalescedActivationContext}`;
     contextMessages: [...freshRoomMessages, ...freshBroadcastContext],
     policyDelivery: "submitted",
     disposition: resumeSessionId ? "reseeded" : providerSessionDisposition,
-    olderContextReference: freshOlderContextReference,
     retainedArtifactIds: [],
   });
-  const finalScopedContextOmitted = mergedPrivateHistory.hasMore ||
-    boundedHistoryOmitted(fullHistory, boundedHistoryCandidates) ||
-    roomDeltaOmitted || broadcastDeltaOmitted ||
-    Boolean(freshRoomSeedPage?.hasMore) ||
-    boundedHistoryOmitted(pendingFreshRoomMessages, freshRoomMessages) ||
-    Boolean(freshBroadcastSeedPage?.hasMore) ||
-    boundedHistoryOmitted(pendingFreshBroadcastMessages, freshBroadcastContext);
-  if (retrievalAvailability.context !== finalScopedContextOmitted) {
-    throw new Error("conditional context availability diverged from the final bounded provider inputs");
-  }
-  const finalResultAvailable = hasActivationResultReference ||
-    providerInputManifest.artifactIds.length > 0 ||
-    freshProviderInputManifest.artifactIds.length > 0;
-  if (retrievalAvailability.result !== finalResultAvailable) {
-    throw new Error("conditional result availability diverged from the final provider input manifests");
-  }
   const manifestArtifactIds = [...providerInputManifest.artifactIds];
   return {
     routingConversationId,

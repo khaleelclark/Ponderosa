@@ -392,8 +392,7 @@ export interface AgentMessageCapability {
   inferredReplyCommunicationEventId?: string;
   /** Project artifacts explicitly submitted to this Run's provider context. */
   reachableArtifactIds: string[];
-  /** Exact host-authorized tool routes for this Run. The provider session may
-   * retain a stable maximal schema while every call still fails closed here. */
+  /** Exact host-authorized tool routes for this Run. */
   availableToolNames: string[];
 }
 

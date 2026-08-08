@@ -93,63 +93,12 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
   },
 };
 
-/** Read-only retrieval for durable result references advertised to the current
- * Run. The byte budget is provider-visible so models can paginate deliberately
- * instead of discovering response-size limits through rejected calls. */
-export const PONDEROSA_RESULT_TOOL: RuntimeDynamicToolSpec = {
-  name: "ponderosa_result",
-  description: "Retrieve durable result references reachable from the current authoritative Run. Pass an optional query for bounded case-insensitive literal-match excerpts, or omit it for ordered full-content pagination. References stay stable and access is recomputed per Run; retrieval creates no Runs, Activations, Requests, Joins, messages, or artifacts.",
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["refs"],
-    properties: {
-      refs: {
-        type: "array", minItems: 1, maxItems: 20, uniqueItems: true,
-        items: { type: "string", pattern: "^ponderosa://(activation|artifact)/[^/]+$", maxLength: 260 },
-        description: "One to twenty stable ponderosa://activation/<id> or ponderosa://artifact/<id> references, in desired return order.",
-      },
-      cursor: {
-        type: "string", minLength: 1, maxLength: 4096,
-        description: "Opaque continuation cursor returned by the preceding call. Reuse it with the exact same refs, query, and maxBytes.",
-      },
-      query: {
-        type: "string", minLength: 1, maxLength: 256,
-        description: "Optional case-insensitive literal query. Returns bounded matching excerpts with exact UTF-8 byte offsets; omit it for full-content pages.",
-      },
-      maxBytes: {
-        type: "integer", minimum: 4096, maximum: 262144,
-        description: "Overall raw-content byte budget for this page. Defaults to 65536 bytes; valid range is 4096 through 262144.",
-      },
-    },
-  },
-};
-
 export const PONDEROSA_TEAM_DIRECTORY_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_team_directory",
   description: "Retrieve the current run-scoped Team Chat directory through Ponderosa. Use this instead of localhost HTTP, browser access, or reading Ponderosa storage directly. Omit agentId for the visible roster; provide one stable ID for a focused entry.",
   inputSchema: {
     type: "object", additionalProperties: false,
     properties: { agentId: { type: "string", minLength: 1, maxLength: 200 } },
-  },
-};
-
-export const PONDEROSA_CONTEXT_TOOL: RuntimeDynamicToolSpec = {
-  name: "ponderosa_context",
-  description: "Retrieve older bounded canonical history only when the current Run contains an OLDER SCOPED CONTEXT reference. Use current_chat for this chat's shared/private history, or agent_private for this Agent's own Direct history across Project chats. It never grants Project-wide access.",
-  inputSchema: {
-    type: "object", additionalProperties: false,
-    properties: {
-      scope: {
-        type: "string", enum: ["current_chat", "agent_private"],
-        description: "Defaults to current_chat for historical compatibility. agent_private returns only Direct history belonging to this Agent across chats.",
-      },
-      cursor: {
-        type: "string", minLength: 1, maxLength: 4096,
-        description: "Opaque continuation cursor returned by the preceding call. Reuse it unchanged for the same scoped history.",
-      },
-      limit: { type: "integer", minimum: 1, maximum: 50, description: "Defaults 20." },
-    },
   },
 };
 
@@ -393,10 +342,8 @@ export const PONDEROSA_RUNTIME_TOOLS: RuntimeDynamicToolSpec[] = [
   PONDEROSA_DECISION_TOOL,
   PONDEROSA_MANAGE_TOOL,
   PONDEROSA_COORDINATE_TOOL,
-  PONDEROSA_RESULT_TOOL,
   PONDEROSA_UPDATE_REQUEST_TOOL,
   PONDEROSA_MESSAGE_TOOL,
   PONDEROSA_TEAM_DIRECTORY_TOOL,
-  PONDEROSA_CONTEXT_TOOL,
   ...PONDEROSA_BROWSER_TOOLS,
 ];

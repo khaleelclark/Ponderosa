@@ -27,8 +27,6 @@ export interface ChatMessage {
     available: boolean;
     /** Stable Ponderosa artifact identity for referenced generated output. */
     artifactId?: string;
-    /** Run-scoped stable retrieval reference supplied to fresh provider sessions. */
-    retrievalUrl?: string;
   }>;
 }
 

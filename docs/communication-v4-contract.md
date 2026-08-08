@@ -1,51 +1,41 @@
 # Communication V4 production contract
 
-## Retrieval schema and authorization decision
+## Provider communication surface
 
-Communication V4 uses one stable maximal provider-visible tool schema for each
-provider-session generation. Codex binds dynamic tool definitions when its
-thread starts, and Claude binds MCP definitions when its provider process
-starts. Ponderosa therefore does not claim that `ponderosa_context` or
-`ponderosa_result` schemas are hidden on Runs where retrieval is unavailable.
+Communication V4 exposes no Board, Wake, `ponderosa_context`, or
+`ponderosa_result` capability. The provider-session contract contains the same
+small communication surface for every Run in that session generation; ordinary
+coordination and result integration never reseed a provider merely to change a
+retrieval schema.
 
-Retrieval is instead conditionally authorized and prompt-guided per Run:
+The canonical event log and SQLite projections continue to retain authored
+history, request updates, artifacts, source manifests, and scheduler provenance.
+Removing provider retrieval tools does not delete or weaken that durable data.
+It deliberately means that history outside the bounded seed/continuation input
+is temporarily unavailable to providers until a separately designed scoped RAG
+replacement exists. This PR does not build or imply that replacement.
 
-- the bounded Run compiler derives context authorization from actual omitted
-  scoped input;
-- result authorization comes from final reachable artifact manifests and
-  structured scheduler provenance for omitted Activation payloads;
-- the renewed Run capability contains the exact authorized route names; and
-- every context or result call fails closed when the current authoritative Run
-  lacks that authorization, even if a reused provider session remembers the
-  stable schema.
+## Complete correlated-result delivery
 
-The provider-session contract hash uses the maximal schema. Changes from no
-retrieval reference, to a result reference, and back do not force a provider
-session rollover. This is an explicit production tradeoff: the ordinary exact
-route allowlist serializes to 18,182 bytes, while the stable maximal schema is
-20,427 bytes, a bounded difference of 2,245 bytes. Recreating a provider
-session can resend or reconstruct tens of thousands of input tokens and can
-lose useful provider continuity. The qualified ordinary → result → ordinary
-Codex sequence reused one provider session, performed no unnecessary retrieval
-call, and kept exact fail-closed authorization on every Run.
+Terminal and joined correlated results enter the requester Run automatically.
+The scheduler resolves only immutable request-update artifacts reachable from
+the exact leased Activation and validates their ledger identity and bytes before
+compiling provider input.
 
-Future adapter support may permit safe per-turn schema replacement inside one
-provider session. Until both supported adapters provide and qualify that
-contract, V4 must not reintroduce availability-driven session hashes or
-false → true → false reseeds merely to hide the two retrieval schemas.
+- Complete result content is injected inline by default.
+- If the complete scheduler packet exceeds the hard 256 KiB provider-input
+  envelope, the prompt supplies the exact validated local artifact path, byte
+  length, media type, and SHA-256. Providers must read the entire file through
+  their ordinary filesystem capability before integrating the result.
+- Missing or changed result content fails compilation. No path silently
+  truncates, previews, or discards correlated-result semantics.
+- The exact Activation and artifact IDs remain recorded in the provider-input
+  source manifest. Idempotent scheduler fencing still owns delivery exactly once.
 
-## Provider guidance
-
-Provider instructions mention retrieval only as authorized by the current
-bounded input. A Run with omitted scoped history receives an **OLDER SCOPED
-CONTEXT** reference and authorization for `ponderosa_context`. A Run with a
-reachable artifact or omitted Activation payload receives result guidance and
-authorization for `ponderosa_result`. Schema presence alone is never authority.
-
-PR descriptions and qualification reports must use the terms **conditionally
-authorized** and **prompt-guided**. They must not claim conditional
-provider-visible exposure, per-Run schema hiding, or the schema-token savings
-measured by research configurations that recreated provider sessions.
+Artifact references in older bounded history remain durable but are not a
+provider retrieval mechanism. PR and qualification wording must distinguish
+automatic current-Run result delivery from the deliberate temporary loss of
+deep-history retrieval.
 
 ## Automatic rollover continuity
 

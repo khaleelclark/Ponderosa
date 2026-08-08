@@ -1,11 +1,9 @@
 import {
-  PONDEROSA_CONTEXT_TOOL,
   PONDEROSA_COORDINATE_TOOL,
   PONDEROSA_CREATE_MANAGED_AGENT_TOOL,
   PONDEROSA_DECISION_TOOL,
   PONDEROSA_MANAGE_TOOL,
   PONDEROSA_MESSAGE_TOOL,
-  PONDEROSA_RESULT_TOOL,
   PONDEROSA_TEAM_DIRECTORY_TOOL,
   PONDEROSA_UPDATE_REQUEST_TOOL,
   type AgentDto,
@@ -228,9 +226,7 @@ export function startProviderRunExecution(
         PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
         PONDEROSA_DOCUMENT_URL: agentMessageUrl.replace(/\/api\/agent-messages$/, "/api/agent-documents"),
         PONDEROSA_AGENT_DIRECTORY_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-directory`,
-        PONDEROSA_AGENT_CONTEXT_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-context`,
         PONDEROSA_AGENT_COORDINATE_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-coordinate`,
-        PONDEROSA_AGENT_RESULT_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-results`,
         PONDEROSA_AGENT_UPDATE_REQUEST_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-request-updates`,
         PONDEROSA_AGENT_BROWSER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-browser`,
         PONDEROSA_AGENT_SPAWN_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-spawn`,
@@ -266,16 +262,7 @@ export function startProviderRunExecution(
             const directoryArguments = call.arguments && typeof call.arguments === "object"
               ? call.arguments as { agentId?: unknown }
               : {};
-            const contextArguments = call.arguments && typeof call.arguments === "object"
-              ? call.arguments as { scope?: unknown; cursor?: unknown; limit?: unknown }
-              : {};
             const isDirectory = call.name === PONDEROSA_TEAM_DIRECTORY_TOOL.name;
-            const isContext = call.name === PONDEROSA_CONTEXT_TOOL.name;
-            const isResult = call.name === PONDEROSA_RESULT_TOOL.name;
-            const contextQuery = new URLSearchParams();
-            if (contextArguments.scope === "current_chat" || contextArguments.scope === "agent_private") contextQuery.set("scope", contextArguments.scope);
-            if (typeof contextArguments.cursor === "string" && contextArguments.cursor.trim()) contextQuery.set("cursor", contextArguments.cursor.trim());
-            if (typeof contextArguments.limit === "number") contextQuery.set("limit", String(contextArguments.limit));
             const url = call.name === PONDEROSA_CREATE_MANAGED_AGENT_TOOL.name
               ? "/api/agent-spawn"
               : call.name === PONDEROSA_DECISION_TOOL.name
@@ -284,16 +271,12 @@ export function startProviderRunExecution(
               ? "/api/agent-management"
               : call.name === PONDEROSA_COORDINATE_TOOL.name
               ? "/api/agent-coordinate"
-              : isResult
-                ? "/api/agent-results"
               : call.name === PONDEROSA_UPDATE_REQUEST_TOOL.name
                 ? "/api/agent-request-updates"
                 : call.name === PONDEROSA_MESSAGE_TOOL.name
                   ? "/api/agent-messages"
                   : isDirectory
                     ? `/api/agent-directory${typeof directoryArguments.agentId === "string" && directoryArguments.agentId.trim() ? `/${encodeURIComponent(directoryArguments.agentId.trim())}` : ""}`
-                  : isContext
-                    ? `/api/agent-context${contextQuery.size ? `?${contextQuery.toString()}` : ""}`
                   : browserOperation
                     ? "/api/agent-browser"
                   : undefined;
@@ -301,13 +284,13 @@ export function startProviderRunExecution(
               return { success: false, text: `Unknown Ponderosa tool: ${call.name}` };
             }
             const response = await app.inject({
-              method: isDirectory || isContext ? "GET" : "POST",
+              method: isDirectory ? "GET" : "POST",
               url,
               headers: {
                 authorization: `Bearer ${messageCapability}`,
                 "content-type": "application/json",
               },
-              ...(!(isDirectory || isContext) ? { payload: JSON.stringify(browserOperation
+              ...(!isDirectory ? { payload: JSON.stringify(browserOperation
                 ? { ...(call.arguments && typeof call.arguments === "object" ? call.arguments : {}), operation: browserOperation }
                 : call.arguments ?? {}) } : {}),
             });

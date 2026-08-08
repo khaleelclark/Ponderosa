@@ -1,34 +1,16 @@
 import { createHash } from "node:crypto";
 import {
-  PONDEROSA_CONTEXT_TOOL,
-  PONDEROSA_RESULT_TOOL,
   PONDEROSA_RUNTIME_TOOLS,
   type RuntimeDynamicToolSpec,
   type Adapter,
   type ModelOption,
 } from "@ponderosa/core";
 
-export interface ConditionalRetrievalAvailability {
-  context: boolean;
-  result: boolean;
+export function providerDynamicTools(): RuntimeDynamicToolSpec[] {
+  return [...PONDEROSA_RUNTIME_TOOLS];
 }
 
-const ALL_RETRIEVAL_TOOLS: ConditionalRetrievalAvailability = {
-  context: true,
-  result: true,
-};
-
-export function providerDynamicTools(
-  availability: ConditionalRetrievalAvailability = ALL_RETRIEVAL_TOOLS,
-): RuntimeDynamicToolSpec[] {
-  return PONDEROSA_RUNTIME_TOOLS.filter((tool) =>
-    (availability.context || tool.name !== PONDEROSA_CONTEXT_TOOL.name) &&
-    (availability.result || tool.name !== PONDEROSA_RESULT_TOOL.name));
-}
-
-function communicationV3Prompt(
-  _availability: ConditionalRetrievalAvailability = ALL_RETRIEVAL_TOOLS,
-): string[] {
+function communicationV3Prompt(): string[] {
   return [
     "Your ordinary runtime response is Work log only; use a Ponderosa capability when another participant needs the result.",
     "Common reply: ponderosa_message({text}). Ponderosa inherits an unambiguous incoming audience and stable idempotency.",
@@ -46,8 +28,6 @@ function communicationV3Prompt(
     "A terminal Request result is the final handoff. Do not send a duplicate message or acknowledgment afterward.",
     "Do not poll or sleep. End the turn after creating a Join when no independent work remains.",
     "Live Team identities are retrievable with ponderosa_team_directory.",
-    "Use ponderosa_result only when this Run's bounded input advertises a retrievable activation or artifact reference; the server rejects references outside the exact Run capability. Pass query for targeted literal excerpts, or omit it for bounded full-content pages.",
-    "Use ponderosa_context only when this Run includes the OLDER SCOPED CONTEXT reference; the server rejects it otherwise.",
     "Visible workers/reviewers/Agents are created only with ponderosa_create_managed_agent. Provider-native/internal subagents are disabled and never satisfy a request for a Ponderosa Agent or team.",
     "Discover stable teammate IDs with ponderosa_team_directory({}).",
   ];

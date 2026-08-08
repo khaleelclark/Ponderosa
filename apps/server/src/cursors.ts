@@ -1,17 +1,6 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
-
 const RESULT_PAGE_MIN_BYTES = 4 * 1024;
 const RESULT_PAGE_DEFAULT_BYTES = 64 * 1024;
 const RESULT_PAGE_MAX_BYTES = 256 * 1024;
-
-interface ResultCursorState {
-  runId: string;
-  refsHash: string;
-  versionsHash: string;
-  maxBytes: number;
-  itemIndex: number;
-  byteOffset: number;
-}
 
 interface ActivityOutputCursorState {
   v: 1;
@@ -58,44 +47,6 @@ function decodeActivityOutputCursor(value: string, agentId: string, seq: number)
   }
 }
 
-function encodeResultCursor(state: ResultCursorState, secret: Buffer): string {
-  const payload = Buffer.from(JSON.stringify(state)).toString("base64url");
-  const signature = createHmac("sha256", secret).update(payload).digest("base64url");
-  return `${payload}.${signature}`;
-}
-
-function decodeResultCursor(value: string, secret: Buffer): ResultCursorState | undefined {
-  const [payload, suppliedSignature, extra] = value.split(".");
-  if (!payload || !suppliedSignature || extra !== undefined) return undefined;
-  const expectedSignature = createHmac("sha256", secret).update(payload).digest();
-  let supplied: Buffer;
-  let payloadBytes: Buffer;
-  try {
-    supplied = Buffer.from(suppliedSignature, "base64url");
-    payloadBytes = Buffer.from(payload, "base64url");
-  }
-  catch { return undefined; }
-  // Node accepts alternate Base64URL spellings whose unused trailing bits
-  // decode to the same bytes. Cursors have one stable textual identity.
-  if (supplied.toString("base64url") !== suppliedSignature || payloadBytes.toString("base64url") !== payload) return undefined;
-  if (supplied.length !== expectedSignature.length || !timingSafeEqual(supplied, expectedSignature)) return undefined;
-  try {
-    const parsed = JSON.parse(payloadBytes.toString("utf8")) as Partial<ResultCursorState>;
-    if (typeof parsed.runId !== "string" || typeof parsed.refsHash !== "string" ||
-        typeof parsed.versionsHash !== "string" || !Number.isSafeInteger(parsed.maxBytes) ||
-        !Number.isSafeInteger(parsed.itemIndex) || !Number.isSafeInteger(parsed.byteOffset) ||
-        (parsed.itemIndex ?? -1) < 0 || (parsed.byteOffset ?? -1) < 0) return undefined;
-    return parsed as ResultCursorState;
-  } catch {
-    return undefined;
-  }
-}
-
-function parseResultRef(ref: string): { kind: "activation" | "artifact"; id: string } | undefined {
-  const match = /^ponderosa:\/\/(activation|artifact)\/([^/]+)$/.exec(ref);
-  return match ? { kind: match[1] as "activation" | "artifact", id: match[2]! } : undefined;
-}
-
 export {
   RESULT_PAGE_MIN_BYTES,
   RESULT_PAGE_DEFAULT_BYTES,
@@ -104,7 +55,4 @@ export {
   decodeTimelineCursor,
   encodeActivityOutputCursor,
   decodeActivityOutputCursor,
-  encodeResultCursor,
-  decodeResultCursor,
-  parseResultRef,
 };
