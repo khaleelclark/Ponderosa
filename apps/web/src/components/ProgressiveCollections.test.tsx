@@ -135,9 +135,9 @@ describe("large collection progressive rendering", () => {
     ).toBe(true);
   });
 
-  it("bounds 200 Project Chats while deep search and opening remain complete", async () => {
+  it("bounds 500 Project Chats while deep search and opening remain complete", async () => {
     const conversations = Array.from(
-      { length: 200 },
+      { length: 500 },
       (_, index) => syntheticConversation(index),
     );
     const onOpenConversation = vi.fn();
@@ -166,12 +166,52 @@ describe("large collection progressive rendering", () => {
     expect(screen.getAllByRole("button", { name: /^Open Chat / })).toHaveLength(50);
 
     fireEvent.change(screen.getByRole("textbox", { name: "Search Project Chats" }), {
-      target: { value: "Chat 199" },
+      target: { value: "Chat 499" },
     });
     await waitFor(() =>
       expect(screen.getAllByRole("button", { name: /^Open Chat / })).toHaveLength(1),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Open Chat Chat 199" }));
-    expect(onOpenConversation).toHaveBeenCalledWith("chat-199");
+    fireEvent.click(screen.getByRole("button", { name: "Open Chat Chat 499" }));
+    expect(onOpenConversation).toHaveBeenCalledWith("chat-499");
+  });
+
+  it("renders secondary-Chat membership using stable relationship context", () => {
+    const manager = {
+      ...syntheticAgent(1),
+      title: "Project Manager",
+      conversationId: "chat-primary",
+      conversationIds: ["chat-primary"],
+    };
+    const child = {
+      ...syntheticAgent(2),
+      title: "Secondary Member",
+      managerAgentId: manager.id,
+      conversationId: "chat-primary",
+      conversationIds: ["chat-primary", "chat-secondary"],
+    };
+    const secondary = {
+      ...syntheticConversation(2),
+      id: "chat-secondary",
+      title: "Secondary Chat",
+    };
+    renderWithQueryClient(
+      <AgentsTab
+        agents={[child]}
+        relationshipAgents={[manager, child]}
+        projectId={project.id}
+        engines={[]}
+        conversations={[secondary]}
+        scopeConversationId={secondary.id}
+        statusByAgentId={new Map()}
+        healthByAgentId={new Map()}
+        onOpenAgent={() => undefined}
+        onNewAgent={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText("Delegated under Project Manager")).toBeTruthy();
+    expect(screen.getByText("Secondary Chat")).toBeTruthy();
+    expect(screen.queryByText("Unlinked Agent")).toBeNull();
+    expect(screen.queryByText("Unknown Project Chat")).toBeNull();
   });
 });

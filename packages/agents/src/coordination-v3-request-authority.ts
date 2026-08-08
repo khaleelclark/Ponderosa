@@ -364,8 +364,13 @@ export class CoordinationV3RequestAuthority {
           (next.openQuestionUpdateId ?? null)
       ) {
         this.questionAuthority.settleClearedQuestion(
-          request.open_question_update_id,
-          now,
+          {
+            questionUpdateId: request.open_question_update_id,
+            settledByUpdateId: input.updateId,
+            resultingState: next.state,
+            terminalRetraction: TERMINAL_REQUEST_STATES.has(next.state),
+            now,
+          },
         );
       }
       const joined = (this.sqlite.prepare(`

@@ -1072,9 +1072,11 @@ export function ConversationView({
             searchValue={memberSearch}
             onSearchValueChange={setMemberSearch}
             agents={conversationAgents}
+            relationshipAgents={projectAgents}
             projectId={conversation.projectId}
             engines={engines}
             conversations={[conversation]}
+            scopeConversationId={conversation.id}
             statusByAgentId={statusByAgentId}
             healthByAgentId={healthByAgentId}
             onOpenAgent={agentId => onOpenAgent(agentId)}

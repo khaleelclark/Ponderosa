@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
-import type { CoordinationReplyAuthority } from "@ponderosa/core";
+import {
+  TERMINAL_REQUEST_STATES,
+  type CoordinationReplyAuthority,
+  type CoordinationRequestState,
+} from "@ponderosa/core";
 import type Database from "better-sqlite3";
 import type { CreateActivationV3Input } from "./coordination-v3-runtime-communication-authority.js";
+import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
 import type { ContextRolloverState, ContextRolloverV3 } from "./coordination-v3-types.js";
 
 interface RolloverRow {
@@ -240,19 +245,22 @@ export class CoordinationV3ContextRolloverAuthority {
     return this.activeForAgent(agentId);
   }
 
-  prepareContinuation(input: { id: string; visibleResponseCommitted: boolean; now?: string }): ContextRolloverV3 {
+  prepareContinuation(input: { id: string; now?: string }): ContextRolloverV3 {
     const now = input.now ?? new Date().toISOString();
     return this.sqlite.transaction(() => {
       const current = this.get(input.id);
       if (!current) throw new Error("context rollover not found");
       if (current.state === "completed" || current.state === "continuation_ready") return current;
       if (current.state !== "session_retiring") throw new Error("context rollover session is not retiring");
-      if (current.visibleResponseCommitted || input.visibleResponseCommitted) {
+      if (
+        current.visibleResponseCommitted ||
+        !this.continuationObligationRemains(current)
+      ) {
         this.sqlite.prepare(`
-          UPDATE context_rollovers SET state = 'completed', visible_response_committed = 1,
-            visible_response_committed_at = COALESCE(visible_response_committed_at, ?),
-            updated_at = ?, terminal_at = ? WHERE id = ? AND state = 'session_retiring'
-        `).run(now, now, now, input.id);
+          UPDATE context_rollovers SET state = 'completed',
+            updated_at = ?, terminal_at = ?
+          WHERE id = ? AND state = 'session_retiring'
+        `).run(now, now, input.id);
         return this.get(input.id)!;
       }
       const activationId = this.createActivation({
@@ -369,6 +377,35 @@ export class CoordinationV3ContextRolloverAuthority {
     const result = this.get(id);
     if (!result) throw new Error("context rollover not found");
     return result;
+  }
+
+  private continuationObligationRemains(
+    rollover: ContextRolloverV3,
+  ): boolean {
+    const requests = this.sqlite.prepare(`
+      ${REQUEST_SOURCE_LINEAGE_CTE}
+      SELECT DISTINCT request.id, request.state, request.recipient_agent_id
+      FROM request_source_lineage lineage
+      JOIN json_each(?) source_activation
+        ON source_activation.value = lineage.activation_id
+      JOIN agent_activations activation
+        ON activation.id = lineage.activation_id
+      JOIN coordination_requests request ON request.id = lineage.request_id
+      WHERE activation.project_id = ? AND activation.agent_id = ?
+    `).all(
+      JSON.stringify(rollover.sourceActivationIds),
+      rollover.projectId,
+      rollover.agentId,
+    ) as Array<{
+      id: string;
+      state: CoordinationRequestState;
+      recipient_agent_id: string;
+    }>;
+    if (requests.some(request =>
+      !TERMINAL_REQUEST_STATES.has(request.state))) return true;
+    if (requests.some(request =>
+      request.recipient_agent_id === rollover.agentId)) return false;
+    return Boolean(rollover.replyAuthority);
   }
 
   private view(row: RolloverRow): ContextRolloverV3 {

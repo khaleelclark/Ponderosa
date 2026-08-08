@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import type { CoordinationRequestState } from "@ponderosa/core";
 import { PRIORITY } from "./coordination-v3-activation.js";
 import type { CreateActivationV3Input } from "./coordination-v3-runtime-communication-authority.js";
 import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runtime-scope-authority.js";
@@ -363,19 +364,132 @@ export class CoordinationV3QuestionAuthority {
     }
   }
 
-  settleClearedQuestion(questionUpdateId: string, now: string): void {
+  settleClearedQuestion(input: {
+    questionUpdateId: string;
+    settledByUpdateId: string;
+    resultingState: CoordinationRequestState;
+    terminalRetraction: boolean;
+    now: string;
+  }): void {
+    const {
+      questionUpdateId,
+      settledByUpdateId,
+      resultingState,
+      terminalRetraction,
+      now,
+    } = input;
     this.cancelUninjectedRunsForClearedQuestion(questionUpdateId, now);
+
+    const pendingInjections = this.sqlite.prepare(`
+      SELECT DISTINCT injection.id, injection.activation_ids_json
+      FROM scheduler_prompt_injections injection,
+        json_each(injection.activation_ids_json) member
+      JOIN agent_activations activation ON activation.id = member.value
+      JOIN activation_sources source ON source.activation_id = activation.id
+      WHERE injection.state = 'pending'
+        AND activation.kind = 'coordination_question'
+        AND source.source_kind = 'request_update'
+        AND source.source_id = ?
+    `).all(questionUpdateId) as Array<{
+      id: string;
+      activation_ids_json: string;
+    }>;
+    for (const injection of pendingInjections) {
+      const cancelled = this.sqlite.prepare(`
+        UPDATE scheduler_prompt_injections
+        SET state = 'cancelled', updated_at = ?, terminal_at = ?
+        WHERE id = ? AND state = 'pending'
+      `).run(now, now, injection.id).changes;
+      if (cancelled !== 1) continue;
+      this.sqlite.prepare(`
+        UPDATE agent_activations
+        SET state = 'retry_pending', available_at = ?, updated_at = ?
+        WHERE state = 'attached'
+          AND id IN (
+            SELECT value FROM json_each(?)
+          )
+          AND id NOT IN (
+            SELECT activation.id
+            FROM agent_activations activation
+            JOIN activation_sources source
+              ON source.activation_id = activation.id
+            WHERE activation.kind = 'coordination_question'
+              AND source.source_kind = 'request_update'
+              AND source.source_id = ?
+          )
+      `).run(now, now, injection.activation_ids_json, questionUpdateId);
+    }
+
+    const deliveredToLiveRun = Boolean(this.sqlite.prepare(`
+      SELECT 1
+      FROM scheduler_prompt_injections injection,
+        json_each(injection.activation_ids_json) member
+      JOIN agent_activations activation ON activation.id = member.value
+      JOIN activation_sources source ON source.activation_id = activation.id
+      JOIN scheduler_runs run ON run.id = injection.run_id
+      WHERE injection.state IN ('submitted', 'acknowledged')
+        AND run.status IN ('leased', 'running')
+        AND activation.kind = 'coordination_question'
+        AND source.source_kind = 'request_update'
+        AND source.source_id = ?
+      LIMIT 1
+    `).get(questionUpdateId));
+
     this.sqlite.prepare(`
       UPDATE agent_activations
       SET state = 'cancelled', terminal_at = ?, updated_at = ?,
-        last_delivery_error = 'question was settled before delivery'
+        last_delivery_error = 'question was settled and is no longer actionable'
       WHERE kind = 'coordination_question'
-        AND state IN ('pending', 'retry_pending')
+        AND state IN ('pending', 'retry_pending', 'attached')
         AND id IN (
           SELECT activation_id FROM activation_sources
           WHERE source_kind = 'request_update' AND source_id = ?
         )
     `).run(now, now, questionUpdateId);
+
+    if (terminalRetraction && deliveredToLiveRun) {
+      const request = this.sqlite.prepare(`
+        SELECT request.id, request.project_id, request.conversation_id,
+          request.requester_agent_id
+        FROM coordination_request_updates question_update
+        JOIN coordination_requests request
+          ON request.id = question_update.request_id
+        WHERE question_update.id = ? AND question_update.kind = 'question'
+      `).get(questionUpdateId) as {
+        id: string;
+        project_id: string;
+        conversation_id: string | null;
+        requester_agent_id: string | null;
+      } | undefined;
+      if (
+        request?.requester_agent_id &&
+        this.support.agentSurvives(request.requester_agent_id)
+      ) {
+        this.createActivation({
+          projectId: request.project_id,
+          agentId: request.requester_agent_id,
+          scopeKey: this.runtimeScopeAuthority.coordinationScopeKey(
+            request.conversation_id,
+            request.requester_agent_id,
+          ),
+          kind: "coordination_question_retracted",
+          priority: PRIORITY.urgent,
+          dedupeKey:
+            `request:${request.id}:question:${questionUpdateId}:retracted`,
+          payload: {
+            requestId: request.id,
+            inReplyToUpdateId: questionUpdateId,
+            state: resultingState,
+            settledByUpdateId,
+            recoveryInstruction:
+              "This blocking question is no longer actionable because the Request is terminal. Do not answer or retry it.",
+          },
+          sourceKind: "request_update",
+          sourceId: settledByUpdateId,
+          now,
+        });
+      }
+    }
     this.sqlite.prepare(`
       UPDATE coordination_question_suspensions
       SET state = 'resolved', updated_at = ?, terminal_at = ?

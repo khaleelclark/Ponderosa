@@ -81,13 +81,13 @@ export abstract class AgentEventSessionFacade {
     );
   }
 
-  pendingContinuationHandoff(agentId: string): {
+  pendingContinuationHandoff(agentId: string, scopeKey?: string): {
     id: string;
     executionId: string;
     text: string;
     createdAt: string;
   } | undefined {
-    return this.eventSession.pendingContinuationHandoff(agentId);
+    return this.eventSession.pendingContinuationHandoff(agentId, scopeKey);
   }
 
   consumeContinuationHandoff(

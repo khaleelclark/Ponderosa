@@ -1096,7 +1096,7 @@ export class CoordinationV3Store {
     return this.contextRolloverAuthority.markVisibleResponseCommitted(agentId, sourceRunId, now);
   }
 
-  prepareContextRolloverContinuation(input: { id: string; visibleResponseCommitted: boolean; now?: string }): ContextRolloverV3 {
+  prepareContextRolloverContinuation(input: { id: string; now?: string }): ContextRolloverV3 {
     return this.contextRolloverAuthority.prepareContinuation(input);
   }
 

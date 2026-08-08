@@ -74,6 +74,8 @@ import {
   agentHierarchyContextIds,
   agentStatusFilterOptions,
   matchesAgentStatusFilters,
+  resolveAgentConversation,
+  resolveAgentRelationshipParent,
   type StatusFilter,
 } from "./AgentsTab.helpers";
 
@@ -162,9 +164,11 @@ export function AgentsTab({
   searchValue,
   onSearchValueChange,
   agents,
+  relationshipAgents = agents,
   projectId,
   engines,
   conversations,
+  scopeConversationId,
   statusByAgentId,
   healthByAgentId,
   onOpenAgent,
@@ -192,9 +196,13 @@ export function AgentsTab({
   searchValue?: string;
   onSearchValueChange?(value: string): void;
   agents: AgentDto[];
+  /** Complete Project roster used only to resolve stable management links. */
+  relationshipAgents?: readonly AgentDto[];
   projectId?: string;
   engines: EngineDto[];
   conversations: ConversationDto[];
+  /** Chat whose membership-scoped roster is being rendered. */
+  scopeConversationId?: string;
   statusByAgentId: ReadonlyMap<string, AgentStatus>;
   healthByAgentId: ReadonlyMap<string, AgentHealthDto>;
   onOpenAgent(agentId: string): void;
@@ -307,11 +315,17 @@ export function AgentsTab({
     },
   });
 
-  const masterName = (id: string | undefined): string =>
-    id
-      ? (conversations.find(master => master.id === id)?.title ??
-        "Unknown Project Chat")
+  const conversationName = (agent: AgentDto): string => {
+    const conversation = resolveAgentConversation(
+      agent,
+      conversations,
+      scopeConversationId,
+    );
+    if (conversation) return conversation.title;
+    return scopeConversationId || agent.conversationId
+      ? "Unknown Project Chat"
       : "Unassigned";
+  };
 
   const organizationRows = orderedAgentOrganization(agents);
   const agentsById = new Map(agents.map(agent => [agent.id, agent]));
@@ -769,11 +783,10 @@ export function AgentsTab({
             {visibleFiltered.map(({ agent, depth }, index) => {
               const status = statusByAgentId.get(agent.id) ?? "idle";
               const profile = agentRoleProfile(agent);
-              const organizationParent = agent.managerAgentId
-                ? agents.find(
-                    candidate => candidate.id === agent.managerAgentId,
-                  )
-                : undefined;
+              const organizationParent = resolveAgentRelationshipParent(
+                agent,
+                relationshipAgents,
+              );
               const orphaned = Boolean(
                 agent.managerAgentId && !organizationParent,
               );
@@ -910,7 +923,7 @@ export function AgentsTab({
                           }}
                         >
                           {projectByAgentId?.get(agent.id)?.label ??
-                            masterName(agent.conversationId)}
+                            conversationName(agent)}
                         </Typography>
                         <Typography
                           variant="caption"

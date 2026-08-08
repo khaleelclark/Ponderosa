@@ -1120,10 +1120,8 @@ export function startProviderRunExecution(
               app.log.error({ err: error, agentId: agent.id, runId }, "continuation rollover teardown remains pending");
             }
           }
-          const capability = agentMessageCapabilities.get(messageCapability);
           const continued = coordinationV3.prepareContextRolloverContinuation({
             id: runRollover!.id,
-            visibleResponseCommitted: Boolean(capability?.inferredReplyCommunicationEventId),
           });
           if (continued.state === "continuation_ready") notifyScheduler();
         } else if (policyRefreshSucceeded) {
