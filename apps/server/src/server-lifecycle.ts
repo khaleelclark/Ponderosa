@@ -28,6 +28,7 @@ import type { createServerReadModels } from "./server-read-models.js";
 import type { TriggerSourceService } from "./trigger-service.js";
 import type { WebPushDeliveryManager } from "./web-push-delivery.js";
 import type { createBrowserAuthority } from "./browser-authority.js";
+import type { ProviderProcessAuthority } from "./provider-process-authority.js";
 
 type ArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>;
 type CommunicationJournal = ReturnType<typeof createCommunicationJournal>;
@@ -88,6 +89,7 @@ type ServerLifecycleContext =
     clearRunLivenessTimer(run: ActiveRun): void;
     isClosed(): boolean;
     setClosed(): void;
+    providerProcessAuthority: ProviderProcessAuthority;
   };
 
 export function registerServerLifecycle(
@@ -146,6 +148,7 @@ export function registerServerLifecycle(
     refreshCommunicationReconciliation,
     stopCommunicationReconciliation,
     closeRunBrowser,
+    providerProcessAuthority,
   } = context;
   let assetSweep: NodeJS.Timeout | undefined;
   let agentDeletionCleanupSweep: NodeJS.Timeout | undefined;
@@ -208,6 +211,11 @@ export function registerServerLifecycle(
       lifecyclePhaseStartedAt = now;
     };
     const orphanGraceBoundary = Date.now() - 60 * 60 * 1_000;
+    const recoveredProviderProcesses = await providerProcessAuthority.recoverPreviousWorkers();
+    if (recoveredProviderProcesses > 0) {
+      app.log.warn({ recoveredProviderProcesses }, "terminated provider process groups recovered from a previous daemon boot");
+    }
+    completeLifecyclePhase("provider_process_recovery");
     const runtimeArtifacts = coordinationV3.runtimeArtifacts();
     if (artifactFilesystem.ok) {
       resolveOperationalNotification("startup:artifact-filesystem-capability");

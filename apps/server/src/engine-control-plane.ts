@@ -16,6 +16,7 @@ import type { FastifyInstance } from "fastify";
 import type { EngineAuthStatusCache } from "./engine-auth-cache.js";
 import type { EngineAvailabilityStore } from "./engine-availability-store.js";
 import type { ProviderUsageCache, ProviderUsageTarget } from "./provider-usage-cache.js";
+import type { ProviderProcessAuthority } from "./provider-process-authority.js";
 import type {
   CapabilityDiscoveryAuthority,
   CapabilityDiscoveryProcess,
@@ -41,6 +42,7 @@ interface EngineControlPlaneContext {
   app: FastifyInstance;
   deletingProjectIds: ReadonlySet<string>;
   isClosed(): boolean;
+  providerProcessAuthority: ProviderProcessAuthority;
 }
 
 export function createEngineControlPlane(context: EngineControlPlaneContext) {
@@ -60,6 +62,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     app,
     deletingProjectIds,
     isClosed,
+    providerProcessAuthority,
   } = context;
 
   const runtimeFailureDetail = (engineId: string): string | undefined => {
@@ -293,6 +296,10 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     const registerProcess = (handle: RuntimeProcessHandle): void => {
       const state: CapabilityDiscoveryProcess = { handle };
       authority.processes.add(state);
+      providerProcessAuthority.register(handle, {
+        purpose: `${adapter.id} capability discovery`,
+        projectId,
+      });
       if (isClosed() || deletingProjectIds.has(projectId) || authority.controller.signal.aborted) {
         void closeCapabilityDiscoveryProcess(state).catch((error) => {
           app.log.error({ err: error, projectId, engineId: adapter.id }, "late capability-discovery process cleanup remains pending");
@@ -495,6 +502,10 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     const registerProcess = (handle: RuntimeProcessHandle): void => {
       const state: CapabilityDiscoveryProcess = { handle };
       authority.processes.add(state);
+      providerProcessAuthority.register(handle, {
+        purpose: `${adapter.id} model catalog discovery`,
+        projectId: project.id,
+      });
       if (isClosed() || deletingProjectIds.has(project.id) || authority.controller.signal.aborted) {
         void closeCapabilityDiscoveryProcess(state).catch((error) => {
           app.log.error({ err: error, projectId: project.id, engineId: adapter.id }, "late model-catalog process cleanup remains pending");
@@ -574,6 +585,10 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     const registerProcess = (handle: RuntimeProcessHandle): void => {
       const state: CapabilityDiscoveryProcess = { handle };
       authority.processes.add(state);
+      providerProcessAuthority.register(handle, {
+        purpose: `${adapter.id} model validation`,
+        projectId: project.id,
+      });
       if (isClosed() || deletingProjectIds.has(project.id) || authority.controller.signal.aborted) {
         void closeCapabilityDiscoveryProcess(state).catch((error) => {
           app.log.error(

@@ -1,5 +1,7 @@
 import type { ChildProcess } from "node:child_process";
-import type { RuntimeProcessHandle } from "@ponderosa/core";
+import { readFileSync } from "node:fs";
+import type { RuntimeProcessHandle, RuntimeProcessIdentity } from "@ponderosa/core";
+import { darwinProcessBirthMarker } from "@ponderosa/native-host";
 
 export interface ObservedProcessTerminationOptions {
   label: string;
@@ -73,7 +75,9 @@ export function runtimeProcessHandle(
   nativeAuthority?: NativeProcessTreeAuthority,
 ): RuntimeProcessHandle {
   let termination: Promise<void> | undefined;
+  const processIdentity = nativeAuthority ? undefined : runtimeProcessIdentity(child);
   return {
+    ...(processIdentity ? { processIdentity } : {}),
     isAlive: () => nativeAuthority?.isAlive() ?? processGroupAlive(child),
     close: () => {
       if (termination) return termination;
@@ -87,6 +91,136 @@ export function runtimeProcessHandle(
       return shared;
     },
   };
+}
+
+/** Capture enough POSIX identity to recover a detached process group without
+ * ever signalling a PID that the OS has since reused. */
+export function runtimeProcessIdentity(child: ChildProcess): RuntimeProcessIdentity | undefined {
+  if (process.platform === "win32" || !child.pid) return undefined;
+  const birthMarker = processBirthMarker(child.pid);
+  return birthMarker ? { pid: child.pid, pgid: child.pid, birthMarker } : undefined;
+}
+
+/** Only identities backed by a platform's high-resolution, immutable process
+ * birth source may authorize restart recovery. Unsupported POSIX platforms
+ * deliberately fail closed instead of falling back to second-resolution ps. */
+export function isRestartRecoverableProcessIdentity(
+  identity: RuntimeProcessIdentity,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return (platform === "linux" && /^linux:\d+$/u.test(identity.birthMarker)) ||
+    (platform === "darwin" && /^darwin:\d+:\d{1,6}$/u.test(identity.birthMarker));
+}
+
+/** Reconstitute a retryable process-group handle after daemon restart. */
+export function recoveredRuntimeProcessHandle(
+  identity: RuntimeProcessIdentity,
+  opts: ObservedProcessTerminationOptions,
+): RuntimeProcessHandle {
+  let termination: Promise<void> | undefined;
+  return {
+    processIdentity: identity,
+    isAlive: () => recoveredProcessGroupAlive(identity),
+    close: () => {
+      if (termination) return termination;
+      const attempt = terminateRecoveredProcessGroup(identity, opts);
+      const shared = attempt.catch((error) => {
+        if (termination === shared) termination = undefined;
+        throw error;
+      });
+      termination = shared;
+      void shared.catch(() => undefined);
+      return shared;
+    },
+  };
+}
+
+function processBirthMarker(pid: number): string | undefined {
+  if (process.platform === "linux") {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const commandEnd = stat.lastIndexOf(")");
+      if (commandEnd < 0) return undefined;
+      // The suffix begins at field 3 (state); starttime is field 22.
+      const fields = stat.slice(commandEnd + 2).trim().split(/\s+/u);
+      const startTime = fields[19];
+      return startTime ? `linux:${startTime}` : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  if (process.platform === "darwin") {
+    const marker = darwinProcessBirthMarker(pid);
+    return marker ? `darwin:${marker}` : undefined;
+  }
+  return undefined;
+}
+
+function recoveredProcessGroupAlive(identity: RuntimeProcessIdentity): boolean {
+  if (process.platform === "win32") return false;
+  try {
+    process.kill(-identity.pgid, 0);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+  if (!isRestartRecoverableProcessIdentity(identity)) return true;
+  const currentBirth = processBirthMarker(identity.pid);
+  if (currentBirth !== undefined) return currentBirth === identity.birthMarker;
+  // If the original group leader exited while descendants remain, the PGID
+  // stays reserved to that group. A reused group would again have a live
+  // leader at pid === pgid and would have been rejected above.
+  return true;
+}
+
+async function terminateRecoveredProcessGroup(
+  identity: RuntimeProcessIdentity,
+  opts: ObservedProcessTerminationOptions,
+): Promise<void> {
+  if (!recoveredProcessGroupAlive(identity)) return;
+  if (!isRestartRecoverableProcessIdentity(identity)) {
+    throw new Error(
+      `${opts.label} process identity cannot be proven safely on ${process.platform}; refusing to signal`,
+    );
+  }
+  const errors: string[] = [];
+  for (const [signal, waitMs] of [
+    ["SIGTERM", Math.max(0, opts.termGraceMs)],
+    ["SIGKILL", opts.killConfirmationMs ?? Math.max(50, Math.min(Math.max(0, opts.termGraceMs), 1_000))],
+  ] as const) {
+    try { process.kill(-identity.pgid, signal); }
+    catch (error) {
+      if (recoveredProcessGroupAlive(identity)) errors.push(`${signal} delivery failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (await waitForRecoveredProcessGroupExit(identity, waitMs)) return;
+  }
+  throw new Error(
+    `${opts.label} recovered process group remained alive after SIGKILL` +
+    `${errors.length ? ` (${errors.join("; ")})` : ""}`,
+  );
+}
+
+function waitForRecoveredProcessGroupExit(
+  identity: RuntimeProcessIdentity,
+  timeoutMs: number,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + timeoutMs;
+    let timer: NodeJS.Timeout | undefined;
+    const check = (): void => {
+      if (!recoveredProcessGroupAlive(identity)) {
+        if (timer) clearTimeout(timer);
+        resolve(true);
+        return;
+      }
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        resolve(false);
+        return;
+      }
+      timer = setTimeout(check, Math.min(25, remaining));
+    };
+    check();
+  });
 }
 
 function waitForNativeTreeExit(

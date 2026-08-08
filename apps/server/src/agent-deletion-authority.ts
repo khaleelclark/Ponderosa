@@ -22,6 +22,7 @@ import type { ContextCursorStore } from "./context-cursors.js";
 import type { createOperationalNotifications } from "./operational-notifications.js";
 import { cleanupAgentRuntimeAttachments } from "./runtime-attachments.js";
 import type { RuntimeElicitationBroker } from "./runtime-elicitation-broker.js";
+import type { ProviderProcessAuthority } from "./provider-process-authority.js";
 
 type OperationalNotifications = ReturnType<typeof createOperationalNotifications>;
 
@@ -63,6 +64,7 @@ type AgentDeletionAuthorityContext =
     refreshTriggerSources(): Promise<void>;
     notifyScheduler(): void;
     closeRunBrowser(agentId: string, run: ActiveRun, reason: string): Promise<void>;
+    providerProcessAuthority: ProviderProcessAuthority;
   };
 
 export function createAgentDeletionAuthority(
@@ -92,6 +94,7 @@ export function createAgentDeletionAuthority(
     closeRunBrowser,
     createOperationalNotification,
     resolveOperationalNotification,
+    providerProcessAuthority,
   } = context;
 
   const cancelAgentDecisions = (agentIds: Iterable<string>): void => {
@@ -210,6 +213,10 @@ export function createAgentDeletionAuthority(
         drainProviderRuntimeAuthority("Agent deletion", deletedAgentIds),
         "Agent deletion runtime close",
       );
+      await awaitRuntimeTerminationOperation(
+        providerProcessAuthority.terminateAgents(deletedAgentIds, "Agent deletion").then(() => undefined),
+        "Agent deletion recovered runtime close",
+      );
     } catch (error) {
       const details = error instanceof AggregateError
         ? error.errors.map((item) => item instanceof Error ? item.message : String(item)).join("; ")
@@ -320,6 +327,13 @@ export function createAgentDeletionAuthority(
         const run = activeRuns.get(agentId);
         if (run) await closeRunBrowser(agentId, run, "agent_deleted");
       }
+      const deletingSet = new Set(expectedAgentIds);
+      // Provider teardown is a pre-commit deletion barrier. The durable receipt
+      // remains useful for post-commit file/projection cleanup, but an Agent's
+      // canonical row must not disappear while any current- or prior-boot
+      // provider process group can still act with its authority.
+      await drainProviderRuntimeAuthority("Agent deletion", deletingSet);
+      await providerProcessAuthority.terminateAgents(deletingSet, "Agent deletion");
       committed = store.deleteAgentSubtrees(
         current.rootAgentIds,
         previewHash,

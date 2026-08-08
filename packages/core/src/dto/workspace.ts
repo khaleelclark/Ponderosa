@@ -119,6 +119,8 @@ export interface WorkspaceDirectoryPageDto<
   T extends WorkspaceDirectoryItemDto = WorkspaceDirectoryItemDto,
 > {
   kind: T["kind"];
+  /** Client-only marker: a stale continuation was transparently restarted. */
+  reset?: boolean;
   /** Starred matches are returned independently and never consume the page limit. */
   starredItems: T[];
   items: T[];

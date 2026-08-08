@@ -35,7 +35,7 @@ import { registerAgentMaintenanceRoutes } from "./agent-maintenance.js";
 import { registerAgentMessageRunRoute } from "./agent-message-run.js";
 import { registerAgentPackageRoutes } from "./agent-packages.js";
 import { registerAgentPresetRoutes } from "./agent-presets.js";
-import { applyCollectionPageHeaders, sqliteCollectionPage, type CollectionQuery } from "../collection-page.js";
+import { applyCollectionPageHeaders, collectionGenerationKey, sendCollectionPageError, sqliteCollectionPage, type CollectionQuery } from "../collection-page.js";
 import { registerAgentUsageRoute, registerUsageRoutes } from "./usage.js";
 import { registerAgentWorkRoutes } from "./agent-work.js";
 import { registerArtifactRoutes } from "./artifacts.js";
@@ -150,6 +150,7 @@ export function registerApplicationRoutes(
     projectCommunicationArtifact,
     runtimeArtifactMetadata,
     coordinationV3WorkerId,
+    providerProcessAuthority,
     workspace,
     workspaceSubscribers,
     liveSseClosures,
@@ -338,6 +339,7 @@ registerProjectDeletionRoutes(app, {
   agentHealth,
   logError: (meta, message) => app.log.error(meta, message),
   projectDeletionCleanupFaults: opts.projectDeletionCleanupFaults,
+  providerProcessAuthority,
 });
 
 registerAgentWorkRoutes(app, { store, projection: agentWorkProjection });
@@ -433,12 +435,13 @@ app.get<{ Params: { id: string }; Querystring: CollectionQuery }>("/api/projects
         : [request.params.id],
       order: "updated",
       scope: `project-agents:${request.params.id}`,
+      generationKeys: [collectionGenerationKey("agents", `project:${request.params.id}`)],
       hydrate: id => store.getAgent(id),
     });
     applyCollectionPageHeaders(reply, page);
     return page.items;
   } catch (error) {
-    return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid collection cursor" });
+    return sendCollectionPageError(reply, error);
   }
 });
 
@@ -622,6 +625,7 @@ registerAgentMessageRunRoute(app, {
   drainDeploymentIdleAuthorities, publishWorkspaceSince, runtimeElicitations,
   ownsActiveRun, cancelRuntimeIdleClose, reconcileAgentRuntimeAuthority,
   scheduleRuntimeLivenessHeartbeat,
+  providerProcessAuthority,
 });
 
 registerWorkspacePreferenceRoutes(app, {
@@ -831,6 +835,7 @@ registerProviderCommandRoutes(app, {
   closeCapabilityDiscoveryProcess,
   providerUsageState,
   reportRuntimeCapabilitiesChanged,
+  providerProcessAuthority,
 });
 
 registerCommunicationDocumentRoutes(app, authoritativeCommunicationDocument);

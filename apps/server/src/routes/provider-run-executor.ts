@@ -175,6 +175,7 @@ export function startProviderRunExecution(
     runtimeElicitations,
     createOperationalNotification,
     resolveOperationalNotification,
+    providerProcessAuthority,
   } = context;
   const {
     activeRun,
@@ -461,6 +462,12 @@ export function startProviderRunExecution(
         // can spawn or await anything.
         const operation = Promise.resolve()
           .then(() => openPersistentRuntime(sessionResumeId, (handle) => {
+            providerProcessAuthority.register(handle, {
+              purpose: "persistent provider runtime",
+              projectId: project.id,
+              agentId: agent.id,
+              runId,
+            });
             if (state.handle && state.handle !== handle) {
               void handle.close().catch((error) => {
                 app.log.error({ err: error, agentId: agent.id }, "duplicate opening provider handle failed to terminate");
@@ -525,12 +532,24 @@ export function startProviderRunExecution(
         persistentRuntime = await openRegisteredPersistentRuntime(resumeSessionId);
       }
       if (persistentRuntime) {
+        providerProcessAuthority.register(persistentRuntime.session, {
+          purpose: "persistent provider runtime",
+          projectId: project.id,
+          agentId: agent.id,
+          runId,
+        });
         activeRun.persistentRuntimeIdentity = persistentRuntime.identity;
         activeRun.runtimeSession = persistentRuntime.session;
         scheduleRuntimeLivenessHeartbeat(agent.id, activeRun);
       }
       let persistentTurnStarted = false;
       const registerOneShotRuntime = (handle: RuntimeProcessHandle): void => {
+        providerProcessAuthority.register(handle, {
+          purpose: "provider Run",
+          projectId: project.id,
+          agentId: agent.id,
+          runId,
+        });
         const authority = runtimeAuthority(agent.id, true)!;
         const existing = authority.oneShots.get(runId);
         if (existing && existing.handle !== handle) {

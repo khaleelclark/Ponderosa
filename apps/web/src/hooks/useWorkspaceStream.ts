@@ -428,6 +428,9 @@ export function useWorkspaceStream(): WorkspaceConnectionState {
             void queryClient.invalidateQueries({
               queryKey: queryKeys.queuedMessages.conversation(conversationId),
             });
+            void queryClient.invalidateQueries({
+              queryKey: queryKeys.conversations.targetedNextRun(conversationId),
+            });
           }
           collaborationChatInvalidator.schedule(event.conversationIds);
         } else {

@@ -218,7 +218,17 @@ export interface RuntimeCommandResult {
  * New signals steer an active turn or start a turn while idle; callers retain a
  * durable mailbox only for the short intervals where neither operation is safe.
  */
+export interface RuntimeProcessIdentity {
+  /** Root PID and process-group ID are equal for Ponderosa's detached POSIX CLIs. */
+  pid: number;
+  pgid: number;
+  /** OS-derived process birth marker used to reject PID/PGID reuse after restart. */
+  birthMarker: string;
+}
+
 export interface RuntimeProcessHandle {
+  /** Restart-recoverable POSIX authority. Windows relies on kill-on-close Job Objects. */
+  readonly processIdentity?: RuntimeProcessIdentity;
   /** True while the provider process group is still owned and running. */
   isAlive(): boolean;
   /** Resolve only after the owned provider process group has exited. A failed

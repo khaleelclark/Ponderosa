@@ -46,6 +46,7 @@ import {
   publicWebAssetRequest,
 } from "./public-web-assets.js";
 import { ProviderUsageCache } from "./provider-usage-cache.js";
+import { ProviderProcessAuthority } from "./provider-process-authority.js";
 import { registerAgentSurface } from "./routes/agent-surface.js";
 import { registerApplicationRoutes } from "./routes/application-routes.js";
 import { DraftService } from "./routes/drafts.js";
@@ -219,11 +220,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     runtimeArtifactMetadata,
     stageCommunicationArtifact,
   } = createCommunicationArtifactAuthority({ dataDir: opts.dataDir, assets, store });
-  const coordinationV3WorkerId = `server:${process.pid}`;
+  const coordinationV3WorkerId = `server:${randomUUID()}`;
+  const providerProcessAuthority = new ProviderProcessAuthority(store.sqlite, coordinationV3WorkerId);
   const workspace = new WorkspaceStore(opts.dataDir);
   const runtimeElicitations = new RuntimeElicitationBroker();
-  // Provider processes do not survive a server restart. Retire any durable
-  // prompt whose sensitive live half disappeared with its provider process.
+  // Startup recovery terminates any surviving prior-boot provider group before
+  // readiness. Retire prompts whose sensitive live half cannot cross the boot.
   for (const decision of workspace.listDecisions({ status: "pending" })) {
     if (!decision.runtimeAction) continue;
     workspace.cancelDecision(decision.id);
@@ -350,7 +352,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const organizationEnvelopeStates = new Map<string, { sessionId: string; hash: string }>();
   const engineAuthStatuses = new EngineAuthStatusCache();
   const engineAvailability = new EngineAvailabilityStore(opts.dataDir);
-  const providerUsage = new ProviderUsageCache(opts.dataDir);
+  const providerUsage = new ProviderUsageCache(opts.dataDir, undefined, undefined, (handle, providerId) => {
+    providerProcessAuthority.register(handle, { purpose: `${providerId} provider usage` });
+  });
   const providerEnabled = (engineId: string): boolean => workspace.getPreferences().providerAvailability[engineId] !== false;
   const {
     agentWorkProjection,
@@ -674,6 +678,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     app,
     deletingProjectIds,
     isClosed: () => closed,
+    providerProcessAuthority,
   });
 app.server.on("upgrade", linkPreviewUpgrade);
   const {
@@ -706,6 +711,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     closeRunBrowser,
     createOperationalNotification,
     resolveOperationalNotification,
+    providerProcessAuthority,
   });
   const coordinationV3Scheduler = createCoordinationScheduler(app, {
     opts,
@@ -736,6 +742,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     drainDeploymentIdleAuthorities,
     communicationArtifactAccess,
     projectCommunicationArtifact,
+    providerProcessAuthority,
   });
   let deploymentControl!: ReturnType<typeof createDeploymentControl>;
   function drainDeploymentIdleAuthorities(): void {
@@ -870,6 +877,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     refreshCommunicationReconciliation,
     stopCommunicationReconciliation,
     closeRunBrowser,
+    providerProcessAuthority,
   });
 
   const {
@@ -962,6 +970,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     coordinationV3WorkerId,
     workspace,
     runtimeElicitations,
+    providerProcessAuthority,
     workspaceSubscribers,
     liveSseClosures,
     appendWorkspace,

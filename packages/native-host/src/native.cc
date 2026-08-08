@@ -20,6 +20,9 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <libproc.h>
+#endif
 #ifdef __linux__
 #include <sys/syscall.h>
 #endif
@@ -1507,6 +1510,36 @@ napi_value Unsupported(napi_env env, napi_callback_info) {
 
 #endif
 
+napi_value DarwinProcessBirthMarker(napi_env env, napi_callback_info info) {
+#ifdef __APPLE__
+  size_t argc = 1;
+  napi_value args[1];
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int32_t pid = 0;
+  if (argc != 1 || napi_get_value_int32(env, args[0], &pid) != napi_ok ||
+      pid <= 0) {
+    return Null(env);
+  }
+  struct proc_bsdinfo process_info{};
+  const int bytes = proc_pidinfo(
+      pid, PROC_PIDTBSDINFO, 0, &process_info, sizeof(process_info));
+  if (bytes != static_cast<int>(sizeof(process_info)) ||
+      process_info.pbi_pid != static_cast<uint32_t>(pid) ||
+      process_info.pbi_start_tvsec == 0 ||
+      process_info.pbi_start_tvusec >= 1000000) {
+    return Null(env);
+  }
+  const std::string marker =
+      std::to_string(process_info.pbi_start_tvsec) + ":" +
+      std::to_string(process_info.pbi_start_tvusec);
+  napi_value value;
+  napi_create_string_utf8(env, marker.c_str(), marker.size(), &value);
+  return value;
+#else
+  return Null(env);
+#endif
+}
+
 napi_value WindowsJobObjectsSupported(napi_env env, napi_callback_info) {
   napi_value value;
 #ifdef _WIN32
@@ -1526,6 +1559,7 @@ napi_value SecureFileAuthoritySupported(napi_env env, napi_callback_info) {
 napi_value Initialize(napi_env env, napi_value exports) {
   napi_property_descriptor properties[] = {
       {"windowsJobObjectsSupported", nullptr, WindowsJobObjectsSupported, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"darwinProcessBirthMarker", nullptr, DarwinProcessBirthMarker, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"secureFileAuthoritySupported", nullptr, SecureFileAuthoritySupported, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"readSecureFile", nullptr, ReadSecureFile, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"listSecureDirectory", nullptr, ListSecureDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},

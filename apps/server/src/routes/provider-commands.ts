@@ -27,6 +27,7 @@ import {
   providerSessionContractHash,
 } from "../runtime-selection.js";
 import type { ServerContext } from "../server-context.js";
+import type { ProviderProcessAuthority } from "../provider-process-authority.js";
 import { registerAgentRunHistoryRoute } from "./agent-audit.js";
 
 interface ProviderCommandRoutesContext {
@@ -65,6 +66,7 @@ interface ProviderCommandRoutesContext {
     refresh?: "none" | "stale" | "force",
   ): Promise<ProviderUsageStateDto>;
   reportRuntimeCapabilitiesChanged(projectId: string, engineId: string): void;
+  providerProcessAuthority: ProviderProcessAuthority;
 }
 
 export function registerProviderCommandRoutes(
@@ -96,6 +98,7 @@ export function registerProviderCommandRoutes(
     closeCapabilityDiscoveryProcess,
     providerUsageState,
     reportRuntimeCapabilitiesChanged,
+    providerProcessAuthority,
   } = context;
 
 app.post<{ Params: { id: string }; Body?: CancelAgentRunRequest }>("/api/agents/:id/cancel", async (request, reply) => {
@@ -188,6 +191,10 @@ app.post<{
   const registerProcess = (handle: RuntimeProcessHandle): void => {
     const state: CapabilityDiscoveryProcess = { handle };
     authority.processes.add(state);
+    providerProcessAuthority.register(handle, {
+      purpose: `${engineId} Project provider command`,
+      projectId: project.id,
+    });
     if (isClosed() || deletingProjectIds.has(project.id) || authority.controller.signal.aborted) {
       void closeCapabilityDiscoveryProcess(state).catch((error) => {
         app.log.error({ err: error, projectId: project.id }, "project provider-command process cleanup remains pending");
@@ -358,6 +365,11 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
     const registerProcess = (handle: RuntimeProcessHandle): void => {
       const state: CapabilityDiscoveryProcess = { handle };
       authority.processes.add(state);
+      providerProcessAuthority.register(handle, {
+        purpose: `${engine.adapter.id} Agent provider command`,
+        projectId: project.id,
+        agentId: agent.id,
+      });
       if (isClosed() || deletingProjectIds.has(project.id) || deletingAgentIds.has(agent.id) || authority.controller.signal.aborted) {
         void closeCapabilityDiscoveryProcess(state).catch((error) => {
           app.log.error({ err: error, agentId: agent.id }, "transient provider-command process cleanup remains pending");
