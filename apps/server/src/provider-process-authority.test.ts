@@ -11,6 +11,7 @@ import { ProviderProcessAuthority } from "./provider-process-authority.js";
 
 const linuxTest = process.platform === "linux" ? test : test.skip;
 const darwinTest = process.platform === "darwin" ? test : test.skip;
+const posixTest = process.platform === "linux" || process.platform === "darwin" ? test : test.skip;
 
 function liveDetachedProcess() {
   const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
@@ -106,7 +107,7 @@ describe("durable provider process authority", () => {
     }
   });
 
-  linuxTest("survives a SIGKILL crash and recovers from durable SQLite in a new process", async () => {
+  posixTest("survives a SIGKILL crash and recovers from durable SQLite in a new process", async () => {
     const qualificationDir = await mkdtemp(join(tmpdir(), "ponderosa-provider-restart-"));
     const dbPath = join(qualificationDir, "authority.sqlite");
     const serverDir = fileURLToPath(new URL("..", import.meta.url));
