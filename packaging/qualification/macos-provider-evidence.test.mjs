@@ -8,7 +8,9 @@ import {
   newestClaudeDesktopManagedCli,
 } from "./macos-provider-evidence.mjs";
 
-test("selects the newest executable Desktop-managed Claude deterministically", () => {
+test("selects the newest executable Desktop-managed Claude deterministically", {
+  skip: process.platform !== "darwin",
+}, () => {
   const home = mkdtempSync(path.join(os.tmpdir(), "ponderosa-gui-claude-"));
   try {
     const executable = (version, mode = 0o755) => {

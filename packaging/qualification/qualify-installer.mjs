@@ -64,6 +64,7 @@ function defaultDataDir() {
 
 const artifact = path.resolve(option("artifact", ""));
 if (!artifact || !existsSync(artifact)) throw new Error(`Installer artifact is missing: ${artifact}`);
+const skipProviderQualification = process.argv.includes("--skip-provider-qualification");
 const reportPath = path.resolve(option(
   "report",
   path.join("dist", "qualification", `${process.platform}-${process.arch}-installer.json`),
@@ -167,13 +168,15 @@ try {
   let guiQualification = { checks: [] };
   if (process.platform === "darwin") {
     const guiReportPath = path.join(disposable, "macos-gui-launch-report.json");
-    run(path.join(installedRoot, "runtime", nodeName), [
+    const guiQualificationArgs = [
       path.join(installedRoot, "qualification", "qualify-macos-gui-launch.mjs"),
       "--application", installedApplication,
       "--install-root", installedRoot,
       "--data-dir", path.join(disposable, "Ponderosa GUI Data"),
       "--report", guiReportPath,
-    ]);
+    ];
+    if (skipProviderQualification) guiQualificationArgs.push("--skip-provider-qualification");
+    run(path.join(installedRoot, "runtime", nodeName), guiQualificationArgs);
     guiQualification = JSON.parse(readFileSync(guiReportPath, "utf8"));
   }
   const lifecycleReportPath = path.join(disposable, "launcher-lifecycle-report.json");
@@ -189,6 +192,10 @@ try {
   if (!existsSync(projectSentinel)) throw new Error("Installer removal deleted the selected Project source folder.");
   if (!existsSync(dataSentinel)) throw new Error("Installer removal deleted Ponderosa user data.");
 
+  const releaseBlockers = [
+    ...(guiQualification.releaseBlockers ?? []),
+    ...(lifecycleQualification.releaseBlockers ?? []),
+  ];
   const report = {
     ...nativeQualification,
     qualification: "native-installed-artifact",
@@ -214,8 +221,8 @@ try {
         detail: "uninstall preserved a disposable Ponderosa data sentinel and selected Project source folder",
       },
     ],
-    releaseQualified: lifecycleQualification.releaseQualified,
-    releaseBlockers: lifecycleQualification.releaseBlockers,
+    releaseQualified: releaseBlockers.length === 0,
+    releaseBlockers,
   };
   mkdirSync(path.dirname(reportPath), { recursive: true });
   writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
