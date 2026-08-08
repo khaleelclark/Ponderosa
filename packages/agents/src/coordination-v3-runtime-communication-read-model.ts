@@ -31,7 +31,84 @@ export class CoordinationV3RuntimeCommunicationReadModel {
       audience: JSON.parse(row.audience_json) as unknown,
       payload: JSON.parse(row.payload_json) as unknown,
       createdAt: row.created_at,
+      sourceKind: "runtime" as const,
     }));
+  }
+
+  /** Provider coordination commits its deterministic Communication identity in
+   * the Request transaction. Return only rows whose Agent audit projection is
+   * incomplete so startup can close the post-commit projection crash window. */
+  requestCommunicationsNeedingProjection(projectId?: string): RuntimeCommunicationV3View[] {
+    const rows = this.sqlite.prepare(`
+      SELECT request.id, request.project_id, request.conversation_id,
+        request.requester_agent_id, request.recipient_agent_id,
+        request.communication_event_id, request.payload_json, request.created_at
+      FROM coordination_requests request
+      WHERE (? IS NULL OR request.project_id = ?)
+        AND request.conversation_id IS NOT NULL
+        AND request.requester_agent_id IS NOT NULL
+        AND request.communication_event_id IS NOT NULL
+        AND (
+          NOT EXISTS (
+            SELECT 1 FROM messages sender_projection
+            WHERE sender_projection.agent_id = request.requester_agent_id
+              AND sender_projection.communication_event_id = request.communication_event_id
+          ) OR NOT EXISTS (
+            SELECT 1 FROM messages recipient_projection
+            WHERE recipient_projection.agent_id = request.recipient_agent_id
+              AND recipient_projection.communication_event_id = request.communication_event_id
+          )
+        )
+      ORDER BY request.created_at, request.id
+    `).all(projectId ?? null, projectId ?? null) as Array<{
+      id: string;
+      project_id: string;
+      conversation_id: string;
+      requester_agent_id: string;
+      recipient_agent_id: string;
+      communication_event_id: string;
+      payload_json: string;
+      created_at: string;
+    }>;
+    return rows.flatMap((row) => {
+      let payload: unknown;
+      try {
+        payload = JSON.parse(row.payload_json) as unknown;
+      } catch {
+        return [];
+      }
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) return [];
+      const request = payload as Record<string, unknown>;
+      if (typeof request.text !== "string" || !request.text.trim()) return [];
+      const requesterRunId = typeof request.requesterRunId === "string"
+        ? request.requesterRunId
+        : undefined;
+      const event = {
+        eventId: row.communication_event_id,
+        schemaVersion: 2,
+        projectId: row.project_id,
+        conversationId: row.conversation_id,
+        sender: {
+          kind: "agent",
+          agentId: row.requester_agent_id,
+          ...(requesterRunId ? { executionId: requesterRunId } : {}),
+        },
+        intent: "collaboration",
+        audience: { kind: "agents", agentIds: [row.recipient_agent_id] },
+        text: request.text,
+        createdAt: row.created_at,
+        idempotencyKey: `v3-request:${row.id}`,
+      };
+      return [{
+        id: row.id,
+        projectId: row.project_id,
+        audience: event.audience,
+        payload: { communication: event },
+        createdAt: row.created_at,
+        sourceKind: "request" as const,
+        recipientAgentIds: [row.recipient_agent_id],
+      }];
+    });
   }
 
   runtimeCommunication(id: string): RuntimeCommunicationV3View | undefined {

@@ -389,6 +389,10 @@ export class CoordinationV3Store {
     return this.runtimeCommunicationReadModel.runtimeCommunications(projectId);
   }
 
+  requestCommunicationsNeedingProjection(projectId?: string): RuntimeCommunicationV3View[] {
+    return this.runtimeCommunicationReadModel.requestCommunicationsNeedingProjection(projectId);
+  }
+
   runtimeCommunication(id: string): RuntimeCommunicationV3View | undefined {
     return this.runtimeCommunicationReadModel.runtimeCommunication(id);
   }
