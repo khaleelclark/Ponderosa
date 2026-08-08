@@ -179,6 +179,85 @@ export class CoordinationV3ReadModel {
 
   /** Read-only projection of the authoritative coordination graph. Relationships
      * come from foreign-key/link tables, never from prompt or chat text. */
+    requestSummariesForCommunications(
+      projectId: string,
+      communicationEventIds: string[],
+    ): Map<string, import("@ponderosa/core").CoordinationRequestSummaryDto[]> {
+      const uniqueEventIds = [...new Set(communicationEventIds.filter(Boolean))];
+      const result = new Map<string, import("@ponderosa/core").CoordinationRequestSummaryDto[]>();
+      if (uniqueEventIds.length === 0) return result;
+      const placeholders = uniqueEventIds.map(() => "?").join(", ");
+      const rows = this.sqlite.prepare(`
+        SELECT request.id, request.state, request.requester_agent_id,
+          request.recipient_agent_id, request.conversation_id,
+          request.communication_event_id, request.payload_json,
+          request.updated_at,
+          EXISTS (
+            SELECT 1 FROM coordination_request_updates request_update
+            WHERE request_update.request_id = request.id
+          ) AS has_updates,
+          (
+            SELECT request_update.kind
+            FROM coordination_request_updates request_update
+            WHERE request_update.request_id = request.id
+            ORDER BY request_update.created_at DESC, request_update.id DESC
+            LIMIT 1
+          ) AS latest_update_kind,
+          (
+            SELECT request_update.created_at
+            FROM coordination_request_updates request_update
+            WHERE request_update.request_id = request.id
+            ORDER BY request_update.created_at DESC, request_update.id DESC
+            LIMIT 1
+          ) AS latest_update_at,
+          EXISTS (
+            SELECT 1 FROM coordination_request_updates request_update
+            WHERE request_update.request_id = request.id
+              AND request_update.kind IN ('completed', 'blocked', 'failed')
+          ) AS has_result
+        FROM coordination_requests request
+        WHERE request.project_id = ?
+          AND request.communication_event_id IN (${placeholders})
+        ORDER BY request.created_at ASC, request.id ASC
+      `).all(projectId, ...uniqueEventIds) as Array<{
+        id: string;
+        state: CoordinationRequestState;
+        requester_agent_id: string | null;
+        recipient_agent_id: string;
+        conversation_id: string | null;
+        communication_event_id: string;
+        payload_json: string | null;
+        updated_at: string;
+        has_updates: number;
+        latest_update_kind: CoordinationRequestUpdateKind | null;
+        latest_update_at: string | null;
+        has_result: number;
+      }>;
+      for (const row of rows) {
+        const preview = boundedRequestPreview(row.payload_json);
+        const summary: import("@ponderosa/core").CoordinationRequestSummaryDto = {
+          recordId: row.id,
+          state: row.state,
+          ...(row.requester_agent_id ? { requesterAgentId: row.requester_agent_id } : {}),
+          recipientAgentId: row.recipient_agent_id,
+          ...(row.conversation_id ? { conversationId: row.conversation_id } : {}),
+          communicationEventId: row.communication_event_id,
+          ...(preview ? { preview } : {}),
+          hasUpdates: row.has_updates === 1,
+          ...(row.latest_update_kind ? { latestUpdateKind: row.latest_update_kind } : {}),
+          ...(row.latest_update_at ? { latestUpdateAt: row.latest_update_at } : {}),
+          hasResult: row.has_result === 1,
+          updatedAt: row.updated_at,
+        };
+        const existing = result.get(row.communication_event_id);
+        if (existing) existing.push(summary);
+        else result.set(row.communication_event_id, [summary]);
+      }
+      return result;
+    }
+
+  /** Read-only projection of the authoritative coordination graph. Relationships
+     * come from foreign-key/link tables, never from prompt or chat text. */
     teamOperationalRecords(input: {
       projectId: string;
       conversationId: string;

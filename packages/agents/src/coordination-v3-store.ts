@@ -722,6 +722,15 @@ export class CoordinationV3Store {
 
   /** Read-only projection of the authoritative coordination graph. Relationships
    * come from foreign-key/link tables, never from prompt or chat text. */
+  requestSummariesForCommunications(
+    projectId: string,
+    communicationEventIds: string[],
+  ): Map<string, import("@ponderosa/core").CoordinationRequestSummaryDto[]> {
+    return this.readModel.requestSummariesForCommunications(projectId, communicationEventIds);
+  }
+
+  /** Read-only projection of the authoritative coordination graph. Relationships
+   * come from foreign-key/link tables, never from prompt or chat text. */
   teamOperationalRecords(input: {
     projectId: string;
     conversationId: string;

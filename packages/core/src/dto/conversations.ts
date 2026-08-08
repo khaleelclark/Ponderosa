@@ -110,6 +110,8 @@ export interface ConversationMessageDto {
   editRevision?: number;
   /** Durable per-recipient delivery evidence for operator-authored messages. */
   deliveryReceipts?: MessageDeliveryReceiptDto[];
+  /** Requests created by this Communication, including terminal state. */
+  coordinationRequests?: CoordinationRequestSummaryDto[];
 }
 
 export type MessageDeliveryReceiptState =
@@ -220,6 +222,22 @@ export interface CollaborationViewDto {
   operationHistory?: HistoryWindowDto;
 }
 
+/** Lightweight Request lifecycle attached to the Communication that created it. */
+export interface CoordinationRequestSummaryDto {
+  recordId: string;
+  state: CoordinationRequestState;
+  requesterAgentId?: string;
+  recipientAgentId: string;
+  conversationId?: string;
+  communicationEventId?: string;
+  preview?: string;
+  hasUpdates: boolean;
+  latestUpdateKind?: CoordinationRequestUpdateKind;
+  latestUpdateAt?: string;
+  hasResult: boolean;
+  updatedAt: string;
+}
+
 export interface TeamOperationalEventDto {
   id: string;
   kind: "run" | "activation" | "request" | "join" | "trigger" | "decision" | "organization";
@@ -233,17 +251,7 @@ export interface TeamOperationalEventDto {
   createdAt: string;
   updatedAt: string;
   /** Lightweight Request metadata. Full lifecycle payloads remain lazy. */
-  request?: {
-    recordId: string;
-    requesterAgentId?: string;
-    recipientAgentId: string;
-    communicationEventId?: string;
-    preview?: string;
-    hasUpdates: boolean;
-    latestUpdateKind?: CoordinationRequestUpdateKind;
-    latestUpdateAt?: string;
-    hasResult: boolean;
-  };
+  request?: CoordinationRequestSummaryDto;
 }
 
 /** One canonical record shown in the read-only Agent work inspector. */
@@ -550,6 +558,8 @@ export interface MessageDto {
   citations?: VerifiedCitationDto[];
   /** Durable per-recipient delivery evidence for operator-authored messages. */
   deliveryReceipts?: MessageDeliveryReceiptDto[];
+  /** Requests created by this Communication, including terminal state. */
+  coordinationRequests?: CoordinationRequestSummaryDto[];
 }
 
 // ─── Messaging / runs ────────────────────────────────────────────────────────

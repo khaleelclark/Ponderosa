@@ -44,6 +44,7 @@ import {
 import { ProjectRelationshipLink } from "./HeaderRelationshipLinks";
 import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
+import { RequestLifecycleCard } from "./RequestLifecycleCard";
 import { DecisionCard } from "./decisions/DecisionCard";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
@@ -486,10 +487,6 @@ function CollaborationTimeline({
   onOpenReview?(agentId: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
 }): JSX.Element {
-  const requestsByCommunicationId = new Map<
-    string,
-    Map<string, TeamOperationalEventDto>
-  >();
   const loadedCommunicationIds = new Set(
     collaborationMessages.flatMap(message =>
       message.communicationEventId ? [message.communicationEventId] : [],
@@ -502,14 +499,6 @@ function CollaborationTimeline({
         ? event.request?.communicationEventId
         : undefined;
     if (!communicationEventId || !event.request) continue;
-    const requests =
-      requestsByCommunicationId.get(communicationEventId) ??
-      new Map<string, TeamOperationalEventDto>();
-    const previous = requests.get(event.request.recordId);
-    if (!previous || previous.updatedAt <= event.updatedAt) {
-      requests.set(event.request.recordId, event);
-    }
-    requestsByCommunicationId.set(communicationEventId, requests);
     if (loadedCommunicationIds.has(communicationEventId)) {
       linkedRequestEventIds.add(event.id);
     }
@@ -684,16 +673,8 @@ function CollaborationTimeline({
           );
         }
         const message = entry.message;
-        const linkedRequests = message.communicationEventId
-          ? [
-              ...(
-                requestsByCommunicationId.get(message.communicationEventId)
-                  ?.values() ?? []
-              ),
-            ].sort((left, right) =>
-              left.updatedAt.localeCompare(right.updatedAt),
-            )
-          : [];
+        const linkedRequests = [...(message.coordinationRequests ?? [])]
+          .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
         return (
           <Box key={entry.id}>
             <ConversationMessage
@@ -713,29 +694,26 @@ function CollaborationTimeline({
               onOpenReview={onOpenReview}
               onOpenFileActivity={onOpenFileActivity}
             />
-            {linkedRequests
-              .filter(event => event.attentionRequired)
-              .map(event => (
-                <Stack
-                  key={event.request!.recordId}
-                  direction="row"
-                  spacing={0.75}
-                  sx={{
-                    ml: { xs: 5, sm: 6.5 },
-                    mt: -0.5,
-                    mb: 0.75,
-                    alignItems: "baseline",
-                    color: "warning.light",
-                  }}
-                >
-                  <Typography variant="caption" sx={{ fontWeight: 700 }}>
-                    {event.state.replaceAll("_", " ")}
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    {event.text}
-                  </Typography>
-                </Stack>
-              ))}
+            {linkedRequests.map(request => (
+              <Box
+                key={request.recordId}
+                sx={{ ml: { xs: 5, sm: 6.5 }, mt: -0.5, mb: 0.75 }}
+              >
+                <RequestLifecycleCard
+                  projectId={projectId}
+                  conversationId={request.conversationId ?? message.conversationId}
+                  requestId={request.recordId}
+                  state={request.state}
+                  requesterAgentId={request.requesterAgentId}
+                  recipientAgentId={request.recipientAgentId}
+                  requestText={request.preview}
+                  hasUpdates={request.hasUpdates}
+                  hasResult={request.hasResult}
+                  updatedAt={request.updatedAt}
+                  agentTitle={agentTitle}
+                />
+              </Box>
+            ))}
           </Box>
         );
       })}

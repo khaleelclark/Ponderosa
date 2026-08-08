@@ -226,6 +226,14 @@ export function startProviderRunExecution(
     v3InjectionId,
   } = input;
 
+  let terminalLifecycle: ReturnType<typeof store.appendEvent> | undefined;
+  let terminalLifecyclePublished = false;
+  const publishTerminalLifecycle = (): void => {
+    if (!terminalLifecycle || terminalLifecyclePublished) return;
+    terminalLifecyclePublished = true;
+    publish(agent.id, terminalLifecycle);
+  };
+
   const execution = (async () => {
     // Consolidate ordinary response deltas into one durable, execution-scoped
     // Work log entry. Communication is created only by explicit intent calls.
@@ -1093,13 +1101,12 @@ export function startProviderRunExecution(
           });
           publish(agent.id, output);
         }
-        const terminal = store.appendEvent(agent.id, {
+        terminalLifecycle = store.appendEvent(agent.id, {
           type: "agent_lifecycle",
           status: schedulerCancelled ? "cancelled" : runError ? "failed" : "completed",
           reason: schedulerCancelled ? "agent_cancelled" : runError ? "runtime_error" : "turn_completed",
           executionId: runId,
         });
-        publish(agent.id, terminal);
         refreshProviderUsageAfterRun(runtimeEngineId);
         if (rolloverSucceeded) {
           coordinationV3.beginContextRolloverRetirement(runRollover!.id);
@@ -1191,6 +1198,12 @@ export function startProviderRunExecution(
         }
       }
       const released = releaseActiveRun(agent.id, activeRun, controller.signal.aborted || schedulerCancelled ? "cancelled" : runError ? "failed" : "completed");
+      if (released || activeRuns.get(agent.id) !== activeRun) {
+        // The lifecycle event drives workspace refetches. Delay it until this
+        // Run is no longer the authoritative active Run so a fast refetch
+        // cannot preserve a phantom active state after completion.
+        publishTerminalLifecycle();
+      }
       if (released && activeRun.v3SchedulerRunId && activeRun.v3FencingToken !== undefined) {
         try {
           if (schedulerCancelled) {
@@ -1301,6 +1314,7 @@ export function startProviderRunExecution(
       drainDeploymentIdleAuthorities();
       notifyScheduler();
     }
+    if (activeRuns.get(agent.id) !== activeRun) publishTerminalLifecycle();
   }).catch(() => undefined);
   const cleanup = execution.finally(async () => {
     const oneShot = oneShotRuntime(agent.id, runId);

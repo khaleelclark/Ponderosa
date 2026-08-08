@@ -774,7 +774,6 @@ export function registerAgentMessageRunRoute(
         ...(effectiveModel ? { model: effectiveModel } : {}),
         ...(effectiveEffort ? { effort: effectiveEffort } : {}),
       });
-      publish(agent.id, runningLifecycle);
       const activeRun: ActiveRun = {
         runId, startedAt, executionId: runId, leaseExpiresAt: leaseExpiry(), controller, messageCapability,
         ...(routingConversationId ? { conversationId: routingConversationId } : {}),
@@ -785,6 +784,11 @@ export function registerAgentMessageRunRoute(
         ownershipState: "running",
       };
       claimActiveRun(agent.id, activeRun);
+      // Publish only after the in-memory execution authority reflects the
+      // durable lifecycle transition. Workspace consumers refetch active Run
+      // state when they receive this event, so publishing first can leave the
+      // Project Overview falsely idle until another event or manual refresh.
+      publish(agent.id, runningLifecycle);
       const immediateDefaultReply = hasOneCanonicalReplySource && sharedTaskTurn
         ? { intent: "broadcast" as const }
         : hasOneCanonicalReplySource && directUserTaskTurn

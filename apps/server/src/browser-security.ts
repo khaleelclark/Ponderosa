@@ -140,3 +140,74 @@ export function redactSnapshot(snapshot: string): string {
     return redactBrowserText(snapshot);
   }
 }
+
+interface SnapshotBounds {
+  truncated: true;
+  originalCharacters: number;
+  stringLimit: number;
+  arrayLimit: number;
+}
+
+function boundedSnapshotValue(value: unknown, stringLimit: number, arrayLimit: number): unknown {
+  if (typeof value === "string") {
+    if (value.length <= stringLimit) return value;
+    return stringLimit > 0 ? `${value.slice(0, Math.max(0, stringLimit - 1))}…` : "";
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, arrayLimit).map((item) => boundedSnapshotValue(item, stringLimit, arrayLimit));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+      key,
+      boundedSnapshotValue(child, stringLimit, arrayLimit),
+    ]));
+  }
+  return value;
+}
+
+/**
+ * Redact and bound an inspect result without slicing serialized JSON. The
+ * truncation marker lets models distinguish a complete snapshot from a
+ * bounded preview while every return value remains parseable JSON.
+ */
+export function boundBrowserSnapshot(snapshot: string, maxCharacters: number): string {
+  const redacted = redactSnapshot(snapshot);
+  if (redacted.length <= maxCharacters) return redacted;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(redacted);
+  } catch {
+    parsed = { text: redacted };
+  }
+  const root = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? parsed as Record<string, unknown>
+    : { snapshot: parsed };
+  const originalCharacters = redacted.length;
+  const encode = (stringLimit: number, arrayLimit: number): string => JSON.stringify({
+    ...boundedSnapshotValue(root, stringLimit, arrayLimit) as Record<string, unknown>,
+    _ponderosa: {
+      truncated: true,
+      originalCharacters,
+      stringLimit,
+      arrayLimit,
+    } satisfies SnapshotBounds,
+  });
+
+  for (const arrayLimit of [80, 40, 20, 10, 5, 1, 0]) {
+    if (encode(0, arrayLimit).length > maxCharacters) continue;
+    let low = 0;
+    let high = maxCharacters;
+    while (low < high) {
+      const candidate = Math.ceil((low + high) / 2);
+      if (encode(candidate, arrayLimit).length <= maxCharacters) low = candidate;
+      else high = candidate - 1;
+    }
+    return encode(low, arrayLimit);
+  }
+
+  // The normal 16k budget can always fit the structured form above. Keep a
+  // valid, explicit envelope even if a caller supplies an unusually tiny cap.
+  const minimal = JSON.stringify({ _ponderosa: { truncated: true, originalCharacters } });
+  return minimal.length <= maxCharacters ? minimal : "{}";
+}
