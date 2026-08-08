@@ -58,6 +58,11 @@ import {
 import { unreadByConversation } from "../workspaceNavigation";
 import { artifactDisplayLabel } from "./filePreview/ArtifactsPane";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
+import {
+  COLLECTION_PROGRESSIVE_BATCH_SIZE,
+  CollectionProgressiveFooter,
+  useProgressiveItems,
+} from "./CollectionPrimitives";
 
 function actionableProjectHealth(
   health: AgentHealthDto[] | undefined,
@@ -205,9 +210,13 @@ export function ProjectOverview({
   const normalizedFilter = chatFilter.trim().toLocaleLowerCase();
   const visibleConversations = activeConversations.filter((conversation) =>
     !normalizedFilter || conversationDisplayTitle(conversation, activeConversations).toLocaleLowerCase().includes(normalizedFilter));
+  const progressiveConversations = useProgressiveItems(visibleConversations, {
+    batchSize: COLLECTION_PROGRESSIVE_BATCH_SIZE,
+    resetKey: `${project.id}:${chatSort}:${normalizedFilter}`,
+  });
   const groupedConversations = (["Today", "Yesterday", "Earlier"] as const).map((group) => ({
     group,
-    conversations: visibleConversations.filter((conversation) => conversationGroup(conversation.updatedAt) === group),
+    conversations: progressiveConversations.visibleItems.filter((conversation) => conversationGroup(conversation.updatedAt) === group),
   }));
   const starred = starredWorkspaceResources(preferences);
 
@@ -323,6 +332,12 @@ export function ProjectOverview({
             </Stack>;
           })}
         </Box> : null)}
+        <CollectionProgressiveFooter
+          visibleCount={progressiveConversations.visibleCount}
+          totalCount={visibleConversations.length}
+          resourceLabel="Chats"
+          onShowMore={progressiveConversations.showMore}
+        />
         {visibleConversations.length === 0 ? <Box sx={{ p: 3, textAlign: "center" }}>
           <Typography fontWeight={750}>{chatFilter.trim() ? "No matching Chats" : "No Chats Yet"}</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>{chatFilter.trim() ? `No Project Chats match “${chatFilter.trim()}”.` : "Create a Chat to give users and Agents a shared Project workspace."}</Typography>

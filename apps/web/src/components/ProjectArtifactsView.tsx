@@ -55,6 +55,7 @@ import type { AgentStatus } from "../agents";
 import { uniqueBy } from "../collections";
 import { queryKeys } from "../queryKeys";
 import { AgentsTab } from "./AgentsTab";
+import { COLLECTION_PROGRESSIVE_BATCH_SIZE } from "./CollectionPrimitives";
 import { artifactDisplayLabel } from "./filePreview/ArtifactsPane";
 import {
   ProjectOverview,
@@ -777,6 +778,7 @@ export function ProjectArtifactsView({
               conversations={conversations}
               statusByAgentId={statusByAgentId}
               healthByAgentId={healthByAgentId}
+              progressiveBatchSize={COLLECTION_PROGRESSIVE_BATCH_SIZE}
               onOpenAgent={onOpenAgent}
               onOpenAgentInNewTab={onOpenAgentInNewTab}
               onOpenAgentSettings={onOpenAgentSettings}

@@ -53,11 +53,13 @@ import {
 } from "./ResourceContextMenu";
 import type { WorkspaceDirectoryRequestState } from "../hooks/useWorkspaceDirectory";
 import {
+  CollectionProgressiveFooter,
   CollectionEmptyState,
   CollectionTimestamp,
   CollectionToolbar,
   CollectionWorkspace,
   ResourceRow,
+  useProgressiveItems,
 } from "./CollectionPrimitives";
 import {
   agentBelongsToConversation,
@@ -183,6 +185,7 @@ export function AgentsTab({
   collectionFooter,
   collectionRequest,
   visibleLimit,
+  progressiveBatchSize,
   renderedAgentIds,
   organizationRootAgentId,
 }: {
@@ -222,6 +225,9 @@ export function AgentsTab({
   collectionRequest?: WorkspaceDirectoryRequestState;
   /** Bound large embedded rosters while retaining full hierarchy context. */
   visibleLimit?: number;
+  /** Progressively mount an already-loaded roster without changing filtering,
+   * hierarchy context, selection, or canonical collection membership. */
+  progressiveBatchSize?: number;
   /** Bound rendered rows while retaining the complete organization as
    * hierarchy, filter, and parent-label context. */
   renderedAgentIds?: ReadonlySet<string>;
@@ -403,8 +409,19 @@ export function AgentsTab({
         (orderRank.get(right.agent.id) ?? Number.MAX_SAFE_INTEGER)
       : 0,
   );
+  const progressive = useProgressiveItems(filtered, {
+    batchSize: visibleLimit === undefined ? progressiveBatchSize : undefined,
+    resetKey: [
+      projectId,
+      organizationRootAgentId,
+      organizationView,
+      effectiveSearch.trim().toLocaleLowerCase(),
+      masterFilter,
+      statusFilters.join(","),
+    ].join(":"),
+  });
   const visibleFiltered = visibleLimit === undefined
-    ? filtered
+    ? progressive.visibleItems
     : filtered.slice(0, visibleLimit);
   const statusOptions = agentStatusFilterOptions(scopedAgents, statusByAgentId);
   const activeRunTargets = scopedAgents.flatMap(agent => {
@@ -1007,6 +1024,15 @@ export function AgentsTab({
           </Stack>
         )}
       </Box>
+      {visibleLimit === undefined && progressiveBatchSize !== undefined ? (
+        <CollectionProgressiveFooter
+          visibleCount={progressive.visibleCount}
+          totalCount={filtered.length}
+          batchSize={progressiveBatchSize}
+          resourceLabel="Agents"
+          onShowMore={progressive.showMore}
+        />
+      ) : null}
       {typeof collectionFooter === "function"
         ? collectionFooter(filtered.length)
         : collectionFooter}
