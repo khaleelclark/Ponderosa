@@ -343,6 +343,8 @@ export interface CoordinationRequestUpdateDto {
   actorId?: string;
   inReplyToUpdateId?: string;
   text?: string;
+  /** The canonical payload is larger than the bounded operator projection. */
+  textTruncated?: true;
   refs: string[];
   artifacts: CoordinationRequestArtifactDto[];
   resultingState: CoordinationRequestState;
@@ -359,12 +361,16 @@ export interface CoordinationRequestLifecycleDto {
     state: CoordinationRequestState;
     version: number;
     text?: string;
+    /** The canonical payload is larger than the bounded operator projection. */
+    textTruncated?: true;
     refs: string[];
     communicationEventId?: string;
     createdAt: string;
     updatedAt: string;
   };
   updates: CoordinationRequestUpdateDto[];
+  /** Older updates remain canonical but were omitted from this bounded read. */
+  updatesTruncated?: true;
 }
 
 /** GET /api/conversations/:id response. */

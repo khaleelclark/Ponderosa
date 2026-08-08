@@ -370,8 +370,9 @@ export function registerAgentCoordinationRoutes(
     if (!capability.conversationId || !author.conversationIds.includes(capability.conversationId)) {
       return reply.code(409).send({ error: "coordination requires an active Team Chat scope" });
     }
-    const normalized: Array<{ requestId?: string; recipientAgentId: string; text: string; lifetime: RequestLifetime }> = [];
-    for (const candidate of requests) {
+    const normalized: Array<{ requestId: string; recipientAgentId: string; text: string; lifetime: RequestLifetime }> = [];
+    for (let requestIndex = 0; requestIndex < requests.length; requestIndex += 1) {
+      const candidate = requests[requestIndex]!;
       const recipientAgentId = candidate.recipientAgentId?.trim();
       const text = candidate.text === undefined
         ? undefined
@@ -385,7 +386,9 @@ export function registerAgentCoordinationRoutes(
         return reply.code(400).send({ error: "every recipient must be a different active agent in this Team Chat" });
       }
       normalized.push({
-        ...(candidate.requestId?.trim() ? { requestId: candidate.requestId.trim() } : {}),
+        requestId: candidate.requestId?.trim() || `v3-request-${createHash("sha256")
+          .update(`${author.projectId}\0${capability.runId}\0${idempotencyKey}\0${requestIndex}`)
+          .digest("hex")}`,
         recipientAgentId,
         text,
         lifetime: candidate.lifetime,
@@ -420,9 +423,12 @@ export function registerAgentCoordinationRoutes(
         idempotencyKey,
         runAuthorization: runAuthorization(capability),
         requests: normalized.map((candidate) => ({
-          ...(candidate.requestId ? { requestId: candidate.requestId } : {}),
+          requestId: candidate.requestId,
           recipientAgentId: candidate.recipientAgentId,
           lifetime: candidate.lifetime,
+          communicationEventId: `v3-request-${createHash("sha256")
+            .update(`${author.projectId}\0${candidate.requestId}`)
+            .digest("hex")}`,
           payload: { text: candidate.text, requesterRunId: capability.runId, ...(completionMode ? { completionMode } : {}) },
           ...(capability.defaultReply ? { replyAuthority: capability.defaultReply } : {}),
         })),
@@ -468,7 +474,6 @@ export function registerAgentCoordinationRoutes(
           );
           projectCommunicationToAgentAudit(author.id, communication, routing.text);
           projectCommunicationToAgentAudit(item.recipientAgentId, communication, routing.text);
-          coordinationV3.attachRequestCommunication(requestId, communication.eventId, author.projectId);
         } catch (error) {
           logWarn({ err: error, requestId }, "V3 request audit projection will be repaired on idempotent retry");
         }

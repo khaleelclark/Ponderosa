@@ -9,6 +9,8 @@ import { inspectorDetails, inspectorJson, inspectorWakePolicy } from "./coordina
 import type { CoordinationWaitCycleV3 } from "./coordination-v3-types.js";
 
 const REQUEST_PREVIEW_CHARACTERS = 280;
+const REQUEST_LIFECYCLE_UPDATE_LIMIT = 100;
+const REQUEST_LIFECYCLE_TEXT_LIMIT = 32_000;
 const ARTIFACT_REF = /ponderosa:\/\/artifact\/[A-Za-z0-9._:-]+/gu;
 
 function parseStoredJson(value: string): unknown {
@@ -36,6 +38,16 @@ function payloadText(payload: unknown): string | undefined {
     }
   }
   return undefined;
+}
+
+function boundedLifecycleText(payload: unknown): { text?: string; truncated?: true } {
+  const text = payloadText(payload);
+  if (!text) return {};
+  if (text.length <= REQUEST_LIFECYCLE_TEXT_LIMIT) return { text };
+  return {
+    text: `${text.slice(0, REQUEST_LIFECYCLE_TEXT_LIMIT - 1).trimEnd()}…`,
+    truncated: true,
+  };
 }
 
 function payloadRefs(payload: unknown): string[] {
@@ -1009,13 +1021,17 @@ export class CoordinationV3ReadModel {
       } | undefined;
       if (!request) return undefined;
 
-      const updateRows = this.sqlite.prepare(`
-        SELECT id, kind, actor_kind, actor_id, in_reply_to_update_id,
-          payload_json, resulting_state, resulting_version, created_at
-        FROM coordination_request_updates
-        WHERE request_id = ?
+      const selectedUpdateRows = this.sqlite.prepare(`
+        SELECT * FROM (
+          SELECT id, kind, actor_kind, actor_id, in_reply_to_update_id,
+            payload_json, resulting_state, resulting_version, created_at
+          FROM coordination_request_updates
+          WHERE request_id = ?
+          ORDER BY created_at DESC, id DESC
+          LIMIT ?
+        ) recent_updates
         ORDER BY created_at, id
-      `).all(request.id) as Array<{
+      `).all(request.id, REQUEST_LIFECYCLE_UPDATE_LIMIT + 1) as Array<{
         id: string;
         kind: CoordinationRequestUpdateKind;
         actor_kind: "agent" | "user" | "system" | "supervisor";
@@ -1026,6 +1042,8 @@ export class CoordinationV3ReadModel {
         resulting_version: number;
         created_at: string;
       }>;
+      const updatesTruncated = selectedUpdateRows.length > REQUEST_LIFECYCLE_UPDATE_LIMIT;
+      const updateRows = updatesTruncated ? selectedUpdateRows.slice(1) : selectedUpdateRows;
       const artifactsByUpdate = new Map<
         string,
         CoordinationRequestLifecycleDto["updates"][number]["artifacts"]
@@ -1057,7 +1075,7 @@ export class CoordinationV3ReadModel {
       }
 
       const requestPayload = parseStoredJson(request.payload_json);
-      const requestText = payloadText(requestPayload);
+      const requestText = boundedLifecycleText(requestPayload);
       return {
         request: {
           id: request.id,
@@ -1067,7 +1085,8 @@ export class CoordinationV3ReadModel {
           recipientAgentId: request.recipient_agent_id,
           state: request.state,
           version: request.version,
-          ...(requestText ? { text: requestText } : {}),
+          ...(requestText.text ? { text: requestText.text } : {}),
+          ...(requestText.truncated ? { textTruncated: true as const } : {}),
           refs: payloadRefs(requestPayload),
           ...(request.communication_event_id
             ? { communicationEventId: request.communication_event_id }
@@ -1077,7 +1096,7 @@ export class CoordinationV3ReadModel {
         },
         updates: updateRows.map((row) => {
           const payload = parseStoredJson(row.payload_json);
-          const text = payloadText(payload);
+          const text = boundedLifecycleText(payload);
           const artifacts = artifactsByUpdate.get(row.id) ?? [];
           return {
             id: row.id,
@@ -1087,7 +1106,8 @@ export class CoordinationV3ReadModel {
             ...(row.in_reply_to_update_id
               ? { inReplyToUpdateId: row.in_reply_to_update_id }
               : {}),
-            ...(text ? { text } : {}),
+            ...(text.text ? { text: text.text } : {}),
+            ...(text.truncated ? { textTruncated: true as const } : {}),
             refs: [
               ...new Set([
                 ...payloadRefs(payload),
@@ -1100,6 +1120,7 @@ export class CoordinationV3ReadModel {
             createdAt: row.created_at,
           };
         }),
+        ...(updatesTruncated ? { updatesTruncated: true as const } : {}),
       };
     }
 

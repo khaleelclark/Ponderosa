@@ -176,6 +176,11 @@ function RequestUpdate({
           {visibleText}
         </Typography>
       ) : null}
+      {update.textTruncated ? (
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+          Update text is bounded in this view.
+        </Typography>
+      ) : null}
       {textIsLong ? (
         <Button
           size="small"
@@ -331,18 +336,30 @@ export function RequestLifecycleCard({
             <Box>
               <Typography variant="overline" color="text.secondary">Request</Typography>
               {resolvedRequestText ? (
-                <Typography
-                  variant="body2"
-                  sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
-                >
-                  {resolvedRequestText}
-                </Typography>
+                <>
+                  <Typography
+                    variant="body2"
+                    sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
+                  >
+                    {resolvedRequestText}
+                  </Typography>
+                  {lifecycle.request.textTruncated ? (
+                    <Typography variant="caption" color="text.secondary">
+                      Request text is bounded in this view.
+                    </Typography>
+                  ) : null}
+                </>
               ) : (
                 <Typography variant="body2" color="text.secondary">
                   No request text was recorded.
                 </Typography>
               )}
             </Box>
+            {lifecycle.updatesTruncated ? (
+              <Alert severity="info">
+                Earlier Request updates are omitted from this bounded view.
+              </Alert>
+            ) : null}
             <Box component="ol" sx={{ p: 0, m: 0 }} aria-label="Request update history">
               {lifecycle.updates.map((update) => (
                 <RequestUpdate
