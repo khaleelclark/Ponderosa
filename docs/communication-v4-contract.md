@@ -39,6 +39,14 @@ deep-history retrieval.
 
 ## Automatic rollover continuity
 
+Crossing the context-pressure threshold queues a dedicated blocker-only
+handoff Run at the next scheduler boundary on the retained old provider
+session. The pressure source Run first completes its ordinary task and exact
+output contract. Only the dedicated Run's acknowledged 300–500-word output can
+commit the continuation handoff; the runtime then retires the old session and
+opens the compatible replacement. This costs one explicit rollover Run but
+does not depend on a model overriding an arbitrary active task response.
+
 An automatic rollover may reach `completed` after its source Run already
 committed the visible reply, because no extra continuation Run is owed for that
 reply. Its durable handoff is still mandatory session-bridge state: until one

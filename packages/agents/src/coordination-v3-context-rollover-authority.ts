@@ -75,14 +75,18 @@ export class CoordinationV3ContextRolloverAuthority {
         scopeKey: input.scopeKey,
         kind: "context_rollover_handoff",
         priority: 100,
-        dispatchPolicy: "steer_or_run",
+        // The source task may have an exact output contract (for example,
+        // reply only DONE). A rollover handoff therefore runs at the next
+        // scheduler boundary on the retained old provider session, where its
+        // bounded output cannot be confused with or override task output.
+        dispatchPolicy: "next_run",
         promptClass: "blocker",
         dedupeKey: `context-rollover-handoff:${id}`,
         payload: {
           rolloverId: id,
           detectedOccupancy: input.detectedOccupancy,
           threshold: input.threshold,
-          instruction: "Context pressure crossed the safe threshold. Finish the current non-interruptible operation, do not begin substantial new work, then end the Work log with one self-contained 300–500-word bounded handoff covering the objective, completed work, unfinished work, blockers, exact next action, verified facts versus assumptions, and relevant file or artifact references. The Ponderosa runtime, not a provider tool call, owns session replacement.",
+          instruction: "The pressure source Run has ended. Produce only one self-contained 300–500-word bounded handoff covering the objective, completed work, unfinished work, blockers, exact next action, verified facts versus assumptions, and relevant file or artifact references. Do not resume the task or repeat its output contract. The Ponderosa runtime, not a provider tool call, owns session replacement.",
         },
         sourceKind: "context_rollover",
         sourceId: id,
