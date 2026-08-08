@@ -1,7 +1,33 @@
-import type { AgentDto } from "@ponderosa/core";
+import type { AgentDto, ConversationDto } from "@ponderosa/core";
 import type { AgentStatus } from "../agents";
 
 export type StatusFilter = AgentStatus | "unassigned";
+
+export function resolveAgentRelationshipParent(
+  agent: AgentDto,
+  relationshipAgents: readonly AgentDto[],
+): AgentDto | undefined {
+  if (!agent.managerAgentId) return undefined;
+  return relationshipAgents.find(candidate =>
+    candidate.id === agent.managerAgentId && candidate.projectId === agent.projectId,
+  );
+}
+
+export function resolveAgentConversation(
+  agent: AgentDto,
+  conversations: readonly ConversationDto[],
+  scopeConversationId?: string,
+): ConversationDto | undefined {
+  const conversationId = scopeConversationId
+    ? agent.conversationIds.includes(scopeConversationId)
+      ? scopeConversationId
+      : undefined
+    : agent.conversationId;
+  if (!conversationId) return undefined;
+  return conversations.find(conversation =>
+    conversation.id === conversationId && conversation.projectId === agent.projectId,
+  );
+}
 
 const STATUS_FILTERS: Array<{
   value: Exclude<StatusFilter, "all" | "unassigned">;

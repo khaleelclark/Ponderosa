@@ -20,6 +20,7 @@ import type { WorkspaceDirectoryRequestState } from "../hooks/useWorkspaceDirect
 import {
   createContext,
   useContext,
+  useEffect,
   useId,
   useRef,
   useState,
@@ -45,6 +46,70 @@ export interface CollectionWorkspaceProps {
 const CollectionAnnouncementContext = createContext<(message: string) => void>(
   () => undefined,
 );
+
+export const COLLECTION_PROGRESSIVE_BATCH_SIZE = 25;
+
+/**
+ * Display-only progressive disclosure for already-loaded collections. Search,
+ * sorting, hierarchy context, and selection continue to operate on `items`;
+ * only the rows mounted in the DOM are bounded.
+ */
+export function useProgressiveItems<T>(
+  items: readonly T[],
+  options: { batchSize?: number; resetKey?: string } = {},
+): {
+  visibleItems: readonly T[];
+  visibleCount: number;
+  remainingCount: number;
+  hasMore: boolean;
+  showMore(): void;
+} {
+  const { batchSize, resetKey } = options;
+  const [limit, setLimit] = useState(
+    batchSize ?? COLLECTION_PROGRESSIVE_BATCH_SIZE,
+  );
+  useEffect(() => {
+    if (batchSize !== undefined) setLimit(batchSize);
+  }, [batchSize, resetKey]);
+  const visibleCount = batchSize === undefined
+    ? items.length
+    : Math.min(limit, items.length);
+  return {
+    visibleItems: items.slice(0, visibleCount),
+    visibleCount,
+    remainingCount: items.length - visibleCount,
+    hasMore: visibleCount < items.length,
+    showMore: () => {
+      if (batchSize !== undefined)
+        setLimit(current => current + batchSize);
+    },
+  };
+}
+
+export function CollectionProgressiveFooter({
+  visibleCount,
+  totalCount,
+  batchSize = COLLECTION_PROGRESSIVE_BATCH_SIZE,
+  resourceLabel,
+  onShowMore,
+}: {
+  visibleCount: number;
+  totalCount: number;
+  batchSize?: number;
+  resourceLabel: string;
+  onShowMore(): void;
+}): JSX.Element | null {
+  const remaining = Math.max(0, totalCount - visibleCount);
+  if (!remaining) return null;
+  const nextCount = Math.min(batchSize, remaining);
+  return (
+    <Box sx={{ display: "flex", justifyContent: "center", py: 1 }}>
+      <Button size="small" color="inherit" onClick={onShowMore}>
+        {`Show ${nextCount} more ${resourceLabel} · ${remaining} remaining`}
+      </Button>
+    </Box>
+  );
+}
 
 export function CollectionHeader({
   title,

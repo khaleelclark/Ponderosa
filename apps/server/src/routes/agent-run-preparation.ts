@@ -405,9 +405,12 @@ export async function prepareAgentRun(
   if (rolloverRecovery && !rolloverRecoveryHandoff) {
     throw new Error("authorized context rollover recovery handoff is unavailable");
   }
+  const schedulerRunScopeKey = v3SchedulerRunId
+    ? coordinationV3.runScopeKey(v3SchedulerRunId, agent.id)
+    : undefined;
   const eligibleContinuationHandoff = rolloverContinuationHandoff
     ?? rolloverRecoveryHandoff
-    ?? store.pendingContinuationHandoff(agent.id);
+    ?? store.pendingContinuationHandoff(agent.id, schedulerRunScopeKey);
   if (eligibleContinuationHandoff) {
     // The rollover's exact handoff remains eligible even when startup had to
     // classify its unterminated source Run as interrupted. Durable rollover

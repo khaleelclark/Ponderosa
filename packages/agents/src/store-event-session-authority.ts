@@ -202,7 +202,7 @@ export class AgentEventSessionAuthority {
     } : undefined;
   }
 
-  pendingContinuationHandoff(agentId: string): {
+  pendingContinuationHandoff(agentId: string, scopeKey?: string): {
     id: string; executionId: string; text: string; createdAt: string;
   } | undefined {
     const row = this.client.prepare(`
@@ -227,8 +227,23 @@ export class AgentEventSessionAuthority {
           WHERE rollover.handoff_event_id = handoff.id
             AND rollover.state IN ('failed','outcome_unknown')
         )
+        AND (
+          NOT EXISTS (
+            SELECT 1 FROM context_rollovers rollover
+            WHERE rollover.handoff_event_id = handoff.id
+          )
+          OR EXISTS (
+            SELECT 1 FROM context_rollovers rollover
+            WHERE rollover.handoff_event_id = handoff.id
+              AND rollover.scope_key = ?
+              AND rollover.state IN (
+                'handoff_committed', 'session_retiring',
+                'continuation_ready', 'completed'
+              )
+          )
+        )
       ORDER BY handoff.created_at ASC, handoff.id ASC LIMIT 1
-    `).get(agentId) as { id: string; source_execution_id: string; text: string; created_at: string } | undefined;
+    `).get(agentId, scopeKey ?? null) as { id: string; source_execution_id: string; text: string; created_at: string } | undefined;
     return row ? { id: row.id, executionId: row.source_execution_id, text: row.text, createdAt: row.created_at } : undefined;
   }
 

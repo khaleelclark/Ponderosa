@@ -333,7 +333,6 @@ export function registerServerLifecycle(
           store.clearResumeSession(rollover.agentId, "explicit_compaction");
           rollover = coordinationV3.prepareContextRolloverContinuation({
             id: rollover.id,
-            visibleResponseCommitted: rollover.visibleResponseCommitted,
           });
         }
         if (rollover.state === "continuation_ready" && rollover.replacementSessionId) {

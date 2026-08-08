@@ -53,11 +53,13 @@ import {
 } from "./ResourceContextMenu";
 import type { WorkspaceDirectoryRequestState } from "../hooks/useWorkspaceDirectory";
 import {
+  CollectionProgressiveFooter,
   CollectionEmptyState,
   CollectionTimestamp,
   CollectionToolbar,
   CollectionWorkspace,
   ResourceRow,
+  useProgressiveItems,
 } from "./CollectionPrimitives";
 import {
   agentBelongsToConversation,
@@ -72,6 +74,8 @@ import {
   agentHierarchyContextIds,
   agentStatusFilterOptions,
   matchesAgentStatusFilters,
+  resolveAgentConversation,
+  resolveAgentRelationshipParent,
   type StatusFilter,
 } from "./AgentsTab.helpers";
 
@@ -160,9 +164,11 @@ export function AgentsTab({
   searchValue,
   onSearchValueChange,
   agents,
+  relationshipAgents = agents,
   projectId,
   engines,
   conversations,
+  scopeConversationId,
   statusByAgentId,
   healthByAgentId,
   onOpenAgent,
@@ -183,15 +189,20 @@ export function AgentsTab({
   collectionFooter,
   collectionRequest,
   visibleLimit,
+  progressiveBatchSize,
   renderedAgentIds,
   organizationRootAgentId,
 }: {
   searchValue?: string;
   onSearchValueChange?(value: string): void;
   agents: AgentDto[];
+  /** Complete Project roster used only to resolve stable management links. */
+  relationshipAgents?: readonly AgentDto[];
   projectId?: string;
   engines: EngineDto[];
   conversations: ConversationDto[];
+  /** Chat whose membership-scoped roster is being rendered. */
+  scopeConversationId?: string;
   statusByAgentId: ReadonlyMap<string, AgentStatus>;
   healthByAgentId: ReadonlyMap<string, AgentHealthDto>;
   onOpenAgent(agentId: string): void;
@@ -222,6 +233,9 @@ export function AgentsTab({
   collectionRequest?: WorkspaceDirectoryRequestState;
   /** Bound large embedded rosters while retaining full hierarchy context. */
   visibleLimit?: number;
+  /** Progressively mount an already-loaded roster without changing filtering,
+   * hierarchy context, selection, or canonical collection membership. */
+  progressiveBatchSize?: number;
   /** Bound rendered rows while retaining the complete organization as
    * hierarchy, filter, and parent-label context. */
   renderedAgentIds?: ReadonlySet<string>;
@@ -301,11 +315,17 @@ export function AgentsTab({
     },
   });
 
-  const masterName = (id: string | undefined): string =>
-    id
-      ? (conversations.find(master => master.id === id)?.title ??
-        "Unknown Project Chat")
+  const conversationName = (agent: AgentDto): string => {
+    const conversation = resolveAgentConversation(
+      agent,
+      conversations,
+      scopeConversationId,
+    );
+    if (conversation) return conversation.title;
+    return scopeConversationId || agent.conversationId
+      ? "Unknown Project Chat"
       : "Unassigned";
+  };
 
   const organizationRows = orderedAgentOrganization(agents);
   const agentsById = new Map(agents.map(agent => [agent.id, agent]));
@@ -403,8 +423,19 @@ export function AgentsTab({
         (orderRank.get(right.agent.id) ?? Number.MAX_SAFE_INTEGER)
       : 0,
   );
+  const progressive = useProgressiveItems(filtered, {
+    batchSize: visibleLimit === undefined ? progressiveBatchSize : undefined,
+    resetKey: [
+      projectId,
+      organizationRootAgentId,
+      organizationView,
+      effectiveSearch.trim().toLocaleLowerCase(),
+      masterFilter,
+      statusFilters.join(","),
+    ].join(":"),
+  });
   const visibleFiltered = visibleLimit === undefined
-    ? filtered
+    ? progressive.visibleItems
     : filtered.slice(0, visibleLimit);
   const statusOptions = agentStatusFilterOptions(scopedAgents, statusByAgentId);
   const activeRunTargets = scopedAgents.flatMap(agent => {
@@ -752,11 +783,10 @@ export function AgentsTab({
             {visibleFiltered.map(({ agent, depth }, index) => {
               const status = statusByAgentId.get(agent.id) ?? "idle";
               const profile = agentRoleProfile(agent);
-              const organizationParent = agent.managerAgentId
-                ? agents.find(
-                    candidate => candidate.id === agent.managerAgentId,
-                  )
-                : undefined;
+              const organizationParent = resolveAgentRelationshipParent(
+                agent,
+                relationshipAgents,
+              );
               const orphaned = Boolean(
                 agent.managerAgentId && !organizationParent,
               );
@@ -893,7 +923,7 @@ export function AgentsTab({
                           }}
                         >
                           {projectByAgentId?.get(agent.id)?.label ??
-                            masterName(agent.conversationId)}
+                            conversationName(agent)}
                         </Typography>
                         <Typography
                           variant="caption"
@@ -1007,6 +1037,15 @@ export function AgentsTab({
           </Stack>
         )}
       </Box>
+      {visibleLimit === undefined && progressiveBatchSize !== undefined ? (
+        <CollectionProgressiveFooter
+          visibleCount={progressive.visibleCount}
+          totalCount={filtered.length}
+          batchSize={progressiveBatchSize}
+          resourceLabel="Agents"
+          onShowMore={progressive.showMore}
+        />
+      ) : null}
       {typeof collectionFooter === "function"
         ? collectionFooter(filtered.length)
         : collectionFooter}
