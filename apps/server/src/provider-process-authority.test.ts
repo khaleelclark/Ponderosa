@@ -1,4 +1,9 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import { openDb } from "@ponderosa/agents";
 import { recoveredRuntimeProcessHandle, runtimeProcessIdentity } from "@ponderosa/engines";
@@ -77,4 +82,99 @@ describe("durable provider process authority", () => {
       opened.client.close();
     }
   });
+
+  linuxTest("survives a SIGKILL crash and recovers from durable SQLite in a new process", async () => {
+    const qualificationDir = await mkdtemp(join(tmpdir(), "ponderosa-provider-restart-"));
+    const dbPath = join(qualificationDir, "authority.sqlite");
+    const serverDir = fileURLToPath(new URL("..", import.meta.url));
+    let cleanupHandle: ReturnType<typeof liveDetachedProcess>["handle"] | undefined;
+    try {
+      const crashedWorkerScript = `
+        import { spawn } from "node:child_process";
+        import { openDb } from "@ponderosa/agents";
+        import { recoveredRuntimeProcessHandle, runtimeProcessIdentity } from "@ponderosa/engines";
+        import { ProviderProcessAuthority } from "./dist/provider-process-authority.js";
+        const opened = openDb(process.argv[1]);
+        const provider = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+          detached: true, stdio: "ignore",
+        });
+        const identity = runtimeProcessIdentity(provider);
+        if (!identity) throw new Error("provider identity unavailable");
+        const handle = recoveredRuntimeProcessHandle(identity, {
+          label: "crash qualification provider", termGraceMs: 500, killConfirmationMs: 500,
+        });
+        new ProviderProcessAuthority(opened.client, "server:boot-crashed").register(handle, {
+          purpose: "provider Run", projectId: "project-crash", agentId: "agent-crash", runId: "run-crash",
+        });
+        provider.unref();
+        process.stdout.write(JSON.stringify(identity) + "\\n");
+        setInterval(() => {}, 1000);
+      `;
+      const crashedWorker = spawn(
+        process.execPath,
+        ["--input-type=module", "-e", crashedWorkerScript, dbPath],
+        { cwd: serverDir, stdio: ["ignore", "pipe", "pipe"] },
+      );
+      let stdout = "";
+      let stderr = "";
+      crashedWorker.stdout.setEncoding("utf8");
+      crashedWorker.stderr.setEncoding("utf8");
+      crashedWorker.stdout.on("data", chunk => { stdout += chunk; });
+      crashedWorker.stderr.on("data", chunk => { stderr += chunk; });
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error(`crashed worker did not become ready: ${stderr}`)), 10_000);
+        const check = (): void => {
+          if (!stdout.includes("\n")) return;
+          clearTimeout(timeout);
+          resolve();
+        };
+        crashedWorker.stdout.on("data", check);
+        crashedWorker.once("exit", (code, signal) => {
+          clearTimeout(timeout);
+          reject(new Error(`crashed worker exited before qualification kill (${code ?? signal}): ${stderr}`));
+        });
+        check();
+      });
+      const identity = JSON.parse(stdout.trim()) as NonNullable<ReturnType<typeof runtimeProcessIdentity>>;
+      cleanupHandle = recoveredRuntimeProcessHandle(identity, {
+        label: "crash qualification cleanup",
+        termGraceMs: 500,
+        killConfirmationMs: 500,
+      });
+      expect(cleanupHandle.isAlive()).toBe(true);
+
+      const crashedExit = once(crashedWorker, "exit") as Promise<[number | null, NodeJS.Signals | null]>;
+      process.kill(crashedWorker.pid!, "SIGKILL");
+      const [, signal] = await crashedExit;
+      expect(signal).toBe("SIGKILL");
+      expect(cleanupHandle.isAlive()).toBe(true);
+
+      const restartedWorkerScript = `
+        import { openDb } from "@ponderosa/agents";
+        import { ProviderProcessAuthority } from "./dist/provider-process-authority.js";
+        const opened = openDb(process.argv[1]);
+        const recovered = await new ProviderProcessAuthority(opened.client, "server:boot-restarted").recoverPreviousWorkers();
+        process.stdout.write(String(recovered));
+        opened.client.close();
+      `;
+      const restarted = spawnSync(
+        process.execPath,
+        ["--input-type=module", "-e", restartedWorkerScript, dbPath],
+        { cwd: serverDir, encoding: "utf8", timeout: 10_000 },
+      );
+      expect(restarted.status, restarted.stderr).toBe(0);
+      expect(restarted.stdout).toBe("1");
+      expect(cleanupHandle.isAlive()).toBe(false);
+
+      const reopened = openDb(dbPath);
+      try {
+        expect(new ProviderProcessAuthority(reopened.client, "server:inspection").count()).toBe(0);
+      } finally {
+        reopened.client.close();
+      }
+    } finally {
+      if (cleanupHandle?.isAlive()) await cleanupHandle.close();
+      await rm(qualificationDir, { recursive: true, force: true });
+    }
+  }, 20_000);
 });

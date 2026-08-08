@@ -42,7 +42,13 @@ export function exactCorrelatedResultArtifactOwners(
     : {};
   const add = (value: unknown, ownerId: unknown): void => {
     const expectedOwner = typeof ownerId === "string" && ownerId ? ownerId : null;
-    for (const artifactId of collectReachableArtifactIds(value)) owners.set(artifactId, expectedOwner);
+    for (const artifactId of collectReachableArtifactIds(value)) {
+      if (!owners.has(artifactId)) {
+        owners.set(artifactId, expectedOwner);
+        continue;
+      }
+      if (owners.get(artifactId) !== expectedOwner) owners.set(artifactId, null);
+    }
   };
   if (activation.kind === "coordination_outcome") {
     add(payload.update, payload.updateId);
@@ -87,7 +93,7 @@ export function resolveCoordinationResultArtifacts(input: {
     const exactOwnerId = exactOwners.get(artifactId);
     const exactReference = exactOwners.has(artifactId);
     if (!artifact || artifact.ownerKind !== "request_update" || artifact.projectId !== input.projectId ||
-        (exactOwnerId !== undefined && exactOwnerId !== null && artifact.ownerId !== exactOwnerId)) {
+        (exactReference && (exactOwnerId === null || artifact.ownerId !== exactOwnerId))) {
       if (exactReference) {
         throw new Error(`exact correlated result artifact contract mismatch: ${artifactId}`);
       }

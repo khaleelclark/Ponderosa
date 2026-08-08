@@ -1,5 +1,4 @@
 import type { ChildProcess } from "node:child_process";
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import type { RuntimeProcessHandle, RuntimeProcessIdentity } from "@ponderosa/core";
 
@@ -101,6 +100,16 @@ export function runtimeProcessIdentity(child: ChildProcess): RuntimeProcessIdent
   return birthMarker ? { pid: child.pid, pgid: child.pid, birthMarker } : undefined;
 }
 
+/** Only identities backed by a platform's high-resolution, immutable process
+ * birth source may authorize restart recovery. Unsupported POSIX platforms
+ * deliberately fail closed instead of falling back to second-resolution ps. */
+export function isRestartRecoverableProcessIdentity(
+  identity: RuntimeProcessIdentity,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return platform === "linux" && identity.birthMarker.startsWith("linux:");
+}
+
 /** Reconstitute a retryable process-group handle after daemon restart. */
 export function recoveredRuntimeProcessHandle(
   identity: RuntimeProcessIdentity,
@@ -138,16 +147,7 @@ function processBirthMarker(pid: number): string | undefined {
       return undefined;
     }
   }
-  try {
-    const started = execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 1_000,
-    }).trim();
-    return started ? `${process.platform}:${started}` : undefined;
-  } catch {
-    return undefined;
-  }
+  return undefined;
 }
 
 function recoveredProcessGroupAlive(identity: RuntimeProcessIdentity): boolean {
@@ -157,6 +157,7 @@ function recoveredProcessGroupAlive(identity: RuntimeProcessIdentity): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code !== "ESRCH";
   }
+  if (!isRestartRecoverableProcessIdentity(identity)) return true;
   const currentBirth = processBirthMarker(identity.pid);
   if (currentBirth !== undefined) return currentBirth === identity.birthMarker;
   // If the original group leader exited while descendants remain, the PGID
@@ -170,6 +171,11 @@ async function terminateRecoveredProcessGroup(
   opts: ObservedProcessTerminationOptions,
 ): Promise<void> {
   if (!recoveredProcessGroupAlive(identity)) return;
+  if (!isRestartRecoverableProcessIdentity(identity)) {
+    throw new Error(
+      `${opts.label} process identity cannot be proven safely on ${process.platform}; refusing to signal`,
+    );
+  }
   const errors: string[] = [];
   for (const [signal, waitMs] of [
     ["SIGTERM", Math.max(0, opts.termGraceMs)],

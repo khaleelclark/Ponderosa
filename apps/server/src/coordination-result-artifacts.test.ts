@@ -41,6 +41,37 @@ describe("V4 correlated result artifact compilation", () => {
     })).toThrow("exact correlated result artifact contract mismatch: exact-result");
   });
 
+  test("fails closed when an exact result omits its request update owner", () => {
+    expect(() => resolveCoordinationResultArtifacts({
+      activation: {
+        ...activation,
+        payload: { update: { artifactId: "exact-result" } },
+      },
+      projectId: "project-a",
+      runtimeArtifact: id => artifact(id, "arbitrary-project-update"),
+      authoritative: () => undefined,
+    })).toThrow("exact correlated result artifact contract mismatch: exact-result");
+  });
+
+  test("fails closed when duplicate exact references claim conflicting update owners", () => {
+    const conflicting = {
+      ...activation,
+      kind: "coordination_join_completed",
+      payload: {
+        outcomes: [
+          { update: { id: "update-a", payload: { artifactId: "exact-result" } } },
+          { update: { id: "update-b", payload: { artifactId: "exact-result" } } },
+        ],
+      },
+    } as SchedulerLease["activations"][number];
+    expect(() => resolveCoordinationResultArtifacts({
+      activation: conflicting,
+      projectId: "project-a",
+      runtimeArtifact: id => artifact(id, "update-b"),
+      authoritative: () => undefined,
+    })).toThrow("exact correlated result artifact contract mismatch: exact-result");
+  });
+
   test("materializes the exact result while ignoring an unrelated missing artifact", () => {
     const materials = resolveCoordinationResultArtifacts({
       activation,
