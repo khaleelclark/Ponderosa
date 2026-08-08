@@ -282,6 +282,29 @@ export const events = sqliteTable("events", {
   createdAt: text("created_at").notNull(),
 });
 
+/** Rebuildable bounded-read projection of contiguous provider output. */
+export const runOutputSegments = sqliteTable("run_output_segments", {
+  agentId: text("agent_id").notNull(),
+  firstSeq: integer("first_seq").notNull(),
+  lastSeq: integer("last_seq").notNull(),
+  eventType: text("event_type").notNull(),
+  executionId: text("execution_id").notNull(),
+  createdAt: text("created_at").notNull(),
+  textPreview: text("text_preview").notNull().default(""),
+  previewUtf8Bytes: integer("preview_utf8_bytes").notNull().default(0),
+  rawUtf8Bytes: integer("raw_utf8_bytes").notNull().default(0),
+  canonicalUtf8Bytes: integer("canonical_utf8_bytes").notNull().default(0),
+}, (table) => [primaryKey({ columns: [table.agentId, table.firstSeq] })]);
+
+/** Last event that can join or break a provider-output segment. */
+export const runOutputHeads = sqliteTable("run_output_heads", {
+  agentId: text("agent_id").primaryKey(),
+  lastSeq: integer("last_seq").notNull(),
+  eventType: text("event_type").notNull(),
+  executionId: text("execution_id"),
+  segmentFirstSeq: integer("segment_first_seq"),
+});
+
 export type ProjectRow = typeof projects.$inferSelect;
 export type AgentPresetRow = typeof agentPresets.$inferSelect;
 export type AgentRow = typeof agents.$inferSelect;
