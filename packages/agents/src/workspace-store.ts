@@ -619,7 +619,7 @@ export class WorkspaceStore {
   readConversationMessages(conversationId: string): void {
     const notificationIds = this.listNotifications()
       .filter((item) => item.conversationId === conversationId && !item.readAt &&
-        ["direct_responses", "project_responses", "mentions", "all_messages", "everyone", "broadcasts"].includes(item.kind))
+        ["direct_responses", "everyone", "broadcasts"].includes(item.kind))
       .map((item) => item.id);
     if (!notificationIds.length) return;
     const readAt = new Date().toISOString();
@@ -902,21 +902,13 @@ export class WorkspaceStore {
 
 function normalizeNotifications(input: unknown): NotificationPreferencesDto {
   if (input && typeof input === "object") {
-    const value = input as Partial<NotificationPreferencesDto> & {
-      directReplies?: boolean;
-      allMessages?: boolean;
-    };
+    const value = input as Partial<NotificationPreferencesDto>;
     return {
-      directResponses: value.directResponses ?? value.directReplies ?? (value.allMessages ? true : undefined) ?? true,
-      broadcasts: value.broadcasts ?? (value.allMessages ? true : undefined) ?? true,
+      directResponses: value.directResponses ?? true,
+      broadcasts: value.broadcasts ?? true,
     };
   }
-  // Preserve the meaning of the pre-toggle single-choice setting.
-  const legacy = typeof input === "string" ? input : "all_messages";
-  return {
-    directResponses: legacy === "direct_responses" || legacy === "mentions" || legacy === "all_messages",
-    broadcasts: legacy === "broadcasts" || legacy === "all_messages",
-  };
+  return { directResponses: true, broadcasts: true };
 }
 
 function clampContextRolloverTokens(value: number): number {

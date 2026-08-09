@@ -106,7 +106,7 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
       const kind = notificationKindForCommunication(stored.event);
       // Team Chat is agent-only collaboration. Keep its structural kind for
       // policy tests/audit, but never materialize an operator notification.
-      if (kind && stored.event.intent !== "collaboration" && notificationPreferenceMatches(preference, stored.event, kind)) {
+      if (kind && stored.event.intent !== "collaboration" && notificationPreferenceMatches(preference, kind)) {
         const cursor = workspace.cursor();
         workspace.createNotification({
           projectId: stored.event.projectId,

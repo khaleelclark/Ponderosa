@@ -15,9 +15,6 @@ export interface WorkspaceProjectSnapshot {
 
 const ORDINARY_MESSAGE_NOTIFICATION_KINDS = new Set<WorkspaceNotificationDto["kind"]>([
   "direct_responses",
-  "project_responses",
-  "mentions",
-  "all_messages",
   "everyone",
   "broadcasts",
 ]);

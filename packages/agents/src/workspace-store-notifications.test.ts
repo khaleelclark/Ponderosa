@@ -17,6 +17,19 @@ function fixture(): WorkspaceStore {
 }
 
 describe("notification attention authority", () => {
+  test("current notification switches preserve explicit disabled values", () => {
+    const store = fixture();
+
+    store.updatePreferences({
+      notifications: { directResponses: false, broadcasts: false },
+    });
+
+    expect(store.getPreferences().notifications).toEqual({
+      directResponses: false,
+      broadcasts: false,
+    });
+  });
+
   test("bulk read applies to updates without hiding unresolved work", () => {
     const store = fixture();
     const update = store.createNotification({
