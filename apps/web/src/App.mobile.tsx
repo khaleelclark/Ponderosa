@@ -350,6 +350,7 @@ export function MobileWorkspaceDrawer({
       onOpen={() => onOpenChange(true)}
       onClose={close}
       disableDiscovery
+      disableSwipeToOpen
       PaperProps={{
         sx: {
           width: "min(100vw, 390px)",
