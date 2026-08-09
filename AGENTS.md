@@ -168,7 +168,6 @@ Ponderosa is frequently modified by several agents concurrently.
 - Never commit directly to `master`.
 - Revalidate against current `origin/master` before opening or updating a PR.
 - Report the exact head commit and verification performed.
-- Every PR requires an independent reviewer.
 - Merge only with explicit authorization and passing required checks.
 - Delete branches or worktrees only after proving they are merged, clean, inactive, and released.
 
