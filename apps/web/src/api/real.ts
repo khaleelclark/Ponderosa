@@ -465,8 +465,6 @@ export const realApi = {
   async markNotificationRead(notificationId: string): Promise<void> { await requestJson(`/api/notifications/${encodeURIComponent(notificationId)}/read`, { method: "POST" }); },
   async clearConversationNotifications(conversationId: string, scope?: "messages"): Promise<void> { await requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/notifications/read`, { method: "POST", ...(scope ? { body: JSON.stringify({ scope }) } : {}) }); },
   async markAllNotificationsRead(): Promise<void> { await requestJson("/api/notifications/read", { method: "POST" }); },
-  async clearAllNotifications(): Promise<void> { await requestJson("/api/notifications", { method: "DELETE" }); },
-  async clearProjectNotifications(projectId: string): Promise<void> { await requestJson(`/api/projects/${encodeURIComponent(projectId)}/notifications`, { method: "DELETE" }); },
   setNotificationStatus(notificationId: string, status: "resolved" | "dismissed"): Promise<WorkspaceNotificationDto> { return requestJson(`/api/notifications/${encodeURIComponent(notificationId)}/status`, { method: "POST", body: JSON.stringify({ status }) }); },
   retryCoordinationRequest(requestId: string, request: { idempotencyKey?: string; createJoin?: boolean } = {}): Promise<RetryCoordinationRequestResponse> {
     return requestJson(`/api/requests/${encodeURIComponent(requestId)}/retry`, {

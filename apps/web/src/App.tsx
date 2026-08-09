@@ -97,6 +97,7 @@ import {
   workspaceResourceFromRoute,
 } from "./workspaceRecency";
 import { MobileWorkspaceActionsProvider } from "./components/MobileWorkspaceActionsContext";
+import { notificationSummary } from "./attention";
 
 const OPERATOR_PROFILE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 const OPERATOR_PROFILE_IMAGE_ACCEPT =
@@ -151,6 +152,7 @@ export default function App({
   const enginesQuery = useEngines();
   const preferencesQuery = useWorkspacePreferences();
   const notificationsQuery = useNotifications();
+  const notificationCounts = notificationSummary(notificationsQuery.data ?? []);
   const projectOrder = preferencesQuery.data?.projectOrder ?? [];
   const projects = [
     ...projectPage,
@@ -339,7 +341,7 @@ export default function App({
     setSidebarConversationAction({ kind, conversation });
   };
 
-  const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], homeSort: "last_used" as const, homeOrder: [], chatSort: "last_used" as const, chatOrder: [], agentSort: "last_used" as const, agentOrder: [], triggerSort: "last_used" as const, triggerOrder: [], starredResourceIds: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter" as const, providerAvailability: {}, defaultUsageProvider: undefined as string | undefined, engineDefaults: {}, claudeModelOptions: [], globalInstructions: "", maxConcurrentAgentRuns: 8, contextRolloverEnabled: false, contextRolloverTokens: 150_000, contextRolloverWindowFraction: 0.7, onboardingCompletedAt: null, profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
+  const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], homeSort: "last_used" as const, homeOrder: [], chatSort: "last_used" as const, chatOrder: [], agentSort: "last_used" as const, agentOrder: [], triggerSort: "last_used" as const, triggerOrder: [], starredResourceIds: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { directResponses: true, broadcasts: true }, fontFamily: "inter" as const, providerAvailability: {}, defaultUsageProvider: undefined as string | undefined, engineDefaults: {}, claudeModelOptions: [], globalInstructions: "", maxConcurrentAgentRuns: 8, contextRolloverEnabled: false, contextRolloverTokens: 150_000, contextRolloverWindowFraction: 0.7, onboardingCompletedAt: null, profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
   const usageProviders = engines.filter(engine =>
     engine.authenticated && Boolean(engine.providerUsageCommand)
   );
@@ -753,9 +755,8 @@ export default function App({
         <MobileWorkspaceHeader
           preferredQuotaProvider={displayedQuotaProvider}
           engineAvailability={engineAvailability}
-          unreadNotifications={(notificationsQuery.data ?? []).filter(
-            item => !item.readAt && (item.status ?? "open") === "open",
-          ).length}
+          attentionNotifications={notificationCounts.attentionCount}
+          unreadNotificationUpdates={notificationCounts.unreadUpdateCount}
           profile={preferences.profile}
           onOpenNavigation={() => setMobileNavOpen(true)}
           onOpenEngineStatus={() => setEngineStatusOpen(true)}
@@ -823,11 +824,8 @@ export default function App({
                 preferences={preferences}
                 activeKey={activeWorkspaceTabKey}
                 onActivate={activateWorkspaceView}
-                notificationCount={
-                  (notificationsQuery.data ?? []).filter(
-                    item => !item.readAt && (item.status ?? "open") === "open",
-                  ).length
-                }
+                notificationAttentionCount={notificationCounts.attentionCount}
+                hasUnreadNotificationUpdates={notificationCounts.unreadUpdateCount > 0}
                 onCreate={createWorkspaceView}
                 onClose={closeWorkspaceView}
                 onSearch={() => setGlobalSearchOpen(true)}

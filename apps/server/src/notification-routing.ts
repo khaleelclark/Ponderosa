@@ -1,6 +1,5 @@
 import type {
   CommunicationEvent,
-  NotificationPreference,
   NotificationPreferencesDto,
   WorkspaceEvent,
   WorkspaceNotificationDto,
@@ -43,23 +42,10 @@ export function notificationKindForCommunication(event: CommunicationEvent): Wor
 }
 
 export function notificationPreferenceMatches(
-  preference: NotificationPreference | NotificationPreferencesDto,
-  event: CommunicationEvent,
+  preference: NotificationPreferencesDto,
   kind: WorkspaceNotificationDto["kind"],
 ): boolean {
-  if (typeof preference === "object") {
-    if (preference.allMessages) return true;
-    if (kind === "direct_responses") return preference.directReplies;
-    if (kind === "project_responses") return preference.projectChatMessages && event.intent === "broadcast" && Boolean(event.conversationId);
-    if (kind === "broadcasts" || kind === "everyone") return preference.broadcasts;
-    if (kind === "mentions") return preference.mentions;
-    return false;
-  }
-  if (preference === "none") return false;
-  if (preference === "all_messages") return true;
-  if (preference === "project_responses") return event.intent === "broadcast" && Boolean(event.conversationId);
-  // #user is represented structurally as an agent-to-user DM, never inferred
-  // from rendered text. It is the only current communication that mentions the operator.
-  if (preference === "mentions") return kind === "direct_responses";
-  return preference === kind;
+  if (kind === "direct_responses") return preference.directResponses;
+  if (kind === "broadcasts" || kind === "everyone") return preference.broadcasts;
+  return false;
 }

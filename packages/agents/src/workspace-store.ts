@@ -70,7 +70,7 @@ const DEFAULT_PREFERENCES: WorkspacePreferencesDto = {
   starredProjectIds: [],
   sidebarCollapsed: false,
   sidebarWidth: 288,
-  notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false },
+  notifications: { directResponses: true, broadcasts: true },
   fontFamily: "inter",
   providerAvailability: {},
   engineDefaults: {},
@@ -84,6 +84,19 @@ const DEFAULT_PREFERENCES: WorkspacePreferencesDto = {
   profile: { displayName: "User", handle: "operator", avatarId: "default-user" },
   updatedAt: new Date(0).toISOString(),
 };
+
+function isOpenAttentionNotification(item: WorkspaceNotificationDto): boolean {
+  return (item.status ?? "open") === "open" && (
+    item.kind === "decision" ||
+    item.kind === "operational" ||
+    item.severity === "attention" ||
+    item.severity === "urgent"
+  );
+}
+
+function isOpenNotificationUpdate(item: WorkspaceNotificationDto): boolean {
+  return (item.status ?? "open") === "open" && !isOpenAttentionNotification(item);
+}
 
 /** Canonical workspace/user event log with rebuildable in-memory projections. */
 export class WorkspaceStore {
@@ -606,7 +619,7 @@ export class WorkspaceStore {
   readConversationMessages(conversationId: string): void {
     const notificationIds = this.listNotifications()
       .filter((item) => item.conversationId === conversationId && !item.readAt &&
-        ["direct_responses", "project_responses", "mentions", "all_messages", "everyone", "broadcasts"].includes(item.kind))
+        ["direct_responses", "everyone", "broadcasts"].includes(item.kind))
       .map((item) => item.id);
     if (!notificationIds.length) return;
     const readAt = new Date().toISOString();
@@ -629,37 +642,13 @@ export class WorkspaceStore {
   }
 
   readAllNotifications(): number {
-    const unread = this.listNotifications().filter((item) => !item.readAt);
+    const unread = this.listNotifications().filter((item) => !item.readAt && isOpenNotificationUpdate(item));
     if (unread.length === 0) return 0;
     this.append(
       { type: "notification_changed", action: "read" },
       { kind: "notifications_read_ids", notificationIds: unread.map((item) => item.id), readAt: new Date().toISOString() },
     );
     return unread.length;
-  }
-
-  clearNotifications(): number {
-    const notificationIds = this.listNotifications().filter((item) => (item.status ?? "open") === "open").map((item) => item.id);
-    if (notificationIds.length === 0) return 0;
-    const at = new Date().toISOString();
-    this.append(
-      { type: "notification_changed", action: "cleared" },
-      { kind: "notifications_dismissed", notificationIds, at },
-    );
-    return notificationIds.length;
-  }
-
-  clearProjectNotifications(projectId: string): number {
-    const notificationIds = this.listNotifications()
-      .filter((item) => item.projectId === projectId && (item.status ?? "open") === "open")
-      .map((item) => item.id);
-    if (notificationIds.length === 0) return 0;
-    const at = new Date().toISOString();
-    this.append(
-      { type: "notification_changed", action: "cleared" },
-      { kind: "notifications_dismissed", notificationIds, at },
-    );
-    return notificationIds.length;
   }
 
   putPushSubscription(input: Omit<WebPushSubscriptionDto, "updatedAt">): WebPushSubscriptionDto {
@@ -915,22 +904,11 @@ function normalizeNotifications(input: unknown): NotificationPreferencesDto {
   if (input && typeof input === "object") {
     const value = input as Partial<NotificationPreferencesDto>;
     return {
-      mentions: value.mentions !== false,
-      directReplies: value.directReplies !== false,
-      projectChatMessages: value.projectChatMessages !== false,
-      broadcasts: value.broadcasts !== false,
-      allMessages: value.allMessages === true,
+      directResponses: value.directResponses ?? true,
+      broadcasts: value.broadcasts ?? true,
     };
   }
-  // Migrate the pre-toggle single-choice setting from the canonical log.
-  const legacy = typeof input === "string" ? input : "all_messages";
-  return {
-    mentions: legacy === "mentions" || legacy === "all_messages" || legacy === "everyone" || legacy === "broadcasts",
-    directReplies: legacy === "direct_responses" || legacy === "mentions" || legacy === "all_messages",
-    projectChatMessages: legacy === "project_responses" || legacy === "all_messages",
-    broadcasts: legacy === "broadcasts" || legacy === "all_messages",
-    allMessages: legacy === "all_messages",
-  };
+  return { directResponses: true, broadcasts: true };
 }
 
 function clampContextRolloverTokens(value: number): number {

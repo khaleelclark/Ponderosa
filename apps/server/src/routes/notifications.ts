@@ -5,8 +5,6 @@ import type { FastifyInstance } from "fastify";
 export interface NotificationRoutesOptions {
   readonly workspace: Pick<
     WorkspaceStore,
-    | "clearNotifications"
-    | "clearProjectNotifications"
     | "cursor"
     | "listNotifications"
     | "readAllNotifications"
@@ -81,26 +79,6 @@ export function registerNotificationMutationRoutes(
     options.publishWorkspaceSince(cursor);
     return { read };
   });
-
-  app.delete("/api/notifications", async () => {
-    const cursor = options.workspace.cursor();
-    const cleared = options.workspace.clearNotifications();
-    options.publishWorkspaceSince(cursor);
-    return { cleared };
-  });
-
-  app.delete<{ Params: { id: string } }>(
-    "/api/projects/:id/notifications",
-    async (request, reply) => {
-      if (!options.store.getProject(request.params.id)) {
-        return reply.code(404).send({ error: "project not found" });
-      }
-      const cursor = options.workspace.cursor();
-      const cleared = options.workspace.clearProjectNotifications(request.params.id);
-      options.publishWorkspaceSince(cursor);
-      return { cleared };
-    },
-  );
 
   app.post<{ Params: { id: string }; Body: { scope?: "messages" } }>(
     "/api/conversations/:id/notifications/read",

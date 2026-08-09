@@ -6,16 +6,10 @@ import type { HistoryWindowDto } from "./common.js";
 import type { ProjectDto, ProjectSort } from "./projects.js";
 import type { TriggerDefinitionDto } from "./triggers.js";
 
-export type NotificationPreference = "direct_responses" | "project_responses" | "mentions" | "all_messages" | "everyone" | "broadcasts" | "none";
-
-/** Durable independent notification switches. `allMessages` implies the
- * narrower categories in the UI without changing their saved values. */
+/** Durable switches for the two operator-visible communication scopes. */
 export interface NotificationPreferencesDto {
-  mentions: boolean;
-  directReplies: boolean;
-  projectChatMessages: boolean;
+  directResponses: boolean;
   broadcasts: boolean;
-  allMessages: boolean;
 }
 
 export interface WorkspacePreferencesDto {
@@ -228,7 +222,7 @@ export interface WorkspaceNotificationDto {
   /** All Agents directly affected by this current issue. */
   agentIds?: string[];
   communicationEventId?: string;
-  kind: Exclude<NotificationPreference, "none"> | "collaboration" | "operational" | "decision";
+  kind: "direct_responses" | "everyone" | "broadcasts" | "collaboration" | "operational" | "decision";
   category?: "communication" | "provider" | "trigger" | "budget" | "coordination" | "decision" | "system";
   severity?: "info" | "attention" | "urgent";
   status?: "open" | "resolved" | "dismissed";

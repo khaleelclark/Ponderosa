@@ -10,6 +10,21 @@ export function visibleNotification(item: WorkspaceNotificationDto): boolean {
   return (item.status ?? "open") === "open";
 }
 
+export function isUnreadNotificationUpdate(item: WorkspaceNotificationDto): boolean {
+  return visibleNotification(item) && !isOpenAttention(item) && !item.readAt;
+}
+
+export function notificationSummary(notifications: WorkspaceNotificationDto[]): {
+  attentionCount: number;
+  unreadUpdateCount: number;
+} {
+  return notifications.reduce((summary, item) => {
+    if (isOpenAttention(item)) summary.attentionCount += 1;
+    else if (isUnreadNotificationUpdate(item)) summary.unreadUpdateCount += 1;
+    return summary;
+  }, { attentionCount: 0, unreadUpdateCount: 0 });
+}
+
 export function scopedAttention(notifications: WorkspaceNotificationDto[], scope: {
   projectId?: string;
   conversationId?: string;
