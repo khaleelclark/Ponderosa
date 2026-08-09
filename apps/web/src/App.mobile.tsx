@@ -74,7 +74,8 @@ interface MobileWorkspaceHeaderProps {
     severity: "success" | "warning" | "default";
     detail: string;
   };
-  unreadNotifications: number;
+  attentionNotifications: number;
+  unreadNotificationUpdates: number;
   profile?: OperatorProfileDto;
   onOpenNavigation(): void;
   onOpenEngineStatus(): void;
@@ -87,7 +88,8 @@ interface MobileWorkspaceHeaderProps {
 export function MobileWorkspaceHeader({
   preferredQuotaProvider,
   engineAvailability,
-  unreadNotifications,
+  attentionNotifications,
+  unreadNotificationUpdates,
   profile,
   onOpenNavigation,
   onOpenEngineStatus,
@@ -162,9 +164,26 @@ export function MobileWorkspaceHeader({
             </Tooltip>
           )}
         />
-        <Tooltip title="Notifications">
-          <IconButton aria-label="Open notifications" onClick={onOpenNotifications}>
-            <Badge color="primary" badgeContent={unreadNotifications}>
+        <Tooltip title={attentionNotifications
+          ? `${attentionNotifications} ${attentionNotifications === 1 ? "item needs" : "items need"} attention`
+          : unreadNotificationUpdates
+            ? `${unreadNotificationUpdates} unread update${unreadNotificationUpdates === 1 ? "" : "s"}`
+            : "Notifications"}>
+          <IconButton
+            aria-label={attentionNotifications
+              ? `Open notifications, ${attentionNotifications} ${attentionNotifications === 1 ? "item needs" : "items need"} attention`
+              : unreadNotificationUpdates
+                ? `Open notifications, ${unreadNotificationUpdates} unread update${unreadNotificationUpdates === 1 ? "" : "s"}`
+                : "Open notifications"}
+            onClick={onOpenNotifications}
+          >
+            <Badge
+              color={attentionNotifications ? "warning" : "success"}
+              badgeContent={attentionNotifications || (unreadNotificationUpdates ? 1 : 0)}
+              max={9}
+              variant={attentionNotifications ? "standard" : "dot"}
+              invisible={!attentionNotifications && !unreadNotificationUpdates}
+            >
               <NotificationsOutlinedIcon />
             </Badge>
           </IconButton>

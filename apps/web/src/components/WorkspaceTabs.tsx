@@ -81,7 +81,8 @@ export function WorkspaceTabs({
   projects,
   preferences,
   activeKey,
-  notificationCount = 0,
+  notificationAttentionCount = 0,
+  hasUnreadNotificationUpdates = false,
   onActivate,
   onCreate,
   onSearch,
@@ -97,7 +98,8 @@ export function WorkspaceTabs({
   projects: ProjectDto[];
   preferences: WorkspacePreferencesDto;
   activeKey: string;
-  notificationCount?: number;
+  notificationAttentionCount?: number;
+  hasUnreadNotificationUpdates?: boolean;
   onActivate(key: string): void;
   onCreate(): void;
   onSearch(): void;
@@ -451,9 +453,13 @@ export function WorkspaceTabs({
             <SearchIcon fontSize="small" />
           </IconButton>
         </Tooltip>
-        <Tooltip title="Inbox">
+        <Tooltip title={notificationAttentionCount
+          ? `${notificationAttentionCount} ${notificationAttentionCount === 1 ? "item needs" : "items need"} attention`
+          : hasUnreadNotificationUpdates ? "Unread updates" : "Notifications"}>
           <IconButton
-            aria-label="Open Inbox"
+            aria-label={notificationAttentionCount
+              ? `Open notifications, ${notificationAttentionCount} ${notificationAttentionCount === 1 ? "item needs" : "items need"} attention`
+              : hasUnreadNotificationUpdates ? "Open notifications, unread updates" : "Open notifications"}
             onClick={onOpenInbox}
             sx={{
               width: 36,
@@ -466,7 +472,13 @@ export function WorkspaceTabs({
               },
             }}
           >
-            <Badge color="error" badgeContent={notificationCount} max={99}>
+            <Badge
+              color={notificationAttentionCount ? "warning" : "success"}
+              badgeContent={notificationAttentionCount || (hasUnreadNotificationUpdates ? 1 : 0)}
+              max={9}
+              variant={notificationAttentionCount ? "standard" : "dot"}
+              invisible={!notificationAttentionCount && !hasUnreadNotificationUpdates}
+            >
               <NotificationsOutlinedIcon fontSize="small" />
             </Badge>
           </IconButton>

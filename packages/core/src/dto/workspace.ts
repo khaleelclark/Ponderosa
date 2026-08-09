@@ -8,14 +8,10 @@ import type { TriggerDefinitionDto } from "./triggers.js";
 
 export type NotificationPreference = "direct_responses" | "project_responses" | "mentions" | "all_messages" | "everyone" | "broadcasts" | "none";
 
-/** Durable independent notification switches. `allMessages` implies the
- * narrower categories in the UI without changing their saved values. */
+/** Durable switches for the two operator-visible communication scopes. */
 export interface NotificationPreferencesDto {
-  mentions: boolean;
-  directReplies: boolean;
-  projectChatMessages: boolean;
+  directResponses: boolean;
   broadcasts: boolean;
-  allMessages: boolean;
 }
 
 export interface WorkspacePreferencesDto {

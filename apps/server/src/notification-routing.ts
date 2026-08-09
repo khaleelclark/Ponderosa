@@ -48,11 +48,8 @@ export function notificationPreferenceMatches(
   kind: WorkspaceNotificationDto["kind"],
 ): boolean {
   if (typeof preference === "object") {
-    if (preference.allMessages) return true;
-    if (kind === "direct_responses") return preference.directReplies;
-    if (kind === "project_responses") return preference.projectChatMessages && event.intent === "broadcast" && Boolean(event.conversationId);
+    if (kind === "direct_responses") return preference.directResponses;
     if (kind === "broadcasts" || kind === "everyone") return preference.broadcasts;
-    if (kind === "mentions") return preference.mentions;
     return false;
   }
   if (preference === "none") return false;

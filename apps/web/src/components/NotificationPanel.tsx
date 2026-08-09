@@ -1,10 +1,8 @@
 import CloseIcon from "@mui/icons-material/Close";
 import DoneAllIcon from "@mui/icons-material/DoneAll";
-import DeleteSweepOutlinedIcon from "@mui/icons-material/DeleteSweepOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import {
   Alert,
-  Badge,
   Box,
   Button,
   Chip,
@@ -27,10 +25,14 @@ import {
 import type { ConversationDto, ProjectDto, WorkspaceNotificationDto } from "@ponderosa/core";
 import { queryKeys } from "../queryKeys";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import type { Route } from "../routing";
-import { isOpenAttention, visibleNotification } from "../attention";
+import {
+  isOpenAttention,
+  isUnreadNotificationUpdate,
+  notificationSummary,
+} from "../attention";
 import { notificationTechnicalFocusId } from "../technicalFocus";
 import { notificationDecision } from "../decisions";
 import { DecisionActions } from "./decisions/DecisionActions";
@@ -49,10 +51,10 @@ function notificationsNewestFirst(notifications: WorkspaceNotificationDto[]): Wo
   return [...notifications].sort(compareNotificationsNewestFirst);
 }
 
-function filterNotifications(notifications: WorkspaceNotificationDto[], filter: "all" | "urgent"): WorkspaceNotificationDto[] {
-  const visible = notifications.filter(visibleNotification);
-  if (filter === "urgent") return visible.filter(isOpenAttention);
-  return visible;
+type NotificationFilter = "attention" | "updates";
+
+function filterNotifications(notifications: WorkspaceNotificationDto[], filter: NotificationFilter): WorkspaceNotificationDto[] {
+  return notifications.filter(filter === "attention" ? isOpenAttention : isUnreadNotificationUpdate);
 }
 
 function groupNotificationsByProject(notifications: WorkspaceNotificationDto[]): NotificationGroup[] {
@@ -97,6 +99,15 @@ function notificationTime(value: string): string {
     : date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
+function notificationSummaryText(attentionCount: number, unreadUpdateCount: number): string {
+  if (attentionCount && unreadUpdateCount) {
+    return `${attentionCount} ${attentionCount === 1 ? "item needs" : "items need"} attention · ${unreadUpdateCount} unread update${unreadUpdateCount === 1 ? "" : "s"}`;
+  }
+  if (attentionCount) return `${attentionCount} ${attentionCount === 1 ? "item needs" : "items need"} attention`;
+  if (unreadUpdateCount) return `${unreadUpdateCount} unread update${unreadUpdateCount === 1 ? "" : "s"}`;
+  return "You’re all caught up";
+}
+
 export function NotificationPanel({ open, projects, notifications, onClose, onNavigate, onOpenSettings }: {
   open: boolean;
   projects: ProjectDto[];
@@ -108,10 +119,17 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
   const theme = useTheme();
   const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
   const queryClient = useQueryClient();
-  const [pending, setPending] = useState<"read" | "clear">();
-  const [pendingProjectId, setPendingProjectId] = useState<string>();
-  const [filter, setFilter] = useState<"all" | "urgent">("all");
+  const [markingRead, setMarkingRead] = useState(false);
+  const [filter, setFilter] = useState<NotificationFilter>("updates");
   const [error, setError] = useState<string>();
+  const wasOpen = useRef(false);
+  const { attentionCount, unreadUpdateCount } = notificationSummary(notifications);
+  useEffect(() => {
+    if (open && !wasOpen.current) {
+      setFilter(attentionCount ? "attention" : "updates");
+    }
+    wasOpen.current = open;
+  }, [attentionCount, open]);
   const visibleNotifications = filterNotifications(notifications, filter);
   const projectIds = useMemo(() => [...new Set(visibleNotifications.map((item) => item.projectId).filter((id): id is string => Boolean(id)))], [visibleNotifications]);
   const conversationQueries = useQueries({
@@ -125,8 +143,6 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
   const conversations = new Map<string, ConversationDto>();
   conversationQueries.forEach((query) => query.data?.forEach((conversation) => conversations.set(conversation.id, conversation)));
   const groups = groupNotificationsByProject(visibleNotifications);
-  const unreadCount = notifications.filter((item) => !item.readAt && (item.status ?? "open") === "open").length;
-  const openAttentionCount = notifications.filter(isOpenAttention).length;
 
   const markRead = (item: WorkspaceNotificationDto) => {
     const readAt = new Date().toISOString();
@@ -177,11 +193,11 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
     }
   };
   const markAllRead = async () => {
-    setPending("read");
+    setMarkingRead(true);
     setError(undefined);
     const readAt = new Date().toISOString();
     queryClient.setQueryData<WorkspaceNotificationDto[]>(queryKeys.notifications.all, (current = []) =>
-      current.map((item) => item.readAt ? item : { ...item, readAt }),
+      current.map((item) => isUnreadNotificationUpdate(item) ? { ...item, readAt } : item),
     );
     try {
       await api.markAllNotificationsRead();
@@ -191,39 +207,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
       setError(reason instanceof Error ? reason.message : "Notifications could not be marked read.");
       await queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
     } finally {
-      setPending(undefined);
-    }
-  };
-
-  const clearAll = async () => {
-    setPending("clear");
-    setError(undefined);
-    queryClient.setQueryData<WorkspaceNotificationDto[]>(queryKeys.notifications.all, []);
-    try {
-      await api.clearAllNotifications();
-      await queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.globalSearch.all });
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Notifications could not be cleared.");
-      await queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
-    } finally {
-      setPending(undefined);
-    }
-  };
-
-  const clearProject = async (projectId: string) => {
-    setPendingProjectId(projectId);
-    setError(undefined);
-    queryClient.setQueryData<WorkspaceNotificationDto[]>(queryKeys.notifications.all, (current = []) => current.filter((item) => item.projectId !== projectId));
-    try {
-      await api.clearProjectNotifications(projectId);
-      await queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.globalSearch.all });
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Project notifications could not be cleared.");
-      await queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
-    } finally {
-      setPendingProjectId(undefined);
+      setMarkingRead(false);
     }
   };
 
@@ -232,37 +216,34 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
       <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
         <Box sx={{ minWidth: 0, flex: 1 }}>
           <Typography variant="h6" component="span">Notifications</Typography>
-          <Typography variant="body2" color="text.secondary">{unreadCount ? `${unreadCount} unread` : openAttentionCount ? `${openAttentionCount} item${openAttentionCount === 1 ? "" : "s"} needs attention` : "You’re all caught up"}</Typography>
+          <Typography variant="body2" color="text.secondary">{notificationSummaryText(attentionCount, unreadUpdateCount)}</Typography>
         </Box>
         <IconButton aria-label="Close notifications" onClick={onClose}><CloseIcon /></IconButton>
       </Stack>
     </DialogTitle>
-    <Tabs value={filter} onChange={(_event, value) => setFilter(value as "all" | "urgent")} aria-label="Notification filters" sx={{ px: { xs: 1, sm: 2 }, minHeight: 42 }}>
-      <Tab value="all" label={`All (${filterNotifications(notifications, "all").length})`} sx={{ minHeight: 42 }} />
-      <Tab value="urgent" label={`Issues (${filterNotifications(notifications, "urgent").length})`} sx={{ minHeight: 42 }} />
+    <Tabs value={filter} onChange={(_event, value) => setFilter(value as NotificationFilter)} aria-label="Notification filters" sx={{ px: { xs: 1, sm: 2 }, minHeight: 42 }}>
+      <Tab value="attention" label={`Needs attention (${attentionCount})`} sx={{ minHeight: 42 }} />
+      <Tab value="updates" label={`Updates (${unreadUpdateCount})`} sx={{ minHeight: 42 }} />
     </Tabs>
     <DialogContent dividers sx={{ px: { xs: 1, sm: 2 }, py: 1.5 }}>
       {error ? <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert> : null}
       <Stack spacing={1}>
         {groups.map((group) => {
           const project = projects.find((candidate) => candidate.id === group.projectId);
-          const groupUnread = group.items.filter((item) => !item.readAt).length;
           return <Box key={group.key} sx={{ border: 1, borderColor: "divider", borderRadius: 2, overflow: "hidden", bgcolor: "background.paper" }}>
-            <Stack direction="row" sx={{ alignItems: "center", bgcolor: "action.hover", borderBottom: 1, borderColor: "divider", pr: 1 }}>
+            <Stack direction="row" sx={{ alignItems: "center", bgcolor: "action.hover", borderBottom: 1, borderColor: "divider" }}>
             <Button fullWidth disabled={!group.projectId} onClick={() => { if (group.projectId) { onClose(); onNavigate({ kind: "project", projectId: group.projectId }); } }} sx={{ justifyContent: "flex-start", px: 1.5, py: 1.1, textAlign: "left", borderRadius: 0 }}>
               <Box sx={{ width: 32, height: 32, mr: 1.25, borderRadius: 1, bgcolor: "action.selected", color: "secondary.main", display: "grid", placeItems: "center", flex: "0 0 auto" }}><FolderOutlinedIcon fontSize="small" /></Box>
               <Stack spacing={.1} sx={{ minWidth: 0, flex: 1 }}>
                 <Typography variant="overline" color="text.secondary" fontWeight={800} lineHeight={1.25} noWrap>{project?.label ?? (group.projectId ? "Unknown project" : "Ponderosa")}</Typography>
-                <Typography variant="subtitle2" noWrap>{group.items.length} {group.items.length === 1 ? "notification" : "notifications"}</Typography>
+                <Typography variant="subtitle2" noWrap>{group.items.length} {filter === "attention" ? (group.items.length === 1 ? "item needs attention" : "items need attention") : (group.items.length === 1 ? "unread update" : "unread updates")}</Typography>
               </Stack>
-              {groupUnread ? <Badge color="primary" badgeContent={groupUnread} sx={{ mr: 1 }} /> : null}
             </Button>
-            {group.projectId ? <Button size="small" color="inherit" aria-label={`Clear all notifications for ${project?.label ?? "this Project"}`} disabled={pendingProjectId === group.projectId} onClick={() => void clearProject(group.projectId!)} sx={{ flex: "0 0 auto", whiteSpace: "nowrap" }}>Clear All</Button> : null}
             </Stack>
             <List dense disablePadding aria-label={`Notifications for ${project?.label ?? "Ponderosa"}`}>
               {group.items.map((item) => <ListItem key={item.id} disablePadding>
-                <ListItemButton selected={!item.readAt} onClick={() => navigateToNotification(item)} alignItems="flex-start" sx={{ gap: 1, mx: .75, my: .45, py: 1, borderRadius: 1.5 }}>
-                  <Box aria-hidden sx={{ width: 8, height: 8, mt: .75, borderRadius: "50%", bgcolor: item.readAt ? "transparent" : "primary.main", flex: "0 0 auto" }} />
+                <ListItemButton selected={filter === "updates" && !item.readAt} onClick={() => navigateToNotification(item)} alignItems="flex-start" sx={{ gap: 1, mx: .75, my: .45, py: 1, borderRadius: 1.5 }}>
+                  <Box aria-hidden sx={{ width: 8, height: 8, mt: .75, borderRadius: "50%", bgcolor: filter === "updates" ? "primary.main" : item.severity === "urgent" ? "error.main" : "warning.main", flex: "0 0 auto" }} />
                   <ListItemText
                     primary={<Stack direction="row" spacing={1} sx={{ minWidth: 0, alignItems: "center" }}><Typography variant="body2" fontWeight={item.readAt ? 600 : 800} noWrap sx={{ minWidth: 0, flex: 1 }}>{item.title}</Typography>{item.severity && item.severity !== "info" ? <Chip size="small" color={item.severity === "urgent" ? "error" : "warning"} label={item.severity === "urgent" ? "Urgent" : "Issue"} /> : null}<Typography variant="caption" color="text.secondary" sx={{ flex: "0 0 auto" }}>{notificationTime(item.createdAt)}</Typography></Stack>}
                     secondary={<Stack spacing={0.5}>{item.conversationId && conversations.get(item.conversationId) ? <Typography variant="caption" color="text.secondary">{conversations.get(item.conversationId)!.title}</Typography> : null}<Typography variant="body2" color="text.secondary">{item.body}</Typography>{item.kind === "decision" && item.decision && (item.status ?? "open") === "open"
@@ -281,13 +262,12 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
             </List>
           </Box>;
         })}
-        {visibleNotifications.length === 0 ? <Box sx={{ py: 5, textAlign: "center" }}><Typography fontWeight={750}>{filter === "urgent" ? "No current issues" : "No notifications"}</Typography><Typography variant="body2" color="text.secondary">{filter === "urgent" ? "Open decisions, blockers, and failures stay here even after you have seen them." : "New activity that needs your attention will appear here."}</Typography></Box> : null}
+        {visibleNotifications.length === 0 ? <Box sx={{ py: 5, textAlign: "center" }}><Typography fontWeight={750}>{filter === "attention" ? "Nothing needs attention" : "No unread updates"}</Typography><Typography variant="body2" color="text.secondary">{filter === "attention" ? "Open decisions, blockers, and failures stay here until they are resolved or dismissed." : "New Agent responses and broadcasts will appear here."}</Typography></Box> : null}
       </Stack>
     </DialogContent>
-    <DialogActions sx={{ px: 2, py: 1.25 }}>
-      <Button startIcon={<DoneAllIcon />} disabled={!unreadCount || Boolean(pending)} onClick={() => void markAllRead()}>Mark All Read</Button>
-      <Button color="error" startIcon={<DeleteSweepOutlinedIcon />} disabled={!filterNotifications(notifications, "all").length || Boolean(pending)} onClick={() => void clearAll()}>Clear All</Button>
-    </DialogActions>
+    {unreadUpdateCount ? <DialogActions sx={{ px: 2, py: 1.25 }}>
+      <Button startIcon={<DoneAllIcon />} disabled={markingRead} onClick={() => void markAllRead()}>Mark Updates Read</Button>
+    </DialogActions> : null}
   </Dialog>
   </>;
 }

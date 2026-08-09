@@ -282,11 +282,8 @@ function GeneralSettingsSection({
 const NOTIFICATION_LABELS: Array<
   [keyof WorkspacePreferencesDto["notifications"], string]
 > = [
-  ["mentions", "Mentions"],
-  ["directReplies", "Direct Replies"],
-  ["projectChatMessages", "Project Chat Messages"],
-  ["broadcasts", "Broadcasts / #everyone"],
-  ["allMessages", "Messages Across Ponderosa"],
+  ["directResponses", "Direct Agent responses"],
+  ["broadcasts", "Project broadcasts"],
 ];
 
 function NotificationSettingsSection({
@@ -316,19 +313,15 @@ function NotificationSettingsSection({
         Notifications
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Choose which activity should ask for your attention.
+        Choose which Agent updates appear in Notifications and browser push. Decisions, blockers, failures, and operational issues always appear because they require action.
       </Typography>
       <Stack>
-        {NOTIFICATION_LABELS.map(([key, label]) => {
-          const included =
-            key !== "allMessages" && preferences.notifications.allMessages;
-          return (
+        {NOTIFICATION_LABELS.map(([key, label]) => (
             <FormControlLabel
               key={key}
               control={
                 <Checkbox
                   checked={preferences.notifications[key]}
-                  disabled={included}
                   onChange={event =>
                     onPreferences({
                       notifications: {
@@ -339,10 +332,9 @@ function NotificationSettingsSection({
                   }
                 />
               }
-              label={included ? `${label} (Included by Messages Across Ponderosa)` : label}
+              label={label}
             />
-          );
-        })}
+        ))}
       </Stack>
       <Alert
         severity={pushSeverity}
