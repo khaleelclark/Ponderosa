@@ -44,7 +44,6 @@ interface AgentDetailPanelsProps {
   activeExecutionId?: string;
   focusTelemetry?: AgentTelemetryFocus;
   projectRoot?: string;
-  timeline: ComponentProps<typeof ArtifactsPane>["timeline"];
   delegatedAgentCount: number;
   triggerSettingsId?: string;
   agentWorkFocus?: string;
@@ -89,7 +88,6 @@ export function AgentDetailPanels({
   activeExecutionId,
   focusTelemetry,
   projectRoot,
-  timeline,
   delegatedAgentCount,
   triggerSettingsId,
   agentWorkFocus,
@@ -202,7 +200,6 @@ export function AgentDetailPanels({
         artifacts={detail.artifacts}
         agentId={agentId}
         agentTitle={detail.agent.title}
-        timeline={timeline}
         initialArtifactId={
           focusTelemetry?.stream === "artifacts"
             ? focusTelemetry.id

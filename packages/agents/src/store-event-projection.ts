@@ -39,6 +39,12 @@ const ACTIVITY_EVENT_TYPES = new Set([
   "context_rollover_triggered", "context_rollover_seed_overflow", "context_rollover_completed",
 ]);
 
+const RUN_OUTPUT_BREAKING_EVENT_TYPES = new Set([
+  "command", "tool_call", "tool_result", "file_change", "test_result", "error",
+  "browser_session", "browser_action", "browser_console", "browser_screenshot",
+  "context_rollover_triggered", "context_rollover_seed_overflow", "context_rollover_completed",
+]);
+
 type ManagedArtifact = ArtifactDto & {
   projectId: string;
   originAgentId: string;
@@ -139,6 +145,120 @@ export class AgentEventProjectionStore {
     this.states.clear();
   }
 
+  private projectRunOutputEvent(
+    agentId: string,
+    row: { seq: number; type: string; payloadJson: string; createdAt: string },
+  ): void {
+    const outputEvent = row.type === "text" || row.type === "reasoning";
+    if (!outputEvent && !RUN_OUTPUT_BREAKING_EVENT_TYPES.has(row.type)) return;
+    const event = JSON.parse(row.payloadJson) as LogEvent;
+    const executionId = "executionId" in event && typeof event.executionId === "string"
+      ? event.executionId
+      : null;
+    const head = this.client.prepare(`
+      SELECT last_seq, event_type, execution_id, segment_first_seq
+      FROM run_output_heads WHERE agent_id = ?
+    `).get(agentId) as {
+      last_seq: number;
+      event_type: string;
+      execution_id: string | null;
+      segment_first_seq: number | null;
+    } | undefined;
+    if (head && row.seq <= head.last_seq) return;
+
+    let segmentFirstSeq: number | null = null;
+    if (outputEvent && executionId) {
+      const delta = (event as Extract<LogEvent, { type: "text" | "reasoning" }>).delta;
+      const deltaUtf8Bytes = Buffer.byteLength(delta, "utf8");
+      const trimmedDelta = delta.trimEnd();
+      const initialPreview = utf8Prefix(delta, 32 * 1_024);
+      const continues = Boolean(
+        head
+        && head.segment_first_seq !== null
+        && head.event_type === row.type
+        && head.execution_id === executionId,
+      );
+      if (continues) {
+        const segment = this.client.prepare(`
+          SELECT text_preview, preview_utf8_bytes, raw_utf8_bytes,
+            canonical_utf8_bytes
+          FROM run_output_segments
+          WHERE agent_id = ? AND first_seq = ?
+        `).get(agentId, head!.segment_first_seq) as {
+          text_preview: string;
+          preview_utf8_bytes: number;
+          raw_utf8_bytes: number;
+          canonical_utf8_bytes: number;
+        } | undefined;
+        if (!segment) {
+          throw new Error("run output segment projection is inconsistent");
+        }
+        const previewPart = utf8Prefix(
+          delta,
+          Math.max(0, 32 * 1_024 - segment.preview_utf8_bytes),
+        );
+        const previewUtf8Bytes = segment.preview_utf8_bytes
+          + Buffer.byteLength(previewPart, "utf8");
+        const canonicalUtf8Bytes = trimmedDelta
+          ? segment.raw_utf8_bytes + Buffer.byteLength(trimmedDelta, "utf8")
+          : segment.canonical_utf8_bytes;
+        const updated = this.client.prepare(`
+          UPDATE run_output_segments SET
+            last_seq = ?,
+            text_preview = ?,
+            preview_utf8_bytes = ?,
+            raw_utf8_bytes = ?,
+            canonical_utf8_bytes = ?
+          WHERE agent_id = ? AND first_seq = ? AND last_seq = ?
+        `).run(
+          row.seq,
+          `${segment.text_preview}${previewPart}`,
+          previewUtf8Bytes,
+          segment.raw_utf8_bytes + deltaUtf8Bytes,
+          canonicalUtf8Bytes,
+          agentId,
+          head!.segment_first_seq,
+          head!.last_seq,
+        );
+        if (updated.changes !== 1) {
+          throw new Error("run output segment projection is inconsistent");
+        }
+        segmentFirstSeq = head!.segment_first_seq;
+      } else {
+        this.client.prepare(`
+          INSERT INTO run_output_segments(
+            agent_id, first_seq, last_seq, event_type, execution_id, created_at,
+            text_preview, preview_utf8_bytes, raw_utf8_bytes,
+            canonical_utf8_bytes
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          agentId,
+          row.seq,
+          row.seq,
+          row.type,
+          executionId,
+          row.createdAt,
+          initialPreview,
+          Buffer.byteLength(initialPreview, "utf8"),
+          deltaUtf8Bytes,
+          trimmedDelta ? Buffer.byteLength(trimmedDelta, "utf8") : 0,
+        );
+        segmentFirstSeq = row.seq;
+      }
+    }
+
+    this.client.prepare(`
+      INSERT INTO run_output_heads(
+        agent_id, last_seq, event_type, execution_id, segment_first_seq
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(agent_id) DO UPDATE SET
+        last_seq = excluded.last_seq,
+        event_type = excluded.event_type,
+        execution_id = excluded.execution_id,
+        segment_first_seq = excluded.segment_first_seq
+    `).run(agentId, row.seq, row.type, executionId, segmentFirstSeq);
+  }
+
   private applyOps(agentId: string, projectId: string, ops: ProjectionOp[]): void {
     for (const op of ops) {
       if (op.kind === "insert_artifact") {
@@ -194,6 +314,7 @@ export class AgentEventProjectionStore {
               INSERT INTO agent_event_head_projection(agent_id, last_seq) VALUES (?, ?)
               ON CONFLICT(agent_id) DO UPDATE SET last_seq = MAX(last_seq, excluded.last_seq)
             `).run(agentId, op.row.seq);
+            this.projectRunOutputEvent(agentId, op.row);
             {
               const event = JSON.parse(op.row.payloadJson) as LogEvent;
               const observation = healthObservation(event, op.row.createdAt);

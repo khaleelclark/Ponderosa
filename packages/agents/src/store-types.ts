@@ -27,17 +27,16 @@ export interface ActivityProjectionReadRow {
   output_sha256: string | null;
 }
 
-export interface RunOutputEventRow {
-  seq: number;
-  payload_json: string;
-  created_at: string;
-}
-
 export interface RunOutputSegmentRow {
   first_seq: number;
   last_seq: number;
   event_type: "text" | "reasoning";
   execution_id: string;
+  created_at: string;
+  text_preview: string;
+  preview_utf8_bytes: number;
+  raw_utf8_bytes: number;
+  canonical_utf8_bytes: number;
 }
 
 export interface ArtifactProjectionReadRow {

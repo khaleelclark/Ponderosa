@@ -987,7 +987,6 @@ export function AgentDetail({
         activeExecutionId={runtimeActivity?.executionId}
         focusTelemetry={focusTelemetry}
         projectRoot={project?.hostPath}
-        timeline={stream.timeline}
         delegatedAgentCount={relationships.delegatedAgentCount}
         triggerSettingsId={triggerSettingsId}
         onCloseTriggerSettings={() => onViewChange?.("triggers")}

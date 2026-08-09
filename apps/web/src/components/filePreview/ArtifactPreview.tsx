@@ -34,17 +34,15 @@ export function AgentArtifactPreview({
   artifact,
   agentId,
   agentTitle,
-  liveContent,
 }: {
   artifact?: ArtifactDto;
   agentId: string;
   agentTitle: string;
-  liveContent?: string;
 }): JSX.Element {
   const contentQuery = useQuery({
     queryKey: queryKeys.projectArtifacts.agentContent(agentId, artifact?.id),
     queryFn: () => api.getArtifact(agentId, artifact!.id),
-    enabled: Boolean(artifact && liveContent === undefined && !artifact.id.startsWith("live-artifact-")
+    enabled: Boolean(artifact
       && !["image", "pdf"].includes(previewCapability({
         mediaType: artifact.mediaType,
         path: artifact.path,
@@ -52,9 +50,7 @@ export function AgentArtifactPreview({
       }).kind)),
   });
   if (!artifact) return <Box sx={{ p: 2 }}><Alert severity="info">Select a file or result to inspect its contents.</Alert></Box>;
-  const content: ArtifactContentDto | undefined = liveContent !== undefined
-    ? { ...artifact, content: liveContent, contentType: artifact.kind === "diff" ? "diff" : "markdown" }
-    : contentQuery.data;
+  const content: ArtifactContentDto | undefined = contentQuery.data;
   return <Box sx={{ p: 1.5, minWidth: 0 }}>
     <ArtifactProvenance artifact={artifact} agentTitle={agentTitle} />
     <FilePreview

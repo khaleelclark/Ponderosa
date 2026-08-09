@@ -117,7 +117,7 @@ export function ComposerNotices({
             </Button>
           }
         >
-          This chat changed in another tab. Your displaced draft is preserved: “
+          This draft changed elsewhere. Your displaced text is preserved: “
           {compactPreviewText(displacedDraft)}”
         </Alert>
       ) : null}

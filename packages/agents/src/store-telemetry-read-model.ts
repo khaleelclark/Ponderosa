@@ -10,7 +10,6 @@ import type {
 import { activityDtoFromProjectionRow, utf8Prefix } from "./store-activity.js";
 import type {
   ActivityProjectionReadRow,
-  RunOutputEventRow,
   RunOutputSegmentRow,
 } from "./store-types.js";
 import type { LogEvent } from "./log-event.js";
@@ -24,14 +23,7 @@ type ResponseFileActivityByExecution = (
   executionFilter?: ReadonlySet<string>,
 ) => Map<string, ResponseFileActivityDto[]>;
 
-const RUN_OUTPUT_TEXT_PREVIEW_BYTES = 32 * 1_024;
 const RUN_OUTPUT_TEXT_MAX_BYTES = 8 * 1_024 * 1_024;
-const RUN_OUTPUT_BREAKING_TYPES = [
-  "command", "tool_call", "tool_result", "file_change", "test_result", "error",
-  "browser_session", "browser_action", "browser_console", "browser_screenshot",
-  "context_rollover_triggered", "context_rollover_seed_overflow", "context_rollover_completed",
-] as const;
-
 export class AgentTelemetryReadModel {
   constructor(
     private readonly client: Database.Database,
@@ -76,52 +68,13 @@ export class AgentTelemetryReadModel {
     agentId: string,
     input?: { beforeSeq?: number; endingAtSeq?: number; limit?: number },
   ): RunOutputSegmentRow[] {
-    const breakingTypes = RUN_OUTPUT_BREAKING_TYPES.map((type) => `'${type}'`).join(", ");
     const limit = input?.limit === undefined ? "" : "LIMIT ?";
     const rows = this.client.prepare(`
-      WITH visible AS (
-        SELECT seq, type, payload_json,
-          json_extract(payload_json, '$.executionId') AS execution_id
-        FROM events
-        WHERE agent_id = ?
-          AND type IN ('text', 'reasoning', ${breakingTypes})
-      ),
-      annotated AS (
-        SELECT *,
-          lag(type) OVER (ORDER BY seq) AS previous_type,
-          lag(execution_id) OVER (ORDER BY seq) AS previous_execution_id
-        FROM visible
-      ),
-      marked AS (
-        SELECT *,
-          CASE
-            WHEN type IN ('text', 'reasoning')
-              AND type = previous_type
-              AND execution_id IS previous_execution_id
-            THEN 0
-            WHEN type IN ('text', 'reasoning') THEN 1
-            ELSE 0
-          END AS starts_segment
-        FROM annotated
-      ),
-      grouped AS (
-        SELECT *,
-          sum(starts_segment) OVER (ORDER BY seq) AS segment_number
-        FROM marked
-      ),
-      segments AS (
-        SELECT
-          min(seq) AS first_seq,
-          max(seq) AS last_seq,
-          min(type) AS event_type,
-          min(execution_id) AS execution_id
-        FROM grouped
-        WHERE type IN ('text', 'reasoning') AND execution_id IS NOT NULL
-        GROUP BY segment_number
-      )
-      SELECT first_seq, last_seq, event_type, execution_id
-      FROM segments
-      WHERE 1 = 1
+      SELECT first_seq, last_seq, event_type, execution_id, created_at,
+        text_preview, preview_utf8_bytes, raw_utf8_bytes,
+        canonical_utf8_bytes
+      FROM run_output_segments
+      WHERE agent_id = ?
         ${input?.beforeSeq === undefined ? "" : "AND first_seq < ?"}
         ${input?.endingAtSeq === undefined ? "" : "AND first_seq <= ?"}
       ORDER BY first_seq DESC
@@ -140,56 +93,14 @@ export class AgentTelemetryReadModel {
   ): RunOutputDto[] {
     if (segmentRows.length === 0) return [];
     const orderedSegments = [...segmentRows].sort((a, b) => a.first_seq - b.first_seq);
-    const eventRows = this.client.prepare(`
-      SELECT seq, payload_json, created_at
-      FROM events
-      WHERE agent_id = ? AND type IN ('text', 'reasoning')
-        AND seq BETWEEN ? AND ?
-      ORDER BY seq
-    `);
-    const byStart = new Map<number, RunOutputDto>();
-    for (const segment of orderedSegments) {
-      const previewParts: string[] = [];
-      let previewUtf8Bytes = 0;
-      let rawUtf8Bytes = 0;
-      let canonicalUtf8Bytes = 0;
-      let createdAt = "";
-      for (const row of eventRows.iterate(
-        agentId,
-        segment.first_seq,
-        segment.last_seq,
-      ) as IterableIterator<RunOutputEventRow>) {
-        const event = JSON.parse(row.payload_json) as LogEvent;
-        if (
-          (event.type === "text" || event.type === "reasoning") &&
-          event.executionId === segment.execution_id
-        ) {
-          createdAt ||= row.created_at;
-          const deltaUtf8Bytes = Buffer.byteLength(event.delta, "utf8");
-          const trimmedDelta = event.delta.trimEnd();
-          if (trimmedDelta) {
-            canonicalUtf8Bytes =
-              rawUtf8Bytes + Buffer.byteLength(trimmedDelta, "utf8");
-          }
-          rawUtf8Bytes += deltaUtf8Bytes;
-          if (previewUtf8Bytes < RUN_OUTPUT_TEXT_PREVIEW_BYTES) {
-            const part = utf8Prefix(
-              event.delta,
-              RUN_OUTPUT_TEXT_PREVIEW_BYTES - previewUtf8Bytes,
-            );
-            previewParts.push(part);
-            previewUtf8Bytes += Buffer.byteLength(part, "utf8");
-          }
-        }
-      }
-      if (canonicalUtf8Bytes === 0) continue;
-      const preview = previewParts.join("");
+    const items = orderedSegments.flatMap((segment): RunOutputDto[] => {
+      if (segment.canonical_utf8_bytes === 0) return [];
       const text =
-        canonicalUtf8Bytes <= previewUtf8Bytes
-          ? utf8Prefix(preview, canonicalUtf8Bytes).trimEnd()
-          : preview;
-      previewUtf8Bytes = Buffer.byteLength(text, "utf8");
-      byStart.set(segment.first_seq, {
+        segment.canonical_utf8_bytes <= segment.preview_utf8_bytes
+          ? utf8Prefix(segment.text_preview, segment.canonical_utf8_bytes).trimEnd()
+          : segment.text_preview;
+      const previewUtf8Bytes = Buffer.byteLength(text, "utf8");
+      return [{
         id: `${agentId}:runOutput:${segment.first_seq}`,
         agentId,
         executionId: segment.execution_id,
@@ -199,20 +110,19 @@ export class AgentTelemetryReadModel {
         seq: segment.first_seq,
         sourceSeqStart: segment.first_seq,
         sourceSeqEnd: segment.last_seq,
-        createdAt,
-        ...(previewUtf8Bytes < canonicalUtf8Bytes
+        createdAt: segment.created_at,
+        ...(previewUtf8Bytes < segment.canonical_utf8_bytes
           ? {
               textPreview: {
                 truncated: true,
                 previewUtf8Bytes,
-                totalUtf8Bytes: canonicalUtf8Bytes,
+                totalUtf8Bytes: segment.canonical_utf8_bytes,
                 retrievalUrl: `/api/agents/${encodeURIComponent(agentId)}/run-output/${segment.first_seq}/text`,
               },
             }
           : {}),
-      });
-    }
-    const items = [...byStart.values()];
+      }];
+    });
     const executionIds = new Set(items.map((item) => item.executionId));
     const fileActivityByExecution = this.responseFileActivityByExecution(
       agentId,
@@ -220,14 +130,21 @@ export class AgentTelemetryReadModel {
       executionIds,
     );
     const lastResponseByExecution = new Map<string, number>();
-    for (const segment of this.runOutputSegmentRows(agentId)) {
-      if (
-        segment.event_type !== "text" ||
-        lastResponseByExecution.has(segment.execution_id)
-      ) {
-        continue;
+    if (executionIds.size > 0) {
+      const placeholders = [...executionIds].map(() => "?").join(", ");
+      const rows = this.client.prepare(`
+        SELECT execution_id, max(first_seq) AS first_seq
+        FROM run_output_segments
+        WHERE agent_id = ? AND event_type = 'text'
+          AND execution_id IN (${placeholders})
+        GROUP BY execution_id
+      `).all(agentId, ...executionIds) as Array<{
+        execution_id: string;
+        first_seq: number;
+      }>;
+      for (const row of rows) {
+        lastResponseByExecution.set(row.execution_id, row.first_seq);
       }
-      lastResponseByExecution.set(segment.execution_id, segment.first_seq);
     }
     return items.map((item) => {
       if (
@@ -265,11 +182,15 @@ export class AgentTelemetryReadModel {
     );
     let endingAtSeq: number | undefined;
     if (focusSeq !== undefined) {
-      const allSegments = this.runOutputSegmentRows(agentId);
-      let containing = allSegments.find(
-        (segment) =>
-          segment.first_seq <= focusSeq && segment.last_seq >= focusSeq,
-      );
+      const containingAt = (seq: number) => this.client.prepare(`
+        SELECT first_seq, last_seq, event_type, execution_id, created_at,
+          text_preview, preview_utf8_bytes, raw_utf8_bytes,
+          canonical_utf8_bytes
+        FROM run_output_segments
+        WHERE agent_id = ? AND first_seq <= ? AND last_seq >= ?
+        ORDER BY first_seq DESC LIMIT 1
+      `).get(agentId, seq, seq) as RunOutputSegmentRow | undefined;
+      let containing = containingAt(focusSeq);
       if (!containing) {
         const legacy = this.client
           .prepare(`
@@ -280,11 +201,7 @@ export class AgentTelemetryReadModel {
         if (legacy) {
           const event = JSON.parse(legacy.payload_json) as LogEvent;
           if (event.type === "agent_output") {
-            containing = allSegments.find(
-              (segment) =>
-                segment.first_seq <= event.sourceSeqEnd &&
-                segment.last_seq >= event.sourceSeqEnd,
-            );
+            containing = containingAt(event.sourceSeqEnd);
           }
         }
       }
@@ -333,9 +250,13 @@ export class AgentTelemetryReadModel {
         totalUtf8Bytes: number;
       }
     | undefined {
-    const segment = this.runOutputSegmentRows(agentId).find(
-      (row) => row.first_seq === seq,
-    );
+    const segment = this.client.prepare(`
+      SELECT first_seq, last_seq, event_type, execution_id, created_at,
+        text_preview, preview_utf8_bytes, raw_utf8_bytes,
+        canonical_utf8_bytes
+      FROM run_output_segments
+      WHERE agent_id = ? AND first_seq = ?
+    `).get(agentId, seq) as RunOutputSegmentRow | undefined;
     if (!segment) return undefined;
     const item = this.materializeRunOutputSegments(agentId, [segment])[0];
     if (!item) return undefined;

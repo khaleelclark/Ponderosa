@@ -6,7 +6,6 @@ import TerminalIcon from "@mui/icons-material/Terminal";
 import { Alert, Box, Chip, InputAdornment, List, ListItemButton, ListItemIcon, ListItemText, Stack, TextField, Typography } from "@mui/material";
 import type { ArtifactDto } from "@ponderosa/core";
 import { useEffect, useState } from "react";
-import type { ExecutionItem } from "../../hooks/useAgentStream";
 import { telemetryElementId } from "../../telemetryFocus";
 import { ResourceContextMenu } from "../ResourceContextMenu";
 import type { ResourceContextMenuState } from "../ResourceContextMenu";
@@ -47,7 +46,6 @@ export function ArtifactsPane({
   artifacts,
   agentId,
   agentTitle,
-  timeline,
   initialArtifactId,
   onSelectArtifact,
   onOpenArtifactInNewTab,
@@ -55,7 +53,6 @@ export function ArtifactsPane({
   artifacts: ArtifactDto[];
   agentId: string;
   agentTitle: string;
-  timeline: ExecutionItem[];
   initialArtifactId?: string;
   onSelectArtifact?(artifactId: string): void;
   onOpenArtifactInNewTab?(artifactId: string): void;
@@ -88,17 +85,6 @@ export function ArtifactsPane({
     .filter((group) => group.artifacts.length > 0);
 
   const selectedArtifact = orderedArtifacts.find((artifact) => artifact.id === selectedArtifactId);
-  const liveSeq = selectedArtifact?.id.startsWith("live-artifact-")
-    ? Number(selectedArtifact.id.replace("live-artifact-", ""))
-    : undefined;
-  const liveEvent = timeline.find((item) => item.seq === liveSeq)?.event;
-  const liveContent =
-    liveEvent?.type === "file_change"
-      ? (liveEvent.diff ?? `No diff body for ${liveEvent.path}.`)
-      : liveEvent?.type === "test_result"
-        ? `## Test result\n\n${liveEvent.summary}`
-        : undefined;
-
   if (orderedArtifacts.length === 0) {
     return (
       <Box sx={{ p: 2 }}>
@@ -160,7 +146,7 @@ export function ArtifactsPane({
           </Box>)}
         </Box>
         <Box sx={{ minWidth: 0, minHeight: 0, overflow: "auto", bgcolor: "background.default" }}>
-        <AgentArtifactPreview artifact={selectedArtifact} agentId={agentId} agentTitle={agentTitle} liveContent={liveContent} />
+        <AgentArtifactPreview artifact={selectedArtifact} agentId={agentId} agentTitle={agentTitle} />
         </Box>
       </Box>
       <ResourceContextMenu state={artifactMenu} onClose={() => setArtifactMenu(undefined)} onOpenInNewTab={onOpenArtifactInNewTab} />

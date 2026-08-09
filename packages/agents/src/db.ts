@@ -25,6 +25,7 @@ const schemaExtensions = [
   "0001_communication_v4_next_run_deliveries.sql",
   "0002_provider_process_authority.sql",
   "0003_collection_generations.sql",
+  "0004_run_output_segments.sql",
 ] as const;
 const legacyMigrationTable = "_migrations";
 const schemaVersionTable = "_schema_version";

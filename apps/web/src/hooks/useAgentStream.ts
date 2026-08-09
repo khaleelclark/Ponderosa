@@ -3,30 +3,22 @@ import type { AgentActivityDto, AgentEvent, AgentRunDto, ArtifactDto, ChangedFil
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
+import { boundLiveAgentTelemetry } from "../agentLiveProjection";
 import type { StreamSubscription } from "../api/types";
 import { compactDefined } from "../collections";
 import { queryKeys } from "../queryKeys";
+import { invalidateForBrowserPage } from "../queryVisibility";
 import { registerLiveAgentStream } from "./agentStreamRegistry";
 import { reconcileCursor } from "./streamCursor";
-
-export interface ExecutionItem {
-  id: string;
-  seq: number;
-  ts: string;
-  event: AgentActivityDto["event"];
-}
 
 export interface StreamState {
   connected: boolean;
   running: boolean;
-  lastSeq?: number;
-  timeline: ExecutionItem[];
 }
 
 const initialStreamState: StreamState = {
   connected: false,
   running: false,
-  timeline: [],
 };
 
 const executionTypes: ReadonlySet<string> = new Set([
@@ -460,7 +452,7 @@ export function useAgentStream(
     const cursor: AgentStreamCursor = streamCursors.get(agentId) ?? { updatedAt: Date.now() };
     rememberCursor(agentId, cursor);
     lastSeqRef.current = cursor.lastSeq;
-    setState({ ...initialStreamState, lastSeq: cursor.lastSeq });
+    setState(initialStreamState);
 
     let stopped = false;
     let subscription: StreamSubscription | undefined;
@@ -487,7 +479,10 @@ export function useAgentStream(
       reconcileTimer = undefined;
       const projectId = projectIdFromCache();
       if (reconcileDetail) {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(agentId) });
+        invalidateForBrowserPage(
+          queryClient,
+          queryKeys.agents.detailPrefix(agentId),
+        );
         reconcileDetail = false;
       }
       if (reconcileRoster && projectId) {
@@ -558,7 +553,7 @@ export function useAgentStream(
             cursor.lastSeq = 0;
             cursor.instanceId = status.instanceId;
             rememberCursor(agentId, cursor);
-            setState({ ...initialStreamState, connected: true, lastSeq: 0 });
+            setState({ ...initialStreamState, connected: true });
             scheduleReconciliation({ detail: true, roster: true, health: true, usage: true });
             markStreamDisconnected();
             nextSubscription.close();
@@ -579,7 +574,7 @@ export function useAgentStream(
           if (status.reset || (lastSeqRef.current ?? 0) > status.cursor) {
             lastSeqRef.current = 0;
             cursor.lastSeq = 0;
-            setState({ ...initialStreamState, connected: true, lastSeq: 0 });
+            setState({ ...initialStreamState, connected: true });
             scheduleReconciliation({ detail: true, roster: true, health: true, usage: true });
           }
           cursor.instanceId = status.instanceId;
@@ -612,26 +607,17 @@ export function useAgentStream(
             return;
           }
 
-          setState((current) => ({
-            ...current,
-            connected: true,
-            running: runningAfterAgentEvent(current.running, envelope.event),
-            lastSeq: envelope.seq,
-            timeline: executionTypes.has(envelope.event.type)
-              ? [
-                  ...current.timeline,
-                  {
-                    id: `event-${envelope.seq}`,
-                    seq: envelope.seq,
-                    ts: envelope.ts,
-                    event: envelope.event as ExecutionItem["event"],
-                  },
-                ]
-              : current.timeline,
-          }));
+          setState((current) => {
+            const running = runningAfterAgentEvent(current.running, envelope.event);
+            return current.connected && current.running === running
+              ? current
+              : { connected: true, running };
+          });
 
           queryClient.setQueriesData<AgentDetailDto>({ queryKey: queryKeys.agents.detailPrefix(agentId) }, (detail) =>
-            detail ? updateAgentDetail(agentId, envelope, detail) : detail,
+            detail
+              ? boundLiveAgentTelemetry(updateAgentDetail(agentId, envelope, detail))
+              : detail,
           );
 
           if (envelope.event.type === "coordination_v3_changed") {
