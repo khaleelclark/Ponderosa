@@ -641,6 +641,9 @@ export function useAgentStream(
             scheduleReconciliation({ detail: true });
           } else if (envelope.event.type === "turn_done") {
             scheduleReconciliation({ detail: true, roster: true, health: true, usage: true });
+          } else if (envelope.event.type === "context_rollover_completed" ||
+              envelope.event.type === "context_rollover_seed_overflow") {
+            scheduleReconciliation({ detail: true, roster: true, health: true, usage: true });
           } else if (envelope.event.type === "agent_lifecycle" || envelope.event.type === "error") {
             scheduleReconciliation({ roster: true, health: true });
           }
