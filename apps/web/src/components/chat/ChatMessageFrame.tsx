@@ -40,9 +40,10 @@ export function ChatMessageFrame({
     const element = articleRef.current;
     if (!element || !message.onVisible || typeof IntersectionObserver === "undefined") return;
     let intersecting = false;
-    const report = () => {
-      if (intersecting && document.visibilityState !== "hidden") message.onVisible?.();
-    };
+    const report = () =>
+      message.onVisible?.(
+        intersecting && document.visibilityState !== "hidden",
+      );
     const observer = new IntersectionObserver((entries) => {
       intersecting = Boolean(entries[0]?.isIntersecting);
       report();

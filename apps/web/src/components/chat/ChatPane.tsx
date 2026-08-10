@@ -103,6 +103,7 @@ function ChatPaneComponent({
   agentIdForHandle,
   onOpenAgent,
   onOpenMessageSource,
+  onCommunicationVisible,
   onMentionAgent,
   onScrollPositionChange,
   previewScope,
@@ -127,6 +128,10 @@ function ChatPaneComponent({
   agentIdForHandle?(handle: string): string | undefined;
   onOpenAgent?(agentId: string): void;
   onOpenMessageSource?(message: MessageDto): void;
+  onCommunicationVisible?(
+    communicationEventId: string | undefined,
+    visible: boolean,
+  ): void;
   onMentionAgent?(): void;
   onScrollPositionChange?(element: HTMLElement, nearBottom: boolean): void;
   previewScope?: LinkPreviewScope;
@@ -416,6 +421,13 @@ function ChatPaneComponent({
                       : {}),
                   },
               createdAt: message.createdAt,
+              onVisible: onCommunicationVisible
+                ? (visible) =>
+                    onCommunicationVisible(
+                      message.communicationEventId,
+                      visible,
+                    )
+                : undefined,
               beforeHeader: attachedRuns.length ? (
                 <>
                   {attachedRuns.map(run => (

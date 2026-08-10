@@ -84,7 +84,7 @@ function ConversationMessageComponent({
   onOpenReview?(agentId: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
   onMentionAgent?(agentId: string): void;
-  onVisible?(): void;
+  onVisible?(visible: boolean): void;
   projectId: string;
   activeRunId?: string;
   operatorProfile?: OperatorProfileDto;
@@ -401,7 +401,10 @@ function MainConversationTimeline({
   onOpenReview?(agentId: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
   mentionAgent(agentId: string): void;
-  markCommunicationVisible(communicationEventId: string | undefined): void;
+  markCommunicationVisible(
+    communicationEventId: string | undefined,
+    visible: boolean,
+  ): void;
 }): JSX.Element {
   return (
     <Stack spacing={0} sx={{ mb: 2 }}>
@@ -453,7 +456,8 @@ function MainConversationTimeline({
           onOpenReview={onOpenReview}
           onOpenFileActivity={onOpenFileActivity}
           onMentionAgent={mentionAgent}
-          onVisible={() => markCommunicationVisible(message.communicationEventId)}
+          onVisible={(visible) =>
+            markCommunicationVisible(message.communicationEventId, visible)}
         />;
       })}
     </Stack>
