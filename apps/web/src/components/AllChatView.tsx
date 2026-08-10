@@ -52,7 +52,6 @@ import { uniqueBy } from "../collections";
 import TagIcon from "@mui/icons-material/Tag";
 import { createClientId } from "../clientId";
 import { queryKeys } from "../queryKeys";
-import { isOrdinaryMessageNotification } from "../workspaceNavigation";
 import { DecisionCard } from "./decisions/DecisionCard";
 import { AgentRuntimeControls } from "./AgentDetail.parts";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
@@ -63,6 +62,7 @@ import {
 import { useRuntimeControls } from "../hooks/useRuntimeControls";
 import { AUTO_ALLOWED_DECISION_OPTION_ID } from "./ConversationView.helpers";
 import { CompactWorkspaceHeader } from "./WorkspaceFrame";
+import { useConversationNotificationVisibility } from "./useConversationNotificationVisibility";
 
 function allChatSourceRoute(item: AllChatItemDto): Route {
   if (item.source.kind === "agent") {
@@ -144,7 +144,10 @@ export function AllChatView({
   const enginesQuery = useEngines();
   const projectsQuery = useProjects();
   const queryClient = useQueryClient();
-  const markedVisibleNotificationIds = useRef(new Set<string>());
+  const markCommunicationVisible = useConversationNotificationVisibility(
+    { data: notifications },
+    queryClient,
+  );
   const [older, setOlder] = useState<{
     items: AllChatItemDto[];
     decisions: AllChatDecisionEventDto[];
@@ -377,27 +380,6 @@ export function AllChatView({
   );
   const selectedCommands: EngineCommand[] =
     selectedEngineCapabilities?.commands ?? [];
-  const markCommunicationVisible = useCallback((communicationEventId: string) => {
-    if (document.visibilityState === "hidden") return;
-    const matching = notifications.filter((item) =>
-      item.communicationEventId === communicationEventId &&
-      !item.readAt &&
-      (item.status ?? "open") === "open" &&
-      isOrdinaryMessageNotification(item) &&
-      !markedVisibleNotificationIds.current.has(item.id));
-    if (!matching.length) return;
-    const ids = new Set(matching.map((item) => item.id));
-    ids.forEach((id) => markedVisibleNotificationIds.current.add(id));
-    const readAt = new Date().toISOString();
-    queryClient.setQueryData<WorkspaceNotificationDto[]>(queryKeys.notifications.all, (current = []) =>
-      current.map((item) => ids.has(item.id) ? { ...item, readAt } : item));
-    void Promise.all(matching.map((item) => api.markNotificationRead(item.id)))
-      .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all }))
-      .catch(() => {
-        ids.forEach((id) => markedVisibleNotificationIds.current.delete(id));
-        void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
-      });
-  }, [notifications, queryClient]);
   const refreshSelectedCapabilities = async () => {
     if (!selectedProjectId || !selectedAgentId) return;
     const discovered = await api.getEngineCapabilities(selectedProjectId, {

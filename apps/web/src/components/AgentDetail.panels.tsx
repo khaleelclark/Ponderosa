@@ -9,6 +9,7 @@ import type {
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useEffect, useState, type ComponentProps } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import type { AgentStatus } from "../agents";
 import { chatStateKey, readChatState } from "../chatState";
 import type { AgentTelemetryFocus } from "../routing";
@@ -20,6 +21,7 @@ import { AgentWorkInspector } from "./AgentWorkInspector";
 import { ChatPane } from "./chat/ChatPane";
 import { ArtifactsPane } from "./filePreview/ArtifactsPane";
 import { TriggersPane } from "./TriggersPane";
+import { useConversationNotificationVisibility } from "./useConversationNotificationVisibility";
 
 interface AgentDetailPanelsProps {
   tab: AgentTab;
@@ -108,6 +110,11 @@ export function AgentDetailPanels({
   onOpenArtifactInNewTab,
   onCloseTriggerSettings,
 }: AgentDetailPanelsProps): JSX.Element {
+  const queryClient = useQueryClient();
+  const markCommunicationVisible = useConversationNotificationVisibility(
+    { data: notifications },
+    queryClient,
+  );
   const [visibleSubagentCount, setVisibleSubagentCount] = useState(25);
   useEffect(() => setVisibleSubagentCount(25), [detail.agent.id]);
   const panes: Record<AgentTab, JSX.Element> = {
@@ -122,6 +129,7 @@ export function AgentDetailPanels({
           agentIdForHandle={agentIdForHandle}
           onOpenAgent={onOpenAgent}
           onOpenMessageSource={onOpenMessageSource}
+          onCommunicationVisible={markCommunicationVisible}
           operatorProfile={operatorProfile}
           projectId={detail.agent.projectId}
           activity={detail.activity}
