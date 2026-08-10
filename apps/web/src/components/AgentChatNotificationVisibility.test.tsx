@@ -9,6 +9,8 @@ const { markNotificationRead } = vi.hoisted(() => ({
   markNotificationRead: vi.fn().mockResolvedValue(undefined),
 }));
 
+let intersecting = true;
+
 vi.mock("../api", () => ({
   api: { markNotificationRead },
 }));
@@ -60,12 +62,13 @@ function AgentChat({ notifications }: { notifications: WorkspaceNotificationDto[
 
 describe("Agent Chat notification visibility", () => {
   beforeEach(() => {
-    markNotificationRead.mockClear();
+    intersecting = true;
+    markNotificationRead.mockReset().mockResolvedValue(undefined);
     vi.stubGlobal("IntersectionObserver", class {
       constructor(private readonly callback: IntersectionObserverCallback) {}
       observe(target: Element): void {
         this.callback(
-          [{ isIntersecting: true, target } as IntersectionObserverEntry],
+          [{ isIntersecting: intersecting, target } as IntersectionObserverEntry],
           this as unknown as IntersectionObserver,
         );
       }
@@ -97,5 +100,51 @@ describe("Agent Chat notification visibility", () => {
     render(<AgentChat notifications={[notification("decision")]} />);
 
     await waitFor(() => expect(markNotificationRead).not.toHaveBeenCalled());
+  });
+
+  it("does not mark an off-screen response read", async () => {
+    intersecting = false;
+    render(<AgentChat notifications={[notification("direct_responses")]} />);
+
+    await waitFor(() => expect(markNotificationRead).not.toHaveBeenCalled());
+  });
+
+  it("waits for a hidden document to become visible", async () => {
+    const visibility = vi
+      .spyOn(document, "visibilityState", "get")
+      .mockReturnValue("hidden");
+    render(<AgentChat notifications={[notification("direct_responses")]} />);
+    expect(markNotificationRead).not.toHaveBeenCalled();
+
+    visibility.mockReturnValue("visible");
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    await waitFor(() =>
+      expect(markNotificationRead).toHaveBeenCalledWith(
+        "notification-direct_responses",
+      ),
+    );
+  });
+
+  it("retries a transient acknowledgement failure while the response remains visible", async () => {
+    markNotificationRead.mockRejectedValueOnce(new Error("temporary failure"));
+    render(<AgentChat notifications={[notification("direct_responses")]} />);
+
+    await waitFor(() => expect(markNotificationRead).toHaveBeenCalledTimes(2));
+  });
+
+  it("acknowledges an unread notification that arrives after the response is visible", async () => {
+    const rendered = render(<AgentChat notifications={[]} />);
+    expect(markNotificationRead).not.toHaveBeenCalled();
+
+    rendered.rerender(
+      <AgentChat notifications={[notification("direct_responses")]} />,
+    );
+
+    await waitFor(() =>
+      expect(markNotificationRead).toHaveBeenCalledWith(
+        "notification-direct_responses",
+      ),
+    );
   });
 });

@@ -48,5 +48,5 @@ export interface ChatMessagePresentation {
   ariaLabel?: string;
   onSelect?(): void;
   /** Called only while this exact message row intersects the visible page. */
-  onVisible?(): void;
+  onVisible?(visible: boolean): void;
 }

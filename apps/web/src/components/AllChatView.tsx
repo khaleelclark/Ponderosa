@@ -789,7 +789,11 @@ export function AllChatView({
                     ) : undefined,
                   attachments: item.attachments,
                   attachmentDensity: "compact",
-                  onVisible: () => markCommunicationVisible(item.communicationEventId),
+                  onVisible: (visible) =>
+                    markCommunicationVisible(
+                      item.communicationEventId,
+                      visible,
+                    ),
                   ariaLabel: allChatSourceAccessibleName(item),
                   body: (
                     <ChatMessageBody
