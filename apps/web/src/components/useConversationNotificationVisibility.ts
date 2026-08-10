@@ -14,6 +14,7 @@ export function useConversationNotificationVisibility(
 ) => void {
   const markedVisibleNotificationIds = useRef(new Set<string>());
   const visibleCommunicationEventIds = useRef(new Set<string>());
+  const observedNotificationIds = useRef(new Set<string>());
   const retryAttempts = useRef(new Map<string, number>());
   const retryTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const notifications = useRef(notificationsQuery.data ?? []);
@@ -67,8 +68,22 @@ export function useConversationNotificationVisibility(
   }, []);
 
   useEffect(() => {
-    visibleCommunicationEventIds.current.forEach((communicationEventId) =>
-      attemptVisible.current(communicationEventId));
+    const newlyArrivedCommunicationEventIds = new Set<string>();
+    for (const item of notificationsQuery.data ?? []) {
+      if (observedNotificationIds.current.has(item.id)) continue;
+      observedNotificationIds.current.add(item.id);
+      if (
+        item.communicationEventId &&
+        !item.readAt &&
+        (item.status ?? "open") === "open" &&
+        isOrdinaryMessageNotification(item)
+      ) newlyArrivedCommunicationEventIds.add(item.communicationEventId);
+    }
+    newlyArrivedCommunicationEventIds.forEach((communicationEventId) => {
+      if (visibleCommunicationEventIds.current.has(communicationEventId)) {
+        attemptVisible.current(communicationEventId);
+      }
+    });
   }, [notificationsQuery.data]);
 
   const markCommunicationVisible = useCallback((

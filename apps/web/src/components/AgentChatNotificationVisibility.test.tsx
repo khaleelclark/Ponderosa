@@ -85,6 +85,7 @@ describe("Agent Chat notification visibility", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -133,6 +134,18 @@ describe("Agent Chat notification visibility", () => {
     render(<AgentChat notifications={[notification("direct_responses")]} />);
 
     await waitFor(() => expect(markNotificationRead).toHaveBeenCalledTimes(2));
+  });
+
+  it("stops retrying after persistent acknowledgement failures", async () => {
+    vi.useFakeTimers();
+    markNotificationRead.mockRejectedValue(new Error("persistent failure"));
+    render(<AgentChat notifications={[notification("direct_responses")]} />);
+
+    await vi.runAllTimersAsync();
+    expect(markNotificationRead).toHaveBeenCalledTimes(4);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(markNotificationRead).toHaveBeenCalledTimes(4);
   });
 
   it("acknowledges an unread notification that arrives after the response is visible", async () => {
