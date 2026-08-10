@@ -66,6 +66,11 @@ export function useConversationNotificationVisibility(
     retryTimers.current.clear();
   }, []);
 
+  useEffect(() => {
+    visibleCommunicationEventIds.current.forEach((communicationEventId) =>
+      attemptVisible.current(communicationEventId));
+  }, [notificationsQuery.data]);
+
   const markCommunicationVisible = useCallback((
     communicationEventId: string | undefined,
     visible: boolean,

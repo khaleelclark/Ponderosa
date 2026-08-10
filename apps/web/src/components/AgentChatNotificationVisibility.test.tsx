@@ -27,6 +27,8 @@ const message: MessageDto = {
   text: "Visible response",
   createdAt: "2026-08-09T00:00:00.000Z",
 };
+const messages = [message];
+let queryClient: QueryClient;
 
 function notification(kind: WorkspaceNotificationDto["kind"]): WorkspaceNotificationDto {
   return {
@@ -43,9 +45,6 @@ function notification(kind: WorkspaceNotificationDto["kind"]): WorkspaceNotifica
 }
 
 function AgentChat({ notifications }: { notifications: WorkspaceNotificationDto[] }): JSX.Element {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
   const onCommunicationVisible = useConversationNotificationVisibility(
     { data: notifications },
     queryClient,
@@ -53,7 +52,7 @@ function AgentChat({ notifications }: { notifications: WorkspaceNotificationDto[
   return (
     <QueryClientProvider client={queryClient}>
       <ChatPane
-        messages={[message]}
+        messages={messages}
         onCommunicationVisible={onCommunicationVisible}
       />
     </QueryClientProvider>
@@ -62,6 +61,9 @@ function AgentChat({ notifications }: { notifications: WorkspaceNotificationDto[
 
 describe("Agent Chat notification visibility", () => {
   beforeEach(() => {
+    queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
     intersecting = true;
     markNotificationRead.mockReset().mockResolvedValue(undefined);
     vi.stubGlobal("IntersectionObserver", class {
