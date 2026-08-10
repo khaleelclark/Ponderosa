@@ -746,9 +746,67 @@ export function Composer({
           );
     void Promise.resolve(operation)
       .then(() => {
-        update("");
+        // A successful send can settle after this Composer has unmounted. Do
+        // not rely on the controlled input's effects to clear durable draft
+        // state: invalidate pending stale writes, clear local storage now, and
+        // serialize an explicit empty draft after any write already in flight.
+        draftGeneration.current += 1;
+        draftEditVersion.current += 1;
+        draftLocallyEdited.current = false;
+        setText("");
+        if (draftStorageKey) writeChatState(draftStorageKey, "");
         setPastedText(undefined);
         clearDraftAttachments();
+        if (conversationDraftId && draftClientId.current) {
+          const clientId = draftClientId.current;
+          draftWriteChain.current = draftWriteChain.current
+            .catch(() => undefined)
+            .then(async () => {
+              try {
+                const draft = await api.putConversationDraft(
+                  conversationDraftId,
+                  {
+                    text: "",
+                    attachmentIds: [],
+                    expectedRevision: draftRevision.current,
+                    clientId,
+                    ownerId: draftOwnerId,
+                  },
+                );
+                draftRevision.current = draft.revision;
+                queryClient.setQueryData(
+                  queryKeys.conversationDraft.detail(
+                    conversationDraftId,
+                    draftOwnerId,
+                  ),
+                  draft,
+                );
+              } catch (error) {
+                if (error instanceof ApiRequestError && error.status === 409) {
+                  try {
+                    const current = await api.getConversationDraft(
+                      conversationDraftId,
+                      draftOwnerId,
+                    );
+                    draftRevision.current = current.revision;
+                    queryClient.setQueryData(
+                      queryKeys.conversationDraft.detail(
+                        conversationDraftId,
+                        draftOwnerId,
+                      ),
+                      current,
+                    );
+                    return;
+                  } catch {
+                    // Fall through to the explicit saved-draft warning.
+                  }
+                }
+                setSendError(
+                  "Message sent, but its saved draft could not be cleared.",
+                );
+              }
+            });
+        }
         if (conversationDraftId)
           for (const id of stagedIds)
             void api
