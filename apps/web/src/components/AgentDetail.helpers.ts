@@ -10,7 +10,6 @@ import type {
   SendMessageRequest,
   SendMessageResponse,
 } from "@ponderosa/core";
-import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
 import { buildMarkdownTranscript } from "../chatTranscript";
 import { uniqueBy } from "../collections";
 import type { AgentDetailView } from "../routing";
@@ -42,6 +41,31 @@ type TelemetryPageState = {
     history?: HistoryWindowDto;
   };
 };
+
+type MessagePageState = {
+  messages: MessageDto[];
+  history?: HistoryWindowDto;
+};
+
+function mergeMessagePage(
+  current: MessagePageState | undefined,
+  page: Pick<AgentDetailDto, "messages" | "history">,
+  recentMessages: MessageDto[],
+  preserveHistory = false,
+  ordinaryHistory?: HistoryWindowDto,
+): MessagePageState {
+  const history = preserveHistory
+    ? (current?.history ?? ordinaryHistory)
+    : page.history;
+  return {
+    messages: uniqueBy(
+      [...page.messages, ...(current?.messages ?? []), ...recentMessages],
+      message => message.id,
+      compareAgentChatMessages,
+    ),
+    ...(history ? { history } : {}),
+  };
+}
 
 function mergeTelemetryPage(
   current: TelemetryPageState,
@@ -180,9 +204,7 @@ function eligibleOrganizationParents(
 
 function mergeAgentDetailProjection(
   current: AgentDetailDto | undefined,
-  olderMessages:
-    | { messages: MessageDto[]; cursor?: string; hasMore: boolean }
-    | undefined,
+  olderMessages: MessagePageState | undefined,
   olderTelemetry: TelemetryPageState,
 ): AgentDetailDto | undefined {
   if (!current) return undefined;
@@ -255,13 +277,7 @@ function mergeAgentDetailProjection(
         ])
         .filter(entry => entry[1] !== undefined),
     ) as AgentDetailDto["telemetryHistory"],
-    history: olderMessages
-      ? {
-          limit: current.history?.limit ?? AGENT_DETAIL_PAGE_SIZE,
-          hasMore: olderMessages.hasMore,
-          ...(olderMessages.cursor ? { cursor: olderMessages.cursor } : {}),
-        }
-      : current.history,
+    history: olderMessages?.history ?? current.history,
   };
 }
 
@@ -386,9 +402,10 @@ export {
   eligibleOrganizationParents,
   mcpPresentation,
   mergeAgentDetailProjection,
+  mergeMessagePage,
   mergeTelemetryPage,
   portablePackageFileName,
   telemetryStreamsForTab,
   telemetryTab,
 };
-export type { AgentTab, TelemetryPageState };
+export type { AgentTab, MessagePageState, TelemetryPageState };

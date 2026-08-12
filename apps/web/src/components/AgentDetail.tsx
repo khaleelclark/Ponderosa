@@ -16,14 +16,15 @@ import type {
   MessageDto,
   ProjectEngineCapabilitiesDto,
   ResponseFileActivityDto,
-  AgentDetailDto,
   AgentDto,
   AgentTelemetryStream,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
+import {
+  AGENT_HISTORY_PAGE_SIZE,
+} from "../agentHistoryPagination";
 import { createClientId } from "../clientId";
 import {
   agentStatusColor,
@@ -32,7 +33,6 @@ import {
   isProviderBlockedHealth,
   type AgentStatus,
 } from "../agents";
-import { uniqueBy } from "../collections";
 import {
   useAgent,
   useNotifications,
@@ -62,13 +62,14 @@ import { useRuntimeControls } from "../hooks/useRuntimeControls";
 import {
   agentRelationshipPresentation,
   agentTranscriptMarkdown,
-  compareAgentChatMessages,
   mcpPresentation,
   mergeAgentDetailProjection,
+  mergeMessagePage,
   mergeTelemetryPage,
   telemetryStreamsForTab,
   telemetryTab,
   type AgentTab,
+  type MessagePageState,
   type TelemetryPageState,
 } from "./AgentDetail.helpers";
 import {
@@ -127,11 +128,7 @@ export function AgentDetail({
   const queryClient = useQueryClient();
   const agentQuery = useAgent(agentId);
   const notificationsQuery = useNotifications();
-  const [olderMessages, setOlderMessages] = useState<{
-    messages: MessageDto[];
-    cursor?: string;
-    hasMore: boolean;
-  }>();
+  const [olderMessages, setOlderMessages] = useState<MessagePageState>();
   const [olderTelemetry, setOlderTelemetry] = useState<TelemetryPageState>({});
   const [loadingOlder, setLoadingOlder] = useState(false);
   const focusedTelemetryRef = useRef<string>();
@@ -249,24 +246,22 @@ export function AgentDetail({
         void api
           .getAgent(
             agentId,
-            AGENT_DETAIL_PAGE_SIZE,
+            AGENT_HISTORY_PAGE_SIZE,
             undefined,
             focusMessageId,
           )
           .then(page => {
-            setOlderMessages(current => ({
-              messages: uniqueBy(
-                [
-                  ...page.messages,
-                  ...(current?.messages ?? []),
-                  ...(agentQuery.data?.messages ?? []),
-                ],
-                message => message.id,
-                compareAgentChatMessages,
+            // A focused lookup fills a durable deep link. It must not advance the
+            // ordinary history cursor past the records between recent and focused data.
+            setOlderMessages(current =>
+              mergeMessagePage(
+                current,
+                page,
+                agentQuery.data?.messages ?? [],
+                true,
+                agentQuery.data?.history,
               ),
-              cursor: page.history?.cursor,
-              hasMore: page.history?.hasMore ?? false,
-            }));
+            );
             focusedMessage.current = page.messages.length
               ? undefined
               : `missing:${focusMessageId}`;
@@ -326,7 +321,7 @@ export function AgentDetail({
           .getAgentHistory(
             agentId,
             focusTelemetry.stream,
-            AGENT_DETAIL_PAGE_SIZE,
+            AGENT_HISTORY_PAGE_SIZE,
             undefined,
             focusTelemetry.id,
           )
@@ -548,33 +543,27 @@ export function AgentDetail({
     try {
       const [messagePage, telemetryPages] = await Promise.all([
         loadMessages
-          ? api.getAgent(agentId, AGENT_DETAIL_PAGE_SIZE, messageCursor)
+          ? api.getAgent(agentId, AGENT_HISTORY_PAGE_SIZE, messageCursor)
           : Promise.resolve(undefined),
         Promise.all(
           telemetryStreams.map(stream =>
             api.getAgentHistory(
               agentId,
               stream,
-              AGENT_DETAIL_PAGE_SIZE,
+              AGENT_HISTORY_PAGE_SIZE,
               detail?.telemetryHistory?.[stream]?.cursor,
             ),
           ),
         ),
       ]);
       if (messagePage) {
-        setOlderMessages(current => ({
-          messages: uniqueBy(
-            [
-              ...messagePage.messages,
-              ...(current?.messages ?? []),
-              ...(agentQuery.data?.messages ?? []),
-            ],
-            message => message.id,
-            compareAgentChatMessages,
+        setOlderMessages(current =>
+          mergeMessagePage(
+            current,
+            messagePage,
+            agentQuery.data?.messages ?? [],
           ),
-          cursor: messagePage.history?.cursor,
-          hasMore: messagePage.history?.hasMore ?? false,
-        }));
+        );
       }
       if (telemetryPages.length) {
         setOlderTelemetry(current =>
@@ -656,7 +645,7 @@ export function AgentDetail({
           api.getAgentHistory(
             agentId,
             stream,
-            AGENT_DETAIL_PAGE_SIZE,
+            AGENT_HISTORY_PAGE_SIZE,
             detail.telemetryHistory?.[stream]?.cursor,
           ),
         ),
