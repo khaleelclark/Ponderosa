@@ -181,7 +181,6 @@ export function ConversationView({
     text: string;
   }>();
   const [commandTargetHandle, setCommandTargetHandle] = useState<string>();
-  const [teamRecipientAgentId, setTeamRecipientAgentId] = useState<string>();
   const [memberSearch, setMemberSearch] = useState("");
   // The runtime shown by the composer. With one exact Agent destination this
   // mirrors that Agent's durable next-Run selection; otherwise it is the
@@ -770,10 +769,6 @@ export function ConversationView({
     .map(agent => ({ handle: agentMentionHandle(agent.title), agentId: agent.id }))
     .filter(binding => binding.handle &&
       !["broadcast", "user", "everyone"].includes(binding.handle.toLocaleLowerCase()));
-  const teamRecipient = teamRecipientAgentId
-    ? agents.find(agent => agent.id === teamRecipientAgentId && !agent.archived)
-    : undefined;
-  const teamMentionHandles = mentionBindings.map(binding => binding.handle);
   const findMentioned = (text: string): AgentDto[] =>
     findMentionedAgents(text, agents);
 
@@ -1145,13 +1140,9 @@ export function ConversationView({
       </Box>
 
       <ChatComposerDock
-        visible={
-          !agentWorkOpen &&
-          (activeView === "main" || activeView === "collaboration")
-        }
+        visible={!agentWorkOpen && activeView === "main"}
       >
-        {(activeView === "main" || activeView === "collaboration") &&
-        queuedMessageNotice ? (
+        {activeView === "main" && queuedMessageNotice ? (
           <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>
             {queuedMessageNotice}
           </Alert>
@@ -1199,51 +1190,23 @@ export function ConversationView({
         {activeView === "main" && targetedNextRunReceipts.data ? (
           <TargetedNextRunReceipts receipts={targetedNextRunReceipts.data.receipts} />
         ) : null}
-        {activeView === "main" || activeView === "collaboration" ? (
+        {activeView === "main" ? (
           <Composer
-            key={activeView}
             draftStorageKey={chatStateKey(
               "draft",
               `conversation.${conversationId}.${activeView}`,
             )}
-            conversationDraftId={
-              activeView === "main"
-                ? conversationId
-                : `${conversationId}:team-direct-message`
-            }
-            destinationMode={
-              activeView === "main" ? "project-chat" : "target-required"
-            }
-            continueWith={
-              activeView === "main" && lastContinuationDestination
-                ? {
-                    agentId: lastContinuationDestination.agent.id,
-                    handle: agentMentionHandle(
-                      lastContinuationDestination.agent.title,
-                    ),
-                    title: lastContinuationDestination.agent.title,
-                    responding: Boolean(
-                      healthByAgentId.get(lastContinuationDestination.agent.id)
-                        ?.runtimeActivity,
-                    ),
-                    selectionKey: lastContinuationDestination.selectionKey,
-                  }
-                : undefined
-            }
-            requiredRecipient={
-              activeView === "collaboration" && teamRecipient
-                ? {
-                    handle: agentMentionHandle(teamRecipient.title),
-                    title: teamRecipient.title,
-                    onClear: () => setTeamRecipientAgentId(undefined),
-                  }
-                : undefined
-            }
-            recipientRequiredMessage={
-              activeView === "collaboration"
-                ? "Tag one Agent with # to send a private Direct Message from Team Chat."
-                : undefined
-            }
+            conversationDraftId={conversationId}
+            destinationMode="project-chat"
+            continueWith={lastContinuationDestination ? {
+              agentId: lastContinuationDestination.agent.id,
+              handle: agentMentionHandle(lastContinuationDestination.agent.title),
+              title: lastContinuationDestination.agent.title,
+              responding: Boolean(
+                healthByAgentId.get(lastContinuationDestination.agent.id)?.runtimeActivity,
+              ),
+              selectionKey: lastContinuationDestination.selectionKey,
+            } : undefined}
             insertTextRequest={mentionInsertRequest}
             controls={runtimeControls}
             disabled={
@@ -1253,21 +1216,8 @@ export function ConversationView({
             }
             running={operationRunning}
             allowSendWhileRunning
-            mentionHandles={
-              activeView === "main" ? mentionHandles : teamMentionHandles
-            }
+            mentionHandles={mentionHandles}
             mentionBindings={mentionBindings}
-            onMentionedHandlesChange={
-              activeView === "collaboration"
-                ? handles => {
-                    setTeamRecipientAgentId(
-                      handles.length === 1
-                        ? agentIdForHandle(handles[0]!)
-                        : undefined,
-                    );
-                  }
-                : undefined
-            }
             commands={composerCommands}
             onCommandTargetHandleChange={setCommandTargetHandle}
             capabilities={composerRuntime.capabilities}
@@ -1294,11 +1244,9 @@ export function ConversationView({
                 : undefined
             }
             busyMentionHandles={busyMentionHandles}
-            allowUnmentionedSend={activeView === "main" && engineReady}
+            allowUnmentionedSend={engineReady}
             placeholder={
-              activeView === "collaboration"
-                ? "Tag an Agent with # to send a private message"
-                : engineReady
+              engineReady
                 ? "Write a message…"
                 : "Choose an available Agent with # or use #broadcast"
             }
