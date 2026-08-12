@@ -5,8 +5,6 @@ import {
   CircularProgress,
   Stack,
   Typography,
-  useMediaQuery,
-  useTheme,
 } from "@mui/material";
 import type {
   AgentHealthDto,
@@ -44,7 +42,6 @@ import { QueuedMessageTray } from "./chat/QueuedMessageTray";
 import { ChatSurface } from "./chat/ChatSurface";
 import { buildMarkdownTranscript } from "../chatTranscript";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
-import { useMobileComposerAutoHide } from "../mobileChat";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 import { AttentionSurface } from "./AttentionSurface";
 import { TargetedNextRunReceipts } from "./TargetedNextRunReceipts";
@@ -78,6 +75,7 @@ import { useConversationMessagingController } from "./useConversationMessagingCo
 import { MasterRespondingIndicator } from "./ConversationComposerStatus";
 import { agentOpeningAgentId } from "./chat/ChatMessages";
 import { ConversationFilesResults } from "./ConversationFilesResults";
+import { ChatComposerDock } from "./chat/ChatComposerDock";
 
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { notificationTechnicalFocusId } from "../technicalFocus";
@@ -183,6 +181,7 @@ export function ConversationView({
     text: string;
   }>();
   const [commandTargetHandle, setCommandTargetHandle] = useState<string>();
+  const [teamRecipientAgentId, setTeamRecipientAgentId] = useState<string>();
   const [memberSearch, setMemberSearch] = useState("");
   // The runtime shown by the composer. With one exact Agent destination this
   // mirrors that Agent's durable next-Run selection; otherwise it is the
@@ -194,16 +193,11 @@ export function ConversationView({
   const initializedFor = useRef<string | undefined>(undefined);
   const { focusedMessage, focusedMessageHighlightDisposer } =
     useConversationMessageFocusRefs();
-  const theme = useTheme();
-  const mobileRoster = useMediaQuery(theme.breakpoints.down("sm"));
-  const mobileComposer = useMobileComposerAutoHide(mobileRoster);
-
   useConversationResetEffect({
     collaborationVisited,
     conversationId,
     focusedMessage,
     initialView,
-    mobileComposer,
     setActiveView,
     setOlderCollaboration,
     setOlderMain,
@@ -776,6 +770,10 @@ export function ConversationView({
     .map(agent => ({ handle: agentMentionHandle(agent.title), agentId: agent.id }))
     .filter(binding => binding.handle &&
       !["broadcast", "user", "everyone"].includes(binding.handle.toLocaleLowerCase()));
+  const teamRecipient = teamRecipientAgentId
+    ? agents.find(agent => agent.id === teamRecipientAgentId && !agent.archived)
+    : undefined;
+  const teamMentionHandles = mentionBindings.map(binding => binding.handle);
   const findMentioned = (text: string): AgentDto[] =>
     findMentionedAgents(text, agents);
 
@@ -933,7 +931,6 @@ export function ConversationView({
                 "scroll",
                 `conversation.${conversationId}.main`,
               ),
-              onPositionChange: mobileComposer.observeScroll,
             }}
             history={{
               kind: "cursor",
@@ -1031,7 +1028,6 @@ export function ConversationView({
                   "scroll",
                   `conversation.${conversationId}.collaboration`,
                 ),
-                onPositionChange: mobileComposer.observeScroll,
               }}
               history={{
                 kind: "cursor",
@@ -1148,22 +1144,14 @@ export function ConversationView({
         ) : null}
       </Box>
 
-      <Box
-        className="mobile-chat-chrome mobile-chat-composer"
-        data-mobile-composer-hidden={
-          agentWorkOpen || mobileComposer.hidden ? "true" : "false"
+      <ChatComposerDock
+        visible={
+          !agentWorkOpen &&
+          (activeView === "main" || activeView === "collaboration")
         }
-        onTransitionEnd={event => {
-          if (
-            event.currentTarget !== event.target ||
-            event.propertyName !== "max-height"
-          )
-            return;
-          mobileComposer.finishTransition();
-        }}
-        sx={{ bgcolor: "transparent" }}
       >
-        {activeView === "main" && queuedMessageNotice ? (
+        {(activeView === "main" || activeView === "collaboration") &&
+        queuedMessageNotice ? (
           <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>
             {queuedMessageNotice}
           </Alert>
@@ -1211,23 +1199,51 @@ export function ConversationView({
         {activeView === "main" && targetedNextRunReceipts.data ? (
           <TargetedNextRunReceipts receipts={targetedNextRunReceipts.data.receipts} />
         ) : null}
-        {activeView === "main" ? (
+        {activeView === "main" || activeView === "collaboration" ? (
           <Composer
+            key={activeView}
             draftStorageKey={chatStateKey(
               "draft",
               `conversation.${conversationId}.${activeView}`,
             )}
-            conversationDraftId={conversationId}
-            destinationMode="project-chat"
-            continueWith={lastContinuationDestination ? {
-              agentId: lastContinuationDestination.agent.id,
-              handle: agentMentionHandle(lastContinuationDestination.agent.title),
-              title: lastContinuationDestination.agent.title,
-              responding: Boolean(
-                healthByAgentId.get(lastContinuationDestination.agent.id)?.runtimeActivity,
-              ),
-              selectionKey: lastContinuationDestination.selectionKey,
-            } : undefined}
+            conversationDraftId={
+              activeView === "main"
+                ? conversationId
+                : `${conversationId}:team-direct-message`
+            }
+            destinationMode={
+              activeView === "main" ? "project-chat" : "target-required"
+            }
+            continueWith={
+              activeView === "main" && lastContinuationDestination
+                ? {
+                    agentId: lastContinuationDestination.agent.id,
+                    handle: agentMentionHandle(
+                      lastContinuationDestination.agent.title,
+                    ),
+                    title: lastContinuationDestination.agent.title,
+                    responding: Boolean(
+                      healthByAgentId.get(lastContinuationDestination.agent.id)
+                        ?.runtimeActivity,
+                    ),
+                    selectionKey: lastContinuationDestination.selectionKey,
+                  }
+                : undefined
+            }
+            requiredRecipient={
+              activeView === "collaboration" && teamRecipient
+                ? {
+                    handle: agentMentionHandle(teamRecipient.title),
+                    title: teamRecipient.title,
+                    onClear: () => setTeamRecipientAgentId(undefined),
+                  }
+                : undefined
+            }
+            recipientRequiredMessage={
+              activeView === "collaboration"
+                ? "Tag one Agent with # to send a private Direct Message from Team Chat."
+                : undefined
+            }
             insertTextRequest={mentionInsertRequest}
             controls={runtimeControls}
             disabled={
@@ -1237,8 +1253,21 @@ export function ConversationView({
             }
             running={operationRunning}
             allowSendWhileRunning
-            mentionHandles={mentionHandles}
+            mentionHandles={
+              activeView === "main" ? mentionHandles : teamMentionHandles
+            }
             mentionBindings={mentionBindings}
+            onMentionedHandlesChange={
+              activeView === "collaboration"
+                ? handles => {
+                    setTeamRecipientAgentId(
+                      handles.length === 1
+                        ? agentIdForHandle(handles[0]!)
+                        : undefined,
+                    );
+                  }
+                : undefined
+            }
             commands={composerCommands}
             onCommandTargetHandleChange={setCommandTargetHandle}
             capabilities={composerRuntime.capabilities}
@@ -1265,9 +1294,11 @@ export function ConversationView({
                 : undefined
             }
             busyMentionHandles={busyMentionHandles}
-            allowUnmentionedSend={engineReady}
+            allowUnmentionedSend={activeView === "main" && engineReady}
             placeholder={
-              engineReady
+              activeView === "collaboration"
+                ? "Tag an Agent with # to send a private message"
+                : engineReady
                 ? "Write a message…"
                 : "Choose an available Agent with # or use #broadcast"
             }
@@ -1299,7 +1330,7 @@ export function ConversationView({
             cancelPending={cancelOperationPending}
           />
         ) : null}
-      </Box>
+      </ChatComposerDock>
 
       <ConversationDialogs
         conversation={conversation}

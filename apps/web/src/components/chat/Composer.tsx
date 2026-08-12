@@ -265,10 +265,10 @@ export function Composer({
       : destinationMode === "target-required" && hasBroadcastDestination
       ? targetRequiredDestinations.length > 0
         ? "Broadcast is only available in a Project Chat."
-        : "#broadcast is not available in Messages Across Ponderosa. Choose an Agent."
+        : "#broadcast is not available here. Choose an Agent."
       : destinationMode === "target-required" &&
           targetRequiredDestinations.length > 1
-        ? "Choose one Agent at a time in Messages Across Ponderosa."
+        ? "Choose one Agent at a time."
         : destinationMode === "target-required" && unresolvedAmbiguousTarget
           ? `#${unresolvedAmbiguousTarget} matches more than one Agent. Use a message's # action to choose the exact Agent.`
           : undefined;

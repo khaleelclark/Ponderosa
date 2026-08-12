@@ -1,19 +1,16 @@
-import { Alert, Box } from "@mui/material";
+import { Alert } from "@mui/material";
 import type {
   ProviderUsageStateDto,
   QueuedConversationMessageDto,
 } from "@ponderosa/core";
 import type { ComposerProps } from "./chat/Composer";
 import { Composer } from "./chat/Composer";
+import { ChatComposerDock } from "./chat/ChatComposerDock";
 import { QueuedMessageTray } from "./chat/QueuedMessageTray";
 import { AgentProviderUsageCard } from "./ProviderUsageCenter";
 
 interface AgentDetailComposerProps {
   visible: boolean;
-  mobileComposer: {
-    hidden: boolean;
-    finishTransition(): void;
-  };
   queuedMessageNotice?: string;
   sendError?: string;
   providerUsageState?: ProviderUsageStateDto;
@@ -32,7 +29,6 @@ interface AgentDetailComposerProps {
 
 export function AgentDetailComposer({
   visible,
-  mobileComposer,
   queuedMessageNotice,
   sendError,
   providerUsageState,
@@ -46,24 +42,7 @@ export function AgentDetailComposer({
   composer,
 }: AgentDetailComposerProps): JSX.Element {
   return (
-    <Box
-      className="mobile-chat-chrome mobile-chat-composer"
-      data-mobile-composer-hidden={mobileComposer.hidden ? "true" : "false"}
-      hidden={!visible}
-      onTransitionEnd={event => {
-        if (
-          event.currentTarget === event.target &&
-          event.propertyName === "max-height"
-        ) {
-          mobileComposer.finishTransition();
-        }
-      }}
-      sx={{
-        minWidth: 0,
-        bgcolor: "transparent",
-        display: visible ? "block" : "none",
-      }}
-    >
+    <ChatComposerDock visible={visible}>
       {queuedMessageNotice ? (
         <Alert
           severity="info"
@@ -94,6 +73,6 @@ export function AgentDetailComposer({
         onDelete={onDeleteQueued}
       />
       <Composer {...composer} />
-    </Box>
+    </ChatComposerDock>
   );
 }

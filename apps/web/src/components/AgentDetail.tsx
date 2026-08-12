@@ -4,8 +4,6 @@ import {
   Button,
   CircularProgress,
   IconButton,
-  useMediaQuery,
-  useTheme,
 } from "@mui/material";
 import type {
   AgentHealthDto,
@@ -56,7 +54,6 @@ import {
   runtimeControlState,
 } from "../conversationEngine";
 import { telemetryElementId } from "../telemetryFocus";
-import { useMobileComposerAutoHide } from "../mobileChat";
 import { queryKeys } from "../queryKeys";
 import { useRuntimeControls } from "../hooks/useRuntimeControls";
 import {
@@ -171,11 +168,7 @@ export function AgentDetail({
   const [agentWorkFocus, setAgentWorkFocus] = useState<string>();
   const [recheckEngineOpen, setRecheckEngineOpen] = useState(false);
   const focusedMessage = useRef<string>();
-  const theme = useTheme();
-  const mobileViewport = useMediaQuery(theme.breakpoints.down("sm"));
-  const mobileComposer = useMobileComposerAutoHide(mobileViewport);
   useEffect(() => {
-    mobileComposer.reset();
     if (initialView) {
       setTab(initialView === "activity" ? "chat" : initialView);
       return;
@@ -970,7 +963,6 @@ export function AgentDetail({
         agentNameForId={agentNameForId}
         agentIdForHandle={agentIdForHandle}
         chatPreviewScope={chatPreviewScope}
-        mobileScrollObserver={mobileComposer.observeScroll}
         loadingOlder={loadingOlder}
         hasOlderTelemetry={hasOlderTelemetry}
         activeExecutionId={runtimeActivity?.executionId}
@@ -999,7 +991,6 @@ export function AgentDetail({
 
       <AgentDetailComposer
         visible={tab === "chat"}
-        mobileComposer={mobileComposer}
         queuedMessageNotice={queueDeliveryNotice ?? queuedMessageNotice}
         sendError={
           sendMessage.isError || cancelRun.isError

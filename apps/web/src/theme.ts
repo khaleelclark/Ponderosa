@@ -1,4 +1,5 @@
-import { createTheme } from "@mui/material/styles";
+import { alpha, createTheme } from "@mui/material/styles";
+import type { Theme } from "@mui/material/styles";
 
 export type ColorMode = "light" | "dark";
 
@@ -19,6 +20,21 @@ export const ponderosaLayoutTokens = {
   collectionRowRadius: 12,
   panelRadius: 12,
 } as const;
+
+/** Shared translucent workspace chrome with an opaque CSS fallback. */
+export function workspaceHeaderSurfaceSx(
+  theme: Theme,
+) {
+  return {
+    backgroundColor: theme.palette.background.default,
+    "@supports (background-color: rgb(0 0 0 / 50%))": {
+      backgroundColor: alpha(
+        theme.palette.background.default,
+        theme.palette.mode === "dark" ? 0.94 : 0.92,
+      ),
+    },
+  };
+}
 
 const ponderosaColorTokens = {
   light: {

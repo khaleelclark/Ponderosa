@@ -42,7 +42,6 @@ export function useConversationResetEffect({
   conversationId,
   focusedMessage,
   initialView,
-  mobileComposer,
   setActiveView,
   setOlderCollaboration,
   setOlderMain,
@@ -51,13 +50,11 @@ export function useConversationResetEffect({
   conversationId: string;
   focusedMessage: MutableRefObject<string | undefined>;
   initialView: ConversationChannel | undefined;
-  mobileComposer: { reset(): void };
   setActiveView: Dispatch<SetStateAction<ConversationActiveView>>;
   setOlderCollaboration(value: undefined): void;
   setOlderMain(value: undefined): void;
 }): void {
   useEffect(() => {
-    mobileComposer.reset();
     collaborationVisited.current = false;
     setOlderMain(undefined);
     setOlderCollaboration(undefined);

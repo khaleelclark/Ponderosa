@@ -9,8 +9,6 @@ import {
   Stack,
   Tooltip,
   Typography,
-  useMediaQuery,
-  useTheme,
 } from "@mui/material";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
@@ -40,7 +38,6 @@ import {
   showBroadcastBadge,
 } from "./chat/ChatMessages";
 import { Composer } from "./chat/Composer";
-import { useMobileComposerAutoHide } from "../mobileChat";
 import { copyText } from "../clipboard";
 import { agentMentionHandle } from "../mentions";
 import { AttentionSurface } from "./AttentionSurface";
@@ -63,6 +60,7 @@ import { useRuntimeControls } from "../hooks/useRuntimeControls";
 import { AUTO_ALLOWED_DECISION_OPTION_ID } from "./ConversationView.helpers";
 import { CompactWorkspaceHeader } from "./WorkspaceFrame";
 import { useConversationNotificationVisibility } from "./useConversationNotificationVisibility";
+import { ChatComposerDock } from "./chat/ChatComposerDock";
 
 function allChatSourceRoute(item: AllChatItemDto): Route {
   if (item.source.kind === "agent") {
@@ -180,9 +178,6 @@ export function AllChatView({
     id: string;
     text: string;
   }>();
-  const theme = useTheme();
-  const mobileViewport = useMediaQuery(theme.breakpoints.down("sm"));
-  const mobileComposer = useMobileComposerAutoHide(mobileViewport);
   const items = useMemo(
     () => mergeAllChatItems(older?.items ?? [], query.data?.items ?? []),
     [older?.items, query.data?.items],
@@ -674,11 +669,7 @@ export function AllChatView({
         layout="workspace"
         layoutKey={layoutKey}
         label="All messages"
-        follow={{
-          kind: "latest",
-          onPositionChange: (element, atLatest) =>
-            mobileComposer.observeScroll(element, atLatest),
-        }}
+        follow={{ kind: "latest" }}
         history={{
           kind: "cursor",
           hasEarlier: history.hasMore,
@@ -921,24 +912,13 @@ export function AllChatView({
           ) : null}
         </Stack>
       </ChatSurface>
-      <Box
-        className="mobile-chat-chrome mobile-chat-composer"
+      <ChatComposerDock
         onKeyDown={event => {
           if (!event.defaultPrevented && event.key === "Escape" && replyTarget) {
             event.preventDefault();
             clearReplyTarget();
           }
         }}
-        data-mobile-composer-hidden={mobileComposer.hidden ? "true" : "false"}
-        onTransitionEnd={event => {
-          if (
-            event.currentTarget !== event.target ||
-            event.propertyName !== "max-height"
-          )
-            return;
-          mobileComposer.finishTransition();
-        }}
-        sx={{ minWidth: 0, bgcolor: "transparent" }}
       >
         {directSendConfirmation ? (
           <Box
@@ -1017,7 +997,7 @@ export function AllChatView({
             })
           }
         />
-      </Box>
+      </ChatComposerDock>
     </Box>
   );
 }
