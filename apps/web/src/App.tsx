@@ -256,14 +256,12 @@ export default function App({
   const preferredQuotaProvider =
     activeAgentQuery.data?.agent.activeEngine;
   useEffect(() => {
-    if (mobileWorkspace) return;
     setWorkspaceTabs(current =>
       navigateWorkspaceTab(current, activeWorkspaceTabKey, route),
     );
-  }, [route, activeWorkspaceTabKey, mobileWorkspace]);
+  }, [route, activeWorkspaceTabKey]);
 
   useEffect(() => {
-    if (mobileWorkspace) return;
     try {
       window.localStorage.setItem(
         WORKSPACE_TABS_STORAGE_KEY,
@@ -272,7 +270,7 @@ export default function App({
     } catch {
       // Tabs remain available for this session when storage is unavailable.
     }
-  }, [workspaceTabs, activeWorkspaceTabKey, mobileWorkspace]);
+  }, [workspaceTabs, activeWorkspaceTabKey]);
 
   useEffect(() => {
     try {
@@ -286,13 +284,12 @@ export default function App({
   }, [sidebarPresentation]);
 
   useEffect(() => {
-    if (mobileWorkspace) return;
     if (workspaceTabs.some(tab => tab.key === activeWorkspaceTabKey)) return;
     const next = workspaceTabs[0];
     if (!next) return;
     setActiveWorkspaceTabKey(next.key);
     navigate(next.route, { replace: true });
-  }, [workspaceTabs, activeWorkspaceTabKey, navigate, mobileWorkspace]);
+  }, [workspaceTabs, activeWorkspaceTabKey, navigate]);
 
   useEffect(() => {
     const refresh = () => {
@@ -427,11 +424,6 @@ export default function App({
     }
   };
   const navigateWorkspace = (next: Route) => {
-    if (mobileWorkspace) {
-      recordWorkspaceRouteUse(next);
-      navigate(next);
-      return;
-    }
     if (next.kind !== "create") {
       creationOriginByWorkspace.current.delete(activeWorkspaceTabKey);
     }
@@ -447,11 +439,6 @@ export default function App({
     navigate(next);
   };
   const replaceActiveWorkspace = (next: Route) => {
-    if (mobileWorkspace) {
-      recordWorkspaceRouteUse(next);
-      navigate(next, { replace: true });
-      return;
-    }
     if (next.kind !== "create") {
       creationOriginByWorkspace.current.delete(activeWorkspaceTabKey);
     }
@@ -753,6 +740,9 @@ export default function App({
           Skip to content
         </Box>
         <MobileWorkspaceHeader
+          tabs={workspaceTabs}
+          projects={projects}
+          activeTabKey={activeWorkspaceTabKey}
           preferredQuotaProvider={displayedQuotaProvider}
           engineAvailability={engineAvailability}
           attentionNotifications={notificationCounts.attentionCount}
@@ -764,6 +754,8 @@ export default function App({
           onOpenNotifications={() => setNotificationPanelOpen(true)}
           onOpenProfile={openOperatorProfile}
           onOpenSettings={openSettings}
+          onActivateTab={activateWorkspaceView}
+          onCloseTab={closeWorkspaceView}
         />
 
         <Box
