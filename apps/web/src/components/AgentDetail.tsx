@@ -23,7 +23,9 @@ import type {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
+import {
+  AGENT_HISTORY_PAGE_SIZE,
+} from "../agentHistoryPagination";
 import { createClientId } from "../clientId";
 import {
   agentStatusColor,
@@ -249,7 +251,7 @@ export function AgentDetail({
         void api
           .getAgent(
             agentId,
-            AGENT_DETAIL_PAGE_SIZE,
+            AGENT_HISTORY_PAGE_SIZE,
             undefined,
             focusMessageId,
           )
@@ -326,7 +328,7 @@ export function AgentDetail({
           .getAgentHistory(
             agentId,
             focusTelemetry.stream,
-            AGENT_DETAIL_PAGE_SIZE,
+            AGENT_HISTORY_PAGE_SIZE,
             undefined,
             focusTelemetry.id,
           )
@@ -548,14 +550,14 @@ export function AgentDetail({
     try {
       const [messagePage, telemetryPages] = await Promise.all([
         loadMessages
-          ? api.getAgent(agentId, AGENT_DETAIL_PAGE_SIZE, messageCursor)
+          ? api.getAgent(agentId, AGENT_HISTORY_PAGE_SIZE, messageCursor)
           : Promise.resolve(undefined),
         Promise.all(
           telemetryStreams.map(stream =>
             api.getAgentHistory(
               agentId,
               stream,
-              AGENT_DETAIL_PAGE_SIZE,
+              AGENT_HISTORY_PAGE_SIZE,
               detail?.telemetryHistory?.[stream]?.cursor,
             ),
           ),
@@ -656,7 +658,7 @@ export function AgentDetail({
           api.getAgentHistory(
             agentId,
             stream,
-            AGENT_DETAIL_PAGE_SIZE,
+            AGENT_HISTORY_PAGE_SIZE,
             detail.telemetryHistory?.[stream]?.cursor,
           ),
         ),

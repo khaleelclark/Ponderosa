@@ -124,7 +124,10 @@ import type {
   WikiIndexDto,
   WikiSearchResponseDto,
 } from "@ponderosa/core";
-import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
+import {
+  AGENT_DETAIL_PAGE_SIZE,
+  AGENT_HISTORY_PAGE_SIZE,
+} from "../agentHistoryPagination";
 import {
   ApiRequestError,
   type CreateAgentOptions,
@@ -606,7 +609,7 @@ export const realApi = {
   getAgent(agentId: string, limit: number = AGENT_DETAIL_PAGE_SIZE, cursor?: string, focusId?: string): Promise<AgentDetailDto> {
     return requestJson<AgentDetailDto>(`/api/agents/${encodeURIComponent(agentId)}${toQuery({ limit: String(limit), cursor, focusId })}`);
   },
-  getAgentHistory(agentId: string, stream: AgentTelemetryStream, limit: number = AGENT_DETAIL_PAGE_SIZE, cursor?: string, focusId?: string): Promise<AgentTelemetryPageDto> {
+  getAgentHistory(agentId: string, stream: AgentTelemetryStream, limit: number = AGENT_HISTORY_PAGE_SIZE, cursor?: string, focusId?: string): Promise<AgentTelemetryPageDto> {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/history/${encodeURIComponent(stream)}${toQuery({ limit: String(limit), cursor, focusId })}`);
   },
   getChangedFileDetail(agentId: string, path: string): Promise<ChangedFileDetailDto> {
