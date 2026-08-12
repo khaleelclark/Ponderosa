@@ -8,14 +8,13 @@ import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, Tooltip, Typography } from "@mui/material";
 import { messageTagTokens, unicodeCodePointLength } from "@ponderosa/core";
 import type { AgentMentionBindingDto, CommunicationDocumentReference, CommunicationIntent, MessageDto, VerifiedCitationDto } from "@ponderosa/core";
-import { lazy, Suspense, type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { copyText } from "../../clipboard";
+import { LazySyntaxHighlightedCode } from "../LazySyntaxHighlightedCode";
 import { useProjectBrowser } from "../ProjectBrowserContext";
 import { ChatDocumentCard } from "./ChatDocumentCard";
-
-const SyntaxHighlightedCode = lazy(() => import("../SyntaxHighlightedCode"));
 
 function isLoopbackLink(url: URL): boolean {
   return url.protocol === "http:" && Boolean(url.port) && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname.toLowerCase());
@@ -263,6 +262,26 @@ function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element 
   const label =
     copyState === "copied" ? "Copied code" : copyState === "error" ? "Copy failed" : "Copy code";
 
+  const plainCode = ({ status, retry }: {
+    status: "pending" | "failed";
+    retry(): void;
+  }): ReactNode => <>
+    {status === "failed" ? <Stack
+      direction="row"
+      alignItems="center"
+      justifyContent="space-between"
+      spacing={1}
+      sx={{ px: 2, py: 0.75, borderBottom: 1, borderColor: "divider", color: "text.secondary" }}
+    >
+      <Typography variant="caption">Syntax highlighting unavailable. Plain code is still readable.</Typography>
+      <Button size="small" color="inherit" onClick={retry}>Retry highlighting</Button>
+    </Stack> : null}
+    <Box
+      component="pre"
+      sx={{ m: 0, p: "16px 18px", minWidth: "max-content", whiteSpace: "pre", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: "0.875rem", lineHeight: 1.55, color: "text.primary", bgcolor: "transparent" }}
+    >{code}</Box>
+  </>;
+
   return (
     <Box sx={{ my: 1, maxWidth: "100%", minWidth: 0, overflow: "hidden", borderRadius: 2, bgcolor: "action.hover", border: 1, borderColor: "divider" }}>
       <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ minHeight: 38, px: 1.5, color: "text.secondary", borderBottom: 1, borderColor: "divider" }}>
@@ -274,18 +293,14 @@ function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element 
         </Tooltip>
       </Stack>
       <Box sx={{ maxWidth: "100%", overflowX: "auto", overscrollBehaviorX: "contain" }}>
-        {highlighted ? <Suspense fallback={<Box
-          component="pre"
-          sx={{ m: 0, p: 2, minWidth: "max-content", whiteSpace: "pre", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: "0.875rem", lineHeight: 1.55, color: "text.primary", bgcolor: "transparent" }}
-        >{code}</Box>}>
-          <SyntaxHighlightedCode
+        {highlighted ? <LazySyntaxHighlightedCode
             language={language}
             customStyle={{ margin: 0, padding: "16px 18px", minWidth: "max-content", background: "transparent", fontSize: "0.875rem", lineHeight: 1.55 }}
             codeTagProps={{ style: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" } }}
-          >{code}</SyntaxHighlightedCode>
-        </Suspense> : <Box
+            renderFallback={plainCode}
+          >{code}</LazySyntaxHighlightedCode> : <Box
           component="pre"
-          sx={{ m: 0, p: 2, minWidth: "max-content", whiteSpace: "pre", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: "0.875rem", lineHeight: 1.55, color: "text.primary", bgcolor: "transparent" }}
+          sx={{ m: 0, p: "16px 18px", minWidth: "max-content", whiteSpace: "pre", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: "0.875rem", lineHeight: 1.55, color: "text.primary", bgcolor: "transparent" }}
         >{code}</Box>}
       </Box>
     </Box>
