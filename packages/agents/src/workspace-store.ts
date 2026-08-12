@@ -119,6 +119,12 @@ export class WorkspaceStore {
   private readonly pushSubscriptions = new Map<string, WebPushSubscriptionDto>();
   private readonly pushDeliveries = new Map<string, PushDeliveryRecord>();
   private readonly resourceRecency = new Map<string, WorkspaceResourceRecencyDto>();
+  private readonly resourceRecencyLinks = new Map<
+    string,
+    { newer?: string; older?: string }
+  >();
+  private newestResourceRecencyKey?: string;
+  private oldestResourceRecencyKey?: string;
   private preferences = DEFAULT_PREFERENCES;
 
   private draftKey(conversationId: string, ownerId = "legacy"): string {
@@ -290,7 +296,7 @@ export class WorkspaceStore {
     }
     if (event.type === "project_changed") {
       if (event.action === "deleted") {
-        this.resourceRecency.delete(`project:${event.projectId}`);
+        this.deleteResourceRecency(`project:${event.projectId}`);
       } else if (event.action === "created" || event.action === "used") {
         this.touchResourceRecency("project", event.projectId, record.ts);
       }
@@ -298,7 +304,7 @@ export class WorkspaceStore {
     }
     if (event.type === "conversation_changed") {
       if (event.action === "deleted") {
-        this.resourceRecency.delete(`conversation:${event.conversationId}`);
+        this.deleteResourceRecency(`conversation:${event.conversationId}`);
       } else if (
         event.action === "created"
         || event.action === "used"
@@ -317,7 +323,7 @@ export class WorkspaceStore {
     }
     if (event.type === "trigger_changed") {
       if (event.action === "deleted") {
-        this.resourceRecency.delete(`trigger:${event.triggerId}`);
+        this.deleteResourceRecency(`trigger:${event.triggerId}`);
       } else if (event.action === "created" || event.action === "occurrence") {
         this.touchResourceRecency("trigger", event.triggerId, record.ts);
       }
@@ -331,15 +337,69 @@ export class WorkspaceStore {
   ): WorkspaceResourceRecencyDto {
     const resourceKey = `${kind}:${resourceId}` as const;
     const current = this.resourceRecency.get(resourceKey);
-    if (current && current.lastUsedAt > lastUsedAt) return current;
+    if (current && current.lastUsedAt >= lastUsedAt) return current;
     const next: WorkspaceResourceRecencyDto = {
       resourceKey,
       kind,
       resourceId,
       lastUsedAt,
     };
+    this.deleteResourceRecency(resourceKey);
     this.resourceRecency.set(resourceKey, next);
+    this.insertResourceRecency(resourceKey);
     return next;
+  }
+
+  private compareResourceRecencyKeys(leftKey: string, rightKey: string): number {
+    const left = this.resourceRecency.get(leftKey)!;
+    const right = this.resourceRecency.get(rightKey)!;
+    return right.lastUsedAt.localeCompare(left.lastUsedAt)
+      || left.resourceKey.localeCompare(right.resourceKey);
+  }
+
+  private insertResourceRecency(resourceKey: string): void {
+    const head = this.newestResourceRecencyKey;
+    if (!head) {
+      this.newestResourceRecencyKey = resourceKey;
+      this.oldestResourceRecencyKey = resourceKey;
+      this.resourceRecencyLinks.set(resourceKey, {});
+      return;
+    }
+
+    // Appended workspace events normally move a resource directly to the head.
+    // Only equal-time tie ordering or repaired legacy input needs a short walk.
+    let olderKey: string | undefined = head;
+    while (
+      olderKey
+      && this.compareResourceRecencyKeys(resourceKey, olderKey) > 0
+    ) {
+      olderKey = this.resourceRecencyLinks.get(olderKey)?.older;
+    }
+    if (!olderKey) {
+      const tail = this.oldestResourceRecencyKey!;
+      this.resourceRecencyLinks.get(tail)!.older = resourceKey;
+      this.resourceRecencyLinks.set(resourceKey, { newer: tail });
+      this.oldestResourceRecencyKey = resourceKey;
+      return;
+    }
+
+    const newerKey = this.resourceRecencyLinks.get(olderKey)?.newer;
+    this.resourceRecencyLinks.set(resourceKey, { newer: newerKey, older: olderKey });
+    this.resourceRecencyLinks.get(olderKey)!.newer = resourceKey;
+    if (newerKey) this.resourceRecencyLinks.get(newerKey)!.older = resourceKey;
+    else this.newestResourceRecencyKey = resourceKey;
+  }
+
+  private deleteResourceRecency(resourceKey: string): void {
+    const links = this.resourceRecencyLinks.get(resourceKey);
+    if (links) {
+      if (links.newer) this.resourceRecencyLinks.get(links.newer)!.older = links.older;
+      else this.newestResourceRecencyKey = links.older;
+      if (links.older) this.resourceRecencyLinks.get(links.older)!.newer = links.newer;
+      else this.oldestResourceRecencyKey = links.newer;
+      this.resourceRecencyLinks.delete(resourceKey);
+    }
+    this.resourceRecency.delete(resourceKey);
   }
 
   private decisionOrder(leftId: string, rightId: string): number {
@@ -447,13 +507,45 @@ export class WorkspaceStore {
 
   getPreferences(): WorkspacePreferencesDto { return this.preferences; }
 
-  listResourceRecency(): WorkspaceResourceRecencyListDto {
+  listResourceRecency(limit?: number): WorkspaceResourceRecencyListDto {
+    const starred = new Set([
+      ...(this.preferences.starredResourceIds ?? []),
+      ...this.preferences.starredProjectIds.map(id => `project:${id}`),
+    ]);
+    const selected = new Map<string, WorkspaceResourceRecencyDto>();
+    if (limit !== undefined) {
+      for (const resourceKey of starred) {
+        const resource = this.resourceRecency.get(resourceKey);
+        if (resource) selected.set(resourceKey, resource);
+      }
+    }
+
+    let unstarredCount = 0;
+    let truncated = false;
+    let resourceKey = this.newestResourceRecencyKey;
+    while (resourceKey) {
+      const resource = this.resourceRecency.get(resourceKey)!;
+      if (limit === undefined) {
+        selected.set(resourceKey, resource);
+      } else if (!starred.has(resourceKey)) {
+        if (unstarredCount >= limit) {
+          truncated = true;
+          break;
+        }
+        selected.set(resourceKey, resource);
+        unstarredCount += 1;
+      }
+      resourceKey = this.resourceRecencyLinks.get(resourceKey)?.older;
+    }
+
+    const resources = [...selected.values()].sort(
+      (left, right) =>
+        right.lastUsedAt.localeCompare(left.lastUsedAt)
+        || left.resourceKey.localeCompare(right.resourceKey),
+    );
     return {
-      resources: [...this.resourceRecency.values()].sort(
-        (left, right) =>
-          right.lastUsedAt.localeCompare(left.lastUsedAt)
-          || left.resourceKey.localeCompare(right.resourceKey),
-      ),
+      resources,
+      ...(truncated ? { truncated: true } : {}),
     };
   }
 

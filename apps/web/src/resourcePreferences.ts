@@ -18,6 +18,17 @@ export function starredWorkspaceResources(preferences: WorkspacePreferencesDto):
   ]);
 }
 
+export function workspaceResourceStarsChanged(
+  previous: WorkspacePreferencesDto | undefined,
+  next: WorkspacePreferencesDto,
+): boolean {
+  if (!previous) return true;
+  const previousStars = starredWorkspaceResources(previous);
+  const nextStars = starredWorkspaceResources(next);
+  return previousStars.size !== nextStars.size
+    || [...previousStars].some(key => !nextStars.has(key));
+}
+
 function sameSequence(
   left: readonly string[] | undefined,
   right: readonly string[] | undefined,

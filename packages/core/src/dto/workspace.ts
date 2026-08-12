@@ -140,6 +140,8 @@ export interface WorkspaceResourceRecencyDto {
 
 export interface WorkspaceResourceRecencyListDto {
   resources: WorkspaceResourceRecencyDto[];
+  /** Older unstarred entries were omitted from this bounded projection. */
+  truncated?: boolean;
 }
 
 export interface MarkWorkspaceResourceUsedRequest {

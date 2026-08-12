@@ -46,7 +46,7 @@ import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 import {
   markWorkspaceResourceUsed,
   useWorkspaceResourceRecency,
-  workspaceResourceRecencyMap,
+  workspaceResourceRecencyTime,
 } from "../workspaceRecency";
 
 type RecentResource = { id: string; title: string; detail: string; updatedAt: string; route: Route; icon: JSX.Element };
@@ -130,7 +130,6 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
 }): JSX.Element {
   const queryClient = useQueryClient();
   const recencyQuery = useWorkspaceResourceRecency();
-  const recency = workspaceResourceRecencyMap(recencyQuery.data);
   const [tabMenu, setTabMenu] = useState<ResourceContextMenuState<Route>>();
   const [createAnchor, setCreateAnchor] = useState<HTMLElement>();
   const [tab, setTab] = useState<"overview" | "work">("overview");
@@ -175,7 +174,7 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
     ...triggerItems.map(({ trigger, project, agent }) => ({ id: `trigger:${trigger.id}`, title: trigger.name, detail: `${project.label} · Trigger`, updatedAt: trigger.updatedAt, route: { kind: "agent", projectId: project.id, agentId: agent.id, view: "triggers" } as Route, icon: <BoltOutlinedIcon fontSize="small" /> })),
   ];
   const starredIds = starredWorkspaceResources(preferences);
-  const orderedResources = sortWorkspaceResources(allResources, "last_used", [], (item) => item.id, (item) => item.title, (item) => recency.get(item.id) ?? item.updatedAt);
+  const orderedResources = sortWorkspaceResources(allResources, "last_used", [], (item) => item.id, (item) => item.title, (item) => workspaceResourceRecencyTime(recencyQuery.data, item.id, item.updatedAt));
   const starred = orderedResources.filter((item) => starredIds.has(item.id));
   const recent = orderedResources.filter((item) => !starredIds.has(item.id)).slice(0, 10);
   const unstar = (item: RecentResource) => {

@@ -89,9 +89,16 @@ export function registerWorkspacePreferenceRoutes(
 
   app.get("/api/workspace/preferences", async () => workspace.getPreferences());
 
-  app.get(
+  app.get<{ Querystring: { limit?: string } }>(
     "/api/workspace/recent-resources",
-    async () => workspace.listResourceRecency(),
+    async (request, reply) => {
+      const rawLimit = request.query.limit;
+      const limit = rawLimit === undefined ? 100 : Number(rawLimit);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 1_000) {
+        return reply.code(400).send({ error: "limit must be an integer between 1 and 1000" });
+      }
+      return workspace.listResourceRecency(limit);
+    },
   );
 
   app.post<{ Body: MarkWorkspaceResourceUsedRequest }>(

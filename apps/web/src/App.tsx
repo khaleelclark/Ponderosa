@@ -360,6 +360,11 @@ export default function App({
           queryKey: queryKeys.workspaceDirectory.kind(kind),
         });
       }
+      if (patch.starredResourceIds !== undefined || patch.starredProjectIds !== undefined) {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.workspaceResourceRecency.all,
+        });
+      }
       if (patch.claudeModelOptions !== undefined) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.engines.all });
         void queryClient.invalidateQueries({ queryKey: ["engine-models"] });
