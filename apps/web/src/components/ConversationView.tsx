@@ -5,8 +5,6 @@ import {
   CircularProgress,
   Stack,
   Typography,
-  useMediaQuery,
-  useTheme,
 } from "@mui/material";
 import type {
   AgentHealthDto,
@@ -44,7 +42,6 @@ import { QueuedMessageTray } from "./chat/QueuedMessageTray";
 import { ChatSurface } from "./chat/ChatSurface";
 import { buildMarkdownTranscript } from "../chatTranscript";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
-import { useMobileComposerAutoHide } from "../mobileChat";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 import { AttentionSurface } from "./AttentionSurface";
 import { TargetedNextRunReceipts } from "./TargetedNextRunReceipts";
@@ -78,6 +75,7 @@ import { useConversationMessagingController } from "./useConversationMessagingCo
 import { MasterRespondingIndicator } from "./ConversationComposerStatus";
 import { agentOpeningAgentId } from "./chat/ChatMessages";
 import { ConversationFilesResults } from "./ConversationFilesResults";
+import { ChatComposerDock } from "./chat/ChatComposerDock";
 
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { notificationTechnicalFocusId } from "../technicalFocus";
@@ -194,16 +192,11 @@ export function ConversationView({
   const initializedFor = useRef<string | undefined>(undefined);
   const { focusedMessage, focusedMessageHighlightDisposer } =
     useConversationMessageFocusRefs();
-  const theme = useTheme();
-  const mobileRoster = useMediaQuery(theme.breakpoints.down("sm"));
-  const mobileComposer = useMobileComposerAutoHide(mobileRoster);
-
   useConversationResetEffect({
     collaborationVisited,
     conversationId,
     focusedMessage,
     initialView,
-    mobileComposer,
     setActiveView,
     setOlderCollaboration,
     setOlderMain,
@@ -933,7 +926,6 @@ export function ConversationView({
                 "scroll",
                 `conversation.${conversationId}.main`,
               ),
-              onPositionChange: mobileComposer.observeScroll,
             }}
             history={{
               kind: "cursor",
@@ -1031,7 +1023,6 @@ export function ConversationView({
                   "scroll",
                   `conversation.${conversationId}.collaboration`,
                 ),
-                onPositionChange: mobileComposer.observeScroll,
               }}
               history={{
                 kind: "cursor",
@@ -1148,20 +1139,8 @@ export function ConversationView({
         ) : null}
       </Box>
 
-      <Box
-        className="mobile-chat-chrome mobile-chat-composer"
-        data-mobile-composer-hidden={
-          agentWorkOpen || mobileComposer.hidden ? "true" : "false"
-        }
-        onTransitionEnd={event => {
-          if (
-            event.currentTarget !== event.target ||
-            event.propertyName !== "max-height"
-          )
-            return;
-          mobileComposer.finishTransition();
-        }}
-        sx={{ bgcolor: "transparent" }}
+      <ChatComposerDock
+        visible={!agentWorkOpen && activeView === "main"}
       >
         {activeView === "main" && queuedMessageNotice ? (
           <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>
@@ -1299,7 +1278,7 @@ export function ConversationView({
             cancelPending={cancelOperationPending}
           />
         ) : null}
-      </Box>
+      </ChatComposerDock>
 
       <ConversationDialogs
         conversation={conversation}

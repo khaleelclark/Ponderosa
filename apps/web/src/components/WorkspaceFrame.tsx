@@ -19,6 +19,7 @@ import {
   type ReactNode,
 } from "react";
 import { IconTitle } from "./IconTitle";
+import { workspaceHeaderSurfaceSx } from "../theme";
 
 type WorkspaceTabItem<T extends string> = { value: T; label: string; icon?: ReactElement };
 
@@ -161,13 +162,12 @@ export function CompactWorkspaceHeader({
 }): JSX.Element {
   return (
     <Box
-      className="mobile-chat-chrome mobile-chat-header"
-      sx={{
+      sx={theme => ({
+        ...workspaceHeaderSurfaceSx(theme),
         minWidth: 0,
-        bgcolor: "background.default",
         borderBottom: 1,
         borderColor: "divider",
-      }}
+      })}
     >
       <Stack
         direction="row"
@@ -284,8 +284,10 @@ export function TabbedWorkspaceFrame<T extends string>({
 
   return (
     <Box
-      className="mobile-chat-chrome mobile-chat-header"
-      sx={{ minWidth: 0, bgcolor: "background.default" }}
+      sx={theme => ({
+        ...workspaceHeaderSurfaceSx(theme),
+        minWidth: 0,
+      })}
     >
       <Box sx={{ px: { xs: 1.5, sm: 2, md: 2.5 }, py: { xs: 1, sm: 1.25 } }}>
         <Stack

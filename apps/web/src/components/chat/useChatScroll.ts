@@ -73,6 +73,7 @@ export function useChatScroll(
       if (followLatest.current) scrollChatToBottom(element);
     });
     observer.observe(content);
+    observer.observe(element);
     return () => observer.disconnect();
   }, [follow.followResizes]);
 

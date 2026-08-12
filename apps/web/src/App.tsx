@@ -97,6 +97,7 @@ import {
 } from "./workspaceRecency";
 import { MobileWorkspaceActionsProvider } from "./components/MobileWorkspaceActionsContext";
 import { notificationSummary } from "./attention";
+import { useAppViewport } from "./hooks/useAppViewport";
 
 const OPERATOR_PROFILE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 const OPERATOR_PROFILE_IMAGE_ACCEPT =
@@ -109,6 +110,7 @@ export default function App({
   colorMode: ColorMode;
   onToggleColorMode(): void;
 }): JSX.Element {
+  useAppViewport();
   const queryClient = useQueryClient();
   const workspaceConnection = useWorkspaceStream();
   const { route, navigate } = useRoute();
@@ -721,7 +723,7 @@ export default function App({
       <Box
         data-testid="ponderosa-app"
         sx={{
-          height: "100dvh",
+          height: "var(--ponderosa-app-viewport-block-size, 100dvh)",
           width: "100%",
           minHeight: 0,
           minWidth: 0,

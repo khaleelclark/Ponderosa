@@ -49,6 +49,7 @@ import { queryKeys } from "./queryKeys";
 import { routeTabLabel } from "./routeRegistry";
 import type { WorkspaceTabState } from "./workspaceTabs";
 import { useQueries } from "@tanstack/react-query";
+import { workspaceHeaderSurfaceSx } from "./theme";
 
 export function mobileCreationReturnRoute(
   origins: ReadonlyMap<string, Route>,
@@ -301,11 +302,12 @@ export function MobileWorkspaceHeader({
       position="static"
       color="inherit"
       elevation={0}
-      sx={{
+      sx={theme => ({
+        ...workspaceHeaderSurfaceSx(theme),
         display: { xs: "block", md: "none" },
         borderBottom: 1,
         borderColor: "divider",
-      }}
+      })}
     >
       <Toolbar
         sx={{

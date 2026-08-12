@@ -38,9 +38,6 @@ interface AgentDetailPanelsProps {
   agentNameForId: NonNullable<ComponentProps<typeof ChatPane>["agentNameForId"]>;
   agentIdForHandle: NonNullable<ComponentProps<typeof ChatPane>["agentIdForHandle"]>;
   chatPreviewScope: ComponentProps<typeof ChatPane>["previewScope"];
-  mobileScrollObserver: NonNullable<
-    ComponentProps<typeof ChatPane>["onScrollPositionChange"]
-  >;
   loadingOlder: boolean;
   hasOlderTelemetry: boolean;
   activeExecutionId?: string;
@@ -84,7 +81,6 @@ export function AgentDetailPanels({
   agentNameForId,
   agentIdForHandle,
   chatPreviewScope,
-  mobileScrollObserver,
   loadingOlder,
   hasOlderTelemetry,
   activeExecutionId,
@@ -147,7 +143,6 @@ export function AgentDetailPanels({
           }
           previewScope={chatPreviewScope}
           scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)}
-          onScrollPositionChange={mobileScrollObserver}
           onMentionAgent={onMentionAgent}
           hasOlder={Boolean(
             detail.history?.hasMore || hasOlderTelemetry,
