@@ -9,6 +9,7 @@ class FakeEventSource {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe("resilient EventSource", () => {
@@ -69,5 +70,59 @@ describe("resilient EventSource", () => {
     subscription.close();
     vi.runAllTimers();
     expect(sources).toHaveLength(1);
+  });
+
+  it("ignores duplicate browser error delivery from the replaced source", () => {
+    vi.useFakeTimers();
+    const sources: FakeEventSource[] = [];
+    const onError = vi.fn();
+    const subscription = createResilientEventSource({
+      createSource: () => {
+        const source = new FakeEventSource();
+        sources.push(source);
+        return source as unknown as EventSource;
+      },
+      configure: vi.fn(),
+      onError,
+      initialReconnectDelayMs: 10,
+    });
+
+    const duplicateError = new Event("error");
+    sources[0]!.onerror!(duplicateError);
+    sources[0]!.onerror!(duplicateError);
+
+    expect(onError).toHaveBeenCalledOnce();
+    expect(sources[0]!.close).toHaveBeenCalledOnce();
+    vi.advanceTimersByTime(10);
+    expect(sources).toHaveLength(2);
+    subscription.close();
+  });
+
+  it("opens only one replacement when a hidden-tab timer is delivered late", () => {
+    vi.useFakeTimers();
+    const visibility = vi
+      .spyOn(document, "visibilityState", "get")
+      .mockReturnValue("hidden");
+    const sources: FakeEventSource[] = [];
+    const subscription = createResilientEventSource({
+      createSource: () => {
+        const source = new FakeEventSource();
+        sources.push(source);
+        return source as unknown as EventSource;
+      },
+      configure: vi.fn(),
+      initialReconnectDelayMs: 10,
+    });
+
+    sources[0]!.onerror!(new Event("error"));
+    expect(sources).toHaveLength(1);
+
+    visibility.mockReturnValue("visible");
+    document.dispatchEvent(new Event("visibilitychange"));
+    vi.advanceTimersByTime(10);
+    expect(sources).toHaveLength(2);
+    vi.runOnlyPendingTimers();
+    expect(sources).toHaveLength(2);
+    subscription.close();
   });
 });

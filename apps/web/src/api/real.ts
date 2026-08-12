@@ -881,7 +881,9 @@ export const realApi = {
           handlers.onEvent(envelope);
         });
         source.addEventListener("agent_status", (event) => {
-          handlers.onStatus?.(JSON.parse(event.data as string) as import("@ponderosa/core").AgentStreamStatusDto);
+          const status = JSON.parse(event.data as string) as AgentStreamStatusDto;
+          if (status.reset) cursor = 0;
+          handlers.onStatus?.(status);
         });
       },
     });
@@ -899,7 +901,9 @@ export const realApi = {
           handlers.onEvent(envelope);
         });
         source.addEventListener("workspace_status", (event) => {
-          handlers.onStatus?.(JSON.parse(event.data as string) as import("@ponderosa/core").WorkspaceStreamStatusDto);
+          const status = JSON.parse(event.data as string) as WorkspaceStreamStatusDto;
+          if (status.reset) cursor = 0;
+          handlers.onStatus?.(status);
         });
       },
     });
