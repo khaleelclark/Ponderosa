@@ -132,6 +132,7 @@ import {
   type StreamSubscription,
   type WorkspaceStreamHandlers,
 } from "./types";
+import { createResilientEventSource } from "./resilientEventSource";
 
 const API_BASE = "";
 
@@ -866,33 +867,41 @@ export const realApi = {
     return { blob: await response.blob(), revision: Number(response.headers.get("x-ponderosa-browser-revision") ?? 0) };
   },
   subscribeAgent(agentId: string, lastSeenSeq: number | undefined, handlers: StreamHandlers): StreamSubscription {
-    const url = `/api/agents/${encodeURIComponent(agentId)}/stream${toQuery({
-      lastEventId: lastSeenSeq,
-    })}`;
-    const source = new EventSource(url);
-
-    source.onopen = () => handlers.onOpen?.();
-    source.onerror = (event) => handlers.onError?.(event);
-    source.addEventListener("message", (event) => {
-      const envelope = JSON.parse(event.data as string) as SseEventEnvelope;
-      handlers.onEvent(envelope);
-    });
-    source.addEventListener("agent_status", (event) => {
-      handlers.onStatus?.(JSON.parse(event.data as string) as import("@ponderosa/core").AgentStreamStatusDto);
-    });
-
-    return {
-      close() {
-        source.close();
+    let cursor = lastSeenSeq;
+    return createResilientEventSource({
+      createSource: () => new EventSource(`/api/agents/${encodeURIComponent(agentId)}/stream${toQuery({
+        lastEventId: cursor,
+      })}`),
+      onOpen: () => handlers.onOpen?.(),
+      onError: (event) => handlers.onError?.(event),
+      configure(source) {
+        source.addEventListener("message", (event) => {
+          const envelope = JSON.parse(event.data as string) as SseEventEnvelope;
+          cursor = Math.max(cursor ?? 0, envelope.seq);
+          handlers.onEvent(envelope);
+        });
+        source.addEventListener("agent_status", (event) => {
+          handlers.onStatus?.(JSON.parse(event.data as string) as import("@ponderosa/core").AgentStreamStatusDto);
+        });
       },
-    };
+    });
   },
   subscribeWorkspace(lastSeenId: number | undefined, handlers: WorkspaceStreamHandlers): StreamSubscription {
-    const source = new EventSource(`/api/workspace/stream${toQuery({ lastEventId: lastSeenId })}`);
-    source.onopen = () => handlers.onOpen?.();
-    source.onerror = (event) => handlers.onError?.(event);
-    source.addEventListener("message", (event) => handlers.onEvent(JSON.parse(event.data as string) as WorkspaceEventEnvelope));
-    source.addEventListener("workspace_status", (event) => handlers.onStatus?.(JSON.parse(event.data as string) as import("@ponderosa/core").WorkspaceStreamStatusDto));
-    return { close: () => source.close() };
+    let cursor = lastSeenId;
+    return createResilientEventSource({
+      createSource: () => new EventSource(`/api/workspace/stream${toQuery({ lastEventId: cursor })}`),
+      onOpen: () => handlers.onOpen?.(),
+      onError: (event) => handlers.onError?.(event),
+      configure(source) {
+        source.addEventListener("message", (event) => {
+          const envelope = JSON.parse(event.data as string) as WorkspaceEventEnvelope;
+          cursor = Math.max(cursor ?? 0, envelope.id);
+          handlers.onEvent(envelope);
+        });
+        source.addEventListener("workspace_status", (event) => {
+          handlers.onStatus?.(JSON.parse(event.data as string) as import("@ponderosa/core").WorkspaceStreamStatusDto);
+        });
+      },
+    });
   },
 };
