@@ -104,6 +104,9 @@ export class AgentRunUsageReadModel {
           .get(r.id, agentId) as
           | { prompt_hash: string; source_manifest_json: string }
           | undefined;
+        const sourceManifest = providerInput
+          ? JSON.parse(providerInput.source_manifest_json) as ProviderInputSourceManifest
+          : undefined;
         return {
           id: r.id,
           agentId: r.agentId,
@@ -156,9 +159,8 @@ export class AgentRunUsageReadModel {
             ? {
                 providerInput: {
                   promptHash: providerInput.prompt_hash,
-                  sourceManifest: JSON.parse(
-                    providerInput.source_manifest_json,
-                  ) as ProviderInputSourceManifest,
+                  sourceCommunicationCount: sourceManifest!.communicationEventIds.length,
+                  sourceManifest: sourceManifest!,
                   exactPromptAvailable: true as const,
                 },
               }
@@ -169,7 +171,12 @@ export class AgentRunUsageReadModel {
 
   getRunPage(
     agentId: string,
-    input: { limit: number; cursor?: string; focusId?: string },
+    input: {
+      limit: number;
+      cursor?: string;
+      focusId?: string;
+      includeProviderInputManifest?: boolean;
+    },
   ): HistoryPageDto<AgentRunDto> {
     const limit = Math.max(1, Math.min(input.limit, 500));
     if (input.cursor && input.focusId) {
@@ -249,6 +256,9 @@ export class AgentRunUsageReadModel {
           .get(row.id, agentId) as
           | { prompt_hash: string; source_manifest_json: string }
           | undefined;
+        const sourceManifest = providerInput
+          ? JSON.parse(providerInput.source_manifest_json) as ProviderInputSourceManifest
+          : undefined;
         return {
           id: row.id,
           agentId: row.agent_id,
@@ -305,9 +315,10 @@ export class AgentRunUsageReadModel {
             ? {
                 providerInput: {
                   promptHash: providerInput.prompt_hash,
-                  sourceManifest: JSON.parse(
-                    providerInput.source_manifest_json,
-                  ) as ProviderInputSourceManifest,
+                  sourceCommunicationCount: sourceManifest!.communicationEventIds.length,
+                  ...(input.includeProviderInputManifest === false
+                    ? {}
+                    : { sourceManifest: sourceManifest! }),
                   exactPromptAvailable: true as const,
                 },
               }

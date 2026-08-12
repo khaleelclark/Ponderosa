@@ -17,6 +17,10 @@ import { messages } from "./schema.js";
 import { userDmAgentIds } from "./store-communication.js";
 
 type Page<T> = (agentId: string, input: { limit: number }) => HistoryPageDto<T>;
+type RunPage = (
+  agentId: string,
+  input: { limit: number; includeProviderInputManifest?: boolean },
+) => HistoryPageDto<AgentRunDto>;
 const CHANGED_FILE_DETAIL_LIMIT = 100;
 
 /**
@@ -38,7 +42,7 @@ export class AgentAuditReadModel {
     private readonly getActivityPage: Page<AgentActivityDto>,
     private readonly getChangedFilePage: Page<ChangedFileDto>,
     private readonly getRuns: (agentId: string) => AgentRunDto[],
-    private readonly getRunPage: Page<AgentRunDto>,
+    private readonly getRunPage: RunPage,
     private readonly getFinalizedWorkDurationMs: (agentId: string) => number,
     private readonly getWorkItems: (agentId: string) => WorkItemDto[],
     private readonly getWorkItemPage: Page<WorkItemDto>,
@@ -114,7 +118,10 @@ export class AgentAuditReadModel {
     });
     const runPage = limit === undefined
       ? undefined
-      : this.getRunPage(id, { limit });
+      : this.getRunPage(id, {
+          limit,
+          includeProviderInputManifest: false,
+        });
     const workItemPage = limit === undefined
       ? undefined
       : this.getWorkItemPage(id, { limit });
