@@ -30,7 +30,7 @@ import type { WorkspaceProjectSnapshot } from "../workspaceNavigation";
 import {
   markWorkspaceResourceUsed,
   useWorkspaceResourceRecency,
-  workspaceResourceRecencyMap,
+  workspaceResourceRecencyTime,
 } from "../workspaceRecency";
 import { AgentStatusIndicator } from "./AgentStatusIndicator";
 import { starColor } from "./WorkspaceSidebar.helpers";
@@ -78,7 +78,6 @@ export function HomeSidebarPanel({
 }: HomeSidebarPanelProps): JSX.Element {
   const queryClient = useQueryClient();
   const recencyQuery = useWorkspaceResourceRecency();
-  const recency = workspaceResourceRecencyMap(recencyQuery.data);
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const starredResourceIds = starredWorkspaceResources(preferences);
   const agentStatusById = new Map<string, AgentStatus>(
@@ -167,7 +166,7 @@ export function HomeSidebarPanel({
     [],
     item => item.id,
     item => item.title,
-    item => recency.get(item.id) ?? item.updatedAt,
+    item => workspaceResourceRecencyTime(recencyQuery.data, item.id, item.updatedAt),
   );
   const starredResources = resources.filter(item =>
     starredResourceIds.has(item.id),

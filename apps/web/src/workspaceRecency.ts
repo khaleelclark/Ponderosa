@@ -1,4 +1,5 @@
 import type {
+  WorkspacePreferencesDto,
   WorkspaceResourceKind,
   WorkspaceResourceRecencyDto,
   WorkspaceResourceRecencyListDto,
@@ -8,6 +9,9 @@ import { api } from "./api";
 import { queryKeys } from "./queryKeys";
 import type { Route } from "./routing";
 
+export const WORKSPACE_RESOURCE_RECENCY_LIMIT = 100;
+const OLDEST_RESOURCE_TIME = new Date(0).toISOString();
+
 export function workspaceResourceKey(
   kind: WorkspaceResourceKind,
   resourceId: string,
@@ -15,11 +19,27 @@ export function workspaceResourceKey(
   return `${kind}:${resourceId}`;
 }
 
-export function workspaceResourceRecencyMap(
+export function workspaceResourceRecencyTime(
   recency: WorkspaceResourceRecencyListDto | undefined,
-): ReadonlyMap<string, string> {
-  return new Map(
-    (recency?.resources ?? []).map(item => [item.resourceKey, item.lastUsedAt]),
+  resourceKey: string,
+  fallback: string,
+): string {
+  const item = recency?.resources.find(resource => resource.resourceKey === resourceKey);
+  if (item) return item.lastUsedAt;
+  return recency?.truncated ? OLDEST_RESOURCE_TIME : fallback;
+}
+
+export function boundWorkspaceResourceRecency(
+  resources: readonly WorkspaceResourceRecencyDto[],
+  preferences: WorkspacePreferencesDto | undefined,
+  limit = WORKSPACE_RESOURCE_RECENCY_LIMIT,
+): WorkspaceResourceRecencyDto[] {
+  const starred = new Set([
+    ...(preferences?.starredResourceIds ?? []),
+    ...(preferences?.starredProjectIds ?? []).map(id => `project:${id}`),
+  ]);
+  return resources.filter(
+    (resource, index) => index < limit || starred.has(resource.resourceKey),
   );
 }
 
@@ -58,15 +78,22 @@ export function markWorkspaceResourceUsed(
     lastUsedAt: new Date().toISOString(),
   };
   const apply = (entry: WorkspaceResourceRecencyDto) => {
+    const preferences = queryClient.getQueryData<WorkspacePreferencesDto>(
+      queryKeys.workspacePreferences.all,
+    );
     queryClient.setQueryData<WorkspaceResourceRecencyListDto>(
       queryKeys.workspaceResourceRecency.all,
       current => ({
-        resources: [
-          entry,
-          ...(current?.resources ?? []).filter(
-            item => item.resourceKey !== entry.resourceKey,
-          ),
-        ],
+        resources: boundWorkspaceResourceRecency(
+          [
+            entry,
+            ...(current?.resources ?? []).filter(
+              item => item.resourceKey !== entry.resourceKey,
+            ),
+          ],
+          preferences,
+        ),
+        truncated: current?.truncated,
       }),
     );
   };

@@ -12,7 +12,10 @@ import {
   browserPageIsVisible,
   invalidateForBrowserPage,
 } from "../queryVisibility";
-import { changedWorkspaceDirectoryKinds } from "../resourcePreferences";
+import {
+  changedWorkspaceDirectoryKinds,
+  workspaceResourceStarsChanged,
+} from "../resourcePreferences";
 import { hasLiveAgentStream } from "./agentStreamRegistry";
 import { reconcileCursor } from "./streamCursor";
 
@@ -369,11 +372,16 @@ export function useWorkspaceStream(): WorkspaceConnectionState {
       let preferenceDirectoryKinds: ReturnType<
         typeof changedWorkspaceDirectoryKinds
       > = [];
+      let preferenceStarsChanged = false;
       if (event.type === "preferences_updated") {
         const previousPreferences = queryClient.getQueryData<
           WorkspacePreferencesDto
         >(queryKeys.workspacePreferences.all);
         preferenceDirectoryKinds = changedWorkspaceDirectoryKinds(
+          previousPreferences,
+          event.preferences,
+        );
+        preferenceStarsChanged = workspaceResourceStarsChanged(
           previousPreferences,
           event.preferences,
         );
@@ -397,7 +405,9 @@ export function useWorkspaceStream(): WorkspaceConnectionState {
       }
       if (workspaceEventInvalidatesGlobalSearch(event)) void queryClient.invalidateQueries({ queryKey: queryKeys.globalSearch.all });
       if (workspaceEventInvalidatesAllChat(event)) void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
-      if (workspaceEventChangesResourceRecency(event)) void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceResourceRecency.all });
+      if (workspaceEventChangesResourceRecency(event) || preferenceStarsChanged) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceResourceRecency.all });
+      }
       if (event.type === "preferences_updated") {
         for (const kind of preferenceDirectoryKinds) {
           void queryClient.invalidateQueries({

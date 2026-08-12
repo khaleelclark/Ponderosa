@@ -447,13 +447,23 @@ export class WorkspaceStore {
 
   getPreferences(): WorkspacePreferencesDto { return this.preferences; }
 
-  listResourceRecency(): WorkspaceResourceRecencyListDto {
+  listResourceRecency(limit?: number): WorkspaceResourceRecencyListDto {
+    const resources = [...this.resourceRecency.values()].sort(
+      (left, right) =>
+        right.lastUsedAt.localeCompare(left.lastUsedAt)
+        || left.resourceKey.localeCompare(right.resourceKey),
+    );
+    if (limit === undefined || resources.length <= limit) return { resources };
+
+    const starred = new Set([
+      ...(this.preferences.starredResourceIds ?? []),
+      ...this.preferences.starredProjectIds.map(id => `project:${id}`),
+    ]);
     return {
-      resources: [...this.resourceRecency.values()].sort(
-        (left, right) =>
-          right.lastUsedAt.localeCompare(left.lastUsedAt)
-          || left.resourceKey.localeCompare(right.resourceKey),
+      resources: resources.filter(
+        (resource, index) => index < limit || starred.has(resource.resourceKey),
       ),
+      truncated: true,
     };
   }
 
