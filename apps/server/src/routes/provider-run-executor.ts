@@ -42,10 +42,29 @@ function humanizeProviderName(value: string): string {
     .replaceAll(/\b\p{L}/gu, (letter) => letter.toLocaleUpperCase());
 }
 
-function validContextRolloverHandoff(text: string): boolean {
+const CONTEXT_ROLLOVER_REFERENCE_PATTERNS = [
+  /https?:\/\/\S+/iu,
+  /ponderosa:\/\/artifact\/[A-Za-z0-9._:-]+/u,
+  /(?:^|\s)\/(?:[^\s/]+\/)+[^\s/]+/u,
+  /(?:^|\s)(?:\.\.\/|\.\/)(?:[^\s/]+\/)*[^\s/]+/u,
+  /\b[A-Za-z]:\\(?:[^\s\\]+\\)*[^\s\\]+/u,
+  /\bPR\s*#?\d+\b/iu,
+  /(?:^|\s)#\d+\b/u,
+  /\b[0-9a-f]{7,40}\b/iu,
+  /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/iu,
+] as const;
+
+export function contextRolloverHandoffValidationError(
+  text: string,
+): string | undefined {
   const handoff = text.trim();
   const words = handoff.split(/\s+/u).filter(Boolean).length;
-  if (words < 150 || words > 500 || unicodeCodePointLength(handoff) > 20_000) return false;
+  if (words < 150 || words > 500) {
+    return `handoff must contain 150–500 words; received ${words}`;
+  }
+  if (unicodeCodePointLength(handoff) > 20_000) {
+    return "handoff must contain 20,000 Unicode characters or fewer";
+  }
   const normalized = handoff.toLocaleLowerCase();
   const requiredLabels = [
     "objective:",
@@ -56,8 +75,14 @@ function validContextRolloverHandoff(text: string): boolean {
     "verified facts:",
     "assumptions:",
   ];
-  return requiredLabels.every((label) => normalized.includes(label)) &&
-    /\b(?:artifact|file|path|reference)s?\b/u.test(normalized);
+  const missingLabels = requiredLabels.filter((label) => !normalized.includes(label));
+  if (missingLabels.length) {
+    return `handoff is missing required section labels: ${missingLabels.join(", ")}`;
+  }
+  if (!CONTEXT_ROLLOVER_REFERENCE_PATTERNS.some((pattern) => pattern.test(handoff))) {
+    return "handoff must include at least one concrete file, path, artifact, PR, URL, commit, or reference identifier";
+  }
+  return undefined;
 }
 
 export interface ProviderRunExecutionInput {
@@ -929,6 +954,7 @@ export function startProviderRunExecution(
         ? attachedRollover
         : durableRollover?.sourceRunId === runId ? durableRollover : undefined;
       let handoffActivationAcknowledged = false;
+      let handoffValidationError: string | undefined;
       if (owned && runRollover?.state === "requested" && !runError &&
           !isClosed() && !controller.signal.aborted && !schedulerCancelled) {
         const handoffActivation = attachedActivationPayloads.find((activation) => {
@@ -942,7 +968,8 @@ export function startProviderRunExecution(
         handoffActivationAcknowledged = handoffInjection?.state === "acknowledged";
         if (handoffActivationAcknowledged) {
           const handoff = finalText.trim();
-          if (validContextRolloverHandoff(handoff)) {
+          handoffValidationError = contextRolloverHandoffValidationError(handoff);
+          if (!handoffValidationError) {
             const existing = store.continuationHandoffForRun(agent.id, runId);
             const handoffId = existing?.id ?? randomUUID();
             if (!existing) {
@@ -986,7 +1013,9 @@ export function startProviderRunExecution(
       );
       if (owned && handoffActivationAcknowledged && runRollover?.state === "requested" &&
           !isClosed() && !controller.signal.aborted && !schedulerCancelled && !runError) {
-        runError = "context rollover failed: provider ended before committing the required bounded handoff";
+        runError = handoffValidationError
+          ? `context rollover handoff was rejected: ${handoffValidationError}`
+          : "context rollover failed: provider ended before committing the required bounded handoff";
         await persistRuntimeEvent(agent.id, activeRun, {
           type: "error",
           message: runError,
@@ -996,7 +1025,9 @@ export function startProviderRunExecution(
           category: "coordination",
           severity: "attention",
           title: `${agent.title} could not refresh context`,
-          body: "The provider ended before committing its continuation handoff. Retry the task or request another context refresh; the old provider generation may be retried safely.",
+          body: handoffValidationError
+            ? `The provider returned a malformed continuation handoff: ${handoffValidationError}. Retry the task or request another context refresh; the old provider generation may be retried safely.`
+            : "The provider ended before committing its continuation handoff. Retry the task or request another context refresh; the old provider generation may be retried safely.",
           projectId: agent.projectId,
           conversationId: routingConversationId,
         });
