@@ -604,6 +604,10 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.agentCatalog.listAgents(projectId);
   }
 
+  listAgentEngineAssignments(): Array<{ id: string; activeEngine: string }> {
+    return this.agentCatalog.listAgentEngineAssignments();
+  }
+
   getAgent(id: string): AgentDto | undefined {
     return this.agentCatalog.getAgent(id);
   }

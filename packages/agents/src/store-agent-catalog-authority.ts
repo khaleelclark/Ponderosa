@@ -125,6 +125,21 @@ export class AgentCatalogAuthority {
       .map((r) => this.agentRowToDto(r));
   }
 
+  /** Scheduler admission needs only durable identity and engine assignment.
+   * Keep that hot read independent of Agent DTO hydration, which also reads
+   * memberships and optional imported-history files for presentation. */
+  listAgentEngineAssignments(): Array<{ id: string; activeEngine: string }> {
+    return this.client.prepare(`
+      SELECT id, active_engine
+      FROM agents
+      WHERE deleted_at IS NULL
+      ORDER BY id
+    `).all().map((row) => {
+      const assignment = row as { id: string; active_engine: string };
+      return { id: assignment.id, activeEngine: assignment.active_engine };
+    });
+  }
+
   getAgent(id: string): AgentDto | undefined {
     const row = this.db.select().from(agents).where(and(eq(agents.id, id), isNull(agents.deletedAt))).get();
     return row ? this.agentRowToDto(row) : undefined;
