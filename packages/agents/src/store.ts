@@ -861,7 +861,12 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.runUsage.getRuns(agentId);
   }
 
-  getRunPage(agentId: string, input: { limit: number; cursor?: string; focusId?: string }): HistoryPageDto<AgentRunDto> {
+  getRunPage(agentId: string, input: {
+    limit: number;
+    cursor?: string;
+    focusId?: string;
+    includeProviderInputManifest?: boolean;
+  }): HistoryPageDto<AgentRunDto> {
     return this.runUsage.getRunPage(agentId, input);
   }
 

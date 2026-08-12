@@ -49,10 +49,13 @@ export interface AgentRunDto {
     files: number;
     errors: number;
   };
-  /** Hash and sources of the exact text Ponderosa submitted to the provider. */
+  /** Hash and availability of the exact text Ponderosa submitted to the provider.
+   * Bounded Agent-detail pages retain only the communication-source count; the
+   * dedicated Run history surface includes the complete source manifest. */
   providerInput?: {
     promptHash: string;
-    sourceManifest: ProviderInputSourceManifest;
+    sourceCommunicationCount: number;
+    sourceManifest?: ProviderInputSourceManifest;
     exactPromptAvailable: true;
   };
 }

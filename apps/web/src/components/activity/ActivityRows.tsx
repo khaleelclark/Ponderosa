@@ -110,7 +110,9 @@ export function RunHeaderRow({
   entry: Extract<ActivityStreamEntry, { kind: "run_header" }>;
 }): JSX.Element {
   const sourceCommunicationCount =
-    entry.run?.providerInput?.sourceManifest.communicationEventIds.length ?? 0;
+    entry.run?.providerInput?.sourceCommunicationCount
+    ?? entry.run?.providerInput?.sourceManifest?.communicationEventIds.length
+    ?? 0;
   const isCoordinationContinuation =
     entry.run?.wakeCause === "coordination" ||
     (entry.run?.wakeCause === "collaboration" &&
