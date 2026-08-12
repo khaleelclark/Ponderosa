@@ -8,12 +8,19 @@ import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
 import SearchIcon from "@mui/icons-material/Search";
 import SettingsIcon from "@mui/icons-material/Settings";
 import SpeedOutlinedIcon from "@mui/icons-material/SpeedOutlined";
+import TabOutlinedIcon from "@mui/icons-material/TabOutlined";
 import {
   AppBar,
   Badge,
   Box,
+  Dialog,
+  DialogContent,
+  DialogTitle,
   Divider,
   IconButton,
+  List,
+  ListItem,
+  ListItemButton,
   ListItemIcon,
   ListItemText,
   Menu,
@@ -32,13 +39,22 @@ import type {
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { routeProjectId, type Route } from "./routing";
+import { api } from "./api";
 import { OperatorAvatar } from "./components/OperatorAvatar";
 import { ProviderQuotaIndicator } from "./components/ProviderUsageCenter";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { useMobileWorkspaceActions } from "./components/MobileWorkspaceActionsContext";
+import { WorkspaceRouteIcon } from "./components/WorkspaceTabs";
+import { queryKeys } from "./queryKeys";
+import { routeTabLabel } from "./routeRegistry";
+import type { WorkspaceTabState } from "./workspaceTabs";
+import { useQueries } from "@tanstack/react-query";
 
-export function mobileCreationReturnRoute(origin?: Route): Route {
-  return origin ?? { kind: "home" };
+export function mobileCreationReturnRoute(
+  origins: ReadonlyMap<string, Route>,
+  activeTabKey: string,
+): Route {
+  return origins.get(activeTabKey) ?? { kind: "home" };
 }
 
 export function mobileRouteAfterResourceRemoval(
@@ -68,6 +84,9 @@ export function mobileRouteAfterResourceRemoval(
 }
 
 interface MobileWorkspaceHeaderProps {
+  tabs: WorkspaceTabState[];
+  projects: ProjectDto[];
+  activeTabKey: string;
   preferredQuotaProvider?: string;
   engineAvailability: {
     label: string;
@@ -83,9 +102,173 @@ interface MobileWorkspaceHeaderProps {
   onOpenNotifications(): void;
   onOpenProfile(): void;
   onOpenSettings(): void;
+  onActivateTab(key: string): void;
+  onCloseTab(key: string): void;
+}
+
+export function MobileWorkspaceTabManager({
+  open,
+  tabs,
+  projects,
+  activeKey,
+  onClose,
+  onActivate,
+  onCloseTab,
+}: {
+  open: boolean;
+  tabs: WorkspaceTabState[];
+  projects: ProjectDto[];
+  activeKey: string;
+  onClose(): void;
+  onActivate(key: string): void;
+  onCloseTab(key: string): void;
+}): JSX.Element {
+  const conversationProjectIds = [
+    ...new Set(
+      tabs.flatMap(tab =>
+        tab.route.kind === "conversation"
+          ? [tab.route.projectId]
+          : [],
+      ),
+    ),
+  ];
+  const agentProjectIds = [
+    ...new Set(
+      tabs.flatMap(tab =>
+        tab.route.kind === "agent" ? [tab.route.projectId] : [],
+      ),
+    ),
+  ];
+  const conversationQueries = useQueries({
+    queries: conversationProjectIds.map(projectId => ({
+      queryKey: queryKeys.conversations.project(projectId),
+      queryFn: () => api.listConversations(projectId),
+      enabled: open,
+      staleTime: 10_000,
+    })),
+  });
+  const agentQueries = useQueries({
+    queries: agentProjectIds.map(projectId => ({
+      queryKey: queryKeys.agents.project(projectId),
+      queryFn: () => api.listAgents(projectId),
+      enabled: open,
+      staleTime: 10_000,
+    })),
+  });
+  const conversationsByProject = new Map(
+    conversationProjectIds.map((projectId, index) => [
+      projectId,
+      conversationQueries[index]?.data ?? [],
+    ]),
+  );
+  const agentsByProject = new Map(
+    agentProjectIds.map((projectId, index) => [
+      projectId,
+      agentQueries[index]?.data ?? [],
+    ]),
+  );
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      fullWidth
+      maxWidth="sm"
+      aria-labelledby="mobile-workspace-tabs-title"
+      slotProps={{
+        paper: {
+          sx: {
+            m: { xs: 1.5, sm: 3 },
+            width: { xs: "calc(100% - 24px)", sm: "100%" },
+            maxHeight: "calc(100dvh - 24px)",
+          },
+        },
+      }}
+    >
+      <DialogTitle
+        id="mobile-workspace-tabs-title"
+        sx={{ display: "flex", alignItems: "center", gap: 1, pr: 1 }}
+      >
+        <TabOutlinedIcon />
+        <Box component="span" sx={{ flex: 1 }}>Open tabs</Box>
+        <IconButton aria-label="Close open tabs" onClick={onClose}>
+          <CloseIcon />
+        </IconButton>
+      </DialogTitle>
+      <DialogContent dividers sx={{ p: 0 }}>
+        <List disablePadding aria-label="Open workspace tabs">
+          {tabs.map(tab => {
+            const projectId =
+              "projectId" in tab.route &&
+              typeof tab.route.projectId === "string"
+                ? tab.route.projectId
+                : undefined;
+            const project = projectId
+              ? projects.find(candidate => candidate.id === projectId)
+              : undefined;
+            const label = tab.title ?? routeTabLabel(tab.route, {
+              conversationTitle: conversationId =>
+                conversationsByProject.get(projectId ?? "")?.find(
+                  conversation => conversation.id === conversationId,
+                )?.title,
+              agentTitle: agentId =>
+                agentsByProject.get(projectId ?? "")?.find(
+                  agent => agent.id === agentId,
+                )?.title,
+              projectLabel: project?.label,
+            });
+            const selected = tab.key === activeKey;
+            return (
+              <ListItem
+                key={tab.key}
+                disablePadding
+                secondaryAction={
+                  tabs.length > 1 ? (
+                    <IconButton
+                      edge="end"
+                      aria-label={`Close ${label}`}
+                      onClick={() => onCloseTab(tab.key)}
+                      sx={{ width: 44, height: 44 }}
+                    >
+                      <CloseIcon />
+                    </IconButton>
+                  ) : null
+                }
+                sx={{ pr: tabs.length > 1 ? 7 : 0 }}
+              >
+                <ListItemButton
+                  selected={selected}
+                  onClick={() => onActivate(tab.key)}
+                  sx={{ minHeight: 56 }}
+                >
+                  <ListItemIcon sx={{ minWidth: 40 }}>
+                    <WorkspaceRouteIcon route={tab.route} />
+                  </ListItemIcon>
+                  <ListItemText
+                    primary={label}
+                    secondary={[
+                      project?.label,
+                      selected ? "Current tab" : undefined,
+                    ].filter(Boolean).join(" · ") || "Ponderosa"}
+                    slotProps={{
+                      primary: { noWrap: true },
+                      secondary: { noWrap: true },
+                    }}
+                  />
+                </ListItemButton>
+              </ListItem>
+            );
+          })}
+        </List>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 export function MobileWorkspaceHeader({
+  tabs,
+  projects,
+  activeTabKey,
   preferredQuotaProvider,
   engineAvailability,
   attentionNotifications,
@@ -97,8 +280,11 @@ export function MobileWorkspaceHeader({
   onOpenNotifications,
   onOpenProfile,
   onOpenSettings,
+  onActivateTab,
+  onCloseTab,
 }: MobileWorkspaceHeaderProps): JSX.Element {
   const [overflowAnchor, setOverflowAnchor] = useState<HTMLElement>();
+  const [tabManagerOpen, setTabManagerOpen] = useState(false);
   const mobileWorkspaceActions = useMobileWorkspaceActions();
   const openOverflow = (event: MouseEvent<HTMLElement>) =>
     setOverflowAnchor(event.currentTarget);
@@ -291,6 +477,19 @@ export function MobileWorkspaceHeader({
         <MenuItem
           onClick={() => {
             setOverflowAnchor(undefined);
+            setTabManagerOpen(true);
+          }}
+        >
+          <ListItemIcon><TabOutlinedIcon /></ListItemIcon>
+          <ListItemText
+            primary="Open tabs"
+            secondary={`${tabs.length} ${tabs.length === 1 ? "tab" : "tabs"}`}
+          />
+        </MenuItem>
+        <Divider />
+        <MenuItem
+          onClick={() => {
+            setOverflowAnchor(undefined);
             onOpenEngineStatus();
           }}
         >
@@ -326,6 +525,18 @@ export function MobileWorkspaceHeader({
           <ListItemText>Settings</ListItemText>
         </MenuItem>
       </Menu>
+      <MobileWorkspaceTabManager
+        open={tabManagerOpen}
+        tabs={tabs}
+        projects={projects}
+        activeKey={activeTabKey}
+        onClose={() => setTabManagerOpen(false)}
+        onActivate={key => {
+          setTabManagerOpen(false);
+          onActivateTab(key);
+        }}
+        onCloseTab={onCloseTab}
+      />
     </AppBar>
   );
 }

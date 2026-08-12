@@ -89,7 +89,6 @@ import {
   MobileWorkspaceDrawer,
   MobileWorkspaceHeader,
   mobileCreationReturnRoute,
-  mobileRouteAfterResourceRemoval,
 } from "./App.mobile";
 import { WorkspaceRouteOutlet } from "./App.workspace-content";
 import {
@@ -199,7 +198,6 @@ export default function App({
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [sidebarConversationAction, setSidebarConversationAction] =
     useState<SidebarConversationAction>();
-  const mobileCreationOrigin = useRef<Route>();
   const [projectBrowserRequest, setProjectBrowserRequest] =
     useState<ProjectBrowserRequest>();
   const projectBrowserRequestId = useRef(0);
@@ -256,14 +254,12 @@ export default function App({
   const preferredQuotaProvider =
     activeAgentQuery.data?.agent.activeEngine;
   useEffect(() => {
-    if (mobileWorkspace) return;
     setWorkspaceTabs(current =>
       navigateWorkspaceTab(current, activeWorkspaceTabKey, route),
     );
-  }, [route, activeWorkspaceTabKey, mobileWorkspace]);
+  }, [route, activeWorkspaceTabKey]);
 
   useEffect(() => {
-    if (mobileWorkspace) return;
     try {
       window.localStorage.setItem(
         WORKSPACE_TABS_STORAGE_KEY,
@@ -272,7 +268,7 @@ export default function App({
     } catch {
       // Tabs remain available for this session when storage is unavailable.
     }
-  }, [workspaceTabs, activeWorkspaceTabKey, mobileWorkspace]);
+  }, [workspaceTabs, activeWorkspaceTabKey]);
 
   useEffect(() => {
     try {
@@ -286,13 +282,12 @@ export default function App({
   }, [sidebarPresentation]);
 
   useEffect(() => {
-    if (mobileWorkspace) return;
     if (workspaceTabs.some(tab => tab.key === activeWorkspaceTabKey)) return;
     const next = workspaceTabs[0];
     if (!next) return;
     setActiveWorkspaceTabKey(next.key);
     navigate(next.route, { replace: true });
-  }, [workspaceTabs, activeWorkspaceTabKey, navigate, mobileWorkspace]);
+  }, [workspaceTabs, activeWorkspaceTabKey, navigate]);
 
   useEffect(() => {
     const refresh = () => {
@@ -432,11 +427,6 @@ export default function App({
     }
   };
   const navigateWorkspace = (next: Route) => {
-    if (mobileWorkspace) {
-      recordWorkspaceRouteUse(next);
-      navigate(next);
-      return;
-    }
     if (next.kind !== "create") {
       creationOriginByWorkspace.current.delete(activeWorkspaceTabKey);
     }
@@ -452,11 +442,6 @@ export default function App({
     navigate(next);
   };
   const replaceActiveWorkspace = (next: Route) => {
-    if (mobileWorkspace) {
-      recordWorkspaceRouteUse(next);
-      navigate(next, { replace: true });
-      return;
-    }
     if (next.kind !== "create") {
       creationOriginByWorkspace.current.delete(activeWorkspaceTabKey);
     }
@@ -482,6 +467,21 @@ export default function App({
     setActiveWorkspaceTabKey(tab.key);
     navigate(tab.route);
   };
+  const pruneCreationOrigins = (
+    previous: typeof workspaceTabs,
+    next: typeof workspaceTabs,
+  ) => {
+    const nextByKey = new Map(next.map(tab => [tab.key, tab]));
+    for (const tab of previous) {
+      const retained = nextByKey.get(tab.key);
+      if (
+        !retained ||
+        workspaceTabKey(retained.route) !== workspaceTabKey(tab.route)
+      ) {
+        creationOriginByWorkspace.current.delete(tab.key);
+      }
+    }
+  };
   const openWorkspaceRoute = (next: Route) => {
     if (mobileWorkspace) {
       recordWorkspaceRouteUse(next);
@@ -506,8 +506,7 @@ export default function App({
     },
   ) => {
     if (route.kind !== "create") {
-      if (mobileWorkspace) mobileCreationOrigin.current = route;
-      else creationOriginByWorkspace.current.set(activeWorkspaceTabKey, route);
+      creationOriginByWorkspace.current.set(activeWorkspaceTabKey, route);
     }
     const destination: Route = {
       kind: "create",
@@ -528,8 +527,7 @@ export default function App({
     kind: "project" | "chat" | "agent" | "trigger",
   ) => {
     if (route.kind !== "create") {
-      if (mobileWorkspace) mobileCreationOrigin.current = route;
-      else creationOriginByWorkspace.current.set(activeWorkspaceTabKey, route);
+      creationOriginByWorkspace.current.set(activeWorkspaceTabKey, route);
     }
     replaceActiveWorkspace({
       kind: "create",
@@ -577,6 +575,7 @@ export default function App({
         ? adjacentWorkspaceTab(workspaceTabs, key)
         : undefined;
     const remaining = closeWorkspaceTab(workspaceTabs, key);
+    creationOriginByWorkspace.current.delete(key);
     setWorkspaceTabs(remaining);
     if (nextActive) {
       setActiveWorkspaceTabKey(nextActive.key);
@@ -587,9 +586,10 @@ export default function App({
   const cancelCreationWorkspace = () => {
     if (mobileWorkspace) {
       const destination = mobileCreationReturnRoute(
-        mobileCreationOrigin.current,
+        creationOriginByWorkspace.current,
+        activeWorkspaceTabKey,
       );
-      mobileCreationOrigin.current = undefined;
+      creationOriginByWorkspace.current.delete(activeWorkspaceTabKey);
       replaceActiveWorkspace(destination);
       return;
     }
@@ -610,6 +610,9 @@ export default function App({
   const closeOtherWorkspaceViews = (key: string) => {
     const retained = workspaceTabs.find(tab => tab.key === key);
     if (!retained) return;
+    for (const tab of workspaceTabs) {
+      if (tab.key !== key) creationOriginByWorkspace.current.delete(tab.key);
+    }
     setWorkspaceTabs([retained]);
     setActiveWorkspaceTabKey(key);
     recordWorkspaceRouteUse(retained.route);
@@ -623,17 +626,6 @@ export default function App({
     );
   };
   const removeWorkspaceView = (removedRoute: Route) => {
-    if (mobileWorkspace) {
-      const fallbackRoute = mobileRouteAfterResourceRemoval(
-        route,
-        removedRoute,
-      );
-      if (fallbackRoute) {
-        recordWorkspaceRouteUse(fallbackRoute);
-        navigate(fallbackRoute, { replace: true });
-      }
-      return;
-    }
     if (removedRoute.kind === "project") {
       const fallbackRoute: Route = { kind: "projects" };
       const activeRoute = workspaceTabs.find(
@@ -643,14 +635,16 @@ export default function App({
         activeRoute !== undefined &&
         "projectId" in activeRoute &&
         activeRoute.projectId === removedRoute.projectId;
-      setWorkspaceTabs(current =>
-        removeProjectWorkspaceTabsWithFallback(
+      setWorkspaceTabs(current => {
+        const next = removeProjectWorkspaceTabsWithFallback(
           current,
           activeWorkspaceTabKey,
           removedRoute.projectId,
           fallbackRoute,
-        ),
-      );
+        );
+        pruneCreationOrigins(current, next);
+        return next;
+      });
       if (removedActiveProject) {
         navigate(fallbackRoute, { replace: true });
       }
@@ -668,14 +662,16 @@ export default function App({
     const removedActiveResource =
       activeRoute !== undefined &&
       workspaceTabKey(activeRoute) === workspaceTabKey(removedRoute);
-    setWorkspaceTabs(current =>
-      removeWorkspaceRouteWithFallback(
+    setWorkspaceTabs(current => {
+      const next = removeWorkspaceRouteWithFallback(
         current,
         activeWorkspaceTabKey,
         removedRoute,
         fallbackRoute,
-      ),
-    );
+      );
+      pruneCreationOrigins(current, next);
+      return next;
+    });
     if (removedActiveResource) {
       recordWorkspaceRouteUse(fallbackRoute);
       navigate(fallbackRoute, { replace: true });
@@ -758,6 +754,9 @@ export default function App({
           Skip to content
         </Box>
         <MobileWorkspaceHeader
+          tabs={workspaceTabs}
+          projects={projects}
+          activeTabKey={activeWorkspaceTabKey}
           preferredQuotaProvider={displayedQuotaProvider}
           engineAvailability={engineAvailability}
           attentionNotifications={notificationCounts.attentionCount}
@@ -769,6 +768,8 @@ export default function App({
           onOpenNotifications={() => setNotificationPanelOpen(true)}
           onOpenProfile={openOperatorProfile}
           onOpenSettings={openSettings}
+          onActivateTab={activateWorkspaceView}
+          onCloseTab={closeWorkspaceView}
         />
 
         <Box
