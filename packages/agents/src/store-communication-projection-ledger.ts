@@ -45,6 +45,7 @@ export class AgentCommunicationProjectionLedger {
     projectId: string,
     artifact: ArtifactDto,
   ) => boolean;
+  private suppressReplaySearchRefresh = false;
 
   constructor(
     private readonly dataDir: string,
@@ -208,7 +209,13 @@ export class AgentCommunicationProjectionLedger {
       // Delivery retries may create new runtime-local IDs and timestamps, and
       // passive audit replay may omit an existing presentation-only routing
       // prefix. Keep the first, richer placement when materialization agrees.
-      this.upsertGlobalChatSearchProjection(projectId, existing);
+      // Startup has already rebuilt this disposable index from the canonical
+      // projection ledger. Replaying an unchanged placement must not repeat the
+      // same SQL work for every communication. Enriched and newly recovered
+      // placements still refresh immediately through the branches above/below.
+      if (!this.suppressReplaySearchRefresh) {
+        this.upsertGlobalChatSearchProjection(projectId, existing);
+      }
       return { projection: existing, replayed: true };
     }
     appendFsyncedJsonl(file, [projection]);
@@ -364,48 +371,53 @@ export class AgentCommunicationProjectionLedger {
   }
 
   ensureCommunicationProjectionLedger(projectId: string): void {
-    const canonicalEvents = this.readCommunicationEvents(projectId);
-    for (const event of canonicalEvents) this.ensureCommunicationBehaviorProjections(event);
-    const canonicalIds = new Set(canonicalEvents.map((event) => event.eventId));
-    if (canonicalIds.size === 0) return;
-    for (const dispatch of this.messageDispatches(projectId)) {
-      if (!canonicalIds.has(dispatch.eventId)) continue;
-      const projection: CommunicationProjection = {
-        eventId: dispatch.eventId,
-        surface: dispatch.channel === "collaboration" ? "collaboration_view" : "conversation",
-        projectionKey: dispatch.conversationId,
-        projectedAt: dispatch.createdAt,
-        message: {
-          messageId: dispatch.messageId,
-          role: dispatch.role,
-          renderedText: dispatch.renderedText,
-          createdAt: dispatch.createdAt,
-          orderKey: dispatch.orderKey,
-          ...(dispatch.authorAgentId ? { authorAgentId: dispatch.authorAgentId } : {}),
-          ...(dispatch.attachments?.length ? { attachmentIds: dispatch.attachments.map((item) => item.id) } : {}),
-          ...(dispatch.attachments?.length ? { attachments: dispatch.attachments } : {}),
-          ...(dispatch.artifactIds?.length ? { artifactIds: dispatch.artifactIds } : {}),
-        },
-      };
-      if (this.communicationProjectionAllowed(projectId, projection)) {
-        this.appendCommunicationProjection(projectId, projection);
+    this.suppressReplaySearchRefresh = true;
+    try {
+      const canonicalEvents = this.readCommunicationEvents(projectId);
+      for (const event of canonicalEvents) this.ensureCommunicationBehaviorProjections(event);
+      const canonicalIds = new Set(canonicalEvents.map((event) => event.eventId));
+      if (canonicalIds.size === 0) return;
+      for (const dispatch of this.messageDispatches(projectId)) {
+        if (!canonicalIds.has(dispatch.eventId)) continue;
+        const projection: CommunicationProjection = {
+          eventId: dispatch.eventId,
+          surface: dispatch.channel === "collaboration" ? "collaboration_view" : "conversation",
+          projectionKey: dispatch.conversationId,
+          projectedAt: dispatch.createdAt,
+          message: {
+            messageId: dispatch.messageId,
+            role: dispatch.role,
+            renderedText: dispatch.renderedText,
+            createdAt: dispatch.createdAt,
+            orderKey: dispatch.orderKey,
+            ...(dispatch.authorAgentId ? { authorAgentId: dispatch.authorAgentId } : {}),
+            ...(dispatch.attachments?.length ? { attachmentIds: dispatch.attachments.map((item) => item.id) } : {}),
+            ...(dispatch.attachments?.length ? { attachments: dispatch.attachments } : {}),
+            ...(dispatch.artifactIds?.length ? { artifactIds: dispatch.artifactIds } : {}),
+          },
+        };
+        if (this.communicationProjectionAllowed(projectId, projection)) {
+          this.appendCommunicationProjection(projectId, projection);
+        }
       }
-    }
-    for (const agent of this.listAgents(projectId)) {
-      for (const stored of this.readEvents(agent.id)) {
-        const eventId = stored.event.type === "communication_projection" || stored.event.type === "user_message"
-          ? stored.event.communicationEventId : undefined;
-        const message = communicationMessageProjection(agent.id, stored);
-        if (eventId && message && canonicalIds.has(eventId)) {
-          const projection: CommunicationProjection = {
-            eventId, surface: "direct_agent_audit", projectionKey: agent.id, projectedAt: stored.ts,
-            message,
-          };
-          if (this.communicationProjectionAllowed(projectId, projection)) {
-            this.appendCommunicationProjection(projectId, projection);
+      for (const agent of this.listAgents(projectId)) {
+        for (const stored of this.readEvents(agent.id)) {
+          const eventId = stored.event.type === "communication_projection" || stored.event.type === "user_message"
+            ? stored.event.communicationEventId : undefined;
+          const message = communicationMessageProjection(agent.id, stored);
+          if (eventId && message && canonicalIds.has(eventId)) {
+            const projection: CommunicationProjection = {
+              eventId, surface: "direct_agent_audit", projectionKey: agent.id, projectedAt: stored.ts,
+              message,
+            };
+            if (this.communicationProjectionAllowed(projectId, projection)) {
+              this.appendCommunicationProjection(projectId, projection);
+            }
           }
         }
       }
+    } finally {
+      this.suppressReplaySearchRefresh = false;
     }
   }
 
