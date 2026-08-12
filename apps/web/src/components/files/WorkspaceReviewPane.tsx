@@ -5,10 +5,9 @@ import { Alert, Box, Button, Chip, CircularProgress, IconButton, Paper, Stack, T
 import type { ChangedFileDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { api } from "../../api";
 import { queryKeys } from "../../queryKeys";
+import { LazySyntaxHighlightedCode } from "../LazySyntaxHighlightedCode";
 import { ResourceContextMenu } from "../ResourceContextMenu";
 import type { ResourceContextMenuState } from "../ResourceContextMenu";
 import { UnifiedDiffViewer } from "../filePreview/FilePreview";
@@ -197,7 +196,28 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
                 {review.isLoading ? <CircularProgress size={22} />
                   : review.isError ? <Alert severity="error">Diff could not be loaded. {String(review.error)}</Alert>
                     : reviewMode === "file" ? (review.data?.content !== undefined
-                      ? <Box data-testid="workspace-file"><SyntaxHighlighter language={languageForPath(review.data.path)} style={oneLight} PreTag="div" customStyle={{ margin: 0 }}>{review.data.content}</SyntaxHighlighter></Box>
+                      ? <Box data-testid="workspace-file">
+                          <LazySyntaxHighlightedCode
+                            language={languageForPath(review.data.path)}
+                            themeMode="light"
+                            customStyle={{ margin: 0 }}
+                            renderFallback={({ status, retry }) => <>
+                              {status === "failed" ? <Stack
+                                direction="row"
+                                alignItems="center"
+                                justifyContent="space-between"
+                                spacing={1}
+                                sx={{ px: 2, py: 0.75, borderBottom: 1, borderColor: "divider", color: "text.secondary" }}
+                              >
+                                <Typography variant="caption">Syntax highlighting unavailable. Plain file text is still readable.</Typography>
+                                <Button size="small" color="inherit" onClick={retry}>Retry highlighting</Button>
+                              </Stack> : null}
+                              <Box component="pre" sx={{ m: 0, p: 2, overflow: "auto", whiteSpace: "pre", fontFamily: "monospace" }}>{review.data?.content ?? ""}</Box>
+                            </>}
+                          >
+                            {review.data.content}
+                          </LazySyntaxHighlightedCode>
+                      </Box>
                       : <Alert severity="info">The current file cannot be displayed. It may be deleted, binary, or above the safe viewer limit.</Alert>)
                     : review.data?.diff ? <>
                       {review.data.truncated ? <Alert severity="warning" sx={{ mb: 1 }}>This review is truncated to the safe viewer limit.</Alert> : null}

@@ -5,15 +5,14 @@ import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import LanguageIcon from "@mui/icons-material/Language";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
-import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, Tooltip, Typography, useTheme } from "@mui/material";
+import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, Tooltip, Typography } from "@mui/material";
 import { messageTagTokens, unicodeCodePointLength } from "@ponderosa/core";
 import type { AgentMentionBindingDto, CommunicationDocumentReference, CommunicationIntent, MessageDto, VerifiedCitationDto } from "@ponderosa/core";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { oneLight, vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import remarkGfm from "remark-gfm";
 import { copyText } from "../../clipboard";
+import { LazySyntaxHighlightedCode } from "../LazySyntaxHighlightedCode";
 import { useProjectBrowser } from "../ProjectBrowserContext";
 import { ChatDocumentCard } from "./ChatDocumentCard";
 
@@ -234,7 +233,6 @@ function fencedCodeLanguage(children: ReactNode): string {
 function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
   const resetTimer = useRef<ReturnType<typeof setTimeout>>();
-  const theme = useTheme();
   const code = codeBlockText(children).replace(/\n$/, "");
   const language = fencedCodeLanguage(children);
   const highlighted = !["text", "txt", "plaintext", "none"].includes(language);
@@ -264,6 +262,26 @@ function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element 
   const label =
     copyState === "copied" ? "Copied code" : copyState === "error" ? "Copy failed" : "Copy code";
 
+  const plainCode = ({ status, retry }: {
+    status: "pending" | "failed";
+    retry(): void;
+  }): ReactNode => <>
+    {status === "failed" ? <Stack
+      direction="row"
+      alignItems="center"
+      justifyContent="space-between"
+      spacing={1}
+      sx={{ px: 2, py: 0.75, borderBottom: 1, borderColor: "divider", color: "text.secondary" }}
+    >
+      <Typography variant="caption">Syntax highlighting unavailable. Plain code is still readable.</Typography>
+      <Button size="small" color="inherit" onClick={retry}>Retry highlighting</Button>
+    </Stack> : null}
+    <Box
+      component="pre"
+      sx={{ m: 0, p: "16px 18px", minWidth: "max-content", whiteSpace: "pre", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: "0.875rem", lineHeight: 1.55, color: "text.primary", bgcolor: "transparent" }}
+    >{code}</Box>
+  </>;
+
   return (
     <Box sx={{ my: 1, maxWidth: "100%", minWidth: 0, overflow: "hidden", borderRadius: 2, bgcolor: "action.hover", border: 1, borderColor: "divider" }}>
       <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ minHeight: 38, px: 1.5, color: "text.secondary", borderBottom: 1, borderColor: "divider" }}>
@@ -275,16 +293,14 @@ function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element 
         </Tooltip>
       </Stack>
       <Box sx={{ maxWidth: "100%", overflowX: "auto", overscrollBehaviorX: "contain" }}>
-        {highlighted ? <SyntaxHighlighter
-          language={language}
-          style={theme.palette.mode === "dark" ? vscDarkPlus : oneLight}
-          PreTag="div"
-          wrapLongLines={false}
-          customStyle={{ margin: 0, padding: "16px 18px", minWidth: "max-content", background: "transparent", fontSize: "0.875rem", lineHeight: 1.55 }}
-          codeTagProps={{ style: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" } }}
-        >{code}</SyntaxHighlighter> : <Box
+        {highlighted ? <LazySyntaxHighlightedCode
+            language={language}
+            customStyle={{ margin: 0, padding: "16px 18px", minWidth: "max-content", background: "transparent", fontSize: "0.875rem", lineHeight: 1.55 }}
+            codeTagProps={{ style: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" } }}
+            renderFallback={plainCode}
+          >{code}</LazySyntaxHighlightedCode> : <Box
           component="pre"
-          sx={{ m: 0, p: 2, minWidth: "max-content", whiteSpace: "pre", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: "0.875rem", lineHeight: 1.55, color: "text.primary", bgcolor: "transparent" }}
+          sx={{ m: 0, p: "16px 18px", minWidth: "max-content", whiteSpace: "pre", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: "0.875rem", lineHeight: 1.55, color: "text.primary", bgcolor: "transparent" }}
         >{code}</Box>}
       </Box>
     </Box>
