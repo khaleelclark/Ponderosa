@@ -657,6 +657,9 @@ CREATE INDEX coordination_joins_deadline
   ON coordination_joins(deadline_at) WHERE deadline_at IS NOT NULL;
 CREATE INDEX coordination_joins_owner_state
   ON coordination_joins(owner_agent_id, state, updated_at);
+CREATE INDEX coordination_joins_attention
+  ON coordination_joins(updated_at DESC, id DESC)
+  WHERE state IN ('impossible', 'expired');
 CREATE UNIQUE INDEX coordination_one_open_join_per_definition
   ON coordination_joins(project_id, owner_agent_id, definition_hash)
   WHERE state = 'open' AND definition_hash IS NOT NULL;
@@ -668,6 +671,9 @@ CREATE INDEX coordination_requests_deadline
   ON coordination_requests(deadline_at) WHERE deadline_at IS NOT NULL;
 CREATE INDEX coordination_requests_recipient_state
   ON coordination_requests(recipient_agent_id, state, updated_at);
+CREATE INDEX coordination_requests_attention
+  ON coordination_requests(updated_at DESC, id DESC)
+  WHERE state IN ('blocked', 'failed', 'outcome_unknown', 'expired', 'recipient_unavailable');
 CREATE INDEX communication_v4_next_run_deliveries_scope_newest
   ON communication_v4_next_run_deliveries(project_id, conversation_id, created_at DESC, id DESC);
 CREATE UNIQUE INDEX communication_v4_next_run_deliveries_operator_idempotency
@@ -840,6 +846,9 @@ CREATE INDEX trigger_occurrences_budget_charge
 CREATE INDEX trigger_occurrences_dead_letter
   ON trigger_occurrences(dead_lettered_at, id)
   WHERE dead_lettered_at IS NOT NULL;
+CREATE INDEX trigger_occurrences_attention
+  ON trigger_occurrences(updated_at DESC, id DESC)
+  WHERE state = 'dead_lettered';
 CREATE INDEX trigger_occurrences_due
   ON trigger_occurrences(state, available_at, id)
   WHERE state = 'pending';

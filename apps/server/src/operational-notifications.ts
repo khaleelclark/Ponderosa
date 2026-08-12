@@ -3,6 +3,7 @@ import type { WorkspaceNotificationDto } from "@ponderosa/core";
 import type {
   AgentStore,
   CommunicationAttentionActivationV3View,
+  CoordinationAttentionCandidateV3View,
   CoordinationV3Store,
   WorkspaceStore,
 } from "@ponderosa/agents";
@@ -144,17 +145,36 @@ export function createOperationalNotifications(context: OperationalNotifications
     if (now - lastCoordinationAttentionReconciliationAt < 5_000) return;
     lastCoordinationAttentionReconciliationAt = now;
     const retained = new Set<string>();
-    const communicationFailureActivationIds = new Set(communicationAttentionActivations()
-      .filter((failure) => failure.communicationEventId && failure.communicationIntent !== "collaboration"
-        && ["human_message", "urgent_message", "ordinary_message"].includes(failure.kind))
-      .map((failure) => failure.id));
-    for (const project of store.listProjects()) {
-      const inspector = agentWorkProjection.inspect({ projectId: project.id, limit: 200 });
-      const items = new Map(inspector.items.map((item) => [item.id, item]));
-      for (const trace of inspector.traces.filter((candidate) => candidate.state === "attention")) {
+    const notifications = workspace.listNotifications();
+    const projects = new Map(
+      store.listProjects().map((project) => [project.id, project]),
+    );
+    const pageSize = 200;
+    let candidateCursor: Pick<
+      CoordinationAttentionCandidateV3View,
+      "updatedAt" | "kind" | "recordId"
+    > | undefined;
+    for (;;) {
+      const candidates = coordinationV3.coordinationAttentionCandidates(
+        pageSize,
+        candidateCursor,
+      );
+      for (const candidate of candidates) {
+        const project = projects.get(candidate.projectId);
+        if (!project) continue;
+        const focusId = `${candidate.kind}:${candidate.recordId}`;
+        const inspector = agentWorkProjection.inspect({
+          projectId: project.id,
+          agentId: candidate.agentId,
+          focusId,
+          limit: 200,
+        });
+        const items = new Map(inspector.items.map((item) => [item.id, item]));
+        const trace = inspector.traces.find((entry) =>
+          entry.state === "attention" && entry.itemIds.includes(focusId));
+        if (!trace) continue;
         const related = trace.itemIds.flatMap((id) => items.get(id) ? [items.get(id)!] : []);
         if (related.some((item) => item.kind === "decision" && item.state === "pending")) continue;
-        if (related.some((item) => item.kind === "activation" && communicationFailureActivationIds.has(item.recordId))) continue;
         const failedRequest = [...related].reverse().find((item) => item.kind === "request"
           && ["blocked", "failed", "outcome_unknown", "expired", "recipient_unavailable"].includes(item.state));
         const failedJoin = [...related].reverse().find((item) => item.kind === "join"
@@ -222,8 +242,15 @@ export function createOperationalNotifications(context: OperationalNotifications
           } : {}),
         });
       }
+      if (candidates.length < pageSize) break;
+      const last = candidates.at(-1)!;
+      candidateCursor = {
+        updatedAt: last.updatedAt,
+        kind: last.kind,
+        recordId: last.recordId,
+      };
     }
-    for (const notification of workspace.listNotifications()) {
+    for (const notification of notifications) {
       if (!notification.dedupeKey?.startsWith("coordination-attention:")) continue;
       if ((notification.status ?? "open") !== "open" || retained.has(notification.dedupeKey)) continue;
       resolveOperationalNotification(notification.dedupeKey);

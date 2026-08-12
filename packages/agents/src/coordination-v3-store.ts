@@ -63,6 +63,8 @@ import type {
   TerminalActivationV3View,
   CommunicationAttentionActivationCursor,
   CommunicationAttentionActivationV3View,
+  CoordinationAttentionCandidateCursor,
+  CoordinationAttentionCandidateV3View,
   SettleUnavailableActivationResult,
   CoordinationWaitCycleV3,
   SteeringLease,
@@ -114,6 +116,9 @@ export type {
   TerminalActivationV3View,
   CommunicationAttentionActivationCursor,
   CommunicationAttentionActivationV3View,
+  CoordinationAttentionCandidateCursor,
+  CoordinationAttentionCandidateKind,
+  CoordinationAttentionCandidateV3View,
   SettleUnavailableActivationResult,
   CoordinationWaitCycleV3,
   SteeringLease,
@@ -786,6 +791,15 @@ export class CoordinationV3Store {
     limit?: number;
   }): { items: import("@ponderosa/core").AgentWorkItemDto[]; truncated: boolean } {
     return this.readModel.agentWorkItems(input);
+  }
+
+  /** Exact canonical records that may still produce an operator-attention
+   * trace, returned in bounded keyset pages. */
+  coordinationAttentionCandidates(
+    limit = 200,
+    cursor?: CoordinationAttentionCandidateCursor,
+  ): CoordinationAttentionCandidateV3View[] {
+    return this.readModel.coordinationAttentionCandidates(limit, cursor);
   }
 
   /** Loads one scoped Request and its canonical update history on demand. */
