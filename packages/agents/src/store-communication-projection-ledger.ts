@@ -423,7 +423,8 @@ export class AgentCommunicationProjectionLedger {
 
   /** Verify that canonical events and their projections agree. */
   reconcileCommunicationEvents(projectId: string): CommunicationReconciliationReport {
-    const canonical = this.readCommunicationEvents(projectId).filter((event) =>
+    const allCanonical = this.readCommunicationEvents(projectId);
+    const canonical = allCanonical.filter((event) =>
       !event.conversationId || Boolean(this.getConversation(event.conversationId)));
     const canonicalIds = new Set(canonical.map((event) => event.eventId));
     const projections = this.readCommunicationProjections(projectId);
@@ -443,7 +444,10 @@ export class AgentCommunicationProjectionLedger {
     const missingProjectionMetadataEventIds = [...new Set(projections
       .filter((projection) => (projection.surface === "conversation" || projection.surface === "collaboration_view" || projection.surface === "direct_agent_audit") && !projection.message)
       .map((projection) => projection.eventId))];
-    const canonicalById = new Map(canonical.map((event) => [event.eventId, event]));
+    // Deleted rooms are intentionally absent from active projections, but their
+    // append-only communication and runtime records remain valid historical
+    // evidence rather than becoming orphans.
+    const canonicalById = new Map(allCanonical.map((event) => [event.eventId, event]));
     const runtimeRows = this.client.prepare(`
       SELECT payload_json FROM runtime_communications WHERE project_id = ? ORDER BY id
     `).all(projectId) as Array<{ payload_json: string }>;
@@ -457,19 +461,27 @@ export class AgentCommunicationProjectionLedger {
             .sort(([left], [right]) => left.localeCompare(right))
             .map(([key, item]) => [key, stable(item)]))
         : value;
-    const canonicalizeAudience = (value: Record<string, unknown>): Record<string, unknown> => {
-      if (value.schemaVersion !== 2 || !value.audience || typeof value.audience !== "object") return value;
-      const audience = value.audience as Record<string, unknown>;
-      if (value.intent === "collaboration" && audience.kind === "agents" && Array.isArray(audience.agentIds)) {
-        return { ...value, audience: { ...audience, agentIds: [...new Set(audience.agentIds)].sort() } };
+    const comparableRuntimePayload = (value: Record<string, unknown>): Record<string, unknown> => {
+      // Canonical append enriches identity with send-time display labels after
+      // the runtime payload is durably recorded. Those labels are explicitly
+      // presentation fallback, not authored content or routing authority.
+      const comparable = Object.fromEntries(
+        Object.entries(value).filter(([key]) => key !== "identity"),
+      );
+      if (comparable.schemaVersion !== 2 || !comparable.audience || typeof comparable.audience !== "object") {
+        return comparable;
       }
-      if (value.intent === "user_dm" && audience.kind === "user_agents" && Array.isArray(audience.agentIds)) {
-        return { ...value, audience: { ...audience, agentIds: [...new Set(audience.agentIds)].sort() } };
+      const audience = comparable.audience as Record<string, unknown>;
+      if (comparable.intent === "collaboration" && audience.kind === "agents" && Array.isArray(audience.agentIds)) {
+        return { ...comparable, audience: { ...audience, agentIds: [...new Set(audience.agentIds)].sort() } };
       }
-      return value;
+      if (comparable.intent === "user_dm" && audience.kind === "user_agents" && Array.isArray(audience.agentIds)) {
+        return { ...comparable, audience: { ...audience, agentIds: [...new Set(audience.agentIds)].sort() } };
+      }
+      return comparable;
     };
     const digest = (value: Record<string, unknown>) => createHash("sha256")
-      .update(JSON.stringify(stable(canonicalizeAudience(value))))
+      .update(JSON.stringify(stable(comparableRuntimePayload(value))))
       .digest("hex");
     for (const row of runtimeRows) {
       const payload = JSON.parse(row.payload_json) as unknown;
