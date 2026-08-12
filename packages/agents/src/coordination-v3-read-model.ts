@@ -86,6 +86,39 @@ function boundedRequestPreview(payloadJson: string | null): string | undefined {
 export class CoordinationV3ReadModel {
   constructor(private readonly sqlite: Database.Database) {}
 
+  /** Projects whose canonical coordination state can currently contribute an
+   * attention trace. This deliberately over-selects recovered graph failures;
+   * AgentWorkProjection remains the authority that decides whether a trace
+   * still needs operator attention. */
+  coordinationAttentionProjectIds(): string[] {
+    const rows = this.sqlite.prepare(`
+      SELECT DISTINCT project_id
+      FROM (
+        SELECT project_id
+        FROM coordination_requests
+        WHERE state IN ('blocked', 'failed', 'outcome_unknown', 'expired', 'recipient_unavailable')
+        UNION ALL
+        SELECT project_id
+        FROM coordination_joins
+        WHERE state IN ('impossible', 'expired')
+        UNION ALL
+        SELECT project_id
+        FROM trigger_occurrences
+        WHERE state = 'dead_lettered'
+        UNION ALL
+        SELECT project_id
+        FROM agent_activations
+        WHERE state IN ('failed', 'outcome_unknown')
+        UNION ALL
+        SELECT project_id
+        FROM scheduler_runs
+        WHERE status IN ('failed', 'outcome_unknown')
+      )
+      ORDER BY project_id
+    `).all() as Array<{ project_id: string }>;
+    return rows.map((row) => row.project_id);
+  }
+
   schedulerMetrics(): {
       pendingActivations: number;
       activeRuns: number;

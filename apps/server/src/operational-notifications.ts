@@ -148,7 +148,25 @@ export function createOperationalNotifications(context: OperationalNotifications
       .filter((failure) => failure.communicationEventId && failure.communicationIntent !== "collaboration"
         && ["human_message", "urgent_message", "ordinary_message"].includes(failure.kind))
       .map((failure) => failure.id));
-    for (const project of store.listProjects()) {
+    const notifications = workspace.listNotifications();
+    const candidateProjectIds = new Set(
+      coordinationV3.coordinationAttentionProjectIds(),
+    );
+    // Revisit projects with an existing open notification even after their raw
+    // failure state changes so stale notifications are resolved promptly.
+    for (const notification of notifications) {
+      if (
+        notification.projectId
+        && notification.dedupeKey?.startsWith("coordination-attention:")
+        && (notification.status ?? "open") === "open"
+      ) candidateProjectIds.add(notification.projectId);
+    }
+    const projects = new Map(
+      store.listProjects().map((project) => [project.id, project]),
+    );
+    for (const projectId of [...candidateProjectIds].sort()) {
+      const project = projects.get(projectId);
+      if (!project) continue;
       const inspector = agentWorkProjection.inspect({ projectId: project.id, limit: 200 });
       const items = new Map(inspector.items.map((item) => [item.id, item]));
       for (const trace of inspector.traces.filter((candidate) => candidate.state === "attention")) {
@@ -223,7 +241,7 @@ export function createOperationalNotifications(context: OperationalNotifications
         });
       }
     }
-    for (const notification of workspace.listNotifications()) {
+    for (const notification of notifications) {
       if (!notification.dedupeKey?.startsWith("coordination-attention:")) continue;
       if ((notification.status ?? "open") !== "open" || retained.has(notification.dedupeKey)) continue;
       resolveOperationalNotification(notification.dedupeKey);

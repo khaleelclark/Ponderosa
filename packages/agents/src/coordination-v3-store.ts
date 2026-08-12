@@ -788,6 +788,12 @@ export class CoordinationV3Store {
     return this.readModel.agentWorkItems(input);
   }
 
+  /** Projects whose canonical coordination state may still produce an
+   * operator-attention trace. */
+  coordinationAttentionProjectIds(): string[] {
+    return this.readModel.coordinationAttentionProjectIds();
+  }
+
   /** Loads one scoped Request and its canonical update history on demand. */
   requestLifecycleDetails(input: {
     projectId: string;
