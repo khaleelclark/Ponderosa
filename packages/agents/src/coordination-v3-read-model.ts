@@ -6,7 +6,12 @@ import type {
   CoordinationRequestUpdateKind,
 } from "@ponderosa/core";
 import { inspectorDetails, inspectorJson, inspectorWakePolicy } from "./coordination-v3-inspector.js";
-import type { CoordinationWaitCycleV3 } from "./coordination-v3-types.js";
+import type {
+  CoordinationAttentionCandidateCursor,
+  CoordinationAttentionCandidateKind,
+  CoordinationAttentionCandidateV3View,
+  CoordinationWaitCycleV3,
+} from "./coordination-v3-types.js";
 
 const REQUEST_PREVIEW_CHARACTERS = 280;
 const REQUEST_LIFECYCLE_UPDATE_LIMIT = 100;
@@ -86,37 +91,88 @@ function boundedRequestPreview(payloadJson: string | null): string | undefined {
 export class CoordinationV3ReadModel {
   constructor(private readonly sqlite: Database.Database) {}
 
-  /** Projects whose canonical coordination state can currently contribute an
-   * attention trace. This deliberately over-selects recovered graph failures;
-   * AgentWorkProjection remains the authority that decides whether a trace
-   * still needs operator attention. */
-  coordinationAttentionProjectIds(): string[] {
+  /** Exact canonical records that can currently contribute a coordination
+   * attention trace. Pages use a stable keyset so recurring reconciliation
+   * never depends on an unbounded DISTINCT/ORDER BY history scan. */
+  coordinationAttentionCandidates(
+    limit = 200,
+    cursor?: CoordinationAttentionCandidateCursor,
+  ): CoordinationAttentionCandidateV3View[] {
+    const ranks: Record<CoordinationAttentionCandidateKind, number> = {
+      request: 0,
+      join: 1,
+      trigger: 2,
+    };
+    const cursorRank = cursor ? ranks[cursor.kind] : null;
+    const pageLimit = Math.max(1, Math.min(limit, 500));
+    const boundary = (kindRank: number): string => cursor ? `
+      AND (
+        updated_at < @cursorUpdatedAt
+        OR (
+          updated_at = @cursorUpdatedAt
+          AND (
+            ${kindRank} > @cursorKindRank
+            OR (${kindRank} = @cursorKindRank AND id < @cursorRecordId)
+          )
+        )
+      )
+    ` : "";
     const rows = this.sqlite.prepare(`
-      SELECT DISTINCT project_id
-      FROM (
-        SELECT project_id
+      WITH request_candidates AS (
+        SELECT 0 AS kind_rank, 'request' AS kind, id AS record_id,
+          project_id, recipient_agent_id AS agent_id, updated_at
         FROM coordination_requests
         WHERE state IN ('blocked', 'failed', 'outcome_unknown', 'expired', 'recipient_unavailable')
-        UNION ALL
-        SELECT project_id
+          ${boundary(0)}
+        ORDER BY updated_at DESC, id DESC
+        LIMIT @branchLimit
+      ), join_candidates AS (
+        SELECT 1 AS kind_rank, 'join' AS kind, id AS record_id,
+          project_id, owner_agent_id AS agent_id, updated_at
         FROM coordination_joins
         WHERE state IN ('impossible', 'expired')
-        UNION ALL
-        SELECT project_id
+          ${boundary(1)}
+        ORDER BY updated_at DESC, id DESC
+        LIMIT @branchLimit
+      ), trigger_candidates AS (
+        SELECT 2 AS kind_rank, 'trigger' AS kind, id AS record_id,
+          project_id, agent_id, updated_at
         FROM trigger_occurrences
         WHERE state = 'dead_lettered'
-        UNION ALL
-        SELECT project_id
-        FROM agent_activations
-        WHERE state IN ('failed', 'outcome_unknown')
-        UNION ALL
-        SELECT project_id
-        FROM scheduler_runs
-        WHERE status IN ('failed', 'outcome_unknown')
+          ${boundary(2)}
+        ORDER BY updated_at DESC, id DESC
+        LIMIT @branchLimit
+      ), attention_candidates AS (
+        SELECT * FROM request_candidates
+        UNION ALL SELECT * FROM join_candidates
+        UNION ALL SELECT * FROM trigger_candidates
       )
-      ORDER BY project_id
-    `).all() as Array<{ project_id: string }>;
-    return rows.map((row) => row.project_id);
+      SELECT kind, record_id, project_id, agent_id, updated_at
+      FROM attention_candidates
+      ORDER BY updated_at DESC, kind_rank, record_id DESC
+      LIMIT @pageLimit
+    `).all({
+      branchLimit: pageLimit,
+      pageLimit,
+      ...(cursor ? {
+        cursorUpdatedAt: cursor.updatedAt,
+        cursorKindRank: cursorRank,
+        cursorRecordId: cursor.recordId,
+      } : {}),
+    }) as Array<{
+      kind: CoordinationAttentionCandidateKind;
+      record_id: string;
+      project_id: string;
+      agent_id: string;
+      updated_at: string;
+    }>;
+    return rows.map((row) => ({
+      kind: row.kind,
+      recordId: row.record_id,
+      projectId: row.project_id,
+      agentId: row.agent_id,
+      updatedAt: row.updated_at,
+    }));
   }
 
   schedulerMetrics(): {

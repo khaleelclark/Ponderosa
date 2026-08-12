@@ -45,6 +45,7 @@ describe("operational notification classification", () => {
       updatedAt: NOW,
     });
     const coordination = {
+      coordinationAttentionCandidates: vi.fn(() => []),
       communicationAttentionActivations: vi.fn(() => [{
         id: COMMUNICATION_ACTIVATION_ID,
         projectId: PROJECT_ID,

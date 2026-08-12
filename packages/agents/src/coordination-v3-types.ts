@@ -367,6 +367,21 @@ export type CommunicationAttentionActivationCursor = Pick<
   "updatedAt" | "id"
 >;
 
+export type CoordinationAttentionCandidateKind = "request" | "join" | "trigger";
+
+export interface CoordinationAttentionCandidateV3View {
+  kind: CoordinationAttentionCandidateKind;
+  recordId: string;
+  projectId: string;
+  agentId: string;
+  updatedAt: string;
+}
+
+export type CoordinationAttentionCandidateCursor = Pick<
+  CoordinationAttentionCandidateV3View,
+  "updatedAt" | "kind" | "recordId"
+>;
+
 export interface SettleUnavailableActivationResult {
   settled: boolean;
   replayed: boolean;
