@@ -16,7 +16,6 @@ import type {
   MessageDto,
   ProjectEngineCapabilitiesDto,
   ResponseFileActivityDto,
-  AgentDetailDto,
   AgentDto,
   AgentTelemetryStream,
 } from "@ponderosa/core";
@@ -70,6 +69,7 @@ import {
   telemetryStreamsForTab,
   telemetryTab,
   type AgentTab,
+  type MessagePageState,
   type TelemetryPageState,
 } from "./AgentDetail.helpers";
 import {
@@ -128,11 +128,7 @@ export function AgentDetail({
   const queryClient = useQueryClient();
   const agentQuery = useAgent(agentId);
   const notificationsQuery = useNotifications();
-  const [olderMessages, setOlderMessages] = useState<{
-    messages: MessageDto[];
-    cursor?: string;
-    hasMore: boolean;
-  }>();
+  const [olderMessages, setOlderMessages] = useState<MessagePageState>();
   const [olderTelemetry, setOlderTelemetry] = useState<TelemetryPageState>({});
   const [loadingOlder, setLoadingOlder] = useState(false);
   const focusedTelemetryRef = useRef<string>();

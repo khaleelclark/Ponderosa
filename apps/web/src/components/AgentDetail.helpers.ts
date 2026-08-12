@@ -10,7 +10,6 @@ import type {
   SendMessageRequest,
   SendMessageResponse,
 } from "@ponderosa/core";
-import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
 import { buildMarkdownTranscript } from "../chatTranscript";
 import { uniqueBy } from "../collections";
 import type { AgentDetailView } from "../routing";
@@ -45,8 +44,7 @@ type TelemetryPageState = {
 
 type MessagePageState = {
   messages: MessageDto[];
-  cursor?: string;
-  hasMore: boolean;
+  history?: HistoryWindowDto;
 };
 
 function mergeMessagePage(
@@ -57,24 +55,15 @@ function mergeMessagePage(
   ordinaryHistory?: HistoryWindowDto,
 ): MessagePageState {
   const history = preserveHistory
-    ? current
-      ? { cursor: current.cursor, hasMore: current.hasMore }
-      : {
-          cursor: ordinaryHistory?.cursor,
-          hasMore: ordinaryHistory?.hasMore ?? false,
-        }
-    : {
-        cursor: page.history?.cursor,
-        hasMore: page.history?.hasMore ?? false,
-      };
+    ? (current?.history ?? ordinaryHistory)
+    : page.history;
   return {
     messages: uniqueBy(
       [...page.messages, ...(current?.messages ?? []), ...recentMessages],
       message => message.id,
       compareAgentChatMessages,
     ),
-    ...(history.cursor ? { cursor: history.cursor } : {}),
-    hasMore: history.hasMore,
+    ...(history ? { history } : {}),
   };
 }
 
@@ -215,9 +204,7 @@ function eligibleOrganizationParents(
 
 function mergeAgentDetailProjection(
   current: AgentDetailDto | undefined,
-  olderMessages:
-    | { messages: MessageDto[]; cursor?: string; hasMore: boolean }
-    | undefined,
+  olderMessages: MessagePageState | undefined,
   olderTelemetry: TelemetryPageState,
 ): AgentDetailDto | undefined {
   if (!current) return undefined;
@@ -290,13 +277,7 @@ function mergeAgentDetailProjection(
         ])
         .filter(entry => entry[1] !== undefined),
     ) as AgentDetailDto["telemetryHistory"],
-    history: olderMessages
-      ? {
-          limit: current.history?.limit ?? AGENT_DETAIL_PAGE_SIZE,
-          hasMore: olderMessages.hasMore,
-          ...(olderMessages.cursor ? { cursor: olderMessages.cursor } : {}),
-        }
-      : current.history,
+    history: olderMessages?.history ?? current.history,
   };
 }
 
