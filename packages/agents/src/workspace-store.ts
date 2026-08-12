@@ -553,7 +553,11 @@ export class WorkspaceStore {
   }
 
   createNotification(input: Omit<WorkspaceNotificationDto, "id" | "createdAt">, queueWebPush = false): WorkspaceNotificationDto {
-    if (input.communicationEventId) {
+    // Operational notifications may point at the same Communication while
+    // representing different retry attempts. Their explicit dedupe key is the
+    // identity; communicationEventId remains navigation metadata. Ordinary
+    // communication notifications have no dedupe key and retain event identity.
+    if (!input.dedupeKey && input.communicationEventId) {
       const existing = [...this.notifications.values()].find((item) => item.communicationEventId === input.communicationEventId);
       if (existing) return existing;
     }

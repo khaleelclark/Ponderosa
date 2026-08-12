@@ -56,4 +56,54 @@ describe("communication attention activations", () => {
       supersededByRetry: false,
     });
   });
+
+  it("paginates beyond the per-query maximum without skipping equal timestamps", () => {
+    const { client: sqlite } = openDb(":memory:");
+    clients.push(sqlite);
+    const insertCommunication = sqlite.prepare(`
+      INSERT INTO runtime_communications (
+        id, project_id, sender_json, intent, audience_json, payload_json,
+        payload_hash, actionable, created_at
+      ) VALUES (?, 'project-1', '{}', 'user_dm', '{}', ?, 'hash', 1, ?)
+    `);
+    const insertActivation = sqlite.prepare(`
+      INSERT INTO agent_activations (
+        id, project_id, agent_id, kind, priority, dispatch_policy,
+        prompt_class, state, dedupe_key, payload_json, available_at,
+        created_at, updated_at
+      ) VALUES (?, 'project-1', 'agent-1', 'human_message', 100, 'steer_or_run',
+        'human', 'failed', ?, '{}', ?, ?, ?)
+    `);
+    const insertSource = sqlite.prepare(`
+      INSERT INTO activation_sources (activation_id, source_kind, source_id)
+      VALUES (?, 'communication', ?)
+    `);
+    sqlite.transaction(() => {
+      for (let index = 0; index < 501; index += 1) {
+        const suffix = index.toString().padStart(3, "0");
+        const communicationId = `dispatch:communication-${suffix}:agent-1`;
+        const activationId = `activation-${suffix}`;
+        insertCommunication.run(
+          communicationId,
+          JSON.stringify({ communication: { eventId: `communication-${suffix}` } }),
+          NOW,
+        );
+        insertActivation.run(activationId, activationId, NOW, NOW, NOW);
+        insertSource.run(activationId, communicationId);
+      }
+    })();
+
+    const store = new CoordinationV3Store(sqlite);
+    const first = store.communicationAttentionActivations(undefined, 500);
+    const last = first.at(-1)!;
+    const second = store.communicationAttentionActivations(undefined, 500, {
+      updatedAt: last.updatedAt,
+      id: last.id,
+    });
+
+    expect(first).toHaveLength(500);
+    expect(second).toHaveLength(1);
+    expect(new Set([...first, ...second].map((activation) => activation.id)).size).toBe(501);
+    expect(second[0]?.id).toBe("activation-000");
+  });
 });

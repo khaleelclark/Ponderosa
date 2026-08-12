@@ -61,6 +61,7 @@ import type {
   RuntimeManagedArtifactAttachmentAuthorizationV3,
   PendingActivationV3View,
   TerminalActivationV3View,
+  CommunicationAttentionActivationCursor,
   CommunicationAttentionActivationV3View,
   SettleUnavailableActivationResult,
   CoordinationWaitCycleV3,
@@ -111,6 +112,7 @@ export type {
   RuntimeArtifactAuthorityV3,
   PendingActivationV3View,
   TerminalActivationV3View,
+  CommunicationAttentionActivationCursor,
   CommunicationAttentionActivationV3View,
   SettleUnavailableActivationResult,
   CoordinationWaitCycleV3,
@@ -463,8 +465,12 @@ export class CoordinationV3Store {
     return this.activationReadModel.terminalActivations(projectId, limit);
   }
 
-  communicationAttentionActivations(projectId?: string, limit = 100): CommunicationAttentionActivationV3View[] {
-    return this.activationReadModel.communicationAttentionActivations(projectId, limit);
+  communicationAttentionActivations(
+    projectId?: string,
+    limit = 100,
+    cursor?: CommunicationAttentionActivationCursor,
+  ): CommunicationAttentionActivationV3View[] {
+    return this.activationReadModel.communicationAttentionActivations(projectId, limit, cursor);
   }
 
   settleUnavailableActivation(input: {

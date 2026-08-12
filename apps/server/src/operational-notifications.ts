@@ -1,6 +1,11 @@
 import { promises as fs } from "node:fs";
 import type { WorkspaceNotificationDto } from "@ponderosa/core";
-import type { AgentStore, CoordinationV3Store, WorkspaceStore } from "@ponderosa/agents";
+import type {
+  AgentStore,
+  CommunicationAttentionActivationV3View,
+  CoordinationV3Store,
+  WorkspaceStore,
+} from "@ponderosa/agents";
 import { AgentWorkProjection } from "./routes/agent-work.js";
 
 interface OperationalNotificationsContext {
@@ -12,6 +17,18 @@ interface OperationalNotificationsContext {
 
 export function createOperationalNotifications(context: OperationalNotificationsContext) {
   const { store, coordinationV3, workspace, publishWorkspaceSince } = context;
+  const communicationAttentionActivations = (): CommunicationAttentionActivationV3View[] => {
+    const pageSize = 500;
+    const failures: CommunicationAttentionActivationV3View[] = [];
+    let cursor: Pick<CommunicationAttentionActivationV3View, "updatedAt" | "id"> | undefined;
+    for (;;) {
+      const page = coordinationV3.communicationAttentionActivations(undefined, pageSize, cursor);
+      failures.push(...page);
+      if (page.length < pageSize) return failures;
+      const last = page.at(-1)!;
+      cursor = { updatedAt: last.updatedAt, id: last.id };
+    }
+  };
 
   const createOperationalNotification = (input: {
     dedupeKey: string;
@@ -76,7 +93,7 @@ export function createOperationalNotifications(context: OperationalNotifications
     return issue;
   };
   const reconcileCommunicationFailureNotifications = (): void => {
-    for (const failure of coordinationV3.communicationAttentionActivations(undefined, 500)) {
+    for (const failure of communicationAttentionActivations()) {
       const key = `communication-delivery:${failure.id}:${failure.terminalOutcome ?? failure.state}`;
       if (failure.supersededByRetry) continue;
       if (!["human_message", "urgent_message", "ordinary_message"].includes(failure.kind)) continue;
@@ -127,7 +144,7 @@ export function createOperationalNotifications(context: OperationalNotifications
     if (now - lastCoordinationAttentionReconciliationAt < 5_000) return;
     lastCoordinationAttentionReconciliationAt = now;
     const retained = new Set<string>();
-    const communicationFailureActivationIds = new Set(coordinationV3.communicationAttentionActivations(undefined, 500)
+    const communicationFailureActivationIds = new Set(communicationAttentionActivations()
       .filter((failure) => failure.communicationEventId && failure.communicationIntent !== "collaboration"
         && ["human_message", "urgent_message", "ordinary_message"].includes(failure.kind))
       .map((failure) => failure.id));

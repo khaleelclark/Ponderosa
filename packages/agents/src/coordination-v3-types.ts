@@ -362,6 +362,11 @@ export interface CommunicationAttentionActivationV3View {
   updatedAt: string;
 }
 
+export type CommunicationAttentionActivationCursor = Pick<
+  CommunicationAttentionActivationV3View,
+  "updatedAt" | "id"
+>;
+
 export interface SettleUnavailableActivationResult {
   settled: boolean;
   replayed: boolean;

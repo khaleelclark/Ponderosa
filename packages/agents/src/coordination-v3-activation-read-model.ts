@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import type {
   ActivationPromptClass,
   ActivationTerminalOutcome,
+  CommunicationAttentionActivationCursor,
   CommunicationAttentionActivationV3View,
   PendingActivationV3View,
   TerminalActivationV3View,
@@ -72,6 +73,7 @@ export class CoordinationV3ActivationReadModel {
   communicationAttentionActivations(
     projectId?: string,
     limit = 100,
+    cursor?: CommunicationAttentionActivationCursor,
   ): CommunicationAttentionActivationV3View[] {
     const rows = this.sqlite.prepare(`
       SELECT activation.id, activation.project_id, activation.agent_id,
@@ -93,10 +95,19 @@ export class CoordinationV3ActivationReadModel {
         AND (? IS NULL OR activation.project_id = ?)
         AND activation.kind IN ('human_message', 'urgent_message', 'ordinary_message')
         AND runtime.intent <> 'collaboration'
+        AND (
+          ? IS NULL
+          OR activation.updated_at < ?
+          OR (activation.updated_at = ? AND activation.id < ?)
+        )
       ORDER BY activation.updated_at DESC, activation.id DESC LIMIT ?
     `).all(
       projectId ?? null,
       projectId ?? null,
+      cursor?.updatedAt ?? null,
+      cursor?.updatedAt ?? null,
+      cursor?.updatedAt ?? null,
+      cursor?.id ?? null,
       Math.max(1, Math.min(limit, 500)),
     ) as Array<{
       id: string;

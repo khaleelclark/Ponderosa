@@ -644,6 +644,10 @@ CREATE INDEX agent_activations_runnable
 CREATE INDEX agent_activations_terminal_delivery
   ON agent_activations(terminal_outcome, terminal_at DESC)
   WHERE terminal_outcome IS NOT NULL;
+CREATE INDEX agent_activations_communication_attention
+  ON agent_activations(updated_at DESC, id DESC)
+  WHERE state IN ('failed', 'outcome_unknown')
+    AND kind IN ('human_message', 'urgent_message', 'ordinary_message');
 CREATE UNIQUE INDEX agent_message_communication_projection
   ON messages (agent_id, communication_event_id)
   WHERE communication_event_id IS NOT NULL;

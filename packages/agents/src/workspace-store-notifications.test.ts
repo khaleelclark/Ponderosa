@@ -49,4 +49,37 @@ describe("notification attention authority", () => {
     expect(store.getNotification(issue.id)?.readAt).toBeUndefined();
     expect(store.getNotification(issue.id)?.status).toBe("open");
   });
+
+  test("retry attempt notices use their dedupe key even when they share a communication", () => {
+    const store = fixture();
+    const predecessor = store.createNotification({
+      kind: "operational",
+      category: "communication",
+      severity: "urgent",
+      status: "open",
+      dedupeKey: "communication-delivery:activation-1:outcome_unknown",
+      communicationEventId: "communication-1",
+      title: "Message outcome needs your review",
+      body: "The first attempt is uncertain.",
+    });
+    store.setNotificationStatus(predecessor.id, "resolved");
+
+    const successor = store.createNotification({
+      kind: "operational",
+      category: "communication",
+      severity: "urgent",
+      status: "open",
+      dedupeKey: "communication-delivery:activation-2:failed",
+      communicationEventId: "communication-1",
+      title: "Message delivery needs your help",
+      body: "The retry failed.",
+    });
+
+    expect(successor.id).not.toBe(predecessor.id);
+    expect(successor.status).toBe("open");
+    expect(store.getNotification(predecessor.id)?.status).toBe("resolved");
+    expect(store.getNotification(successor.id)?.dedupeKey).toBe(
+      "communication-delivery:activation-2:failed",
+    );
+  });
 });

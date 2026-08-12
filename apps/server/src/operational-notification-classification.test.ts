@@ -135,4 +135,66 @@ describe("operational notification classification", () => {
     ]);
     expect(notifications[0]?.body).toContain("Retrying may duplicate work");
   });
+
+  it("reconciles every communication failure across bounded pages", () => {
+    const failures = Array.from({ length: 501 }, (_, index) => ({
+      id: `activation-${index.toString().padStart(3, "0")}`,
+      projectId: PROJECT_ID,
+      agentId: AGENT_ID,
+      kind: "human_message",
+      state: "failed" as const,
+      communicationEventId: `communication-${index}`,
+      communicationIntent: "user_dm",
+      deliveryFailures: 1,
+      updatedAt: NOW,
+    })).reverse();
+    const notifications: WorkspaceNotificationDto[] = [];
+    const communicationAttentionActivations = vi.fn((
+      _projectId: string | undefined,
+      limit: number,
+      cursor?: { updatedAt: string; id: string },
+    ) => {
+      const start = cursor
+        ? failures.findIndex((failure) => failure.id === cursor.id) + 1
+        : 0;
+      return failures.slice(start, start + limit);
+    });
+    const coordination = {
+      communicationAttentionActivations,
+      terminalActivationDisposition: vi.fn(() => undefined),
+    } as unknown as CoordinationV3Store;
+    const workspace = {
+      cursor: vi.fn(() => 0),
+      listNotifications: vi.fn(() => notifications),
+      createNotification: vi.fn((input: WorkspaceNotificationDto) => {
+        const notification = {
+          ...input,
+          id: input.id ?? `notification-${notifications.length + 1}`,
+          createdAt: input.createdAt ?? NOW,
+        };
+        notifications.push(notification);
+        return notification;
+      }),
+      setNotificationStatus: vi.fn(),
+    } as unknown as WorkspaceStore;
+    const operational = createOperationalNotifications({
+      store: { getConversation: vi.fn(() => undefined) } as unknown as AgentStore,
+      coordinationV3: coordination,
+      workspace,
+      publishWorkspaceSince: vi.fn(),
+    });
+
+    operational.reconcileCommunicationFailureNotifications();
+
+    expect(communicationAttentionActivations).toHaveBeenCalledTimes(2);
+    expect(communicationAttentionActivations).toHaveBeenLastCalledWith(
+      undefined,
+      500,
+      { updatedAt: NOW, id: "activation-001" },
+    );
+    expect(notifications).toHaveLength(501);
+    expect(notifications.at(-1)?.dedupeKey).toBe(
+      "communication-delivery:activation-000:failed",
+    );
+  });
 });

@@ -32,6 +32,8 @@ export type {
   ActivationPromptClass,
   ActivationTerminalOutcome,
   TerminalActivationV3View,
+  CommunicationAttentionActivationCursor,
+  CommunicationAttentionActivationV3View,
   SettleUnavailableActivationResult,
   OutboxItem,
   EnqueueMessageActivationInput,
