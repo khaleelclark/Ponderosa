@@ -164,9 +164,19 @@ export function registerServerLifecycle(
       startupProjectionRecovery = reconcileRuntimeCommunicationProjections(undefined, {
         yieldEvery: 1,
         shouldContinue: () => !isClosed(),
-      }).then((repaired) => {
+      }).then(async (repaired) => {
+        let verifiedProjects = 0;
+        for (const project of store.listProjects()) {
+          if (isClosed()) break;
+          refreshCommunicationReconciliation(project.id);
+          verifiedProjects += 1;
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
         if (!isClosed()) {
-          app.log.info({ repaired }, "runtime communication projection startup recovery completed");
+          app.log.info(
+            { repaired, verifiedProjects },
+            "runtime communication projection startup recovery completed",
+          );
         }
       }).catch((error) => {
         if (!isClosed()) {
