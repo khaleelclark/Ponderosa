@@ -76,9 +76,11 @@ export function parseGitStatus(output: string): WorkspaceChangeDto[] {
 async function workspaceStatus(projectId: string, root: string): Promise<WorkspaceStatusDto> {
   const generatedAt = new Date().toISOString();
   try {
-    const retainedGitDirectory = listSecureDirectory({ root })
-      ?.some((entry) => entry.name === ".git" && entry.kind === "directory");
-    if (!retainedGitDirectory) {
+    const retainedGitMarker = listSecureDirectory({ root })
+      ?.some((entry) =>
+        entry.name === ".git" &&
+        (entry.kind === "directory" || entry.kind === "file"));
+    if (!retainedGitMarker) {
       return { projectId, isGitRepository: false, generatedAt, changes: [] };
     }
     const inside = await runGit(root, ["rev-parse", "--is-inside-work-tree"]);
