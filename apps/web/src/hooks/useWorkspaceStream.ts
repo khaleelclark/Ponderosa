@@ -119,6 +119,32 @@ function workspaceEventChangesResourceRecency(event: WorkspaceEvent): boolean {
     );
 }
 
+/** A fixed window bounds recency refetches during sustained Agent output while
+ * still guaranteeing periodic refreshes rather than waiting for a quiet gap. */
+function createWorkspaceRecencyInvalidator(
+  queryClient: Pick<QueryClient, "invalidateQueries">,
+  delayMs = 350,
+): { schedule(): void; flush(): void; dispose(): void } {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const flush = () => {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.workspaceResourceRecency.all,
+    });
+  };
+  return {
+    schedule() {
+      timer ??= setTimeout(flush, delayMs);
+    },
+    flush,
+    dispose() {
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+    },
+  };
+}
+
 function persistWorkspaceCursor(cursor: number, instanceId?: string): void {
   try {
     window.sessionStorage.setItem(CURSOR_KEY, String(cursor));
@@ -328,6 +354,8 @@ export function useWorkspaceStream(): WorkspaceConnectionState {
     const agentWorkInvalidator = createAgentWorkInvalidator(queryClient);
     const agentDetailInvalidator = createAgentDetailInvalidator(queryClient);
     const agentStateInvalidator = createAgentStateInvalidator(queryClient);
+    const workspaceRecencyInvalidator =
+      createWorkspaceRecencyInvalidator(queryClient);
     const collaborationChatInvalidator = createCollaborationChatInvalidator(queryClient);
     const decisionConversationInvalidator =
       createDecisionConversationInvalidator(queryClient);
@@ -336,6 +364,7 @@ export function useWorkspaceStream(): WorkspaceConnectionState {
       agentWorkInvalidator.dispose();
       agentDetailInvalidator.dispose();
       agentStateInvalidator.dispose();
+      workspaceRecencyInvalidator.dispose();
       collaborationChatInvalidator.dispose();
       decisionConversationInvalidator.dispose();
       void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
@@ -406,7 +435,7 @@ export function useWorkspaceStream(): WorkspaceConnectionState {
       if (workspaceEventInvalidatesGlobalSearch(event)) void queryClient.invalidateQueries({ queryKey: queryKeys.globalSearch.all });
       if (workspaceEventInvalidatesAllChat(event)) void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
       if (workspaceEventChangesResourceRecency(event) || preferenceStarsChanged) {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceResourceRecency.all });
+        workspaceRecencyInvalidator.schedule();
       }
       if (event.type === "preferences_updated") {
         for (const kind of preferenceDirectoryKinds) {
@@ -618,9 +647,12 @@ export function useWorkspaceStream(): WorkspaceConnectionState {
       agentWorkInvalidator.dispose();
       agentDetailInvalidator.dispose();
       agentStateInvalidator.dispose();
+      workspaceRecencyInvalidator.dispose();
       collaborationChatInvalidator.dispose();
       decisionConversationInvalidator.dispose();
     };
   }, [queryClient]);
   return connection;
 }
+
+export { createWorkspaceRecencyInvalidator, workspaceEventChangesResourceRecency };

@@ -38,9 +38,13 @@ export function boundWorkspaceResourceRecency(
     ...(preferences?.starredResourceIds ?? []),
     ...(preferences?.starredProjectIds ?? []).map(id => `project:${id}`),
   ]);
-  return resources.filter(
-    (resource, index) => index < limit || starred.has(resource.resourceKey),
-  );
+  let unstarredCount = 0;
+  return resources.filter(resource => {
+    if (starred.has(resource.resourceKey)) return true;
+    if (unstarredCount >= limit) return false;
+    unstarredCount += 1;
+    return true;
+  });
 }
 
 export function useWorkspaceResourceRecency() {
@@ -83,18 +87,24 @@ export function markWorkspaceResourceUsed(
     );
     queryClient.setQueryData<WorkspaceResourceRecencyListDto>(
       queryKeys.workspaceResourceRecency.all,
-      current => ({
-        resources: boundWorkspaceResourceRecency(
-          [
-            entry,
-            ...(current?.resources ?? []).filter(
-              item => item.resourceKey !== entry.resourceKey,
-            ),
-          ],
+      current => {
+        const candidates = [
+          entry,
+          ...(current?.resources ?? []).filter(
+            item => item.resourceKey !== entry.resourceKey,
+          ),
+        ];
+        const resources = boundWorkspaceResourceRecency(
+          candidates,
           preferences,
-        ),
-        truncated: current?.truncated,
-      }),
+        );
+        const truncated = Boolean(current?.truncated)
+          || resources.length < candidates.length;
+        return {
+          resources,
+          ...(truncated ? { truncated: true } : {}),
+        };
+      },
     );
   };
   apply(optimistic);
