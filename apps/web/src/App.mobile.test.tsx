@@ -1,8 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { AgentDto, ProjectDto } from "@ponderosa/core";
+import type { AgentDto, ConversationDto, ProjectDto } from "@ponderosa/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MobileWorkspaceTabManager } from "./App.mobile";
+import {
+  mobileCreationReturnRoute,
+  MobileWorkspaceTabManager,
+} from "./App.mobile";
 import type { WorkspaceTabState } from "./workspaceTabs";
 
 const { listAgents, listConversations } = vi.hoisted(() => ({
@@ -36,6 +39,15 @@ const agent: AgentDto = {
     allowAutomaticDescendantDeletion: false,
     allowAutomaticDescendantReorganization: false,
   },
+};
+
+const conversation: ConversationDto = {
+  id: "conversation-1",
+  projectId: project.id,
+  title: "Project Chat",
+  createdAt: "2026-08-12T00:00:00.000Z",
+  updatedAt: "2026-08-12T00:00:00.000Z",
+  archived: false,
 };
 
 const tabs: WorkspaceTabState[] = [
@@ -97,6 +109,29 @@ describe("mobile workspace tab management", () => {
     expect(liveAgentTab).not.toBeNull();
     fireEvent.click(liveAgentTab!);
     expect(props.onActivate).toHaveBeenCalledWith("tab-agent");
+    expect(listAgents).toHaveBeenCalledTimes(1);
+    expect(listConversations).not.toHaveBeenCalled();
+  });
+
+  it("loads only conversations for projects represented by chat tabs", async () => {
+    listAgents.mockResolvedValue([]);
+    listConversations.mockResolvedValue([conversation]);
+    renderManager({
+      tabs: [{
+        key: "tab-chat",
+        route: {
+          kind: "conversation",
+          projectId: project.id,
+          conversationId: conversation.id,
+        },
+        lastActivatedAt: 1,
+      }],
+      activeKey: "tab-chat",
+    });
+
+    await waitFor(() => expect(screen.getByText("Project Chat")).toBeTruthy());
+    expect(listConversations).toHaveBeenCalledTimes(1);
+    expect(listAgents).not.toHaveBeenCalled();
   });
 
   it("does not offer closing the final workspace tab", () => {
@@ -105,5 +140,22 @@ describe("mobile workspace tab management", () => {
     renderManager({ tabs: [tabs[0]!], activeKey: "tab-home" });
 
     expect(screen.queryByRole("button", { name: "Close Home" })).toBeNull();
+  });
+
+  it("keeps interleaved creation origins isolated by persisted tab", () => {
+    const origins = new Map([
+      ["tab-a", { kind: "projects" } as const],
+      ["tab-b", { kind: "allAgents" } as const],
+    ]);
+
+    expect(mobileCreationReturnRoute(origins, "tab-a")).toEqual({
+      kind: "projects",
+    });
+    expect(mobileCreationReturnRoute(origins, "tab-b")).toEqual({
+      kind: "allAgents",
+    });
+    expect(mobileCreationReturnRoute(origins, "missing")).toEqual({
+      kind: "home",
+    });
   });
 });

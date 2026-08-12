@@ -50,8 +50,11 @@ import { routeTabLabel } from "./routeRegistry";
 import type { WorkspaceTabState } from "./workspaceTabs";
 import { useQueries } from "@tanstack/react-query";
 
-export function mobileCreationReturnRoute(origin?: Route): Route {
-  return origin ?? { kind: "home" };
+export function mobileCreationReturnRoute(
+  origins: ReadonlyMap<string, Route>,
+  activeTabKey: string,
+): Route {
+  return origins.get(activeTabKey) ?? { kind: "home" };
 }
 
 export function mobileRouteAfterResourceRemoval(
@@ -120,17 +123,24 @@ export function MobileWorkspaceTabManager({
   onActivate(key: string): void;
   onCloseTab(key: string): void;
 }): JSX.Element {
-  const projectIds = [
+  const conversationProjectIds = [
     ...new Set(
       tabs.flatMap(tab =>
-        "projectId" in tab.route && typeof tab.route.projectId === "string"
+        tab.route.kind === "conversation"
           ? [tab.route.projectId]
           : [],
       ),
     ),
   ];
+  const agentProjectIds = [
+    ...new Set(
+      tabs.flatMap(tab =>
+        tab.route.kind === "agent" ? [tab.route.projectId] : [],
+      ),
+    ),
+  ];
   const conversationQueries = useQueries({
-    queries: projectIds.map(projectId => ({
+    queries: conversationProjectIds.map(projectId => ({
       queryKey: queryKeys.conversations.project(projectId),
       queryFn: () => api.listConversations(projectId),
       enabled: open,
@@ -138,20 +148,23 @@ export function MobileWorkspaceTabManager({
     })),
   });
   const agentQueries = useQueries({
-    queries: projectIds.map(projectId => ({
+    queries: agentProjectIds.map(projectId => ({
       queryKey: queryKeys.agents.project(projectId),
       queryFn: () => api.listAgents(projectId),
       enabled: open,
       staleTime: 10_000,
     })),
   });
-  const resourcesByProject = new Map(
-    projectIds.map((projectId, index) => [
+  const conversationsByProject = new Map(
+    conversationProjectIds.map((projectId, index) => [
       projectId,
-      {
-        conversations: conversationQueries[index]?.data ?? [],
-        agents: agentQueries[index]?.data ?? [],
-      },
+      conversationQueries[index]?.data ?? [],
+    ]),
+  );
+  const agentsByProject = new Map(
+    agentProjectIds.map((projectId, index) => [
+      projectId,
+      agentQueries[index]?.data ?? [],
     ]),
   );
 
@@ -193,16 +206,15 @@ export function MobileWorkspaceTabManager({
             const project = projectId
               ? projects.find(candidate => candidate.id === projectId)
               : undefined;
-            const resources = projectId
-              ? resourcesByProject.get(projectId)
-              : undefined;
             const label = tab.title ?? routeTabLabel(tab.route, {
               conversationTitle: conversationId =>
-                resources?.conversations.find(
+                conversationsByProject.get(projectId ?? "")?.find(
                   conversation => conversation.id === conversationId,
                 )?.title,
               agentTitle: agentId =>
-                resources?.agents.find(agent => agent.id === agentId)?.title,
+                agentsByProject.get(projectId ?? "")?.find(
+                  agent => agent.id === agentId,
+                )?.title,
               projectLabel: project?.label,
             });
             const selected = tab.key === activeKey;
