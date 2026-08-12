@@ -2,6 +2,8 @@ import type Database from "better-sqlite3";
 import type {
   ActivationPromptClass,
   ActivationTerminalOutcome,
+  CommunicationAttentionActivationCursor,
+  CommunicationAttentionActivationV3View,
   PendingActivationV3View,
   TerminalActivationV3View,
 } from "./coordination-v3-types.js";
@@ -50,7 +52,10 @@ export class CoordinationV3ActivationReadModel {
           WHERE retry.predecessor_activation_id = agent_activations.id
         ) AS superseded_by_retry
       FROM agent_activations
-      WHERE id = ? AND terminal_outcome IS NOT NULL
+      WHERE id = ? AND (
+        terminal_outcome IS NOT NULL
+        OR state IN ('failed', 'outcome_unknown', 'cancelled')
+      )
     `).get(activationId) as {
       id: string;
       state: TerminalActivationV3View["state"];
@@ -63,6 +68,81 @@ export class CoordinationV3ActivationReadModel {
           supersededByRetry: Boolean(row.superseded_by_retry),
         }
       : undefined;
+  }
+
+  communicationAttentionActivations(
+    projectId?: string,
+    limit = 100,
+    cursor?: CommunicationAttentionActivationCursor,
+  ): CommunicationAttentionActivationV3View[] {
+    const rows = this.sqlite.prepare(`
+      SELECT activation.id, activation.project_id, activation.agent_id,
+        activation.kind, activation.state, activation.scope_key,
+        activation.delivery_failures, activation.last_delivery_error,
+        activation.terminal_outcome, activation.updated_at,
+        COALESCE(json_extract(runtime.payload_json, '$.communication.eventId'), runtime.id)
+          AS communication_event_id,
+        runtime.intent AS communication_intent,
+        EXISTS (
+          SELECT 1 FROM activation_delivery_retry_lineage retry
+          WHERE retry.predecessor_activation_id = activation.id
+        ) AS superseded_by_retry
+      FROM agent_activations activation
+      JOIN activation_sources source
+        ON source.activation_id = activation.id AND source.source_kind = 'communication'
+      JOIN runtime_communications runtime ON runtime.id = source.source_id
+      WHERE activation.state IN ('failed', 'outcome_unknown')
+        AND (? IS NULL OR activation.project_id = ?)
+        AND activation.kind IN ('human_message', 'urgent_message', 'ordinary_message')
+        AND runtime.intent <> 'collaboration'
+        AND (
+          ? IS NULL
+          OR activation.updated_at < ?
+          OR (activation.updated_at = ? AND activation.id < ?)
+        )
+      ORDER BY activation.updated_at DESC, activation.id DESC LIMIT ?
+    `).all(
+      projectId ?? null,
+      projectId ?? null,
+      cursor?.updatedAt ?? null,
+      cursor?.updatedAt ?? null,
+      cursor?.updatedAt ?? null,
+      cursor?.id ?? null,
+      Math.max(1, Math.min(limit, 500)),
+    ) as Array<{
+      id: string;
+      project_id: string;
+      agent_id: string;
+      kind: string;
+      state: CommunicationAttentionActivationV3View["state"];
+      scope_key: string | null;
+      delivery_failures: number;
+      last_delivery_error: string | null;
+      updated_at: string;
+      communication_event_id: string;
+      communication_intent: string;
+      superseded_by_retry: number;
+      terminal_outcome: ActivationTerminalOutcome | null;
+    }>;
+    return rows.map((row) => ({
+      id: row.id,
+      projectId: row.project_id,
+      agentId: row.agent_id,
+      kind: row.kind,
+      state: row.state,
+      ...(row.scope_key ? { scopeKey: row.scope_key } : {}),
+      communicationEventId: row.communication_event_id,
+      communicationIntent: row.communication_intent,
+      ...(row.superseded_by_retry ? { supersededByRetry: true } : {}),
+      ...(row.terminal_outcome
+        ? { terminalOutcome: row.terminal_outcome }
+        : {}),
+      deliveryFailures: row.delivery_failures,
+      ...(row.last_delivery_error
+        ? { lastDeliveryError: row.last_delivery_error }
+        : {}),
+      updatedAt: row.updated_at,
+    }));
   }
 
   terminalActivations(projectId?: string, limit = 100): TerminalActivationV3View[] {

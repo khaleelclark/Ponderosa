@@ -1,6 +1,11 @@
 import { promises as fs } from "node:fs";
 import type { WorkspaceNotificationDto } from "@ponderosa/core";
-import type { AgentStore, CoordinationV3Store, WorkspaceStore } from "@ponderosa/agents";
+import type {
+  AgentStore,
+  CommunicationAttentionActivationV3View,
+  CoordinationV3Store,
+  WorkspaceStore,
+} from "@ponderosa/agents";
 import { AgentWorkProjection } from "./routes/agent-work.js";
 
 interface OperationalNotificationsContext {
@@ -12,6 +17,18 @@ interface OperationalNotificationsContext {
 
 export function createOperationalNotifications(context: OperationalNotificationsContext) {
   const { store, coordinationV3, workspace, publishWorkspaceSince } = context;
+  const communicationAttentionActivations = (): CommunicationAttentionActivationV3View[] => {
+    const pageSize = 500;
+    const failures: CommunicationAttentionActivationV3View[] = [];
+    let cursor: Pick<CommunicationAttentionActivationV3View, "updatedAt" | "id"> | undefined;
+    for (;;) {
+      const page = coordinationV3.communicationAttentionActivations(undefined, pageSize, cursor);
+      failures.push(...page);
+      if (page.length < pageSize) return failures;
+      const last = page.at(-1)!;
+      cursor = { updatedAt: last.updatedAt, id: last.id };
+    }
+  };
 
   const createOperationalNotification = (input: {
     dedupeKey: string;
@@ -76,9 +93,9 @@ export function createOperationalNotifications(context: OperationalNotifications
     return issue;
   };
   const reconcileCommunicationFailureNotifications = (): void => {
-    for (const failure of coordinationV3.terminalActivations(undefined, 500)) {
-      const key = `communication-delivery:${failure.id}:${failure.outcome}`;
-      if (failure.supersededByRetry || failure.state === "cancelled") continue;
+    for (const failure of communicationAttentionActivations()) {
+      const key = `communication-delivery:${failure.id}:${failure.terminalOutcome ?? failure.state}`;
+      if (failure.supersededByRetry) continue;
       if (!["human_message", "urgent_message", "ordinary_message"].includes(failure.kind)) continue;
       // Intent, not priority or rendered text, keeps internal Collaboration out
       // of the operator notification tree.
@@ -87,13 +104,19 @@ export function createOperationalNotifications(context: OperationalNotifications
         ? failure.scopeKey.slice("conversation:".length)
         : undefined;
       const conversation = conversationId ? store.getConversation(conversationId) : undefined;
-      const issue = failure.lastDeliveryError ?? failure.outcome.replaceAll("_", " ");
+      const outcomeUnknown = failure.state === "outcome_unknown";
+      const issue = failure.lastDeliveryError
+        ?? (failure.terminalOutcome ?? failure.state).replaceAll("_", " ");
       createOperationalNotification({
         dedupeKey: key,
         category: "communication",
         severity: "urgent",
-        title: "Message delivery needs your help",
-        body: `Ponderosa could not deliver this message after ${failure.deliveryFailures} ${failure.deliveryFailures === 1 ? "attempt" : "attempts"}. ${issue}`,
+        title: outcomeUnknown
+          ? "Message outcome needs your review"
+          : "Message delivery needs your help",
+        body: outcomeUnknown
+          ? "Ponderosa lost contact with the provider before it could confirm whether this message finished. Retrying may duplicate work if the provider completed it before the interruption."
+          : `Ponderosa could not deliver this message after ${failure.deliveryFailures} ${failure.deliveryFailures === 1 ? "attempt" : "attempts"}. ${issue}`,
         projectId: failure.projectId,
         ...(conversation ? { conversationId: conversation.id } : {}),
         ...(failure.communicationEventId ? { communicationEventId: failure.communicationEventId } : {}),
@@ -121,7 +144,7 @@ export function createOperationalNotifications(context: OperationalNotifications
     if (now - lastCoordinationAttentionReconciliationAt < 5_000) return;
     lastCoordinationAttentionReconciliationAt = now;
     const retained = new Set<string>();
-    const communicationFailureActivationIds = new Set(coordinationV3.terminalActivations(undefined, 500)
+    const communicationFailureActivationIds = new Set(communicationAttentionActivations()
       .filter((failure) => failure.communicationEventId && failure.communicationIntent !== "collaboration"
         && ["human_message", "urgent_message", "ordinary_message"].includes(failure.kind))
       .map((failure) => failure.id));
@@ -134,6 +157,14 @@ export function createOperationalNotifications(context: OperationalNotifications
         if (related.some((item) => item.kind === "activation" && communicationFailureActivationIds.has(item.recordId))) continue;
         const failedRequest = [...related].reverse().find((item) => item.kind === "request"
           && ["blocked", "failed", "outcome_unknown", "expired", "recipient_unavailable"].includes(item.state));
+        const failedJoin = [...related].reverse().find((item) => item.kind === "join"
+          && ["impossible", "expired"].includes(item.state));
+        const failedTrigger = [...related].reverse().find((item) => item.kind === "trigger"
+          && item.state === "dead_lettered");
+        // Plain user messages and internal context-rollover Runs have their own
+        // recovery surfaces. They are not coordinated assignments merely
+        // because their execution trace ended uncertain.
+        if (!failedRequest && !failedJoin && !failedTrigger) continue;
         const responsibleAgentId = failedRequest?.recipientAgentId ?? failedRequest?.requesterAgentId ?? trace.agentIds[0];
         const agent = responsibleAgentId ? store.getAgent(responsibleAgentId) : undefined;
         const affectedAgents = trace.agentIds.flatMap((agentId) => {

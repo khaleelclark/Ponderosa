@@ -346,6 +346,27 @@ export interface TerminalActivationV3View {
   terminalAt: string;
 }
 
+export interface CommunicationAttentionActivationV3View {
+  id: string;
+  projectId: string;
+  agentId: string;
+  kind: string;
+  state: "failed" | "outcome_unknown";
+  scopeKey?: string;
+  communicationEventId: string;
+  communicationIntent: string;
+  supersededByRetry?: boolean;
+  terminalOutcome?: ActivationTerminalOutcome;
+  deliveryFailures: number;
+  lastDeliveryError?: string;
+  updatedAt: string;
+}
+
+export type CommunicationAttentionActivationCursor = Pick<
+  CommunicationAttentionActivationV3View,
+  "updatedAt" | "id"
+>;
+
 export interface SettleUnavailableActivationResult {
   settled: boolean;
   replayed: boolean;
