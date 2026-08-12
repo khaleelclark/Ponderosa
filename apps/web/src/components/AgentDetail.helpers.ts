@@ -43,6 +43,41 @@ type TelemetryPageState = {
   };
 };
 
+type MessagePageState = {
+  messages: MessageDto[];
+  cursor?: string;
+  hasMore: boolean;
+};
+
+function mergeMessagePage(
+  current: MessagePageState | undefined,
+  page: Pick<AgentDetailDto, "messages" | "history">,
+  recentMessages: MessageDto[],
+  preserveHistory = false,
+  ordinaryHistory?: HistoryWindowDto,
+): MessagePageState {
+  const history = preserveHistory
+    ? current
+      ? { cursor: current.cursor, hasMore: current.hasMore }
+      : {
+          cursor: ordinaryHistory?.cursor,
+          hasMore: ordinaryHistory?.hasMore ?? false,
+        }
+    : {
+        cursor: page.history?.cursor,
+        hasMore: page.history?.hasMore ?? false,
+      };
+  return {
+    messages: uniqueBy(
+      [...page.messages, ...(current?.messages ?? []), ...recentMessages],
+      message => message.id,
+      compareAgentChatMessages,
+    ),
+    ...(history.cursor ? { cursor: history.cursor } : {}),
+    hasMore: history.hasMore,
+  };
+}
+
 function mergeTelemetryPage(
   current: TelemetryPageState,
   page: AgentTelemetryPageDto,
@@ -386,9 +421,10 @@ export {
   eligibleOrganizationParents,
   mcpPresentation,
   mergeAgentDetailProjection,
+  mergeMessagePage,
   mergeTelemetryPage,
   portablePackageFileName,
   telemetryStreamsForTab,
   telemetryTab,
 };
-export type { AgentTab, TelemetryPageState };
+export type { AgentTab, MessagePageState, TelemetryPageState };

@@ -34,7 +34,6 @@ import {
   isProviderBlockedHealth,
   type AgentStatus,
 } from "../agents";
-import { uniqueBy } from "../collections";
 import {
   useAgent,
   useNotifications,
@@ -64,9 +63,9 @@ import { useRuntimeControls } from "../hooks/useRuntimeControls";
 import {
   agentRelationshipPresentation,
   agentTranscriptMarkdown,
-  compareAgentChatMessages,
   mcpPresentation,
   mergeAgentDetailProjection,
+  mergeMessagePage,
   mergeTelemetryPage,
   telemetryStreamsForTab,
   telemetryTab,
@@ -256,19 +255,17 @@ export function AgentDetail({
             focusMessageId,
           )
           .then(page => {
-            setOlderMessages(current => ({
-              messages: uniqueBy(
-                [
-                  ...page.messages,
-                  ...(current?.messages ?? []),
-                  ...(agentQuery.data?.messages ?? []),
-                ],
-                message => message.id,
-                compareAgentChatMessages,
+            // A focused lookup fills a durable deep link. It must not advance the
+            // ordinary history cursor past the records between recent and focused data.
+            setOlderMessages(current =>
+              mergeMessagePage(
+                current,
+                page,
+                agentQuery.data?.messages ?? [],
+                true,
+                agentQuery.data?.history,
               ),
-              cursor: page.history?.cursor,
-              hasMore: page.history?.hasMore ?? false,
-            }));
+            );
             focusedMessage.current = page.messages.length
               ? undefined
               : `missing:${focusMessageId}`;
@@ -564,19 +561,13 @@ export function AgentDetail({
         ),
       ]);
       if (messagePage) {
-        setOlderMessages(current => ({
-          messages: uniqueBy(
-            [
-              ...messagePage.messages,
-              ...(current?.messages ?? []),
-              ...(agentQuery.data?.messages ?? []),
-            ],
-            message => message.id,
-            compareAgentChatMessages,
+        setOlderMessages(current =>
+          mergeMessagePage(
+            current,
+            messagePage,
+            agentQuery.data?.messages ?? [],
           ),
-          cursor: messagePage.history?.cursor,
-          hasMore: messagePage.history?.hasMore ?? false,
-        }));
+        );
       }
       if (telemetryPages.length) {
         setOlderTelemetry(current =>
