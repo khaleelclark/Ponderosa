@@ -441,10 +441,9 @@ return new CoordinationV3Scheduler(
       });
     },
     blockedAgentIds: () => [...new Set([
-      ...store.listProjects().flatMap((project) =>
-        store.listAgents(project.id)
-          .filter((candidate) => !providerEnabled(candidate.activeEngine) || Boolean(engineAvailability.denial(candidate.activeEngine)))
-          .map((candidate) => candidate.id)),
+      ...store.listAgentEngineAssignments()
+        .filter((candidate) => !providerEnabled(candidate.activeEngine) || Boolean(engineAvailability.denial(candidate.activeEngine)))
+        .map((candidate) => candidate.id),
       ...[...runtimeAuthorities].flatMap(([agentId, authority]) =>
         authority.opening || authority.closing || authority.oneShots.size > 0 ? [agentId] : []),
       ...activeRuns.keys(),
