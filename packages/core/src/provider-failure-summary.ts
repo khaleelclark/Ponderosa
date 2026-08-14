@@ -1,3 +1,5 @@
+import type { ProviderErrorCode } from "./events.js";
+
 export const MAX_PUBLIC_PROVIDER_FAILURE_CHARACTERS = 240;
 export const MAX_PROVIDER_FAILURE_CLASSIFICATION_CHARACTERS = 2_048;
 
@@ -46,9 +48,13 @@ const STRUCTURED_PROVIDER_FAILURE_CODES = new Map<string, ProviderFailureCategor
   ["rate_limit", "rate_limit"],
   ["usage_limit", "rate_limit"],
   ["quota_exhausted", "rate_limit"],
+  ["rate_limit_error", "rate_limit"],
   ["capacity", "capacity"],
+  ["overloaded_error", "capacity"],
   ["context", "context_length"],
   ["context_length", "context_length"],
+  ["context_length_exceeded", "context_length"],
+  ["context_window_exceeded", "context_length"],
   ["invalid_request", "invalid_request"],
   ["invalid_model", "invalid_request"],
   ["model_not_found", "invalid_request"],
@@ -63,6 +69,52 @@ export interface PublicProviderFailure {
   category: ProviderFailureCategory;
   summary: string;
   remediation: string;
+}
+
+const PUBLIC_PROVIDER_ERROR_CODES = new Set<ProviderErrorCode>([
+  "invalid_model",
+  "model_not_found",
+  "authentication_failed",
+  "rate_limit",
+  "capacity",
+  "context_length",
+  "organization_policy",
+  "plan_entitlement",
+  "network",
+  "provider_error",
+]);
+
+function publicProviderErrorCode(value: string | undefined): ProviderErrorCode | undefined {
+  return value && PUBLIC_PROVIDER_ERROR_CODES.has(value as ProviderErrorCode)
+    ? value as ProviderErrorCode
+    : undefined;
+}
+
+export function publicProviderFailureEvent(event: {
+  type: "error";
+  message: string;
+  code?: string;
+  category?: ProviderFailureCategory | string;
+}): {
+  type: "error";
+  message: string;
+  code?: ProviderErrorCode;
+  category: ProviderFailureCategory;
+  remediation: string;
+} {
+  const failure = publicProviderFailure({
+    detail: event.message,
+    category: event.category,
+    code: event.code,
+  });
+  const code = publicProviderErrorCode(event.code);
+  return {
+    type: "error",
+    ...(code ? { code } : {}),
+    message: failure.summary,
+    category: failure.category,
+    remediation: failure.remediation,
+  };
 }
 
 function categoryFromStructuredCode(code: string | undefined): ProviderFailureCategory | undefined {
@@ -108,8 +160,10 @@ export function classifyProviderFailure(
   detail: string,
   structuredCategoryOrCode?: ProviderFailureCategory | string,
 ): ProviderFailureCategory {
-  return categoryFromStructuredCode(structuredCategoryOrCode)
-    ?? highConfidenceTextCategory(detail);
+  const structured = categoryFromStructuredCode(structuredCategoryOrCode);
+  return structured && structured !== "unknown"
+    ? structured
+    : highConfidenceTextCategory(detail);
 }
 
 export function publicProviderFailure(input: {
@@ -117,8 +171,10 @@ export function publicProviderFailure(input: {
   category?: ProviderFailureCategory | string;
   code?: string;
 }): PublicProviderFailure {
-  const category = categoryFromStructuredCode(input.category)
-    ?? categoryFromStructuredCode(input.code)
+  const explicitCategory = categoryFromStructuredCode(input.category);
+  const structuredCode = categoryFromStructuredCode(input.code);
+  const category = explicitCategory
+    ?? (structuredCode && structuredCode !== "unknown" ? structuredCode : undefined)
     ?? highConfidenceTextCategory(input.detail ?? "");
   return {
     category,

@@ -186,6 +186,7 @@ export interface ContextRolloverV3 {
   replacementVerifiedAt?: string;
   visibleResponseCommittedAt?: string;
   completionReason?: "replacement_verified" | "native_compaction" | "no_continuation_required";
+  failureSignal?: "seed_overflow" | "replacement_cancelled";
   lastError?: string;
   createdAt: string;
   updatedAt: string;

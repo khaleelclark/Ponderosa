@@ -15,7 +15,13 @@
 //   {"type":"turn.completed","usage":{"input_tokens","output_tokens",...}}
 //   {"type":"error","message"} / {"type":"turn.failed","error":{"message"}}
 
-import type { AgentEvent, FileChangeKind, TokenUsage } from "@ponderosa/core";
+import {
+  classifyProviderFailure,
+  type AgentEvent,
+  type FileChangeKind,
+  type ProviderErrorCode,
+  type TokenUsage,
+} from "@ponderosa/core";
 
 /** Extra context the mapper needs that isn't in the raw event (e.g. the run cwd). */
 export interface CodexMapContext {
@@ -78,7 +84,7 @@ interface RawEvent {
   type?: string;
   thread_id?: string;
   message?: string;
-  error?: { message?: string } | string;
+  error?: { message?: string; code?: unknown; type?: unknown } | string;
   usage?: {
     input_tokens?: number;
     cached_input_tokens?: number;
@@ -134,6 +140,40 @@ function errorMessage(e: RawEvent["error"], fallback: string): string {
   return fallback;
 }
 
+export function providerErrorCodeFromDetail(
+  detail: string,
+  rawCode?: string,
+): ProviderErrorCode | undefined {
+  const structuredCategory = rawCode
+    ? classifyProviderFailure("", rawCode)
+    : "unknown";
+  const category = structuredCategory === "unknown"
+    ? classifyProviderFailure(detail)
+    : structuredCategory;
+  if (category === "authentication") return "authentication_failed";
+  if (category === "rate_limit") return "rate_limit";
+  if (category === "capacity") return "capacity";
+  if (category === "context_length") return "context_length";
+  if (category === "unavailable") return "network";
+  return undefined;
+}
+
+function providerErrorCode(error: RawEvent["error"], detail: string): ProviderErrorCode | undefined {
+  const rawCode = error && typeof error === "object"
+    ? typeof error.code === "string"
+      ? error.code
+      : typeof error.type === "string"
+        ? error.type
+        : undefined
+    : undefined;
+  return providerErrorCodeFromDetail(detail, rawCode);
+}
+
+function errorEvent(error: RawEvent["error"], detail: string): Extract<AgentEvent, { type: "error" }> {
+  const code = providerErrorCode(error, detail);
+  return { type: "error", message: detail, ...(code ? { code } : {}) };
+}
+
 // ─── The mapper ──────────────────────────────────────────────────────────────
 
 /**
@@ -161,10 +201,10 @@ export function mapCodexEvent(raw: unknown, ctx: CodexMapContext = {}): AgentEve
       return [{ type: "turn_done", usage: mapUsage(ev.usage) }];
 
     case "turn.failed":
-      return [{ type: "error", message: errorMessage(ev.error, "turn failed") }];
+      return [errorEvent(ev.error, errorMessage(ev.error, "turn failed"))];
 
     case "error":
-      return [{ type: "error", message: ev.message ?? errorMessage(ev.error, "error") }];
+      return [errorEvent(ev.error, ev.message ?? errorMessage(ev.error, "error"))];
 
     case "item.started":
       return mapItemStarted(ev.item, ctx);

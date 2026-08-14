@@ -1,6 +1,7 @@
-import type {
-  AgentStreamEvent,
-  SseEventEnvelope,
+import {
+  publicProviderFailureEvent,
+  type AgentStreamEvent,
+  type SseEventEnvelope,
 } from "@ponderosa/core";
 import type { StoredLogEvent } from "@ponderosa/agents";
 
@@ -10,7 +11,10 @@ function isAgentStreamEvent(event: StoredLogEvent["event"]): event is AgentStrea
 
 function envelope(agentId: string, stored: StoredLogEvent, replayed = false): SseEventEnvelope | undefined {
   if (!isAgentStreamEvent(stored.event)) return undefined;
-  return { agentId, seq: stored.seq, ts: stored.ts, event: stored.event, ...(replayed ? { replayed: true } : {}) };
+  const event = stored.event.type === "error"
+    ? publicProviderFailureEvent(stored.event)
+    : stored.event;
+  return { agentId, seq: stored.seq, ts: stored.ts, event, ...(replayed ? { replayed: true } : {}) };
 }
 
 function writeSse(res: NodeJS.WritableStream, name: string, id: number | undefined, data: unknown): void {

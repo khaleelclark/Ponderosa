@@ -44,6 +44,34 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
+async function readSseUntil(
+  response: Awaited<ReturnType<typeof fetch>>,
+  expected: string,
+): Promise<string> {
+  if (!response.body) throw new Error("SSE response body is unavailable");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let body = "";
+  try {
+    while (!body.includes(expected)) {
+      let timeout: NodeJS.Timeout | undefined;
+      const chunk = await Promise.race([
+        reader.read(),
+        new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => reject(new Error(`SSE did not emit ${expected}`)), 5_000);
+        }),
+      ]).finally(() => {
+        if (timeout) clearTimeout(timeout);
+      });
+      if (chunk.done) throw new Error(`SSE ended before emitting ${expected}`);
+      body += decoder.decode(chunk.value, { stream: true });
+    }
+    return body;
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+}
+
 function providerRunAdapter(input: {
   outcome: "success" | "authentication_failure" | "cancelled";
   errorMessage?: string;
@@ -670,6 +698,69 @@ describe("provider readiness truth", () => {
     await app.close();
   });
 
+  it("sanitizes resolved invalid model-validation results with structured-code precedence", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-model-validation-boundary-"));
+    roots.push(root);
+    const hostPath = path.join(root, "workspace");
+    mkdirSync(hostPath, { recursive: true });
+    const store = new AgentStore(path.join(root, "data"));
+    const project = store.createProject({
+      label: "Model Validation Boundary",
+      hostPath,
+      defaultEngine: "codex",
+    });
+    const restricted = "MODEL_VALIDATION_RAW_MARKER_91d4 access_token=private-validation-token";
+    const validationAdapter: Adapter = {
+      ...adapter(),
+      validateModel: async (_cwd, modelId) => modelId === "auth-model"
+        ? {
+            valid: false,
+            errorCode: "authentication",
+            error: `rate limit reached ${restricted}`,
+          }
+        : {
+            valid: false,
+            errorCode: "provider_error",
+            error: restricted,
+          },
+    };
+    const app = createServer({
+      dataDir: path.join(root, "data"),
+      store,
+      engines: [{ adapter: validationAdapter }],
+      logger: false,
+    });
+    await app.ready();
+
+    const unknown = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/engine-models/codex/validate`,
+      payload: { modelId: "unknown-model" },
+    });
+    expect(unknown.statusCode).toBe(200);
+    expect(unknown.json()).toEqual({
+      valid: false,
+      errorCode: "provider_error",
+      error: "Provider execution failed.",
+    });
+
+    const authentication = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/engine-models/codex/validate`,
+      payload: { modelId: "auth-model" },
+    });
+    expect(authentication.statusCode).toBe(200);
+    expect(authentication.json()).toEqual({
+      valid: false,
+      errorCode: "authentication",
+      error: "Provider authentication was rejected.",
+    });
+    expect(`${unknown.body}\n${authentication.body}`).not.toMatch(
+      /MODEL_VALIDATION_RAW_MARKER_91d4|private-validation-token|access_token|rate limit reached/u,
+    );
+    await app.close();
+  });
+
   it("sanitizes asynchronous provider-usage failures before later cache projections", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "ponderosa-provider-usage-cache-error-"));
     roots.push(root);
@@ -855,6 +946,84 @@ describe("provider readiness truth", () => {
     );
     await failed.app.close();
   });
+
+  it("persists and streams only the finite provider failure event for live and replay delivery", async () => {
+    const started = deferred();
+    const release = deferred();
+    const restricted = "AGENT_SSE_RAW_MARKER_5f12 access_token=private-sse-token at /root/.codex/auth.json";
+    const failed = await providerRunFixture({
+      adapter: providerRunAdapter({
+        outcome: "authentication_failure",
+        errorMessage: restricted,
+        started: started.resolve,
+        release: release.promise,
+      }),
+    });
+    await started.promise;
+    const address = await failed.app.listen({ host: "127.0.0.1", port: 0 });
+    const liveCursor = failed.store.lastSeqOf(failed.agent.id);
+    const liveResponse = await fetch(
+      `${address}/api/agents/${failed.agent.id}/stream?lastEventId=${liveCursor}`,
+    );
+    expect(liveResponse.status).toBe(200);
+
+    release.resolve();
+    const liveBody = await readSseUntil(liveResponse, '"type":"error"');
+    expect(liveBody).toContain('"message":"Provider authentication was rejected."');
+    expect(liveBody).toContain('"category":"authentication"');
+    expect(liveBody).toContain(
+      '"remediation":"Check the provider subscription and sign-in, then retry."',
+    );
+    expect(liveBody).not.toMatch(/AGENT_SSE_RAW_MARKER_5f12|private-sse-token|access_token|root|auth\.json/u);
+
+    await waitForAgentRunStatus(failed.store, failed.agent.id, "failed");
+    const error = failed.store.readEvents(failed.agent.id).find((stored) => stored.event.type === "error");
+    expect(error?.event).toEqual({
+      type: "error",
+      code: "authentication_failed",
+      message: "Provider authentication was rejected.",
+      category: "authentication",
+      remediation: "Check the provider subscription and sign-in, then retry.",
+    });
+    const eventLog = readFileSync(path.join(
+      failed.dataDir,
+      "projects",
+      failed.project.id,
+      "agents",
+      failed.agent.id,
+      "events.jsonl",
+    ), "utf8");
+    const eventRows = failed.store.sqlite.prepare(`
+      SELECT payload_json FROM events WHERE agent_id = ? AND type = 'error'
+    `).all(failed.agent.id) as Array<{ payload_json: string }>;
+    const activity = await failed.app.inject({
+      method: "GET",
+      url: `/api/agents/${failed.agent.id}/history/activity`,
+    });
+    for (const publicEvidence of [eventLog, JSON.stringify(eventRows), activity.body]) {
+      expect(publicEvidence).toContain("Provider authentication was rejected.");
+      expect(publicEvidence).not.toMatch(
+        /AGENT_SSE_RAW_MARKER_5f12|private-sse-token|access_token|root|auth\.json/u,
+      );
+    }
+
+    const audit = failed.store.sqlite.prepare(`
+      SELECT provider_failure_json FROM scheduler_runs
+      WHERE provider_failure_json IS NOT NULL ORDER BY rowid DESC LIMIT 1
+    `).get() as { provider_failure_json: string };
+    expect(audit.provider_failure_json).toContain(restricted);
+
+    const replayResponse = await fetch(
+      `${address}/api/agents/${failed.agent.id}/stream?lastEventId=${Math.max(0, error!.seq - 1)}`,
+    );
+    expect(replayResponse.status).toBe(200);
+    const replayBody = await readSseUntil(replayResponse, '"type":"error"');
+    expect(replayBody).toContain('"message":"Provider authentication was rejected."');
+    expect(replayBody).toContain('"category":"authentication"');
+    expect(replayBody).toContain('"replayed":true');
+    expect(replayBody).not.toMatch(/AGENT_SSE_RAW_MARKER_5f12|private-sse-token|access_token|root|auth\.json/u);
+    await failed.app.close();
+  }, 15_000);
 
   it("keeps managed-child failure context public while retaining raw Run audit evidence", async () => {
     const restricted = String.raw`AUTHENTICATION_FAILURE authentication rejected Basic cHJpdmF0ZS11c2VyOnByaXZhdGUtcGFzc3dvcmQ= session_id=private-managed-session access_token=private-managed-token pa\u0073sword=hunter2 SECRET_KEY=x W3sicGFzc3dvcmQiOiJ4In1d at /root/.aws/credentials`;

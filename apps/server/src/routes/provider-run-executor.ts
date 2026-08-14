@@ -930,7 +930,7 @@ export function startProviderRunExecution(
                 });
               }
             } else if (replacementRollover?.state === "failed" &&
-                replacementRollover.lastError?.startsWith("rollover_seed_overflow:")) {
+                replacementRollover.failureSignal === "seed_overflow") {
               // A seed already above the low-water mark needs operator action.
               // Do not manufacture an infinite succession of fresh sessions.
               suppressPressureForSeedOverflow = true;
@@ -1368,7 +1368,7 @@ export function startProviderRunExecution(
             failureKind,
             confirmedNotExecuted: !providerWorkObserved && (failureKind === "capacity" || failureKind === "rate_limit"),
             retryable: !projectWorkspaceUnavailable && failureKind !== "authentication",
-            error: `[${failureKind}] ${publicProviderFailureSummary(runError, failureKind) ?? "Provider execution failed."}`,
+            error: publicProviderFailureSummary(runError, failureKind) ?? "Provider execution failed.",
             failureDetail: {
               phase: v3PromptInjected ? "provider_execution" : "prompt_submission",
               promptInjectionState: coordinationV3!.agentSnapshot(agent.id).activeRun?.promptInjectionState

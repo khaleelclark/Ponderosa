@@ -12,7 +12,7 @@ import {
   type RuntimeTurnInput,
   type RuntimeProcessHandle,
 } from "@ponderosa/core";
-import { mapFileChangeKind } from "./events.js";
+import { mapFileChangeKind, providerErrorCodeFromDetail } from "./events.js";
 import { JsonRpcProcess, type JsonRpcNotification } from "./json-rpc-process.js";
 import type { SpawnFn } from "./process.js";
 import { renderSeedPrompt } from "./seed-history.js";
@@ -963,7 +963,9 @@ export function mapCodexAppServerNotification(
 ): AgentEvent[] {
   const params = notification.params as Record<string, unknown> | undefined;
   if (notification.method === "ponderosa/processError") {
-    return [{ type: "error", message: String(params?.message ?? "Codex app-server stopped") }];
+    const message = String(params?.message ?? "Codex app-server stopped");
+    const code = providerErrorCodeFromDetail(message);
+    return [{ type: "error", message, ...(code ? { code } : {}) }];
   }
   if (notification.method === "item/agentMessage/delta") {
     // Deltas are transport-only progress. Canonical chat records the completed
@@ -975,8 +977,16 @@ export function mapCodexAppServerNotification(
     return delta ? [{ type: "reasoning", delta }] : [];
   }
   if (notification.method === "turn/completed") {
-    const turn = params?.turn as { status?: string; error?: { message?: string } | null } | undefined;
-    if (turn?.status === "failed") return [{ type: "error", message: turn.error?.message ?? "Codex turn failed" }];
+    const turn = params?.turn as {
+      status?: string;
+      error?: { message?: string; code?: unknown } | null;
+    } | undefined;
+    if (turn?.status === "failed") {
+      const message = turn.error?.message ?? "Codex turn failed";
+      const rawCode = typeof turn.error?.code === "string" ? turn.error.code : undefined;
+      const code = providerErrorCodeFromDetail(message, rawCode);
+      return [{ type: "error", message, ...(code ? { code } : {}) }];
+    }
     return [{
       type: "turn_done",
       ...(usage ? { usage } : {}),

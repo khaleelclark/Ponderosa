@@ -549,6 +549,7 @@ export class CoordinationV3RunLifecycleAuthority {
           UPDATE agent_activations
           SET delivery_failures = delivery_failures + 1,
             last_delivery_error = ?,
+            provider_failure_category = ?,
             state = CASE
               WHEN ? IS NOT NULL OR (? = 1 AND delivery_failures + 1 >= ?)
                 THEN 'failed'
@@ -571,6 +572,7 @@ export class CoordinationV3RunLifecycleAuthority {
           ) AND state = 'attached'
         `).run(
           publicError,
+          input.failureKind ?? "unknown",
           terminalOutcome ?? null,
           providerUnavailable ? 0 : 1,
           maximum,
@@ -726,8 +728,7 @@ export class CoordinationV3RunLifecycleAuthority {
       const rows = this.sqlite.prepare(`
         SELECT id, payload_json FROM agent_activations
         WHERE agent_id = ? AND state = 'retry_pending'
-          AND (last_delivery_error LIKE '[capacity] %'
-            OR last_delivery_error LIKE '[rate_limit] %')
+          AND provider_failure_category IN ('capacity', 'rate_limit')
         ORDER BY id
       `).all(agentId) as Array<{ id: string; payload_json: string }>;
       if (!rows.length) return { activationIds: [], resumed: 0 };
@@ -743,8 +744,7 @@ export class CoordinationV3RunLifecycleAuthority {
         UPDATE agent_activations
         SET payload_json = ?, available_at = ?, updated_at = ?
         WHERE id = ? AND agent_id = ? AND state = 'retry_pending'
-          AND (last_delivery_error LIKE '[capacity] %'
-            OR last_delivery_error LIKE '[rate_limit] %')
+          AND provider_failure_category IN ('capacity', 'rate_limit')
       `);
       const activationIds: string[] = [];
       for (const row of rows) {
@@ -830,6 +830,7 @@ export class CoordinationV3RunLifecycleAuthority {
       this.sqlite.prepare(`
         UPDATE context_rollovers
         SET state = 'outcome_unknown',
+          failure_signal = 'replacement_cancelled',
           last_error = 'replacement Run was cancelled before low-water context confirmation',
           updated_at = ?, terminal_at = COALESCE(terminal_at, ?)
         WHERE state = 'continuation_ready'

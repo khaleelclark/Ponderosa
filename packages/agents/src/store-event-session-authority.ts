@@ -1,11 +1,12 @@
 import type Database from "better-sqlite3";
 import { and, eq } from "drizzle-orm";
-import type {
-  AgentDto,
-  AgentLifecycleReason,
-  AgentLifecycleStatus,
-  CommunicationProjection,
-  ProjectDto,
+import {
+  publicProviderFailureEvent,
+  type AgentDto,
+  type AgentLifecycleReason,
+  type AgentLifecycleStatus,
+  type CommunicationProjection,
+  type ProjectDto,
 } from "@ponderosa/core";
 import type { Db } from "./db.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";
@@ -75,7 +76,10 @@ export class AgentEventSessionAuthority {
       // projection may not leave an unprojectable user_message in events.jsonl.
       throw new Error("communication scope cannot project to requested surface");
     }
-    const stored = this.eventProjection.append(agentId, projectId, event);
+    const canonicalEvent = event.type === "error"
+      ? publicProviderFailureEvent(event)
+      : event;
+    const stored = this.eventProjection.append(agentId, projectId, canonicalEvent);
     const message = communicationMessageProjection(agentId, stored);
     if (communicationEventId && message) {
       this.appendCommunicationProjection(projectId, {

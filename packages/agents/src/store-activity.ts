@@ -1,7 +1,8 @@
-import type {
-  AgentActivityDto,
-  AgentLifecycleReason,
-  AgentLifecycleStatus,
+import {
+  publicProviderFailureEvent,
+  type AgentActivityDto,
+  type AgentLifecycleReason,
+  type AgentLifecycleStatus,
 } from "@ponderosa/core";
 import type { LogEvent } from "./log-event.js";
 import type { ActivityProjectionReadRow } from "./store-types.js";
@@ -45,7 +46,10 @@ function activityDtoFromProjectionRow(
   agentId: string,
   row: ActivityProjectionReadRow,
 ): AgentActivityDto {
-  const event = JSON.parse(row.event_json) as AgentActivityDto["event"];
+  const parsedEvent = JSON.parse(row.event_json) as AgentActivityDto["event"];
+  const event = parsedEvent.type === "error"
+    ? publicProviderFailureEvent(parsedEvent)
+    : parsedEvent;
   const base: AgentActivityDto = {
     id: `${agentId}:activity:${row.seq}`,
     agentId,

@@ -217,6 +217,29 @@ describe("Create Project provider availability", () => {
     expect(unknown).not.toMatch(/subscription|sign-in/iu);
   });
 
+  it("uses the structured category for both diagnostic summary and remediation", () => {
+    const marker = "STRUCTURED_CATEGORY_RAW_MARKER_74b2";
+    render(<ProviderAvailabilityAlerts
+      engines={[engine("claude", {
+        intakeReady: false,
+        reachability: "degraded",
+        availabilityCategory: "authentication",
+        availabilityDetail: `rate limit reached ${marker}`,
+      })]}
+      testPending={false}
+      onTestAccess={vi.fn()}
+    />);
+
+    expect(screen.getByText(
+      "Claude access is unavailable. Check the provider subscription and sign-in, then retry.",
+    )).toBeTruthy();
+    expect(screen.getByTestId("provider-diagnostic-claude").textContent).toBe(
+      "Provider authentication was rejected.",
+    );
+    expect(document.body.textContent).not.toContain(marker);
+    expect(document.body.textContent).not.toContain("rate limit reached");
+  });
+
   it("preserves provider association when every enabled provider has failed", () => {
     render(<ProviderAvailabilityAlerts
       engines={[

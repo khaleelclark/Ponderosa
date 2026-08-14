@@ -20,7 +20,10 @@ export function ProviderAvailabilityAlerts({
 
   return <Stack spacing={1} aria-label="Provider availability">
     {unavailable.map((engine) => {
-      const diagnostic = providerAvailabilityDiagnostic(engine.availabilityDetail ?? engine.authDetail);
+      const diagnostic = providerAvailabilityDiagnostic(
+        engine.availabilityDetail ?? engine.authDetail,
+        engine.availabilityCategory,
+      );
       const canTest = engineCanTestAccess(engine);
       return <Alert
         key={engine.id}

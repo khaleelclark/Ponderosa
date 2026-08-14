@@ -873,7 +873,8 @@ export class CoordinationV3ReadModel {
 
       const activationSelection = selection("activation", "id");
       const activationRows = trimUnscopedOverflow(this.sqlite.prepare(`
-        SELECT id, agent_id, kind, state, delivery_failures, last_delivery_error, available_at, created_at, updated_at
+        SELECT id, agent_id, kind, state, delivery_failures, last_delivery_error,
+          provider_failure_category, available_at, created_at, updated_at
         FROM agent_activations
         WHERE project_id = ? AND (? IS NULL OR scope_key = ?) ${activationSelection.sql}
         ORDER BY CASE WHEN state IN ('pending', 'retry_pending', 'attached') THEN 0 ELSE 1 END,
@@ -884,11 +885,15 @@ export class CoordinationV3ReadModel {
       ) as Array<{
         id: string; agent_id: string; kind: string; state: string;
         delivery_failures: number; last_delivery_error: string | null; available_at: string;
+        provider_failure_category: string | null;
         created_at: string; updated_at: string;
       }>);
       for (const row of activationRows) {
-        const providerFailure = /^\[(capacity|rate_limit)\]\s/u.exec(row.last_delivery_error ?? "")?.[1] as
-          | "capacity" | "rate_limit" | undefined;
+        const providerFailure: "capacity" | "rate_limit" | undefined =
+          row.provider_failure_category === "capacity" ||
+          row.provider_failure_category === "rate_limit"
+          ? row.provider_failure_category as "capacity" | "rate_limit"
+          : undefined;
         const providerRecovery = row.state === "retry_pending" && providerFailure ? {
           classification: providerFailure,
           activationIds: [row.id],

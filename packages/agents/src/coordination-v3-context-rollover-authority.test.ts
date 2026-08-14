@@ -552,6 +552,96 @@ function activeManualHandoffFixture(): ReturnType<typeof storeFixture> & {
 }
 
 describe("context rollover continuation obligations", () => {
+  it("retains provider-blocked recovery authority in a structured durable category", () => {
+    const fixture = storeFixture();
+    const activationId = fixture.store.enqueueMessageActivation({
+      projectId: PROJECT_ID,
+      agentId: RECIPIENT_ID,
+      scopeKey: SCOPE_KEY,
+      messageId: "structured-provider-block",
+      kind: "human",
+      payload: { text: "blocked work" },
+      now: NOW,
+    });
+    const lease = fixture.store.leaseNextRun({ workerId: "blocked-worker", now: NOW });
+    if (!lease) throw new Error("provider-blocked Run was not leased");
+    expect(fixture.store.failRun({
+      runId: lease.runId,
+      fencingToken: lease.fencingToken,
+      workerId: "blocked-worker",
+      sameRunResumable: false,
+      confirmedNotExecuted: true,
+      failureKind: "capacity",
+      error: "contradictory authentication prose",
+      now: NOW,
+    })).toBe("retry");
+    fixture.sqlite.prepare(`
+      UPDATE agent_activations SET last_delivery_error = 'Provider execution failed.'
+      WHERE id = ?
+    `).run(activationId);
+    expect(fixture.sqlite.prepare(`
+      SELECT state, provider_failure_category FROM agent_activations WHERE id = ?
+    `).get(activationId)).toEqual({
+      state: "retry_pending",
+      provider_failure_category: "capacity",
+    });
+
+    const restarted = new CoordinationV3Store(fixture.sqlite);
+    expect(restarted.providerBlockedState(RECIPIENT_ID)).toMatchObject({
+      classification: "capacity",
+      activationIds: [activationId],
+    });
+    expect(restarted.resumeProviderBlockedAgent(RECIPIENT_ID, {
+      activeEngine: "codex",
+      model: "replacement-model",
+    }, "2026-01-01T00:00:01.000Z")).toEqual({
+      activationIds: [activationId],
+      resumed: 1,
+    });
+  });
+
+  it.each([
+    ["rate_limit", "Provider usage limit was reached.", true],
+    ["context_length", "Provider context limit was reached.", false],
+  ] as const)("uses structured %s authority for scheduler retry decisions", (
+    failureKind,
+    expectedError,
+    providerBlocked,
+  ) => {
+    const fixture = storeFixture();
+    const activationId = fixture.store.enqueueMessageActivation({
+      projectId: PROJECT_ID,
+      agentId: RECIPIENT_ID,
+      scopeKey: SCOPE_KEY,
+      messageId: `structured-retry-${failureKind}`,
+      kind: "human",
+      payload: { text: "retry work" },
+      now: NOW,
+    });
+    const lease = fixture.store.leaseNextRun({ workerId: `${failureKind}-worker`, now: NOW });
+    if (!lease) throw new Error("structured retry Run was not leased");
+    expect(fixture.store.failRun({
+      runId: lease.runId,
+      fencingToken: lease.fencingToken,
+      workerId: `${failureKind}-worker`,
+      sameRunResumable: false,
+      confirmedNotExecuted: true,
+      failureKind,
+      error: "contradictory authentication rejected prose",
+      now: NOW,
+    })).toBe("retry");
+    expect(fixture.sqlite.prepare(`
+      SELECT state, provider_failure_category, last_delivery_error
+      FROM agent_activations WHERE id = ?
+    `).get(activationId)).toEqual({
+      state: "retry_pending",
+      provider_failure_category: failureKind,
+      last_delivery_error: expectedError,
+    });
+    expect(Boolean(new CoordinationV3Store(fixture.sqlite).providerBlockedState(RECIPIENT_ID)))
+      .toBe(providerBlocked);
+  });
+
   it.each([
     "requested",
     "handoff_committed",
@@ -2630,8 +2720,33 @@ describe("context rollover continuation obligations", () => {
       NOW,
     )).toMatchObject({
       state: "failed",
+      failureSignal: "seed_overflow",
       lastError: "Provider execution failed.",
     });
+    expect(fixture.sqlite.prepare(`
+      SELECT failure_signal, last_error FROM context_rollovers WHERE id = ?
+    `).get(rolloverId)).toEqual({
+      failure_signal: "seed_overflow",
+      last_error: "Provider execution failed.",
+    });
+    const restarted = new CoordinationV3Store(fixture.sqlite);
+    expect(restarted.contextRollover(rolloverId)?.failureSignal).toBe("seed_overflow");
+    const recoveryRequestId = `${fixture.requestId}:seed-overflow-recovery`;
+    restarted.coordinate({
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      requesterAgentId: REQUESTER_ID,
+      actorScope: "user:local-operator",
+      idempotencyKey: "seed-overflow-recovery-must-remain-fenced",
+      rolloverRecoveryForRequestId: fixture.requestId,
+      requests: [{
+        requestId: recoveryRequestId,
+        recipientAgentId: RECIPIENT_ID,
+        lifetime: { kind: "indefinite" },
+        payload: { text: "retry overflow", retryOfRequestId: fixture.requestId },
+      }],
+    }, NOW);
+    expect(restarted.contextRolloverRecoveryForRequest(recoveryRequestId)).toBeUndefined();
     const replay = fixture.store.requestContextRollover({
       projectId: PROJECT_ID,
       agentId: RECIPIENT_ID,

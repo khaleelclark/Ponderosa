@@ -5,9 +5,13 @@ import {
   PUBLIC_PROVIDER_FAILURE_MESSAGES,
   PUBLIC_PROVIDER_FAILURE_REMEDIATIONS,
   publicProviderFailure,
+  publicProviderFailureEvent,
   publicProviderFailureSummary,
 } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
+import { mapClaudeEvent } from "./claude-events.js";
+import { mapCodexAppServerNotification } from "./codex-app-server.js";
+import { mapCodexEvent } from "./events.js";
 import { classifyProviderFailure as classifyEngineProviderFailure } from "./session-recovery.js";
 
 const publicMessages = new Set<string>(Object.values(PUBLIC_PROVIDER_FAILURE_MESSAGES));
@@ -36,6 +40,25 @@ describe("canonical public provider-failure policy", () => {
       expect(summary, detail).not.toMatch(/INPUT_MARKER|hunter2|Users|credentials/iu);
       expect(summary!.length).toBeLessThanOrEqual(MAX_PUBLIC_PROVIDER_FAILURE_CHARACTERS);
     }
+  });
+
+  it("constructs a closed public error event without copying raw extension fields", () => {
+    const marker = "EVENT_EXTENSION_RAW_MARKER_47ac";
+    const event = publicProviderFailureEvent({
+      type: "error",
+      code: "authentication_failed",
+      message: marker,
+      rawDetail: marker,
+      stderr: marker,
+    } as never);
+    expect(event).toEqual({
+      type: "error",
+      code: "authentication_failed",
+      category: "authentication",
+      message: PUBLIC_PROVIDER_FAILURE_MESSAGES.authentication,
+      remediation: PUBLIC_PROVIDER_FAILURE_REMEDIATIONS.authentication,
+    });
+    expect(JSON.stringify(event)).not.toContain(marker);
   });
 
   it("maps low-confidence, encoded, malformed, confusable, and localized input to generic", () => {
@@ -90,6 +113,37 @@ describe("canonical public provider-failure policy", () => {
       detail: "subscription expired",
       category: "context_length",
     }).category).toBe("context_length");
+  });
+
+  it("normalizes adapter quota, capacity, and context failures to structured codes", () => {
+    expect(mapCodexEvent({
+      type: "turn.failed",
+      error: { code: "provider_error", message: "0 weighted tokens left" },
+    })).toEqual([expect.objectContaining({ type: "error", code: "rate_limit" })]);
+
+    expect(mapClaudeEvent({
+      type: "result",
+      is_error: true,
+      error: "overloaded_error",
+      result: "authentication rejected",
+    }).find((event) => event.type === "error")).toMatchObject({
+      code: "capacity",
+    });
+
+    expect(mapCodexAppServerNotification({
+      method: "turn/completed",
+      params: {
+        turn: {
+          status: "failed",
+          error: {
+            code: "context_length_exceeded",
+            message: "rate limit reached",
+          },
+        },
+      },
+    } as never, "/tmp")).toEqual([
+      expect.objectContaining({ type: "error", code: "context_length" }),
+    ]);
   });
 
   it("keeps category summaries and remediation inside finite allowlists", () => {

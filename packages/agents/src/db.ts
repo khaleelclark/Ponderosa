@@ -28,6 +28,7 @@ const schemaExtensions = [
   "0004_run_output_segments.sql",
   "0005_required_reply_obligations.sql",
   "0006_delivery_idempotency.sql",
+  "0007_structured_provider_failure_state.sql",
 ] as const;
 const legacyMigrationTable = "_migrations";
 const schemaVersionTable = "_schema_version";
@@ -507,8 +508,8 @@ export function openDb(file: string): OpenedDb {
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("foreign_keys = ON");
   establishSchema(sqlite);
-  establishSchemaExtensions(sqlite);
   establishContextRolloverAtomicitySchema(sqlite);
+  establishSchemaExtensions(sqlite);
   establishReadIndexes(sqlite);
   return { db: drizzle(sqlite, { schema }), client: sqlite };
 }

@@ -57,6 +57,12 @@ function providerErrorMessage(code: ProviderErrorCode | undefined, detail: strin
       return `Claude could not find or access the selected model${detail ? `: ${detail}` : ""}`;
     case "authentication_failed":
       return `Claude authentication failed${detail ? `: ${detail}` : ""}`;
+    case "rate_limit":
+      return `Claude usage limit was reached${detail ? `: ${detail}` : ""}`;
+    case "capacity":
+      return `Claude is at capacity${detail ? `: ${detail}` : ""}`;
+    case "context_length":
+      return `Claude context limit was reached${detail ? `: ${detail}` : ""}`;
     case "organization_policy":
       return `Claude organization policy rejected the request${detail ? `: ${detail}` : ""}`;
     case "plan_entitlement":

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { publicProviderFailure } from "@ponderosa/core";
 import type {
   Adapter,
   EngineCapabilities,
@@ -742,7 +743,17 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     );
     authority.operation = operation;
     try {
-      return await operation;
+      const result = await operation;
+      if (result.valid) return result;
+      const publicFailure = publicProviderFailure({
+        detail: result.error,
+        code: result.errorCode,
+      });
+      return {
+        valid: false,
+        errorCode: result.errorCode,
+        error: publicFailure.summary,
+      };
     } catch (error) {
       app.log.warn({ err: error, engineId: adapter.id }, "provider model validation failed");
       const publicFailure = publicProviderExceptionResponse(error);
