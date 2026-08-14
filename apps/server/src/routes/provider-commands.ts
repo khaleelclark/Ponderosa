@@ -78,27 +78,21 @@ function publicProviderCommandFailure(error: unknown): {
   category: ReturnType<typeof publicProviderFailure>["category"];
   remediation: string;
 } {
-  const record = error && typeof error === "object"
-    ? error as {
-      message?: unknown;
-      code?: unknown;
-      errorCode?: unknown;
-      category?: unknown;
-      failureCategory?: unknown;
+  const stringProperty = (key: string): string | undefined => {
+    if (error === null || (typeof error !== "object" && typeof error !== "function")) {
+      return undefined;
     }
-    : undefined;
-  const code = typeof record?.code === "string"
-    ? record.code
-    : typeof record?.errorCode === "string"
-      ? record.errorCode
-      : undefined;
-  const category = typeof record?.category === "string"
-    ? record.category
-    : typeof record?.failureCategory === "string"
-      ? record.failureCategory
-      : undefined;
+    try {
+      const value = Reflect.get(error, key);
+      return typeof value === "string" ? value : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const code = stringProperty("code") ?? stringProperty("errorCode");
+  const category = stringProperty("category") ?? stringProperty("failureCategory");
   const failure = publicProviderFailure({
-    detail: typeof record?.message === "string" ? record.message : undefined,
+    detail: stringProperty("message"),
     code,
     category,
   });

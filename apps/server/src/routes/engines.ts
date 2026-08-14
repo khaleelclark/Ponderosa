@@ -215,7 +215,7 @@ export function registerEngineRoutes(
           detail: publicProviderExceptionResponse(error, "unavailable").error,
         };
       }
-      availability.record({
+      const evidence = availability.record({
         engineId: request.params.id,
         available: result.available,
         ...(result.failureCategory ? { failureCategory: result.failureCategory } : {}),
@@ -231,7 +231,7 @@ export function registerEngineRoutes(
           category: "provider",
           severity: "attention",
           title: `${registration.adapter.displayName} is unavailable`,
-          body: providerUnavailableNotificationBody(result.detail, result.failureCategory),
+          body: providerUnavailableNotificationBody(evidence.detail, evidence.failureCategory),
           action: { kind: "open_settings", targetId: request.params.id },
         });
       }

@@ -1,5 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { publicProviderFailure } from "@ponderosa/core";
+import {
+  normalizeEngineModelValidationError,
+  publicProviderFailure,
+} from "@ponderosa/core";
 import type {
   Adapter,
   EngineCapabilities,
@@ -745,13 +748,14 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     try {
       const result = await operation;
       if (result.valid) return result;
+      const errorCode = normalizeEngineModelValidationError(result.errorCode);
       const publicFailure = publicProviderFailure({
         detail: result.error,
-        code: result.errorCode,
+        code: errorCode,
       });
       return {
         valid: false,
-        errorCode: result.errorCode,
+        errorCode,
         error: publicFailure.summary,
       };
     } catch (error) {

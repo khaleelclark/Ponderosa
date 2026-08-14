@@ -2,6 +2,8 @@ import {
   MAX_PUBLIC_PROVIDER_FAILURE_CHARACTERS,
   PUBLIC_PROVIDER_FAILURE_MESSAGES,
   PUBLIC_PROVIDER_FAILURE_REMEDIATIONS,
+  normalizeEngineModelValidationError,
+  normalizeProviderFailureCategory,
   publicProviderFailure,
   publicProviderFailureSummary,
 } from "@ponderosa/core";
@@ -67,6 +69,14 @@ describe("publicProviderFailureSummary", () => {
     });
     expect(publicProviderFailure({ detail: "rate limit reached", category: "authentication" }).category)
       .toBe("authentication");
+  });
+
+  it("normalizes runtime enum inputs onto finite code-owned values", () => {
+    const marker = "HOSTILE_RUNTIME_ENUM_MARKER_92c1";
+    expect(normalizeEngineModelValidationError(marker)).toBe("provider_error");
+    expect(normalizeProviderFailureCategory(marker)).toBe("unknown");
+    expect(normalizeEngineModelValidationError("authentication")).toBe("authentication");
+    expect(normalizeProviderFailureCategory("capacity")).toBe("capacity");
   });
 
   it("terminates with a bounded generic projection for oversized input", () => {

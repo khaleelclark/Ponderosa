@@ -1,4 +1,5 @@
 import type { ProviderErrorCode } from "./events.js";
+import type { EngineModelValidationError } from "./adapter.js";
 
 export const MAX_PUBLIC_PROVIDER_FAILURE_CHARACTERS = 240;
 export const MAX_PROVIDER_FAILURE_CLASSIFICATION_CHARACTERS = 2_048;
@@ -15,6 +16,37 @@ export const PROVIDER_FAILURE_CATEGORIES = [
 
 export type ProviderFailureCategory = typeof PROVIDER_FAILURE_CATEGORIES[number];
 export type ProviderFailureKind = ProviderFailureCategory;
+
+const PROVIDER_FAILURE_CATEGORY_SET = new Set<string>(PROVIDER_FAILURE_CATEGORIES);
+
+export function normalizeProviderFailureCategory(value: unknown): ProviderFailureCategory {
+  return typeof value === "string" && PROVIDER_FAILURE_CATEGORY_SET.has(value)
+    ? value as ProviderFailureCategory
+    : "unknown";
+}
+
+const ENGINE_MODEL_VALIDATION_ERRORS = new Set<EngineModelValidationError>([
+  "invalid_model",
+  "model_not_found",
+  "authentication",
+  "rate_limit",
+  "capacity",
+  "context_length",
+  "organization_policy",
+  "plan_entitlement",
+  "network",
+  "provider_error",
+]);
+
+export function normalizeEngineModelValidationError(
+  value: unknown,
+): EngineModelValidationError {
+  return typeof value === "string" && ENGINE_MODEL_VALIDATION_ERRORS.has(
+    value as EngineModelValidationError,
+  )
+    ? value as EngineModelValidationError
+    : "provider_error";
+}
 
 export const PUBLIC_PROVIDER_FAILURE_MESSAGES = {
   authentication: "Provider authentication was rejected.",

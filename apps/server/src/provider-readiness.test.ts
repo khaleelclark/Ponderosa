@@ -751,19 +751,26 @@ describe("provider readiness truth", () => {
       defaultEngine: "codex",
     });
     const restricted = "MODEL_VALIDATION_RAW_MARKER_91d4 access_token=private-validation-token";
+    const hostileCode = "MODEL_VALIDATION_CODE_MARKER_4ac7";
     const validationAdapter: Adapter = {
       ...adapter(),
-      validateModel: async (_cwd, modelId) => modelId === "auth-model"
-        ? {
-            valid: false,
-            errorCode: "authentication",
-            error: `rate limit reached ${restricted}`,
-          }
-        : {
-            valid: false,
-            errorCode: "provider_error",
-            error: restricted,
-          },
+      validateModel: async (_cwd, modelId) => {
+        if (modelId === "auth-model") return {
+          valid: false,
+          errorCode: "authentication",
+          error: `rate limit reached ${restricted}`,
+        };
+        if (modelId === "hostile-code-model") return {
+          valid: false,
+          errorCode: hostileCode,
+          error: restricted,
+        } as never;
+        return {
+          valid: false,
+          errorCode: "provider_error",
+          error: restricted,
+        };
+      },
     };
     const app = createServer({
       dataDir: path.join(root, "data"),
@@ -796,8 +803,19 @@ describe("provider readiness truth", () => {
       errorCode: "authentication",
       error: "Provider authentication was rejected.",
     });
-    expect(`${unknown.body}\n${authentication.body}`).not.toMatch(
-      /MODEL_VALIDATION_RAW_MARKER_91d4|private-validation-token|access_token|rate limit reached/u,
+    const hostile = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/engine-models/codex/validate`,
+      payload: { modelId: "hostile-code-model" },
+    });
+    expect(hostile.statusCode).toBe(200);
+    expect(hostile.json()).toEqual({
+      valid: false,
+      errorCode: "provider_error",
+      error: "Provider execution failed.",
+    });
+    expect(`${unknown.body}\n${authentication.body}\n${hostile.body}`).not.toMatch(
+      /MODEL_VALIDATION_RAW_MARKER_91d4|MODEL_VALIDATION_CODE_MARKER_4ac7|private-validation-token|access_token|rate limit reached/u,
     );
     await app.close();
   });
@@ -858,6 +876,76 @@ describe("provider readiness truth", () => {
       });
       expect(response.body).not.toMatch(
         /PROVIDER_COMMAND_RAW_MARKER_d03f|private-command-token|private-catalog|access_token|rate limit reached/u,
+      );
+    }
+    await app.close();
+  });
+
+  it("contains throwing provider-command error getters and proxies at both APIs", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-provider-command-hostile-error-"));
+    roots.push(root);
+    const dataDir = path.join(root, "data");
+    const hostPath = path.join(root, "workspace");
+    mkdirSync(hostPath, { recursive: true });
+    const store = new AgentStore(dataDir);
+    const project = store.createProject({
+      label: "Provider Command Hostile Error",
+      hostPath,
+      defaultEngine: "codex",
+    });
+    const agent = store.createAgent(project.id, {
+      title: "Provider Command Hostile Agent",
+      engine: "codex",
+      conversationId: project.lastConversationId,
+    });
+    const getterMarker = "PROVIDER_COMMAND_GETTER_MARKER_69c4";
+    const proxyMarker = "PROVIDER_COMMAND_PROXY_MARKER_b108";
+    const getterError = Object.create(Error.prototype) as Record<string, unknown>;
+    for (const property of ["message", "code", "errorCode", "category", "failureCategory"]) {
+      Object.defineProperty(getterError, property, {
+        get: () => { throw new Error(`${getterMarker}:${property}`); },
+      });
+    }
+    const proxyError = new Proxy(Object.create(null) as Record<string, unknown>, {
+      get: (_target, property) => { throw new Error(`${proxyMarker}:${String(property)}`); },
+    });
+    let invocation = 0;
+    const commandAdapter: Adapter = {
+      ...adapter(),
+      openSession: async () => {
+        invocation += 1;
+        throw invocation === 1 ? getterError : proxyError;
+      },
+    };
+    const app = createServer({
+      dataDir,
+      store,
+      engines: [{ adapter: commandAdapter }],
+      logger: false,
+    });
+    await app.ready();
+
+    const responses = [
+      await app.inject({
+        method: "POST",
+        url: `/api/projects/${project.id}/provider-commands`,
+        payload: { engineId: "codex", name: "status" },
+      }),
+      await app.inject({
+        method: "POST",
+        url: `/api/agents/${agent.id}/provider-commands`,
+        payload: { name: "status" },
+      }),
+    ];
+    for (const response of responses) {
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        error: "Provider execution failed.",
+        category: "unknown",
+        remediation: "Review the restricted server logs, then retry the provider operation.",
+      });
+      expect(response.body).not.toMatch(
+        /PROVIDER_COMMAND_GETTER_MARKER_69c4|PROVIDER_COMMAND_PROXY_MARKER_b108/u,
       );
     }
     await app.close();
@@ -1009,6 +1097,80 @@ describe("provider readiness truth", () => {
       body: expect.stringContaining("Provider execution failed."),
     })]);
     await app.close();
+  });
+
+  it("normalizes hostile availability categories before persistence and public projection", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-hostile-availability-category-"));
+    roots.push(root);
+    const dataDir = path.join(root, "data");
+    const categoryMarker = "AVAILABILITY_CATEGORY_MARKER_1f6b";
+    const detailMarker = "AVAILABILITY_RESTRICTED_DETAIL_MARKER_8d2e access_token=private-availability-token";
+    const hostileAdapter: Adapter = {
+      ...adapter(),
+    };
+    const app = createServer({
+      dataDir,
+      engines: [{
+        adapter: hostileAdapter,
+        authStatus: async () => ({ authenticated: true }),
+        availabilityProbe: async () => ({
+          available: false,
+          failureCategory: categoryMarker,
+          detail: detailMarker,
+        } as never),
+      }],
+      logger: false,
+    });
+    await app.ready();
+
+    const recheck = await app.inject({ method: "POST", url: "/api/engines/codex/recheck" });
+    const engines = await app.inject({ method: "GET", url: "/api/engines" });
+    const notifications = await app.inject({ method: "GET", url: "/api/notifications" });
+    expect(recheck.json()).toMatchObject({
+      availabilityCategory: "unknown",
+      availabilityDetail: "Provider execution failed.",
+    });
+    expect(notifications.json()).toEqual([expect.objectContaining({
+      body: expect.stringContaining("Provider execution failed."),
+    })]);
+    for (const body of [recheck.body, engines.body, notifications.body]) {
+      expect(body).not.toMatch(
+        /AVAILABILITY_CATEGORY_MARKER_1f6b|AVAILABILITY_RESTRICTED_DETAIL_MARKER_8d2e|private-availability-token|access_token/u,
+      );
+    }
+
+    const evidence = readFileSync(path.join(dataDir, "engine-availability.jsonl"), "utf8");
+    expect(evidence).toContain('"failureCategory":"unknown"');
+    expect(evidence).toContain("AVAILABILITY_RESTRICTED_DETAIL_MARKER_8d2e");
+    expect(evidence).not.toContain(categoryMarker);
+
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const replayResponse = await fetch(`${address}/api/workspace/stream?lastEventId=0`);
+    const replayBody = await readSseUntil(replayResponse, "notification_changed");
+    expect(replayBody).not.toMatch(
+      /AVAILABILITY_CATEGORY_MARKER_1f6b|AVAILABILITY_RESTRICTED_DETAIL_MARKER_8d2e|private-availability-token|access_token/u,
+    );
+    await app.close();
+
+    const restarted = createServer({
+      dataDir,
+      engines: [{
+        adapter: adapter(),
+        authStatus: async () => ({ authenticated: true }),
+      }],
+      logger: false,
+    });
+    await restarted.ready();
+    const restartedBodies = [
+      (await restarted.inject({ method: "GET", url: "/api/engines" })).body,
+      (await restarted.inject({ method: "GET", url: "/api/notifications" })).body,
+    ];
+    for (const body of restartedBodies) {
+      expect(body).not.toMatch(
+        /AVAILABILITY_CATEGORY_MARKER_1f6b|AVAILABILITY_RESTRICTED_DETAIL_MARKER_8d2e|private-availability-token|access_token/u,
+      );
+    }
+    await restarted.close();
   });
 
   it("sanitizes the immediate live provider Run failure notification", async () => {
