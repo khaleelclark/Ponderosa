@@ -12,6 +12,7 @@ import {
   type ChatMessage,
   type ConversationMessageDto,
   type ProjectDto,
+  type ProviderErrorCode,
   type ProviderInputSourceManifest,
   type RuntimeDynamicToolSpec,
   type RuntimeProcessHandle,
@@ -266,6 +267,7 @@ export function startProviderRunExecution(
     // Consolidate ordinary response deltas into one durable, execution-scoped
     // Work log entry. Communication is created only by explicit intent calls.
     let runError: string | undefined;
+    let runFailureCode: ProviderErrorCode | undefined;
     let finalText = "";
     let firstTextSeq: number | undefined;
     let lastTextSeq: number | undefined;
@@ -1010,7 +1012,10 @@ export function startProviderRunExecution(
               }
             }
           }
-          if (event.type === "error") runError = event.message;
+          if (event.type === "error") {
+            runError = event.message;
+            runFailureCode = event.code;
+          }
         }
         if (!retryFresh) break;
       }
@@ -1301,14 +1306,16 @@ export function startProviderRunExecution(
             hash: policySnapshotHash,
           });
         }
+        const runFailureKind = runError ? classifyProviderFailure(runError, runFailureCode) : undefined;
         const publicRunError = runError
-          ? publicProviderFailureSummary(runError) ?? "Provider execution failed."
+          ? publicProviderFailureSummary(runError, runFailureKind) ?? "Provider execution failed."
           : undefined;
         if (runError && publicRunError && !schedulerCancelled) {
-          if (classifyProviderFailure(runError) === "authentication") {
+          if (runFailureKind === "authentication") {
             engineAvailability.record({
               engineId: runtimeEngineId,
               available: false,
+              failureCategory: runFailureKind,
               detail: runError,
               source: "provider_run",
             });
@@ -1317,7 +1324,7 @@ export function startProviderRunExecution(
               category: "provider",
               severity: "attention",
               title: `${engines.get(runtimeEngineId)?.adapter.displayName ?? runtimeEngineId} stopped accepting work`,
-              body: providerUnavailableNotificationBody(runError),
+              body: providerUnavailableNotificationBody(runError, runFailureKind),
               projectId: agent.projectId,
               conversationId: agent.conversationId,
               action: { kind: "open_settings", targetId: runtimeEngineId },
@@ -1352,7 +1359,7 @@ export function startProviderRunExecution(
             idempotencyKey: `runtime-abort:${activeRun.v3SchedulerRunId}`,
           });
           else if (runError) {
-            const failureKind = classifyProviderFailure(runError);
+            const failureKind = classifyProviderFailure(runError, runFailureCode);
             coordinationV3!.failRun({
             runId: activeRun.v3SchedulerRunId,
             fencingToken: activeRun.v3FencingToken,
@@ -1361,7 +1368,7 @@ export function startProviderRunExecution(
             failureKind,
             confirmedNotExecuted: !providerWorkObserved && (failureKind === "capacity" || failureKind === "rate_limit"),
             retryable: !projectWorkspaceUnavailable && failureKind !== "authentication",
-            error: `[${failureKind}] ${publicProviderFailureSummary(runError) ?? "Provider execution failed."}`,
+            error: `[${failureKind}] ${publicProviderFailureSummary(runError, failureKind) ?? "Provider execution failed."}`,
             failureDetail: {
               phase: v3PromptInjected ? "provider_execution" : "prompt_submission",
               promptInjectionState: coordinationV3!.agentSnapshot(agent.id).activeRun?.promptInjectionState

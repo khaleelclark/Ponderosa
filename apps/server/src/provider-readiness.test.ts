@@ -57,7 +57,11 @@ function providerRunAdapter(input: {
       if (input.release) await input.release;
       if (input.outcome === "authentication_failure") {
         yield { type: "reasoning" as const, delta: "provider accepted work" };
-        yield { type: "error" as const, message: input.errorMessage ?? "authentication rejected by provider" };
+        yield {
+          type: "error" as const,
+          code: "authentication_failed" as const,
+          message: input.errorMessage ?? "authentication rejected by provider",
+        };
         return;
       }
       yield { type: "turn_done" as const };
@@ -434,7 +438,7 @@ describe("provider readiness truth", () => {
       intakeReady: false,
       reachability: "degraded",
     });
-    expect(recheck.json().availabilityDetail).toMatch(/^Claude subscription expired/u);
+    expect(recheck.json().availabilityDetail).toBe("Provider execution failed.");
     expect(recheck.json().availabilityDetail.length).toBeLessThanOrEqual(240);
     expect(JSON.stringify(recheck.json())).not.toMatch(
       /session_id|access_token|private-(?:claude|nested)/u,
@@ -458,13 +462,13 @@ describe("provider readiness truth", () => {
         message: JSON.stringify({ session_id: "private-session", access_token: "private-token" }),
       }),
     });
-    expect(publicProviderAvailabilityDetail(secretEnvelope)).toBeUndefined();
-    expect(publicProviderAvailabilityDetail('{"message":"access_token: private-token","error":')).toBeUndefined();
+    expect(publicProviderAvailabilityDetail(secretEnvelope)).toBe("Provider execution failed.");
+    expect(publicProviderAvailabilityDetail('{"message":"access_token: private-token","error":')).toBe("Provider execution failed.");
 
     let deep: unknown = { message: "must-not-escape-depth-limit" };
     for (let index = 0; index < 8; index += 1) deep = { error: JSON.stringify(deep) };
-    expect(publicProviderAvailabilityDetail(JSON.stringify(deep))).toBeUndefined();
-    expect(publicProviderAvailabilityDetail("x".repeat(64 * 1024 + 1))).toBeUndefined();
+    expect(publicProviderAvailabilityDetail(JSON.stringify(deep))).toBe("Provider execution failed.");
+    expect(publicProviderAvailabilityDetail("x".repeat(64 * 1024 + 1))).toBe("Provider execution failed.");
   });
 
   it("rejects credential paths, tokens, key material, encoded JSON, and obfuscated secrets", () => {
@@ -507,9 +511,11 @@ describe("provider readiness truth", () => {
       "W3sicGFzc3dvcmQiOiJ4In1d",
     ];
     for (const detail of adversarial) {
-      expect(publicProviderAvailabilityDetail(detail), detail).toBeUndefined();
+      const publicDetail = publicProviderAvailabilityDetail(detail);
+      expect(publicDetail, detail).toBe("Provider execution failed.");
+      expect(publicDetail, detail).not.toContain(detail);
     }
-    expect(publicProviderAvailabilityDetail("connection reset by peer")).toBe("connection reset by peer");
+    expect(publicProviderAvailabilityDetail("connection reset by peer")).toBe("Provider is temporarily unavailable.");
   });
 
   it("sanitizes throwing auth status across recheck and readiness endpoints", async () => {
@@ -583,9 +589,9 @@ describe("provider readiness truth", () => {
     expect(responses.map((response) => response.statusCode)).toEqual([503, 503]);
     for (const response of responses) {
       expect(response.json()).toEqual({
-        error: "Provider authentication was rejected.",
+        error: "Provider execution failed.",
         category: "provider_error",
-        remediation: "Check the provider subscription and sign-in, then retry.",
+        remediation: "Review the restricted server logs, then retry the provider operation.",
       });
       expect(response.body).not.toMatch(
         /AUTHENTICATION_FAILURE|Basic|private-|hunter2|password|access_token|Users|phoenix|auth\.json|hosts\.yml/u,
@@ -616,7 +622,7 @@ describe("provider readiness truth", () => {
     const response = await app.inject({ method: "GET", url: "/api/engines" });
     expect(response.statusCode).toBe(503);
     expect(response.json()).toEqual({
-      error: "Provider runtime information could not be read.",
+      error: "Provider execution failed.",
       category: "provider_error",
       remediation: "Review the restricted server logs, then retry the provider operation.",
     });
@@ -654,7 +660,7 @@ describe("provider readiness truth", () => {
     });
     expect(response.statusCode).toBe(503);
     expect(response.json()).toEqual({
-      error: "Provider capabilities could not be refreshed.",
+      error: "Provider execution failed.",
       category: "provider_error",
       remediation: "Review the restricted server logs, then retry the provider operation.",
     });
@@ -696,7 +702,7 @@ describe("provider readiness truth", () => {
       expect(later.json().providers).toEqual([expect.objectContaining({
         provider: "codex",
         refreshing: false,
-        error: "Provider usage could not be refreshed.",
+        error: "Provider execution failed.",
       })]);
       expect(later.body).not.toMatch(/hunter2|private-usage-token|password|access_token|HOME|auth\.json/u);
     });
@@ -765,7 +771,7 @@ describe("provider readiness truth", () => {
       expect(later.json().providers).toEqual([expect.objectContaining({
         provider: "codex",
         refreshing: false,
-        error: "Provider usage could not be refreshed.",
+        error: "Provider execution failed.",
       })]);
       expect(later.body).not.toMatch(/hunter2|password|secret_key|root|credentials/u);
     });
@@ -805,9 +811,9 @@ describe("provider readiness truth", () => {
     for (const body of [recheck.body, engines.body, notifications.body]) {
       expect(body).not.toMatch(/hunter2|SECRET_KEY|W3sicGF|HOME|auth\.json|Users|credentials/u);
     }
-    expect(recheck.json().availabilityDetail).toBe("Provider authentication was rejected.");
+    expect(recheck.json().availabilityDetail).toBe("Provider execution failed.");
     expect(notifications.json()).toEqual([expect.objectContaining({
-      body: expect.stringContaining("Provider authentication was rejected."),
+      body: expect.stringContaining("Provider execution failed."),
     })]);
     await app.close();
   });
@@ -831,7 +837,7 @@ describe("provider readiness truth", () => {
       const notifications = (await failed.app.inject({ method: "GET", url: "/api/notifications" })).json();
       expect(notifications).toEqual([expect.objectContaining({
         dedupeKey: "provider:codex:unavailable",
-        body: expect.stringContaining("authentication rejected by provider"),
+        body: expect.stringContaining("Provider authentication was rejected."),
       })]);
       expect(JSON.stringify(notifications)).not.toMatch(
         /session_id|refresh_token|private-(?:live|outer-live)/u,
@@ -839,7 +845,8 @@ describe("provider readiness truth", () => {
     });
     const engines = (await failed.app.inject({ method: "GET", url: "/api/engines" })).json();
     expect(engines).toEqual([expect.objectContaining({
-      availabilityDetail: "authentication rejected by provider",
+      availabilityDetail: "Provider authentication was rejected.",
+      availabilityCategory: "authentication",
       intakeReady: false,
       reachability: "degraded",
     })]);
@@ -863,13 +870,13 @@ describe("provider readiness truth", () => {
         WHERE intent = 'managed_child_failure'
       `).all() as Array<{ payload_json: string }>;
       expect(communications).toHaveLength(1);
-      expect(communications[0]!.payload_json).toContain("Provider execution failed.");
+      expect(communications[0]!.payload_json).toContain("Provider authentication was rejected.");
       expect(communications[0]!.payload_json).not.toMatch(/private-managed|hunter2|SECRET_KEY|W3sicGF|root|credentials/u);
       const activation = failed.store.sqlite.prepare(`
         SELECT payload_json FROM agent_activations
         WHERE kind = 'managed_child_failure'
       `).get() as { payload_json: string } | undefined;
-      expect(activation?.payload_json).toContain("Provider execution failed.");
+      expect(activation?.payload_json).toContain("Provider authentication was rejected.");
       expect(activation?.payload_json).not.toMatch(/private-managed|hunter2|SECRET_KEY|W3sicGF|root|credentials/u);
     });
     let audit: { id: string; provider_failure_json: string } | undefined;
@@ -896,7 +903,7 @@ describe("provider readiness truth", () => {
     });
     expect(publicDetails.statusCode).toBe(200);
     expect(publicDetails.json().details).toEqual(expect.arrayContaining([
-      { label: "Provider failure summary", value: "Provider execution failed." },
+      { label: "Provider failure summary", value: "Provider authentication was rejected." },
       {
         label: "Operator action",
         value: "Review provider access and retry the affected work when the provider is available.",
@@ -967,7 +974,7 @@ describe("provider readiness truth", () => {
     `).all(requestId) as Array<{ payload_json: string }>;
     expect(JSON.stringify(activationErrors)).not.toMatch(/hunter2|pa\\u0073sword|private-request|HOME|credentials/u);
     expect(JSON.stringify(requestUpdates)).not.toMatch(/hunter2|pa\\u0073sword|private-request|HOME|credentials/u);
-    expect(JSON.stringify({ activationErrors, requestUpdates })).toContain("Provider execution failed.");
+    expect(JSON.stringify({ activationErrors, requestUpdates })).toContain("Provider authentication was rejected.");
 
     const publicContext = JSON.stringify({
       activations: activationErrors,
@@ -977,7 +984,7 @@ describe("provider readiness truth", () => {
       updates: requestUpdates,
     });
     expect(publicContext).not.toMatch(/hunter2|pa\\u0073sword|private-request-token|HOME|credentials/u);
-    expect(publicContext).toContain("Provider execution failed.");
+    expect(publicContext).toContain("Provider authentication was rejected.");
     const audit = store.sqlite.prepare(`
       SELECT provider_failure_json FROM scheduler_runs WHERE id = ?
     `).get(lease.runId) as { provider_failure_json: string };

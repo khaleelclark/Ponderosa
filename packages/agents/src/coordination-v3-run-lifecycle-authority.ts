@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import type {
   CoordinationRequestState,
   ProviderInputSourceManifest,
+  ProviderFailureCategory,
 } from "@ponderosa/core";
 import {
   activationRetryDisposition,
@@ -378,12 +379,7 @@ export class CoordinationV3RunLifecycleAuthority {
     error?: string;
     maxDeliveryFailures?: number;
     confirmedNotExecuted?: boolean;
-    failureKind?:
-      | "capacity"
-      | "rate_limit"
-      | "authentication"
-      | "context"
-      | "unknown";
+    failureKind?: ProviderFailureCategory;
     failureDetail?: {
       phase: string;
       promptInjectionState: "not_injected" | "injecting" | "injected";
@@ -406,6 +402,7 @@ export class CoordinationV3RunLifecycleAuthority {
         `).run(
           stableJson({
             ...input.failureDetail,
+            ...(input.failureKind ? { category: input.failureKind } : {}),
             ...(input.failureDetail.stderr
               ? { stderr: input.failureDetail.stderr.slice(-8_192) }
               : {}),
@@ -421,6 +418,7 @@ export class CoordinationV3RunLifecycleAuthority {
       }
       const publicError = publicProviderFailureSummary(
         input.error ?? "scheduler dispatch rejected",
+        input.failureKind,
       ) ?? "Provider execution failed.";
       const disposition = input.confirmedNotExecuted
         ? "retry"

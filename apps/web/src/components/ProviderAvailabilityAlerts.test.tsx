@@ -100,7 +100,7 @@ describe("Create Project provider availability", () => {
     </div>);
 
     expect(screen.getByText(
-      "Claude access is unavailable. Check the Claude subscription and Claude Code sign-in, then test access.",
+      "Claude access is unavailable. Review the restricted server logs, then retry the provider operation.",
     )).toBeTruthy();
     const disclosure = container.querySelector("details");
     expect(disclosure?.hasAttribute("open")).toBe(false);
@@ -109,7 +109,7 @@ describe("Create Project provider availability", () => {
     expect(diagnostic).not.toContain("private-session");
   });
 
-  it("decodes nested stringified diagnostics without rendering secrets", () => {
+  it("maps nested stringified diagnostics to a generic code-owned message", () => {
     const nested = JSON.stringify({
       type: "result",
       error: JSON.stringify({
@@ -128,7 +128,7 @@ describe("Create Project provider availability", () => {
       onTestAccess={vi.fn()}
     />);
 
-    expect(screen.getByTestId("provider-diagnostic-claude").textContent).toBe("Claude subscription expired");
+    expect(screen.getByTestId("provider-diagnostic-claude").textContent).toBe("Provider execution failed.");
     expect(document.body.textContent).not.toContain("private-nested-session");
     expect(document.body.textContent).not.toContain("private-nested-token");
   });
@@ -139,13 +139,13 @@ describe("Create Project provider availability", () => {
         message: JSON.stringify({ session_id: "private-session", access_token: "private-token" }),
       }),
     });
-    expect(providerAvailabilityDiagnostic(secretEnvelope)).toBeUndefined();
-    expect(providerAvailabilityDiagnostic('{"message":"refresh_token: private-token","error":')).toBeUndefined();
+    expect(providerAvailabilityDiagnostic(secretEnvelope)).toBe("Provider execution failed.");
+    expect(providerAvailabilityDiagnostic('{"message":"refresh_token: private-token","error":')).toBe("Provider execution failed.");
 
     let deep: unknown = { message: "must-not-escape-depth-limit" };
     for (let index = 0; index < 8; index += 1) deep = { error: JSON.stringify(deep) };
-    expect(providerAvailabilityDiagnostic(JSON.stringify(deep))).toBeUndefined();
-    expect(providerAvailabilityDiagnostic("x".repeat(64 * 1024 + 1))).toBeUndefined();
+    expect(providerAvailabilityDiagnostic(JSON.stringify(deep))).toBe("Provider execution failed.");
+    expect(providerAvailabilityDiagnostic("x".repeat(64 * 1024 + 1))).toBe("Provider execution failed.");
   });
 
   it("rejects client-side credential paths, tokens, encoded JSON, and obfuscated secrets", () => {
@@ -179,9 +179,11 @@ describe("Create Project provider availability", () => {
       "W3sicGFzc3dvcmQiOiJ4In1d",
     ];
     for (const detail of adversarial) {
-      expect(providerAvailabilityDiagnostic(detail), detail).toBeUndefined();
+      const diagnostic = providerAvailabilityDiagnostic(detail);
+      expect(diagnostic, detail).toBe("Provider execution failed.");
+      expect(diagnostic, detail).not.toContain(detail);
     }
-    expect(providerAvailabilityDiagnostic("connection reset by peer")).toBe("connection reset by peer");
+    expect(providerAvailabilityDiagnostic("connection reset by peer")).toBe("Provider is temporarily unavailable.");
   });
 
   it("uses category-accurate remediation for provider degradation", () => {
@@ -189,30 +191,29 @@ describe("Create Project provider availability", () => {
       intakeReady: false,
       reachability: "degraded",
       availabilityDetail: "subscription expired",
-    }))).toContain("Claude subscription and Claude Code sign-in");
+    }))).toContain("provider subscription and sign-in");
     expect(providerAvailabilityMessage(engine("claude", {
       intakeReady: false,
       reachability: "degraded",
       availabilityDetail: "subscription inactive",
-    }))).toContain("Claude subscription and Claude Code sign-in");
+    }))).toContain("provider subscription and sign-in");
     expect(providerAvailabilityMessage(engine("codex", {
       intakeReady: false,
       reachability: "degraded",
       availabilityDetail: "usage limit reached; limit resets soon",
-    }))).toContain("usage limit was reached");
+    }))).toContain("provider usage limit to reset");
     expect(providerAvailabilityMessage(engine("claude", {
       intakeReady: false,
       reachability: "degraded",
       availabilityDetail: "selected model is at capacity",
-    }))).toContain("provider is at capacity");
+    }))).toContain("provider capacity is available");
 
     const unknown = providerAvailabilityMessage(engine("claude", {
       intakeReady: false,
       reachability: "degraded",
       availabilityDetail: "connection reset by peer",
     }));
-    expect(unknown).toContain("Test access again");
-    expect(unknown).toContain("provider logs");
+    expect(unknown).toContain("Retry when the provider is available");
     expect(unknown).not.toMatch(/subscription|sign-in/iu);
   });
 

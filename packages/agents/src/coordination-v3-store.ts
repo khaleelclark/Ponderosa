@@ -6,6 +6,7 @@ import {
   type CoordinationReplyAuthority,
   type TriggerDefinitionDto,
   type TriggerOccurrenceDto,
+  type ProviderFailureCategory,
 } from "@ponderosa/core";
 import { CoordinationV3ReadModel } from "./coordination-v3-read-model.js";
 import { CoordinationV3RequestReadModel } from "./coordination-v3-request-read-model.js";
@@ -1109,7 +1110,7 @@ export class CoordinationV3Store {
     error?: string;
     maxDeliveryFailures?: number;
     confirmedNotExecuted?: boolean;
-    failureKind?: "capacity" | "rate_limit" | "authentication" | "context" | "unknown";
+    failureKind?: ProviderFailureCategory;
     failureDetail?: {
       phase: string;
       promptInjectionState: "not_injected" | "injecting" | "injected";

@@ -367,7 +367,7 @@ describe("CoordinationV3Scheduler rollover expiry recovery", () => {
     expect(terminal).toMatchObject({
       state: "outcome_unknown",
       terminalAt: AFTER_EXPIRY,
-      lastError: "rollover Run lease expired after prompt injection before durable handoff commit",
+      lastError: "Provider execution failed.",
     });
     expect(sqlite.prepare(`
       SELECT state FROM agent_activations
@@ -389,7 +389,7 @@ describe("CoordinationV3Scheduler rollover expiry recovery", () => {
     expect(restarted.contextRollover(rollover.id)).toMatchObject({
       state: "outcome_unknown",
       terminalAt: AFTER_EXPIRY,
-      lastError: "rollover Run lease expired after prompt injection before durable handoff commit",
+      lastError: "Provider execution failed.",
     });
   });
 

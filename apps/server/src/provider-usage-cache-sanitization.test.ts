@@ -35,7 +35,7 @@ describe("ProviderUsageCache public failure projection", () => {
       expect(cache.state(target)).toMatchObject({
         provider: "codex",
         refreshing: false,
-        error: "Provider usage could not be refreshed.",
+        error: "Provider execution failed.",
       });
     });
 
@@ -48,9 +48,9 @@ describe("ProviderUsageCache public failure projection", () => {
   });
 
   it.each([
-    "deadline exceeded / operation exceeded retry budget",
-    "Ошибка подключения к провайдеру",
-  ])("retains useful benign async reader detail: %s", async (detail) => {
+    ["deadline exceeded / operation exceeded retry budget", "Provider is temporarily unavailable."],
+    ["Ошибка подключения к провайдеру", "Provider execution failed."],
+  ])("projects benign async reader detail through the finite policy: %s", async (detail, expected) => {
     const adapter = {
       id: "codex",
       displayName: "Codex",
@@ -68,7 +68,8 @@ describe("ProviderUsageCache public failure projection", () => {
 
     cache.refresh(target, true);
     await vi.waitFor(() => {
-      expect(cache.state(target).error).toBe(detail);
+      expect(cache.state(target).error).toBe(expected);
+      expect(cache.state(target).error).not.toContain(detail);
     });
     await cache.shutdown();
   });

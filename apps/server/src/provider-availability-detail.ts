@@ -1,6 +1,8 @@
 import {
+  publicProviderFailure,
   publicProviderFailureCategorySummary,
   publicProviderFailureSummary,
+  type ProviderFailureCategory,
 } from "@ponderosa/core";
 
 export const publicProviderAvailabilityDetail = publicProviderFailureSummary;
@@ -14,22 +16,17 @@ export interface PublicProviderErrorResponse {
 
 export function publicProviderExceptionResponse(
   error: unknown,
-  fallback = "Provider runtime information could not be read.",
+  category?: ProviderFailureCategory,
 ): PublicProviderErrorResponse {
   const detail = error instanceof Error ? error.message : undefined;
-  const summary = publicProviderFailureCategorySummary(detail) ?? fallback;
-  const remediation = summary === "Provider authentication was rejected."
-    ? "Check the provider subscription and sign-in, then retry."
-    : summary === "Provider usage limit was reached."
-      ? "Wait for the provider usage limit to reset, then retry."
-      : summary === "Provider is temporarily at capacity."
-        ? "Retry when provider capacity is available."
-        : "Review the restricted server logs, then retry the provider operation.";
-  return { error: summary, category: "provider_error", remediation };
+  const failure = publicProviderFailure({ detail, category });
+  return { error: failure.summary, category: "provider_error", remediation: failure.remediation };
 }
 
-export function providerUnavailableNotificationBody(detail: string | undefined): string {
-  const safeDetail = publicProviderFailureSummary(detail)
-    ?? publicProviderFailureCategorySummary(detail);
-  return `${safeDetail ?? "The provider rejected runtime access."} Queued work is held until access is explicitly rechecked or a successful authorized Run proves recovery.`;
+export function providerUnavailableNotificationBody(
+  detail: string | undefined,
+  category?: ProviderFailureCategory,
+): string {
+  const failure = publicProviderFailure({ detail, category });
+  return `${failure.summary} ${failure.remediation} Queued work is held until access is explicitly rechecked or a successful authorized Run proves recovery.`;
 }

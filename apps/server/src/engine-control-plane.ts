@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   Adapter,
   EngineCapabilities,
@@ -10,6 +10,7 @@ import type {
   ProviderUsageCenterDto,
   ProviderUsageStateDto,
   RuntimeProcessHandle,
+  ProviderFailureCategory,
 } from "@ponderosa/core";
 import type { AgentStore, WorkspaceStore } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
@@ -20,7 +21,6 @@ import type { ProviderProcessAuthority } from "./provider-process-authority.js";
 import {
   publicProviderAvailabilityDetail,
   publicProviderExceptionResponse,
-  publicProviderFailureCategorySummary,
 } from "./provider-availability-detail.js";
 import type {
   CapabilityDiscoveryAuthority,
@@ -55,8 +55,8 @@ export class ProviderAdapterBoundaryError extends Error {
   readonly operation: string;
   readonly publicResponse: ReturnType<typeof publicProviderExceptionResponse>;
 
-  constructor(engineId: string, operation: string, cause: unknown, fallback?: string) {
-    const publicResponse = publicProviderExceptionResponse(cause, fallback);
+  constructor(engineId: string, operation: string, cause: unknown) {
+    const publicResponse = publicProviderExceptionResponse(cause);
     super(publicResponse.error, { cause });
     this.name = "ProviderAdapterBoundaryError";
     this.engineId = engineId;
@@ -92,34 +92,30 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     adapter: Adapter,
     operation: string,
     callback: () => T,
-    fallback?: string,
   ): T => {
     try {
       return callback();
     } catch (error) {
-      throw new ProviderAdapterBoundaryError(adapter.id, operation, error, fallback);
+      throw new ProviderAdapterBoundaryError(adapter.id, operation, error);
     }
   };
   const providerAdapterOperation = async <T>(
     adapter: Adapter,
     operation: string,
     callback: () => Promise<T>,
-    fallback?: string,
   ): Promise<T> => {
     try {
       return await callback();
     } catch (error) {
       if (error instanceof ProviderAdapterBoundaryError) throw error;
-      throw new ProviderAdapterBoundaryError(adapter.id, operation, error, fallback);
+      throw new ProviderAdapterBoundaryError(adapter.id, operation, error);
     }
   };
 
   const runtimeFailureDetail = (engineId: string): string | undefined => {
     const denial = engineAvailability.denial(engineId);
     return denial
-      ? publicProviderAvailabilityDetail(denial.detail)
-        ?? publicProviderFailureCategorySummary(denial.detail)
-        ?? "provider rejected runtime access"
+      ? publicProviderAvailabilityDetail(denial.detail, denial.failureCategory)
       : undefined;
   };
   const runtimeStatus = async (
@@ -132,6 +128,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     reachability: "unverified" | "reachable" | "degraded";
     authDetail?: string;
     availabilityDetail?: string;
+    availabilityCategory?: ProviderFailureCategory;
   }> => {
     let auth: { authenticated: boolean; detail?: string };
     try {
@@ -148,12 +145,14 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         reachability: "degraded",
         authDetail,
         availabilityDetail: "runtime authentication could not be checked",
+        availabilityCategory: "unavailable",
       };
     }
-    const authDetail = publicProviderAvailabilityDetail(auth.detail);
+    const authDetail = auth.authenticated
+      ? "Provider authentication is available."
+      : "Provider authentication is required.";
     const denial = runtimeFailureDetail(id);
     const evidence = engineAvailability.get(id);
-    const evidenceDetail = publicProviderAvailabilityDetail(evidence?.detail);
     const enabled = providerEnabled(id);
     return {
       configured: true,
@@ -161,12 +160,15 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       intakeReady: enabled && auth.authenticated && !denial,
       reachability: evidence ? (evidence.available ? "reachable" : "degraded") : "unverified",
       ...(authDetail ? { authDetail } : {}),
+      ...(evidence && !evidence.available
+        ? { availabilityCategory: evidence.failureCategory ?? "unknown" }
+        : {}),
       ...(!enabled ? { availabilityDetail: "disabled by the operator; queued work is held" }
         : !auth.authenticated
         ? { availabilityDetail: authDetail ?? "runtime is not authenticated" }
         : denial ? { availabilityDetail: denial }
           : evidence?.available
-            ? { availabilityDetail: evidenceDetail ?? "provider accepted real work" }
+            ? { availabilityDetail: "Provider access check succeeded." }
             : { availabilityDetail: "provider intake is enabled; reachability has not yet been verified by real work" }),
     };
   };
@@ -184,6 +186,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         reachability: "degraded",
         authDetail,
         availabilityDetail: "runtime authentication could not be checked",
+        availabilityCategory: "unavailable",
       };
     }
     try {
@@ -223,17 +226,16 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       ? await engineAuthStatuses.get(registration.adapter.id, registration.authStatus)
       : { authenticated: true, detail: "authenticated provider" };
     const detail = auth.detail?.trim();
-    const publicDetail = publicProviderAvailabilityDetail(detail);
-    const accountMatch = publicDetail
-      ? /^logged in as (.+?)(?:\s+\(subscription\))?$/iu.exec(publicDetail)
-      : undefined;
     return {
       adapter: registration.adapter,
       displayName: registration.adapter.displayName,
       authenticated: auth.authenticated,
-      accountKey: detail || (auth.authenticated ? "authenticated" : "unauthenticated"),
-      ...(accountMatch?.[1] ? { accountLabel: accountMatch[1].trim() }
-        : auth.authenticated && publicDetail ? { accountLabel: publicDetail } : {}),
+      accountKey: detail
+        ? createHash("sha256").update(detail, "utf8").digest("hex")
+        : (auth.authenticated ? "authenticated" : "unauthenticated"),
+      ...(registration.adapter.id === "codex" && auth.authenticated
+        ? { accountLabel: "ChatGPT account" }
+        : {}),
     };
   };
   const providerUsageState = async (
@@ -410,7 +412,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         ...(model ? { model } : {}),
         signal: authority.controller.signal,
         onRuntimeSpawned: registerProcess,
-      }), "Provider capabilities could not be refreshed."));
+      })));
     const promise = adapterOperation
       .then(async (value) => {
         authority.settled = true;
@@ -436,7 +438,6 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
             adapter.id,
             "clean up capability discovery",
             new AggregateError([error, closeError], `${adapter.id} capability discovery and cleanup failed`),
-            "Provider capabilities could not be refreshed.",
           );
         }
         throw error;
@@ -523,7 +524,6 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       adapter,
       "read model catalog configuration",
       () => adapter.modelCatalogConfigurationKey?.() ?? "default",
-      "Provider model discovery failed.",
     ),
   ].join("\0");
   const closeModelCatalogDiscoveryAuthority = async (
@@ -572,7 +572,6 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
           adapter.id,
           "read live model catalog",
           error,
-          "Provider model discovery failed.",
         );
       }
       if (!live?.modelCatalog) continue;
@@ -582,7 +581,6 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
               adapter,
               "normalize configured model catalog",
               () => adapter.configuredModelCatalog!(live.modelCatalog!.models),
-              "Provider model discovery failed.",
             )
           : live.modelCatalog.models,
         cliVersion: live.modelCatalog.cliVersion,
@@ -647,7 +645,6 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
                 adapter,
                 "read model catalog configuration",
                 () => adapter.modelCatalogConfigurationKey?.() ?? "default",
-                "Provider model discovery failed.",
               ),
             }
           : await providerAdapterOperation(
@@ -657,7 +654,6 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
                 signal: authority.controller.signal,
                 onRuntimeSpawned: registerProcess,
               }),
-              "Provider model discovery failed.",
             );
         const value: ProjectEngineModelCatalogDto = {
           projectId: project.id,
@@ -692,7 +688,6 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
             adapter.id,
             "clean up model discovery",
             new AggregateError([error, closeError], `${adapter.id} model discovery and cleanup failed`),
-            "Provider model discovery failed.",
           );
         }
         throw error;
@@ -744,17 +739,13 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         signal: authority.controller.signal,
         onRuntimeSpawned: registerProcess,
       }),
-      "Provider model validation failed.",
     );
     authority.operation = operation;
     try {
       return await operation;
     } catch (error) {
       app.log.warn({ err: error, engineId: adapter.id }, "provider model validation failed");
-      const publicFailure = publicProviderExceptionResponse(
-        error,
-        "Provider model validation failed.",
-      );
+      const publicFailure = publicProviderExceptionResponse(error);
       return {
         valid: false,
         errorCode: "provider_error",
@@ -769,7 +760,6 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
           adapter.id,
           "clean up model validation",
           error,
-          "Provider model validation failed.",
         );
       }
     }

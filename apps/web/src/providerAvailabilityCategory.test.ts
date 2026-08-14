@@ -21,14 +21,14 @@ describe("canonical provider availability categories", () => {
   it("uses authentication remediation for expired and inactive subscriptions", () => {
     for (const detail of ["subscription expired", "subscription inactive"]) {
       expect(providerAvailabilityMessage(degraded(detail))).toBe(
-        "Codex access is unavailable. Check the ChatGPT subscription and Codex sign-in, then test access.",
+        "Codex access is unavailable. Check the provider subscription and sign-in, then retry.",
       );
     }
   });
 
   it("uses limit remediation when the provider reports zero weighted tokens", () => {
     expect(providerAvailabilityMessage(degraded("0 weighted tokens left"))).toBe(
-      "Codex access is temporarily unavailable because its usage limit was reached. Test access again after the provider limit resets.",
+      "Codex access is unavailable. Wait for the provider usage limit to reset, then retry.",
     );
   });
 });

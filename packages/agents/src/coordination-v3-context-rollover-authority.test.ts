@@ -615,9 +615,7 @@ describe("context rollover continuation obligations", () => {
     expect(restarted.contextRollover(fixture.rolloverId)).toMatchObject({
       state: "outcome_unknown",
       terminalAt: cancelledAt,
-      lastError: phase === "requested"
-        ? "rollover handoff Run was cancelled before durable commit"
-        : "owning Run was cancelled before rollover continuation finalized",
+      lastError: "Provider execution failed.",
     });
 
     const laterActivationId = restarted.enqueueMessageActivation({
@@ -690,7 +688,7 @@ describe("context rollover continuation obligations", () => {
     const failed = fixture.store.contextRollover(requested.rollover.id);
     expect(failed).toMatchObject({
       state: "failed",
-      lastError: safeFailure,
+      lastError: "Provider execution failed.",
       terminalAt: NOW,
     });
     expect(fixture.sqlite.prepare(`
@@ -768,7 +766,7 @@ describe("context rollover continuation obligations", () => {
     );
     expect(fixture.store.contextRollover(requested.rollover.id)).toMatchObject({
       state: "failed",
-      lastError: safeFailure,
+      lastError: "Provider execution failed.",
       terminalAt: NOW,
     });
   });
@@ -838,12 +836,12 @@ describe("context rollover continuation obligations", () => {
     const publicRollover = fixture.store.contextRollover(requested.rollover.id);
     expect(publicRollover).toMatchObject({
       state: "outcome_unknown",
-      lastError: "Provider execution failed.",
+      lastError: "Provider authentication was rejected.",
     });
     const persisted = fixture.sqlite.prepare(`
       SELECT last_error FROM context_rollovers WHERE id = ?
     `).get(requested.rollover.id) as { last_error: string };
-    expect(persisted.last_error).toBe("Provider execution failed.");
+    expect(persisted.last_error).toBe("Provider authentication was rejected.");
     expect(JSON.stringify({ publicRollover, persisted })).not.toMatch(
       /cGFzc3dv|hunter2|short123|dXNlcj|signing_key|private-rollover-token|password|access_token|root|auth\.json/iu,
     );
@@ -2632,7 +2630,7 @@ describe("context rollover continuation obligations", () => {
       NOW,
     )).toMatchObject({
       state: "failed",
-      lastError: expect.stringContaining("rollover_seed_overflow"),
+      lastError: "Provider execution failed.",
     });
     const replay = fixture.store.requestContextRollover({
       projectId: PROJECT_ID,

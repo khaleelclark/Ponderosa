@@ -5,6 +5,7 @@ import type {
   CoordinationRequestState,
   CoordinationRequestUpdateKind,
 } from "@ponderosa/core";
+import { publicProviderFailureSummary } from "@ponderosa/core";
 import { inspectorDetails, inspectorJson, inspectorWakePolicy } from "./coordination-v3-inspector.js";
 import type {
   CoordinationAttentionCandidateCursor,
@@ -1275,6 +1276,7 @@ export class CoordinationV3ReadModel {
           SELECT scheduler.id, scheduler.status, scheduler.fencing_token, scheduler.prompt_injection_state,
             scheduler.context_disposition, scheduler.lease_expires_at, scheduler.terminal_at,
             CASE WHEN scheduler.provider_failure_json IS NULL THEN 0 ELSE 1 END AS has_provider_failure,
+            json_extract(scheduler.provider_failure_json, '$.category') AS provider_failure_category,
             (
               SELECT activation.last_delivery_error
               FROM scheduler_run_activations attached
@@ -1295,10 +1297,13 @@ export class CoordinationV3ReadModel {
           lease_expires_at: string; terminal_at: string | null; execution_id: string | null; prompt_hash: string | null;
           execution_status: string | null; wake_cause: string | null; completed_at: string | null;
           has_provider_failure: 0 | 1;
+          provider_failure_category: string | null;
           provider_failure_summary: string | null;
         } | undefined;
         const providerFailureSummary = row?.provider_failure_summary
-          ?? (row?.has_provider_failure ? "Provider execution failed." : undefined);
+          ?? (row?.has_provider_failure
+            ? publicProviderFailureSummary(undefined, row.provider_failure_category ?? "unknown")
+            : undefined);
         return row ? inspectorDetails(["Execution Run ID", row.execution_id], ["Scheduler Run ID", row.id],
           ["Scheduler status", row.status], ["Execution projection status", row.execution_status], ["Wake cause", row.wake_cause],
           ["Fence", row.fencing_token], ["Prompt injection", row.prompt_injection_state],

@@ -25,7 +25,7 @@ interface ProviderUsageAuthority {
 
 function publicProviderUsageError(error: unknown): string {
   const detail = error instanceof Error ? error.message : String(error);
-  return publicProviderFailureSummary(detail) ?? "Provider usage could not be refreshed.";
+  return publicProviderFailureSummary(detail) ?? "Provider execution failed.";
 }
 
 export interface ProviderUsageTarget {
@@ -52,7 +52,7 @@ export class ProviderUsageCache {
   state(target: ProviderUsageTarget): ProviderUsageStateDto {
     const entry = this.entries.get(this.key(target));
     const error = entry?.error
-      ? publicProviderFailureSummary(entry.error) ?? "Provider usage could not be refreshed."
+      ? publicProviderFailureSummary(entry.error) ?? "Provider execution failed."
       : undefined;
     const reading = entry?.reading
       ? {

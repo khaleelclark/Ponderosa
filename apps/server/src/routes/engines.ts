@@ -211,15 +211,14 @@ export function registerEngineRoutes(
         request.log.warn({ err: error, engineId: request.params.id }, "provider availability probe failed");
         result = {
           available: false,
-          detail: publicProviderExceptionResponse(
-            error,
-            "Provider access could not be checked.",
-          ).error,
+          failureCategory: "unavailable",
+          detail: publicProviderExceptionResponse(error, "unavailable").error,
         };
       }
       availability.record({
         engineId: request.params.id,
         available: result.available,
+        ...(result.failureCategory ? { failureCategory: result.failureCategory } : {}),
         ...(result.detail ? { detail: result.detail } : {}),
         source: "operator_probe",
       });
@@ -232,7 +231,7 @@ export function registerEngineRoutes(
           category: "provider",
           severity: "attention",
           title: `${registration.adapter.displayName} is unavailable`,
-          body: providerUnavailableNotificationBody(result.detail),
+          body: providerUnavailableNotificationBody(result.detail, result.failureCategory),
           action: { kind: "open_settings", targetId: request.params.id },
         });
       }
