@@ -50,6 +50,22 @@ import type {
   UpdateAgentOrganizationRequest,
 } from "@ponderosa/core";
 import type { GlobalChatSearchInput } from "./store-chat-search-read-model.js";
+import {
+  bindContextRolloverBoundary,
+  hasCompactionHistory,
+  indexCompactionHistoryMessage,
+  readCompactionHistory,
+  reconcileCompactionHistoryIndex,
+  resolveContextRolloverTail,
+  searchCompactionHistory,
+  type CompactionHistoryBoundary,
+  type CompactionHistoryMaterializationKind,
+  type ContextRolloverBoundaryBinding,
+  type ContextRolloverTailBinding,
+  type ReadCompactionHistoryInput,
+  type ResolvedContextRolloverTailMessage,
+  type SearchCompactionHistoryInput,
+} from "./compaction-history-retrieval.js";
 import type { AgentChatFeedProjection } from "./store-chat-feed-projection.js";
 import type { AgentTelemetryReadModel } from "./store-telemetry-read-model.js";
 import type { AgentFileActivityReadModel } from "./store-file-activity-read-model.js";
@@ -123,6 +139,12 @@ export class AgentStore extends AgentEventSessionFacade {
   private readonly support: AgentStoreSupport;
   private ownership?: DataDirectoryOwnership;
   private closed = false;
+  private compactionHistoryMaterialization = {
+    indexedRows: 0,
+    relationCandidateRows: 0,
+    canonicalEvents: 0,
+    canonicalRevisions: 0,
+  };
   private startupProfileData: {
     mode: "clean" | "recovery";
     openMs: number;
@@ -200,7 +222,15 @@ export class AgentStore extends AgentEventSessionFacade {
       // transactionally on every startup so a crash or torn append cannot leave
       // a partially repaired projection visible to ordinary requests.
       this.rebuildProjections();
-      for (const project of this.listProjects()) this.ensureCommunicationProjectionLedger(project.id);
+      for (const project of this.listProjects()) {
+        this.ensureCommunicationProjectionLedger(project.id);
+        reconcileCompactionHistoryIndex(
+          this.client,
+          project.id,
+          this.readCommunicationEvents(project.id),
+          this.readCommunicationRevisions(project.id),
+        );
+      }
       const completedAt = performance.now();
       this.startupProfileData = {
         mode: "recovery",
@@ -252,7 +282,22 @@ export class AgentStore extends AgentEventSessionFacade {
    * making transport retries idempotent while detecting identity collisions.
    */
   appendCommunicationEvent(input: CommunicationEvent): { event: CommunicationEvent; replayed: boolean } {
-    return this.communicationJournal.appendCommunicationEvent(input);
+    const result = this.communicationJournal.appendCommunicationEvent(input);
+    const ordinal = this.communicationJournal.communicationOrdinal(result.event.projectId, result.event.eventId);
+    if (!ordinal) throw new Error("communication append ordinal is unavailable");
+    // A canonical append may have committed before its derived index
+    // transaction failed. Exact idempotent replay is therefore also the
+    // bounded live repair path; startup reconciliation remains the full repair.
+    indexCompactionHistoryMessage(
+      this.client,
+      result.event,
+      ordinal,
+      this.communicationJournal.latestCommunicationRevision(
+        result.event.projectId,
+        result.event.eventId,
+      ),
+    );
+    return result;
   }
 
   private ensureCommunicationBehaviorProjections(event: CommunicationEvent): void {
@@ -260,7 +305,26 @@ export class AgentStore extends AgentEventSessionFacade {
   }
 
   appendCommunicationRevision(input: CommunicationRevisionEvent): { revision: CommunicationRevisionEvent; replayed: boolean } {
-    return this.communicationJournal.appendCommunicationRevision(input);
+    const result = this.communicationJournal.appendCommunicationRevision(input);
+    if (!result.replayed) {
+      const event = this.communicationJournal.getCommunicationEvent(
+        result.revision.projectId,
+        result.revision.targetEventId,
+      );
+      const ordinal = this.communicationJournal.communicationOrdinal(
+        result.revision.projectId,
+        result.revision.targetEventId,
+      );
+      if (event && ordinal) {
+        indexCompactionHistoryMessage(
+          this.client,
+          event,
+          ordinal,
+          result.revision,
+        );
+      }
+    }
+    return result;
   }
 
   readCommunicationRevisions(projectId: string): CommunicationRevisionEvent[] {
@@ -273,6 +337,257 @@ export class AgentStore extends AgentEventSessionFacade {
 
   getCommunicationEvent(projectId: string, eventId: string): CommunicationEvent | undefined {
     return this.communicationJournal.getCommunicationEvent(projectId, eventId);
+  }
+
+  /** Current append-only authored-communication boundary. This generic
+   * rollover primitive does not depend on any retrieval index or tool. */
+  communicationJournalBoundary(projectId: string): {
+    canonicalOrdinal: number;
+    communicationEventId?: string;
+  } {
+    return this.communicationJournal.communicationBoundary(projectId);
+  }
+
+  communicationHistoryBoundary(projectId: string): CompactionHistoryBoundary {
+    return this.communicationJournalBoundary(projectId);
+  }
+
+  /** Exact canonical Communication identities known to occupy the currently
+   * accepted provider session. Scheduler Runs carry the provider-session
+   * identity observed after acknowledged injection; rejected replacement
+   * candidates therefore cannot contaminate the old accepted session merely by
+   * appearing later in the Agent event log. Legacy snapshots without a creating
+   * execution ID return undefined so rollover fails closed. */
+  acceptedProviderSessionCommunicationEventIds(agentId: string): string[] | undefined {
+    const accepted = this.resumeSessionState(agentId);
+    if (!accepted) return undefined;
+    const events = this.readEvents(agentId);
+    let boundaryExecutionId: string | undefined;
+    let rolloverId: string | undefined;
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index]!.event;
+      if ((event.type === "session_snapshot" || event.type === "context_rollover_session_accepted") &&
+          event.sessionId === accepted.sessionId) {
+        boundaryExecutionId = event.executionId;
+        rolloverId = event.type === "context_rollover_session_accepted" ? event.rolloverId : undefined;
+        break;
+      }
+    }
+    if (!boundaryExecutionId) return undefined;
+    const boundaryRun = this.client.prepare(`
+      SELECT provider_session_id, prompt_injection_state FROM scheduler_runs
+      WHERE id = ? AND agent_id = ?
+    `).get(boundaryExecutionId, agentId) as {
+      provider_session_id: string | null;
+      prompt_injection_state: string;
+    } | undefined;
+    // Tests and imported legacy logs may predate scheduler session binding.
+    // They are not safe evidence for a new rollover boundary.
+    if (!boundaryRun || boundaryRun.provider_session_id !== accepted.sessionId ||
+        boundaryRun.prompt_injection_state !== "injected") return undefined;
+    const executionIds = new Set((this.client.prepare(`
+      SELECT id FROM scheduler_runs
+      WHERE agent_id = ? AND provider_session_id = ?
+        AND prompt_injection_state = 'injected'
+      ORDER BY created_at, id
+    `).all(agentId, accepted.sessionId) as Array<{ id: string }>).map((row) => row.id));
+    const selectedHistoryIds: string[] = [];
+    for (const stored of events) {
+      const event = stored.event;
+      if (event.type === "compaction_history_retrieval" && executionIds.has(event.executionId)) {
+        selectedHistoryIds.push(...event.selected.map((selected) => selected.communicationEventId));
+      }
+    }
+    const rolloverTail = rolloverId
+      ? (this.client.prepare(`
+          SELECT recent_tail_event_ids_json FROM context_rollovers WHERE id = ? AND agent_id = ?
+        `).get(rolloverId, agentId) as { recent_tail_event_ids_json: string } | undefined)
+      : undefined;
+    const providerInputIds = [...executionIds].flatMap((executionId) =>
+      this.getProviderInput(executionId)?.sourceManifest.communicationEventIds ?? []);
+    return [...new Set([
+      ...(rolloverTail ? JSON.parse(rolloverTail.recent_tail_event_ids_json) as string[] : []),
+      ...providerInputIds,
+      ...selectedHistoryIds,
+    ])];
+  }
+
+  bindContextRolloverBoundary(input: {
+    agentId: string;
+    currentConversationId?: string;
+    submittedCommunicationEventIds: readonly string[];
+  }): ContextRolloverBoundaryBinding {
+    const agent = this.getAgent(input.agentId);
+    if (!agent || agent.archived) throw new Error("context rollover agent is unavailable");
+    return bindContextRolloverBoundary({
+      ...input,
+      sqlite: this.client,
+      agent,
+      getConversation: id => this.getConversation(id),
+      getAgent: id => this.getAgent(id),
+      getCommunicationEvent: (projectId, eventId) =>
+        this.communicationJournal.getCommunicationEvent(projectId, eventId),
+      getLatestCommunicationRevision: (projectId, targetEventId) =>
+        this.communicationJournal.latestCommunicationRevision(projectId, targetEventId),
+      observeMaterialization: (kind, count) => this.observeCompactionHistoryMaterialization(kind, count),
+    });
+  }
+
+  resolveContextRolloverTail(input: {
+    agentId: string;
+    currentConversationId?: string;
+    boundary: CompactionHistoryBoundary;
+    recentTail: readonly ContextRolloverTailBinding[];
+  }): ResolvedContextRolloverTailMessage[] {
+    const agent = this.getAgent(input.agentId);
+    if (!agent || agent.archived) throw new Error("context rollover agent is unavailable");
+    return resolveContextRolloverTail({
+      ...input,
+      sqlite: this.client,
+      agent,
+      getConversation: id => this.getConversation(id),
+      getAgent: id => this.getAgent(id),
+      getCommunicationEvent: (projectId, eventId) =>
+        this.communicationJournal.getCommunicationEvent(projectId, eventId),
+      getLatestCommunicationRevision: (projectId, targetEventId) =>
+        this.communicationJournal.latestCommunicationRevision(projectId, targetEventId),
+      observeMaterialization: (kind, count) => this.observeCompactionHistoryMaterialization(kind, count),
+    });
+  }
+
+  hasCompactionHistory(input: {
+    agentId: string;
+    currentConversationId?: string;
+    boundary: CompactionHistoryBoundary;
+    excludedCommunicationEventIds: ReadonlySet<string>;
+  }): boolean {
+    const agent = this.getAgent(input.agentId);
+    if (!agent || agent.archived) return false;
+    return hasCompactionHistory({
+      ...input,
+      sqlite: this.client,
+      agent,
+      getConversation: id => this.getConversation(id),
+      getAgent: id => this.getAgent(id),
+      getCommunicationEvent: (projectId, eventId) =>
+        this.communicationJournal.getCommunicationEvent(projectId, eventId),
+      getLatestCommunicationRevision: (projectId, targetEventId) =>
+        this.communicationJournal.latestCommunicationRevision(projectId, targetEventId),
+      observeMaterialization: (kind, count) => this.observeCompactionHistoryMaterialization(kind, count),
+    });
+  }
+
+  /** Search only canonical authored Communication visible to one active Agent.
+   * The caller supplies the frozen current-context exclusions for its Run. */
+  searchCompactionHistory(input: Omit<
+    SearchCompactionHistoryInput,
+    "sqlite" | "agent" | "getConversation" | "getAgent" | "getCommunicationEvent" |
+    "getLatestCommunicationRevision" | "observeMaterialization" | "boundary"
+  > & { agentId: string; boundary?: CompactionHistoryBoundary }) {
+    const agent = this.getAgent(input.agentId);
+    if (!agent || agent.archived) throw new Error("compaction-history agent is unavailable");
+    return searchCompactionHistory({
+      ...input,
+      boundary: input.boundary ?? this.communicationHistoryBoundary(agent.projectId),
+      sqlite: this.client,
+      agent,
+      getConversation: id => this.getConversation(id),
+      getAgent: id => this.getAgent(id),
+      getCommunicationEvent: (projectId, eventId) =>
+        this.communicationJournal.getCommunicationEvent(projectId, eventId),
+      getLatestCommunicationRevision: (projectId, targetEventId) =>
+        this.communicationJournal.latestCommunicationRevision(projectId, targetEventId),
+      observeMaterialization: (kind, count) => this.observeCompactionHistoryMaterialization(kind, count),
+    });
+  }
+
+  readCompactionHistory(input: Omit<
+    ReadCompactionHistoryInput,
+    "sqlite" | "agent" | "getConversation" | "getAgent" | "getCommunicationEvent" |
+    "getLatestCommunicationRevision" | "observeMaterialization" | "boundary"
+  > & { agentId: string; boundary?: CompactionHistoryBoundary }) {
+    const agent = this.getAgent(input.agentId);
+    if (!agent || agent.archived) throw new Error("compaction-history agent is unavailable");
+    return readCompactionHistory({
+      ...input,
+      boundary: input.boundary ?? this.communicationHistoryBoundary(agent.projectId),
+      sqlite: this.client,
+      agent,
+      getConversation: id => this.getConversation(id),
+      getAgent: id => this.getAgent(id),
+      getCommunicationEvent: (projectId, eventId) =>
+        this.communicationJournal.getCommunicationEvent(projectId, eventId),
+      getLatestCommunicationRevision: (projectId, targetEventId) =>
+        this.communicationJournal.latestCommunicationRevision(projectId, targetEventId),
+      observeMaterialization: (kind, count) => this.observeCompactionHistoryMaterialization(kind, count),
+    });
+  }
+
+  /** Derived-index qualification evidence. Counts contain no message text. */
+  compactionHistoryIndexStats(projectId: string): {
+    messages: number;
+    lexicalRows: number;
+  } {
+    const messages = this.client.prepare(`
+      SELECT COUNT(*) AS count
+      FROM compaction_history_messages message
+      WHERE message.project_id = ? AND (
+        message.conversation_id IS NULL OR EXISTS (
+          SELECT 1 FROM conversations conversation
+          WHERE conversation.id = message.conversation_id
+            AND conversation.project_id = message.project_id
+            AND conversation.archived = 0
+        )
+      )
+    `).get(projectId) as { count: number } | undefined;
+    const lexicalRows = this.client.prepare(`
+      SELECT COUNT(*) AS count FROM compaction_history_fts WHERE project_id = ?
+    `).get(projectId) as { count: number } | undefined;
+    return {
+      messages: messages?.count ?? 0,
+      lexicalRows: lexicalRows?.count ?? 0,
+    };
+  }
+
+  private observeCompactionHistoryMaterialization(
+    kind: CompactionHistoryMaterializationKind,
+    count: number,
+  ): void {
+    if (kind === "indexed_rows") this.compactionHistoryMaterialization.indexedRows += count;
+    else if (kind === "relation_candidates") this.compactionHistoryMaterialization.relationCandidateRows += count;
+    else if (kind === "canonical_events") this.compactionHistoryMaterialization.canonicalEvents += count;
+    else this.compactionHistoryMaterialization.canonicalRevisions += count;
+  }
+
+  /** Qualification-only counters. They expose counts, never canonical text. */
+  compactionHistoryMaterializationStats(): {
+    journalEventArrayReads: number;
+    journalEventRowsCopied: number;
+    journalRevisionArrayReads: number;
+    journalRevisionRowsCopied: number;
+    indexedRows: number;
+    relationCandidateRows: number;
+    canonicalEvents: number;
+    canonicalRevisions: number;
+  } {
+    const journal = this.communicationJournal.communicationMaterializationStats();
+    return {
+      journalEventArrayReads: journal.eventArrayReads,
+      journalEventRowsCopied: journal.eventRowsCopied,
+      journalRevisionArrayReads: journal.revisionArrayReads,
+      journalRevisionRowsCopied: journal.revisionRowsCopied,
+      ...this.compactionHistoryMaterialization,
+    };
+  }
+
+  resetCompactionHistoryMaterializationStats(): void {
+    this.communicationJournal.resetCommunicationMaterializationStats();
+    this.compactionHistoryMaterialization = {
+      indexedRows: 0,
+      relationCandidateRows: 0,
+      canonicalEvents: 0,
+      canonicalRevisions: 0,
+    };
   }
 
   getCommunicationDocument(projectId: string, documentId: string) {

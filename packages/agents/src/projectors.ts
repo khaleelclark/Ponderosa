@@ -159,7 +159,9 @@ export function projectEvent(
       break;
 
     case "session":
-      ops.push({ kind: "set_session", sessionId: event.sessionId, toolContractHash: null, artifactIds: [] });
+      // A provider-announced opaque ID is telemetry, not accepted resume
+      // authority. Normal Runs append session_snapshot; rollover candidates
+      // use the verified atomic acceptance event below.
       break;
 
     case "session_snapshot":
@@ -168,6 +170,21 @@ export function projectEvent(
         sessionId: event.sessionId,
         toolContractHash: event.toolContractHash,
         artifactIds: [...new Set(event.artifactIds)].sort(),
+      });
+      break;
+
+    case "context_rollover_session_accepted":
+      ops.push({
+        kind: "set_session",
+        sessionId: event.sessionId,
+        toolContractHash: event.toolContractHash,
+        artifactIds: [...new Set(event.artifactIds)].sort(),
+      });
+      ops.push({
+        kind: "consume_continuation_handoff",
+        id: event.handoffId,
+        executionId: event.executionId,
+        consumedAt: ts,
       });
       break;
 

@@ -8,7 +8,37 @@ export { WorkspaceStore } from "./workspace-store.js";
 export type { PushDeliveryRecord } from "./workspace-store.js";
 export { highlightedSearchSnippet, searchProjectedChatMessages } from "./chat-search.js";
 export type { ProjectedChatSearchCandidate, ProjectedChatSearchOptions } from "./chat-search.js";
-export { CoordinationV3Store } from "./coordination-v3-store.js";
+export {
+  CompactionHistoryQueryError,
+  MAX_HISTORY_EXCERPT_UTF8_BYTES,
+  MAX_HISTORY_READ_MESSAGES,
+  MAX_HISTORY_READ_RESPONSE_UTF8_BYTES,
+  MAX_HISTORY_SEARCH_RESPONSE_UTF8_BYTES,
+  MAX_HISTORY_SEARCH_RESULTS,
+  MAX_CONTEXT_ROLLOVER_TAIL_MESSAGES,
+  MAX_CONTEXT_ROLLOVER_TAIL_UTF8_BYTES,
+  bindContextRolloverBoundary,
+  hasCompactionHistory,
+  indexCompactionHistoryMessage,
+  normalizeCompactionHistoryQuery,
+  readCompactionHistory,
+  reconcileCompactionHistoryIndex,
+  searchCompactionHistory,
+  resolveContextRolloverTail,
+} from "./compaction-history-retrieval.js";
+export type {
+  CompactionHistoryBoundary,
+  CompactionHistoryRetrievalAudit,
+  ContextRolloverBoundaryBinding,
+  ContextRolloverTailBinding,
+  ReadCompactionHistoryInput,
+  SearchCompactionHistoryInput,
+  ResolvedContextRolloverTailMessage,
+} from "./compaction-history-retrieval.js";
+export {
+  CoordinationV3Store,
+  MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES,
+} from "./coordination-v3-store.js";
 export { PendingActivationCapacityError } from "./coordination-v3-activation.js";
 export type {
   CoordinateV3Input,
@@ -90,7 +120,7 @@ export {
 } from "./projectors.js";
 export type { ProjectionOp, ProjectionState } from "./projectors.js";
 
-export type { LogEvent, UserMessageEvent, CommunicationProjectionEvent, AgentLifecycleEvent, CoordinationV3ChangedEvent, GeneratedArtifactEvent, TurnDoneLogEvent, StoredLogEvent } from "./log-event.js";
+export type { LogEvent, UserMessageEvent, CommunicationProjectionEvent, CompactionHistoryRetrievalEvent, AgentLifecycleEvent, CoordinationV3ChangedEvent, GeneratedArtifactEvent, TurnDoneLogEvent, StoredLogEvent } from "./log-event.js";
 export * as schema from "./schema.js";
 export type {
   ProjectRow,

@@ -55,6 +55,11 @@ export class AgentWorkspaceCatalogAuthority {
       primaryConversationId?: string,
     ) => void,
     private readonly refreshAllChatFeedProject: (projectId: string) => void,
+    private readonly setHistoryConversationVisibility: (
+      projectId: string,
+      conversationId: string,
+      visible: boolean,
+    ) => void,
   ) {}
 
   createProject(input: Omit<CreateProjectRequest, "defaultEngine"> & { hostPath: string; defaultEngine?: CreateProjectRequest["defaultEngine"] }): ProjectDto {
@@ -293,18 +298,22 @@ export class AgentWorkspaceCatalogAuthority {
       defaultEffort: patch.defaultEffort === undefined ? row.defaultEffort : patch.defaultEffort,
       archived: patch.archived ?? row.archived === 1,
     };
-    this.db
-      .update(conversations)
-      .set({
-        title: next.title,
-        defaultEngine: next.defaultEngine,
-        defaultModel: next.defaultModel,
-        defaultEffort: next.defaultEffort,
-        archived: next.archived ? 1 : 0,
-        updatedAt: now,
-      })
-      .where(eq(conversations.id, id))
-      .run();
+    this.db.transaction((tx) => {
+      tx.update(conversations)
+        .set({
+          title: next.title,
+          defaultEngine: next.defaultEngine,
+          defaultModel: next.defaultModel,
+          defaultEffort: next.defaultEffort,
+          archived: next.archived ? 1 : 0,
+          updatedAt: now,
+        })
+        .where(eq(conversations.id, id))
+        .run();
+      if (next.archived !== (row.archived === 1)) {
+        this.setHistoryConversationVisibility(row.projectId, id, !next.archived);
+      }
+    });
     const persisted = readJson<ConversationJson & { providerPermissionMode?: unknown }>(
       conversationJsonPath(this.dataDir, row.projectId, id),
     );
@@ -335,6 +344,7 @@ export class AgentWorkspaceCatalogAuthority {
       // pending-work cancellation, and membership removal commit atomically.
       for (const agent of linkedAgents) beforeMembershipDelete?.(agent.id, id);
       beforeProjectionDelete?.(id);
+      this.setHistoryConversationVisibility(row.projectId, id, false);
       tx.delete(agentConversationMemberships).where(eq(agentConversationMemberships.conversationId, id)).run();
       tx.delete(conversations).where(eq(conversations.id, id)).run();
     });

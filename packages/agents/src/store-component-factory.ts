@@ -44,6 +44,7 @@ import { AgentProjectionRebuilder } from "./store-projection-rebuilder.js";
 import { AgentRunUsageReadModel } from "./store-run-usage-read-model.js";
 import { AgentTelemetryReadModel } from "./store-telemetry-read-model.js";
 import { AgentWorkspaceCatalogAuthority } from "./store-workspace-catalog-authority.js";
+import { setCompactionHistoryConversationVisibility } from "./compaction-history-retrieval.js";
 
 type HistoryCursorInput = {
   stream: string;
@@ -194,6 +195,8 @@ export function createAgentStoreComponents(
     ports.getConversationMessages,
     ports.persistAgentMemberships,
     projectId => chatFeed.refreshAllChatFeedProject(projectId),
+    (projectId, conversationId, visible) =>
+      setCompactionHistoryConversationVisibility(client, projectId, conversationId, visible),
   );
   const agentCatalog = new AgentCatalogAuthority(
     dataDir,

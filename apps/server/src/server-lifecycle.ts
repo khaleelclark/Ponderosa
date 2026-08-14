@@ -303,6 +303,35 @@ export function registerServerLifecycle(
       if (decision.continuationRequestIds?.length) ensureDecisionResponseActivation(decision);
     }
     coordinationV3.recoverOrphanedRuns(coordinationV3WorkerId);
+    for (const rollover of coordinationV3.contextRolloverCanonicalAcceptanceCandidates()) {
+      const accepted = [...store.readEvents(rollover.agentId)].reverse().find((stored) =>
+        stored.event.type === "context_rollover_session_accepted" &&
+        stored.event.rolloverId === rollover.id &&
+        stored.event.sessionId === rollover.replacementSessionId &&
+        stored.event.executionId === rollover.replacementRunId &&
+        stored.event.handoffId === rollover.handoffEventId);
+      if (!accepted || accepted.event.type !== "context_rollover_session_accepted") continue;
+      try {
+        coordinationV3.reconcileContextRolloverCanonicalAcceptance({
+          id: rollover.id,
+          replacementSessionId: accepted.event.sessionId,
+          replacementRunId: accepted.event.executionId,
+          handoffEventId: accepted.event.handoffId,
+        });
+      } catch (error) {
+        createOperationalNotification({
+          dedupeKey: `context-rollover:${rollover.id}:acceptance-reconciliation-failed`,
+          category: "coordination",
+          severity: "attention",
+          title: "Context refresh acceptance needs review",
+          body: error instanceof Error ? error.message : String(error),
+          projectId: rollover.projectId,
+          conversationId: rollover.conversationId,
+          agentId: rollover.agentId,
+          action: { kind: "open_agent", targetId: rollover.agentId },
+        });
+      }
+    }
     for (const rollover of coordinationV3.cancelledContextRolloverReplacements()) {
       if (
         rollover.replacementSessionId &&
@@ -353,13 +382,38 @@ export function registerServerLifecycle(
           rollover = coordinationV3.beginContextRolloverRetirement(rollover.id);
         }
         if (rollover.state === "session_retiring") {
-          store.clearResumeSession(rollover.agentId, "explicit_compaction");
           rollover = coordinationV3.prepareContextRolloverContinuation({
             id: rollover.id,
           });
+          if (rollover.completionReason === "no_continuation_required" && rollover.handoffEventId) {
+            store.consumeContinuationHandoff(rollover.agentId, rollover.handoffEventId, rollover.sourceRunId);
+            continue;
+          }
+        }
+        if (rollover.state === "continuation_ready" && rollover.replacementRunId && !rollover.replacementSessionId) {
+          coordinationV3.failUnidentifiedContextRolloverReplacementAfterRestart(rollover.id);
+          createOperationalNotification({
+            dedupeKey: `context-rollover:${rollover.id}:candidate-start-unknown`,
+            category: "coordination",
+            severity: "attention",
+            title: "Context refresh candidate was discarded after restart",
+            body: "The exact replacement input was durable, but no candidate session identity was observed before restart. The old accepted provider session remains authoritative; an explicit authorized Retry may reuse this rollover generation.",
+            projectId: rollover.projectId,
+            conversationId: rollover.conversationId,
+            agentId: rollover.agentId,
+            action: { kind: "open_agent", targetId: rollover.agentId },
+          });
+          continue;
         }
         if (rollover.state === "continuation_ready" && rollover.replacementSessionId) {
-          store.clearResumeSession(rollover.agentId, "explicit_compaction");
+          if (rollover.replacementVerifiedAt &&
+              store.resumeSessionId(rollover.agentId) === rollover.replacementSessionId) {
+            coordinationV3.completeVerifiedContextRolloverReplacement(
+              rollover.id,
+              rollover.replacementSessionId,
+            );
+            continue;
+          }
           coordinationV3.failContextRollover(
             rollover.id,
             "outcome_unknown",
@@ -370,7 +424,7 @@ export function registerServerLifecycle(
             category: "coordination",
             severity: "attention",
             title: "Context refresh needs review",
-            body: "The replacement provider session ended with the server before safe context headroom was confirmed. Its exact bounded handoff remains recorded; review the Agent's work before retrying the original assignment.",
+            body: "The replacement provider session ended with the server before safe context headroom was confirmed. The last accepted old provider session remains available; its exact bounded handoff is recorded for review.",
             projectId: rollover.projectId,
             conversationId: rollover.conversationId,
             agentId: rollover.agentId,

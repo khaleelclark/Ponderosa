@@ -135,6 +135,7 @@ export class CoordinationV3RequiredReplyAuthority {
     activations: readonly ActivationInput[];
     now: string;
   }): RequiredReplyObligation[] {
+    this.transferContextRolloverObligations(input);
     const required = requiredReplyAuthoritiesForActivations(input.activations);
     const insert = this.sqlite.prepare(`
       INSERT OR IGNORE INTO required_reply_obligations (
@@ -161,6 +162,213 @@ export class CoordinationV3RequiredReplyAuthority {
       );
     }
     return this.forRun(input.runId);
+  }
+
+  /** A context-rollover continuation is not a new authored request, but it
+   * executes the unfinished source task in a replacement provider session.
+   * Move the exact source obligations onto that Run and retire the recovery
+   * Activations they had queued when the pressure-source Run completed. This
+   * keeps one durable reply owner while preserving its retry generation. */
+  private transferContextRolloverObligations(input: {
+    runId: string;
+    projectId: string;
+    agentId: string;
+    scopeKey: string;
+    activations: readonly ActivationInput[];
+    now: string;
+  }): void {
+    const continuations = input.activations.filter(
+      (activation) => activation.kind === "context_rollover_continuation",
+    );
+    if (continuations.length === 0) return;
+    if (continuations.length !== 1 || input.activations.length !== 1) {
+      throw new Error("context rollover continuation Run must be isolated");
+    }
+    const continuation = continuations[0]!;
+    const payload = record(continuation.payload);
+    const rolloverId = typeof payload?.rolloverId === "string"
+      ? payload.rolloverId
+      : undefined;
+    const payloadReplyAuthority = normalizeCoordinationReplyAuthority(
+      payload?.replyAuthority,
+    );
+    if (!rolloverId) {
+      throw new Error("context rollover continuation is missing its durable owner");
+    }
+    const rollover = this.sqlite.prepare(`
+      SELECT id, source_run_id, source_activation_ids_json,
+        reply_authority_json
+      FROM context_rollovers
+      WHERE id = ? AND continuation_activation_id = ?
+        AND project_id = ? AND agent_id = ? AND scope_key = ?
+        AND state = 'continuation_ready'
+    `).get(
+      rolloverId,
+      continuation.id,
+      input.projectId,
+      input.agentId,
+      input.scopeKey,
+    ) as {
+      id: string;
+      source_run_id: string;
+      source_activation_ids_json: string;
+      reply_authority_json: string | null;
+    } | undefined;
+    if (!rollover) {
+      throw new Error("context rollover continuation authority is unavailable");
+    }
+    if (!rollover.reply_authority_json) {
+      if (payloadReplyAuthority) {
+        throw new Error("context rollover continuation reply authority conflicts with its durable owner");
+      }
+      return;
+    }
+    if (!payloadReplyAuthority ||
+        stableJson(payloadReplyAuthority) !== rollover.reply_authority_json) {
+      throw new Error("context rollover continuation reply authority conflicts with its durable owner");
+    }
+    const sourceActivationIds = JSON.parse(
+      rollover.source_activation_ids_json,
+    ) as unknown;
+    if (!Array.isArray(sourceActivationIds) ||
+        sourceActivationIds.some((id) => typeof id !== "string")) {
+      throw new Error("context rollover source activation lineage is invalid");
+    }
+    if (sourceActivationIds.length === 0) return;
+    const sourceRun = this.sqlite.prepare(`
+      SELECT project_id, agent_id, scope_key
+      FROM scheduler_runs
+      WHERE id = ?
+    `).get(rollover.source_run_id) as {
+      project_id: string;
+      agent_id: string;
+      scope_key: string;
+    } | undefined;
+    if (!sourceRun || sourceRun.project_id !== input.projectId ||
+        sourceRun.agent_id !== input.agentId ||
+        sourceRun.scope_key !== input.scopeKey) {
+      throw new Error("context rollover source Run authority conflicts with its durable owner");
+    }
+    const attachedSourceCount = this.sqlite.prepare(`
+      SELECT COUNT(DISTINCT source.value) AS count
+      FROM json_each(?) source
+      JOIN scheduler_run_activations attached
+        ON attached.run_id = ? AND attached.activation_id = source.value
+      JOIN agent_activations activation ON activation.id = attached.activation_id
+      WHERE activation.project_id = ? AND activation.agent_id = ?
+        AND activation.scope_key = ?
+    `).get(
+      rollover.source_activation_ids_json,
+      rollover.source_run_id,
+      input.projectId,
+      input.agentId,
+      input.scopeKey,
+    ) as { count: number };
+    if (attachedSourceCount.count !== sourceActivationIds.length) {
+      throw new Error("context rollover source activation lineage conflicts with its source Run");
+    }
+    // A transferred obligation deliberately retains its authored/recovery
+    // source Activation rather than adopting the continuation Activation. A
+    // later rollover therefore derives the durable roots from the exact source
+    // Run, while a retry of this same continuation follows those roots to the
+    // newest unfinished owner created by the prior lease.
+    const sourceRoots = this.sqlite.prepare(`
+      SELECT source_activation_id
+      FROM required_reply_obligations
+      WHERE run_id = ? AND project_id = ? AND agent_id = ? AND scope_key = ?
+        AND reply_authority_json = ?
+      ORDER BY source_activation_id
+    `).all(
+      rollover.source_run_id,
+      input.projectId,
+      input.agentId,
+      input.scopeKey,
+      rollover.reply_authority_json,
+    ) as Array<{ source_activation_id: string }>;
+    if (sourceRoots.length === 0) return;
+    const rootIds = sourceRoots.map((row) => row.source_activation_id);
+    const placeholders = rootIds.map(() => "?").join(", ");
+    const owners = this.sqlite.prepare(`
+      SELECT obligation.run_id, obligation.source_activation_id,
+        obligation.project_id, obligation.agent_id, obligation.scope_key,
+        obligation.reply_authority_json, obligation.attempt_count,
+        obligation.state, obligation.recovery_activation_id,
+        run.rowid AS run_sequence
+      FROM required_reply_obligations obligation
+      JOIN scheduler_runs run ON run.id = obligation.run_id
+      WHERE obligation.source_activation_id IN (${placeholders})
+        AND obligation.project_id = ? AND obligation.agent_id = ?
+        AND obligation.scope_key = ? AND obligation.reply_authority_json = ?
+      ORDER BY obligation.source_activation_id, run.rowid DESC
+    `).all(
+      ...rootIds,
+      input.projectId,
+      input.agentId,
+      input.scopeKey,
+      rollover.reply_authority_json,
+    ) as Array<{
+      run_id: string;
+      source_activation_id: string;
+      project_id: string;
+      agent_id: string;
+      scope_key: string;
+      reply_authority_json: string;
+      attempt_count: number;
+      state: RequiredReplyObligation["state"];
+      recovery_activation_id: string | null;
+      run_sequence: number;
+    }>;
+    const latestBySource = new Map<string, typeof owners[number]>();
+    for (const owner of owners) {
+      if (!latestBySource.has(owner.source_activation_id)) {
+        latestBySource.set(owner.source_activation_id, owner);
+      }
+    }
+    const predecessors = [...latestBySource.values()].filter((owner) =>
+      owner.state === "pending" || owner.state === "recovery_pending" ||
+      owner.state === "retried");
+    if (predecessors.length === 0) return;
+    const insert = this.sqlite.prepare(`
+      INSERT OR IGNORE INTO required_reply_obligations (
+        run_id, source_activation_id, project_id, agent_id, scope_key,
+        reply_authority_json, attempt_count, state, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+    `);
+    for (const predecessor of predecessors) {
+      insert.run(
+        input.runId,
+        predecessor.source_activation_id,
+        input.projectId,
+        input.agentId,
+        input.scopeKey,
+        predecessor.reply_authority_json,
+        predecessor.attempt_count,
+        input.now,
+        input.now,
+      );
+      if (predecessor.recovery_activation_id) {
+        this.sqlite.prepare(`
+          UPDATE agent_activations
+          SET state = 'cancelled', updated_at = ?, terminal_at = ?
+          WHERE id = ? AND state IN ('pending','retry_pending')
+        `).run(
+          input.now,
+          input.now,
+          predecessor.recovery_activation_id,
+        );
+      }
+      this.sqlite.prepare(`
+        UPDATE required_reply_obligations
+        SET state = 'superseded', updated_at = ?, terminal_at = ?
+        WHERE run_id = ? AND source_activation_id = ?
+          AND state IN ('pending','recovery_pending')
+      `).run(
+        input.now,
+        input.now,
+        predecessor.run_id,
+        predecessor.source_activation_id,
+      );
+    }
   }
 
   forRun(runId: string): RequiredReplyObligation[] {
@@ -317,10 +525,20 @@ export class CoordinationV3RequiredReplyAuthority {
     return this.sqlite.prepare(`
       UPDATE required_reply_obligations
       SET state = 'retried', updated_at = ?, terminal_at = ?
-      WHERE run_id = ? AND state = 'pending' AND source_activation_id IN (
-        SELECT activation_id FROM scheduler_run_activations attached
-        JOIN agent_activations activation ON activation.id = attached.activation_id
-        WHERE attached.run_id = ? AND activation.state = 'retry_pending'
+      WHERE run_id = ? AND state = 'pending' AND (
+        source_activation_id IN (
+          SELECT activation_id FROM scheduler_run_activations attached
+          JOIN agent_activations activation ON activation.id = attached.activation_id
+          WHERE attached.run_id = ? AND activation.state = 'retry_pending'
+        ) OR EXISTS (
+          SELECT 1 FROM scheduler_run_activations attached
+          JOIN agent_activations activation ON activation.id = attached.activation_id
+          JOIN context_rollovers rollover
+            ON rollover.continuation_activation_id = activation.id
+          WHERE attached.run_id = required_reply_obligations.run_id
+            AND activation.kind = 'context_rollover_continuation'
+            AND activation.state = 'retry_pending'
+        )
       )
     `).run(now, now, runId, runId).changes;
   }

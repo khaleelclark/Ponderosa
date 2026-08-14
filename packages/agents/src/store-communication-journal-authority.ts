@@ -37,6 +37,7 @@ export class AgentCommunicationJournalAuthority {
   private readonly communicationEventCache = new Map<string, {
     events: CommunicationEvent[];
     byId: Map<string, CommunicationEvent>;
+    ordinalById: Map<string, number>;
     byIdempotency: Map<string, CommunicationEvent>;
   }>();
   private readonly communicationRevisionCache = new Map<string, {
@@ -46,6 +47,12 @@ export class AgentCommunicationJournalAuthority {
     byTarget: Map<string, CommunicationRevisionEvent[]>;
   }>();
   private readonly messageDispatchCache = new Map<string, MessageDispatchRecord[]>();
+  private materializationStats = {
+    eventArrayReads: 0,
+    eventRowsCopied: 0,
+    revisionArrayReads: 0,
+    revisionRowsCopied: 0,
+  };
 
   constructor(
     private readonly dataDir: string,
@@ -85,11 +92,12 @@ export class AgentCommunicationJournalAuthority {
     if (cached) return cached;
     const events = readRepairableJsonl<CommunicationEvent>(communicationEventsPath(this.dataDir, projectId), "communication log", true);
     const byId = new Map(events.map((event) => [event.eventId, event]));
+    const ordinalById = new Map(events.map((event, index) => [event.eventId, index + 1]));
     const byIdempotency = new Map<string, CommunicationEvent>();
     for (const event of events) {
       if (event.idempotencyKey) byIdempotency.set(`${JSON.stringify(event.sender)}\u0000${event.idempotencyKey}`, event);
     }
-    cached = { events, byId, byIdempotency };
+    cached = { events, byId, ordinalById, byIdempotency };
     this.communicationEventCache.set(projectId, cached);
     return cached;
   }
@@ -256,6 +264,7 @@ export class AgentCommunicationJournalAuthority {
     appendFsyncedJsonl(file, [event]);
     index.events.push(event);
     index.byId.set(event.eventId, event);
+    index.ordinalById.set(event.eventId, index.events.length);
     if (event.idempotencyKey) index.byIdempotency.set(`${JSON.stringify(event.sender)}\u0000${event.idempotencyKey}`, event);
     this.ensureCommunicationBehaviorProjections(event);
     return { event, replayed: false };
@@ -326,17 +335,64 @@ export class AgentCommunicationJournalAuthority {
 
   readCommunicationRevisions(projectId: string): CommunicationRevisionEvent[] {
     if (!this.getProject(projectId)) throw new Error("communication project not found");
-    return [...this.communicationRevisionIndex(projectId).revisions];
+    const revisions = this.communicationRevisionIndex(projectId).revisions;
+    this.materializationStats.revisionArrayReads += 1;
+    this.materializationStats.revisionRowsCopied += revisions.length;
+    return [...revisions];
   }
 
   readCommunicationEvents(projectId: string): CommunicationEvent[] {
     if (!this.getProject(projectId)) throw new Error("communication project not found");
-    return [...this.communicationIndex(projectId).events];
+    const events = this.communicationIndex(projectId).events;
+    this.materializationStats.eventArrayReads += 1;
+    this.materializationStats.eventRowsCopied += events.length;
+    return [...events];
   }
 
   getCommunicationEvent(projectId: string, eventId: string): CommunicationEvent | undefined {
     if (!this.getProject(projectId)) throw new Error("communication project not found");
     return this.communicationIndex(projectId).byId.get(eventId);
+  }
+
+  getCommunicationRevision(projectId: string, revisionEventId: string): CommunicationRevisionEvent | undefined {
+    if (!this.getProject(projectId)) throw new Error("communication project not found");
+    return this.communicationRevisionIndex(projectId).byId.get(revisionEventId);
+  }
+
+  latestCommunicationRevision(
+    projectId: string,
+    targetEventId: string,
+  ): CommunicationRevisionEvent | undefined {
+    if (!this.getProject(projectId)) throw new Error("communication project not found");
+    return this.communicationRevisionIndex(projectId).byTarget.get(targetEventId)?.at(-1);
+  }
+
+  communicationOrdinal(projectId: string, eventId: string): number | undefined {
+    if (!this.getProject(projectId)) throw new Error("communication project not found");
+    return this.communicationIndex(projectId).ordinalById.get(eventId);
+  }
+
+  communicationBoundary(projectId: string): { canonicalOrdinal: number; communicationEventId?: string } {
+    if (!this.getProject(projectId)) throw new Error("communication project not found");
+    const events = this.communicationIndex(projectId).events;
+    const last = events.at(-1);
+    return {
+      canonicalOrdinal: events.length,
+      ...(last ? { communicationEventId: last.eventId } : {}),
+    };
+  }
+
+  communicationMaterializationStats(): Readonly<typeof this.materializationStats> {
+    return { ...this.materializationStats };
+  }
+
+  resetCommunicationMaterializationStats(): void {
+    this.materializationStats = {
+      eventArrayReads: 0,
+      eventRowsCopied: 0,
+      revisionArrayReads: 0,
+      revisionRowsCopied: 0,
+    };
   }
 
   getCommunicationDocument(projectId: string, documentId: string) {

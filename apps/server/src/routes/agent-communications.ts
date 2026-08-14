@@ -335,7 +335,7 @@ export function registerAgentCommunicationRoutes(
     const routeAlreadyPublished = capability.requiredReplyFingerprints?.[selectedReplyAuthorityKey] !== undefined;
     const explicitlySelectedRequiredReply = !inferredReply && !capability.defaultReply &&
       (routeHasPendingReply || (routeAlreadyPublished && !request.body?.idempotencyKey?.trim()));
-    const requiredReplyAction = (inferredReply && routeHasPendingReply) ||
+    const requiredReplyAction = (inferredReply && (routeHasPendingReply || routeAlreadyPublished)) ||
       explicitlySelectedRequiredReply;
     const inferredReplyFingerprint = requiredReplyAction
       ? createHash("sha256").update(JSON.stringify({
@@ -468,7 +468,9 @@ export function registerAgentCommunicationRoutes(
           sender: proposedCommunication.sender,
           intent: proposedCommunication.intent,
           audience: proposedCommunication.audience,
-          payload: proposedCommunication,
+          payload: inferredReplyFingerprint
+            ? { communication: proposedCommunication, requiredReplyFingerprint: inferredReplyFingerprint }
+            : proposedCommunication,
           ...(preparedArtifacts.length ? { artifacts: preparedArtifacts.map(runtimeArtifactMetadata) } : {}),
           scopeKey: capability.conversationId ? `conversation:${capability.conversationId}` : `agent:${capability.agentId}`,
           runAuthorization: runAuthorization(capability),
@@ -489,6 +491,14 @@ export function registerAgentCommunicationRoutes(
         artifactIds: preparedArtifacts.map((artifact) => artifact.id),
       });
       if (intake.replayed) {
+        // The scheduler transaction can commit before the canonical JSONL
+        // append's derived history transaction. Replay the exact canonical
+        // identity first so the bounded index projection is repaired live.
+        recordCommunication(
+          store.getCommunicationEvent(proposedCommunication.projectId, proposedCommunication.eventId)
+            ?? replayCommunication
+            ?? proposedCommunication,
+        );
         await reconcileRuntimeCommunicationProjections({
           projectId: proposedCommunication.projectId,
           communicationEventId: proposedCommunication.eventId,
@@ -612,7 +622,9 @@ export function registerAgentCommunicationRoutes(
         sender: proposedCommunication.sender,
         intent: proposedCommunication.intent,
         audience: proposedCommunication.audience,
-        payload: proposedCommunication,
+        payload: inferredReplyFingerprint
+          ? { communication: proposedCommunication, requiredReplyFingerprint: inferredReplyFingerprint }
+          : proposedCommunication,
         ...(preparedArtifacts.length ? { artifacts: preparedArtifacts.map(runtimeArtifactMetadata) } : {}),
         scopeKey: capability.conversationId ? `conversation:${capability.conversationId}` : `agent:${capability.agentId}`,
         runAuthorization: runAuthorization(capability),
@@ -644,6 +656,11 @@ export function registerAgentCommunicationRoutes(
       artifactIds: preparedArtifacts.map((artifact) => artifact.id),
     });
     if (intake.replayed) {
+      recordCommunication(
+        store.getCommunicationEvent(proposedCommunication.projectId, proposedCommunication.eventId)
+          ?? replayCommunication
+          ?? proposedCommunication,
+      );
       await reconcileRuntimeCommunicationProjections({
         projectId: proposedCommunication.projectId,
         communicationEventId: proposedCommunication.eventId,

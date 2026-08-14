@@ -100,7 +100,12 @@ CREATE TABLE context_rollovers (
   threshold INTEGER NOT NULL CHECK (threshold > 0),
   context_window INTEGER,
   low_water_mark INTEGER NOT NULL CHECK (low_water_mark >= 0),
-  low_water_confirmation_required INTEGER NOT NULL DEFAULT 1,
+  low_water_confirmation_required INTEGER NOT NULL DEFAULT 1 CHECK (low_water_confirmation_required = 1),
+  trigger_kind TEXT NOT NULL DEFAULT 'automatic' CHECK (trigger_kind IN ('automatic','human')),
+  compaction_cutoff_ordinal INTEGER NOT NULL DEFAULT 0 CHECK (compaction_cutoff_ordinal >= 0),
+  compaction_cutoff_event_id TEXT,
+  recent_tail_event_ids_json TEXT NOT NULL DEFAULT '[]',
+  recent_tail_hashes_json TEXT NOT NULL DEFAULT '[]',
   source_run_id TEXT NOT NULL,
   source_activation_ids_json TEXT NOT NULL,
   scope_key TEXT NOT NULL,
@@ -109,16 +114,72 @@ CREATE TABLE context_rollovers (
   handoff_event_id TEXT,
   continuation_activation_id TEXT,
   replacement_session_id TEXT,
+  replacement_run_id TEXT,
+  replacement_prompt_hash TEXT,
+  replacement_system_prompt_hash TEXT,
+  replacement_manifest_hash TEXT,
+  replacement_attempt INTEGER NOT NULL DEFAULT 0 CHECK (replacement_attempt >= 0),
   visible_response_committed INTEGER NOT NULL DEFAULT 0,
   handoff_committed_at TEXT,
   session_retiring_at TEXT,
   continuation_ready_at TEXT,
   replacement_session_at TEXT,
+  replacement_input_committed_at TEXT,
+  replacement_verified_at TEXT,
   visible_response_committed_at TEXT,
+  completion_reason TEXT CHECK (completion_reason IN (
+    'replacement_verified', 'native_compaction', 'no_continuation_required'
+  )),
   last_error TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  terminal_at TEXT
+  terminal_at TEXT,
+  CHECK (state IN ('failed','outcome_unknown') OR
+    (compaction_cutoff_ordinal > 0 AND compaction_cutoff_event_id IS NOT NULL))
+);
+CREATE TABLE compaction_history_messages (
+  project_id TEXT NOT NULL,
+  communication_event_id TEXT NOT NULL,
+  canonical_ordinal INTEGER NOT NULL,
+  conversation_id TEXT,
+  created_at TEXT NOT NULL,
+  revision_event_id TEXT,
+  edited_at TEXT,
+  content_sha256 TEXT NOT NULL,
+  text TEXT NOT NULL,
+  communication_intent TEXT NOT NULL DEFAULT '',
+  context_policy TEXT NOT NULL DEFAULT '',
+  sender_kind TEXT NOT NULL DEFAULT '',
+  sender_agent_id TEXT,
+  PRIMARY KEY (project_id, communication_event_id)
+);
+CREATE INDEX idx_compaction_history_messages_boundary
+  ON compaction_history_messages (project_id, canonical_ordinal);
+CREATE INDEX idx_compaction_history_messages_conversation_ordinal
+  ON compaction_history_messages (project_id, conversation_id, canonical_ordinal);
+CREATE TABLE compaction_history_agent_participants (
+  project_id TEXT NOT NULL,
+  communication_event_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  PRIMARY KEY (project_id, communication_event_id, agent_id)
+);
+CREATE TABLE compaction_history_relation_candidates (
+  project_id TEXT NOT NULL,
+  communication_event_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  canonical_ordinal INTEGER NOT NULL,
+  authority_agent_id TEXT NOT NULL,
+  PRIMARY KEY (project_id, communication_event_id, authority_agent_id)
+);
+CREATE INDEX idx_compaction_history_relation_candidates_lookup
+  ON compaction_history_relation_candidates (
+    project_id, conversation_id, authority_agent_id, canonical_ordinal DESC
+  );
+CREATE VIRTUAL TABLE compaction_history_fts USING fts5(
+  project_id UNINDEXED,
+  communication_event_id UNINDEXED,
+  text,
+  tokenize = 'unicode61'
 );
 CREATE TABLE agent_conversation_memberships (
   agent_id TEXT NOT NULL, conversation_id TEXT NOT NULL, position INTEGER NOT NULL,

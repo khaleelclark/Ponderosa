@@ -145,7 +145,10 @@ export type {
 
 /** Transactional authority for Communication V3. Runtime telemetry may mirror
  * these transitions, but scheduler decisions must read this store. */
+export const MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES = 256 * 1024;
+
 export class CoordinationV3Store {
+  private readonly sqlite: Database.Database;
   private readonly activationReadModel: CoordinationV3ActivationReadModel;
   private readonly activationCommandAuthority: CoordinationV3ActivationCommandAuthority;
   private readonly readModel: CoordinationV3ReadModel;
@@ -178,6 +181,7 @@ export class CoordinationV3Store {
     sqlite: Database.Database,
     options: CoordinationV3StoreOptions = {},
   ) {
+    this.sqlite = sqlite;
     this.activationReadModel = new CoordinationV3ActivationReadModel(sqlite);
     this.activationFactory = new CoordinationV3ActivationFactory(sqlite, options);
     this.requiredReplyAuthority = new CoordinationV3RequiredReplyAuthority(
@@ -877,6 +881,12 @@ export class CoordinationV3Store {
     return this.schedulerLeaseAuthority.recoverOrphanedRuns(workerId, now);
   }
 
+  /** Fence expired live leases before the daemon applies its concurrency
+   * budget. This is transactional and does not lease replacement work. */
+  recoverExpiredRuns(now = new Date().toISOString()): { retried: number; outcomeUnknown: number } {
+    return this.schedulerLeaseAuthority.recoverExpiredRuns(now);
+  }
+
   cancelJoin(joinId: string, ownerAgentId: string, now = new Date().toISOString()): boolean {
     return this.requestAuthority.cancelJoin(joinId, ownerAgentId, now);
   }
@@ -985,6 +995,41 @@ export class CoordinationV3Store {
     now?: string;
   }): void {
     this.runLifecycleAuthority.recordProviderInput(input);
+  }
+
+  /** Persist the exact provider packet and bind it to an attached rollover in
+   * one SQLite transaction. Production must use this before starting a
+   * replacement provider session; a non-rollover Run simply records its input. */
+  recordProviderInputAndCommitContextRolloverReplacement(input: {
+    executionId: string;
+    schedulerRunId: string;
+    fencingToken: number;
+    agentId: string;
+    projectId: string;
+    prompt: string;
+    systemPrompt?: string;
+    sourceManifest: import("@ponderosa/core").ProviderInputSourceManifest;
+    now?: string;
+  }): ContextRolloverV3 | undefined {
+    const now = input.now ?? new Date().toISOString();
+    return this.sqlite.transaction(() => {
+      const candidate = this.contextRolloverAuthority.candidateForRun(input.schedulerRunId, input.agentId);
+      if (candidate &&
+          Buffer.byteLength(input.prompt, "utf8") + Buffer.byteLength(input.systemPrompt ?? "", "utf8") >
+            MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES) {
+        throw new Error("context rollover replacement provider input exceeds the aggregate prompt and system-prompt bound");
+      }
+      this.runLifecycleAuthority.recordProviderInput({ ...input, now });
+      const committed = this.contextRolloverAuthority.commitReplacementInputForRun(
+        input.schedulerRunId,
+        input.agentId,
+        now,
+      );
+      if (candidate && !committed) {
+        throw new Error("attached context rollover candidate was not durably bound to its provider input");
+      }
+      return committed;
+    })();
   }
 
   preparePromptInjection(input: {
@@ -1136,6 +1181,10 @@ export class CoordinationV3Store {
     return this.contextRolloverAuthority.forContinuationRun(runId, agentId);
   }
 
+  contextRolloverCandidateForRun(runId: string, agentId: string): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.candidateForRun(runId, agentId);
+  }
+
   contextRolloverRecoveryForRun(runId: string, agentId: string): ContextRolloverV3 | undefined {
     return this.contextRolloverAuthority.recoveryForRun(runId, agentId);
   }
@@ -1150,6 +1199,20 @@ export class CoordinationV3Store {
 
   cancelledContextRolloverReplacements(): ContextRolloverV3[] {
     return this.contextRolloverAuthority.cancelledReplacements();
+  }
+
+  contextRolloverCanonicalAcceptanceCandidates(): ContextRolloverV3[] {
+    return this.contextRolloverAuthority.canonicalAcceptanceCandidates();
+  }
+
+  reconcileContextRolloverCanonicalAcceptance(input: Parameters<
+    CoordinationV3ContextRolloverAuthority["reconcileCanonicalAcceptance"]
+  >[0]): ContextRolloverV3 {
+    return this.contextRolloverAuthority.reconcileCanonicalAcceptance(input);
+  }
+
+  failUnidentifiedContextRolloverReplacementAfterRestart(id: string, now?: string): ContextRolloverV3 {
+    return this.contextRolloverAuthority.failUnidentifiedReplacementAfterRestart(id, now);
   }
 
   commitContextRolloverHandoff(id: string, handoffEventId: string, now?: string): ContextRolloverV3 {
@@ -1168,12 +1231,24 @@ export class CoordinationV3Store {
     return this.contextRolloverAuthority.prepareContinuation(input);
   }
 
-  recordContextRolloverReplacementSession(continuationActivationId: string, replacementSessionId: string, now?: string): ContextRolloverV3 | undefined {
-    return this.contextRolloverAuthority.recordReplacementSession(continuationActivationId, replacementSessionId, now);
+  recordContextRolloverReplacementSessionForRun(runId: string, agentId: string, replacementSessionId: string, now?: string): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.recordReplacementSessionForRun(runId, agentId, replacementSessionId, now);
+  }
+
+  commitContextRolloverReplacementInputForRun(runId: string, agentId: string, now?: string): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.commitReplacementInputForRun(runId, agentId, now);
   }
 
   observeContextRolloverReplacementOccupancy(id: string, replacementSessionId: string, usedTokens: number, now?: string): ContextRolloverV3 {
     return this.contextRolloverAuthority.observeReplacementOccupancy(id, replacementSessionId, usedTokens, now);
+  }
+
+  completeVerifiedContextRolloverReplacement(id: string, replacementSessionId: string, now?: string): ContextRolloverV3 {
+    return this.contextRolloverAuthority.completeVerifiedReplacement(id, replacementSessionId, now);
+  }
+
+  cancelContextRolloverAfterNativeCompaction(input: Parameters<CoordinationV3ContextRolloverAuthority["cancelAfterNativeCompaction"]>[0]): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.cancelAfterNativeCompaction(input);
   }
 
   failContextRollover(id: string, state: "failed" | "outcome_unknown", error: string, now?: string): ContextRolloverV3 {

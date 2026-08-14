@@ -396,6 +396,40 @@ export function formatCodexRateLimits(rateLimits: unknown): string[] {
   return parts;
 }
 
+/** Orders structured commands against asynchronous provider usage
+ * notifications. A command response alone is not proof that the session's
+ * observable context state has advanced. */
+export class ContextUsageObservationGate {
+  private version = 0;
+  private readonly waiters = new Set<() => void>();
+
+  currentVersion(): number {
+    return this.version;
+  }
+
+  observe(): void {
+    this.version += 1;
+    for (const resolve of this.waiters) resolve();
+    this.waiters.clear();
+  }
+
+  waitAfter(version: number, timeoutMs = 10_000): Promise<void> {
+    if (this.version > version) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const onUsage = () => {
+        clearTimeout(timeout);
+        resolve();
+      };
+      const timeout = setTimeout(() => {
+        this.waiters.delete(onUsage);
+        reject(new Error("Codex compact completed without a post-compaction context usage observation"));
+      }, timeoutMs);
+      timeout.unref?.();
+      this.waiters.add(onUsage);
+    });
+  }
+}
+
 
 export class CodexAppServerSession implements RuntimeSession {
   private activeTurnId?: string;
@@ -405,6 +439,7 @@ export class CodexAppServerSession implements RuntimeSession {
   private baselineTotal?: TokenUsage;
   private latestTotal?: TokenUsage;
   private latestContextUsage?: CodexContextUsage;
+  private readonly contextUsageGate = new ContextUsageObservationGate();
   private capabilitiesSnapshot?: EngineCapabilities;
   private capabilitiesDiscovery?: Promise<EngineCapabilities>;
   private capabilitiesDirty = true;
@@ -449,7 +484,7 @@ export class CodexAppServerSession implements RuntimeSession {
       killGraceMs: opts.killGraceMs,
       onRuntimeSpawned: opts.onRuntimeSpawned,
       onRuntimeRootExit: opts.onRuntimeRootExit,
-      onNotification: (notification) => session?.observeCapabilityNotification(notification),
+      onNotification: (notification) => session?.observeNotification(notification),
       handleServerRequest: async (method, params) => {
         if (method === "mcpServer/elicitation/request") {
           if (!opts.handleElicitation) throw new Error("MCP elicitation is unavailable");
@@ -563,7 +598,9 @@ export class CodexAppServerSession implements RuntimeSession {
       throw new Error(command?.unavailableReason ?? `/${name} is unavailable in the Codex command catalog`);
     }
     if (name === "compact") {
+      const previousUsageVersion = this.contextUsageGate.currentVersion();
       await this.rpc.request("thread/compact/start", { threadId: this.engineAgentId });
+      await this.contextUsageGate.waitAfter(previousUsageVersion);
       return;
     }
     if (name === "status") {
@@ -591,6 +628,20 @@ export class CodexAppServerSession implements RuntimeSession {
     return formatCodexRateLimits(
       await optionalRequest(this.rpc, "account/rateLimits/read", undefined),
     );
+  }
+
+  private observeNotification(notification: JsonRpcNotification): void {
+    if (notification.method === "thread/tokenUsage/updated") {
+      const params = notification.params as {
+        tokenUsage?: { total?: unknown; last?: unknown; modelContextWindow?: unknown };
+      } | undefined;
+      const usage = codexContextUsageSnapshot(params?.tokenUsage);
+      if (usage) {
+        this.latestContextUsage = usage;
+        this.contextUsageGate.observe();
+      }
+    }
+    this.observeCapabilityNotification(notification);
   }
 
   private observeCapabilityNotification(notification: JsonRpcNotification): void {

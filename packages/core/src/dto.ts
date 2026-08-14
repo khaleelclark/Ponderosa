@@ -13,3 +13,4 @@ export * from "./dto/conversations.js";
 export * from "./dto/runs.js";
 export * from "./dto/events.js";
 export * from "./dto/launcher.js";
+export * from "./dto/history-retrieval.js";

@@ -28,6 +28,7 @@ import {
 } from "../runtime-selection.js";
 import type { ServerContext } from "../server-context.js";
 import type { ProviderProcessAuthority } from "../provider-process-authority.js";
+import { evaluateContextRolloverPressure } from "../context-rollover-pressure.js";
 import { registerAgentRunHistoryRoute } from "./agent-audit.js";
 
 interface ProviderCommandRoutesContext {
@@ -46,13 +47,6 @@ interface ProviderCommandRoutesContext {
   reusableRuntime(agentId: string): PersistentRuntime | undefined;
   persistentRuntimeForTermination(agentId: string): PersistentRuntime | undefined;
   closeRunBrowser(agentId: string, run: ActiveRun, reason: string): Promise<void>;
-  clearAgentResumeSession(agentId: string, reason: "explicit_compaction"): boolean;
-  teardownPersistentRuntime(
-    agentId: string,
-    runtime: PersistentRuntime,
-    reason: string,
-    projectId?: string,
-  ): Promise<void>;
   publishMessageDeliveryChanged(agentId: string): void;
   publish(agentId: string, stored: StoredLogEvent): void;
   cachedModelOptions(
@@ -89,8 +83,6 @@ export function registerProviderCommandRoutes(
     reusableRuntime,
     persistentRuntimeForTermination,
     closeRunBrowser,
-    clearAgentResumeSession,
-    teardownPersistentRuntime,
     publishMessageDeliveryChanged,
     publish,
     cachedModelOptions,
@@ -309,6 +301,22 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
         throw error;
       }
       const result = await session.invokeCommand(name, argumentsText);
+      if (name === "compact") {
+        const usage = session.contextUsage?.();
+        const providerSessionGeneration = usage?.providerSessionGeneration;
+        if (usage && providerSessionGeneration && session.engineAgentId) {
+          const cancelled = coordinationV3.cancelContextRolloverAfterNativeCompaction({
+            agentId: agent.id,
+            providerSessionGeneration,
+            providerSessionId: session.engineAgentId,
+            usedTokens: usage.usedTokens,
+          });
+          if (cancelled) {
+            scheduledSessionRollovers.delete(agent.id);
+            notifyScheduler();
+          }
+        }
+      }
       return { catalog, ...(result?.message ? { message: result.message } : {}) };
     };
     const liveSession = activeRuns.get(agent.id)?.runtimeSession ??
@@ -420,15 +428,76 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
 );
 
 app.post<{ Params: { id: string } }>("/api/agents/:id/compact", async (request, reply) => {
-  if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
+  const agent = store.getAgent(request.params.id);
+  if (!agent) return reply.code(404).send({ error: "agent not found" });
   if (activeRuns.has(request.params.id)) {
     return reply.code(409).send({ error: "cannot compact an agent with an active run", retryable: true });
   }
-  const runtime = persistentRuntimeForTermination(request.params.id);
-  if (runtime) {
-    await teardownPersistentRuntime(request.params.id, runtime, "explicit compaction");
+  const persisted = store.resumeSessionState(agent.id);
+  const latestRun = store.getRuns(agent.id).at(-1);
+  if (!persisted || !latestRun) {
+    return reply.code(409).send({ error: "the agent has no accepted provider session to roll over" });
   }
-  return { compacted: clearAgentResumeSession(request.params.id, "explicit_compaction") };
+  const runtime = persistentRuntimeForTermination(request.params.id);
+  const usage = runtime?.session.contextUsage?.();
+  const preferences = workspace.getPreferences();
+  const pressure = evaluateContextRolloverPressure(
+    usage ?? { usedTokens: preferences.contextRolloverTokens },
+    preferences,
+  );
+  const acceptedSessionTail = store.acceptedProviderSessionCommunicationEventIds(agent.id);
+  if (!acceptedSessionTail) {
+    return reply.code(409).send({
+      error: "the accepted provider session predates exact input-boundary tracking and cannot be rolled over safely",
+      retryable: false,
+    });
+  }
+  const sourceCommunication = latestRun.communicationEventId
+    ? store.getCommunicationEvent(agent.projectId, latestRun.communicationEventId)
+    : undefined;
+  let rolloverBoundary: ReturnType<typeof store.bindContextRolloverBoundary>;
+  try {
+    rolloverBoundary = store.bindContextRolloverBoundary({
+      agentId: agent.id,
+      ...(sourceCommunication?.conversationId
+        ? { currentConversationId: sourceCommunication.conversationId }
+        : {}),
+      submittedCommunicationEventIds: acceptedSessionTail,
+    });
+  } catch (error) {
+    return reply.code(409).send({
+      error: error instanceof Error ? error.message : "the exact canonical rollover boundary is unavailable",
+      retryable: false,
+    });
+  }
+  const requested = coordinationV3.requestContextRollover({
+    projectId: agent.projectId,
+    agentId: agent.id,
+    oldProviderSessionId: persisted.sessionId,
+    providerSessionGeneration: usage?.providerSessionGeneration ?? persisted.sessionId,
+    detectedOccupancy: usage?.usedTokens ?? pressure.threshold,
+    ...(usage?.aggregateTokens !== undefined ? { aggregateTokens: usage.aggregateTokens } : {}),
+    threshold: pressure.threshold,
+    ...(usage?.windowTokens !== undefined ? { contextWindow: usage.windowTokens } : {}),
+    lowWaterMark: pressure.lowWaterMark,
+    triggerKind: "human",
+    compactionCutoffOrdinal: rolloverBoundary.canonicalOrdinal,
+    compactionCutoffEventId: rolloverBoundary.communicationEventId,
+    recentTail: rolloverBoundary.recentTail,
+    sourceRunId: latestRun.id,
+    sourceActivationIds: [],
+    scopeKey: `context-rollover-human:${agent.id}:${persisted.sessionId}`,
+    ...(sourceCommunication?.conversationId
+      ? { conversationId: sourceCommunication.conversationId }
+      : {}),
+  });
+  notifyScheduler();
+  return {
+    compacted: true,
+    mode: "durable_rollover" as const,
+    rolloverId: requested.rollover.id,
+    replayed: !requested.created,
+  };
 });
 
 registerAgentRunHistoryRoute(app, serverContext);

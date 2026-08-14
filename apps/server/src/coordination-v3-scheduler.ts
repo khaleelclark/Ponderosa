@@ -167,6 +167,10 @@ export class CoordinationV3Scheduler {
     try {
       const now = new Date((this.options.now ?? Date.now)()).toISOString();
       this.store.expireDue(now);
+      // Expired Runs must be fenced before activeRunCount applies the workspace
+      // admission limit. Otherwise one stale injected Run can permanently fill
+      // a saturated budget and prevent leaseNextRun's transactional recovery.
+      this.store.recoverExpiredRuns(now);
       this.store.processDueTriggerOccurrences(now);
       for (const agentId of this.store.processDueSteeringRecoveries(now)) {
         this.options.onMessageDeliveryChanged?.(agentId);

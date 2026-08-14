@@ -119,6 +119,13 @@ export class CoordinationV3SchedulerLeaseAuthority {
     })();
   }
 
+  /** Recover expired live leases before scheduler capacity accounting. The
+   * whole Run/Activation/request/rollover transition is one transaction, so a
+   * saturated daemon cannot count stale ownership without also fencing it. */
+  recoverExpiredRuns(now: string): { retried: number; outcomeUnknown: number } {
+    return this.sqlite.transaction(() => this.recoverExpiredRunsInTransaction(now))();
+  }
+
   leaseNextRun(input: {
     workerId: string;
     now?: string;
@@ -134,7 +141,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
       ? `AND a.agent_id NOT IN (${excludedAgentIds.map(() => "?").join(", ")})`
       : "";
     return this.sqlite.transaction(() => {
-      this.recoverExpiredUninjectedRuns(now);
+      this.recoverExpiredRunsInTransaction(now);
       this.triggerRegistry.resetExpiredBudgets(now);
       this.activationLifecycle.settleUnauthorizedPendingActivations(now);
       const candidate = this.sqlite.prepare(`
@@ -249,6 +256,30 @@ export class CoordinationV3SchedulerLeaseAuthority {
         }
       };
       const candidateTriggerId = triggerId(queuedActivations[0]!);
+      const isContextRolloverCandidate = (activation: ActivationRow): boolean =>
+        Boolean(this.sqlite.prepare(`
+          SELECT 1
+          FROM context_rollovers rollover
+          WHERE rollover.agent_id = ? AND rollover.project_id = ?
+            AND (
+              rollover.continuation_activation_id = ?
+              OR EXISTS (
+                SELECT 1 FROM activation_sources recovery
+                WHERE recovery.activation_id = ?
+                  AND recovery.source_kind = 'context_rollover_recovery'
+                  AND recovery.source_id = rollover.id
+              )
+            )
+          LIMIT 1
+        `).get(
+          candidate.agent_id,
+          candidate.project_id,
+          activation.id,
+          activation.id,
+        ));
+      const candidateIsContextRollover = isContextRolloverCandidate(
+        queuedActivations[0]!,
+      );
       const triggerBudgetChargeId = (
         activation: ActivationRow,
       ): string | undefined => {
@@ -263,11 +294,12 @@ export class CoordinationV3SchedulerLeaseAuthority {
       const candidateBudgetChargeId = triggerBudgetChargeId(
         queuedActivations[0]!,
       );
-      const activations = candidateIsExplicitQueuedTurn
+      const activations = candidateIsExplicitQueuedTurn || candidateIsContextRollover
         ? [queuedActivations[0]!]
         : queuedActivations
           .filter((activation) =>
             !isExplicitQueuedTurn(activation) &&
+            !isContextRolloverCandidate(activation) &&
             startsFreshTask(activation) === candidateStartsFreshTask &&
             (
               candidateTriggerId
@@ -406,7 +438,10 @@ export class CoordinationV3SchedulerLeaseAuthority {
     })();
   }
 
-  recoverExpiredUninjectedRuns(now: string): void {
+  private recoverExpiredRunsInTransaction(now: string): {
+    retried: number;
+    outcomeUnknown: number;
+  } {
     const runs = this.sqlite.prepare(`
       SELECT id, prompt_injection_state FROM scheduler_runs
       WHERE status IN ('leased', 'running') AND lease_expires_at <= ?
@@ -414,6 +449,8 @@ export class CoordinationV3SchedulerLeaseAuthority {
       id: string;
       prompt_injection_state: string;
     }>;
+    let retried = 0;
+    let outcomeUnknown = 0;
     for (const run of runs) {
       if (run.prompt_injection_state === "not_injected") {
         this.sqlite.prepare(`
@@ -435,7 +472,23 @@ export class CoordinationV3SchedulerLeaseAuthority {
           WHERE run_id = ? AND state = 'pending'
         `).run(now, now, run.id);
         this.settleRetriedRequiredReply(run.id, now);
+        retried += 1;
       } else {
+        // Lease recovery runs inside the same immediate scheduler transaction
+        // as the next claim. Once an injected replacement loses its lease, its
+        // provider outcome is unknown and the matching unverified rollover can
+        // no longer remain active. Terminalize that exact binding before any
+        // recovery Activation is considered; the old accepted session and
+        // unconsumed handoff remain authoritative until verified acceptance.
+        this.sqlite.prepare(`
+          UPDATE context_rollovers
+          SET state = 'outcome_unknown',
+            last_error = 'replacement Run lease expired after prompt injection before verified acceptance',
+            updated_at = ?, terminal_at = COALESCE(terminal_at, ?)
+          WHERE replacement_run_id = ?
+            AND state = 'continuation_ready'
+            AND replacement_verified_at IS NULL
+        `).run(now, now, run.id);
         this.sqlite.prepare(`
           UPDATE scheduler_runs
           SET status = 'outcome_unknown', updated_at = ?, terminal_at = ?
@@ -466,7 +519,9 @@ export class CoordinationV3SchedulerLeaseAuthority {
           ],
         );
         this.recoverRequiredReply(run.id, now);
+        outcomeUnknown += 1;
       }
     }
+    return { retried, outcomeUnknown };
   }
 }

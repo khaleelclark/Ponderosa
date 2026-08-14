@@ -4,6 +4,7 @@ import {
   PONDEROSA_DECISION_TOOL,
   PONDEROSA_MANAGE_TOOL,
   PONDEROSA_MESSAGE_TOOL,
+  PONDEROSA_HISTORY_TOOL,
   PONDEROSA_TEAM_DIRECTORY_TOOL,
   PONDEROSA_UPDATE_REQUEST_TOOL,
   type AgentDto,
@@ -273,6 +274,11 @@ export function startProviderRunExecution(
     let usedFreshFallback = false;
     let projectWorkspaceUnavailable = false;
     try {
+      const runCapability = agentMessageCapabilities.get(messageCapability);
+      if (!runCapability || runCapability.agentId !== agent.id || runCapability.runId !== runId) {
+        throw new Error("provider Run lost its exact message capability before session creation");
+      }
+      const replacementCandidate = coordinationV3.contextRolloverCandidateForRun(runId, agent.id);
       const environment = {
         PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
         PONDEROSA_DOCUMENT_URL: agentMessageUrl.replace(/\/api\/agent-messages$/, "/api/agent-documents"),
@@ -326,6 +332,8 @@ export function startProviderRunExecution(
                 ? "/api/agent-request-updates"
                 : call.name === PONDEROSA_MESSAGE_TOOL.name
                   ? "/api/agent-messages"
+                  : call.name === PONDEROSA_HISTORY_TOOL.name
+                    ? "/api/agent-history"
                   : isDirectory
                     ? `/api/agent-directory${typeof directoryArguments.agentId === "string" && directoryArguments.agentId.trim() ? `/${encodeURIComponent(directoryArguments.agentId.trim())}` : ""}`
                   : browserOperation
@@ -688,10 +696,28 @@ export function startProviderRunExecution(
         const sessionSnapshot = store.appendEvent(agent.id, {
           type: "session_snapshot",
           sessionId: acceptedSessionId,
+          executionId: runId,
           toolContractHash: runtimeSessionContractHash,
           artifactIds,
         });
         publish(agent.id, sessionSnapshot);
+      };
+      const acceptVerifiedRolloverSession = (input: {
+        rolloverId: string;
+        acceptedSessionId: string;
+        handoffId: string;
+      }): void => {
+        const accepted = store.appendEvent(agent.id, {
+          type: "context_rollover_session_accepted",
+          rolloverId: input.rolloverId,
+          sessionId: input.acceptedSessionId,
+          toolContractHash: runtimeSessionContractHash,
+          artifactIds: [...manifestArtifactIds].sort(),
+          handoffId: input.handoffId,
+          executionId: runId,
+        });
+        publish(agent.id, accepted);
+        continuationHandoffConsumed = true;
       };
 
       let sessionId = resumeSessionId;
@@ -736,7 +762,7 @@ export function startProviderRunExecution(
               providerSessionId: sessionId ?? persistentRuntime?.session.engineAgentId,
             });
             v3PromptInjected = true;
-            if (continuationHandoff && !continuationHandoffConsumed) {
+            if (continuationHandoff && !continuationHandoffConsumed && !replacementCandidate) {
               continuationHandoffConsumed = store.consumeContinuationHandoff(
                 agent.id,
                 continuationHandoff.id,
@@ -795,23 +821,46 @@ export function startProviderRunExecution(
           // compatible session's expanded artifact roots even if the
           // operator later cancels the turn. Fresh providers reveal their
           // opaque id through the session event; continuations retain it.
+          if (event.type === "session") {
+            coordinationV3.recordContextRolloverReplacementSessionForRun(
+              runId,
+              agent.id,
+              event.sessionId,
+            );
+          }
           const acceptedSessionId = event.type === "session"
             ? event.sessionId
             : event.type !== "error"
               ? sessionId
               : undefined;
-          if (acceptedSessionId) persistAcceptedSessionSnapshot(acceptedSessionId);
+          const pendingReplacement = acceptedSessionId
+            ? coordinationV3.contextRolloverForReplacementSession(agent.id, acceptedSessionId)
+            : undefined;
+          if (acceptedSessionId && !replacementCandidate &&
+              pendingReplacement?.state !== "continuation_ready") {
+            persistAcceptedSessionSnapshot(acceptedSessionId);
+          }
           if (event.type === "text") {
             finalText += event.delta;
             firstTextSeq ??= stored.seq;
             lastTextSeq = stored.seq;
           }
-          if (event.type === "session") {
-            for (const activationId of coordinationV3.activationIdsAttachedToRun(runId, agent.id)) {
-              coordinationV3.recordContextRolloverReplacementSession(activationId, event.sessionId);
-            }
-          }
           if (event.type === "context_usage" && ownsActiveRun(agent.id, activeRun)) {
+            const nativeCompaction = coordinationV3.cancelContextRolloverAfterNativeCompaction({
+              agentId: agent.id,
+              providerSessionGeneration: event.providerSessionGeneration,
+              providerSessionId: event.providerSessionId,
+              usedTokens: event.usedTokens,
+            });
+            if (nativeCompaction) {
+              app.log.info({
+                agentId: agent.id,
+                rolloverId: nativeCompaction.id,
+                providerSessionId: event.providerSessionId,
+                usedTokens: event.usedTokens,
+              }, "provider native compaction made proactive rollover redundant");
+              notifyScheduler();
+            }
             const replacementRollover = coordinationV3.contextRolloverForReplacementSession(
               agent.id,
               event.providerSessionId,
@@ -849,12 +898,29 @@ export function startProviderRunExecution(
                   projectId: agent.projectId,
                   conversationId: routingConversationId,
                 });
-              } else if (observed.state === "completed") {
+                runError = observed.lastError ?? "replacement context remained above the rollover low-water mark";
+                break;
+              } else if (observed.replacementVerifiedAt) {
+                if (!observed.handoffEventId) {
+                  throw new Error("verified context rollover has no durable handoff");
+                }
+                // This single canonical event atomically switches the accepted
+                // provider snapshot and consumes the exact handoff. Every
+                // candidate fault before this point leaves both untouched.
+                acceptVerifiedRolloverSession({
+                  rolloverId: observed.id,
+                  acceptedSessionId: event.providerSessionId,
+                  handoffId: observed.handoffEventId,
+                });
+                const completed = coordinationV3.completeVerifiedContextRolloverReplacement(
+                  observed.id,
+                  event.providerSessionId,
+                );
                 await persistRuntimeEvent(agent.id, activeRun, {
                   type: "context_rollover_completed",
                   executionId: runId,
-                  rolloverId: observed.id,
-                  previousProviderSessionId: observed.oldProviderSessionId,
+                  rolloverId: completed.id,
+                  previousProviderSessionId: completed.oldProviderSessionId,
                   replacementProviderSessionId: event.providerSessionId,
                   startingOccupancy: event.usedTokens,
                 });
@@ -872,7 +938,35 @@ export function startProviderRunExecution(
                   !store.continuationHandoffForRun(agent.id, runId)) {
                 const pressure = evaluateContextRolloverPressure(event, preferences);
                 if (pressure.shouldRequest) {
-                  const capability = agentMessageCapabilities.get(messageCapability);
+                  let rolloverBoundary: ReturnType<typeof store.bindContextRolloverBoundary>;
+                  try {
+                    const acceptedSessionTail =
+                      store.acceptedProviderSessionCommunicationEventIds(agent.id);
+                    if (!acceptedSessionTail) {
+                      throw new Error(
+                        "the accepted provider session has no exact input boundary; native compaction remains authoritative",
+                      );
+                    }
+                    rolloverBoundary = store.bindContextRolloverBoundary({
+                      agentId: agent.id,
+                      ...(routingConversationId ? { currentConversationId: routingConversationId } : {}),
+                      submittedCommunicationEventIds: [...new Set([
+                        ...acceptedSessionTail,
+                        ...runCapability.historyRetrievalExcludedCommunicationEventIds,
+                      ])],
+                    });
+                  } catch (error) {
+                    createOperationalNotification({
+                      dedupeKey: `context-rollover:${agent.id}:boundary-invalid`,
+                      category: "coordination",
+                      severity: "attention",
+                      title: `${agent.title} could not freeze a safe context boundary`,
+                      body: error instanceof Error ? error.message : "The canonical rollover boundary was unavailable.",
+                      projectId: agent.projectId,
+                      conversationId: routingConversationId,
+                    });
+                    continue;
+                  }
                   const requested = coordinationV3.requestContextRollover({
                     projectId: project.id,
                     agentId: agent.id,
@@ -883,12 +977,15 @@ export function startProviderRunExecution(
                     threshold: pressure.threshold,
                     ...(event.windowTokens !== undefined ? { contextWindow: event.windowTokens } : {}),
                     lowWaterMark: pressure.lowWaterMark,
+                    compactionCutoffOrdinal: rolloverBoundary.canonicalOrdinal,
+                    compactionCutoffEventId: rolloverBoundary.communicationEventId,
+                    recentTail: rolloverBoundary.recentTail,
                     sourceRunId: runId,
                     sourceActivationIds: coordinationV3.activationIdsAttachedToRun(runId, agent.id),
                     scopeKey: coordinationV3.runScopeKey(runId, agent.id),
                     ...(routingConversationId ? { conversationId: routingConversationId } : {}),
-                    ...(capability?.defaultReply ? { replyAuthority: capability.defaultReply } : {}),
-                    visibleResponseCommitted: Boolean(capability?.inferredReplyCommunicationEventId),
+                    ...(runCapability.defaultReply ? { replyAuthority: runCapability.defaultReply } : {}),
+                    visibleResponseCommitted: Boolean(runCapability.inferredReplyCommunicationEventId),
                   });
                   if (requested.created) {
                     await persistRuntimeEvent(agent.id, activeRun, {
@@ -997,10 +1094,7 @@ export function startProviderRunExecution(
           });
         }
       }
-      const replacementRunRollover = coordinationV3.contextRolloverForContinuationRun(
-        runId,
-        agent.id,
-      );
+      const replacementRunRollover = coordinationV3.contextRolloverCandidateForRun(runId, agent.id);
       const rolloverRequested = owned && Boolean(localRolloverRequested || runRollover);
       const rolloverSucceeded = Boolean(
         rolloverRequested && runRollover?.state === "handoff_committed" &&
@@ -1034,13 +1128,23 @@ export function startProviderRunExecution(
       const replacementCancelled = Boolean(
         replacementRunRollover && schedulerCancelled && !isClosed(),
       );
+      const replacementFailed = Boolean(
+        replacementRunRollover?.state === "failed" && !isClosed(),
+      );
       const replacementMissingConfirmation = Boolean(
         owned && replacementRunRollover?.state === "continuation_ready" &&
         !isClosed() && !controller.signal.aborted && !schedulerCancelled,
       );
       if (replacementRunRollover &&
-          (replacementCancelled || replacementMissingConfirmation)) {
-        if (replacementMissingConfirmation) {
+          (replacementCancelled || replacementMissingConfirmation || replacementFailed)) {
+        const currentReplacement = coordinationV3.contextRollover(replacementRunRollover.id);
+        if (replacementCancelled && currentReplacement?.state === "continuation_ready") {
+          coordinationV3.failContextRollover(
+            replacementRunRollover.id,
+            "outcome_unknown",
+            "replacement Run was cancelled before low-water context confirmation",
+          );
+        } else if (replacementMissingConfirmation) {
           const missingObservation = replacementRunRollover.replacementSessionId
             ? `replacement session ${replacementRunRollover.replacementSessionId} ended before reporting the required low-water context observation`
             : "replacement Run ended before identifying and confirming a low-water provider session";
@@ -1050,14 +1154,8 @@ export function startProviderRunExecution(
             missingObservation,
           );
         }
-        if (replacementCancelled && replacementRunRollover.handoffEventId) {
-          store.consumeContinuationHandoff(
-            agent.id,
-            replacementRunRollover.handoffEventId,
-            runId,
-          );
-        }
-        clearAgentResumeSession(agent.id, "explicit_compaction");
+        // The last accepted snapshot still identifies the old provider
+        // generation. Discard only this unverified replacement runtime.
         organizationEnvelopeStates.delete(agent.id);
         const unconfirmedRuntime = reusableRuntime(agent.id);
         if (unconfirmedRuntime) {
@@ -1081,7 +1179,9 @@ export function startProviderRunExecution(
           category: "coordination",
           severity: "attention",
           title: `${agent.title} could not confirm refreshed context`,
-          body: replacementCancelled
+          body: replacementFailed
+            ? "The replacement context remained above the safe threshold. Ponderosa retained the old provider session and stopped automatic rollover instead of looping."
+            : replacementCancelled
             ? "The replacement Run was cancelled before refreshed context could be confirmed. Its bounded handoff is reserved for one authorized Retry Assignment and will not leak into unrelated work."
             : runError
               ? "The replacement Run ended before confirming safe context headroom. Its exact bounded handoff is reserved for one authorized Retry Assignment."
@@ -1122,13 +1222,12 @@ export function startProviderRunExecution(
         refreshProviderUsageAfterRun(runtimeEngineId);
         if (rolloverSucceeded) {
           coordinationV3.beginContextRolloverRetirement(runRollover!.id);
-          clearAgentResumeSession(agent.id, "explicit_compaction");
           organizationEnvelopeStates.delete(agent.id);
           const staleRuntime = reusableRuntime(agent.id);
           if (staleRuntime) {
-            // This Run is already terminal and is deliberately retiring its
-            // provider. Do not let the observed root-exit callback
-            // reinterpret that intentional teardown as a runtime failure.
+            // Retire only the process. The accepted old provider session ID
+            // remains durable until a verified replacement snapshot switches
+            // it atomically.
             activeRun.persistentRuntimeIdentity = undefined;
             try {
               await teardownPersistentRuntime(agent.id, staleRuntime, "continuation handoff rollover", project.id);
@@ -1143,6 +1242,9 @@ export function startProviderRunExecution(
             id: runRollover!.id,
           });
           if (continued.state === "continuation_ready") notifyScheduler();
+          else if (continued.completionReason === "no_continuation_required" && continued.handoffEventId) {
+            store.consumeContinuationHandoff(agent.id, continued.handoffEventId, runId);
+          }
         } else if (policyRefreshSucceeded) {
           // Workspace/Project policy changes still invalidate the retained
           // provider cache after the current clean Run. They do not represent

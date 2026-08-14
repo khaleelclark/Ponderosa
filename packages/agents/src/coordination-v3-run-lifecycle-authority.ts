@@ -428,6 +428,26 @@ export class CoordinationV3RunLifecycleAuthority {
               | "injected",
           sameRunResumable: input.sameRunResumable,
         });
+      const boundReplacement = this.sqlite.prepare(`
+        SELECT id FROM context_rollovers
+        WHERE replacement_run_id = ? AND agent_id = ? AND project_id = ?
+          AND state = 'continuation_ready' AND replacement_verified_at IS NULL
+      `).get(input.runId, run.agent_id, run.project_id) as { id: string } | undefined;
+      const candidateReplacement = boundReplacement ?? this.sqlite.prepare(`
+        SELECT DISTINCT rollover.id
+        FROM context_rollovers rollover
+        JOIN scheduler_run_activations attached ON attached.run_id = ?
+        LEFT JOIN activation_sources recovery
+          ON recovery.activation_id = attached.activation_id
+          AND recovery.source_kind = 'context_rollover_recovery'
+          AND recovery.source_id = rollover.id
+        WHERE rollover.agent_id = ? AND rollover.project_id = ?
+          AND (
+            attached.activation_id = rollover.continuation_activation_id
+            OR recovery.activation_id IS NOT NULL
+          )
+        LIMIT 1
+      `).get(input.runId, run.agent_id, run.project_id) as { id: string } | undefined;
       if (disposition === "retry") {
         const error = (
           input.error ?? "scheduler dispatch rejected"
@@ -436,7 +456,28 @@ export class CoordinationV3RunLifecycleAuthority {
         const maximum = Number.isFinite(requestedMaximum)
           ? Math.max(1, Math.floor(requestedMaximum))
           : 5;
-        const terminalOutcome = input.retryable === false
+        // Once the exact replacement packet is durably bound, an ordinary
+        // Activation retry would create a different Run ID and either loop on
+        // the old binding or weaken candidate fencing. Fail this candidate and
+        // its attached Activation terminally; the old accepted session and
+        // unconsumed handoff remain the only authority, and explicit recovery
+        // may later rebind the same rollover generation.
+        if (candidateReplacement) {
+          this.sqlite.prepare(`
+            UPDATE context_rollovers
+            SET state = CASE WHEN replacement_run_id = ? THEN 'outcome_unknown' ELSE 'failed' END,
+              last_error = ?, updated_at = ?, terminal_at = COALESCE(terminal_at, ?)
+            WHERE id = ? AND replacement_verified_at IS NULL
+              AND state IN ('continuation_ready','failed','outcome_unknown')
+          `).run(
+            input.runId,
+            "replacement Run failed before verified acceptance",
+            now,
+            now,
+            candidateReplacement.id,
+          );
+        }
+        const terminalOutcome = input.retryable === false || candidateReplacement
           ? input.terminalOutcome ?? "permanent_failure"
           : undefined;
         const providerUnavailable = input.failureKind === "capacity" || input.failureKind === "rate_limit";
@@ -565,6 +606,21 @@ export class CoordinationV3RunLifecycleAuthority {
           input.fencingToken,
         );
       } else {
+        if (boundReplacement) {
+          this.sqlite.prepare(`
+            UPDATE context_rollovers
+            SET state = 'outcome_unknown',
+              last_error = ?, updated_at = ?, terminal_at = COALESCE(terminal_at, ?)
+            WHERE id = ? AND replacement_run_id = ?
+              AND state = 'continuation_ready' AND replacement_verified_at IS NULL
+          `).run(
+            "replacement Run outcome became unknown before verified acceptance",
+            now,
+            now,
+            boundReplacement.id,
+            input.runId,
+          );
+        }
         this.sqlite.prepare(`
           UPDATE scheduler_runs
           SET status = 'outcome_unknown', updated_at = ?, terminal_at = ?
@@ -723,11 +779,14 @@ export class CoordinationV3RunLifecycleAuthority {
           last_error = 'replacement Run was cancelled before low-water context confirmation',
           updated_at = ?, terminal_at = COALESCE(terminal_at, ?)
         WHERE state = 'continuation_ready'
-          AND continuation_activation_id IN (
-            SELECT activation_id FROM scheduler_run_activations
-            WHERE run_id = ?
+          AND replacement_verified_at IS NULL
+          AND (
+            replacement_run_id = ?
+            OR (replacement_run_id IS NULL AND continuation_activation_id IN (
+              SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?
+            ))
           )
-      `).run(now, now, run.id);
+      `).run(now, now, run.id, run.id);
       this.sqlite.prepare(`
         UPDATE scheduler_runs
         SET status = 'cancelled', fencing_token = ?,

@@ -238,7 +238,7 @@ export class AgentEventSessionAuthority {
               AND rollover.scope_key = ?
               AND rollover.state IN (
                 'handoff_committed', 'session_retiring',
-                'continuation_ready', 'completed'
+                'continuation_ready'
               )
           )
         )

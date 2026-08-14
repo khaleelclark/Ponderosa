@@ -15,6 +15,7 @@ import {
   type ProviderInputSourceManifest,
   type RuntimeDynamicToolSpec,
   type TeamDirectoryDto,
+  PONDEROSA_HISTORY_TOOL,
   unicodeCodePointLength,
 } from "@ponderosa/core";
 import { attachmentsDir } from "@ponderosa/agents";
@@ -274,7 +275,10 @@ export async function prepareAgentRun(
     hasMore: currentChatPrivateHistoryPage.hasMore || secondaryPrivateHistory.hasMore ||
       currentChatPrivateHistoryPage.items.length + secondaryPrivateHistory.newest.length > historySourceLimit,
   };
-  const referencedProjectArtifacts = (message: ScopedContextMessage): ArtifactDto[] => {
+  const referencedProjectArtifacts = (message: Pick<
+    ScopedContextMessage,
+    "text" | "attachments" | "artifactIds"
+  >): ArtifactDto[] => {
     const ids = collectReachableArtifactIds(message);
     let tokens = 0;
     for (const match of message.text.matchAll(/[A-Za-z0-9](?:[A-Za-z0-9._:-]{0,254}[A-Za-z0-9])?/gu)) {
@@ -293,11 +297,57 @@ export async function prepareAgentRun(
     artifact.kind === "generated_file" && Boolean(assets.authoritativeGeneratedArtifact(project.id, artifact)));
   const manifestActivationIds = coordinationV3.activationIdsForInjection(v3InjectionId!, runId);
   const manifestActivationPayloads = coordinationV3.activationPayloads(agent.id, manifestActivationIds, runId);
-  // Provider adapters bind tool definitions when their persistent session is
-  // created (Codex thread/start; Claude MCP process startup). Keep that
-  // provider contract maximal and stable; the renewed per-Run capability below
-  // keeps the provider communication contract stable for session reuse.
-  const availableRuntimeTools: RuntimeDynamicToolSpec[] = providerDynamicTools();
+  const preflightResumeSessionState = store.resumeSessionState(agent.id);
+  const preflightActiveRollover = coordinationV3.activeContextRollover(agent.id);
+  const preflightAttachedActivationIds = v3SchedulerRunId
+    ? coordinationV3.activationIdsAttachedToRun(v3SchedulerRunId, agent.id)
+    : [];
+  const preflightRecoveryRollover = v3SchedulerRunId
+    ? coordinationV3.contextRolloverRecoveryForRun(v3SchedulerRunId, agent.id)
+    : undefined;
+  const preflightContinuationRollover = preflightActiveRollover?.state === "continuation_ready" &&
+      preflightActiveRollover.continuationActivationId &&
+      preflightAttachedActivationIds.includes(preflightActiveRollover.continuationActivationId)
+    ? preflightActiveRollover : undefined;
+  const replacementCandidateRollover = preflightContinuationRollover ?? preflightRecoveryRollover;
+  const historyRollover = replacementCandidateRollover
+    ?? (preflightResumeSessionState
+      ? coordinationV3.contextRolloverForReplacementSession(
+          agent.id,
+          preflightResumeSessionState.sessionId,
+        )
+      : undefined);
+  const acceptedSessionContextEventIds = historyRollover
+    ? store.acceptedProviderSessionCommunicationEventIds(agent.id)
+    : undefined;
+  const historyRetrievalFrozenExclusions = [...new Set([
+    ...(historyRollover?.recentTailCommunicationEventIds ?? []),
+    ...(acceptedSessionContextEventIds ?? []),
+  ])];
+  const candidateHistoryRetrievalBoundary = historyRollover && acceptedSessionContextEventIds &&
+      historyRollover.compactionCutoffOrdinal > 0 &&
+      historyRollover.compactionCutoffEventId
+    ? {
+        canonicalOrdinal: historyRollover.compactionCutoffOrdinal,
+        communicationEventId: historyRollover.compactionCutoffEventId,
+      }
+    : undefined;
+  const historyRetrievalBoundary = candidateHistoryRetrievalBoundary &&
+      store.hasCompactionHistory({
+        agentId: agent.id,
+        ...(routingConversationId ? { currentConversationId: routingConversationId } : {}),
+        boundary: candidateHistoryRetrievalBoundary,
+        excludedCommunicationEventIds: new Set(historyRetrievalFrozenExclusions),
+      })
+    ? candidateHistoryRetrievalBoundary
+    : undefined;
+  // Provider tools are immutable for a persistent session. Expose history only
+  // when a fresh rollover generation owns a durable boundary; every later Run
+  // in that replacement session derives the same contract from its session ID.
+  const availableRuntimeTools: RuntimeDynamicToolSpec[] = [
+    ...providerDynamicTools(),
+    ...(historyRetrievalBoundary ? [PONDEROSA_HISTORY_TOOL] : []),
+  ];
   const communicationPrompt = communicationV3Prompt();
   const providerToolHash = providerToolContractHash(availableRuntimeTools, communicationPrompt);
   const runtimeSessionContractHash = providerSessionContractHash(
@@ -306,7 +356,7 @@ export async function prepareAgentRun(
     effectiveEffort,
     providerToolHash,
   );
-  const pendingCommunicationV4NextRunDeliveryCandidates = routingConversationId
+  const pendingCommunicationV4NextRunDeliveryCandidates = routingConversationId && !replacementCandidateRollover
     ? coordinationV3.pendingCommunicationV4NextRunDeliveries({
         projectId: project.id,
         conversationId: routingConversationId,
@@ -372,11 +422,9 @@ export async function prepareAgentRun(
   // An evicted/failed runtime keeps this Agent fenced until its retained
   // handle confirms exit. Never start a replacement beside it.
   await reconcileAgentRuntimeAuthority(agent.id);
-  let resumeSessionState = store.resumeSessionState(agent.id);
-  const attachedActivationIds = v3SchedulerRunId
-    ? coordinationV3.activationIdsAttachedToRun(v3SchedulerRunId, agent.id)
-    : [];
-  const activeRollover = coordinationV3.activeContextRollover(agent.id);
+  let resumeSessionState = preflightResumeSessionState;
+  const attachedActivationIds = preflightAttachedActivationIds;
+  const activeRollover = preflightActiveRollover;
   const rolloverOwnsThisContinuation = Boolean(
     activeRollover?.state === "continuation_ready"
     && activeRollover.continuationActivationId
@@ -392,9 +440,7 @@ export async function prepareAgentRun(
   if (rolloverOwnsThisContinuation && !rolloverContinuationHandoff) {
     throw new Error("durable context rollover continuation handoff is unavailable");
   }
-  const rolloverRecovery = v3SchedulerRunId
-    ? coordinationV3.contextRolloverRecoveryForRun(v3SchedulerRunId, agent.id)
-    : undefined;
+  const rolloverRecovery = preflightRecoveryRollover;
   const rolloverRecoveryHandoff = rolloverRecovery?.handoffEventId
     ? store.continuationHandoffForRollover(
         agent.id,
@@ -416,8 +462,9 @@ export async function prepareAgentRun(
     // identity, not the recovered lifecycle label, owns this restart boundary.
     const staleRuntime = reusableRuntime(agent.id);
     scheduledSessionRollovers.delete(agent.id);
-    clearAgentResumeSession(agent.id, "explicit_compaction");
     organizationEnvelopeStates.delete(agent.id);
+    // Keep the old provider session snapshot as the durable fallback until the
+    // replacement reports low-water reconstruction and is atomically accepted.
     resumeSessionState = undefined;
     if (staleRuntime) await teardownPersistentRuntime(agent.id, staleRuntime, "continuation handoff rollover", project.id);
   } else if (requestContextRollover) {
@@ -457,13 +504,45 @@ export async function prepareAgentRun(
   // truthful fresh seed without replaying the failed continuation packet.
   type SeedHistoryCandidate = ChatMessage & {
     sourceCommunicationEventId?: string;
+    sourceContentSha256?: string;
     sourceConversationId?: string;
     sourceConversationTitle?: string;
     sourceAuthor?: string;
     sourceCommunicationIntent?: CommunicationEvent["intent"];
   };
+  const frozenRolloverTail = replacementCandidateRollover
+    ? store.resolveContextRolloverTail({
+        agentId: agent.id,
+        ...(replacementCandidateRollover.conversationId
+          ? { currentConversationId: replacementCandidateRollover.conversationId }
+          : {}),
+        boundary: {
+          canonicalOrdinal: replacementCandidateRollover.compactionCutoffOrdinal,
+          communicationEventId: replacementCandidateRollover.compactionCutoffEventId,
+        },
+        recentTail: replacementCandidateRollover.recentTailCommunicationEventIds.map(
+          (communicationEventId, index) => ({
+            communicationEventId,
+            contentSha256: replacementCandidateRollover.recentTailContentHashes[index] ?? "",
+          }),
+        ),
+      })
+    : undefined;
+  const historyInputs: Array<Pick<
+    ScopedContextMessage,
+    "id" | "role" | "text" | "createdAt" | "communicationEventId" | "attachments" | "artifactIds"
+  > & { sourceContentSha256?: string }> = frozenRolloverTail
+    ? frozenRolloverTail.map((message) => ({
+        id: message.event.eventId,
+        role: message.event.sender.kind === "agent" ? "assistant" as const : "user" as const,
+        text: message.text,
+        createdAt: message.event.createdAt,
+        communicationEventId: message.event.eventId,
+        sourceContentSha256: message.contentSha256,
+      }))
+    : [...mergedPrivateHistory.newest].reverse();
   const fullHistory: SeedHistoryCandidate[] = await Promise.all(
-    [...mergedPrivateHistory.newest].reverse().map(async (message) => {
+    historyInputs.map(async (message) => {
       const sourceCommunication = message.communicationEventId
         ? store.getCommunicationEvent(project.id, message.communicationEventId)
         : undefined;
@@ -491,6 +570,9 @@ export async function prepareAgentRun(
         createdAt: message.createdAt,
         ...(sourceCommunication ? {
           sourceCommunicationEventId: sourceCommunication.eventId,
+          ...(typeof (message as { sourceContentSha256?: unknown }).sourceContentSha256 === "string"
+            ? { sourceContentSha256: (message as { sourceContentSha256: string }).sourceContentSha256 }
+            : {}),
           ...(sourceCommunication.conversationId ? {
             sourceConversationId: sourceCommunication.conversationId,
             sourceConversationTitle,
@@ -498,7 +580,7 @@ export async function prepareAgentRun(
           ...(sourceAuthor ? { sourceAuthor } : {}),
           sourceCommunicationIntent: sourceCommunication.intent,
         } : {}),
-        attachments: [
+        attachments: replacementCandidateRollover ? [] : [
           ...(await Promise.all(
             message.attachments?.filter((item): item is AssetDto =>
               !message.artifactIds?.includes(item.id) &&
@@ -515,23 +597,34 @@ export async function prepareAgentRun(
       };
     }),
   );
-  if (contextArtifacts.length) fullHistory.push({
+  // A replacement candidate is an exact, authority-frozen continuity packet:
+  // the canonical Communication tail plus its durable handoff. Ordinary
+  // Project context (including pinned/published generated files) remains in
+  // the catalog for later accepted-session Runs, but must not widen this
+  // candidate or make its exact manifest fail closed before provider startup.
+  const newlySubmittedContextArtifacts = replacementCandidateRollover
+    ? []
+    : contextArtifacts.filter((artifact) => !retainedSessionArtifactIds.includes(artifact.id));
+  const contextArtifactHistory = newlySubmittedContextArtifacts.length ? [{
     role: "assistant",
     text: "Pinned or published project artifacts available to this session:",
-    attachments: contextArtifacts.map(generatedArtifactReference),
-  });
-  const boundedHistoryCandidates = boundedSeedHistory(fullHistory);
+    attachments: newlySubmittedContextArtifacts.map(generatedArtifactReference),
+  } satisfies ChatMessage] : [];
+  fullHistory.push(...contextArtifactHistory);
+  const boundedHistoryCandidates = frozenRolloverTail ? fullHistory : boundedSeedHistory(fullHistory);
   const seedHistoryCommunicationEventIds = new Set(boundedHistoryCandidates.flatMap((message) =>
     message.sourceCommunicationEventId ? [message.sourceCommunicationEventId] : []));
   const seedHistorySources = boundedHistoryCandidates.map((message) => ({
     communicationEventId: message.sourceCommunicationEventId,
+    contentSha256: message.sourceContentSha256,
     conversationId: message.sourceConversationId,
     conversationTitle: message.sourceConversationTitle,
     author: message.sourceAuthor,
     communicationIntent: message.sourceCommunicationIntent,
   }));
   const seedHistory: ChatMessage[] = boundedHistoryCandidates.map(({
-    sourceCommunicationEventId: _, sourceConversationId: _conversationId,
+    sourceCommunicationEventId: _, sourceContentSha256: _contentSha256,
+    sourceConversationId: _conversationId,
     sourceConversationTitle: _conversationTitle, sourceAuthor: _author,
     sourceCommunicationIntent: _communicationIntent, ...message
   }) => message);
@@ -611,14 +704,14 @@ export async function prepareAgentRun(
   const pendingRoomMessages = incremental
     ? roomDeltaPage!.items
     : withoutSeedHistoryDuplicates([...(roomSeedPage?.items ?? [])].reverse(), currentPrivateSourceIds);
-  const roomMessages = incremental
+  const roomMessages = replacementCandidateRollover ? [] : incremental
     ? boundedContinuationHistory(pendingRoomMessages)
     : boundedSeedHistory(pendingRoomMessages);
   const pendingFreshRoomMessages = withoutSeedHistoryDuplicates(
     [...(freshRoomSeedPage?.items ?? [])].reverse(),
     seedHistoryCommunicationEventIds,
   );
-  const freshRoomMessages = boundedSeedHistory(pendingFreshRoomMessages);
+  const freshRoomMessages = replacementCandidateRollover ? [] : boundedSeedHistory(pendingFreshRoomMessages);
   const roomCanonicalTipId = roomDeltaPage?.latestMessageId
     ?? (sharedCommunication && sourceMasterMessage ? sourceMasterMessage.id : roomSeedPage?.items[0]?.id);
   const broadcastCursorScope = resumeSessionId && routingConversationId && sourceChannel !== "main"
@@ -655,14 +748,14 @@ export async function prepareAgentRun(
   const pendingBroadcastMessages = broadcastIncremental
     ? broadcastDeltaPage!.items
     : withoutSeedHistoryDuplicates([...(broadcastSeedPage?.items ?? [])].reverse(), currentPrivateSourceIds);
-  const initialBroadcastContext = broadcastIncremental
+  const initialBroadcastContext = replacementCandidateRollover ? [] : broadcastIncremental
     ? boundedContinuationHistory(pendingBroadcastMessages)
     : boundedSeedHistory(pendingBroadcastMessages);
   const pendingFreshBroadcastMessages = withoutSeedHistoryDuplicates(
     [...(freshBroadcastSeedPage?.items ?? [])].reverse(),
     seedHistoryCommunicationEventIds,
   );
-  const freshBroadcastContext = boundedSeedHistory(pendingFreshBroadcastMessages);
+  const freshBroadcastContext = replacementCandidateRollover ? [] : boundedSeedHistory(pendingFreshBroadcastMessages);
   const broadcastCanonicalTipId = broadcastDeltaPage?.latestMessageId
     ?? (sharedCommunication && sourceMasterMessage ? sourceMasterMessage.id : broadcastSeedPage?.items[0]?.id);
   const roomDeltaOmitted = Boolean(roomDeltaPage?.hasMore || roomSeedPage?.hasMore) ||
@@ -726,7 +819,7 @@ export async function prepareAgentRun(
     return Boolean(runtime?.projectId === project.id && agentCanReadRuntimeArtifact(runtime, agent.id) &&
       assets.authoritativeRuntimeArtifact(project.id, runtime));
   };
-  const availableRuntimeToolNames = providerDynamicTools().map((tool) => tool.name);
+  const availableRuntimeToolNames = availableRuntimeTools.map((tool) => tool.name);
   const policySnapshotHash = createHash("sha256").update(JSON.stringify({
     contract: "communication-v4",
     toolContractHash: providerToolHash,
@@ -770,10 +863,14 @@ ${communicationV4NextRunDeliveryContext ? `
 ${communicationV4NextRunDeliveryContext}` : ""}
 
 ${freshGuidedPrompt}${attachmentContext}${coalescedActivationContext}`;
-  const providerSessionDisposition = requestContextRollover
+  const providerSessionDisposition = replacementCandidateRollover
+    ? "reseeded" as const
+    : requestContextRollover
     ? coordinationV3.runChangesScope(runId, agent.id) ? "reseeded" as const : "fresh_task" as const
     : resumeSessionId ? "continued_session" as const : "fresh_task" as const;
-  const exactProviderInput = resumeSessionId ? prompt : renderSeedPrompt(seedHistory, freshPrompt);
+  const exactProviderInput = resumeSessionId
+    ? renderSeedPrompt(contextArtifactHistory, prompt)
+    : renderSeedPrompt(seedHistory, freshPrompt);
   const freshExactProviderInput = renderSeedPrompt(seedHistory, freshPrompt);
   const manifestRequestIds = coordinationV3.requestIdsAttachedToRun(runId, agent.id);
   const manifestTriggerOccurrences = manifestActivationPayloads.flatMap(({ payload }) => {
@@ -806,6 +903,7 @@ ${freshGuidedPrompt}${attachmentContext}${coalescedActivationContext}`;
     submittedHistory: ChatMessage[];
     historySources: Array<{
       communicationEventId?: string;
+      contentSha256?: string;
       conversationId?: string;
       conversationTitle?: string;
       author?: string;
@@ -816,6 +914,7 @@ ${freshGuidedPrompt}${attachmentContext}${coalescedActivationContext}`;
     disposition: "fresh_task" | "continued_session" | "reseeded";
     retainedArtifactIds: string[];
   }): ProviderInputSourceManifest => {
+    const manifestConversationId = replacementCandidateRollover?.conversationId ?? routingConversationId;
     const contextCommunicationEventIds = input.contextMessages.flatMap((message) =>
       message.communicationEventId ? [message.communicationEventId] : []);
     const historyCommunicationEventIds = input.historySources.flatMap((source) =>
@@ -826,7 +925,7 @@ ${freshGuidedPrompt}${attachmentContext}${coalescedActivationContext}`;
       ...historyCommunicationEventIds,
       ...contextCommunicationEventIds,
     ])];
-    const submittedArtifactCandidates = collectReachableArtifactIds([
+    const submittedArtifactCandidates = replacementCandidateRollover ? new Set<string>() : collectReachableArtifactIds([
       ...(communication ? [communication] : []),
       ...input.submittedHistory,
       ...input.contextMessages.map((message) => ({
@@ -849,7 +948,7 @@ ${freshGuidedPrompt}${attachmentContext}${coalescedActivationContext}`;
       triggerOccurrenceIds: manifestTriggerOccurrences.map((occurrence) => occurrence.id),
       communicationEventIds,
       artifactIds,
-      ...(routingConversationId ? { conversationId: routingConversationId } : {}),
+      ...(manifestConversationId ? { conversationId: manifestConversationId } : {}),
       providerSessionDisposition: input.disposition,
       sources: [
         { kind: "identity", ref: agent.id, delivery: input.policyDelivery },
@@ -877,7 +976,8 @@ ${freshGuidedPrompt}${attachmentContext}${coalescedActivationContext}`;
               kind: "communication" as const,
               ref: input.historySources[index]!.communicationEventId!,
               delivery: "submitted" as const,
-              hash: createHash("sha256").update(message.text).digest("hex"),
+              hash: input.historySources[index]!.contentSha256 ??
+                createHash("sha256").update(message.text).digest("hex"),
               ...(message.createdAt ? { createdAt: message.createdAt } : {}),
               ...(input.historySources[index]!.conversationId ? {
                 conversationId: input.historySources[index]!.conversationId,
@@ -931,7 +1031,7 @@ ${freshGuidedPrompt}${attachmentContext}${coalescedActivationContext}`;
     };
   };
   const providerInputManifest = buildProviderInputManifest({
-    submittedHistory: history,
+    submittedHistory: resumeSessionId ? contextArtifactHistory : history,
     historySources: resumeSessionId ? [] : seedHistorySources,
     contextMessages: [...roomMessages, ...initialBroadcastContext],
     policyDelivery,
@@ -946,7 +1046,31 @@ ${freshGuidedPrompt}${attachmentContext}${coalescedActivationContext}`;
     disposition: resumeSessionId ? "reseeded" : providerSessionDisposition,
     retainedArtifactIds: [],
   });
-  const manifestArtifactIds = [...providerInputManifest.artifactIds];
+  const recoveryProviderInput = preflightRecoveryRollover?.replacementRunId
+    ? store.getProviderInput(preflightRecoveryRollover.replacementRunId, true)
+    : undefined;
+  if (preflightRecoveryRollover && (!recoveryProviderInput?.exactPrompt ||
+      recoveryProviderInput.exactSystemPrompt === undefined ||
+      recoveryProviderInput.sourceManifest.schemaVersion !== 3)) {
+    throw new Error("authorized context rollover recovery has no exact durable replacement packet");
+  }
+  const recoveryManifest = recoveryProviderInput?.sourceManifest.schemaVersion === 3
+    ? recoveryProviderInput.sourceManifest
+    : undefined;
+  const recoveryPolicyHash = recoveryManifest?.sources.find((source) => source.kind === "policy")?.hash;
+  if (recoveryProviderInput && (recoveryProviderInput.exactSystemPrompt !== systemPrompt ||
+      recoveryPolicyHash !== policySnapshotHash)) {
+    throw new Error("context rollover recovery provider contract changed since the exact packet was committed");
+  }
+  const effectiveSeedHistory = recoveryProviderInput ? [] : seedHistory;
+  const effectivePrompt = recoveryProviderInput?.exactPrompt ?? prompt;
+  const effectiveFreshPrompt = recoveryProviderInput?.exactPrompt ?? freshPrompt;
+  const effectiveSystemPrompt = recoveryProviderInput?.exactSystemPrompt ?? systemPrompt;
+  const effectiveProviderInputManifest = recoveryManifest ?? providerInputManifest;
+  const effectiveFreshProviderInputManifest = recoveryManifest ?? freshProviderInputManifest;
+  const effectiveExactProviderInput = recoveryProviderInput?.exactPrompt ?? exactProviderInput;
+  const effectiveFreshExactProviderInput = recoveryProviderInput?.exactPrompt ?? freshExactProviderInput;
+  const manifestArtifactIds = [...effectiveProviderInputManifest.artifactIds];
   return {
     routingConversationId,
     sourceChannel,
@@ -957,7 +1081,7 @@ ${freshGuidedPrompt}${attachmentContext}${coalescedActivationContext}`;
     resumeSessionId,
     continuationHandoff,
     mode,
-    seedHistory,
+    seedHistory: effectiveSeedHistory,
     cursorChannel,
     cursorConversationId,
     cursorModel,
@@ -973,19 +1097,21 @@ ${freshGuidedPrompt}${attachmentContext}${coalescedActivationContext}`;
     broadcastDeltaOmitted,
     routingHash,
     policySnapshotHash,
-    systemPrompt,
-    systemPromptHash,
+    systemPrompt: effectiveSystemPrompt,
+    systemPromptHash: createHash("sha256").update(effectiveSystemPrompt).digest("hex"),
     runtimeSessionContractHash: effectiveRuntimeSessionContractHash,
     availableRuntimeTools,
     availableRuntimeToolNames,
-    prompt,
-    freshPrompt,
+    historyRetrievalBoundary,
+    historyRetrievalFrozenExclusions,
+    prompt: effectivePrompt,
+    freshPrompt: effectiveFreshPrompt,
     providerSessionDisposition,
-    exactProviderInput,
-    freshExactProviderInput,
+    exactProviderInput: effectiveExactProviderInput,
+    freshExactProviderInput: effectiveFreshExactProviderInput,
     activationWakeCause,
-    providerInputManifest,
-    freshProviderInputManifest,
+    providerInputManifest: effectiveProviderInputManifest,
+    freshProviderInputManifest: effectiveFreshProviderInputManifest,
     manifestArtifactIds,
     runtimeAttachmentDirectory,
     runtimeAttachmentCleanupAfterRun: !runtimeAttachmentsFollowSession,

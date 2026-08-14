@@ -72,6 +72,54 @@ type ServerReadModels = ReturnType<typeof createServerReadModels>;
 type OperationalNotifications = ReturnType<typeof createOperationalNotifications>;
 type CommunicationDocumentAuthority = ReturnType<typeof createCommunicationDocumentAuthority>;
 
+export function recoverRequiredReplyPublications(
+  coordinationV3: CoordinationV3Store,
+  runId: string,
+  agentId: string,
+): {
+  fingerprints: Record<string, string>;
+  communicationEventId?: string;
+} {
+  const fingerprints: Record<string, string> = {};
+  const communicationEventIds = new Set<string>();
+  for (const obligation of coordinationV3.requiredReplyObligationsForRun(runId)) {
+    if (obligation.state !== "satisfied" || !obligation.satisfiedCommunicationId) continue;
+    const runtime = coordinationV3.runtimeCommunication(obligation.satisfiedCommunicationId);
+    const payload = runtime?.payload && typeof runtime.payload === "object" && !Array.isArray(runtime.payload)
+      ? runtime.payload as Record<string, unknown>
+      : undefined;
+    const communication = payload?.communication && typeof payload.communication === "object"
+      ? payload.communication as Partial<CommunicationEvent>
+      : undefined;
+    const fingerprint = payload?.requiredReplyFingerprint;
+    if (
+      typeof fingerprint !== "string" || !/^[a-f0-9]{64}$/u.test(fingerprint) ||
+      communication?.eventId !== obligation.satisfiedCommunicationId ||
+      communication.sender?.kind !== "agent" ||
+      communication.sender.agentId !== agentId ||
+      communication.sender.executionId !== runId
+    ) continue;
+    const authorityKey = JSON.stringify({
+      intent: obligation.replyAuthority.intent,
+      ...(obligation.replyAuthority.recipientAgentIds?.length
+        ? { recipientAgentIds: [...obligation.replyAuthority.recipientAgentIds].sort() }
+        : {}),
+    });
+    const existing = fingerprints[authorityKey];
+    if (existing && existing !== fingerprint) {
+      throw new Error("durable required-reply publications conflict for one route");
+    }
+    fingerprints[authorityKey] = fingerprint;
+    communicationEventIds.add(obligation.satisfiedCommunicationId);
+  }
+  return {
+    fingerprints,
+    ...(communicationEventIds.size === 1
+      ? { communicationEventId: [...communicationEventIds][0] }
+      : {}),
+  };
+}
+
 export type AgentMessageRunContext =
   Pick<EngineControlPlane,
     "cachedModelOptions" | "discoverEngineCapabilities" | "discoverEngineModelCatalog" | "markEngineModelUnavailable" |
@@ -674,6 +722,8 @@ export function registerAgentMessageRunRoute(
         runtimeSessionContractHash: effectiveRuntimeSessionContractHash,
         availableRuntimeTools,
         availableRuntimeToolNames,
+        historyRetrievalBoundary,
+        historyRetrievalFrozenExclusions,
         prompt,
         freshPrompt,
         providerSessionDisposition,
@@ -705,7 +755,7 @@ export function registerAgentMessageRunRoute(
           v3FencingToken!,
           providerSessionDisposition,
         );
-        coordinationV3.recordProviderInput({
+        coordinationV3.recordProviderInputAndCommitContextRolloverReplacement({
           executionId: runId,
           schedulerRunId: runId,
           fencingToken: v3FencingToken!,
@@ -720,6 +770,15 @@ export function registerAgentMessageRunRoute(
         });
         durableClaim = { generation: v3FencingToken! };
       } catch {
+        try {
+          coordinationV3.failRun({
+            runId,
+            fencingToken: v3FencingToken!,
+            workerId: coordinationV3WorkerId,
+            sameRunResumable: false,
+            retryDelayMs: 0,
+          });
+        } catch { /* ownership may already have changed */ }
         if (runtimeAttachmentCleanupAfterRun) {
           await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
         }
@@ -732,11 +791,19 @@ export function registerAgentMessageRunRoute(
           sameRunResumable: false, retryDelayMs: 0,
         });
       };
-      await opts.messageLifecycleFaults?.afterRunClaim?.({
-        agentId: agent.id,
-        runId,
-        generation: durableClaim.generation,
-      });
+      try {
+        await opts.messageLifecycleFaults?.afterRunClaim?.({
+          agentId: agent.id,
+          runId,
+          generation: durableClaim.generation,
+        });
+      } catch (error) {
+        failUnstartedClaim();
+        if (runtimeAttachmentCleanupAfterRun) {
+          await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
+        }
+        throw error;
+      }
       if (deletingAgentIds.has(agent.id) || !store.getAgent(agent.id)) {
         failUnstartedClaim(true);
         if (runtimeAttachmentCleanupAfterRun) {
@@ -790,6 +857,11 @@ export function registerAgentMessageRunRoute(
       // Project Overview falsely idle until another event or manual refresh.
       publish(agent.id, runningLifecycle);
       const durableReply = coordinationV3.requiredReplyObligationForRun(runId)?.replyAuthority;
+      const recoveredRequiredReply = recoverRequiredReplyPublications(
+        coordinationV3,
+        runId,
+        agent.id,
+      );
       const peerReplyRoutes = coordinationV3.requestIdsAttachedToRun(runId, agent.id).length === 0
         ? coordinationV3.activationPayloads(
             agent.id,
@@ -823,8 +895,20 @@ export function registerAgentMessageRunRoute(
         mentionTrail,
         reachableArtifactIds: manifestArtifactIds,
         availableToolNames: availableRuntimeToolNames,
+        historyRetrievalExcludedCommunicationEventIds: [...new Set([
+          ...historyRetrievalFrozenExclusions,
+          ...providerInputManifest.communicationEventIds,
+          ...freshProviderInputManifest.communicationEventIds,
+        ])],
+        ...(historyRetrievalBoundary ? { historyRetrievalBoundary } : {}),
         ...(sharedTaskTurn ? { plainSharedReply: true } : {}),
         ...(defaultReply ? { defaultReply } : {}),
+        ...(Object.keys(recoveredRequiredReply.fingerprints).length
+          ? { requiredReplyFingerprints: recoveredRequiredReply.fingerprints }
+          : {}),
+        ...(recoveredRequiredReply.communicationEventId
+          ? { inferredReplyCommunicationEventId: recoveredRequiredReply.communicationEventId }
+          : {}),
       });
 
       startProviderRunExecution(app, runContext, {

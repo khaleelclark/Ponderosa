@@ -826,8 +826,6 @@ registerProviderCommandRoutes(app, {
   reusableRuntime,
   persistentRuntimeForTermination,
   closeRunBrowser,
-  clearAgentResumeSession,
-  teardownPersistentRuntime,
   publishMessageDeliveryChanged,
   publish,
   cachedModelOptions,
