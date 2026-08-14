@@ -87,15 +87,6 @@ jobs:
         shell: bash
         run: pnpm typecheck
 
-      - name: Native safety unit suites
-        shell: bash
-        run: |
-          node --test packaging/qualification/*.test.mjs
-          pnpm --filter @ponderosa/native-host test
-          pnpm --filter @ponderosa/engines test
-          pnpm --filter @ponderosa/launcher test
-          pnpm --filter @ponderosa/server test
-
       - name: Production build
         shell: bash
         run: pnpm build

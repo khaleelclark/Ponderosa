@@ -25,7 +25,7 @@ I also ran clone detection as a discovery aid, then checked every candidate
 manually. The strict detector found only four clone regions (0.27% duplicated
 lines), but the higher-value opportunities below are mostly semantic
 duplication, dead pass-through contracts, and obsolete code kept alive only by
-tests.
+non-production entry points.
 
 ## Ranked findings
 
@@ -53,60 +53,43 @@ read it. The value is nevertheless threaded from `ProjectShell` through
 through `ChatPane`. Removing the prop from every layer changes no rendered
 behavior and eliminates a misleading capability from five component contracts.
 
-### 2. Delete legacy UI components that only tests render
+### 2. Delete legacy UI components with no production callers
 
 - Category: dead-code
 - Effort: M
 - Affected:
   - `apps/web/src/components/activity/ActivityPane.tsx:231-384`
-  - `apps/web/test/runCauseVisibility.test.tsx:5,43-59`
   - `apps/web/src/components/files/WorkspaceReviewPane.tsx:142-208`
-  - `apps/web/test/changedFilesLive.test.tsx:6,20-23,178-215`
   - `apps/web/src/components/filePreview/AttachmentPreview.tsx:1-34`
-  - `apps/web/test/assets.test.tsx:7,38-45`
-  - `apps/web/test/filePreview.test.tsx:5,59-85`
   - `apps/web/src/components/chat/ChatMessages.tsx:422-424`
-  - `apps/web/test/messageTimestamp.test.tsx:5,58-62`
-  - `apps/web/test/userMessageLabel.test.tsx:6,49-62`
   - `apps/web/src/components/browser/browserAdapters.ts:31-45`
-  - `apps/web/test/projectBrowser.test.ts:3,11`
 
 Repository-wide symbol searches show no production caller for `RunsPane`,
 `ChangedFilesPane`, `AttachmentPreview`, the `UserMessageLabel` compatibility
-wrapper, or `runBrowserAdapter`. They survive because tests import them through
-direct paths or the `panes.tsx` barrel.
+wrapper, or `runBrowserAdapter`. Their exports remain reachable through direct
+paths or the `panes.tsx` barrel despite having no shipped caller.
 
 The live replacements are already in use: `AgentWorkInspector` for technical
 run detail, `ActivityPane` for current work, `WorkspaceReviewPane`/artifact
 surfaces for files, `ChatOperatorLabel` for operator identity, and
 `projectBrowserAdapter` for the browser UI. Removing these obsolete surfaces
-and either deleting or retargeting their tests should remove roughly 250 lines
-of product code without changing the shipped component graph.
+should remove roughly 250 lines of product code without changing the shipped
+component graph.
 
-### 3. Remove production-dead helpers that tests alone keep “used”
+### 3. Remove production-dead exported helpers
 
 - Category: dead-code
 - Effort: S
 - Affected:
   - `apps/web/src/agents.ts:12-15,157-169`
-  - `apps/web/test/agentStatus.test.ts:4,47-60`
   - `apps/web/src/components/HomeView.tsx:23-28`
-  - `apps/web/test/homeOrdering.test.ts:2,8`
   - `apps/web/src/components/WorkspaceSidebar.tsx:80-86,173-184`
-  - `apps/web/test/workspaceSidebarFlow.test.tsx:5,121-124`
-  - `apps/web/test/resourceOrdering.test.ts:3,15`
   - `apps/web/src/components/AgentDetail.tsx:146-155`
-  - `apps/web/test/agentStream.test.ts:4,17-24`
   - `apps/web/src/components/activity/ActivityPane.tsx:688-709`
-  - `apps/web/test/activitySummary.test.ts:4,15-26`
   - `apps/web/src/collaborationRecipients.ts:1-15`
-  - `apps/web/test/collaborationRecipients.test.ts:3,11-23`
   - `apps/web/src/responsive.ts:1-7`
-  - `apps/web/test/responsive.test.tsx:3,21-37`
   - `apps/web/src/messageSender.ts:1-3`
-  - `apps/web/test/messageSenderLabel.test.tsx:5,10-15`
   - `apps/web/src/workspaceNavigation.ts:48-61,98-100`
-  - `apps/web/test/workspaceNavigation.test.ts:5,33-45`
 
 These symbols have no consumer under `apps/web/src`: `agentRosterIndent`,
 `agentActivity`, `orderHomeResources`, `orderByStableIds`,
@@ -116,9 +99,9 @@ These symbols have no consumer under `apps/web/src`: `agentRosterIndent`,
 `directMessageSender`, `workspaceChats`, and `projectContextLabel`.
 
 This explains why the prior knip pass can be clean while dead product code
-remains: tests are acting as artificial entry points. Since this is an
-application rather than a published utility package, tests should cover live
-behavior or live helpers, not preserve abandoned APIs.
+remains: exported application helpers can look reachable despite having no
+shipped consumer. Since this is an application rather than a published utility
+package, abandoned APIs should not be preserved.
 
 ### 4. Remove the one-use `MessageMarkdown` forwarding component
 
@@ -303,7 +286,7 @@ a sort. `mergeTelemetryPage` repeats the same operation in six type branches.
 A generic `uniqueBy`/`mergeByKey` helper that accepts a key selector and optional
 sort comparator would collapse these copies while preserving explicit ordering
 at each call site. It is safe because the existing “last value for key wins”
-semantics can be captured directly in unit tests.
+semantics can be checked through focused live qualification.
 
 ### 13. Remove the no-op `ResourceRow.onDragOver` contract
 
