@@ -724,6 +724,10 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.projectDeletion.getProjectDeletionReceipt(projectId);
   }
 
+  listProjectDeletionReceipts(): ProjectDeletionReceipt[] {
+    return this.projectDeletion.listProjectDeletionReceipts();
+  }
+
   listPendingProjectDeletionReceipts(): ProjectDeletionReceipt[] {
     return this.projectDeletion.listPendingProjectDeletionReceipts();
   }

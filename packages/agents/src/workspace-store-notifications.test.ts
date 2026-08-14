@@ -132,6 +132,100 @@ describe("notification attention authority", () => {
       unreadConversationCounts: { "target-conversation": 1 },
     });
   });
+
+  test("retains but resolves deleted-Project notifications across live projection and reload", () => {
+    const directory = mkdtempSync(join(tmpdir(), "ponderosa-notifications-"));
+    directories.push(directory);
+    const store = new WorkspaceStore(directory);
+    const deletedUpdate = store.createNotification({
+      projectId: "project-1",
+      conversationId: "conversation-1",
+      communicationEventId: "message-1",
+      kind: "direct_responses",
+      title: "Agent replied",
+      body: "Finished.",
+    });
+    const deletedAttention = store.createNotification({
+      projectId: "project-1",
+      kind: "operational",
+      severity: "attention",
+      title: "Project issue",
+      body: "Review this Project.",
+      action: { kind: "open_project", targetId: "project-1" },
+    });
+    const unaffected = store.createNotification({
+      projectId: "project-2",
+      conversationId: "conversation-2",
+      communicationEventId: "message-2",
+      kind: "direct_responses",
+      title: "Another reply",
+      body: "Still available.",
+    });
+    const cleanupAttention = store.createNotification({
+      projectId: "project-1",
+      kind: "operational",
+      category: "system",
+      severity: "attention",
+      dedupeKey: "project-deletion:project-1",
+      title: "Project deletion cleanup needs attention",
+      body: "Filesystem cleanup is still retrying.",
+    });
+
+    store.append({
+      type: "project_changed",
+      projectId: "project-1",
+      action: "deleted",
+    });
+
+    expect(store.listNotifications()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: deletedUpdate.id,
+        status: "resolved",
+        readAt: expect.any(String),
+      }),
+      expect.objectContaining({
+        id: deletedAttention.id,
+        status: "resolved",
+        readAt: expect.any(String),
+      }),
+      unaffected,
+    ]));
+    expect(store.getNotification(cleanupAttention.id)).toMatchObject({
+      id: cleanupAttention.id,
+      status: "open",
+    });
+    expect(store.getNotification(cleanupAttention.id)?.projectId).toBeUndefined();
+    expect(store.notificationSearchState({
+      communicationEventIds: ["message-1", "message-2"],
+      conversationIds: ["conversation-1", "conversation-2"],
+    })).toEqual({
+      unreadCommunicationEventIds: ["message-2"],
+      unreadConversationCounts: { "conversation-2": 1 },
+    });
+
+    const late = store.createNotification({
+      projectId: "project-1",
+      kind: "broadcasts",
+      title: "Late stale update",
+      body: "This cannot reopen deleted Project attention.",
+    });
+    expect(late.status).toBe("resolved");
+    expect(late.readAt).toBeDefined();
+
+    const reloaded = new WorkspaceStore(directory);
+    expect(reloaded.listNotifications()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: deletedUpdate.id, status: "resolved" }),
+      expect.objectContaining({ id: deletedAttention.id, status: "resolved" }),
+      expect.objectContaining({ id: late.id, status: "resolved" }),
+      unaffected,
+    ]));
+    expect(reloaded.getNotification(cleanupAttention.id)).toMatchObject({
+      id: cleanupAttention.id,
+      status: "open",
+    });
+    expect(reloaded.getNotification(cleanupAttention.id)?.projectId).toBeUndefined();
+    expect(reloaded.listNotifications()).toHaveLength(5);
+  });
 });
 
 describe("workspace resource recency", () => {

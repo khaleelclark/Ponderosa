@@ -5,7 +5,7 @@ import {
 } from "@mui/material";
 import type { ConversationDto, ProjectDto } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { ApiRequestError } from "./api/types";
 import { ProjectShell } from "./components/ProjectShell";
@@ -36,6 +36,7 @@ import {
   useWorkspacePreferences,
 } from "./hooks/queries";
 import { useWorkspaceStream } from "./hooks/useWorkspaceStream";
+import { reconcileDeletedProjectWorkspace } from "./deletedProjectReconciliation";
 import {
   parseRoute,
   routeProjectId,
@@ -48,6 +49,11 @@ import {
   workspaceTabKey,
 } from "./routeRegistry";
 import type { ColorMode } from "./theme";
+
+type RemovableWorkspaceResourceRoute = Extract<
+  Route,
+  { kind: "agent" | "conversation" }
+>;
 import {
   closeReadPushNotifications,
   inspectWebPush,
@@ -71,7 +77,7 @@ import {
   navigateWorkspaceTab,
   openWorkspaceTab,
   openWorkspaceTabInBackground,
-  removeProjectWorkspaceTabsWithFallback,
+  removeProjectWorkspaceTabs,
   removeWorkspaceRouteWithFallback,
   renameWorkspaceTab,
   reusableWorkspaceTab,
@@ -96,7 +102,10 @@ import {
   workspaceResourceFromRoute,
 } from "./workspaceRecency";
 import { MobileWorkspaceActionsProvider } from "./components/MobileWorkspaceActionsContext";
-import { notificationSummary } from "./attention";
+import {
+  notificationsForAvailableProjects,
+  notificationSummary,
+} from "./attention";
 import { useAppViewport } from "./hooks/useAppViewport";
 
 const OPERATOR_PROFILE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
@@ -112,7 +121,6 @@ export default function App({
 }): JSX.Element {
   useAppViewport();
   const queryClient = useQueryClient();
-  const workspaceConnection = useWorkspaceStream();
   const { route, navigate } = useRoute();
   const [initialWorkspaceSession] = useState(() => {
     try {
@@ -131,6 +139,38 @@ export default function App({
   const [activeWorkspaceTabKey, setActiveWorkspaceTabKey] = useState(
     initialWorkspaceSession.activeKey,
   );
+  const workspaceTabsRef = useRef(workspaceTabs);
+  workspaceTabsRef.current = workspaceTabs;
+  const activeWorkspaceTabKeyRef = useRef(activeWorkspaceTabKey);
+  activeWorkspaceTabKeyRef.current = activeWorkspaceTabKey;
+  const creationOriginByWorkspace = useRef(new Map<string, Route>());
+  const reconcileDeletedProject = (
+    projectId: string,
+    at = new Date().toISOString(),
+  ) => {
+    const activeKey = activeWorkspaceTabKeyRef.current;
+    const currentTabs = workspaceTabsRef.current;
+    const reconciliation = reconcileDeletedProjectWorkspace(
+      queryClient,
+      currentTabs,
+      activeKey,
+      projectId,
+      at,
+    );
+    for (const tab of currentTabs) {
+      if ("projectId" in tab.route && tab.route.projectId === projectId) {
+        creationOriginByWorkspace.current.delete(tab.key);
+      }
+    }
+    workspaceTabsRef.current = reconciliation.tabs;
+    setWorkspaceTabs(reconciliation.tabs);
+    if (reconciliation.activeRouteDeleted) {
+      navigate(reconciliation.fallback, { replace: true });
+    }
+  };
+  const workspaceConnection = useWorkspaceStream({
+    onProjectDeleted: reconcileDeletedProject,
+  });
   const [sidebarPresentation, setSidebarPresentation] = useState(() => {
     try {
       return restoreWorkspaceSidebarState(
@@ -153,7 +193,6 @@ export default function App({
   const enginesQuery = useEngines();
   const preferencesQuery = useWorkspacePreferences();
   const notificationsQuery = useNotifications();
-  const notificationCounts = notificationSummary(notificationsQuery.data ?? []);
   const projectOrder = preferencesQuery.data?.projectOrder ?? [];
   const projects = [
     ...projectPage,
@@ -179,6 +218,16 @@ export default function App({
       ) || a.id.localeCompare(b.id)
     );
   });
+  const presentedNotifications = useMemo(
+    () => projectsQuery.isSuccess
+      ? notificationsForAvailableProjects(
+          notificationsQuery.data ?? [],
+          new Set((projectsQuery.data ?? []).map(project => project.id)),
+        )
+      : notificationsQuery.data ?? [],
+    [notificationsQuery.data, projectsQuery.data, projectsQuery.isSuccess],
+  );
+  const notificationCounts = notificationSummary(presentedNotifications);
   const engines = enginesQuery.data ?? [];
   const providerEngines = useRef(engines);
   providerEngines.current = engines;
@@ -203,7 +252,6 @@ export default function App({
   const [projectBrowserRequest, setProjectBrowserRequest] =
     useState<ProjectBrowserRequest>();
   const projectBrowserRequestId = useRef(0);
-  const creationOriginByWorkspace = useRef(new Map<string, Route>());
   const readinessQuery = useQuery({
     queryKey: queryKeys.readiness.all,
     queryFn: () => api.getReadiness(),
@@ -271,6 +319,25 @@ export default function App({
       // Tabs remain available for this session when storage is unavailable.
     }
   }, [workspaceTabs, activeWorkspaceTabKey]);
+
+  useEffect(() => {
+    if (!projectsQuery.isSuccess) return;
+    const availableProjectIds = new Set(
+      (projectsQuery.data ?? []).map(project => project.id),
+    );
+    setWorkspaceTabs(current => {
+      const next = removeProjectWorkspaceTabs(current, availableProjectIds);
+      if (next === current) return current;
+      const retainedKeys = new Set(next.map(tab => tab.key));
+      for (const tab of current) {
+        if (!retainedKeys.has(tab.key)) {
+          creationOriginByWorkspace.current.delete(tab.key);
+        }
+      }
+      workspaceTabsRef.current = next;
+      return next;
+    });
+  }, [projectsQuery.data, projectsQuery.isSuccess]);
 
   useEffect(() => {
     try {
@@ -627,31 +694,7 @@ export default function App({
       reorderWorkspaceTabs(current, draggedKey, targetKey),
     );
   };
-  const removeWorkspaceView = (removedRoute: Route) => {
-    if (removedRoute.kind === "project") {
-      const fallbackRoute: Route = { kind: "projects" };
-      const activeRoute = workspaceTabs.find(
-        tab => tab.key === activeWorkspaceTabKey,
-      )?.route;
-      const removedActiveProject =
-        activeRoute !== undefined &&
-        "projectId" in activeRoute &&
-        activeRoute.projectId === removedRoute.projectId;
-      setWorkspaceTabs(current => {
-        const next = removeProjectWorkspaceTabsWithFallback(
-          current,
-          activeWorkspaceTabKey,
-          removedRoute.projectId,
-          fallbackRoute,
-        );
-        pruneCreationOrigins(current, next);
-        return next;
-      });
-      if (removedActiveProject) {
-        navigate(fallbackRoute, { replace: true });
-      }
-      return;
-    }
+  const removeWorkspaceView = (removedRoute: RemovableWorkspaceResourceRoute) => {
     const fallbackRoute: Route =
       removedRoute.kind === "conversation"
         ? { kind: "project", projectId: removedRoute.projectId }
@@ -680,7 +723,7 @@ export default function App({
     }
   };
   const handleProjectDeleted = (projectId: string) => {
-    removeWorkspaceView({ kind: "project", projectId });
+    reconcileDeletedProject(projectId);
   };
   useEffect(() => {
     if (mobileWorkspace) return;
@@ -790,7 +833,7 @@ export default function App({
               projects={projects}
               preferences={preferences}
               route={route}
-              notifications={notificationsQuery.data ?? []}
+              notifications={presentedNotifications}
               onNavigate={navigateWorkspace}
               onOpenInNewTab={openWorkspaceRouteInBackground}
               onCreate={replaceWorkspaceWithCreationForm}
@@ -875,7 +918,7 @@ export default function App({
                     onRetryProject={() => void routedProjectQuery.refetch()}
                     projects={projects}
                     engines={engines}
-                    notifications={notificationsQuery.data ?? []}
+                    notifications={presentedNotifications}
                     preferences={preferences}
                     colorMode={colorMode}
                     projectBrowserRequest={projectBrowserRequest}
@@ -920,7 +963,7 @@ export default function App({
           projects={projects}
           preferences={preferences}
           route={route}
-          notifications={notificationsQuery.data ?? []}
+          notifications={presentedNotifications}
           onOpenChange={setMobileNavOpen}
           onNavigate={navigateWorkspace}
           onCreate={replaceWorkspaceWithCreationForm}
@@ -994,7 +1037,7 @@ export default function App({
         <NotificationPanel
           open={notificationPanelOpen}
           projects={projects}
-          notifications={notificationsQuery.data ?? []}
+          notifications={presentedNotifications}
           onClose={() => setNotificationPanelOpen(false)}
           onNavigate={navigateWorkspace}
           onOpenSettings={openSettings}

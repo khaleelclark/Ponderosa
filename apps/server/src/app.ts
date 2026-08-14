@@ -63,6 +63,11 @@ import {
 } from "./runtime-attachments.js";
 import type { ServerContext } from "./server-context.js";
 import { registerServerLifecycle } from "./server-lifecycle.js";
+import {
+  publishWorkspaceEvent,
+  reconcileCommittedProjectDeletion as reconcileProjectDeletionWorkspace,
+  reconcileCommittedProjectDeletions as reconcileProjectDeletionsWorkspace,
+} from "./project-deletion-workspace-reconciliation.js";
 import { createServerReadModels } from "./server-read-models.js";
 import {
   registerBodyParsers,
@@ -236,7 +241,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const workspaceSubscribers = new Set<(event: WorkspaceEventEnvelope) => void>();
   const liveSseClosures = new Set<() => void>();
   const publishWorkspace = (event: WorkspaceEventEnvelope): void => {
-    for (const subscriber of workspaceSubscribers) subscriber(event);
+    publishWorkspaceEvent(workspaceSubscribers, event, error => {
+      app.log.warn({ err: error, workspaceEventId: event.id }, "workspace subscriber publication failed");
+    });
   };
   const appendWorkspace = (event: Parameters<WorkspaceStore["append"]>[0]): WorkspaceEventEnvelope => {
     const stored = workspace.append(event);
@@ -245,6 +252,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   };
   const publishWorkspaceSince = (cursor: number): void => {
     for (const event of workspace.readSince(cursor)) publishWorkspace(event);
+  };
+  const reconcileCommittedProjectDeletion = (projectId: string): WorkspaceEventEnvelope => {
+    return reconcileProjectDeletionWorkspace(workspace, publishWorkspace, projectId);
+  };
+  const reconcileCommittedProjectDeletions = (): void => {
+    reconcileProjectDeletionsWorkspace(store, workspace, publishWorkspace);
   };
   const { vapid, webPushConfiguration, webPushConfigurationDetail, webPushConfigured, webPushDelivery } =
     createWebPushConfiguration(opts, workspace, publishWorkspaceSince);
@@ -833,6 +846,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     assets,
     coordinationV3,
     workspace,
+    reconcileCommittedProjectDeletions,
     artifactFilesystem,
     processContainment,
     coordinationV3WorkerId,
@@ -976,6 +990,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     workspaceSubscribers,
     liveSseClosures,
     appendWorkspace,
+    reconcileCommittedProjectDeletion,
     publishWorkspaceSince,
     vapid,
     webPushConfiguration,

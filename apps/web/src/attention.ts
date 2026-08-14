@@ -25,6 +25,17 @@ export function notificationSummary(notifications: WorkspaceNotificationDto[]): 
   }, { attentionCount: 0, unreadUpdateCount: 0 });
 }
 
+/** A Project-scoped notification has no actionable destination after its
+ * Project leaves the canonical Project collection. */
+export function notificationsForAvailableProjects(
+  notifications: WorkspaceNotificationDto[],
+  projectIds: ReadonlySet<string>,
+): WorkspaceNotificationDto[] {
+  return notifications.filter(item =>
+    !item.projectId || projectIds.has(item.projectId)
+  );
+}
+
 export function scopedAttention(notifications: WorkspaceNotificationDto[], scope: {
   projectId?: string;
   conversationId?: string;

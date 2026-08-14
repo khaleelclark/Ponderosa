@@ -178,10 +178,28 @@ export function AllChatView({
     id: string;
     text: string;
   }>();
-  const items = useMemo(
-    () => mergeAllChatItems(older?.items ?? [], query.data?.items ?? []),
-    [older?.items, query.data?.items],
+  const availableProjectIds = useMemo(
+    () => projectsQuery.data
+      ? new Set(projectsQuery.data.map(project => project.id))
+      : undefined,
+    [projectsQuery.data],
   );
+  const items = useMemo(
+    () => mergeAllChatItems(older?.items ?? [], query.data?.items ?? [])
+      .filter(item => !availableProjectIds || availableProjectIds.has(item.project.id)),
+    [availableProjectIds, older?.items, query.data?.items],
+  );
+  useEffect(() => {
+    if (!availableProjectIds) return;
+    setReplyTarget(current =>
+      current && !availableProjectIds.has(current.projectId) ? undefined : current,
+    );
+    setSelectedId(current =>
+      current && !items.some(item => item.communicationEventId === current)
+        ? undefined
+        : current,
+    );
+  }, [availableProjectIds, items]);
   const composerTargets = useMemo(() => {
     const byId = new Map<string, AllChatReplyTarget>();
     for (const item of items) {
@@ -220,8 +238,8 @@ export function AllChatView({
       [...(older?.decisions ?? []), ...(query.data?.decisions ?? [])],
       (item) => item.id,
       (left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
-    ),
-    [older?.decisions, query.data?.decisions],
+    ).filter(item => !availableProjectIds || availableProjectIds.has(item.project.id)),
+    [availableProjectIds, older?.decisions, query.data?.decisions],
   );
   const timeline = useMemo<AllMessagesTimelineEntry[]>(() => {
     const entries: AllMessagesTimelineEntry[] = [
