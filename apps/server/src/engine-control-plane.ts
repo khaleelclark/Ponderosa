@@ -30,6 +30,7 @@ import {
   publicProviderAvailabilityDetail,
   publicProviderExceptionResponse,
 } from "./provider-availability-detail.js";
+import { projectProviderCapabilities } from "./provider-success-projection.js";
 import type {
   CapabilityDiscoveryAuthority,
   CapabilityDiscoveryProcess,
@@ -428,11 +429,12 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       }
     };
     const adapterOperation = Promise.resolve()
-      .then(() => providerAdapterOperation(adapter, "discover capabilities", () => adapter.capabilities!(hostPath, {
-        ...(model ? { model } : {}),
-        signal: authority.controller.signal,
-        onRuntimeSpawned: registerProcess,
-      })));
+      .then(() => providerAdapterOperation(adapter, "discover capabilities", async () =>
+        projectProviderCapabilities(await adapter.capabilities!(hostPath, {
+          ...(model ? { model } : {}),
+          signal: authority.controller.signal,
+          onRuntimeSpawned: registerProcess,
+        }))));
     const promise = adapterOperation
       .then(async (value) => {
         authority.settled = true;
@@ -594,7 +596,9 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       const session = activeRuns.get(agent.id)?.runtimeSession ?? reusableRuntime(agent.id)?.session;
       let live: EngineCapabilities | undefined;
       try {
-        live = session?.capabilities ? await session.capabilities() : undefined;
+        live = session?.capabilities
+          ? projectProviderCapabilities(await session.capabilities())
+          : undefined;
       } catch (error) {
         throw new ProviderAdapterBoundaryError(
           adapter.id,

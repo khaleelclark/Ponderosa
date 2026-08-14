@@ -6,6 +6,7 @@ import {
   type RuntimeProcessHandle,
 } from "@ponderosa/core";
 import { guardedProviderExceptionStringProperty } from "./provider-exception-properties.js";
+import { projectProviderUsage } from "./provider-success-projection.js";
 
 const DEFAULT_STALE_MS = 5 * 60_000;
 
@@ -52,13 +53,24 @@ export class ProviderUsageCache {
 
   state(target: ProviderUsageTarget): ProviderUsageStateDto {
     const entry = this.entries.get(this.key(target));
-    const error = entry?.error
+    let invalidReading = false;
+    let projectedReading: ProviderUsage | undefined;
+    if (entry?.reading) {
+      try {
+        projectedReading = projectProviderUsage(entry.reading, target.adapter.id);
+      } catch {
+        invalidReading = true;
+      }
+    }
+    const error = invalidReading
+      ? "Provider execution failed."
+      : entry?.error
       ? publicProviderFailureSummary(entry.error) ?? "Provider execution failed."
       : undefined;
-    const reading = entry?.reading
+    const reading = projectedReading
       ? {
-          ...entry.reading,
-          ...(!entry.reading.accountLabel && target.accountLabel
+          ...projectedReading,
+          ...(!projectedReading.accountLabel && target.accountLabel
             ? { accountLabel: target.accountLabel }
             : {}),
           ...(this.isStale(entry) || error ? { stale: true } : {}),
@@ -108,12 +120,10 @@ export class ProviderUsageCache {
         },
       }))
       .then((reading) => {
-        if (reading.provider !== target.adapter.id) {
-          throw new Error(`${target.adapter.id} usage reader returned ${reading.provider}`);
-        }
+        const projected = projectProviderUsage(reading, target.adapter.id);
         entry.reading = {
-          ...reading,
-          ...(!reading.accountLabel && target.accountLabel
+          ...projected,
+          ...(!projected.accountLabel && target.accountLabel
             ? { accountLabel: target.accountLabel }
             : {}),
         };

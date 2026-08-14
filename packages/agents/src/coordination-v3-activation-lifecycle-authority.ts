@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import type {
   CoordinationRequestUpdateKind,
+  ProviderFailureCategory,
 } from "@ponderosa/core";
 import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runtime-scope-authority.js";
 import type {
@@ -91,7 +92,7 @@ export class CoordinationV3ActivationLifecycleAuthority {
       activation_id: string;
       terminal_outcome: ActivationTerminalOutcome;
       last_delivery_error: string | null;
-      provider_failure_category: string | null;
+      provider_failure_category: ProviderFailureCategory | null;
     }>;
     for (const request of requests) {
       const kind: CoordinationRequestUpdateKind =
@@ -113,8 +114,11 @@ export class CoordinationV3ActivationLifecycleAuthority {
           reason: publicActivationDeliveryError({
             lastDeliveryError: request.last_delivery_error,
             providerFailureCategory: request.provider_failure_category,
-          }) ?? "activation could not execute",
+            }) ?? "activation could not execute",
         },
+        ...(request.provider_failure_category
+          ? { providerFailureCategory: request.provider_failure_category }
+          : {}),
         now,
       });
     }

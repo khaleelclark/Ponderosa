@@ -1120,7 +1120,22 @@ export class CoordinationV3ReadModel {
       const selectedUpdateRows = this.sqlite.prepare(`
         SELECT * FROM (
           SELECT id, kind, actor_kind, actor_id, in_reply_to_update_id,
-            payload_json, resulting_state, resulting_version, created_at
+            payload_json, resulting_state, resulting_version, created_at,
+            COALESCE(provider_failure_category, (
+              SELECT COALESCE(activation.provider_failure_category, 'unknown')
+              FROM agent_activations activation
+              WHERE json_valid(coordination_request_updates.payload_json)
+                AND activation.id = json_extract(
+                  coordination_request_updates.payload_json, '$.activationId'
+                )
+                AND EXISTS (
+                  SELECT 1 FROM scheduler_run_activations attached
+                  JOIN scheduler_runs scheduler ON scheduler.id = attached.run_id
+                  WHERE attached.activation_id = activation.id
+                    AND scheduler.provider_failure_json IS NOT NULL
+                )
+              LIMIT 1
+            )) AS provider_failure_category
           FROM coordination_request_updates
           WHERE request_id = ?
           ORDER BY created_at DESC, id DESC
@@ -1137,6 +1152,7 @@ export class CoordinationV3ReadModel {
         resulting_state: CoordinationRequestState;
         resulting_version: number;
         created_at: string;
+        provider_failure_category: string | null;
       }>;
       const updatesTruncated = selectedUpdateRows.length > REQUEST_LIFECYCLE_UPDATE_LIMIT;
       const updateRows = updatesTruncated ? selectedUpdateRows.slice(1) : selectedUpdateRows;
@@ -1192,7 +1208,14 @@ export class CoordinationV3ReadModel {
         },
         updates: updateRows.map((row) => {
           const payload = parseStoredJson(row.payload_json);
-          const text = boundedLifecycleText(payload);
+          const text = row.provider_failure_category
+            ? {
+                text: publicProviderFailureSummary(
+                  undefined,
+                  row.provider_failure_category,
+                ) ?? "Provider execution failed.",
+              }
+            : boundedLifecycleText(payload);
           const artifacts = artifactsByUpdate.get(row.id) ?? [];
           return {
             id: row.id,
@@ -1265,6 +1288,18 @@ export class CoordinationV3ReadModel {
         const row = this.sqlite.prepare(`
           SELECT id, kind, priority, dispatch_policy, prompt_class, delivery_failures, terminal_outcome,
             last_delivery_error, provider_failure_category,
+            (
+              SELECT request_update.provider_failure_category
+              FROM json_tree(
+                CASE WHEN json_valid(agent_activations.payload_json)
+                  THEN agent_activations.payload_json ELSE '{}' END
+              ) payload_node
+              JOIN coordination_request_updates request_update
+                ON payload_node.key = 'updateId'
+                AND payload_node.value = request_update.id
+              WHERE request_update.provider_failure_category IS NOT NULL
+              LIMIT 1
+            ) AS request_provider_failure_category,
             EXISTS (
               SELECT 1 FROM scheduler_run_activations attached
               JOIN scheduler_runs scheduler ON scheduler.id = attached.run_id
@@ -1278,6 +1313,7 @@ export class CoordinationV3ReadModel {
           id: string; kind: string; priority: number; dispatch_policy: string; prompt_class: string;
           delivery_failures: number; terminal_outcome: string | null; last_delivery_error: string | null;
           provider_failure_category: string | null; has_provider_failure: number;
+          request_provider_failure_category: string | null;
           payload_json: string; terminal_at: string | null;
         } | undefined;
         const lastDeliveryError = row ? publicActivationDeliveryError({
@@ -1285,10 +1321,18 @@ export class CoordinationV3ReadModel {
           providerFailureCategory: row.provider_failure_category,
           hasProviderFailure: Boolean(row.has_provider_failure),
         }) : undefined;
+        const publicPayload = row?.request_provider_failure_category
+          ? JSON.stringify({
+              providerFailure: publicProviderFailureSummary(
+                undefined,
+                row.request_provider_failure_category,
+              ) ?? "Provider execution failed.",
+            })
+          : row?.payload_json;
         return row ? inspectorDetails(["Activation ID", row.id], ["Kind", row.kind], ["Priority", row.priority],
           ["Dispatch", row.dispatch_policy], ["Prompt class", row.prompt_class], ["Delivery failures", row.delivery_failures],
           ["Terminal outcome", row.terminal_outcome], ["Last error", lastDeliveryError],
-          ["Payload", inspectorJson(row.payload_json)], ["Terminal time", row.terminal_at]) : undefined;
+          ["Payload", inspectorJson(publicPayload ?? "{}")], ["Terminal time", row.terminal_at]) : undefined;
       }
       if (input.kind === "run") {
         const row = this.sqlite.prepare(`

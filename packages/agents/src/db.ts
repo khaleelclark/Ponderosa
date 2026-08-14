@@ -9,6 +9,13 @@ import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
+import {
+  normalizeProviderFailureCategory,
+  publicProviderFailureSummary,
+  type CoordinationRequestUpdateKind,
+} from "@ponderosa/core";
+import { payloadHash, stableJson } from "./coordination-v3-canonical-json.js";
+import type { Actor, RuntimeArtifactInputV3 } from "./coordination-v3-types.js";
 import * as schema from "./schema.js";
 
 export type Db = BetterSQLite3Database<typeof schema>;
@@ -34,6 +41,7 @@ const schemaExtensions = [
 const legacyMigrationTable = "_migrations";
 const schemaVersionTable = "_schema_version";
 const contextRolloverAtomicityMigration = "0005_context_rollover_atomicity.ts";
+const publicProviderRequestUpdatesMigration = "0009_public_provider_request_updates.ts";
 const latestLegacyMigration = "0035_coordination_question_suspensions.sql";
 
 // Fingerprint of the complete schema that was current when the launch baseline
@@ -157,6 +165,174 @@ function establishSchemaExtensions(sqlite: Database.Database): void {
         .run(extensionName, new Date().toISOString());
     })();
   }
+}
+
+function replaceMaterializedRequestUpdate(
+  value: unknown,
+  updateId: string,
+  publicPayload: Record<string, unknown>,
+  budget = { nodes: 0 },
+  depth = 0,
+): { value: unknown; changed: boolean } {
+  budget.nodes += 1;
+  if (budget.nodes > 100_000 || depth > 128) {
+    return { value: { providerFailure: publicPayload.reason }, changed: true };
+  }
+  if (Array.isArray(value)) {
+    let changed = false;
+    const projected = value.map((item) => {
+      const next = replaceMaterializedRequestUpdate(item, updateId, publicPayload, budget, depth + 1);
+      changed ||= next.changed;
+      return next.value;
+    });
+    return { value: changed ? projected : value, changed };
+  }
+  if (!value || typeof value !== "object") return { value, changed: false };
+  const record = value as Record<string, unknown>;
+  let changed = false;
+  const projected: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(record)) {
+    if (key === "update" && record.updateId === updateId) {
+      projected[key] = publicPayload;
+      changed = true;
+      continue;
+    }
+    const next = replaceMaterializedRequestUpdate(child, updateId, publicPayload, budget, depth + 1);
+    projected[key] = next.value;
+    changed ||= next.changed;
+  }
+  return { value: changed ? projected : value, changed };
+}
+
+/** Backfill provider-derived Request updates materialized before activation
+ * failure text gained a finite public projection. Exact provider evidence
+ * remains unchanged in restricted scheduler_runs rows. */
+function establishPublicProviderRequestUpdates(sqlite: Database.Database): void {
+  const applied = sqlite
+    .prepare(`SELECT 1 FROM ${schemaVersionTable} WHERE name = ?`)
+    .get(publicProviderRequestUpdatesMigration) !== undefined;
+  if (applied) return;
+  sqlite.transaction(() => {
+    const columns = new Set(
+      (sqlite.pragma("table_info(coordination_request_updates)") as Array<{ name: string }>)
+        .map((column) => column.name),
+    );
+    if (!columns.has("provider_failure_category")) {
+      sqlite.exec(`
+        ALTER TABLE coordination_request_updates ADD COLUMN provider_failure_category TEXT
+          CHECK (provider_failure_category IS NULL OR provider_failure_category IN (
+            'authentication', 'rate_limit', 'capacity', 'context_length',
+            'invalid_request', 'unavailable', 'unknown'
+          ));
+      `);
+    }
+    const rows = sqlite.prepare(`
+      SELECT request_update.id, request_update.request_id, request_update.kind,
+        request_update.actor_kind, request_update.actor_id,
+        request_update.in_reply_to_update_id, activation.id AS activation_id,
+        activation.terminal_outcome, activation.provider_failure_category
+      FROM coordination_request_updates request_update
+      JOIN coordination_requests request ON request.id = request_update.request_id
+      JOIN activation_sources source
+        ON source.source_kind = 'request' AND source.source_id = request.id
+      JOIN agent_activations activation ON activation.id = source.activation_id
+      WHERE request_update.kind IN ('failed', 'recipient_unavailable')
+        AND request_update.actor_kind IN ('system', 'supervisor')
+        AND json_valid(request_update.payload_json)
+        AND json_extract(request_update.payload_json, '$.activationId') = activation.id
+        AND EXISTS (
+          SELECT 1 FROM scheduler_run_activations attached
+          JOIN scheduler_runs scheduler ON scheduler.id = attached.run_id
+          WHERE attached.activation_id = activation.id
+            AND scheduler.provider_failure_json IS NOT NULL
+        )
+      ORDER BY request_update.created_at, request_update.id
+    `).all() as Array<{
+      id: string;
+      request_id: string;
+      kind: CoordinationRequestUpdateKind;
+      actor_kind: Actor["kind"];
+      actor_id: string | null;
+      in_reply_to_update_id: string | null;
+      activation_id: string;
+      terminal_outcome: string | null;
+      provider_failure_category: string | null;
+    }>;
+    const updateRequest = sqlite.prepare(`
+      UPDATE coordination_request_updates
+      SET payload_json = ?, payload_hash = ?, provider_failure_category = ?
+      WHERE id = ?
+    `);
+    const updateActivation = sqlite.prepare(`
+      UPDATE agent_activations SET payload_json = ? WHERE id = ?
+    `);
+    for (const row of rows) {
+      const category = normalizeProviderFailureCategory(row.provider_failure_category);
+      const publicPayload = {
+        activationId: row.activation_id,
+        activationOutcome: row.terminal_outcome ?? "permanent_failure",
+        reason: publicProviderFailureSummary(undefined, category)
+          ?? "Provider execution failed.",
+      };
+      const artifacts = sqlite.prepare(`
+        SELECT id, role, title, media_type, blob_path, blob_hash, byte_length,
+          origin_agent_id, execution_id
+        FROM runtime_artifacts
+        WHERE owner_kind = 'request_update' AND owner_id = ?
+        ORDER BY created_at, id
+      `).all(row.id) as Array<{
+        id: string;
+        role: RuntimeArtifactInputV3["role"];
+        title: string;
+        media_type: RuntimeArtifactInputV3["mediaType"];
+        blob_path: string;
+        blob_hash: string;
+        byte_length: number;
+        origin_agent_id: string | null;
+        execution_id: string | null;
+      }>;
+      const projectedArtifacts: RuntimeArtifactInputV3[] = artifacts.map((artifact) => ({
+        id: artifact.id,
+        role: artifact.role,
+        title: artifact.title,
+        mediaType: artifact.media_type,
+        blobPath: artifact.blob_path,
+        blobHash: artifact.blob_hash,
+        byteLength: artifact.byte_length,
+        ...(artifact.origin_agent_id ? { originAgentId: artifact.origin_agent_id } : {}),
+        ...(artifact.execution_id ? { executionId: artifact.execution_id } : {}),
+      }));
+      const actor: Actor = {
+        kind: row.actor_kind,
+        ...(row.actor_id ? { id: row.actor_id } : {}),
+      };
+      const hash = payloadHash({
+        requestId: row.request_id,
+        kind: row.kind,
+        actor,
+        inReplyToUpdateId: row.in_reply_to_update_id,
+        payload: publicPayload,
+        providerFailureCategory: category,
+        artifacts: projectedArtifacts,
+      });
+      updateRequest.run(stableJson(publicPayload), hash, category, row.id);
+
+      const activations = sqlite.prepare(`
+        SELECT id, payload_json FROM agent_activations
+        WHERE json_valid(payload_json) AND instr(payload_json, ?) > 0
+      `).all(row.id) as Array<{ id: string; payload_json: string }>;
+      for (const activation of activations) {
+        const projected = replaceMaterializedRequestUpdate(
+          JSON.parse(activation.payload_json) as unknown,
+          row.id,
+          publicPayload,
+        );
+        if (projected.changed) updateActivation.run(stableJson(projected.value), activation.id);
+      }
+    }
+    sqlite.prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
+      .run(publicProviderRequestUpdatesMigration, new Date().toISOString());
+  })();
 }
 
 /** Context rollover first shipped behind a draft qualification branch, where
@@ -511,6 +687,7 @@ export function openDb(file: string): OpenedDb {
   establishSchema(sqlite);
   establishContextRolloverAtomicitySchema(sqlite);
   establishSchemaExtensions(sqlite);
+  establishPublicProviderRequestUpdates(sqlite);
   establishReadIndexes(sqlite);
   return { db: drizzle(sqlite, { schema }), client: sqlite };
 }

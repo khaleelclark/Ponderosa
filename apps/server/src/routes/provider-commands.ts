@@ -34,6 +34,7 @@ import {
   guardedProviderExceptionStringProperty,
   restrictedProviderExceptionLogDetail,
 } from "../provider-exception-properties.js";
+import { projectProviderCapabilities } from "../provider-success-projection.js";
 import { registerAgentRunHistoryRoute } from "./agent-audit.js";
 
 interface ProviderCommandRoutesContext {
@@ -249,7 +250,7 @@ app.post<{
       signal: authority.controller.signal,
     });
     const catalog = session.capabilities
-      ? await session.capabilities()
+      ? projectProviderCapabilities(await session.capabilities())
       : {
           steering: false,
           persistentSessions: false,
@@ -324,7 +325,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
     }
     const invoke = async (session: RuntimeSession): Promise<{ catalog: EngineCapabilities; message?: string }> => {
       const catalog = session.capabilities
-        ? await session.capabilities()
+        ? projectProviderCapabilities(await session.capabilities())
         : {
             steering: false,
             persistentSessions: false,

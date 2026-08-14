@@ -3,6 +3,93 @@ import { describe, expect, it, vi } from "vitest";
 import { ProviderUsageCache, type ProviderUsageTarget } from "./provider-usage-cache.js";
 
 describe("ProviderUsageCache public failure projection", () => {
+  it("contains circular initial success data without caching or rejecting its recovery chain", async () => {
+    const marker = "PROVIDER_USAGE_CIRCULAR_SUCCESS_MARKER_8d31";
+    const circular = {
+      provider: "codex",
+      windows: [],
+      source: "provider-rpc",
+      fetchedAt: new Date().toISOString(),
+    } as Record<string, unknown>;
+    circular.self = { marker, circular };
+    const adapter = {
+      id: "codex",
+      displayName: "Codex",
+      listModels: () => [],
+      listEfforts: () => [],
+      readProviderUsage: async () => circular,
+    } as unknown as Adapter;
+    const target: ProviderUsageTarget = {
+      adapter,
+      displayName: "Codex",
+      authenticated: true,
+      accountKey: "circular-initial",
+    };
+    const cache = new ProviderUsageCache(process.cwd());
+    const unhandled: unknown[] = [];
+    const uncaught: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    const onUncaught = (error: unknown): void => { uncaught.push(error); };
+    process.on("unhandledRejection", onUnhandled);
+    process.on("uncaughtException", onUncaught);
+    try {
+      cache.refresh(target, true);
+      await vi.waitFor(() => expect(cache.state(target)).toMatchObject({
+        refreshing: false,
+        error: "Provider execution failed.",
+      }));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(JSON.stringify(cache.state(target))).not.toContain(marker);
+      expect(cache.state(target).reading).toBeUndefined();
+      expect(unhandled).toEqual([]);
+      expect(uncaught).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      process.off("uncaughtException", onUncaught);
+      await cache.shutdown();
+    }
+  });
+
+  it("rejects malformed refresh success while retaining the last closed reading", async () => {
+    const marker = "PROVIDER_USAGE_CIRCULAR_REFRESH_MARKER_50f2";
+    let reads = 0;
+    const adapter = {
+      id: "codex",
+      displayName: "Codex",
+      listModels: () => [],
+      listEfforts: () => [],
+      readProviderUsage: async () => {
+        reads += 1;
+        const result = {
+          provider: "codex",
+          windows: [],
+          source: "provider-rpc",
+          fetchedAt: new Date().toISOString(),
+        } as Record<string, unknown>;
+        if (reads > 1) result.self = { marker, result };
+        return result;
+      },
+    } as unknown as Adapter;
+    const target: ProviderUsageTarget = {
+      adapter,
+      displayName: "Codex",
+      authenticated: true,
+      accountKey: "circular-refresh",
+    };
+    const cache = new ProviderUsageCache(process.cwd());
+    cache.refresh(target, true);
+    await vi.waitFor(() => expect(cache.state(target).refreshing).toBe(false));
+    expect(cache.state(target).reading).toBeDefined();
+    cache.refresh(target, true);
+    await vi.waitFor(() => expect(cache.state(target)).toMatchObject({
+      refreshing: false,
+      error: "Provider execution failed.",
+      reading: { provider: "codex", stale: true },
+    }));
+    expect(JSON.stringify(cache.state(target))).not.toContain(marker);
+    await cache.shutdown();
+  });
+
   it("contains hostile initial rejection getters without an unhandled rejection", async () => {
     const marker = "PROVIDER_USAGE_INITIAL_GETTER_MARKER_109c";
     const errorLike = Object.create(Error.prototype) as object;

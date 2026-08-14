@@ -739,6 +739,140 @@ describe("provider readiness truth", () => {
     await app.close();
   });
 
+  it("fails closed for circular capability success data over inject, a listening socket, and restart", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-capability-circular-success-"));
+    roots.push(root);
+    const hostPath = path.join(root, "workspace");
+    mkdirSync(hostPath, { recursive: true });
+    const dataDir = path.join(root, "data");
+    const marker = "CAPABILITY_CIRCULAR_SUCCESS_MARKER_40c9 access_token=private-capability-success";
+    const circularCapabilities = (): unknown => {
+      const result = {
+        steering: false,
+        persistentSessions: false,
+        commands: [],
+        mcpServers: [],
+        composerCapabilities: [],
+      } as Record<string, unknown>;
+      result.self = { marker, result };
+      return result;
+    };
+    const capabilityAdapter: Adapter = {
+      ...adapter(),
+      capabilities: async () => circularCapabilities() as never,
+    };
+    const store = new AgentStore(dataDir);
+    const project = store.createProject({
+      label: "Circular Capability",
+      hostPath,
+      defaultEngine: "codex",
+    });
+    const app = createServer({ dataDir, store, engines: [{ adapter: capabilityAdapter }], logger: false });
+    await app.ready();
+    const injectResponse = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/engine-capabilities?engineId=codex&refresh=true`,
+    });
+    expect(injectResponse.statusCode).toBe(503);
+    expect(injectResponse.json()).toEqual({
+      error: "Provider execution failed.",
+      category: "provider_error",
+      remediation: "Review the restricted server logs, then retry the provider operation.",
+    });
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const socketResponse = await fetch(
+      `${address}/api/projects/${project.id}/engine-capabilities?engineId=codex&refresh=true`,
+    );
+    expect(socketResponse.status).toBe(503);
+    const socketBody = await socketResponse.text();
+    expect(JSON.parse(socketBody)).toEqual(injectResponse.json());
+    expect(`${injectResponse.body}${socketBody}`).not.toMatch(
+      /CAPABILITY_CIRCULAR_SUCCESS_MARKER_40c9|private-capability-success|access_token|self|circular/iu,
+    );
+    await app.close();
+
+    const reopenedStore = new AgentStore(dataDir);
+    const restarted = createServer({
+      dataDir,
+      store: reopenedStore,
+      engines: [{ adapter: capabilityAdapter }],
+      logger: false,
+    });
+    await restarted.ready();
+    const afterRestart = await restarted.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/engine-capabilities?engineId=codex&refresh=true`,
+    });
+    expect(afterRestart.statusCode).toBe(503);
+    expect(afterRestart.body).not.toMatch(
+      /CAPABILITY_CIRCULAR_SUCCESS_MARKER_40c9|private-capability-success|access_token|self|circular/iu,
+    );
+    await restarted.close();
+  });
+
+  it("does not replace the last closed capability cache entry with a malformed refresh", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-capability-malformed-refresh-"));
+    roots.push(root);
+    const hostPath = path.join(root, "workspace");
+    mkdirSync(hostPath, { recursive: true });
+    const dataDir = path.join(root, "data");
+    const store = new AgentStore(dataDir);
+    const project = store.createProject({
+      label: "Capability Cache",
+      hostPath,
+      defaultEngine: "codex",
+    });
+    const marker = "CAPABILITY_REFRESH_CACHE_MARKER_f31b secret_key=private-cache-secret";
+    let reads = 0;
+    const capabilityAdapter: Adapter = {
+      ...adapter(),
+      capabilities: async () => {
+        reads += 1;
+        const result = {
+          steering: true,
+          persistentSessions: true,
+          catalogVersion: "safe-catalog",
+          commands: [],
+          mcpServers: [],
+          composerCapabilities: [],
+        } as Record<string, unknown>;
+        if (reads > 1) result.self = { marker, result };
+        return result as never;
+      },
+    };
+    const app = createServer({ dataDir, store, engines: [{ adapter: capabilityAdapter }], logger: false });
+    await app.ready();
+    const first = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/engine-capabilities?engineId=codex&refresh=true`,
+    });
+    expect(first.statusCode).toBe(200);
+    expect(first.json()).toEqual([expect.objectContaining({
+      engineId: "codex",
+      discovered: true,
+      catalogVersion: "safe-catalog",
+    })]);
+    const malformed = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/engine-capabilities?engineId=codex&refresh=true`,
+    });
+    expect(malformed.statusCode).toBe(503);
+    const cached = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/engine-capabilities?engineId=codex`,
+    });
+    expect(cached.statusCode).toBe(200);
+    expect(cached.json()).toEqual([expect.objectContaining({
+      engineId: "codex",
+      discovered: true,
+      catalogVersion: "safe-catalog",
+    })]);
+    expect(`${malformed.body}${cached.body}`).not.toMatch(
+      /CAPABILITY_REFRESH_CACHE_MARKER_f31b|private-cache-secret|secret_key|self/u,
+    );
+    await app.close();
+  });
+
   it("contains throwing exception getters across availability, validation, and capability APIs", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "ponderosa-provider-exception-getters-"));
     roots.push(root);
@@ -1063,6 +1197,76 @@ describe("provider readiness truth", () => {
       expect(later.body).not.toMatch(/hunter2|private-usage-token|password|access_token|HOME|auth\.json/u);
     });
     await app.close();
+  });
+
+  it("fails closed for circular provider-usage success over inject and a listening socket", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-provider-usage-circular-success-"));
+    roots.push(root);
+    const marker = "USAGE_CIRCULAR_API_MARKER_77a0 refresh_token=private-usage-success";
+    const circularUsage = {
+      provider: "codex",
+      windows: [],
+      source: "provider-rpc",
+      fetchedAt: new Date().toISOString(),
+    } as Record<string, unknown>;
+    circularUsage.self = { marker, circularUsage };
+    const usageAdapter: Adapter = {
+      ...adapter(),
+      readProviderUsage: async () => circularUsage as never,
+    };
+    const dataDir = path.join(root, "data");
+    const app = createServer({
+      dataDir,
+      engines: [{
+        adapter: usageAdapter,
+        authStatus: async () => ({ authenticated: true, detail: "signed in" }),
+      }],
+      logger: false,
+    });
+    const unhandled: unknown[] = [];
+    const uncaught: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    const onUncaught = (error: unknown): void => { uncaught.push(error); };
+    process.on("unhandledRejection", onUnhandled);
+    process.on("uncaughtException", onUncaught);
+    try {
+      await app.ready();
+      const refresh = await app.inject({
+        method: "POST",
+        url: "/api/provider-usage/codex/refresh",
+      });
+      expect(refresh.statusCode).toBe(200);
+      await vi.waitFor(async () => {
+        const state = await app.inject({ method: "GET", url: "/api/provider-usage" });
+        expect(state.json().providers).toEqual([expect.objectContaining({
+          provider: "codex",
+          refreshing: false,
+          error: "Provider execution failed.",
+        })]);
+        expect(state.body).not.toMatch(
+          /USAGE_CIRCULAR_API_MARKER_77a0|private-usage-success|refresh_token|self|circular/iu,
+        );
+      });
+      const address = await app.listen({ host: "127.0.0.1", port: 0 });
+      const socketResponse = await fetch(`${address}/api/provider-usage`);
+      expect(socketResponse.status).toBe(200);
+      const socketBody = await socketResponse.text();
+      expect(JSON.parse(socketBody).providers).toEqual([expect.objectContaining({
+        provider: "codex",
+        refreshing: false,
+        error: "Provider execution failed.",
+      })]);
+      expect(socketBody).not.toMatch(
+        /USAGE_CIRCULAR_API_MARKER_77a0|private-usage-success|refresh_token|self|circular/iu,
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+      expect(uncaught).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      process.off("uncaughtException", onUncaught);
+      await app.close();
+    }
   });
 
   it("contains hostile initial and refresh usage rejections without an unhandled rejection", async () => {
@@ -1596,6 +1800,179 @@ describe("provider readiness truth", () => {
     expect(JSON.parse(audit.provider_failure_json).message).toContain(String.raw`pa\u0073sword=hunter2`);
     expect(JSON.parse(audit.provider_failure_json).message).toContain("$HOME/.aws/credentials");
   });
+
+  it("migrates historical provider Request updates before lifecycle, Agent Work, notification, and SSE reads", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-provider-request-migration-api-"));
+    roots.push(root);
+    const hostPath = path.join(root, "workspace");
+    mkdirSync(hostPath, { recursive: true });
+    const dataDir = path.join(root, "data");
+    const originalStore = new AgentStore(dataDir);
+    const project = originalStore.createProject({
+      label: "Provider Request Migration",
+      hostPath,
+      defaultEngine: "codex",
+    });
+    const requester = originalStore.createAgent(project.id, {
+      title: "Requester",
+      engine: "codex",
+      conversationId: project.lastConversationId,
+    });
+    const recipient = originalStore.createAgent(project.id, {
+      title: "Recipient",
+      engine: "codex",
+      conversationId: project.lastConversationId,
+      managerAgentId: requester.id,
+    });
+    const coordination = new CoordinationV3Store(originalStore.sqlite);
+    const requestId = coordination.coordinate({
+      projectId: project.id,
+      conversationId: project.lastConversationId,
+      requesterAgentId: requester.id,
+      actorScope: `agent:${requester.id}`,
+      idempotencyKey: "historical-provider-request",
+      requests: [{
+        recipientAgentId: recipient.id,
+        lifetime: { kind: "indefinite" },
+        payload: { text: "exercise historical provider failure" },
+      }],
+    }).requestIds[0]!;
+    const lease = coordination.leaseNextRun({ workerId: "historical-provider-worker" });
+    if (!lease) throw new Error("historical provider Request was not leased");
+    expect(coordination.failRun({
+      runId: lease.runId,
+      fencingToken: lease.fencingToken,
+      workerId: "historical-provider-worker",
+      sameRunResumable: false,
+      retryable: false,
+      terminalOutcome: "permanent_failure",
+      failureKind: "authentication",
+      error: "authentication rejected",
+      failureDetail: {
+        phase: "prompt_submission",
+        promptInjectionState: "not_injected",
+        message: "authentication rejected",
+      },
+    })).toBe("terminal");
+    const update = originalStore.sqlite.prepare(`
+      SELECT id FROM coordination_request_updates WHERE request_id = ?
+      ORDER BY created_at DESC, id DESC LIMIT 1
+    `).get(requestId) as { id: string };
+    const outcome = originalStore.sqlite.prepare(`
+      SELECT id FROM agent_activations
+      WHERE kind = 'coordination_outcome'
+        AND json_extract(payload_json, '$.updateId') = ?
+      LIMIT 1
+    `).get(update.id) as { id: string };
+    const marker = "HISTORICAL_REQUEST_UPDATE_MARKER_9ca2 access_token=private-request-migration";
+    originalStore.sqlite.prepare(`
+      UPDATE coordination_request_updates
+      SET payload_json = ?, provider_failure_category = NULL
+      WHERE id = ?
+    `).run(JSON.stringify({
+      activationId: lease.activationIds[0],
+      activationOutcome: "permanent_failure",
+      reason: marker,
+    }), update.id);
+    originalStore.sqlite.prepare(`
+      UPDATE agent_activations SET payload_json = ? WHERE id = ?
+    `).run(JSON.stringify({
+      requestId,
+      state: "failed",
+      updateId: update.id,
+      update: { reason: marker },
+    }), outcome.id);
+    originalStore.sqlite.prepare(`
+      DELETE FROM _schema_version
+      WHERE name = '0009_public_provider_request_updates.ts'
+    `).run();
+    originalStore.close();
+
+    const reopenedStore = new AgentStore(dataDir);
+    const migratedRows = JSON.stringify({
+      update: reopenedStore.sqlite.prepare(`
+        SELECT payload_json, provider_failure_category
+        FROM coordination_request_updates WHERE id = ?
+      `).get(update.id),
+      outcome: reopenedStore.sqlite.prepare(`
+        SELECT payload_json FROM agent_activations WHERE id = ?
+      `).get(outcome.id),
+    });
+    expect(migratedRows).toContain("Provider authentication was rejected.");
+    expect(migratedRows).not.toMatch(
+      /HISTORICAL_REQUEST_UPDATE_MARKER_9ca2|private-request-migration|access_token/u,
+    );
+    const restrictedAudit = reopenedStore.sqlite.prepare(`
+      SELECT provider_failure_json FROM scheduler_runs WHERE id = ?
+    `).get(lease.runId) as { provider_failure_json: string };
+    expect(restrictedAudit.provider_failure_json).toContain("authentication rejected");
+
+    const app = createServer({
+      dataDir,
+      store: reopenedStore,
+      engines: [{ adapter: adapter() }],
+      logger: false,
+    });
+    await app.ready();
+    const lifecycle = new CoordinationV3Store(reopenedStore.sqlite).requestLifecycleDetails({
+      projectId: project.id,
+      conversationId: project.lastConversationId,
+      recordId: requestId,
+    });
+    const agentWork = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/agent-work/items/request/${requestId}`
+        + `?conversationId=${project.lastConversationId}`,
+    });
+    const outcomeWork = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/agent-work/items/activation/${outcome.id}`
+        + `?conversationId=${project.lastConversationId}`,
+    });
+    const notifications = await app.inject({ method: "GET", url: "/api/notifications" });
+    expect(agentWork.statusCode).toBe(200);
+    expect(outcomeWork.statusCode).toBe(200);
+    const publicReads = JSON.stringify({
+      lifecycle,
+      agentWork: agentWork.json(),
+      outcomeWork: outcomeWork.json(),
+      notifications: notifications.json(),
+    });
+    expect(publicReads).toContain("Provider authentication was rejected.");
+    expect(publicReads).not.toMatch(
+      /HISTORICAL_REQUEST_UPDATE_MARKER_9ca2|private-request-migration|access_token/u,
+    );
+
+    const replaySeed = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/conversations`,
+      payload: { title: "Migration replay SSE proof" },
+    });
+    expect(replaySeed.statusCode).toBe(200);
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const replayResponse = await fetch(`${address}/api/workspace/stream?lastEventId=0`);
+    const replayBody = await readSseUntil(replayResponse, '"replayed":true');
+    const cursorMatch = /"cursor":(\d+)/u.exec(replayBody);
+    if (!cursorMatch) throw new Error("workspace stream cursor was not emitted");
+    expect(replayBody).not.toMatch(
+      /HISTORICAL_REQUEST_UPDATE_MARKER_9ca2|private-request-migration|access_token/u,
+    );
+    const liveResponse = await fetch(
+      `${address}/api/workspace/stream?lastEventId=${cursorMatch[1]}`,
+    );
+    const liveBodyPromise = readSseUntil(liveResponse, '"type":"conversation_changed"');
+    const createdConversation = await fetch(`${address}/api/projects/${project.id}/conversations`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "Migration live SSE proof" }),
+    });
+    expect(createdConversation.status).toBe(200);
+    const liveBody = await liveBodyPromise;
+    expect(liveBody).not.toMatch(
+      /HISTORICAL_REQUEST_UPDATE_MARKER_9ca2|private-request-migration|access_token/u,
+    );
+    await app.close();
+  }, 20_000);
 
   it("reports a bounded authentication timeout as checking, not signed out", async () => {
     const app = await fixture(() => new Promise((resolve) => {

@@ -9,6 +9,7 @@ import type {
   CoordinationReplyAuthority,
   CoordinationRequestState,
   CoordinationRequestUpdateKind,
+  ProviderFailureCategory,
   RequestLifetime,
   TriggerRunBudgetDto,
   TriggerOccurrenceState,
@@ -74,6 +75,8 @@ export interface UpdateRequestV3Input {
   runAuthorization?: RunAuthorizationV3;
   inReplyToUpdateId?: string;
   payload?: unknown;
+  /** Durable structured classification for a provider-derived system update. */
+  providerFailureCategory?: ProviderFailureCategory;
   artifacts?: RuntimeArtifactInputV3[];
   now?: string;
 }

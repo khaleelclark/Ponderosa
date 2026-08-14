@@ -349,8 +349,15 @@ export function registerEngineRoutes(
           engineId: adapter.id,
           discovered: snapshot.discovered,
           ...(snapshot.refreshing ? { refreshing: true } : {}),
-          ...capabilities,
+          steering: capabilities.steering,
+          persistentSessions: capabilities.persistentSessions,
+          ...(capabilities.sessionId === undefined ? {} : { sessionId: capabilities.sessionId }),
+          ...(capabilities.selectedModel === undefined ? {} : { selectedModel: capabilities.selectedModel }),
+          ...(capabilities.model === undefined ? {} : { model: capabilities.model }),
+          ...(capabilities.catalogVersion === undefined ? {} : { catalogVersion: capabilities.catalogVersion }),
           commands: capabilities.commands,
+          mcpServers: capabilities.mcpServers,
+          composerCapabilities: capabilities.composerCapabilities,
         };
       }));
     },
