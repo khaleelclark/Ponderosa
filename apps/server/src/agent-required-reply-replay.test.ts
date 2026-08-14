@@ -22,6 +22,8 @@ afterEach(() => {
 function replyAdapter(input: {
   replyingAgentId: string;
   store: AgentStore;
+  messageArguments?: Record<string, unknown>;
+  steeringInjectionId?: string;
   resolveResults: (results: Array<{ success: boolean; text: string }>) => void;
 }): Adapter {
   return {
@@ -63,14 +65,49 @@ function replyAdapter(input: {
           async *[Symbol.asyncIterator]() {
             yield { type: "session" as const, sessionId: `session-${options.agentId}` };
             if (options.agentId === input.replyingAgentId) {
+              if (input.steeringInjectionId) {
+                const run = input.store.sqlite.prepare(`
+                  SELECT id FROM scheduler_runs
+                  WHERE agent_id = ? AND status = 'running'
+                  ORDER BY rowid DESC LIMIT 1
+                `).get(options.agentId) as { id: string } | undefined;
+                if (!run) throw new Error("test Run was not running before its reply");
+                const sequence = (input.store.sqlite.prepare(`
+                  SELECT COALESCE(MAX(sequence), -1) + 1 AS sequence
+                  FROM scheduler_prompt_injections WHERE run_id = ?
+                `).get(run.id) as { sequence: number }).sequence;
+                input.store.sqlite.prepare(`
+                  INSERT INTO scheduler_prompt_injections (
+                    id, run_id, kind, sequence, state, prompt_hash,
+                    activation_ids_json, created_at, updated_at,
+                    submitted_at, acknowledged_at
+                  ) VALUES (?, ?, 'steer', ?, 'acknowledged', ?, '[]', ?, ?, ?, ?)
+                `).run(
+                  input.steeringInjectionId,
+                  run.id,
+                  sequence,
+                  `test-steering:${input.steeringInjectionId}`,
+                  "2026-08-14T00:00:01.000Z",
+                  "2026-08-14T00:00:01.000Z",
+                  "2026-08-14T00:00:01.000Z",
+                  "2026-08-14T00:00:01.000Z",
+                );
+              }
+              const messageArguments = {
+                text: "Updated exactly-once reply.",
+                ...input.messageArguments,
+                ...(input.steeringInjectionId
+                  ? { steeringInjectionId: input.steeringInjectionId }
+                  : {}),
+              };
               const first = await options.handleDynamicToolCall!({
                 name: "ponderosa_message",
-                arguments: { text: "Updated exactly-once reply." },
+                arguments: messageArguments,
               });
               input.store.sqlite.exec("DROP TRIGGER fail_required_reply_relation_index");
               const second = await options.handleDynamicToolCall!({
                 name: "ponderosa_message",
-                arguments: { text: "Updated exactly-once reply." },
+                arguments: messageArguments,
               });
               input.resolveResults([first, second]);
             }
@@ -87,7 +124,24 @@ function replyAdapter(input: {
 }
 
 describe("required-reply canonical append replay", () => {
-  test("keeps one durable reply identity across index failure, immediate retry, and restart", async () => {
+  test.each([
+    {
+      label: "inferred inherited route",
+      messageArguments: undefined,
+      steeringInjectionId: undefined,
+    },
+    {
+      label: "explicit keyed matching route behind acknowledged steering",
+      messageArguments: {
+        intent: "direct_to_user",
+        idempotencyKey: "stable-required-reply",
+      },
+      steeringInjectionId: "steering-explicit-required-reply",
+    },
+  ])("keeps one durable reply identity for the $label across index failure, immediate retry, and restart", async ({
+    messageArguments,
+    steeringInjectionId,
+  }) => {
     const root = mkdtempSync(path.join(tmpdir(), "ponderosa-required-reply-replay-"));
     roots.push(root);
     const dataDir = path.join(root, "data");
@@ -146,7 +200,13 @@ describe("required-reply canonical append replay", () => {
       dataDir,
       store,
       engines: [{
-        adapter: replyAdapter({ replyingAgentId: agent.id, store, resolveResults }),
+        adapter: replyAdapter({
+          replyingAgentId: agent.id,
+          store,
+          messageArguments,
+          steeringInjectionId,
+          resolveResults,
+        }),
         authStatus: async () => ({ authenticated: true }),
       }],
       communicationV3: { pollMs: 10 },
