@@ -130,4 +130,111 @@ describe("provider success projection", () => {
       expect(String(error)).not.toContain(marker);
     }
   });
+
+  it.each([
+    ["commands", () => ({
+      ...validCapabilities(),
+      commands: Array.from({ length: 1_000 }, (_, index) => ({
+        name: `command-${index}`,
+        description: "d".repeat(8_192),
+        source: "provider-advertised",
+        acceptsArguments: false,
+        insertText: `/command-${index}`,
+        status: "available",
+        invocation: "runtime",
+      })),
+    })],
+    ["models", () => ({
+      ...validCapabilities(),
+      modelCatalog: {
+        models: Array.from({ length: 500 }, (_, index) => ({
+          id: `model-${index}`,
+          label: `Model ${index}`,
+          description: "m".repeat(8_192),
+          kind: "exact",
+          source: "provider-probe",
+        })),
+        cliVersion: "1.0.0",
+        configurationKey: "config",
+      },
+    })],
+    ["service-tiers-500x64", () => {
+      const serviceTiers = Array.from({ length: 64 }, (_, index) => ({
+        id: `tier-${index}`,
+        label: `Tier ${index}`,
+        description: "t".repeat(8_192),
+      }));
+      return {
+        ...validCapabilities(),
+        modelCatalog: {
+          models: Array.from({ length: 500 }, (_, index) => ({
+            id: `model-${index}`,
+            label: `Model ${index}`,
+            kind: "exact",
+            source: "provider-probe",
+            serviceTiers,
+          })),
+          cliVersion: "1.0.0",
+          configurationKey: "config",
+        },
+      };
+    }],
+    ["modes", () => ({
+      ...validCapabilities(),
+      modelCatalog: {
+        models: Array.from({ length: 500 }, (_, index) => ({
+          id: `model-${index}`,
+          label: `Model ${index}`,
+          kind: "exact",
+          source: "provider-probe",
+          efforts: Array.from({ length: 64 }, (_entry, effortIndex) => ({
+            id: `effort-${effortIndex}`,
+            label: `Effort ${effortIndex}`,
+          })),
+          supportedEffortLevels: Array.from({ length: 64 }, (_entry, effortIndex) =>
+            `effort-${effortIndex}`),
+        })),
+        cliVersion: "1.0.0",
+        configurationKey: "config",
+      },
+    })],
+    ["nested-mixed", () => ({
+      ...validCapabilities(),
+      commands: Array.from({ length: 100 }, (_, index) => ({
+        name: `command-${index}`,
+        description: "c".repeat(4_096),
+        source: "provider-advertised",
+        acceptsArguments: false,
+        insertText: `/command-${index}`,
+        status: "available",
+        invocation: "runtime",
+      })),
+      composerCapabilities: Array.from({ length: 100 }, (_, index) => ({
+        id: `composer-${index}`,
+        kind: "plugin",
+        label: `Composer ${index}`,
+        description: "p".repeat(4_096),
+        status: "available",
+      })),
+    })],
+  ])("enforces one cumulative capability budget across %s", (_kind, makeValue) => {
+    expect(() => projectProviderCapabilities(makeValue())).toThrow(
+      "Provider returned invalid structured data.",
+    );
+  });
+
+  it("enforces the cumulative UTF-8 budget for schema-valid usage windows", () => {
+    const value = {
+      ...validUsage(),
+      windows: Array.from({ length: 100 }, (_, index) => ({
+        id: `窗口-${index}-${"界".repeat(500)}`,
+        label: `配额-${index}-${"量".repeat(1_000)}`,
+        usedPercent: 20,
+        resetsAt: `重置-${index}-${"时".repeat(500)}`,
+      })),
+    };
+    expect(() => projectProviderUsage(value, "codex")).toThrow(
+      "Provider returned invalid structured data.",
+    );
+  });
 });

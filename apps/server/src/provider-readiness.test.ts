@@ -75,6 +75,7 @@ async function readSseUntil(
 function providerRunAdapter(input: {
   outcome: "success" | "authentication_failure" | "cancelled";
   errorMessage?: string;
+  thrownFailure?: unknown;
   started?: () => void;
   finished?: () => void;
   release?: Promise<void>;
@@ -83,6 +84,7 @@ function providerRunAdapter(input: {
     try {
       input.started?.();
       if (input.release) await input.release;
+      if (input.thrownFailure !== undefined) throw input.thrownFailure;
       if (input.outcome === "authentication_failure") {
         yield { type: "reasoning" as const, delta: "provider accepted work" };
         yield {
@@ -873,6 +875,68 @@ describe("provider readiness truth", () => {
     await app.close();
   });
 
+  it("rejects a schema-valid cumulative capability catalog before inject or socket serialization", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-capability-budget-"));
+    roots.push(root);
+    const hostPath = path.join(root, "workspace");
+    mkdirSync(hostPath, { recursive: true });
+    const marker = "CAPABILITY_CUMULATIVE_BUDGET_MARKER_7c42";
+    const tiers = Array.from({ length: 64 }, (_, index) => ({
+      id: `tier-${index}`,
+      label: `Tier ${index}`,
+      description: `${marker}-${"x".repeat(8_000)}`,
+    }));
+    const capabilityAdapter: Adapter = {
+      ...adapter(),
+      capabilities: async () => ({
+        steering: false,
+        persistentSessions: false,
+        modelCatalog: {
+          models: Array.from({ length: 500 }, (_, index) => ({
+            id: `model-${index}`,
+            label: `Model ${index}`,
+            kind: "exact",
+            source: "provider-probe",
+            serviceTiers: tiers,
+          })),
+          cliVersion: "1.0.0",
+          configurationKey: "budget-attack",
+        },
+        commands: [],
+        mcpServers: [],
+        composerCapabilities: [],
+      } as never),
+    };
+    const store = new AgentStore(path.join(root, "data"));
+    const project = store.createProject({
+      label: "Capability Budget",
+      hostPath,
+      defaultEngine: "codex",
+    });
+    const app = createServer({
+      dataDir: path.join(root, "data"),
+      store,
+      engines: [{ adapter: capabilityAdapter }],
+      logger: false,
+    });
+    await app.ready();
+    const url = `/api/projects/${project.id}/engine-capabilities?engineId=codex&refresh=true`;
+    const injected = await app.inject({ method: "GET", url });
+    expect(injected.statusCode).toBe(503);
+    expect(injected.json()).toEqual({
+      error: "Provider execution failed.",
+      category: "provider_error",
+      remediation: "Review the restricted server logs, then retry the provider operation.",
+    });
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const socket = await fetch(`${address}${url}`);
+    const socketBody = await socket.text();
+    expect(socket.status).toBe(503);
+    expect(JSON.parse(socketBody)).toEqual(injected.json());
+    expect(`${injected.body}${socketBody}`).not.toContain(marker);
+    await app.close();
+  });
+
   it("contains throwing exception getters across availability, validation, and capability APIs", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "ponderosa-provider-exception-getters-"));
     roots.push(root);
@@ -1269,6 +1333,64 @@ describe("provider readiness truth", () => {
     }
   });
 
+  it("fails closed for cumulative usage data without caching or process-level rejection", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-provider-usage-budget-"));
+    roots.push(root);
+    const marker = "USAGE_CUMULATIVE_BUDGET_MARKER_a913";
+    const usageAdapter: Adapter = {
+      ...adapter(),
+      readProviderUsage: async () => ({
+        provider: "codex",
+        windows: Array.from({ length: 100 }, (_, index) => ({
+          id: `窗口-${index}-${"界".repeat(500)}`,
+          label: `${marker}-${index}-${"量".repeat(950)}`,
+          usedPercent: 20,
+          resetsAt: `重置-${index}-${"时".repeat(500)}`,
+        })),
+        source: "provider-rpc",
+        fetchedAt: new Date().toISOString(),
+      } as never),
+    };
+    const app = createServer({
+      dataDir: path.join(root, "data"),
+      engines: [{
+        adapter: usageAdapter,
+        authStatus: async () => ({ authenticated: true, detail: "signed in" }),
+      }],
+      logger: false,
+    });
+    const unhandled: unknown[] = [];
+    const uncaught: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    const onUncaught = (error: unknown): void => { uncaught.push(error); };
+    process.on("unhandledRejection", onUnhandled);
+    process.on("uncaughtException", onUncaught);
+    try {
+      await app.ready();
+      expect((await app.inject({ method: "POST", url: "/api/provider-usage/codex/refresh" })).statusCode)
+        .toBe(200);
+      await vi.waitFor(async () => {
+        const state = await app.inject({ method: "GET", url: "/api/provider-usage" });
+        expect(state.json().providers).toEqual([expect.objectContaining({
+          provider: "codex",
+          refreshing: false,
+          error: "Provider execution failed.",
+        })]);
+        expect(state.body).not.toContain(marker);
+      });
+      const address = await app.listen({ host: "127.0.0.1", port: 0 });
+      const socketBody = await (await fetch(`${address}/api/provider-usage`)).text();
+      expect(socketBody).not.toContain(marker);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+      expect(uncaught).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      process.off("uncaughtException", onUncaught);
+      await app.close();
+    }
+  });
+
   it("contains hostile initial and refresh usage rejections without an unhandled rejection", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "ponderosa-provider-usage-hostile-exceptions-"));
     roots.push(root);
@@ -1586,6 +1708,85 @@ describe("provider readiness truth", () => {
     await failed.app.close();
   });
 
+  it.each(["trapped", "revoked"])(
+    "terminalizes a scheduler Run exactly once when the provider generator throws a %s exception value",
+    async (kind) => {
+      const marker = `PROVIDER_RUN_TERMINAL_TRAP_MARKER_${kind}_61e4`;
+      let thrownFailure: unknown;
+      if (kind === "revoked") {
+        const revocable = Proxy.revocable(Object.create(Error.prototype) as object, {});
+        revocable.revoke();
+        thrownFailure = revocable.proxy;
+      } else {
+        const target = Object.create(Error.prototype) as Record<PropertyKey, unknown>;
+        for (const property of ["message", "code", "name", "stack"] as const) {
+          Object.defineProperty(target, property, {
+            get: () => { throw new Error(`${marker}:${property}`); },
+          });
+        }
+        Object.defineProperty(target, Symbol.hasInstance, {
+          get: () => { throw new Error(`${marker}:hasInstance`); },
+        });
+        Object.defineProperty(target, Symbol.toPrimitive, {
+          get: () => { throw new Error(`${marker}:toPrimitive`); },
+        });
+        thrownFailure = new Proxy(target, {
+          get: () => { throw new Error(`${marker}:get`); },
+          getOwnPropertyDescriptor: () => { throw new Error(`${marker}:descriptor`); },
+          getPrototypeOf: () => { throw new Error(`${marker}:prototype`); },
+          ownKeys: () => { throw new Error(`${marker}:ownKeys`); },
+        });
+      }
+      const unhandled: unknown[] = [];
+      const uncaught: unknown[] = [];
+      const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+      const onUncaught = (error: unknown): void => { uncaught.push(error); };
+      process.on("unhandledRejection", onUnhandled);
+      process.on("uncaughtException", onUncaught);
+      const failed = await providerRunFixture({
+        adapter: providerRunAdapter({ outcome: "success", thrownFailure }),
+      });
+      try {
+        const run = await waitForRunStatus(failed.store, "failed");
+        await waitForAgentRunStatus(failed.store, failed.agent.id, "failed");
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        const durable = failed.store.sqlite.prepare(`
+          SELECT status, terminal_at, provider_failure_json
+          FROM scheduler_runs WHERE id = ?
+        `).get(run.id) as {
+          status: string;
+          terminal_at: string | null;
+          provider_failure_json: string | null;
+        };
+        expect(durable.status).toBe("failed");
+        expect(durable.terminal_at).toBeTruthy();
+        expect(JSON.parse(durable.provider_failure_json ?? "null")).toMatchObject({
+          category: "unknown",
+          message: "Provider execution failed.",
+        });
+        expect(failed.store.sqlite.prepare(`
+          SELECT COUNT(*) AS count FROM scheduler_runs
+          WHERE id = ? AND status = 'failed' AND provider_failure_json IS NOT NULL
+        `).get(run.id)).toEqual({ count: 1 });
+        const failedLifecycles = failed.store.readEvents(failed.agent.id).filter(({ event }) =>
+          event.type === "agent_lifecycle" && event.status === "failed");
+        expect(failedLifecycles).toHaveLength(1);
+        const publicBodies = [
+          (await failed.app.inject({ method: "GET", url: `/api/agents/${failed.agent.id}/history/activity` })).body,
+          (await failed.app.inject({ method: "GET", url: "/api/notifications" })).body,
+        ];
+        expect(publicBodies.join("\n")).not.toContain(marker);
+        expect(unhandled).toEqual([]);
+        expect(uncaught).toEqual([]);
+      } finally {
+        process.off("unhandledRejection", onUnhandled);
+        process.off("uncaughtException", onUncaught);
+        await failed.app.close();
+      }
+    },
+    15_000,
+  );
+
   it("persists and streams only the finite provider failure event for live and replay delivery", async () => {
     const started = deferred();
     const release = deferred();
@@ -1884,7 +2085,10 @@ describe("provider readiness truth", () => {
     }), outcome.id);
     originalStore.sqlite.prepare(`
       DELETE FROM _schema_version
-      WHERE name = '0009_public_provider_request_updates.ts'
+      WHERE name IN (
+        '0009_public_provider_request_updates.ts',
+        '0010_provider_activation_execution_payloads.ts'
+      )
     `).run();
     originalStore.close();
 
@@ -1907,13 +2111,39 @@ describe("provider readiness truth", () => {
     `).get(lease.runId) as { provider_failure_json: string };
     expect(restrictedAudit.provider_failure_json).toContain("authentication rejected");
 
+    const capturedProviderInputs: string[] = [];
+    const baseRunAdapter = providerRunAdapter({ outcome: "success" });
+    const captureAdapter: Adapter = {
+      ...baseRunAdapter,
+      seed: (options) => {
+        capturedProviderInputs.push(options.prompt);
+        return baseRunAdapter.seed(options);
+      },
+    };
     const app = createServer({
       dataDir,
       store: reopenedStore,
-      engines: [{ adapter: adapter() }],
+      engines: [{
+        adapter: captureAdapter,
+        authStatus: async () => ({ authenticated: true }),
+      }],
+      communicationV3: { pollMs: 10 },
       logger: false,
     });
     await app.ready();
+    await vi.waitFor(() => expect(capturedProviderInputs).toHaveLength(1), {
+      timeout: 5_000,
+      interval: 20,
+    });
+    const exactProviderInput = (reopenedStore.sqlite.prepare(`
+      SELECT provider_prompt FROM provider_inputs ORDER BY created_at DESC, execution_id DESC LIMIT 1
+    `).get() as { provider_prompt: string }).provider_prompt;
+    for (const providerInput of [...capturedProviderInputs, exactProviderInput]) {
+      expect(providerInput).toContain("Provider authentication was rejected.");
+      expect(providerInput).not.toMatch(
+        /HISTORICAL_REQUEST_UPDATE_MARKER_9ca2|private-request-migration|access_token/u,
+      );
+    }
     const lifecycle = new CoordinationV3Store(reopenedStore.sqlite).requestLifecycleDetails({
       projectId: project.id,
       conversationId: project.lastConversationId,

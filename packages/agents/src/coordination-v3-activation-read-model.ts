@@ -1,5 +1,4 @@
 import type Database from "better-sqlite3";
-import { publicProviderFailureSummary } from "@ponderosa/core";
 import type {
   ActivationDispatchPolicy,
   ActivationPromptClass,
@@ -9,33 +8,16 @@ import type {
   PendingActivationV3View,
   TerminalActivationV3View,
 } from "./coordination-v3-types.js";
-import { publicActivationDeliveryError } from "./coordination-v3-provider-failure-projection.js";
+import {
+  publicActivationDeliveryError,
+  providerSafeActivationPayload,
+} from "./coordination-v3-provider-failure-projection.js";
 
 export class CoordinationV3ActivationReadModel {
   constructor(private readonly sqlite: Database.Database) {}
 
   private publicPayload(activationId: string, payloadJson: string): unknown {
-    const providerFailure = this.sqlite.prepare(`
-      SELECT request_update.provider_failure_category AS category
-      FROM json_tree(CASE WHEN json_valid(?) THEN ? ELSE '{}' END) payload_node
-      JOIN coordination_request_updates request_update
-        ON payload_node.key = 'updateId' AND payload_node.value = request_update.id
-      WHERE request_update.provider_failure_category IS NOT NULL
-      LIMIT 1
-    `).get(payloadJson, payloadJson) as { category: string } | undefined;
-    if (providerFailure) {
-      return {
-        providerFailure: publicProviderFailureSummary(
-          undefined,
-          providerFailure.category,
-        ) ?? "Provider execution failed.",
-      };
-    }
-    try {
-      return JSON.parse(payloadJson) as unknown;
-    } catch {
-      return { activationId, detail: "Activation payload is unavailable." };
-    }
+    return providerSafeActivationPayload(this.sqlite, activationId, payloadJson);
   }
 
   activation(

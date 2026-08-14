@@ -17,6 +17,7 @@ import {
   type RuntimeDynamicToolSpec,
   type RuntimeProcessHandle,
   unicodeCodePointLength,
+  publicProviderFailureEvent,
   publicProviderFailureSummary,
 } from "@ponderosa/core";
 import { randomUUID } from "node:crypto";
@@ -36,6 +37,7 @@ import type {
 import { evaluateContextRolloverPressure } from "../context-rollover-pressure.js";
 import type { ContextCursor } from "../context-cursors.js";
 import { providerUnavailableNotificationBody } from "../provider-availability-detail.js";
+import { guardedProviderExceptionStringProperty } from "../provider-exception-properties.js";
 import { cleanupRuntimeAttachments } from "../runtime-attachments.js";
 import type { AgentMessageRunContext } from "./agent-message-run.js";
 
@@ -274,6 +276,7 @@ export function startProviderRunExecution(
     let v3PromptInjected = false;
     let continuationHandoffConsumed = false;
     let providerWorkObserved = false;
+    let providerGeneratorRejected = false;
     let schedulerCancelled = false;
     let usedFreshFallback = false;
     let projectWorkspaceUnavailable = false;
@@ -1026,7 +1029,21 @@ export function startProviderRunExecution(
       if (isClosed() || controller.signal.aborted || !ownsActiveRunForAuditDrain(agent.id, activeRun)) return;
       schedulerCancelled = Boolean(activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));
       if (schedulerCancelled) return;
-      const message = err instanceof Error ? err.message : String(err);
+      // Adapter rejection values are untrusted. Do not perform instanceof,
+      // coercion, serialization, or ordinary property access here: any of
+      // those operations can trap and prevent the durable Run transition in
+      // finally. Safely readable detail remains restricted to the scheduler
+      // failure audit; public events are projected again at append time.
+      const message = guardedProviderExceptionStringProperty(err, "message")
+        ?? "Provider execution failed.";
+      providerGeneratorRejected = true;
+      const failureEvent = publicProviderFailureEvent({
+        type: "error",
+        message,
+        code: guardedProviderExceptionStringProperty(err, "code")
+          ?? guardedProviderExceptionStringProperty(err, "errorCode"),
+      });
+      runFailureCode = failureEvent.code;
       const workspaceIssue = await reconcileProjectWorkspace(project, agent);
       projectWorkspaceUnavailable = Boolean(workspaceIssue);
       runError = workspaceIssue ?? message;
@@ -1366,7 +1383,9 @@ export function startProviderRunExecution(
             workerId: coordinationV3WorkerId,
             sameRunResumable: false,
             failureKind,
-            confirmedNotExecuted: !providerWorkObserved && (failureKind === "capacity" || failureKind === "rate_limit"),
+            confirmedNotExecuted: !providerWorkObserved && !v3PromptInjected && (
+              providerGeneratorRejected || failureKind === "capacity" || failureKind === "rate_limit"
+            ),
             retryable: !projectWorkspaceUnavailable && failureKind !== "authentication",
             error: publicProviderFailureSummary(runError, failureKind) ?? "Provider execution failed.",
             failureDetail: {

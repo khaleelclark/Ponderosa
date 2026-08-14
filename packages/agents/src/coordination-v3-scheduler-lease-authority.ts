@@ -7,7 +7,10 @@ import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runt
 import type { CoordinationV3StoreSupport } from "./coordination-v3-store-support.js";
 import type { CoordinationV3TriggerRegistry } from "./coordination-v3-trigger-registry.js";
 import type { SchedulerLease } from "./coordination-v3-types.js";
-import { publicActivationDeliveryError } from "./coordination-v3-provider-failure-projection.js";
+import {
+  publicActivationDeliveryError,
+  providerSafeActivationPayload,
+} from "./coordination-v3-provider-failure-projection.js";
 
 interface ActivationRow {
   id: string;
@@ -410,7 +413,11 @@ export class CoordinationV3SchedulerLeaseAuthority {
         activations: activations.map((activation) => ({
           id: activation.id,
           kind: activation.kind,
-          payload: JSON.parse(activation.payload_json) as unknown,
+          payload: providerSafeActivationPayload(
+            this.sqlite,
+            activation.id,
+            activation.payload_json,
+          ),
         })),
         now,
       });
@@ -435,7 +442,11 @@ export class CoordinationV3SchedulerLeaseAuthority {
             priority: activation.priority,
             dispatchPolicy: activation.dispatch_policy,
             promptClass: activation.prompt_class,
-            payload: JSON.parse(activation.payload_json) as unknown,
+            payload: providerSafeActivationPayload(
+              this.sqlite,
+              activation.id,
+              activation.payload_json,
+            ),
             deliveryFailures: activation.delivery_failures,
             ...(lastDeliveryError ? { lastDeliveryError } : {}),
           };

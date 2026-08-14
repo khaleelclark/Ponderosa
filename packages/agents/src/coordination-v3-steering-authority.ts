@@ -11,7 +11,10 @@ import type {
   SteeringLease,
   SteeringRecoveryDecisionResult,
 } from "./coordination-v3-types.js";
-import { publicActivationDeliveryError } from "./coordination-v3-provider-failure-projection.js";
+import {
+  publicActivationDeliveryError,
+  providerSafeActivationPayload,
+} from "./coordination-v3-provider-failure-projection.js";
 
 interface ActivationRow {
   id: string;
@@ -178,7 +181,11 @@ export class CoordinationV3SteeringAuthority {
             priority: activation.priority,
             dispatchPolicy: activation.dispatch_policy,
             promptClass: activation.prompt_class,
-            payload: JSON.parse(activation.payload_json) as unknown,
+            payload: providerSafeActivationPayload(
+              this.sqlite,
+              activation.id,
+              activation.payload_json,
+            ),
             deliveryFailures: activation.delivery_failures,
             ...(lastDeliveryError ? { lastDeliveryError } : {}),
           };

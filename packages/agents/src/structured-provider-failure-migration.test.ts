@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CoordinationV3Store } from "./coordination-v3-store.js";
+import { payloadHash } from "./coordination-v3-canonical-json.js";
 import { openDb } from "./db.js";
 
 const directories: string[] = [];
@@ -109,7 +110,8 @@ describe("structured provider failure migration", () => {
       DELETE FROM _schema_version
       WHERE name IN (
         '0008_public_activation_provider_failures.sql',
-        '0009_public_provider_request_updates.ts'
+        '0009_public_provider_request_updates.ts',
+        '0010_provider_activation_execution_payloads.ts'
       )
     `).run();
     opened.client.close();
@@ -126,9 +128,10 @@ describe("structured provider failure migration", () => {
       SELECT 1 AS applied FROM _schema_version
       WHERE name IN (
         '0008_public_activation_provider_failures.sql',
-        '0009_public_provider_request_updates.ts'
+        '0009_public_provider_request_updates.ts',
+        '0010_provider_activation_execution_payloads.ts'
       )
-    `).all()).toHaveLength(2);
+    `).all()).toHaveLength(3);
 
     const coordination = new CoordinationV3Store(migrated.client);
     const migratedReads = JSON.stringify({
@@ -170,6 +173,27 @@ describe("structured provider failure migration", () => {
       }),
       provider_failure_category: "authentication",
     });
+    const expectedPublicPayload = {
+      activationId: "activation-legacy-provider",
+      activationOutcome: "permanent_failure",
+      reason: "Provider authentication was rejected.",
+    };
+    expect((migrated.client.prepare(`
+      SELECT payload_hash FROM coordination_request_updates
+      WHERE id = 'update-legacy-provider'
+    `).get() as { payload_hash: string }).payload_hash).toBe(payloadHash({
+      requestId: "request-legacy-provider",
+      kind: "failed",
+      actor: { kind: "supervisor", id: "v3-activation-supervisor" },
+      inReplyToUpdateId: null,
+      payload: expectedPublicPayload,
+      providerFailureCategory: "authentication",
+      artifacts: [],
+    }));
+    expect(migrated.client.prepare(`
+      SELECT source_kind, source_id FROM activation_sources
+      WHERE activation_id = 'activation-legacy-outcome'
+    `).all()).toEqual([{ source_kind: "request", source_id: "request-legacy-provider" }]);
     expect((migrated.client.prepare(`
       SELECT payload_json FROM agent_activations
       WHERE id = 'activation-legacy-outcome'

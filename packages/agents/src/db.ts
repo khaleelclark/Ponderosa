@@ -42,6 +42,7 @@ const legacyMigrationTable = "_migrations";
 const schemaVersionTable = "_schema_version";
 const contextRolloverAtomicityMigration = "0005_context_rollover_atomicity.ts";
 const publicProviderRequestUpdatesMigration = "0009_public_provider_request_updates.ts";
+const providerActivationExecutionPayloadsMigration = "0010_provider_activation_execution_payloads.ts";
 const latestLegacyMigration = "0035_coordination_question_suspensions.sql";
 
 // Fingerprint of the complete schema that was current when the launch baseline
@@ -204,6 +205,28 @@ function replaceMaterializedRequestUpdate(
   return { value: changed ? projected : value, changed };
 }
 
+function repairMaterializedRequestUpdateActivations(
+  sqlite: Database.Database,
+  updateId: string,
+  publicPayload: Record<string, unknown>,
+): void {
+  const updateActivation = sqlite.prepare(`
+    UPDATE agent_activations SET payload_json = ? WHERE id = ?
+  `);
+  const activations = sqlite.prepare(`
+    SELECT id, payload_json FROM agent_activations
+    WHERE json_valid(payload_json) AND instr(payload_json, ?) > 0
+  `).all(updateId) as Array<{ id: string; payload_json: string }>;
+  for (const activation of activations) {
+    const projected = replaceMaterializedRequestUpdate(
+      JSON.parse(activation.payload_json) as unknown,
+      updateId,
+      publicPayload,
+    );
+    if (projected.changed) updateActivation.run(stableJson(projected.value), activation.id);
+  }
+}
+
 /** Backfill provider-derived Request updates materialized before activation
  * failure text gained a finite public projection. Exact provider evidence
  * remains unchanged in restricted scheduler_runs rows. */
@@ -263,9 +286,6 @@ function establishPublicProviderRequestUpdates(sqlite: Database.Database): void 
       SET payload_json = ?, payload_hash = ?, provider_failure_category = ?
       WHERE id = ?
     `);
-    const updateActivation = sqlite.prepare(`
-      UPDATE agent_activations SET payload_json = ? WHERE id = ?
-    `);
     for (const row of rows) {
       const category = normalizeProviderFailureCategory(row.provider_failure_category);
       const publicPayload = {
@@ -317,21 +337,51 @@ function establishPublicProviderRequestUpdates(sqlite: Database.Database): void 
       });
       updateRequest.run(stableJson(publicPayload), hash, category, row.id);
 
-      const activations = sqlite.prepare(`
-        SELECT id, payload_json FROM agent_activations
-        WHERE json_valid(payload_json) AND instr(payload_json, ?) > 0
-      `).all(row.id) as Array<{ id: string; payload_json: string }>;
-      for (const activation of activations) {
-        const projected = replaceMaterializedRequestUpdate(
-          JSON.parse(activation.payload_json) as unknown,
-          row.id,
-          publicPayload,
-        );
-        if (projected.changed) updateActivation.run(stableJson(projected.value), activation.id);
-      }
+      repairMaterializedRequestUpdateActivations(sqlite, row.id, publicPayload);
     }
     sqlite.prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
       .run(publicProviderRequestUpdatesMigration, new Date().toISOString());
+  })();
+}
+
+/** Repair provider-failed Request updates materialized in pending Activation
+ * payloads on installations where the Request-update migration was already
+ * marked applied. This is a separate durable marker because changing an
+ * already-applied migration cannot repair live data. */
+function establishProviderActivationExecutionPayloads(sqlite: Database.Database): void {
+  const applied = sqlite
+    .prepare(`SELECT 1 FROM ${schemaVersionTable} WHERE name = ?`)
+    .get(providerActivationExecutionPayloadsMigration) !== undefined;
+  if (applied) return;
+  sqlite.transaction(() => {
+    const rows = sqlite.prepare(`
+      SELECT id, payload_json, provider_failure_category
+      FROM coordination_request_updates
+      WHERE provider_failure_category IS NOT NULL AND json_valid(payload_json)
+      ORDER BY created_at, id
+    `).all() as Array<{
+      id: string;
+      payload_json: string;
+      provider_failure_category: string;
+    }>;
+    for (const row of rows) {
+      const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)
+          || typeof payload.activationId !== "string") continue;
+      const publicPayload = {
+        activationId: payload.activationId,
+        activationOutcome: typeof payload.activationOutcome === "string"
+          ? payload.activationOutcome
+          : "permanent_failure",
+        reason: publicProviderFailureSummary(
+          undefined,
+          normalizeProviderFailureCategory(row.provider_failure_category),
+        ) ?? "Provider execution failed.",
+      };
+      repairMaterializedRequestUpdateActivations(sqlite, row.id, publicPayload);
+    }
+    sqlite.prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
+      .run(providerActivationExecutionPayloadsMigration, new Date().toISOString());
   })();
 }
 
@@ -688,6 +738,7 @@ export function openDb(file: string): OpenedDb {
   establishContextRolloverAtomicitySchema(sqlite);
   establishSchemaExtensions(sqlite);
   establishPublicProviderRequestUpdates(sqlite);
+  establishProviderActivationExecutionPayloads(sqlite);
   establishReadIndexes(sqlite);
   return { db: drizzle(sqlite, { schema }), client: sqlite };
 }
