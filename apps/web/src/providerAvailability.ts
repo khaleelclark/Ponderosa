@@ -1,4 +1,5 @@
 import {
+  classifyProviderFailure,
   MAX_PUBLIC_PROVIDER_FAILURE_CHARACTERS,
   publicProviderFailureSummary,
   type EngineDto,
@@ -25,16 +26,10 @@ function providerAccountHelp(engine: Pick<EngineDto, "id" | "displayName">): str
 type ProviderAvailabilityCategory = "authentication" | "limit" | "capacity" | "unknown";
 
 function providerAvailabilityCategory(detail: string | undefined): ProviderAvailabilityCategory {
-  const value = detail ?? "";
-  if (/unauthori[sz]ed|authentication|sign.?in|oauth|credential|subscription (?:access|expired|inactive)|organization has disabled/iu.test(value)) {
-    return "authentication";
-  }
-  if (/rate.?limit|too many requests|\b429\b|session.?limit|usage.?limit|quota (?:is )?(?:exhausted|reached)|hit (?:your |the )?limit|limit resets?/iu.test(value)) {
-    return "limit";
-  }
-  if (/selected model is at capacity|model.*capacity|overloaded|no capacity|resource exhausted/iu.test(value)) {
-    return "capacity";
-  }
+  const category = classifyProviderFailure(detail ?? "");
+  if (category === "authentication") return "authentication";
+  if (category === "rate_limit") return "limit";
+  if (category === "capacity") return "capacity";
   return "unknown";
 }
 

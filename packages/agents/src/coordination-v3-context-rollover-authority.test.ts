@@ -677,19 +677,20 @@ describe("context rollover continuation obligations", () => {
       expect.objectContaining({ kind: "context_rollover_handoff" }),
     ]);
     fixture.store.markRunStarted(handoffRun.runId, handoffRun.fencingToken, NOW);
+    const safeFailure = "deadline exceeded / Ошибка подключения к провайдеру";
     expect(fixture.store.failRun({
       runId: handoffRun.runId,
       fencingToken: handoffRun.fencingToken,
       workerId: "handoff-worker",
       sameRunResumable: false,
-      error: "provider rejected manual handoff",
+      error: safeFailure,
       retryDelayMs: 0,
       now: NOW,
     })).toBe("terminal");
     const failed = fixture.store.contextRollover(requested.rollover.id);
     expect(failed).toMatchObject({
       state: "failed",
-      lastError: "provider rejected manual handoff",
+      lastError: safeFailure,
       terminalAt: NOW,
     });
     expect(fixture.sqlite.prepare(`
@@ -767,7 +768,7 @@ describe("context rollover continuation obligations", () => {
     );
     expect(fixture.store.contextRollover(requested.rollover.id)).toMatchObject({
       state: "failed",
-      lastError: "provider rejected manual handoff",
+      lastError: safeFailure,
       terminalAt: NOW,
     });
   });
@@ -809,7 +810,16 @@ describe("context rollover continuation obligations", () => {
       injectionId: handoffRun.injectionId,
       prompt: "restricted rollover handoff prompt",
     });
-    const restricted = String.raw`provider rejected pa\\u0073sword=hunter2 access_token=private-rollover-token at /root/.codex/auth.json`;
+    const restricted = [
+      String.raw`provider rejected pa\\u0073sword=hunter2`,
+      "cGFzc3dvcmQ9aHVudGVyMg==",
+      "Веагег short123",
+      "сode=hunter2",
+      "Basic dXNlcjpodW50ZXIy",
+      "signing_key=x",
+      "access_token=private-rollover-token",
+      "at /root/.codex/auth.json",
+    ].join(" ");
     expect(fixture.store.failRun({
       runId: handoffRun.runId,
       fencingToken: handoffRun.fencingToken,
@@ -835,12 +845,16 @@ describe("context rollover continuation obligations", () => {
     `).get(requested.rollover.id) as { last_error: string };
     expect(persisted.last_error).toBe("Provider execution failed.");
     expect(JSON.stringify({ publicRollover, persisted })).not.toMatch(
-      /hunter2|private-rollover-token|password|access_token|root|auth\.json/u,
+      /cGFzc3dv|hunter2|short123|dXNlcj|signing_key|private-rollover-token|password|access_token|root|auth\.json/iu,
     );
     const audit = fixture.sqlite.prepare(`
       SELECT provider_failure_json FROM scheduler_runs WHERE id = ?
     `).get(handoffRun.runId) as { provider_failure_json: string };
     expect(audit.provider_failure_json).toContain("hunter2");
+    expect(audit.provider_failure_json).toContain("cGFzc3dvcmQ9aHVudGVyMg==");
+    expect(audit.provider_failure_json).toContain("Веагег short123");
+    expect(audit.provider_failure_json).toContain("Basic dXNlcjpodW50ZXIy");
+    expect(audit.provider_failure_json).toContain("signing_key=x");
     expect(audit.provider_failure_json).toContain("private-rollover-token");
     expect(audit.provider_failure_json).toContain("/root/.codex/auth.json");
 
@@ -896,7 +910,7 @@ describe("context rollover continuation obligations", () => {
       activations: replacement.activations,
     });
     expect(modelContext).not.toMatch(
-      /hunter2|private-rollover-token|password|access_token|root|auth\.json/u,
+      /cGFzc3dv|hunter2|short123|dXNlcj|signing_key|private-rollover-token|password|access_token|root|auth\.json/iu,
     );
     fixture.store.recordProviderInputAndCommitContextRolloverReplacement({
       executionId: replacement.runId,
@@ -920,7 +934,7 @@ describe("context rollover continuation obligations", () => {
       source_manifest_json: string;
     };
     expect(JSON.stringify(providerInput)).not.toMatch(
-      /hunter2|private-rollover-token|password|access_token|root|auth\.json/u,
+      /cGFzc3dv|hunter2|short123|dXNlcj|signing_key|private-rollover-token|password|access_token|root|auth\.json/iu,
     );
   });
 

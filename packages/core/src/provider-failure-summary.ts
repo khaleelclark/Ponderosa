@@ -4,7 +4,8 @@ const MAX_PROVIDER_FAILURE_INPUT_CHARACTERS = 64 * 1024;
 const MAX_PROVIDER_FAILURE_DEPTH = 6;
 const MAX_PROVIDER_FAILURE_ARRAY_ITEMS = 16;
 const MAX_PROVIDER_FAILURE_NORMALIZATION_PASSES = 8;
-const MAX_ENCODED_JSON_CHARACTERS = 8 * 1024;
+const MAX_ENCODED_PROVIDER_CHARACTERS = 8 * 1024;
+const MAX_ENCODED_PROVIDER_CANDIDATES = 16;
 const HUMAN_FAILURE_KEYS = ["message", "detail", "reason", "error"] as const;
 
 function normalizedProviderPass(value: string): string | undefined {
@@ -59,9 +60,8 @@ function normalizedProviderPass(value: string): string | undefined {
   });
   if (invalidEncoding) return undefined;
   const normalized = decodedPercent
-    .normalize("NFKD")
-    .replace(/\p{Cf}|\p{M}|\p{Variation_Selector}/gu, "")
     .normalize("NFKC")
+    .replace(/\p{Cf}|\p{Variation_Selector}/gu, "")
     .replace(/\\\//gu, "/")
     .replace(/[\u0000-\u001f\u007f]+/gu, " ")
     .replace(/\s+/gu, " ")
@@ -103,8 +103,8 @@ const PROVIDER_CONFUSABLE_ASCII = new Map<string, string>([
   ...["ᒪ", "ӏ"].map((value) => [value, "l"] as const),
   ...["Μ", "М", "м"].map((value) => [value, "m"] as const),
   ...["Ν", "п", "ո"].map((value) => [value, "n"] as const),
-  ...["Ο", "О", "ο", "о"].map((value) => [value, "o"] as const),
-  ...["Ρ", "Р", "ρ", "р", "ϱ"].map((value) => [value, "p"] as const),
+  ...["Ο", "О", "ο", "о", "օ"].map((value) => [value, "o"] as const),
+  ...["Ρ", "Р", "ρ", "р", "ϱ", "ƿ"].map((value) => [value, "p"] as const),
   ...["Ԛ", "ԛ"].map((value) => [value, "q"] as const),
   ...["Г", "г"].map((value) => [value, "r"] as const),
   ...["Ѕ", "ѕ"].map((value) => [value, "s"] as const),
@@ -130,23 +130,19 @@ const RESTRICTED_ASSIGNMENT_KEY_FAMILIES = [
   "token", "apikey", "secretkey", "privatekey", "clientsecret", "clientid", "secret",
   "authorization", "authorizationcode", "oauthcode", "authcode", "callbackcode",
   "credential", "credentials", "awsaccesskeyid", "awssecretaccesskey", "githubtoken",
+  "code", "passphrase", "signingkey", "keysigning", "encryptionkey", "keyencryption",
+  "sshkey", "keyssh", "secretvalue", "valuesecret", "passwordvalue", "valuepassword",
+  "sessioncookie", "cookiesession", "accesskeyid", "idaccesskey", "keyapi",
 ] as const;
 
 function isRestrictedAssignmentKey(value: string): boolean {
   const skeleton = providerClassificationSkeleton(value);
-  const compact = skeleton.replace(/[^a-z0-9]/gu, "");
-  const semanticCharacters = [...skeleton.replace(/[\s_.\\/-]/gu, "")];
-  return RESTRICTED_ASSIGNMENT_KEY_FAMILIES.some(
-    (family) => {
-      if (compact === family || compact.endsWith(family)) return true;
-      if (semanticCharacters.length < family.length) return false;
-      const suffix = semanticCharacters.slice(-family.length);
-      return [...family].every((character, index) => {
-        const observed = suffix[index];
-        return observed === character || Boolean(observed && /[^\x00-\x7f]/u.test(observed));
-      });
-    },
-  );
+  return skeleton.split(/[^\x00-\x7f]+/gu).some((asciiSegment) => {
+    const compact = asciiSegment.replace(/[^a-z0-9]/gu, "");
+    return RESTRICTED_ASSIGNMENT_KEY_FAMILIES.some(
+      (family) => compact === family || compact.startsWith(family) || compact.endsWith(family),
+    );
+  });
 }
 
 function containsRestrictedAssignment(value: string): boolean {
@@ -158,147 +154,202 @@ function containsRestrictedAssignment(value: string): boolean {
   return false;
 }
 
-type EncodedJson =
-  | { kind: "not-json" }
-  | { kind: "malformed-json" }
-  | { kind: "json"; value: unknown };
+type EncodedProviderText =
+  | { kind: "not-encoded" }
+  | { kind: "text"; value: string };
 
-function decodeEncodedJsonCandidate(value: string): EncodedJson {
+interface ProviderInspectionBudget {
+  remainingEncodedCandidates: number;
+}
+
+function decodeEncodedProviderCandidate(value: string): EncodedProviderText {
   if (
     value.length < 8
-    || value.length > MAX_ENCODED_JSON_CHARACTERS
+    || value.length > MAX_ENCODED_PROVIDER_CHARACTERS
     || !/^[A-Za-z0-9+/_-]+={0,2}$/u.test(value)
     || value.length % 4 === 1
-  ) return { kind: "not-json" };
+  ) return { kind: "not-encoded" };
   const base64 = value.replace(/-/gu, "+").replace(/_/gu, "/");
   const padded = `${base64}${"=".repeat((4 - (base64.length % 4)) % 4)}`;
-  let decoded: string;
   try {
     const binary = globalThis.atob(padded);
     const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-    decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes).trim();
-  } catch {
-    return { kind: "not-json" };
-  }
-  if (!/^(?:\{|\[|")/u.test(decoded)) return { kind: "not-json" };
-  try {
-    return { kind: "json", value: JSON.parse(decoded) as unknown };
-  } catch {
-    return { kind: "malformed-json" };
-  }
-}
-
-function containsOpaqueHighEntropyBlob(value: string): boolean {
-  const tokens = value.match(/[A-Za-z0-9+/_=-]{32,}/gu) ?? [];
-  return tokens.some((token) => {
-    const frequencies = new Map<string, number>();
-    for (const character of token) {
-      frequencies.set(character, (frequencies.get(character) ?? 0) + 1);
+    const canonical = globalThis.btoa(binary).replace(/=+$/u, "");
+    if (canonical !== base64.replace(/=+$/u, "")) return { kind: "not-encoded" };
+    const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes).trim();
+    if (!decoded || /[\p{Cc}\p{Cs}]/u.test(decoded.replace(/[\t\r\n]/gu, ""))) {
+      return { kind: "not-encoded" };
     }
-    if (frequencies.size < 10) return false;
-    const entropy = [...frequencies.values()].reduce((total, count) => {
-      const probability = count / token.length;
-      return total - probability * Math.log2(probability);
-    }, 0);
-    return entropy >= 3.5;
-  });
+    return { kind: "text", value: decoded };
+  } catch {
+    return { kind: "not-encoded" };
+  }
 }
 
-function containsRestrictedProviderValue(value: unknown, depth: number): boolean {
+function containsStructuredOpaqueCredential(value: string): boolean {
+  const tokens = value.match(/[A-Za-z0-9+/_=-]{32,}/gu) ?? [];
+  return tokens.some((token) => /[a-z]/u.test(token) && /[A-Z]/u.test(token) && /[0-9]/u.test(token));
+}
+
+function containsRestrictedProviderValue(
+  value: unknown,
+  depth: number,
+  budget: ProviderInspectionBudget,
+): boolean {
   if (depth > MAX_PROVIDER_FAILURE_DEPTH) return true;
   if (value === null || value === undefined) return false;
   if (typeof value === "string") {
     const normalized = normalizeProviderText(value);
-    return normalized === undefined || containsRestrictedProviderData(normalized, depth + 1);
+    return normalized === undefined || containsRestrictedProviderData(normalized, depth + 1, budget);
   }
   if (typeof value !== "object") return false;
   if (Array.isArray(value)) {
     if (value.length > MAX_PROVIDER_FAILURE_ARRAY_ITEMS) return true;
     return value.some(
-      (item) => containsRestrictedProviderValue(item, depth + 1),
+      (item) => containsRestrictedProviderValue(item, depth + 1, budget),
     );
   }
   const entries = Object.entries(value as Record<string, unknown>);
   if (entries.length > MAX_PROVIDER_FAILURE_ARRAY_ITEMS) return true;
   return entries.some(([key, child]) => (
-    isRestrictedAssignmentKey(key) || containsRestrictedProviderValue(child, depth + 1)
+    isRestrictedAssignmentKey(key) || containsRestrictedProviderValue(child, depth + 1, budget)
   ));
 }
 
-function containsRestrictedEncodedJson(value: string, depth: number): boolean {
+function containsRestrictedEncodedProviderText(
+  value: string,
+  depth: number,
+  budget: ProviderInspectionBudget,
+): boolean {
   if (depth > MAX_PROVIDER_FAILURE_DEPTH) return true;
-  const candidates = value.match(/[A-Za-z0-9+/_-]{8,}={0,2}/gu) ?? [];
-  if (candidates.length > MAX_PROVIDER_FAILURE_ARRAY_ITEMS) return true;
-  return candidates.some((candidate) => {
-    const decoded = decodeEncodedJsonCandidate(candidate);
-    return decoded.kind === "malformed-json"
-      || (decoded.kind === "json" && containsRestrictedProviderValue(decoded.value, depth + 1));
-  });
+  for (const match of value.matchAll(/[A-Za-z0-9+/_-]{8,}={0,2}/gu)) {
+    const candidate = match[0];
+    const decoded = decodeEncodedProviderCandidate(candidate);
+    if (decoded.kind === "not-encoded") continue;
+    budget.remainingEncodedCandidates -= 1;
+    if (budget.remainingEncodedCandidates < 0) return true;
+    const normalized = normalizeProviderText(decoded.value);
+    if (normalized === undefined) return true;
+    if (/^(?:\{|\[|")/u.test(normalized)) {
+      try {
+        if (containsRestrictedProviderValue(JSON.parse(normalized), depth + 1, budget)) return true;
+      } catch {
+        // A reversible UTF-8 payload is not sensitive merely because it resembles malformed JSON.
+      }
+    }
+    if (containsRestrictedProviderData(normalized, depth + 1, budget)) return true;
+  }
+  return false;
 }
 
-function containsRestrictedProviderData(value: string, depth = 0): boolean {
+function containsRestrictedSecurityLabel(
+  value: string,
+  depth: number,
+  budget: ProviderInspectionBudget,
+): boolean {
+  for (const match of value.matchAll(/([^\s:=]{4,24})\s+([A-Za-z0-9+/_-]{4,}={0,2})/gu)) {
+    const labelSkeleton = providerClassificationSkeleton(match[1] ?? "");
+    if (/[^\x00-\x7f]/u.test(labelSkeleton)) continue;
+    const label = labelSkeleton.replace(/[^a-z]/gu, "");
+    const payload = match[2];
+    if (!payload || (label !== "bearer" && label !== "basic")) continue;
+    const decoded = decodeEncodedProviderCandidate(payload);
+    if (label === "bearer") return true;
+    if (decoded.kind === "not-encoded") continue;
+    budget.remainingEncodedCandidates -= 1;
+    if (budget.remainingEncodedCandidates < 0) return true;
+    const normalized = normalizeProviderText(decoded.value);
+    if (normalized === undefined) return true;
+    if (normalized.includes(":")) return true;
+    if (containsRestrictedProviderData(normalized, depth + 1, budget)) return true;
+  }
+  return false;
+}
+
+function containsRestrictedProviderData(
+  value: string,
+  depth = 0,
+  budget: ProviderInspectionBudget = {
+    remainingEncodedCandidates: MAX_ENCODED_PROVIDER_CANDIDATES,
+  },
+): boolean {
+  if (depth > MAX_PROVIDER_FAILURE_DEPTH) return true;
   const skeleton = providerClassificationSkeleton(value);
   const pathView = skeleton.replace(/\\+/gu, "/");
   return /\b(?:session[_-]?id|access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|client[_-]?secret|client[_-]?id)\b/iu.test(skeleton)
     || containsRestrictedAssignment(skeleton)
-    || /(?:^|[?&\s])(?:code|oauth[_-]?code|authorization[_-]?code|callback[_-]?code)\s*[:=]/iu.test(value)
+    || containsRestrictedSecurityLabel(value, depth, budget)
+    || /\b[a-z][a-z0-9+.-]{1,15}:\/\/[^\s/?#@]{1,256}@/iu.test(skeleton)
     || /-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----/iu.test(value)
     || /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/u.test(value)
-    || /\bgh[pousr]_[A-Za-z0-9]{20,}\b/u.test(value)
-    || /\b(?:sk-(?:ant-)?[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{16,})\b/u.test(value)
-    || /\bbearer\s+[A-Za-z0-9._~+/-]{8,}/iu.test(value)
+    || /\bgh[pousr]_[A-Za-z0-9]{6,}\b/u.test(value)
+    || /\b(?:sk-(?:ant-)?[A-Za-z0-9_-]{6,}|xox[baprs]-[A-Za-z0-9-]{6,})\b/u.test(value)
     || /\beyJ[A-Za-z0-9+/_=-]{12,}/u.test(value)
     || /(?:^|[\s"'(=])(?:~\/|\/(?!\/)(?:(?:[^/\s"'<>]+\/)+[^/\s"'<>]*|(?:home|root|etc|var|tmp|opt|srv|mnt|private|run)(?:\/[^/\s"'<>]*)?))/u.test(value)
     || /(?:^|[\s"'(=])(?:[A-Za-z]:[\\/]+[^\\/\s"'<>]+(?:[\\/]+[^\\/\s"'<>]+)*|[\\/]{2}[^\\/\s"'<>]+[\\/]+[^\\/\s"'<>]+)/u.test(value)
     || /(?:^|[\s"'(=])(?:\.{0,2}[\\/]+)?(?:\.ssh|\.aws|\.codex|\.claude|\.config[\\/]+gh)[\\/]+[^\s"'<>]*/iu.test(value)
     || /(?:^|[\s"'(=])(?:\$(?:home|\{home\})|%home%|~)(?:\/|\\)/iu.test(skeleton)
-    || /(?:^|[\s"'(=])\/(?:$|[\s"')])/u.test(pathView)
+    || pathView === "/"
     || /(?:^|[\s"'(=])\/(?:root|etc\/(?:passwd|shadow|sudoers(?:\.d)?|ssh)|run\/secrets|var\/run\/secrets)(?:\/|\b)/iu.test(pathView)
     || /(?:^|[\s"'(=/])(?:credentials?|auth\.json|config\.(?:json|ya?ml|toml)|\.env|id_(?:rsa|dsa|ecdsa|ed25519)|[^/\s"'<>]+\.(?:pem|key))(?:\b|$)/iu.test(pathView)
     || /(?:^|[\s"'(=])(?:\.{0,2}\/|~\/|(?:[^\s"'<>/]+\/)+)(?:\.config|\.ssh|\.aws|\.codex|\.claude|credentials?|secrets?|tokens?|auth|config)(?:\/|\b)/iu.test(pathView)
-    || containsRestrictedEncodedJson(value, depth + 1)
-    || containsOpaqueHighEntropyBlob(value);
+    || containsRestrictedEncodedProviderText(value, depth + 1, budget)
+    || containsStructuredOpaqueCredential(value);
 }
 
-function malformedHumanFailure(value: string, depth: number): string | undefined {
+function malformedHumanFailure(
+  value: string,
+  depth: number,
+  budget: ProviderInspectionBudget,
+): string | undefined {
   const match = value.match(
     /["'](?:message|detail|reason|error)["']\s*:\s*["']([^"'\r\n]+)/iu,
   );
-  return match?.[1] ? extractProviderFailure(match[1], depth + 1) : undefined;
+  return match?.[1] ? extractProviderFailure(match[1], depth + 1, budget) : undefined;
 }
 
-function extractProviderFailure(value: unknown, depth = 0): string | undefined {
+function extractProviderFailure(
+  value: unknown,
+  depth = 0,
+  budget: ProviderInspectionBudget = {
+    remainingEncodedCandidates: MAX_ENCODED_PROVIDER_CANDIDATES,
+  },
+): string | undefined {
   if (depth > MAX_PROVIDER_FAILURE_DEPTH || value === null || value === undefined) return undefined;
   if (typeof value === "string") {
     const candidate = normalizeProviderText(value);
     if (!candidate) return undefined;
     if (/^(?:\{|\[|")/u.test(candidate)) {
       try {
-        return extractProviderFailure(JSON.parse(candidate), depth + 1);
+        return extractProviderFailure(JSON.parse(candidate), depth + 1, budget);
       } catch {
-        return malformedHumanFailure(candidate, depth);
+        return malformedHumanFailure(candidate, depth, budget);
       }
     }
-    const encoded = decodeEncodedJsonCandidate(candidate);
-    if (encoded.kind === "malformed-json") return undefined;
-    if (encoded.kind === "json") {
-      if (containsRestrictedProviderValue(encoded.value, depth + 1)) return undefined;
-      return extractProviderFailure(encoded.value, depth + 1);
+    const encoded = decodeEncodedProviderCandidate(candidate);
+    if (encoded.kind === "text" && /^(?:\{|\[|")/u.test(encoded.value)) {
+      try {
+        const decodedValue = JSON.parse(encoded.value) as unknown;
+        if (containsRestrictedProviderValue(decodedValue, depth + 1, budget)) return undefined;
+        return extractProviderFailure(decodedValue, depth + 1, budget);
+      } catch {
+        // Treat malformed encoded JSON as plaintext; parse failure alone is not sensitive.
+      }
     }
-    return containsRestrictedProviderData(candidate, depth) ? undefined : candidate;
+    return containsRestrictedProviderData(candidate, depth, budget) ? undefined : candidate;
   }
   if (typeof value !== "object") return undefined;
   if (Array.isArray(value)) {
     if (value.length > MAX_PROVIDER_FAILURE_ARRAY_ITEMS) return undefined;
     for (const item of value) {
-      const extracted = extractProviderFailure(item, depth + 1);
+      const extracted = extractProviderFailure(item, depth + 1, budget);
       if (extracted) return extracted;
     }
     return undefined;
   }
   const record = value as Record<string, unknown>;
   for (const key of HUMAN_FAILURE_KEYS) {
-    const extracted = extractProviderFailure(record[key], depth + 1);
+    const extracted = extractProviderFailure(record[key], depth + 1, budget);
     if (extracted) return extracted;
   }
   return undefined;
@@ -314,4 +365,35 @@ export function publicProviderFailureSummary(detail: string | undefined): string
   return extracted.length > MAX_PUBLIC_PROVIDER_FAILURE_CHARACTERS
     ? `${extracted.slice(0, MAX_PUBLIC_PROVIDER_FAILURE_CHARACTERS - 1)}…`
     : extracted;
+}
+
+export type ProviderFailureKind = "capacity" | "rate_limit" | "authentication" | "context" | "unknown";
+
+/** One category classifier shared by engines, server projections, and browser remediation. */
+export function classifyProviderFailure(errorMessage: string): ProviderFailureKind {
+  const normalized = normalizeProviderText(errorMessage);
+  if (!normalized) return "unknown";
+  const value = providerClassificationSkeleton(normalized);
+  if (/selected model is at capacity|model.*capacity|overloaded|no capacity|resource exhausted/iu.test(value)) {
+    return "capacity";
+  }
+  if (/rate.?limit|too many requests|\b429\b|session.?limit|usage.?limit|quota (?:is )?(?:exhausted|reached)|(?:you(?:'|’)ve|you have) hit your limit|limit resets?|\b0 weighted tokens left\b/iu.test(value)) {
+    return "rate_limit";
+  }
+  if (/unauthori[sz]ed|authentication|sign.?in|oauth|invalid.*credential|subscription (?:access|expired|inactive)|organization has disabled/iu.test(value)) {
+    return "authentication";
+  }
+  if (/context window|too many tokens|maximum context|pre-sampling compact/iu.test(value)) {
+    return "context";
+  }
+  return "unknown";
+}
+
+export function publicProviderFailureCategorySummary(detail: string | undefined): string | undefined {
+  if (!detail) return undefined;
+  const kind = classifyProviderFailure(detail);
+  if (kind === "authentication") return "Provider authentication was rejected.";
+  if (kind === "rate_limit") return "Provider usage limit was reached.";
+  if (kind === "capacity") return "Provider is temporarily at capacity.";
+  return undefined;
 }

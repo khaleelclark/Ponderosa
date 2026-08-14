@@ -1,18 +1,10 @@
-import { publicProviderFailureSummary } from "@ponderosa/core";
-import { classifyProviderFailure } from "@ponderosa/engines";
+import {
+  publicProviderFailureCategorySummary,
+  publicProviderFailureSummary,
+} from "@ponderosa/core";
 
 export const publicProviderAvailabilityDetail = publicProviderFailureSummary;
-
-export function publicProviderFailureCategorySummary(detail: string | undefined): string | undefined {
-  if (!detail) return undefined;
-  const kind = classifyProviderFailure(detail);
-  if (kind === "authentication" || /subscription (?:expired|inactive)/iu.test(detail)) {
-    return "Provider authentication was rejected.";
-  }
-  if (kind === "rate_limit") return "Provider usage limit was reached.";
-  if (kind === "capacity") return "Provider is temporarily at capacity.";
-  return undefined;
-}
+export { publicProviderFailureCategorySummary };
 
 export function providerUnavailableNotificationBody(detail: string | undefined): string {
   const safeDetail = publicProviderFailureSummary(detail)
