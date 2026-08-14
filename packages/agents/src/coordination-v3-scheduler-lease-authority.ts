@@ -7,6 +7,7 @@ import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runt
 import type { CoordinationV3StoreSupport } from "./coordination-v3-store-support.js";
 import type { CoordinationV3TriggerRegistry } from "./coordination-v3-trigger-registry.js";
 import type { SchedulerLease } from "./coordination-v3-types.js";
+import { publicActivationDeliveryError } from "./coordination-v3-provider-failure-projection.js";
 
 interface ActivationRow {
   id: string;
@@ -17,6 +18,7 @@ interface ActivationRow {
   payload_json: string;
   delivery_failures: number;
   last_delivery_error: string | null;
+  provider_failure_category: string | null;
 }
 
 /** Recovers abandoned scheduler work and exclusively creates new Runs. */
@@ -422,18 +424,22 @@ export class CoordinationV3SchedulerLeaseAuthority {
         leaseExpiresAt,
         injectionId,
         activationIds: activations.map((activation) => activation.id),
-        activations: activations.map((activation) => ({
-          id: activation.id,
-          kind: activation.kind,
-          priority: activation.priority,
-          dispatchPolicy: activation.dispatch_policy,
-          promptClass: activation.prompt_class,
-          payload: JSON.parse(activation.payload_json) as unknown,
-          deliveryFailures: activation.delivery_failures,
-          ...(activation.last_delivery_error
-            ? { lastDeliveryError: activation.last_delivery_error }
-            : {}),
-        })),
+        activations: activations.map((activation) => {
+          const lastDeliveryError = publicActivationDeliveryError({
+            lastDeliveryError: activation.last_delivery_error,
+            providerFailureCategory: activation.provider_failure_category,
+          });
+          return {
+            id: activation.id,
+            kind: activation.kind,
+            priority: activation.priority,
+            dispatchPolicy: activation.dispatch_policy,
+            promptClass: activation.prompt_class,
+            payload: JSON.parse(activation.payload_json) as unknown,
+            deliveryFailures: activation.delivery_failures,
+            ...(lastDeliveryError ? { lastDeliveryError } : {}),
+          };
+        }),
       };
     })();
   }

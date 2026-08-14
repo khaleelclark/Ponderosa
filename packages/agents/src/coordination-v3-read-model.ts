@@ -7,6 +7,7 @@ import type {
 } from "@ponderosa/core";
 import { publicProviderFailureSummary } from "@ponderosa/core";
 import { inspectorDetails, inspectorJson, inspectorWakePolicy } from "./coordination-v3-inspector.js";
+import { publicActivationDeliveryError } from "./coordination-v3-provider-failure-projection.js";
 import type {
   CoordinationAttentionCandidateCursor,
   CoordinationAttentionCandidateKind,
@@ -873,7 +874,7 @@ export class CoordinationV3ReadModel {
 
       const activationSelection = selection("activation", "id");
       const activationRows = trimUnscopedOverflow(this.sqlite.prepare(`
-        SELECT id, agent_id, kind, state, delivery_failures, last_delivery_error,
+        SELECT id, agent_id, kind, state, delivery_failures,
           provider_failure_category, available_at, created_at, updated_at
         FROM agent_activations
         WHERE project_id = ? AND (? IS NULL OR scope_key = ?) ${activationSelection.sql}
@@ -884,7 +885,7 @@ export class CoordinationV3ReadModel {
         ...activationSelection.params, queryLimit,
       ) as Array<{
         id: string; agent_id: string; kind: string; state: string;
-        delivery_failures: number; last_delivery_error: string | null; available_at: string;
+        delivery_failures: number; available_at: string;
         provider_failure_category: string | null;
         created_at: string; updated_at: string;
       }>);
@@ -1263,17 +1264,30 @@ export class CoordinationV3ReadModel {
       if (input.kind === "activation") {
         const row = this.sqlite.prepare(`
           SELECT id, kind, priority, dispatch_policy, prompt_class, delivery_failures, terminal_outcome,
-            last_delivery_error, payload_json, terminal_at
+            last_delivery_error, provider_failure_category,
+            EXISTS (
+              SELECT 1 FROM scheduler_run_activations attached
+              JOIN scheduler_runs scheduler ON scheduler.id = attached.run_id
+              WHERE attached.activation_id = agent_activations.id
+                AND scheduler.provider_failure_json IS NOT NULL
+            ) AS has_provider_failure,
+            payload_json, terminal_at
           FROM agent_activations
           WHERE id = ? AND project_id = ? AND (? IS NULL OR scope_key = ?)
         `).get(input.recordId, input.projectId, scopeKey ?? null, scopeKey ?? null) as {
           id: string; kind: string; priority: number; dispatch_policy: string; prompt_class: string;
           delivery_failures: number; terminal_outcome: string | null; last_delivery_error: string | null;
+          provider_failure_category: string | null; has_provider_failure: number;
           payload_json: string; terminal_at: string | null;
         } | undefined;
+        const lastDeliveryError = row ? publicActivationDeliveryError({
+          lastDeliveryError: row.last_delivery_error,
+          providerFailureCategory: row.provider_failure_category,
+          hasProviderFailure: Boolean(row.has_provider_failure),
+        }) : undefined;
         return row ? inspectorDetails(["Activation ID", row.id], ["Kind", row.kind], ["Priority", row.priority],
           ["Dispatch", row.dispatch_policy], ["Prompt class", row.prompt_class], ["Delivery failures", row.delivery_failures],
-          ["Terminal outcome", row.terminal_outcome], ["Last error", row.last_delivery_error],
+          ["Terminal outcome", row.terminal_outcome], ["Last error", lastDeliveryError],
           ["Payload", inspectorJson(row.payload_json)], ["Terminal time", row.terminal_at]) : undefined;
       }
       if (input.kind === "run") {
@@ -1281,15 +1295,11 @@ export class CoordinationV3ReadModel {
           SELECT scheduler.id, scheduler.status, scheduler.fencing_token, scheduler.prompt_injection_state,
             scheduler.context_disposition, scheduler.lease_expires_at, scheduler.terminal_at,
             CASE WHEN scheduler.provider_failure_json IS NULL THEN 0 ELSE 1 END AS has_provider_failure,
-            json_extract(scheduler.provider_failure_json, '$.category') AS provider_failure_category,
-            (
-              SELECT activation.last_delivery_error
-              FROM scheduler_run_activations attached
-              JOIN agent_activations activation ON activation.id = attached.activation_id
-              WHERE attached.run_id = scheduler.id AND activation.last_delivery_error IS NOT NULL
-              ORDER BY activation.updated_at DESC, activation.id DESC
-              LIMIT 1
-            ) AS provider_failure_summary,
+            json_extract(
+              CASE WHEN json_valid(scheduler.provider_failure_json)
+                THEN scheduler.provider_failure_json ELSE '{}' END,
+              '$.category'
+            ) AS provider_failure_category,
             provider.execution_id, provider.prompt_hash, execution.status AS execution_status,
             execution.wake_cause, execution.completed_at
           FROM scheduler_runs scheduler
@@ -1303,12 +1313,10 @@ export class CoordinationV3ReadModel {
           execution_status: string | null; wake_cause: string | null; completed_at: string | null;
           has_provider_failure: 0 | 1;
           provider_failure_category: string | null;
-          provider_failure_summary: string | null;
         } | undefined;
-        const providerFailureSummary = row?.provider_failure_summary
-          ?? (row?.has_provider_failure
-            ? publicProviderFailureSummary(undefined, row.provider_failure_category ?? "unknown")
-            : undefined);
+        const providerFailureSummary = row?.has_provider_failure
+          ? publicProviderFailureSummary(undefined, row.provider_failure_category ?? "unknown")
+          : undefined;
         return row ? inspectorDetails(["Execution Run ID", row.execution_id], ["Scheduler Run ID", row.id],
           ["Scheduler status", row.status], ["Execution projection status", row.execution_status], ["Wake cause", row.wake_cause],
           ["Fence", row.fencing_token], ["Prompt injection", row.prompt_injection_state],

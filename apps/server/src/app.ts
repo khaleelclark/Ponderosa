@@ -395,7 +395,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       category: "provider",
       severity: "attention",
       title: `${engines.get(engineId)?.adapter.displayName ?? engineId} is unavailable`,
-      body: providerUnavailableNotificationBody(denial.detail),
+      body: providerUnavailableNotificationBody(denial.detail, denial.failureCategory),
       action: { kind: "open_settings", targetId: engineId },
     });
     if (!providerEnabled(engineId)) resolveOperationalNotification(`provider:${engineId}:unavailable`);

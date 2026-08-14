@@ -8,6 +8,7 @@ import type {
   PendingActivationV3View,
   TerminalActivationV3View,
 } from "./coordination-v3-types.js";
+import { publicActivationDeliveryError } from "./coordination-v3-provider-failure-projection.js";
 
 export class CoordinationV3ActivationReadModel {
   constructor(private readonly sqlite: Database.Database) {}
@@ -115,6 +116,13 @@ export class CoordinationV3ActivationReadModel {
       SELECT activation.id, activation.project_id, activation.agent_id,
         activation.kind, activation.state, activation.scope_key,
         activation.delivery_failures, activation.last_delivery_error,
+        activation.provider_failure_category,
+        EXISTS (
+          SELECT 1 FROM scheduler_run_activations attached
+          JOIN scheduler_runs scheduler ON scheduler.id = attached.run_id
+          WHERE attached.activation_id = activation.id
+            AND scheduler.provider_failure_json IS NOT NULL
+        ) AS has_provider_failure,
         activation.terminal_outcome, activation.updated_at,
         COALESCE(json_extract(runtime.payload_json, '$.communication.eventId'), runtime.id)
           AS communication_event_id,
@@ -154,31 +162,38 @@ export class CoordinationV3ActivationReadModel {
       scope_key: string | null;
       delivery_failures: number;
       last_delivery_error: string | null;
+      provider_failure_category: string | null;
+      has_provider_failure: number;
       updated_at: string;
       communication_event_id: string;
       communication_intent: string;
       superseded_by_retry: number;
       terminal_outcome: ActivationTerminalOutcome | null;
     }>;
-    return rows.map((row) => ({
-      id: row.id,
-      projectId: row.project_id,
-      agentId: row.agent_id,
-      kind: row.kind,
-      state: row.state,
-      ...(row.scope_key ? { scopeKey: row.scope_key } : {}),
-      communicationEventId: row.communication_event_id,
-      communicationIntent: row.communication_intent,
-      ...(row.superseded_by_retry ? { supersededByRetry: true } : {}),
-      ...(row.terminal_outcome
-        ? { terminalOutcome: row.terminal_outcome }
-        : {}),
-      deliveryFailures: row.delivery_failures,
-      ...(row.last_delivery_error
-        ? { lastDeliveryError: row.last_delivery_error }
-        : {}),
-      updatedAt: row.updated_at,
-    }));
+    return rows.map((row) => {
+      const lastDeliveryError = publicActivationDeliveryError({
+        lastDeliveryError: row.last_delivery_error,
+        providerFailureCategory: row.provider_failure_category,
+        hasProviderFailure: Boolean(row.has_provider_failure),
+      });
+      return {
+        id: row.id,
+        projectId: row.project_id,
+        agentId: row.agent_id,
+        kind: row.kind,
+        state: row.state,
+        ...(row.scope_key ? { scopeKey: row.scope_key } : {}),
+        communicationEventId: row.communication_event_id,
+        communicationIntent: row.communication_intent,
+        ...(row.superseded_by_retry ? { supersededByRetry: true } : {}),
+        ...(row.terminal_outcome
+          ? { terminalOutcome: row.terminal_outcome }
+          : {}),
+        deliveryFailures: row.delivery_failures,
+        ...(lastDeliveryError ? { lastDeliveryError } : {}),
+        updatedAt: row.updated_at,
+      };
+    });
   }
 
   terminalActivations(projectId?: string, limit = 100): TerminalActivationV3View[] {
@@ -197,7 +212,14 @@ export class CoordinationV3ActivationReadModel {
           SELECT 1 FROM activation_delivery_retry_lineage retry
           WHERE retry.predecessor_activation_id = agent_activations.id
         ) AS superseded_by_retry,
-        last_delivery_error, terminal_at
+        last_delivery_error, provider_failure_category,
+        EXISTS (
+          SELECT 1 FROM scheduler_run_activations attached
+          JOIN scheduler_runs scheduler ON scheduler.id = attached.run_id
+          WHERE attached.activation_id = agent_activations.id
+            AND scheduler.provider_failure_json IS NOT NULL
+        ) AS has_provider_failure,
+        terminal_at
       FROM agent_activations
       WHERE terminal_outcome IS NOT NULL AND (? IS NULL OR project_id = ?)
       ORDER BY terminal_at DESC, id DESC LIMIT ?
@@ -218,27 +240,36 @@ export class CoordinationV3ActivationReadModel {
       terminal_outcome: ActivationTerminalOutcome;
       delivery_failures: number;
       last_delivery_error: string | null;
+      provider_failure_category: string | null;
+      has_provider_failure: number;
       terminal_at: string;
     }>;
-    return rows.map((row) => ({
-      id: row.id,
-      projectId: row.project_id,
-      agentId: row.agent_id,
-      kind: row.kind,
-      state: row.state,
-      ...(row.scope_key ? { scopeKey: row.scope_key } : {}),
-      ...(row.communication_event_id
-        ? { communicationEventId: row.communication_event_id }
-        : {}),
-      ...(row.communication_intent
-        ? { communicationIntent: row.communication_intent }
-        : {}),
-      ...(row.superseded_by_retry ? { supersededByRetry: true } : {}),
-      outcome: row.terminal_outcome,
-      deliveryFailures: row.delivery_failures,
-      ...(row.last_delivery_error ? { lastDeliveryError: row.last_delivery_error } : {}),
-      terminalAt: row.terminal_at,
-    }));
+    return rows.map((row) => {
+      const lastDeliveryError = publicActivationDeliveryError({
+        lastDeliveryError: row.last_delivery_error,
+        providerFailureCategory: row.provider_failure_category,
+        hasProviderFailure: Boolean(row.has_provider_failure),
+      });
+      return {
+        id: row.id,
+        projectId: row.project_id,
+        agentId: row.agent_id,
+        kind: row.kind,
+        state: row.state,
+        ...(row.scope_key ? { scopeKey: row.scope_key } : {}),
+        ...(row.communication_event_id
+          ? { communicationEventId: row.communication_event_id }
+          : {}),
+        ...(row.communication_intent
+          ? { communicationIntent: row.communication_intent }
+          : {}),
+        ...(row.superseded_by_retry ? { supersededByRetry: true } : {}),
+        outcome: row.terminal_outcome,
+        deliveryFailures: row.delivery_failures,
+        ...(lastDeliveryError ? { lastDeliveryError } : {}),
+        terminalAt: row.terminal_at,
+      };
+    });
   }
 
   activationPayloads(

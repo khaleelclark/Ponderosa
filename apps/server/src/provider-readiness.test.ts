@@ -329,6 +329,47 @@ describe("provider readiness truth", () => {
     await fixture.app.close();
   });
 
+  it("rebuilds restart notifications from the persisted structured provider category", async () => {
+    const restricted = "RESTART_NOTIFICATION_RAW_MARKER_83aa rate limit reached access_token=private-restart-token";
+    const failed = await providerRunFixture({
+      adapter: providerRunAdapter({
+        outcome: "authentication_failure",
+        errorMessage: restricted,
+      }),
+    });
+    await waitForAgentRunStatus(failed.store, failed.agent.id, "failed");
+    expect((await failed.app.inject({ method: "GET", url: "/api/notifications" })).json())
+      .toEqual([expect.objectContaining({
+        body: expect.stringContaining("Provider authentication was rejected."),
+      })]);
+    await failed.app.close();
+
+    const persistedEvidence = readFileSync(
+      path.join(failed.dataDir, "engine-availability.jsonl"),
+      "utf8",
+    );
+    expect(persistedEvidence).toContain('"failureCategory":"authentication"');
+    expect(persistedEvidence).toContain("RESTART_NOTIFICATION_RAW_MARKER_83aa");
+
+    const restarted = createServer({
+      dataDir: failed.dataDir,
+      engines: [{
+        adapter: adapter(),
+        authStatus: async () => ({ authenticated: true }),
+      }],
+      logger: false,
+    });
+    await restarted.ready();
+    const notifications = await restarted.inject({ method: "GET", url: "/api/notifications" });
+    expect(notifications.json()).toEqual([expect.objectContaining({
+      body: expect.stringContaining("Provider authentication was rejected."),
+    })]);
+    expect(notifications.body).not.toMatch(
+      /RESTART_NOTIFICATION_RAW_MARKER_83aa|private-restart-token|access_token|rate limit reached|Provider execution failed/u,
+    );
+    await restarted.close();
+  });
+
   it("does not record positive reachability for failed or cancelled provider Runs", async () => {
     const failed = await providerRunFixture({
       adapter: providerRunAdapter({ outcome: "authentication_failure" }),
@@ -758,6 +799,67 @@ describe("provider readiness truth", () => {
     expect(`${unknown.body}\n${authentication.body}`).not.toMatch(
       /MODEL_VALIDATION_RAW_MARKER_91d4|private-validation-token|access_token|rate limit reached/u,
     );
+    await app.close();
+  });
+
+  it("returns only structured static failures for rejected provider commands", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-provider-command-boundary-"));
+    roots.push(root);
+    const dataDir = path.join(root, "data");
+    const hostPath = path.join(root, "workspace");
+    mkdirSync(hostPath, { recursive: true });
+    const store = new AgentStore(dataDir);
+    const project = store.createProject({
+      label: "Provider Command Boundary",
+      hostPath,
+      defaultEngine: "codex",
+    });
+    const agent = store.createAgent(project.id, {
+      title: "Provider Command Agent",
+      engine: "codex",
+      conversationId: project.lastConversationId,
+    });
+    const restricted = "PROVIDER_COMMAND_RAW_MARKER_d03f rate limit reached access_token=private-command-token";
+    const commandAdapter: Adapter = {
+      ...adapter(),
+      openSession: async () => {
+        throw Object.assign(new Error(restricted), {
+          code: "authentication_failed",
+          catalogVersion: `private-catalog-${restricted}`,
+        });
+      },
+    };
+    const app = createServer({
+      dataDir,
+      store,
+      engines: [{ adapter: commandAdapter }],
+      logger: false,
+    });
+    await app.ready();
+
+    const responses = [
+      await app.inject({
+        method: "POST",
+        url: `/api/projects/${project.id}/provider-commands`,
+        payload: { engineId: "codex", name: "status" },
+      }),
+      await app.inject({
+        method: "POST",
+        url: `/api/agents/${agent.id}/provider-commands`,
+        payload: { name: "status" },
+      }),
+    ];
+    for (const response of responses) {
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        error: "Provider authentication was rejected.",
+        category: "authentication",
+        remediation: "Check the provider subscription and sign-in, then retry.",
+      });
+      expect(response.body).not.toMatch(
+        /PROVIDER_COMMAND_RAW_MARKER_d03f|private-command-token|private-catalog|access_token|rate limit reached/u,
+      );
+    }
     await app.close();
   });
 

@@ -29,6 +29,7 @@ const schemaExtensions = [
   "0005_required_reply_obligations.sql",
   "0006_delivery_idempotency.sql",
   "0007_structured_provider_failure_state.sql",
+  "0008_public_activation_provider_failures.sql",
 ] as const;
 const legacyMigrationTable = "_migrations";
 const schemaVersionTable = "_schema_version";
