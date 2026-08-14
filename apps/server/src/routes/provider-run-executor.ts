@@ -1238,12 +1238,25 @@ export function startProviderRunExecution(
               app.log.error({ err: error, agentId: agent.id, runId }, "continuation rollover teardown remains pending");
             }
           }
-          const continued = coordinationV3.prepareContextRolloverContinuation({
-            id: runRollover!.id,
-          });
-          if (continued.state === "continuation_ready") notifyScheduler();
-          else if (continued.completionReason === "no_continuation_required" && continued.handoffEventId) {
-            store.consumeContinuationHandoff(agent.id, continued.handoffEventId, runId);
+          const retiringRollover = coordinationV3.contextRollover(runRollover!.id);
+          if (retiringRollover?.state === "session_retiring") {
+            try {
+              const continued = coordinationV3.prepareContextRolloverContinuation({
+                id: retiringRollover.id,
+              });
+              if (continued.state === "continuation_ready") notifyScheduler();
+              else if (continued.completionReason === "no_continuation_required" && continued.handoffEventId) {
+                store.consumeContinuationHandoff(agent.id, continued.handoffEventId, runId);
+              }
+            } catch (error) {
+              // Cancellation may fence the Run after teardown started but
+              // before continuation preparation. Its SQLite transaction owns
+              // the rollover terminal state and pending Activation cleanup.
+              if (!activeRun.v3SchedulerRunId ||
+                  !coordinationV3.isSchedulerRunCancelled(activeRun.v3SchedulerRunId)) {
+                throw error;
+              }
+            }
           }
         } else if (policyRefreshSucceeded) {
           // Workspace/Project policy changes still invalidate the retained
@@ -1261,18 +1274,15 @@ export function startProviderRunExecution(
             }
           }
         } else if (rolloverRequested &&
-            (controller.signal.aborted || schedulerCancelled || handoffActivationAcknowledged)) {
+            (runError || controller.signal.aborted || schedulerCancelled || handoffActivationAcknowledged)) {
           const abandonedHandoff = store.continuationHandoffForRun(agent.id, runId);
           if (abandonedHandoff && !abandonedHandoff.consumedAt) {
             store.consumeContinuationHandoff(agent.id, abandonedHandoff.id, runId);
           }
-          if (runRollover && ["requested", "handoff_committed"].includes(runRollover.state)) {
-            coordinationV3.failContextRollover(
-              runRollover.id,
-              controller.signal.aborted || schedulerCancelled ? "outcome_unknown" : "failed",
-              runError ?? "provider Run ended before a safe context rollover handoff could continue",
-            );
-          }
+          // Scheduler Run failure/cancellation owns the rollover transition in
+          // the same fenced SQLite transaction. This executor only cleans up a
+          // handoff that never became canonical; it must not race or overwrite
+          // that terminal outcome.
         }
         // Teardown above may yield while cancellation advances the scheduler
         // fence. Re-read canonical status and exact Run ownership before any

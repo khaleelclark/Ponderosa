@@ -489,6 +489,11 @@ export class CoordinationV3SchedulerLeaseAuthority {
             AND state = 'continuation_ready'
             AND replacement_verified_at IS NULL
         `).run(now, now, run.id);
+        this.terminalizeUncommittedRolloverForAbandonedRun(
+          run.id,
+          now,
+          "rollover Run lease expired after prompt injection before durable handoff commit",
+        );
         this.sqlite.prepare(`
           UPDATE scheduler_runs
           SET status = 'outcome_unknown', updated_at = ?, terminal_at = ?
@@ -523,5 +528,64 @@ export class CoordinationV3SchedulerLeaseAuthority {
       }
     }
     return { retried, outcomeUnknown };
+  }
+
+  /** An injected source or handoff Run cannot be retried as ordinary delivery
+   * after its lease is abandoned. Terminalize only a rollover that has not
+   * committed a handoff, preserving the separate recovery authority for
+   * committed handoffs and unverified replacement candidates. */
+  private terminalizeUncommittedRolloverForAbandonedRun(
+    runId: string,
+    now: string,
+    error: string,
+  ): void {
+    const rows = this.sqlite.prepare(`
+      SELECT rollover.id
+      FROM context_rollovers rollover
+      WHERE rollover.state = 'requested'
+        AND rollover.handoff_event_id IS NULL
+        AND rollover.agent_id = (
+          SELECT agent_id FROM scheduler_runs WHERE id = ?
+        )
+        AND rollover.project_id = (
+          SELECT project_id FROM scheduler_runs WHERE id = ?
+        )
+        AND (
+          rollover.source_run_id = ?
+          OR EXISTS (
+            SELECT 1
+            FROM scheduler_run_activations attached
+            JOIN agent_activations activation
+              ON activation.id = attached.activation_id
+              AND activation.kind = 'context_rollover_handoff'
+            JOIN activation_sources source
+              ON source.activation_id = activation.id
+              AND source.source_kind = 'context_rollover'
+              AND source.source_id = rollover.id
+            WHERE attached.run_id = ?
+          )
+        )
+    `).all(runId, runId, runId, runId) as Array<{ id: string }>;
+    if (rows.length === 0) return;
+    const ids = rows.map((row) => row.id);
+    const placeholders = ids.map(() => "?").join(", ");
+    this.sqlite.prepare(`
+      UPDATE context_rollovers
+      SET state = 'outcome_unknown', last_error = ?, updated_at = ?,
+        terminal_at = COALESCE(terminal_at, ?)
+      WHERE id IN (${placeholders}) AND state = 'requested'
+        AND handoff_event_id IS NULL
+    `).run(error, now, now, ...ids);
+    this.sqlite.prepare(`
+      UPDATE agent_activations
+      SET state = 'cancelled', updated_at = ?, terminal_at = ?
+      WHERE kind = 'context_rollover_handoff'
+        AND state IN ('pending','retry_pending')
+        AND id IN (
+          SELECT activation_id FROM activation_sources
+          WHERE source_kind = 'context_rollover'
+            AND source_id IN (${placeholders})
+        )
+    `).run(now, now, ...ids);
   }
 }

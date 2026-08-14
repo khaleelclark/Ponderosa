@@ -63,6 +63,15 @@ interface ProviderCommandRoutesContext {
   providerProcessAuthority: ProviderProcessAuthority;
 }
 
+export function authorizedManualRolloverConversationId(
+  agent: { conversationIds: readonly string[] },
+  sourceConversationId?: string,
+): string | undefined {
+  return sourceConversationId && agent.conversationIds.includes(sourceConversationId)
+    ? sourceConversationId
+    : undefined;
+}
+
 export function registerProviderCommandRoutes(
   app: FastifyInstance,
   context: ProviderCommandRoutesContext,
@@ -455,12 +464,16 @@ app.post<{ Params: { id: string } }>("/api/agents/:id/compact", async (request, 
   const sourceCommunication = latestRun.communicationEventId
     ? store.getCommunicationEvent(agent.projectId, latestRun.communicationEventId)
     : undefined;
+  const rolloverConversationId = authorizedManualRolloverConversationId(
+    agent,
+    sourceCommunication?.conversationId,
+  );
   let rolloverBoundary: ReturnType<typeof store.bindContextRolloverBoundary>;
   try {
     rolloverBoundary = store.bindContextRolloverBoundary({
       agentId: agent.id,
-      ...(sourceCommunication?.conversationId
-        ? { currentConversationId: sourceCommunication.conversationId }
+      ...(rolloverConversationId
+        ? { currentConversationId: rolloverConversationId }
         : {}),
       submittedCommunicationEventIds: acceptedSessionTail,
     });
@@ -486,9 +499,15 @@ app.post<{ Params: { id: string } }>("/api/agents/:id/compact", async (request, 
     recentTail: rolloverBoundary.recentTail,
     sourceRunId: latestRun.id,
     sourceActivationIds: [],
-    scopeKey: `context-rollover-human:${agent.id}:${persisted.sessionId}`,
-    ...(sourceCommunication?.conversationId
-      ? { conversationId: sourceCommunication.conversationId }
+    // Scheduler authorization accepts only canonical conversation or Agent
+    // scopes. The rollover ID and provider generation already provide durable
+    // dedupe; inventing a command-specific scope makes the handoff Activation
+    // unauthorized and can strand the rollover in requested forever.
+    scopeKey: rolloverConversationId
+      ? `conversation:${rolloverConversationId}`
+      : `agent:${agent.id}`,
+    ...(rolloverConversationId
+      ? { conversationId: rolloverConversationId }
       : {}),
   });
   notifyScheduler();

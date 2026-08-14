@@ -70,20 +70,31 @@ export class CoordinationV3ContextRolloverAuthority {
         WHERE agent_id = ? AND provider_session_generation = ?
         ORDER BY created_at DESC, rowid DESC LIMIT 1
       `).get(input.agentId, input.providerSessionGeneration) as RolloverRow | undefined;
-      // A provider generation owns exactly one rollover record, including after
-      // failure. Recovery reuses that durable record and its handoff; another
-      // pressure observation from the same opaque generation must not create a
-      // second replacement attempt or a rollover loop.
+      // Automatic pressure owns at most one rollover attempt for an opaque
+      // provider generation, including after failure, so a failed handoff can
+      // never manufacture a rollover loop. A human may explicitly retry only
+      // an attempt that failed before either a handoff or replacement candidate
+      // became durable. That retry receives a new rollover ID and fresh frozen
+      // boundary; recovery of a committed handoff remains bound to the original
+      // record and can never be mistaken for a manual retry.
       if (existing) {
+        const terminalFailure = ["failed", "outcome_unknown"].includes(existing.state);
+        const explicitSafeRetry = input.triggerKind === "human" &&
+          terminalFailure &&
+          existing.handoff_event_id === null &&
+          existing.replacement_run_id === null;
         if (existing.project_id !== input.projectId ||
             existing.old_provider_session_id !== input.oldProviderSessionId ||
-            existing.compaction_cutoff_ordinal !== input.compactionCutoffOrdinal ||
-            existing.compaction_cutoff_event_id !== input.compactionCutoffEventId ||
-            existing.recent_tail_event_ids_json !== JSON.stringify(input.recentTail.map((binding) => binding.communicationEventId)) ||
-            existing.recent_tail_hashes_json !== JSON.stringify(input.recentTail.map((binding) => binding.contentSha256))) {
+            (!terminalFailure && (
+              existing.compaction_cutoff_ordinal !== input.compactionCutoffOrdinal ||
+              existing.compaction_cutoff_event_id !== input.compactionCutoffEventId ||
+              existing.recent_tail_event_ids_json !== JSON.stringify(input.recentTail.map((binding) => binding.communicationEventId)) ||
+              existing.recent_tail_hashes_json !== JSON.stringify(input.recentTail.map((binding) => binding.contentSha256))))) {
           throw new Error("context rollover provider generation replay conflicts with its durable owner");
         }
-        return { rollover: this.view(existing), created: false };
+        if (!explicitSafeRetry) {
+          return { rollover: this.view(existing), created: false };
+        }
       }
       const id = randomUUID();
       this.sqlite.prepare(`
