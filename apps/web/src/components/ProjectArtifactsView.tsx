@@ -56,7 +56,7 @@ import { uniqueBy } from "../collections";
 import { queryKeys } from "../queryKeys";
 import { AgentsTab } from "./AgentsTab";
 import { COLLECTION_PROGRESSIVE_BATCH_SIZE } from "./CollectionPrimitives";
-import { artifactDisplayLabel } from "./filePreview/ArtifactsPane";
+import { artifactDisplayLabel, artifactSearchText } from "./filePreview/artifactPresentation";
 import {
   ProjectOverview,
   projectHealthDetail,
@@ -75,6 +75,7 @@ import {
   PROJECT_FILE_CATEGORIES,
   matchesProjectFileCategories,
   projectArtifactGroup,
+  projectArtifactDisplayPath,
   projectFileCategory,
   projectOutputKinds,
   type ProjectFileCategory,
@@ -232,11 +233,7 @@ export function ProjectArtifactsView({
           !normalizedFilter ||
           [
             agent?.title,
-            artifactDisplayLabel(artifact),
-            artifact.path,
-            artifact.sourcePath,
-            artifact.summary,
-            artifact.kind,
+            artifactSearchText(artifact, project.hostPath),
           ]
             .filter(Boolean)
             .join(" ")
@@ -244,7 +241,7 @@ export function ProjectArtifactsView({
             .includes(normalizedFilter)
         );
       }),
-    [fileCategories, records, normalizedFilter],
+    [fileCategories, records, normalizedFilter, project.hostPath],
   );
   const fileCategoryOptions = useMemo(() => {
     const counts = new Map<ProjectFileCategory, number>(
@@ -611,7 +608,11 @@ export function ProjectArtifactsView({
                       sx={{ display: "grid", gap: 0.75 }}
                     >
                       {group.records.map(({ agent, artifact }) => {
-                        const label = artifactDisplayLabel(artifact);
+                        const displayPath = projectArtifactDisplayPath(
+                          artifact,
+                          project.hostPath,
+                        );
+                        const label = artifactDisplayLabel(artifact, displayPath);
                         const originAgentId =
                           artifact.originAgentId ?? artifact.agentId;
                         const owner =
@@ -637,8 +638,8 @@ export function ProjectArtifactsView({
                             }}
                           >
                             <ListItemButton
-                              aria-label={`Open ${label} (${artifact.sourcePath ?? artifact.path}) from ${owner}`}
-                              title={artifact.sourcePath ?? artifact.path}
+                              aria-label={`Open ${label} (${displayPath}) from ${owner}`}
+                              title={displayPath}
                               disabled={!canOpen}
                               onContextMenu={event => {
                                 if (!agent) return;
@@ -668,6 +669,7 @@ export function ProjectArtifactsView({
                               <ListItemText
                                 primary={label}
                                 secondary={[
+                                  displayPath,
                                   owner,
                                   artifact.executionId
                                     ? `Run ${artifact.executionId.slice(0, 8)}`
@@ -847,7 +849,10 @@ export function ProjectArtifactsView({
               sx={{ m: 0 }}
             >
               {previewArtifact
-                ? artifactDisplayLabel(previewArtifact)
+                ? artifactDisplayLabel(
+                    previewArtifact,
+                    projectArtifactDisplayPath(previewArtifact, project.hostPath),
+                  )
                 : "File Preview"}
             </Typography>
             {previewArtifact ? (
@@ -883,6 +888,7 @@ export function ProjectArtifactsView({
             <ProjectArtifactPreview
               key={previewArtifact.id}
               artifact={previewArtifact}
+              projectRoot={project.hostPath}
               agent={agents.find(
                 candidate =>
                   candidate.id ===

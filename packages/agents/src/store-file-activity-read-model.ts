@@ -108,6 +108,8 @@ export class AgentFileActivityReadModel {
         byExecution.get(item.executionId) ??
         new Map<string, ResponseFileActivityDto>();
       byPath.set(item.event.path, {
+        // Canonical authority/deduplication keeps the exact provider value.
+        // Ordinary clients must derive presentation from the Project root.
         path: item.event.path,
         kind: item.event.kind,
         status,

@@ -409,6 +409,7 @@ export function ProjectShell({
     const running = Boolean(detail?.runs?.some((run) => run.status === "running" || run.status === "compacting"));
     main = <WorkspaceReviewPane
       projectId={projectId}
+      projectRoot={project.hostPath}
       agentId={route.agentId}
       files={detail?.changedFiles ?? []}
       running={running}

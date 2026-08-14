@@ -283,6 +283,7 @@ export function AgentWorkReceipt({
                     onOpenFile={onOpenFile}
                     onOpenFileInNewTab={onOpenFileInNewTab}
                     projectId={projectId}
+                    projectRoot={projectRoot}
                   />
                 );
               }

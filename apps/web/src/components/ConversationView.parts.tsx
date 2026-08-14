@@ -69,6 +69,7 @@ function ConversationMessageComponent({
   onMentionAgent,
   onVisible,
   projectId,
+  projectRoot,
   activeRunId,
   operatorProfile,
 }: {
@@ -86,6 +87,7 @@ function ConversationMessageComponent({
   onMentionAgent?(agentId: string): void;
   onVisible?(visible: boolean): void;
   projectId: string;
+  projectRoot?: string;
   activeRunId?: string;
   operatorProfile?: OperatorProfileDto;
 }): JSX.Element {
@@ -198,6 +200,7 @@ function ConversationMessageComponent({
               <ResponseFileActivity
                 files={message.fileActivity}
                 projectId={projectId}
+                projectRoot={projectRoot}
                 onOpenFile={
                   message.authorAgentId && onOpenFileActivity
                     ? file => onOpenFileActivity(message.authorAgentId!, file)
@@ -378,6 +381,7 @@ function MainConversationTimeline({
   mainTimeline,
   operatorProfile,
   projectId,
+  projectRoot,
   healthByAgentId,
   agentTitle,
   agentIdForHandle,
@@ -390,6 +394,7 @@ function MainConversationTimeline({
   mainTimeline: MainTimelineEntry[];
   operatorProfile?: OperatorProfileDto;
   projectId: string;
+  projectRoot?: string;
   healthByAgentId: Map<string, AgentHealthDto>;
   agentTitle(agentId: string | undefined): string;
   agentIdForHandle(handle: string): string | undefined;
@@ -443,6 +448,7 @@ function MainConversationTimeline({
           message={message}
           conversation="main"
           projectId={projectId}
+          projectRoot={projectRoot}
           activeRunId={
             message.authorAgentId
               ? healthByAgentId.get(message.authorAgentId)
@@ -468,6 +474,7 @@ function CollaborationTimeline({
   operationalEvents,
   collaborationMessages,
   projectId,
+  projectRoot,
   healthByAgentId,
   operatorProfile,
   agentTitle,
@@ -479,6 +486,7 @@ function CollaborationTimeline({
   operationalEvents: TeamOperationalEventDto[];
   collaborationMessages: ConversationMessageDto[];
   projectId: string;
+  projectRoot?: string;
   healthByAgentId: Map<string, AgentHealthDto>;
   operatorProfile?: OperatorProfileDto;
   agentTitle(agentId: string | undefined): string;
@@ -685,6 +693,7 @@ function CollaborationTimeline({
               message={message}
               conversation="collaboration"
               projectId={projectId}
+              projectRoot={projectRoot}
               activeRunId={
                 message.authorAgentId
                   ? healthByAgentId.get(message.authorAgentId)

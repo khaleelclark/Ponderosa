@@ -113,24 +113,6 @@ export function runtimeIdentityPrompt(
   ].join("\n");
 }
 
-function sharedRequestCompletionPrompt(): string {
-  return contextSection("RESPONSE CONTRACT", "ACTION REQUIRED", [
-    "Before this Run ends, call ponderosa_message({text: \"<final answer>\"}) exactly once with the completed result or material blocker.",
-    "Ponderosa will publish this shared Project-chat reply as a Broadcast. Ordinary runtime output remains Work log only.",
-    "A reply does not schedule future work. Never promise to contact, notify, check back, continue, or act later unless a Ponderosa capability response in this Run explicitly confirms that a durable wake source was created.",
-    "Without that confirmation, complete the work now or truthfully say that you cannot self-resume and what the user must do next.",
-  ]);
-}
-
-function directUserRequestCompletionPrompt(): string {
-  return contextSection("RESPONSE CONTRACT", "ACTION REQUIRED", [
-    "Before this Run ends, call ponderosa_message({text: \"<reply>\"}) exactly once with the answer, question, completed result, or material blocker.",
-    "Ponderosa will keep this reply private to the user and this Agent. Ordinary runtime output remains Work log only.",
-    "A reply does not schedule future work. Never promise to contact, notify, check back, continue, or act later unless a Ponderosa capability response in this Run explicitly confirms that a durable wake source was created.",
-    "Without that confirmation, complete the work now or truthfully say that you cannot self-resume and what the user must do next.",
-  ]);
-}
-
 function teamDirectoryPrompt(directory: TeamDirectoryDto): string {
   return contextSection("TEAM DIRECTORY", "ON-DEMAND REFERENCE", [
     `${directory.agents.length} visible Agent${directory.agents.length === 1 ? "" : "s"} are currently in scope.`,
@@ -348,12 +330,10 @@ export {
   contextSection,
   continuationPrompt,
   conversationPrompt,
-  directUserRequestCompletionPrompt,
   individualChatPrompt,
   managerRelationshipPrompt,
   mergeScopedContextSources,
   sharedBroadcastContextPrompt,
-  sharedRequestCompletionPrompt,
   teamDirectoryPrompt,
 };
 export type {

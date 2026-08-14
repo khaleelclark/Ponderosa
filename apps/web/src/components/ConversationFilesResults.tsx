@@ -31,18 +31,21 @@ import { api } from "../api";
 import { uniqueBy } from "../collections";
 import { queryKeys } from "../queryKeys";
 import { ProjectArtifactPreview } from "./filePreview/ArtifactPreview";
-import { artifactDisplayLabel } from "./filePreview/ArtifactsPane";
+import { artifactDisplayLabel, artifactSearchText } from "./filePreview/artifactPresentation";
 import {
+  projectArtifactDisplayPath,
   projectArtifactGroup,
   projectOutputKinds,
 } from "./ProjectArtifactsView.helpers";
 
 export function ConversationFilesResults({
   projectId,
+  projectRoot,
   conversationId,
   agents,
 }: {
   projectId: string;
+  projectRoot: string;
   conversationId: string;
   agents: AgentDto[];
 }): JSX.Element {
@@ -92,11 +95,7 @@ export function ConversationFilesResults({
           !normalizedFilter ||
           [
             owner?.title,
-            artifactDisplayLabel(artifact),
-            artifact.path,
-            artifact.sourcePath,
-            artifact.summary,
-            artifact.kind,
+            artifactSearchText(artifact, projectRoot),
           ]
             .filter(Boolean)
             .join(" ")
@@ -104,7 +103,7 @@ export function ConversationFilesResults({
             .includes(normalizedFilter)
         );
       }),
-    [agentById, normalizedFilter, records],
+    [agentById, normalizedFilter, projectRoot, records],
   );
   const grouped = (["Modified & Created Files", "Results"] as const)
     .map(label => ({
@@ -201,7 +200,11 @@ export function ConversationFilesResults({
                 {group.artifacts.map(artifact => {
                   const ownerId = artifact.originAgentId ?? artifact.agentId;
                   const owner = agentById.get(ownerId);
-                  const label = artifactDisplayLabel(artifact);
+                  const displayPath = projectArtifactDisplayPath(
+                    artifact,
+                    projectRoot,
+                  );
+                  const label = artifactDisplayLabel(artifact, displayPath);
                   return (
                     <Box
                       key={artifact.id}
@@ -217,6 +220,7 @@ export function ConversationFilesResults({
                     >
                       <ListItemButton
                         aria-label={`Preview ${label} from ${owner?.title ?? "Deleted Agent"}`}
+                        title={displayPath}
                         onClick={() => setPreviewArtifact(artifact)}
                         sx={{ minWidth: 0 }}
                       >
@@ -226,6 +230,7 @@ export function ConversationFilesResults({
                       <ListItemText
                         primary={label}
                         secondary={[
+                          displayPath,
                           owner?.title ?? `Deleted Agent · ${ownerId.slice(0, 8)}`,
                           new Date(artifact.createdAt).toLocaleString(),
                         ].join(" · ")}
@@ -302,7 +307,12 @@ export function ConversationFilesResults({
         <DialogTitle id="chat-artifact-preview-title" component="div">
           <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
             <Typography component="h2" variant="h6" noWrap sx={{ minWidth: 0, flex: 1 }}>
-              {previewArtifact ? artifactDisplayLabel(previewArtifact) : "Preview"}
+              {previewArtifact
+                ? artifactDisplayLabel(
+                    previewArtifact,
+                    projectArtifactDisplayPath(previewArtifact, projectRoot),
+                  )
+                : "Preview"}
             </Typography>
             <IconButton aria-label="Close preview" onClick={() => setPreviewArtifact(undefined)}>
               <CloseIcon />
@@ -311,7 +321,11 @@ export function ConversationFilesResults({
         </DialogTitle>
         <DialogContent dividers>
           {previewArtifact ? (
-            <ProjectArtifactPreview artifact={previewArtifact} agent={previewOwner} />
+            <ProjectArtifactPreview
+              artifact={previewArtifact}
+              projectRoot={projectRoot}
+              agent={previewOwner}
+            />
           ) : null}
         </DialogContent>
         <DialogActions>

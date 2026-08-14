@@ -16,11 +16,13 @@ import { useEffect, useState } from "react";
 import { api } from "../../api";
 import { copyText } from "../../clipboard";
 import { queryKeys } from "../../queryKeys";
+import { presentProjectPath } from "../../projectPathPresentation";
 import { telemetryElementId } from "../../telemetryFocus";
 import { ResourceContextMenu } from "../ResourceContextMenu";
 import type { ResourceContextMenuState } from "../ResourceContextMenu";
 import { ChatMessageBody } from "../chat/ChatMessages";
 import { FilePreview } from "../filePreview/FilePreview";
+import { recordedArtifactDiff } from "../filePreview/artifactDiff";
 import { ActivityOutput, RunOutputFullText } from "./ActivityOutput";
 import type { ActivityStreamEntry } from "./activityStream";
 import { ResponseFileActivity } from "./ResponseFileActivity";
@@ -253,6 +255,9 @@ function GroupedActivityRow({
     if (entry.id === focusId) setExpanded(true);
   }, [entry.id, focusId]);
   const fileEntry = entry.kind === "file" ? entry : undefined;
+  const fileDisplayPath = fileEntry
+    ? presentProjectPath(projectRoot ?? "", fileEntry.path).displayPath
+    : undefined;
   const file: ResponseFileActivityDto | undefined = fileEntry ? {
     path: fileEntry.path,
     kind: fileEntry.changeKind,
@@ -307,7 +312,7 @@ function GroupedActivityRow({
     : entry.kind === "tool"
       ? entry.name
       : entry.kind === "file"
-        ? entry.path
+        ? fileDisplayPath!
         : entry.kind === "browser"
           ? browser!.detail
           : entry.detail ?? "";
@@ -325,6 +330,7 @@ function GroupedActivityRow({
         color="inherit"
         startIcon={expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
         aria-expanded={expanded}
+        aria-label={preview ? `${label} ${preview}` : label}
         onClick={() => setExpanded(value => !value)}
         sx={{
           flex: 1,
@@ -380,11 +386,13 @@ function GroupedActivityRow({
       </Stack> : null}
       {file && filePreviewOpen ? <Box sx={{ mt: 0.5 }}>
         <FilePreview
-          title={file.path}
-          path={file.path}
+          title={fileDisplayPath!}
+          path={fileDisplayPath!}
           artifactKind="diff"
           contentType="diff"
-          content={fileQuery.data?.content}
+          content={fileQuery.data
+            ? recordedArtifactDiff(fileQuery.data, fileQuery.data.content, fileDisplayPath!)
+            : undefined}
           loading={fileQuery.isLoading}
           error={fileQuery.isError}
           truncated={fileQuery.data?.truncated}
@@ -597,6 +605,7 @@ export function ResponseRow({
   onOpenFileInNewTab,
   onViewAll,
   projectId,
+  projectRoot,
 }: {
   entry: Extract<ActivityStreamEntry, { kind: "response" }>;
   focusId?: string;
@@ -604,6 +613,7 @@ export function ResponseRow({
   onOpenFileInNewTab?(file: ResponseFileActivityDto): void;
   onViewAll?(): void;
   projectId?: string;
+  projectRoot?: string;
 }): JSX.Element {
   return <Row entry={entry} focusId={focusId} stream="runOutput">
     <RunOutputFullText
@@ -622,6 +632,7 @@ export function ResponseRow({
       onOpenFileInNewTab={onOpenFileInNewTab}
       onViewAll={onViewAll}
       projectId={projectId}
+      projectRoot={projectRoot}
     /> : null}
   </Row>;
 }

@@ -985,6 +985,7 @@ export function ConversationView({
               mainTimeline={visibleMainTimeline}
               operatorProfile={preferencesQuery.data?.profile}
               projectId={conversation.projectId}
+              projectRoot={project?.hostPath}
               healthByAgentId={healthByAgentId}
               agentTitle={agentTitle}
               agentIdForHandle={agentIdForHandle}
@@ -1037,6 +1038,7 @@ export function ConversationView({
                 operationalEvents={operationalEvents}
                 collaborationMessages={collaborationMessages}
                 projectId={conversation.projectId}
+                projectRoot={project?.hostPath}
                 healthByAgentId={healthByAgentId}
                 operatorProfile={preferencesQuery.data?.profile}
                 agentTitle={agentTitle}
@@ -1060,6 +1062,11 @@ export function ConversationView({
         ) : activeView === "files" ? (
           <ConversationFilesResults
             projectId={conversation.projectId}
+            projectRoot={
+              projectsQuery.data?.find(
+                project => project.id === conversation.projectId,
+              )?.hostPath ?? ""
+            }
             conversationId={conversation.id}
             agents={conversationAgents}
           />

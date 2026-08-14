@@ -156,6 +156,7 @@ export function ActivityStreamPane({
         onOpenFileInNewTab={onOpenFileInNewTab}
         onViewAll={onViewAll}
         projectId={projectId}
+        projectRoot={projectRoot}
       />;
       if (entry.kind === "test" || entry.kind === "error" || entry.kind === "browser" || entry.kind === "notice") {
         return <CompactActivityRow key={entry.id} entry={entry} focusId={focusId} />;

@@ -50,6 +50,7 @@ export interface UpdateConversationRequest {
 
 /** Compact execution-scoped file provenance shown beside an agent response. */
 export interface ResponseFileActivityDto {
+  /** Exact provider path retained for file authority/navigation; never present directly in ordinary UI. */
   path: string;
   kind: "create" | "edit" | "delete";
   status: "in_progress" | "completed";

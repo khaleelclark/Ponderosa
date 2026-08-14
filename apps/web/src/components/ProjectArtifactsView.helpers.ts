@@ -1,4 +1,5 @@
 import type { ArtifactDto } from "@ponderosa/core";
+import { presentProjectPath } from "../projectPathPresentation";
 
 export type ProjectFileCategory =
   | "all"
@@ -82,6 +83,14 @@ export const projectOutputKinds = new Set<ArtifactDto["kind"]>([
   "screenshot",
   "generated_file",
 ]);
+
+export function projectArtifactDisplayPath(
+  artifact: Pick<ArtifactDto, "path" | "sourcePath">,
+  projectRoot: string,
+): string {
+  return presentProjectPath(projectRoot, artifact.sourcePath ?? artifact.path)
+    .displayPath;
+}
 
 export function projectArtifactGroup(
   kind: ArtifactDto["kind"],

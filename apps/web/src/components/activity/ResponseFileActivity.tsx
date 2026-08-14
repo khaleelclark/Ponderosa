@@ -2,6 +2,7 @@ import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import { Box, Button, Paper, Stack, Typography } from "@mui/material";
 import type { ResponseFileActivityDto } from "@ponderosa/core";
 import { useState } from "react";
+import { presentProjectPath } from "../../projectPathPresentation";
 import { ResourceContextMenu } from "../ResourceContextMenu";
 import type { ResourceContextMenuState } from "../ResourceContextMenu";
 
@@ -11,12 +12,14 @@ export function ResponseFileActivity({
   onOpenFileInNewTab,
   onViewAll,
   projectId,
+  projectRoot,
 }: {
   files: ResponseFileActivityDto[];
   onOpenFile?(file: ResponseFileActivityDto): void;
   onOpenFileInNewTab?(file: ResponseFileActivityDto): void;
   onViewAll?(): void;
   projectId?: string;
+  projectRoot?: string;
 }): JSX.Element | null {
   const [fileMenu, setFileMenu] = useState<ResourceContextMenuState<ResponseFileActivityDto>>();
   if (files.length === 0) return null;
@@ -41,6 +44,7 @@ export function ResponseFileActivity({
         </Box>
         <Stack spacing={0.25} sx={{ px: 0.5, pb: 0.5 }}>
           {files.map((file) => {
+            const displayPath = presentProjectPath(projectRoot ?? "", file.path).displayPath;
             const generated = file.artifactKind === "generated_file" && file.artifactId && projectId;
             const root = generated ? `/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(file.artifactId!)}` : undefined;
             return <Stack
@@ -58,10 +62,10 @@ export function ResponseFileActivity({
                 color="inherit"
                 onClick={() => onOpenFile?.(file)}
                 disabled={!onOpenFile}
-                aria-label={file.previewable ? `Open focused diff for ${file.path}` : `Open file artifact for ${file.path}`}
+                aria-label={file.previewable ? `Open focused diff for ${displayPath}` : `Open file artifact for ${displayPath}`}
                 sx={{ display: "flex", flex: 1, minWidth: 0, justifyContent: "flex-start", textTransform: "none", minHeight: 30, px: 0.75, py: 0.25, textAlign: "left" }}
               >
-                <Typography variant="caption" sx={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{file.path}</Typography>
+                <Typography variant="caption" sx={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayPath}</Typography>
                 <Typography variant="caption" color="text.secondary" sx={{ ml: 1, flexShrink: 0 }}>
                   {file.kind}{file.additions !== undefined || file.deletions !== undefined ? ` · +${file.additions ?? 0} −${file.deletions ?? 0}` : " · Files & Results"}
                 </Typography>

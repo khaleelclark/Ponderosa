@@ -6,25 +6,25 @@ import type {
   WorkspaceNotificationDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
-import { AllChatView } from "./components/AllChatView";
 import { HomeView } from "./components/HomeView";
-import { CreateWorkspace } from "./components/CreateWorkspace";
 import type { ProjectBrowserRequest } from "./components/ProjectBrowserContext";
-import { ProjectShell } from "./components/ProjectShell";
-import {
-  OperatorProfileWorkspace,
-  WorkspaceSettingsView,
-} from "./components/WorkspaceSettingsView";
-import { AllProjectsView } from "./components/WorkspaceOverview";
-import {
-  AllAgentsWorkspace,
-  AllChatsWorkspace,
-  AllTriggersWorkspace,
-} from "./components/WorkspaceResourceViews";
-import { WikiView } from "./components/WikiView";
+import { RecoverableLazyRoute } from "./components/RecoverableLazyRoute";
 import type { Route } from "./routing";
-import { assertNeverRoute, isProjectRoute } from "./routeRegistry";
+import { assertNeverRoute, isProjectRoute, routeToPath } from "./routeRegistry";
 import type { ColorMode } from "./theme";
+
+const loadAllChatView = () => import("./components/AllChatView").then(module => ({ default: module.AllChatView }));
+const loadCreateWorkspace = () => import("./components/CreateWorkspace").then(module => ({ default: module.CreateWorkspace }));
+const loadProjectShell = () => import("./components/ProjectShell").then(module => ({ default: module.ProjectShell }));
+const loadWikiView = () => import("./components/WikiView").then(module => ({ default: module.WikiView }));
+const loadAllProjectsView = () => import("./components/WorkspaceOverview").then(module => ({ default: module.AllProjectsView }));
+const workspaceResourceViews = () => import("./components/WorkspaceResourceViews");
+const loadAllAgentsWorkspace = () => workspaceResourceViews().then(module => ({ default: module.AllAgentsWorkspace }));
+const loadAllChatsWorkspace = () => workspaceResourceViews().then(module => ({ default: module.AllChatsWorkspace }));
+const loadAllTriggersWorkspace = () => workspaceResourceViews().then(module => ({ default: module.AllTriggersWorkspace }));
+const workspaceSettingsViews = () => import("./components/WorkspaceSettingsView");
+const loadWorkspaceSettingsView = () => workspaceSettingsViews().then(module => ({ default: module.WorkspaceSettingsView }));
+const loadOperatorProfileWorkspace = () => workspaceSettingsViews().then(module => ({ default: module.OperatorProfileWorkspace }));
 
 interface WorkspaceRouteOutletProps {
   route: Route;
@@ -90,6 +90,8 @@ export function WorkspaceRouteOutlet({
   onResourceDeleted,
   onToggleColorMode,
 }: WorkspaceRouteOutletProps): JSX.Element {
+  const routePath = routeToPath(route);
+  const routeMarker = { kind: route.kind, path: routePath };
   return (
     <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
       {loadError ? (
@@ -107,133 +109,181 @@ export function WorkspaceRouteOutlet({
           </Alert>
         </Box>
       ) : route.kind === "create" ? (
-        <CreateWorkspace
-          route={route}
-          projects={projects}
-          engines={engines}
-          preferences={preferences}
-          onCancel={onCancelCreate}
-          onNavigate={onNavigate}
+        <RecoverableLazyRoute
+          key={routePath}
+          load={loadCreateWorkspace}
+          routeMarker={routeMarker}
+          componentProps={{ route, projects, engines, preferences, onCancel: onCancelCreate, onNavigate }}
         />
       ) : route.kind === "wiki" ? (
-        <WikiView articleId={route.articleId} navigate={onNavigate} />
+        <RecoverableLazyRoute
+          key={routePath}
+          load={loadWikiView}
+          routeMarker={routeMarker}
+          componentProps={{ articleId: route.articleId, navigate: onNavigate }}
+        />
       ) : route.kind === "home" ? (
-        <HomeView
-          projects={projects}
-          engines={engines}
-          notifications={notifications}
-          preferences={preferences}
-          onNavigate={onNavigate}
-          onOpenInNewTab={onOpenInNewTab}
-          onPreferences={onPreferences}
-          onCreateProject={() => onCreate("project")}
-          onCreateChat={() => onCreate("chat")}
-          onCreateAgent={() => onCreate("agent")}
-          onCreateTrigger={() => onCreate("trigger")}
-          onOpenInbox={onOpenInbox}
-        />
-      ) : route.kind === "allChat" ? (
-        <AllChatView onNavigate={onNavigate} notifications={notifications} />
-      ) : route.kind === "projects" ? (
-        <AllProjectsView
-          projects={projects}
-          preferences={preferences}
-          onNavigate={onNavigate}
-          onOpenInNewTab={onOpenInNewTab}
-          onCreateProject={() => onCreate("project")}
-          onProjectDeleted={onProjectDeleted}
-          onPreferences={onPreferences}
-        />
-      ) : route.kind === "allAgents" ? (
-        <AllAgentsWorkspace
-          projects={projects}
-          engines={engines}
-          filterProjectId={route.filterProjectId}
-          preferences={preferences}
-          onPreferences={onPreferences}
-          onNavigate={onNavigate}
-          onOpenInNewTab={onOpenInNewTab}
-          onCreate={(projectId, managerAgentId) =>
-            onCreate("agent", {
-              ...(projectId ? { projectId } : {}),
-              ...(managerAgentId ? { managerAgentId } : {}),
-            })}
-          onAgentsDeleted={(projectId, agentIds) =>
-            agentIds.forEach(agentId =>
-              onResourceDeleted({ kind: "agent", projectId, agentId }),
-            )}
-        />
-      ) : route.kind === "allChats" ? (
-        <AllChatsWorkspace
-          projects={projects}
-          filterProjectId={route.filterProjectId}
-          preferences={preferences}
-          onPreferences={onPreferences}
-          onNavigate={onNavigate}
-          onOpenInNewTab={onOpenInNewTab}
-          onCreate={projectId => onCreate("chat", { projectId })}
-          onConversationAction={onConversationAction}
-        />
-      ) : route.kind === "allTriggers" ? (
-        <AllTriggersWorkspace
-          projects={projects}
-          preferences={preferences}
-          onPreferences={onPreferences}
-          onNavigate={onNavigate}
-          onOpenInNewTab={onOpenInNewTab}
-          onCreate={() => onCreate("trigger")}
-        />
-      ) : route.kind === "settings" ? (
-        <WorkspaceSettingsView
-          preferences={preferences}
-          engines={engines}
-          projects={projects}
-          colorMode={colorMode}
-          onToggleColorMode={onToggleColorMode}
-          onPreferences={onPreferences}
-          section={route.section}
-        />
-      ) : route.kind === "profile" ? (
-        <OperatorProfileWorkspace
-          preferences={preferences}
-          onPreferences={onPreferences}
-        />
-      ) : route.kind === "usage" ? (
-        <WorkspaceSettingsView
-          preferences={preferences}
-          engines={engines}
-          projects={projects}
-          colorMode={colorMode}
-          onToggleColorMode={onToggleColorMode}
-          onPreferences={onPreferences}
-          section="activity"
-          activityProjectId={route.projectId}
-        />
-      ) : isProjectRoute(route) ? (
-        selectedProjectId ? (
-          <ProjectShell
-            projectId={selectedProjectId}
-            project={
-              projects.find(project => project.id === selectedProjectId)!
-            }
-            route={route}
+        <Box
+          data-workspace-route-kind={route.kind}
+          data-workspace-route-path={routePath}
+          data-workspace-route-content
+          sx={{ display: "contents" }}
+        >
+          <HomeView
+            projects={projects}
             engines={engines}
             notifications={notifications}
             preferences={preferences}
+            onNavigate={onNavigate}
+            onOpenInNewTab={onOpenInNewTab}
             onPreferences={onPreferences}
-            onRenameConversation={conversation =>
-              onConversationAction("rename", conversation)
-            }
-            onDeleteConversation={conversation =>
-              onConversationAction("delete", conversation)
-            }
-            onOpenEngineStatus={onOpenEngineStatus}
-            navigate={onNavigate}
-            browserRequest={projectBrowserRequest}
-            onBrowserRequestHandled={onBrowserRequestHandled}
-            openInNewTab={onOpenInNewTab}
-            onResourceDeleted={onResourceDeleted}
-            onCreate={(kind, context) => onCreate(kind, context)}
+            onCreateProject={() => onCreate("project")}
+            onCreateChat={() => onCreate("chat")}
+            onCreateAgent={() => onCreate("agent")}
+            onCreateTrigger={() => onCreate("trigger")}
+            onOpenInbox={onOpenInbox}
+          />
+        </Box>
+      ) : route.kind === "allChat" ? (
+        <RecoverableLazyRoute
+          key={routePath}
+          load={loadAllChatView}
+          routeMarker={routeMarker}
+          componentProps={{ onNavigate, notifications }}
+        />
+      ) : route.kind === "projects" ? (
+        <RecoverableLazyRoute
+          key={routePath}
+          load={loadAllProjectsView}
+          routeMarker={routeMarker}
+          componentProps={{
+            projects,
+            preferences,
+            onNavigate,
+            onOpenInNewTab,
+            onCreateProject: () => onCreate("project"),
+            onProjectDeleted,
+            onPreferences,
+          }}
+        />
+      ) : route.kind === "allAgents" ? (
+        <RecoverableLazyRoute
+          key={routePath}
+          load={loadAllAgentsWorkspace}
+          routeMarker={routeMarker}
+          componentProps={{
+            projects,
+            engines,
+            filterProjectId: route.filterProjectId,
+            preferences,
+            onPreferences,
+            onNavigate,
+            onOpenInNewTab,
+            onCreate: (projectId, managerAgentId) =>
+              onCreate("agent", {
+                ...(projectId ? { projectId } : {}),
+                ...(managerAgentId ? { managerAgentId } : {}),
+              }),
+            onAgentsDeleted: (projectId, agentIds) =>
+              agentIds.forEach(agentId =>
+                onResourceDeleted({ kind: "agent", projectId, agentId }),
+              ),
+          }}
+        />
+      ) : route.kind === "allChats" ? (
+        <RecoverableLazyRoute
+          key={routePath}
+          load={loadAllChatsWorkspace}
+          routeMarker={routeMarker}
+          componentProps={{
+            projects,
+            filterProjectId: route.filterProjectId,
+            preferences,
+            onPreferences,
+            onNavigate,
+            onOpenInNewTab,
+            onCreate: projectId => onCreate("chat", { projectId }),
+            onConversationAction,
+          }}
+        />
+      ) : route.kind === "allTriggers" ? (
+        <RecoverableLazyRoute
+          key={routePath}
+          load={loadAllTriggersWorkspace}
+          routeMarker={routeMarker}
+          componentProps={{
+            projects,
+            preferences,
+            onPreferences,
+            onNavigate,
+            onOpenInNewTab,
+            onCreate: () => onCreate("trigger"),
+          }}
+        />
+      ) : route.kind === "settings" ? (
+        <RecoverableLazyRoute
+          key={routePath}
+          load={loadWorkspaceSettingsView}
+          routeMarker={routeMarker}
+          componentProps={{
+            preferences,
+            engines,
+            projects,
+            colorMode,
+            onToggleColorMode,
+            onPreferences,
+            section: route.section,
+          }}
+        />
+      ) : route.kind === "profile" ? (
+        <RecoverableLazyRoute
+          key={routePath}
+          load={loadOperatorProfileWorkspace}
+          routeMarker={routeMarker}
+          componentProps={{ preferences, onPreferences }}
+        />
+      ) : route.kind === "usage" ? (
+        <RecoverableLazyRoute
+          key={routePath}
+          load={loadWorkspaceSettingsView}
+          routeMarker={routeMarker}
+          componentProps={{
+            preferences,
+            engines,
+            projects,
+            colorMode,
+            onToggleColorMode,
+            onPreferences,
+            section: "activity",
+            activityProjectId: route.projectId,
+          }}
+        />
+      ) : isProjectRoute(route) ? (
+        selectedProjectId ? (
+          <RecoverableLazyRoute
+            key={routePath}
+            load={loadProjectShell}
+            routeMarker={routeMarker}
+            componentProps={{
+              projectId: selectedProjectId,
+              project: projects.find(project => project.id === selectedProjectId)!,
+              route,
+              engines,
+              notifications,
+              preferences,
+              onPreferences,
+              onRenameConversation: conversation =>
+                onConversationAction("rename", conversation),
+              onDeleteConversation: conversation =>
+                onConversationAction("delete", conversation),
+              onOpenEngineStatus,
+              navigate: onNavigate,
+              browserRequest: projectBrowserRequest,
+              onBrowserRequestHandled,
+              openInNewTab: onOpenInNewTab,
+              onResourceDeleted,
+              onCreate: (kind, context) => onCreate(kind, context),
+            }}
           />
         ) : projectResolution === "loading" ? (
           <Stack role="status" aria-live="polite" spacing={1} sx={{ p: 3 }}>

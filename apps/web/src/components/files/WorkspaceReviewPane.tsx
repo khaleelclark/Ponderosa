@@ -7,10 +7,12 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { queryKeys } from "../../queryKeys";
+import { presentProjectPath } from "../../projectPathPresentation";
 import { LazySyntaxHighlightedCode } from "../LazySyntaxHighlightedCode";
 import { ResourceContextMenu } from "../ResourceContextMenu";
 import type { ResourceContextMenuState } from "../ResourceContextMenu";
 import { UnifiedDiffViewer } from "../filePreview/FilePreview";
+import { recordedPathDiff } from "../filePreview/artifactDiff";
 import { languageForPath } from "../filePreview/fileTypes";
 
 function resolveWorkspaceReviewPath(
@@ -38,8 +40,9 @@ export function recordedPreviewLabel(file: Pick<ChangedFileDto, "diffAvailable">
   return file.diffAvailable ? "Text preview recorded" : "Metadata and provenance only";
 }
 
-export function WorkspaceReviewPane({ projectId, agentId, files, running, initialPath, onBack, onOpenInNewTab }: {
+export function WorkspaceReviewPane({ projectId, projectRoot, agentId, files, running, initialPath, onBack, onOpenInNewTab }: {
   projectId: string;
+  projectRoot: string;
   agentId?: string;
   files: ChangedFileDto[];
   running: boolean;
@@ -61,6 +64,8 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
   const recordedMode = workspace.data?.isGitRepository === false;
   const reviewEntries = recordedMode ? files : changes;
   const activePath = resolveWorkspaceReviewPath(reviewEntries, selectedPath, initialPath);
+  const displayPath = (path: string) => presentProjectPath(projectRoot, path).displayPath;
+  const activeDisplayPath = activePath ? displayPath(activePath) : undefined;
 
   useEffect(() => {
     setSelectedPath((current) => {
@@ -92,7 +97,13 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
   const recordedDiff = selectedProvenance && "diff" in selectedProvenance && typeof selectedProvenance.diff === "string"
     ? selectedProvenance.diff
     : undefined;
+  const presentedRecordedDiff = recordedDiff && activeDisplayPath
+    ? recordedPathDiff(recordedDiff, activeDisplayPath, selectedProvenance?.kind === "create")
+    : undefined;
   const recordedTotals = recordedDiffTotals(recordedDiff);
+  const presentedWorkspaceDiff = review.data?.diff && activeDisplayPath
+    ? recordedPathDiff(review.data.diff, activeDisplayPath)
+    : undefined;
   const displayedChangeCount = recordedMode ? files.length : changes.length;
 
   return <Box data-testid="workspace-review" sx={{ display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", minHeight: 0, height: "100%" }} aria-label="Workspace changes">
@@ -111,24 +122,29 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
           <Alert severity="info" sx={{ mb: 1.5 }}>Showing recorded agent file changes. This working folder is not a Git repository, so no Git diff is available.</Alert>
           {files.length === 0 ? <Typography variant="body2" color="text.secondary">No recorded changed files for this agent.</Typography> : <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", lg: "minmax(240px, 34%) minmax(0, 1fr)" }, gap: 1.5 }}>
             <Stack spacing={0.75}>
-              {files.map((file) => <Button
+              {files.map((file) => {
+                const presentedFilePath = displayPath(file.path);
+                return <Button
                 key={`${file.path}:${file.lastSeq}`}
+                aria-label={`Review ${presentedFilePath}`}
+                title={presentedFilePath}
                 variant={file.path === activePath ? "contained" : "outlined"}
                 color={file.path === activePath ? "primary" : "inherit"}
                 onClick={() => setSelectedPath(file.path)}
                 sx={{ justifyContent: "flex-start", textAlign: "left", textTransform: "none" }}
               >
                 <Box sx={{ minWidth: 0, width: "100%" }}>
-                  <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{file.path}</Typography>
+                  <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{presentedFilePath}</Typography>
                   <Typography variant="caption" color="text.secondary">
                     {file.kind} · {file.executionCount} run{file.executionCount === 1 ? "" : "s"} · {recordedPreviewLabel(file)}
                   </Typography>
                 </Box>
-              </Button>)}
+              </Button>;
+              })}
             </Stack>
             <Paper variant="outlined" sx={{ minWidth: 0, p: 1.25, overflow: "auto" }}>
               <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", mb: 1 }}>
-                <Typography variant="subtitle2" sx={{ flex: 1, overflowWrap: "anywhere" }}>{activePath}</Typography>
+                <Typography variant="subtitle2" sx={{ flex: 1, overflowWrap: "anywhere" }}>{activeDisplayPath}</Typography>
                 {recordedTotals ? <>
                   <Chip size="small" color="success" variant="outlined" label={`+${recordedTotals.additions}`} />
                   <Chip size="small" color="error" variant="outlined" label={`−${recordedTotals.deletions}`} />
@@ -137,7 +153,7 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
               </Stack>
               {selectedProvenanceQuery.isLoading ? <CircularProgress size={22} />
                 : selectedProvenanceQuery.isError ? <Alert severity="error">Recorded change details could not be loaded. {String(selectedProvenanceQuery.error)}</Alert>
-                  : recordedDiff ? <UnifiedDiffViewer diff={recordedDiff} />
+                  : presentedRecordedDiff ? <UnifiedDiffViewer diff={presentedRecordedDiff} />
                     : selectedProvenance?.diffAvailable
                       ? <Alert
                         severity="info"
@@ -154,10 +170,13 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
               <Stack sx={{ overflowY: "auto", borderRight: { lg: 1 }, borderBottom: { xs: 1, lg: 0 }, borderColor: "divider", maxHeight: { xs: 220, lg: "none" } }}>
                 {changes.map((change) => {
                   const touched = provenance.get(change.path);
+                  const presentedChangePath = displayPath(change.path);
                   return <Button
                     key={change.path}
                     data-testid="workspace-change"
-                    data-workspace-path={change.path}
+                    data-workspace-path={presentedChangePath}
+                    aria-label={`Review ${presentedChangePath}`}
+                    title={presentedChangePath}
                     onClick={() => setSelectedPath(change.path)}
                     onContextMenu={(event) => {
                       if (!onOpenInNewTab) return;
@@ -171,7 +190,7 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
                     <Stack direction="row" spacing={1} sx={{ alignItems: "center", width: "100%", minWidth: 0 }}>
                       <Chip size="small" label={change.kind} color={change.kind === "delete" ? "error" : change.kind === "create" ? "success" : "default"} />
                       <Box sx={{ minWidth: 0, flex: 1 }}>
-                        <Typography variant="body2" noWrap>{change.path}</Typography>
+                        <Typography variant="body2" noWrap>{presentedChangePath}</Typography>
                         <Typography variant="caption" color="text.secondary">
                           {[change.staged && "staged", change.unstaged && "unstaged", change.untracked && "untracked", touched && "this agent"].filter(Boolean).join(" · ")}
                         </Typography>
@@ -182,7 +201,7 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
               </Stack>
               <Box data-testid="workspace-diff" sx={{ overflow: "auto", minWidth: 0, p: 1.5 }}>
                 <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", mb: 1 }}>
-                  <Typography variant="subtitle2" sx={{ flex: 1, overflowWrap: "anywhere" }}>{activePath}</Typography>
+                  <Typography variant="subtitle2" sx={{ flex: 1, overflowWrap: "anywhere" }}>{activeDisplayPath}</Typography>
                   {selectedChange?.staged ? <Chip size="small" label="Staged" color="success" /> : null}
                   {selectedChange?.unstaged ? <Chip size="small" label="Unstaged" color="warning" /> : null}
                   {selectedChange?.untracked ? <Chip size="small" label="Untracked" color="info" /> : null}
@@ -219,9 +238,11 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
                           </LazySyntaxHighlightedCode>
                       </Box>
                       : <Alert severity="info">The current file cannot be displayed. It may be deleted, binary, or above the safe viewer limit.</Alert>)
-                    : review.data?.diff ? <>
+                    : review.data?.diff && activeDisplayPath ? <>
                       {review.data.truncated ? <Alert severity="warning" sx={{ mb: 1 }}>This review is truncated to the safe viewer limit.</Alert> : null}
-                      <UnifiedDiffViewer diff={review.data.diff} />
+                      {presentedWorkspaceDiff
+                        ? <UnifiedDiffViewer diff={presentedWorkspaceDiff} />
+                        : <Alert severity="info">Git has no safe line-oriented diff for this change. It may be binary or metadata-only.</Alert>}
                     </> : <Alert severity="info">Git has no textual diff for this change. It may be binary or metadata-only.</Alert>}
               </Box>
             </Box>}

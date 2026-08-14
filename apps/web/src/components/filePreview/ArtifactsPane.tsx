@@ -10,6 +10,7 @@ import { telemetryElementId } from "../../telemetryFocus";
 import { ResourceContextMenu } from "../ResourceContextMenu";
 import type { ResourceContextMenuState } from "../ResourceContextMenu";
 import { AgentArtifactPreview } from "./ArtifactPreview";
+import { artifactDisplayLabel, artifactDisplayPath, artifactSearchText } from "./artifactPresentation";
 
 function artifactIcon(kind: ArtifactDto["kind"]): JSX.Element {
   if (kind === "diff") {
@@ -24,28 +25,11 @@ function artifactIcon(kind: ArtifactDto["kind"]): JSX.Element {
   return <ArticleIcon fontSize="small" />;
 }
 
-function fileName(path: string): string {
-  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
-}
-
-export function artifactDisplayLabel(artifact: Pick<ArtifactDto, "kind" | "path" | "summary">): string {
-  const summary = artifact.summary?.trim();
-  const fileAction = summary?.match(/^(create|edit|delete)\s+(.+)$/i);
-  if (fileAction) {
-    const action = fileAction[1]![0]!.toUpperCase() + fileAction[1]!.slice(1).toLowerCase();
-    return `${action} · ${fileName(fileAction[2]!)}`;
-  }
-  if (artifact.kind === "log" && summary) {
-    const command = summary.replace(/^\/bin\/(?:ba)?sh\s+-lc\s+/, "");
-    return `Command · ${command.length > 56 ? `${command.slice(0, 55)}…` : command}`;
-  }
-  return summary || fileName(artifact.path) || "Result";
-}
-
 export function ArtifactsPane({
   artifacts,
   agentId,
   agentTitle,
+  projectRoot,
   initialArtifactId,
   onSelectArtifact,
   onOpenArtifactInNewTab,
@@ -53,6 +37,7 @@ export function ArtifactsPane({
   artifacts: ArtifactDto[];
   agentId: string;
   agentTitle: string;
+  projectRoot?: string;
   initialArtifactId?: string;
   onSelectArtifact?(artifactId: string): void;
   onOpenArtifactInNewTab?(artifactId: string): void;
@@ -75,9 +60,8 @@ export function ArtifactsPane({
   }, [artifacts, initialArtifactId, orderedArtifacts, selectedArtifactId]);
 
   const normalizedFilter = filter.trim().toLocaleLowerCase();
-  const visibleArtifacts = orderedArtifacts.filter((artifact) => !normalizedFilter || [
-    artifactDisplayLabel(artifact), artifact.path, artifact.summary, artifact.kind,
-  ].filter(Boolean).join(" ").toLocaleLowerCase().includes(normalizedFilter));
+  const visibleArtifacts = orderedArtifacts.filter((artifact) =>
+    !normalizedFilter || artifactSearchText(artifact, projectRoot).includes(normalizedFilter));
   const groups = [
     { label: "Files", kinds: new Set<ArtifactDto["kind"]>(["generated_file", "document", "screenshot", "diff"]) },
     { label: "Results", kinds: new Set<ArtifactDto["kind"]>(["test_report", "pr_summary"]) },
@@ -117,10 +101,12 @@ export function ArtifactsPane({
             <List disablePadding>
               {group.artifacts.map((artifact) => {
                 const selected = artifact.id === selectedArtifactId;
+                const displayPath = artifactDisplayPath(artifact, projectRoot);
+                const displayLabel = artifactDisplayLabel(artifact, displayPath);
                 return <ListItemButton
                   key={artifact.id}
-                  aria-label={`Open ${artifactDisplayLabel(artifact)} (${artifact.path})`}
-                  title={artifact.path}
+                  aria-label={`Open ${displayLabel} (${displayPath})`}
+                  title={displayPath}
                   id={telemetryElementId("artifacts", artifact.id)}
                   tabIndex={initialArtifactId === artifact.id ? -1 : undefined}
                   selected={selected}
@@ -134,7 +120,7 @@ export function ArtifactsPane({
                 >
                   <ListItemIcon sx={{ minWidth: 34, mt: 0.25, color: selected ? "primary.main" : "text.secondary" }}>{artifactIcon(artifact.kind)}</ListItemIcon>
                   <ListItemText
-                    primary={artifactDisplayLabel(artifact)}
+                    primary={displayLabel}
                     secondary={new Date(artifact.createdAt).toLocaleString()}
                     primaryTypographyProps={{ variant: "body2", fontWeight: selected ? 750 : 600, noWrap: true }}
                     secondaryTypographyProps={{ variant: "caption", color: "text.secondary", component: "span", sx: { lineHeight: 1.35 } }}
@@ -146,7 +132,7 @@ export function ArtifactsPane({
           </Box>)}
         </Box>
         <Box sx={{ minWidth: 0, minHeight: 0, overflow: "auto", bgcolor: "background.default" }}>
-        <AgentArtifactPreview artifact={selectedArtifact} agentId={agentId} agentTitle={agentTitle} />
+        <AgentArtifactPreview artifact={selectedArtifact} agentId={agentId} agentTitle={agentTitle} projectRoot={projectRoot} />
         </Box>
       </Box>
       <ResourceContextMenu state={artifactMenu} onClose={() => setArtifactMenu(undefined)} onOpenInNewTab={onOpenArtifactInNewTab} />

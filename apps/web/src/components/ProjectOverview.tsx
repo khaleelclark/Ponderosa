@@ -56,7 +56,7 @@ import {
   workspaceResourceSortPatch,
 } from "../resourcePreferences";
 import { unreadByConversation } from "../workspaceNavigation";
-import { artifactDisplayLabel } from "./filePreview/ArtifactsPane";
+import { artifactDisplayLabel, artifactDisplayPath } from "./filePreview/artifactPresentation";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 import {
   COLLECTION_PROGRESSIVE_BATCH_SIZE,
@@ -246,7 +246,7 @@ export function ProjectOverview({
             </Box>
             <Box sx={{ flex: 1, minWidth: 0 }}>
               <Typography variant="overline" color="text.secondary">Important outputs</Typography>
-              {importantOutputs.length ? <Stack spacing={0.15}>{importantOutputs.map((artifact) => <Button key={artifact.id} size="small" color="inherit" onClick={() => onOpenImportantArtifact(artifact)} sx={{ justifyContent: "flex-start", px: 0, minWidth: 0 }}><Typography variant="body2" noWrap>{artifactDisplayLabel(artifact)}</Typography></Button>)}</Stack>
+              {importantOutputs.length ? <Stack spacing={0.15}>{importantOutputs.map((artifact) => <Button key={artifact.id} size="small" color="inherit" onClick={() => onOpenImportantArtifact(artifact)} sx={{ justifyContent: "flex-start", px: 0, minWidth: 0 }}><Typography variant="body2" noWrap>{artifactDisplayLabel(artifact, artifactDisplayPath(artifact, project.hostPath))}</Typography></Button>)}</Stack>
                 : <Typography variant="body2" color="text.secondary">No pinned or published outputs yet.</Typography>}
             </Box>
           </Stack>
