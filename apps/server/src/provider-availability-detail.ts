@@ -4,6 +4,7 @@ import {
   publicProviderFailureSummary,
   type ProviderFailureCategory,
 } from "@ponderosa/core";
+import { guardedProviderExceptionStringProperty } from "./provider-exception-properties.js";
 
 export const publicProviderAvailabilityDetail = publicProviderFailureSummary;
 export { publicProviderFailureCategorySummary };
@@ -18,7 +19,7 @@ export function publicProviderExceptionResponse(
   error: unknown,
   category?: ProviderFailureCategory,
 ): PublicProviderErrorResponse {
-  const detail = error instanceof Error ? error.message : undefined;
+  const detail = guardedProviderExceptionStringProperty(error, "message");
   const failure = publicProviderFailure({ detail, category });
   return { error: failure.summary, category: "provider_error", remediation: failure.remediation };
 }

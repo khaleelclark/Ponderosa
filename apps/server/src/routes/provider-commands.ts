@@ -30,6 +30,10 @@ import {
 import type { ServerContext } from "../server-context.js";
 import type { ProviderProcessAuthority } from "../provider-process-authority.js";
 import { evaluateContextRolloverPressure } from "../context-rollover-pressure.js";
+import {
+  guardedProviderExceptionStringProperty,
+  restrictedProviderExceptionLogDetail,
+} from "../provider-exception-properties.js";
 import { registerAgentRunHistoryRoute } from "./agent-audit.js";
 
 interface ProviderCommandRoutesContext {
@@ -78,21 +82,12 @@ function publicProviderCommandFailure(error: unknown): {
   category: ReturnType<typeof publicProviderFailure>["category"];
   remediation: string;
 } {
-  const stringProperty = (key: string): string | undefined => {
-    if (error === null || (typeof error !== "object" && typeof error !== "function")) {
-      return undefined;
-    }
-    try {
-      const value = Reflect.get(error, key);
-      return typeof value === "string" ? value : undefined;
-    } catch {
-      return undefined;
-    }
-  };
-  const code = stringProperty("code") ?? stringProperty("errorCode");
-  const category = stringProperty("category") ?? stringProperty("failureCategory");
+  const code = guardedProviderExceptionStringProperty(error, "code")
+    ?? guardedProviderExceptionStringProperty(error, "errorCode");
+  const category = guardedProviderExceptionStringProperty(error, "category")
+    ?? guardedProviderExceptionStringProperty(error, "failureCategory");
   const failure = publicProviderFailure({
-    detail: stringProperty("message"),
+    detail: guardedProviderExceptionStringProperty(error, "message"),
     code,
     category,
   });
@@ -233,7 +228,10 @@ app.post<{
     });
     if (isClosed() || deletingProjectIds.has(project.id) || authority.controller.signal.aborted) {
       void closeCapabilityDiscoveryProcess(state).catch((error) => {
-        app.log.error({ err: error, projectId: project.id }, "project provider-command process cleanup remains pending");
+        app.log.error({
+          providerError: restrictedProviderExceptionLogDetail(error),
+          projectId: project.id,
+        }, "project provider-command process cleanup remains pending");
       });
     }
   };
@@ -290,7 +288,10 @@ app.post<{
     try {
       await closeCapabilityDiscoveryAuthority(authority);
     } catch (error) {
-      app.log.error({ err: error, projectId: project.id }, "project provider-command process cleanup remains pending");
+      app.log.error({
+        providerError: restrictedProviderExceptionLogDetail(error),
+        projectId: project.id,
+      }, "project provider-command process cleanup remains pending");
     }
   }
 });
@@ -421,7 +422,10 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
       });
       if (isClosed() || deletingProjectIds.has(project.id) || deletingAgentIds.has(agent.id) || authority.controller.signal.aborted) {
         void closeCapabilityDiscoveryProcess(state).catch((error) => {
-          app.log.error({ err: error, agentId: agent.id }, "transient provider-command process cleanup remains pending");
+          app.log.error({
+            providerError: restrictedProviderExceptionLogDetail(error),
+            agentId: agent.id,
+          }, "transient provider-command process cleanup remains pending");
         });
       }
     };
@@ -460,7 +464,10 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
       try {
         await closeCapabilityDiscoveryAuthority(authority);
       } catch (error) {
-        app.log.error({ err: error, agentId: agent.id }, "transient provider-command process cleanup remains pending");
+        app.log.error({
+          providerError: restrictedProviderExceptionLogDetail(error),
+          agentId: agent.id,
+        }, "transient provider-command process cleanup remains pending");
       }
     }
   },

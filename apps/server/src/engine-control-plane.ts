@@ -23,6 +23,10 @@ import type { EngineAvailabilityStore } from "./engine-availability-store.js";
 import type { ProviderUsageCache, ProviderUsageTarget } from "./provider-usage-cache.js";
 import type { ProviderProcessAuthority } from "./provider-process-authority.js";
 import {
+  guardedProviderExceptionStringProperty,
+  restrictedProviderExceptionLogDetail,
+} from "./provider-exception-properties.js";
+import {
   publicProviderAvailabilityDetail,
   publicProviderExceptionResponse,
 } from "./provider-availability-detail.js";
@@ -58,6 +62,7 @@ export class ProviderAdapterBoundaryError extends Error {
   readonly engineId: string;
   readonly operation: string;
   readonly publicResponse: ReturnType<typeof publicProviderExceptionResponse>;
+  readonly restrictedDetail?: string;
 
   constructor(engineId: string, operation: string, cause: unknown) {
     const publicResponse = publicProviderExceptionResponse(cause);
@@ -66,6 +71,8 @@ export class ProviderAdapterBoundaryError extends Error {
     this.engineId = engineId;
     this.operation = operation;
     this.publicResponse = publicResponse;
+    this.restrictedDetail = guardedProviderExceptionStringProperty(cause, "restrictedDetail")
+      ?? guardedProviderExceptionStringProperty(cause, "message");
   }
 }
 
@@ -111,7 +118,6 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     try {
       return await callback();
     } catch (error) {
-      if (error instanceof ProviderAdapterBoundaryError) throw error;
       throw new ProviderAdapterBoundaryError(adapter.id, operation, error);
     }
   };
@@ -140,7 +146,10 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         ? await engineAuthStatuses.get(id, registration.authStatus)
         : { authenticated: true, detail: "runtime registered (authentication status not reported)" };
     } catch (error) {
-      app.log.warn({ err: error, engineId: id }, "provider authentication status failed");
+      app.log.warn({
+        providerError: restrictedProviderExceptionLogDetail(error),
+        engineId: id,
+      }, "provider authentication status failed");
       const authDetail = publicAuthStatusExceptionDetail(error);
       return {
         configured: true,
@@ -273,7 +282,10 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     const registration = engines.get(engineId);
     if (!registration?.adapter.readProviderUsage) return;
     void providerUsageState(registration, "stale").catch((error) => {
-      app.log.warn({ err: error, engineId }, "provider usage refresh after Run failed");
+      app.log.warn({
+        providerError: restrictedProviderExceptionLogDetail(error),
+        engineId,
+      }, "provider usage refresh after Run failed");
     });
   };
   const engineCapabilityCacheTtlMs = 60_000;
@@ -407,7 +419,11 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       });
       if (isClosed() || deletingProjectIds.has(projectId) || authority.controller.signal.aborted) {
         void closeCapabilityDiscoveryProcess(state).catch((error) => {
-          app.log.error({ err: error, projectId, engineId: adapter.id }, "late capability-discovery process cleanup remains pending");
+          app.log.error({
+            providerError: restrictedProviderExceptionLogDetail(error),
+            projectId,
+            engineId: adapter.id,
+          }, "late capability-discovery process cleanup remains pending");
         });
       }
     };
@@ -450,7 +466,11 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     engineCapabilityDiscoveries.set(key, authority);
     if (!forceRefresh && cached) {
       void promise.catch((error) => {
-        app.log.warn({ err: error, projectId, engineId: adapter.id }, "background capability refresh failed; serving last-known capabilities");
+        app.log.warn({
+          providerError: restrictedProviderExceptionLogDetail(error),
+          projectId,
+          engineId: adapter.id,
+        }, "background capability refresh failed; serving last-known capabilities");
       });
       return Promise.resolve(cached.value);
     }
@@ -492,7 +512,11 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         false,
       ).catch((error) => {
         app.log.warn(
-          { err: error, projectId, engineId: adapter.id },
+          {
+            providerError: restrictedProviderExceptionLogDetail(error),
+            projectId,
+            engineId: adapter.id,
+          },
           "background capability discovery failed",
         );
       });
@@ -634,7 +658,11 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       });
       if (isClosed() || deletingProjectIds.has(project.id) || authority.controller.signal.aborted) {
         void closeCapabilityDiscoveryProcess(state).catch((error) => {
-          app.log.error({ err: error, projectId: project.id, engineId: adapter.id }, "late model-catalog process cleanup remains pending");
+          app.log.error({
+            providerError: restrictedProviderExceptionLogDetail(error),
+            projectId: project.id,
+            engineId: adapter.id,
+          }, "late model-catalog process cleanup remains pending");
         });
       }
     };
@@ -700,7 +728,11 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     engineModelCatalogDiscoveries.set(key, authority);
     if (!forceRefresh && cached) {
       void operation.catch((error) => {
-        app.log.warn({ err: error, projectId: project.id, engineId: adapter.id }, "background model refresh failed; serving last-known choices");
+        app.log.warn({
+          providerError: restrictedProviderExceptionLogDetail(error),
+          projectId: project.id,
+          engineId: adapter.id,
+        }, "background model refresh failed; serving last-known choices");
       });
       return Promise.resolve({ ...cached.value, refreshing: true });
     }
@@ -730,7 +762,11 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       if (isClosed() || deletingProjectIds.has(project.id) || authority.controller.signal.aborted) {
         void closeCapabilityDiscoveryProcess(state).catch((error) => {
           app.log.error(
-            { err: error, projectId: project.id, engineId: adapter.id },
+            {
+              providerError: restrictedProviderExceptionLogDetail(error),
+              projectId: project.id,
+              engineId: adapter.id,
+            },
             "late model-validation cleanup remains pending",
           );
         });
@@ -759,7 +795,10 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         error: publicFailure.summary,
       };
     } catch (error) {
-      app.log.warn({ err: error, engineId: adapter.id }, "provider model validation failed");
+      app.log.warn({
+        providerError: restrictedProviderExceptionLogDetail(error),
+        engineId: adapter.id,
+      }, "provider model validation failed");
       const publicFailure = publicProviderExceptionResponse(error);
       return {
         valid: false,

@@ -50,6 +50,7 @@ import {
 } from "./public-web-assets.js";
 import { ProviderUsageCache } from "./provider-usage-cache.js";
 import { providerUnavailableNotificationBody } from "./provider-availability-detail.js";
+import { restrictedProviderExceptionLogDetail } from "./provider-exception-properties.js";
 import { ProviderProcessAuthority } from "./provider-process-authority.js";
 import { registerAgentSurface } from "./routes/agent-surface.js";
 import { registerApplicationRoutes } from "./routes/application-routes.js";
@@ -657,7 +658,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.setErrorHandler((error, request, reply) => {
     if (!(error instanceof ProviderAdapterBoundaryError)) throw error;
     request.log.error({
-      err: error.cause,
+      providerError: restrictedProviderExceptionLogDetail(error),
       engineId: error.engineId,
       operation: error.operation,
     }, "provider adapter operation failed at public boundary");

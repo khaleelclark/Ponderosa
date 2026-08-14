@@ -5,6 +5,7 @@ import {
   type ProviderUsageStateDto,
   type RuntimeProcessHandle,
 } from "@ponderosa/core";
+import { guardedProviderExceptionStringProperty } from "./provider-exception-properties.js";
 
 const DEFAULT_STALE_MS = 5 * 60_000;
 
@@ -24,7 +25,7 @@ interface ProviderUsageAuthority {
 }
 
 function publicProviderUsageError(error: unknown): string {
-  const detail = error instanceof Error ? error.message : String(error);
+  const detail = guardedProviderExceptionStringProperty(error, "message");
   return publicProviderFailureSummary(detail) ?? "Provider execution failed.";
 }
 

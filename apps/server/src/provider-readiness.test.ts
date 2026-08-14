@@ -739,6 +739,81 @@ describe("provider readiness truth", () => {
     await app.close();
   });
 
+  it("contains throwing exception getters across availability, validation, and capability APIs", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-provider-exception-getters-"));
+    roots.push(root);
+    const hostPath = path.join(root, "workspace");
+    mkdirSync(hostPath, { recursive: true });
+    const store = new AgentStore(path.join(root, "data"));
+    const project = store.createProject({
+      label: "Provider Exception Getters",
+      hostPath,
+      defaultEngine: "codex",
+    });
+    const markers = {
+      availability: "AVAILABILITY_THROWING_MESSAGE_MARKER_0c71",
+      validation: "VALIDATION_THROWING_MESSAGE_MARKER_5fd2",
+      capability: "CAPABILITY_THROWING_MESSAGE_MARKER_83ae",
+    };
+    const errorLike = (marker: string): object => {
+      const value = Object.create(Error.prototype) as object;
+      Object.defineProperty(value, "message", {
+        get: () => { throw new Error(marker); },
+      });
+      return value;
+    };
+    const hostileAdapter: Adapter = {
+      ...adapter(),
+      validateModel: async () => { throw errorLike(markers.validation); },
+      capabilities: async () => { throw errorLike(markers.capability); },
+    };
+    const app = createServer({
+      dataDir: path.join(root, "data"),
+      store,
+      engines: [{
+        adapter: hostileAdapter,
+        authStatus: async () => ({ authenticated: true }),
+        availabilityProbe: async () => { throw errorLike(markers.availability); },
+      }],
+    });
+    await app.ready();
+
+    const recheck = await app.inject({ method: "POST", url: "/api/engines/codex/recheck" });
+    const validation = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/engine-models/codex/validate`,
+      payload: { modelId: "test-model" },
+    });
+    const capabilities = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/engine-capabilities?engineId=codex&refresh=true`,
+    });
+
+    expect(recheck.statusCode).toBe(200);
+    expect(recheck.json()).toMatchObject({
+      availabilityCategory: "unavailable",
+      availabilityDetail: "Provider is temporarily unavailable.",
+    });
+    expect(validation.statusCode).toBe(200);
+    expect(validation.json()).toEqual({
+      valid: false,
+      errorCode: "provider_error",
+      error: "Provider execution failed.",
+    });
+    expect(capabilities.statusCode).toBe(503);
+    expect(capabilities.json()).toEqual({
+      error: "Provider execution failed.",
+      category: "provider_error",
+      remediation: "Review the restricted server logs, then retry the provider operation.",
+    });
+    for (const body of [recheck.body, validation.body, capabilities.body]) {
+      expect(body).not.toMatch(
+        /AVAILABILITY_THROWING_MESSAGE_MARKER_0c71|VALIDATION_THROWING_MESSAGE_MARKER_5fd2|CAPABILITY_THROWING_MESSAGE_MARKER_83ae/u,
+      );
+    }
+    await app.close();
+  });
+
   it("sanitizes resolved invalid model-validation results with structured-code precedence", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "ponderosa-model-validation-boundary-"));
     roots.push(root);
@@ -988,6 +1063,102 @@ describe("provider readiness truth", () => {
       expect(later.body).not.toMatch(/hunter2|private-usage-token|password|access_token|HOME|auth\.json/u);
     });
     await app.close();
+  });
+
+  it("contains hostile initial and refresh usage rejections without an unhandled rejection", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-provider-usage-hostile-exceptions-"));
+    roots.push(root);
+    const initialMarker = "USAGE_INITIAL_THROWING_GETTER_MARKER_76a1";
+    const refreshMarker = "USAGE_REFRESH_THROWING_PROXY_MARKER_cb42";
+    const initialError = Object.create(Error.prototype) as object;
+    Object.defineProperty(initialError, "message", {
+      get: () => { throw new Error(initialMarker); },
+    });
+    const refreshError = new Proxy(Object.create(null) as object, {
+      get: () => { throw new Error(refreshMarker); },
+      getOwnPropertyDescriptor: () => { throw new Error(`${refreshMarker}:descriptor`); },
+      getPrototypeOf: () => { throw new Error(`${refreshMarker}:prototype`); },
+    });
+    let claudeReads = 0;
+    const codexUsage: Adapter = {
+      ...namedAdapter("codex", "Codex"),
+      readProviderUsage: async () => { throw initialError; },
+    };
+    const claudeUsage: Adapter = {
+      ...namedAdapter("claude", "Claude"),
+      readProviderUsage: async () => {
+        claudeReads += 1;
+        if (claudeReads > 1) throw refreshError;
+        return {
+          provider: "claude",
+          windows: [],
+          source: "provider-rpc",
+          fetchedAt: new Date().toISOString(),
+        };
+      },
+    };
+    const app = createServer({
+      dataDir: path.join(root, "data"),
+      engines: [codexUsage, claudeUsage].map((usageAdapter) => ({
+        adapter: usageAdapter,
+        authStatus: async () => ({ authenticated: true, detail: "signed in" }),
+      })),
+      logger: false,
+    });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      await app.ready();
+      const initial = await app.inject({
+        method: "GET",
+        url: "/api/provider-usage?refresh=stale",
+      });
+      expect(initial.statusCode).toBe(200);
+      await vi.waitFor(async () => {
+        const state = await app.inject({ method: "GET", url: "/api/provider-usage" });
+        expect(state.json().providers).toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            provider: "codex",
+            refreshing: false,
+            error: "Provider execution failed.",
+          }),
+          expect.objectContaining({
+            provider: "claude",
+            refreshing: false,
+            reading: expect.objectContaining({ provider: "claude" }),
+          }),
+        ]));
+        expect(state.body).not.toMatch(
+          /USAGE_INITIAL_THROWING_GETTER_MARKER_76a1|USAGE_REFRESH_THROWING_PROXY_MARKER_cb42/u,
+        );
+      });
+
+      const refresh = await app.inject({
+        method: "POST",
+        url: "/api/provider-usage/claude/refresh",
+      });
+      expect(refresh.statusCode).toBe(200);
+      await vi.waitFor(async () => {
+        const state = await app.inject({ method: "GET", url: "/api/provider-usage" });
+        expect(state.json().providers).toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            provider: "claude",
+            refreshing: false,
+            error: "Provider execution failed.",
+            reading: expect.objectContaining({ provider: "claude", stale: true }),
+          }),
+        ]));
+        expect(state.body).not.toMatch(
+          /USAGE_INITIAL_THROWING_GETTER_MARKER_76a1|USAGE_REFRESH_THROWING_PROXY_MARKER_cb42/u,
+        );
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      await app.close();
+    }
   });
 
   it("sanitizes provider-usage process cleanup failures before later cache projections", async () => {

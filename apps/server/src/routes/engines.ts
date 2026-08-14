@@ -19,6 +19,7 @@ import {
   providerUnavailableNotificationBody,
   publicProviderExceptionResponse,
 } from "../provider-availability-detail.js";
+import { restrictedProviderExceptionLogDetail } from "../provider-exception-properties.js";
 
 interface EngineRouteRegistration {
   adapter: Adapter;
@@ -208,7 +209,10 @@ export function registerEngineRoutes(
       try {
         result = await registration.availabilityProbe();
       } catch (error) {
-        request.log.warn({ err: error, engineId: request.params.id }, "provider availability probe failed");
+        request.log.warn({
+          providerError: restrictedProviderExceptionLogDetail(error),
+          engineId: request.params.id,
+        }, "provider availability probe failed");
         result = {
           available: false,
           failureCategory: "unavailable",
