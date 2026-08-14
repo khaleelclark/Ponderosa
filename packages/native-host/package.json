@@ -13,8 +13,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node-gyp rebuild",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "echo \"no tests\""
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

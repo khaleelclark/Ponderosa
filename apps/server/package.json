@@ -7,7 +7,6 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsc -p tsconfig.json && vitest run --passWithNoTests",
     "start": "node dist/main.js",
     "dev": "node --watch --experimental-strip-types src/main.ts",
     "push:configure": "node dist/configure-web-push.js"
@@ -32,7 +31,6 @@
     "@types/picomatch": "^4.0.3",
     "@types/web-push": "^3.6.4",
     "@types/ws": "^8.18.1",
-    "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "typescript": "^5.7.2"
   }
 }
