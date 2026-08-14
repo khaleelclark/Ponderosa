@@ -17,6 +17,7 @@ import type {
   SteerQueuedMessageRequest,
   SteerQueuedMessageResponse,
 } from "@ponderosa/core";
+import { CoordinationIdempotencyConflictError } from "@ponderosa/agents";
 import type { AgentStore, CoordinationV3Store, WorkspaceStore } from "@ponderosa/agents";
 import { AssetError } from "../assets.js";
 import type { PreparedCommunicationArtifact } from "./conversation-deliveries.js";
@@ -28,6 +29,43 @@ export type QueuedEditRevisionOutboxPayload = {
   revision: CommunicationRevisionEvent;
   artifact?: PreparedCommunicationArtifact;
 };
+
+export type QueuedMessageChangeOutboxPayload = {
+  activationId: string;
+  projectId: string;
+  agentId: string;
+  conversationId: string;
+  action: "cancelled";
+};
+
+export function applyQueuedMessageChangeOutbox(
+  input: { activationId: string },
+  dependencies: Pick<
+    QueuedMessageRouteDependencies,
+    "coordinationV3" | "workspace" | "appendWorkspace" |
+    "publishCoordinationV3Changed"
+  >,
+): void {
+  const change = dependencies.coordinationV3.queuedMessageCancellationChange(
+    input.activationId,
+  );
+  if (!change) throw new Error("queued-message cancellation authority is unavailable");
+  if (!dependencies.workspace.hasQueuedMessageChange({
+    conversationId: change.conversationId,
+    deliveryId: change.activationId,
+    action: change.action,
+  })) {
+    dependencies.appendWorkspace({
+      type: "queued_message_changed",
+      conversationId: change.conversationId,
+      deliveryId: change.activationId,
+      action: change.action,
+    });
+  }
+  dependencies.publishCoordinationV3Changed(change.agentId, {
+    conversationIds: [change.conversationId],
+  });
+}
 
 type PreparedCommunication = {
   canonicalText: string;
@@ -92,40 +130,32 @@ export function registerQueuedMessageRoutes(
     if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
     const conversation = store.getConversation(request.params.id);
     if (!conversation || conversation.archived) return reply.code(404).send({ error: "conversation not found" });
-    const pendingActivation = coordinationV3.pendingActivations(conversation.projectId)
-      .find((candidate) => candidate.id === request.params.deliveryId);
-    if (pendingActivation &&
-        pendingActivation.dispatchPolicy !== "next_run") {
-      return reply.code(404).send({ error: "queued message not found" });
-    }
-    const activation = pendingActivation;
-    if (!activation) {
-      const result = coordinationV3.cancelPendingActivation({
-        activationId: request.params.deliveryId,
-        projectId: conversation.projectId,
-        idempotencyKey,
-      });
-      return result.cancelled
-        ? result satisfies CancelQueuedMessageResponse
-        : reply.code(409).send(result satisfies CancelQueuedMessageResponse);
-    }
-    const payload = activation.payload && typeof activation.payload === "object"
+    const activation = coordinationV3.activation(request.params.deliveryId, conversation.projectId);
+    const payload = activation?.payload && typeof activation.payload === "object"
       ? activation.payload as { communication?: CommunicationEvent; dispatch?: { conversationId?: string } }
       : undefined;
-    if (payload?.dispatch?.conversationId !== conversation.id) return reply.code(404).send({ error: "queued message not found" });
+    if (!activation || activation.dispatchPolicy !== "next_run" ||
+        payload?.dispatch?.conversationId !== conversation.id) {
+      return reply.code(404).send({ error: "queued message not found" });
+    }
     if (payload.communication?.sender.kind !== "user" || payload.communication.sender.userId !== "local-operator") {
       return reply.code(403).send({ error: "only your own queued messages can be cancelled" });
     }
-    const result = coordinationV3.cancelPendingActivation({
-      activationId: activation.id,
-      projectId: conversation.projectId,
-      idempotencyKey,
-    });
+    let result: ReturnType<CoordinationV3Store["cancelPendingActivation"]>;
+    try {
+      result = coordinationV3.cancelPendingActivation({
+        activationId: activation.id,
+        projectId: conversation.projectId,
+        idempotencyKey,
+      });
+    } catch (error) {
+      if (error instanceof CoordinationIdempotencyConflictError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
     if (!result.cancelled) return reply.code(409).send(result satisfies CancelQueuedMessageResponse);
-    appendWorkspace({ type: "queued_message_changed", conversationId: conversation.id, deliveryId: activation.id, action: "cancelled" });
-    publishCoordinationV3Changed(activation.agentId, {
-      conversationIds: [conversation.id],
-    });
+    notifyScheduler();
     return result satisfies CancelQueuedMessageResponse;
   });
 
@@ -163,26 +193,27 @@ export function registerQueuedMessageRoutes(
     if (!agent || agent.archived) return reply.code(404).send({ error: "agent not found" });
     const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
     if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
-    const activation = coordinationV3.pendingActivations(agent.projectId)
-      .find((candidate) =>
-        candidate.id === request.params.deliveryId &&
-        candidate.agentId === agent.id &&
-        candidate.dispatchPolicy === "next_run");
+    const activation = coordinationV3.activation(request.params.deliveryId, agent.projectId);
     const payload = activation?.payload && typeof activation.payload === "object"
       ? activation.payload as { communication?: CommunicationEvent }
       : undefined;
-    if (!activation || payload?.communication?.sender.kind !== "user" || payload.communication.sender.userId !== "local-operator") {
+    if (!activation || activation.agentId !== agent.id || activation.dispatchPolicy !== "next_run" ||
+        payload?.communication?.sender.kind !== "user" || payload.communication.sender.userId !== "local-operator") {
       return reply.code(404).send({ error: "queued message not found" });
     }
-    const result = coordinationV3.cancelPendingActivation({
-      activationId: activation.id, projectId: agent.projectId, idempotencyKey,
-    });
+    let result: ReturnType<CoordinationV3Store["cancelPendingActivation"]>;
+    try {
+      result = coordinationV3.cancelPendingActivation({
+        activationId: activation.id, projectId: agent.projectId, idempotencyKey,
+      });
+    } catch (error) {
+      if (error instanceof CoordinationIdempotencyConflictError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
     if (!result.cancelled) return reply.code(409).send(result satisfies CancelQueuedMessageResponse);
-    const conversationId = payload.communication.conversationId ?? agent.conversationId;
-    if (conversationId) appendWorkspace({ type: "queued_message_changed", conversationId, deliveryId: activation.id, action: "cancelled" });
-    publishCoordinationV3Changed(agent.id, {
-      conversationIds: conversationId ? [conversationId] : [],
-    });
+    notifyScheduler();
     return result satisfies CancelQueuedMessageResponse;
   });
 

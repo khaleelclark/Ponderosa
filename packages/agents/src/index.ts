@@ -40,6 +40,7 @@ export {
   MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES,
 } from "./coordination-v3-store.js";
 export { PendingActivationCapacityError } from "./coordination-v3-activation.js";
+export { CoordinationIdempotencyConflictError } from "./coordination-v3-errors.js";
 export type {
   CoordinateV3Input,
   CoordinateV3Result,

@@ -233,6 +233,166 @@ function seedExpiredInjectedReplacement(input: { verified?: boolean } = {}): {
 }
 
 describe("CoordinationV3Scheduler rollover expiry recovery", () => {
+  test("terminalizes an injected uncommitted handoff before leasing later ordinary work", () => {
+    const { client: sqlite } = openDb(":memory:");
+    clients.push(sqlite);
+    sqlite.prepare(`
+      INSERT INTO projects (id, label, host_path, created_at, default_engine)
+      VALUES (?, 'Expiry project', '/tmp/expiry-project', ?, 'codex')
+    `).run(PROJECT_ID, NOW);
+    sqlite.prepare(`
+      INSERT INTO conversations (id, project_id, title, created_at, updated_at)
+      VALUES (?, ?, 'Expiry chat', ?, ?)
+    `).run(CONVERSATION_ID, PROJECT_ID, NOW, NOW);
+    sqlite.prepare(`
+      INSERT INTO agents (
+        id, project_id, conversation_id, title, active_engine, created_at, updated_at
+      ) VALUES (?, ?, ?, 'Recipient', 'codex', ?, ?)
+    `).run(RECIPIENT_ID, PROJECT_ID, CONVERSATION_ID, NOW, NOW);
+    sqlite.prepare(`
+      INSERT INTO agent_conversation_memberships (agent_id, conversation_id, position)
+      VALUES (?, ?, 0)
+    `).run(RECIPIENT_ID, CONVERSATION_ID);
+    const store = new CoordinationV3Store(sqlite);
+    const sourceActivationId = store.enqueueMessageActivation({
+      projectId: PROJECT_ID,
+      agentId: RECIPIENT_ID,
+      scopeKey: SCOPE_KEY,
+      messageId: "expired-handoff-source",
+      kind: "human",
+      payload: { text: "source" },
+      now: NOW,
+    });
+    const sourceRun = store.leaseNextRun({ workerId: "source", now: NOW });
+    if (!sourceRun) throw new Error("source Run was not leased");
+    expect(sourceRun.activationIds).toEqual([sourceActivationId]);
+    store.markRunStarted(sourceRun.runId, sourceRun.fencingToken, NOW);
+    store.preparePromptInjection({
+      injectionId: sourceRun.injectionId,
+      runId: sourceRun.runId,
+      fencingToken: sourceRun.fencingToken,
+      prompt: "source prompt",
+      now: NOW,
+    });
+    store.markPromptSubmitted({
+      injectionId: sourceRun.injectionId,
+      runId: sourceRun.runId,
+      fencingToken: sourceRun.fencingToken,
+      providerSessionId: "provider-old",
+      now: NOW,
+    });
+    store.acknowledgePromptInjection({
+      injectionId: sourceRun.injectionId,
+      runId: sourceRun.runId,
+      fencingToken: sourceRun.fencingToken,
+      providerSessionId: "provider-old",
+      now: NOW,
+    });
+    store.completeRun(sourceRun.runId, sourceRun.fencingToken, NOW);
+    const rollover = store.requestContextRollover({
+      projectId: PROJECT_ID,
+      agentId: RECIPIENT_ID,
+      oldProviderSessionId: "provider-old",
+      providerSessionGeneration: "generation-expired-handoff",
+      detectedOccupancy: 80_000,
+      threshold: 75_000,
+      lowWaterMark: 25_000,
+      triggerKind: "human",
+      compactionCutoffOrdinal: 1,
+      compactionCutoffEventId: "tail-default",
+      recentTail: [{
+        communicationEventId: "tail-default",
+        contentSha256: hashFor("tail-default"),
+      }],
+      sourceRunId: sourceRun.runId,
+      sourceActivationIds: [],
+      scopeKey: SCOPE_KEY,
+      conversationId: CONVERSATION_ID,
+      now: NOW,
+    }).rollover;
+    const laterActivationId = store.enqueueMessageActivation({
+      projectId: PROJECT_ID,
+      agentId: RECIPIENT_ID,
+      scopeKey: SCOPE_KEY,
+      messageId: "later-after-expired-handoff",
+      kind: "human",
+      payload: { text: "later work" },
+      now: NOW,
+    });
+    const handoffRun = store.leaseNextRun({
+      workerId: "handoff",
+      now: NOW,
+      leaseMs: 1_000,
+    });
+    if (!handoffRun) throw new Error("handoff Run was not leased");
+    store.markRunStarted(handoffRun.runId, handoffRun.fencingToken, NOW);
+    store.preparePromptInjection({
+      injectionId: handoffRun.injectionId,
+      runId: handoffRun.runId,
+      fencingToken: handoffRun.fencingToken,
+      prompt: "handoff prompt",
+      now: NOW,
+    });
+    store.markPromptSubmitted({
+      injectionId: handoffRun.injectionId,
+      runId: handoffRun.runId,
+      fencingToken: handoffRun.fencingToken,
+      providerSessionId: "provider-old",
+      now: NOW,
+    });
+    store.acknowledgePromptInjection({
+      injectionId: handoffRun.injectionId,
+      runId: handoffRun.runId,
+      fencingToken: handoffRun.fencingToken,
+      providerSessionId: "provider-old",
+      now: NOW,
+    });
+    expect(sqlite.prepare(`
+      SELECT source.source_id
+      FROM scheduler_run_activations attached
+      JOIN agent_activations activation
+        ON activation.id = attached.activation_id
+        AND activation.kind = 'context_rollover_handoff'
+      JOIN activation_sources source
+        ON source.activation_id = activation.id
+        AND source.source_kind = 'context_rollover'
+      WHERE attached.run_id = ?
+    `).get(handoffRun.runId)).toEqual({ source_id: rollover.id });
+
+    expect(store.recoverExpiredRuns(AFTER_EXPIRY)).toEqual({
+      retried: 0,
+      outcomeUnknown: 1,
+    });
+    const terminal = store.contextRollover(rollover.id);
+    expect(terminal).toMatchObject({
+      state: "outcome_unknown",
+      terminalAt: AFTER_EXPIRY,
+      lastError: "rollover Run lease expired after prompt injection before durable handoff commit",
+    });
+    expect(sqlite.prepare(`
+      SELECT state FROM agent_activations
+      WHERE id IN (SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?)
+    `).get(handoffRun.runId)).toEqual({ state: "outcome_unknown" });
+    expect(store.leaseNextRun({
+      workerId: "later",
+      now: AFTER_EXPIRY,
+    })?.activationIds).toEqual([laterActivationId]);
+
+    const restarted = new CoordinationV3Store(sqlite);
+    expect(restarted.activeContextRollover(RECIPIENT_ID)).toBeUndefined();
+    restarted.failContextRollover(
+      rollover.id,
+      "failed",
+      "late restart recovery must not overwrite lease expiry",
+      "2026-01-01T00:00:03.000Z",
+    );
+    expect(restarted.contextRollover(rollover.id)).toMatchObject({
+      state: "outcome_unknown",
+      terminalAt: AFTER_EXPIRY,
+      lastError: "rollover Run lease expired after prompt injection before durable handoff commit",
+    });
+  });
+
   test("recovers an injected replacement before saturated capacity accounting", async () => {
     const fixture = seedExpiredInjectedReplacement();
     const leased: SchedulerLease[] = [];

@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import type {
+  ActivationDispatchPolicy,
   ActivationPromptClass,
   ActivationTerminalOutcome,
   CommunicationAttentionActivationCursor,
@@ -10,6 +11,41 @@ import type {
 
 export class CoordinationV3ActivationReadModel {
   constructor(private readonly sqlite: Database.Database) {}
+
+  activation(
+    activationId: string,
+    projectId: string,
+  ): {
+    id: string;
+    projectId: string;
+    agentId: string;
+    dispatchPolicy: ActivationDispatchPolicy;
+    state: string;
+    payload: unknown;
+  } | undefined {
+    const row = this.sqlite.prepare(`
+      SELECT id, project_id, agent_id, dispatch_policy, state, payload_json
+      FROM agent_activations
+      WHERE id = ? AND project_id = ?
+    `).get(activationId, projectId) as {
+      id: string;
+      project_id: string;
+      agent_id: string;
+      dispatch_policy: ActivationDispatchPolicy;
+      state: string;
+      payload_json: string;
+    } | undefined;
+    return row
+      ? {
+          id: row.id,
+          projectId: row.project_id,
+          agentId: row.agent_id,
+          dispatchPolicy: row.dispatch_policy,
+          state: row.state,
+          payload: JSON.parse(row.payload_json) as unknown,
+        }
+      : undefined;
+  }
 
   pendingActivations(projectId?: string): PendingActivationV3View[] {
     const rows = this.sqlite.prepare(`

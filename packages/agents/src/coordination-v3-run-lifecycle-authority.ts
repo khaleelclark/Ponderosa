@@ -449,6 +449,29 @@ export class CoordinationV3RunLifecycleAuthority {
           )
         LIMIT 1
       `).get(input.runId, run.agent_id, run.project_id) as { id: string } | undefined;
+      const attachedRequestedHandoff = this.sqlite.prepare(`
+        SELECT rollover.id
+        FROM context_rollovers rollover
+        JOIN activation_sources source
+          ON source.source_kind = 'context_rollover'
+          AND source.source_id = rollover.id
+        JOIN agent_activations activation
+          ON activation.id = source.activation_id
+          AND activation.kind = 'context_rollover_handoff'
+        JOIN scheduler_run_activations attached
+          ON attached.activation_id = activation.id
+          AND attached.run_id = ?
+        WHERE rollover.agent_id = ? AND rollover.project_id = ?
+          AND rollover.state = 'requested'
+          AND rollover.handoff_event_id IS NULL
+        LIMIT 1
+      `).get(input.runId, run.agent_id, run.project_id) as { id: string } | undefined;
+      const requestedRollover = attachedRequestedHandoff ?? this.sqlite.prepare(`
+        SELECT id FROM context_rollovers
+        WHERE source_run_id = ? AND agent_id = ? AND project_id = ?
+          AND state = 'requested' AND handoff_event_id IS NULL
+        LIMIT 1
+      `).get(input.runId, run.agent_id, run.project_id) as { id: string } | undefined;
       if (disposition === "retry") {
         const error = publicProviderFailureSummary(
           input.error ?? "scheduler dispatch rejected",
@@ -478,7 +501,24 @@ export class CoordinationV3RunLifecycleAuthority {
             candidateReplacement.id,
           );
         }
-        const terminalOutcome = input.retryable === false || candidateReplacement
+        // A requested rollover must not outlive failure of either its source
+        // Run or its dedicated handoff Run. Terminalize the durable rollover
+        // in this same fenced transaction and cancel any still-pending handoff.
+        // Only an attached handoff becomes terminal here; an ordinary source
+        // Activation retains its normal retry disposition. Explicit human
+        // compact can create a fresh safe attempt, while automatic pressure is
+        // suppressed for the failed provider generation.
+        if (requestedRollover) {
+          this.sqlite.prepare(`
+            UPDATE context_rollovers
+            SET state = 'failed', last_error = ?, updated_at = ?,
+              terminal_at = COALESCE(terminal_at, ?)
+            WHERE id = ? AND state = 'requested'
+              AND handoff_event_id IS NULL
+          `).run(error, now, now, requestedRollover.id);
+          this.cancelPendingRolloverHandoff(requestedRollover.id, now);
+        }
+        const terminalOutcome = input.retryable === false || candidateReplacement || attachedRequestedHandoff
           ? input.terminalOutcome ?? "permanent_failure"
           : undefined;
         const providerUnavailable = input.failureKind === "capacity" || input.failureKind === "rate_limit";
@@ -621,6 +661,21 @@ export class CoordinationV3RunLifecycleAuthority {
             boundReplacement.id,
             input.runId,
           );
+        }
+        if (requestedRollover) {
+          this.sqlite.prepare(`
+            UPDATE context_rollovers
+            SET state = 'outcome_unknown', last_error = ?, updated_at = ?,
+              terminal_at = COALESCE(terminal_at, ?)
+            WHERE id = ? AND state = 'requested'
+              AND handoff_event_id IS NULL
+          `).run(
+            (input.error ?? "rollover handoff Run outcome became unknown before durable commit").slice(0, 2_000),
+            now,
+            now,
+            requestedRollover.id,
+          );
+          this.cancelPendingRolloverHandoff(requestedRollover.id, now);
         }
         this.sqlite.prepare(`
           UPDATE scheduler_runs
@@ -786,6 +841,54 @@ export class CoordinationV3RunLifecycleAuthority {
             OR (replacement_run_id IS NULL AND continuation_activation_id IN (
               SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?
             ))
+          )
+      `).run(now, now, run.id, run.id);
+      this.sqlite.prepare(`
+        UPDATE context_rollovers
+        SET state = 'outcome_unknown',
+          last_error = CASE
+            WHEN handoff_event_id IS NULL
+              THEN 'rollover handoff Run was cancelled before durable commit'
+            ELSE 'owning Run was cancelled before rollover continuation finalized'
+          END,
+          updated_at = ?, terminal_at = COALESCE(terminal_at, ?)
+        WHERE state IN ('requested','handoff_committed','session_retiring','continuation_ready')
+          AND replacement_verified_at IS NULL
+          AND (source_run_id = ? OR id IN (
+            SELECT source.source_id
+            FROM scheduler_run_activations attached
+            JOIN agent_activations activation
+              ON activation.id = attached.activation_id
+              AND activation.kind = 'context_rollover_handoff'
+            JOIN activation_sources source
+              ON source.activation_id = activation.id
+              AND source.source_kind = 'context_rollover'
+            WHERE attached.run_id = ?
+          ))
+      `).run(now, now, run.id, run.id);
+      this.sqlite.prepare(`
+        UPDATE agent_activations
+        SET state = 'cancelled', updated_at = ?, terminal_at = ?
+        WHERE kind IN ('context_rollover_handoff','context_rollover_continuation')
+          AND state IN ('pending','retry_pending')
+          AND id IN (
+            SELECT source.activation_id
+            FROM activation_sources source
+            JOIN context_rollovers rollover ON rollover.id = source.source_id
+            WHERE source.source_kind = 'context_rollover'
+              AND (rollover.source_run_id = ? OR EXISTS (
+                SELECT 1
+                FROM scheduler_run_activations owner_attached
+                JOIN agent_activations owner_activation
+                  ON owner_activation.id = owner_attached.activation_id
+                  AND owner_activation.kind = 'context_rollover_handoff'
+                JOIN activation_sources owner_source
+                  ON owner_source.activation_id = owner_activation.id
+                  AND owner_source.source_kind = 'context_rollover'
+                  AND owner_source.source_id = rollover.id
+                WHERE owner_attached.run_id = ?
+              ))
+              AND rollover.state = 'outcome_unknown'
           )
       `).run(now, now, run.id, run.id);
       this.sqlite.prepare(`
@@ -973,6 +1076,22 @@ export class CoordinationV3RunLifecycleAuthority {
         reason,
       );
     }
+  }
+
+  private cancelPendingRolloverHandoff(
+    rolloverId: string,
+    now: string,
+  ): void {
+    this.sqlite.prepare(`
+      UPDATE agent_activations
+      SET state = 'cancelled', updated_at = ?, terminal_at = ?
+      WHERE kind = 'context_rollover_handoff'
+        AND state IN ('pending','retry_pending')
+        AND id IN (
+          SELECT activation_id FROM activation_sources
+          WHERE source_kind = 'context_rollover' AND source_id = ?
+        )
+    `).run(now, now, rolloverId);
   }
 
   private requestOwnedByActiveRollover(

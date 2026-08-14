@@ -182,14 +182,22 @@ export class CoordinationV3RuntimeCommunicationAuthority {
             ) {
               throw new Error("runtime communication ID collision");
             }
-            const activations = this.sqlite.prepare(`
-              SELECT a.id FROM agent_activations a
-              JOIN activation_sources source ON source.activation_id = a.id
-              WHERE source.source_kind = 'communication'
-                AND source.source_id = ?
-                AND a.project_id = ?
-              ORDER BY a.created_at, a.id
-            `).all(input.id, input.projectId) as Array<{ id: string }>;
+            let activations = this.sqlite.prepare(`
+              SELECT activation_id, agent_id
+              FROM runtime_communication_activation_intake
+              WHERE communication_id = ?
+              ORDER BY recipient_index
+            `).all(input.id) as Array<{ activation_id: string; agent_id: string }>;
+            if (activations.length === 0 && activationInputs.length > 0) {
+              activations = this.restorePreIntakeMapping(
+                input.id,
+                input.projectId,
+                activationInputs,
+              );
+            }
+            if (activations.length !== activationInputs.length) {
+              throw new Error("runtime communication intake mapping is unavailable");
+            }
             if (input.runAuthorization && input.satisfiesRequiredReply) this.markRequiredReplySatisfied({
               runId: input.runAuthorization.runId,
               communicationId: input.id,
@@ -200,13 +208,17 @@ export class CoordinationV3RuntimeCommunicationAuthority {
             return {
               id: input.id,
               ...(activations[0]
-                ? { activationId: activations[0].id }
+                ? { activationId: activations[0].activation_id }
                 : {}),
               ...(activations.length
                 ? {
                   activationIds: activations.map(
-                    (activation) => activation.id,
+                    (activation) => activation.activation_id,
                   ),
+                  activations: activations.map((activation) => ({
+                    id: activation.activation_id,
+                    agentId: activation.agent_id,
+                  })),
                 }
                 : {}),
               ...(artifacts.length
@@ -294,12 +306,37 @@ export class CoordinationV3RuntimeCommunicationAuthority {
               externalIntake: true,
               now,
             }));
+          const readActivation = this.sqlite.prepare(`
+            SELECT id, agent_id FROM agent_activations
+            WHERE id = ? AND project_id = ?
+          `);
+          const activations = activationIds.map((id) => {
+            const activation = readActivation.get(id, input.projectId) as {
+              id: string;
+              agent_id: string;
+            } | undefined;
+            if (!activation) throw new Error("runtime communication activation is unavailable");
+            return { id: activation.id, agentId: activation.agent_id };
+          });
+          const insertActivationIntake = this.sqlite.prepare(`
+            INSERT INTO runtime_communication_activation_intake (
+              communication_id, recipient_index, agent_id, activation_id
+            ) VALUES (?, ?, ?, ?)
+          `);
+          for (const [index, activation] of activations.entries()) {
+            insertActivationIntake.run(
+              input.id,
+              index,
+              activation.agentId,
+              activation.id,
+            );
+          }
           return {
             id: input.id,
             ...(activationIds[0]
               ? { activationId: activationIds[0] }
               : {}),
-            ...(activationIds.length ? { activationIds } : {}),
+            ...(activationIds.length ? { activationIds, activations } : {}),
             ...(artifacts.length
               ? { artifactIds: artifacts.map((artifact) => artifact.id) }
               : {}),
@@ -411,6 +448,57 @@ export class CoordinationV3RuntimeCommunicationAuthority {
       preparedAttachments.bindings,
     );
     return result;
+  }
+
+  /** Databases created before the intake-mapping extension already have the
+   * immutable Communication hash and the exact original Activation dedupe
+   * keys. Recover only from those keys during an exact replay. Descendant
+   * lineage is deliberately irrelevant: retry and rollover Activations cannot
+   * own the original `(project, agent, dedupe_key)` tuple. */
+  private restorePreIntakeMapping(
+    communicationId: string,
+    projectId: string,
+    activationInputs: NonNullable<RuntimeCommunicationV3Input["activations"]>,
+  ): Array<{ activation_id: string; agent_id: string }> {
+    const findOriginal = this.sqlite.prepare(`
+      SELECT activation.id, activation.agent_id
+      FROM agent_activations activation
+      JOIN activation_sources source
+        ON source.activation_id = activation.id
+       AND source.source_kind = 'communication'
+       AND source.source_id = ?
+      WHERE activation.project_id = ?
+        AND activation.agent_id = ?
+        AND activation.dedupe_key = ?
+    `);
+    const recovered = activationInputs.map((activation, index) => {
+      const dedupeKey = activation.dedupeKey ??
+        `communication:${communicationId}:${activation.agentId}:${index}`;
+      const row = findOriginal.get(
+        communicationId,
+        projectId,
+        activation.agentId,
+        dedupeKey,
+      ) as { id: string; agent_id: string } | undefined;
+      if (!row) {
+        throw new Error("runtime communication intake mapping is unavailable");
+      }
+      return { activation_id: row.id, agent_id: row.agent_id };
+    });
+    const insert = this.sqlite.prepare(`
+      INSERT INTO runtime_communication_activation_intake (
+        communication_id, recipient_index, agent_id, activation_id
+      ) VALUES (?, ?, ?, ?)
+    `);
+    for (const [index, activation] of recovered.entries()) {
+      insert.run(
+        communicationId,
+        index,
+        activation.agent_id,
+        activation.activation_id,
+      );
+    }
+    return recovered;
   }
 
   private managedArtifactIds(payloadValue: unknown): string[] {

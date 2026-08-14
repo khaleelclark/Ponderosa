@@ -645,13 +645,20 @@ export function registerConversationDeliveryRoutes(
           });
         }
         notifyScheduler();
+        const deliveryIdByAgentId = new Map(
+          (intake.activations ?? []).map((activation) => [activation.agentId, activation.id]),
+        );
+        if (deliveryIdByAgentId.size !== recipients.length ||
+            recipients.some((recipient) => !deliveryIdByAgentId.has(recipient.agentId))) {
+          throw new Error("direct message activation ownership mismatch");
+        }
         return {
           messageId: message.id,
           replayed: intake.replayed,
-          recipients: recipients.map((recipient, index) => ({
+          recipients: recipients.map((recipient) => ({
             agentId: recipient.agentId,
             queued: true,
-            deliveryId: intake.activationIds?.[index],
+            deliveryId: deliveryIdByAgentId.get(recipient.agentId),
             state: "queued" as const,
           })),
         } satisfies MultiAgentDirectMessageResponse;

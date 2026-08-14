@@ -248,6 +248,7 @@ export interface RuntimeCommunicationV3Result {
   id: string;
   activationId?: string;
   activationIds?: string[];
+  activations?: Array<{ id: string; agentId: string }>;
   artifactIds?: string[];
   replayed: boolean;
 }

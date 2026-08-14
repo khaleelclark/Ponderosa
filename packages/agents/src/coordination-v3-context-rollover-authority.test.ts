@@ -69,6 +69,39 @@ function storeFixture(): {
   return { sqlite, store: new CoordinationV3Store(sqlite) };
 }
 
+function requestManualRollover(input: {
+  store: CoordinationV3Store;
+  sourceRunId: string;
+  providerSessionGeneration?: string;
+  boundaryOrdinal?: number;
+  boundaryEventId?: string;
+  tailEventId?: string;
+  now?: string;
+}) {
+  const tailEventId = input.tailEventId ?? "manual-tail";
+  return input.store.requestContextRollover({
+    projectId: PROJECT_ID,
+    agentId: RECIPIENT_ID,
+    oldProviderSessionId: "provider-old",
+    providerSessionGeneration: input.providerSessionGeneration ?? "manual-generation",
+    detectedOccupancy: 30_000,
+    threshold: 25_000,
+    lowWaterMark: 15_000,
+    triggerKind: "human",
+    compactionCutoffOrdinal: input.boundaryOrdinal ?? 42,
+    compactionCutoffEventId: input.boundaryEventId ?? "manual-boundary",
+    recentTail: [{
+      communicationEventId: tailEventId,
+      contentSha256: hashFor(tailEventId),
+    }],
+    sourceRunId: input.sourceRunId,
+    sourceActivationIds: [],
+    scopeKey: SCOPE_KEY,
+    conversationId: CONVERSATION_ID,
+    now: input.now ?? NOW,
+  });
+}
+
 function retireRollover(input: {
   sqlite: Database.Database;
   store: CoordinationV3Store;
@@ -463,7 +496,350 @@ function acknowledgeRun(input: {
   });
 }
 
+function activeManualHandoffFixture(): ReturnType<typeof storeFixture> & {
+  rolloverId: string;
+  handoffRun: SchedulerLease;
+  handoffId: string;
+} {
+  const fixture = storeFixture();
+  const sourceActivationId = fixture.store.enqueueMessageActivation({
+    projectId: PROJECT_ID,
+    agentId: RECIPIENT_ID,
+    scopeKey: SCOPE_KEY,
+    messageId: "cancellation-source",
+    kind: "human",
+    payload: { text: "source work" },
+    now: NOW,
+  });
+  const sourceRun = fixture.store.leaseNextRun({ workerId: "source-worker", now: NOW });
+  if (!sourceRun) throw new Error("source Run was not leased");
+  expect(sourceRun.activationIds).toEqual([sourceActivationId]);
+  acknowledgeRun({
+    store: fixture.store,
+    runId: sourceRun.runId,
+    fencingToken: sourceRun.fencingToken,
+    injectionId: sourceRun.injectionId,
+    prompt: "cancellation source prompt",
+  });
+  fixture.store.completeRun(sourceRun.runId, sourceRun.fencingToken, NOW);
+  const rollover = requestManualRollover({
+    store: fixture.store,
+    sourceRunId: sourceRun.runId,
+    providerSessionGeneration: "cancellation-generation",
+  }).rollover;
+  const handoffRun = fixture.store.leaseNextRun({ workerId: "handoff-worker", now: NOW });
+  if (!handoffRun) throw new Error("handoff Run was not leased");
+  acknowledgeRun({
+    store: fixture.store,
+    runId: handoffRun.runId,
+    fencingToken: handoffRun.fencingToken,
+    injectionId: handoffRun.injectionId,
+    prompt: "cancellation handoff prompt",
+  });
+  const handoffId = `handoff:${rollover.id}`;
+  fixture.sqlite.prepare(`
+    INSERT INTO continuation_handoffs (
+      id, agent_id, source_execution_id, text, created_at
+    ) VALUES (?, ?, ?, ?, ?)
+  `).run(
+    handoffId,
+    RECIPIENT_ID,
+    handoffRun.runId,
+    handoffTextFor(rollover.id),
+    NOW,
+  );
+  return { ...fixture, rolloverId: rollover.id, handoffRun, handoffId };
+}
+
 describe("context rollover continuation obligations", () => {
+  it.each([
+    "requested",
+    "handoff_committed",
+    "session_retiring",
+    "continuation_ready",
+  ] as const)("fences cancellation during %s without creating delayed replacement work", (phase) => {
+    const fixture = activeManualHandoffFixture();
+    if (phase !== "requested") {
+      fixture.store.commitContextRolloverHandoff(
+        fixture.rolloverId,
+        fixture.handoffId,
+        NOW,
+      );
+    }
+    if (phase === "session_retiring" || phase === "continuation_ready") {
+      fixture.store.beginContextRolloverRetirement(fixture.rolloverId, NOW);
+    }
+    const continuation = phase === "continuation_ready"
+      ? fixture.store.prepareContextRolloverContinuation({
+          id: fixture.rolloverId,
+          now: NOW,
+        })
+      : undefined;
+    expect(fixture.store.contextRollover(fixture.rolloverId)?.state).toBe(phase);
+
+    const cancelledAt = "2026-01-01T00:00:01.000Z";
+    expect(fixture.store.cancelAgentRun({
+      agentId: RECIPIENT_ID,
+      expectedRunId: fixture.handoffRun.runId,
+      idempotencyKey: `cancel-rollover-${phase}`,
+      now: cancelledAt,
+    })).toMatchObject({ cancelled: true, replayed: false });
+    const terminal = fixture.store.contextRollover(fixture.rolloverId);
+    expect(terminal).toMatchObject({
+      state: "outcome_unknown",
+      terminalAt: cancelledAt,
+    });
+    expect(() => fixture.store.prepareContextRolloverContinuation({
+      id: fixture.rolloverId,
+      now: "2026-01-01T00:00:02.000Z",
+    })).toThrow("context rollover session is not retiring");
+    if (continuation?.continuationActivationId) {
+      expect(fixture.sqlite.prepare(`
+        SELECT state FROM agent_activations WHERE id = ?
+      `).get(continuation.continuationActivationId)).toEqual({ state: "cancelled" });
+    }
+    expect(fixture.sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations
+      WHERE kind = 'context_rollover_continuation'
+        AND state IN ('pending','retry_pending','attached')
+    `).get()).toEqual({ count: 0 });
+
+    const restarted = new CoordinationV3Store(fixture.sqlite);
+    expect(restarted.activeContextRollover(RECIPIENT_ID)).toBeUndefined();
+    restarted.failContextRollover(
+      fixture.rolloverId,
+      "failed",
+      "late teardown must not overwrite cancellation",
+      "2026-01-01T00:00:03.000Z",
+    );
+    expect(restarted.contextRollover(fixture.rolloverId)).toMatchObject({
+      state: "outcome_unknown",
+      terminalAt: cancelledAt,
+      lastError: phase === "requested"
+        ? "rollover handoff Run was cancelled before durable commit"
+        : "owning Run was cancelled before rollover continuation finalized",
+    });
+
+    const laterActivationId = restarted.enqueueMessageActivation({
+      projectId: PROJECT_ID,
+      agentId: RECIPIENT_ID,
+      scopeKey: SCOPE_KEY,
+      messageId: `later-work-${phase}`,
+      kind: "human",
+      payload: { text: "later work" },
+      now: "2026-01-01T00:00:03.000Z",
+    });
+    expect(restarted.leaseNextRun({
+      workerId: "later-worker",
+      now: "2026-01-01T00:00:03.000Z",
+    })?.activationIds).toEqual([laterActivationId]);
+  });
+
+  it("terminalizes a failed manual handoff, releases later work, and creates one explicit retry", () => {
+    const fixture = storeFixture();
+    const sourceActivationId = fixture.store.enqueueMessageActivation({
+      projectId: PROJECT_ID,
+      agentId: RECIPIENT_ID,
+      scopeKey: SCOPE_KEY,
+      messageId: "manual-rollover-source",
+      kind: "human",
+      payload: { text: "source work" },
+      now: NOW,
+    });
+    const sourceRun = fixture.store.leaseNextRun({ workerId: "source-worker", now: NOW });
+    if (!sourceRun) throw new Error("source Run was not leased");
+    expect(sourceRun.activationIds).toEqual([sourceActivationId]);
+    acknowledgeRun({
+      store: fixture.store,
+      runId: sourceRun.runId,
+      fencingToken: sourceRun.fencingToken,
+      injectionId: sourceRun.injectionId,
+      prompt: "source prompt",
+    });
+    fixture.store.completeRun(sourceRun.runId, sourceRun.fencingToken, NOW);
+
+    const requested = requestManualRollover({
+      store: fixture.store,
+      sourceRunId: sourceRun.runId,
+    });
+    const laterActivationId = fixture.store.enqueueMessageActivation({
+      projectId: PROJECT_ID,
+      agentId: RECIPIENT_ID,
+      scopeKey: SCOPE_KEY,
+      messageId: "work-after-failed-manual-rollover",
+      kind: "human",
+      payload: { text: "later work" },
+      now: NOW,
+    });
+    const handoffRun = fixture.store.leaseNextRun({ workerId: "handoff-worker", now: NOW });
+    if (!handoffRun) throw new Error("rollover handoff Run was not leased");
+    expect(handoffRun.activations).toEqual([
+      expect.objectContaining({ kind: "context_rollover_handoff" }),
+    ]);
+    fixture.store.markRunStarted(handoffRun.runId, handoffRun.fencingToken, NOW);
+    expect(fixture.store.failRun({
+      runId: handoffRun.runId,
+      fencingToken: handoffRun.fencingToken,
+      workerId: "handoff-worker",
+      sameRunResumable: false,
+      error: "provider rejected manual handoff",
+      retryDelayMs: 0,
+      now: NOW,
+    })).toBe("terminal");
+    const failed = fixture.store.contextRollover(requested.rollover.id);
+    expect(failed).toMatchObject({
+      state: "failed",
+      lastError: "provider rejected manual handoff",
+      terminalAt: NOW,
+    });
+    expect(fixture.sqlite.prepare(`
+      SELECT state FROM agent_activations
+      WHERE id IN (SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?)
+    `).get(handoffRun.runId)).toEqual({ state: "failed" });
+
+    const laterRun = fixture.store.leaseNextRun({ workerId: "later-worker", now: NOW });
+    if (!laterRun) throw new Error("later ordinary work remained excluded");
+    expect(laterRun.activationIds).toEqual([laterActivationId]);
+    acknowledgeRun({
+      store: fixture.store,
+      runId: laterRun.runId,
+      fencingToken: laterRun.fencingToken,
+      injectionId: laterRun.injectionId,
+      prompt: "later prompt",
+    });
+    fixture.store.completeRun(laterRun.runId, laterRun.fencingToken, NOW);
+
+    const automaticReplay = fixture.store.requestContextRollover({
+      projectId: PROJECT_ID,
+      agentId: RECIPIENT_ID,
+      oldProviderSessionId: "provider-old",
+      providerSessionGeneration: "manual-generation",
+      detectedOccupancy: 30_000,
+      threshold: 25_000,
+      lowWaterMark: 15_000,
+      compactionCutoffOrdinal: 43,
+      compactionCutoffEventId: "automatic-later-boundary",
+      recentTail: [{
+        communicationEventId: "automatic-later-tail",
+        contentSha256: hashFor("automatic-later-tail"),
+      }],
+      sourceRunId: laterRun.runId,
+      sourceActivationIds: [],
+      scopeKey: SCOPE_KEY,
+      now: "2026-01-01T00:00:01.000Z",
+    });
+    expect(automaticReplay).toMatchObject({
+      created: false,
+      rollover: { id: requested.rollover.id, state: "failed" },
+    });
+
+    const retry = requestManualRollover({
+      store: fixture.store,
+      sourceRunId: laterRun.runId,
+      boundaryOrdinal: 43,
+      boundaryEventId: "manual-boundary-retry",
+      tailEventId: "manual-tail-retry",
+      now: "2026-01-01T00:00:01.000Z",
+    });
+    expect(retry.created).toBe(true);
+    expect(retry.rollover).toMatchObject({ state: "requested", triggerKind: "human" });
+    expect(retry.rollover.id).not.toBe(requested.rollover.id);
+    const retryReplay = requestManualRollover({
+      store: fixture.store,
+      sourceRunId: laterRun.runId,
+      boundaryOrdinal: 43,
+      boundaryEventId: "manual-boundary-retry",
+      tailEventId: "manual-tail-retry",
+      now: "2026-01-01T00:00:02.000Z",
+    });
+    expect(retryReplay.created).toBe(false);
+    expect(retryReplay.rollover.id).toBe(retry.rollover.id);
+    expect(fixture.sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM context_rollovers
+      WHERE agent_id = ? AND provider_session_generation = 'manual-generation'
+    `).get(RECIPIENT_ID)).toEqual({ count: 2 });
+
+    fixture.store.failContextRollover(
+      requested.rollover.id,
+      "outcome_unknown",
+      "late executor transition must not overwrite scheduler authority",
+      "2026-01-01T00:00:03.000Z",
+    );
+    expect(fixture.store.contextRollover(requested.rollover.id)).toMatchObject({
+      state: "failed",
+      lastError: "provider rejected manual handoff",
+      terminalAt: NOW,
+    });
+  });
+
+  it("terminalizes a requested manual rollover during daemon restart recovery", () => {
+    const fixture = storeFixture();
+    const sourceActivationId = fixture.store.enqueueMessageActivation({
+      projectId: PROJECT_ID,
+      agentId: RECIPIENT_ID,
+      scopeKey: SCOPE_KEY,
+      messageId: "restart-source",
+      kind: "human",
+      payload: { text: "source work" },
+      now: NOW,
+    });
+    const sourceRun = fixture.store.leaseNextRun({ workerId: "source-worker", now: NOW });
+    if (!sourceRun) throw new Error("source Run was not leased");
+    expect(sourceRun.activationIds).toEqual([sourceActivationId]);
+    acknowledgeRun({
+      store: fixture.store,
+      runId: sourceRun.runId,
+      fencingToken: sourceRun.fencingToken,
+      injectionId: sourceRun.injectionId,
+      prompt: "restart source prompt",
+    });
+    fixture.store.completeRun(sourceRun.runId, sourceRun.fencingToken, NOW);
+    const requested = requestManualRollover({
+      store: fixture.store,
+      sourceRunId: sourceRun.runId,
+      providerSessionGeneration: "restart-generation",
+    });
+    const handoffRun = fixture.store.leaseNextRun({ workerId: "old-daemon", now: NOW });
+    if (!handoffRun) throw new Error("handoff Run was not leased");
+
+    expect(fixture.store.recoverOrphanedRuns(
+      "new-daemon",
+      "2026-01-01T00:01:00.000Z",
+    )).toEqual({ retried: 1, outcomeUnknown: 0 });
+    const restarted = new CoordinationV3Store(fixture.sqlite);
+    const active = restarted.activeContextRollover(RECIPIENT_ID);
+    expect(active?.id).toBe(requested.rollover.id);
+    restarted.failContextRollover(
+      requested.rollover.id,
+      "outcome_unknown",
+      "server restarted before the provider committed a bounded rollover handoff",
+      "2026-01-01T00:01:00.000Z",
+    );
+    expect(restarted.activeContextRollover(RECIPIENT_ID)).toBeUndefined();
+    expect(restarted.contextRollover(requested.rollover.id)).toMatchObject({
+      state: "outcome_unknown",
+      terminalAt: "2026-01-01T00:01:00.000Z",
+    });
+    expect(fixture.sqlite.prepare(`
+      SELECT state FROM agent_activations
+      WHERE id IN (SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?)
+    `).get(handoffRun.runId)).toEqual({ state: "cancelled" });
+
+    const laterActivationId = restarted.enqueueMessageActivation({
+      projectId: PROJECT_ID,
+      agentId: RECIPIENT_ID,
+      scopeKey: SCOPE_KEY,
+      messageId: "restart-later-work",
+      kind: "human",
+      payload: { text: "later work" },
+      now: "2026-01-01T00:01:00.000Z",
+    });
+    expect(restarted.leaseNextRun({
+      workerId: "new-daemon",
+      now: "2026-01-01T00:01:00.000Z",
+    })?.activationIds).toEqual([laterActivationId]);
+  });
+
   it("transfers a human DM reply exactly once through an accepted replacement", () => {
     const fixture = directReplyReplacementCandidate();
     expect(fixture.store.requiredReplyObligationForRun(
@@ -2188,7 +2564,7 @@ describe("context rollover continuation obligations", () => {
 
   it("routes a human-triggered rollover through the same verified continuation protocol", () => {
     const fixture = requestSourceFixture();
-    const manualScope = "context-rollover-human:recipient:provider-old";
+    const manualScope = SCOPE_KEY;
     const requested = fixture.store.requestContextRollover({
       projectId: PROJECT_ID,
       agentId: RECIPIENT_ID,

@@ -31,6 +31,7 @@ import type { createAgentEventService } from "../agent-event-service.js";
 import type { createCommunicationArtifactAuthority } from "../communication-artifacts.js";
 import { derivedRunActionKey } from "../security.js";
 import { normalizeExternalCitations } from "../external-content.js";
+import { selectsRequiredReply } from "../required-reply-route.js";
 import type { PreparedCommunicationArtifact } from "./conversation-deliveries.js";
 
 type AgentEventService = ReturnType<typeof createAgentEventService>;
@@ -322,28 +323,52 @@ export function registerAgentCommunicationRoutes(
         ? { recipientAgentIds: [...inferredRecipientAgentIds].sort() }
         : {}),
     };
-    const selectedReplyAuthorityKey = JSON.stringify(selectedReplyAuthority);
+    const candidateRequiredReplyFingerprint = createHash("sha256").update(JSON.stringify({
+      intent, text, recipientAgentIds: inferredRecipientAgentIds,
+      artifactIds: artifactIds ?? [],
+      document: documentTitle && documentContent ? { title: documentTitle, content: documentContent, mediaType: "text/markdown" } : null,
+      citations,
+      steeringInjectionId: requiredSteeringFence ?? null,
+    })).digest("hex");
+    const requestedIdempotencyKey = request.body?.idempotencyKey?.trim();
+    if (requestedIdempotencyKey && requestedIdempotencyKey.length > 200) {
+      return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
+    }
+    const requestedReceiptKey = requestedIdempotencyKey
+      ? `${capability.runId}:${intent}:${requestedIdempotencyKey}`
+      : undefined;
+    const requestedCommunicationEventId = requestedReceiptKey
+      ? `runtime-${createHash("sha256").update(`${currentAuthor?.projectId ?? "unknown"}\0${requestedReceiptKey}`).digest("hex")}`
+      : undefined;
+    const requestedReplay = requestedCommunicationEventId
+      ? coordinationV3.runtimeCommunication(requestedCommunicationEventId)
+      : undefined;
+    const requestedReplayPayload = requestedReplay?.payload &&
+      typeof requestedReplay.payload === "object" &&
+      !Array.isArray(requestedReplay.payload)
+      ? requestedReplay.payload as { requiredReplyFingerprint?: unknown }
+      : undefined;
+    const keyedReplayRequiredReplyFingerprint =
+      typeof requestedReplayPayload?.requiredReplyFingerprint === "string"
+        ? requestedReplayPayload.requiredReplyFingerprint
+        : undefined;
+    const suppliedSteeringFence = request.body?.steeringInjectionId?.trim();
     const pendingRequiredReplyAuthorities = coordinationV3.requiredReplyAuthoritiesForRun(capability.runId);
-    const routeHasPendingReply = pendingRequiredReplyAuthorities.some((authority) =>
-      JSON.stringify({
-        intent: authority.intent,
-        ...(authority.recipientAgentIds?.length
-          ? { recipientAgentIds: [...authority.recipientAgentIds].sort() }
-          : {}),
-      }) === selectedReplyAuthorityKey
-    );
-    const routeAlreadyPublished = capability.requiredReplyFingerprints?.[selectedReplyAuthorityKey] !== undefined;
-    const explicitlySelectedRequiredReply = !inferredReply && !capability.defaultReply &&
-      (routeHasPendingReply || (routeAlreadyPublished && !request.body?.idempotencyKey?.trim()));
-    const requiredReplyAction = (inferredReply && (routeHasPendingReply || routeAlreadyPublished)) ||
-      explicitlySelectedRequiredReply;
+    const {
+      selectedReplyAuthorityKey,
+      requiredReplyAction,
+    } = selectsRequiredReply({
+      inferredReply,
+      selectedReplyAuthority,
+      pendingReplyAuthorities: pendingRequiredReplyAuthorities,
+      publishedReplyFingerprints: capability.requiredReplyFingerprints,
+      requestedIdempotencyKey,
+      candidateReplyFingerprint: candidateRequiredReplyFingerprint,
+      keyedReplayRequiredReplyFingerprint,
+      steeringFenceMatches: !requiredSteeringFence || suppliedSteeringFence === requiredSteeringFence,
+    });
     const inferredReplyFingerprint = requiredReplyAction
-      ? createHash("sha256").update(JSON.stringify({
-          intent, text, recipientAgentIds: inferredRecipientAgentIds,
-          artifactIds: artifactIds ?? [],
-          document: documentTitle && documentContent ? { title: documentTitle, content: documentContent, mediaType: "text/markdown" } : null,
-          citations,
-        })).digest("hex")
+      ? candidateRequiredReplyFingerprint
       : undefined;
     const previousRequiredReplyFingerprint = requiredReplyAction
       ? capability.requiredReplyFingerprints?.[selectedReplyAuthorityKey]
@@ -351,24 +376,24 @@ export function registerAgentCommunicationRoutes(
     if (inferredReplyFingerprint && previousRequiredReplyFingerprint && previousRequiredReplyFingerprint !== inferredReplyFingerprint) {
       return reply.code(409).send({ error: "this Run already published its required reply on this route; supply an idempotencyKey for an additional advanced communication" });
     }
-    const idempotencyKey = request.body?.idempotencyKey?.trim() || (inferredReplyFingerprint
+    const idempotencyKey = requestedIdempotencyKey || (inferredReplyFingerprint
       ? derivedRunActionKey(capability.runId, "reply", {
           authority: selectedReplyAuthority,
           fingerprint: inferredReplyFingerprint,
         })
       : undefined);
-    if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
     const receiptKey = idempotencyKey ? `${capability.runId}:${intent}:${idempotencyKey}` : undefined;
     const communicationEventId = receiptKey
       ? `runtime-${createHash("sha256").update(`${currentAuthor?.projectId ?? "unknown"}\0${receiptKey}`).digest("hex")}`
       : randomUUID();
-    const replay = coordinationV3.runtimeCommunication(communicationEventId);
+    const replay = requestedCommunicationEventId === communicationEventId
+      ? requestedReplay
+      : coordinationV3.runtimeCommunication(communicationEventId);
     const replayPayload = replay?.payload && typeof replay.payload === "object"
       ? replay.payload as { communication?: CommunicationEvent }
       : undefined;
     const replayCommunication = replayPayload?.communication ?? replay?.payload as CommunicationEvent | undefined;
 
-    const suppliedSteeringFence = request.body?.steeringInjectionId?.trim();
     if (!replay && requiredSteeringFence && suppliedSteeringFence !== requiredSteeringFence) {
       return reply.code(409).send({
         error: "output is fenced behind acknowledged steering; reconsider the newest steering prompt and retry with its exact steeringInjectionId",

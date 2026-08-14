@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import type { RetryMessageDeliveryResponse } from "@ponderosa/core";
 import { PRIORITY } from "./coordination-v3-activation.js";
 import { payloadHash, stableJson } from "./coordination-v3-canonical-json.js";
+import { CoordinationIdempotencyConflictError } from "./coordination-v3-errors.js";
 import type { CoordinationV3RuntimeArtifactAuthority } from "./coordination-v3-runtime-artifact-authority.js";
 import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runtime-scope-authority.js";
 import type {
@@ -352,7 +353,14 @@ export class CoordinationV3ActivationCommandAuthority {
       const replay = this.idempotentReplay<{ cancelled: boolean; status: "cancelled" | "delivery_started" }>(
         input.projectId, "user:local-operator", "cancel_activation", input.idempotencyKey, hash,
       );
-      if (replay) return { ...replay, replayed: true };
+      if (replay) {
+        if (replay.cancelled) this.ensureQueuedMessageCancellationOutbox(
+          input.projectId,
+          input.activationId,
+          now,
+        );
+        return { ...replay, replayed: true };
+      }
       const changed = this.sqlite.prepare(`
         UPDATE agent_activations SET state = 'cancelled', updated_at = ?
         WHERE id = ? AND project_id = ? AND state IN ('pending', 'retry_pending')
@@ -362,6 +370,11 @@ export class CoordinationV3ActivationCommandAuthority {
         : { cancelled: false, status: "delivery_started" as const };
       this.recordIdempotency(
         input.projectId, "user:local-operator", "cancel_activation", input.idempotencyKey, hash, result, now,
+      );
+      if (result.cancelled) this.ensureQueuedMessageCancellationOutbox(
+        input.projectId,
+        input.activationId,
+        now,
       );
       return { ...result, replayed: false };
     })();
@@ -513,6 +526,116 @@ export class CoordinationV3ActivationCommandAuthority {
     ).get(agentId));
   }
 
+  private ensureQueuedMessageCancellationOutbox(
+    projectId: string,
+    activationId: string,
+    now: string,
+  ): void {
+    const change = this.queuedMessageCancellationChange(activationId);
+    if (!change || change.projectId !== projectId) return;
+    const canonicalPayload = stableJson({
+      activationId: change.activationId,
+      projectId: change.projectId,
+      agentId: change.agentId,
+      conversationId: change.conversationId,
+      action: change.action,
+    });
+    this.sqlite.prepare(`
+      UPDATE activation_outbox
+      SET payload_json = ?
+      WHERE activation_id = ? AND event_kind = 'queued_message_change'
+        AND processed_at IS NULL AND claimed_by IS NULL
+    `).run(canonicalPayload, activationId);
+    this.sqlite.prepare(`
+      UPDATE activation_outbox
+      SET dead_lettered_at = NULL, last_error = NULL, attempts = 0
+      WHERE activation_id = ? AND event_kind = 'queued_message_change'
+        AND processed_at IS NULL AND dead_lettered_at IS NOT NULL
+        AND claimed_by IS NULL
+    `).run(activationId);
+    this.sqlite.prepare(`
+      INSERT INTO activation_outbox (
+        activation_id, event_kind, payload_json, created_at
+      )
+      SELECT ?, 'queued_message_change', ?, ?
+      WHERE NOT EXISTS (
+        SELECT 1 FROM activation_outbox
+        WHERE activation_id = ? AND event_kind = 'queued_message_change'
+      )
+    `).run(
+      activationId,
+      canonicalPayload,
+      now,
+      activationId,
+    );
+  }
+
+  queuedMessageCancellationChange(activationId: string): {
+    activationId: string;
+    projectId: string;
+    agentId: string;
+    conversationId: string;
+    action: "cancelled";
+  } | undefined {
+    const activation = this.sqlite.prepare(`
+      SELECT id, project_id, agent_id, dispatch_policy, state, payload_json
+      FROM agent_activations
+      WHERE id = ?
+    `).get(activationId) as {
+      id: string;
+      project_id: string;
+      agent_id: string;
+      dispatch_policy: ActivationDispatchPolicy;
+      state: string;
+      payload_json: string;
+    } | undefined;
+    if (!activation || activation.dispatch_policy !== "next_run" ||
+        activation.state !== "cancelled") return undefined;
+    let payload: {
+      communication?: {
+        conversationId?: unknown;
+        sender?: { kind?: unknown; userId?: unknown };
+      };
+      dispatch?: { conversationId?: unknown; sourceConversationId?: unknown };
+    };
+    try {
+      payload = JSON.parse(activation.payload_json) as typeof payload;
+    } catch {
+      return undefined;
+    }
+    if (payload.communication?.sender?.kind !== "user" ||
+        payload.communication.sender.userId !== "local-operator") return undefined;
+    const conversationId = payload.dispatch?.sourceConversationId ??
+      payload.dispatch?.conversationId ?? payload.communication.conversationId;
+    if (typeof conversationId !== "string" || !conversationId) return undefined;
+    const canonicalOwners = this.sqlite.prepare(`
+      SELECT
+        EXISTS (
+          SELECT 1 FROM agents
+          WHERE id = ? AND project_id = ?
+        ) AS owns_agent,
+        EXISTS (
+          SELECT 1 FROM conversations
+          WHERE id = ? AND project_id = ?
+        ) AS owns_conversation
+    `).get(
+      activation.agent_id,
+      activation.project_id,
+      conversationId,
+      activation.project_id,
+    ) as { owns_agent: number; owns_conversation: number };
+    if (!canonicalOwners.owns_agent || !canonicalOwners.owns_conversation) {
+      return undefined;
+    }
+    return {
+      activationId: activation.id,
+      projectId: activation.project_id,
+      agentId: activation.agent_id,
+      conversationId,
+      action: "cancelled",
+    };
+  }
+
   private idempotentReplay<T>(
     projectId: string,
     actorScope: string,
@@ -528,7 +651,7 @@ export class CoordinationV3ActivationCommandAuthority {
       result_json: string;
     } | undefined;
     if (!row) return undefined;
-    if (row.payload_hash !== hash) throw new Error("idempotency key collision");
+    if (row.payload_hash !== hash) throw new CoordinationIdempotencyConflictError();
     return JSON.parse(row.result_json) as T;
   }
 

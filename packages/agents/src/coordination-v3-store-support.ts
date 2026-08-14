@@ -7,6 +7,7 @@ import {
   type RequestLifetime,
 } from "@ponderosa/core";
 import { stableJson } from "./coordination-v3-canonical-json.js";
+import { CoordinationIdempotencyConflictError } from "./coordination-v3-errors.js";
 import { isIso } from "./coordination-v3-runtime-validation.js";
 import type {
   Actor,
@@ -238,9 +239,7 @@ export class CoordinationV3StoreSupport {
       result_json: string;
     } | undefined;
     if (!row) return undefined;
-    if (row.payload_hash !== hash) {
-      throw new Error("idempotency key collision");
-    }
+    if (row.payload_hash !== hash) throw new CoordinationIdempotencyConflictError();
     return JSON.parse(row.result_json) as T;
   }
 
