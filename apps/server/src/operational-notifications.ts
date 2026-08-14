@@ -297,7 +297,6 @@ export function createOperationalNotifications(context: OperationalNotifications
         severity: "attention",
         title: "Project deletion cleanup needs attention",
         body: `The Project was deleted, but filesystem cleanup is still retrying. ${receipt.lastError ?? "Retry deletion to continue cleanup."}`.slice(0, 1_000),
-        projectId: receipt.projectId,
       });
     }
     for (const notification of workspace.listNotifications()) {

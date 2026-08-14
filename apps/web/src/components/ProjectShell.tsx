@@ -37,6 +37,11 @@ import { WorkspaceReviewPane } from "./files/WorkspaceReviewPane";
 import { WorkspaceFileView } from "./WorkspaceFileView";
 import { WorkspaceErrorBoundary } from "./WorkspaceErrorBoundary";
 
+type RemovableWorkspaceResourceRoute = Extract<
+  Route,
+  { kind: "agent" | "conversation" }
+>;
+
 export function ProjectShell({
   projectId,
   project,
@@ -53,6 +58,7 @@ export function ProjectShell({
   onBrowserRequestHandled,
   openInNewTab,
   onResourceDeleted,
+  onProjectDeleted,
   onCreate,
 }: {
   projectId: string;
@@ -69,7 +75,8 @@ export function ProjectShell({
   browserRequest?: ProjectBrowserRequest;
   onBrowserRequestHandled?(requestId: number): void;
   openInNewTab?(route: Route): void;
-  onResourceDeleted?(route: Route): void;
+  onResourceDeleted?(route: RemovableWorkspaceResourceRoute): void;
+  onProjectDeleted(projectId: string): void;
   onCreate(
     kind: "chat" | "agent" | "trigger",
     context: {
@@ -472,7 +479,7 @@ export function ProjectShell({
         onOpenTriggerInNewTab={(triggerRoute) => openInNewTab?.(triggerRoute)}
         onCreateTrigger={() => onCreate("trigger", { projectId })}
         onProjectDeleted={() => {
-          onResourceDeleted?.({ kind: "project", projectId });
+          onProjectDeleted(projectId);
         }}
         onOpenEngineStatus={onOpenEngineStatus}
         onOpenArtifact={openProjectArtifact}

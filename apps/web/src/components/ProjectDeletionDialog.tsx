@@ -1,9 +1,8 @@
 import { Alert, Checkbox, FormControlLabel } from "@mui/material";
 import type { ProjectDto } from "@ponderosa/core";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import { queryKeys } from "../queryKeys";
 import { ResourceDeletionDialog } from "./ConfirmationDialogs";
 
 export function ProjectDeletionDialog({
@@ -17,14 +16,10 @@ export function ProjectDeletionDialog({
   onClose(): void;
   onDeleted(projectId: string): void;
 }): JSX.Element {
-  const queryClient = useQueryClient();
   const [acknowledged, setAcknowledged] = useState(false);
   const remove = useMutation({
     mutationFn: () => api.deleteProject(project.id),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
-      onDeleted(project.id);
-    },
+    onSuccess: () => onDeleted(project.id),
   });
 
   useEffect(() => {

@@ -120,6 +120,8 @@ export class WorkspaceStore {
   private readonly decisionEventIdsByConversation = new Map<string, string[]>();
   private readonly pushSubscriptions = new Map<string, WebPushSubscriptionDto>();
   private readonly pushDeliveries = new Map<string, PushDeliveryRecord>();
+  private readonly deletedProjectIds = new Set<string>();
+  private readonly projectDeletionEvents = new Map<string, WorkspaceEventEnvelope>();
   private readonly queuedMessageChanges = new Set<string>();
   private readonly resourceRecency = new Map<string, WorkspaceResourceRecencyDto>();
   private readonly resourceRecencyLinks = new Map<
@@ -185,6 +187,7 @@ export class WorkspaceStore {
 
   private project(record: CanonicalWorkspaceEvent): void {
     this.projectResourceRecency(record);
+    this.projectDeletedProjectNotifications(record);
     if (record.event.type === "queued_message_changed") {
       this.queuedMessageChanges.add([
         record.event.conversationId,
@@ -246,11 +249,16 @@ export class WorkspaceStore {
       for (const key of [...this.draftConflicts.keys()]) if (key.startsWith(prefix)) this.draftConflicts.delete(key);
     }
     if (record.mutation?.kind === "notification") {
-      this.setNotification(record.mutation.notification);
+      const notification = this.deletedProjectNotification(
+        record.mutation.notification,
+        record.ts,
+      );
+      this.setNotification(notification);
       for (const target of record.mutation.pushTargets ?? []) {
-        const key = this.pushDeliveryKey(record.mutation.notification.id, target.deviceId);
+        if ((notification.status ?? "open") !== "open") continue;
+        const key = this.pushDeliveryKey(notification.id, target.deviceId);
         if (!this.pushDeliveries.has(key)) this.pushDeliveries.set(key, {
-          notificationId: record.mutation.notification.id,
+          notificationId: notification.id,
           deviceId: target.deviceId,
           subscriptionUpdatedAt: target.subscriptionUpdatedAt,
           status: "pending",
@@ -331,6 +339,51 @@ export class WorkspaceStore {
     if (record.mutation?.kind === "push_delivery") {
       const delivery = record.mutation.delivery;
       this.pushDeliveries.set(this.pushDeliveryKey(delivery.notificationId, delivery.deviceId), delivery);
+    }
+  }
+
+  private deletedProjectNotification(
+    notification: WorkspaceNotificationDto,
+    at: string,
+  ): WorkspaceNotificationDto {
+    if (!notification.projectId || !this.deletedProjectIds.has(notification.projectId)) {
+      return notification;
+    }
+    // Deletion cleanup is workspace-owned after its Project has gone. Keep the
+    // alert current without retaining a dead Project destination.
+    if (notification.dedupeKey?.startsWith("project-deletion:")) {
+      const { projectId: _deletedProjectId, ...workspaceNotification } = notification;
+      return workspaceNotification;
+    }
+    return {
+      ...notification,
+      status: "resolved",
+      readAt: notification.readAt ?? at,
+      resolvedAt: notification.resolvedAt ?? at,
+    };
+  }
+
+  /** Project lifecycle is the durable boundary for retaining historical
+   * notifications without leaving deleted destinations unread or actionable. */
+  private projectDeletedProjectNotifications(record: CanonicalWorkspaceEvent): void {
+    const event = record.event;
+    if (event.type !== "project_changed") return;
+    if (event.action === "created") {
+      this.deletedProjectIds.delete(event.projectId);
+      this.projectDeletionEvents.delete(event.projectId);
+      return;
+    }
+    if (event.action !== "deleted") return;
+    this.deletedProjectIds.add(event.projectId);
+    this.projectDeletionEvents.set(event.projectId, record);
+    for (const notification of this.notifications.values()) {
+      if (notification.projectId !== event.projectId) continue;
+      const reconciled = this.deletedProjectNotification(notification, record.ts);
+      this.setNotification(reconciled);
+      if ((reconciled.status ?? "open") === "open") continue;
+      for (const key of this.pushDeliveries.keys()) {
+        if (key.startsWith(`${notification.id}\u0000`)) this.pushDeliveries.delete(key);
+      }
     }
   }
 
@@ -532,6 +585,14 @@ export class WorkspaceStore {
     this.events.push(record);
     this.project(record);
     return record;
+  }
+
+  /** Materialize an irreversible Project receipt in the durable workspace log.
+   * Returning the original envelope makes publication retries idempotent. */
+  reconcileProjectDeletion(projectId: string): WorkspaceEventEnvelope {
+    const existing = this.projectDeletionEvents.get(projectId);
+    if (existing) return existing;
+    return this.append({ type: "project_changed", projectId, action: "deleted" });
   }
 
   readSince(id: number): WorkspaceEventEnvelope[] {
@@ -750,7 +811,7 @@ export class WorkspaceStore {
       { type: "notification_changed", notificationId: notification.id, conversationId: notification.conversationId, action: "created" },
       { kind: "notification", notification, ...(pushTargets?.length ? { pushTargets } : {}) },
     );
-    return notification;
+    return this.notifications.get(notification.id)!;
   }
 
   listNotifications(): WorkspaceNotificationDto[] {

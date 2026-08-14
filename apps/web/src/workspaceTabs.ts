@@ -298,6 +298,7 @@ export function removeProjectWorkspaceTabsWithFallback(
 
 export function removeProjectWorkspaceTabs(current: WorkspaceTabState[], projectIds: Set<string>): WorkspaceTabState[] {
   const retained = current.filter((tab) => !("projectId" in tab.route) || typeof tab.route.projectId !== "string" || projectIds.has(tab.route.projectId));
+  if (retained.length === current.length) return current;
   return retained.length > 0 ? retained : [createWorkspaceTab({ kind: "home" })];
 }
 

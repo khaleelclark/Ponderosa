@@ -1,8 +1,12 @@
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import type {
+  AllChatPageDto,
+  GlobalChatSearchResponseDto,
+  ProjectDto,
   WorkspaceEvent,
   WorkspaceEventEnvelope,
+  WorkspaceNotificationDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { api } from "../api";
@@ -25,6 +29,27 @@ const INSTANCE_MISMATCH_INITIAL_DELAY_MS = 50;
 const INSTANCE_MISMATCH_MAX_DELAY_MS = 2_000;
 const RECONNECTING_NOTICE_DELAY_MS = 1_000;
 const STALE_NOTICE_DELAY_MS = 8_000;
+const DIRECTLY_PROJECT_SCOPED_QUERY_ROOTS = new Set([
+  "project",
+  "conversations",
+  "agents",
+  "agent-health",
+  "agent-presets",
+  "decisions",
+  "engine-models",
+  "engine-capabilities",
+  "workspace-status",
+  "workspace-file",
+  "workspace",
+  "workspace-file-view",
+  "agent-work",
+  "token-usage",
+  "project-browser",
+  "agent-browsers",
+  "agent-browser",
+  "project-artifacts",
+  "agent-deletion-preview",
+]);
 
 export type WorkspaceConnectionStatus =
   | "connecting"
@@ -38,6 +63,95 @@ export interface WorkspaceConnectionState {
   lastSuccessfulSyncAt?: string;
   prolongedDisconnect: boolean;
   announcement?: string;
+}
+
+export interface WorkspaceStreamOptions {
+  onProjectDeleted?(projectId: string, at: string): void;
+}
+
+export function reconcileDeletedProjectClientState(
+  queryClient: Pick<
+    QueryClient,
+    "setQueryData" | "setQueriesData" | "removeQueries" | "invalidateQueries"
+  >,
+  projectId: string,
+  at: string,
+): void {
+  queryClient.setQueryData<ProjectDto[]>(
+    queryKeys.projects.all,
+    current => current?.filter(project => project.id !== projectId),
+  );
+  queryClient.setQueryData<WorkspaceNotificationDto[]>(
+    queryKeys.notifications.all,
+    current => current?.map(notification => {
+      if (notification.projectId !== projectId) return notification;
+      if (notification.dedupeKey?.startsWith("project-deletion:")) {
+        const { projectId: _deletedProjectId, ...workspaceNotification } = notification;
+        return workspaceNotification;
+      }
+      return {
+        ...notification,
+        status: "resolved",
+        readAt: notification.readAt ?? at,
+        resolvedAt: notification.resolvedAt ?? at,
+      };
+    }),
+  );
+  queryClient.setQueriesData<GlobalChatSearchResponseDto>(
+    { queryKey: queryKeys.globalSearch.all },
+    current => current
+      ? {
+          ...current,
+          results: current.results.filter(item => item.project.id !== projectId),
+          recentChats: current.recentChats.filter(item => item.project.id !== projectId),
+        }
+      : current,
+  );
+  queryClient.setQueriesData<AllChatPageDto>(
+    { queryKey: queryKeys.allChatAll },
+    current => current
+      ? {
+          ...current,
+          items: current.items.filter(item => item.project.id !== projectId),
+          ...(current.decisions
+            ? {
+                decisions: current.decisions.filter(
+                  item => item.project.id !== projectId,
+                ),
+              }
+            : {}),
+        }
+      : current,
+  );
+  queryClient.removeQueries({
+    predicate: query =>
+      DIRECTLY_PROJECT_SCOPED_QUERY_ROOTS.has(String(query.queryKey[0]))
+      && query.queryKey.includes(projectId),
+  });
+  queryClient.removeQueries({ queryKey: queryKeys.workspaceDirectory.all });
+  queryClient.removeQueries({ queryKey: queryKeys.workspaceResourceRecency.all });
+  for (const queryKey of [
+    queryKeys.projects.all,
+    queryKeys.notifications.all,
+    queryKeys.globalSearch.all,
+    queryKeys.allChatAll,
+    queryKeys.workspaceDirectory.all,
+    queryKeys.workspaceResourceRecency.all,
+  ]) void queryClient.invalidateQueries({ queryKey });
+}
+
+/** Reconcile presentation state immediately from the canonical lifecycle event;
+ * the subsequent refetch confirms the durable server projection. */
+export function reconcileDeletedProjectEvent(
+  envelope: WorkspaceEventEnvelope,
+  onProjectDeleted?: (projectId: string, at: string) => void,
+): string | undefined {
+  const event = envelope.event;
+  if (event.type !== "project_changed" || event.action !== "deleted") {
+    return undefined;
+  }
+  onProjectDeleted?.(event.projectId, envelope.ts);
+  return event.projectId;
 }
 
 function initialCursor(): number {
@@ -341,8 +455,12 @@ function createDecisionConversationInvalidator(
 }
 
 /** One authoritative live stream invalidates only caches affected by each event. */
-export function useWorkspaceStream(): WorkspaceConnectionState {
+export function useWorkspaceStream(
+  options: WorkspaceStreamOptions = {},
+): WorkspaceConnectionState {
   const queryClient = useQueryClient();
+  const onProjectDeleted = useRef(options.onProjectDeleted);
+  onProjectDeleted.current = options.onProjectDeleted;
   const cursor = useRef(initialCursor());
   const instanceId = useRef(initialInstanceId());
   const [connection, setConnection] = useState<WorkspaceConnectionState>({
@@ -398,6 +516,10 @@ export function useWorkspaceStream(): WorkspaceConnectionState {
       cursor.current = reconciliation.cursor;
       persistWorkspaceCursor(reconciliation.cursor, instanceId.current ?? undefined);
       const event = envelope.event;
+      const deletedProjectId = reconcileDeletedProjectEvent(
+        envelope,
+        (projectId, at) => onProjectDeleted.current?.(projectId, at),
+      );
       let preferenceDirectoryKinds: ReturnType<
         typeof changedWorkspaceDirectoryKinds
       > = [];
@@ -455,7 +577,13 @@ export function useWorkspaceStream(): WorkspaceConnectionState {
         void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("project") });
       }
       if (event.type === "preferences_updated") return;
-      if (event.type === "project_changed") void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
+      if (event.type === "project_changed") {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
+        if (deletedProjectId) {
+          void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.globalSearch.all });
+        }
+      }
       else if (event.type === "conversation_changed") {
         for (const queryKey of conversationChangedQueryKeys(event)) {
           void queryClient.invalidateQueries({ queryKey });

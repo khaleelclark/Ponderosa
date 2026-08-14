@@ -75,8 +75,11 @@ function groupNotificationsByProject(notifications: WorkspaceNotificationDto[]):
   return [...groups.values()].sort((a, b) => compareNotificationsNewestFirst(a.items[0]!, b.items[0]!));
 }
 
-function notificationWorkRoute(item: WorkspaceNotificationDto): Route | undefined {
-  if (!item.projectId) return undefined;
+function notificationWorkRoute(
+  item: WorkspaceNotificationDto,
+  availableProjectIds: ReadonlySet<string>,
+): Route | undefined {
+  if (!item.projectId || !availableProjectIds.has(item.projectId)) return undefined;
   const focusId = notificationTechnicalFocusId(item);
   if (item.action?.kind === "open_agent" && item.action.targetId) {
     return {
@@ -89,6 +92,32 @@ function notificationWorkRoute(item: WorkspaceNotificationDto): Route | undefine
     ...(item.conversationId ? { conversationId: item.conversationId } : {}),
     ...(focusId ? { focusId } : {}),
   };
+}
+
+export function notificationNavigationRoute(
+  item: WorkspaceNotificationDto,
+  availableProjectIds: ReadonlySet<string>,
+): Route | undefined {
+  if (!item.projectId || !availableProjectIds.has(item.projectId)) return undefined;
+  if (item.action?.kind === "open_agent" && item.action.targetId) {
+    return {
+      kind: "agent",
+      projectId: item.projectId,
+      agentId: item.action.targetId,
+      ...(item.category === "coordination" ? { view: "technical" as const } : {}),
+    };
+  }
+  if (item.conversationId) {
+    return {
+      kind: "conversation",
+      projectId: item.projectId,
+      conversationId: item.conversationId,
+      ...(item.communicationEventId
+        ? { focusMessageId: item.communicationEventId }
+        : {}),
+    };
+  }
+  return { kind: "project", projectId: item.projectId };
 }
 
 function notificationTime(value: string): string {
@@ -123,6 +152,10 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
   const [filter, setFilter] = useState<NotificationFilter>("updates");
   const [error, setError] = useState<string>();
   const wasOpen = useRef(false);
+  const availableProjectIds = useMemo(
+    () => new Set(projects.map(project => project.id)),
+    [projects],
+  );
   const { attentionCount, unreadUpdateCount } = notificationSummary(notifications);
   useEffect(() => {
     if (open && !wasOpen.current) {
@@ -161,26 +194,10 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
       onOpenSettings?.();
       return;
     }
-    if (item.projectId && item.action?.kind === "open_agent" && item.action.targetId) {
-      onClose();
-      onNavigate({
-        kind: "agent", projectId: item.projectId, agentId: item.action.targetId,
-        ...(item.category === "coordination" ? { view: "technical" as const } : {}),
-      });
-      return;
-    }
-    if (!item.projectId) return;
+    const destination = notificationNavigationRoute(item, availableProjectIds);
+    if (!destination) return;
     onClose();
-    if (item.conversationId) {
-      onNavigate({
-        kind: "conversation",
-        projectId: item.projectId,
-        conversationId: item.conversationId,
-        ...(item.communicationEventId ? { focusMessageId: item.communicationEventId } : {}),
-      });
-      return;
-    }
-    onNavigate({ kind: "project", projectId: item.projectId });
+    onNavigate(destination);
   };
 
   const setStatus = async (item: WorkspaceNotificationDto, status: "resolved" | "dismissed") => {
@@ -232,7 +249,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
           const project = projects.find((candidate) => candidate.id === group.projectId);
           return <Box key={group.key} sx={{ border: 1, borderColor: "divider", borderRadius: 2, overflow: "hidden", bgcolor: "background.paper" }}>
             <Stack direction="row" sx={{ alignItems: "center", bgcolor: "action.hover", borderBottom: 1, borderColor: "divider" }}>
-            <Button fullWidth disabled={!group.projectId} onClick={() => { if (group.projectId) { onClose(); onNavigate({ kind: "project", projectId: group.projectId }); } }} sx={{ justifyContent: "flex-start", px: 1.5, py: 1.1, textAlign: "left", borderRadius: 0 }}>
+            <Button fullWidth disabled={!project} onClick={() => { if (project) { onClose(); onNavigate({ kind: "project", projectId: project.id }); } }} sx={{ justifyContent: "flex-start", px: 1.5, py: 1.1, textAlign: "left", borderRadius: 0 }}>
               <Box sx={{ width: 32, height: 32, mr: 1.25, borderRadius: 1, bgcolor: "action.selected", color: "secondary.main", display: "grid", placeItems: "center", flex: "0 0 auto" }}><FolderOutlinedIcon fontSize="small" /></Box>
               <Stack spacing={.1} sx={{ minWidth: 0, flex: 1 }}>
                 <Typography variant="overline" color="text.secondary" fontWeight={800} lineHeight={1.25} noWrap>{project?.label ?? (group.projectId ? "Unknown project" : "Ponderosa")}</Typography>
@@ -251,9 +268,11 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
                       : item.kind === "operational" && (item.status ?? "open") === "open" ? <Stack direction="row" spacing={1}><Button size="small" onClick={(event) => { event.stopPropagation(); void setStatus(item, "resolved"); }}>Mark Resolved</Button><Button size="small" color="inherit" onClick={(event) => { event.stopPropagation(); void setStatus(item, "dismissed"); }}>Dismiss</Button></Stack> : item.status && item.status !== "open" ? <Typography variant="caption" color="text.secondary">{item.status}</Typography> : null}
                     {item.projectId && (item.kind === "operational" || ["coordination", "trigger", "decision"].includes(item.category ?? "")) ? <Button size="small" sx={{ alignSelf: "flex-start" }} onClick={(event) => {
                       event.stopPropagation();
-                      const route = notificationWorkRoute(item);
-                      onClose();
-                      if (route) onNavigate(route);
+                      const route = notificationWorkRoute(item, availableProjectIds);
+                      if (route) {
+                        onClose();
+                        onNavigate(route);
+                      }
                     }}>Review Work Details</Button> : null}</Stack>}
                     secondaryTypographyProps={{ component: "div", sx: { display: "-webkit-box", overflow: "hidden", overflowWrap: "anywhere", WebkitBoxOrient: "vertical", WebkitLineClamp: 2 } }}
                   />

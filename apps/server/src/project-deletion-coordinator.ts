@@ -6,7 +6,6 @@ import type {
 import type {
   AgentStore,
   CoordinationV3Store,
-  WorkspaceStore,
 } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
 import type { BrowserSessionManager } from "./browser-session-manager.js";
@@ -60,7 +59,7 @@ interface ProjectDeletionCoordinatorContext {
   awaitProjectDeletionBarrier(operation: Promise<unknown>, label: string): Promise<void>;
   cancelAgentDecisions(agentIds: Iterable<string>): void;
   invalidateEngineCapabilities(projectId: string, engineId: string): void;
-  appendWorkspace(event: Parameters<WorkspaceStore["append"]>[0]): unknown;
+  reconcileCommittedProjectDeletion(projectId: string): unknown;
   createOperationalNotification: OperationalNotifications["createOperationalNotification"];
   resolveOperationalNotification: OperationalNotifications["resolveOperationalNotification"];
   agentHealth(
@@ -106,7 +105,7 @@ export function registerProjectDeletionRoutes(
     awaitProjectDeletionBarrier,
     cancelAgentDecisions,
     invalidateEngineCapabilities,
-    appendWorkspace,
+    reconcileCommittedProjectDeletion,
     createOperationalNotification,
     resolveOperationalNotification,
     agentHealth,
@@ -118,6 +117,10 @@ export function registerProjectDeletionRoutes(
   app.delete<{ Params: { id: string } }>("/api/projects/:id", async (request, reply) => {
     const previousReceipt = store.getProjectDeletionReceipt(request.params.id);
     if (previousReceipt) {
+      try { reconcileCommittedProjectDeletion(previousReceipt.projectId); }
+      catch (error) {
+        logError({ err: error, projectId: previousReceipt.projectId }, "Project deletion workspace reconciliation retry failed");
+      }
       if (!previousReceipt.storageCleanupCompleted) {
         try {
           store.finishProjectDeletionStorageCleanup(
@@ -144,7 +147,6 @@ export function registerProjectDeletionRoutes(
             severity: "attention",
             title: "Project deletion cleanup needs attention",
             body: `The Project was deleted, but filesystem cleanup is still retrying. ${refreshed.lastError ?? "Retry deletion to continue cleanup."}`.slice(0, 1_000),
-            projectId: refreshed.projectId,
           });
         }
       } catch { /* the committed receipt remains the cleanup authority */ }
@@ -251,10 +253,12 @@ export function registerProjectDeletionRoutes(
           );
         } catch { /* the durable committed receipt remains authoritative */ }
       }
-      // Live invalidation and notification repair are best effort after the
-      // durable purge receipt exists. They cannot reopen or obscure deletion.
-      try { appendWorkspace({ type: "project_changed", projectId: project.id, action: "deleted" }); }
-      catch { /* clients reconcile from durable state on reconnect */ }
+      // Publication is retryable from the durable receipt. A failed append is
+      // also repaired before readiness on the next boot.
+      try { reconcileCommittedProjectDeletion(project.id); }
+      catch (error) {
+        logError({ err: error, projectId: project.id }, "Project deletion workspace reconciliation failed");
+      }
       for (const { adapter } of engines.values()) {
         try { invalidateEngineCapabilities(project.id, adapter.id); }
         catch { /* the Project no longer owns provider capability state */ }
@@ -270,7 +274,6 @@ export function registerProjectDeletionRoutes(
             severity: "attention",
             title: "Project deletion cleanup needs attention",
             body: `The Project was deleted, but filesystem cleanup is still retrying. ${refreshed.lastError ?? "Retry deletion to continue cleanup."}`.slice(0, 1_000),
-            projectId: project.id,
           });
         }
       } catch { /* the committed receipt remains the cleanup authority */ }

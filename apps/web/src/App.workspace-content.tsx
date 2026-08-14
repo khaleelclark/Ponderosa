@@ -13,6 +13,11 @@ import type { Route } from "./routing";
 import { assertNeverRoute, isProjectRoute, routeToPath } from "./routeRegistry";
 import type { ColorMode } from "./theme";
 
+type RemovableWorkspaceResourceRoute = Extract<
+  Route,
+  { kind: "agent" | "conversation" }
+>;
+
 const loadAllChatView = () => import("./components/AllChatView").then(module => ({ default: module.AllChatView }));
 const loadCreateWorkspace = () => import("./components/CreateWorkspace").then(module => ({ default: module.CreateWorkspace }));
 const loadProjectShell = () => import("./components/ProjectShell").then(module => ({ default: module.ProjectShell }));
@@ -60,7 +65,7 @@ interface WorkspaceRouteOutletProps {
   ): void;
   onOpenEngineStatus(): void;
   onBrowserRequestHandled(requestId: number): void;
-  onResourceDeleted(route: Route): void;
+  onResourceDeleted(route: RemovableWorkspaceResourceRoute): void;
   onToggleColorMode(): void;
 }
 
@@ -282,6 +287,7 @@ export function WorkspaceRouteOutlet({
               onBrowserRequestHandled,
               openInNewTab: onOpenInNewTab,
               onResourceDeleted,
+              onProjectDeleted,
               onCreate: (kind, context) => onCreate(kind, context),
             }}
           />

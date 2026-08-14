@@ -64,6 +64,7 @@ type ServerLifecycleContext =
     assets: AssetStore;
     coordinationV3: CoordinationV3Store;
     workspace: WorkspaceStore;
+    reconcileCommittedProjectDeletions(): void;
     artifactFilesystem: ReadinessCheckDto;
     processContainment: ReadinessCheckDto;
     coordinationV3WorkerId: string;
@@ -102,6 +103,7 @@ export function registerServerLifecycle(
     assets,
     coordinationV3,
     workspace,
+    reconcileCommittedProjectDeletions,
     artifactFilesystem,
     processContainment,
     coordinationV3WorkerId,
@@ -220,6 +222,10 @@ export function registerServerLifecycle(
       lifecyclePhases[name] = Math.round((now - lifecyclePhaseStartedAt) * 10) / 10;
       lifecyclePhaseStartedAt = now;
     };
+    // Completed deletion receipts are irreversible canonical authority. Repair
+    // any crash gap in the workspace log before the listener becomes ready.
+    reconcileCommittedProjectDeletions();
+    completeLifecyclePhase("project_deletion_workspace_recovery");
     const orphanGraceBoundary = Date.now() - 60 * 60 * 1_000;
     const recoveredProviderProcesses = await providerProcessAuthority.recoverPreviousWorkers();
     if (recoveredProviderProcesses > 0) {

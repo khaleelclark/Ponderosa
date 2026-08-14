@@ -53,6 +53,18 @@ export class AgentProjectDeletionAuthority {
     } : undefined;
   }
 
+  listProjectDeletionReceipts(): ProjectDeletionReceipt[] {
+    return this.db.select().from(projectDeletionReceipts).all().map((row) => ({
+      projectId: row.projectId,
+      tombstoneName: row.tombstoneName,
+      storageCleanupCompleted: row.storageCleanupCompleted === 1,
+      ...(row.lastError ? { lastError: row.lastError } : {}),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      ...(row.completedAt ? { completedAt: row.completedAt } : {}),
+    }));
+  }
+
   listPendingProjectDeletionReceipts(): ProjectDeletionReceipt[] {
     return this.db.select().from(projectDeletionReceipts)
       .where(eq(projectDeletionReceipts.storageCleanupCompleted, 0)).all()

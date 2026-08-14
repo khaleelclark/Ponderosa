@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   removeProjectWorkspaceTabsWithFallback,
+  removeProjectWorkspaceTabs,
   removeWorkspaceRouteWithFallback,
+  restoreWorkspaceTabSession,
+  serializeWorkspaceTabs,
   type WorkspaceTabState,
 } from "./workspaceTabs";
 
@@ -80,5 +83,56 @@ describe("workspace tab deletion cleanup", () => {
         route: { kind: "projects" },
       }),
     ]);
+  });
+
+  it("removes multiple inactive Project tabs without changing the active unaffected tab", () => {
+    const unaffected: WorkspaceTabState = {
+      key: "other-project",
+      route: { kind: "project", projectId: "project-2" },
+      lastActivatedAt: 5,
+    };
+    const next = removeProjectWorkspaceTabsWithFallback(
+      [...tabs, unaffected],
+      "other-project",
+      "project-1",
+      { kind: "projects" },
+      10,
+    );
+
+    expect(next).toEqual([tabs[0], unaffected]);
+  });
+
+  it("persists deletion cleanup so reload cannot restore a dead Project route", () => {
+    const next = removeProjectWorkspaceTabsWithFallback(
+      tabs,
+      "chat",
+      "project-1",
+      { kind: "projects" },
+      10,
+    );
+
+    const restored = restoreWorkspaceTabSession(
+      serializeWorkspaceTabs(next, "chat"),
+    );
+    expect(restored.activeKey).toBe("chat");
+    expect(restored.tabs).toEqual(next);
+    expect(restored.tabs.some(tab =>
+      "projectId" in tab.route && tab.route.projectId === "project-1"
+    )).toBe(false);
+  });
+
+  it("cleans a stale persisted session against the canonical Project list on reload", () => {
+    const restored = restoreWorkspaceTabSession(
+      serializeWorkspaceTabs(tabs, "chat"),
+    );
+    const next = removeProjectWorkspaceTabs(
+      restored.tabs,
+      new Set(["project-2"]),
+    );
+
+    expect(next).toEqual([tabs[0]]);
+    expect(restoreWorkspaceTabSession(
+      serializeWorkspaceTabs(next, next[0]!.key),
+    )).toEqual({ tabs: [tabs[0]], activeKey: "home" });
   });
 });

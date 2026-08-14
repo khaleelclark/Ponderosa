@@ -64,13 +64,13 @@ export function registerStreamRoutes(
       const queued: WorkspaceEventEnvelope[] = [];
       const writeEvent = (event: WorkspaceEventEnvelope, replayed = false) => {
         if (event.id <= cursor) return;
-        cursor = event.id;
         writeSse(
           reply.raw,
           "message",
           event.id,
           replayed ? { ...event, replayed: true } : event,
         );
+        cursor = event.id;
       };
       const subscriber = (event: WorkspaceEventEnvelope) => {
         if (replaying) queued.push(event);
