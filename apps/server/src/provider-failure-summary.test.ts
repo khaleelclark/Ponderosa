@@ -9,9 +9,21 @@ describe("publicProviderFailureSummary", () => {
       String.raw`password\u003dhunter2`,
       String.raw`pa\u200bssword=x`,
       "pass\u2063word=x",
+      "pass\u061cword=x",
       "pass\ufe0fword=x",
+      "pass\u{e0100}word=x",
       "pa\u0301ssword=x",
+      "pa\u1ab0ssword=x",
       "paѕѕword=x",
+      "paѕѕԝord=x",
+      "passwօrd=x",
+      "ƿassword=x",
+      String.raw`pa\\\\u0073sword\\u003dhunter2`,
+      String.raw`pass\uDB40\uDD00word=x`,
+      "pass%E2%81%A3word=x",
+      "pa%CC%81ssword=x",
+      "pa%25252573sword%2525253Dhunter2",
+      "pa%2525u0073sword%25253Dhunter2",
       "SECRET_KEY=hunter2",
       "secret-key: 1",
       "runtime_client-secret=no",
@@ -66,6 +78,15 @@ describe("publicProviderFailureSummary", () => {
     expect(publicProviderFailureSummary(
       Buffer.from(JSON.stringify(deep)).toString("base64"),
     )).toBeUndefined();
+  });
+
+  it("fails closed when bounded normalization cannot converge", () => {
+    let encodedLetter = "%73";
+    for (let index = 0; index < 10; index += 1) {
+      encodedLetter = encodedLetter.replaceAll("%", "%25");
+    }
+    expect(publicProviderFailureSummary(`pa${encodedLetter}sword=x`)).toBeUndefined();
+    expect(publicProviderFailureSummary("x".repeat((64 * 1024) + 1))).toBeUndefined();
   });
 
   it("retains concise ordinary human failure detail", () => {

@@ -1,8 +1,9 @@
-import type {
-  Adapter,
-  ProviderUsage,
-  ProviderUsageStateDto,
-  RuntimeProcessHandle,
+import {
+  publicProviderFailureSummary,
+  type Adapter,
+  type ProviderUsage,
+  type ProviderUsageStateDto,
+  type RuntimeProcessHandle,
 } from "@ponderosa/core";
 
 const DEFAULT_STALE_MS = 5 * 60_000;
@@ -20,6 +21,11 @@ interface ProviderUsageCacheEntry {
 interface ProviderUsageAuthority {
   controller: AbortController;
   processes: Set<RuntimeProcessHandle>;
+}
+
+function publicProviderUsageError(error: unknown): string {
+  const detail = error instanceof Error ? error.message : String(error);
+  return publicProviderFailureSummary(detail) ?? "Provider usage could not be refreshed.";
 }
 
 export interface ProviderUsageTarget {
@@ -45,13 +51,16 @@ export class ProviderUsageCache {
 
   state(target: ProviderUsageTarget): ProviderUsageStateDto {
     const entry = this.entries.get(this.key(target));
+    const error = entry?.error
+      ? publicProviderFailureSummary(entry.error) ?? "Provider usage could not be refreshed."
+      : undefined;
     const reading = entry?.reading
       ? {
           ...entry.reading,
           ...(!entry.reading.accountLabel && target.accountLabel
             ? { accountLabel: target.accountLabel }
             : {}),
-          ...(this.isStale(entry) || entry.error ? { stale: true } : {}),
+          ...(this.isStale(entry) || error ? { stale: true } : {}),
         }
       : undefined;
     return {
@@ -60,7 +69,7 @@ export class ProviderUsageCache {
       authenticated: target.authenticated,
       ...(reading ? { reading } : {}),
       refreshing: Boolean(entry?.operation),
-      ...(entry?.error ? { error: entry.error } : {}),
+      ...(error ? { error } : {}),
     };
   }
 
@@ -111,7 +120,7 @@ export class ProviderUsageCache {
       })
       .catch((error: unknown) => {
         if (!this.closed) {
-          entry.error = error instanceof Error ? error.message : String(error);
+          entry.error = publicProviderUsageError(error);
         }
       })
       .finally(async () => {
@@ -121,9 +130,7 @@ export class ProviderUsageCache {
         );
         const failure = cleanup.find((result) => result.status === "rejected");
         if (failure?.status === "rejected") {
-          entry.error = failure.reason instanceof Error
-            ? failure.reason.message
-            : String(failure.reason);
+          entry.error = publicProviderUsageError(failure.reason);
         } else {
           authority.processes.clear();
           if (entry.authority === authority) entry.authority = undefined;

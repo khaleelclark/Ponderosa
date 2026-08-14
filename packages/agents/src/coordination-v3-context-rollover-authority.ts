@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  publicProviderFailureSummary,
   TERMINAL_REQUEST_STATES,
   type CoordinationReplyAuthority,
   type CoordinationRequestState,
@@ -827,11 +828,12 @@ export class CoordinationV3ContextRolloverAuthority {
   }
 
   fail(id: string, state: "failed" | "outcome_unknown", error: string, now = new Date().toISOString()): ContextRolloverV3 {
+    const publicError = publicProviderFailureSummary(error) ?? "Provider execution failed.";
     this.sqlite.transaction(() => {
       this.sqlite.prepare(`
         UPDATE context_rollovers SET state = ?, last_error = ?, updated_at = ?, terminal_at = ?
         WHERE id = ? AND state IN ('requested','handoff_committed','session_retiring','continuation_ready')
-      `).run(state, error.slice(0, 2_000), now, now, id);
+      `).run(state, publicError, now, now, id);
       this.sqlite.prepare(`
         UPDATE agent_activations SET state = 'cancelled', updated_at = ?, terminal_at = ?
         WHERE kind IN ('context_rollover_handoff','context_rollover_continuation')
@@ -877,6 +879,9 @@ export class CoordinationV3ContextRolloverAuthority {
   }
 
   private view(row: RolloverRow): ContextRolloverV3 {
+    const publicLastError = row.last_error
+      ? publicProviderFailureSummary(row.last_error) ?? "Provider execution failed."
+      : undefined;
     return {
       id: row.id, projectId: row.project_id, agentId: row.agent_id, state: row.state,
       oldProviderSessionId: row.old_provider_session_id,
@@ -916,7 +921,7 @@ export class CoordinationV3ContextRolloverAuthority {
       ...(row.visible_response_committed_at
         ? { visibleResponseCommittedAt: row.visible_response_committed_at }
         : {}),
-      ...(row.last_error ? { lastError: row.last_error } : {}),
+      ...(publicLastError ? { lastError: publicLastError } : {}),
       ...(row.completion_reason ? { completionReason: row.completion_reason } : {}),
       createdAt: row.created_at, updatedAt: row.updated_at,
       ...(row.terminal_at ? { terminalAt: row.terminal_at } : {}),

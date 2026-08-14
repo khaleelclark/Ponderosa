@@ -487,8 +487,17 @@ describe("provider readiness truth", () => {
       String.raw`password%3Dhunter2`,
       String.raw`password\u003dhunter2`,
       "pass\u2063word=hunter2",
+      "pass\u061cword=hunter2",
       "pass\ufe0fword=hunter2",
+      "pass\u{e0100}word=hunter2",
       "pa\u0301ssword=hunter2",
+      "paѕѕԝord=hunter2",
+      "passwօrd=hunter2",
+      "ƿassword=hunter2",
+      String.raw`pa\\\\u0073sword\\u003dhunter2`,
+      "pass%E2%81%A3word=hunter2",
+      "pa%25252573sword%2525253Dhunter2",
+      "pa%2525u0073sword%25253Dhunter2",
       "SECRET_KEY=hunter2",
       "/root",
       "/etc/shadow",
@@ -540,6 +549,115 @@ describe("provider readiness truth", () => {
       expect(response.body).not.toMatch(/private-session|private-token|Users|phoenix|hosts\.yml|auth\.json/u);
     }
     await app.close();
+  });
+
+  it("sanitizes asynchronous provider-usage failures before later cache projections", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-provider-usage-cache-error-"));
+    roots.push(root);
+    const restricted = String.raw`usage failed pa\\u0073sword=hunter2 access_token=private-usage-token at $HOME/.codex/auth.json`;
+    const usageAdapter: Adapter = {
+      ...adapter(),
+      readProviderUsage: async () => {
+        await Promise.resolve();
+        throw new Error(restricted);
+      },
+    };
+    const app = createServer({
+      dataDir: path.join(root, "data"),
+      engines: [{
+        adapter: usageAdapter,
+        authStatus: async () => ({ authenticated: true, detail: "signed in" }),
+      }],
+      logger: false,
+    });
+    await app.ready();
+
+    const refresh = await app.inject({
+      method: "POST",
+      url: "/api/provider-usage/codex/refresh",
+    });
+    expect(refresh.statusCode).toBe(200);
+    await vi.waitFor(async () => {
+      const later = await app.inject({ method: "GET", url: "/api/provider-usage" });
+      expect(later.statusCode).toBe(200);
+      expect(later.json().providers).toEqual([expect.objectContaining({
+        provider: "codex",
+        refreshing: false,
+        error: "Provider usage could not be refreshed.",
+      })]);
+      expect(later.body).not.toMatch(/hunter2|private-usage-token|password|access_token|HOME|auth\.json/u);
+    });
+    await app.close();
+  });
+
+  it("sanitizes provider-usage process cleanup failures before later cache projections", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-provider-usage-cleanup-error-"));
+    roots.push(root);
+    const restricted = String.raw`cleanup failed pa\\u0073sword=hunter2 secret_key=x at /root/.aws/credentials`;
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    const birthMarker = processBirthMarker(child.pid!);
+    if (!birthMarker) throw new Error("usage cleanup test process birth marker unavailable");
+    child.unref();
+    const runtimeHandle = recoveredRuntimeProcessHandle({
+      pid: child.pid!,
+      pgid: child.pid!,
+      birthMarker,
+    }, {
+      label: "provider usage cleanup regression",
+      termGraceMs: 500,
+      killConfirmationMs: 500,
+    });
+    let closeAttempts = 0;
+    const usageAdapter: Adapter = {
+      ...adapter(),
+      readProviderUsage: async (options) => {
+        options.onRuntimeSpawned({
+          processIdentity: runtimeHandle.processIdentity,
+          isAlive: () => runtimeHandle.isAlive(),
+          close: async () => {
+            closeAttempts += 1;
+            if (closeAttempts === 1) throw new Error(restricted);
+            await runtimeHandle.close();
+          },
+        });
+        return {
+          provider: "codex",
+          windows: [],
+          source: "provider-rpc",
+          fetchedAt: new Date().toISOString(),
+        };
+      },
+    };
+    const app = createServer({
+      dataDir: path.join(root, "data"),
+      engines: [{
+        adapter: usageAdapter,
+        authStatus: async () => ({ authenticated: true, detail: "signed in" }),
+      }],
+      logger: false,
+    });
+    await app.ready();
+
+    const refresh = await app.inject({
+      method: "POST",
+      url: "/api/provider-usage/codex/refresh",
+    });
+    expect(refresh.statusCode).toBe(200);
+    await vi.waitFor(async () => {
+      const later = await app.inject({ method: "GET", url: "/api/provider-usage" });
+      expect(later.statusCode).toBe(200);
+      expect(later.json().providers).toEqual([expect.objectContaining({
+        provider: "codex",
+        refreshing: false,
+        error: "Provider usage could not be refreshed.",
+      })]);
+      expect(later.body).not.toMatch(/hunter2|password|secret_key|root|credentials/u);
+    });
+    await app.close();
+    if (runtimeHandle.isAlive()) await runtimeHandle.close();
   });
 
   it("fails closed across recheck, engine, and notification projections for adversarial detail", async () => {

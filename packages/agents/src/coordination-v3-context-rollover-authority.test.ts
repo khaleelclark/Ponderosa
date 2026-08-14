@@ -772,6 +772,158 @@ describe("context rollover continuation obligations", () => {
     });
   });
 
+  it("keeps injected rollover provider failure raw only in restricted Run audit evidence", () => {
+    const fixture = storeFixture();
+    const sourceActivationId = fixture.store.enqueueMessageActivation({
+      projectId: PROJECT_ID,
+      agentId: RECIPIENT_ID,
+      scopeKey: SCOPE_KEY,
+      messageId: "restricted-rollover-source",
+      kind: "human",
+      payload: { text: "source work" },
+      now: NOW,
+    });
+    const sourceRun = fixture.store.leaseNextRun({ workerId: "source-worker", now: NOW });
+    if (!sourceRun) throw new Error("source Run was not leased");
+    expect(sourceRun.activationIds).toEqual([sourceActivationId]);
+    acknowledgeRun({
+      store: fixture.store,
+      runId: sourceRun.runId,
+      fencingToken: sourceRun.fencingToken,
+      injectionId: sourceRun.injectionId,
+      prompt: "restricted rollover source prompt",
+    });
+    fixture.store.completeRun(sourceRun.runId, sourceRun.fencingToken, NOW);
+
+    const requested = requestManualRollover({
+      store: fixture.store,
+      sourceRunId: sourceRun.runId,
+      providerSessionGeneration: "restricted-rollover-generation",
+    });
+    const handoffRun = fixture.store.leaseNextRun({ workerId: "handoff-worker", now: NOW });
+    if (!handoffRun) throw new Error("rollover handoff Run was not leased");
+    acknowledgeRun({
+      store: fixture.store,
+      runId: handoffRun.runId,
+      fencingToken: handoffRun.fencingToken,
+      injectionId: handoffRun.injectionId,
+      prompt: "restricted rollover handoff prompt",
+    });
+    const restricted = String.raw`provider rejected pa\\u0073sword=hunter2 access_token=private-rollover-token at /root/.codex/auth.json`;
+    expect(fixture.store.failRun({
+      runId: handoffRun.runId,
+      fencingToken: handoffRun.fencingToken,
+      workerId: "handoff-worker",
+      sameRunResumable: false,
+      error: restricted,
+      failureKind: "authentication",
+      failureDetail: {
+        phase: "prompt_submission",
+        promptInjectionState: "injected",
+        message: restricted,
+      },
+      now: NOW,
+    })).toBe("outcome_unknown");
+
+    const publicRollover = fixture.store.contextRollover(requested.rollover.id);
+    expect(publicRollover).toMatchObject({
+      state: "outcome_unknown",
+      lastError: "Provider execution failed.",
+    });
+    const persisted = fixture.sqlite.prepare(`
+      SELECT last_error FROM context_rollovers WHERE id = ?
+    `).get(requested.rollover.id) as { last_error: string };
+    expect(persisted.last_error).toBe("Provider execution failed.");
+    expect(JSON.stringify({ publicRollover, persisted })).not.toMatch(
+      /hunter2|private-rollover-token|password|access_token|root|auth\.json/u,
+    );
+    const audit = fixture.sqlite.prepare(`
+      SELECT provider_failure_json FROM scheduler_runs WHERE id = ?
+    `).get(handoffRun.runId) as { provider_failure_json: string };
+    expect(audit.provider_failure_json).toContain("hunter2");
+    expect(audit.provider_failure_json).toContain("private-rollover-token");
+    expect(audit.provider_failure_json).toContain("/root/.codex/auth.json");
+
+    const retry = requestManualRollover({
+      store: fixture.store,
+      sourceRunId: sourceRun.runId,
+      providerSessionGeneration: "restricted-rollover-generation",
+      boundaryOrdinal: 43,
+      boundaryEventId: "restricted-rollover-retry-boundary",
+      tailEventId: "restricted-rollover-retry-tail",
+      now: "2026-01-01T00:00:01.000Z",
+    });
+    expect(retry.created).toBe(true);
+    const retryHandoff = fixture.store.leaseNextRun({
+      workerId: "retry-handoff-worker",
+      now: "2026-01-01T00:00:01.000Z",
+    });
+    if (!retryHandoff) throw new Error("retry handoff Run was not leased");
+    acknowledgeRun({
+      store: fixture.store,
+      runId: retryHandoff.runId,
+      fencingToken: retryHandoff.fencingToken,
+      injectionId: retryHandoff.injectionId,
+      prompt: "safe retry handoff prompt",
+    });
+    const retryHandoffId = `handoff:${retry.rollover.id}`;
+    fixture.sqlite.prepare(`
+      INSERT INTO continuation_handoffs (
+        id, agent_id, source_execution_id, text, created_at
+      ) VALUES (?, ?, ?, ?, ?)
+    `).run(
+      retryHandoffId,
+      RECIPIENT_ID,
+      retryHandoff.runId,
+      handoffTextFor(retry.rollover.id),
+      NOW,
+    );
+    fixture.store.commitContextRolloverHandoff(retry.rollover.id, retryHandoffId, NOW);
+    fixture.store.beginContextRolloverRetirement(retry.rollover.id, NOW);
+    fixture.store.completeRun(retryHandoff.runId, retryHandoff.fencingToken, NOW);
+    const continued = fixture.store.prepareContextRolloverContinuation({
+      id: retry.rollover.id,
+      now: NOW,
+    });
+    const replacement = fixture.store.leaseNextRun({ workerId: "replacement-worker", now: NOW });
+    if (!replacement || !continued.continuationActivationId) {
+      throw new Error("replacement Run was not leased");
+    }
+    fixture.store.markRunStarted(replacement.runId, replacement.fencingToken, NOW);
+    const modelContext = JSON.stringify({
+      priorRollover: publicRollover,
+      retryRollover: fixture.store.contextRollover(retry.rollover.id),
+      activations: replacement.activations,
+    });
+    expect(modelContext).not.toMatch(
+      /hunter2|private-rollover-token|password|access_token|root|auth\.json/u,
+    );
+    fixture.store.recordProviderInputAndCommitContextRolloverReplacement({
+      executionId: replacement.runId,
+      schedulerRunId: replacement.runId,
+      fencingToken: replacement.fencingToken,
+      agentId: RECIPIENT_ID,
+      projectId: PROJECT_ID,
+      prompt: modelContext,
+      sourceManifest: replacementManifest({
+        activationIds: replacement.activationIds,
+        rolloverId: retry.rollover.id,
+        recentTailCommunicationEventIds: ["restricted-rollover-retry-tail"],
+      }),
+      now: NOW,
+    });
+    const providerInput = fixture.sqlite.prepare(`
+      SELECT provider_prompt, source_manifest_json FROM provider_inputs
+      WHERE scheduler_run_id = ?
+    `).get(replacement.runId) as {
+      provider_prompt: string;
+      source_manifest_json: string;
+    };
+    expect(JSON.stringify(providerInput)).not.toMatch(
+      /hunter2|private-rollover-token|password|access_token|root|auth\.json/u,
+    );
+  });
+
   it("terminalizes a requested manual rollover during daemon restart recovery", () => {
     const fixture = storeFixture();
     const sourceActivationId = fixture.store.enqueueMessageActivation({

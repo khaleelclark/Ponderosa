@@ -3,48 +3,126 @@ export const MAX_PUBLIC_PROVIDER_FAILURE_CHARACTERS = 240;
 const MAX_PROVIDER_FAILURE_INPUT_CHARACTERS = 64 * 1024;
 const MAX_PROVIDER_FAILURE_DEPTH = 6;
 const MAX_PROVIDER_FAILURE_ARRAY_ITEMS = 16;
-const MAX_PROVIDER_FAILURE_NORMALIZATION_PASSES = 3;
+const MAX_PROVIDER_FAILURE_NORMALIZATION_PASSES = 8;
 const MAX_ENCODED_JSON_CHARACTERS = 8 * 1024;
 const HUMAN_FAILURE_KEYS = ["message", "detail", "reason", "error"] as const;
 
-function normalizeProviderText(value: string): string {
-  let normalized = value;
-  for (let pass = 0; pass < MAX_PROVIDER_FAILURE_NORMALIZATION_PASSES; pass += 1) {
-    const decoded = normalized.replace(
-      /\\u([0-9a-f]{4})|\\x([0-9a-f]{2})|%([0-9a-f]{2})/giu,
-      (escape, unicode: string | undefined, hex: string | undefined, percent: string | undefined) => {
-        const codePoint = Number.parseInt(unicode ?? hex ?? percent ?? "", 16);
-        if (codePoint >= 0xd800 && codePoint <= 0xdfff) return escape;
-        if (!unicode && (codePoint < 0x20 || codePoint > 0x7e)) return escape;
-        return String.fromCodePoint(codePoint);
-      },
-    ).normalize("NFKC");
-    if (decoded === normalized) break;
-    normalized = decoded;
-  }
-  return normalized
-    .replace(/\\udb40\\udd[0-9a-f]{2}|\\x(?:ad)|%e2%80%(?:8b|8c|8d)|%ef%bb%bf/giu, "")
-    .replace(/[\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufe00-\ufe0f\ufeff\u{e0100}-\u{e01ef}]/gu, "")
+function normalizedProviderPass(value: string): string | undefined {
+  let invalidEncoding = false;
+  const collapsedEscapes = value.replace(
+    /\\{2,}(?=(?:u[0-9a-f]{4}|x[0-9a-f]{2}))/giu,
+    "\\",
+  );
+  const decodedSurrogates = collapsedEscapes.replace(
+    /\\u(d[89ab][0-9a-f]{2})\\u(d[cdef][0-9a-f]{2})/giu,
+    (_escape, high: string, low: string) => String.fromCodePoint(
+      ((Number.parseInt(high, 16) - 0xd800) * 0x400)
+        + Number.parseInt(low, 16) - 0xdc00 + 0x10000,
+    ),
+  );
+  const decodedEscapes = decodedSurrogates.replace(
+    /\\u([0-9a-f]{4})|\\x([0-9a-f]{2})/giu,
+    (escape, unicode: string | undefined, hex: string | undefined) => {
+      const codePoint = Number.parseInt(unicode ?? hex ?? "", 16);
+      if (codePoint >= 0xd800 && codePoint <= 0xdfff) {
+        invalidEncoding = true;
+        return escape;
+      }
+      return String.fromCodePoint(codePoint);
+    },
+  );
+  const decodedPercentSurrogates = decodedEscapes.replace(
+    /%u(d[89ab][0-9a-f]{2})%u(d[cdef][0-9a-f]{2})/giu,
+    (_escape, high: string, low: string) => String.fromCodePoint(
+      ((Number.parseInt(high, 16) - 0xd800) * 0x400)
+        + Number.parseInt(low, 16) - 0xdc00 + 0x10000,
+    ),
+  );
+  const decodedPercentUnicode = decodedPercentSurrogates.replace(
+    /%u([0-9a-f]{4})/giu,
+    (escape, unicode: string) => {
+      const codePoint = Number.parseInt(unicode, 16);
+      if (codePoint >= 0xd800 && codePoint <= 0xdfff) {
+        invalidEncoding = true;
+        return escape;
+      }
+      return String.fromCodePoint(codePoint);
+    },
+  );
+  const decodedPercent = decodedPercentUnicode.replace(/(?:%[0-9a-f]{2})+/giu, (encoded) => {
+    try {
+      return decodeURIComponent(encoded);
+    } catch {
+      invalidEncoding = true;
+      return encoded;
+    }
+  });
+  if (invalidEncoding) return undefined;
+  const normalized = decodedPercent
+    .normalize("NFKD")
+    .replace(/\p{Cf}|\p{M}|\p{Variation_Selector}/gu, "")
+    .normalize("NFKC")
     .replace(/\\\//gu, "/")
     .replace(/[\u0000-\u001f\u007f]+/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
+  return normalized.length <= MAX_PROVIDER_FAILURE_INPUT_CHARACTERS
+    && new TextEncoder().encode(normalized).byteLength <= MAX_PROVIDER_FAILURE_INPUT_CHARACTERS
+    ? normalized
+    : undefined;
 }
 
+function normalizeProviderText(value: string): string | undefined {
+  if (value.length > MAX_PROVIDER_FAILURE_INPUT_CHARACTERS
+      || new TextEncoder().encode(value).byteLength > MAX_PROVIDER_FAILURE_INPUT_CHARACTERS) {
+    return undefined;
+  }
+  let normalized = value;
+  for (let pass = 0; pass < MAX_PROVIDER_FAILURE_NORMALIZATION_PASSES; pass += 1) {
+    const decoded = normalizedProviderPass(normalized);
+    if (decoded === undefined) return undefined;
+    if (decoded === normalized) return decoded;
+    normalized = decoded;
+  }
+  const convergenceCheck = normalizedProviderPass(normalized);
+  return convergenceCheck === normalized ? normalized : undefined;
+}
+
+const PROVIDER_CONFUSABLE_ASCII = new Map<string, string>([
+  ...["Α", "А", "α", "а"].map((value) => [value, "a"] as const),
+  ...["Β", "В", "β", "Ь", "ь"].map((value) => [value, "b"] as const),
+  ...["Ϲ", "С", "ϲ", "с"].map((value) => [value, "c"] as const),
+  ...["ԁ", "ժ"].map((value) => [value, "d"] as const),
+  ...["Ε", "Е", "ε", "е", "ϵ"].map((value) => [value, "e"] as const),
+  ...["Ϝ", "Ғ", "ғ"].map((value) => [value, "f"] as const),
+  ...["Ԍ", "ԍ"].map((value) => [value, "g"] as const),
+  ...["Η", "Н", "һ"].map((value) => [value, "h"] as const),
+  ...["Ι", "І", "Ӏ", "і"].map((value) => [value, "i"] as const),
+  ...["Ј", "ј"].map((value) => [value, "j"] as const),
+  ...["Κ", "К", "κ", "к"].map((value) => [value, "k"] as const),
+  ...["ᒪ", "ӏ"].map((value) => [value, "l"] as const),
+  ...["Μ", "М", "м"].map((value) => [value, "m"] as const),
+  ...["Ν", "п", "ո"].map((value) => [value, "n"] as const),
+  ...["Ο", "О", "ο", "о"].map((value) => [value, "o"] as const),
+  ...["Ρ", "Р", "ρ", "р", "ϱ"].map((value) => [value, "p"] as const),
+  ...["Ԛ", "ԛ"].map((value) => [value, "q"] as const),
+  ...["Г", "г"].map((value) => [value, "r"] as const),
+  ...["Ѕ", "ѕ"].map((value) => [value, "s"] as const),
+  ...["Τ", "Т", "τ", "т"].map((value) => [value, "t"] as const),
+  ...["Ս", "ս"].map((value) => [value, "u"] as const),
+  ...["ν"].map((value) => [value, "v"] as const),
+  ...["Ԝ", "ԝ", "ω"].map((value) => [value, "w"] as const),
+  ...["Χ", "Х", "χ", "х"].map((value) => [value, "x"] as const),
+  ...["Υ", "У", "γ", "у"].map((value) => [value, "y"] as const),
+  ...["Ζ", "ζ"].map((value) => [value, "z"] as const),
+]);
+
 function providerClassificationSkeleton(value: string): string {
-  return value.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().replace(
-    /[\u0391\u0392\u0395\u0397\u0399\u039a\u039c\u039d\u039f\u03a1\u03a4\u03a5\u03a7\u03b1\u03b5\u03b9\u03ba\u03bd\u03bf\u03c1\u03c4\u03c5\u03c7\u0406\u0408\u0410\u0412\u0415\u041a\u041c\u041d\u041e\u0420\u0421\u0422\u0425\u0430\u0435\u043a\u043c\u043e\u0440\u0441\u0442\u0445\u0455\u0456\u0458]/gu,
-    (character) => ({
-      "\u0391": "a", "\u0392": "b", "\u0395": "e", "\u0397": "h", "\u0399": "i", "\u039a": "k",
-      "\u039c": "m", "\u039d": "n", "\u039f": "o", "\u03a1": "p", "\u03a4": "t", "\u03a5": "y",
-      "\u03a7": "x", "\u03b1": "a", "\u03b5": "e", "\u03b9": "i", "\u03ba": "k", "\u03bd": "v",
-      "\u03bf": "o", "\u03c1": "p", "\u03c4": "t", "\u03c5": "y", "\u03c7": "x", "\u0406": "i",
-      "\u0408": "j", "\u0410": "a", "\u0412": "b", "\u0415": "e", "\u041a": "k", "\u041c": "m",
-      "\u041d": "h", "\u041e": "o", "\u0420": "p", "\u0421": "c", "\u0422": "t", "\u0425": "x",
-      "\u0430": "a", "\u0435": "e", "\u043a": "k", "\u043c": "m", "\u043e": "o", "\u0440": "p",
-      "\u0441": "c", "\u0442": "t", "\u0445": "x", "\u0455": "s", "\u0456": "i", "\u0458": "j",
-    })[character] ?? character,
-  );
+  return value
+    .normalize("NFKD")
+    .replace(/\p{Cf}|\p{M}|\p{Variation_Selector}/gu, "")
+    .replace(/[^\x00-\x7f]/gu, (character) => PROVIDER_CONFUSABLE_ASCII.get(character) ?? character)
+    .toLowerCase();
 }
 
 const RESTRICTED_ASSIGNMENT_KEY_FAMILIES = [
@@ -55,15 +133,25 @@ const RESTRICTED_ASSIGNMENT_KEY_FAMILIES = [
 ] as const;
 
 function isRestrictedAssignmentKey(value: string): boolean {
-  const compact = providerClassificationSkeleton(value).replace(/[^a-z0-9]/gu, "");
+  const skeleton = providerClassificationSkeleton(value);
+  const compact = skeleton.replace(/[^a-z0-9]/gu, "");
+  const semanticCharacters = [...skeleton.replace(/[\s_.\\/-]/gu, "")];
   return RESTRICTED_ASSIGNMENT_KEY_FAMILIES.some(
-    (family) => compact === family || compact.endsWith(family),
+    (family) => {
+      if (compact === family || compact.endsWith(family)) return true;
+      if (semanticCharacters.length < family.length) return false;
+      const suffix = semanticCharacters.slice(-family.length);
+      return [...family].every((character, index) => {
+        const observed = suffix[index];
+        return observed === character || Boolean(observed && /[^\x00-\x7f]/u.test(observed));
+      });
+    },
   );
 }
 
 function containsRestrictedAssignment(value: string): boolean {
   const skeleton = providerClassificationSkeleton(value);
-  const assignments = skeleton.matchAll(/(?:^|[^a-z0-9])([a-z0-9][a-z0-9_.\-\s]{0,47})\s*[:=]/gu);
+  const assignments = skeleton.matchAll(/([^:=\r\n]{1,64})\s*[:=]/gu);
   for (const assignment of assignments) {
     if (assignment[1] && isRestrictedAssignmentKey(assignment[1])) return true;
   }
@@ -120,7 +208,8 @@ function containsRestrictedProviderValue(value: unknown, depth: number): boolean
   if (depth > MAX_PROVIDER_FAILURE_DEPTH) return true;
   if (value === null || value === undefined) return false;
   if (typeof value === "string") {
-    return containsRestrictedProviderData(normalizeProviderText(value), depth + 1);
+    const normalized = normalizeProviderText(value);
+    return normalized === undefined || containsRestrictedProviderData(normalized, depth + 1);
   }
   if (typeof value !== "object") return false;
   if (Array.isArray(value)) {
@@ -182,7 +271,7 @@ function extractProviderFailure(value: unknown, depth = 0): string | undefined {
   if (depth > MAX_PROVIDER_FAILURE_DEPTH || value === null || value === undefined) return undefined;
   if (typeof value === "string") {
     const candidate = normalizeProviderText(value);
-    if (!candidate || candidate.length > MAX_PROVIDER_FAILURE_INPUT_CHARACTERS) return undefined;
+    if (!candidate) return undefined;
     if (/^(?:\{|\[|")/u.test(candidate)) {
       try {
         return extractProviderFailure(JSON.parse(candidate), depth + 1);
@@ -219,7 +308,7 @@ function extractProviderFailure(value: unknown, depth = 0): string | undefined {
 export function publicProviderFailureSummary(detail: string | undefined): string | undefined {
   if (!detail) return undefined;
   const normalized = normalizeProviderText(detail);
-  if (!normalized || normalized.length > MAX_PROVIDER_FAILURE_INPUT_CHARACTERS) return undefined;
+  if (!normalized) return undefined;
   const extracted = extractProviderFailure(normalized);
   if (!extracted) return undefined;
   return extracted.length > MAX_PUBLIC_PROVIDER_FAILURE_CHARACTERS

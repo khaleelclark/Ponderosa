@@ -419,6 +419,9 @@ export class CoordinationV3RunLifecycleAuthority {
           input.fencingToken,
         );
       }
+      const publicError = publicProviderFailureSummary(
+        input.error ?? "scheduler dispatch rejected",
+      ) ?? "Provider execution failed.";
       const disposition = input.confirmedNotExecuted
         ? "retry"
         : activationRetryDisposition({
@@ -473,9 +476,6 @@ export class CoordinationV3RunLifecycleAuthority {
         LIMIT 1
       `).get(input.runId, run.agent_id, run.project_id) as { id: string } | undefined;
       if (disposition === "retry") {
-        const error = publicProviderFailureSummary(
-          input.error ?? "scheduler dispatch rejected",
-        ) ?? "Provider execution failed.";
         const requestedMaximum = input.maxDeliveryFailures ?? 5;
         const maximum = Number.isFinite(requestedMaximum)
           ? Math.max(1, Math.floor(requestedMaximum))
@@ -515,7 +515,7 @@ export class CoordinationV3RunLifecycleAuthority {
               terminal_at = COALESCE(terminal_at, ?)
             WHERE id = ? AND state = 'requested'
               AND handoff_event_id IS NULL
-          `).run(error, now, now, requestedRollover.id);
+          `).run(publicError, now, now, requestedRollover.id);
           this.cancelPendingRolloverHandoff(requestedRollover.id, now);
         }
         const terminalOutcome = input.retryable === false || candidateReplacement || attachedRequestedHandoff
@@ -572,7 +572,7 @@ export class CoordinationV3RunLifecycleAuthority {
             WHERE run_id = ?
           ) AND state = 'attached'
         `).run(
-          error,
+          publicError,
           terminalOutcome ?? null,
           providerUnavailable ? 0 : 1,
           maximum,
@@ -670,7 +670,7 @@ export class CoordinationV3RunLifecycleAuthority {
             WHERE id = ? AND state = 'requested'
               AND handoff_event_id IS NULL
           `).run(
-            (input.error ?? "rollover handoff Run outcome became unknown before durable commit").slice(0, 2_000),
+            publicError,
             now,
             now,
             requestedRollover.id,
