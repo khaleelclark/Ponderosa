@@ -164,6 +164,19 @@ describe("Create Project provider availability", () => {
       "eyJzZXNzaW9uX2lkIjoicHJpdmF0ZSJ9",
       "Zk9xR1p4dHFzUDBTQnNLWkQ5Q3h5ZkF0RmhjWmZ2",
       "access\u200b_token=private-token",
+      String.raw`pa\u0073sword=hunter2`,
+      String.raw`password\u003dhunter2`,
+      String.raw`password%3Dhunter2`,
+      "pass\u2063word=hunter2",
+      "pass\ufe0fword=hunter2",
+      "pa\u0301ssword=hunter2",
+      "SECRET_KEY=hunter2",
+      "/root/.aws/credentials",
+      "/etc/shadow",
+      "/auth.json",
+      "$HOME/.aws/credentials",
+      "${HOME}/.codex/auth.json",
+      "W3sicGFzc3dvcmQiOiJ4In1d",
     ];
     for (const detail of adversarial) {
       expect(providerAvailabilityDiagnostic(detail), detail).toBeUndefined();
@@ -176,6 +189,11 @@ describe("Create Project provider availability", () => {
       intakeReady: false,
       reachability: "degraded",
       availabilityDetail: "subscription expired",
+    }))).toContain("Claude subscription and Claude Code sign-in");
+    expect(providerAvailabilityMessage(engine("claude", {
+      intakeReady: false,
+      reachability: "degraded",
+      availabilityDetail: "subscription inactive",
     }))).toContain("Claude subscription and Claude Code sign-in");
     expect(providerAvailabilityMessage(engine("codex", {
       intakeReady: false,

@@ -69,6 +69,12 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     providerProcessAuthority,
   } = context;
 
+  const publicAuthStatusExceptionDetail = (error: unknown): string => (
+    publicProviderAvailabilityDetail(
+      error instanceof Error ? error.message : "runtime authentication could not be checked",
+    ) ?? "runtime authentication could not be checked"
+  );
+
   const runtimeFailureDetail = (engineId: string): string | undefined => {
     const denial = engineAvailability.denial(engineId);
     return denial
@@ -94,15 +100,13 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         ? await engineAuthStatuses.get(id, registration.authStatus)
         : { authenticated: true, detail: "runtime registered (authentication status not reported)" };
     } catch (error) {
-      const authDetail = publicProviderAvailabilityDetail(
-        error instanceof Error ? error.message : "runtime authentication could not be checked",
-      );
+      const authDetail = publicAuthStatusExceptionDetail(error);
       return {
         configured: true,
         authentication: "error",
         intakeReady: false,
         reachability: "degraded",
-        authDetail: authDetail ?? "runtime authentication could not be checked",
+        authDetail,
         availabilityDetail: "runtime authentication could not be checked",
       };
     }
@@ -132,15 +136,13 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     try {
       status = await runtimeStatus(adapter.id, registration);
     } catch (error) {
-      const authDetail = publicProviderAvailabilityDetail(
-        error instanceof Error ? error.message : "auth status check failed",
-      );
+      const authDetail = publicAuthStatusExceptionDetail(error);
       status = {
         configured: true,
         authentication: "error",
         intakeReady: false,
         reachability: "degraded",
-        authDetail: authDetail ?? "auth status check failed",
+        authDetail,
         availabilityDetail: "runtime authentication could not be checked",
       };
     }
@@ -177,24 +179,37 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       ? await engineAuthStatuses.get(registration.adapter.id, registration.authStatus)
       : { authenticated: true, detail: "authenticated provider" };
     const detail = auth.detail?.trim();
-    const accountMatch = detail ? /^logged in as (.+?)(?:\s+\(subscription\))?$/iu.exec(detail) : undefined;
+    const publicDetail = publicProviderAvailabilityDetail(detail);
+    const accountMatch = publicDetail
+      ? /^logged in as (.+?)(?:\s+\(subscription\))?$/iu.exec(publicDetail)
+      : undefined;
     return {
       adapter: registration.adapter,
       displayName: registration.adapter.displayName,
       authenticated: auth.authenticated,
       accountKey: detail || (auth.authenticated ? "authenticated" : "unauthenticated"),
       ...(accountMatch?.[1] ? { accountLabel: accountMatch[1].trim() }
-        : auth.authenticated && detail ? { accountLabel: detail } : {}),
+        : auth.authenticated && publicDetail ? { accountLabel: publicDetail } : {}),
     };
   };
   const providerUsageState = async (
     registration: EngineRegistration,
     refresh: "none" | "stale" | "force" = "none",
   ): Promise<ProviderUsageStateDto> => {
-    const target = await providerUsageTarget(registration);
-    return refresh === "none"
-      ? providerUsage.state(target)
-      : providerUsage.refresh(target, refresh === "force");
+    try {
+      const target = await providerUsageTarget(registration);
+      return refresh === "none"
+        ? providerUsage.state(target)
+        : providerUsage.refresh(target, refresh === "force");
+    } catch (error) {
+      return {
+        provider: registration.adapter.id,
+        displayName: registration.adapter.displayName,
+        authenticated: false,
+        refreshing: false,
+        error: publicAuthStatusExceptionDetail(error),
+      };
+    }
   };
   const providerUsageCenter = async (
     refresh: "none" | "stale" = "none",

@@ -26,7 +26,7 @@ type ProviderAvailabilityCategory = "authentication" | "limit" | "capacity" | "u
 
 function providerAvailabilityCategory(detail: string | undefined): ProviderAvailabilityCategory {
   const value = detail ?? "";
-  if (/unauthori[sz]ed|authentication|sign.?in|oauth|credential|subscription (?:access|expired)|organization has disabled/iu.test(value)) {
+  if (/unauthori[sz]ed|authentication|sign.?in|oauth|credential|subscription (?:access|expired|inactive)|organization has disabled/iu.test(value)) {
     return "authentication";
   }
   if (/rate.?limit|too many requests|\b429\b|session.?limit|usage.?limit|quota (?:is )?(?:exhausted|reached)|hit (?:your |the )?limit|limit resets?/iu.test(value)) {
