@@ -76,6 +76,7 @@ function providerRunAdapter(input: {
   outcome: "success" | "authentication_failure" | "cancelled";
   errorMessage?: string;
   thrownFailure?: unknown;
+  yieldedEvents?: unknown[];
   started?: () => void;
   finished?: () => void;
   release?: Promise<void>;
@@ -85,6 +86,10 @@ function providerRunAdapter(input: {
       input.started?.();
       if (input.release) await input.release;
       if (input.thrownFailure !== undefined) throw input.thrownFailure;
+      if (input.yieldedEvents) {
+        for (const event of input.yieldedEvents) yield event as never;
+        return;
+      }
       if (input.outcome === "authentication_failure") {
         yield { type: "reasoning" as const, delta: "provider accepted work" };
         yield {
@@ -118,6 +123,7 @@ function persistentProviderRunAdapter(input: {
   teardownFinished: () => void;
   steer?: RuntimeSession["steer"];
   engineAgentId?: string;
+  firstEvent?: unknown;
 }): Adapter {
   return {
     id: "codex",
@@ -164,7 +170,10 @@ function persistentProviderRunAdapter(input: {
         interrupt: async () => undefined,
         events: {
           async *[Symbol.asyncIterator]() {
-            yield { type: "session" as const, sessionId: `session-${options.agentId}` };
+            yield (input.firstEvent ?? {
+              type: "session" as const,
+              sessionId: `session-${options.agentId}`,
+            }) as never;
             await input.releaseTurn;
             yield { type: "turn_done" as const };
           },
@@ -414,6 +423,54 @@ describe("provider readiness truth", () => {
     expect(await reachability(cancelled.app)).toBe("unverified");
     await cancelled.app.close();
   });
+
+  it("drops a hostile late event after exact Run cancellation without a process escape", async () => {
+    const marker = "PROVIDER_EVENT_LATE_CANCEL_MARKER_d8b4";
+    const started = deferred();
+    const release = deferred();
+    const finished = deferred();
+    const fixture = await providerRunFixture({
+      adapter: providerRunAdapter({
+        outcome: "cancelled",
+        started: started.resolve,
+        finished: finished.resolve,
+        release: release.promise,
+        yieldedEvents: [{
+          type: "text",
+          delta: "safe",
+          toJSON: () => ({ type: "text", delta: marker, secret: marker }),
+        }],
+      }),
+    });
+    const unhandled: unknown[] = [];
+    const uncaught: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    const onUncaught = (error: unknown): void => { uncaught.push(error); };
+    process.on("unhandledRejection", onUnhandled);
+    process.on("uncaughtException", onUncaught);
+    try {
+      await started.promise;
+      const running = await waitForRunStatus(fixture.store, "running");
+      const cancellation = await fixture.app.inject({
+        method: "POST",
+        url: `/api/agents/${fixture.agent.id}/cancel`,
+        payload: { targetRunId: running.id, idempotencyKey: "hostile-late-event-cancel" },
+      });
+      expect(cancellation.statusCode).toBe(200);
+      release.resolve();
+      await waitForRunStatus(fixture.store, "cancelled");
+      await finished.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(JSON.stringify(fixture.store.readEvents(fixture.agent.id))).not.toContain(marker);
+      expect(unhandled).toEqual([]);
+      expect(uncaught).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      process.off("uncaughtException", onUncaught);
+      release.resolve();
+      await fixture.app.close();
+    }
+  }, 10_000);
 
   it("does not record positive reachability when cancellation lands during awaited teardown", async () => {
     const started = deferred();
@@ -2438,6 +2495,299 @@ describe("provider readiness truth", () => {
     },
     15_000,
   );
+
+  it.each([
+    [
+      "non-finite usage",
+      { type: "turn_done", usage: { inputTokens: 1e400 } },
+      "PROVIDER_EVENT_INFINITY_MARKER_73d1",
+    ],
+    [
+      "control/secret session id",
+      { type: "session", sessionId: "session\0PROVIDER_EVENT_SESSION_MARKER_18c2 access_token=private-session-token" },
+      "PROVIDER_EVENT_SESSION_MARKER_18c2",
+    ],
+    [
+      "custom serialization",
+      {
+        type: "text",
+        delta: "otherwise safe event text",
+        toJSON: () => ({
+          type: "text",
+          delta: "PROVIDER_EVENT_TO_JSON_MARKER_4a6f",
+          access_token: "private-event-token",
+        }),
+      },
+      "PROVIDER_EVENT_TO_JSON_MARKER_4a6f",
+    ],
+  ])(
+    "fails the owning scheduler Run before persisting a provider event with %s",
+    async (_name, yieldedEvent, marker) => {
+      const unhandled: unknown[] = [];
+      const uncaught: unknown[] = [];
+      const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+      const onUncaught = (error: unknown): void => { uncaught.push(error); };
+      process.on("unhandledRejection", onUnhandled);
+      process.on("uncaughtException", onUncaught);
+      const failed = await providerRunFixture({
+        adapter: providerRunAdapter({ outcome: "success", yieldedEvents: [yieldedEvent] }),
+      });
+      try {
+        const failedRun = await waitForRunStatus(failed.store, "failed");
+        await waitForAgentRunStatus(failed.store, failed.agent.id, "failed");
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        const events = failed.store.readEvents(failed.agent.id);
+        expect(events.some(({ event }) =>
+          event.type === "context_usage"
+          || event.type === "session"
+          || event.type === "text"
+          || event.type === "turn_done")).toBe(false);
+        const perExecutionTerminalCounts = new Map<string, number>();
+        for (const { event } of events) {
+          if (event.type !== "agent_lifecycle" || !["failed", "completed", "cancelled", "interrupted"].includes(event.status)) continue;
+          perExecutionTerminalCounts.set(event.executionId, (perExecutionTerminalCounts.get(event.executionId) ?? 0) + 1);
+        }
+        expect([...perExecutionTerminalCounts.values()].every((count) => count === 1)).toBe(true);
+        expect(perExecutionTerminalCounts.get(failedRun.id)).toBe(1);
+
+        const durable = failed.store.sqlite.prepare(`
+          SELECT status, terminal_at, provider_session_id, provider_failure_json
+          FROM scheduler_runs WHERE id = ?
+        `).get(failedRun.id) as {
+          status: string;
+          terminal_at: string | null;
+          provider_session_id: string | null;
+          provider_failure_json: string | null;
+        };
+        expect(durable).toMatchObject({
+          status: "failed",
+          provider_session_id: null,
+        });
+        expect(durable.terminal_at).toBeTruthy();
+        expect(JSON.parse(durable.provider_failure_json ?? "null")).toMatchObject({
+          category: "unknown",
+          message: "Provider returned an invalid runtime event.",
+        });
+
+        const eventLog = readFileSync(path.join(
+          failed.dataDir,
+          "projects",
+          failed.project.id,
+          "agents",
+          failed.agent.id,
+          "events.jsonl",
+        ), "utf8");
+        const injected = await failed.app.inject({
+          method: "GET",
+          url: `/api/agents/${failed.agent.id}/history/activity`,
+        });
+        expect(injected.statusCode).toBe(200);
+        const address = await failed.app.listen({ host: "127.0.0.1", port: 0 });
+        const socket = await fetch(`${address}/api/agents/${failed.agent.id}/history/activity`);
+        expect(socket.status).toBe(200);
+        const socketBody = await socket.text();
+        for (const body of [eventLog, injected.body, socketBody, durable.provider_failure_json ?? ""]) {
+          expect(body).not.toContain(marker);
+          expect(body).not.toMatch(/private-(?:session|event)-token|access_token|\u0000/u);
+        }
+        expect(unhandled).toEqual([]);
+        expect(uncaught).toEqual([]);
+      } finally {
+        process.off("unhandledRejection", onUnhandled);
+        process.off("uncaughtException", onUncaught);
+        await failed.app.close();
+      }
+    },
+    20_000,
+  );
+
+  it("keeps invalid yielded events out of live/replay SSE and restart projections", async () => {
+    const marker = "PROVIDER_EVENT_LIVE_REPLAY_MARKER_2cc8";
+    const started = deferred();
+    const release = deferred();
+    const failed = await providerRunFixture({
+      adapter: providerRunAdapter({
+        outcome: "success",
+        started: started.resolve,
+        release: release.promise,
+        yieldedEvents: [{
+          type: "text",
+          delta: "safe",
+          toJSON: () => ({ type: "text", delta: marker, secret: marker }),
+        }],
+      }),
+    });
+    await started.promise;
+    const address = await failed.app.listen({ host: "127.0.0.1", port: 0 });
+    const liveCursor = failed.store.lastSeqOf(failed.agent.id);
+    const liveResponse = await fetch(`${address}/api/agents/${failed.agent.id}/stream?lastEventId=${liveCursor}`);
+    release.resolve();
+    const liveBody = await readSseUntil(liveResponse, '"status":"failed"');
+    expect(liveBody).not.toContain(marker);
+    await waitForAgentRunStatus(failed.store, failed.agent.id, "failed");
+    const replayResponse = await fetch(`${address}/api/agents/${failed.agent.id}/stream?lastEventId=0`);
+    const replayBody = await readSseUntil(replayResponse, '"status":"failed"');
+    expect(replayBody).not.toContain(marker);
+    await failed.app.close();
+
+    const restarted = createServer({
+      dataDir: failed.dataDir,
+      engines: [{ adapter: adapter(), authStatus: async () => ({ authenticated: true }) }],
+      logger: false,
+    });
+    await restarted.ready();
+    const restartedActivity = await restarted.inject({
+      method: "GET",
+      url: `/api/agents/${failed.agent.id}/history/activity`,
+    });
+    expect(restartedActivity.statusCode).toBe(200);
+    expect(restartedActivity.body).not.toContain(marker);
+    await restarted.close();
+  }, 20_000);
+
+  it("projects persistent-session events before terminal checks or downstream use", async () => {
+    const marker = "PERSISTENT_EVENT_DESCRIPTOR_MARKER_9f31";
+    const releaseTurn = deferred();
+    const releaseTeardown = deferred();
+    const hostile = { type: "text" } as Record<string, unknown>;
+    Object.defineProperty(hostile, "delta", {
+      enumerable: true,
+      get: () => { throw new Error(marker); },
+    });
+    const fixture = await providerRunFixture({
+      adapter: persistentProviderRunAdapter({
+        started: () => undefined,
+        releaseTurn: releaseTurn.promise,
+        teardownStarted: () => undefined,
+        releaseTeardown: releaseTeardown.promise,
+        teardownFinished: () => undefined,
+        firstEvent: hostile,
+      }),
+    });
+    const unhandled: unknown[] = [];
+    const uncaught: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    const onUncaught = (error: unknown): void => { uncaught.push(error); };
+    process.on("unhandledRejection", onUnhandled);
+    process.on("uncaughtException", onUncaught);
+    try {
+      releaseTurn.resolve();
+      releaseTeardown.resolve();
+      await waitForRunStatus(fixture.store, "failed");
+      await waitForAgentRunStatus(fixture.store, fixture.agent.id, "failed");
+      const evidence = JSON.stringify(fixture.store.readEvents(fixture.agent.id));
+      const durable = JSON.stringify(fixture.store.sqlite.prepare(`
+        SELECT status, provider_session_id, provider_failure_json
+        FROM scheduler_runs ORDER BY rowid DESC LIMIT 1
+      `).get());
+      expect(evidence).not.toContain(marker);
+      expect(durable).not.toContain(marker);
+      expect(fixture.store.readEvents(fixture.agent.id).some(({ event }) => event.type === "text")).toBe(false);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+      expect(uncaught).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      process.off("uncaughtException", onUncaught);
+      await fixture.app.close();
+    }
+  }, 20_000);
+
+  it("preserves valid event semantics, duplicates, usage, and provider input provenance", async () => {
+    const fixture = await providerRunFixture({
+      adapter: providerRunAdapter({
+        outcome: "success",
+        yieldedEvents: [
+          { type: "session", sessionId: "valid-session" },
+          {
+            type: "context_usage",
+            providerSessionId: "valid-session",
+            providerSessionGeneration: "generation-1",
+            usedTokens: 12,
+            aggregateTokens: 20,
+            windowTokens: 100,
+          },
+          { type: "text", delta: "same" },
+          { type: "text", delta: "same" },
+          { type: "tool_call", id: "call-1", name: "read", input: { path: "README.md", lines: [1, 2] } },
+          { type: "turn_done", usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 } },
+        ],
+      }),
+    });
+    const completed = await waitForRunStatus(fixture.store, "completed");
+    await vi.waitFor(() => {
+      expect(fixture.store.getRuns(fixture.agent.id).at(-1)?.status).toBe("completed");
+    }, { timeout: 5_000, interval: 20 });
+    const events = fixture.store.readEvents(fixture.agent.id).map(({ event }) => event);
+    expect(events.filter((event) => event.type === "text")).toEqual([
+      expect.objectContaining({ type: "text", delta: "same", executionId: completed.id }),
+      expect.objectContaining({ type: "text", delta: "same", executionId: completed.id }),
+    ]);
+    expect(events).toContainEqual({
+      type: "context_usage",
+      providerSessionId: "valid-session",
+      providerSessionGeneration: "generation-1",
+      usedTokens: 12,
+      aggregateTokens: 20,
+      windowTokens: 100,
+    });
+    expect(events).toContainEqual({
+      type: "tool_call",
+      id: "call-1",
+      name: "read",
+      input: { path: "README.md", lines: [1, 2] },
+    });
+    expect(events).toContainEqual({
+      type: "turn_done",
+      executionId: completed.id,
+      usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+    });
+    expect(fixture.store.resumeSessionId(fixture.agent.id)).toBe("valid-session");
+    const providerInput = fixture.store.getProviderInput(completed.id, true);
+    expect(providerInput?.exactPrompt).toContain("exercise provider reachability");
+    expect(providerInput?.promptHash).toMatch(/^[a-f0-9]{64}$/u);
+    expect(providerInput?.sourceManifest.sources.some((source) => source.kind === "activation")).toBe(true);
+    await fixture.app.close();
+  }, 20_000);
+
+  it("retries a pre-acceptance invalid event without carrying it into the successful Run", async () => {
+    const marker = "PROVIDER_EVENT_RETRY_MARKER_a209";
+    let attempts = 0;
+    const stream = async function* () {
+      attempts += 1;
+      if (attempts === 1) {
+        yield {
+          type: "text",
+          delta: "safe",
+          toJSON: () => ({ type: "text", delta: marker, secret: marker }),
+        } as never;
+        return;
+      }
+      yield { type: "session" as const, sessionId: "retry-session" };
+      yield { type: "text" as const, delta: "recovered" };
+      yield { type: "turn_done" as const };
+    };
+    const fixture = await providerRunFixture({
+      adapter: {
+        ...adapter(),
+        trustedSystemPromptChannel: "developer",
+        seed: stream,
+        continue: stream,
+      },
+    });
+    await vi.waitFor(() => {
+      expect(attempts).toBeGreaterThanOrEqual(2);
+      expect(fixture.store.sqlite.prepare(`
+        SELECT COUNT(*) AS count FROM scheduler_runs WHERE status = 'completed'
+      `).get()).toEqual({ count: 1 });
+    }, { timeout: 10_000, interval: 20 });
+    const evidence = JSON.stringify(fixture.store.readEvents(fixture.agent.id));
+    expect(evidence).toContain("recovered");
+    expect(evidence).not.toContain(marker);
+    expect(fixture.store.resumeSessionId(fixture.agent.id)).toBe("retry-session");
+    await fixture.app.close();
+  }, 20_000);
 
   it("persists and streams only the finite provider failure event for live and replay delivery", async () => {
     const started = deferred();

@@ -12,6 +12,7 @@ export { ClaudeModelCatalogProbe, claudeModelDisplayName, normalizeClaudeProvide
 export { ClaudeStreamSession } from "./claude-stream-session.js";
 export type { ClaudeAdapterOptions } from "./claude.js";
 export { mapCodexEvent, mapFileChangeKind } from "./events.js";
+export { AgentEventProjectionError, projectAgentEvent } from "./agent-event-projection.js";
 export { mapClaudeEvent } from "./claude-events.js";
 export type { CodexMapContext } from "./events.js";
 export { streamProcess } from "./process.js";

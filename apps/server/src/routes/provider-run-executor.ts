@@ -24,6 +24,7 @@ import { randomUUID } from "node:crypto";
 import type { LogEvent } from "@ponderosa/agents";
 import {
   classifyProviderFailure,
+  projectAgentEvent,
   shouldRolloverEngineSession,
 } from "@ponderosa/engines";
 import type { FastifyInstance } from "fastify";
@@ -606,6 +607,16 @@ export function startProviderRunExecution(
           });
         }
       };
+      const projectProviderStream = async function* (
+        source: AsyncIterable<AgentEvent>,
+      ): AsyncIterable<AgentEvent> {
+        for await (const yielded of source) {
+          // This is the first read of a provider-yielded value. The canonical
+          // copy must precede discriminant checks, scheduler decisions,
+          // persistence, logging, or public streaming.
+          yield projectAgentEvent(yielded);
+        }
+      };
       const startStream = (sessionId?: string): AsyncIterable<AgentEvent> => sessionId
         ? persistentRuntime
           ? {
@@ -628,12 +639,13 @@ export function startProviderRunExecution(
                     yield { type: "error", message: "persistent engine session stopped" };
                     return;
                   }
-                  yield next.value;
-                  if (next.value.type === "turn_done" || next.value.type === "error") return;
+                  const event = projectAgentEvent(next.value);
+                  yield event;
+                  if (event.type === "turn_done" || event.type === "error") return;
                 }
               },
             }
-          : engine.adapter.continue({
+          : projectProviderStream(engine.adapter.continue({
               agentId: agent.id,
               cwd: project.hostPath,
               prompt,
@@ -646,7 +658,7 @@ export function startProviderRunExecution(
               signal: controller.signal,
               onRuntimeRootExit: () => agentMessageCapabilities.delete(messageCapability),
               onRuntimeSpawned: registerOneShotRuntime,
-            })
+            }))
         : persistentRuntime
           ? {
               async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
@@ -668,12 +680,13 @@ export function startProviderRunExecution(
                     yield { type: "error", message: "persistent engine session stopped" };
                     return;
                   }
-                  yield next.value;
-                  if (next.value.type === "turn_done" || next.value.type === "error") return;
+                  const event = projectAgentEvent(next.value);
+                  yield event;
+                  if (event.type === "turn_done" || event.type === "error") return;
                 }
               },
             }
-          : engine.adapter.seed({
+          : projectProviderStream(engine.adapter.seed({
               agentId: agent.id,
               cwd: project.hostPath,
               prompt: freshPrompt,
@@ -686,7 +699,7 @@ export function startProviderRunExecution(
               signal: controller.signal,
               onRuntimeRootExit: () => agentMessageCapabilities.delete(messageCapability),
               onRuntimeSpawned: registerOneShotRuntime,
-            });
+            }));
 
       const persistAcceptedSessionSnapshot = (acceptedSessionId: string): void => {
         const artifactIds = [...manifestArtifactIds].sort();
