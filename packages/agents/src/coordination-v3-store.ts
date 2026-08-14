@@ -479,6 +479,13 @@ export class CoordinationV3Store {
     return this.activationReadModel.pendingActivations(projectId);
   }
 
+  activation(
+    activationId: string,
+    projectId: string,
+  ): ReturnType<CoordinationV3ActivationReadModel["activation"]> {
+    return this.activationReadModel.activation(activationId, projectId);
+  }
+
   terminalActivationDisposition(activationId: string): {
     id: string;
     state: TerminalActivationV3View["state"];
@@ -526,6 +533,12 @@ export class CoordinationV3Store {
     now?: string;
   }): { cancelled: boolean; replayed: boolean; status: "cancelled" | "delivery_started" } {
     return this.activationCommandAuthority.cancelPendingActivation(input);
+  }
+
+  queuedMessageCancellationChange(
+    activationId: string,
+  ): ReturnType<CoordinationV3ActivationCommandAuthority["queuedMessageCancellationChange"]> {
+    return this.activationCommandAuthority.queuedMessageCancellationChange(activationId);
   }
 
   editPendingActivationText(input: {

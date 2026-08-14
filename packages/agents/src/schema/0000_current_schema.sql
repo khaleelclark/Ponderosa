@@ -563,6 +563,17 @@ CREATE TABLE runtime_communications (
   actionable INTEGER NOT NULL CHECK (actionable IN (0, 1)),
   created_at TEXT NOT NULL
 );
+CREATE TABLE runtime_communication_activation_intake (
+  communication_id TEXT NOT NULL
+    REFERENCES runtime_communications(id) ON DELETE CASCADE,
+  recipient_index INTEGER NOT NULL CHECK (recipient_index >= 0),
+  agent_id TEXT NOT NULL,
+  activation_id TEXT NOT NULL
+    REFERENCES agent_activations(id) ON DELETE CASCADE,
+  PRIMARY KEY (communication_id, recipient_index)
+);
+CREATE INDEX runtime_communication_activation_intake_activation
+  ON runtime_communication_activation_intake (activation_id);
 CREATE TABLE scheduler_agent_fences (
   agent_id TEXT PRIMARY KEY,
   next_fencing_token INTEGER NOT NULL CHECK (next_fencing_token > 0)

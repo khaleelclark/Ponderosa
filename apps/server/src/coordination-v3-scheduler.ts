@@ -91,7 +91,11 @@ export class CoordinationV3Scheduler {
       dispatchProviderOperation?: (operation: ProviderOperation) => Promise<CoordinationV3DispatchResult>;
       /** Project authoritative SQLite outbox effects before the related
        * Activation can be leased. Handlers must be idempotent across retries. */
-      processOutbox?: (item: { eventKind: string; payload: unknown }) => void | Promise<void>;
+      processOutbox?: (item: {
+        activationId: string;
+        eventKind: string;
+        payload: unknown;
+      }) => void | Promise<void>;
       onMessageDeliveryChanged?: (agentId: string) => void;
       onRunLeased?: (lease: SchedulerLease) => void;
       /** Keep durable work queued while its provider is known unavailable. */
@@ -177,7 +181,11 @@ export class CoordinationV3Scheduler {
       }
       for (const item of this.store.claimOutbox(this.options.workerId, 500, now)) {
         try {
-          await this.options.processOutbox?.({ eventKind: item.eventKind, payload: item.payload });
+          await this.options.processOutbox?.({
+            activationId: item.activationId,
+            eventKind: item.eventKind,
+            payload: item.payload,
+          });
           this.store.completeOutbox(item.id, this.options.workerId, now);
           this.metrics.outboxSignals += 1;
         } catch (error) {

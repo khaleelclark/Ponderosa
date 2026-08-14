@@ -120,6 +120,7 @@ export class WorkspaceStore {
   private readonly decisionEventIdsByConversation = new Map<string, string[]>();
   private readonly pushSubscriptions = new Map<string, WebPushSubscriptionDto>();
   private readonly pushDeliveries = new Map<string, PushDeliveryRecord>();
+  private readonly queuedMessageChanges = new Set<string>();
   private readonly resourceRecency = new Map<string, WorkspaceResourceRecencyDto>();
   private readonly resourceRecencyLinks = new Map<
     string,
@@ -184,6 +185,13 @@ export class WorkspaceStore {
 
   private project(record: CanonicalWorkspaceEvent): void {
     this.projectResourceRecency(record);
+    if (record.event.type === "queued_message_changed") {
+      this.queuedMessageChanges.add([
+        record.event.conversationId,
+        record.event.deliveryId,
+        record.event.action,
+      ].join("\0"));
+    }
     if (record.event.type === "preferences_updated") {
       const persisted = record.event.preferences as WorkspacePreferencesDto & {
         providerPermissionMode?: unknown;
@@ -540,6 +548,18 @@ export class WorkspaceStore {
   }
 
   cursor(): number { return this.events.at(-1)?.id ?? 0; }
+
+  hasQueuedMessageChange(input: {
+    conversationId: string;
+    deliveryId: string;
+    action: Extract<WorkspaceEvent, { type: "queued_message_changed" }>["action"];
+  }): boolean {
+    return this.queuedMessageChanges.has([
+      input.conversationId,
+      input.deliveryId,
+      input.action,
+    ].join("\0"));
+  }
 
   instanceId(): string { return this.instance; }
 

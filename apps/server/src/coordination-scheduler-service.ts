@@ -23,7 +23,10 @@ import {
   CoordinationV3Scheduler,
 } from "./coordination-v3-scheduler.js";
 import type { createCommunicationArtifactAuthority } from "./communication-artifacts.js";
-import type { QueuedEditRevisionOutboxPayload } from "./routes/queued-messages.js";
+import {
+  applyQueuedMessageChangeOutbox,
+  type QueuedEditRevisionOutboxPayload,
+} from "./routes/queued-messages.js";
 import type { ProviderProcessAuthority } from "./provider-process-authority.js";
 
 type ArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>;
@@ -414,6 +417,15 @@ return new CoordinationV3Scheduler(
       return { accepted: true };
     },
     processOutbox: async (item) => {
+      if (item.eventKind === "queued_message_change") {
+        applyQueuedMessageChangeOutbox(item, {
+          coordinationV3,
+          workspace,
+          appendWorkspace,
+          publishCoordinationV3Changed,
+        });
+        return;
+      }
       if (item.eventKind !== "communication_revision") return;
       const payload = item.payload as Partial<QueuedEditRevisionOutboxPayload> | null;
       if (!payload || typeof payload.activationId !== "string" || typeof payload.agentId !== "string"

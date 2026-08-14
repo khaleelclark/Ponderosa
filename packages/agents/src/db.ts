@@ -27,6 +27,7 @@ const schemaExtensions = [
   "0003_collection_generations.sql",
   "0004_run_output_segments.sql",
   "0005_required_reply_obligations.sql",
+  "0006_delivery_idempotency.sql",
 ] as const;
 const legacyMigrationTable = "_migrations";
 const schemaVersionTable = "_schema_version";
