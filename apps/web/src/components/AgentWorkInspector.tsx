@@ -62,7 +62,7 @@ function diagnosticLogBundle(data: AgentWorkInspectorDto): string {
   ].filter((line): line is string => line !== undefined).join("\n");
 }
 
-function AgentWorkTechnicalDetails({
+export function AgentWorkTechnicalDetails({
   projectId,
   conversationId,
   item,
@@ -84,7 +84,7 @@ function AgentWorkTechnicalDetails({
     onToggle={(event) => setExpanded(event.currentTarget.open)}
     sx={{ mt: 0.75, "& > summary": { cursor: "pointer" } }}
   >
-    <Typography component="summary" variant="caption" color="text.secondary">Raw fields and provider data</Typography>
+    <Typography component="summary" variant="caption" color="text.secondary">Technical details</Typography>
     {query.isLoading ? <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", mt: 0.75 }}>
       <CircularProgress size={14} /><Typography variant="caption">Loading technical details…</Typography>
     </Stack> : null}

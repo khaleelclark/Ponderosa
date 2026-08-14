@@ -19,6 +19,7 @@ import type { ProviderUsageCache, ProviderUsageTarget } from "./provider-usage-c
 import type { ProviderProcessAuthority } from "./provider-process-authority.js";
 import {
   publicProviderAvailabilityDetail,
+  publicProviderExceptionResponse,
   publicProviderFailureCategorySummary,
 } from "./provider-availability-detail.js";
 import type {
@@ -49,6 +50,21 @@ interface EngineControlPlaneContext {
   providerProcessAuthority: ProviderProcessAuthority;
 }
 
+export class ProviderAdapterBoundaryError extends Error {
+  readonly engineId: string;
+  readonly operation: string;
+  readonly publicResponse: ReturnType<typeof publicProviderExceptionResponse>;
+
+  constructor(engineId: string, operation: string, cause: unknown, fallback?: string) {
+    const publicResponse = publicProviderExceptionResponse(cause, fallback);
+    super(publicResponse.error, { cause });
+    this.name = "ProviderAdapterBoundaryError";
+    this.engineId = engineId;
+    this.operation = operation;
+    this.publicResponse = publicResponse;
+  }
+}
+
 export function createEngineControlPlane(context: EngineControlPlaneContext) {
   const {
     engines,
@@ -69,11 +85,34 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     providerProcessAuthority,
   } = context;
 
-  const publicAuthStatusExceptionDetail = (error: unknown): string => (
-    publicProviderAvailabilityDetail(
-      error instanceof Error ? error.message : "runtime authentication could not be checked",
-    ) ?? "runtime authentication could not be checked"
-  );
+  const publicAuthStatusExceptionDetail = (_error: unknown): string =>
+    "runtime authentication could not be checked";
+
+  const providerAdapterCall = <T>(
+    adapter: Adapter,
+    operation: string,
+    callback: () => T,
+    fallback?: string,
+  ): T => {
+    try {
+      return callback();
+    } catch (error) {
+      throw new ProviderAdapterBoundaryError(adapter.id, operation, error, fallback);
+    }
+  };
+  const providerAdapterOperation = async <T>(
+    adapter: Adapter,
+    operation: string,
+    callback: () => Promise<T>,
+    fallback?: string,
+  ): Promise<T> => {
+    try {
+      return await callback();
+    } catch (error) {
+      if (error instanceof ProviderAdapterBoundaryError) throw error;
+      throw new ProviderAdapterBoundaryError(adapter.id, operation, error, fallback);
+    }
+  };
 
   const runtimeFailureDetail = (engineId: string): string | undefined => {
     const denial = engineAvailability.denial(engineId);
@@ -100,6 +139,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         ? await engineAuthStatuses.get(id, registration.authStatus)
         : { authenticated: true, detail: "runtime registered (authentication status not reported)" };
     } catch (error) {
+      app.log.warn({ err: error, engineId: id }, "provider authentication status failed");
       const authDetail = publicAuthStatusExceptionDetail(error);
       return {
         configured: true,
@@ -146,33 +186,37 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         availabilityDetail: "runtime authentication could not be checked",
       };
     }
-    const models = adapter.listModels();
-    const defaultModel = adapter.defaultModel?.() ?? models.find((model) => model.id)?.id;
-    const defaultEffort = adapter.defaultEffort?.(defaultModel)
-      ?? models.find((model) => model.id === defaultModel)?.defaultEffort
-      ?? adapter.listEfforts(defaultModel)[0]?.id;
-    return {
-      id: adapter.id,
-      displayName: adapter.displayName,
-      ...(adapter.providerUsageCommand ? { providerUsageCommand: adapter.providerUsageCommand.name } : {}),
-      models: models.map((model) => ({
-        ...model,
-        ...(model.efforts !== undefined
-          ? { efforts: model.efforts }
-          : !adapter.modelSpecificEfforts || !model.id
-            ? { efforts: adapter.listEfforts(model.id || undefined) }
-            : {}),
-      })),
-      ...(adapter.configuredModelOptions
-        ? { configuredModels: adapter.configuredModelOptions() }
-        : {}),
-      efforts: adapter.listEfforts(),
-      ...(defaultModel ? { defaultModel } : {}),
-      ...(defaultEffort ? { defaultEffort } : {}),
-      modelCatalogKnown: !adapter.modelSpecificEfforts || models.some((model) => Boolean(model.id)),
-      enabled: providerEnabled(adapter.id),
-      ...status,
-    };
+    try {
+      const models = providerAdapterCall(adapter, "list models", () => adapter.listModels());
+      const defaultModel = adapter.defaultModel?.() ?? models.find((model) => model.id)?.id;
+      const defaultEffort = adapter.defaultEffort?.(defaultModel)
+        ?? models.find((model) => model.id === defaultModel)?.defaultEffort
+        ?? adapter.listEfforts(defaultModel)[0]?.id;
+      return {
+        id: adapter.id,
+        displayName: adapter.displayName,
+        ...(adapter.providerUsageCommand ? { providerUsageCommand: adapter.providerUsageCommand.name } : {}),
+        models: models.map((model) => ({
+          ...model,
+          ...(model.efforts !== undefined
+            ? { efforts: model.efforts }
+            : !adapter.modelSpecificEfforts || !model.id
+              ? { efforts: adapter.listEfforts(model.id || undefined) }
+              : {}),
+        })),
+        ...(adapter.configuredModelOptions
+          ? { configuredModels: adapter.configuredModelOptions() }
+          : {}),
+        efforts: adapter.listEfforts(),
+        ...(defaultModel ? { defaultModel } : {}),
+        ...(defaultEffort ? { defaultEffort } : {}),
+        modelCatalogKnown: !adapter.modelSpecificEfforts || models.some((model) => Boolean(model.id)),
+        enabled: providerEnabled(adapter.id),
+        ...status,
+      };
+    } catch (error) {
+      throw new ProviderAdapterBoundaryError(adapter.id, "read engine configuration", error);
+    }
   };
   const providerUsageTarget = async (registration: EngineRegistration): Promise<ProviderUsageTarget> => {
     const auth = registration.authStatus
@@ -362,11 +406,11 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       }
     };
     const adapterOperation = Promise.resolve()
-      .then(() => adapter.capabilities!(hostPath, {
+      .then(() => providerAdapterOperation(adapter, "discover capabilities", () => adapter.capabilities!(hostPath, {
         ...(model ? { model } : {}),
         signal: authority.controller.signal,
         onRuntimeSpawned: registerProcess,
-      }));
+      }), "Provider capabilities could not be refreshed."));
     const promise = adapterOperation
       .then(async (value) => {
         authority.settled = true;
@@ -388,7 +432,12 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         try {
           await closeCapabilityDiscoveryAuthority(authority);
         } catch (closeError) {
-          throw new AggregateError([error, closeError], `${adapter.id} capability discovery and cleanup failed`);
+          throw new ProviderAdapterBoundaryError(
+            adapter.id,
+            "clean up capability discovery",
+            new AggregateError([error, closeError], `${adapter.id} capability discovery and cleanup failed`),
+            "Provider capabilities could not be refreshed.",
+          );
         }
         throw error;
       });
@@ -470,7 +519,12 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     projectId,
     hostPath,
     adapter.id,
-    adapter.modelCatalogConfigurationKey?.() ?? "default",
+    providerAdapterCall(
+      adapter,
+      "read model catalog configuration",
+      () => adapter.modelCatalogConfigurationKey?.() ?? "default",
+      "Provider model discovery failed.",
+    ),
   ].join("\0");
   const closeModelCatalogDiscoveryAuthority = async (
     authority: ModelCatalogDiscoveryAuthority,
@@ -510,11 +564,26 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     for (const agent of store.listAgents(projectId)) {
       if (agent.activeEngine !== adapter.id) continue;
       const session = activeRuns.get(agent.id)?.runtimeSession ?? reusableRuntime(agent.id)?.session;
-      const live = session?.capabilities ? await session.capabilities() : undefined;
+      let live: EngineCapabilities | undefined;
+      try {
+        live = session?.capabilities ? await session.capabilities() : undefined;
+      } catch (error) {
+        throw new ProviderAdapterBoundaryError(
+          adapter.id,
+          "read live model catalog",
+          error,
+          "Provider model discovery failed.",
+        );
+      }
       if (!live?.modelCatalog) continue;
       return {
         models: adapter.configuredModelCatalog
-          ? adapter.configuredModelCatalog(live.modelCatalog.models)
+          ? providerAdapterCall(
+              adapter,
+              "normalize configured model catalog",
+              () => adapter.configuredModelCatalog!(live.modelCatalog!.models),
+              "Provider model discovery failed.",
+            )
           : live.modelCatalog.models,
         cliVersion: live.modelCatalog.cliVersion,
       };
@@ -574,12 +643,22 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
           ? {
               models: live.models,
               cliVersion: live.cliVersion,
-              configurationKey: adapter.modelCatalogConfigurationKey?.() ?? "default",
+              configurationKey: providerAdapterCall(
+                adapter,
+                "read model catalog configuration",
+                () => adapter.modelCatalogConfigurationKey?.() ?? "default",
+                "Provider model discovery failed.",
+              ),
             }
-          : await adapter.discoverModelCatalog!(project.hostPath, {
-              signal: authority.controller.signal,
-              onRuntimeSpawned: registerProcess,
-            });
+          : await providerAdapterOperation(
+              adapter,
+              "discover model catalog",
+              () => adapter.discoverModelCatalog!(project.hostPath, {
+                signal: authority.controller.signal,
+                onRuntimeSpawned: registerProcess,
+              }),
+              "Provider model discovery failed.",
+            );
         const value: ProjectEngineModelCatalogDto = {
           projectId: project.id,
           engineId: adapter.id,
@@ -609,7 +688,12 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         try {
           await closeModelCatalogDiscoveryAuthority(authority);
         } catch (closeError) {
-          throw new AggregateError([error, closeError], `${adapter.id} model discovery and cleanup failed`);
+          throw new ProviderAdapterBoundaryError(
+            adapter.id,
+            "clean up model discovery",
+            new AggregateError([error, closeError], `${adapter.id} model discovery and cleanup failed`),
+            "Provider model discovery failed.",
+          );
         }
         throw error;
       });
@@ -653,22 +737,41 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         });
       }
     };
-    const operation = adapter.validateModel!(project.hostPath, modelId, {
-      signal: authority.controller.signal,
-      onRuntimeSpawned: registerProcess,
-    });
+    const operation = providerAdapterCall(
+      adapter,
+      "validate model",
+      () => adapter.validateModel!(project.hostPath, modelId, {
+        signal: authority.controller.signal,
+        onRuntimeSpawned: registerProcess,
+      }),
+      "Provider model validation failed.",
+    );
     authority.operation = operation;
     try {
       return await operation;
     } catch (error) {
+      app.log.warn({ err: error, engineId: adapter.id }, "provider model validation failed");
+      const publicFailure = publicProviderExceptionResponse(
+        error,
+        "Provider model validation failed.",
+      );
       return {
         valid: false,
         errorCode: "provider_error",
-        error: error instanceof Error ? error.message : "Claude model validation failed",
+        error: publicFailure.error,
       };
     } finally {
       authority.settled = true;
-      await closeModelCatalogDiscoveryAuthority(authority);
+      try {
+        await closeModelCatalogDiscoveryAuthority(authority);
+      } catch (error) {
+        throw new ProviderAdapterBoundaryError(
+          adapter.id,
+          "clean up model validation",
+          error,
+          "Provider model validation failed.",
+        );
+      }
     }
   };
   const markEngineModelUnavailable = (

@@ -551,6 +551,119 @@ describe("provider readiness truth", () => {
     await app.close();
   });
 
+  it("returns a canonical 503 when engine metadata throws without exposing provider exception text", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-engine-metadata-exception-"));
+    roots.push(root);
+    const restricted = [
+      "AUTHENTICATION_FAILURE",
+      "Basic cHJpdmF0ZS11c2VyOnByaXZhdGUtcGFzc3dvcmQ=",
+      String.raw`pa\u0073sword=hunter2`,
+      "access_token=private-engine-token",
+      String.raw`C:\Users\Patrick\.codex\auth.json`,
+      "/home/phoenix/.config/gh/hosts.yml",
+    ].join(" ");
+    const throwingAdapter: Adapter = {
+      ...adapter(),
+      listModels: () => { throw new Error(restricted); },
+    };
+    const app = createServer({
+      dataDir: path.join(root, "data"),
+      engines: [{
+        adapter: throwingAdapter,
+        authStatus: async () => ({ authenticated: true }),
+      }],
+      logger: false,
+    });
+    await app.ready();
+
+    const responses = [
+      await app.inject({ method: "GET", url: "/api/engines" }),
+      await app.inject({ method: "POST", url: "/api/engines/codex/recheck" }),
+    ];
+    expect(responses.map((response) => response.statusCode)).toEqual([503, 503]);
+    for (const response of responses) {
+      expect(response.json()).toEqual({
+        error: "Provider authentication was rejected.",
+        category: "provider_error",
+        remediation: "Check the provider subscription and sign-in, then retry.",
+      });
+      expect(response.body).not.toMatch(
+        /AUTHENTICATION_FAILURE|Basic|private-|hunter2|password|access_token|Users|phoenix|auth\.json|hosts\.yml/u,
+      );
+    }
+    const notifications = await app.inject({ method: "GET", url: "/api/notifications" });
+    expect(notifications.statusCode).toBe(200);
+    expect(notifications.body).not.toMatch(
+      /AUTHENTICATION_FAILURE|Basic|private-|hunter2|password|access_token|Users|phoenix|auth\.json|hosts\.yml/u,
+    );
+    await app.close();
+  });
+
+  it("uses a useful closed fallback for unclassified engine metadata exceptions", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-engine-metadata-fallback-"));
+    roots.push(root);
+    const throwingAdapter: Adapter = {
+      ...adapter(),
+      listModels: () => { throw new Error("private-semantic-marker-742"); },
+    };
+    const app = createServer({
+      dataDir: path.join(root, "data"),
+      engines: [{ adapter: throwingAdapter }],
+      logger: false,
+    });
+    await app.ready();
+
+    const response = await app.inject({ method: "GET", url: "/api/engines" });
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({
+      error: "Provider runtime information could not be read.",
+      category: "provider_error",
+      remediation: "Review the restricted server logs, then retry the provider operation.",
+    });
+    expect(response.body).not.toContain("private-semantic-marker-742");
+    await app.close();
+  });
+
+  it("contains asynchronous provider capability exceptions at the public 503 boundary", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-capability-exception-"));
+    roots.push(root);
+    const hostPath = path.join(root, "workspace");
+    mkdirSync(hostPath, { recursive: true });
+    const store = new AgentStore(path.join(root, "data"));
+    const project = store.createProject({
+      label: "Capability Exception",
+      hostPath,
+      defaultEngine: "codex",
+    });
+    const restricted = String.raw`CAPABILITY_SEMANTIC_MARKER access_token=private-capability-token at /root/.codex/auth.json`;
+    const throwingAdapter: Adapter = {
+      ...adapter(),
+      capabilities: async () => { throw new Error(restricted); },
+    };
+    const app = createServer({
+      dataDir: path.join(root, "data"),
+      store,
+      engines: [{ adapter: throwingAdapter }],
+      logger: false,
+    });
+    await app.ready();
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/engine-capabilities?engineId=codex&refresh=true`,
+    });
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({
+      error: "Provider capabilities could not be refreshed.",
+      category: "provider_error",
+      remediation: "Review the restricted server logs, then retry the provider operation.",
+    });
+    expect(response.body).not.toMatch(
+      /CAPABILITY_SEMANTIC_MARKER|private-capability-token|access_token|root|auth\.json/u,
+    );
+    await app.close();
+  });
+
   it("sanitizes asynchronous provider-usage failures before later cache projections", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "ponderosa-provider-usage-cache-error-"));
     roots.push(root);
@@ -737,7 +850,7 @@ describe("provider readiness truth", () => {
   });
 
   it("keeps managed-child failure context public while retaining raw Run audit evidence", async () => {
-    const restricted = String.raw`authentication rejected session_id=private-managed-session pa\u0073sword=hunter2 SECRET_KEY=x W3sicGFzc3dvcmQiOiJ4In1d at /root/.aws/credentials`;
+    const restricted = String.raw`AUTHENTICATION_FAILURE authentication rejected Basic cHJpdmF0ZS11c2VyOnByaXZhdGUtcGFzc3dvcmQ= session_id=private-managed-session access_token=private-managed-token pa\u0073sword=hunter2 SECRET_KEY=x W3sicGFzc3dvcmQiOiJ4In1d at /root/.aws/credentials`;
     const failed = await providerRunFixture({
       adapter: providerRunAdapter({ outcome: "authentication_failure", errorMessage: restricted }),
       managerContext: "managed_child",
@@ -759,12 +872,12 @@ describe("provider readiness truth", () => {
       expect(activation?.payload_json).toContain("Provider execution failed.");
       expect(activation?.payload_json).not.toMatch(/private-managed|hunter2|SECRET_KEY|W3sicGF|root|credentials/u);
     });
-    let audit: { provider_failure_json: string } | undefined;
+    let audit: { id: string; provider_failure_json: string } | undefined;
     await vi.waitFor(() => {
       audit = failed.store.sqlite.prepare(`
-        SELECT provider_failure_json FROM scheduler_runs
+        SELECT id, provider_failure_json FROM scheduler_runs
         WHERE provider_failure_json IS NOT NULL ORDER BY rowid DESC LIMIT 1
-      `).get() as { provider_failure_json: string } | undefined;
+      `).get() as { id: string; provider_failure_json: string } | undefined;
       expect(audit).toBeTruthy();
     });
     expect(audit!.provider_failure_json).toContain("private-managed-session");
@@ -773,6 +886,25 @@ describe("provider readiness truth", () => {
     expect(rawAuditMessage).toContain("SECRET_KEY=x");
     expect(rawAuditMessage).toContain("W3sicGFzc3dvcmQiOiJ4In1d");
     expect(rawAuditMessage).toContain("/root/.aws/credentials");
+    expect(rawAuditMessage).toContain("Basic cHJpdmF0ZS");
+    expect(rawAuditMessage).toContain("access_token=private-managed-token");
+
+    const publicDetails = await failed.app.inject({
+      method: "GET",
+      url: `/api/projects/${failed.project.id}/agent-work/items/run/${audit!.id}`
+        + `?conversationId=${failed.project.lastConversationId}`,
+    });
+    expect(publicDetails.statusCode).toBe(200);
+    expect(publicDetails.json().details).toEqual(expect.arrayContaining([
+      { label: "Provider failure summary", value: "Provider execution failed." },
+      {
+        label: "Operator action",
+        value: "Review provider access and retry the affected work when the provider is available.",
+      },
+    ]));
+    expect(publicDetails.body).not.toMatch(
+      /AUTHENTICATION_FAILURE|Basic|private-|hunter2|password|access_token|SECRET_KEY|W3sicGF|root|credentials/u,
+    );
     await failed.app.close();
   });
 

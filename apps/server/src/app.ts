@@ -34,7 +34,10 @@ import { createDeploymentControl } from "./deployment-control.js";
 import { documentationReferences } from "./documentation-reference/index.js";
 import { EngineAuthStatusCache } from "./engine-auth-cache.js";
 import { EngineAvailabilityStore } from "./engine-availability-store.js";
-import { createEngineControlPlane } from "./engine-control-plane.js";
+import {
+  createEngineControlPlane,
+  ProviderAdapterBoundaryError,
+} from "./engine-control-plane.js";
 import { createLinkPreviewService } from "./link-preview-service.js";
 import { createLauncherSecurity } from "./launcher-security.js";
 import { createOperationalNotifications } from "./operational-notifications.js";
@@ -651,6 +654,15 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       },
     },
   }) as unknown as PonderosaServer;
+  app.setErrorHandler((error, request, reply) => {
+    if (!(error instanceof ProviderAdapterBoundaryError)) throw error;
+    request.log.error({
+      err: error.cause,
+      engineId: error.engineId,
+      operation: error.operation,
+    }, "provider adapter operation failed at public boundary");
+    return reply.code(503).send(error.publicResponse);
+  });
   app.log.info(store.startupProfile(), "agent store startup completed");
   const limits = { ...ASSET_LIMITS, maxAttachmentsPerMessage: ASSET_LIMITS.maxAssetsPerMessage };
   const serverContext: ServerContext = { opts, documentationReferences, limits, agentDetail, store, tokenUsage };

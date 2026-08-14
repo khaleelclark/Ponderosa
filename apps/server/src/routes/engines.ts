@@ -15,7 +15,10 @@ import type {
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { EngineAuthStatusCache } from "../engine-auth-cache.js";
 import type { EngineAvailabilityStore } from "../engine-availability-store.js";
-import { providerUnavailableNotificationBody } from "../provider-availability-detail.js";
+import {
+  providerUnavailableNotificationBody,
+  publicProviderExceptionResponse,
+} from "../provider-availability-detail.js";
 
 interface EngineRouteRegistration {
   adapter: Adapter;
@@ -205,9 +208,13 @@ export function registerEngineRoutes(
       try {
         result = await registration.availabilityProbe();
       } catch (error) {
+        request.log.warn({ err: error, engineId: request.params.id }, "provider availability probe failed");
         result = {
           available: false,
-          detail: error instanceof Error ? error.message : String(error),
+          detail: publicProviderExceptionResponse(
+            error,
+            "Provider access could not be checked.",
+          ).error,
         };
       }
       availability.record({
@@ -247,17 +254,11 @@ export function registerEngineRoutes(
     if (!registration.adapter.discoverModelCatalog) {
       return reply.code(404).send({ error: "this engine does not provide model discovery" });
     }
-    try {
-      return await discoverModelCatalog(
-        project,
-        registration.adapter,
-        request.query.refresh === "true" || request.query.refresh === "1",
-      );
-    } catch (error) {
-      return reply.code(503).send({
-        error: error instanceof Error ? error.message : "model discovery failed",
-      });
-    }
+    return discoverModelCatalog(
+      project,
+      registration.adapter,
+      request.query.refresh === "true" || request.query.refresh === "1",
+    );
   });
 
   app.post<{
