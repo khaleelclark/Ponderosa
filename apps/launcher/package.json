@@ -13,6 +13,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@ponderosa/core": "workspace:*",
     "@ponderosa/native-host": "workspace:*"
   },
   "devDependencies": {

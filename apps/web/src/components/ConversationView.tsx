@@ -786,7 +786,7 @@ export function ConversationView({
           disabled: !engineIsAvailable(option),
           detail: engineIsAvailable(option)
             ? undefined
-            : option.authenticated
+            : option.authentication === "authenticated"
               ? "Access unavailable"
               : "Signed out",
         }))}

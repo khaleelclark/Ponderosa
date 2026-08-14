@@ -16,13 +16,13 @@ export interface ProcessSignalHost {
 export function installProcessShutdownHandlers(
   app: Pick<FastifyInstance, "close" | "log"> & {
     prepareForShutdown?: () => void;
-    retryProviderRuntimeShutdown?: () => Promise<void>;
+    retryShutdownCleanup?: () => Promise<void>;
+    completeLauncherShutdownRecovery?: () => void;
   },
   host: ProcessSignalHost = process,
 ): () => void {
   let shutdown: Promise<void> | undefined;
   let fastifyCloseAttempted = false;
-  let unrecoverableCloseError: unknown;
   const handle = (signal: ShutdownSignal): void => {
     if (shutdown) return;
     app.log.info({ signal }, "Ponderosa received an OS shutdown signal");
@@ -33,24 +33,18 @@ export function installProcessShutdownHandlers(
           app.prepareForShutdown?.();
           await app.close();
         } catch (error) {
-          const providerRuntimeOnly = (error as { providerRuntimeOnly?: unknown } | null)?.providerRuntimeOnly === true;
-          if (!providerRuntimeOnly) unrecoverableCloseError = error;
-          if (app.retryProviderRuntimeShutdown) {
-            app.log.error({ err: error, signal }, "Ponderosa is retrying provider shutdown after Fastify close failed");
+          if (app.retryShutdownCleanup) {
+            app.log.error({ err: error, signal }, "Ponderosa is retrying strict shutdown cleanup after Fastify close failed");
             try {
-              await app.retryProviderRuntimeShutdown();
+              await app.retryShutdownCleanup();
             } catch (retryError) {
-              throw new AggregateError([error, retryError], "Ponderosa shutdown and provider retry did not complete");
+              throw new AggregateError([error, retryError], "Ponderosa shutdown cleanup retry did not complete");
             }
-          }
-          if (!providerRuntimeOnly) {
-            throw new AggregateError([error], "Ponderosa shutdown failed outside provider cleanup");
-          }
+          } else throw error;
         }
-      } else if (app.retryProviderRuntimeShutdown) {
-        await app.retryProviderRuntimeShutdown();
       }
-      if (unrecoverableCloseError) throw unrecoverableCloseError;
+      await app.retryShutdownCleanup?.();
+      app.completeLauncherShutdownRecovery?.();
       host.exitCode = 0;
     };
     shutdown = attempt().catch((error: unknown) => {

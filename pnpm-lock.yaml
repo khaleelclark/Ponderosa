@@ -28,6 +28,9 @@ importers:
 
   apps/launcher:
     dependencies:
+      '@ponderosa/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@ponderosa/native-host':
         specifier: workspace:*
         version: link:../../packages/native-host

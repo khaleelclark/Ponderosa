@@ -83,6 +83,55 @@ describe("notification attention authority", () => {
       "communication-delivery:activation-2:failed",
     );
   });
+
+  test("resolves bounded search unread state from indexes without listing all notifications", () => {
+    const store = fixture();
+    for (let index = 0; index < 1_000; index += 1) {
+      store.createNotification({
+        kind: "direct_responses",
+        conversationId: `unrelated-conversation-${index}`,
+        communicationEventId: `unrelated-event-${index}`,
+        title: "Unrelated",
+        body: "Unrelated notification",
+      });
+    }
+    const first = store.createNotification({
+      kind: "direct_responses",
+      conversationId: "target-conversation",
+      communicationEventId: "target-event",
+      title: "Target",
+      body: "First target notification",
+    });
+    store.createNotification({
+      kind: "broadcasts",
+      conversationId: "target-conversation",
+      communicationEventId: "other-target-event",
+      title: "Target two",
+      body: "Second target notification",
+    });
+    const list = vi.spyOn(store, "listNotifications").mockImplementation(() => {
+      throw new Error("unbounded notification listing is forbidden during search");
+    });
+
+    expect(store.notificationSearchState({
+      communicationEventIds: ["target-event"],
+      conversationIds: ["target-conversation"],
+    })).toEqual({
+      unreadCommunicationEventIds: ["target-event"],
+      unreadConversationCounts: { "target-conversation": 2 },
+    });
+    expect(list).not.toHaveBeenCalled();
+
+    list.mockRestore();
+    store.readNotification(first.id);
+    expect(store.notificationSearchState({
+      communicationEventIds: ["target-event"],
+      conversationIds: ["target-conversation"],
+    })).toEqual({
+      unreadCommunicationEventIds: [],
+      unreadConversationCounts: { "target-conversation": 1 },
+    });
+  });
 });
 
 describe("workspace resource recency", () => {

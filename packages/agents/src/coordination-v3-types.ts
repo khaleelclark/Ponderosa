@@ -188,6 +188,9 @@ interface RuntimeCommunicationV3InputBase {
   scopeKey?: string;
   /** Required for provider-authored communications. */
   runAuthorization?: RunAuthorizationV3;
+  /** Server-owned proof that this Communication is the Run's inferred reply,
+   * rather than another explicit Communication using the same route. */
+  satisfiesRequiredReply?: boolean;
   artifacts?: RuntimeArtifactInputV3[];
   activation?: {
     agentId: string;

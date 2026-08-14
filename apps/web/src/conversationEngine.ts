@@ -6,22 +6,31 @@ import type {
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 
-export function engineIsAvailable(engine: { authenticated: boolean; available: boolean; enabled?: boolean } | undefined): boolean {
-  return Boolean(engine?.enabled !== false && engine?.authenticated && engine.available);
+export function engineIsAuthenticated(engine: Pick<EngineDto, "authentication"> | undefined): boolean {
+  return engine?.authentication === "authenticated";
+}
+
+export function engineIsAvailable(engine: Pick<EngineDto, "authentication" | "intakeReady" | "enabled"> | undefined): boolean {
+  return Boolean(engine && engine.enabled !== false && engineIsAuthenticated(engine) && engine.intakeReady);
 }
 
 /** An operator-disabled provider is intentionally inactive, not unhealthy. */
-export function engineCanTestAccess(engine: Pick<EngineDto, "authenticated" | "available" | "enabled">): boolean {
-  return engine.enabled !== false && engine.authenticated && !engine.available;
+export function engineCanTestAccess(engine: Pick<EngineDto, "authentication" | "intakeReady" | "enabled" | "reachability">): boolean {
+  return engine.enabled !== false && engineIsAuthenticated(engine) &&
+    (!engine.intakeReady || engine.reachability !== "reachable");
 }
 
-export function engineStatusPresentation(engine: Pick<EngineDto, "available" | "enabled">): {
-  label: "Ready" | "Needs attention" | "Inactive";
+export function engineStatusPresentation(engine: Pick<EngineDto, "authentication" | "intakeReady" | "enabled" | "reachability">): {
+  label: "Checking" | "Reachable" | "Intake ready" | "Needs attention" | "Inactive";
   color: "success" | "warning" | "default";
 } {
   if (engine.enabled === false) return { label: "Inactive", color: "default" };
-  return engine.available
-    ? { label: "Ready", color: "success" }
+  if (engine.authentication === "checking" || engine.reachability === "checking") {
+    return { label: "Checking", color: "default" };
+  }
+  if (engine.reachability === "reachable") return { label: "Reachable", color: "success" };
+  return engine.intakeReady
+    ? { label: "Intake ready", color: "success" }
     : { label: "Needs attention", color: "warning" };
 }
 
@@ -49,7 +58,10 @@ export function engineAvailabilityPresentation(engines: EngineDto[]): {
     ? `${available.map((engine) => engine.displayName).join(", ")} ${available.length === 1 ? "is" : "are"} ready.`
     : "No enabled engine can currently run work.";
   const unavailableSummary = unavailable.map((engine) => {
-    const state = engine.authenticated ? "unavailable" : "not signed in";
+    const state = engine.authentication === "checking" ? "still checking"
+      : engine.authentication === "authenticated" ? "unavailable"
+      : engine.authentication === "error" ? "status unavailable"
+      : "not signed in";
     const detail = conciseAvailabilityDetail(engine.availabilityDetail ?? engine.authDetail);
     return `${engine.displayName} is ${state}${detail ? `: ${detail}` : ""}.`;
   }).join(" ");

@@ -23,6 +23,8 @@ import type { ServerContext } from "../server-context.js";
 import { registerHealthRoutes } from "./health.js";
 import { applyCollectionPageHeaders, sendCollectionPageError, sqliteCollectionPage, type CollectionQuery } from "../collection-page.js";
 import { projectedProjectCount } from "../readiness.js";
+import { writeLauncherShutdownReceipt } from "../launcher-shutdown-receipt.js";
+import { processBirthMarker } from "@ponderosa/engines";
 
 interface ServerControlRoutesContext {
   opts: CreateServerOptions;
@@ -60,8 +62,9 @@ interface ServerControlRoutesContext {
     registration: EngineRegistration,
   ): Promise<{
     configured: true;
-    authenticated: boolean;
-    available: boolean;
+    authentication: "authenticated" | "unauthenticated" | "error";
+    intakeReady: boolean;
+    reachability: "unverified" | "reachable" | "degraded";
     authDetail?: string;
     availabilityDetail?: string;
   }>;
@@ -288,20 +291,74 @@ try{
 }
 })();`));
 
-const beginShutdown = (reply: FastifyReply) => {
+const beginShutdown = (reply: FastifyReply, requestGeneration: unknown, requestTime: unknown) => {
   if (isClosed()) return reply.code(409).send({ error: "Ponderosa is already shutting down" });
+  const generation = opts.launcherGeneration;
+  const launcherRoot = opts.launcherDataDir;
+  if (!generation || !launcherRoot) {
+    return reply.code(409).send({ error: "launcher shutdown receipt authority is unavailable" });
+  }
+  if (requestGeneration !== generation || typeof requestTime !== "string" ||
+      !Number.isFinite(Date.parse(requestTime))) {
+    return reply.code(409).send({ error: "shutdown request does not match this launcher generation" });
+  }
+  const requestedAt = requestTime;
+  const birthMarker = processBirthMarker(process.pid);
+  const writeTerminalReceipt = (state: "clean" | "incomplete", error?: unknown): void => {
+    const updatedAt = new Date().toISOString();
+    writeLauncherShutdownReceipt(launcherRoot, {
+      schemaVersion: 1,
+      generation,
+      pid: process.pid,
+      ...(birthMarker ? { processBirthMarker: birthMarker } : {}),
+      state,
+      requestedAt,
+      updatedAt,
+      ...(state === "incomplete"
+        ? { error: (error instanceof Error ? error.message : String(error)).slice(0, 2_000) }
+        : {}),
+    });
+  };
+  try {
+    writeLauncherShutdownReceipt(launcherRoot, {
+      schemaVersion: 1,
+      generation,
+      pid: process.pid,
+      ...(birthMarker ? { processBirthMarker: birthMarker } : {}),
+      state: "pending",
+      requestedAt,
+      updatedAt: requestedAt,
+    });
+  } catch (error) {
+    return reply.code(503).send({ error: error instanceof Error ? error.message : "shutdown receipt could not be persisted" });
+  }
+  app.completeLauncherShutdownRecovery = () => writeTerminalReceipt("clean");
   reply.code(202);
   setImmediate(() => {
     app.prepareForShutdown();
-    void app.close().catch((error) => {
+    void app.close().then(() => {
+      writeTerminalReceipt("clean");
+    }).catch((error) => {
+      process.exitCode = 1;
+      try {
+        writeTerminalReceipt("incomplete", error);
+      } catch (receiptError) {
+        app.log.error({ err: receiptError }, "Launcher shutdown failure receipt could not be persisted");
+      }
       app.log.error({ err: error }, "Launcher-requested shutdown remains incomplete");
     });
   });
   return { accepted: true };
 };
 
-app.post("/api/launcher/shutdown", async (_request, reply) =>
-  beginShutdown(reply));
+app.post<{ Body: { generation?: unknown; requestedAt?: unknown } }>(
+  "/api/launcher/shutdown",
+  async (request, reply) => beginShutdown(
+    reply,
+    request.body?.generation,
+    request.body?.requestedAt,
+  ),
+);
 
 app.post("/api/deployment/drain", async (_request, reply) => {
   if (isClosed()) return reply.code(409).send({ error: "daemon is shutting down" });
@@ -406,30 +463,38 @@ app.get("/api/ready", async (_request, reply): Promise<ReadinessDto> => {
       return {
         id,
         configured: true as const,
-        authenticated: status.authenticated,
-        available: status.available,
-        ...((status.available ? status.authDetail : status.availabilityDetail)
-          ? { detail: status.available ? status.authDetail : status.availabilityDetail }
+        authentication: status.authentication,
+        intakeReady: status.intakeReady,
+        reachability: status.reachability,
+        ...((status.availabilityDetail ?? status.authDetail)
+          ? { detail: status.availabilityDetail ?? status.authDetail }
           : {}),
       };
     } catch (error) {
       return {
         id,
         configured: true as const,
-        authenticated: false,
-        available: false,
+        authentication: error instanceof Error && error.message === "runtime check exceeded readiness budget"
+          ? "checking" as const
+          : "error" as const,
+        intakeReady: false,
+        reachability: error instanceof Error && error.message === "runtime check exceeded readiness budget"
+          ? "checking" as const
+          : "degraded" as const,
         detail: error instanceof Error ? error.message : String(error),
       };
     } finally {
       if (timer) clearTimeout(timer);
     }
   }));
-  const available = runtimeStatuses.filter((runtime) => runtime.available).length;
+  const intakeReady = runtimeStatuses.filter((runtime) => runtime.intakeReady).length;
+  const reachable = runtimeStatuses.filter((runtime) => runtime.reachability === "reachable").length;
+  const degraded = runtimeStatuses.filter((runtime) => runtime.reachability === "degraded").length;
   const runtimes = {
-    ok: available > 0,
+    ok: intakeReady > 0,
     detail: engines.size === 0
       ? "no runtimes are configured"
-      : `${available} of ${engines.size} configured runtimes available`,
+      : `${intakeReady} of ${engines.size} configured runtimes intake-ready; ${reachable} reachable, ${degraded} degraded`,
   };
   const evidence = [...communicationReconciliation.values()];
   const driftedProjects = evidence.filter((item) => item.state === "verified" && !item.report.ok).length;
@@ -473,7 +538,8 @@ app.get("/api/ready", async (_request, reply): Promise<ReadinessDto> => {
     durationMs: Math.round((performance.now() - startedAt) * 10) / 10,
     projectCount,
     configuredRuntimeCount: engines.size,
-    availableRuntimeCount: available,
+    intakeReadyRuntimeCount: intakeReady,
+    reachableRuntimeCount: reachable,
   }, "readiness check completed");
   if (!canAcceptWork) reply.code(503);
   return body;
@@ -505,28 +571,32 @@ app.get("/api/diagnostics/ready", async (_request, reply): Promise<ReadinessDto>
       return {
         id,
         configured: true as const,
-        authenticated: status.authenticated,
-        available: status.available,
-        ...((status.available ? status.authDetail : status.availabilityDetail)
-          ? { detail: status.available ? status.authDetail : status.availabilityDetail }
+        authentication: status.authentication,
+        intakeReady: status.intakeReady,
+        reachability: status.reachability,
+        ...((status.availabilityDetail ?? status.authDetail)
+          ? { detail: status.availabilityDetail ?? status.authDetail }
           : {}),
       };
     } catch (error) {
       return {
         id,
         configured: true as const,
-        authenticated: false,
-        available: false,
+        authentication: "error" as const,
+        intakeReady: false,
+        reachability: "degraded" as const,
         detail: `runtime check failed: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
   }));
-  const available = runtimeStatuses.filter((runtime) => runtime.available).length;
+  const intakeReady = runtimeStatuses.filter((runtime) => runtime.intakeReady).length;
+  const reachable = runtimeStatuses.filter((runtime) => runtime.reachability === "reachable").length;
+  const degraded = runtimeStatuses.filter((runtime) => runtime.reachability === "degraded").length;
   const runtimes = {
-    ok: available > 0,
+    ok: intakeReady > 0,
     detail: engines.size === 0
       ? "no runtimes are configured"
-      : `${available} of ${engines.size} configured runtimes available`,
+      : `${intakeReady} of ${engines.size} configured runtimes intake-ready; ${reachable} reachable, ${degraded} degraded`,
   };
   const communicationStates = store.listProjects().map((project) => ({
     projectId: project.id,
@@ -576,7 +646,8 @@ app.get("/api/diagnostics/ready", async (_request, reply): Promise<ReadinessDto>
     durationMs: Math.round((performance.now() - startedAt) * 10) / 10,
     projectCount: communicationStates.length,
     configuredRuntimeCount: engines.size,
-    availableRuntimeCount: available,
+    intakeReadyRuntimeCount: intakeReady,
+    reachableRuntimeCount: reachable,
   }, "readiness diagnostic completed");
   if (!canAcceptWork) reply.code(503);
   return body;

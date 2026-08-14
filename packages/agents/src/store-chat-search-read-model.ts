@@ -15,11 +15,13 @@ export interface GlobalChatSearchInput {
   chatKind?: "conversation" | "agent";
   recentLimit?: number;
   maxScannedMessages?: number;
-  notifications?: Array<{
-    conversationId?: string;
-    communicationEventId?: string;
-    readAt?: string;
-  }>;
+  notificationState?: (input: {
+    communicationEventIds: readonly string[];
+    conversationIds: readonly string[];
+  }) => {
+    unreadCommunicationEventIds: readonly string[];
+    unreadConversationCounts: Readonly<Record<string, number>>;
+  };
 }
 
 export class AgentChatSearchReadModel {
@@ -40,25 +42,6 @@ export class AgentChatSearchReadModel {
       limit,
       Math.min(20_000, input.maxScannedMessages ?? 10_000),
     );
-    const unreadNotifications = (input.notifications ?? []).filter(
-      notification => !notification.readAt,
-    );
-    const unreadEventIds = new Set(
-      unreadNotifications.flatMap(notification =>
-        notification.communicationEventId
-          ? [notification.communicationEventId]
-          : [],
-      ),
-    );
-    const unreadConversationCounts = new Map<string, number>();
-    for (const notification of unreadNotifications) {
-      if (!notification.conversationId) continue;
-      unreadConversationCounts.set(
-        notification.conversationId,
-        (unreadConversationCounts.get(notification.conversationId) ?? 0) + 1,
-      );
-    }
-
     type SearchProjectionRow = {
       projectId: string;
       projectLabel: string;
@@ -118,6 +101,38 @@ export class AgentChatSearchReadModel {
         input.chatKind ?? null,
         maxScannedMessages + 1,
       ) as SearchProjectionRow[];
+    const emptyConversationCandidates = !query
+      ? this.client
+        .prepare(`
+          SELECT
+            conversation.id AS chatId,
+            conversation.title AS chatTitle,
+            conversation.project_id AS projectId,
+            project.label AS projectLabel,
+            conversation.updated_at AS updatedAt
+          FROM conversations conversation
+          JOIN projects project ON project.id = conversation.project_id
+          WHERE conversation.archived = 0
+          ORDER BY conversation.updated_at DESC, conversation.id DESC
+          LIMIT ?
+        `)
+        .all(recentLimit) as Array<{
+          chatId: string;
+          chatTitle: string;
+          projectId: string;
+          projectLabel: string;
+          updatedAt: string;
+        }>
+      : [];
+    const notificationState = input.notificationState?.({
+      communicationEventIds: rows.map((row) => row.communicationEventId),
+      conversationIds: [
+        ...rows.flatMap((row) => row.chatKind === "conversation" ? [row.chatId] : []),
+        ...emptyConversationCandidates.map((conversation) => conversation.chatId),
+      ],
+    }) ?? { unreadCommunicationEventIds: [], unreadConversationCounts: {} };
+    const unreadEventIds = new Set(notificationState.unreadCommunicationEventIds);
+    const unreadConversationCounts = new Map(Object.entries(notificationState.unreadConversationCounts));
     const candidates: ProjectedChatSearchCandidate[] = rows.map(row => {
       const author: GlobalChatSearchAuthorDto = row.authorAgentId
         ? {
@@ -179,27 +194,6 @@ export class AgentChatSearchReadModel {
       if (recentChats.length >= recentLimit) break;
     }
     if (!query) {
-      const emptyConversationCandidates = this.client
-        .prepare(`
-          SELECT
-            conversation.id AS chatId,
-            conversation.title AS chatTitle,
-            conversation.project_id AS projectId,
-            project.label AS projectLabel,
-            conversation.updated_at AS updatedAt
-          FROM conversations conversation
-          JOIN projects project ON project.id = conversation.project_id
-          WHERE conversation.archived = 0
-          ORDER BY conversation.updated_at DESC, conversation.id DESC
-          LIMIT ?
-        `)
-        .all(recentLimit) as Array<{
-        chatId: string;
-        chatTitle: string;
-        projectId: string;
-        projectLabel: string;
-        updatedAt: string;
-      }>;
       for (const conversation of emptyConversationCandidates) {
         const key = `${conversation.projectId}\u0000conversation\u0000${conversation.chatId}`;
         if (recentKeys.has(key)) continue;

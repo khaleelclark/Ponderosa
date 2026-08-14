@@ -223,7 +223,7 @@ export default function App({
       for (const engine of providerEngines.current) {
         if (
           engine.enabled === false ||
-          (engine.authenticated && engine.available) ||
+          (engine.authentication === "authenticated" && engine.intakeReady && engine.reachability === "reachable") ||
           providerRecheckInFlight.current.has(engine.id) ||
           now - (providerRecheckAt.current.get(engine.id) ?? 0) < 4_000
         ) {
@@ -340,7 +340,7 @@ export default function App({
 
   const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], homeSort: "last_used" as const, homeOrder: [], chatSort: "last_used" as const, chatOrder: [], agentSort: "last_used" as const, agentOrder: [], triggerSort: "last_used" as const, triggerOrder: [], starredResourceIds: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { directResponses: true, broadcasts: true }, fontFamily: "inter" as const, providerAvailability: {}, defaultUsageProvider: undefined as string | undefined, engineDefaults: {}, claudeModelOptions: [], globalInstructions: "", maxConcurrentAgentRuns: 8, contextRolloverEnabled: false, contextRolloverTokens: 150_000, contextRolloverWindowFraction: 0.7, onboardingCompletedAt: null, profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
   const usageProviders = engines.filter(engine =>
-    engine.authenticated && Boolean(engine.providerUsageCommand)
+    engine.authentication === "authenticated" && Boolean(engine.providerUsageCommand)
   );
   const defaultQuotaProvider = usageProviders.some(
     engine => engine.id === preferences.defaultUsageProvider,

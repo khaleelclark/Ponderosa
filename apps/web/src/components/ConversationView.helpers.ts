@@ -109,7 +109,7 @@ function mergeOperationalEvents(
 
 function conversationComposerRuntime(
   engine:
-    | (Pick<EngineDto, "id" | "authenticated" | "available"> & {
+    | (Pick<EngineDto, "id" | "authentication" | "intakeReady"> & {
         enabled?: boolean;
       })
     | undefined,

@@ -79,8 +79,12 @@ export interface ManagementPlan {
 
 export interface CreateServerOptions {
   dataDir: string;
+  /** Starts only canonical crash cleanup, never listeners, triggers, or Run leasing. */
+  startupMode?: "serve" | "shutdown_recovery";
   /** Launcher-owned data root. Runtime state remains under dataDir. */
   launcherDataDir?: string;
+  /** Exact installed launcher generation used to fence shutdown receipts. */
+  launcherGeneration?: string;
   store?: AgentStore;
   engines: EngineRegistration[];
   webDist?: string;
@@ -163,6 +167,9 @@ export interface CreateServerOptions {
   /** Deterministic shutdown fault seam; never enabled in production. */
   shutdownFaults?: {
     backgroundCleanup?: () => void | Promise<void>;
+    /** Strict provider-runtime close barrier fault used to prove that launcher
+     * shutdown cannot publish a clean receipt when provider teardown fails. */
+    providerClose?: () => void | Promise<void>;
     /** Maximum time non-authority cleanup may delay process shutdown. Provider
      * and browser process termination remain strict, separately awaited barriers. */
     backgroundCleanupTimeoutMs?: number;
@@ -386,8 +393,9 @@ export interface AgentMessageCapability {
     intent: "broadcast" | "direct_to_user" | "collaboration";
     recipientAgentIds?: string[];
   };
-  /** One material inferred reply is allowed; exact retries replay it. */
-  inferredReplyFingerprint?: string;
+  /** Material reply fingerprints are fenced independently for each selected
+   * route when coalesced sources have incompatible authorities. */
+  requiredReplyFingerprints?: Record<string, string>;
   /** Canonical visible reply committed by this Run, used to suppress rollover duplicates. */
   inferredReplyCommunicationEventId?: string;
   /** Project artifacts explicitly submitted to this Run's provider context. */
@@ -418,7 +426,10 @@ export interface PonderosaServer extends FastifyInstance {
   /** Stop accepting work and synchronously detach long-lived HTTP streams so
    * Fastify's close lifecycle can reach its durable teardown hooks. */
   prepareForShutdown(): void;
-  /** Retry the retained provider barriers after Fastify shutdown was unable to
-   * confirm every process group. Intended for the production signal handler. */
-  retryProviderRuntimeShutdown(): Promise<void>;
+  /** Retry every retained strict cleanup barrier after Fastify has stopped
+   * accepting requests. Successful retries are safe and idempotent. */
+  retryShutdownCleanup(): Promise<void>;
+  /** Promote the exact launcher receipt after a post-close signal retry proves
+   * the same generation's strict cleanup completed. */
+  completeLauncherShutdownRecovery?: () => void;
 }

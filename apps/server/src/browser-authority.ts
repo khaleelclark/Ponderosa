@@ -7,6 +7,7 @@ import {
   type BrowserScope,
 } from "./browser-session-manager.js";
 import type { ActiveRun } from "./app-contracts.js";
+import type { ProviderProcessAuthority } from "./provider-process-authority.js";
 
 interface BrowserAuthorityContext {
   dataDir: string;
@@ -20,6 +21,17 @@ interface BrowserAuthorityContext {
     run: ActiveRun,
     event: LogEvent | AgentEvent,
   ): Promise<StoredLogEvent | undefined>;
+  providerProcessAuthority: ProviderProcessAuthority;
+}
+
+export function durableBrowserDriverFactory(
+  factory: BrowserDriverFactory,
+  register: (handle: Parameters<NonNullable<Parameters<BrowserDriverFactory>[2]>>[0], sessionId: string) => void,
+): BrowserDriverFactory {
+  return (sessionId, onConsole, onSpawned) => factory(sessionId, onConsole, (handle, options) => {
+    if (handle.processIdentity) register(handle, sessionId);
+    onSpawned?.(handle, options);
+  });
 }
 
 export function createBrowserAuthority(context: BrowserAuthorityContext) {
@@ -31,11 +43,19 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     publish,
     persistRuntimeEvent,
     logWarn,
+    providerProcessAuthority,
   } = context;
+
+  const browserFactory = durableBrowserDriverFactory(
+    driverFactory ?? chromeBrowserDriverFactory(dataDir),
+    (handle, sessionId) => providerProcessAuthority.register(handle, {
+      purpose: `browser session ${sessionId}`,
+    }),
+  );
 
   const browserSessions = new BrowserSessionManager(
     dataDir,
-    driverFactory ?? chromeBrowserDriverFactory(dataDir),
+    browserFactory,
     (scope, event) => {
       const run = activeRuns.get(scope.agentId);
       if (!run || run.runId !== scope.runId || run.conversationId !== scope.conversationId) {
@@ -73,7 +93,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
   const projectBrowserGrants = new Map<string, { agentId: string; runId: string }>();
   const projectBrowserSessions = new BrowserSessionManager(
     dataDir,
-    driverFactory ?? chromeBrowserDriverFactory(dataDir),
+    browserFactory,
     (scope, event) => {
       const grant = projectBrowserGrants.get(scope.projectId);
       if (!grant || scope.actorAgentId !== grant.agentId || scope.actorRunId !== grant.runId) {

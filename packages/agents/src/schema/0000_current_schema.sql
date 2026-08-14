@@ -64,6 +64,27 @@ CREATE TABLE agent_activations (
   )), terminal_at TEXT,
   UNIQUE (project_id, agent_id, dedupe_key)
 );
+CREATE TABLE required_reply_obligations (
+  run_id TEXT NOT NULL REFERENCES scheduler_runs(id) ON DELETE CASCADE,
+  source_activation_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  scope_key TEXT NOT NULL,
+  reply_authority_json TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  state TEXT NOT NULL CHECK (state IN (
+    'pending', 'satisfied', 'recovery_pending', 'failed',
+    'cancelled', 'retried', 'superseded'
+  )),
+  satisfied_communication_id TEXT,
+  recovery_activation_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  terminal_at TEXT,
+  PRIMARY KEY (run_id, source_activation_id)
+);
+CREATE INDEX idx_required_reply_obligations_state
+  ON required_reply_obligations (state, updated_at, run_id);
 CREATE TABLE context_rollovers (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,

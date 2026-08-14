@@ -77,6 +77,9 @@ header p, .logs-header p { margin-top: 4px; color: #a9b5ae; font-size: 13px; }
   background: #829088;
 }
 .state-dot.running { background: #58cf7a; box-shadow: 0 0 0 4px rgba(88, 207, 122, 0.12); }
+.state-dot.reachable { background: #6eb4d8; box-shadow: 0 0 0 4px rgba(110, 180, 216, 0.12); }
+.state-dot.degraded, .state-dot.cleanup_incomplete { background: #e36d63; box-shadow: 0 0 0 4px rgba(227, 109, 99, 0.12); }
+.state-dot.stopping { background: #d7ba61; box-shadow: 0 0 0 4px rgba(215, 186, 97, 0.12); }
 .state-dot.starting { background: #d7ba61; box-shadow: 0 0 0 4px rgba(215, 186, 97, 0.12); }
 .state-dot.error { background: #e36d63; box-shadow: 0 0 0 4px rgba(227, 109, 99, 0.12); }
 

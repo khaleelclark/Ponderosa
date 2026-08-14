@@ -538,8 +538,9 @@ export interface ReadinessDto {
   runtimes: Array<{
     id: string;
     configured: true;
-    authenticated: boolean;
-    available: boolean;
+    authentication: "checking" | "authenticated" | "unauthenticated" | "error";
+    intakeReady: boolean;
+    reachability: "unverified" | "checking" | "reachable" | "degraded";
     detail?: string;
   }>;
 }

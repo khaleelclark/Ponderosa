@@ -25,6 +25,9 @@ export class CoordinationV3RunLifecycleAuthority {
     private readonly questionAuthority: CoordinationV3QuestionAuthority,
     private readonly activationLifecycle: CoordinationV3ActivationLifecycleAuthority,
     private readonly updateRequest: (input: UpdateRequestV3Input) => unknown,
+    private readonly recoverRequiredReply: (runId: string, now: string) => void,
+    private readonly settleRetriedRequiredReply: (runId: string, now: string) => void,
+    private readonly cancelRequiredReply: (runId: string, now: string) => void,
   ) {}
 
   markRunStarted(
@@ -354,6 +357,7 @@ export class CoordinationV3RunLifecycleAuthority {
         ["open", "in_progress", "waiting_dependency"],
         false,
       );
+      this.recoverRequiredReply(runId, now);
     })();
   }
 
@@ -535,7 +539,11 @@ export class CoordinationV3RunLifecycleAuthority {
             WHERE run_id = ?
           ) AND state = 'retry_pending'
         `).get(input.runId) as { count: number }).count;
-        if (pending === 0) return "terminal";
+        this.settleRetriedRequiredReply(input.runId, now);
+        this.recoverRequiredReply(input.runId, now);
+        if (pending === 0) {
+          return "terminal";
+        }
       } else if (disposition === "resume_same_run") {
         const nextFence = this.support.nextFence(
           run.agent_id as string,
@@ -586,6 +594,7 @@ export class CoordinationV3RunLifecycleAuthority {
             "awaiting_answer",
           ],
         );
+        this.recoverRequiredReply(input.runId, now);
       }
       return disposition;
     })();
@@ -763,6 +772,7 @@ export class CoordinationV3RunLifecycleAuthority {
           "awaiting_answer",
         ],
       );
+      this.cancelRequiredReply(run.id, now);
       this.sqlite.prepare(`
         INSERT INTO scheduler_cancellation_receipts (
           agent_id, idempotency_key, run_id, accepted,

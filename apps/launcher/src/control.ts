@@ -13,11 +13,14 @@ import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { LauncherShutdownReceiptDto } from "@ponderosa/core";
+import { darwinProcessBirthMarker } from "@ponderosa/native-host";
 import { discoverProviders } from "./providers.js";
 import {
   ensureDataLayout,
   launcherStateLocation,
   readLauncherConfiguration,
+  readLegacyLauncherState,
   readLauncherState,
   writeJsonAtomic,
 } from "./paths.js";
@@ -25,6 +28,7 @@ import type {
   BuildManifest,
   LauncherDependencies,
   LauncherPaths,
+  LegacyLauncherState,
   LauncherState,
   PlatformAdapter,
   PublicLauncherState,
@@ -33,6 +37,7 @@ import type {
 const LOOPBACK_HOST = "127.0.0.1" as const;
 const START_TIMEOUT_MS = 45_000;
 const STOP_TIMEOUT_MS = 30_000;
+const LEGACY_PROVISIONAL_STATUS_RECOVERY_MS = 5_000;
 const OPERATION_LOCK_INITIALIZATION_GRACE_MS = 5_000;
 const LOG_ROTATE_BYTES = 5 * 1024 * 1024;
 const LOG_ARCHIVE_COUNT = 3;
@@ -47,11 +52,31 @@ function processAlive(pid: number): boolean {
   }
 }
 
+export function launcherProcessBirthMarker(pid: number): string | undefined {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
+  if (process.platform === "linux") {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const commandEnd = stat.lastIndexOf(")");
+      const startTime = commandEnd < 0 ? undefined : stat.slice(commandEnd + 2).trim().split(/\s+/u)[19];
+      return startTime ? `linux:${startTime}` : undefined;
+    } catch { return undefined; }
+  }
+  if (process.platform === "darwin") {
+    const marker = darwinProcessBirthMarker(pid);
+    return marker ? `darwin:${marker}` : undefined;
+  }
+  return undefined;
+}
+
 function supervisorStatusPath(paths: LauncherPaths, generation: string): string {
   return path.join(paths.runtimeDir, `server-supervisor-${generation}.json`);
 }
 
-function supervisorDrained(paths: LauncherPaths, state: LauncherState): boolean {
+function supervisorDrained(
+  paths: LauncherPaths,
+  state: Pick<LauncherState, "supervisorGeneration">,
+): boolean {
   if (!state.supervisorGeneration) return true;
   try {
     const status = JSON.parse(readFileSync(
@@ -64,9 +89,47 @@ function supervisorDrained(paths: LauncherPaths, state: LauncherState): boolean 
   }
 }
 
-function removeSupervisorStatus(paths: LauncherPaths, state: LauncherState): void {
+function removeSupervisorStatus(
+  paths: LauncherPaths,
+  state: Pick<LauncherState, "supervisorGeneration">,
+): void {
   if (state.supervisorGeneration) {
     rmSync(supervisorStatusPath(paths, state.supervisorGeneration), { force: true });
+  }
+}
+
+export function shutdownReceiptPath(paths: LauncherPaths, generation: string): string {
+  return path.join(paths.stateDir, `shutdown-${generation}.json`);
+}
+
+export function readShutdownReceipt(
+  paths: LauncherPaths,
+  state: LauncherState,
+): LauncherShutdownReceiptDto | undefined {
+  try {
+    const receipt = JSON.parse(readFileSync(
+      shutdownReceiptPath(paths, state.generation),
+      "utf8",
+    )) as LauncherShutdownReceiptDto;
+    if (receipt.schemaVersion !== 1 || receipt.generation !== state.generation ||
+        receipt.pid !== state.pid || receipt.requestedAt !== state.shutdownRequestedAt ||
+        receipt.processBirthMarker !== state.processBirthMarker ||
+        !["pending", "clean", "incomplete"].includes(receipt.state) ||
+        !Number.isFinite(Date.parse(receipt.updatedAt))) return undefined;
+    return receipt;
+  } catch {
+    return undefined;
+  }
+}
+
+function requireCleanShutdownReceipt(paths: LauncherPaths, state: LauncherState): void {
+  if (!state.shutdownRequestedAt) return;
+  const receipt = readShutdownReceipt(paths, state);
+  if (receipt?.state !== "clean") {
+    const detail = receipt?.state === "incomplete" && receipt.error
+      ? ` ${receipt.error}`
+      : " The matching durable clean receipt is missing.";
+    throw new Error(`Ponderosa shutdown cleanup is incomplete.${detail} Replacement remains blocked.`);
   }
 }
 
@@ -152,10 +215,23 @@ async function responseDetail(response: Response): Promise<string> {
   return `${response.status} ${response.statusText}`.trim();
 }
 
-export async function launcherStatus(
+type LegacyLauncherStatus = Omit<LegacyLauncherState, "controlToken"> & Pick<
+  PublicLauncherState,
+  "healthy" | "detail" | "acceptingDurableIntake" | "leasingRuns" | "activeRunCount"
+>;
+
+export function launcherStatus(
   state: LauncherState,
+  fetchFn?: typeof globalThis.fetch,
+): Promise<PublicLauncherState | undefined>;
+export function launcherStatus(
+  state: LegacyLauncherState,
+  fetchFn?: typeof globalThis.fetch,
+): Promise<LegacyLauncherStatus | undefined>;
+export async function launcherStatus(
+  state: LauncherState | LegacyLauncherState,
   fetchFn: typeof globalThis.fetch = globalThis.fetch,
-): Promise<PublicLauncherState | undefined> {
+): Promise<PublicLauncherState | LegacyLauncherStatus | undefined> {
   try {
     const response = await fetchFn(`${baseUrl(state)}/api/launcher/status`, {
       headers: bearer(state.controlToken),
@@ -168,16 +244,114 @@ export async function launcherStatus(
       version?: string;
       commit?: string;
       channel?: string;
+      acceptingDurableIntake?: boolean;
+      leasingRuns?: boolean;
+      activeRunCount?: number;
     };
     if (!Number.isSafeInteger(body.pid) || body.pid! <= 0 ||
         (state.pid > 0 && body.pid !== state.pid) || body.dataDir !== state.dataDir ||
         body.version !== state.version || body.commit !== state.commit ||
-        body.channel !== state.channel) return undefined;
+        body.channel !== state.channel || typeof body.acceptingDurableIntake !== "boolean" ||
+        typeof body.leasingRuns !== "boolean" || !Number.isSafeInteger(body.activeRunCount) ||
+        body.activeRunCount! < 0) return undefined;
     const { controlToken: _controlToken, ...safe } = state;
-    return { ...safe, pid: body.pid!, healthy: true, detail: "Ponderosa is running." };
+    const detail = body.acceptingDurableIntake
+      ? body.leasingRuns
+        ? "Ponderosa is reachable; durable intake and provider leasing are active."
+        : "Ponderosa is reachable; durable intake is active and provider leasing is paused."
+      : "Ponderosa is reachable, but durable intake is blocked.";
+    return {
+      ...safe,
+      pid: body.pid!,
+      healthy: true,
+      detail,
+      acceptingDurableIntake: body.acceptingDurableIntake,
+      leasingRuns: body.leasingRuns,
+      activeRunCount: body.activeRunCount!,
+    };
   } catch {
     return undefined;
   }
+}
+
+async function waitForLegacyProvisionalStatus(
+  state: LegacyLauncherState,
+  fetchFn: typeof globalThis.fetch,
+): Promise<LegacyLauncherStatus | undefined> {
+  const deadline = Date.now() + LEGACY_PROVISIONAL_STATUS_RECOVERY_MS;
+  while (Date.now() < deadline) {
+    await delay(200);
+    const status = await launcherStatus(state, fetchFn);
+    if (status) return status;
+  }
+  return undefined;
+}
+
+/** Persist the exact process proved by the authenticated status route before
+ * any shutdown fence can name it. POSIX requires immutable birth evidence;
+ * Windows retains its supervisor generation and drained-Job authority. */
+function canonicalizeAuthenticatedLauncherAuthority(
+  paths: LauncherPaths,
+  state: LauncherState,
+  status: Pick<PublicLauncherState, "pid">,
+): LauncherState {
+  let canonical: LauncherState;
+  if (state.supervisorGeneration) {
+    const { processBirthMarker: _processBirthMarker, ...supervised } = state;
+    canonical = { ...supervised, pid: status.pid };
+  } else {
+    const processBirthMarker = launcherProcessBirthMarker(status.pid);
+    if (!processBirthMarker) {
+      throw new Error(
+        "Authenticated Ponderosa process lacks exact POSIX birth evidence. Shutdown remains blocked.",
+      );
+    }
+    if (state.processBirthMarker && state.processBirthMarker !== processBirthMarker) {
+      throw new Error(
+        "Authenticated Ponderosa process birth evidence changed. Shutdown remains blocked.",
+      );
+    }
+    canonical = { ...state, pid: status.pid, processBirthMarker };
+  }
+  if (canonical.pid !== state.pid ||
+      canonical.processBirthMarker !== state.processBirthMarker) {
+    writeJsonAtomic(paths.statePath, canonical);
+  }
+  return canonical;
+}
+
+/** Write-ahead identity for the one-time schema-1 cutover. A later launcher
+ * can prove that this exact POSIX process exited, or await the exact Windows
+ * supervisor/Job drain, even when the legacy control route closed before its
+ * shutdown response arrived. */
+function canonicalizeAuthenticatedLegacyAuthority(
+  paths: LauncherPaths,
+  state: LegacyLauncherState,
+  status: Pick<LegacyLauncherStatus, "pid">,
+): LegacyLauncherState {
+  let canonical: LegacyLauncherState;
+  if (state.supervisorGeneration) {
+    const { processBirthMarker: _processBirthMarker, ...supervised } = state;
+    canonical = { ...supervised, pid: status.pid };
+  } else {
+    const processBirthMarker = launcherProcessBirthMarker(status.pid);
+    if (!processBirthMarker) {
+      throw new Error(
+        "Authenticated schema-1 Ponderosa process lacks exact POSIX birth evidence. Upgrade remains blocked.",
+      );
+    }
+    if (state.processBirthMarker && state.processBirthMarker !== processBirthMarker) {
+      throw new Error(
+        "Authenticated schema-1 Ponderosa process birth evidence changed. Upgrade remains blocked.",
+      );
+    }
+    canonical = { ...state, pid: status.pid, processBirthMarker };
+  }
+  if (canonical.pid !== state.pid ||
+      canonical.processBirthMarker !== state.processBirthMarker) {
+    writeJsonAtomic(paths.statePath, canonical);
+  }
+  return canonical;
 }
 
 async function waitForProvisionalStatus(
@@ -332,23 +506,48 @@ function assertInstall(paths: LauncherPaths, manifest: BuildManifest): void {
   }
 }
 
-function removeDeadState(paths: LauncherPaths, state: LauncherState): void {
-  if (state.supervisorPid && processAlive(state.supervisorPid)) {
-    throw new Error(
-      "Ponderosa's Windows process-tree supervisor is still draining. Retry after it exits; replacement is blocked.",
-    );
-  }
-  if (processAlive(state.pid)) {
-    throw new Error(
-      "Ponderosa's recorded process still exists but did not prove ownership. Run diagnostics before forcing recovery.",
-    );
-  }
-  if (!supervisorDrained(paths, state)) {
-    throw new Error(
-      "Ponderosa's Windows process-tree supervisor did not prove that its Job drained. Replacement remains blocked.",
-    );
-  }
+async function defaultRecoverShutdown(paths: LauncherPaths, state: LauncherState): Promise<void> {
+  if (!state.shutdownRequestedAt) throw new Error("shutdown recovery requires an exact requestedAt fence");
+  const child = spawn(paths.nodeExecutable, [paths.serverEntry], {
+    cwd: paths.installRoot,
+    env: {
+      ...process.env,
+      NODE_ENV: "production",
+      PONDEROSA_DATA_DIR: state.dataDir,
+      PONDEROSA_BUILD_SHA: state.commit,
+      PONDEROSA_BUILD_VERSION: state.version,
+      PONDEROSA_RELEASE_CHANNEL: state.channel,
+      PONDEROSA_INSTALL_ROOT: state.installRoot,
+      PONDEROSA_LAUNCHER_CONTROL_TOKEN: state.controlToken,
+      PONDEROSA_LAUNCHER_DATA_DIR: paths.dataDir,
+      PONDEROSA_LAUNCHER_GENERATION: state.generation,
+      PONDEROSA_SHUTDOWN_RECOVERY: "1",
+      PONDEROSA_SHUTDOWN_RECOVERY_PID: String(state.pid),
+      PONDEROSA_SHUTDOWN_RECOVERY_REQUESTED_AT: state.shutdownRequestedAt,
+      ...(state.processBirthMarker
+        ? { PONDEROSA_SHUTDOWN_RECOVERY_BIRTH_MARKER: state.processBirthMarker }
+        : {}),
+    },
+    windowsHide: true,
+    stdio: "ignore",
+  });
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error("bounded shutdown recovery verifier exceeded 30000ms"));
+    }, STOP_TIMEOUT_MS);
+    child.once("error", (error) => { clearTimeout(timer); reject(error); });
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error(`shutdown recovery verifier exited with code ${code ?? "unknown"}`));
+    });
+  });
+}
+
+function removeExactStateFiles(paths: LauncherPaths, state: Pick<LauncherState, "pid" | "generation" | "supervisorGeneration">): void {
   removeSupervisorStatus(paths, state);
+  rmSync(shutdownReceiptPath(paths, state.generation), { force: true });
   rmSync(paths.statePath, { force: true });
   const daemonLock = path.join(paths.applicationDataDir, ".ponderosa-daemon.lock");
   try {
@@ -357,6 +556,125 @@ function removeDeadState(paths: LauncherPaths, state: LauncherState): void {
   } catch {
     // A missing or unrelated daemon lock is not launcher state.
   }
+}
+
+async function removeDeadState(
+  paths: LauncherPaths,
+  state: LauncherState,
+  dependencies?: LauncherDependencies,
+): Promise<void> {
+  if (state.supervisorPid && processAlive(state.supervisorPid)) {
+    throw new Error(
+      "Ponderosa's Windows process-tree supervisor is still draining. Retry after it exits; replacement is blocked.",
+    );
+  }
+  if (processAlive(state.pid)) {
+    const exactRetry = Boolean(
+      state.shutdownRequestedAt && state.processBirthMarker &&
+      launcherProcessBirthMarker(state.pid) === state.processBirthMarker,
+    );
+    if (!exactRetry) {
+      throw new Error(
+        "Ponderosa's recorded process is live without exact post-close birth evidence. Replacement remains blocked.",
+      );
+    }
+    process.kill(state.pid, "SIGTERM");
+    const deadline = Date.now() + STOP_TIMEOUT_MS;
+    while (Date.now() < deadline && processAlive(state.pid)) await delay(200);
+    if (processAlive(state.pid)) {
+      throw new Error("The exact Ponderosa process remains live after bounded strict-cleanup retry. Replacement remains blocked.");
+    }
+  }
+  if (!supervisorDrained(paths, state)) {
+    throw new Error(
+      "Ponderosa's Windows process-tree supervisor did not prove that its Job drained. Replacement remains blocked.",
+    );
+  }
+  if (state.shutdownRequestedAt && readShutdownReceipt(paths, state)?.state !== "clean") {
+    await (dependencies?.recoverShutdown ?? defaultRecoverShutdown)(paths, state);
+  }
+  requireCleanShutdownReceipt(paths, state);
+  removeExactStateFiles(paths, state);
+}
+
+async function cutoverLegacyLauncherState(
+  paths: LauncherPaths,
+  state: LegacyLauncherState,
+  fetchFn: typeof globalThis.fetch,
+): Promise<boolean> {
+  const immediate = await launcherStatus(state, fetchFn);
+  const current = immediate ?? (state.pid === 0
+    ? await waitForLegacyProvisionalStatus(state, fetchFn)
+    : undefined);
+  if (!current && state.pid === 0 && !state.supervisorGeneration) {
+    throw new Error(
+      "A schema-1 Ponderosa authority still has a provisional process identity and did not prove control ownership. Upgrade remains blocked; retry after the existing daemon becomes reachable.",
+    );
+  }
+  const canonicalState = current
+    ? canonicalizeAuthenticatedLegacyAuthority(paths, state, current)
+    : state;
+  const hasExactDrainAuthority = Boolean(
+    canonicalState.supervisorGeneration || canonicalState.processBirthMarker,
+  );
+  let shutdownError: Error | undefined;
+  if (current) {
+    try {
+      const response = await fetchFn(`${baseUrl(canonicalState)}/api/launcher/shutdown`, {
+        method: "POST",
+        headers: bearer(canonicalState.controlToken),
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!response.ok) {
+        shutdownError = new Error(
+          `Legacy Ponderosa cutover could not begin: ${await responseDetail(response)}`,
+        );
+      }
+    } catch (error) {
+      shutdownError = error instanceof Error ? error : new Error(String(error));
+    }
+  } else if (!hasExactDrainAuthority &&
+      (processAlive(canonicalState.pid) ||
+        Boolean(canonicalState.supervisorPid && processAlive(canonicalState.supervisorPid)))) {
+    throw new Error("A live schema-1 Ponderosa authority did not prove control ownership. Upgrade remains blocked.");
+  }
+
+  const authorityState = (): "live" | "drained" | "uncertain" => {
+    if (canonicalState.supervisorGeneration) {
+      if (canonicalState.supervisorPid && processAlive(canonicalState.supervisorPid)) return "live";
+      return supervisorDrained(paths, canonicalState) ? "drained" : "uncertain";
+    }
+    if (canonicalState.processBirthMarker) {
+      if (!processAlive(canonicalState.pid)) return "drained";
+      const marker = launcherProcessBirthMarker(canonicalState.pid);
+      if (marker === canonicalState.processBirthMarker) return "live";
+      return marker ? "drained" : "uncertain";
+    }
+    return processAlive(canonicalState.pid) ? "uncertain" : "drained";
+  };
+  const deadline = Date.now() + STOP_TIMEOUT_MS;
+  let observedAuthority = authorityState();
+  while (Date.now() < deadline && observedAuthority === "live") {
+    await delay(200);
+    observedAuthority = authorityState();
+  }
+  if (observedAuthority !== "drained") {
+    const detail = shutdownError ? ` ${shutdownError.message}` : "";
+    throw new Error(
+      `The exact schema-1 Ponderosa authority did not prove it drained; upgrade remains blocked.${detail}`,
+    );
+  }
+  if (!supervisorDrained(paths, canonicalState)) {
+    throw new Error("The schema-1 Windows Job did not publish its exact drained generation; upgrade remains blocked.");
+  }
+  removeSupervisorStatus(paths, canonicalState);
+  rmSync(paths.statePath, { force: true });
+  const daemonLock = path.join(paths.applicationDataDir, ".ponderosa-daemon.lock");
+  try {
+    const owner = JSON.parse(readFileSync(daemonLock, "utf8")) as { pid?: number };
+    if (owner.pid === canonicalState.pid) rmSync(daemonLock, { force: true });
+  } catch { /* Exact legacy daemon lock is already absent. */ }
+  return Boolean(current || hasExactDrainAuthority);
 }
 
 function selectedPort(configurationPort: number | undefined, requestedPort: number | undefined): number {
@@ -416,14 +734,15 @@ export async function startPonderosa(input: {
   const release = await acquireOperationLockWithWait(input.paths.operationLockPath);
   const fetchFn = input.dependencies?.fetch ?? globalThis.fetch;
   try {
+    const legacy = readLegacyLauncherState(input.paths.statePath);
+    if (legacy) await cutoverLegacyLauncherState(input.paths, legacy, fetchFn);
     const existing = readLauncherState(input.paths.statePath);
     if (existing) {
       const immediate = await launcherStatus(existing, fetchFn);
       const current = immediate ?? (existing.pid === 0
         ? await waitForProvisionalStatus(existing, fetchFn) : undefined);
       if (current) {
-        const recovered = existing.pid > 0 ? existing : { ...existing, pid: current.pid };
-        if (existing.pid <= 0) writeJsonAtomic(input.paths.statePath, recovered);
+        const recovered = canonicalizeAuthenticatedLauncherAuthority(input.paths, existing, current);
         if (input.openBrowser !== false) {
           await requestBrowserBootstrap(
             recovered,
@@ -433,7 +752,7 @@ export async function startPonderosa(input: {
         }
         return recovered;
       }
-      removeDeadState(input.paths, existing);
+      await removeDeadState(input.paths, existing, input.dependencies);
     }
     const configuration = readLauncherConfiguration(input.paths.configPath);
     const port = selectedPort(configuration.port, input.requestedPort);
@@ -443,7 +762,8 @@ export async function startPonderosa(input: {
       input.dependencies?.env ?? process.env,
     );
     const provisional: LauncherState = {
-      schemaVersion: 1,
+      schemaVersion: 2,
+      generation: randomUUID(),
       controlToken: randomBytes(32).toString("base64url"),
       pid: 0,
       port,
@@ -465,6 +785,7 @@ export async function startPonderosa(input: {
       PONDEROSA_RELEASE_CHANNEL: input.manifest.channel,
       PONDEROSA_LAUNCHER_CONTROL_TOKEN: provisional.controlToken,
       PONDEROSA_LAUNCHER_DATA_DIR: input.paths.dataDir,
+      PONDEROSA_LAUNCHER_GENERATION: provisional.generation,
       PONDEROSA_INSTALL_ROOT: input.paths.installRoot,
     };
     for (const provider of providers) {
@@ -492,7 +813,8 @@ export async function startPonderosa(input: {
       // fence after launch failure, so restart cannot race Job teardown.
       throw error;
     }
-    const state = { ...provisional, pid };
+    const processBirthMarker = launcherProcessBirthMarker(pid);
+    const state = { ...provisional, pid, ...(processBirthMarker ? { processBirthMarker } : {}) };
     writeJsonAtomic(input.paths.statePath, state);
     try {
       await waitForStart(state, fetchFn);
@@ -527,38 +849,50 @@ export async function startPonderosa(input: {
 export async function stopPonderosa(input: {
   paths: LauncherPaths;
   fetch?: typeof globalThis.fetch;
+  dependencies?: Pick<LauncherDependencies, "recoverShutdown">;
 }): Promise<"stopped" | "not_running"> {
   ensureDataLayout(input.paths);
   const release = await acquireOperationLockWithWait(input.paths.operationLockPath);
   const fetchFn = input.fetch ?? globalThis.fetch;
   try {
+    const legacy = readLegacyLauncherState(input.paths.statePath);
+    if (legacy) {
+      const wasRunning = await cutoverLegacyLauncherState(input.paths, legacy, fetchFn);
+      return wasRunning ? "stopped" : "not_running";
+    }
     const state = readLauncherState(input.paths.statePath);
     if (!state) return "not_running";
     const current = await launcherStatus(state, fetchFn);
     if (!current) {
-      removeDeadState(input.paths, state);
-      return "not_running";
+      await removeDeadState(input.paths, state, input.dependencies);
+      return state.shutdownRequestedAt ? "stopped" : "not_running";
     }
-    const response = await fetchFn(`${baseUrl(state)}/api/launcher/shutdown`, {
+    const canonicalState = canonicalizeAuthenticatedLauncherAuthority(input.paths, state, current);
+    const shutdownRequestedAt = new Date().toISOString();
+    const stoppingState: LauncherState = { ...canonicalState, shutdownRequestedAt };
+    writeJsonAtomic(input.paths.statePath, stoppingState);
+    const response = await fetchFn(`${baseUrl(canonicalState)}/api/launcher/shutdown`, {
       method: "POST",
-      headers: bearer(state.controlToken),
+      headers: { ...bearer(canonicalState.controlToken), "content-type": "application/json" },
+      body: JSON.stringify({ generation: canonicalState.generation, requestedAt: shutdownRequestedAt }),
       signal: AbortSignal.timeout(5_000),
     });
     if (!response.ok) throw new Error(`Ponderosa could not begin shutdown: ${await responseDetail(response)}`);
     const stillOwned = () =>
-      processAlive(state.pid) || Boolean(state.supervisorPid && processAlive(state.supervisorPid));
+      processAlive(canonicalState.pid) ||
+      Boolean(canonicalState.supervisorPid && processAlive(canonicalState.supervisorPid));
     const deadline = Date.now() + STOP_TIMEOUT_MS;
     while (Date.now() < deadline && stillOwned()) await delay(200);
     if (stillOwned()) {
       throw new Error("Ponderosa is still finishing provider or browser cleanup. Check diagnostics before retrying.");
     }
-    if (!supervisorDrained(input.paths, state)) {
+    if (!supervisorDrained(input.paths, stoppingState)) {
       throw new Error(
         "Ponderosa's Windows process-tree supervisor exited without proving that its Job drained. Replacement remains blocked.",
       );
     }
-    removeSupervisorStatus(input.paths, state);
-    rmSync(input.paths.statePath, { force: true });
+    requireCleanShutdownReceipt(input.paths, stoppingState);
+    removeExactStateFiles(input.paths, stoppingState);
     return "stopped";
   } finally {
     release();
@@ -573,13 +907,22 @@ export async function currentPonderosaStatus(
   if (!state) return undefined;
   const status = await launcherStatus(state, fetchFn);
   if (status) {
-    if (state.pid <= 0) writeJsonAtomic(paths.statePath, { ...state, pid: status.pid });
-    return status;
+    const canonical = canonicalizeAuthenticatedLauncherAuthority(paths, state, status);
+    return {
+      ...status,
+      pid: canonical.pid,
+      ...(canonical.processBirthMarker
+        ? { processBirthMarker: canonical.processBirthMarker }
+        : {}),
+    };
   }
   const { controlToken: _controlToken, ...safe } = state;
   return {
     ...safe,
     healthy: false,
+    acceptingDurableIntake: false,
+    leasingRuns: false,
+    activeRunCount: 0,
     detail: processAlive(state.pid)
       ? "A recorded Ponderosa process exists but did not prove control ownership."
       : "Ponderosa is not running; stale launcher state can be recovered on the next start.",

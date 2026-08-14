@@ -316,7 +316,28 @@ export function registerAgentCommunicationRoutes(
     const inferredRecipientAgentIds = intent === "collaboration"
       ? [...new Set(request.body?.recipientAgentIds ?? capability.defaultReply?.recipientAgentIds ?? [])]
       : [];
-    const inferredReplyFingerprint = inferredReply
+    const selectedReplyAuthority = {
+      intent,
+      ...(inferredRecipientAgentIds.length
+        ? { recipientAgentIds: [...inferredRecipientAgentIds].sort() }
+        : {}),
+    };
+    const selectedReplyAuthorityKey = JSON.stringify(selectedReplyAuthority);
+    const pendingRequiredReplyAuthorities = coordinationV3.requiredReplyAuthoritiesForRun(capability.runId);
+    const routeHasPendingReply = pendingRequiredReplyAuthorities.some((authority) =>
+      JSON.stringify({
+        intent: authority.intent,
+        ...(authority.recipientAgentIds?.length
+          ? { recipientAgentIds: [...authority.recipientAgentIds].sort() }
+          : {}),
+      }) === selectedReplyAuthorityKey
+    );
+    const routeAlreadyPublished = capability.requiredReplyFingerprints?.[selectedReplyAuthorityKey] !== undefined;
+    const explicitlySelectedRequiredReply = !inferredReply && !capability.defaultReply &&
+      (routeHasPendingReply || (routeAlreadyPublished && !request.body?.idempotencyKey?.trim()));
+    const requiredReplyAction = (inferredReply && routeHasPendingReply) ||
+      explicitlySelectedRequiredReply;
+    const inferredReplyFingerprint = requiredReplyAction
       ? createHash("sha256").update(JSON.stringify({
           intent, text, recipientAgentIds: inferredRecipientAgentIds,
           artifactIds: artifactIds ?? [],
@@ -324,11 +345,17 @@ export function registerAgentCommunicationRoutes(
           citations,
         })).digest("hex")
       : undefined;
-    if (inferredReplyFingerprint && capability.inferredReplyFingerprint && capability.inferredReplyFingerprint !== inferredReplyFingerprint) {
-      return reply.code(409).send({ error: "this Run already published its inferred reply; use an explicit advanced communication only if additional material communication is required" });
+    const previousRequiredReplyFingerprint = requiredReplyAction
+      ? capability.requiredReplyFingerprints?.[selectedReplyAuthorityKey]
+      : undefined;
+    if (inferredReplyFingerprint && previousRequiredReplyFingerprint && previousRequiredReplyFingerprint !== inferredReplyFingerprint) {
+      return reply.code(409).send({ error: "this Run already published its required reply on this route; supply an idempotencyKey for an additional advanced communication" });
     }
     const idempotencyKey = request.body?.idempotencyKey?.trim() || (inferredReplyFingerprint
-      ? derivedRunActionKey(capability.runId, "reply", { fingerprint: inferredReplyFingerprint })
+      ? derivedRunActionKey(capability.runId, "reply", {
+          authority: selectedReplyAuthority,
+          fingerprint: inferredReplyFingerprint,
+        })
       : undefined);
     if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
     const receiptKey = idempotencyKey ? `${capability.runId}:${intent}:${idempotencyKey}` : undefined;
@@ -417,10 +444,6 @@ export function registerAgentCommunicationRoutes(
     // The stable artifact reference remains in structured document metadata and
     // tool results. Do not leak the internal ponderosa:// URI into chat prose.
     const publishedText = messageArtifact ? "" : messageContent;
-    if (inferredReplyFingerprint) {
-      capability.inferredReplyFingerprint = inferredReplyFingerprint;
-    }
-
     if (intent === "direct_to_user") {
       const proposedCommunication: CommunicationEvent = {
         eventId: communicationEventId,
@@ -449,12 +472,15 @@ export function registerAgentCommunicationRoutes(
           ...(preparedArtifacts.length ? { artifacts: preparedArtifacts.map(runtimeArtifactMetadata) } : {}),
           scopeKey: capability.conversationId ? `conversation:${capability.conversationId}` : `agent:${capability.agentId}`,
           runAuthorization: runAuthorization(capability),
+          ...(inferredReplyFingerprint ? { satisfiesRequiredReply: true } : {}),
           now: proposedCommunication.createdAt,
         });
       } catch (error) {
         return reply.code(409).send({ error: error instanceof Error ? error.message : "message authorization failed" });
       }
       if (inferredReplyFingerprint) {
+        capability.requiredReplyFingerprints ??= {};
+        capability.requiredReplyFingerprints[selectedReplyAuthorityKey] = inferredReplyFingerprint;
         capability.inferredReplyCommunicationEventId = communicationEventId;
         coordinationV3.markContextRolloverVisibleResponseCommitted(capability.agentId, capability.runId);
       }
@@ -590,6 +616,7 @@ export function registerAgentCommunicationRoutes(
         ...(preparedArtifacts.length ? { artifacts: preparedArtifacts.map(runtimeArtifactMetadata) } : {}),
         scopeKey: capability.conversationId ? `conversation:${capability.conversationId}` : `agent:${capability.agentId}`,
         runAuthorization: runAuthorization(capability),
+        ...(inferredReplyFingerprint ? { satisfiesRequiredReply: true } : {}),
         ...(intent === "collaboration" ? {
           activations: actionableRoutingIntents.map((delivery, index) => ({
             agentId: delivery.targetAgentId,
@@ -607,6 +634,8 @@ export function registerAgentCommunicationRoutes(
       return reply.code(message.includes("scope") ? 409 : 403).send({ error: message });
     }
     if (inferredReplyFingerprint) {
+      capability.requiredReplyFingerprints ??= {};
+      capability.requiredReplyFingerprints[selectedReplyAuthorityKey] = inferredReplyFingerprint;
       capability.inferredReplyCommunicationEventId = communicationEventId;
       coordinationV3.markContextRolloverVisibleResponseCommitted(capability.agentId, capability.runId);
     }

@@ -8,6 +8,8 @@ import { describe, expect, test } from "vitest";
 import { openDb } from "@ponderosa/agents";
 import { recoveredRuntimeProcessHandle, runtimeProcessIdentity } from "@ponderosa/engines";
 import { ProviderProcessAuthority } from "./provider-process-authority.js";
+import { durableBrowserDriverFactory } from "./browser-authority.js";
+import type { BrowserDriver, BrowserDriverFactory, BrowserTerminationHandle } from "./chrome-cdp-driver.js";
 
 const linuxTest = process.platform === "linux" ? test : test.skip;
 const darwinTest = process.platform === "darwin" ? test : test.skip;
@@ -32,6 +34,32 @@ function liveDetachedProcess() {
 }
 
 describe("durable provider process authority", () => {
+  test("registers browser spawn authority before forwarding it to session ownership", async () => {
+    const handle = {
+      processIdentity: { pid: 123, pgid: 123, birthMarker: "linux:123" },
+      isAlive: () => true,
+      close: async () => undefined,
+    } as BrowserTerminationHandle;
+    const driver = handle as BrowserDriver;
+    const base: BrowserDriverFactory = async (_sessionId, _onConsole, onSpawned) => {
+      onSpawned?.(handle, { complete: true, coversReturnedDriver: true });
+      return driver;
+    };
+    const order: string[] = [];
+    let forwarded: BrowserTerminationHandle | undefined;
+    const factory = durableBrowserDriverFactory(base, (registered, sessionId) => {
+      expect(registered).toBe(handle);
+      expect(sessionId).toBe("browser-a");
+      order.push("registered");
+    });
+    await expect(factory("browser-a", () => undefined, (published) => {
+      forwarded = published;
+      order.push("forwarded");
+    })).resolves.toBe(driver);
+    expect(forwarded).toBe(handle);
+    expect(order).toEqual(["registered", "forwarded"]);
+  });
+
   darwinTest("admits and cancels a current-boot provider with native Darwin identity", async () => {
     const opened = openDb(":memory:");
     const runtime = liveDetachedProcess();

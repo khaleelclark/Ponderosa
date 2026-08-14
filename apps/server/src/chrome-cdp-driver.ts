@@ -2,7 +2,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import type { Readable, Writable } from "node:stream";
-import { terminateProcessGroup } from "@ponderosa/engines";
+import type { RuntimeProcessIdentity } from "@ponderosa/core";
+import { processGroupAlive, runtimeProcessIdentity, terminateProcessGroup } from "@ponderosa/engines";
 import { redactBrowserText } from "./browser-security.js";
 
 const VIEWPORT = { width: 1280, height: 720 } as const;
@@ -28,6 +29,8 @@ export interface BrowserTerminationHandle {
    * observes the same whole-process shutdown. Absent means this handle is its
    * own distinct authority. */
   readonly terminationAuthority?: object;
+  readonly processIdentity?: RuntimeProcessIdentity;
+  isAlive(): boolean;
   close(): Promise<void>;
 }
 
@@ -161,7 +164,10 @@ class ChromeCdpDriver implements BrowserDriver {
     private readonly cdpSessionId: string,
     private readonly profileDir: string,
     readonly terminationAuthority: object,
+    readonly processIdentity: RuntimeProcessIdentity | undefined,
   ) {}
+
+  isAlive(): boolean { return processGroupAlive(this.child); }
 
   static async create(
     executable: string,
@@ -195,8 +201,11 @@ class ChromeCdpDriver implements BrowserDriver {
       launchError = `${launchError}${chunk}`.slice(-MAX_BROWSER_LAUNCH_ERROR);
     });
     const terminationAuthority = {};
+    const processIdentity = runtimeProcessIdentity(child);
     const spawnHandle: BrowserTerminationHandle = {
       terminationAuthority,
+      ...(processIdentity ? { processIdentity } : {}),
+      isAlive: () => processGroupAlive(child),
       close: async () => {
         await terminateBrowserProcess(child);
         await removeBrowserProfile(profileDir);
@@ -218,7 +227,14 @@ class ChromeCdpDriver implements BrowserDriver {
       const attached = await connection.send("Target.attachToTarget", { targetId, flatten: true });
       const sessionId = String(attached.sessionId ?? "");
       if (!sessionId) throw new Error("browser did not attach to the page target");
-      const driver = new ChromeCdpDriver(child, connection, sessionId, profileDir, terminationAuthority);
+      const driver = new ChromeCdpDriver(
+        child,
+        connection,
+        sessionId,
+        profileDir,
+        terminationAuthority,
+        processIdentity,
+      );
       connection.onEvent((message) => {
         if (message.sessionId !== sessionId || message.method !== "Runtime.consoleAPICalled") return;
         const type = String(message.params?.type ?? "log");

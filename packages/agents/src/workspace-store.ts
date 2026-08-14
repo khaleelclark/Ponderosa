@@ -106,6 +106,8 @@ export class WorkspaceStore {
   private readonly drafts = new Map<string, ConversationDraftDto>();
   private readonly draftConflicts = new Map<string, ConversationDraftConflictDto[]>();
   private readonly notifications = new Map<string, WorkspaceNotificationDto>();
+  private readonly unreadNotificationIdsByCommunication = new Map<string, Set<string>>();
+  private readonly unreadNotificationIdsByConversation = new Map<string, Set<string>>();
   private readonly decisions = new Map<string, DecisionDto>();
   private readonly decisionIdempotency = new Map<string, string>();
   private readonly decisionIdsByProject = new Map<string, string[]>();
@@ -142,6 +144,42 @@ export class WorkspaceStore {
     chmodSync(this.file, 0o600);
     this.events = readRepairableJsonl<CanonicalWorkspaceEvent>(this.file, "workspace event log", true);
     for (const event of this.events) this.project(event);
+  }
+
+  private notificationSearchIndexEligible(item: WorkspaceNotificationDto): boolean {
+    return item.kind !== "collaboration" && (item.status ?? "open") !== "dismissed" && !item.readAt;
+  }
+
+  private updateNotificationSearchIndex(item: WorkspaceNotificationDto, add: boolean): void {
+    if (!this.notificationSearchIndexEligible(item)) return;
+    for (const [key, index] of [
+      [item.communicationEventId, this.unreadNotificationIdsByCommunication],
+      [item.conversationId, this.unreadNotificationIdsByConversation],
+    ] as const) {
+      if (!key) continue;
+      if (add) {
+        const ids = index.get(key) ?? new Set<string>();
+        ids.add(item.id);
+        index.set(key, ids);
+      } else {
+        const ids = index.get(key);
+        ids?.delete(item.id);
+        if (ids?.size === 0) index.delete(key);
+      }
+    }
+  }
+
+  private setNotification(item: WorkspaceNotificationDto): void {
+    const current = this.notifications.get(item.id);
+    if (current) this.updateNotificationSearchIndex(current, false);
+    this.notifications.set(item.id, item);
+    this.updateNotificationSearchIndex(item, true);
+  }
+
+  private deleteNotification(id: string): void {
+    const current = this.notifications.get(id);
+    if (current) this.updateNotificationSearchIndex(current, false);
+    this.notifications.delete(id);
   }
 
   private project(record: CanonicalWorkspaceEvent): void {
@@ -200,7 +238,7 @@ export class WorkspaceStore {
       for (const key of [...this.draftConflicts.keys()]) if (key.startsWith(prefix)) this.draftConflicts.delete(key);
     }
     if (record.mutation?.kind === "notification") {
-      this.notifications.set(record.mutation.notification.id, record.mutation.notification);
+      this.setNotification(record.mutation.notification);
       for (const target of record.mutation.pushTargets ?? []) {
         const key = this.pushDeliveryKey(record.mutation.notification.id, target.deviceId);
         if (!this.pushDeliveries.has(key)) this.pushDeliveries.set(key, {
@@ -214,27 +252,27 @@ export class WorkspaceStore {
       }
     }
     if (record.mutation?.kind === "notifications_read") {
-      for (const [id, item] of this.notifications) {
+      for (const item of this.notifications.values()) {
         if (item.conversationId === record.mutation.conversationId && !item.readAt) {
-          this.notifications.set(id, { ...item, readAt: record.mutation.readAt });
+          this.setNotification({ ...item, readAt: record.mutation.readAt });
         }
       }
     }
     if (record.mutation?.kind === "notifications_read_ids") {
       for (const notificationId of record.mutation.notificationIds) {
         const current = this.notifications.get(notificationId);
-        if (current && !current.readAt) this.notifications.set(notificationId, { ...current, readAt: record.mutation.readAt });
+        if (current && !current.readAt) this.setNotification({ ...current, readAt: record.mutation.readAt });
       }
     }
     if (record.mutation?.kind === "notifications_read_all") {
-      for (const [id, item] of this.notifications) {
-        if (!item.readAt) this.notifications.set(id, { ...item, readAt: record.mutation.readAt });
+      for (const item of this.notifications.values()) {
+        if (!item.readAt) this.setNotification({ ...item, readAt: record.mutation.readAt });
       }
     }
     if (record.mutation?.kind === "notifications_dismissed") {
       for (const notificationId of record.mutation.notificationIds) {
         const current = this.notifications.get(notificationId);
-        if (current) this.notifications.set(notificationId, { ...current, status: "dismissed", resolvedAt: record.mutation.at, readAt: current.readAt ?? record.mutation.at });
+        if (current) this.setNotification({ ...current, status: "dismissed", resolvedAt: record.mutation.at, readAt: current.readAt ?? record.mutation.at });
         for (const key of this.pushDeliveries.keys()) {
           if (key.startsWith(`${notificationId}\u0000`)) this.pushDeliveries.delete(key);
         }
@@ -242,7 +280,7 @@ export class WorkspaceStore {
     }
     if (record.mutation?.kind === "notifications_cleared") {
       for (const notificationId of record.mutation.notificationIds) {
-        this.notifications.delete(notificationId);
+        this.deleteNotification(notificationId);
         for (const key of this.pushDeliveries.keys()) {
           if (key.startsWith(`${notificationId}\u0000`)) this.pushDeliveries.delete(key);
         }
@@ -250,7 +288,7 @@ export class WorkspaceStore {
     }
     if (record.mutation?.kind === "notification_status") {
       const current = this.notifications.get(record.mutation.notificationId);
-      if (current) this.notifications.set(current.id, {
+      if (current) this.setNotification({
         ...current,
         status: record.mutation.status,
         resolvedAt: record.mutation.at,
@@ -269,9 +307,9 @@ export class WorkspaceStore {
       if (record.mutation.decision.response?.respondedAt && !previous?.response?.respondedAt) {
         this.indexDecisionEvent(record.mutation.decision, "decision_response");
       }
-      for (const [id, notification] of this.notifications) {
+      for (const notification of this.notifications.values()) {
         if (notification.decision?.id !== record.mutation.decision.id) continue;
-        this.notifications.set(id, {
+        this.setNotification({
           ...notification,
           decision: { ...notification.decision, status: record.mutation.decision.status },
         });
@@ -702,6 +740,23 @@ export class WorkspaceStore {
     return [...this.notifications.values()]
       .filter((item) => item.kind !== "collaboration" && (item.status ?? "open") !== "dismissed")
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  notificationSearchState(input: {
+    communicationEventIds: readonly string[];
+    conversationIds: readonly string[];
+  }): {
+    unreadCommunicationEventIds: string[];
+    unreadConversationCounts: Record<string, number>;
+  } {
+    const unreadCommunicationEventIds = [...new Set(input.communicationEventIds)]
+      .filter((id) => (this.unreadNotificationIdsByCommunication.get(id)?.size ?? 0) > 0);
+    const unreadConversationCounts: Record<string, number> = {};
+    for (const id of new Set(input.conversationIds)) {
+      const count = this.unreadNotificationIdsByConversation.get(id)?.size ?? 0;
+      if (count > 0) unreadConversationCounts[id] = count;
+    }
+    return { unreadCommunicationEventIds, unreadConversationCounts };
   }
 
   readConversation(conversationId: string): void {

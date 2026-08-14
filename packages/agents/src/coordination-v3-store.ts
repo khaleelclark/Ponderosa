@@ -3,6 +3,7 @@ import {
   type MessageDeliveryReceiptDto,
   type RetryMessageDeliveryResponse,
   type DerivedAgentAvailability,
+  type CoordinationReplyAuthority,
   type TriggerDefinitionDto,
   type TriggerOccurrenceDto,
 } from "@ponderosa/core";
@@ -33,6 +34,10 @@ import { CoordinationV3SteeringAuthority } from "./coordination-v3-steering-auth
 import { CoordinationV3SchedulerLeaseAuthority } from "./coordination-v3-scheduler-lease-authority.js";
 import { CoordinationV3RequestAuthority } from "./coordination-v3-request-authority.js";
 import { CoordinationV3RunLifecycleAuthority } from "./coordination-v3-run-lifecycle-authority.js";
+import {
+  CoordinationV3RequiredReplyAuthority,
+  type RequiredReplyObligation,
+} from "./coordination-v3-required-reply-authority.js";
 import { CoordinationV3TriggerRegistry } from "./coordination-v3-trigger-registry.js";
 import {
   CommunicationV4NextRunDeliveryAuthority,
@@ -165,6 +170,7 @@ export class CoordinationV3Store {
   private readonly schedulerLeaseAuthority: CoordinationV3SchedulerLeaseAuthority;
   private readonly requestAuthority: CoordinationV3RequestAuthority;
   private readonly runLifecycleAuthority: CoordinationV3RunLifecycleAuthority;
+  private readonly requiredReplyAuthority: CoordinationV3RequiredReplyAuthority;
   private readonly contextRolloverAuthority: CoordinationV3ContextRolloverAuthority;
   private readonly communicationV4NextRunDeliveries: CommunicationV4NextRunDeliveryAuthority;
 
@@ -174,6 +180,10 @@ export class CoordinationV3Store {
   ) {
     this.activationReadModel = new CoordinationV3ActivationReadModel(sqlite);
     this.activationFactory = new CoordinationV3ActivationFactory(sqlite, options);
+    this.requiredReplyAuthority = new CoordinationV3RequiredReplyAuthority(
+      sqlite,
+      input => this.createActivation(input),
+    );
     this.contextRolloverAuthority = new CoordinationV3ContextRolloverAuthority(
       sqlite,
       input => this.createActivation(input),
@@ -224,6 +234,7 @@ export class CoordinationV3Store {
         this.support.requireAuthorizedRun(authorization, expectedScopeKey),
       projectId => this.support.requireProject(projectId),
       input => this.createActivation(input),
+      input => { this.requiredReplyAuthority.markSatisfied(input); },
     );
     this.triggerRegistry = new CoordinationV3TriggerRegistry(
       sqlite,
@@ -271,6 +282,9 @@ export class CoordinationV3Store {
       this.questionAuthority,
       this.activationLifecycle,
       input => this.updateRequest(input),
+      (runId, now) => { this.requiredReplyAuthority.recoverPending(runId, now); },
+      (runId, now) => { this.requiredReplyAuthority.settleRetried(runId, now); },
+      (runId, now) => { this.requiredReplyAuthority.settleForRun(runId, "cancelled", now); },
     );
     this.deletionAuthority = new CoordinationV3DeletionAuthority(
       sqlite,
@@ -332,6 +346,9 @@ export class CoordinationV3Store {
           reason,
           eligibleStates,
         ),
+      input => { this.requiredReplyAuthority.registerForRun(input); },
+      (runId, now) => { this.requiredReplyAuthority.recoverPending(runId, now); },
+      (runId, now) => { this.requiredReplyAuthority.settleRetried(runId, now); },
     );
   }
 
@@ -1007,6 +1024,18 @@ export class CoordinationV3Store {
 
   completeRun(runId: string, fence: number, now = new Date().toISOString()): void {
     this.runLifecycleAuthority.completeRun(runId, fence, now);
+  }
+
+  requiredReplyObligationForRun(runId: string): RequiredReplyObligation | undefined {
+    return this.requiredReplyAuthority.unambiguousForRun(runId);
+  }
+
+  requiredReplyObligationsForRun(runId: string): RequiredReplyObligation[] {
+    return this.requiredReplyAuthority.forRun(runId);
+  }
+
+  requiredReplyAuthoritiesForRun(runId: string): CoordinationReplyAuthority[] {
+    return this.requiredReplyAuthority.authoritiesForRun(runId);
   }
 
   failRun(input: {

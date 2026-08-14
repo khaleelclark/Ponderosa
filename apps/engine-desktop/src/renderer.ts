@@ -6,7 +6,7 @@ interface LogTail {
 }
 
 interface EngineSnapshot {
-  state: "starting" | "running" | "stopped" | "error";
+  state: "starting" | "running" | "reachable" | "degraded" | "stopping" | "cleanup_incomplete" | "stopped" | "error";
   detail: string;
   pid?: number;
   version?: string;
@@ -79,6 +79,14 @@ function render(snapshot: EngineSnapshot): void {
   stateDot.className = `state-dot ${snapshot.state}`;
   stateLabel.textContent = snapshot.state === "running"
     ? "Running"
+    : snapshot.state === "reachable"
+      ? "Reachable"
+      : snapshot.state === "degraded"
+        ? "Degraded"
+        : snapshot.state === "stopping"
+          ? "Stopping"
+          : snapshot.state === "cleanup_incomplete"
+            ? "Cleanup incomplete"
     : snapshot.state === "starting"
       ? "Starting"
       : snapshot.state === "error"
@@ -102,14 +110,14 @@ function render(snapshot: EngineSnapshot): void {
   dataDir.textContent = snapshot.dataDir ?? "—";
   const selected = snapshot.logs[selectedLog];
   logOutput.textContent = selected.text ||
-    (snapshot.state === "running" ? "No log output yet." : snapshot.detail);
+    (["running", "reachable", "degraded"].includes(snapshot.state) ? "No log output yet." : snapshot.detail);
   const totalKiB = (selected.totalBytes / 1024).toFixed(1);
   logOutput.setAttribute(
     "aria-label",
     `${selectedLog} log${selected.truncated ? `, latest ${totalKiB} KiB shown` : ""}`,
   );
-  openButton.disabled = snapshot.state !== "running" || busy;
-  restartButton.disabled = snapshot.state === "starting" || busy;
+  openButton.disabled = !["running", "reachable", "degraded"].includes(snapshot.state) || busy;
+  restartButton.disabled = ["starting", "stopping"].includes(snapshot.state) || busy;
   quitButton.disabled = busy;
 }
 

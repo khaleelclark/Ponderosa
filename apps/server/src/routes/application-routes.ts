@@ -582,7 +582,7 @@ const globalChatSearch = (query: {
     query: q,
     limit,
     chatKind,
-    notifications: workspace.listNotifications(),
+    notificationState: (input) => workspace.notificationSearchState(input),
   });
 };
 

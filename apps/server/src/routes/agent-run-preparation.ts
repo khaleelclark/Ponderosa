@@ -23,7 +23,6 @@ import { renderSeedPrompt } from "@ponderosa/engines";
 import { inboundContext } from "../agent-mentions.js";
 import { collectReachableArtifactIds } from "../artifact-refs.js";
 import {
-  type AgentMessageCapability,
   type EngineRegistration,
   type PendingTurn,
 } from "../app-contracts.js";
@@ -803,29 +802,6 @@ ${freshGuidedPrompt}${attachmentContext}${coalescedActivationContext}`;
       ? [(communication as { eventId: string }).eventId]
       : [];
   });
-  const hasOneCanonicalReplySource = new Set(activationCommunicationEventIds).size === 1;
-  const inheritedReplyAuthorities: Array<NonNullable<AgentMessageCapability["defaultReply"]>> =
-    [
-      ...(manifestTriggerOccurrences.length ? [{ intent: "direct_to_user" as const }] : []),
-      ...manifestActivationPayloads.flatMap(({ payload }) => {
-      if (!payload || typeof payload !== "object") return [];
-      const authority = (payload as { replyAuthority?: unknown }).replyAuthority;
-      if (!authority || typeof authority !== "object") return [];
-      const candidate = authority as { intent?: unknown; recipientAgentIds?: unknown };
-      const rawRecipients = candidate.recipientAgentIds;
-      const recipients = Array.isArray(rawRecipients)
-        ? rawRecipients.filter((agentId): agentId is string => typeof agentId === "string")
-        : [];
-      if (!(candidate.intent === "broadcast" || candidate.intent === "direct_to_user" || candidate.intent === "collaboration") ||
-          (rawRecipients !== undefined && (!Array.isArray(rawRecipients) || recipients.length !== rawRecipients.length)) ||
-          (candidate.intent === "collaboration" ? recipients.length === 0 : recipients.length > 0) ||
-          new Set(recipients).size !== recipients.length || recipients.some((agentId) => !agentId.trim())) return [];
-      return [{
-        intent: candidate.intent,
-        ...(recipients.length > 0 ? { recipientAgentIds: [...recipients].sort() } : {}),
-        }] satisfies Array<NonNullable<AgentMessageCapability["defaultReply"]>>;
-      }),
-    ];
   const buildProviderInputManifest = (input: {
     submittedHistory: ChatMessage[];
     historySources: Array<{
@@ -1008,8 +984,6 @@ ${freshGuidedPrompt}${attachmentContext}${coalescedActivationContext}`;
     exactProviderInput,
     freshExactProviderInput,
     activationWakeCause,
-    hasOneCanonicalReplySource,
-    inheritedReplyAuthorities,
     providerInputManifest,
     freshProviderInputManifest,
     manifestArtifactIds,

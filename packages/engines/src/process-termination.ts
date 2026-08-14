@@ -135,7 +135,7 @@ export function recoveredRuntimeProcessHandle(
   };
 }
 
-function processBirthMarker(pid: number): string | undefined {
+export function processBirthMarker(pid: number): string | undefined {
   if (process.platform === "linux") {
     try {
       const stat = readFileSync(`/proc/${pid}/stat`, "utf8");

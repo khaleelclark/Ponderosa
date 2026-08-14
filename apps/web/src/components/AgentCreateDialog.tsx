@@ -260,7 +260,7 @@ export function AgentCreateForm({
               {option.displayName}
               {engineIsAvailable(option)
                 ? ""
-                : option.authenticated
+                : option.authentication === "authenticated"
                   ? " — Unavailable"
                   : " — Not Signed In"}
             </MenuItem>

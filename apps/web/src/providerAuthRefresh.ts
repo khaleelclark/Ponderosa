@@ -17,11 +17,13 @@ export async function recheckProvider(
     ),
   );
   const becameOperational =
-    (previous?.authenticated === false && updated.authenticated) ||
-    (previous?.available === false && updated.available);
+    (previous?.authentication !== "authenticated" && updated.authentication === "authenticated") ||
+    (previous?.intakeReady === false && updated.intakeReady) ||
+    (previous?.reachability !== "reachable" && updated.reachability === "reachable");
   const statusChanged =
-    previous?.authenticated !== updated.authenticated ||
-    previous?.available !== updated.available;
+    previous?.authentication !== updated.authentication ||
+    previous?.intakeReady !== updated.intakeReady ||
+    previous?.reachability !== updated.reachability;
   await Promise.all([
     ...(becameOperational
       ? [

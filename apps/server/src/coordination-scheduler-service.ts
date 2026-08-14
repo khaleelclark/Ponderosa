@@ -12,6 +12,7 @@ import {
   type AgentMessageCapability,
   type AgentRuntimeAuthority,
   type CreateServerOptions,
+  type EngineRegistration,
   type PersistentRuntime,
   type PonderosaServer,
 } from "./app-contracts.js";
@@ -22,7 +23,6 @@ import {
   CoordinationV3Scheduler,
 } from "./coordination-v3-scheduler.js";
 import type { createCommunicationArtifactAuthority } from "./communication-artifacts.js";
-import type { EngineAvailabilityStore } from "./engine-availability-store.js";
 import type { QueuedEditRevisionOutboxPayload } from "./routes/queued-messages.js";
 import type { ProviderProcessAuthority } from "./provider-process-authority.js";
 
@@ -32,6 +32,7 @@ type ArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>
  * above this hard UTF-8 envelope use their already-durable, validated artifact
  * file instead of risking a provider request/context rejection. */
 const AUTOMATIC_RESULT_PROVIDER_PACKET_UTF8_LIMIT = 256 * 1024;
+const PROVIDER_INTAKE_CHECK_BUDGET_MS = 500;
 
 export function exactCorrelatedResultArtifactOwners(
   activation: SchedulerLease["activations"][number],
@@ -121,7 +122,11 @@ interface CoordinationSchedulerContext {
   workspace: WorkspaceStore;
   activeRuns: Map<string, ActiveRun>;
   runtimeAuthorities: Map<string, AgentRuntimeAuthority>;
-  engineAvailability: EngineAvailabilityStore;
+  engines: ReadonlyMap<string, EngineRegistration>;
+  runtimeStatus(
+    id: string,
+    registration: EngineRegistration,
+  ): Promise<{ intakeReady: boolean }>;
   agentMessageCapabilities: Map<string, AgentMessageCapability>;
   scheduledSessionRollovers: Map<string, string>;
   coordinationV3WorkerId: string;
@@ -166,7 +171,8 @@ export function createCoordinationScheduler(
     workspace,
     activeRuns,
     runtimeAuthorities,
-    engineAvailability,
+    engines,
+    runtimeStatus,
     agentMessageCapabilities,
     scheduledSessionRollovers,
     coordinationV3WorkerId,
@@ -440,14 +446,34 @@ return new CoordinationV3Scheduler(
         conversationIds: [payload.conversationId],
       });
     },
-    blockedAgentIds: () => [...new Set([
-      ...store.listAgentEngineAssignments()
-        .filter((candidate) => !providerEnabled(candidate.activeEngine) || Boolean(engineAvailability.denial(candidate.activeEngine)))
-        .map((candidate) => candidate.id),
-      ...[...runtimeAuthorities].flatMap(([agentId, authority]) =>
-        authority.opening || authority.closing || authority.oneShots.size > 0 ? [agentId] : []),
-      ...activeRuns.keys(),
-    ])],
+    blockedAgentIds: async () => {
+      const intake = new Map(await Promise.all([...engines.entries()].map(async ([id, registration]) => {
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          const timeout = new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(
+              () => reject(new Error("runtime intake check exceeded scheduler admission budget")),
+              PROVIDER_INTAKE_CHECK_BUDGET_MS,
+            );
+            timer.unref?.();
+          });
+          const status = await Promise.race([runtimeStatus(id, registration), timeout]);
+          return [id, status.intakeReady] as const;
+        } catch {
+          return [id, false] as const;
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      })));
+      return [...new Set([
+        ...store.listAgentEngineAssignments()
+          .filter((candidate) => intake.get(candidate.activeEngine) !== true)
+          .map((candidate) => candidate.id),
+        ...[...runtimeAuthorities].flatMap(([agentId, authority]) =>
+          authority.opening || authority.closing || authority.oneShots.size > 0 ? [agentId] : []),
+        ...activeRuns.keys(),
+      ])];
+    },
     onRunLeased: () => { reconcileTriggerOperationalNotifications(); },
     onMessageDeliveryChanged: publishMessageDeliveryChanged,
   },

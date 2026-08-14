@@ -106,16 +106,21 @@ export function createOperationalNotifications(context: OperationalNotifications
         : undefined;
       const conversation = conversationId ? store.getConversation(conversationId) : undefined;
       const outcomeUnknown = failure.state === "outcome_unknown";
+      const requiredReplyExhausted = failure.terminalOutcome === "retry_exhausted";
       const issue = failure.lastDeliveryError
         ?? (failure.terminalOutcome ?? failure.state).replaceAll("_", " ");
       createOperationalNotification({
         dedupeKey: key,
         category: "communication",
         severity: "urgent",
-        title: outcomeUnknown
+        title: requiredReplyExhausted
+          ? "Required reply recovery exhausted"
+          : outcomeUnknown
           ? "Message outcome needs your review"
           : "Message delivery needs your help",
-        body: outcomeUnknown
+        body: requiredReplyExhausted
+          ? `Ponderosa did not publish the required Chat reply after ${failure.deliveryFailures} provider Runs. Automatic recovery stopped. Review prior work before trying delivery again; retrying may duplicate work.`
+          : outcomeUnknown
           ? "Ponderosa lost contact with the provider before it could confirm whether this message finished. Retrying may duplicate work if the provider completed it before the interruption."
           : `Ponderosa could not deliver this message after ${failure.deliveryFailures} ${failure.deliveryFailures === 1 ? "attempt" : "attempts"}. ${issue}`,
         projectId: failure.projectId,

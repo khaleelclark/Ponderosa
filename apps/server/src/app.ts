@@ -400,6 +400,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     publish: (agentId, stored) => publish(agentId, stored),
     logWarn: (meta, message) => app.log.warn(meta, message),
     persistRuntimeEvent: (agentId, run, event) => persistRuntimeEvent(agentId, run, event as LogEvent),
+    providerProcessAuthority,
   });
   const managedWorkspacesRoot = path.resolve(opts.dataDir, "workspaces");
   const projectFolderPathBoundary = createProjectFolderPathBoundary({
@@ -721,7 +722,8 @@ app.server.on("upgrade", linkPreviewUpgrade);
     workspace,
     activeRuns,
     runtimeAuthorities,
-    engineAvailability,
+    engines,
+    runtimeStatus,
     agentMessageCapabilities,
     scheduledSessionRollovers,
     coordinationV3WorkerId,

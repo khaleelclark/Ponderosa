@@ -33,6 +33,16 @@ export class CoordinationV3SchedulerLeaseAuthority {
       reason: string,
       eligibleStates: CoordinationRequestState[],
     ) => void,
+    private readonly registerRequiredReply: (input: {
+      runId: string;
+      projectId: string;
+      agentId: string;
+      scopeKey: string;
+      activations: ReadonlyArray<{ id: string; kind: string; payload: unknown }>;
+      now: string;
+    }) => void,
+    private readonly recoverRequiredReply: (runId: string, now: string) => void,
+    private readonly settleRetriedRequiredReply: (runId: string, now: string) => void,
   ) {}
 
   recoverOrphanedRuns(
@@ -69,6 +79,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
             SET state = 'cancelled', updated_at = ?, terminal_at = ?
             WHERE run_id = ? AND state = 'pending'
           `).run(now, now, run.id);
+          this.settleRetriedRequiredReply(run.id, now);
           retried += 1;
         } else {
           this.sqlite.prepare(`
@@ -100,6 +111,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
               "awaiting_answer",
             ],
           );
+          this.recoverRequiredReply(run.id, now);
           outcomeUnknown += 1;
         }
       }
@@ -356,6 +368,18 @@ export class CoordinationV3SchedulerLeaseAuthority {
         now,
         now,
       );
+      this.registerRequiredReply({
+        runId,
+        projectId: candidate.project_id,
+        agentId: candidate.agent_id,
+        scopeKey: candidate.scope_key,
+        activations: activations.map((activation) => ({
+          id: activation.id,
+          kind: activation.kind,
+          payload: JSON.parse(activation.payload_json) as unknown,
+        })),
+        now,
+      });
       return {
         runId,
         projectId: candidate.project_id,
@@ -410,6 +434,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
           SET state = 'cancelled', updated_at = ?, terminal_at = ?
           WHERE run_id = ? AND state = 'pending'
         `).run(now, now, run.id);
+        this.settleRetriedRequiredReply(run.id, now);
       } else {
         this.sqlite.prepare(`
           UPDATE scheduler_runs
@@ -440,6 +465,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
             "awaiting_answer",
           ],
         );
+        this.recoverRequiredReply(run.id, now);
       }
     }
   }

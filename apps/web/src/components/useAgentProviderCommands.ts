@@ -28,7 +28,7 @@ export function useAgentProviderCommands({
       const loading: ProviderUsageStateDto = {
         provider: engine.id,
         displayName: engine.displayName,
-        authenticated: engine.authenticated,
+        authenticated: engine.authentication === "authenticated",
         refreshing: true,
         ...(providerUsageState?.reading
           ? { reading: providerUsageState.reading }

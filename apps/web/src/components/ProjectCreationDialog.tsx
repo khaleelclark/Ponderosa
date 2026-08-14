@@ -96,7 +96,7 @@ export function ProjectCreationDialog({
       queryClient.setQueryData<EngineDto[]>(queryKeys.engines.all, (current) =>
         current?.map((candidate) => candidate.id === updated.id ? updated : candidate));
       void queryClient.invalidateQueries({ queryKey: queryKeys.engines.all });
-      if (updated.available) setDefaultEngine(updated.id);
+      if (updated.intakeReady) setDefaultEngine(updated.id);
       setEngineToTest(undefined);
     },
   });
@@ -138,7 +138,7 @@ export function ProjectCreationDialog({
                 <MenuItem value="" disabled>Select a Provider</MenuItem>
                 {engines.map((engine) => (
                   <MenuItem key={engine.id} value={engine.id} disabled={!engineIsAvailable(engine)}>
-                    {engine.displayName}{engineIsAvailable(engine) ? "" : engine.authenticated ? " — Unavailable" : " — Not Signed In"}
+                    {engine.displayName}{engineIsAvailable(engine) ? "" : engine.authentication === "checking" ? " — Checking" : engine.authentication === "authenticated" ? " — Unavailable" : " — Not Signed In"}
                   </MenuItem>
                 ))}
               </Select>

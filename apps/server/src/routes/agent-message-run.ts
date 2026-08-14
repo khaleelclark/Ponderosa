@@ -680,8 +680,6 @@ export function registerAgentMessageRunRoute(
         exactProviderInput,
         freshExactProviderInput,
         activationWakeCause,
-        hasOneCanonicalReplySource,
-        inheritedReplyAuthorities,
         providerInputManifest,
         freshProviderInputManifest,
         manifestArtifactIds,
@@ -791,17 +789,30 @@ export function registerAgentMessageRunRoute(
       // state when they receive this event, so publishing first can leave the
       // Project Overview falsely idle until another event or manual refresh.
       publish(agent.id, runningLifecycle);
-      const immediateDefaultReply = hasOneCanonicalReplySource && sharedTaskTurn
-        ? { intent: "broadcast" as const }
-        : hasOneCanonicalReplySource && directUserTaskTurn
-          ? { intent: "direct_to_user" as const }
-          : hasOneCanonicalReplySource && communication?.intent === "collaboration" && communication.sender.kind === "agent" &&
-              coordinationV3.requestIdsAttachedToRun(runId, agent.id).length === 0
-            ? { intent: "collaboration" as const, recipientAgentIds: [communication.sender.agentId] }
-            : undefined;
-      const replyAuthorities = [...(immediateDefaultReply ? [immediateDefaultReply] : []), ...inheritedReplyAuthorities];
-      const distinctReplyAuthorities = [...new Map(replyAuthorities.map((authority) => [JSON.stringify(authority), authority])).values()];
-      const defaultReply = distinctReplyAuthorities.length === 1 ? distinctReplyAuthorities[0] : undefined;
+      const durableReply = coordinationV3.requiredReplyObligationForRun(runId)?.replyAuthority;
+      const peerReplyRoutes = coordinationV3.requestIdsAttachedToRun(runId, agent.id).length === 0
+        ? coordinationV3.activationPayloads(
+            agent.id,
+            coordinationV3.activationIdsAttachedToRun(runId, agent.id),
+            runId,
+          ).flatMap(({ payload }) => {
+            if (!payload || typeof payload !== "object") return [];
+            const source = (payload as { communication?: unknown }).communication;
+            if (!source || typeof source !== "object") return [];
+            const candidate = source as Partial<CommunicationEvent>;
+            return candidate.intent === "collaboration" && candidate.sender?.kind === "agent"
+              ? [{ intent: "collaboration" as const, recipientAgentIds: [candidate.sender.agentId] }]
+              : [];
+          })
+        : [];
+      const distinctReplyRoutes = [...new Map(
+        [...(durableReply ? [durableReply] : []), ...peerReplyRoutes]
+          .map((authority) => [JSON.stringify(authority), authority]),
+      ).values()];
+      // A convenient reply route and a durable reply obligation are separate
+      // authorities. Ordinary/urgent peer input may make a bare message
+      // unambiguous without manufacturing acknowledgement or recovery work.
+      const defaultReply = distinctReplyRoutes.length === 1 ? distinctReplyRoutes[0] : undefined;
       agentMessageCapabilities.set(messageCapability, {
         agentId: agent.id,
         conversationId: routingConversationId,

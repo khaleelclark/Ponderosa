@@ -285,9 +285,62 @@ export class CoordinationV3RuntimeCommunicationReadModel {
       audience_json: string;
       payload_json: string;
     }>;
+    const activationIds = [...new Set(activations.map((activation) => activation.id))];
+    const requiredReplySummaries = new Map<string, {
+      attemptCount: number;
+      latestAttemptAt: string;
+      exhausted: boolean;
+    }>();
+    if (activationIds.length > 0) {
+      const rootBindings = Object.fromEntries(
+        activationIds.map((activationId, index) => [`root${index}`, activationId]),
+      );
+      const rootPlaceholders = activationIds
+        .map((_, index) => `@root${index}`)
+        .join(", ");
+      const rows = this.sqlite.prepare(`
+        WITH RECURSIVE required_reply_chain (
+          root_activation_id, source_activation_id, attempt_count, state, updated_at
+        ) AS (
+          SELECT source_activation_id, source_activation_id, attempt_count, state, updated_at
+          FROM required_reply_obligations
+          WHERE source_activation_id IN (${rootPlaceholders})
+          UNION
+          SELECT chain.root_activation_id, child.source_activation_id,
+            child.attempt_count, child.state, child.updated_at
+          FROM required_reply_chain chain
+          JOIN required_reply_obligations parent
+            ON parent.source_activation_id = chain.source_activation_id
+          JOIN required_reply_obligations child
+            ON child.source_activation_id = parent.recovery_activation_id
+              AND child.attempt_count = chain.attempt_count + 1
+        )
+        SELECT root_activation_id,
+          MAX(attempt_count) + 1 AS attempt_count,
+          MAX(updated_at) AS latest_attempt_at,
+          MAX(CASE WHEN state = 'failed' THEN 1 ELSE 0 END) AS exhausted
+        FROM required_reply_chain
+        GROUP BY root_activation_id
+      `).all(rootBindings) as Array<{
+        root_activation_id: string;
+        attempt_count: number;
+        latest_attempt_at: string;
+        exhausted: number;
+      }>;
+      for (const row of rows) requiredReplySummaries.set(row.root_activation_id, {
+        attemptCount: row.attempt_count,
+        latestAttemptAt: row.latest_attempt_at,
+        exhausted: Boolean(row.exhausted),
+      });
+    }
     const latestByCommunication = new Map<
       string,
-      Map<string, { activation: typeof activations[number]; attemptCount: number }>
+      Map<string, {
+        activation: typeof activations[number];
+        attemptCount: number;
+        latestAttemptAt: string;
+        requiredReplyExhausted: boolean;
+      }>
     >();
     for (const activation of activations) {
       let sender: unknown;
@@ -317,13 +370,27 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         latestByRecipient = new Map();
         latestByCommunication.set(activation.communication_event_id, latestByRecipient);
       }
+      const previous = latestByRecipient.get(activation.agent_id);
+      const requiredReply = requiredReplySummaries.get(activation.id);
+      const latestAttemptAt = [
+        previous?.latestAttemptAt,
+        requiredReply?.latestAttemptAt,
+        activation.updated_at,
+      ].filter((value): value is string => Boolean(value)).sort().at(-1)!;
       latestByRecipient.set(activation.agent_id, {
         activation,
-        attemptCount: activation.attempt_number + 1,
+        attemptCount: (previous?.attemptCount ?? 0) + (requiredReply?.attemptCount ?? 1),
+        latestAttemptAt,
+        requiredReplyExhausted: requiredReply?.exhausted ?? false,
       });
     }
     for (const [communicationEventId, latestByRecipient] of latestByCommunication) {
-      const receipts = [...latestByRecipient.values()].map(({ activation, attemptCount }) => {
+      const receipts = [...latestByRecipient.values()].map(({
+        activation,
+        attemptCount,
+        latestAttemptAt,
+        requiredReplyExhausted,
+      }) => {
         const injection = this.sqlite.prepare(`
           SELECT injection.id, injection.kind, injection.state, injection.updated_at
           FROM scheduler_prompt_injections injection, json_each(injection.activation_ids_json) member
@@ -354,7 +421,8 @@ export class CoordinationV3RuntimeCommunicationReadModel {
           } | undefined
           : undefined;
         let state: MessageDeliveryReceiptDto["state"];
-        if (activation.state === "outcome_unknown") {
+        if (requiredReplyExhausted) state = "retry_exhausted";
+        else if (activation.state === "outcome_unknown") {
           if (!recovery) state = "undelivered";
           else if (recovery.state === "grace_period") state = "unconfirmed";
           else if (recovery.recovery_activation_state === "consumed") state = "recovered";
@@ -380,10 +448,15 @@ export class CoordinationV3RuntimeCommunicationReadModel {
           activationId: activation.id,
           targetAgentId: activation.agent_id,
           state,
-          updatedAt: recovery?.updated_at ?? injection?.updated_at ?? activation.updated_at,
+          updatedAt: [
+            latestAttemptAt,
+            recovery?.updated_at,
+            injection?.updated_at,
+            activation.updated_at,
+          ].filter((value): value is string => Boolean(value)).sort().at(-1)!,
           attemptCount,
           ...(
-            (state === "undelivered" || state === "failed")
+            (state === "undelivered" || state === "retry_exhausted" || state === "failed")
             && this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(
               activation.project_id,
               activation.agent_id,

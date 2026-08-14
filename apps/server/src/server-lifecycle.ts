@@ -226,6 +226,11 @@ export function registerServerLifecycle(
       app.log.warn({ recoveredProviderProcesses }, "terminated provider process groups recovered from a previous daemon boot");
     }
     completeLifecyclePhase("provider_process_recovery");
+    if (opts.startupMode === "shutdown_recovery") {
+      setClosed();
+      app.log.info({ recoveredProviderProcesses }, "shutdown recovery verifier completed durable process cleanup");
+      return;
+    }
     const runtimeArtifacts = coordinationV3.runtimeArtifacts();
     if (artifactFilesystem.ok) {
       resolveOperationalNotification("startup:artifact-filesystem-capability");
@@ -493,6 +498,7 @@ export function registerServerLifecycle(
         drainEngineCapabilityDiscoveries(),
         drainEngineModelCatalogDiscoveries(),
         providerUsage.shutdown(),
+        Promise.resolve().then(() => opts.shutdownFaults?.providerClose?.()),
       ]);
       const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
       if (failures.length) throw new AggregateError(failures, "Provider runtime authority shutdown did not complete");
@@ -506,8 +512,6 @@ export function registerServerLifecycle(
     }
     closeShutdownStorageIfReady();
   };
-  app.retryProviderRuntimeShutdown = finalizeProviderRuntimeShutdown;
-
   const boundedBackgroundShutdown = async (label: string, operation: () => void | Promise<void>): Promise<void> => {
     const timeoutMs = opts.shutdownFaults?.backgroundCleanupTimeoutMs ?? 5_000;
     let timer: NodeJS.Timeout | undefined;
@@ -520,22 +524,26 @@ export function registerServerLifecycle(
         timeout,
       ]);
       if (result === "timeout") {
-        app.log.warn({ cleanup: label, timeoutMs }, "Non-authority shutdown cleanup exceeded its deadline; process exit will release it");
+        throw new Error(`${label} cleanup exceeded its ${timeoutMs}ms shutdown deadline`);
       }
     } finally {
       if (timer) clearTimeout(timer);
     }
   };
 
-  app.addHook("onClose", async () => {
+  let shutdownRunBrowserClosures: Array<() => Promise<void>> = [];
+  let shutdownPrepared = false;
+  const prepareStrictShutdown = (): void => {
+    if (shutdownPrepared) return;
+    shutdownPrepared = true;
     setClosed();
     if (startupProjectionRecoveryImmediate) clearImmediate(startupProjectionRecoveryImmediate);
     if (assetSweep) clearInterval(assetSweep);
     if (agentDeletionCleanupSweep) clearInterval(agentDeletionCleanupSweep);
     stopCommunicationReconciliation();
-    const runBrowserClosures: Promise<void>[] = [];
+    shutdownRunBrowserClosures = [];
     for (const [agentId, run] of activeRuns) {
-      runBrowserClosures.push(closeRunBrowser(agentId, run, "server_shutdown"));
+      shutdownRunBrowserClosures.push(() => closeRunBrowser(agentId, run, "server_shutdown"));
       clearRunLeaseTimer(run);
       clearRunLivenessTimer(run);
       agentMessageCapabilities.delete(run.messageCapability);
@@ -551,6 +559,9 @@ export function registerServerLifecycle(
       }
       run.controller.abort();
     }
+  };
+  const finalizeBackgroundShutdown = async (): Promise<void> => {
+    if (shutdownBackgroundCleanupSucceeded) return;
     projectBrowserGrants.clear();
     const backgroundOperation = Promise.allSettled([
       boundedBackgroundShutdown("web-push delivery", () => webPushDelivery?.stop()),
@@ -560,24 +571,32 @@ export function registerServerLifecycle(
         "runtime communication projection recovery",
         () => startupProjectionRecovery,
       ),
-      ...runBrowserClosures,
+      ...shutdownRunBrowserClosures.map((close) => Promise.resolve().then(close)),
       Promise.resolve().then(() => browserSessions.closeAll("server_shutdown")),
       Promise.resolve().then(() => projectBrowserSessions.closeAll("server_shutdown")),
       boundedBackgroundShutdown("injected background cleanup", () => opts.shutdownFaults?.backgroundCleanup?.()),
     ]);
+    const results = await backgroundOperation;
+    const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+    if (failures.length) throw new AggregateError(failures, "Background shutdown cleanup did not complete");
+    shutdownBackgroundCleanupSucceeded = true;
+    closeShutdownStorageIfReady();
+  };
+  const finalizeShutdownCleanup = async (): Promise<void> => {
+    prepareStrictShutdown();
     // Provider authority revocation is an independent barrier. No earlier
     // watcher, scheduler, push, or browser failure can skip it.
     const [backgroundResults, providerResult] = await Promise.all([
-      backgroundOperation,
+      finalizeBackgroundShutdown().then(
+        () => ({ status: "fulfilled" as const }),
+        (reason: unknown) => ({ status: "rejected" as const, reason }),
+      ),
       finalizeProviderRuntimeShutdown().then(
         () => ({ status: "fulfilled" as const }),
         (reason: unknown) => ({ status: "rejected" as const, reason }),
       ),
     ]);
-    const backgroundFailures = backgroundResults.flatMap((result) =>
-      result.status === "rejected" ? [result.reason] : []
-    );
-    shutdownBackgroundCleanupSucceeded = backgroundFailures.length === 0;
+    const backgroundFailures = backgroundResults.status === "rejected" ? [backgroundResults.reason] : [];
     const failures = [
       ...backgroundFailures,
       ...(providerResult.status === "rejected" ? [providerResult.reason] : []),
@@ -594,5 +613,10 @@ export function registerServerLifecycle(
         providerResult.status === "rejected";
       throw error;
     }
+  };
+  app.retryShutdownCleanup = finalizeShutdownCleanup;
+
+  app.addHook("onClose", async () => {
+    await finalizeShutdownCleanup();
   });
 }

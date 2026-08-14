@@ -126,6 +126,7 @@ export type MessageDeliveryReceiptState =
   | "recovering"
   | "recovered"
   | "undelivered"
+  | "retry_exhausted"
   | "failed"
   | "cancelled";
 

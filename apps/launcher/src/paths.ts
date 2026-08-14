@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import type {
   LauncherConfiguration,
   LauncherPaths,
+  LegacyLauncherState,
   LauncherState,
   PlatformAdapter,
 } from "./types.js";
@@ -92,7 +93,8 @@ export function readLauncherConfiguration(pathname: string): LauncherConfigurati
 export function readLauncherState(pathname: string): LauncherState | undefined {
   try {
     const parsed = JSON.parse(readFileSync(pathname, "utf8")) as LauncherState;
-    if (parsed.schemaVersion !== 1 ||
+    if (parsed.schemaVersion !== 2 ||
+        typeof parsed.generation !== "string" || !/^[0-9a-f-]{36}$/iu.test(parsed.generation) ||
         typeof parsed.controlToken !== "string" || parsed.controlToken.length < 32 ||
         (parsed.supervisorPid !== undefined &&
           (!Number.isSafeInteger(parsed.supervisorPid) || parsed.supervisorPid <= 0)) ||
@@ -101,6 +103,44 @@ export function readLauncherState(pathname: string): LauncherState | undefined {
             !/^[0-9a-f-]{36}$/iu.test(parsed.supervisorGeneration))) ||
         ((parsed.supervisorPid === undefined) !== (parsed.supervisorGeneration === undefined)) ||
         !Number.isSafeInteger(parsed.pid) || parsed.pid < 0 ||
+        (parsed.processBirthMarker !== undefined &&
+          (typeof parsed.processBirthMarker !== "string" || parsed.processBirthMarker.length === 0)) ||
+        !Number.isSafeInteger(parsed.port) || parsed.port < 1 || parsed.port > 65_535 ||
+        parsed.host !== "127.0.0.1" ||
+        typeof parsed.startedAt !== "string" || !Number.isFinite(Date.parse(parsed.startedAt)) ||
+        typeof parsed.dataDir !== "string" || parsed.dataDir.length === 0 ||
+        typeof parsed.installRoot !== "string" || parsed.installRoot.length === 0 ||
+        typeof parsed.version !== "string" || parsed.version.length === 0 ||
+        typeof parsed.commit !== "string" || parsed.commit.length === 0 ||
+        typeof parsed.channel !== "string" || parsed.channel.length === 0 ||
+        (parsed.shutdownRequestedAt !== undefined &&
+          (typeof parsed.shutdownRequestedAt !== "string" || !Number.isFinite(Date.parse(parsed.shutdownRequestedAt))))) {
+      return undefined;
+    }
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+export function readLegacyLauncherState(pathname: string): LegacyLauncherState | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(pathname, "utf8")) as LegacyLauncherState & {
+      generation?: unknown;
+      shutdownRequestedAt?: unknown;
+    };
+    if (parsed.schemaVersion !== 1 || parsed.generation !== undefined ||
+        parsed.shutdownRequestedAt !== undefined ||
+        typeof parsed.controlToken !== "string" || parsed.controlToken.length < 32 ||
+        (parsed.supervisorPid !== undefined &&
+          (!Number.isSafeInteger(parsed.supervisorPid) || parsed.supervisorPid <= 0)) ||
+        (parsed.supervisorGeneration !== undefined &&
+          (typeof parsed.supervisorGeneration !== "string" ||
+            !/^[0-9a-f-]{36}$/iu.test(parsed.supervisorGeneration))) ||
+        ((parsed.supervisorPid === undefined) !== (parsed.supervisorGeneration === undefined)) ||
+        !Number.isSafeInteger(parsed.pid) || parsed.pid < 0 ||
+        (parsed.processBirthMarker !== undefined &&
+          (typeof parsed.processBirthMarker !== "string" || parsed.processBirthMarker.length === 0)) ||
         !Number.isSafeInteger(parsed.port) || parsed.port < 1 || parsed.port > 65_535 ||
         parsed.host !== "127.0.0.1" ||
         typeof parsed.startedAt !== "string" || !Number.isFinite(Date.parse(parsed.startedAt)) ||

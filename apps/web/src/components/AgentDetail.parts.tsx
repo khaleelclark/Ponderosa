@@ -79,13 +79,13 @@ function AgentRuntimeControls({
       engines={engines.map(option => ({
         id: option.id,
         label: option.displayName,
-        disabled: !option.available || option.enabled === false,
-        detail: option.available
+        disabled: !option.intakeReady || option.enabled === false,
+        detail: option.intakeReady
           ? option.enabled === false
             ? "Disabled in Settings"
             : undefined
-          : option.authenticated
-            ? "Access unavailable"
+          : option.authentication === "authenticated"
+            ? option.reachability === "degraded" ? "Provider degraded" : "Intake unavailable"
             : "Signed out",
       }))}
       model={model}

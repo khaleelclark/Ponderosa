@@ -15,8 +15,14 @@ import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  classifyEngineReadiness,
+  type EngineReadinessSnapshot,
+} from "./engine-state.js";
 
 interface LauncherState {
+  schemaVersion: 2;
+  generation: string;
   controlToken: string;
   pid: number;
   port: number;
@@ -55,7 +61,7 @@ interface BundleIdentity {
   channel: string;
 }
 
-type EngineState = "starting" | "running" | "stopped" | "error";
+type EngineState = "starting" | "running" | "reachable" | "degraded" | "stopping" | "cleanup_incomplete" | "stopped" | "error";
 
 interface EngineSnapshot {
   state: EngineState;
@@ -141,6 +147,8 @@ async function readState(): Promise<LauncherState | undefined> {
     const state = JSON.parse(await readFile(launcherStatePath, "utf8")) as Partial<LauncherState>;
     if (
       typeof state.controlToken !== "string" ||
+      state.schemaVersion !== 2 ||
+      typeof state.generation !== "string" || !/^[0-9a-f-]{36}$/iu.test(state.generation) ||
       !Number.isSafeInteger(state.pid) ||
       !Number.isSafeInteger(state.port) ||
       state.host !== "127.0.0.1" ||
@@ -174,25 +182,43 @@ async function launcherRequest<T>(
   return response.json() as Promise<T>;
 }
 
-async function currentStatus(): Promise<{ state: LauncherState; status: LauncherStatus } | undefined> {
-  const state = await readState();
-  if (!state) return undefined;
+async function readinessRequest(state: LauncherState): Promise<EngineReadinessSnapshot | undefined> {
   try {
-    const status = await launcherRequest<LauncherStatus>(state, "/api/launcher/status");
-    return { state, status };
+    const response = await fetch(`http://${state.host}:${state.port}/api/ready`, {
+      headers: { authorization: `Bearer ${state.controlToken}` },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (response.status !== 200 && response.status !== 503) return undefined;
+    return await response.json() as EngineReadinessSnapshot;
   } catch {
     return undefined;
   }
 }
 
-async function waitUntilRunning(timeoutMs = 30_000): Promise<{ state: LauncherState; status: LauncherStatus }> {
+async function currentStatus(): Promise<{
+  state: LauncherState;
+  status: LauncherStatus;
+  readiness?: EngineReadinessSnapshot;
+} | undefined> {
+  const state = await readState();
+  if (!state) return undefined;
+  try {
+    const status = await launcherRequest<LauncherStatus>(state, "/api/launcher/status");
+    const readiness = await readinessRequest(state);
+    return { state, status, ...(readiness ? { readiness } : {}) };
+  } catch {
+    return undefined;
+  }
+}
+
+async function waitUntilReachable(timeoutMs = 30_000): Promise<NonNullable<Awaited<ReturnType<typeof currentStatus>>>> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const running = await currentStatus();
     if (running) return running;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  throw new Error("Ponderosa Engine did not become ready in time.");
+  throw new Error("Ponderosa Engine did not become reachable in time.");
 }
 
 function launcher(command: "engine" | "stop"): ChildProcess {
@@ -262,7 +288,7 @@ async function startEngine(openBrowser: boolean): Promise<void> {
     engineProcess.once("exit", () => {
       engineProcess = undefined;
       void currentStatus().then((running) => {
-        if (!running && engineState !== "starting") {
+        if (!running && engineState !== "starting" && engineState !== "cleanup_incomplete") {
           engineState = "stopped";
           engineDetail = "The local service is stopped. Restart it when you are ready.";
           window?.webContents.send("engine:changed");
@@ -272,9 +298,10 @@ async function startEngine(openBrowser: boolean): Promise<void> {
   }
 
   try {
-    await waitUntilRunning();
-    engineState = "running";
-    engineDetail = "The local service is ready.";
+    const observed = await waitUntilReachable();
+    const classification = classifyEngineReadiness(observed.readiness);
+    engineState = classification.state;
+    engineDetail = classification.detail;
     window?.webContents.send("engine:changed");
     if (openBrowser) await openPonderosa();
   } catch (error) {
@@ -321,14 +348,17 @@ async function snapshot(): Promise<EngineSnapshot> {
       },
     };
   }
-  engineState = "running";
-  engineDetail = "The local service is ready.";
+  if (engineState !== "stopping" && engineState !== "cleanup_incomplete") {
+    const classification = classifyEngineReadiness(running.readiness);
+    engineState = classification.state;
+    engineDetail = classification.detail;
+  }
   const [server, error] = await Promise.all([
     logs(running.state, "server"),
     logs(running.state, "error"),
   ]);
   return {
-    state: "running",
+    state: engineState,
     detail: engineDetail,
     pid: running.status.pid,
     version: running.status.version,
@@ -416,7 +446,7 @@ async function requestQuit(): Promise<boolean> {
         : await dialog.showMessageBox(options);
       if (choice.response === 0) return false;
     }
-    engineState = "stopped";
+    engineState = "stopping";
     engineDetail = "Stopping the local Ponderosa service…";
     window?.webContents.send("engine:changed");
     await runLauncher("stop");
@@ -424,7 +454,7 @@ async function requestQuit(): Promise<boolean> {
     app.quit();
     return true;
   } catch (error) {
-    engineState = "error";
+    engineState = "cleanup_incomplete";
     engineDetail = error instanceof Error ? error.message : "Ponderosa Engine could not stop safely.";
     window?.webContents.send("engine:changed");
     const options: MessageBoxOptions = {
@@ -460,8 +490,18 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.handle("engine:snapshot", snapshot);
   ipcMain.handle("engine:open", async () => openPonderosa());
   ipcMain.handle("engine:restart", async () => {
-    await runLauncher("stop");
-    await startEngine(true);
+    engineState = "stopping";
+    engineDetail = "Stopping the local Ponderosa service before restart…";
+    window?.webContents.send("engine:changed");
+    try {
+      await runLauncher("stop");
+      await startEngine(true);
+    } catch (error) {
+      engineState = "cleanup_incomplete";
+      engineDetail = error instanceof Error ? error.message : "Ponderosa Engine could not stop safely for restart.";
+      window?.webContents.send("engine:changed");
+      throw error;
+    }
   });
   ipcMain.handle("engine:quit", requestQuit);
   ipcMain.handle("engine:copy-logs", (_event, text: unknown) => {

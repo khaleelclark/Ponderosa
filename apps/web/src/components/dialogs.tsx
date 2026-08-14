@@ -323,7 +323,7 @@ export function CreateAgentDialog({
               {engines.map((option) => (
                 <MenuItem key={option.id} value={option.id} disabled={!engineIsAvailable(option)}>
                   {option.displayName}
-                  {engineIsAvailable(option) ? "" : option.authenticated ? " — Unavailable" : " — Not Signed In"}
+                  {engineIsAvailable(option) ? "" : option.authentication === "checking" ? " — Checking" : option.authentication === "authenticated" ? " — Unavailable" : " — Not Signed In"}
                 </MenuItem>
               ))}
             </Select>

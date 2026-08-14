@@ -188,17 +188,8 @@ export function registerEngineRoutes(
         : { authenticated: true };
       if (!auth.authenticated) return engineDto(registration);
       if (!registration.availabilityProbe) {
-        const denial = availability.denial(request.params.id);
-        if (denial?.source === "provider_run") {
-          availability.record({
-            engineId: request.params.id,
-            available: true,
-            detail: "provider authentication rechecked successfully",
-            source: "operator_probe",
-          });
-        }
         const refreshed = await engineDto(registration);
-        if (refreshed.available) {
+        if (refreshed.intakeReady) {
           resolveOperationalNotification(`provider:${request.params.id}:unavailable`);
           notifyScheduler();
         }

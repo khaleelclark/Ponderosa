@@ -56,6 +56,18 @@ describe("operational notification classification", () => {
         communicationIntent: "user_dm",
         deliveryFailures: 0,
         updatedAt: NOW,
+      }, {
+        id: "required-reply-exhausted",
+        projectId: PROJECT_ID,
+        agentId: AGENT_ID,
+        kind: "human_message",
+        state: "outcome_unknown",
+        communicationEventId: "communication-exhausted",
+        communicationIntent: "broadcast",
+        terminalOutcome: "retry_exhausted",
+        deliveryFailures: 6,
+        lastDeliveryError: "Required Chat reply was not published after 6 provider Runs.",
+        updatedAt: NOW,
       }]),
       terminalActivationDisposition: vi.fn(() => ({
         id: COMMUNICATION_ACTIVATION_ID,
@@ -133,8 +145,12 @@ describe("operational notification classification", () => {
 
     expect(notifications.map((notification) => notification.title)).toEqual([
       "Message outcome needs your review",
+      "Required reply recovery exhausted",
     ]);
     expect(notifications[0]?.body).toContain("Retrying may duplicate work");
+    expect(notifications[1]?.body).toContain("after 6 provider Runs");
+    expect(notifications[1]?.body).toContain("Automatic recovery stopped");
+    expect(notifications[1]?.body).toContain("retrying may duplicate work");
   });
 
   it("reconciles every communication failure across bounded pages", () => {

@@ -72,22 +72,33 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
   const runtimeStatus = async (
     id: string,
     registration: EngineRegistration,
-  ): Promise<{ configured: true; authenticated: boolean; available: boolean; authDetail?: string; availabilityDetail?: string }> => {
+  ): Promise<{
+    configured: true;
+    authentication: "authenticated" | "unauthenticated" | "error";
+    intakeReady: boolean;
+    reachability: "unverified" | "reachable" | "degraded";
+    authDetail?: string;
+    availabilityDetail?: string;
+  }> => {
     const auth = registration.authStatus
       ? await engineAuthStatuses.get(id, registration.authStatus)
       : { authenticated: true, detail: "runtime registered (authentication status not reported)" };
     const denial = runtimeFailureDetail(id);
+    const evidence = engineAvailability.get(id);
     const enabled = providerEnabled(id);
     return {
       configured: true,
-      authenticated: auth.authenticated,
-      available: enabled && auth.authenticated && !denial,
+      authentication: auth.authenticated ? "authenticated" : "unauthenticated",
+      intakeReady: enabled && auth.authenticated && !denial,
+      reachability: evidence ? (evidence.available ? "reachable" : "degraded") : "unverified",
       ...(auth.detail ? { authDetail: auth.detail } : {}),
       ...(!enabled ? { availabilityDetail: "disabled by the operator; queued work is held" }
         : !auth.authenticated
         ? { availabilityDetail: auth.detail ?? "runtime is not authenticated" }
         : denial ? { availabilityDetail: `provider rejected runtime access: ${denial}` }
-          : { availabilityDetail: "provider access available" }),
+          : evidence?.available
+            ? { availabilityDetail: evidence.detail ?? "provider accepted real work" }
+            : { availabilityDetail: "provider intake is enabled; reachability has not yet been verified by real work" }),
     };
   };
   const engineDto = async (registration: EngineRegistration): Promise<EngineDto> => {
@@ -98,8 +109,9 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     } catch (error) {
       status = {
         configured: true,
-        authenticated: false,
-        available: false,
+        authentication: "error",
+        intakeReady: false,
+        reachability: "degraded",
         authDetail: error instanceof Error ? error.message : "auth status check failed",
         availabilityDetail: "runtime authentication could not be checked",
       };

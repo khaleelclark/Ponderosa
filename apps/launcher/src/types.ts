@@ -45,13 +45,18 @@ export interface LauncherConfiguration {
 }
 
 export interface LauncherState {
-  schemaVersion: 1;
+  schemaVersion: 2;
+  /** Exact installed server generation used by durable shutdown receipts. */
+  generation: string;
   controlToken: string;
   /** Windows supervisor that owns the server Job Object until it drains. */
   supervisorPid?: number;
   /** Correlates the persisted supervisor status with this launcher instance. */
   supervisorGeneration?: string;
   pid: number;
+  /** Immutable POSIX process birth evidence used before retrying a post-close
+   * signal. Windows uses the supervisor generation and Job drain record. */
+  processBirthMarker?: string;
   port: number;
   host: "127.0.0.1";
   startedAt: string;
@@ -61,11 +66,24 @@ export interface LauncherState {
   version: string;
   commit: string;
   channel: ReleaseChannel;
+  /** Set before the launcher asks this exact generation to stop. */
+  shutdownRequestedAt?: string;
 }
+
+/** One-time upgrade input written by the pre-receipt launcher. Current code
+ * may add exact authenticated identity evidence before shutdown, and removes
+ * the record only after that authority drains. */
+export type LegacyLauncherState = Omit<
+  LauncherState,
+  "schemaVersion" | "generation" | "shutdownRequestedAt"
+> & { schemaVersion: 1 };
 
 export interface PublicLauncherState extends Omit<LauncherState, "controlToken"> {
   healthy: boolean;
   detail: string;
+  acceptingDurableIntake: boolean;
+  leasingRuns: boolean;
+  activeRunCount: number;
 }
 
 export interface UpdateRestartPrompt {
@@ -148,4 +166,5 @@ export interface LauncherDependencies {
   output?: LauncherOutput;
   fetch?: typeof globalThis.fetch;
   spawnServer?: (paths: LauncherPaths, state: LauncherState, env: NodeJS.ProcessEnv) => Promise<number>;
+  recoverShutdown?: (paths: LauncherPaths, state: LauncherState) => Promise<void>;
 }

@@ -41,6 +41,11 @@ export class CoordinationV3DeletionAuthority {
         now,
       });
       this.sqlite.prepare(`
+        UPDATE required_reply_obligations
+        SET state = 'cancelled', updated_at = ?, terminal_at = ?
+        WHERE agent_id = ? AND state IN ('pending', 'recovery_pending')
+      `).run(now, now, agentId);
+      this.sqlite.prepare(`
         UPDATE context_rollovers
         SET state = 'failed', last_error = 'agent deletion fenced context rollover',
           updated_at = ?, terminal_at = COALESCE(terminal_at, ?)
@@ -140,6 +145,12 @@ export class CoordinationV3DeletionAuthority {
           now,
         });
       }
+      this.sqlite.prepare(`
+        UPDATE required_reply_obligations
+        SET state = 'cancelled', updated_at = ?, terminal_at = ?
+        WHERE agent_id = ? AND scope_key = ?
+          AND state IN ('pending', 'recovery_pending')
+      `).run(now, now, agentId, scopeKey);
       const joins = this.sqlite.prepare(`
         SELECT id FROM coordination_joins
         WHERE owner_agent_id = ? AND conversation_id = ? AND state = 'open'
@@ -241,6 +252,11 @@ export class CoordinationV3DeletionAuthority {
           now,
         });
       }
+      this.sqlite.prepare(`
+        UPDATE required_reply_obligations
+        SET state = 'cancelled', updated_at = ?, terminal_at = ?
+        WHERE project_id = ? AND state IN ('pending', 'recovery_pending')
+      `).run(now, now, projectId);
       this.sqlite.prepare(`
         UPDATE context_rollovers
         SET state = 'failed', last_error = 'project deletion fenced context rollover',

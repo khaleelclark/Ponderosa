@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import type { CommunicationAudience } from "@ponderosa/core";
 import { payloadHash, stableJson } from "./coordination-v3-canonical-json.js";
 import type { CoordinationV3RuntimeAttachmentAuthority } from "./coordination-v3-runtime-attachment-authority.js";
 import type { CoordinationV3RuntimeArtifactAuthority } from "./coordination-v3-runtime-artifact-authority.js";
@@ -46,6 +47,13 @@ export class CoordinationV3RuntimeCommunicationAuthority {
     ) => void,
     private readonly requireProject: (projectId: string) => void,
     private readonly createActivation: (input: CreateActivationV3Input) => string,
+    private readonly markRequiredReplySatisfied: (input: {
+      runId: string;
+      communicationId: string;
+      intent: string;
+      audience: CommunicationAudience;
+      now: string;
+    }) => void,
   ) {}
 
   recordRuntimeCommunication(
@@ -182,6 +190,13 @@ export class CoordinationV3RuntimeCommunicationAuthority {
                 AND a.project_id = ?
               ORDER BY a.created_at, a.id
             `).all(input.id, input.projectId) as Array<{ id: string }>;
+            if (input.runAuthorization && input.satisfiesRequiredReply) this.markRequiredReplySatisfied({
+              runId: input.runAuthorization.runId,
+              communicationId: input.id,
+              intent: input.intent,
+              audience: input.audience,
+              now,
+            });
             return {
               id: input.id,
               ...(activations[0]
@@ -231,6 +246,13 @@ export class CoordinationV3RuntimeCommunicationAuthority {
             now,
           );
           insertedCommunication = true;
+          if (input.runAuthorization && input.satisfiesRequiredReply) this.markRequiredReplySatisfied({
+            runId: input.runAuthorization.runId,
+            communicationId: input.id,
+            intent: input.intent,
+            audience: input.audience,
+            now,
+          });
           const insertArtifact = this.sqlite.prepare(`
             INSERT INTO runtime_artifacts (
               id, owner_kind, owner_id, project_id, role, title, media_type,

@@ -556,7 +556,7 @@ function ProviderSettingsSection({
   onRecheckEngine(engineId: string): void;
 }): JSX.Element {
   const usageProviders = engines.filter(engine =>
-    engine.authenticated && Boolean(engine.providerUsageCommand)
+    engine.authentication === "authenticated" && Boolean(engine.providerUsageCommand)
   );
   const defaultUsageProvider = usageProviders.some(
     engine => engine.id === preferences.defaultUsageProvider,
@@ -623,10 +623,12 @@ function ProviderSettingsSection({
                   <Typography fontWeight={800}>{engine.displayName}</Typography>
                   <Typography
                     variant="caption"
-                    color={engine.available ? "text.secondary" : "warning.main"}
+                    color={engine.intakeReady ? "text.secondary" : "warning.main"}
                   >
-                    {engine.available
-                      ? "Available"
+                    {engine.reachability === "reachable"
+                      ? "Reachable"
+                      : engine.intakeReady
+                        ? "Intake ready"
                       : (engine.availabilityDetail ?? "Unavailable")}
                   </Typography>
                 </Box>
@@ -731,7 +733,7 @@ function ProviderSettingsSection({
                   </Button>
                 }
               >
-                {engine.authenticated
+                {engine.authentication === "authenticated"
                   ? "Provider access needs attention before it can start new work."
                   : "Sign in on this host, then return to Ponderosa. Sign-in will be checked automatically."}
               </Alert>

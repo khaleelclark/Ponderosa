@@ -49,10 +49,10 @@ export function ProviderStatusDialog({
             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
               <Typography variant="subtitle1" fontWeight={750} sx={{ flex: 1 }}>{engine.displayName}</Typography>
               <Chip size="small" label={disabled ? "Disabled" : "Enabled"} color={disabled ? "default" : "success"} variant="outlined" />
-              <Chip size="small" label={engine.authenticated ? "Signed in" : "Sign-in needed"} color={engine.authenticated ? "success" : "warning"} variant="outlined" />
+              <Chip size="small" label={engine.authentication === "authenticated" ? "Signed in" : engine.authentication === "checking" ? "Checking sign-in" : engine.authentication === "error" ? "Sign-in check failed" : "Sign-in needed"} color={engine.authentication === "authenticated" ? "success" : engine.authentication === "checking" ? "default" : "warning"} variant="outlined" />
               <Chip size="small" label={status.label} color={status.color} />
             </Stack>
-            <Typography variant="body2" sx={{ mt: 1 }}>{disabled ? "Provider access is inactive while disabled by the operator." : engine.availabilityDetail ?? (engine.available ? "Runtime access is available." : "Runtime access is unavailable.")}</Typography>
+            <Typography variant="body2" sx={{ mt: 1 }}>{disabled ? "Provider access is inactive while disabled by the operator." : engine.availabilityDetail ?? (engine.intakeReady ? "Provider intake is ready." : "Provider intake is unavailable.")}</Typography>
             {engine.authDetail ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>{engine.authDetail}</Typography> : null}
             <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>Default: {engine.models.find((model) => model.id === engine.defaultModel)?.label ?? engine.defaultModel ?? "provider default"}{engine.defaultEffort ? ` · ${engine.defaultEffort} effort` : ""}</Typography>
             {engineCanTestAccess(engine) ? <Button size="small" sx={{ mt: 1 }} disabled={Boolean(recheckingEngineId)} onClick={() => onTestAccess(engine)}>

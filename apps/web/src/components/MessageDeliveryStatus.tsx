@@ -33,6 +33,7 @@ function deliveryLabel(
     case "recovering": return `Delivery to ${recipientName} was unconfirmed. Recovery is running and auditing current state first.`;
     case "recovered": return `Recovered and processed by ${recipientName}.`;
     case "undelivered": return `Undelivered to ${recipientName}: provider acknowledgement was not confirmed.`;
+    case "retry_exhausted": return `Required reply from ${recipientName} was not published after ${receipt.attemptCount} attempts; automatic recovery stopped.`;
     case "failed": return `Delivery to ${recipientName} failed.`;
     case "cancelled": return `Delivery to ${recipientName} was cancelled.`;
   }
@@ -51,6 +52,7 @@ function compactDeliveryLabel(receipt: Pick<MessageDeliveryReceiptDto, "state">)
     case "recovering": return "Recovering";
     case "recovered": return "Recovered";
     case "undelivered": return "Undelivered";
+    case "retry_exhausted": return "Reply exhausted";
     case "failed": return "Failed";
     case "cancelled": return "Cancelled";
   }
@@ -59,7 +61,7 @@ function compactDeliveryLabel(receipt: Pick<MessageDeliveryReceiptDto, "state">)
 function severity(receipt: MessageDeliveryReceiptDto): "success" | "info" | "warning" | "error" {
   if (receipt.state === "delivered" || receipt.state === "processed" || receipt.state === "recovered") return "success";
   if (receipt.state === "unconfirmed" || receipt.state === "waiting_for_run" || receipt.state === "recovery_queued" || receipt.state === "recovering") return "warning";
-  if (receipt.state === "undelivered" || receipt.state === "failed") return "error";
+  if (receipt.state === "undelivered" || receipt.state === "retry_exhausted" || receipt.state === "failed") return "error";
   return "info";
 }
 

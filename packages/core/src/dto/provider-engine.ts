@@ -179,12 +179,16 @@ export interface EngineDto {
   configured: true;
   /** Global operator switch. Disabled engines retain queued work but cannot lease it. */
   enabled?: boolean;
-  /** Subscription credentials are present; this does not prove entitlement. */
-  authenticated: boolean;
+  /** Authentication probe truth. `checking` never means signed out, and
+   * successful authentication does not prove provider reachability. */
+  authentication: "checking" | "authenticated" | "unauthenticated" | "error";
   authDetail?: string;
-  /** Real provider work is allowed to run. */
-  available: boolean;
-  /** Positive/negative provider evidence behind `available`. */
+  /** Scheduler intake may start real provider work. This is admission state,
+   * not a claim that a provider request has already succeeded. */
+  intakeReady: boolean;
+  /** Last real provider observation. Authentication alone remains unverified. */
+  reachability: "unverified" | "checking" | "reachable" | "degraded";
+  /** Positive/negative provider evidence behind reachability and intake. */
   availabilityDetail?: string;
 }
 
