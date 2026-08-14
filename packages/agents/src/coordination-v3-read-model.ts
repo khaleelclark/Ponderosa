@@ -1274,7 +1274,15 @@ export class CoordinationV3ReadModel {
         const row = this.sqlite.prepare(`
           SELECT scheduler.id, scheduler.status, scheduler.fencing_token, scheduler.prompt_injection_state,
             scheduler.context_disposition, scheduler.lease_expires_at, scheduler.terminal_at,
-            scheduler.provider_failure_json,
+            CASE WHEN scheduler.provider_failure_json IS NULL THEN 0 ELSE 1 END AS has_provider_failure,
+            (
+              SELECT activation.last_delivery_error
+              FROM scheduler_run_activations attached
+              JOIN agent_activations activation ON activation.id = attached.activation_id
+              WHERE attached.run_id = scheduler.id AND activation.last_delivery_error IS NOT NULL
+              ORDER BY activation.updated_at DESC, activation.id DESC
+              LIMIT 1
+            ) AS provider_failure_summary,
             provider.execution_id, provider.prompt_hash, execution.status AS execution_status,
             execution.wake_cause, execution.completed_at
           FROM scheduler_runs scheduler
@@ -1286,13 +1294,19 @@ export class CoordinationV3ReadModel {
           id: string; status: string; fencing_token: number; prompt_injection_state: string; context_disposition: string;
           lease_expires_at: string; terminal_at: string | null; execution_id: string | null; prompt_hash: string | null;
           execution_status: string | null; wake_cause: string | null; completed_at: string | null;
-          provider_failure_json: string | null;
+          has_provider_failure: 0 | 1;
+          provider_failure_summary: string | null;
         } | undefined;
+        const providerFailureSummary = row?.provider_failure_summary
+          ?? (row?.has_provider_failure ? "Provider execution failed." : undefined);
         return row ? inspectorDetails(["Execution Run ID", row.execution_id], ["Scheduler Run ID", row.id],
           ["Scheduler status", row.status], ["Execution projection status", row.execution_status], ["Wake cause", row.wake_cause],
           ["Fence", row.fencing_token], ["Prompt injection", row.prompt_injection_state],
           ["Provider context", row.context_disposition], ["Prompt hash", row.prompt_hash],
-          ["Provider failure", inspectorJson(row.provider_failure_json)],
+          ["Provider failure summary", providerFailureSummary],
+          ["Operator action", providerFailureSummary
+            ? "Review provider access and retry the affected work when the provider is available."
+            : undefined],
           ["Lease expires", row.lease_expires_at], ["Scheduler terminal time", row.terminal_at],
           ["Execution completed time", row.completed_at]) : undefined;
       }
