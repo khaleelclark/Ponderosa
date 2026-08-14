@@ -33,6 +33,7 @@ import type {
 } from "../app-contracts.js";
 import { evaluateContextRolloverPressure } from "../context-rollover-pressure.js";
 import type { ContextCursor } from "../context-cursors.js";
+import { providerUnavailableNotificationBody } from "../provider-availability-detail.js";
 import { cleanupRuntimeAttachments } from "../runtime-attachments.js";
 import type { AgentMessageRunContext } from "./agent-message-run.js";
 
@@ -1302,7 +1303,7 @@ export function startProviderRunExecution(
               category: "provider",
               severity: "attention",
               title: `${engines.get(runtimeEngineId)?.adapter.displayName ?? runtimeEngineId} stopped accepting work`,
-              body: `${runError} Queued Runs using this provider are now held.`,
+              body: providerUnavailableNotificationBody(runError),
               projectId: agent.projectId,
               conversationId: agent.conversationId,
               action: { kind: "open_settings", targetId: runtimeEngineId },

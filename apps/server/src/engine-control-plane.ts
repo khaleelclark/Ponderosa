@@ -86,21 +86,23 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     const auth = registration.authStatus
       ? await engineAuthStatuses.get(id, registration.authStatus)
       : { authenticated: true, detail: "runtime registered (authentication status not reported)" };
+    const authDetail = publicProviderAvailabilityDetail(auth.detail);
     const denial = runtimeFailureDetail(id);
     const evidence = engineAvailability.get(id);
+    const evidenceDetail = publicProviderAvailabilityDetail(evidence?.detail);
     const enabled = providerEnabled(id);
     return {
       configured: true,
       authentication: auth.authenticated ? "authenticated" : "unauthenticated",
       intakeReady: enabled && auth.authenticated && !denial,
       reachability: evidence ? (evidence.available ? "reachable" : "degraded") : "unverified",
-      ...(auth.detail ? { authDetail: auth.detail } : {}),
+      ...(authDetail ? { authDetail } : {}),
       ...(!enabled ? { availabilityDetail: "disabled by the operator; queued work is held" }
         : !auth.authenticated
-        ? { availabilityDetail: auth.detail ?? "runtime is not authenticated" }
+        ? { availabilityDetail: authDetail ?? "runtime is not authenticated" }
         : denial ? { availabilityDetail: denial }
           : evidence?.available
-            ? { availabilityDetail: evidence.detail ?? "provider accepted real work" }
+            ? { availabilityDetail: evidenceDetail ?? "provider accepted real work" }
             : { availabilityDetail: "provider intake is enabled; reachability has not yet been verified by real work" }),
     };
   };
@@ -110,12 +112,15 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     try {
       status = await runtimeStatus(adapter.id, registration);
     } catch (error) {
+      const authDetail = publicProviderAvailabilityDetail(
+        error instanceof Error ? error.message : "auth status check failed",
+      );
       status = {
         configured: true,
         authentication: "error",
         intakeReady: false,
         reachability: "degraded",
-        authDetail: error instanceof Error ? error.message : "auth status check failed",
+        authDetail: authDetail ?? "auth status check failed",
         availabilityDetail: "runtime authentication could not be checked",
       };
     }

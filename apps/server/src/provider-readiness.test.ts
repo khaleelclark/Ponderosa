@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createServer } from "./app.js";
+import { publicProviderAvailabilityDetail } from "./provider-availability-detail.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -45,6 +46,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 
 function providerRunAdapter(input: {
   outcome: "success" | "authentication_failure" | "cancelled";
+  errorMessage?: string;
   started?: () => void;
   finished?: () => void;
   release?: Promise<void>;
@@ -55,7 +57,7 @@ function providerRunAdapter(input: {
       if (input.release) await input.release;
       if (input.outcome === "authentication_failure") {
         yield { type: "reasoning" as const, delta: "provider accepted work" };
-        yield { type: "error" as const, message: "authentication rejected by provider" };
+        yield { type: "error" as const, message: input.errorMessage ?? "authentication rejected by provider" };
         return;
       }
       yield { type: "turn_done" as const };
@@ -393,7 +395,11 @@ describe("provider readiness truth", () => {
       type: "result",
       subtype: "error",
       is_error: true,
-      error: { message: `Claude subscription expired ${"x".repeat(600)}` },
+      error: JSON.stringify({
+        message: `Claude subscription expired ${"x".repeat(600)}`,
+        session_id: "private-nested-claude-session",
+        access_token: "private-nested-access-token",
+      }),
       session_id: "private-claude-session",
     });
     const app = createServer({
@@ -423,7 +429,9 @@ describe("provider readiness truth", () => {
     });
     expect(recheck.json().availabilityDetail).toMatch(/^Claude subscription expired/u);
     expect(recheck.json().availabilityDetail.length).toBeLessThanOrEqual(240);
-    expect(JSON.stringify(recheck.json())).not.toContain("private-claude-session");
+    expect(JSON.stringify(recheck.json())).not.toMatch(
+      /session_id|access_token|private-(?:claude|nested)/u,
+    );
 
     const engines = (await app.inject({ method: "GET", url: "/api/engines" })).json();
     expect(engines).toEqual([
@@ -431,8 +439,62 @@ describe("provider readiness truth", () => {
       expect.objectContaining({ id: "codex", intakeReady: true }),
     ]);
     const notifications = (await app.inject({ method: "GET", url: "/api/notifications" })).json();
-    expect(JSON.stringify(notifications)).not.toContain("private-claude-session");
+    expect(JSON.stringify(notifications)).not.toMatch(
+      /session_id|access_token|private-(?:claude|nested)/u,
+    );
     await app.close();
+  });
+
+  it("fails closed for secret-bearing, malformed, and over-deep provider detail", () => {
+    const secretEnvelope = JSON.stringify({
+      error: JSON.stringify({
+        message: JSON.stringify({ session_id: "private-session", access_token: "private-token" }),
+      }),
+    });
+    expect(publicProviderAvailabilityDetail(secretEnvelope)).toBeUndefined();
+    expect(publicProviderAvailabilityDetail('{"message":"access_token: private-token","error":')).toBeUndefined();
+
+    let deep: unknown = { message: "must-not-escape-depth-limit" };
+    for (let index = 0; index < 8; index += 1) deep = { error: JSON.stringify(deep) };
+    expect(publicProviderAvailabilityDetail(JSON.stringify(deep))).toBeUndefined();
+    expect(publicProviderAvailabilityDetail("x".repeat(64 * 1024 + 1))).toBeUndefined();
+  });
+
+  it("sanitizes the immediate live provider Run failure notification", async () => {
+    const liveFailure = JSON.stringify({
+      type: "result",
+      error: JSON.stringify({
+        message: "authentication rejected by provider",
+        session_id: "private-live-session",
+        refresh_token: "private-live-token",
+      }),
+      session_id: "private-outer-live-session",
+    });
+    const failed = await providerRunFixture({
+      adapter: providerRunAdapter({ outcome: "authentication_failure", errorMessage: liveFailure }),
+    });
+    await waitForAgentRunStatus(failed.store, failed.agent.id, "failed");
+
+    await vi.waitFor(async () => {
+      const notifications = (await failed.app.inject({ method: "GET", url: "/api/notifications" })).json();
+      expect(notifications).toEqual([expect.objectContaining({
+        dedupeKey: "provider:codex:unavailable",
+        body: expect.stringContaining("authentication rejected by provider"),
+      })]);
+      expect(JSON.stringify(notifications)).not.toMatch(
+        /session_id|refresh_token|private-(?:live|outer-live)/u,
+      );
+    });
+    const engines = (await failed.app.inject({ method: "GET", url: "/api/engines" })).json();
+    expect(engines).toEqual([expect.objectContaining({
+      availabilityDetail: "authentication rejected by provider",
+      intakeReady: false,
+      reachability: "degraded",
+    })]);
+    expect(JSON.stringify(engines)).not.toMatch(
+      /session_id|refresh_token|private-(?:live|outer-live)/u,
+    );
+    await failed.app.close();
   });
 
   it("reports a bounded authentication timeout as checking, not signed out", async () => {

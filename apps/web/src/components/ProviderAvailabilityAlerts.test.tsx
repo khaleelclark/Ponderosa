@@ -2,7 +2,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { EngineDto, WorkspacePreferencesDto } from "@ponderosa/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MAX_PROVIDER_DIAGNOSTIC_CHARACTERS } from "../providerAvailability";
+import {
+  MAX_PROVIDER_DIAGNOSTIC_CHARACTERS,
+  providerAvailabilityDiagnostic,
+  providerAvailabilityMessage,
+} from "../providerAvailability";
 import { ProjectCreationDialog } from "./ProjectCreationDialog";
 import { ProviderAvailabilityAlerts } from "./ProviderAvailabilityAlerts";
 
@@ -103,6 +107,72 @@ describe("Create Project provider availability", () => {
     const diagnostic = screen.getByTestId("provider-diagnostic-claude").textContent ?? "";
     expect(diagnostic.length).toBeLessThanOrEqual(MAX_PROVIDER_DIAGNOSTIC_CHARACTERS);
     expect(diagnostic).not.toContain("private-session");
+  });
+
+  it("decodes nested stringified diagnostics without rendering secrets", () => {
+    const nested = JSON.stringify({
+      type: "result",
+      error: JSON.stringify({
+        message: "Claude subscription expired",
+        session_id: "private-nested-session",
+        access_token: "private-nested-token",
+      }),
+    });
+    render(<ProviderAvailabilityAlerts
+      engines={[engine("claude", {
+        intakeReady: false,
+        reachability: "degraded",
+        availabilityDetail: nested,
+      })]}
+      testPending={false}
+      onTestAccess={vi.fn()}
+    />);
+
+    expect(screen.getByTestId("provider-diagnostic-claude").textContent).toBe("Claude subscription expired");
+    expect(document.body.textContent).not.toContain("private-nested-session");
+    expect(document.body.textContent).not.toContain("private-nested-token");
+  });
+
+  it("fails closed for secret-bearing, malformed, and over-deep fallback detail", () => {
+    const secretEnvelope = JSON.stringify({
+      error: JSON.stringify({
+        message: JSON.stringify({ session_id: "private-session", access_token: "private-token" }),
+      }),
+    });
+    expect(providerAvailabilityDiagnostic(secretEnvelope)).toBeUndefined();
+    expect(providerAvailabilityDiagnostic('{"message":"refresh_token: private-token","error":')).toBeUndefined();
+
+    let deep: unknown = { message: "must-not-escape-depth-limit" };
+    for (let index = 0; index < 8; index += 1) deep = { error: JSON.stringify(deep) };
+    expect(providerAvailabilityDiagnostic(JSON.stringify(deep))).toBeUndefined();
+    expect(providerAvailabilityDiagnostic("x".repeat(64 * 1024 + 1))).toBeUndefined();
+  });
+
+  it("uses category-accurate remediation for provider degradation", () => {
+    expect(providerAvailabilityMessage(engine("claude", {
+      intakeReady: false,
+      reachability: "degraded",
+      availabilityDetail: "subscription expired",
+    }))).toContain("Claude subscription and Claude Code sign-in");
+    expect(providerAvailabilityMessage(engine("codex", {
+      intakeReady: false,
+      reachability: "degraded",
+      availabilityDetail: "usage limit reached; limit resets soon",
+    }))).toContain("usage limit was reached");
+    expect(providerAvailabilityMessage(engine("claude", {
+      intakeReady: false,
+      reachability: "degraded",
+      availabilityDetail: "selected model is at capacity",
+    }))).toContain("provider is at capacity");
+
+    const unknown = providerAvailabilityMessage(engine("claude", {
+      intakeReady: false,
+      reachability: "degraded",
+      availabilityDetail: "connection reset by peer",
+    }));
+    expect(unknown).toContain("Test access again");
+    expect(unknown).toContain("provider logs");
+    expect(unknown).not.toMatch(/subscription|sign-in/iu);
   });
 
   it("preserves provider association when every enabled provider has failed", () => {
