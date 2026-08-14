@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   projectProviderCapabilities,
+  projectProviderCommandResult,
+  projectProviderEffortOptions,
+  projectProviderModelCatalog,
+  projectProviderModelOptions,
+  projectProviderModelValidation,
   projectProviderUsage,
 } from "./provider-success-projection.js";
 
@@ -38,6 +43,112 @@ describe("provider success projection", () => {
     expect(Object.getPrototypeOf(usage)).toBe(Object.prototype);
     expect(JSON.stringify({ capabilities, usage })).toContain("catalog-1");
   });
+
+  it("copies valid model, catalog, validation, effort, and command successes", () => {
+    const model = { id: "gpt-5", label: "GPT-5", efforts: [{ id: "high", label: "High" }] };
+    const catalogModel = { ...model, kind: "alias" as const, source: "provider-probe" as const };
+    expect(projectProviderModelOptions([model])).toEqual([model]);
+    expect(projectProviderEffortOptions(model.efforts)).toEqual(model.efforts);
+    expect(projectProviderModelCatalog({
+      models: [catalogModel], cliVersion: "1.2.3", configurationKey: "default",
+    })).toEqual({ models: [catalogModel], cliVersion: "1.2.3", configurationKey: "default" });
+    expect(projectProviderModelValidation({ valid: true, model: catalogModel }))
+      .toEqual({ valid: true, model: catalogModel });
+    expect(projectProviderModelValidation({
+      valid: false, errorCode: "model_not_found", error: "not found",
+    })).toEqual({ valid: false, errorCode: "model_not_found", error: "not found" });
+    expect(projectProviderCommandResult({ message: "Runtime is healthy." }))
+      .toEqual({ message: "Runtime is healthy." });
+  });
+
+  it.each([
+    "toJSON", "getter", "descriptor", "ownKeys", "circular", "proxy", "revoked",
+    "enum", "shape", "huge", "deep", "wide", "symbol", "function", "bigint", "control", "secret",
+  ])("fails closed for hostile model successes: %s", (kind) => {
+    const marker = `MODEL_SUCCESS_HOSTILE_MARKER_${kind}`;
+    let row: unknown = {
+      id: "gpt-5", label: "GPT-5", kind: "alias", source: "provider-probe",
+    };
+    let value: unknown = [row];
+    if (kind === "toJSON") (row as Record<string, unknown>).toJSON = () => ({ marker });
+    else if (kind === "getter") Object.defineProperty(row, "label", {
+      enumerable: true, get: () => { throw new Error(marker); },
+    });
+    else if (kind === "descriptor") row = new Proxy(row as object, {
+      getOwnPropertyDescriptor: () => { throw new Error(marker); },
+    }), value = [row];
+    else if (kind === "ownKeys") row = new Proxy(row as object, {
+      ownKeys: () => { throw new Error(marker); },
+    }), value = [row];
+    else if (kind === "circular") (row as Record<string, unknown>).self = row;
+    else if (kind === "proxy") value = new Proxy(value as object, {
+      getPrototypeOf: () => { throw new Error(marker); },
+    });
+    else if (kind === "revoked") {
+      const revocable = Proxy.revocable(row as object, {});
+      revocable.revoke();
+      value = [revocable.proxy];
+    } else if (kind === "enum") (row as Record<string, unknown>).kind = marker;
+    else if (kind === "shape") value = { models: [row] };
+    else if (kind === "huge") (row as Record<string, unknown>).description = marker.repeat(1_000);
+    else if (kind === "deep") (row as Record<string, unknown>).serviceTiers = [{
+      id: "tier", label: "Tier", description: "x", nested: { marker },
+    }];
+    else if (kind === "wide") value = Array.from({ length: 501 }, () => row);
+    else if (kind === "symbol") (row as Record<PropertyKey, unknown>)[Symbol(marker)] = marker;
+    else if (kind === "function") (row as Record<string, unknown>).description = () => marker;
+    else if (kind === "bigint") (row as Record<string, unknown>).description = 1n;
+    else if (kind === "control") (row as Record<string, unknown>).label = `${marker}\u0000hidden`;
+    else if (kind === "secret") (row as Record<string, unknown>).access_token = marker;
+    expect(() => projectProviderModelOptions(value)).toThrow("Provider returned invalid structured data.");
+  });
+
+  it("enforces one cumulative model catalog budget and closed validation shapes", () => {
+    const hugeCatalog = {
+      models: Array.from({ length: 500 }, (_, index) => ({
+        id: `model-${index}`,
+        label: `Model ${index}`,
+        description: "x".repeat(8_192),
+        kind: "exact",
+        source: "provider-probe",
+      })),
+      cliVersion: "1.2.3",
+      configurationKey: "default",
+    };
+    expect(() => projectProviderModelCatalog(hugeCatalog)).toThrow(
+      "Provider returned invalid structured data.",
+    );
+    expect(() => projectProviderModelValidation({
+      valid: true,
+      model: { id: "gpt-5", label: "GPT-5", kind: "alias", source: "provider-probe" },
+      access_token: "MODEL_VALIDATION_SECRET_MARKER",
+    })).toThrow("Provider returned invalid structured data.");
+  });
+
+  it.each(["toJSON", "getter", "ownKeys", "revoked", "huge", "control", "secret"])(
+    "fails closed for hostile provider-command successes: %s",
+    (kind) => {
+      const marker = `COMMAND_SUCCESS_HOSTILE_MARKER_${kind}`;
+      let value: unknown = { message: "ok" };
+      if (kind === "toJSON") (value as Record<string, unknown>).toJSON = () => ({ marker });
+      else if (kind === "getter") Object.defineProperty(value, "message", {
+        enumerable: true, get: () => { throw new Error(marker); },
+      });
+      else if (kind === "ownKeys") value = new Proxy(value as object, {
+        ownKeys: () => { throw new Error(marker); },
+      });
+      else if (kind === "revoked") {
+        const revocable = Proxy.revocable(value as object, {});
+        revocable.revoke();
+        value = revocable.proxy;
+      } else if (kind === "huge") (value as Record<string, unknown>).message = marker.repeat(1_000);
+      else if (kind === "control") (value as Record<string, unknown>).message = `${marker}\u0000hidden`;
+      else if (kind === "secret") (value as Record<string, unknown>).access_token = marker;
+      expect(() => projectProviderCommandResult(value)).toThrow(
+        "Provider returned invalid structured data.",
+      );
+    },
+  );
 
   it.each([
     "circular",

@@ -34,7 +34,10 @@ import {
   guardedProviderExceptionStringProperty,
   restrictedProviderExceptionLogDetail,
 } from "../provider-exception-properties.js";
-import { projectProviderCapabilities } from "../provider-success-projection.js";
+import {
+  projectProviderCapabilities,
+  projectProviderCommandResult,
+} from "../provider-success-projection.js";
 import { registerAgentRunHistoryRoute } from "./agent-audit.js";
 
 interface ProviderCommandRoutesContext {
@@ -267,8 +270,8 @@ app.post<{
       Object.assign(error, { catalogVersion: catalog.catalogVersion });
       throw error;
     }
-    const result = await session.invokeCommand(name, argumentsText);
-    invocation = { catalog, ...(result?.message ? { message: result.message } : {}) };
+    const result = projectProviderCommandResult(await session.invokeCommand(name, argumentsText));
+    invocation = { catalog, ...(result.message ? { message: result.message } : {}) };
     return catalog;
   });
   authority.operation = operation;
@@ -345,7 +348,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
         Object.assign(error, { catalogVersion: catalog.catalogVersion });
         throw error;
       }
-      const result = await session.invokeCommand(name, argumentsText);
+      const result = projectProviderCommandResult(await session.invokeCommand(name, argumentsText));
       if (name === "compact") {
         const usage = session.contextUsage?.();
         const providerSessionGeneration = usage?.providerSessionGeneration;
@@ -362,7 +365,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
           }
         }
       }
-      return { catalog, ...(result?.message ? { message: result.message } : {}) };
+      return { catalog, ...(result.message ? { message: result.message } : {}) };
     };
     const liveSession = activeRuns.get(agent.id)?.runtimeSession ??
       reusableRuntime(agent.id)?.session;

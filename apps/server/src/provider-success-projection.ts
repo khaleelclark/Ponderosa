@@ -5,10 +5,13 @@ import type {
   EngineComposerCapability,
   EngineMcpServer,
   EngineModelCatalog,
+  EngineModelValidationResult,
   EngineModelOption,
+  ModelOption,
   ProviderUsage,
   ProviderUsageWindow,
   ServiceTierOption,
+  RuntimeCommandResult,
 } from "@ponderosa/core";
 
 const MAX_CAPABILITY_ROWS = 1_000;
@@ -21,12 +24,12 @@ const MAX_PROJECTED_UTF8_BYTES = 256 * 1024;
 const MAX_PROJECTED_NODES = 10_000;
 const MAX_PROJECTED_DEPTH = 8;
 const JSON_UNSAFE_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
-type ProjectionBoundary = "capabilities" | "usage";
+type ProjectionBoundary = "capabilities" | "usage" | "models" | "validation" | "command";
 
 export class ProviderSuccessProjectionError extends Error {
   readonly restrictedDetail: string;
 
-  constructor(boundary: "capabilities" | "usage") {
+  constructor(boundary: ProjectionBoundary) {
     super("Provider returned invalid structured data.");
     this.name = "ProviderSuccessProjectionError";
     this.restrictedDetail = `${boundary} result did not match the closed provider schema`;
@@ -208,63 +211,86 @@ function finiteNumber(
   return value;
 }
 
-function effort(value: unknown, budget: ProjectionBudget, depth: number): EffortOption {
-  const record = dataRecord(value, ["id", "label"], "capabilities", budget, depth);
+function effort(
+  value: unknown,
+  budget: ProjectionBudget,
+  depth: number,
+  boundary: ProjectionBoundary = "capabilities",
+): EffortOption {
+  const record = dataRecord(value, ["id", "label"], boundary, budget, depth);
   return {
-    id: requiredString(record, "id", MAX_IDENTIFIER_CHARACTERS, "capabilities", budget, depth + 1),
-    label: requiredString(record, "label", MAX_LABEL_CHARACTERS, "capabilities", budget, depth + 1),
+    id: requiredString(record, "id", MAX_IDENTIFIER_CHARACTERS, boundary, budget, depth + 1),
+    label: requiredString(record, "label", MAX_LABEL_CHARACTERS, boundary, budget, depth + 1),
   };
 }
 
-function serviceTier(value: unknown, budget: ProjectionBudget, depth: number): ServiceTierOption {
-  const record = dataRecord(value, ["id", "label", "description"], "capabilities", budget, depth);
+function serviceTier(
+  value: unknown,
+  budget: ProjectionBudget,
+  depth: number,
+  boundary: ProjectionBoundary = "capabilities",
+): ServiceTierOption {
+  const record = dataRecord(value, ["id", "label", "description"], boundary, budget, depth);
   const description = optionalString(
-    record, "description", MAX_DESCRIPTION_CHARACTERS, "capabilities", budget, depth + 1,
+    record, "description", MAX_DESCRIPTION_CHARACTERS, boundary, budget, depth + 1,
   );
   return {
-    id: requiredString(record, "id", MAX_IDENTIFIER_CHARACTERS, "capabilities", budget, depth + 1),
-    label: requiredString(record, "label", MAX_LABEL_CHARACTERS, "capabilities", budget, depth + 1),
+    id: requiredString(record, "id", MAX_IDENTIFIER_CHARACTERS, boundary, budget, depth + 1),
+    label: requiredString(record, "label", MAX_LABEL_CHARACTERS, boundary, budget, depth + 1),
     ...(description === undefined ? {} : { description }),
   };
 }
 
-function model(value: unknown, budget: ProjectionBudget, depth: number): EngineModelOption {
+function model(
+  value: unknown,
+  budget: ProjectionBudget,
+  depth: number,
+  boundary: ProjectionBoundary = "capabilities",
+  requireCatalogMetadata = true,
+): ModelOption | EngineModelOption {
   const record = dataRecord(value, [
     "id", "label", "efforts", "defaultEffort", "serviceTiers", "defaultServiceTier",
     "resolvedModel", "description", "kind", "supportedEffortLevels", "source",
     "validatedAt", "availability", "unavailableReason",
-  ], "capabilities", budget, depth);
+  ], boundary, budget, depth);
   const efforts = record.has("efforts") && record.get("efforts") !== undefined
-    ? projectedArray(record.get("efforts"), 64, "capabilities", budget, depth + 1,
-        (entry, entryDepth) => effort(entry, budget, entryDepth))
+    ? projectedArray(record.get("efforts"), 64, boundary, budget, depth + 1,
+        (entry, entryDepth) => effort(entry, budget, entryDepth, boundary))
     : undefined;
   const serviceTiers = record.has("serviceTiers") && record.get("serviceTiers") !== undefined
-    ? projectedArray(record.get("serviceTiers"), 64, "capabilities", budget, depth + 1,
-        (entry, entryDepth) => serviceTier(entry, budget, entryDepth))
+    ? projectedArray(record.get("serviceTiers"), 64, boundary, budget, depth + 1,
+        (entry, entryDepth) => serviceTier(entry, budget, entryDepth, boundary))
     : undefined;
   const supportedEffortLevels = record.has("supportedEffortLevels")
     && record.get("supportedEffortLevels") !== undefined
-    ? projectedArray(record.get("supportedEffortLevels"), 64, "capabilities", budget, depth + 1,
+    ? projectedArray(record.get("supportedEffortLevels"), 64, boundary, budget, depth + 1,
       (entry, entryDepth) => {
         if (typeof entry !== "string"
           || entry.length > MAX_IDENTIFIER_CHARACTERS || JSON_UNSAFE_CONTROL.test(entry)) {
-          reject("capabilities");
+          reject(boundary);
         }
         budget.string(entry, entryDepth);
         return entry;
       })
     : undefined;
-  const description = optionalString(record, "description", MAX_DESCRIPTION_CHARACTERS, "capabilities", budget, depth + 1);
-  const defaultEffort = optionalString(record, "defaultEffort", MAX_IDENTIFIER_CHARACTERS, "capabilities", budget, depth + 1);
-  const defaultServiceTier = optionalString(record, "defaultServiceTier", MAX_IDENTIFIER_CHARACTERS, "capabilities", budget, depth + 1);
-  const resolvedModel = optionalString(record, "resolvedModel", MAX_IDENTIFIER_CHARACTERS, "capabilities", budget, depth + 1);
-  const validatedAt = optionalString(record, "validatedAt", MAX_IDENTIFIER_CHARACTERS, "capabilities", budget, depth + 1);
-  const unavailableReason = optionalString(record, "unavailableReason", MAX_DESCRIPTION_CHARACTERS, "capabilities", budget, depth + 1);
+  const description = optionalString(record, "description", MAX_DESCRIPTION_CHARACTERS, boundary, budget, depth + 1);
+  const defaultEffort = optionalString(record, "defaultEffort", MAX_IDENTIFIER_CHARACTERS, boundary, budget, depth + 1);
+  const defaultServiceTier = optionalString(record, "defaultServiceTier", MAX_IDENTIFIER_CHARACTERS, boundary, budget, depth + 1);
+  const resolvedModel = optionalString(record, "resolvedModel", MAX_IDENTIFIER_CHARACTERS, boundary, budget, depth + 1);
+  const validatedAt = optionalString(record, "validatedAt", MAX_IDENTIFIER_CHARACTERS, boundary, budget, depth + 1);
+  const unavailableReason = optionalString(record, "unavailableReason", MAX_DESCRIPTION_CHARACTERS, boundary, budget, depth + 1);
+  const kind = record.has("kind") && record.get("kind") !== undefined
+    ? enumString(record, "kind", ["alias", "exact"] as const, boundary, budget, depth + 1)
+    : undefined;
+  const source = record.has("source") && record.get("source") !== undefined
+    ? enumString(record, "source", ["provider-probe", "operator", "environment"] as const, boundary, budget, depth + 1)
+    : undefined;
+  if (requireCatalogMetadata && (kind === undefined || source === undefined)) reject(boundary);
   return {
-    id: requiredString(record, "id", MAX_IDENTIFIER_CHARACTERS, "capabilities", budget, depth + 1),
-    label: requiredString(record, "label", MAX_LABEL_CHARACTERS, "capabilities", budget, depth + 1),
-    kind: enumString(record, "kind", ["alias", "exact"] as const, "capabilities", budget, depth + 1),
-    source: enumString(record, "source", ["provider-probe", "operator", "environment"] as const, "capabilities", budget, depth + 1),
+    id: requiredString(record, "id", MAX_IDENTIFIER_CHARACTERS, boundary, budget, depth + 1),
+    label: requiredString(record, "label", MAX_LABEL_CHARACTERS, boundary, budget, depth + 1),
+    ...(kind === undefined ? {} : { kind }),
+    ...(source === undefined ? {} : { source }),
     ...(efforts ? { efforts } : {}),
     ...(defaultEffort === undefined ? {} : { defaultEffort }),
     ...(serviceTiers ? { serviceTiers } : {}),
@@ -274,19 +300,24 @@ function model(value: unknown, budget: ProjectionBudget, depth: number): EngineM
     ...(supportedEffortLevels ? { supportedEffortLevels } : {}),
     ...(validatedAt === undefined ? {} : { validatedAt }),
     ...(record.has("availability") && record.get("availability") !== undefined
-      ? { availability: enumString(record, "availability", ["available", "unavailable"] as const, "capabilities", budget, depth + 1) }
+      ? { availability: enumString(record, "availability", ["available", "unavailable"] as const, boundary, budget, depth + 1) }
       : {}),
     ...(unavailableReason === undefined ? {} : { unavailableReason }),
   };
 }
 
-function modelCatalog(value: unknown, budget: ProjectionBudget, depth: number): EngineModelCatalog {
-  const record = dataRecord(value, ["models", "cliVersion", "configurationKey"], "capabilities", budget, depth);
+function modelCatalog(
+  value: unknown,
+  budget: ProjectionBudget,
+  depth: number,
+  boundary: ProjectionBoundary = "capabilities",
+): EngineModelCatalog {
+  const record = dataRecord(value, ["models", "cliVersion", "configurationKey"], boundary, budget, depth);
   return {
-    models: projectedArray(record.get("models"), MAX_MODEL_ROWS, "capabilities", budget, depth + 1,
-      (entry, entryDepth) => model(entry, budget, entryDepth)),
-    cliVersion: requiredString(record, "cliVersion", MAX_IDENTIFIER_CHARACTERS, "capabilities", budget, depth + 1),
-    configurationKey: requiredString(record, "configurationKey", MAX_IDENTIFIER_CHARACTERS, "capabilities", budget, depth + 1),
+    models: projectedArray(record.get("models"), MAX_MODEL_ROWS, boundary, budget, depth + 1,
+      (entry, entryDepth) => model(entry, budget, entryDepth, boundary) as EngineModelOption),
+    cliVersion: requiredString(record, "cliVersion", MAX_IDENTIFIER_CHARACTERS, boundary, budget, depth + 1),
+    configurationKey: requiredString(record, "configurationKey", MAX_IDENTIFIER_CHARACTERS, boundary, budget, depth + 1),
   };
 }
 
@@ -387,6 +418,66 @@ export function projectProviderCapabilities(value: unknown): EngineCapabilities 
   } catch {
     return reject("capabilities");
   }
+}
+
+/** Copy adapter model choices into a closed, accessor-free DTO array. */
+export function projectProviderModelOptions(value: unknown): ModelOption[] {
+  const budget = new ProjectionBudget("models");
+  return projectedArray(value, MAX_MODEL_ROWS, "models", budget, 0,
+    (entry, depth) => model(entry, budget, depth, "models", false) as ModelOption);
+}
+
+/** Copy adapter effort choices into a closed, accessor-free DTO array. */
+export function projectProviderEffortOptions(value: unknown): EffortOption[] {
+  const budget = new ProjectionBudget("models");
+  return projectedArray(value, 64, "models", budget, 0,
+    (entry, depth) => effort(entry, budget, depth, "models"));
+}
+
+/** Copy a discovered model catalog before caching or returning it. */
+export function projectProviderModelCatalog(value: unknown): EngineModelCatalog {
+  const budget = new ProjectionBudget("models");
+  return modelCatalog(value, budget, 0, "models");
+}
+
+/** Copy a provider validation success/failure before public policy projection. */
+export function projectProviderModelValidation(value: unknown): EngineModelValidationResult {
+  const budget = new ProjectionBudget("validation");
+  const discriminator = dataRecord(value, ["valid", "model", "errorCode", "error"], "validation", budget, 0);
+  const valid = requiredBoolean(discriminator, "valid", "validation", budget, 1);
+  if (valid) {
+    if (discriminator.has("errorCode") || discriminator.has("error")) reject("validation");
+    return {
+      valid: true,
+      model: model(discriminator.get("model"), budget, 1, "validation") as EngineModelOption,
+    };
+  }
+  if (discriminator.has("model")) reject("validation");
+  return {
+    valid: false,
+    errorCode: enumString(discriminator, "errorCode", [
+      "invalid_model", "model_not_found", "authentication", "rate_limit", "capacity",
+      "context_length", "organization_policy", "plan_entitlement", "network", "provider_error",
+    ] as const, "validation", budget, 1),
+    error: requiredString(discriminator, "error", MAX_DESCRIPTION_CHARACTERS, "validation", budget, 1),
+  };
+}
+
+/** Validate adapter-owned identifiers before using them in cache keys or DTOs. */
+export function projectProviderModelIdentifier(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  const budget = new ProjectionBudget("models");
+  const record = new Map<string, unknown>([["value", value]]);
+  return requiredString(record, "value", MAX_IDENTIFIER_CHARACTERS, "models", budget, 0);
+}
+
+/** Copy a runtime command result before HTTP/event/persistence use. */
+export function projectProviderCommandResult(value: unknown): RuntimeCommandResult {
+  if (value === undefined) return {};
+  const budget = new ProjectionBudget("command");
+  const record = dataRecord(value, ["message"], "command", budget, 0);
+  const message = optionalString(record, "message", MAX_DESCRIPTION_CHARACTERS, "command", budget, 1);
+  return message === undefined ? {} : { message };
 }
 
 function usageWindow(value: unknown, budget: ProjectionBudget, depth: number): ProviderUsageWindow {

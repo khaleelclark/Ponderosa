@@ -30,7 +30,14 @@ import {
   publicProviderAvailabilityDetail,
   publicProviderExceptionResponse,
 } from "./provider-availability-detail.js";
-import { projectProviderCapabilities } from "./provider-success-projection.js";
+import {
+  projectProviderCapabilities,
+  projectProviderEffortOptions,
+  projectProviderModelCatalog,
+  projectProviderModelIdentifier,
+  projectProviderModelOptions,
+  projectProviderModelValidation,
+} from "./provider-success-projection.js";
 import type {
   CapabilityDiscoveryAuthority,
   CapabilityDiscoveryProcess,
@@ -204,11 +211,14 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       };
     }
     try {
-      const models = providerAdapterCall(adapter, "list models", () => adapter.listModels());
-      const defaultModel = adapter.defaultModel?.() ?? models.find((model) => model.id)?.id;
-      const defaultEffort = adapter.defaultEffort?.(defaultModel)
+      const models = projectProviderModelOptions(
+        providerAdapterCall(adapter, "list models", () => adapter.listModels()),
+      );
+      const defaultModel = projectProviderModelIdentifier(adapter.defaultModel?.())
+        ?? models.find((model) => model.id)?.id;
+      const defaultEffort = projectProviderModelIdentifier(adapter.defaultEffort?.(defaultModel))
         ?? models.find((model) => model.id === defaultModel)?.defaultEffort
-        ?? adapter.listEfforts(defaultModel)[0]?.id;
+        ?? projectProviderEffortOptions(adapter.listEfforts(defaultModel))[0]?.id;
       return {
         id: adapter.id,
         displayName: adapter.displayName,
@@ -218,13 +228,13 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
           ...(model.efforts !== undefined
             ? { efforts: model.efforts }
             : !adapter.modelSpecificEfforts || !model.id
-              ? { efforts: adapter.listEfforts(model.id || undefined) }
+              ? { efforts: projectProviderEffortOptions(adapter.listEfforts(model.id || undefined)) }
               : {}),
         })),
         ...(adapter.configuredModelOptions
-          ? { configuredModels: adapter.configuredModelOptions() }
+          ? { configuredModels: projectProviderModelOptions(adapter.configuredModelOptions()) }
           : {}),
-        efforts: adapter.listEfforts(),
+        efforts: projectProviderEffortOptions(adapter.listEfforts()),
         ...(defaultModel ? { defaultModel } : {}),
         ...(defaultEffort ? { defaultEffort } : {}),
         modelCatalogKnown: !adapter.modelSpecificEfforts || models.some((model) => Boolean(model.id)),
@@ -553,7 +563,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     providerAdapterCall(
       adapter,
       "read model catalog configuration",
-      () => adapter.modelCatalogConfigurationKey?.() ?? "default",
+      () => projectProviderModelIdentifier(adapter.modelCatalogConfigurationKey?.() ?? "default")!,
     ),
   ].join("\0");
   const closeModelCatalogDiscoveryAuthority = async (
@@ -612,7 +622,11 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
           ? providerAdapterCall(
               adapter,
               "normalize configured model catalog",
-              () => adapter.configuredModelCatalog!(live.modelCatalog!.models),
+              () => projectProviderModelCatalog({
+                models: adapter.configuredModelCatalog!(live.modelCatalog!.models),
+                cliVersion: live.modelCatalog!.cliVersion,
+                configurationKey: "live",
+              }).models,
             )
           : live.modelCatalog.models,
         cliVersion: live.modelCatalog.cliVersion,
@@ -673,14 +687,16 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     const operation = Promise.resolve()
       .then(async () => {
         const live = await liveProjectModelCatalog(project.id, adapter);
-        const catalog = live
+        const rawCatalog = live
           ? {
               models: live.models,
               cliVersion: live.cliVersion,
               configurationKey: providerAdapterCall(
                 adapter,
                 "read model catalog configuration",
-                () => adapter.modelCatalogConfigurationKey?.() ?? "default",
+                () => projectProviderModelIdentifier(
+                  adapter.modelCatalogConfigurationKey?.() ?? "default",
+                )!,
               ),
             }
           : await providerAdapterOperation(
@@ -691,6 +707,11 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
                 onRuntimeSpawned: registerProcess,
               }),
             );
+        const catalog = providerAdapterCall(
+          adapter,
+          "project model catalog",
+          () => projectProviderModelCatalog(rawCatalog),
+        );
         const value: ProjectEngineModelCatalogDto = {
           projectId: project.id,
           engineId: adapter.id,
@@ -786,7 +807,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     );
     authority.operation = operation;
     try {
-      const result = await operation;
+      const result = projectProviderModelValidation(await operation);
       if (result.valid) return result;
       const errorCode = normalizeEngineModelValidationError(result.errorCode);
       const publicFailure = publicProviderFailure({

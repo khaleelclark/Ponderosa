@@ -1093,6 +1093,146 @@ describe("provider readiness truth", () => {
     await app.close();
   });
 
+  it("projects hostile model successes before engine, catalog, validation, cache, and socket output", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-model-success-boundary-"));
+    roots.push(root);
+    const dataDir = path.join(root, "data");
+    const hostPath = path.join(root, "workspace");
+    mkdirSync(hostPath, { recursive: true });
+    const store = new AgentStore(dataDir);
+    const project = store.createProject({
+      label: "Model Success Boundary",
+      hostPath,
+      defaultEngine: "codex",
+    });
+    const marker = "MODEL_SUCCESS_TOJSON_MARKER_752e access_token=private-model-success";
+    const validModel = {
+      id: "safe-model",
+      label: "Safe model",
+      kind: "alias" as const,
+      source: "provider-probe" as const,
+    };
+    let catalogReads = 0;
+    const hostileListRow = {
+      id: "hostile-model",
+      label: "Hostile model",
+      toJSON: () => ({ id: "leaked-model", label: marker, access_token: marker }),
+    };
+    const hostileCatalog = {
+      models: [validModel],
+      cliVersion: "hostile",
+      configurationKey: "hostile",
+      toJSON: () => ({ models: [validModel], marker, access_token: marker }),
+    };
+    const hostileValidation = {
+      valid: true,
+      model: {
+        ...validModel,
+        toJSON: () => ({ ...validModel, description: marker, access_token: marker }),
+      },
+    };
+    const modelAdapter: Adapter = {
+      ...adapter(),
+      listModels: () => [hostileListRow] as never,
+      discoverModelCatalog: async () => {
+        catalogReads += 1;
+        return catalogReads === 1
+          ? { models: [validModel], cliVersion: "1.0.0", configurationKey: "default" }
+          : hostileCatalog as never;
+      },
+      validateModel: async () => hostileValidation as never,
+    };
+    const create = (reopenedStore: AgentStore) => createServer({
+      dataDir,
+      store: reopenedStore,
+      engines: [{ adapter: modelAdapter }],
+      logger: false,
+    });
+    const unhandled: unknown[] = [];
+    const uncaught: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    const onUncaught = (error: unknown): void => { uncaught.push(error); };
+    process.on("unhandledRejection", onUnhandled);
+    process.on("uncaughtException", onUncaught);
+    let app = create(store);
+    try {
+      await app.ready();
+      const engines = await app.inject({ method: "GET", url: "/api/engines" });
+      expect(engines.statusCode).toBe(503);
+      expect(engines.json()).toEqual({
+        error: "Provider execution failed.",
+        category: "provider_error",
+        remediation: "Review the restricted server logs, then retry the provider operation.",
+      });
+      const initial = await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}/engine-models/codex`,
+      });
+      expect(initial.statusCode).toBe(200);
+      expect(initial.json().models).toEqual([validModel]);
+      const refresh = await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}/engine-models/codex?refresh=true`,
+      });
+      expect(refresh.statusCode).toBe(503);
+      const cached = await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}/engine-models/codex`,
+      });
+      expect(cached.statusCode).toBe(200);
+      expect(cached.json().models).toEqual([validModel]);
+      const validation = await app.inject({
+        method: "POST",
+        url: `/api/projects/${project.id}/engine-models/codex/validate`,
+        payload: { modelId: "safe-model" },
+      });
+      expect(validation.statusCode).toBe(200);
+      expect(validation.json()).toEqual({
+        valid: false,
+        errorCode: "provider_error",
+        error: "Provider execution failed.",
+      });
+      const address = await app.listen({ host: "127.0.0.1", port: 0 });
+      const socketEngines = await fetch(`${address}/api/engines`);
+      const socketValidation = await fetch(
+        `${address}/api/projects/${project.id}/engine-models/codex/validate`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ modelId: "safe-model" }),
+        },
+      );
+      expect(socketEngines.status).toBe(503);
+      expect(socketValidation.status).toBe(200);
+      const publicBodies = [
+        engines.body, initial.body, refresh.body, cached.body, validation.body,
+        await socketEngines.text(), await socketValidation.text(),
+      ].join("\n");
+      expect(publicBodies).not.toMatch(
+        /MODEL_SUCCESS_TOJSON_MARKER_752e|private-model-success|access_token|leaked-model/u,
+      );
+      await app.close();
+
+      app = create(new AgentStore(dataDir));
+      await app.ready();
+      const afterRestart = await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}/engine-models/codex`,
+      });
+      expect(afterRestart.statusCode).toBe(503);
+      expect(afterRestart.body).not.toMatch(
+        /MODEL_SUCCESS_TOJSON_MARKER_752e|private-model-success|access_token/u,
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+      expect(uncaught).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      process.off("uncaughtException", onUncaught);
+      await app.close();
+    }
+  });
+
   it("returns only structured static failures for rejected provider commands", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "ponderosa-provider-command-boundary-"));
     roots.push(root);
@@ -1222,6 +1362,126 @@ describe("provider readiness truth", () => {
       );
     }
     await app.close();
+  });
+
+  it("projects provider-command successes before Project and Agent HTTP output", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-provider-command-success-boundary-"));
+    roots.push(root);
+    const dataDir = path.join(root, "data");
+    const hostPath = path.join(root, "workspace");
+    mkdirSync(hostPath, { recursive: true });
+    const store = new AgentStore(dataDir);
+    const project = store.createProject({
+      label: "Provider Command Success Boundary",
+      hostPath,
+      defaultEngine: "codex",
+    });
+    const agent = store.createAgent(project.id, {
+      title: "Provider Command Success Agent",
+      engine: "codex",
+      conversationId: project.lastConversationId,
+    });
+    const marker = "PROVIDER_COMMAND_SUCCESS_TOJSON_MARKER_953f access_token=private-command-success";
+    const capabilities = {
+      steering: false,
+      persistentSessions: false,
+      commands: ["status", "valid"].map((name) => ({
+        name,
+        description: `Run ${name}`,
+        source: "provider-advertised" as const,
+        acceptsArguments: false,
+        insertText: `/${name}`,
+        status: "available" as const,
+        invocation: "runtime" as const,
+      })),
+      mcpServers: [],
+      composerCapabilities: [],
+    };
+    const commandAdapter: Adapter = {
+      ...adapter(),
+      openSession: async () => ({
+        capabilities: async () => capabilities,
+        invokeCommand: async (name: string) => name === "valid"
+          ? { message: "Provider command completed." }
+          : {
+              message: "unsafe",
+              toJSON: () => ({ message: marker, access_token: marker }),
+            } as never,
+      } as unknown as RuntimeSession),
+    };
+    const app = createServer({
+      dataDir,
+      store,
+      engines: [{ adapter: commandAdapter }],
+      logger: false,
+    });
+    const unhandled: unknown[] = [];
+    const uncaught: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    const onUncaught = (error: unknown): void => { uncaught.push(error); };
+    process.on("unhandledRejection", onUnhandled);
+    process.on("uncaughtException", onUncaught);
+    try {
+      await app.ready();
+      const projectHostile = await app.inject({
+        method: "POST",
+        url: `/api/projects/${project.id}/provider-commands`,
+        payload: { engineId: "codex", name: "status" },
+      });
+      const agentHostile = await app.inject({
+        method: "POST",
+        url: `/api/agents/${agent.id}/provider-commands`,
+        payload: { name: "status" },
+      });
+      for (const response of [projectHostile, agentHostile]) {
+        expect(response.statusCode).toBe(409);
+        expect(response.json()).toEqual({
+          error: "Provider execution failed.",
+          category: "unknown",
+          remediation: "Review the restricted server logs, then retry the provider operation.",
+        });
+        expect(response.body).not.toMatch(
+          /PROVIDER_COMMAND_SUCCESS_TOJSON_MARKER_953f|private-command-success|access_token/u,
+        );
+      }
+      const valid = await app.inject({
+        method: "POST",
+        url: `/api/projects/${project.id}/provider-commands`,
+        payload: { engineId: "codex", name: "valid" },
+      });
+      expect(valid.statusCode).toBe(200);
+      expect(valid.json()).toMatchObject({
+        invoked: true,
+        name: "valid",
+        message: "Provider command completed.",
+      });
+      const address = await app.listen({ host: "127.0.0.1", port: 0 });
+      const socketResponses = await Promise.all([
+        fetch(`${address}/api/projects/${project.id}/provider-commands`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ engineId: "codex", name: "status" }),
+        }),
+        fetch(`${address}/api/agents/${agent.id}/provider-commands`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "status" }),
+        }),
+      ]);
+      for (const response of socketResponses) {
+        expect(response.status).toBe(409);
+        expect(await response.text()).not.toMatch(
+          /PROVIDER_COMMAND_SUCCESS_TOJSON_MARKER_953f|private-command-success|access_token/u,
+        );
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+      expect(uncaught).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      process.off("uncaughtException", onUncaught);
+      await app.close();
+    }
   });
 
   it("sanitizes asynchronous provider-usage failures before later cache projections", async () => {
