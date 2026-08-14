@@ -259,6 +259,13 @@ export class CoordinationV3RunLifecycleAuthority {
     providerSessionId?: string;
     now?: string;
   }): void {
+    if (input.providerTurnId !== undefined && (
+      typeof input.providerTurnId !== "string"
+      || input.providerTurnId.length > 512
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(input.providerTurnId)
+    )) {
+      throw new Error("provider turn id must be a bounded identifier");
+    }
     const now = input.now ?? new Date().toISOString();
     this.sqlite.transaction(() => {
       this.support.getFencedRun(input.runId, input.fencingToken);

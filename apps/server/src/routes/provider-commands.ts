@@ -38,6 +38,10 @@ import {
   projectProviderCapabilities,
   projectProviderCommandResult,
 } from "../provider-success-projection.js";
+import {
+  readProviderContextUsage,
+  readProviderSessionIdentifier,
+} from "../provider-session-success.js";
 import { registerAgentRunHistoryRoute } from "./agent-audit.js";
 
 interface ProviderCommandRoutesContext {
@@ -350,13 +354,21 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
       }
       const result = projectProviderCommandResult(await session.invokeCommand(name, argumentsText));
       if (name === "compact") {
-        const usage = session.contextUsage?.();
+        let usage: ReturnType<typeof readProviderContextUsage>;
+        try {
+          usage = readProviderContextUsage(session);
+        } catch {
+          // Native compaction already succeeded. Invalid optional telemetry
+          // must not invite a duplicate command retry or influence rollover.
+          usage = undefined;
+        }
         const providerSessionGeneration = usage?.providerSessionGeneration;
-        if (usage && providerSessionGeneration && session.engineAgentId) {
+        if (usage && providerSessionGeneration) {
+          const providerSessionId = readProviderSessionIdentifier(session);
           const cancelled = coordinationV3.cancelContextRolloverAfterNativeCompaction({
             agentId: agent.id,
             providerSessionGeneration,
-            providerSessionId: session.engineAgentId,
+            providerSessionId,
             usedTokens: usage.usedTokens,
           });
           if (cancelled) {
@@ -489,7 +501,15 @@ app.post<{ Params: { id: string } }>("/api/agents/:id/compact", async (request, 
     return reply.code(409).send({ error: "the agent has no accepted provider session to roll over" });
   }
   const runtime = persistentRuntimeForTermination(request.params.id);
-  const usage = runtime?.session.contextUsage?.();
+  let usage: ReturnType<typeof readProviderContextUsage>;
+  try {
+    usage = readProviderContextUsage(runtime?.session);
+  } catch {
+    return reply.code(409).send({
+      error: "Provider returned invalid structured data.",
+      retryable: true,
+    });
+  }
   const preferences = workspace.getPreferences();
   const pressure = evaluateContextRolloverPressure(
     usage ?? { usedTokens: preferences.contextRolloverTokens },

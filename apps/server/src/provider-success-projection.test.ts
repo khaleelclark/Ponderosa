@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
   projectProviderCapabilities,
+  projectProviderAuthStatus,
+  projectProviderAvailabilityStatus,
   projectProviderCommandResult,
+  projectProviderContextUsage,
   projectProviderEffortOptions,
   projectProviderModelCatalog,
   projectProviderModelOptions,
   projectProviderModelValidation,
+  projectProviderSessionIdentifier,
+  projectProviderSteerResult,
   projectProviderUsage,
 } from "./provider-success-projection.js";
 
@@ -59,6 +64,83 @@ describe("provider success projection", () => {
     })).toEqual({ valid: false, errorCode: "model_not_found", error: "not found" });
     expect(projectProviderCommandResult({ message: "Runtime is healthy." }))
       .toEqual({ message: "Runtime is healthy." });
+  });
+
+  it("copies valid auth, availability, steering, context, and session successes", () => {
+    expect(projectProviderAuthStatus({ authenticated: true, detail: "signed in" }))
+      .toEqual({ authenticated: true, detail: "signed in" });
+    expect(projectProviderAvailabilityStatus({
+      available: false, failureCategory: "rate_limit", detail: "quota reached",
+    })).toEqual({ available: false, failureCategory: "rate_limit", detail: "quota reached" });
+    expect(projectProviderAvailabilityStatus({
+      available: false, failureCategory: "adapter_future_category",
+    })).toEqual({ available: false, failureCategory: "unknown" });
+    expect(projectProviderSteerResult({ status: "accepted", turnId: "turn-1" }))
+      .toEqual({ status: "accepted", turnId: "turn-1" });
+    expect(projectProviderContextUsage({
+      usedTokens: 10, windowTokens: 100, aggregateTokens: 20,
+      providerSessionGeneration: "generation-1",
+    })).toEqual({
+      usedTokens: 10, windowTokens: 100, aggregateTokens: 20,
+      providerSessionGeneration: "generation-1",
+    });
+    expect(projectProviderSessionIdentifier("session-1")).toBe("session-1");
+  });
+
+  it.each(["toJSON", "getter", "descriptor", "ownKeys", "proxy", "revoked", "huge", "control", "secret", "malformed"])(
+    "fails closed for remaining provider success schemas: %s",
+    (kind) => {
+      const marker = `ADJACENT_SUCCESS_MARKER_${kind}`;
+      const hostile = (base: Record<string, unknown>): unknown => {
+        if (kind === "toJSON") base.toJSON = () => ({ marker });
+        else if (kind === "getter") Object.defineProperty(base, Object.keys(base)[0]!, {
+          enumerable: true, get: () => { throw new Error(marker); },
+        });
+        else if (kind === "descriptor") return new Proxy(base, {
+          getOwnPropertyDescriptor: () => { throw new Error(marker); },
+        });
+        else if (kind === "ownKeys") return new Proxy(base, {
+          ownKeys: () => { throw new Error(marker); },
+        });
+        else if (kind === "proxy") return new Proxy(base, {
+          getPrototypeOf: () => { throw new Error(marker); },
+        });
+        else if (kind === "revoked") {
+          const value = Proxy.revocable(base, {});
+          value.revoke();
+          return value.proxy;
+        } else if (kind === "huge") base[Object.keys(base)[0]!] = marker.repeat(1_000);
+        else if (kind === "control") base[Object.keys(base)[0]!] = `${marker}\u0000hidden`;
+        else if (kind === "secret") base.access_token = marker;
+        else base[Object.keys(base)[0]!] = 1n;
+        return base;
+      };
+      const attempts = [
+        () => projectProviderAuthStatus(hostile({ authenticated: true, detail: "ok" })),
+        () => projectProviderAvailabilityStatus(hostile({ available: true, detail: "ok" })),
+        () => projectProviderSteerResult(hostile({ status: "accepted", turnId: "turn" })),
+        () => projectProviderContextUsage(hostile({ usedTokens: 1, providerSessionGeneration: "generation" })),
+      ];
+      for (const attempt of attempts) {
+        expect(attempt).toThrow("Provider returned invalid structured data.");
+        try { attempt(); } catch (error) { expect(String(error)).not.toContain(marker); }
+      }
+    },
+  );
+
+  it("rejects malformed enums, numeric bounds, and identifier budgets", () => {
+    expect(() => projectProviderSteerResult({ status: "accepted", reason: "impossible" }))
+      .toThrow("Provider returned invalid structured data.");
+    expect(() => projectProviderSteerResult({ status: "future_status" }))
+      .toThrow("Provider returned invalid structured data.");
+    expect(() => projectProviderContextUsage({ usedTokens: -1 }))
+      .toThrow("Provider returned invalid structured data.");
+    expect(() => projectProviderContextUsage({ usedTokens: Number.POSITIVE_INFINITY }))
+      .toThrow("Provider returned invalid structured data.");
+    expect(() => projectProviderSessionIdentifier("x".repeat(513)))
+      .toThrow("Provider returned invalid structured data.");
+    expect(() => projectProviderSessionIdentifier("access_token=private-session"))
+      .toThrow("Provider returned invalid structured data.");
   });
 
   it.each([

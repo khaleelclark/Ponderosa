@@ -28,6 +28,10 @@ import {
   type QueuedEditRevisionOutboxPayload,
 } from "./routes/queued-messages.js";
 import type { ProviderProcessAuthority } from "./provider-process-authority.js";
+import {
+  invokeProviderSteer,
+  readProviderSessionIdentifier,
+} from "./provider-session-success.js";
 
 type ArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>;
 
@@ -334,14 +338,15 @@ return new CoordinationV3Scheduler(
           error: "authoritative run is not currently steerable",
         };
       }
-      coordinationV3.markPromptSubmitted({
-        injectionId: lease.injectionId,
-        runId: lease.runId,
-        fencingToken: lease.fencingToken,
-        providerSessionId: run.runtimeSession.engineAgentId,
-      });
       try {
-        const result = await run.runtimeSession.steer({
+        const providerSessionId = readProviderSessionIdentifier(run.runtimeSession);
+        coordinationV3.markPromptSubmitted({
+          injectionId: lease.injectionId,
+          runId: lease.runId,
+          fencingToken: lease.fencingToken,
+          providerSessionId,
+        });
+        const result = await invokeProviderSteer(run.runtimeSession, {
           prompt,
           kind: "user_message",
           clientMessageId: lease.injectionId,
@@ -351,7 +356,7 @@ return new CoordinationV3Scheduler(
             accepted: false,
             retryable: true,
             retrySteering: true,
-            error: result.reason ?? result.status,
+            error: result.status,
           };
         }
         coordinationV3.acknowledgePromptInjection({
@@ -359,7 +364,7 @@ return new CoordinationV3Scheduler(
           runId: lease.runId,
           fencingToken: lease.fencingToken,
           providerTurnId: result.turnId,
-          providerSessionId: run.runtimeSession.engineAgentId,
+          providerSessionId,
         });
         renewExecutionLease(lease.agentId, run);
         return { accepted: true };
@@ -367,7 +372,7 @@ return new CoordinationV3Scheduler(
         return {
           accepted: false,
           outcomeUnknown: true,
-          error: error instanceof Error ? error.message : String(error),
+          error: "provider steering failed",
         };
       }
     },

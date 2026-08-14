@@ -116,6 +116,8 @@ function persistentProviderRunAdapter(input: {
   teardownStarted: () => void;
   releaseTeardown: Promise<void>;
   teardownFinished: () => void;
+  steer?: RuntimeSession["steer"];
+  engineAgentId?: string;
 }): Adapter {
   return {
     id: "codex",
@@ -145,7 +147,7 @@ function persistentProviderRunAdapter(input: {
         killConfirmationMs: 500,
       });
       const session: RuntimeSession = {
-        engineAgentId: `provider-${options.agentId}`,
+        engineAgentId: input.engineAgentId ?? `provider-${options.agentId}`,
         processIdentity: { pid: child.pid!, pgid: child.pid!, birthMarker },
         isAlive: () => authority.isAlive(),
         close: async () => {
@@ -158,7 +160,7 @@ function persistentProviderRunAdapter(input: {
           input.started();
           return { turnId: `turn-${options.agentId}` };
         },
-        steer: async () => ({ status: "unsupported", reason: "test runtime" }),
+        steer: input.steer ?? (async () => ({ status: "unsupported", reason: "test runtime" })),
         interrupt: async () => undefined,
         events: {
           async *[Symbol.asyncIterator]() {
@@ -180,6 +182,7 @@ async function providerRunFixture(input: {
   adapter: Adapter;
   availabilityProbe?: () => Promise<{ available: boolean; detail?: string }>;
   managerContext?: "managed_child";
+  steeringRecoveryGraceMs?: number;
 }) {
   const root = mkdtempSync(path.join(tmpdir(), "ponderosa-provider-run-readiness-"));
   roots.push(root);
@@ -216,7 +219,12 @@ async function providerRunFixture(input: {
       authStatus: async () => ({ authenticated: true }),
       ...(input.availabilityProbe ? { availabilityProbe: input.availabilityProbe } : {}),
     }],
-    communicationV3: { pollMs: 10 },
+    communicationV3: {
+      pollMs: 10,
+      ...(input.steeringRecoveryGraceMs === undefined
+        ? {}
+        : { steeringRecoveryGraceMs: input.steeringRecoveryGraceMs }),
+    },
     logger: false,
   });
   await app.ready();
@@ -452,6 +460,138 @@ describe("provider readiness truth", () => {
     await fixture.app.close();
   });
 
+  it("rejects hostile steering turn identifiers before scheduler persistence", async () => {
+    const started = deferred();
+    const releaseTurn = deferred();
+    const teardownStarted = deferred();
+    const releaseTeardown = deferred();
+    const teardownFinished = deferred();
+    const marker = "STEERING_TURN_SUCCESS_MARKER_80ad";
+    let steerCalls = 0;
+    const fixture = await providerRunFixture({
+      adapter: persistentProviderRunAdapter({
+        started: started.resolve,
+        releaseTurn: releaseTurn.promise,
+        teardownStarted: teardownStarted.resolve,
+        releaseTeardown: releaseTeardown.promise,
+        teardownFinished: teardownFinished.resolve,
+        steer: async () => {
+          steerCalls += 1;
+          return {
+            status: "accepted",
+            turnId: `access_token=private-${marker}`,
+          } as never;
+        },
+      }),
+      steeringRecoveryGraceMs: 60_000,
+    });
+    const unhandled: unknown[] = [];
+    const uncaught: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    const onUncaught = (error: unknown): void => { uncaught.push(error); };
+    process.on("unhandledRejection", onUnhandled);
+    process.on("uncaughtException", onUncaught);
+    try {
+      await started.promise;
+      const response = await fixture.app.inject({
+        method: "POST",
+        url: `/api/agents/${fixture.agent.id}/messages`,
+        payload: {
+          text: "steer this active run",
+          activeRunDelivery: "steer",
+          idempotencyKey: "hostile-steering-turn-id",
+        },
+      });
+      expect(response.statusCode).toBeLessThan(300);
+      expect(response.body).not.toMatch(/STEERING_TURN_SUCCESS_MARKER_80ad|private-|access_token/u);
+      await vi.waitFor(() => {
+        expect(steerCalls).toBe(1);
+        expect(fixture.store.sqlite.prepare(`
+          SELECT state, provider_turn_id AS providerTurnId
+          FROM scheduler_prompt_injections
+          WHERE kind = 'steer' ORDER BY rowid DESC LIMIT 1
+        `).get()).toEqual({ state: "outcome_unknown", providerTurnId: null });
+      }, { timeout: 5_000, interval: 20 });
+      const activation = fixture.store.sqlite.prepare(`
+        SELECT state, last_delivery_error AS lastDeliveryError
+        FROM agent_activations
+        ORDER BY rowid DESC LIMIT 1
+      `).get() as { state: string; lastDeliveryError: string };
+      expect(activation).toEqual({
+        state: "outcome_unknown",
+        lastDeliveryError: "provider steering failed",
+      });
+      expect(JSON.stringify(activation)).not.toContain(marker);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+      expect(uncaught).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      process.off("uncaughtException", onUncaught);
+      releaseTurn.resolve();
+      releaseTeardown.resolve();
+      await fixture.app.close();
+    }
+  }, 10_000);
+
+  it("fails a Run finitely when a provider session identifier is hostile", async () => {
+    const releaseTurn = deferred();
+    const releaseTeardown = deferred();
+    const marker = "PROVIDER_SESSION_IDENTIFIER_MARKER_4a7c";
+    const fixture = await providerRunFixture({
+      adapter: persistentProviderRunAdapter({
+        started: () => undefined,
+        releaseTurn: releaseTurn.promise,
+        teardownStarted: () => undefined,
+        releaseTeardown: releaseTeardown.promise,
+        teardownFinished: () => undefined,
+        engineAgentId: `access_token=private-${marker}`,
+      }),
+    });
+    const unhandled: unknown[] = [];
+    const uncaught: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    const onUncaught = (error: unknown): void => { uncaught.push(error); };
+    process.on("unhandledRejection", onUnhandled);
+    process.on("uncaughtException", onUncaught);
+    try {
+      releaseTeardown.resolve();
+      await waitForRunStatus(fixture.store, "failed");
+      await waitForAgentRunStatus(fixture.store, fixture.agent.id, "failed");
+      const durable = fixture.store.sqlite.prepare(`
+        SELECT status, provider_session_id AS providerSessionId,
+          provider_failure_json AS providerFailureJson
+        FROM scheduler_runs ORDER BY rowid DESC LIMIT 1
+      `).get() as {
+        status: string;
+        providerSessionId: string | null;
+        providerFailureJson: string;
+      };
+      expect(durable.status).toBe("failed");
+      expect(durable.providerSessionId).toBeNull();
+      expect(durable.providerFailureJson).not.toMatch(
+        /PROVIDER_SESSION_IDENTIFIER_MARKER_4a7c|private-|access_token/u,
+      );
+      const work = await fixture.app.inject({
+        method: "GET",
+        url: `/api/agents/${fixture.agent.id}/history/runOutput`,
+      });
+      expect(work.statusCode).toBe(200);
+      expect(work.body).not.toMatch(
+        /PROVIDER_SESSION_IDENTIFIER_MARKER_4a7c|private-|access_token/u,
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+      expect(uncaught).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      process.off("uncaughtException", onUncaught);
+      releaseTurn.resolve();
+      releaseTeardown.resolve();
+      await fixture.app.close();
+    }
+  }, 10_000);
+
   it("keeps authenticated intake separate from unverified reachability", async () => {
     const app = await fixture(async () => ({ authenticated: true, detail: "signed in" }));
     const engines = await app.inject({ method: "GET", url: "/api/engines" });
@@ -626,6 +766,108 @@ describe("provider readiness truth", () => {
       expect(response.body).not.toMatch(/private-session|private-token|Users|phoenix|hosts\.yml|auth\.json/u);
     }
     await app.close();
+  });
+
+  it("projects hostile auth and availability successes before cache, HTTP, socket, and restart", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-auth-availability-success-boundary-"));
+    roots.push(root);
+    const dataDir = path.join(root, "data");
+    const authMarker = "AUTH_SUCCESS_TOJSON_MARKER_1c92 access_token=private-auth-success";
+    const availabilityMarker = "AVAILABILITY_SUCCESS_TOJSON_MARKER_74b1 refresh_token=private-availability-success";
+    let validAuth = false;
+    const app = createServer({
+      dataDir,
+      engines: [{
+        adapter: adapter(),
+        authStatus: async () => validAuth
+          ? { authenticated: true, detail: "recovered account" }
+          : {
+              authenticated: true,
+              toJSON: () => ({ authenticated: true, detail: authMarker, access_token: authMarker }),
+            } as never,
+        availabilityProbe: async () => ({
+          available: false,
+          toJSON: () => ({
+            available: true,
+            detail: availabilityMarker,
+            refresh_token: availabilityMarker,
+          }),
+        } as never),
+      }],
+      logger: false,
+    });
+    const unhandled: unknown[] = [];
+    const uncaught: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    const onUncaught = (error: unknown): void => { uncaught.push(error); };
+    process.on("unhandledRejection", onUnhandled);
+    process.on("uncaughtException", onUncaught);
+    try {
+      await app.ready();
+      const concurrentAuth = await Promise.all([
+        app.inject({ method: "GET", url: "/api/engines" }),
+        app.inject({ method: "GET", url: "/api/engines" }),
+      ]);
+      for (const response of concurrentAuth) {
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual([expect.objectContaining({
+          authentication: "error",
+          intakeReady: false,
+          authDetail: "runtime authentication could not be checked",
+        })]);
+        expect(response.body).not.toMatch(/AUTH_SUCCESS_TOJSON_MARKER_1c92|private-auth-success|access_token/u);
+      }
+      validAuth = true;
+      const recovered = await app.inject({ method: "GET", url: "/api/engines" });
+      expect(recovered.json()).toEqual([expect.objectContaining({
+        authentication: "authenticated",
+        intakeReady: true,
+      })]);
+
+      const recheck = await app.inject({ method: "POST", url: "/api/engines/codex/recheck" });
+      expect(recheck.statusCode).toBe(200);
+      expect(recheck.json()).toEqual(expect.objectContaining({
+        reachability: "degraded",
+        availabilityDetail: "Provider is temporarily unavailable.",
+      }));
+      expect(recheck.body).not.toMatch(
+        /AVAILABILITY_SUCCESS_TOJSON_MARKER_74b1|private-availability-success|refresh_token/u,
+      );
+
+      const address = await app.listen({ host: "127.0.0.1", port: 0 });
+      const socketResponse = await fetch(`${address}/api/engines/codex/recheck`, { method: "POST" });
+      expect(socketResponse.status).toBe(200);
+      const socketBody = await socketResponse.text();
+      expect(socketBody).not.toMatch(
+        /AUTH_SUCCESS_TOJSON_MARKER_1c92|AVAILABILITY_SUCCESS_TOJSON_MARKER_74b1|private-.*-success|access_token|refresh_token/u,
+      );
+      const evidence = readFileSync(path.join(dataDir, "engine-availability.jsonl"), "utf8");
+      expect(evidence).toContain("Provider is temporarily unavailable.");
+      expect(evidence).not.toMatch(
+        /AUTH_SUCCESS_TOJSON_MARKER_1c92|AVAILABILITY_SUCCESS_TOJSON_MARKER_74b1|private-.*-success|access_token|refresh_token/u,
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+      expect(uncaught).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      process.off("uncaughtException", onUncaught);
+      await app.close();
+    }
+
+    const restarted = createServer({
+      dataDir,
+      engines: [{ adapter: adapter(), authStatus: async () => ({ authenticated: true }) }],
+      logger: false,
+    });
+    await restarted.ready();
+    const afterRestart = await restarted.inject({ method: "GET", url: "/api/engines" });
+    expect(afterRestart.statusCode).toBe(200);
+    expect(afterRestart.json()).toEqual([expect.objectContaining({ reachability: "degraded" })]);
+    expect(afterRestart.body).not.toMatch(
+      /AUTH_SUCCESS_TOJSON_MARKER_1c92|AVAILABILITY_SUCCESS_TOJSON_MARKER_74b1|private-.*-success|access_token|refresh_token/u,
+    );
+    await restarted.close();
   });
 
   it("returns a canonical 503 when engine metadata throws without exposing provider exception text", async () => {
@@ -1483,6 +1725,156 @@ describe("provider readiness truth", () => {
       await app.close();
     }
   });
+
+  it("projects hostile context usage across native and manual compact over inject and socket", async () => {
+    const started = deferred();
+    const releaseTurn = deferred();
+    const marker = "CONTEXT_USAGE_SUCCESS_MARKER_9e6c access_token=private-context-usage";
+    let usageCall = 0;
+    const contextAdapter: Adapter = {
+      ...adapter(),
+      trustedSystemPromptChannel: "developer",
+      openSession: async (options: OpenRuntimeSessionOptions): Promise<RuntimeSession> => {
+        const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+          detached: true,
+          stdio: "ignore",
+        });
+        await new Promise<void>((resolve, reject) => {
+          child.once("spawn", resolve);
+          child.once("error", reject);
+        });
+        child.unref();
+        const birthMarker = processBirthMarker(child.pid!);
+        if (!birthMarker) throw new Error("test provider process lacks birth evidence");
+        const processIdentity = { pid: child.pid!, pgid: child.pid!, birthMarker };
+        const authority = recoveredRuntimeProcessHandle(processIdentity, {
+          label: "hostile context usage provider",
+          termGraceMs: 500,
+          killConfirmationMs: 500,
+        });
+        const hostileUsage = (): never => {
+          usageCall += 1;
+          if (usageCall === 1) {
+            return {
+              usedTokens: 1,
+              toJSON: () => ({ usedTokens: 1, marker, access_token: marker }),
+            } as never;
+          }
+          if (usageCall === 2) {
+            const value = { usedTokens: 1 };
+            Object.defineProperty(value, "usedTokens", {
+              enumerable: true,
+              get: () => { throw new Error(marker); },
+            });
+            return value as never;
+          }
+          if (usageCall === 3) {
+            const value = Proxy.revocable({ usedTokens: 1 }, {});
+            value.revoke();
+            return value.proxy as never;
+          }
+          return { usedTokens: 1, providerSessionGeneration: marker.repeat(100) } as never;
+        };
+        const session: RuntimeSession = {
+          engineAgentId: "provider-context-session",
+          processIdentity,
+          isAlive: () => authority.isAlive(),
+          close: () => authority.close(),
+          startTurn: async () => {
+            started.resolve();
+            return { turnId: "initial-turn" };
+          },
+          steer: async () => ({ status: "unsupported", reason: "test runtime" }),
+          interrupt: async () => undefined,
+          capabilities: async () => ({
+            steering: false,
+            persistentSessions: true,
+            commands: [{
+              name: "compact",
+              description: "Compact provider context",
+              source: "adapter-implemented",
+              acceptsArguments: false,
+              insertText: "/compact",
+              status: "available",
+              invocation: "runtime",
+            }],
+            mcpServers: [],
+            composerCapabilities: [],
+          }),
+          invokeCommand: async () => ({ message: "Compacted." }),
+          contextUsage: hostileUsage,
+          events: {
+            async *[Symbol.asyncIterator]() {
+              yield { type: "session" as const, sessionId: "provider-context-session" };
+              await releaseTurn.promise;
+              yield { type: "turn_done" as const };
+            },
+          },
+        };
+        options.onRuntimeSpawned(session);
+        return session;
+      },
+      async *seed() { yield { type: "turn_done" }; },
+      async *continue() { yield { type: "turn_done" }; },
+    };
+    const fixture = await providerRunFixture({ adapter: contextAdapter });
+    const unhandled: unknown[] = [];
+    const uncaught: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    const onUncaught = (error: unknown): void => { uncaught.push(error); };
+    process.on("unhandledRejection", onUnhandled);
+    process.on("uncaughtException", onUncaught);
+    try {
+      await started.promise;
+      releaseTurn.resolve();
+      await waitForRunStatus(fixture.store, "completed");
+      const injectResponses = [
+        await fixture.app.inject({
+          method: "POST",
+          url: `/api/agents/${fixture.agent.id}/provider-commands`,
+          payload: { name: "compact" },
+        }),
+        await fixture.app.inject({
+          method: "POST",
+          url: `/api/agents/${fixture.agent.id}/compact`,
+        }),
+      ];
+      expect(injectResponses.map((response) => response.statusCode)).toEqual([200, 409]);
+      expect(injectResponses[0]!.json()).toMatchObject({
+        invoked: true,
+        name: "compact",
+        message: "Compacted.",
+      });
+
+      const address = await fixture.app.listen({ host: "127.0.0.1", port: 0 });
+      const socketResponses = await Promise.all([
+        fetch(`${address}/api/agents/${fixture.agent.id}/provider-commands`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "compact" }),
+        }),
+        fetch(`${address}/api/agents/${fixture.agent.id}/compact`, { method: "POST" }),
+      ]);
+      expect(socketResponses.map((response) => response.status)).toEqual([200, 409]);
+      const bodies = [
+        ...injectResponses.map((response) => response.body),
+        ...await Promise.all(socketResponses.map((response) => response.text())),
+      ];
+      for (const body of bodies) {
+        expect(body).not.toMatch(
+          /CONTEXT_USAGE_SUCCESS_MARKER_9e6c|private-context-usage|access_token|toJSON/u,
+        );
+        expect(body.length).toBeLessThan(1_000);
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+      expect(uncaught).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      process.off("uncaughtException", onUncaught);
+      await fixture.app.close();
+    }
+  }, 10_000);
 
   it("sanitizes asynchronous provider-usage failures before later cache projections", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "ponderosa-provider-usage-cache-error-"));

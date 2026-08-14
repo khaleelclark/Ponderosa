@@ -1,5 +1,7 @@
 import type {
   EffortOption,
+  EngineAuthStatus,
+  EngineAvailabilityStatus,
   EngineCapabilities,
   EngineCommand,
   EngineComposerCapability,
@@ -12,7 +14,9 @@ import type {
   ProviderUsageWindow,
   ServiceTierOption,
   RuntimeCommandResult,
+  RuntimeSteerResult,
 } from "@ponderosa/core";
+import { normalizeProviderFailureCategory } from "@ponderosa/core";
 
 const MAX_CAPABILITY_ROWS = 1_000;
 const MAX_MODEL_ROWS = 500;
@@ -24,7 +28,17 @@ const MAX_PROJECTED_UTF8_BYTES = 256 * 1024;
 const MAX_PROJECTED_NODES = 10_000;
 const MAX_PROJECTED_DEPTH = 8;
 const JSON_UNSAFE_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
-type ProjectionBoundary = "capabilities" | "usage" | "models" | "validation" | "command";
+type ProjectionBoundary =
+  | "auth"
+  | "availability"
+  | "capabilities"
+  | "usage"
+  | "models"
+  | "validation"
+  | "command"
+  | "steering"
+  | "context_usage"
+  | "session_identifier";
 
 export class ProviderSuccessProjectionError extends Error {
   readonly restrictedDetail: string;
@@ -155,6 +169,36 @@ function optionalString(
 ): string | undefined {
   if (!record.has(key) || record.get(key) === undefined) return undefined;
   return requiredString(record, key, limit, boundary, budget, depth);
+}
+
+function identifierString(
+  record: Map<string, unknown>,
+  key: string,
+  boundary: ProjectionBoundary,
+  budget: ProjectionBudget,
+  depth: number,
+): string {
+  const value = requiredString(
+    record,
+    key,
+    MAX_IDENTIFIER_CHARACTERS,
+    boundary,
+    budget,
+    depth,
+  );
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(value)) reject(boundary);
+  return value;
+}
+
+function optionalIdentifierString(
+  record: Map<string, unknown>,
+  key: string,
+  boundary: ProjectionBoundary,
+  budget: ProjectionBudget,
+  depth: number,
+): string | undefined {
+  if (!record.has(key) || record.get(key) === undefined) return undefined;
+  return identifierString(record, key, boundary, budget, depth);
 }
 
 function requiredBoolean(
@@ -388,7 +432,7 @@ export function projectProviderCapabilities(value: unknown): EngineCapabilities 
       "steering", "persistentSessions", "sessionId", "selectedModel", "model",
       "catalogVersion", "modelCatalog", "commands", "mcpServers", "composerCapabilities",
     ], "capabilities", budget, 0);
-    const sessionId = optionalString(record, "sessionId", MAX_IDENTIFIER_CHARACTERS, "capabilities", budget, 1);
+    const sessionId = optionalIdentifierString(record, "sessionId", "capabilities", budget, 1);
     const selectedModel = optionalString(record, "selectedModel", MAX_IDENTIFIER_CHARACTERS, "capabilities", budget, 1);
     const activeModel = optionalString(record, "model", MAX_IDENTIFIER_CHARACTERS, "capabilities", budget, 1);
     const catalogVersion = optionalString(record, "catalogVersion", MAX_IDENTIFIER_CHARACTERS, "capabilities", budget, 1);
@@ -478,6 +522,138 @@ export function projectProviderCommandResult(value: unknown): RuntimeCommandResu
   const record = dataRecord(value, ["message"], "command", budget, 0);
   const message = optionalString(record, "message", MAX_DESCRIPTION_CHARACTERS, "command", budget, 1);
   return message === undefined ? {} : { message };
+}
+
+/** Copy authentication probe output before it enters the shared auth cache. */
+export function projectProviderAuthStatus(value: unknown): EngineAuthStatus {
+  const budget = new ProjectionBudget("auth");
+  const record = dataRecord(value, ["authenticated", "detail"], "auth", budget, 0);
+  const detail = optionalString(record, "detail", MAX_DESCRIPTION_CHARACTERS, "auth", budget, 1);
+  return {
+    authenticated: requiredBoolean(record, "authenticated", "auth", budget, 1),
+    ...(detail === undefined ? {} : { detail }),
+  };
+}
+
+/** Copy an availability probe result before evidence, notifications, or HTTP use. */
+export function projectProviderAvailabilityStatus(value: unknown): EngineAvailabilityStatus {
+  const budget = new ProjectionBudget("availability");
+  const record = dataRecord(
+    value,
+    ["available", "failureCategory", "detail"],
+    "availability",
+    budget,
+    0,
+  );
+  const detail = optionalString(
+    record,
+    "detail",
+    MAX_DESCRIPTION_CHARACTERS,
+    "availability",
+    budget,
+    1,
+  );
+  const category = record.has("failureCategory") && record.get("failureCategory") !== undefined
+    ? normalizeProviderFailureCategory(requiredString(
+        record,
+        "failureCategory",
+        MAX_IDENTIFIER_CHARACTERS,
+        "availability",
+        budget,
+        1,
+      ))
+    : undefined;
+  return {
+    available: requiredBoolean(record, "available", "availability", budget, 1),
+    ...(category === undefined ? {} : { failureCategory: category }),
+    ...(detail === undefined ? {} : { detail }),
+  };
+}
+
+/** Copy a steering acknowledgement before scheduler decisions or persistence. */
+export function projectProviderSteerResult(value: unknown): RuntimeSteerResult {
+  const budget = new ProjectionBudget("steering");
+  const record = dataRecord(value, ["status", "turnId", "reason"], "steering", budget, 0);
+  const status = enumString(record, "status", [
+    "accepted", "not_active", "not_steerable", "unsupported",
+  ] as const, "steering", budget, 1);
+  if (status === "accepted") {
+    if (record.has("reason")) reject("steering");
+    const turnId = optionalIdentifierString(
+      record,
+      "turnId",
+      "steering",
+      budget,
+      1,
+    );
+    return { status, ...(turnId === undefined ? {} : { turnId }) };
+  }
+  if (record.has("turnId")) reject("steering");
+  const reason = optionalString(
+    record,
+    "reason",
+    MAX_DESCRIPTION_CHARACTERS,
+    "steering",
+    budget,
+    1,
+  );
+  return { status, ...(reason === undefined ? {} : { reason }) };
+}
+
+export interface ProjectedProviderContextUsage {
+  usedTokens: number;
+  windowTokens?: number;
+  aggregateTokens?: number;
+  providerSessionGeneration?: string;
+}
+
+/** Copy a synchronous session usage snapshot before rollover decisions. */
+export function projectProviderContextUsage(value: unknown): ProjectedProviderContextUsage | undefined {
+  if (value === undefined) return undefined;
+  const budget = new ProjectionBudget("context_usage");
+  const record = dataRecord(value, [
+    "usedTokens", "windowTokens", "aggregateTokens", "providerSessionGeneration",
+  ], "context_usage", budget, 0);
+  const optionalTokenCount = (key: "windowTokens" | "aggregateTokens"): number | undefined =>
+    record.has(key) && record.get(key) !== undefined
+      ? finiteNumber(record, key, 0, Number.MAX_SAFE_INTEGER, "context_usage", budget, 1)
+      : undefined;
+  const windowTokens = optionalTokenCount("windowTokens");
+  const aggregateTokens = optionalTokenCount("aggregateTokens");
+  const providerSessionGeneration = optionalIdentifierString(
+    record,
+    "providerSessionGeneration",
+    "context_usage",
+    budget,
+    1,
+  );
+  return {
+    usedTokens: finiteNumber(
+      record,
+      "usedTokens",
+      0,
+      Number.MAX_SAFE_INTEGER,
+      "context_usage",
+      budget,
+      1,
+    ),
+    ...(windowTokens === undefined ? {} : { windowTokens }),
+    ...(aggregateTokens === undefined ? {} : { aggregateTokens }),
+    ...(providerSessionGeneration === undefined ? {} : { providerSessionGeneration }),
+  };
+}
+
+/** Validate one provider-owned opaque session identifier. */
+export function projectProviderSessionIdentifier(value: unknown): string {
+  const budget = new ProjectionBudget("session_identifier");
+  const record = new Map<string, unknown>([["value", value]]);
+  return identifierString(
+    record,
+    "value",
+    "session_identifier",
+    budget,
+    0,
+  );
 }
 
 function usageWindow(value: unknown, budget: ProjectionBudget, depth: number): ProviderUsageWindow {

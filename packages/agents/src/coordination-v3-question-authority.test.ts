@@ -134,6 +134,28 @@ function activationState(
 }
 
 describe("cleared coordination questions", () => {
+  it("rejects hostile provider turn identifiers before durable acknowledgement", () => {
+    const { sqlite, store, requesterRun } = fixture();
+    const marker = "PROVIDER_TURN_PERSISTENCE_MARKER_64f2";
+    for (const providerTurnId of [
+      `${marker}\u0000hidden`,
+      marker.repeat(40),
+      "access_token=private-provider-turn",
+    ]) {
+      expect(() => store.acknowledgePromptInjection({
+        injectionId: requesterRun.injectionId,
+        runId: requesterRun.runId,
+        fencingToken: requesterRun.fencingToken,
+        providerTurnId,
+        now: NOW,
+      })).toThrow("provider turn id must be a bounded identifier");
+    }
+    expect(sqlite.prepare(`
+      SELECT provider_turn_id AS providerTurnId
+      FROM scheduler_prompt_injections WHERE id = ?
+    `).get(requesterRun.injectionId)).toEqual({ providerTurnId: null });
+  });
+
   it("cancels an attached question and its unsubmitted steering injection", () => {
     const { sqlite, store, requestId } = fixture();
     const unrelatedActivationId = store.enqueueMessageActivation({

@@ -20,6 +20,7 @@ import {
   publicProviderExceptionResponse,
 } from "../provider-availability-detail.js";
 import { restrictedProviderExceptionLogDetail } from "../provider-exception-properties.js";
+import { projectProviderAvailabilityStatus } from "../provider-success-projection.js";
 
 interface EngineRouteRegistration {
   adapter: Adapter;
@@ -207,7 +208,7 @@ export function registerEngineRoutes(
       }
       let result: EngineAvailabilityStatus;
       try {
-        result = await registration.availabilityProbe();
+        result = projectProviderAvailabilityStatus(await registration.availabilityProbe());
       } catch (error) {
         request.log.warn({
           providerError: restrictedProviderExceptionLogDetail(error),

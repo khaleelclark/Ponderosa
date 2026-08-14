@@ -38,6 +38,7 @@ import { evaluateContextRolloverPressure } from "../context-rollover-pressure.js
 import type { ContextCursor } from "../context-cursors.js";
 import { providerUnavailableNotificationBody } from "../provider-availability-detail.js";
 import { guardedProviderExceptionStringProperty } from "../provider-exception-properties.js";
+import { readProviderSessionIdentifier } from "../provider-session-success.js";
 import { cleanupRuntimeAttachments } from "../runtime-attachments.js";
 import type { AgentMessageRunContext } from "./agent-message-run.js";
 
@@ -736,7 +737,9 @@ export function startProviderRunExecution(
             injectionId: v3InjectionId!,
             runId: activeRun.v3SchedulerRunId,
             fencingToken: activeRun.v3FencingToken,
-            providerSessionId: sessionId ?? persistentRuntime?.session.engineAgentId,
+            providerSessionId: sessionId ?? (persistentRuntime
+              ? readProviderSessionIdentifier(persistentRuntime.session)
+              : undefined),
           });
         }
         for await (const event of startStream(sessionId)) {
@@ -766,7 +769,9 @@ export function startProviderRunExecution(
               injectionId: v3InjectionId!,
               runId: activeRun.v3SchedulerRunId,
               fencingToken: activeRun.v3FencingToken,
-              providerSessionId: sessionId ?? persistentRuntime?.session.engineAgentId,
+              providerSessionId: sessionId ?? (persistentRuntime
+                ? readProviderSessionIdentifier(persistentRuntime.session)
+                : undefined),
             });
             v3PromptInjected = true;
             if (continuationHandoff && !continuationHandoffConsumed && !replacementCandidate) {
