@@ -1274,6 +1274,14 @@ export function startProviderRunExecution(
             );
           }
         }
+        // Teardown above may yield while cancellation advances the scheduler
+        // fence. Re-read canonical status and exact Run ownership before any
+        // successful provider side effect can escape this terminalization.
+        schedulerCancelled ||= Boolean(
+          activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId),
+        );
+        const successfulRunStillAuthoritative = !isClosed() && !controller.signal.aborted &&
+          !schedulerCancelled && ownsActiveRun(agent.id, activeRun);
         const acceptedSessionId = !runError && !schedulerCancelled ? store.resumeSessionId(agent.id) : undefined;
         if (acceptedSessionId) {
           organizationEnvelopeStates.set(agent.id, {
@@ -1301,14 +1309,15 @@ export function startProviderRunExecution(
             });
           }
           notifyManagerOfChildFailure(agent.id, runId, runError);
-        } else if (!schedulerCancelled && engineAvailability.denial(runtimeEngineId)) {
+        } else if (successfulRunStillAuthoritative) {
+          const priorDenial = engineAvailability.denial(runtimeEngineId);
           engineAvailability.record({
             engineId: runtimeEngineId,
             available: true,
             detail: "provider Run completed successfully",
             source: "provider_run",
           });
-          resolveOperationalNotification(`provider:${runtimeEngineId}:unavailable`);
+          if (priorDenial) resolveOperationalNotification(`provider:${runtimeEngineId}:unavailable`);
         }
       }
       const released = releaseActiveRun(agent.id, activeRun, controller.signal.aborted || schedulerCancelled ? "cancelled" : runError ? "failed" : "completed");
