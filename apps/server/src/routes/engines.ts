@@ -15,6 +15,7 @@ import type {
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { EngineAuthStatusCache } from "../engine-auth-cache.js";
 import type { EngineAvailabilityStore } from "../engine-availability-store.js";
+import { providerUnavailableNotificationBody } from "../provider-availability-detail.js";
 
 interface EngineRouteRegistration {
   adapter: Adapter;
@@ -219,8 +220,7 @@ export function registerEngineRoutes(
           category: "provider",
           severity: "attention",
           title: `${registration.adapter.displayName} is unavailable`,
-          body: result.detail
-            ?? "The provider rejected the explicit access test. Queued work remains held.",
+          body: providerUnavailableNotificationBody(result.detail),
           action: { kind: "open_settings", targetId: request.params.id },
         });
       }

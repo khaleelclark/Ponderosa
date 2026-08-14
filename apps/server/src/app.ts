@@ -46,6 +46,7 @@ import {
   publicWebAssetRequest,
 } from "./public-web-assets.js";
 import { ProviderUsageCache } from "./provider-usage-cache.js";
+import { providerUnavailableNotificationBody } from "./provider-availability-detail.js";
 import { ProviderProcessAuthority } from "./provider-process-authority.js";
 import { registerAgentSurface } from "./routes/agent-surface.js";
 import { registerApplicationRoutes } from "./routes/application-routes.js";
@@ -378,7 +379,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       category: "provider",
       severity: "attention",
       title: `${engines.get(engineId)?.adapter.displayName ?? engineId} is unavailable`,
-      body: `${denial.detail ?? "The provider rejected runtime access."} Queued work is held until access is explicitly rechecked or a successful authorized Run proves recovery.`,
+      body: providerUnavailableNotificationBody(denial.detail),
       action: { kind: "open_settings", targetId: engineId },
     });
     if (!providerEnabled(engineId)) resolveOperationalNotification(`provider:${engineId}:unavailable`);

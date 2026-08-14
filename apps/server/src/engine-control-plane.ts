@@ -17,6 +17,7 @@ import type { EngineAuthStatusCache } from "./engine-auth-cache.js";
 import type { EngineAvailabilityStore } from "./engine-availability-store.js";
 import type { ProviderUsageCache, ProviderUsageTarget } from "./provider-usage-cache.js";
 import type { ProviderProcessAuthority } from "./provider-process-authority.js";
+import { publicProviderAvailabilityDetail } from "./provider-availability-detail.js";
 import type {
   CapabilityDiscoveryAuthority,
   CapabilityDiscoveryProcess,
@@ -67,7 +68,9 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
 
   const runtimeFailureDetail = (engineId: string): string | undefined => {
     const denial = engineAvailability.denial(engineId);
-    return denial ? denial.detail ?? "provider rejected runtime access" : undefined;
+    return denial
+      ? publicProviderAvailabilityDetail(denial.detail) ?? "provider rejected runtime access"
+      : undefined;
   };
   const runtimeStatus = async (
     id: string,
@@ -95,7 +98,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       ...(!enabled ? { availabilityDetail: "disabled by the operator; queued work is held" }
         : !auth.authenticated
         ? { availabilityDetail: auth.detail ?? "runtime is not authenticated" }
-        : denial ? { availabilityDetail: `provider rejected runtime access: ${denial}` }
+        : denial ? { availabilityDetail: denial }
           : evidence?.available
             ? { availabilityDetail: evidence.detail ?? "provider accepted real work" }
             : { availabilityDetail: "provider intake is enabled; reachability has not yet been verified by real work" }),

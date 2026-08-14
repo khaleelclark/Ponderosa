@@ -27,6 +27,14 @@ function adapter(): Adapter {
   } as unknown as Adapter;
 }
 
+function namedAdapter(id: string, displayName: string): Adapter {
+  return {
+    ...adapter(),
+    id,
+    displayName,
+  };
+}
+
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => {
@@ -375,6 +383,55 @@ describe("provider readiness truth", () => {
       intakeReady: true,
       reachability: "unverified",
     });
+    await app.close();
+  });
+
+  it("projects bounded provider-specific detail without exposing nested provider payloads", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-provider-detail-"));
+    roots.push(root);
+    const rawClaudeFailure = JSON.stringify({
+      type: "result",
+      subtype: "error",
+      is_error: true,
+      error: { message: `Claude subscription expired ${"x".repeat(600)}` },
+      session_id: "private-claude-session",
+    });
+    const app = createServer({
+      dataDir: path.join(root, "data"),
+      engines: [
+        {
+          adapter: namedAdapter("claude", "Claude"),
+          authStatus: async () => ({ authenticated: true }),
+          availabilityProbe: async () => ({ available: false, detail: rawClaudeFailure }),
+        },
+        {
+          adapter: namedAdapter("codex", "Codex"),
+          authStatus: async () => ({ authenticated: true }),
+        },
+      ],
+      logger: false,
+    });
+    await app.ready();
+
+    const recheck = await app.inject({ method: "POST", url: "/api/engines/claude/recheck" });
+    expect(recheck.statusCode).toBe(200);
+    expect(recheck.json()).toMatchObject({
+      id: "claude",
+      displayName: "Claude",
+      intakeReady: false,
+      reachability: "degraded",
+    });
+    expect(recheck.json().availabilityDetail).toMatch(/^Claude subscription expired/u);
+    expect(recheck.json().availabilityDetail.length).toBeLessThanOrEqual(240);
+    expect(JSON.stringify(recheck.json())).not.toContain("private-claude-session");
+
+    const engines = (await app.inject({ method: "GET", url: "/api/engines" })).json();
+    expect(engines).toEqual([
+      expect.objectContaining({ id: "claude", intakeReady: false, reachability: "degraded" }),
+      expect.objectContaining({ id: "codex", intakeReady: true }),
+    ]);
+    const notifications = (await app.inject({ method: "GET", url: "/api/notifications" })).json();
+    expect(JSON.stringify(notifications)).not.toContain("private-claude-session");
     await app.close();
   });
 
