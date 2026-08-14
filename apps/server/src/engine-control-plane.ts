@@ -17,7 +17,10 @@ import type { EngineAuthStatusCache } from "./engine-auth-cache.js";
 import type { EngineAvailabilityStore } from "./engine-availability-store.js";
 import type { ProviderUsageCache, ProviderUsageTarget } from "./provider-usage-cache.js";
 import type { ProviderProcessAuthority } from "./provider-process-authority.js";
-import { publicProviderAvailabilityDetail } from "./provider-availability-detail.js";
+import {
+  publicProviderAvailabilityDetail,
+  publicProviderFailureCategorySummary,
+} from "./provider-availability-detail.js";
 import type {
   CapabilityDiscoveryAuthority,
   CapabilityDiscoveryProcess,
@@ -69,7 +72,9 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
   const runtimeFailureDetail = (engineId: string): string | undefined => {
     const denial = engineAvailability.denial(engineId);
     return denial
-      ? publicProviderAvailabilityDetail(denial.detail) ?? "provider rejected runtime access"
+      ? publicProviderAvailabilityDetail(denial.detail)
+        ?? publicProviderFailureCategorySummary(denial.detail)
+        ?? "provider rejected runtime access"
       : undefined;
   };
   const runtimeStatus = async (
@@ -83,9 +88,24 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     authDetail?: string;
     availabilityDetail?: string;
   }> => {
-    const auth = registration.authStatus
-      ? await engineAuthStatuses.get(id, registration.authStatus)
-      : { authenticated: true, detail: "runtime registered (authentication status not reported)" };
+    let auth: { authenticated: boolean; detail?: string };
+    try {
+      auth = registration.authStatus
+        ? await engineAuthStatuses.get(id, registration.authStatus)
+        : { authenticated: true, detail: "runtime registered (authentication status not reported)" };
+    } catch (error) {
+      const authDetail = publicProviderAvailabilityDetail(
+        error instanceof Error ? error.message : "runtime authentication could not be checked",
+      );
+      return {
+        configured: true,
+        authentication: "error",
+        intakeReady: false,
+        reachability: "degraded",
+        authDetail: authDetail ?? "runtime authentication could not be checked",
+        availabilityDetail: "runtime authentication could not be checked",
+      };
+    }
     const authDetail = publicProviderAvailabilityDetail(auth.detail);
     const denial = runtimeFailureDetail(id);
     const evidence = engineAvailability.get(id);

@@ -1,60 +1,10 @@
-import type { EngineDto } from "@ponderosa/core";
+import {
+  MAX_PUBLIC_PROVIDER_FAILURE_CHARACTERS,
+  publicProviderFailureSummary,
+  type EngineDto,
+} from "@ponderosa/core";
 
-export const MAX_PROVIDER_DIAGNOSTIC_CHARACTERS = 240;
-const MAX_PROVIDER_DIAGNOSTIC_INPUT_CHARACTERS = 64 * 1024;
-const MAX_PROVIDER_DIAGNOSTIC_DEPTH = 6;
-const MAX_PROVIDER_DIAGNOSTIC_ARRAY_ITEMS = 16;
-const HUMAN_DIAGNOSTIC_KEYS = ["message", "detail", "reason", "error"] as const;
-
-function compact(value: string): string {
-  return value.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
-}
-
-function containsSensitiveProviderData(value: string): boolean {
-  const normalized = value.replaceAll('\\"', '"').replaceAll("\\'", "'");
-  return /\b(?:session[_-]?id|access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key)\b/iu.test(normalized)
-    || /\b(?:session|token|secret|authorization|credential)s?\b\s*[:=]/iu.test(normalized)
-    || /\bbearer\s+[A-Za-z0-9._~+/-]{8,}/iu.test(normalized)
-    || /\bsk-[A-Za-z0-9_-]{8,}/u.test(normalized)
-    || /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/u.test(normalized);
-}
-
-function malformedHumanDiagnostic(value: string, depth: number): string | undefined {
-  const match = value.match(
-    /["'](?:message|detail|reason|error)["']\s*:\s*["']([^"'\r\n]+)/iu,
-  );
-  return match?.[1] ? extractJsonDiagnostic(match[1], depth + 1) : undefined;
-}
-
-function extractJsonDiagnostic(value: unknown, depth = 0): string | undefined {
-  if (depth > MAX_PROVIDER_DIAGNOSTIC_DEPTH || value === null || value === undefined) return undefined;
-  if (typeof value === "string") {
-    const candidate = compact(value);
-    if (!candidate || candidate.length > MAX_PROVIDER_DIAGNOSTIC_INPUT_CHARACTERS) return undefined;
-    if (/^(?:\{|\[|")/u.test(candidate)) {
-      try {
-        return extractJsonDiagnostic(JSON.parse(candidate), depth + 1);
-      } catch {
-        return malformedHumanDiagnostic(candidate, depth);
-      }
-    }
-    return containsSensitiveProviderData(candidate) ? undefined : candidate;
-  }
-  if (typeof value !== "object") return undefined;
-  if (Array.isArray(value)) {
-    for (const item of value.slice(0, MAX_PROVIDER_DIAGNOSTIC_ARRAY_ITEMS)) {
-      const extracted = extractJsonDiagnostic(item, depth + 1);
-      if (extracted) return extracted;
-    }
-    return undefined;
-  }
-  const record = value as Record<string, unknown>;
-  for (const key of HUMAN_DIAGNOSTIC_KEYS) {
-    const extracted = extractJsonDiagnostic(record[key], depth + 1);
-    if (extracted) return extracted;
-  }
-  return undefined;
-}
+export const MAX_PROVIDER_DIAGNOSTIC_CHARACTERS = MAX_PUBLIC_PROVIDER_FAILURE_CHARACTERS;
 
 /**
  * Provider failures may contain a complete JSON result/session envelope. Keep
@@ -63,12 +13,7 @@ function extractJsonDiagnostic(value: unknown, depth = 0): string | undefined {
 export function providerAvailabilityDiagnostic(detail: string | undefined): string | undefined {
   if (!detail) return undefined;
   const withoutServerPrefix = detail.replace(/^provider rejected runtime access:\s*/iu, "").trim();
-  if (!withoutServerPrefix || withoutServerPrefix.length > MAX_PROVIDER_DIAGNOSTIC_INPUT_CHARACTERS) return undefined;
-  const extracted = extractJsonDiagnostic(withoutServerPrefix);
-  if (!extracted) return undefined;
-  return extracted.length > MAX_PROVIDER_DIAGNOSTIC_CHARACTERS
-    ? `${extracted.slice(0, MAX_PROVIDER_DIAGNOSTIC_CHARACTERS - 1)}…`
-    : extracted;
+  return publicProviderFailureSummary(withoutServerPrefix);
 }
 
 function providerAccountHelp(engine: Pick<EngineDto, "id" | "displayName">): string {

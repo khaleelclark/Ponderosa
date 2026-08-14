@@ -6,6 +6,7 @@ import type {
 } from "@ponderosa/core";
 import {
   activationRetryDisposition,
+  publicProviderFailureSummary,
 } from "@ponderosa/core";
 import { stableJson } from "./coordination-v3-canonical-json.js";
 import type { CoordinationV3ActivationLifecycleAuthority } from "./coordination-v3-activation-lifecycle-authority.js";
@@ -449,9 +450,9 @@ export class CoordinationV3RunLifecycleAuthority {
         LIMIT 1
       `).get(input.runId, run.agent_id, run.project_id) as { id: string } | undefined;
       if (disposition === "retry") {
-        const error = (
-          input.error ?? "scheduler dispatch rejected"
-        ).slice(0, 2_000);
+        const error = publicProviderFailureSummary(
+          input.error ?? "scheduler dispatch rejected",
+        ) ?? "Provider execution failed.";
         const requestedMaximum = input.maxDeliveryFailures ?? 5;
         const maximum = Number.isFinite(requestedMaximum)
           ? Math.max(1, Math.floor(requestedMaximum))

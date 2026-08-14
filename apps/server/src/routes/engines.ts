@@ -184,9 +184,14 @@ export function registerEngineRoutes(
       const registration = engines.get(request.params.id);
       if (!registration) return reply.code(404).send({ error: "unknown engine" });
       authStatuses.invalidate(request.params.id);
-      const auth = registration.authStatus
-        ? await authStatuses.get(request.params.id, registration.authStatus)
-        : { authenticated: true };
+      let auth: EngineAuthStatus;
+      try {
+        auth = registration.authStatus
+          ? await authStatuses.get(request.params.id, registration.authStatus)
+          : { authenticated: true };
+      } catch {
+        return engineDto(registration);
+      }
       if (!auth.authenticated) return engineDto(registration);
       if (!registration.availabilityProbe) {
         const refreshed = await engineDto(registration);

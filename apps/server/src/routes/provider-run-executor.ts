@@ -16,6 +16,7 @@ import {
   type RuntimeDynamicToolSpec,
   type RuntimeProcessHandle,
   unicodeCodePointLength,
+  publicProviderFailureSummary,
 } from "@ponderosa/core";
 import { randomUUID } from "node:crypto";
 import type { LogEvent } from "@ponderosa/agents";
@@ -1147,7 +1148,7 @@ export function startProviderRunExecution(
           );
         } else if (replacementMissingConfirmation) {
           const missingObservation = replacementRunRollover.replacementSessionId
-            ? `replacement session ${replacementRunRollover.replacementSessionId} ended before reporting the required low-water context observation`
+            ? "replacement provider session ended before reporting the required low-water context observation"
             : "replacement Run ended before identifying and confirming a low-water provider session";
           coordinationV3.failContextRollover(
             replacementRunRollover.id,
@@ -1271,7 +1272,9 @@ export function startProviderRunExecution(
             coordinationV3.failContextRollover(
               runRollover.id,
               controller.signal.aborted || schedulerCancelled ? "outcome_unknown" : "failed",
-              runError ?? "provider Run ended before a safe context rollover handoff could continue",
+              runError
+                ? publicProviderFailureSummary(runError) ?? "Provider execution failed."
+                : "provider Run ended before a safe context rollover handoff could continue",
             );
           }
         }
@@ -1290,7 +1293,10 @@ export function startProviderRunExecution(
             hash: policySnapshotHash,
           });
         }
-        if (runError && !schedulerCancelled) {
+        const publicRunError = runError
+          ? publicProviderFailureSummary(runError) ?? "Provider execution failed."
+          : undefined;
+        if (runError && publicRunError && !schedulerCancelled) {
           if (classifyProviderFailure(runError) === "authentication") {
             engineAvailability.record({
               engineId: runtimeEngineId,
@@ -1309,7 +1315,7 @@ export function startProviderRunExecution(
               action: { kind: "open_settings", targetId: runtimeEngineId },
             });
           }
-          notifyManagerOfChildFailure(agent.id, runId, runError);
+          notifyManagerOfChildFailure(agent.id, runId, publicRunError);
         } else if (successfulRunStillAuthoritative) {
           const priorDenial = engineAvailability.denial(runtimeEngineId);
           engineAvailability.record({
@@ -1347,7 +1353,7 @@ export function startProviderRunExecution(
             failureKind,
             confirmedNotExecuted: !providerWorkObserved && (failureKind === "capacity" || failureKind === "rate_limit"),
             retryable: !projectWorkspaceUnavailable && failureKind !== "authentication",
-            error: `[${failureKind}] ${runError}`,
+            error: `[${failureKind}] ${publicProviderFailureSummary(runError) ?? "Provider execution failed."}`,
             failureDetail: {
               phase: v3PromptInjected ? "provider_execution" : "prompt_submission",
               promptInjectionState: coordinationV3!.agentSnapshot(agent.id).activeRun?.promptInjectionState

@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
-import type {
-  AssetDto,
-  CommunicationEvent,
-  ConversationMessageDto,
-  ImageAttachmentDto,
-  CollaborationViewDto,
+import {
+  publicProviderFailureSummary,
+  type AssetDto,
+  type CommunicationEvent,
+  type ConversationMessageDto,
+  type ImageAttachmentDto,
+  type CollaborationViewDto,
 } from "@ponderosa/core";
 import type {
   AgentStore,
@@ -291,12 +292,15 @@ export function createAgentEventService(context: AgentEventServiceContext) {
       .requestIdsAttachedToRun(executionId, child.id)
       .some((requestId) => coordinationV3.getRequest(requestId)?.requesterAgentId === manager.id);
     if (correlatedManagerOutcome) return;
+    // Raw provider evidence belongs to the fenced Run audit record, never
+    // manager-visible runtime communication or Activation payloads.
+    const publicFailure = publicProviderFailureSummary(failure) ?? "Provider execution failed.";
     const createdAt = new Date().toISOString();
     const id = `managed-agent:${child.id}:${executionId}:failure`;
     const text = [
         "Internal managed-agent update (not a chat message).",
         `${child.title} (${child.id}) encountered a runtime failure during execution ${executionId}.`,
-        `Failure: ${failure}`,
+        `Failure: ${publicFailure}`,
         "The agent remains in your organization and can be steered or retried.",
       ].join("\n");
     const sharedConversationId = child.conversationId
@@ -309,7 +313,7 @@ export function createAgentEventService(context: AgentEventServiceContext) {
       sender: { kind: "system", component: "runtime-supervisor" },
       intent: "managed_child_failure",
       audience: { kind: "agents", agentIds: [manager.id] },
-      payload: { text, childAgentId: child.id, executionId, failure },
+      payload: { text, childAgentId: child.id, executionId, failure: publicFailure },
       scopeKey: sharedConversationId
         ? `conversation:${sharedConversationId}`
         : `agent:${manager.id}`,

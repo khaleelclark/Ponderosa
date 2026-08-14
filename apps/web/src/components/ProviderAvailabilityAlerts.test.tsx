@@ -148,6 +148,29 @@ describe("Create Project provider availability", () => {
     expect(providerAvailabilityDiagnostic("x".repeat(64 * 1024 + 1))).toBeUndefined();
   });
 
+  it("rejects client-side credential paths, tokens, encoded JSON, and obfuscated secrets", () => {
+    const adversarial = [
+      "failed reading /home/phoenix/.config/gh/hosts.yml",
+      "failed reading /tmp",
+      String.raw`failed reading C:\Users\Patrick\.aws\credentials`,
+      String.raw`failed reading C:\auth.json`,
+      String.raw`failed reading .aws\credentials`,
+      String.raw`failed reading \u002fhome\u002fphoenix\u002f.codex\u002fauth.json`,
+      "password=hunter2",
+      "ghp_abcdefghijklmnopqrstuvwxyz123456",
+      "AKIAABCDEFGHIJKLMNOP",
+      "oauth callback code=private-code",
+      "-----BEGIN PRIVATE KEY----- private-key-material",
+      "eyJzZXNzaW9uX2lkIjoicHJpdmF0ZSJ9",
+      "Zk9xR1p4dHFzUDBTQnNLWkQ5Q3h5ZkF0RmhjWmZ2",
+      "access\u200b_token=private-token",
+    ];
+    for (const detail of adversarial) {
+      expect(providerAvailabilityDiagnostic(detail), detail).toBeUndefined();
+    }
+    expect(providerAvailabilityDiagnostic("connection reset by peer")).toBe("connection reset by peer");
+  });
+
   it("uses category-accurate remediation for provider degradation", () => {
     expect(providerAvailabilityMessage(engine("claude", {
       intakeReady: false,

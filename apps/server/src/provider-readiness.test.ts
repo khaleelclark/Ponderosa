@@ -145,6 +145,7 @@ function persistentProviderRunAdapter(input: {
 async function providerRunFixture(input: {
   adapter: Adapter;
   availabilityProbe?: () => Promise<{ available: boolean; detail?: string }>;
+  managerContext?: "managed_child";
 }) {
   const root = mkdtempSync(path.join(tmpdir(), "ponderosa-provider-run-readiness-"));
   roots.push(root);
@@ -153,10 +154,16 @@ async function providerRunFixture(input: {
   mkdirSync(hostPath, { recursive: true });
   const store = new AgentStore(dataDir);
   const project = store.createProject({ label: "Provider Run", hostPath, defaultEngine: "codex" });
+  const manager = input.managerContext ? store.createAgent(project.id, {
+    title: "Provider Run Manager",
+    engine: "codex",
+    conversationId: project.lastConversationId,
+  }) : undefined;
   const agent = store.createAgent(project.id, {
     title: "Provider Run Agent",
     engine: "codex",
     conversationId: project.lastConversationId,
+    ...(manager ? { managerAgentId: manager.id } : {}),
   });
   const coordination = new CoordinationV3Store(store.sqlite);
   coordination.enqueueMessageActivation({
@@ -179,7 +186,7 @@ async function providerRunFixture(input: {
     logger: false,
   });
   await app.ready();
-  return { agent, app, dataDir, project, store };
+  return { agent, app, coordination, dataDir, manager, project, store };
 }
 
 async function waitForRunStatus(
@@ -460,6 +467,86 @@ describe("provider readiness truth", () => {
     expect(publicProviderAvailabilityDetail("x".repeat(64 * 1024 + 1))).toBeUndefined();
   });
 
+  it("rejects credential paths, tokens, key material, encoded JSON, and obfuscated secrets", () => {
+    const adversarial = [
+      "failed reading /home/phoenix/.config/gh/hosts.yml",
+      "failed reading /tmp",
+      String.raw`failed reading C:\Users\Patrick\.aws\credentials`,
+      String.raw`failed reading C:\auth.json`,
+      String.raw`failed reading .aws\credentials`,
+      String.raw`failed reading \u002fhome\u002fphoenix\u002f.codex\u002fauth.json`,
+      "password=hunter2",
+      "ghp_abcdefghijklmnopqrstuvwxyz123456",
+      "AKIAABCDEFGHIJKLMNOP",
+      "oauth callback code=private-code",
+      "-----BEGIN PRIVATE KEY----- private-key-material",
+      "eyJzZXNzaW9uX2lkIjoicHJpdmF0ZSJ9",
+      "Zk9xR1p4dHFzUDBTQnNLWkQ5Q3h5ZkF0RmhjWmZ2",
+      "access\u200b_token=private-token",
+    ];
+    for (const detail of adversarial) {
+      expect(publicProviderAvailabilityDetail(detail), detail).toBeUndefined();
+    }
+    expect(publicProviderAvailabilityDetail("connection reset by peer")).toBe("connection reset by peer");
+  });
+
+  it("sanitizes throwing auth status across recheck and readiness endpoints", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-auth-exception-"));
+    roots.push(root);
+    const restricted = String.raw`authentication probe failed session_id=private-session access_token=private-token at C:\Users\Patrick\.codex\auth.json and /home/phoenix/.config/gh/hosts.yml`;
+    const app = createServer({
+      dataDir: path.join(root, "data"),
+      engines: [{
+        adapter: adapter(),
+        authStatus: async () => { throw new Error(restricted); },
+      }],
+      logger: false,
+    });
+    await app.ready();
+
+    const responses = [
+      await app.inject({ method: "POST", url: "/api/engines/codex/recheck" }),
+      await app.inject({ method: "GET", url: "/api/engines" }),
+      await app.inject({ method: "GET", url: "/api/ready" }),
+      await app.inject({ method: "GET", url: "/api/diagnostics/ready" }),
+    ];
+    expect(responses.map((response) => response.statusCode)).toEqual([200, 200, 503, 503]);
+    for (const response of responses) {
+      expect(response.body).toContain("runtime authentication could not be checked");
+      expect(response.body).not.toMatch(/private-session|private-token|Users|phoenix|hosts\.yml|auth\.json/u);
+    }
+    await app.close();
+  });
+
+  it("fails closed across recheck, engine, and notification projections for adversarial detail", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-adversarial-detail-"));
+    roots.push(root);
+    const restricted = String.raw`authentication rejected password=hunter2 ghp_abcdefghijklmnopqrstuvwxyz123456 AKIAABCDEFGHIJKLMNOP callback code=private-code /home/phoenix/.ssh/id_ed25519 C:\Users\Patrick\.aws\credentials`;
+    const app = createServer({
+      dataDir: path.join(root, "data"),
+      engines: [{
+        adapter: adapter(),
+        authStatus: async () => ({ authenticated: true }),
+        availabilityProbe: async () => ({ available: false, detail: restricted }),
+      }],
+      logger: false,
+    });
+    await app.ready();
+
+    const recheck = await app.inject({ method: "POST", url: "/api/engines/codex/recheck" });
+    const engines = await app.inject({ method: "GET", url: "/api/engines" });
+    const notifications = await app.inject({ method: "GET", url: "/api/notifications" });
+    expect(recheck.statusCode).toBe(200);
+    for (const body of [recheck.body, engines.body, notifications.body]) {
+      expect(body).not.toMatch(/hunter2|ghp_|AKIA|private-code|id_ed25519|Users|credentials/u);
+    }
+    expect(recheck.json().availabilityDetail).toBe("Provider authentication was rejected.");
+    expect(notifications.json()).toEqual([expect.objectContaining({
+      body: expect.stringContaining("Provider authentication was rejected."),
+    })]);
+    await app.close();
+  });
+
   it("sanitizes the immediate live provider Run failure notification", async () => {
     const liveFailure = JSON.stringify({
       type: "result",
@@ -495,6 +582,113 @@ describe("provider readiness truth", () => {
       /session_id|refresh_token|private-(?:live|outer-live)/u,
     );
     await failed.app.close();
+  });
+
+  it("keeps managed-child failure context public while retaining raw Run audit evidence", async () => {
+    const restricted = String.raw`authentication rejected session_id=private-managed-session access_token=private-managed-token at /home/phoenix/.codex/auth.json`;
+    const failed = await providerRunFixture({
+      adapter: providerRunAdapter({ outcome: "authentication_failure", errorMessage: restricted }),
+      managerContext: "managed_child",
+    });
+    await waitForAgentRunStatus(failed.store, failed.agent.id, "failed");
+
+    await vi.waitFor(() => {
+      const communications = failed.store.sqlite.prepare(`
+        SELECT payload_json FROM runtime_communications
+        WHERE intent = 'managed_child_failure'
+      `).all() as Array<{ payload_json: string }>;
+      expect(communications).toHaveLength(1);
+      expect(communications[0]!.payload_json).toContain("Provider execution failed.");
+      expect(communications[0]!.payload_json).not.toMatch(/private-managed|phoenix|auth\.json/u);
+      const activation = failed.store.sqlite.prepare(`
+        SELECT payload_json FROM agent_activations
+        WHERE kind = 'managed_child_failure'
+      `).get() as { payload_json: string } | undefined;
+      expect(activation?.payload_json).toContain("Provider execution failed.");
+      expect(activation?.payload_json).not.toMatch(/private-managed|phoenix|auth\.json/u);
+    });
+    let audit: { provider_failure_json: string } | undefined;
+    await vi.waitFor(() => {
+      audit = failed.store.sqlite.prepare(`
+        SELECT provider_failure_json FROM scheduler_runs
+        WHERE provider_failure_json IS NOT NULL ORDER BY rowid DESC LIMIT 1
+      `).get() as { provider_failure_json: string } | undefined;
+      expect(audit).toBeTruthy();
+    });
+    expect(audit!.provider_failure_json).toContain("private-managed-session");
+    expect(audit!.provider_failure_json).toContain("/home/phoenix/.codex/auth.json");
+    await failed.app.close();
+  });
+
+  it("keeps correlated Request failure reasons public and raw evidence audit-only", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-provider-request-failure-"));
+    roots.push(root);
+    const hostPath = path.join(root, "workspace");
+    mkdirSync(hostPath, { recursive: true });
+    const store = new AgentStore(path.join(root, "data"));
+    const project = store.createProject({ label: "Provider Request", hostPath, defaultEngine: "codex" });
+    const requester = store.createAgent(project.id, {
+      title: "Requester",
+      engine: "codex",
+      conversationId: project.lastConversationId,
+    });
+    const recipient = store.createAgent(project.id, {
+      title: "Recipient",
+      engine: "codex",
+      conversationId: project.lastConversationId,
+      managerAgentId: requester.id,
+    });
+    const coordination = new CoordinationV3Store(store.sqlite);
+    const requestId = coordination.coordinate({
+      projectId: project.id,
+      conversationId: project.lastConversationId,
+      requesterAgentId: requester.id,
+      actorScope: `agent:${requester.id}`,
+      idempotencyKey: "provider-failure-request",
+      requests: [{
+        recipientAgentId: recipient.id,
+        lifetime: { kind: "indefinite" },
+        payload: { text: "exercise terminal provider failure" },
+      }],
+    }).requestIds[0]!;
+    const lease = coordination.leaseNextRun({ workerId: "provider-failure-worker" });
+    if (!lease) throw new Error("provider failure Request was not leased");
+    const restricted = String.raw`authentication rejected refresh_token=private-request-token at C:\Users\Patrick\.aws\credentials`;
+    expect(coordination.failRun({
+      runId: lease.runId,
+      fencingToken: lease.fencingToken,
+      workerId: "provider-failure-worker",
+      sameRunResumable: false,
+      retryable: false,
+      terminalOutcome: "permanent_failure",
+      failureKind: "authentication",
+      error: restricted,
+      failureDetail: {
+        phase: "prompt_submission",
+        promptInjectionState: "not_injected",
+        message: restricted,
+      },
+    })).toBe("terminal");
+    expect(coordination.getRequest(requestId)?.state).toBe("failed");
+
+    const publicContext = JSON.stringify({
+      activations: store.sqlite.prepare(`
+        SELECT payload_json, last_delivery_error FROM agent_activations
+      `).all(),
+      communications: store.sqlite.prepare(`
+        SELECT payload_json FROM runtime_communications
+      `).all(),
+      updates: store.sqlite.prepare(`
+        SELECT payload_json FROM coordination_request_updates WHERE request_id = ?
+      `).all(requestId),
+    });
+    expect(publicContext).not.toMatch(/private-request-token|Users|Patrick|credentials/u);
+    expect(publicContext).toContain("Provider execution failed.");
+    const audit = store.sqlite.prepare(`
+      SELECT provider_failure_json FROM scheduler_runs WHERE id = ?
+    `).get(lease.runId) as { provider_failure_json: string };
+    expect(audit.provider_failure_json).toContain("private-request-token");
+    expect(JSON.parse(audit.provider_failure_json).message).toMatch(/Users.*Patrick.*credentials/u);
   });
 
   it("reports a bounded authentication timeout as checking, not signed out", async () => {
