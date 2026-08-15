@@ -51,7 +51,6 @@ export function ProviderAvailabilityAlerts({
             sx={{ cursor: "pointer", width: "fit-content" }}
           >Diagnostic detail</Typography>
           <Typography
-            data-testid={`provider-diagnostic-${engine.id}`}
             component="p"
             variant="caption"
             color="text.secondary"
