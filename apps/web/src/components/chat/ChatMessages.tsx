@@ -446,14 +446,14 @@ function ChatMarkdown({
             const visibleLabel = operatorMention && handle.toLocaleLowerCase() !== "pto" && operatorHandle
               ? `#${operatorHandle}`
               : boundMention ? `#${boundMention.label}` : label;
-            if (operatorMention) return <Box component="span" data-message-tag={handle.toLocaleLowerCase()} sx={messageMentionSx}>{visibleLabel}</Box>;
+            if (operatorMention) return <Box component="span" sx={messageMentionSx}>{visibleLabel}</Box>;
             if (!agentId) {
               if (["broadcast", "everyone"].includes(handle.toLocaleLowerCase())) {
-                return <Box component="span" data-message-tag={handle.toLocaleLowerCase()} sx={messageMentionSx}>{label}</Box>;
+                return <Box component="span" sx={messageMentionSx}>{label}</Box>;
               }
               return <>{label}</>;
             }
-            if (!onOpenAgent) return <Box component="span" data-message-tag={handle.toLocaleLowerCase()} sx={messageMentionSx}>{visibleLabel}</Box>;
+            if (!onOpenAgent) return <Box component="span" sx={messageMentionSx}>{visibleLabel}</Box>;
             return <Box className="chat-text-navigation" component="button" type="button" aria-label={`Open agent ${boundMention?.label ?? handle}`} onClick={() => onOpenAgent(agentId)} sx={{ ...messageMentionSx, border: 0, font: "inherit", cursor: "pointer" }}>{visibleLabel}</Box>;
           },
         }}

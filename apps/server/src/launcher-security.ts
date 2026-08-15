@@ -14,9 +14,8 @@ export function createLauncherSecurity(
       ? "Operator API access requires bearer authentication on this loopback listener."
       : "Operator access is limited to clients on this host.",
   };
-  const launcherNow = opts.launcherSecurity?.now ?? Date.now;
-  const launcherRandomToken = opts.launcherSecurity?.randomToken ??
-    (() => randomBytes(32).toString("base64url"));
+  const launcherNow = Date.now;
+  const launcherRandomToken = () => randomBytes(32).toString("base64url");
   const launcherBootstrapTtlMs = Math.max(5_000, Math.min(
     opts.launcherSecurity?.bootstrapTtlMs ?? 60_000,
     5 * 60_000,

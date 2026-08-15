@@ -8,7 +8,6 @@
 // control over the `resume` flag quirks (no -C/-s on the resume subcommand) and
 // the `-c` config overrides. The `Adapter` interface hides the choice entirely.
 
-import { spawn as nodeSpawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -28,19 +27,15 @@ import type {
   SeedOptions,
 } from "@ponderosa/core";
 import { mapCodexEvent } from "./events.js";
-import { streamProcess, type RuntimeProcessFaults, type SpawnFn } from "./process.js";
+import { streamProcess } from "./process.js";
 import { discoverCliMcps, parseCodexMcpList } from "./capabilities.js";
 import { CodexAppServerSession, discoverCodexAppServerCapabilities } from "./codex-app-server.js";
 import { renderSeedPrompt } from "./seed-history.js";
 import { readCodexProviderUsage } from "./provider-usage.js";
 
-export type { SpawnFn };
-
 export interface CodexAdapterOptions {
   /** Path/name of the codex binary. Default: "codex". */
   bin?: string;
-  /** Injected spawn (for tests). Default: node:child_process.spawn. */
-  spawnFn?: SpawnFn;
   /**
    * Codex sandbox mode. Default "workspace-write" (edit the project + run commands
    * within it, headlessly). SPEC §11 allows full host access on the solo box; set
@@ -49,9 +44,8 @@ export interface CodexAdapterOptions {
   sandboxMode?: "read-only" | "workspace-write" | "danger-full-access";
   /** ms to wait after SIGTERM before SIGKILL on cancel. Default 3000. */
   killGraceMs?: number;
-  /** Override the CLI model cache path. Primarily useful for tests. */
+  /** Override the CLI model cache path. */
   modelsCachePath?: string;
-  processFaults?: RuntimeProcessFaults;
 }
 
 // Model availability differs by Codex version, account type, and subscription.
@@ -207,21 +201,17 @@ export class CodexAdapter implements Adapter {
   readonly trustedSystemPromptChannel = "developer" as const;
 
   private readonly bin: string;
-  private readonly spawnFn: SpawnFn;
   private readonly sandboxMode: string;
   private readonly killGraceMs: number;
   private readonly modelsCachePath: string;
-  private readonly processFaults?: RuntimeProcessFaults;
 
   constructor(opts: CodexAdapterOptions = {}) {
     this.bin = opts.bin ?? "codex";
-    this.spawnFn = opts.spawnFn ?? nodeSpawn;
     this.sandboxMode =
       opts.sandboxMode ?? process.env.PONDEROSA_CODEX_SANDBOX ?? "workspace-write";
     this.killGraceMs = opts.killGraceMs ?? 3000;
     const codexHome = process.env.CODEX_HOME ?? path.join(homedir(), ".codex");
     this.modelsCachePath = opts.modelsCachePath ?? path.join(codexHome, "models_cache.json");
-    this.processFaults = opts.processFaults;
   }
 
   listModels(): ModelOption[] {
@@ -253,11 +243,10 @@ export class CodexAdapter implements Adapter {
   }
 
   async capabilities(cwd: string, context: EngineCapabilityDiscoveryOptions): Promise<EngineCapabilities> {
-    const configuredMcps = await discoverCliMcps(this.bin, ["mcp", "list", "--json"], cwd, parseCodexMcpList, context, this.killGraceMs, this.spawnFn);
+    const configuredMcps = await discoverCliMcps(this.bin, ["mcp", "list", "--json"], cwd, parseCodexMcpList, context, this.killGraceMs);
     if (context.signal.aborted) throw new Error("codex capability discovery aborted");
     return discoverCodexAppServerCapabilities({
       bin: this.bin,
-      spawnFn: this.spawnFn,
       cwd,
       model: context?.model,
       sandboxMode: this.sandboxMode,
@@ -278,7 +267,6 @@ export class CodexAdapter implements Adapter {
     return CodexAppServerSession.open({
       ...opts,
       bin: this.bin,
-      spawnFn: this.spawnFn,
       sandboxMode: this.sandboxMode,
       killGraceMs: this.killGraceMs,
       enableFastMode: this.listModels().some(model =>
@@ -292,7 +280,6 @@ export class CodexAdapter implements Adapter {
   readProviderUsage(options: ProviderUsageReadOptions): Promise<ProviderUsage> {
     return readCodexProviderUsage({
       bin: this.bin,
-      spawnFn: this.spawnFn,
       sandboxMode: this.sandboxMode,
       killGraceMs: this.killGraceMs,
       options,
@@ -367,12 +354,10 @@ export class CodexAdapter implements Adapter {
       onRuntimeRootExit,
       onRuntimeSpawned,
       environment,
-      spawnFn: this.spawnFn,
       killGraceMs: this.killGraceMs,
       map: mapCodexEvent,
       label: "codex",
       stdin,
-      faults: this.processFaults,
     });
   }
 }

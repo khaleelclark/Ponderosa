@@ -88,7 +88,6 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
   function transitionRun(agentId: string, run: ActiveRun, state: RuntimeOwnershipState): boolean {
     if (!ownsActiveRunForAuditDrain(agentId, run)) return false;
     run.ownershipState = state;
-    opts.runtimeEventFaults?.onOwnershipState?.({ agentId, runId: run.runId, generation: run.generation, state });
     return true;
   }
 
@@ -97,11 +96,6 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
     const at = new Date().toISOString();
     run.lastEventReceivedAt = at;
     return true;
-  }
-
-  async function waitBeforeRuntimePersist(agentId: string, run: ActiveRun, event: AgentEvent): Promise<boolean> {
-    await opts.runtimeEventFaults?.beforePersist?.({ agentId, runId: run.runId, generation: run.generation, event });
-    return ownsActiveRunForAuditDrain(agentId, run) && run.ownershipState !== "cancelling";
   }
 
   async function persistRuntimeEvent(
@@ -117,7 +111,6 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
     const recovered = run.ownershipState === "stalled";
     if (recovered) {
       run.ownershipState = "running";
-      opts.runtimeEventFaults?.onOwnershipState?.({ agentId, runId: run.runId, generation: run.generation, state: "running" });
     }
     publish(agentId, stored);
     if (canonicalEvent.type === "file_change" && canonicalEvent.kind !== "delete") {
@@ -135,7 +128,6 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
             maxBytes: 64 * 1024 * 1024,
             requireNonEmpty: true,
             signal: run.controller.signal,
-            faults: opts.workspaceArtifactReadFaults,
           });
           if (!source) throw new Error("generated artifact is unavailable through the retained Project root");
           const body = source.body;
@@ -381,6 +373,5 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
     renewExecutionLease,
     scheduleRuntimeLivenessHeartbeat,
     transitionRun,
-    waitBeforeRuntimePersist,
   };
 }

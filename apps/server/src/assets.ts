@@ -261,15 +261,6 @@ async function writeAtomic(file: string, body: Buffer | string): Promise<void> {
   try { await rename(temporary, file); } catch (error) { await unlink(temporary).catch(() => undefined); throw error; }
 }
 
-type AssetDirectorySyncPhase = "stage" | "associate";
-
-interface AssetStoreTestHooks {
-  /** Test-only fault injection immediately before the durable directory barrier. */
-  beforeDirectorySync?(phase: AssetDirectorySyncPhase): void | Promise<void>;
-  /** Test-only observation after the directory entry changes are durable. */
-  afterDirectorySync?(phase: AssetDirectorySyncPhase): void | Promise<void>;
-}
-
 function canonicalFiles(id: string): { originalFile: string; previewFile: string } {
   return { originalFile: `${id}.bin`, previewFile: `${id}.preview.png` };
 }
@@ -328,7 +319,7 @@ export class AssetStore {
   private root?: string;
   private authority: AssetAuthority;
 
-  constructor(private dataDir: string, private testHooks?: AssetStoreTestHooks) { this.authority = new AssetAuthority(dataDir); }
+  constructor(private dataDir: string) { this.authority = new AssetAuthority(dataDir); }
   close(): void { this.authority.close(); }
 
   private validateOwner(projectId: string, agentId: string): void {
@@ -370,10 +361,8 @@ export class AssetStore {
    * advance. Re-syncing an already-associated asset makes a retry after an I/O
    * failure complete the same barrier without changing its immutable metadata.
    */
-  private async syncDirectory(handle: FileHandle, phase: AssetDirectorySyncPhase): Promise<void> {
-    await this.testHooks?.beforeDirectorySync?.(phase);
+  private async syncDirectory(handle: FileHandle): Promise<void> {
     await handle.sync();
-    await this.testHooks?.afterDirectorySync?.(phase);
   }
 
   async read(projectId: string, agentId: string, id: string): Promise<StoredAsset | undefined> {
@@ -799,7 +788,7 @@ export class AssetStore {
         await writeAtomic(path.join(directory, `${id}.json`), JSON.stringify(asset));
         // Persist all staged names (content, optional preview, and metadata)
         // before quota state can make this asset authoritative.
-        await this.syncDirectory(openedDirectory.handle, "stage");
+        await this.syncDirectory(openedDirectory.handle);
         this.authority.settle(reservationId);
       } catch (error) {
         await Promise.allSettled([unlink(path.join(directory, originalFile)), previewFile ? unlink(path.join(directory, previewFile)) : Promise.resolve(), unlink(path.join(directory, `${id}.json`))]);
@@ -827,14 +816,14 @@ export class AssetStore {
           // This is intentionally not a no-op: a previous metadata rename may
           // have succeeded while its directory sync failed. A retry must finish
           // that durability barrier before reporting success.
-          await this.syncDirectory(directory.handle, "associate");
+          await this.syncDirectory(directory.handle);
           return;
         }
         const updated = { ...asset, state: "associated" as const, associatedAt: now };
         await writeAtomic(path.join(directory.path, `${asset.id}.json`), JSON.stringify(updated));
         // Communication/attachment recovery may rely on this state only after
         // the replacement metadata name is durable.
-        await this.syncDirectory(directory.handle, "associate");
+        await this.syncDirectory(directory.handle);
         Object.assign(asset, updated);
       }
       finally { await directory.handle.close(); }

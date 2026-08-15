@@ -768,7 +768,7 @@ export async function startPonderosa(input: {
       pid: 0,
       port,
       host: LOOPBACK_HOST,
-      startedAt: (input.dependencies?.now ?? (() => new Date()))().toISOString(),
+      startedAt: new Date().toISOString(),
       ...launcherStateLocation(input.paths),
       version: input.manifest.version,
       commit: input.manifest.commit,

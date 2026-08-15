@@ -409,7 +409,7 @@ export function projectEvent(
   return { state: next, ops };
 }
 
-/** Fold a full log into ops (used by rebuild and tests). */
+/** Fold a full log into operations for projection rebuilds. */
 export function projectAll(
   agentId: string,
   storedEvents: StoredLogEvent[],

@@ -133,7 +133,7 @@ Ponderosa uses REST and SSE. Do not introduce SSR, Next.js, or WebSockets withou
 
 - Use TypeScript throughout.
 - Build in dependency order: engines → agents → server → web.
-- During rapid development, do not add automated tests, test files, or test-only harnesses. Use focused live/manual qualification plus typecheck and build checks instead.
+- During rapid development, do not create, restore, run, request, recommend, or cite automated tests, test files, test-only fixtures, test-only hooks, or test-only harnesses. Use focused live/manual qualification plus typecheck and build checks instead.
 - Persist commands, tool calls, file changes, failures, and lifecycle events in the audit trail.
 - Keep Project and Agent history bounded by default. Retrieve older evidence explicitly.
 - Project creation requires a validated host folder and subscription-backed engine.

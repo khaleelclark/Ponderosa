@@ -208,7 +208,6 @@ export function startProviderRunExecution(
     releaseActiveRun,
     renewExecutionLease,
     scheduleRuntimeLivenessHeartbeat,
-    waitBeforeRuntimePersist,
     publish,
     publishMessageDeliveryChanged,
     publishWorkspaceSince,
@@ -879,7 +878,6 @@ export function startProviderRunExecution(
           }
           if (deletingAgentIds.has(agent.id) || isClosed() || controller.signal.aborted || !renewExecutionLease(agent.id, activeRun)) break;
           if (!receiveRuntimeEvent(agent.id, activeRun)) break;
-          if (opts.runtimeEventFaults?.beforePersist && !await waitBeforeRuntimePersist(agent.id, activeRun, event)) break;
           if (event.type === "error" && sessionId && !providerWorkObserved && shouldRolloverEngineSession(runtimeEngineId, event.message)) {
             // The provider confirmed the resumed session failed before
             // sampling. Discard its buffered session event and retry once

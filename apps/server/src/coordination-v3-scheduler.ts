@@ -75,9 +75,6 @@ export class CoordinationV3Scheduler {
       coalesceLimit?: number;
       maxDeliveryFailures?: number;
       steeringRecoveryGraceMs?: number;
-      now?: () => number;
-      setTimer?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
-      clearTimer?: (timer: NodeJS.Timeout) => void;
       dispatchSteering?: (
         lease: SteeringLease,
         prompt: string,
@@ -153,7 +150,7 @@ export class CoordinationV3Scheduler {
 
   async stop(): Promise<void> {
     this.stopped = true;
-    if (this.timer) (this.options.clearTimer ?? clearTimeout)(this.timer);
+    if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
     if (this.draining) {
       await new Promise<void>((resolve) => this.stopWaiters.add(resolve));
@@ -169,7 +166,7 @@ export class CoordinationV3Scheduler {
     this.draining = true;
     let dispatched = 0;
     try {
-      const now = new Date((this.options.now ?? Date.now)()).toISOString();
+      const now = new Date().toISOString();
       this.store.expireDue(now);
       // Expired Runs must be fenced before activeRunCount applies the workspace
       // admission limit. Otherwise one stale injected Run can permanently fill
@@ -268,14 +265,14 @@ export class CoordinationV3Scheduler {
           workerId: this.options.workerId,
           leaseMs: this.options.leaseMs,
           coalesceLimit: this.options.coalesceLimit,
-          now: new Date((this.options.now ?? Date.now)()).toISOString(),
+          now: new Date().toISOString(),
           excludedAgentIds,
         });
         if (!lease) break;
         this.options.onRunLeased?.(lease);
         dispatched += 1;
         this.metrics.claimedRuns += 1;
-        const started = (this.options.now ?? Date.now)();
+        const started = Date.now();
         const compilation = this.options.compilePrompt?.(lease) ?? compileActivationPrompt(lease);
         const { prompt } = compilation;
         try {
@@ -295,7 +292,7 @@ export class CoordinationV3Scheduler {
         } catch (error) {
           result = { accepted: false, retryable: true, error: error instanceof Error ? error.message : String(error) };
         }
-        this.recordDispatchLatency(Math.max(0, (this.options.now ?? Date.now)() - started));
+        this.recordDispatchLatency(Math.max(0, Date.now() - started));
         if (result.accepted) {
           this.metrics.acceptedRuns += 1;
         } else {
@@ -312,7 +309,7 @@ export class CoordinationV3Scheduler {
               terminalOutcome: result.terminalOutcome,
               error: result.error,
               maxDeliveryFailures: this.options.maxDeliveryFailures,
-              now: new Date((this.options.now ?? Date.now)()).toISOString(),
+              now: new Date().toISOString(),
             });
           } catch (error) {
             this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
@@ -339,8 +336,7 @@ export class CoordinationV3Scheduler {
 
   private schedule(delayMs: number): void {
     if (this.timer || this.stopped) return;
-    const setTimer = this.options.setTimer ?? setTimeout;
-    this.timer = setTimer(() => {
+    this.timer = setTimeout(() => {
       this.timer = undefined;
       void this.drainOnce()
         .catch((error) => {

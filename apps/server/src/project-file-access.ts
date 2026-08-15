@@ -20,17 +20,6 @@ import {
 
 export type WorkspaceArtifactReadPurpose = "generated_capture" | "legacy_pdf";
 
-export interface WorkspaceArtifactReadFaults {
-  afterPathValidation?: (context: WorkspaceArtifactReadContext) => void;
-  afterFileOpen?: (context: WorkspaceArtifactReadContext) => void;
-}
-
-export interface WorkspaceArtifactReadContext {
-  purpose: WorkspaceArtifactReadPurpose;
-  rootPath: string;
-  relativePath: string;
-}
-
 export interface SafeProjectFile {
   body: Buffer;
   name: string;
@@ -168,7 +157,6 @@ export function readWorkspaceArtifactFile(input: {
   purpose: WorkspaceArtifactReadPurpose;
   maxBytes: number;
   requireNonEmpty?: boolean;
-  faults?: WorkspaceArtifactReadFaults;
 }): SafeProjectFile | undefined {
   if (process.platform !== "linux") {
     if (!secureFileAuthoritySupported()) return undefined;
@@ -180,12 +168,6 @@ export function readWorkspaceArtifactFile(input: {
         input.requestedPath,
       );
       if (!relativePath) return undefined;
-      const context = {
-        purpose: input.purpose,
-        rootPath: rootReal,
-        relativePath,
-      } as const;
-      input.faults?.afterPathValidation?.(context);
       const body = readSecureFile({
         root: input.rootPath,
         relativePath,
@@ -193,7 +175,6 @@ export function readWorkspaceArtifactFile(input: {
         requireNonEmpty: input.requireNonEmpty,
       });
       if (!body) return undefined;
-      input.faults?.afterFileOpen?.(context);
       return {
         body,
         name: path.basename(relativePath),
@@ -210,15 +191,12 @@ export function readWorkspaceArtifactFile(input: {
     const rootReal = root.realPath;
     const relativePath = relativeProjectPath(input.rootPath, rootReal, input.requestedPath);
     if (!relativePath) return undefined;
-    const context = { purpose: input.purpose, rootPath: rootReal, relativePath } as const;
-    input.faults?.afterPathValidation?.(context);
     const retainedRoot = root;
     root = undefined;
     opened = openProjectPathFromRoot(retainedRoot, relativePath);
     const before = fstatSync(opened.fileDescriptor);
     if (!before.isFile() || before.nlink !== 1 || before.size > input.maxBytes ||
         (input.requireNonEmpty === true && before.size < 1)) return undefined;
-    input.faults?.afterFileOpen?.(context);
     const body = readFileSync(opened.fileDescriptor);
     const after = fstatSync(opened.fileDescriptor);
     if (!after.isFile() || after.nlink !== 1 || after.dev !== before.dev || after.ino !== before.ino ||
@@ -240,7 +218,6 @@ export async function readWorkspaceArtifactFileAsync(input: {
   maxBytes: number;
   requireNonEmpty?: boolean;
   signal?: AbortSignal;
-  faults?: WorkspaceArtifactReadFaults;
 }): Promise<SafeProjectFile | undefined> {
   if (!secureFileAuthoritySupported()) return undefined;
   try {
@@ -251,12 +228,6 @@ export async function readWorkspaceArtifactFileAsync(input: {
       input.requestedPath,
     );
     if (!relativePath) return undefined;
-    const context = {
-      purpose: input.purpose,
-      rootPath: rootReal,
-      relativePath,
-    } as const;
-    input.faults?.afterPathValidation?.(context);
     const body = await readSecureFileAsync({
       root: input.rootPath,
       relativePath,
@@ -264,7 +235,6 @@ export async function readWorkspaceArtifactFileAsync(input: {
       requireNonEmpty: input.requireNonEmpty,
     }, input.signal);
     if (!body) return undefined;
-    input.faults?.afterFileOpen?.(context);
     return {
       body,
       name: path.basename(relativePath),

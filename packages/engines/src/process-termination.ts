@@ -254,7 +254,7 @@ function processTreeAlive(child: ChildProcess, pid: number | undefined, observed
       return true;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ESRCH") return true;
-      // A test adapter or unusual launcher may not make the child its process
+      // An unusual launcher may not make the child its process
       // group leader. Fall back to the root process without weakening the
       // normal detached-group check.
       try { process.kill(pid, 0); return true; }

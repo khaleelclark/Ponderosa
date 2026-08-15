@@ -11,7 +11,7 @@ import type {
 } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
 import { agentMentionHandle } from "../agent-mentions.js";
-import { MAX_ATTACHMENTS_PER_MESSAGE, type CreateServerOptions, type EngineRegistration } from "../app-contracts.js";
+import { MAX_ATTACHMENTS_PER_MESSAGE, type EngineRegistration } from "../app-contracts.js";
 import { AssetError, type AssetStore } from "../assets.js";
 import type { createCommunicationArtifactAuthority } from "../communication-artifacts.js";
 import {
@@ -41,7 +41,6 @@ interface AgentCreationRoutesContext {
   publish(agentId: string, stored: StoredLogEvent): void;
   publishMessageDeliveryChanged(agentId: string): void;
   notifyScheduler(): void;
-  messageLifecycleFaults: CreateServerOptions["messageLifecycleFaults"];
 }
 
 export function registerAgentCreationRoutes(
@@ -66,7 +65,6 @@ export function registerAgentCreationRoutes(
     publish,
     publishMessageDeliveryChanged,
     notifyScheduler,
-    messageLifecycleFaults,
   } = context;
 
   app.post<{
@@ -296,9 +294,6 @@ export function registerAgentCreationRoutes(
             promptClass: "human",
           } } : {}),
           now: createdAt,
-        });
-        if (openingPrepared!.artifact) await messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
-          kind: "communication", ownerId: eventId, artifactIds: [openingPrepared!.artifact.id],
         });
         const canonicalCommunication = recordCommunication(communication);
         if (openingPrepared!.artifact) projectCommunicationArtifact(

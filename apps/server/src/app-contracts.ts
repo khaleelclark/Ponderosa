@@ -11,11 +11,8 @@ import type {
   RuntimeProcessHandle,
   RuntimeSession,
 } from "@ponderosa/core";
-import type { AgentStore, ManagedArtifactAsyncReadFaults, StoredLogEvent } from "@ponderosa/agents";
+import type { AgentStore, StoredLogEvent } from "@ponderosa/agents";
 import { ASSET_LIMITS } from "./assets.js";
-import type { WorkspaceArtifactReadFaults } from "./project-file-access.js";
-import type { WebPushSender } from "./web-push-delivery.js";
-import type { BrowserDriverFactory } from "./browser-session-manager.js";
 
 export type RuntimeOwnershipState = "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
 
@@ -89,7 +86,7 @@ export interface CreateServerOptions {
   engines: EngineRegistration[];
   webDist?: string;
   authToken?: string;
-  /** Installed-build identity. Development and test embeddings may omit it. */
+  /** Installed-build identity. Development embeddings may omit it. */
   buildVersion?: string;
   releaseChannel?: string;
   /** Host-launcher security is enabled only for installed loopback builds.
@@ -99,13 +96,9 @@ export interface CreateServerOptions {
     controlToken: string;
     bootstrapTtlMs?: number;
     sessionTtlMs?: number;
-    now?: () => number;
-    randomToken?: () => string;
   };
-  /** Validated production listener boundary. Tests embedding the server default safely to loopback. */
+  /** Validated production listener boundary. Embedded servers default safely to loopback. */
   networkSecurity?: ReadinessDto["networkSecurity"];
-  /** Deterministic test seam; production resolves and pins public DNS itself. */
-  linkFaviconLoader?: (target: URL) => Promise<{ body: Buffer; mediaType: string }>;
   /** Deterministic limits for the opaque localhost-preview transport. */
   linkPreviewScheduling?: {
     registrationTtlMs?: number;
@@ -129,62 +122,6 @@ export interface CreateServerOptions {
   /** Host-local origin injected into runtime tools; agents run on this server host. */
   agentBaseUrl?: string;
   logger?: boolean;
-  /** Deterministic scheduling seams for retry tests; production uses host timers and randomness. */
-  deliveryScheduling?: {
-    now?: () => number;
-    random?: () => number;
-    setTimer?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
-    /** Test-only internal claim response override. */
-    claimStatus?: () => number | undefined;
-  };
-  /** Deterministic execution-lease supervision seams; production uses one host timer per active run. */
-  executionLeaseScheduling?: {
-    leaseMs?: number;
-    /** Persistent runtimes prove process liveness at this cadence. */
-    heartbeatMs?: number;
-    now?: () => number;
-    setTimer?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
-    clearTimer?: (timer: NodeJS.Timeout) => void;
-  };
-  /** Bound persistent runtime resources after a turn becomes idle. */
-  runtimeSessionScheduling?: {
-    idleTtlMs?: number;
-    /** Maximum number of completed runtimes kept warm across all agents. */
-    maxIdleSessions?: number;
-    now?: () => number;
-    setTimer?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
-    clearTimer?: (timer: NodeJS.Timeout) => void;
-  };
-  /** Deterministic provider-authority cleanup retry seams. Production uses
-   * capped exponential backoff with jitter. */
-  runtimeAuthorityRetryScheduling?: {
-    baseDelayMs?: number;
-    maxDelayMs?: number;
-    random?: () => number;
-    setTimer?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
-    clearTimer?: (timer: NodeJS.Timeout) => void;
-  };
-  /** Deterministic shutdown fault seam; never enabled in production. */
-  shutdownFaults?: {
-    backgroundCleanup?: () => void | Promise<void>;
-    /** Strict provider-runtime close barrier fault used to prove that launcher
-     * shutdown cannot publish a clean receipt when provider teardown fails. */
-    providerClose?: () => void | Promise<void>;
-    /** Maximum time non-authority cleanup may delay process shutdown. Provider
-     * and browser process termination remain strict, separately awaited barriers. */
-    backgroundCleanupTimeoutMs?: number;
-  };
-  /** Deterministic same-process event-consumer fault seam; never enabled in production configuration. */
-  runtimeEventFaults?: {
-    beforePersist?: (context: { agentId: string; runId: string; generation: number; event: AgentEvent }) => void | Promise<void>;
-    stallAfterMs?: number;
-    onOwnershipState?: (context: { agentId: string; runId: string; generation: number; state: RuntimeOwnershipState }) => void;
-  };
-  /** Deterministic post-commit deletion cleanup fault seam for recovery tests. */
-  agentDeletionCleanupFaults?: {
-    beforeServerCleanup?: (receiptId: string) => void | Promise<void>;
-    runtimeTerminationTimeoutMs?: number;
-  };
   /** Communication V3 scheduler tuning. V3 is unconditional. */
   communicationV3?: {
     maxConcurrentRuns?: number;
@@ -196,61 +133,6 @@ export interface CreateServerOptions {
     maxDeliveryFailures?: number;
     /** Provider steer acknowledgement grace before exact-Run interruption. */
     steeringRecoveryGraceMs?: number;
-  };
-  /** Deterministic message-claim race seam; never enabled in production configuration. */
-  messageLifecycleFaults?: {
-    beforeRunClaim?: (context: { agentId: string; runId: string }) => void | Promise<void>;
-    afterRunClaim?: (context: { agentId: string; runId: string; generation: number }) => void | Promise<void>;
-    /** Crash seam after the authoritative SQLite commit and before append-only
-     * chat/artifact projections. */
-    afterCommunicationArtifactCommit?: (context: {
-      kind: "communication" | "request_update";
-      ownerId: string;
-      artifactIds: string[];
-    }) => void | Promise<void>;
-    /** Deterministic crash seam immediately after the canonical append and
-     * before any catalog association can expose artifact bytes. */
-    afterCanonicalCommunicationAppend?: (context: {
-      communicationEventId: string;
-      artifactIds: string[];
-    }) => void;
-    /** Crash seams around queued-edit outbox reconciliation. SQLite has
-     * already committed before either hook can run. */
-    afterQueuedEditSqliteCommit?: (context: { activationId: string; revisionId: string }) => void | Promise<void>;
-    afterQueuedEditRevisionAppend?: (context: { activationId: string; revisionId: string }) => void | Promise<void>;
-  };
-  /** Deterministic Project-file replacement seam; never enabled in production configuration. */
-  projectFilePreviewFaults?: {
-    afterResolve?: (resolvedPath: string) => void | Promise<void>;
-  };
-  /** Deterministic workspace-derived artifact read seams; never enabled in production configuration. */
-  workspaceArtifactReadFaults?: WorkspaceArtifactReadFaults;
-  /** Deterministic async managed-artifact read seam; never enabled in production configuration. */
-  managedArtifactReadFaults?: ManagedArtifactAsyncReadFaults;
-  /** Deterministic startup capability seam; production probes the exact platform authority. */
-  artifactFilesystemCapabilityProbe?: () => ReadinessDto["checks"]["artifactFilesystem"];
-  /** Deterministic process-containment seam; production probes the native authority. */
-  processContainmentCapabilityProbe?: () => ReadinessDto["checks"]["processContainment"];
-  /** Web Push configuration/test seams. Production reads host-only VAPID env. */
-  webPush?: {
-    publicKey?: string;
-    privateKey?: string;
-    subject?: string;
-    sender?: WebPushSender;
-    retryDelaysMs?: readonly number[];
-    now?: () => number;
-    setTimer?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
-    clearTimer?: (timer: NodeJS.Timeout) => void;
-  };
-  /** Test seam or host override for the engine-agnostic browser driver. */
-  browserDriverFactory?: BrowserDriverFactory;
-  /** Bound each fallible Project-deletion cleanup barrier. Production defaults
-   * to five seconds; tests may shorten the quarantine path. */
-  projectDeletionCleanupTimeoutMs?: number;
-  /** Deterministic post-commit Project tombstone cleanup seam; never enabled
-   * in production configuration. */
-  projectDeletionCleanupFaults?: {
-    afterTombstoneRemoval?: (projectId: string) => void;
   };
 }
 

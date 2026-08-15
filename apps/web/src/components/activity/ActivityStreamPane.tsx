@@ -135,7 +135,6 @@ export function ActivityStreamPane({
       {running ? <Chip size="small" color="info" label="Working" /> : null}
     </Stack>}
     empty="Thinking, responses, commands, tool calls, file changes, and browser actions will appear here."
-    scrollTestId="activity-scroll-region"
   >
     {displayEntries.map((entry) => {
       if (entry.kind === "action_group") return <ActionGroupRow

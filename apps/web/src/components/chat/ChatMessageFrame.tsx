@@ -198,7 +198,6 @@ export function ChatMessageFrame({
             </Stack>
           ) : null}
           <Box
-            data-message-bubble="true"
             sx={{
               width: fromOperator ? "fit-content" : "auto",
               maxWidth: "100%",

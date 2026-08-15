@@ -19,7 +19,7 @@ import {
 
 export class AssetAuthority {
   private db: Database.Database;
-  constructor(dataDir: string, private testHooks?: { afterAuditOpen?(file: string): void }) {
+  constructor(dataDir: string) {
     try {
       mkdirSyncSafe(dataDir); this.db = new Database(path.join(dataDir, "asset-authority.sqlite"));
       this.db.pragma("journal_mode = WAL"); this.db.pragma("synchronous = FULL"); this.db.pragma("busy_timeout = 500");
@@ -149,7 +149,6 @@ export class AssetAuthority {
       }
       const info = fstatSync(fd);
       if (!info.isFile() || info.nlink !== 1 || (typeof process.getuid === "function" && info.uid !== process.getuid()) || (info.mode & 0o022) !== 0) throw new AssetError(409, "asset audit leaf is unsafe");
-      this.testHooks?.afterAuditOpen?.(file);
       let text = readFileSync(fd, "utf8");
       const rawLines = text.split("\n"); const fileIds = new Map<string, string>(); let validBytes = 0;
       for (let index = 0; index < rawLines.length; index++) {

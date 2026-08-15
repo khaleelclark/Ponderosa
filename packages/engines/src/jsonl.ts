@@ -14,7 +14,7 @@ export class JsonlRecordLimitError extends Error {
 /**
  * Incremental line buffer. Feed it raw string chunks; it returns the complete
  * lines available so far and retains any partial trailing line for the next feed.
- * Pure and synchronous — the unit-testable core of the stream parser.
+ * Pure and synchronous so stream parsing remains deterministic.
  */
 export class LineBuffer {
   private chunks: Buffer[] = [];

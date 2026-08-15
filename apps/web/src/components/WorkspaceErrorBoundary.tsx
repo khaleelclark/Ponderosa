@@ -38,7 +38,7 @@ export class WorkspaceErrorBoundary extends Component<WorkspaceErrorBoundaryProp
 
   override render(): ReactNode {
     if (!this.state.error) return this.props.children;
-    return <Box data-workspace-error-boundary role="alert" sx={{ minHeight: 0, overflow: "auto", p: { xs: 2, md: 3 } }}>
+    return <Box role="alert" sx={{ minHeight: 0, overflow: "auto", p: { xs: 2, md: 3 } }}>
       <Alert severity="error" icon={<ErrorOutlineIcon />}>
         <Stack spacing={1}>
           <Typography fontWeight={800}>{this.props.title ?? "This workspace view could not be displayed."}</Typography>

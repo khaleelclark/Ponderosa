@@ -162,7 +162,6 @@ export interface LauncherOutput {
 export interface LauncherDependencies {
   platform?: PlatformAdapter;
   env?: NodeJS.ProcessEnv;
-  now?: () => Date;
   output?: LauncherOutput;
   fetch?: typeof globalThis.fetch;
   spawnServer?: (paths: LauncherPaths, state: LauncherState, env: NodeJS.ProcessEnv) => Promise<number>;

@@ -13,15 +13,10 @@ export interface WebPushDeliveryOptions {
   store: WorkspaceStore;
   sender: WebPushSender;
   onWorkspaceEvents(cursor: number): void;
-  now?: () => number;
-  setTimer?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
-  clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
-  retryDelaysMs?: readonly number[];
-  sendTimeoutMs?: number;
 }
 
 const DEFAULT_RETRY_DELAYS_MS = [2_000, 10_000, 60_000, 5 * 60_000] as const;
-export const DEFAULT_WEB_PUSH_SEND_TIMEOUT_MS = 4_000;
+const DEFAULT_WEB_PUSH_SEND_TIMEOUT_MS = 4_000;
 
 /**
  * Drains canonical per-device delivery records. Web Push acknowledgements are
@@ -30,20 +25,11 @@ export const DEFAULT_WEB_PUSH_SEND_TIMEOUT_MS = 4_000;
  */
 export class WebPushDeliveryManager {
   private readonly inFlight = new Set<string>();
-  private readonly retryDelaysMs: readonly number[];
-  private readonly now: () => number;
-  private readonly setTimer: NonNullable<WebPushDeliveryOptions["setTimer"]>;
-  private readonly clearTimer: NonNullable<WebPushDeliveryOptions["clearTimer"]>;
   private timer?: ReturnType<typeof setTimeout>;
   private drainPromise?: Promise<void>;
   private stopped = false;
 
-  constructor(private readonly options: WebPushDeliveryOptions) {
-    this.retryDelaysMs = options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
-    this.now = options.now ?? Date.now;
-    this.setTimer = options.setTimer ?? setTimeout;
-    this.clearTimer = options.clearTimer ?? clearTimeout;
-  }
+  constructor(private readonly options: WebPushDeliveryOptions) {}
 
   start(): void {
     this.stopped = false;
@@ -56,7 +42,7 @@ export class WebPushDeliveryManager {
 
   async stop(): Promise<void> {
     this.stopped = true;
-    if (this.timer) this.clearTimer(this.timer);
+    if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
     await this.drainPromise;
   }
@@ -74,9 +60,9 @@ export class WebPushDeliveryManager {
   }
 
   private async drainOnce(): Promise<void> {
-    if (this.timer) this.clearTimer(this.timer);
+    if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
-    const due = this.options.store.duePushDeliveries(new Date(this.now()));
+    const due = this.options.store.duePushDeliveries(new Date());
     await Promise.allSettled(due.map(async ({ delivery, notification, subscription }) => {
       const key = `${delivery.notificationId}\u0000${delivery.deviceId}`;
       if (this.inFlight.has(key)) return;
@@ -86,14 +72,14 @@ export class WebPushDeliveryManager {
           TTL: 60 * 60,
           urgency: "normal",
           topic: pushTopic(notification.id),
-          timeout: this.options.sendTimeoutMs ?? DEFAULT_WEB_PUSH_SEND_TIMEOUT_MS,
+          timeout: DEFAULT_WEB_PUSH_SEND_TIMEOUT_MS,
         });
         const cursor = this.options.store.cursor();
         this.options.store.updatePushDelivery({
           notificationId: delivery.notificationId,
           deviceId: delivery.deviceId,
           status: "delivered",
-          deliveredAt: new Date(this.now()).toISOString(),
+          deliveredAt: new Date().toISOString(),
         });
         this.options.onWorkspaceEvents(cursor);
       } catch (error) {
@@ -108,14 +94,14 @@ export class WebPushDeliveryManager {
   private recordFailure(delivery: PushDeliveryRecord, error: PushSendError): void {
     const statusCode = error.statusCode;
     const expired = statusCode === 404 || statusCode === 410;
-    const nextDelay = this.retryDelaysMs[delivery.attempts];
+    const nextDelay = DEFAULT_RETRY_DELAYS_MS[delivery.attempts];
     const cursor = this.options.store.cursor();
     if (expired) this.options.store.deletePushSubscription(delivery.deviceId);
     this.options.store.updatePushDelivery({
       notificationId: delivery.notificationId,
       deviceId: delivery.deviceId,
       status: expired || nextDelay === undefined ? "abandoned" : "pending",
-      ...(nextDelay === undefined ? {} : { nextAttemptAt: new Date(this.now() + nextDelay).toISOString() }),
+      ...(nextDelay === undefined ? {} : { nextAttemptAt: new Date(Date.now() + nextDelay).toISOString() }),
       lastError: statusCode ? `push service returned ${statusCode}` : "push delivery failed",
     });
     this.options.onWorkspaceEvents(cursor);
@@ -127,8 +113,8 @@ export class WebPushDeliveryManager {
     if (!nextAt) return;
     const next = Date.parse(nextAt);
     if (!Number.isFinite(next)) return;
-    const delay = Math.max(50, next - this.now());
-    this.timer = this.setTimer(() => {
+    const delay = Math.max(50, next - Date.now());
+    this.timer = setTimeout(() => {
       this.timer = undefined;
       void this.drain();
     }, delay);

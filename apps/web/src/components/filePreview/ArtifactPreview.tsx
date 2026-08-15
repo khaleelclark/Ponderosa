@@ -118,7 +118,6 @@ export function ProjectArtifactPreview({
   const createdDiffLabel = text.data !== undefined && contentType === "diff" ? `Created-file diff for ${displayLabel}` : undefined;
   return <Box
     aria-label={createdDiffLabel}
-    data-testid={artifact.kind === "diff" ? "project-recorded-diff" : undefined}
   >
     <FilePreview
       title={displayLabel}

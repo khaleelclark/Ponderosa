@@ -381,7 +381,7 @@ export class AgentStore extends AgentEventSessionFacade {
       provider_session_id: string | null;
       prompt_injection_state: string;
     } | undefined;
-    // Tests and imported legacy logs may predate scheduler session binding.
+    // Imported legacy logs may predate scheduler session binding.
     // They are not safe evidence for a new rollover boundary.
     if (!boundaryRun || boundaryRun.provider_session_id !== accepted.sessionId ||
         boundaryRun.prompt_injection_state !== "injected") return undefined;
@@ -693,7 +693,7 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.eventSession.recoverInterruptedExecutions();
   }
 
-  /** The raw better-sqlite3 handle (read-only queries, PRAGMAs, tests). */
+  /** The raw better-sqlite3 handle for read models, transactions, and PRAGMAs. */
   get sqlite(): Database.Database {
     return this.client;
   }
@@ -1320,7 +1320,7 @@ export class AgentStore extends AgentEventSessionFacade {
   /**
    * Wipe every projection table and replay from disk (the *.json files + each
    * `events.jsonl`). After this, projections are byte-identical to the incremental
-   * result — the property the rebuild test asserts.
+   * result.
    */
   private recoverAgentDeletionDirectories(): void {
     this.agentDeletion.recoverAgentDeletionDirectories();

@@ -651,7 +651,7 @@ export function AllChatView({
         icon={<ChatBubbleOutlineIcon fontSize="small" />}
         title="Messages Across Ponderosa"
       />
-      <Box data-chat-attention-slot sx={{ minWidth: 0 }}>
+      <Box sx={{ minWidth: 0 }}>
           <AttentionSurface
             notifications={notifications.filter((item) => item.kind !== "decision")}
           onOpen={item => {

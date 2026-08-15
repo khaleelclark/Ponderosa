@@ -119,7 +119,6 @@ function AgentRosterShell({
   }
   return (
     <Box
-      data-testid="agent-roster"
       sx={{
         height: "100%",
         minHeight: 0,

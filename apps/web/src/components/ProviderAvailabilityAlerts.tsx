@@ -28,7 +28,6 @@ export function ProviderAvailabilityAlerts({
       return <Alert
         key={engine.id}
         severity="warning"
-        data-provider-id={engine.id}
         action={canTest ? <Button
           color="inherit"
           size="small"

@@ -72,11 +72,6 @@ export interface CollaborationRouteDependencies {
     options?: { conversationIds?: string[] },
   ) => void;
   notifyScheduler: () => void;
-  afterCommunicationArtifactCommit?: (context: {
-    kind: "communication";
-    ownerId: string;
-    artifactIds: string[];
-  }) => void | Promise<void>;
 }
 const MAX_ATTACHMENTS_PER_MESSAGE = ASSET_LIMITS.maxAssetsPerMessage;
 
@@ -101,7 +96,6 @@ export function registerCollaborationRoutes(
     appendWorkspace,
     publishCoordinationV3Changed,
     notifyScheduler,
-    afterCommunicationArtifactCommit,
   } = dependencies;
   app.get<{ Params: { id: string }; Querystring: { limit?: string; cursor?: string; focusId?: string; operationCursor?: string } }>("/api/conversations/:id/collaboration", async (request, reply) => {
     const limit = Math.min(1_000, Math.max(1, Number(request.query.limit ?? 100) || 100));
@@ -253,9 +247,6 @@ export function registerCollaborationRoutes(
           dedupeKey: `communication:${eventId}:${intent.targetAgentId}:${index}`,
         })),
         now: communication.createdAt,
-      });
-      if (prepared.artifact) await afterCommunicationArtifactCommit?.({
-        kind: "communication", ownerId: eventId, artifactIds: [prepared.artifact.id],
       });
     } catch (error) {
       const status = error instanceof AssetError ? error.statusCode : 409;

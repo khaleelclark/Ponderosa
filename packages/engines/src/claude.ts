@@ -5,7 +5,6 @@
 // stream-json` and resumes with `--resume <session-id>`. The choice of the CLI
 // (vs the Agent SDK library) is invisible outside this file (invariant 2).
 
-import { spawn as nodeSpawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import type {
   Adapter,
@@ -28,7 +27,7 @@ import type {
 } from "@ponderosa/core";
 import { mapClaudeEvent } from "./claude-events.js";
 import { renderSeedPrompt } from "./seed-history.js";
-import { streamProcess, type SpawnFn } from "./process.js";
+import { streamProcess } from "./process.js";
 import { composerCapabilities, discoverCliMcps, parseClaudeMcpList } from "./capabilities.js";
 import { ClaudeStreamSession } from "./claude-stream-session.js";
 import { ClaudeModelCatalogProbe } from "./claude-models.js";
@@ -37,8 +36,6 @@ import { readClaudeProviderUsage } from "./provider-usage.js";
 export interface ClaudeAdapterOptions {
   /** Path/name of the claude binary. Default: "claude". */
   bin?: string;
-  /** Injected spawn (for tests). */
-  spawnFn?: SpawnFn;
   /** Environment used to discover Claude Code's configured model pins. */
   modelEnvironment?: Readonly<Record<string, string | undefined>>;
   /**
@@ -137,7 +134,6 @@ export class ClaudeAdapter implements Adapter {
   };
 
   private readonly bin: string;
-  private readonly spawnFn: SpawnFn;
   private readonly modelEnvironment: Readonly<Record<string, string | undefined>>;
   private operatorModels: EngineModelOption[] = [];
   private readonly permissionMode: string;
@@ -146,7 +142,6 @@ export class ClaudeAdapter implements Adapter {
 
   constructor(opts: ClaudeAdapterOptions = {}) {
     this.bin = opts.bin ?? "claude";
-    this.spawnFn = opts.spawnFn ?? nodeSpawn;
     this.modelEnvironment = opts.modelEnvironment ?? process.env;
     this.permissionMode =
       opts.permissionMode ??
@@ -155,7 +150,6 @@ export class ClaudeAdapter implements Adapter {
     this.killGraceMs = opts.killGraceMs ?? 3000;
     this.modelCatalogProbe = new ClaudeModelCatalogProbe({
       bin: this.bin,
-      spawnFn: this.spawnFn,
       environment: this.modelEnvironment,
       killGraceMs: this.killGraceMs,
     });
@@ -247,7 +241,7 @@ export class ClaudeAdapter implements Adapter {
   }
 
   async capabilities(cwd: string, context: EngineCapabilityDiscoveryOptions): Promise<EngineCapabilities> {
-    const mcpServers = await discoverCliMcps(this.bin, ["mcp", "list"], cwd, parseClaudeMcpList, context, this.killGraceMs, this.spawnFn);
+    const mcpServers = await discoverCliMcps(this.bin, ["mcp", "list"], cwd, parseClaudeMcpList, context, this.killGraceMs);
     const commands = [{
       name: this.providerUsageCommand.name,
       description: this.providerUsageCommand.description,
@@ -271,7 +265,6 @@ export class ClaudeAdapter implements Adapter {
     return Promise.resolve(new ClaudeStreamSession({
       ...opts,
       bin: this.bin,
-      spawnFn: this.spawnFn,
       permissionMode: this.permissionMode,
       killGraceMs: this.killGraceMs,
     }));
@@ -280,7 +273,6 @@ export class ClaudeAdapter implements Adapter {
   readProviderUsage(options: ProviderUsageReadOptions): Promise<ProviderUsage> {
     return readClaudeProviderUsage({
       bin: this.bin,
-      spawnFn: this.spawnFn,
       killGraceMs: this.killGraceMs,
       options,
     });
@@ -340,7 +332,6 @@ export class ClaudeAdapter implements Adapter {
       onRuntimeRootExit,
       onRuntimeSpawned,
       environment,
-      spawnFn: this.spawnFn,
       killGraceMs: this.killGraceMs,
       map: mapClaudeEvent,
       label: "claude",

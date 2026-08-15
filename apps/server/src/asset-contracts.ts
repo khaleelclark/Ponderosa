@@ -143,6 +143,6 @@ export class AssetError extends Error {
 }
 
 export function mkdirSyncSafe(dataDir: string): void {
-  // The server creates this root before stores; retained for isolated authority tests.
+  // The server creates this root before stores open their durable state.
   if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true, mode: 0o700 });
 }

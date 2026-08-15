@@ -96,7 +96,6 @@ export function WorkspaceRouteOutlet({
   onToggleColorMode,
 }: WorkspaceRouteOutletProps): JSX.Element {
   const routePath = routeToPath(route);
-  const routeMarker = { kind: route.kind, path: routePath };
   return (
     <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
       {loadError ? (
@@ -117,21 +116,16 @@ export function WorkspaceRouteOutlet({
         <RecoverableLazyRoute
           key={routePath}
           load={loadCreateWorkspace}
-          routeMarker={routeMarker}
           componentProps={{ route, projects, engines, preferences, onCancel: onCancelCreate, onNavigate }}
         />
       ) : route.kind === "wiki" ? (
         <RecoverableLazyRoute
           key={routePath}
           load={loadWikiView}
-          routeMarker={routeMarker}
           componentProps={{ articleId: route.articleId, navigate: onNavigate }}
         />
       ) : route.kind === "home" ? (
         <Box
-          data-workspace-route-kind={route.kind}
-          data-workspace-route-path={routePath}
-          data-workspace-route-content
           sx={{ display: "contents" }}
         >
           <HomeView
@@ -153,14 +147,12 @@ export function WorkspaceRouteOutlet({
         <RecoverableLazyRoute
           key={routePath}
           load={loadAllChatView}
-          routeMarker={routeMarker}
           componentProps={{ onNavigate, notifications }}
         />
       ) : route.kind === "projects" ? (
         <RecoverableLazyRoute
           key={routePath}
           load={loadAllProjectsView}
-          routeMarker={routeMarker}
           componentProps={{
             projects,
             preferences,
@@ -175,7 +167,6 @@ export function WorkspaceRouteOutlet({
         <RecoverableLazyRoute
           key={routePath}
           load={loadAllAgentsWorkspace}
-          routeMarker={routeMarker}
           componentProps={{
             projects,
             engines,
@@ -199,7 +190,6 @@ export function WorkspaceRouteOutlet({
         <RecoverableLazyRoute
           key={routePath}
           load={loadAllChatsWorkspace}
-          routeMarker={routeMarker}
           componentProps={{
             projects,
             filterProjectId: route.filterProjectId,
@@ -215,7 +205,6 @@ export function WorkspaceRouteOutlet({
         <RecoverableLazyRoute
           key={routePath}
           load={loadAllTriggersWorkspace}
-          routeMarker={routeMarker}
           componentProps={{
             projects,
             preferences,
@@ -229,7 +218,6 @@ export function WorkspaceRouteOutlet({
         <RecoverableLazyRoute
           key={routePath}
           load={loadWorkspaceSettingsView}
-          routeMarker={routeMarker}
           componentProps={{
             preferences,
             engines,
@@ -244,14 +232,12 @@ export function WorkspaceRouteOutlet({
         <RecoverableLazyRoute
           key={routePath}
           load={loadOperatorProfileWorkspace}
-          routeMarker={routeMarker}
           componentProps={{ preferences, onPreferences }}
         />
       ) : route.kind === "usage" ? (
         <RecoverableLazyRoute
           key={routePath}
           load={loadWorkspaceSettingsView}
-          routeMarker={routeMarker}
           componentProps={{
             preferences,
             engines,
@@ -268,7 +254,6 @@ export function WorkspaceRouteOutlet({
           <RecoverableLazyRoute
             key={routePath}
             load={loadProjectShell}
-            routeMarker={routeMarker}
             componentProps={{
               projectId: selectedProjectId,
               project: projects.find(project => project.id === selectedProjectId)!,

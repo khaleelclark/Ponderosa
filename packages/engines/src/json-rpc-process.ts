@@ -1,7 +1,6 @@
-import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import type { ProviderRootExitDetail, RuntimeProcessHandle } from "@ponderosa/core";
 import { spawnContainedCli } from "./contained-spawn.js";
-import type { SpawnFn } from "./process.js";
 import { processGroupAlive, runtimeProcessIdentity, terminateProcessGroup } from "./process-termination.js";
 import type { NativeProcessTreeAuthority } from "./process-termination.js";
 import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, LineBuffer } from "./jsonl.js";
@@ -57,7 +56,6 @@ export interface JsonRpcProcessOptions {
   cwd: string;
   environment?: Record<string, string>;
   signal: AbortSignal;
-  spawnFn?: SpawnFn;
   killGraceMs?: number;
   /** Register authority immediately after spawn, before transport setup. */
   onRuntimeSpawned: (handle: RuntimeProcessHandle) => void;
@@ -83,7 +81,6 @@ export class JsonRpcProcess {
   readonly notifications: AsyncIterable<JsonRpcNotification> = this.queue;
 
   constructor(private readonly opts: JsonRpcProcessOptions) {
-    const spawnFn = opts.spawnFn ?? nodeSpawn;
     const environment = runtimeEnvironment(opts.environment);
     const contained = spawnContainedCli({
       bin: opts.bin,
@@ -91,7 +88,6 @@ export class JsonRpcProcess {
       cwd: opts.cwd,
       env: environment,
       stdin: "pipe",
-      spawnFn,
     });
     this.child = contained.child;
     this.nativeAuthority = contained.authority;

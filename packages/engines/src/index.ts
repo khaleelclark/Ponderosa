@@ -6,7 +6,7 @@
 
 export { CodexAdapter, renderSeedPrompt } from "./codex.js";
 export { CodexAppServerSession, mapCodexAppServerNotification } from "./codex-app-server.js";
-export type { CodexAdapterOptions, SpawnFn } from "./codex.js";
+export type { CodexAdapterOptions } from "./codex.js";
 export { ClaudeAdapter } from "./claude.js";
 export { ClaudeModelCatalogProbe, claudeModelDisplayName, normalizeClaudeProviderModels } from "./claude-models.js";
 export { ClaudeStreamSession } from "./claude-stream-session.js";
@@ -17,7 +17,6 @@ export { mapClaudeEvent } from "./claude-events.js";
 export type { CodexMapContext } from "./events.js";
 export { streamProcess } from "./process.js";
 export { processBirthMarker, processGroupAlive, recoveredRuntimeProcessHandle, runtimeProcessIdentity, terminateProcessGroup } from "./process-termination.js";
-export type { ProcessStreamSnapshot, RuntimeProcessFaults } from "./process.js";
 export { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, LineBuffer, parseJsonLine, parseJsonlChunks } from "./jsonl.js";
 export { codexAuthStatus, codexHome, claudeAuthStatus, claudeAvailabilityStatus } from "./auth.js";
 export { shouldRolloverEngineSession, classifyProviderFailure } from "./session-recovery.js";

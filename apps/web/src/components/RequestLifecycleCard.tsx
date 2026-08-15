@@ -278,7 +278,6 @@ export function RequestLifecycleCard({
       onChange={(_, next) => setExpanded(next)}
       disableGutters
       variant="outlined"
-      data-request-lifecycle={requestId}
       sx={{
         borderRadius: "10px !important",
         "&:before": { display: "none" },

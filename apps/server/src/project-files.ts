@@ -46,7 +46,6 @@ export function isProjectFileReferenceAllowed(relativePath: string): boolean {
 async function readScopedPath(
   root: string,
   relInput: string | undefined,
-  faults?: { afterResolve?(relativePath: string): void | Promise<void> },
 ): Promise<FilesResponse> {
   const rel = safeRelativePath(relInput);
   if (rel && !isProjectFileReferenceAllowed(rel)) throw new Error("path is excluded from project references");
@@ -77,7 +76,6 @@ async function readScopedPath(
       candidate.name === leaf && candidate.kind === "file");
   if (!entry || entry.size === undefined) throw new Error("project file is unavailable");
   if (entry.size > MAX_FILE_BYTES) throw new Error("file exceeds 2 MiB browser limit");
-  await faults?.afterResolve?.(rel);
   const buffer = await readSecureFileAsync({
     root,
     relativePath: rel,

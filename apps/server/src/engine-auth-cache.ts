@@ -15,14 +15,9 @@ interface CachedStatus {
 export class EngineAuthStatusCache {
   private readonly entries = new Map<string, CachedStatus>();
 
-  constructor(
-    private readonly ttlMs = 30_000,
-    private readonly now: () => number = Date.now,
-  ) {}
-
   get(id: string, load: () => Promise<EngineAuthStatus>): Promise<EngineAuthStatus> {
     const current = this.entries.get(id);
-    const now = this.now();
+    const now = Date.now();
     if (current?.value && current.expiresAt > now) return Promise.resolve(current.value);
     if (current?.pending) return current.pending;
 
@@ -37,7 +32,7 @@ export class EngineAuthStatusCache {
           throw error;
         }
         if (this.entries.get(id) === entry) {
-          this.entries.set(id, { value, expiresAt: this.now() + this.ttlMs });
+          this.entries.set(id, { value, expiresAt: Date.now() + 30_000 });
         }
         return value;
       },

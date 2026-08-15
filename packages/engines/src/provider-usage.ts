@@ -1,4 +1,4 @@
-import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import type {
   ProviderUsage,
   ProviderUsageReadOptions,
@@ -8,7 +8,6 @@ import type {
 import { spawnContainedCli } from "./contained-spawn.js";
 import { JsonRpcProcess } from "./json-rpc-process.js";
 import { parseJsonlChunks } from "./jsonl.js";
-import type { SpawnFn } from "./process.js";
 import { runtimeProcessHandle } from "./process-termination.js";
 import { runtimeEnvironment } from "./runtime-environment.js";
 
@@ -137,7 +136,6 @@ function childCompletion(child: ChildProcess): Promise<{ code: number | null; er
 
 export async function readClaudeProviderUsage(input: {
   bin: string;
-  spawnFn?: SpawnFn;
   killGraceMs: number;
   options: ProviderUsageReadOptions;
 }): Promise<ProviderUsage> {
@@ -157,7 +155,6 @@ export async function readClaudeProviderUsage(input: {
     cwd: options.cwd,
     env: runtimeEnvironment(),
     stdin: "ignore",
-    spawnFn: input.spawnFn ?? nodeSpawn,
   });
   const child = spawned.child;
   const handle = runtimeProcessHandle(child, {
@@ -299,7 +296,6 @@ export function normalizeCodexProviderUsage(
 
 export async function readCodexProviderUsage(input: {
   bin: string;
-  spawnFn?: SpawnFn;
   sandboxMode: string;
   killGraceMs: number;
   options: ProviderUsageReadOptions;
@@ -325,7 +321,6 @@ export async function readCodexProviderUsage(input: {
     ],
     cwd: options.cwd,
     signal: controller.signal,
-    spawnFn: input.spawnFn,
     killGraceMs: input.killGraceMs,
     onRuntimeSpawned: options.onRuntimeSpawned,
     onRuntimeRootExit: () => undefined,

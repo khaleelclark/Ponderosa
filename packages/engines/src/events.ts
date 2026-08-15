@@ -4,7 +4,7 @@
 // (AGENTS.md invariant 2: normalize at the edge). Every `codex exec --json` line
 // is one raw event; `mapCodexEvent` turns it into zero or more AgentEvents.
 //
-// Grounding (recorded from codex-cli 0.143.0, see ../fixtures/*.jsonl):
+// Grounding (recorded from codex-cli 0.143.0):
 //   {"type":"thread.started","thread_id":"..."}
 //   {"type":"turn.started"}
 //   {"type":"item.started","item":{"id","type":"command_execution","command",

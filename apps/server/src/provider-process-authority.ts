@@ -33,7 +33,6 @@ export class ProviderProcessAuthority {
     if (process.platform === "win32") return;
     const identity = handle.processIdentity;
     if (!identity) {
-      if (process.env.NODE_ENV === "test") return;
       if (handle.isAlive()) {
         void handle.close().catch(() => undefined);
         throw new Error("provider process did not expose restart-recoverable POSIX identity");

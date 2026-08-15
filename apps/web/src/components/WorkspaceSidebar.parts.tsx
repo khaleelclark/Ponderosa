@@ -95,8 +95,6 @@ function SharedSidebarPanel({
   const hasStarredRows = Children.count(starredRows) > 0;
   return (
     <Box
-      data-sidebar-layout="shared-resource"
-      data-sidebar-panel={title.toLocaleLowerCase()}
       sx={{
         minHeight: 0,
         minWidth: 0,
@@ -140,19 +138,18 @@ function SharedSidebarPanel({
         />
       </Box>
       <Box
-        data-testid="workspace-navigation-scroll"
         aria-busy={busy}
         className="ponderosa-scroll"
         sx={{ minHeight: 0, overflowY: "auto", px: 1.25, pb: 1.5 }}
       >
         {topContent}
         {hasStarredRows ? (
-          <Box component="section" data-sidebar-section="starred" sx={{ mb: 2 }}>
+          <Box component="section" sx={{ mb: 2 }}>
             <SidebarSectionHeading>Starred</SidebarSectionHeading>
             <List disablePadding>{starredRows}</List>
           </Box>
         ) : null}
-        <Box component="section" data-sidebar-section="all">
+        <Box component="section">
           <SidebarSectionHeading>
             {title === "Home" ? "Recents" : `All ${title}`}
           </SidebarSectionHeading>

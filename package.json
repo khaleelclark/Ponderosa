@@ -12,7 +12,6 @@
     "typecheck": "pnpm --filter @ponderosa/core build && pnpm --filter @ponderosa/native-host build && pnpm --filter @ponderosa/agents build && pnpm --filter @ponderosa/engines build && pnpm -r typecheck",
     "verify": "pnpm typecheck && pnpm build",
     "clean": "pnpm -r exec rm -rf dist",
-    "engines:try": "node packages/engines/dist/harness.js",
     "start:prod": "NODE_ENV=production node apps/server/dist/main.js",
     "beta:version": "node packaging/beta-version.mjs",
     "beta:cut": "node packaging/beta-version.mjs --cut --push",

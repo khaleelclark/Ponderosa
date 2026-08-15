@@ -819,7 +819,6 @@ export default function App({
     >
       <MobileWorkspaceActionsProvider>
       <Box
-        data-testid="ponderosa-app"
         sx={{
           height: "var(--ponderosa-app-viewport-block-size, 100dvh)",
           width: "100%",

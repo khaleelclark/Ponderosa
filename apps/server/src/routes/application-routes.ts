@@ -68,8 +68,7 @@ import { registerWorkspacePreferenceRoutes } from "./workspace-preferences.js";
 
 type ApplicationRoutesContext =
   Parameters<typeof registerProjectRoutes>[1] &
-  Omit<Parameters<typeof registerProjectDeletionRoutes>[1],
-    "logError" | "projectDeletionCleanupFaults"> &
+  Omit<Parameters<typeof registerProjectDeletionRoutes>[1], "logError"> &
   Omit<Parameters<typeof registerConversationRoutes>[1],
     "hasActiveRun" | "handleAgentConversationRemoval" |
     "purgeCommunicationV4Conversation" | "refreshTriggers"> &
@@ -77,8 +76,8 @@ type ApplicationRoutesContext =
     "projectDeletionInProgress" | "assetMetadata"> &
   Parameters<typeof registerQueuedMessageRoutes>[1] &
   Omit<Parameters<typeof registerCollaborationRoutes>[1],
-    "projectDeletionInProgress" | "assetMetadata" | "afterCommunicationArtifactCommit"> &
-  Omit<Parameters<typeof registerAgentCreationRoutes>[1], "messageLifecycleFaults"> &
+    "projectDeletionInProgress" | "assetMetadata"> &
+  Parameters<typeof registerAgentCreationRoutes>[1] &
   Omit<Parameters<typeof registerAgentPackageRoutes>[1], "dataDir" | "coordination"> &
   Parameters<typeof registerAgentMaintenanceRoutes>[1] &
   Omit<Parameters<typeof registerAgentMessageRunRoute>[1],
@@ -234,7 +233,6 @@ export function registerApplicationRoutes(
     releaseActiveRun,
     renewExecutionLease,
     scheduleRuntimeLivenessHeartbeat,
-    waitBeforeRuntimePersist,
     agentHealth,
     agentMessages,
     canonicalConversationContext,
@@ -337,7 +335,6 @@ registerProjectDeletionRoutes(app, {
   resolveOperationalNotification,
   agentHealth,
   logError: (meta, message) => app.log.error(meta, message),
-  projectDeletionCleanupFaults: opts.projectDeletionCleanupFaults,
   providerProcessAuthority,
 });
 
@@ -382,7 +379,6 @@ registerConversationDeliveryRoutes(app, {
   appendWorkspace,
   publishCoordinationV3Changed,
   notifyScheduler: notifyScheduler,
-  afterCommunicationArtifactCommit: opts.messageLifecycleFaults?.afterCommunicationArtifactCommit,
 });
 
 registerQueuedMessageRoutes(app, {
@@ -396,7 +392,6 @@ registerQueuedMessageRoutes(app, {
   publishCoordinationV3Changed,
   publishMessageDeliveryChanged,
   notifyScheduler: notifyScheduler,
-  afterQueuedEditSqliteCommit: opts.messageLifecycleFaults?.afterQueuedEditSqliteCommit,
 });
 registerCollaborationRoutes(app, {
   store,
@@ -415,7 +410,6 @@ registerCollaborationRoutes(app, {
   appendWorkspace,
   publishCoordinationV3Changed,
   notifyScheduler: notifyScheduler,
-  afterCommunicationArtifactCommit: opts.messageLifecycleFaults?.afterCommunicationArtifactCommit,
 });
 
 app.get<{ Params: { id: string }; Querystring: CollectionQuery }>("/api/projects/:id/agents", async (request, reply) => {
@@ -477,7 +471,6 @@ registerAgentCreationRoutes(app, {
   publish,
   publishMessageDeliveryChanged,
   notifyScheduler: notifyScheduler,
-  messageLifecycleFaults: opts.messageLifecycleFaults,
 });
 
 registerTriggerRoutes(app, {
@@ -616,7 +609,7 @@ registerAgentMessageRunRoute(app, {
   persistentRootExited, scheduleRuntimeIdleClose, teardownOneShotRuntime, teardownOpeningRuntime,
   teardownPersistentRuntime, teardownPersistentRuntimeInBackground, claimActiveRun,
   persistRuntimeEvent, receiveRuntimeEvent, releaseActiveRun, renewExecutionLease,
-  waitBeforeRuntimePersist, communicationArtifactAccess, prepareUserCommunicationText,
+  communicationArtifactAccess, prepareUserCommunicationText,
   projectCommunicationArtifact, runtimeArtifactMetadata, projectCommunicationToAgentAudit,
   publish, publishCoordinationV3Changed, publishMessageDeliveryChanged, teamDirectory,
   canonicalConversationContext, agentCanReadRuntimeArtifact,
@@ -834,17 +827,12 @@ registerProviderCommandRoutes(app, {
 });
 
 registerCommunicationDocumentRoutes(app, authoritativeCommunicationDocument);
-const projectFileAuthority = new ProjectFileAuthority(
-  store,
-  opts.projectFilePreviewFaults,
-);
+const projectFileAuthority = new ProjectFileAuthority(store);
 registerArtifactRoutes(app, {
   store,
   assets,
   dataDir: opts.dataDir,
   projectFileAuthority,
-  workspaceArtifactReadFaults: opts.workspaceArtifactReadFaults,
-  managedArtifactReadFaults: opts.managedArtifactReadFaults,
   publish,
   managedProjectArtifactAgreesWithRuntime,
 });

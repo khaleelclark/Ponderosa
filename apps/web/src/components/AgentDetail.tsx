@@ -881,8 +881,6 @@ export function AgentDetail({
 
   return (
     <Box
-      data-testid="agent-detail"
-      data-agent-id={agentId}
       sx={{
         width: "100%",
         maxWidth: "100%",

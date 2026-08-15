@@ -97,10 +97,6 @@ export interface QueuedMessageRouteDependencies {
   ) => void;
   publishMessageDeliveryChanged: (agentId: string) => void;
   notifyScheduler: () => void;
-  afterQueuedEditSqliteCommit?: (context: {
-    activationId: string;
-    revisionId: string;
-  }) => void | Promise<void>;
 }
 
 const MAX_TEXT_LENGTH = 64 * 1024;
@@ -120,7 +116,6 @@ export function registerQueuedMessageRoutes(
     publishCoordinationV3Changed,
     publishMessageDeliveryChanged,
     notifyScheduler,
-    afterQueuedEditSqliteCommit,
   } = dependencies;
   app.post<{
     Params: { id: string; deliveryId: string };
@@ -291,10 +286,6 @@ export function registerQueuedMessageRoutes(
       now: createdAt,
     });
     if (!result.edited) return reply.code(409).send(result satisfies EditQueuedMessageResponse);
-    if (!result.replayed) await afterQueuedEditSqliteCommit?.({
-      activationId: activation.id,
-      revisionId,
-    });
     publishCoordinationV3Changed(agent.id, {
       conversationIds: [conversationId],
     });

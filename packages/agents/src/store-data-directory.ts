@@ -58,7 +58,7 @@ function releaseDataDirectoryOwnership(ownership: DataDirectoryOwnership | undef
   } catch { /* a missing/replaced lock is no longer ours */ }
 }
 
-/** V1 is a destructive test-data cutover; managed source workspaces are external. */
+/** V1 is a destructive data-layout cutover; managed source workspaces are external. */
 function ensureV1Layout(dataDir: string): void {
   const marker = join(dataDir, ".ponderosa-layout-version");
   if (existsSync(marker) && readFileSync(marker, "utf8").trim() === "1") return;

@@ -107,10 +107,7 @@ export function createAgentDeletionAuthority(
     }
     publishWorkspaceSince(cursor);
   };
-  const deletionRuntimeTerminationTimeoutMs = Math.max(
-    1,
-    opts.agentDeletionCleanupFaults?.runtimeTerminationTimeoutMs ?? 5_000,
-  );
+  const deletionRuntimeTerminationTimeoutMs = 5_000;
   const awaitRuntimeTerminationOperation = async (operation: Promise<void>, label: string): Promise<void> => {
     let timer: NodeJS.Timeout | undefined;
     try {
@@ -125,7 +122,7 @@ export function createAgentDeletionAuthority(
       if (timer) clearTimeout(timer);
     }
   };
-  const projectDeletionCleanupTimeoutMs = Math.max(1, opts.projectDeletionCleanupTimeoutMs ?? 5_000);
+  const projectDeletionCleanupTimeoutMs = 5_000;
   const awaitProjectDeletionBarrier = async (operation: Promise<unknown>, label: string): Promise<void> => {
     let timer: NodeJS.Timeout | undefined;
     try {
@@ -191,12 +188,6 @@ export function createAgentDeletionAuthority(
   };
   const processAgentDeletionCleanup = async (receipt: import("@ponderosa/agents").AgentDeletionReceipt): Promise<boolean> => {
     if (receipt.serverCleanupCompleted) return true;
-    try { await opts.agentDeletionCleanupFaults?.beforeServerCleanup?.(receipt.id); }
-    catch (error) {
-      try { store.recordAgentDeletionCleanupError(receipt.id, error instanceof Error ? error.message : "injected cleanup failure"); }
-      catch { /* the receipt itself remains pending */ }
-      return false;
-    }
     const errors: string[] = [];
     try { cancelAgentDecisions(receipt.deletedAgentIds); }
     catch (error) { errors.push(error instanceof Error ? error.message : "Decision cleanup failed"); }

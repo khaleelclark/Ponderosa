@@ -1,4 +1,4 @@
-import { execFile as nodeExecFile, spawn as nodeSpawn } from "node:child_process";
+import { execFile as nodeExecFile } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
@@ -227,7 +227,7 @@ export function parseCodexMcpList(output: string): EngineMcpServer[] {
       }];
     });
   } catch {
-    // Older harnesses expose only the human-readable table.
+    // Older CLI versions expose only the human-readable table.
   }
   return output.split("\n").flatMap((line) => {
     const trimmed = line.trim();
@@ -525,7 +525,6 @@ export async function discoverCliMcps(
   parse: (output: string) => EngineMcpServer[],
   lifecycle?: EngineCapabilityDiscoveryOptions,
   killGraceMs = 3_000,
-  spawnFn: typeof nodeSpawn = nodeSpawn,
 ): Promise<EngineMcpServer[]> {
   if (lifecycle) {
     if (lifecycle.signal.aborted) return parse("");
@@ -535,7 +534,6 @@ export async function discoverCliMcps(
       cwd,
       env: runtimeEnvironment(),
       stdin: "ignore",
-      spawnFn,
     });
     const child = spawned.child;
     const handle = runtimeProcessHandle(

@@ -130,7 +130,6 @@ export class TriggerSourceService {
     onBudgetReset?(): void;
     projectAvailable?(projectId: string): boolean;
     sourceAvailable?(): boolean;
-    now?: () => Date;
   }) {
     this.secrets = new TriggerSecretStore(options.dataDir);
   }
@@ -286,12 +285,6 @@ export class TriggerSourceService {
     }
   }
 
-  /** Deterministic qualification seam; production CRUD does not wait for a
-   * potentially large Project tree to finish its initial watcher scan. */
-  async waitForFilesystemWatchers(): Promise<void> {
-    await Promise.all([...this.watchers.values()].map((active) => active.ready));
-  }
-
   createWebhookSecret(): { secret: string; ciphertext: string; fingerprint: string } {
     return this.secrets.create();
   }
@@ -317,7 +310,7 @@ export class TriggerSourceService {
     if (!input.eventId.trim() || input.eventId.length > 200) throw new Error("X-Ponderosa-Event-Id is required");
     const timestampSeconds = Number(input.timestamp);
     const config = trigger.sourceConfig as TriggerWebhookConfig;
-    const nowSeconds = Math.floor(this.now().getTime() / 1_000);
+    const nowSeconds = Math.floor(Date.now() / 1_000);
     if (!Number.isInteger(timestampSeconds) || Math.abs(nowSeconds - timestampSeconds) > config.replayWindowSeconds) {
       throw new Error("webhook timestamp is outside the replay window");
     }
@@ -337,7 +330,7 @@ export class TriggerSourceService {
         signatureVersion: "v1",
         ...(input.remoteAddress ? { remoteAddress: input.remoteAddress } : {}),
       },
-      now: this.now().toISOString(),
+      now: new Date().toISOString(),
     });
     if (!result.replayed) this.options.notify(trigger.id);
     return { occurrenceId: result.occurrenceId, state: result.state, replayed: result.replayed };
@@ -345,7 +338,7 @@ export class TriggerSourceService {
 
   async processDueSchedules(): Promise<void> {
     if (!this.sourceAvailable()) return;
-    const now = this.now();
+    const now = new Date();
     if (this.options.coordination.resetExpiredTriggerBudgets(now.toISOString()) > 0) {
       this.options.onBudgetReset?.();
     }
@@ -429,7 +422,7 @@ export class TriggerSourceService {
   private addFileEvent(trigger: TriggerDefinitionDto, changedPath: string, type: string): void {
     if (!this.sourceAvailable()) return;
     if (!(this.options.projectAvailable?.(trigger.projectId) ?? true)) return;
-    const now = this.now().toISOString();
+    const now = new Date().toISOString();
     try {
       const burst = this.options.coordination.recordFilesystemTriggerEvent({
         triggerId: trigger.id,
@@ -483,7 +476,7 @@ export class TriggerSourceService {
   private scheduleFileBurst(trigger: TriggerDefinitionDto, burst: TriggerFilesystemBurst): void {
     this.clearBurst(trigger.id);
     const config = trigger.sourceConfig as TriggerFilesystemConfig;
-    const now = this.now().getTime();
+    const now = Date.now();
     const quietDelay = Math.max(0, Date.parse(burst.lastAt) + config.quietMs - now);
     const maxDelay = Math.max(0, Date.parse(burst.startedAt) + config.maxWindowMs - now);
     this.bursts.set(trigger.id, {
@@ -524,7 +517,4 @@ export class TriggerSourceService {
     return this.options.sourceAvailable?.() ?? true;
   }
 
-  private now(): Date {
-    return this.options.now?.() ?? new Date();
-  }
 }

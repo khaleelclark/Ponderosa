@@ -241,8 +241,6 @@ export function WorkspaceTabs({
           return (
             <Box
               key={tab.key}
-              data-tab-key={tab.key}
-              data-tab-dragging={draggedKey === tab.key ? "true" : undefined}
               draggable
               onDragStart={event => {
                 setDraggedKey(tab.key);

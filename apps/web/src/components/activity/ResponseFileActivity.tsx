@@ -29,7 +29,7 @@ export function ResponseFileActivity({
   const inProgress = files.some((file) => file.status === "in_progress");
   return <Box component="aside" aria-label="File activity" sx={{ mt: 1 }}>
     <Stack direction="row" spacing={0.75} sx={{ alignItems: "flex-start", minWidth: 0 }}>
-      <Paper component="details" variant="outlined" data-testid="response-file-activity" sx={{ flex: 1, minWidth: 0, bgcolor: "action.hover", "& > summary": { cursor: "pointer", listStylePosition: "inside" } }}>
+      <Paper component="details" variant="outlined" sx={{ flex: 1, minWidth: 0, bgcolor: "action.hover", "& > summary": { cursor: "pointer", listStylePosition: "inside" } }}>
         <Box component="summary" sx={{ px: 1, py: 0.625 }}>
           <Stack component="span" direction="row" spacing={0.75} sx={{ display: "inline-flex", alignItems: "baseline", ml: 0.25 }}>
             <Typography component="span" variant="caption" sx={{ fontWeight: 700 }}>

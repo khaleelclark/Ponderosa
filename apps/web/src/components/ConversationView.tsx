@@ -868,8 +868,6 @@ export function ConversationView({
     ) : null;
   return (
     <Box
-      data-testid="conversation"
-      data-conversation-id={conversationId}
       sx={{
         height: "100%",
         minHeight: 0,

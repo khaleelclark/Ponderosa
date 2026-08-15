@@ -5,13 +5,11 @@ import {
   notificationKindForCommunication,
   notificationPreferenceMatches,
 } from "./notification-routing.js";
-import type { CreateServerOptions } from "./app-contracts.js";
 import type { WebPushDeliveryManager } from "./web-push-delivery.js";
 
 interface CommunicationJournalContext {
   store: AgentStore;
   workspace: WorkspaceStore;
-  messageLifecycleFaults: CreateServerOptions["messageLifecycleFaults"];
   webPushConfigured: boolean;
   webPushDelivery?: WebPushDeliveryManager;
   publishWorkspaceSince(cursor: number): void;
@@ -23,7 +21,6 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
   const {
     store,
     workspace,
-    messageLifecycleFaults,
     webPushConfigured,
     webPushDelivery,
     publishWorkspaceSince,
@@ -95,17 +92,11 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
   const recordCommunication = (event: CommunicationEvent): CommunicationEvent => {
     const stored = store.appendCommunicationEvent(withSendTimeIdentity(event));
     if (!stored.replayed) scheduleCommunicationReconciliation(stored.event.projectId);
-    if (!stored.replayed && stored.event.document?.artifactId) {
-      messageLifecycleFaults?.afterCanonicalCommunicationAppend?.({
-        communicationEventId: stored.event.eventId,
-        artifactIds: [stored.event.document.artifactId],
-      });
-    }
     if (!stored.replayed && stored.event.sender.kind === "agent") {
       const preference = workspace.getPreferences().notifications;
       const kind = notificationKindForCommunication(stored.event);
       // Team Chat is agent-only collaboration. Keep its structural kind for
-      // policy tests/audit, but never materialize an operator notification.
+      // policy and audit, but never materialize an operator notification.
       if (kind && stored.event.intent !== "collaboration" && notificationPreferenceMatches(preference, kind)) {
         const cursor = workspace.cursor();
         workspace.createNotification({

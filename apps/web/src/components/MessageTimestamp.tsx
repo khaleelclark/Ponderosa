@@ -62,7 +62,6 @@ export function MessageTimestamp({
     <Typography
       component="time"
       dateTime={timestamp.dateTime}
-      data-compact={compact ? "true" : undefined}
       title={timestamp.title}
       variant="caption"
       sx={{
@@ -104,8 +103,8 @@ export function MessageActionsAndTimestamp({
     if (event.pointerType === "touch") setTouchRevealed(true);
   };
   const actionButtons = <Box className="chat-message-action-buttons" sx={{ display: "flex", flexShrink: 0, minWidth: 0, flexWrap: "wrap", alignItems: "center", gap: 0.25 }}>{actions}</Box>;
-  return <Box className={touchRevealed ? "chat-message-actions revealed" : "chat-message-actions"} data-action-alignment={actionAlign} onPointerDown={revealOnTouch} sx={{ mt: 0.25, minWidth: 0, minHeight: { xs: 44, sm: 28 }, "& .MuiIconButton-root": { p: 0.35, minWidth: 28, minHeight: 28 }, "& .MuiSvgIcon-root": { fontSize: "1rem" } }}>
-    {mobileTimestampRevealed ? <Box data-mobile-message-timestamp sx={{ display: { xs: "block", sm: "none" }, color: "text.secondary", mb: 0.25 }}>
+  return <Box className={touchRevealed ? "chat-message-actions revealed" : "chat-message-actions"} onPointerDown={revealOnTouch} sx={{ mt: 0.25, minWidth: 0, minHeight: { xs: 44, sm: 28 }, "& .MuiIconButton-root": { p: 0.35, minWidth: 28, minHeight: 28 }, "& .MuiSvgIcon-root": { fontSize: "1rem" } }}>
+    {mobileTimestampRevealed ? <Box sx={{ display: { xs: "block", sm: "none" }, color: "text.secondary", mb: 0.25 }}>
       <MessageTimestamp value={value} compact align={mobileTimestampAlign} />
     </Box> : null}
     <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ alignItems: "flex-start", minWidth: 0, minHeight: { xs: 44, sm: 28 } }}>

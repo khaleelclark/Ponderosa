@@ -135,7 +135,7 @@ export type AgentMessageRunContext =
     "teardownPersistentRuntimeInBackground"> &
   Pick<RuntimeEventAuthority,
     "claimActiveRun" | "persistRuntimeEvent" | "receiveRuntimeEvent" | "releaseActiveRun" |
-    "renewExecutionLease" | "scheduleRuntimeLivenessHeartbeat" | "waitBeforeRuntimePersist"> &
+    "renewExecutionLease" | "scheduleRuntimeLivenessHeartbeat"> &
   Pick<ArtifactAuthority,
     "communicationArtifactAccess" | "prepareUserCommunicationText" |
     "projectCommunicationArtifact" | "runtimeArtifactMetadata"> &
@@ -553,10 +553,6 @@ export function registerAgentMessageRunRoute(
         } catch (error) {
           return reply.code(409).send({ error: error instanceof Error ? error.message : "message intake failed" });
         }
-        if (userTextArtifact) await opts.messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
-          kind: "communication", ownerId: `dispatch:${intendedCommunicationEventId}:${agent.id}`,
-          artifactIds: [userTextArtifact.id],
-        });
       }
       const communicationEventId = internalV3Dispatch
         ? v3CommunicationEventId
@@ -754,7 +750,6 @@ export function registerAgentMessageRunRoute(
         runtimeAttachmentCleanupAfterRun,
       } = preparedRun;
 
-      await opts.messageLifecycleFaults?.beforeRunClaim?.({ agentId: agent.id, runId });
       // No await may be introduced between this recheck and the claim. Deletion
       // marks the agent unavailable before its own first await.
       if (deletingAgentIds.has(agent.id) || !store.getAgent(agent.id)) {
@@ -807,19 +802,6 @@ export function registerAgentMessageRunRoute(
           sameRunResumable: false, retryDelayMs: 0,
         });
       };
-      try {
-        await opts.messageLifecycleFaults?.afterRunClaim?.({
-          agentId: agent.id,
-          runId,
-          generation: durableClaim.generation,
-        });
-      } catch (error) {
-        failUnstartedClaim();
-        if (runtimeAttachmentCleanupAfterRun) {
-          await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
-        }
-        throw error;
-      }
       if (deletingAgentIds.has(agent.id) || !store.getAgent(agent.id)) {
         failUnstartedClaim(true);
         if (runtimeAttachmentCleanupAfterRun) {

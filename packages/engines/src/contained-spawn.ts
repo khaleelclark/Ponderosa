@@ -9,9 +9,8 @@ export interface ContainedSpawn {
 
 /**
  * One process-tree boundary for provider CLIs and every helper they launch.
- * Production Windows processes start behind the Job-assignment gate; POSIX
- * processes receive their own detached group. Injected test spawners remain
- * observable without attempting to attach fake PIDs to a native Job.
+ * Windows processes start behind the Job-assignment gate; POSIX processes
+ * receive their own detached group.
  */
 export function spawnContainedCli(input: {
   bin: string;
@@ -19,18 +18,16 @@ export function spawnContainedCli(input: {
   cwd: string;
   env: NodeJS.ProcessEnv;
   stdin: "ignore" | "pipe";
-  spawnFn?: typeof nodeSpawn;
 }): ContainedSpawn {
-  const spawnFn = input.spawnFn ?? nodeSpawn;
-  if (process.platform === "win32" && spawnFn === nodeSpawn) {
+  if (process.platform === "win32") {
     return spawnWindowsContainedProcess(input);
   }
   return {
-    child: spawnFn(input.bin, input.args, {
+    child: nodeSpawn(input.bin, input.args, {
       cwd: input.cwd,
       env: input.env,
       stdio: [input.stdin, "pipe", "pipe"],
-      detached: process.platform !== "win32",
+      detached: true,
     }),
   };
 }

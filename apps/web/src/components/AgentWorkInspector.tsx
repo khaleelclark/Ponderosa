@@ -115,7 +115,6 @@ function TechnicalRecord({ projectId, conversationId, item, elementId, focused =
   return <Box
     id={elementId}
     tabIndex={focused ? -1 : undefined}
-    data-agent-work-item={item.id}
     sx={{ minWidth: 0, p: 1.25, borderRadius: 1.5, bgcolor: focused ? "action.selected" : "action.hover", outline: focused ? 2 : 0, outlineColor: "primary.main" }}
   >
     <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", minWidth: 0 }}>
@@ -229,7 +228,7 @@ export function AgentWorkInspector({
   const executionItems = orderedItems.filter((item) => item.kind === "run" || item.kind === "activation");
   const technicalKinds = ["request", "join", "activation", "run", "decision", "trigger"] as const;
 
-  return <Stack data-testid="technical-details-workspace" sx={{ position: "relative", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
+  return <Stack sx={{ position: "relative", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
       <Stack direction="row" spacing={1} sx={{ alignItems: "center", px: 2, py: 1.5, borderBottom: 1, borderColor: "divider" }}>
         <Tooltip title={backLabel}><IconButton aria-label={backLabel} onClick={onClose}><ArrowBackIcon /></IconButton></Tooltip>
         <Box sx={{ flex: 1, minWidth: 0 }}>
@@ -309,7 +308,6 @@ export function AgentWorkInspector({
               expanded={expandedTraceId === trace.id}
               onChange={(_, expanded) => setExpandedTraceId(expanded ? trace.id : undefined)}
               disableGutters
-              data-agent-work-trace={trace.id}
               sx={{
                 bgcolor: "transparent",
                 borderTop: 1,
@@ -353,7 +351,6 @@ export function AgentWorkInspector({
                         key={item.id}
                         id={`agent-work-${item.id}`}
                         tabIndex={focused ? -1 : undefined}
-                        data-agent-work-item={item.id}
                         sx={{
                           position: "relative",
                           minWidth: 0,
@@ -381,7 +378,7 @@ export function AgentWorkInspector({
                         />
                       </Box>;
                     }
-                    return <Box key={item.id} id={`agent-work-${item.id}`} tabIndex={focused ? -1 : undefined} data-agent-work-item={item.id} sx={{ position: "relative", minWidth: 0, ml: 1.5, mb: 1.25, p: 1.25, borderRadius: 1.5, bgcolor: focused ? "action.selected" : "action.hover", outline: focused ? 2 : 0, outlineColor: "primary.main" }}>
+                    return <Box key={item.id} id={`agent-work-${item.id}`} tabIndex={focused ? -1 : undefined} sx={{ position: "relative", minWidth: 0, ml: 1.5, mb: 1.25, p: 1.25, borderRadius: 1.5, bgcolor: focused ? "action.selected" : "action.hover", outline: focused ? 2 : 0, outlineColor: "primary.main" }}>
                       <Box sx={{ position: "absolute", width: 10, height: 10, borderRadius: "50%", bgcolor: "text.secondary", left: -21, top: 18 }} />
                       <Box sx={{ display: "grid", gridTemplateColumns: "auto minmax(0, 1fr) auto", gap: 0.75, alignItems: "start" }}>
                         <Chip size="small" variant="outlined" label={kindLabel(item.kind)} />

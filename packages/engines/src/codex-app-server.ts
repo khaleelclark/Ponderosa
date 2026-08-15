@@ -14,7 +14,6 @@ import {
 } from "@ponderosa/core";
 import { mapFileChangeKind, providerErrorCodeFromDetail } from "./events.js";
 import { JsonRpcProcess, type JsonRpcNotification } from "./json-rpc-process.js";
-import type { SpawnFn } from "./process.js";
 import { renderSeedPrompt } from "./seed-history.js";
 import { normalizeCodexProviderDiscovery } from "./capabilities.js";
 
@@ -67,7 +66,6 @@ function normalizeElicitationRequest(params: unknown): RuntimeElicitationRequest
 
 interface AppServerSessionOptions extends OpenRuntimeSessionOptions {
   bin: string;
-  spawnFn: SpawnFn;
   sandboxMode: string;
   killGraceMs: number;
   enableFastMode: boolean;
@@ -227,7 +225,6 @@ async function readInstalledPluginDetails(rpc: JsonRpcProcess, response: unknown
 
 export async function discoverCodexAppServerCapabilities(opts: {
   bin: string;
-  spawnFn: SpawnFn;
   cwd: string;
   model?: string;
   sandboxMode: string;
@@ -257,7 +254,6 @@ export async function discoverCodexAppServerCapabilities(opts: {
     ],
     cwd: opts.cwd,
     signal: controller.signal,
-    spawnFn: opts.spawnFn,
     killGraceMs: opts.killGraceMs,
     onRuntimeSpawned: opts.onRuntimeSpawned,
     onRuntimeRootExit: () => undefined,
@@ -481,7 +477,6 @@ export class CodexAppServerSession implements RuntimeSession {
       cwd: opts.cwd,
       environment: opts.environment,
       signal: opts.signal,
-      spawnFn: opts.spawnFn,
       killGraceMs: opts.killGraceMs,
       onRuntimeSpawned: opts.onRuntimeSpawned,
       onRuntimeRootExit: opts.onRuntimeRootExit,

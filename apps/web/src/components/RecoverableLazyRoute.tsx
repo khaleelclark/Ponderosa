@@ -37,7 +37,7 @@ class LazyRouteErrorBoundary extends Component<{
     if (!this.state.failed) return this.props.children;
     const canRetry = this.props.attempt < this.props.maxRetries;
     return (
-      <Box data-route-chunk-error sx={{ p: { xs: 2, md: 3 } }}>
+      <Box sx={{ p: { xs: 2, md: 3 } }}>
         <Alert severity="error" icon={<ErrorOutlineIcon />}>
           <Stack spacing={1}>
             <Typography fontWeight={800}>This view could not be loaded.</Typography>
@@ -79,13 +79,11 @@ function RouteLoading(): JSX.Element {
 export function RecoverableLazyRoute<Props extends object>({
   load,
   componentProps,
-  routeMarker,
   maxRetries = 1,
   reload = () => window.location.reload(),
 }: {
   load: LazyRouteLoad<Props>;
   componentProps: Props;
-  routeMarker: { kind: string; path: string };
   maxRetries?: number;
   reload?(): void;
 }): JSX.Element {
@@ -102,9 +100,6 @@ export function RecoverableLazyRoute<Props extends object>({
     >
       <Suspense fallback={<RouteLoading />}>
         <Box
-          data-workspace-route-kind={routeMarker.kind}
-          data-workspace-route-path={routeMarker.path}
-          data-workspace-route-content
           sx={{ display: "contents" }}
         >
           {createElement(RenderableComponent, componentProps as Record<string, unknown>)}

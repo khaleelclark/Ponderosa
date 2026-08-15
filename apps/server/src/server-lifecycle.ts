@@ -565,7 +565,6 @@ export function registerServerLifecycle(
         drainEngineCapabilityDiscoveries(),
         drainEngineModelCatalogDiscoveries(),
         providerUsage.shutdown(),
-        Promise.resolve().then(() => opts.shutdownFaults?.providerClose?.()),
       ]);
       const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
       if (failures.length) throw new AggregateError(failures, "Provider runtime authority shutdown did not complete");
@@ -580,7 +579,7 @@ export function registerServerLifecycle(
     closeShutdownStorageIfReady();
   };
   const boundedBackgroundShutdown = async (label: string, operation: () => void | Promise<void>): Promise<void> => {
-    const timeoutMs = opts.shutdownFaults?.backgroundCleanupTimeoutMs ?? 5_000;
+    const timeoutMs = 5_000;
     let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<"timeout">((resolve) => {
       timer = setTimeout(() => resolve("timeout"), timeoutMs);
@@ -641,7 +640,6 @@ export function registerServerLifecycle(
       ...shutdownRunBrowserClosures.map((close) => Promise.resolve().then(close)),
       Promise.resolve().then(() => browserSessions.closeAll("server_shutdown")),
       Promise.resolve().then(() => projectBrowserSessions.closeAll("server_shutdown")),
-      boundedBackgroundShutdown("injected background cleanup", () => opts.shutdownFaults?.backgroundCleanup?.()),
     ]);
     const results = await backgroundOperation;
     const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);

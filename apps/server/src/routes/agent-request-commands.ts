@@ -16,7 +16,6 @@ import {
   isRequestCommunicationHandoffKind,
   requestUpdateCommunicationEventId,
 } from "../request-update-communication.js";
-import type { CreateServerOptions } from "../app-contracts.js";
 
 type CommunicationArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>;
 
@@ -53,7 +52,6 @@ interface AgentRequestCommandRoutesContext {
     options?: { conversationIds?: string[] },
   ): void;
   notifyScheduler(): void;
-  messageLifecycleFaults: CreateServerOptions["messageLifecycleFaults"];
 }
 
 export function registerAgentRequestCommandRoutes(
@@ -76,7 +74,6 @@ export function registerAgentRequestCommandRoutes(
     projectCommunicationToAgentAudit,
     publishCoordinationV3Changed,
     notifyScheduler,
-    messageLifecycleFaults,
   } = context;
 
   app.post<{
@@ -169,9 +166,6 @@ export function registerAgentRequestCommandRoutes(
           canonicalHandoff: (["completed", "blocked", "failed"] as CoordinationRequestUpdateKind[]).includes(kind),
         },
         ...(artifact ? { artifacts: [runtimeArtifactMetadata(artifact)] } : {}),
-      });
-      if (artifact) await messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
-        kind: "request_update", ownerId: updateId, artifactIds: [artifact.id],
       });
       const changedRequest = coordinationV3.getRequest(requestId);
       if (artifact && changedRequest) projectCommunicationArtifact(

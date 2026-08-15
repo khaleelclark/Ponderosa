@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import {
   classifyProviderFailure,
 } from "@ponderosa/core";
@@ -13,14 +13,12 @@ import type {
 } from "@ponderosa/core";
 import { spawnContainedCli } from "./contained-spawn.js";
 import { parseJsonlChunks } from "./jsonl.js";
-import type { SpawnFn } from "./process.js";
 import { runtimeProcessHandle } from "./process-termination.js";
 import type { NativeProcessTreeAuthority } from "./process-termination.js";
 import { runtimeEnvironment } from "./runtime-environment.js";
 
 interface ClaudeModelCatalogProbeOptions {
   bin: string;
-  spawnFn?: SpawnFn;
   environment?: Readonly<Record<string, string | undefined>>;
   killGraceMs: number;
 }
@@ -309,11 +307,7 @@ function observeTerminationRequest(
 }
 
 export class ClaudeModelCatalogProbe {
-  private readonly spawnFn: SpawnFn;
-
-  constructor(private readonly options: ClaudeModelCatalogProbeOptions) {
-    this.spawnFn = options.spawnFn ?? nodeSpawn;
-  }
+  constructor(private readonly options: ClaudeModelCatalogProbeOptions) {}
 
   async discover(
     cwd: string,
@@ -383,7 +377,6 @@ export class ClaudeModelCatalogProbe {
       cwd,
       env: environmentFor(this.options.environment),
       stdin: "ignore",
-      spawnFn: this.spawnFn,
     });
     const child = spawned.child;
     const childErrors = observeChildErrors(child, "Claude model validation");
@@ -476,7 +469,6 @@ export class ClaudeModelCatalogProbe {
       cwd,
       env: environmentFor(this.options.environment),
       stdin: "pipe",
-      spawnFn: this.spawnFn,
     });
     const child = spawned.child;
     const childErrors = observeChildErrors(child, "Claude model catalog probe");
@@ -534,7 +526,6 @@ export class ClaudeModelCatalogProbe {
       cwd,
       env: environmentFor(this.options.environment),
       stdin: "ignore",
-      spawnFn: this.spawnFn,
     });
     const child = spawned.child;
     const childErrors = observeChildErrors(child, "Claude version check");

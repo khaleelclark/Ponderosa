@@ -3,32 +3,12 @@
 // to AgentEvents, and wire AbortSignal → SIGTERM → SIGKILL. That machinery lives
 // here so each adapter is just "args + a mapper" (AGENTS.md invariant 2).
 
-import { spawn as nodeSpawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import type { AgentEvent, RuntimeProcessHandle } from "@ponderosa/core";
 import { spawnContainedCli } from "./contained-spawn.js";
 import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, parseJsonlChunks } from "./jsonl.js";
 import { runtimeProcessHandle } from "./process-termination.js";
 import { runtimeEnvironment } from "./runtime-environment.js";
-
-/** A minimal spawn signature so tests can inject a fake CLI. */
-export type SpawnFn = typeof nodeSpawn;
-
-export interface ProcessStreamSnapshot {
-  pid?: number;
-  pgid?: number;
-  parentPid: number;
-  exitCode: number | null;
-  stdinOpen: boolean;
-  stdoutOpen: boolean;
-  stderrOpen: boolean;
-}
-
-export interface RuntimeProcessFaults {
-  afterDecodeBeforeYield?: (raw: unknown, child: ProcessStreamSnapshot) => void | Promise<void>;
-  /** Test-only: keep the fake runtime's stdin connected after writing its prompt. */
-  keepStdinOpen?: boolean;
-}
 
 export interface StreamProcessOptions {
   bin: string;
@@ -39,7 +19,6 @@ export interface StreamProcessOptions {
   /** Fence host capabilities as soon as the provider root exits. */
   onRuntimeRootExit?: () => void;
   environment?: Record<string, string>;
-  spawnFn: SpawnFn;
   /** ms to wait after SIGTERM before SIGKILL on cancel. */
   killGraceMs: number;
   /** Map one parsed JSON event → 0..n normalized AgentEvents (the engine's mapper). */
@@ -48,7 +27,6 @@ export interface StreamProcessOptions {
   label: string;
   /** Optional stdin payload. Use this for unbounded user/context text, never argv. */
   stdin?: string;
-  faults?: RuntimeProcessFaults;
 }
 
 const POST_EXIT_STDOUT_DRAIN_MS = 250;
@@ -82,12 +60,10 @@ export async function* streamProcess(
     onRuntimeSpawned,
     onRuntimeRootExit,
     environment,
-    spawnFn,
     killGraceMs,
     map,
     label,
     stdin,
-    faults,
   } = opts;
 
   if (signal.aborted) {
@@ -102,7 +78,6 @@ export async function* streamProcess(
     cwd,
     env: providerEnvironment,
     stdin: stdin === undefined ? "ignore" : "pipe",
-    spawnFn,
   });
   const child: ChildProcess = contained.child;
 
@@ -112,8 +87,7 @@ export async function* streamProcess(
   // the process exit/spawn error below remains the canonical error signal.
   if (stdin !== undefined && child.stdin) {
     child.stdin.on("error", () => undefined);
-    if (faults?.keepStdinOpen) child.stdin.write(stdin);
-    else child.stdin.end(stdin);
+    child.stdin.end(stdin);
   }
 
   let stderrTail = "";
@@ -234,7 +208,6 @@ export async function* streamProcess(
         bufferedBytes -= record.bytes;
         releaseProducer?.();
         releaseProducer = undefined;
-        await faults?.afterDecodeBeforeYield?.(record.raw, processSnapshot(child));
         for (const ev of map(record.raw, { cwd })) yield ev;
       }
       await parsing;
@@ -272,17 +245,6 @@ export async function* streamProcess(
     signal.removeEventListener("abort", onAbort);
     await terminate();
   }
-}
-
-function processSnapshot(child: ChildProcess): ProcessStreamSnapshot {
-  return {
-    ...(child.pid ? { pid: child.pid, ...(process.platform !== "win32" ? { pgid: child.pid } : {}) } : {}),
-    parentPid: process.pid,
-    exitCode: child.exitCode,
-    stdinOpen: Boolean(child.stdin && !child.stdin.destroyed),
-    stdoutOpen: Boolean(child.stdout && !child.stdout.destroyed),
-    stderrOpen: Boolean(child.stderr && !child.stderr.destroyed),
-  };
 }
 
 /** Resolve when the root exits, independently of descendant-owned stdio. */

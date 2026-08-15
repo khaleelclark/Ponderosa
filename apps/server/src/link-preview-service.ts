@@ -20,11 +20,10 @@ interface LinkPreviewServiceContext {
   store: AgentStore;
   activeRuns: ReadonlyMap<string, ActiveRun>;
   ownsActiveRun(agentId: string, run: ActiveRun): boolean;
-  linkFaviconLoader?: CreateServerOptions["linkFaviconLoader"];
 }
 
 export function createLinkPreviewService(context: LinkPreviewServiceContext) {
-  const { options, store, activeRuns, ownsActiveRun, linkFaviconLoader } = context;
+  const { options, store, activeRuns, ownsActiveRun } = context;
 
   const linkPreviews = new Map<string, LinkPreviewRegistration>();
   const linkPreviewTtlMs = options?.registrationTtlMs ?? 4 * 60 * 60 * 1000;
@@ -282,7 +281,7 @@ export function createLinkPreviewService(context: LinkPreviewServiceContext) {
     const target = externalFaviconTarget(request.query.url ?? "");
     if (!target) return reply.code(400).send({ error: "favicon URL must be a public HTTPS hostname" });
     try {
-      const favicon = await (linkFaviconLoader ?? loadExternalFavicon)(target);
+      const favicon = await loadExternalFavicon(target);
       reply.type(favicon.mediaType);
       reply.header("cache-control", "public, max-age=3600");
       return reply.send(favicon.body);

@@ -2,7 +2,6 @@ import { Readable } from "node:stream";
 import {
   openManagedArtifactContent,
   type AgentStore,
-  type ManagedArtifactAsyncReadFaults,
   type ManagedArtifactContentHandle,
   type RuntimeArtifactInputV3,
   type StoredLogEvent,
@@ -17,10 +16,7 @@ import {
 import {
   MAX_FILE_BYTES,
 } from "../project-files.js";
-import {
-  readWorkspaceArtifactFileAsync,
-  type WorkspaceArtifactReadFaults,
-} from "../project-file-access.js";
+import { readWorkspaceArtifactFileAsync } from "../project-file-access.js";
 import {
   boundedUtf8Preview,
   contentTypeForArtifact,
@@ -36,8 +32,6 @@ interface ArtifactRoutesContext {
   assets: AssetStore;
   dataDir: string;
   projectFileAuthority: ProjectFileAuthority;
-  workspaceArtifactReadFaults?: WorkspaceArtifactReadFaults;
-  managedArtifactReadFaults?: ManagedArtifactAsyncReadFaults;
   publish(agentId: string, event: StoredLogEvent): void;
   managedProjectArtifactAgreesWithRuntime(
     managed: ArtifactDto,
@@ -62,8 +56,6 @@ export function registerArtifactRoutes(
     assets,
     dataDir,
     projectFileAuthority,
-    workspaceArtifactReadFaults,
-    managedArtifactReadFaults,
     publish,
     managedProjectArtifactAgreesWithRuntime,
   } = context;
@@ -195,7 +187,6 @@ export function registerArtifactRoutes(
         purpose: "legacy_pdf",
         maxBytes: 32 * 1024 * 1024,
         signal,
-        faults: workspaceArtifactReadFaults,
       });
       return source
         ? {
@@ -225,7 +216,7 @@ export function registerArtifactRoutes(
         managed.id,
         managed.size,
         managed.sha256,
-        { signal, faults: managedArtifactReadFaults },
+        { signal },
       );
       return authoritative
         ? {
@@ -566,7 +557,7 @@ export function registerArtifactRoutes(
           managed.id,
           managed.size,
           managed.sha256,
-          { signal: transfer.signal, faults: managedArtifactReadFaults },
+          { signal: transfer.signal },
         );
         if (!file) return reply.code(404).send({ error: "artifact content not found" });
         const source = await file.readRange(MAX_FILE_BYTES + 4, transfer.signal);

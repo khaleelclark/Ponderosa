@@ -158,7 +158,6 @@ export function BrowserViewport<Session extends BrowserSession>({
 
   return <Stack spacing={1} sx={{ minHeight: 0 }}>
     <Box
-      data-testid="browser-viewport"
       sx={{
         position: "relative",
         minHeight: 0,

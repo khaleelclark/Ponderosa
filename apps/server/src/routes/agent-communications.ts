@@ -25,7 +25,6 @@ import {
 import type {
   ActiveRun,
   AgentMessageCapability,
-  CreateServerOptions,
 } from "../app-contracts.js";
 import type { createAgentEventService } from "../agent-event-service.js";
 import type { createCommunicationArtifactAuthority } from "../communication-artifacts.js";
@@ -68,7 +67,6 @@ interface AgentCommunicationRoutesContext {
   publishWorkspaceSince(cursor: number): void;
   resolveOperationalNotification(dedupeKey: string): void;
   notifyScheduler(): void;
-  messageLifecycleFaults: CreateServerOptions["messageLifecycleFaults"];
   reconcileRuntimeCommunicationProjections(filter?: {
     projectId?: string;
     communicationEventId?: string;
@@ -137,7 +135,6 @@ export function registerAgentCommunicationRoutes(
     publishWorkspaceSince,
     resolveOperationalNotification,
     notifyScheduler,
-    messageLifecycleFaults,
     reconcileRuntimeCommunicationProjections,
     publish,
   } = context;
@@ -511,10 +508,6 @@ export function registerAgentCommunicationRoutes(
         capability.inferredReplyCommunicationEventId = communicationEventId;
         coordinationV3.markContextRolloverVisibleResponseCommitted(capability.agentId, capability.runId);
       }
-      if (preparedArtifacts.length) await messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
-        kind: "communication", ownerId: proposedCommunication.eventId,
-        artifactIds: preparedArtifacts.map((artifact) => artifact.id),
-      });
       if (intake.replayed) {
         // The scheduler transaction can commit before the canonical JSONL
         // append's derived history transaction. Replay the exact canonical
@@ -676,10 +669,6 @@ export function registerAgentCommunicationRoutes(
       capability.inferredReplyCommunicationEventId = communicationEventId;
       coordinationV3.markContextRolloverVisibleResponseCommitted(capability.agentId, capability.runId);
     }
-    if (preparedArtifacts.length) await messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
-      kind: "communication", ownerId: proposedCommunication.eventId,
-      artifactIds: preparedArtifacts.map((artifact) => artifact.id),
-    });
     if (intake.replayed) {
       recordCommunication(
         store.getCommunicationEvent(proposedCommunication.projectId, proposedCommunication.eventId)

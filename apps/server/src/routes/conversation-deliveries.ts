@@ -87,11 +87,6 @@ export interface ConversationDeliveryRouteDependencies {
     options?: { conversationIds?: string[] },
   ) => void;
   notifyScheduler: () => void;
-  afterCommunicationArtifactCommit?: (context: {
-    kind: "communication";
-    ownerId: string;
-    artifactIds: string[];
-  }) => void | Promise<void>;
 }
 
 const MAX_ATTACHMENTS_PER_MESSAGE = ASSET_LIMITS.maxAssetsPerMessage;
@@ -137,7 +132,6 @@ export function registerConversationDeliveryRoutes(
     appendWorkspace,
     publishCoordinationV3Changed,
     notifyScheduler,
-    afterCommunicationArtifactCommit,
   } = dependencies;
   app.post<{
     Params: { id: string };
@@ -386,9 +380,6 @@ export function registerConversationDeliveryRoutes(
       return reply.code(409).send({ error: error instanceof Error ? error.message : "broadcast conflict" });
     }
     const sqliteIntakeCompletedAt = performance.now();
-    if (prepared.artifact) await afterCommunicationArtifactCommit?.({
-      kind: "communication", ownerId: eventId, artifactIds: [prepared.artifact.id],
-    });
     const communication = recordCommunication(communicationInput);
     const canonicalAppendCompletedAt = performance.now();
     if (intake.replayed) await reconcileRuntimeCommunicationProjections({
@@ -598,9 +589,6 @@ export function registerConversationDeliveryRoutes(
             dedupeKey: `communication:${eventId}:${recipient.agentId}:${index}`,
           })),
           now: createdAt,
-        });
-        if (prepared.artifact) await afterCommunicationArtifactCommit?.({
-          kind: "communication", ownerId: eventId, artifactIds: [prepared.artifact.id],
         });
         const canonicalCommunication = recordCommunication(communication);
         if (intake.replayed) await reconcileRuntimeCommunicationProjections({

@@ -264,7 +264,7 @@ function eventUserId(event: CommunicationEvent): string | undefined {
 
 /**
  * Executable communication behavior matrix. The returned ordering is stable so
- * it can be snapshot-tested and used to materialize projections idempotently.
+ * projections can be materialized idempotently.
  */
 export function deriveCommunicationBehavior(event: CommunicationEvent): CommunicationBehavior {
   const projectionTargets: CommunicationBehavior["projectionTargets"] = [];

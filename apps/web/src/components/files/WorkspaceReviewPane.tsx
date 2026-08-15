@@ -106,7 +106,7 @@ export function WorkspaceReviewPane({ projectId, projectRoot, agentId, files, ru
     : undefined;
   const displayedChangeCount = recordedMode ? files.length : changes.length;
 
-  return <Box data-testid="workspace-review" sx={{ display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", minHeight: 0, height: "100%" }} aria-label="Workspace changes">
+  return <Box sx={{ display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", minHeight: 0, height: "100%" }} aria-label="Workspace changes">
     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", px: 1.5, py: 1, borderBottom: 1, borderColor: "divider" }}>
       <Tooltip title="Back to Agent"><IconButton aria-label="Back to Agent" size="small" onClick={onBack}><ArrowBackIcon /></IconButton></Tooltip>
       <Typography variant="overline" color="text.secondary">Review</Typography>
@@ -173,8 +173,6 @@ export function WorkspaceReviewPane({ projectId, projectRoot, agentId, files, ru
                   const presentedChangePath = displayPath(change.path);
                   return <Button
                     key={change.path}
-                    data-testid="workspace-change"
-                    data-workspace-path={presentedChangePath}
                     aria-label={`Review ${presentedChangePath}`}
                     title={presentedChangePath}
                     onClick={() => setSelectedPath(change.path)}
@@ -199,7 +197,7 @@ export function WorkspaceReviewPane({ projectId, projectRoot, agentId, files, ru
                   </Button>;
                 })}
               </Stack>
-              <Box data-testid="workspace-diff" sx={{ overflow: "auto", minWidth: 0, p: 1.5 }}>
+              <Box sx={{ overflow: "auto", minWidth: 0, p: 1.5 }}>
                 <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", mb: 1 }}>
                   <Typography variant="subtitle2" sx={{ flex: 1, overflowWrap: "anywhere" }}>{activeDisplayPath}</Typography>
                   {selectedChange?.staged ? <Chip size="small" label="Staged" color="success" /> : null}
@@ -215,7 +213,7 @@ export function WorkspaceReviewPane({ projectId, projectRoot, agentId, files, ru
                 {review.isLoading ? <CircularProgress size={22} />
                   : review.isError ? <Alert severity="error">Diff could not be loaded. {String(review.error)}</Alert>
                     : reviewMode === "file" ? (review.data?.content !== undefined
-                      ? <Box data-testid="workspace-file">
+                      ? <Box>
                           <LazySyntaxHighlightedCode
                             language={languageForPath(review.data.path)}
                             themeMode="light"

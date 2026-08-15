@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type {
   AgentEvent,
@@ -13,7 +13,6 @@ import type {
 import { spawnContainedCli } from "./contained-spawn.js";
 import { mapClaudeAssistantUsage, mapClaudeEvent } from "./claude-events.js";
 import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, parseJsonlChunks } from "./jsonl.js";
-import type { SpawnFn } from "./process.js";
 import { runtimeProcessIdentity, terminateProcessGroup } from "./process-termination.js";
 import type { NativeProcessTreeAuthority } from "./process-termination.js";
 import { runtimeEnvironment } from "./runtime-environment.js";
@@ -23,7 +22,6 @@ import { normalizeClaudeProviderModels } from "./claude-models.js";
 
 interface ClaudeStreamSessionOptions extends OpenRuntimeSessionOptions {
   bin: string;
-  spawnFn?: SpawnFn;
   permissionMode: string;
   killGraceMs: number;
 }
@@ -75,7 +73,6 @@ export class ClaudeStreamSession implements RuntimeSession {
       ...(opts.effort ? ["--effort", opts.effort] : []),
       ...(opts.resumeSessionId ? ["--resume", opts.resumeSessionId] : ["--session-id", this.engineAgentId]),
     ];
-    const spawnFn = opts.spawnFn ?? nodeSpawn;
     const environment = runtimeEnvironment(opts.environment);
     const contained = spawnContainedCli({
       bin: opts.bin,
@@ -83,7 +80,6 @@ export class ClaudeStreamSession implements RuntimeSession {
       cwd: opts.cwd,
       env: environment,
       stdin: "pipe",
-      spawnFn,
     });
     this.child = contained.child;
     this.nativeAuthority = contained.authority;

@@ -16,7 +16,6 @@ export function ChatSurface({
   empty,
   children,
   beforeMessages,
-  scrollTestId,
 }: {
   layoutKey: string;
   follow?: ChatFollowLatest;
@@ -26,7 +25,6 @@ export function ChatSurface({
   empty?: ReactNode;
   children: ReactNode;
   beforeMessages?: ReactNode;
-  scrollTestId?: string;
 }): JSX.Element {
   const scroll = useChatScroll(layoutKey, follow);
   const isEmpty = Children.count(children) === 0;
@@ -41,8 +39,6 @@ export function ChatSurface({
     <Box sx={{ position: "relative", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
       <Stack
         component="section"
-        data-testid={scrollTestId}
-        data-chat-column={layout === "project" ? true : undefined}
         aria-label={label}
         className="chat-scroll-region ponderosa-scroll"
         ref={scroll.scrollRef}
@@ -63,7 +59,6 @@ export function ChatSurface({
       >
         <Stack
           ref={scroll.contentRef}
-          data-chat-content="true"
           spacing={0}
           sx={{
             width: `min(${contentWidth}px, 100%)`,

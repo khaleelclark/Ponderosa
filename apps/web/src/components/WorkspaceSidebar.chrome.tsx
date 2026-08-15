@@ -334,7 +334,6 @@ export function WikiSidebarPanel({
       <Box
         component="nav"
         aria-label="Wiki navigation"
-        data-testid="workspace-navigation-scroll"
         className="ponderosa-scroll"
         sx={{ minHeight: 0, overflowY: "auto", px: 1.25, pb: 2 }}
       >

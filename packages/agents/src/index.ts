@@ -108,9 +108,7 @@ export {
   repairManagedArtifactContent,
   type ManagedArtifactFile,
   type ManagedArtifactContentHandle,
-  type ManagedArtifactAsyncReadFaults,
   type ManagedArtifactBatchInput,
-  type ManagedArtifactBatchFaults,
 } from "./managed-artifact-files.js";
 export type { Db } from "./db.js";
 

@@ -210,7 +210,6 @@ registerAgentRequestCommandRoutes(app, {
   projectCommunicationToAgentAudit,
   publishCoordinationV3Changed,
   notifyScheduler: notifyScheduler,
-  messageLifecycleFaults: opts.messageLifecycleFaults,
 });
 
 registerAgentCommunicationRoutes(app, {
@@ -233,7 +232,6 @@ registerAgentCommunicationRoutes(app, {
   publishCoordinationV3Changed,
   publishWorkspaceSince,
   notifyScheduler: notifyScheduler,
-  messageLifecycleFaults: opts.messageLifecycleFaults,
   reconcileRuntimeCommunicationProjections,
   resolveOperationalNotification,
   publish,

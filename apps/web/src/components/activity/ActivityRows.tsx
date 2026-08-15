@@ -96,7 +96,6 @@ function Row({
   return <Box
     id={telemetryElementId(stream, entry.id)}
     tabIndex={focusId === entry.id ? -1 : undefined}
-    data-activity-kind={entry.kind}
     sx={{ py: 0.8, borderBottom: 1, borderColor: "divider", minWidth: 0 }}
   >
     {children}
@@ -121,7 +120,6 @@ export function RunHeaderRow({
       !entry.run.communicationEventId &&
       sourceCommunicationCount === 0);
   if (entry.prompt) return <Box
-    data-activity-kind="run_header"
     sx={{ py: 1, borderBottom: 1, borderColor: "divider", minWidth: 0 }}
   >
     <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 0.35 }}>
@@ -141,7 +139,6 @@ export function RunHeaderRow({
     </Stack>
   </Box>;
   return <Box
-    data-activity-kind={isCoordinationContinuation ? "run_continuation" : "run_header"}
     sx={{
       py: 0.65,
       borderBottom: 1,
@@ -444,7 +441,7 @@ export function ActionGroupRow({
     />;
   }
   const summary = `Ran ${entries.length} ${entries.length === 1 ? "activity" : "activities"}`;
-  return <Box data-activity-kind="action_group">
+  return <Box>
     <Stack
       direction="row"
       spacing={1}

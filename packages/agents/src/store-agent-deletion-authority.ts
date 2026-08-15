@@ -271,7 +271,7 @@ export class AgentDeletionAuthority {
     });
   }
 
-  /** Internal exact-current deletion convenience for rollback and fixtures. */
+  /** Internal exact-current deletion convenience for creation rollback. */
   deleteAgent(id: string, beforeProjectionDelete?: (agentId: string) => void): boolean {
     if (!this.getAgent(id)) return false;
     const preview = this.previewAgentDeletion([id]);

@@ -133,14 +133,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   } = createLauncherSecurity(opts);
   const store = opts.store ?? new AgentStore(opts.dataDir);
   const publicWebAssets = publicWebAssetPaths(opts.webDist);
-  const artifactFilesystem = (opts.artifactFilesystemCapabilityProbe ??
-    (() => descriptorRelativeFilesystemCapability(opts.dataDir)))();
-  const processContainment = (opts.processContainmentCapabilityProbe ?? (() =>
-    process.platform === "win32"
-      ? windowsJobObjectsSupported()
-        ? { ok: true, detail: "Windows Job Object authority is available" }
-        : { ok: false, detail: "Windows Job Object authority is unavailable" }
-      : { ok: true, detail: "POSIX process-group authority is available" }))();
+  const artifactFilesystem = descriptorRelativeFilesystemCapability(opts.dataDir);
+  const processContainment = process.platform === "win32"
+    ? windowsJobObjectsSupported()
+      ? { ok: true, detail: "Windows Job Object authority is available" }
+      : { ok: false, detail: "Windows Job Object authority is unavailable" }
+    : { ok: true, detail: "POSIX process-group authority is available" };
   const artifactFilesystemError = () => !artifactFilesystem.ok
     ? `artifact-dependent work is unavailable: ${artifactFilesystem.detail}`
     : !processContainment.ok
@@ -265,7 +263,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     reconcileProjectDeletionsWorkspace(store, workspace, publishWorkspace);
   };
   const { vapid, webPushConfiguration, webPushConfigurationDetail, webPushConfigured, webPushDelivery } =
-    createWebPushConfiguration(opts, workspace, publishWorkspaceSince);
+    createWebPushConfiguration(workspace, publishWorkspaceSince);
   store.recoverInterruptedExecutions();
   const engines = new Map(opts.engines.map((engine) => [engine.adapter.id, engine]));
   const applyOperatorModelOptions = (): void => {
@@ -345,7 +343,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     store,
     activeRuns,
     ownsActiveRun: (agentId, run) => ownsActiveRun(agentId, run),
-    linkFaviconLoader: opts.linkFaviconLoader,
   });
   const runtimeAuthorities = new Map<string, AgentRuntimeAuthority>();
   const runtimeAuthority = (agentId: string, create = false): AgentRuntimeAuthority | undefined => {
@@ -412,7 +409,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     projectBrowserSessions,
   } = createBrowserAuthority({
     dataDir: opts.dataDir,
-    driverFactory: opts.browserDriverFactory,
     store,
     activeRuns,
     publish: (agentId, stored) => publish(agentId, stored),
@@ -483,39 +479,37 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   } = createCommunicationJournal({
     store,
     workspace,
-    messageLifecycleFaults: opts.messageLifecycleFaults,
     webPushConfigured,
     webPushDelivery,
     publishWorkspaceSince,
     appendWorkspace,
     isClosed: () => closed,
   });
-  const executionLeaseMs = opts.executionLeaseScheduling?.leaseMs ?? 6 * 60 * 1000;
-  const executionHeartbeatMs = opts.executionLeaseScheduling?.heartbeatMs ?? Math.max(1, Math.floor(executionLeaseMs / 3));
+  const executionLeaseMs = 6 * 60 * 1000;
+  const executionHeartbeatMs = Math.max(1, Math.floor(executionLeaseMs / 3));
   // Once provider execution is claimed, its scheduler fence must remain valid
   // for at least the host execution lease. A shorter dispatch lease is useful
   // before acceptance but must never expire healthy provider work.
   const coordinationV3LeaseMs = Math.max(opts.communicationV3?.leaseMs ?? executionLeaseMs, executionLeaseMs);
-  const executionLeaseNow = opts.executionLeaseScheduling?.now ?? Date.now;
-  const setExecutionLeaseTimer = opts.executionLeaseScheduling?.setTimer ?? ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs));
-  const clearExecutionLeaseTimer = opts.executionLeaseScheduling?.clearTimer ?? clearTimeout;
+  const executionLeaseNow = Date.now;
+  const setExecutionLeaseTimer = (callback: () => void, delayMs: number) => setTimeout(callback, delayMs);
+  const clearExecutionLeaseTimer = clearTimeout;
   const leaseExpiry = () => new Date(executionLeaseNow() + executionLeaseMs).toISOString();
-  const runtimeStallAfterMs = opts.runtimeEventFaults?.stallAfterMs ?? 30_000;
-  const runtimeIdleTtlMs = opts.runtimeSessionScheduling?.idleTtlMs ?? 90_000;
+  const runtimeStallAfterMs = 30_000;
+  const runtimeIdleTtlMs = 90_000;
   const configuredMaxIdleSessions = Number.parseInt(process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS ?? "", 10);
-  const requestedMaxIdleSessions = opts.runtimeSessionScheduling?.maxIdleSessions ?? configuredMaxIdleSessions;
+  const requestedMaxIdleSessions = configuredMaxIdleSessions;
   const runtimeMaxIdleSessions = Number.isInteger(requestedMaxIdleSessions) && requestedMaxIdleSessions >= 0
     ? requestedMaxIdleSessions
     : 0;
-  const runtimeSessionNow = opts.runtimeSessionScheduling?.now ?? Date.now;
-  const setRuntimeIdleTimer = opts.runtimeSessionScheduling?.setTimer ?? ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs));
-  const clearRuntimeIdleTimer = opts.runtimeSessionScheduling?.clearTimer ?? clearTimeout;
-  const runtimeAuthorityRetryBaseMs = Math.max(1, opts.runtimeAuthorityRetryScheduling?.baseDelayMs ?? 500);
-  const runtimeAuthorityRetryMaxMs = Math.max(runtimeAuthorityRetryBaseMs, opts.runtimeAuthorityRetryScheduling?.maxDelayMs ?? 30_000);
-  const runtimeAuthorityRetryRandom = opts.runtimeAuthorityRetryScheduling?.random ?? Math.random;
-  const setRuntimeAuthorityRetryTimer = opts.runtimeAuthorityRetryScheduling?.setTimer ??
-    ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs));
-  const clearRuntimeAuthorityRetryTimer = opts.runtimeAuthorityRetryScheduling?.clearTimer ?? clearTimeout;
+  const runtimeSessionNow = Date.now;
+  const setRuntimeIdleTimer = (callback: () => void, delayMs: number) => setTimeout(callback, delayMs);
+  const clearRuntimeIdleTimer = clearTimeout;
+  const runtimeAuthorityRetryBaseMs = 500;
+  const runtimeAuthorityRetryMaxMs = 30_000;
+  const runtimeAuthorityRetryRandom = Math.random;
+  const setRuntimeAuthorityRetryTimer = (callback: () => void, delayMs: number) => setTimeout(callback, delayMs);
+  const clearRuntimeAuthorityRetryTimer = clearTimeout;
 
   const {
     cancelRuntimeIdleClose,
@@ -584,7 +578,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     renewExecutionLease,
     scheduleRuntimeLivenessHeartbeat,
     transitionRun,
-    waitBeforeRuntimePersist,
   } = createRuntimeEventAuthority({
     opts,
     activeRuns,
@@ -647,7 +640,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const app = Fastify({
     bodyLimit: ASSET_LIMITS.maxRequestBytes,
     // Startup recovery intentionally completes before the listener accepts work.
-    // Large durable test datasets can require several minutes to reconcile, so
+    // Large durable datasets can require several minutes to reconcile, so
     // keep the boundary bounded without forcing a restart loop.
     pluginTimeout: 10 * 60_000,
     logger: opts.logger === false ? false : {
@@ -1089,7 +1082,6 @@ app.server.on("upgrade", linkPreviewUpgrade);
     releaseActiveRun,
     renewExecutionLease,
     scheduleRuntimeLivenessHeartbeat,
-    waitBeforeRuntimePersist,
     agentHealth,
     agentMessages,
     canonicalConversationContext,

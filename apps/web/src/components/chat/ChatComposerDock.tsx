@@ -17,7 +17,6 @@ export function ChatComposerDock({
 }): JSX.Element {
   return (
     <Box
-      data-chat-composer-dock="true"
       hidden={!visible}
       onKeyDown={onKeyDown}
       sx={{

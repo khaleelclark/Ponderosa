@@ -340,5 +340,5 @@ obvious, and materially improves reviewability.
 
 The first batch has the best impact-to-risk ratio and should be easy to review
 independently. The `ChatSurface` migration should remain a separate change
-because scroll restoration and prepend behavior deserve focused interaction
-tests even though the target abstraction already exists.
+because scroll restoration and prepend behavior deserve focused manual
+qualification even though the target abstraction already exists.

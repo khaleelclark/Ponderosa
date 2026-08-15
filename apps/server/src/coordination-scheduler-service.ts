@@ -439,10 +439,6 @@ return new CoordinationV3Scheduler(
         throw new Error("invalid queued-edit revision outbox payload");
       }
       store.appendCommunicationRevision(payload.revision);
-      await opts.messageLifecycleFaults?.afterQueuedEditRevisionAppend?.({
-        activationId: payload.activationId,
-        revisionId: payload.revision.eventId,
-      });
       if (payload.artifact) {
         const target = store.getCommunicationEvent(payload.revision.projectId, payload.revision.targetEventId);
         if (!target) throw new Error("queued-edit artifact target Communication is unavailable");

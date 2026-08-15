@@ -1,6 +1,5 @@
 // Deterministic projection-row ids. Derived purely from (agentId, seq[, index]),
-// NEVER random — so replaying the log during a rebuild yields byte-identical rows
-// (the property the rebuild test asserts).
+// NEVER random — so replaying the log during a rebuild yields byte-identical rows.
 
 export function messageId(agentId: string, seq: number): string {
   return `${agentId}:m:${seq}`;

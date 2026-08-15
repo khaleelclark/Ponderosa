@@ -899,8 +899,6 @@ export function WorkspaceSidebar({
     <Box
       component="aside"
       aria-label="Workspace navigation"
-      data-sidebar-state={collapsed ? "collapsed" : "expanded"}
-      data-sidebar-resizing={resizing ? "true" : "false"}
       sx={{
         position: "relative",
         width: drawer

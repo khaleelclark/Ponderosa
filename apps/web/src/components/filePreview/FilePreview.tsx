@@ -22,7 +22,6 @@ export function UnifiedDiffViewer({ diff }: { diff: string }): JSX.Element {
       return <Box
         component="span"
         key={`${index}:${line.slice(0, 24)}`}
-        data-diff-line-kind={kind}
         sx={{
           display: "block",
           minWidth: "max-content",
@@ -74,9 +73,9 @@ export function FilePreview(props: FilePreviewProps): JSX.Element {
   } else if (props.error) {
     body = <Alert severity="error">{errorMessage ? `Preview is unavailable: ${errorMessage}` : "Preview is unavailable. Download the file to inspect it."}</Alert>;
   } else if (capability.kind === "image" && props.previewUrl) {
-    body = <Box component="img" data-testid="file-image-preview" src={props.previewUrl} alt={props.title} sx={{ display: "block", maxWidth: "100%", maxHeight: props.maxHeight ?? { xs: "55vh", md: "66vh" }, objectFit: "contain", mx: "auto" }} />;
+    body = <Box component="img" src={props.previewUrl} alt={props.title} sx={{ display: "block", maxWidth: "100%", maxHeight: props.maxHeight ?? { xs: "55vh", md: "66vh" }, objectFit: "contain", mx: "auto" }} />;
   } else if (capability.kind === "pdf" && props.previewUrl) {
-    body = <Box component="iframe" data-testid="file-pdf-preview" title={`Preview ${props.title}`} src={props.previewUrl} sx={{ width: "100%", minHeight: props.maxHeight ?? { xs: "55vh", md: "66vh" }, border: 0, bgcolor: "background.paper" }} />;
+    body = <Box component="iframe" title={`Preview ${props.title}`} src={props.previewUrl} sx={{ width: "100%", minHeight: props.maxHeight ?? { xs: "55vh", md: "66vh" }, border: 0, bgcolor: "background.paper" }} />;
   } else if (capability.kind === "diff" && props.content !== undefined) {
     body = props.content ? <UnifiedDiffViewer diff={props.content} /> : <Alert severity="info">This diff is empty.</Alert>;
   } else if (capability.kind === "markdown" && props.content !== undefined) {

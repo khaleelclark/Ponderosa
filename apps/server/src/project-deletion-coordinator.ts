@@ -19,7 +19,6 @@ import type {
   EngineRegistration,
   ModelCatalogDiscoveryAuthority,
   Subscriber,
-  CreateServerOptions,
 } from "./app-contracts.js";
 import type { createOperationalNotifications } from "./operational-notifications.js";
 import type { ProviderProcessAuthority } from "./provider-process-authority.js";
@@ -67,7 +66,6 @@ interface ProjectDeletionCoordinatorContext {
     agents: AgentDto[],
   ): AgentHealthProjectionDto;
   logError(meta: Record<string, unknown>, message: string): void;
-  projectDeletionCleanupFaults: CreateServerOptions["projectDeletionCleanupFaults"];
   providerProcessAuthority: ProviderProcessAuthority;
 }
 
@@ -110,7 +108,6 @@ export function registerProjectDeletionRoutes(
     resolveOperationalNotification,
     agentHealth,
     logError,
-    projectDeletionCleanupFaults,
     providerProcessAuthority,
   } = context;
 
@@ -123,10 +120,7 @@ export function registerProjectDeletionRoutes(
       }
       if (!previousReceipt.storageCleanupCompleted) {
         try {
-          store.finishProjectDeletionStorageCleanup(
-            previousReceipt,
-            projectDeletionCleanupFaults?.afterTombstoneRemoval,
-          );
+          store.finishProjectDeletionStorageCleanup(previousReceipt);
         } catch (error) {
           try {
             store.recordProjectDeletionReceiptCleanupError(
@@ -241,10 +235,7 @@ export function registerProjectDeletionRoutes(
       dirtyCommunicationProjects.delete(project.id);
       deleted = true;
       try {
-        store.finishProjectDeletionStorageCleanup(
-          receipt,
-          projectDeletionCleanupFaults?.afterTombstoneRemoval,
-        );
+        store.finishProjectDeletionStorageCleanup(receipt);
       } catch (error) {
         try {
           store.recordProjectDeletionReceiptCleanupError(

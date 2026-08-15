@@ -43,10 +43,6 @@ function streamBuffer(body: Buffer): Readable {
   })());
 }
 
-interface ProjectFileReadFaults {
-  afterResolve?(resolvedPath: string): Promise<void> | void;
-}
-
 export class ProjectFileAuthority {
   private globalInFlight = 0;
   private readonly inFlight = new Map<string, number>();
@@ -61,10 +57,7 @@ export class ProjectFileAuthority {
     "application/pdf",
   ]);
 
-  constructor(
-    private readonly store: Pick<AgentStore, "getProject">,
-    private readonly faults?: ProjectFileReadFaults,
-  ) {}
+  constructor(private readonly store: Pick<AgentStore, "getProject">) {}
 
   acquire(projectId: string, weight: number): (() => void) | undefined {
     const now = Date.now();
@@ -244,7 +237,6 @@ export class ProjectFileAuthority {
     try {
       const target = await this.nativeRelativePath(project.hostPath, input);
       if (!target) return undefined;
-      await this.faults?.afterResolve?.(target.resolved);
       const body = await readSecureFileAsync({
         root: project.hostPath,
         relativePath: target.relative,
