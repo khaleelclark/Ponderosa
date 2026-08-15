@@ -314,6 +314,7 @@ interface ComposerSendActionsProps {
   onCancel: ComposerProps["onCancel"];
   queue(): void;
   recipientRequiredMessage: string | undefined;
+  sendUnavailableReason: string | undefined;
   send(): void;
   showQueue: boolean;
   steer(): void;
@@ -331,6 +332,7 @@ export function ComposerSendActions({
   onCancel,
   queue,
   recipientRequiredMessage,
+  sendUnavailableReason,
   send,
   showQueue,
   steer,
@@ -389,9 +391,11 @@ export function ComposerSendActions({
           title={
             !canSend &&
             (destinationError ||
+              sendUnavailableReason ||
               (destinationMode === "target-required" &&
                 !targetRequiredRecipientTagged))
               ? (destinationError ??
+                sendUnavailableReason ??
                 recipientRequiredMessage ??
                 "Choose at least one Agent recipient.")
               : "Send"

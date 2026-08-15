@@ -103,6 +103,7 @@ export function Composer({
   attachmentsUnavailableReason,
   busyMentionHandles,
   allowUnmentionedSend = true,
+  sendUnavailableReason,
   onSend,
   onCommand,
   onQueue,
@@ -1175,6 +1176,7 @@ export function Composer({
           onCancel={onCancel}
           queue={queue}
           recipientRequiredMessage={recipientRequiredMessage}
+          sendUnavailableReason={sendUnavailableReason}
           send={send}
           showQueue={showQueue}
           steer={steer}

@@ -16,6 +16,8 @@ export interface ComposerProps extends ChatComposerContract {
   attachmentsUnavailableReason?: string;
   busyMentionHandles?: string[];
   allowUnmentionedSend?: boolean;
+  /** Explains why a valid-looking draft cannot use the ordinary send path. */
+  sendUnavailableReason?: string;
   agentResponding?: boolean;
   onCancel?(): void;
   cancelPending?: boolean;
