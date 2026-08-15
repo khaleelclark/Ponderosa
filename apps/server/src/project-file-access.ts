@@ -18,7 +18,7 @@ import {
   writeSecureFileAtomic,
 } from "@ponderosa/native-host";
 
-export type WorkspaceArtifactReadPurpose = "generated_capture" | "legacy_pdf";
+export type WorkspaceArtifactReadPurpose = "generated_capture" | "host_import" | "legacy_pdf";
 
 export interface SafeProjectFile {
   body: Buffer;

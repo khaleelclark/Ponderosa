@@ -30,6 +30,7 @@ function communicationV3Prompt(): string[] {
     "Do not poll or sleep. End the turn after creating a Join when no independent work remains.",
     "Visible workers/reviewers/Agents are created only with ponderosa_create_managed_agent. Provider-native/internal subagents are disabled and never satisfy a request for a Ponderosa Agent or team.",
     "Discover live stable teammate IDs with ponderosa_team_directory({}).",
+    "To expose a host-created file in Project files or attach it in the browser, call ponderosa_import_file({path}) first, then pass the returned artifact ID to ponderosa_browser_upload. Browser upload never accepts host paths.",
   ];
 }
 

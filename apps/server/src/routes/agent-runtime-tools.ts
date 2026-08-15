@@ -1,10 +1,13 @@
-import { createHash } from "node:crypto";
-import type { AgentStore } from "@ponderosa/agents";
+import { createHash, randomUUID } from "node:crypto";
+import path from "node:path";
+import type { AgentStore, StoredLogEvent } from "@ponderosa/agents";
 import {
   CompactionHistoryQueryError,
+  MANAGED_ARTIFACT_MAX_BYTES,
   normalizeCompactionHistoryQuery,
+  publishManagedArtifactContentAsync,
 } from "@ponderosa/agents";
-import { PONDEROSA_HISTORY_TOOL } from "@ponderosa/core";
+import { PONDEROSA_HISTORY_TOOL, PONDEROSA_IMPORT_FILE_TOOL } from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
 import {
   BrowserSessionError,
@@ -15,6 +18,8 @@ import type {
   ActiveRun,
   AgentMessageCapability,
 } from "../app-contracts.js";
+import type { AssetStore } from "../assets.js";
+import { readWorkspaceArtifactFileAsync } from "../project-file-access.js";
 
 interface AgentRuntimeToolRoutesContext {
   store: AgentStore;
@@ -23,11 +28,32 @@ interface AgentRuntimeToolRoutesContext {
   browserSessions: BrowserSessionManager;
   projectBrowserSessions: BrowserSessionManager;
   projectBrowserGrants: Map<string, { agentId: string; runId: string }>;
+  dataDir: string;
+  assets: AssetStore;
+  publish(agentId: string, stored: StoredLogEvent): void;
   projectBrowserScope(projectId: string, grant?: { agentId: string; runId: string }): BrowserScope;
   capabilityOwnsAuthoritativeRun(
     capability: AgentMessageCapability,
     run: ActiveRun | undefined,
   ): boolean;
+}
+function importedArtifactMediaType(file: string): string {
+  const extension = path.extname(file).toLowerCase();
+  return ({
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".svg": "image/svg+xml",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".jar": "application/java-archive",
+    ".md": "text/markdown", ".txt": "text/plain", ".csv": "text/csv",
+    ".json": "application/json", ".html": "text/html", ".zip": "application/zip",
+  } as Record<string, string>)[extension] ?? "application/octet-stream";
 }
 
 export function registerAgentRuntimeToolRoutes(
@@ -43,6 +69,9 @@ export function registerAgentRuntimeToolRoutes(
     projectBrowserGrants,
     projectBrowserScope,
     capabilityOwnsAuthoritativeRun,
+    dataDir,
+    assets,
+    publish,
   } = context;
 
   app.post<{
@@ -180,6 +209,126 @@ export function registerAgentRuntimeToolRoutes(
       appendAudit({ normalizedQuery, outcome: "rejected", reason: error.message });
       return reply.code(400).send({ error: error.message });
     }
+  });
+
+  app.post<{
+    Body: { path?: unknown };
+  }>("/api/agent-import-file", async (request, reply) => {
+    const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
+    const capability = token ? agentMessageCapabilities.get(token) : undefined;
+    const active = capability ? activeRuns.get(capability.agentId) : undefined;
+    const agent = capability ? store.getAgent(capability.agentId) : undefined;
+    if (!capability || !active || !agent ||
+        !capabilityOwnsAuthoritativeRun(capability, active) ||
+        active.messageCapability !== token ||
+        !capability.availableToolNames.includes(PONDEROSA_IMPORT_FILE_TOOL.name)) {
+      return reply.code(401).send({
+        error: "file import capability is not authorized for an active run",
+      });
+    }
+    const requestedPath = typeof request.body?.path === "string"
+      ? request.body.path.trim()
+      : "";
+    if (!requestedPath || requestedPath.length > 4096 ||
+        /[\u0000-\u001f\u007f-\u009f]/u.test(requestedPath)) {
+      return reply.code(400).send({
+        error: "path must be a non-empty filesystem path of at most 4096 characters",
+      });
+    }
+    const project = store.getProject(agent.projectId);
+    if (!project) {
+      return reply.code(404).send({ error: "run Project is unavailable" });
+    }
+    const absoluteSourcePath = path.isAbsolute(requestedPath)
+      ? path.resolve(requestedPath)
+      : path.resolve(project.hostPath, requestedPath);
+    const authorityIsCurrent = () => {
+      const current = activeRuns.get(agent.id);
+      return current === active &&
+        !active.controller.signal.aborted &&
+        capabilityOwnsAuthoritativeRun(capability, current) &&
+        current.messageCapability === token;
+    };
+    const source = await readWorkspaceArtifactFileAsync({
+      rootPath: path.parse(absoluteSourcePath).root,
+      requestedPath: absoluteSourcePath,
+      purpose: "host_import",
+      maxBytes: MANAGED_ARTIFACT_MAX_BYTES,
+      requireNonEmpty: true,
+      signal: active.controller.signal,
+    });
+    if (!source) {
+      return reply.code(400).send({
+        error: "host file is unavailable, unsafe, empty, changing, or larger than 64 MiB",
+      });
+    }
+    if (!authorityIsCurrent()) {
+      return reply.code(409).send({ error: "run authority ended before file import" });
+    }
+    const artifactId = randomUUID();
+    const extension = path.extname(source.name).toLowerCase();
+    const name = source.name
+      .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/gu, "_")
+      .trim() || `imported-${artifactId}${extension}`;
+    const mediaType = importedArtifactMediaType(name);
+    const managedPath = `imported/${artifactId}${extension}`;
+    const publishedArtifact = await publishManagedArtifactContentAsync(
+      dataDir,
+      agent.projectId,
+      artifactId,
+      source.body,
+      active.controller.signal,
+    );
+    if (!authorityIsCurrent()) {
+      return reply.code(409).send({ error: "run authority ended during file import" });
+    }
+    const captured = store.appendEvent(agent.id, {
+      type: "generated_artifact",
+      artifactId,
+      executionId: active.executionId,
+      path: managedPath,
+      sourcePath: absoluteSourcePath,
+      name,
+      mediaType,
+      size: publishedArtifact.size,
+      sha256: publishedArtifact.sha256,
+      visibility: "project",
+    });
+    const catalogArtifact = {
+      id: artifactId,
+      projectId: agent.projectId,
+      agentId: agent.id,
+      originAgentId: agent.id,
+      executionId: active.executionId,
+      kind: "generated_file",
+      path: managedPath,
+      sourcePath: absoluteSourcePath,
+      summary: name,
+      createdAt: captured.ts,
+      mediaType,
+      size: publishedArtifact.size,
+      sha256: publishedArtifact.sha256,
+      visibility: "project" as const,
+      pinned: false,
+    } as const;
+    assets.registerPublishedGeneratedArtifact(catalogArtifact, publishedArtifact);
+    store.recordProjectArtifact(catalogArtifact);
+    publish(agent.id, captured);
+    const artifactRoot = `/api/projects/${encodeURIComponent(agent.projectId)}/artifacts/${encodeURIComponent(artifactId)}`;
+    return {
+      artifact: {
+        id: artifactId,
+        name,
+        mediaType,
+        size: publishedArtifact.size,
+        sha256: publishedArtifact.sha256,
+        previewUrl: `${artifactRoot}/preview`,
+        downloadUrl: `${artifactRoot}/download`,
+      },
+      next: {
+        browserUpload: { artifact_id: artifactId },
+      },
+    };
   });
 
   app.post<{

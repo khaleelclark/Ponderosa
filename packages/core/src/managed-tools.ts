@@ -411,6 +411,23 @@ export const PONDEROSA_BROWSER_TOOLS: RuntimeDynamicToolSpec[] = [
   },
 ];
 
+export const PONDEROSA_IMPORT_FILE_TOOL: RuntimeDynamicToolSpec = {
+  name: "ponderosa_import_file",
+  description: "Import one regular host file into this Run's Project files, making it available to the operator, ponderosa_message, and ponderosa_browser_upload. Pass an absolute host path or a path relative to the Project workspace. The server securely copies exact stable bytes into immutable Project-managed storage and returns the artifact ID. Symlinks, empty files, changing files, and files larger than 64 MiB fail closed.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["path"],
+    properties: {
+      path: {
+        type: "string",
+        minLength: 1,
+        maxLength: 4096,
+      },
+    },
+  },
+};
+
 /** One canonical provider-visible tool surface. Engine adapters may rename a
  * tool for their native protocol, but they must derive from this exact list. */
 export const PONDEROSA_RUNTIME_TOOLS: RuntimeDynamicToolSpec[] = [
@@ -422,4 +439,5 @@ export const PONDEROSA_RUNTIME_TOOLS: RuntimeDynamicToolSpec[] = [
   PONDEROSA_MESSAGE_TOOL,
   PONDEROSA_TEAM_DIRECTORY_TOOL,
   ...PONDEROSA_BROWSER_TOOLS,
+  PONDEROSA_IMPORT_FILE_TOOL,
 ];

@@ -159,6 +159,9 @@ registerAgentManagementRoutes(app, {
 
 registerAgentRuntimeToolRoutes(app, {
   store,
+  dataDir: opts.dataDir,
+  assets,
+  publish,
   agentMessageCapabilities,
   activeRuns,
   browserSessions,

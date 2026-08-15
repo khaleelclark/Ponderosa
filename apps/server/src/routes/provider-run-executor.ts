@@ -5,6 +5,7 @@ import {
   PONDEROSA_MANAGE_TOOL,
   PONDEROSA_MESSAGE_TOOL,
   PONDEROSA_HISTORY_TOOL,
+  PONDEROSA_IMPORT_FILE_TOOL,
   PONDEROSA_TEAM_DIRECTORY_TOOL,
   PONDEROSA_UPDATE_REQUEST_TOOL,
   type AgentDto,
@@ -309,6 +310,7 @@ export function startProviderRunExecution(
         PONDEROSA_AGENT_COORDINATE_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-coordinate`,
         PONDEROSA_AGENT_UPDATE_REQUEST_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-request-updates`,
         PONDEROSA_AGENT_BROWSER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-browser`,
+        PONDEROSA_AGENT_IMPORT_FILE_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-import-file`,
         PONDEROSA_AGENT_SPAWN_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-spawn`,
         PONDEROSA_AGENT_DECISION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-decisions`,
         PONDEROSA_AGENT_MANAGE_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-management`,
@@ -346,22 +348,24 @@ export function startProviderRunExecution(
             const url = call.name === PONDEROSA_CREATE_MANAGED_AGENT_TOOL.name
               ? "/api/agent-spawn"
               : call.name === PONDEROSA_DECISION_TOOL.name
-              ? "/api/agent-decisions"
-              : call.name === PONDEROSA_MANAGE_TOOL.name
-              ? "/api/agent-management"
-              : call.name === PONDEROSA_COORDINATE_TOOL.name
-              ? "/api/agent-coordinate"
-              : call.name === PONDEROSA_UPDATE_REQUEST_TOOL.name
-                ? "/api/agent-request-updates"
-                : call.name === PONDEROSA_MESSAGE_TOOL.name
-                  ? "/api/agent-messages"
-                  : call.name === PONDEROSA_HISTORY_TOOL.name
-                    ? "/api/agent-history"
-                  : isDirectory
-                    ? `/api/agent-directory${typeof directoryArguments.agentId === "string" && directoryArguments.agentId.trim() ? `/${encodeURIComponent(directoryArguments.agentId.trim())}` : ""}`
-                  : browserOperation
-                    ? "/api/agent-browser"
-                  : undefined;
+                ? "/api/agent-decisions"
+                : call.name === PONDEROSA_MANAGE_TOOL.name
+                  ? "/api/agent-management"
+                  : call.name === PONDEROSA_COORDINATE_TOOL.name
+                    ? "/api/agent-coordinate"
+                    : call.name === PONDEROSA_UPDATE_REQUEST_TOOL.name
+                      ? "/api/agent-request-updates"
+                      : call.name === PONDEROSA_MESSAGE_TOOL.name
+                        ? "/api/agent-messages"
+                        : call.name === PONDEROSA_HISTORY_TOOL.name
+                          ? "/api/agent-history"
+                          : call.name === PONDEROSA_IMPORT_FILE_TOOL.name
+                            ? "/api/agent-import-file"
+                            : isDirectory
+                              ? `/api/agent-directory${typeof directoryArguments.agentId === "string" && directoryArguments.agentId.trim() ? `/${encodeURIComponent(directoryArguments.agentId.trim())}` : ""}`
+                              : browserOperation
+                                ? "/api/agent-browser"
+                                : undefined;
             if (!url) {
               return { success: false, text: `Unknown Ponderosa tool: ${call.name}` };
             }
