@@ -22,7 +22,7 @@ import {
   useMediaQuery,
   useTheme,
 } from "@mui/material";
-import type { ConversationDto, ProjectDto, WorkspaceNotificationDto } from "@ponderosa/core";
+import type { ConversationDto, ProjectDto, WorkspaceNotificationDto, WorkspaceNotificationPageDto } from "@ponderosa/core";
 import { queryKeys } from "../queryKeys";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -31,7 +31,7 @@ import type { Route } from "../routing";
 import {
   isOpenAttention,
   isUnreadNotificationUpdate,
-  notificationSummary,
+  notificationsForAvailableProjects,
 } from "../attention";
 import { notificationTechnicalFocusId } from "../technicalFocus";
 import { notificationDecision } from "../decisions";
@@ -142,10 +142,10 @@ function notificationSummaryText(attentionCount: number, unreadUpdateCount: numb
   return "You’re all caught up";
 }
 
-export function NotificationPanel({ open, projects, notifications, onClose, onNavigate, onOpenSettings }: {
+export function NotificationPanel({ open, projects, firstPage, onClose, onNavigate, onOpenSettings }: {
   open: boolean;
   projects: ProjectDto[];
-  notifications: WorkspaceNotificationDto[];
+  firstPage?: WorkspaceNotificationPageDto;
   onClose(): void;
   onNavigate(route: Route): void;
   onOpenSettings?(): void;
@@ -154,6 +154,8 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
   const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
   const queryClient = useQueryClient();
   const [markingRead, setMarkingRead] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [olderPages, setOlderPages] = useState<WorkspaceNotificationPageDto[]>([]);
   const [filter, setFilter] = useState<NotificationFilter>("updates");
   const [error, setError] = useState<string>();
   const wasOpen = useRef(false);
@@ -161,7 +163,20 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
     () => new Set(projects.map(project => project.id)),
     [projects],
   );
-  const { attentionCount, unreadUpdateCount } = notificationSummary(notifications);
+  useEffect(() => {
+    setOlderPages([]);
+  }, [firstPage]);
+  const notifications = useMemo(() => {
+    const unique = new Map<string, WorkspaceNotificationDto>();
+    for (const page of [firstPage, ...olderPages]) {
+      for (const notification of page?.items ?? []) unique.set(notification.id, notification);
+    }
+    return notificationsForAvailableProjects([...unique.values()], availableProjectIds)
+      .sort(compareNotificationsNewestFirst);
+  }, [availableProjectIds, firstPage, olderPages]);
+  const attentionCount = firstPage?.attentionCount ?? 0;
+  const unreadUpdateCount = firstPage?.unreadUpdateCount ?? 0;
+  const nextCursor = olderPages.at(-1)?.nextCursor ?? firstPage?.nextCursor;
   useEffect(() => {
     if (open && !wasOpen.current) {
       setFilter(attentionCount ? "attention" : "updates");
@@ -169,6 +184,8 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
     wasOpen.current = open;
   }, [attentionCount, open]);
   const visibleNotifications = filterNotifications(notifications, filter);
+  const totalForFilter = filter === "attention" ? attentionCount : unreadUpdateCount;
+  const remainingForFilter = Math.max(0, totalForFilter - visibleNotifications.length);
   const projectIds = useMemo(() => [...new Set(visibleNotifications.map((item) => item.projectId).filter((id): id is string => Boolean(id)))], [visibleNotifications]);
   const conversationQueries = useQueries({
     queries: projectIds.map((projectId) => ({
@@ -182,9 +199,34 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
   conversationQueries.forEach((query) => query.data?.forEach((conversation) => conversations.set(conversation.id, conversation)));
   const groups = groupNotificationsByProject(visibleNotifications);
 
+  const loadOlder = async () => {
+    if (!nextCursor || loadingOlder) return;
+    setLoadingOlder(true);
+    setError(undefined);
+    try {
+      const page = await api.listNotifications(nextCursor);
+      if (page.nextCursor === nextCursor) throw new Error("Notification history did not advance.");
+      setOlderPages((current) => [...current, page]);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Older notifications could not be loaded.");
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
+
   const markRead = (item: WorkspaceNotificationDto) => {
     const readAt = new Date().toISOString();
-    queryClient.setQueryData<WorkspaceNotificationDto[]>(queryKeys.notifications.all, (current = []) => current.map((candidate) => candidate.id === item.id ? { ...candidate, readAt } : candidate));
+    queryClient.setQueryData<WorkspaceNotificationPageDto>(queryKeys.notifications.all, (current) => current ? ({
+      ...current,
+      items: current.items.map((candidate) => candidate.id === item.id ? { ...candidate, readAt } : candidate),
+      unreadUpdateCount: isUnreadNotificationUpdate(item)
+        ? Math.max(0, current.unreadUpdateCount - 1)
+        : current.unreadUpdateCount,
+    }) : current);
+    setOlderPages((current) => current.map((page) => ({
+      ...page,
+      items: page.items.map((candidate) => candidate.id === item.id ? { ...candidate, readAt } : candidate),
+    })));
     void api.markNotificationRead(item.id).then(() => {
       return queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
     }).catch((reason) => {
@@ -218,9 +260,15 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
     setMarkingRead(true);
     setError(undefined);
     const readAt = new Date().toISOString();
-    queryClient.setQueryData<WorkspaceNotificationDto[]>(queryKeys.notifications.all, (current = []) =>
-      current.map((item) => isUnreadNotificationUpdate(item) ? { ...item, readAt } : item),
-    );
+    queryClient.setQueryData<WorkspaceNotificationPageDto>(queryKeys.notifications.all, (current) => current ? ({
+      ...current,
+      items: current.items.map((item) => isUnreadNotificationUpdate(item) ? { ...item, readAt } : item),
+      unreadUpdateCount: 0,
+    }) : current);
+    setOlderPages((current) => current.map((page) => ({
+      ...page,
+      items: page.items.map((item) => isUnreadNotificationUpdate(item) ? { ...item, readAt } : item),
+    })));
     try {
       await api.markAllNotificationsRead();
       await queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
@@ -286,7 +334,12 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
             </List>
           </Box>;
         })}
-        {visibleNotifications.length === 0 ? <Box sx={{ py: 5, textAlign: "center" }}><Typography fontWeight={750}>{filter === "attention" ? "Nothing needs attention" : "No unread updates"}</Typography><Typography variant="body2" color="text.secondary">{filter === "attention" ? "Open decisions, blockers, and failures stay here until they are resolved or dismissed." : "New Agent responses and broadcasts will appear here."}</Typography></Box> : null}
+        {visibleNotifications.length === 0 && totalForFilter === 0 ? <Box sx={{ py: 5, textAlign: "center" }}><Typography fontWeight={750}>{filter === "attention" ? "Nothing needs attention" : "No unread updates"}</Typography><Typography variant="body2" color="text.secondary">{filter === "attention" ? "Open decisions, blockers, and failures stay here until they are resolved or dismissed." : "New Agent responses and broadcasts will appear here."}</Typography></Box> : null}
+        {nextCursor ? <Button disabled={loadingOlder} onClick={() => void loadOlder()}>
+          {loadingOlder ? "Loading older notifications…" : remainingForFilter
+            ? `Load older (${remainingForFilter} ${filter === "attention" ? "attention" : "updates"} remaining)`
+            : "Load older notifications"}
+        </Button> : null}
       </Stack>
     </DialogContent>
     {unreadUpdateCount ? <DialogActions sx={{ px: 2, py: 1.25 }}>

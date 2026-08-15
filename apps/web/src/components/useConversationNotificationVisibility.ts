@@ -1,12 +1,12 @@
-import type { WorkspaceNotificationDto } from "@ponderosa/core";
+import type { WorkspaceNotificationDto, WorkspaceNotificationPageDto } from "@ponderosa/core";
 import type { QueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import { isOrdinaryMessageNotification } from "../workspaceNavigation";
 
 export function useConversationNotificationVisibility(
-  notificationsQuery: { data?: WorkspaceNotificationDto[] },
+  notificationsQuery: { data?: WorkspaceNotificationPageDto | WorkspaceNotificationDto[] },
   queryClient: QueryClient,
 ): (
   communicationEventId: string | undefined,
@@ -17,8 +17,11 @@ export function useConversationNotificationVisibility(
   const observedNotificationIds = useRef(new Set<string>());
   const retryAttempts = useRef(new Map<string, number>());
   const retryTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
-  const notifications = useRef(notificationsQuery.data ?? []);
-  notifications.current = notificationsQuery.data ?? [];
+  const notificationItems = useMemo(() => Array.isArray(notificationsQuery.data)
+    ? notificationsQuery.data
+    : notificationsQuery.data?.items ?? [], [notificationsQuery.data]);
+  const notifications = useRef(notificationItems);
+  notifications.current = notificationItems;
   const attemptVisible = useRef<(communicationEventId: string) => void>(() => undefined);
 
   attemptVisible.current = (communicationEventId: string) => {
@@ -36,8 +39,11 @@ export function useConversationNotificationVisibility(
     const ids = new Set(matchingNotifications.map((item) => item.id));
     ids.forEach((id) => markedVisibleNotificationIds.current.add(id));
     const readAt = new Date().toISOString();
-    queryClient.setQueryData<WorkspaceNotificationDto[]>(queryKeys.notifications.all, (current = []) =>
-      current.map((item) => ids.has(item.id) ? { ...item, readAt } : item));
+    queryClient.setQueryData<WorkspaceNotificationPageDto>(queryKeys.notifications.all, (current) => current ? ({
+      ...current,
+      items: current.items.map((item) => ids.has(item.id) ? { ...item, readAt } : item),
+      unreadUpdateCount: Math.max(0, current.unreadUpdateCount - ids.size),
+    }) : current);
     void Promise.all(matchingNotifications.map((item) => api.markNotificationRead(item.id)))
       .then(() => {
         retryAttempts.current.delete(communicationEventId);
@@ -45,10 +51,14 @@ export function useConversationNotificationVisibility(
       })
       .catch(() => {
         ids.forEach((id) => markedVisibleNotificationIds.current.delete(id));
-        queryClient.setQueryData<WorkspaceNotificationDto[]>(
+        queryClient.setQueryData<WorkspaceNotificationPageDto>(
           queryKeys.notifications.all,
-          (current = []) => current.map((item) =>
-            ids.has(item.id) ? { ...item, readAt: undefined } : item),
+          (current) => current ? ({
+            ...current,
+            items: current.items.map((item) =>
+              ids.has(item.id) ? { ...item, readAt: undefined } : item),
+            unreadUpdateCount: current.unreadUpdateCount + ids.size,
+          }) : current,
         );
         void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
         const attempt = retryAttempts.current.get(communicationEventId) ?? 0;
@@ -69,7 +79,7 @@ export function useConversationNotificationVisibility(
 
   useEffect(() => {
     const newlyArrivedCommunicationEventIds = new Set<string>();
-    for (const item of notificationsQuery.data ?? []) {
+    for (const item of notificationItems) {
       if (observedNotificationIds.current.has(item.id)) continue;
       observedNotificationIds.current.add(item.id);
       if (
@@ -84,7 +94,7 @@ export function useConversationNotificationVisibility(
         attemptVisible.current(communicationEventId);
       }
     });
-  }, [notificationsQuery.data]);
+  }, [notificationItems]);
 
   const markCommunicationVisible = useCallback((
     communicationEventId: string | undefined,

@@ -958,7 +958,7 @@ export function AgentDetail({
         engines={engines}
         statusByAgentId={statusByAgentId}
         healthByAgentId={healthByAgentId}
-        notifications={notificationsQuery.data ?? []}
+        notifications={notificationsQuery.data?.items ?? []}
         operatorProfile={preferencesQuery.data?.profile}
         agentNameForId={agentNameForId}
         agentIdForHandle={agentIdForHandle}

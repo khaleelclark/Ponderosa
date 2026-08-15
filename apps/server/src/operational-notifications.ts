@@ -51,7 +51,7 @@ export function createOperationalNotifications(context: OperationalNotifications
     return notification;
   };
   const resolveOperationalNotification = (dedupeKey: string): void => {
-    const current = workspace.listNotifications().find((item) => item.dedupeKey === dedupeKey && (item.status ?? "open") === "open");
+    const current = workspace.openOperationalNotification(dedupeKey);
     if (!current) return;
     const cursor = workspace.cursor();
     workspace.setNotificationStatus(current.id, "resolved");
@@ -131,26 +131,20 @@ export function createOperationalNotifications(context: OperationalNotifications
           : { kind: "open_project", targetId: failure.projectId },
       });
     }
-    for (const notification of workspace.listNotifications()) {
+    workspace.forEachOpenOperationalNotification("communication-delivery:", (notification) => {
       const key = notification.dedupeKey;
-      if (!key?.startsWith("communication-delivery:")
-        || (notification.status ?? "open") !== "open") continue;
+      if (!key) return;
       const activationId = /^communication-delivery:([^:]+):/u.exec(key)?.[1];
-      if (!activationId) continue;
+      if (!activationId) return;
       const disposition = coordinationV3.terminalActivationDisposition(activationId);
       if (!disposition
-        || (!disposition.supersededByRetry && disposition.state !== "cancelled")) continue;
+        || (!disposition.supersededByRetry && disposition.state !== "cancelled")) return;
       resolveOperationalNotification(key);
-    }
+    });
   };
   const agentWorkProjection = new AgentWorkProjection(store, coordinationV3, workspace);
-  let lastCoordinationAttentionReconciliationAt = 0;
   const reconcileCoordinationAttentionNotifications = (): void => {
-    const now = Date.now();
-    if (now - lastCoordinationAttentionReconciliationAt < 5_000) return;
-    lastCoordinationAttentionReconciliationAt = now;
     const retained = new Set<string>();
-    const notifications = workspace.listNotifications();
     const projects = new Map(
       store.listProjects().map((project) => [project.id, project]),
     );
@@ -255,11 +249,10 @@ export function createOperationalNotifications(context: OperationalNotifications
         recordId: last.recordId,
       };
     }
-    for (const notification of notifications) {
-      if (!notification.dedupeKey?.startsWith("coordination-attention:")) continue;
-      if ((notification.status ?? "open") !== "open" || retained.has(notification.dedupeKey)) continue;
+    workspace.forEachOpenOperationalNotification("coordination-attention:", (notification) => {
+      if (!notification.dedupeKey || retained.has(notification.dedupeKey)) return;
       resolveOperationalNotification(notification.dedupeKey);
-    }
+    });
   };
   const reconcileTriggerOperationalNotifications = (): void => {
     const triggers = coordinationV3.listTriggerDefinitions();
@@ -282,12 +275,12 @@ export function createOperationalNotifications(context: OperationalNotifications
       if (trigger.sourceKind === "filesystem" && !trigger.enabled) retained.add(`trigger:${trigger.id}:watcher-failed`);
       if (trigger.sourceKind === "filesystem" && trigger.enabled) retained.add(`trigger:${trigger.id}:filesystem-persistence`);
     }
-    for (const notification of workspace.listNotifications()) {
+    workspace.forEachOpenOperationalNotification("trigger:", (notification) => {
       const key = notification.dedupeKey;
-      if (!key?.startsWith("trigger:") || (notification.status ?? "open") !== "open") continue;
-      if (![":budget-held", ":watcher-failed", ":filesystem-persistence"].some((suffix) => key.endsWith(suffix))) continue;
+      if (!key) return;
+      if (![":budget-held", ":watcher-failed", ":filesystem-persistence"].some((suffix) => key.endsWith(suffix))) return;
       if (!retained.has(key)) resolveOperationalNotification(key);
-    }
+    });
   };
   const reconcileProjectDeletionOperationalNotifications = (): void => {
     for (const receipt of store.listPendingProjectDeletionReceipts()) {
@@ -299,13 +292,13 @@ export function createOperationalNotifications(context: OperationalNotifications
         body: `The Project was deleted, but filesystem cleanup is still retrying. ${receipt.lastError ?? "Retry deletion to continue cleanup."}`.slice(0, 1_000),
       });
     }
-    for (const notification of workspace.listNotifications()) {
+    workspace.forEachOpenOperationalNotification("project-deletion:", (notification) => {
       const key = notification.dedupeKey;
-      if (!key?.startsWith("project-deletion:") || (notification.status ?? "open") !== "open") continue;
+      if (!key) return;
       const projectId = key.slice("project-deletion:".length);
       const receipt = store.getProjectDeletionReceipt(projectId);
       if (receipt?.storageCleanupCompleted) resolveOperationalNotification(key);
-    }
+    });
   };
 
   return {

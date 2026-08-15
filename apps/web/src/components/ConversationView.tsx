@@ -936,7 +936,7 @@ export function ConversationView({
             beforeMessages={
               <>
                 <AttentionSurface
-                  notifications={(notificationsQuery.data ?? []).filter((item) => item.kind !== "decision")}
+                  notifications={(notificationsQuery.data?.items ?? []).filter((item) => item.kind !== "decision")}
                   projectId={conversation.projectId}
                   conversationId={conversationId}
                   conversationAgentIds={agents.map(agent => agent.id)}

@@ -179,8 +179,6 @@ export function registerApplicationRoutes(
     providerEnabled,
     agentWorkProjection,
     createOperationalNotification,
-    reconcileCommunicationFailureNotifications,
-    reconcileCoordinationAttentionNotifications,
     reconcileProjectWorkspace,
     reconcileTriggerOperationalNotifications,
     resolveOperationalNotification,
@@ -649,8 +647,6 @@ const notificationRoutesOptions = {
   workspace,
   store,
   publishWorkspaceSince,
-  reconcileCommunicationFailureNotifications,
-  reconcileCoordinationAttentionNotifications,
 };
 registerNotificationListRoute(app, notificationRoutesOptions);
 app.get<{ Querystring: { projectId?: string; conversationId?: string; agentId?: string; status?: string } }>("/api/decisions", async (request, reply) => {
@@ -723,7 +719,7 @@ app.post<{ Params: { id: string }; Body: { optionId?: string; text?: string; con
   }
   const cursor = workspace.cursor();
   const decision = workspace.resolveDecision(current.id, { ...(optionId ? { optionId } : {}), ...(text ? { text } : {}), respondedAt })!;
-  const notification = workspace.listNotifications().find((item) => item.dedupeKey === `decision:${decision.id}` && (item.status ?? "open") === "open");
+  const notification = workspace.findNotification((item) => item.dedupeKey === `decision:${decision.id}` && (item.status ?? "open") === "open");
   if (notification) workspace.setNotificationStatus(notification.id, "resolved");
   publishWorkspaceSince(cursor);
   if (current.runtimeAction) {

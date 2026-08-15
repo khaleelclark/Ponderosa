@@ -1,4 +1,4 @@
-import type { WebPushStatusDto, WorkspaceNotificationDto } from "@ponderosa/core";
+import type { WebPushStatusDto } from "@ponderosa/core";
 import { api } from "./api";
 import { createClientId } from "./clientId";
 
@@ -212,14 +212,73 @@ export async function disableWebPush(): Promise<WebPushState> {
   }
 }
 
-/** Close OS notifications that became read through this or another open tab. */
-export async function closeReadPushNotifications(notifications: WorkspaceNotificationDto[]): Promise<void> {
-  if (!("serviceWorker" in navigator)) return;
-  const readIds = new Set(notifications.filter((item) => item.readAt).map((item) => item.id));
-  if (readIds.size === 0) return;
+/** Reconcile the browser's bounded displayed-notification set directly with
+ * canonical state instead of enumerating the complete active feed. */
+const DISPLAYED_PUSH_RETRY_DELAYS_MS = [150, 500] as const;
+
+async function waitForDisplayedPushRetry(delayMs: number): Promise<void> {
+  await new Promise<void>((resolve) => window.setTimeout(resolve, delayMs));
+}
+
+async function reconcileDisplayedPushChunk(
+  registration: ServiceWorkerRegistration,
+  notificationIds: readonly string[],
+): Promise<boolean> {
+  let remainingIds = [...notificationIds];
+  for (let attempt = 0; attempt <= DISPLAYED_PUSH_RETRY_DELAYS_MS.length; attempt += 1) {
+    if (remainingIds.length === 0) return true;
+    try {
+      const activeIds = new Set(await api.activeNotificationIds(remainingIds));
+      const displayed = await registration.getNotifications();
+      const candidates = new Set(remainingIds);
+      for (const notification of displayed) {
+        if (notification.tag && candidates.has(notification.tag) && !activeIds.has(notification.tag)) {
+          notification.close();
+        }
+      }
+      return true;
+    } catch {
+      const retryDelay = DISPLAYED_PUSH_RETRY_DELAYS_MS[attempt];
+      if (retryDelay === undefined) return false;
+      await waitForDisplayedPushRetry(retryDelay);
+      try {
+        const displayedIds = new Set(
+          (await registration.getNotifications()).map((notification) => notification.tag).filter(Boolean),
+        );
+        remainingIds = remainingIds.filter((id) => displayedIds.has(id));
+      } catch {
+        // Retry the same bounded chunk when the browser cannot enumerate it.
+      }
+    }
+  }
+  return false;
+}
+
+let displayedPushReconciliation: Promise<boolean> | undefined;
+
+async function performDisplayedPushReconciliation(): Promise<boolean> {
+  if (!("serviceWorker" in navigator)) return true;
   try {
     const registration = await navigator.serviceWorker.ready;
     const displayed = await registration.getNotifications();
-    for (const notification of displayed) if (readIds.has(notification.tag)) notification.close();
-  } catch { /* in-app read state remains canonical */ }
+    let reconciled = true;
+    for (let index = 0; index < displayed.length; index += 100) {
+      const chunk = displayed.slice(index, index + 100);
+      const ids = [...new Set(chunk.map((notification) => notification.tag).filter(Boolean))];
+      if (!await reconcileDisplayedPushChunk(registration, ids)) reconciled = false;
+    }
+    return reconciled;
+  } catch {
+    // Surface an unavailable canonical check so the App can retain one retry.
+    return false;
+  }
+}
+
+export function reconcileDisplayedPushNotifications(): Promise<boolean> {
+  if (displayedPushReconciliation) return displayedPushReconciliation;
+  const reconciliation = performDisplayedPushReconciliation().finally(() => {
+    if (displayedPushReconciliation === reconciliation) displayedPushReconciliation = undefined;
+  });
+  displayedPushReconciliation = reconciliation;
+  return reconciliation;
 }

@@ -48,6 +48,8 @@ interface ReadModelContext {
   transitionRun(agentId: string, run: ActiveRun, state: RuntimeOwnershipState): boolean;
   appendWorkspace(event: Parameters<WorkspaceStore["append"]>[0]): unknown;
   publish(agentId: string, stored: StoredLogEvent): void;
+  reconcileCommunicationNotifications(): void;
+  reconcileCoordinationAttentionNotifications(): void;
   isClosed(): boolean;
 }
 
@@ -90,6 +92,8 @@ export function createServerReadModels(context: ReadModelContext) {
     transitionRun,
     appendWorkspace,
     publish,
+    reconcileCommunicationNotifications,
+    reconcileCoordinationAttentionNotifications,
     isClosed,
   } = context;
 
@@ -466,6 +470,7 @@ export function createServerReadModels(context: ReadModelContext) {
         agentId,
         conversationIds: options.conversationIds ?? agent.conversationIds,
       });
+      reconcileCoordinationAttentionNotifications();
     }
   }
 
@@ -479,6 +484,7 @@ export function createServerReadModels(context: ReadModelContext) {
       agentId,
       conversationIds: agent.conversationIds,
     });
+    reconcileCommunicationNotifications();
   }
 
   function ensureDecisionResponseActivation(decision: DecisionDto): string | undefined {

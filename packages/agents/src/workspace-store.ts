@@ -98,6 +98,33 @@ function isOpenNotificationUpdate(item: WorkspaceNotificationDto): boolean {
   return (item.status ?? "open") === "open" && !isOpenAttentionNotification(item);
 }
 
+type NotificationLiveKind = "attention" | "update";
+
+function notificationLiveKind(item: WorkspaceNotificationDto): NotificationLiveKind | undefined {
+  if (item.kind === "collaboration" || (item.status ?? "open") !== "open") return undefined;
+  if (isOpenAttentionNotification(item)) return "attention";
+  return !item.readAt && isOpenNotificationUpdate(item) ? "update" : undefined;
+}
+
+export interface WorkspaceNotificationPageCursor {
+  createdAt: string;
+  id: string;
+}
+
+export interface WorkspaceNotificationPage {
+  items: WorkspaceNotificationDto[];
+  attentionCount: number;
+  unreadUpdateCount: number;
+  nextCursor?: WorkspaceNotificationPageCursor;
+}
+
+function compareNotificationsNewestFirst(
+  left: Pick<WorkspaceNotificationDto, "createdAt" | "id">,
+  right: Pick<WorkspaceNotificationDto, "createdAt" | "id">,
+): number {
+  return right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id);
+}
+
 /** Canonical workspace/user event log with rebuildable in-memory projections. */
 export class WorkspaceStore {
   private readonly file: string;
@@ -106,6 +133,11 @@ export class WorkspaceStore {
   private readonly drafts = new Map<string, ConversationDraftDto>();
   private readonly draftConflicts = new Map<string, ConversationDraftConflictDto[]>();
   private readonly notifications = new Map<string, WorkspaceNotificationDto>();
+  private readonly notificationsByDedupeKey = new Map<string, WorkspaceNotificationDto>();
+  private readonly openOperationalNotificationsByDedupeKey = new Map<string, WorkspaceNotificationDto>();
+  private readonly activeNotifications: WorkspaceNotificationDto[] = [];
+  private notificationAttentionCount = 0;
+  private notificationUnreadUpdateCount = 0;
   private readonly unreadNotificationIdsByCommunication = new Map<string, Set<string>>();
   private readonly unreadNotificationIdsByConversation = new Map<string, Set<string>>();
   private readonly decisions = new Map<string, DecisionDto>();
@@ -174,15 +206,63 @@ export class WorkspaceStore {
 
   private setNotification(item: WorkspaceNotificationDto): void {
     const current = this.notifications.get(item.id);
-    if (current) this.updateNotificationSearchIndex(current, false);
+    if (current) {
+      this.updateNotificationSearchIndex(current, false);
+      this.removeActiveNotification(current);
+      if (current.dedupeKey && this.notificationsByDedupeKey.get(current.dedupeKey)?.id === current.id) {
+        this.notificationsByDedupeKey.delete(current.dedupeKey);
+      }
+      if (current.dedupeKey && this.openOperationalNotificationsByDedupeKey.get(current.dedupeKey)?.id === current.id) {
+        this.openOperationalNotificationsByDedupeKey.delete(current.dedupeKey);
+      }
+    }
     this.notifications.set(item.id, item);
+    if (item.dedupeKey) this.notificationsByDedupeKey.set(item.dedupeKey, item);
+    if (item.kind === "operational" && item.dedupeKey && (item.status ?? "open") === "open") {
+      this.openOperationalNotificationsByDedupeKey.set(item.dedupeKey, item);
+    }
     this.updateNotificationSearchIndex(item, true);
+    this.insertActiveNotification(item);
   }
 
   private deleteNotification(id: string): void {
     const current = this.notifications.get(id);
-    if (current) this.updateNotificationSearchIndex(current, false);
+    if (current) {
+      this.updateNotificationSearchIndex(current, false);
+      this.removeActiveNotification(current);
+      if (current.dedupeKey && this.notificationsByDedupeKey.get(current.dedupeKey)?.id === current.id) {
+        this.notificationsByDedupeKey.delete(current.dedupeKey);
+      }
+      if (current.dedupeKey && this.openOperationalNotificationsByDedupeKey.get(current.dedupeKey)?.id === current.id) {
+        this.openOperationalNotificationsByDedupeKey.delete(current.dedupeKey);
+      }
+    }
     this.notifications.delete(id);
+  }
+
+  private removeActiveNotification(item: WorkspaceNotificationDto): void {
+    const kind = notificationLiveKind(item);
+    if (!kind) return;
+    const index = this.activeNotifications.findIndex((candidate) => candidate.id === item.id);
+    if (index < 0) return;
+    this.activeNotifications.splice(index, 1);
+    if (kind === "attention") this.notificationAttentionCount -= 1;
+    else this.notificationUnreadUpdateCount -= 1;
+  }
+
+  private insertActiveNotification(item: WorkspaceNotificationDto): void {
+    const kind = notificationLiveKind(item);
+    if (!kind) return;
+    let low = 0;
+    let high = this.activeNotifications.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (compareNotificationsNewestFirst(this.activeNotifications[middle]!, item) <= 0) low = middle + 1;
+      else high = middle;
+    }
+    this.activeNotifications.splice(low, 0, item);
+    if (kind === "attention") this.notificationAttentionCount += 1;
+    else this.notificationUnreadUpdateCount += 1;
   }
 
   private project(record: CanonicalWorkspaceEvent): void {
@@ -773,7 +853,7 @@ export class WorkspaceStore {
       if (existing) return existing;
     }
     if (input.dedupeKey) {
-      const existing = [...this.notifications.values()].find((item) => item.dedupeKey === input.dedupeKey);
+      const existing = this.notificationsByDedupeKey.get(input.dedupeKey);
       if (existing) {
         if ((existing.status ?? "open") !== "open") return existing;
         const updated: WorkspaceNotificationDto = {
@@ -814,13 +894,74 @@ export class WorkspaceStore {
     return this.notifications.get(notification.id)!;
   }
 
-  listNotifications(): WorkspaceNotificationDto[] {
-    // Collaboration/Team Chat is an agent-only room and is intentionally not
-    // part of the operator notification or unread-count tree, including when
-    // replaying logs created by an older server.
-    return [...this.notifications.values()]
-      .filter((item) => item.kind !== "collaboration" && (item.status ?? "open") !== "dismissed")
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  /** Iterate operator notifications without materializing the complete
+   * historical collection. Collaboration remains agent-only, and dismissed
+   * rows remain outside every operator notification surface. */
+  forEachNotification(visitor: (item: WorkspaceNotificationDto) => void): void {
+    for (const item of this.notifications.values()) {
+      if (item.kind === "collaboration" || (item.status ?? "open") === "dismissed") continue;
+      visitor(item);
+    }
+  }
+
+  findNotification(
+    predicate: (item: WorkspaceNotificationDto) => boolean,
+  ): WorkspaceNotificationDto | undefined {
+    for (const item of this.notifications.values()) {
+      if (item.kind === "collaboration" || (item.status ?? "open") === "dismissed") continue;
+      if (predicate(item)) return item;
+    }
+    return undefined;
+  }
+
+  openOperationalNotification(dedupeKey: string): WorkspaceNotificationDto | undefined {
+    return this.openOperationalNotificationsByDedupeKey.get(dedupeKey);
+  }
+
+  forEachOpenOperationalNotification(
+    dedupeKeyPrefix: string,
+    visitor: (item: WorkspaceNotificationDto) => void,
+  ): void {
+    for (const [dedupeKey, item] of this.openOperationalNotificationsByDedupeKey) {
+      if (dedupeKey.startsWith(dedupeKeyPrefix)) visitor(item);
+    }
+  }
+
+  /** Return a keyset-paginated live feed. The scan also produces exact badge
+   * counts, while retaining at most one bounded page in memory. */
+  listNotificationPage(input: {
+    limit: number;
+    before?: WorkspaceNotificationPageCursor;
+  }): WorkspaceNotificationPage {
+    const limit = Math.max(1, Math.min(100, Math.floor(input.limit)));
+    let start = 0;
+    if (input.before) {
+      let low = 0;
+      let high = this.activeNotifications.length;
+      while (low < high) {
+        const middle = (low + high) >>> 1;
+        if (compareNotificationsNewestFirst(this.activeNotifications[middle]!, input.before) <= 0) low = middle + 1;
+        else high = middle;
+      }
+      start = low;
+    }
+    const items = this.activeNotifications.slice(start, start + limit);
+    const last = items.at(-1);
+    return {
+      items,
+      attentionCount: this.notificationAttentionCount,
+      unreadUpdateCount: this.notificationUnreadUpdateCount,
+      ...(last && start + items.length < this.activeNotifications.length
+        ? { nextCursor: { createdAt: last.createdAt, id: last.id } }
+        : {}),
+    };
+  }
+
+  activeNotificationIds(notificationIds: readonly string[]): string[] {
+    return notificationIds.filter((id) => {
+      const notification = this.notifications.get(id);
+      return notification ? Boolean(notificationLiveKind(notification)) : false;
+    });
   }
 
   notificationSearchState(input: {
@@ -841,7 +982,7 @@ export class WorkspaceStore {
   }
 
   readConversation(conversationId: string): void {
-    const unread = this.listNotifications().some((item) => item.conversationId === conversationId && !item.readAt);
+    const unread = this.findNotification((item) => item.conversationId === conversationId && !item.readAt);
     if (!unread) return;
     const readAt = new Date().toISOString();
     this.append({ type: "notification_changed", conversationId, action: "read" }, { kind: "notifications_read", conversationId, readAt });
@@ -849,10 +990,13 @@ export class WorkspaceStore {
 
   /** Viewing a Chat acknowledges ordinary authored-message notices only. */
   readConversationMessages(conversationId: string): void {
-    const notificationIds = this.listNotifications()
-      .filter((item) => item.conversationId === conversationId && !item.readAt &&
-        ["direct_responses", "everyone", "broadcasts"].includes(item.kind))
-      .map((item) => item.id);
+    const notificationIds: string[] = [];
+    this.forEachNotification((item) => {
+      if (item.conversationId === conversationId && !item.readAt &&
+        ["direct_responses", "everyone", "broadcasts"].includes(item.kind)) {
+        notificationIds.push(item.id);
+      }
+    });
     if (!notificationIds.length) return;
     const readAt = new Date().toISOString();
     this.append(
@@ -874,13 +1018,16 @@ export class WorkspaceStore {
   }
 
   readAllNotifications(): number {
-    const unread = this.listNotifications().filter((item) => !item.readAt && isOpenNotificationUpdate(item));
-    if (unread.length === 0) return 0;
+    const unreadIds: string[] = [];
+    this.forEachNotification((item) => {
+      if (!item.readAt && isOpenNotificationUpdate(item)) unreadIds.push(item.id);
+    });
+    if (unreadIds.length === 0) return 0;
     this.append(
       { type: "notification_changed", action: "read" },
-      { kind: "notifications_read_ids", notificationIds: unread.map((item) => item.id), readAt: new Date().toISOString() },
+      { kind: "notifications_read_ids", notificationIds: unreadIds, readAt: new Date().toISOString() },
     );
-    return unread.length;
+    return unreadIds.length;
   }
 
   putPushSubscription(input: Omit<WebPushSubscriptionDto, "updatedAt">): WebPushSubscriptionDto {

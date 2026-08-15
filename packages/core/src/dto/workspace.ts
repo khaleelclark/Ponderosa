@@ -252,6 +252,16 @@ export interface WorkspaceNotificationDto {
   };
 }
 
+/** One bounded page of current operator-facing notifications. Historical
+ * resolved/read rows stay durable in the workspace log but are not part of
+ * this live feed. */
+export interface WorkspaceNotificationPageDto {
+  items: WorkspaceNotificationDto[];
+  attentionCount: number;
+  unreadUpdateCount: number;
+  nextCursor?: string;
+}
+
 export interface RetryCoordinationRequestResponse {
   requestIds: string[];
   joinId?: string;

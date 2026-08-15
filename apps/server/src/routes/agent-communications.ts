@@ -795,12 +795,12 @@ export function registerAgentCommunicationRoutes(
           );
         }
         const notificationCursor = workspace.cursor();
-        for (const notification of workspace.listNotifications()) {
+        workspace.forEachNotification((notification) => {
           if ((notification.status ?? "open") === "open" && notification.resolution?.kind === "coordination_request"
               && notification.resolution.requestId === original.id) {
             workspace.setNotificationStatus(notification.id, "resolved");
           }
-        }
+        });
         publishWorkspaceSince(notificationCursor);
         const conversationIds = original.conversationId
           ? [original.conversationId]

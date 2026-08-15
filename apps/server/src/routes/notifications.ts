@@ -1,12 +1,13 @@
 import type { AgentStore, WorkspaceStore } from "@ponderosa/agents";
-import type { WebPushSubscriptionDto } from "@ponderosa/core";
+import type { WebPushSubscriptionDto, WorkspaceNotificationPageDto } from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
 
 export interface NotificationRoutesOptions {
   readonly workspace: Pick<
     WorkspaceStore,
+    | "activeNotificationIds"
     | "cursor"
-    | "listNotifications"
+    | "listNotificationPage"
     | "readAllNotifications"
     | "readConversation"
     | "readConversationMessages"
@@ -15,8 +16,6 @@ export interface NotificationRoutesOptions {
   >;
   readonly store: Pick<AgentStore, "getAgentTitleProjection" | "getConversation" | "getProject">;
   readonly publishWorkspaceSince: (cursor: number) => void;
-  readonly reconcileCommunicationFailureNotifications: () => void;
-  readonly reconcileCoordinationAttentionNotifications: () => void;
 }
 
 export interface PushRoutesOptions {
@@ -37,14 +36,36 @@ export function registerNotificationListRoute(
   app: FastifyInstance,
   options: NotificationRoutesOptions,
 ): void {
-  app.get("/api/notifications", async () => {
-    options.reconcileCommunicationFailureNotifications();
-    options.reconcileCoordinationAttentionNotifications();
-    const notifications = options.workspace.listNotifications();
+  app.get<{ Querystring: { limit?: string; cursor?: string } }>("/api/notifications", async (request, reply) => {
+    const requestedLimit = request.query.limit == null ? 100 : Number(request.query.limit);
+    if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 100) {
+      return reply.code(400).send({ error: "limit must be an integer from 1 to 100" });
+    }
+    let before: { createdAt: string; id: string } | undefined;
+    if (request.query.cursor) {
+      try {
+        if (request.query.cursor.length > 512) throw new Error("cursor is too long");
+        const decoded = JSON.parse(Buffer.from(request.query.cursor, "base64url").toString("utf8")) as {
+          createdAt?: unknown;
+          id?: unknown;
+        };
+        if (typeof decoded.createdAt !== "string" || decoded.createdAt.length > 64 ||
+          typeof decoded.id !== "string" || !decoded.id || decoded.id.length > 200) {
+          throw new Error("cursor fields are invalid");
+        }
+        before = { createdAt: decoded.createdAt, id: decoded.id };
+      } catch {
+        return reply.code(400).send({ error: "cursor is invalid" });
+      }
+    }
+    const page = options.workspace.listNotificationPage({
+      limit: requestedLimit,
+      ...(before ? { before } : {}),
+    });
     const agentTitles = options.store.getAgentTitleProjection(
-      notifications.flatMap((notification) => notification.agentId ? [notification.agentId] : []),
+      page.items.flatMap((notification) => notification.agentId ? [notification.agentId] : []),
     );
-    return notifications.map((notification) => {
+    const items = page.items.map((notification) => {
       if (!notification.agentId) return notification;
       const agentTitle = agentTitles.get(notification.agentId);
       return {
@@ -52,6 +73,25 @@ export function registerNotificationListRoute(
         ...(agentTitle ? { agentTitle } : {}),
       };
     });
+    return {
+      items,
+      attentionCount: page.attentionCount,
+      unreadUpdateCount: page.unreadUpdateCount,
+      ...(page.nextCursor
+        ? { nextCursor: Buffer.from(JSON.stringify(page.nextCursor)).toString("base64url") }
+        : {}),
+    } satisfies WorkspaceNotificationPageDto;
+  });
+
+  app.post<{ Body: { notificationIds?: unknown } }>("/api/notifications/active", async (request, reply) => {
+    const notificationIds = request.body?.notificationIds;
+    if (!Array.isArray(notificationIds) || notificationIds.length > 100 ||
+      notificationIds.some((id) => typeof id !== "string" || !id || id.length > 200)) {
+      return reply.code(400).send({ error: "notificationIds must contain at most 100 notification IDs" });
+    }
+    return {
+      activeNotificationIds: options.workspace.activeNotificationIds([...new Set(notificationIds)]),
+    };
   });
 }
 

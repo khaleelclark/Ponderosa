@@ -28,7 +28,6 @@ import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import type { Route } from "../routing";
 import { useNotifications } from "../hooks/queries";
-import { isOpenAttention } from "../attention";
 import { linkPresentation } from "./chat/ChatMessages";
 
 export type GlobalSearchSelection =
@@ -248,7 +247,7 @@ export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
     refetchOnReconnect: true,
   });
   const unread = useMemo(() => search.data?.results.filter((result) => result.unread) ?? [], [search.data]);
-  const openAttentionCount = (notifications.data ?? []).filter(isOpenAttention).length;
+  const openAttentionCount = notifications.data?.attentionCount ?? 0;
   const visibleResults = useMemo(() => (search.data?.results ?? []).filter((result) => {
     if (scope === "all") return true;
     if (scope === "chats") return result.chat.kind === "conversation";

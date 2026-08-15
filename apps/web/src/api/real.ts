@@ -112,6 +112,7 @@ import type {
   WorkspaceFileReviewDto,
   WorkspaceFileViewDto,
   WorkspaceNotificationDto,
+  WorkspaceNotificationPageDto,
   WorkspaceDirectoryItemDto,
   WorkspaceDirectoryKind,
   WorkspaceDirectoryPageDto,
@@ -465,7 +466,17 @@ export const realApi = {
       body: file,
     });
   },
-  listNotifications(): Promise<WorkspaceNotificationDto[]> { return requestJson<WorkspaceNotificationDto[]>("/api/notifications"); },
+  listNotifications(cursor?: string, limit = 100): Promise<WorkspaceNotificationPageDto> {
+    return requestJson<WorkspaceNotificationPageDto>(`/api/notifications${toQuery({ limit, cursor })}`);
+  },
+  async activeNotificationIds(notificationIds: string[]): Promise<string[]> {
+    if (!notificationIds.length) return [];
+    const response = await requestJson<{ activeNotificationIds: string[] }>("/api/notifications/active", {
+      method: "POST",
+      body: JSON.stringify({ notificationIds }),
+    });
+    return response.activeNotificationIds;
+  },
   async markNotificationRead(notificationId: string): Promise<void> { await requestJson(`/api/notifications/${encodeURIComponent(notificationId)}/read`, { method: "POST" }); },
   async clearConversationNotifications(conversationId: string, scope?: "messages"): Promise<void> { await requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/notifications/read`, { method: "POST", ...(scope ? { body: JSON.stringify({ scope }) } : {}) }); },
   async markAllNotificationsRead(): Promise<void> { await requestJson("/api/notifications/read", { method: "POST" }); },

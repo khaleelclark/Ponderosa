@@ -55,7 +55,7 @@ type RemovableWorkspaceResourceRoute = Extract<
   { kind: "agent" | "conversation" }
 >;
 import {
-  closeReadPushNotifications,
+  reconcileDisplayedPushNotifications,
   inspectWebPush,
   subscribeWebPushChanges,
   syncWebPush,
@@ -104,13 +104,14 @@ import {
 import { MobileWorkspaceActionsProvider } from "./components/MobileWorkspaceActionsContext";
 import {
   notificationsForAvailableProjects,
-  notificationSummary,
 } from "./attention";
 import { useAppViewport } from "./hooks/useAppViewport";
 
 const OPERATOR_PROFILE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 const OPERATOR_PROFILE_IMAGE_ACCEPT =
   "image/png,image/jpeg,image/webp,image/gif,image/avif";
+const PUSH_CLEANUP_RETRY_INITIAL_MS = 1_000;
+const PUSH_CLEANUP_RETRY_MAX_MS = 30_000;
 
 export default function App({
   colorMode,
@@ -193,6 +194,7 @@ export default function App({
   const enginesQuery = useEngines();
   const preferencesQuery = useWorkspacePreferences();
   const notificationsQuery = useNotifications();
+  const triggerPushCleanup = useRef<() => void>(() => undefined);
   const projectOrder = preferencesQuery.data?.projectOrder ?? [];
   const projects = [
     ...projectPage,
@@ -221,13 +223,16 @@ export default function App({
   const presentedNotifications = useMemo(
     () => projectsQuery.isSuccess
       ? notificationsForAvailableProjects(
-          notificationsQuery.data ?? [],
+          notificationsQuery.data?.items ?? [],
           new Set((projectsQuery.data ?? []).map(project => project.id)),
         )
-      : notificationsQuery.data ?? [],
+      : notificationsQuery.data?.items ?? [],
     [notificationsQuery.data, projectsQuery.data, projectsQuery.isSuccess],
   );
-  const notificationCounts = notificationSummary(presentedNotifications);
+  const notificationCounts = {
+    attentionCount: notificationsQuery.data?.attentionCount ?? 0,
+    unreadUpdateCount: notificationsQuery.data?.unreadUpdateCount ?? 0,
+  };
   const engines = enginesQuery.data ?? [];
   const providerEngines = useRef(engines);
   providerEngines.current = engines;
@@ -359,28 +364,78 @@ export default function App({
   }, [workspaceTabs, activeWorkspaceTabKey, navigate]);
 
   useEffect(() => {
+    let stopped = false;
+    let reconciliationInFlight = false;
+    let reconciliationRequested = false;
+    let retryTimer: number | undefined;
+    let retryDelay = PUSH_CLEANUP_RETRY_INITIAL_MS;
+    const reconcile = () => {
+      if (stopped) return;
+      if (retryTimer !== undefined) {
+        window.clearTimeout(retryTimer);
+        retryTimer = undefined;
+      }
+      if (reconciliationInFlight) {
+        reconciliationRequested = true;
+        return;
+      }
+      reconciliationInFlight = true;
+      reconciliationRequested = false;
+      void reconcileDisplayedPushNotifications()
+        .catch(() => false)
+        .then((succeeded) => {
+          reconciliationInFlight = false;
+          if (stopped) return;
+          if (succeeded) {
+            retryDelay = PUSH_CLEANUP_RETRY_INITIAL_MS;
+            if (reconciliationRequested) queueMicrotask(reconcile);
+            return;
+          }
+          const delay = retryDelay;
+          retryDelay = Math.min(retryDelay * 2, PUSH_CLEANUP_RETRY_MAX_MS);
+          retryTimer = window.setTimeout(() => {
+            retryTimer = undefined;
+            reconcile();
+          }, delay);
+        });
+    };
+    triggerPushCleanup.current = reconcile;
     const refresh = () => {
       void inspectWebPush();
+      reconcile();
     };
     if (
       typeof Notification !== "undefined" &&
       Notification.permission === "granted"
     ) {
-      void syncWebPush(false);
+      void syncWebPush(false).finally(() => {
+        reconcile();
+      });
     } else refresh();
     const unsubscribe = subscribeWebPushChanges(refresh);
     const onVisible = () => {
       if (document.visibilityState === "visible") refresh();
     };
+    navigator.serviceWorker?.addEventListener("controllerchange", refresh);
     document.addEventListener("visibilitychange", onVisible);
     return () => {
+      stopped = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+      if (triggerPushCleanup.current === reconcile) {
+        triggerPushCleanup.current = () => undefined;
+      }
       unsubscribe();
+      navigator.serviceWorker?.removeEventListener("controllerchange", refresh);
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
 
   useEffect(() => {
-    void closeReadPushNotifications(notificationsQuery.data ?? []);
+    if (workspaceConnection.status === "live") triggerPushCleanup.current();
+  }, [workspaceConnection.status]);
+
+  useEffect(() => {
+    if (notificationsQuery.data) triggerPushCleanup.current();
   }, [notificationsQuery.data]);
 
   const selectedProjectId =
@@ -1037,7 +1092,7 @@ export default function App({
         <NotificationPanel
           open={notificationPanelOpen}
           projects={projects}
-          notifications={presentedNotifications}
+          firstPage={notificationsQuery.data}
           onClose={() => setNotificationPanelOpen(false)}
           onNavigate={navigateWorkspace}
           onOpenSettings={openSettings}

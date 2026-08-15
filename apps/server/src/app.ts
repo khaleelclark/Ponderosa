@@ -239,7 +239,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   for (const decision of workspace.listDecisions({ status: "pending" })) {
     if (!decision.runtimeAction) continue;
     workspace.cancelDecision(decision.id);
-    const notification = workspace.listNotifications().find((item) =>
+    const notification = workspace.findNotification((item) =>
       item.dedupeKey === `decision:${decision.id}` && (item.status ?? "open") === "open");
     if (notification) workspace.setNotificationStatus(notification.id, "resolved");
   }
@@ -639,6 +639,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     transitionRun,
     appendWorkspace,
     publish: (agentId, stored) => publish(agentId, stored),
+    reconcileCommunicationNotifications: reconcileCommunicationFailureNotifications,
+    reconcileCoordinationAttentionNotifications,
     isClosed: () => closed,
   });
 
@@ -665,6 +667,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return reply.code(503).send(error.publicResponse);
   });
   app.log.info(store.startupProfile(), "agent store startup completed");
+  // Repair operational projections before the listener accepts reads. Further
+  // reconciliation is driven by canonical coordination/delivery mutations.
+  reconcileCommunicationFailureNotifications();
+  reconcileCoordinationAttentionNotifications();
   const limits = { ...ASSET_LIMITS, maxAttachmentsPerMessage: ASSET_LIMITS.maxAssetsPerMessage };
   const serverContext: ServerContext = { opts, documentationReferences, limits, agentDetail, store, tokenUsage };
   const {
@@ -1028,8 +1034,6 @@ app.server.on("upgrade", linkPreviewUpgrade);
     providerEnabled,
     agentWorkProjection,
     createOperationalNotification,
-    reconcileCommunicationFailureNotifications,
-    reconcileCoordinationAttentionNotifications,
     reconcileProjectWorkspace,
     reconcileTriggerOperationalNotifications,
     resolveOperationalNotification,

@@ -396,11 +396,11 @@ export function registerQueuedMessageRoutes(
     const result = coordinationV3.cancelTerminalMessageDelivery({ projectId, activationId, idempotencyKey });
     if (!result.cancelled) return reply.code(409).send(result satisfies CancelMessageDeliveryResponse);
     const cursor = workspace.cursor();
-    for (const notification of workspace.listNotifications()) {
+    workspace.forEachNotification((notification) => {
       if (notification.dedupeKey?.startsWith(`communication-delivery:${activationId}:`)) {
         workspace.setNotificationStatus(notification.id, "dismissed");
       }
-    }
+    });
     publishWorkspaceSince(cursor);
     if (result.targetAgentId) publishMessageDeliveryChanged(result.targetAgentId);
     return result satisfies CancelMessageDeliveryResponse;

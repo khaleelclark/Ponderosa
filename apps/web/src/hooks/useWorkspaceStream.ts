@@ -6,12 +6,13 @@ import type {
   ProjectDto,
   WorkspaceEvent,
   WorkspaceEventEnvelope,
-  WorkspaceNotificationDto,
+  WorkspaceNotificationPageDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { api } from "../api";
 import type { StreamSubscription } from "../api/types";
 import { queryKeys } from "../queryKeys";
+import { isOpenAttention, isUnreadNotificationUpdate } from "../attention";
 import {
   browserPageIsVisible,
   invalidateForBrowserPage,
@@ -81,21 +82,34 @@ export function reconcileDeletedProjectClientState(
     queryKeys.projects.all,
     current => current?.filter(project => project.id !== projectId),
   );
-  queryClient.setQueryData<WorkspaceNotificationDto[]>(
+  queryClient.setQueryData<WorkspaceNotificationPageDto>(
     queryKeys.notifications.all,
-    current => current?.map(notification => {
-      if (notification.projectId !== projectId) return notification;
-      if (notification.dedupeKey?.startsWith("project-deletion:")) {
-        const { projectId: _deletedProjectId, ...workspaceNotification } = notification;
-        return workspaceNotification;
-      }
+    current => {
+      if (!current) return current;
+      let removedAttention = 0;
+      let removedUpdates = 0;
+      const items = current.items.map(notification => {
+        if (notification.projectId !== projectId) return notification;
+        if (notification.dedupeKey?.startsWith("project-deletion:")) {
+          const { projectId: _deletedProjectId, ...workspaceNotification } = notification;
+          return workspaceNotification;
+        }
+        if (isOpenAttention(notification)) removedAttention += 1;
+        else if (isUnreadNotificationUpdate(notification)) removedUpdates += 1;
+        return {
+          ...notification,
+          status: "resolved" as const,
+          readAt: notification.readAt ?? at,
+          resolvedAt: notification.resolvedAt ?? at,
+        };
+      });
       return {
-        ...notification,
-        status: "resolved",
-        readAt: notification.readAt ?? at,
-        resolvedAt: notification.resolvedAt ?? at,
+        ...current,
+        items,
+        attentionCount: Math.max(0, current.attentionCount - removedAttention),
+        unreadUpdateCount: Math.max(0, current.unreadUpdateCount - removedUpdates),
       };
-    }),
+    },
   );
   queryClient.setQueriesData<GlobalChatSearchResponseDto>(
     { queryKey: queryKeys.globalSearch.all },
