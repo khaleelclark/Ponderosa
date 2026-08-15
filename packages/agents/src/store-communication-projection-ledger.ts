@@ -154,8 +154,32 @@ export class AgentCommunicationProjectionLedger {
     const tuple = `${projection.eventId}\u0000${projection.surface}\u0000${projection.projectionKey}`;
     const existing = index.byTuple.get(tuple);
     if (existing) {
+      if (existing.message && projection.message) {
+        const existingText = existing.message.renderedText ?? "";
+        const projectionText = projection.message.renderedText ?? "";
+        const canonicalText = this.communicationIndex(projectId).byId.get(projection.eventId)?.text;
+        const hasStrictRoutingPrefix = (renderedText: string): boolean => {
+          if (!canonicalText || !renderedText.endsWith(canonicalText)) return false;
+          const routingPrefix = renderedText.slice(0, -canonicalText.length);
+          return /^#[\p{L}\p{N}_-]+(?: #[\p{L}\p{N}_-]+)* $/u.test(routingPrefix);
+        };
+        const sameCanonicalAuditMaterialization = projection.surface === "direct_agent_audit"
+          && canonicalText !== undefined
+          && canonicalText.length > 0
+          && ((existingText === canonicalText && hasStrictRoutingPrefix(projectionText))
+            || (projectionText === canonicalText && hasStrictRoutingPrefix(existingText)));
+        const sameMaterialization = existing.message.role === projection.message.role
+          && (existingText === projectionText || sameCanonicalAuditMaterialization);
+        if (!sameMaterialization) {
+          throw new Error("communication projection metadata collision");
+        }
+      }
       if (!existing.message && projection.message) {
-        const enriched = { ...projection, revision: (existing.revision ?? 1) + 1 };
+        const enriched = {
+          ...existing,
+          revision: (existing.revision ?? 1) + 1,
+          message: projection.message,
+        };
         appendFsyncedJsonl(file, [enriched]);
         const position = index.projections.findIndex((candidate) => candidate === existing);
         if (position >= 0) index.projections[position] = enriched;
@@ -189,26 +213,9 @@ export class AgentCommunicationProjectionLedger {
           return { projection: enriched, replayed: false };
         }
       }
-      const existingText = existing.message?.renderedText ?? "";
-      const projectionText = projection.message?.renderedText ?? "";
-      const canonicalText = this.communicationIndex(projectId).byId.get(projection.eventId)?.text;
-      const routingPrefix = canonicalText && existingText.endsWith(canonicalText)
-        ? existingText.slice(0, -canonicalText.length)
-        : "";
-      const sameCanonicalAuditMaterialization = projection.surface === "direct_agent_audit"
-        && canonicalText !== undefined
-        && canonicalText.length > 0
-        && projectionText === canonicalText
-        && /^#[\p{L}\p{N}_-]+(?: #[\p{L}\p{N}_-]+)* $/u.test(routingPrefix);
-      const sameMaterialization = existing.message && projection.message
-        && existing.message.role === projection.message.role
-        && (existingText === projectionText || sameCanonicalAuditMaterialization);
-      if (projection.message && JSON.stringify(existing.message) !== JSON.stringify(projection.message) && !sameMaterialization) {
-        throw new Error("communication projection metadata collision");
-      }
       // Delivery retries may create new runtime-local IDs and timestamps, and
-      // passive audit replay may omit an existing presentation-only routing
-      // prefix. Keep the first, richer placement when materialization agrees.
+      // passive audit replay may add or omit a presentation-only routing
+      // prefix. Keep the first placement when materialization agrees.
       // Startup has already rebuilt this disposable index from the canonical
       // projection ledger. Replaying an unchanged placement must not repeat the
       // same SQL work for every communication. Enriched and newly recovered
