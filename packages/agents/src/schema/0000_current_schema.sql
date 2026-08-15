@@ -130,6 +130,9 @@ CREATE TABLE context_rollovers (
   completion_reason TEXT CHECK (completion_reason IN (
     'replacement_verified', 'native_compaction', 'no_continuation_required'
   )),
+  failure_provenance TEXT NOT NULL DEFAULT 'internal' CHECK (
+    failure_provenance IN ('provider','internal')
+  ),
   last_error TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,

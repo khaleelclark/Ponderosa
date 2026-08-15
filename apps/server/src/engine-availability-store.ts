@@ -1,11 +1,16 @@
 import { chmodSync, closeSync, existsSync, fsyncSync, openSync, readFileSync, writeSync } from "node:fs";
 import path from "node:path";
+import {
+  normalizeProviderFailureCategory,
+  type ProviderFailureCategory,
+} from "@ponderosa/core";
 
 export type EngineAvailabilityEvidenceSource = "provider_run" | "operator_probe";
 
 export interface EngineAvailabilityEvidence {
   engineId: string;
   available: boolean;
+  failureCategory?: ProviderFailureCategory;
   detail?: string;
   source: EngineAvailabilityEvidenceSource;
   observedAt: string;
@@ -32,9 +37,16 @@ export class EngineAvailabilityStore {
         if (typeof value.engineId !== "string" || typeof value.available !== "boolean" ||
             typeof value.observedAt !== "string" ||
             !["provider_run", "operator_probe"].includes(value.source ?? "")) continue;
+        const hasFailureCategory = Object.prototype.hasOwnProperty.call(
+          value,
+          "failureCategory",
+        );
         this.latest.set(value.engineId, {
           engineId: value.engineId,
           available: value.available,
+          ...(hasFailureCategory
+            ? { failureCategory: normalizeProviderFailureCategory(value.failureCategory) }
+            : {}),
           ...(typeof value.detail === "string" ? { detail: value.detail } : {}),
           source: value.source as EngineAvailabilityEvidenceSource,
           observedAt: value.observedAt,
@@ -55,9 +67,16 @@ export class EngineAvailabilityStore {
   }
 
   record(input: Omit<EngineAvailabilityEvidence, "observedAt"> & { observedAt?: string }): EngineAvailabilityEvidence {
+    const hasFailureCategory = Object.prototype.hasOwnProperty.call(
+      input,
+      "failureCategory",
+    );
     const evidence: EngineAvailabilityEvidence = {
       engineId: input.engineId,
       available: input.available,
+      ...(hasFailureCategory
+        ? { failureCategory: normalizeProviderFailureCategory(input.failureCategory) }
+        : {}),
       ...(input.detail ? { detail: input.detail.slice(0, 1_000) } : {}),
       source: input.source,
       observedAt: input.observedAt ?? new Date().toISOString(),

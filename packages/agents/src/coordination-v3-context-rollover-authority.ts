@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  publicProviderFailureSummary,
   TERMINAL_REQUEST_STATES,
   type CoordinationReplyAuthority,
   type CoordinationRequestState,
@@ -10,6 +11,16 @@ import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js
 import type { ContextRolloverState, ContextRolloverV3 } from "./coordination-v3-types.js";
 
 const MAX_CONTEXT_ROLLOVER_RECENT_TAIL_IDS = 80;
+const MAX_INTERNAL_ROLLOVER_FAILURE_CHARACTERS = 1_000;
+const UNSAFE_INTERNAL_ROLLOVER_FAILURE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
+
+function boundedInternalRolloverFailure(error: string): string {
+  const value = error.trim();
+  if (!value || UNSAFE_INTERNAL_ROLLOVER_FAILURE.test(value)) {
+    return "Context rollover failed due to an internal runtime error.";
+  }
+  return value.slice(0, MAX_INTERNAL_ROLLOVER_FAILURE_CHARACTERS);
+}
 
 interface RolloverRow {
   id: string; project_id: string; agent_id: string; state: ContextRolloverState;
@@ -34,6 +45,8 @@ interface RolloverRow {
   replacement_input_committed_at: string | null; replacement_verified_at: string | null;
   visible_response_committed_at: string | null;
   completion_reason: ContextRolloverV3["completionReason"] | null;
+  failure_signal: ContextRolloverV3["failureSignal"] | null;
+  failure_provenance: ContextRolloverV3["failureProvenance"];
   last_error: string | null; created_at: string; updated_at: string; terminal_at: string | null;
 }
 
@@ -268,7 +281,7 @@ export class CoordinationV3ContextRolloverAuthority {
     const rows = this.sqlite.prepare(`
       SELECT * FROM context_rollovers
       WHERE state = 'outcome_unknown'
-        AND last_error = 'replacement Run was cancelled before low-water context confirmation'
+        AND failure_signal = 'replacement_cancelled'
       ORDER BY terminal_at, id
     `).all() as RolloverRow[];
     return rows.map((row) => this.view(row));
@@ -336,6 +349,7 @@ export class CoordinationV3ContextRolloverAuthority {
   failUnidentifiedReplacementAfterRestart(id: string, now = new Date().toISOString()): ContextRolloverV3 {
     this.sqlite.prepare(`
       UPDATE context_rollovers SET state = 'outcome_unknown',
+        failure_provenance = 'internal',
         last_error = 'server restarted after replacement input commit but before the candidate provider session was durably identified',
         updated_at = ?, terminal_at = COALESCE(terminal_at, ?)
       WHERE id = ? AND state = 'continuation_ready'
@@ -576,7 +590,7 @@ export class CoordinationV3ContextRolloverAuthority {
             row.completion_reason || row.replacement_verified_at) {
           throw new Error("context rollover recovery is not fenced to a failed unaccepted candidate");
         }
-        if (row.last_error?.startsWith("rollover_seed_overflow:")) {
+        if (row.failure_signal === "seed_overflow") {
           throw new Error("context rollover seed overflow is terminal for this provider generation");
         }
         if (row.replacement_run_id && row.replacement_run_id !== runId) {
@@ -754,7 +768,7 @@ export class CoordinationV3ContextRolloverAuthority {
           replacement_attempt = replacement_attempt + CASE WHEN replacement_run_id = ? THEN 0 ELSE 1 END,
           replacement_input_committed_at = ?, replacement_session_id = NULL,
           replacement_session_at = NULL, replacement_verified_at = NULL,
-          state = 'continuation_ready', completion_reason = NULL, last_error = NULL,
+          state = 'continuation_ready', completion_reason = NULL, failure_signal = NULL, last_error = NULL,
           terminal_at = NULL, updated_at = ?
         WHERE id = ? AND state IN ('continuation_ready','failed','outcome_unknown')
       `).run(runId, row.prompt_hash, row.system_prompt_hash, manifestHash, runId, now, now, row.id);
@@ -768,7 +782,14 @@ export class CoordinationV3ContextRolloverAuthority {
       throw new Error("replacement session does not own this context rollover");
     }
     if (usedTokens >= current.lowWaterMark) {
-      return this.fail(id, "failed", `rollover_seed_overflow: reconstructed context occupancy ${usedTokens} did not fall below low-water mark ${current.lowWaterMark}`, now);
+      return this.fail(
+        id,
+        "failed",
+        "replacement context remained above the rollover low-water mark",
+        "internal",
+        now,
+        "seed_overflow",
+      );
     }
     this.sqlite.prepare(`
       UPDATE context_rollovers SET replacement_verified_at = COALESCE(replacement_verified_at, ?),
@@ -826,12 +847,23 @@ export class CoordinationV3ContextRolloverAuthority {
     })();
   }
 
-  fail(id: string, state: "failed" | "outcome_unknown", error: string, now = new Date().toISOString()): ContextRolloverV3 {
+  fail(
+    id: string,
+    state: "failed" | "outcome_unknown",
+    error: string,
+    provenance: ContextRolloverV3["failureProvenance"],
+    now = new Date().toISOString(),
+    failureSignal?: ContextRolloverV3["failureSignal"],
+  ): ContextRolloverV3 {
+    const publicError = provenance === "provider"
+      ? publicProviderFailureSummary(error) ?? "Provider execution failed."
+      : boundedInternalRolloverFailure(error);
     this.sqlite.transaction(() => {
       this.sqlite.prepare(`
-        UPDATE context_rollovers SET state = ?, last_error = ?, updated_at = ?, terminal_at = ?
+        UPDATE context_rollovers SET state = ?, failure_signal = ?, failure_provenance = ?,
+          last_error = ?, updated_at = ?, terminal_at = ?
         WHERE id = ? AND state IN ('requested','handoff_committed','session_retiring','continuation_ready')
-      `).run(state, error.slice(0, 2_000), now, now, id);
+      `).run(state, failureSignal ?? null, provenance, publicError, now, now, id);
       this.sqlite.prepare(`
         UPDATE agent_activations SET state = 'cancelled', updated_at = ?, terminal_at = ?
         WHERE kind IN ('context_rollover_handoff','context_rollover_continuation')
@@ -877,6 +909,11 @@ export class CoordinationV3ContextRolloverAuthority {
   }
 
   private view(row: RolloverRow): ContextRolloverV3 {
+    const publicLastError = row.last_error
+      ? row.failure_provenance === "provider"
+        ? publicProviderFailureSummary(row.last_error) ?? "Provider execution failed."
+        : boundedInternalRolloverFailure(row.last_error)
+      : undefined;
     return {
       id: row.id, projectId: row.project_id, agentId: row.agent_id, state: row.state,
       oldProviderSessionId: row.old_provider_session_id,
@@ -916,8 +953,10 @@ export class CoordinationV3ContextRolloverAuthority {
       ...(row.visible_response_committed_at
         ? { visibleResponseCommittedAt: row.visible_response_committed_at }
         : {}),
-      ...(row.last_error ? { lastError: row.last_error } : {}),
+      ...(publicLastError ? { lastError: publicLastError } : {}),
       ...(row.completion_reason ? { completionReason: row.completion_reason } : {}),
+      ...(row.failure_signal ? { failureSignal: row.failure_signal } : {}),
+      failureProvenance: row.failure_provenance,
       createdAt: row.created_at, updatedAt: row.updated_at,
       ...(row.terminal_at ? { terminalAt: row.terminal_at } : {}),
     };

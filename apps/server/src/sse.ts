@@ -1,6 +1,6 @@
-import type {
-  AgentStreamEvent,
-  SseEventEnvelope,
+import {
+  type AgentStreamEvent,
+  type SseEventEnvelope,
 } from "@ponderosa/core";
 import type { StoredLogEvent } from "@ponderosa/agents";
 

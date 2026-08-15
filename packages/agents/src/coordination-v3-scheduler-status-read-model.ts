@@ -38,22 +38,21 @@ export class CoordinationV3SchedulerStatusReadModel {
 
   providerBlockedState(agentId: string): ProviderBlockedWorkDto | undefined {
     const rows = this.sqlite.prepare(`
-      SELECT id, delivery_failures, last_delivery_error, available_at, updated_at
+      SELECT id, delivery_failures, provider_failure_category, available_at, updated_at
       FROM agent_activations
       WHERE agent_id = ? AND state = 'retry_pending'
-        AND (last_delivery_error LIKE '[capacity] %'
-          OR last_delivery_error LIKE '[rate_limit] %')
+        AND provider_failure_category IN ('capacity', 'rate_limit')
       ORDER BY available_at, id
     `).all(agentId) as Array<{
       id: string;
       delivery_failures: number;
-      last_delivery_error: string;
+      provider_failure_category: "capacity" | "rate_limit";
       available_at: string;
       updated_at: string;
     }>;
     if (!rows.length) return undefined;
     return {
-      classification: rows.some((row) => row.last_delivery_error.startsWith("[capacity]"))
+      classification: rows.some((row) => row.provider_failure_category === "capacity")
         ? "capacity"
         : "rate_limit",
       activationIds: rows.map((row) => row.id),

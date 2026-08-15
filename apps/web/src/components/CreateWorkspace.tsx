@@ -30,7 +30,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { api } from "../api";
 import {
-  engineCanTestAccess,
   engineIsAvailable,
   resolveRuntimeSelection,
 } from "../conversationEngine";
@@ -49,6 +48,7 @@ import { ConfirmDialog } from "./ConfirmationDialogs";
 import { HostFolderPicker } from "./HostFolderPicker";
 import { IconTitle } from "./IconTitle";
 import { ProjectRuntimeFields } from "./ProjectRuntimeFields";
+import { ProviderAvailabilityAlerts } from "./ProviderAvailabilityAlerts";
 import { TriggersPane } from "./TriggersPane";
 import { AgentCreateSurface } from "./AgentCreateDialog";
 
@@ -214,15 +214,11 @@ function ProjectCreateForm({
           inheritedFallback="Automatic"
           disabled={!defaultEngine}
         />
-        {engines.filter(engineCanTestAccess).map(engine => (
-          <Alert
-            key={engine.id}
-            severity="warning"
-            action={<Button color="inherit" size="small" disabled={recheckEngine.isPending} onClick={() => setEngineToTest(engine)}>Test Access</Button>}
-          >
-            {engine.displayName} is configured but unavailable. {engine.availabilityDetail}
-          </Alert>
-        ))}
+        <ProviderAvailabilityAlerts
+          engines={engines}
+          testPending={recheckEngine.isPending}
+          onTestAccess={setEngineToTest}
+        />
         <Box>
           <Typography variant="subtitle2">Working Folder</Typography>
           <RadioGroup value={folderMode} onChange={event => {

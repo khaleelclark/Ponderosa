@@ -1,11 +1,11 @@
 import type Database from "better-sqlite3";
 import { and, eq } from "drizzle-orm";
-import type {
-  AgentDto,
-  AgentLifecycleReason,
-  AgentLifecycleStatus,
-  CommunicationProjection,
-  ProjectDto,
+import {
+  type AgentDto,
+  type AgentLifecycleReason,
+  type AgentLifecycleStatus,
+  type CommunicationProjection,
+  type ProjectDto,
 } from "@ponderosa/core";
 import type { Db } from "./db.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";

@@ -40,7 +40,11 @@ import {
 } from "../app-contracts.js";
 import type { createAgentEventService } from "../agent-event-service.js";
 import type { createCommunicationArtifactAuthority } from "../communication-artifacts.js";
-import type { createEngineControlPlane } from "../engine-control-plane.js";
+import {
+  ProviderAdapterBoundaryError,
+  type createEngineControlPlane,
+} from "../engine-control-plane.js";
+import { projectProviderCapabilities } from "../provider-success-projection.js";
 import type { EngineAvailabilityStore } from "../engine-availability-store.js";
 import type { createRuntimeAuthority } from "../runtime-authority.js";
 import type { createRuntimeEventAuthority } from "../runtime-event-authority.js";
@@ -374,11 +378,23 @@ export function registerAgentMessageRunRoute(
       const providerSlash = !internalV3Dispatch ? /^\/([\p{L}\p{N}_:-]+)(?:\s|$)/u.exec(text) : undefined;
       if (providerSlash) {
         const runtimeSession = activeRuns.get(agent.id)?.runtimeSession ?? reusableRuntime(agent.id)?.session;
-        const catalog: EngineCapabilities = await Promise.resolve(runtimeSession?.capabilities
-          ? runtimeSession.capabilities()
-          : engine.adapter.capabilities
-            ? discoverEngineCapabilities(project.id, project.hostPath, engine.adapter, effectiveModel, false)
-            : { steering: false, persistentSessions: false, commands: [], mcpServers: [], composerCapabilities: [] });
+        let catalog: EngineCapabilities;
+        try {
+          const rawCapabilities = await Promise.resolve(runtimeSession?.capabilities
+            ? runtimeSession.capabilities()
+            : engine.adapter.capabilities
+              ? discoverEngineCapabilities(project.id, project.hostPath, engine.adapter, effectiveModel, false)
+              : { steering: false, persistentSessions: false, commands: [], mcpServers: [], composerCapabilities: [] });
+          catalog = projectProviderCapabilities(rawCapabilities);
+        } catch (error) {
+          throw error instanceof ProviderAdapterBoundaryError
+            ? error
+            : new ProviderAdapterBoundaryError(
+                engine.adapter.id,
+                "read runtime capabilities",
+                error,
+              );
+        }
         const command = catalog.commands.find((candidate) => candidate.name === providerSlash[1]);
         if (!command || command.status !== "available") {
           return reply.code(409).send({

@@ -77,6 +77,9 @@ export class CoordinationV3RequestAuthority {
       actor: input.actor,
       inReplyToUpdateId: input.inReplyToUpdateId ?? null,
       payload: input.payload ?? null,
+      ...(input.providerFailureCategory
+        ? { providerFailureCategory: input.providerFailureCategory }
+        : {}),
       artifacts,
     });
     return this.sqlite.transaction(() => {
@@ -323,8 +326,9 @@ export class CoordinationV3RequestAuthority {
         INSERT INTO coordination_request_updates (
           id, request_id, kind, actor_kind, actor_id,
           in_reply_to_update_id, payload_json, payload_hash,
-          resulting_state, resulting_version, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          resulting_state, resulting_version, created_at,
+          provider_failure_category
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         input.updateId,
         request.id,
@@ -337,6 +341,7 @@ export class CoordinationV3RequestAuthority {
         next.state,
         next.version,
         now,
+        input.providerFailureCategory ?? null,
       );
       this.insertArtifacts(
         input.updateId,

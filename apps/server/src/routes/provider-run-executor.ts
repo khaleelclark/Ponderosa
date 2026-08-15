@@ -12,10 +12,14 @@ import {
   type ChatMessage,
   type ConversationMessageDto,
   type ProjectDto,
+  type ProviderErrorCode,
+  type ProviderFailureCategory,
   type ProviderInputSourceManifest,
   type RuntimeDynamicToolSpec,
   type RuntimeProcessHandle,
   unicodeCodePointLength,
+  publicProviderFailureEvent,
+  publicProviderFailureSummary,
 } from "@ponderosa/core";
 import { randomUUID } from "node:crypto";
 import type { LogEvent } from "@ponderosa/agents";
@@ -33,6 +37,17 @@ import type {
 } from "../app-contracts.js";
 import { evaluateContextRolloverPressure } from "../context-rollover-pressure.js";
 import type { ContextCursor } from "../context-cursors.js";
+import { providerUnavailableNotificationBody } from "../provider-availability-detail.js";
+import { readProviderSessionIdentifier } from "../provider-session-success.js";
+import {
+  isProviderRuntimeBoundaryError,
+  providerEventStream,
+  providerRuntimeOperation,
+  providerRuntimeValue,
+  providerProcessHandleFacade,
+  providerSessionFacade,
+  takeProviderRuntimeCleanupFailure,
+} from "../provider-session-facade.js";
 import { cleanupRuntimeAttachments } from "../runtime-attachments.js";
 import type { AgentMessageRunContext } from "./agent-message-run.js";
 
@@ -264,12 +279,21 @@ export function startProviderRunExecution(
     // Consolidate ordinary response deltas into one durable, execution-scoped
     // Work log entry. Communication is created only by explicit intent calls.
     let runError: string | undefined;
+    let runFailureClassification:
+      | ProviderErrorCode
+      | ProviderFailureCategory
+      | undefined;
     let finalText = "";
     let firstTextSeq: number | undefined;
     let lastTextSeq: number | undefined;
     let v3PromptInjected = false;
     let continuationHandoffConsumed = false;
     let providerWorkObserved = false;
+    let projectedProviderNonExecutionEvidence = false;
+    let providerStreamBoundaryFailure: {
+      kind: "turn_submission_rejection" | "iterator_rejection" | "event_projection";
+      providerAccepted: boolean;
+    } | undefined;
     let schedulerCancelled = false;
     let usedFreshFallback = false;
     let projectWorkspaceUnavailable = false;
@@ -298,7 +322,7 @@ export function startProviderRunExecution(
         onRuntimeSpawned: (handle: RuntimeProcessHandle) => void,
         identity: object,
       ): Promise<PersistentRuntime> => {
-        const session = await engine.adapter.openSession!({
+        const rawSession = await providerRuntimeOperation("open provider session", () => engine.adapter.openSession!({
           agentId: agent.id,
           cwd: project.hostPath,
           resumeSessionId: sessionResumeId,
@@ -473,7 +497,8 @@ export function startProviderRunExecution(
           onRuntimeRootExit: (detail) => persistentRootExited(agent.id, identity, detail),
           onCapabilitiesChanged: () => reportRuntimeCapabilitiesChanged(project.id, engine.adapter.id),
           signal: controller.signal,
-        });
+        }));
+        const session = providerSessionFacade(rawSession);
         return {
           identity,
           session,
@@ -494,6 +519,7 @@ export function startProviderRunExecution(
         // can spawn or await anything.
         const operation = Promise.resolve()
           .then(() => openPersistentRuntime(sessionResumeId, (handle) => {
+            handle = providerProcessHandleFacade(handle);
             providerProcessAuthority.register(handle, {
               purpose: "persistent provider runtime",
               projectId: project.id,
@@ -530,6 +556,13 @@ export function startProviderRunExecution(
               try {
                 await teardownOpeningRuntime(agent.id, state, "provider readiness failed");
               } catch (closeError) {
+                if (isProviderRuntimeBoundaryError(error)) {
+                  app.log.error(
+                    { agentId: agent.id, runId },
+                    "provider readiness cleanup remains pending after provider rejection",
+                  );
+                  throw error;
+                }
                 throw new AggregateError(
                   [error, closeError],
                   `provider runtime readiness and cleanup failed for ${agent.id}`,
@@ -576,6 +609,7 @@ export function startProviderRunExecution(
       }
       let persistentTurnStarted = false;
       const registerOneShotRuntime = (handle: RuntimeProcessHandle): void => {
+        handle = providerProcessHandleFacade(handle);
         providerProcessAuthority.register(handle, {
           purpose: "provider Run",
           projectId: project.id,
@@ -598,34 +632,77 @@ export function startProviderRunExecution(
           });
         }
       };
+      const projectProviderStream = async function* (
+        source: AsyncIterable<AgentEvent>,
+      ): AsyncIterable<AgentEvent> {
+        try {
+          for await (const event of source) {
+            providerStreamBoundaryFailure = undefined;
+            yield event;
+          }
+        } catch (error) {
+          providerStreamBoundaryFailure ??= {
+            kind: isProviderRuntimeBoundaryError(error) &&
+              error.operation === "project provider event"
+              ? "event_projection"
+              : "iterator_rejection",
+            providerAccepted: v3PromptInjected,
+          };
+          throw error;
+        }
+      };
       const startStream = (sessionId?: string): AsyncIterable<AgentEvent> => sessionId
         ? persistentRuntime
           ? {
               async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
                 if (!persistentTurnStarted) {
-                  await persistentRuntime!.session.startTurn({
-                    prompt,
-                    kind: "collaboration",
-                    model: effectiveModel,
-                    effort: effectiveEffort,
-                    speed: effectiveSpeed,
-                    clientMessageId: communicationEventId,
-                  });
+                  try {
+                    await persistentRuntime!.session.startTurn({
+                      prompt,
+                      kind: "collaboration",
+                      model: effectiveModel,
+                      effort: effectiveEffort,
+                      speed: effectiveSpeed,
+                      clientMessageId: communicationEventId,
+                    });
+                  } catch (error) {
+                    providerStreamBoundaryFailure = {
+                      kind: "turn_submission_rejection",
+                      providerAccepted: v3PromptInjected,
+                    };
+                    throw error;
+                  }
                   persistentTurnStarted = true;
                 }
                 while (true) {
-                  const next = await persistentRuntime!.iterator.next();
+                  let next: IteratorResult<AgentEvent>;
+                  try {
+                    next = await persistentRuntime!.iterator.next();
+                  } catch (error) {
+                    providerStreamBoundaryFailure = {
+                      kind: isProviderRuntimeBoundaryError(error) &&
+                        error.operation === "project provider event"
+                        ? "event_projection"
+                        : "iterator_rejection",
+                      providerAccepted: v3PromptInjected,
+                    };
+                    throw error;
+                  }
                   if (next.done) {
                     teardownPersistentRuntimeInBackground(agent.id, persistentRuntime!, "provider stream ended");
                     yield { type: "error", message: "persistent engine session stopped" };
                     return;
                   }
-                  yield next.value;
-                  if (next.value.type === "turn_done" || next.value.type === "error") return;
+                  const event = next.value;
+                  providerStreamBoundaryFailure = undefined;
+                  yield event;
+                  if (event.type === "turn_done" || event.type === "error") return;
                 }
               },
             }
-          : engine.adapter.continue({
+          : projectProviderStream(providerEventStream(providerRuntimeValue(
+              "continue provider session",
+              () => engine.adapter.continue({
               agentId: agent.id,
               cwd: project.hostPath,
               prompt,
@@ -638,34 +715,59 @@ export function startProviderRunExecution(
               signal: controller.signal,
               onRuntimeRootExit: () => agentMessageCapabilities.delete(messageCapability),
               onRuntimeSpawned: registerOneShotRuntime,
-            })
+              }),
+            ), "read continued provider event stream"))
         : persistentRuntime
           ? {
               async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
                 if (!persistentTurnStarted) {
-                  await persistentRuntime!.session.startTurn({
-                    prompt: freshPrompt,
-                    kind: "collaboration",
-                    model: effectiveModel,
-                    effort: effectiveEffort,
-                    speed: effectiveSpeed,
-                    clientMessageId: communicationEventId,
-                  });
+                  try {
+                    await persistentRuntime!.session.startTurn({
+                      prompt: freshPrompt,
+                      kind: "collaboration",
+                      model: effectiveModel,
+                      effort: effectiveEffort,
+                      speed: effectiveSpeed,
+                      clientMessageId: communicationEventId,
+                    });
+                  } catch (error) {
+                    providerStreamBoundaryFailure = {
+                      kind: "turn_submission_rejection",
+                      providerAccepted: v3PromptInjected,
+                    };
+                    throw error;
+                  }
                   persistentTurnStarted = true;
                 }
                 while (true) {
-                  const next = await persistentRuntime!.iterator.next();
+                  let next: IteratorResult<AgentEvent>;
+                  try {
+                    next = await persistentRuntime!.iterator.next();
+                  } catch (error) {
+                    providerStreamBoundaryFailure = {
+                      kind: isProviderRuntimeBoundaryError(error) &&
+                        error.operation === "project provider event"
+                        ? "event_projection"
+                        : "iterator_rejection",
+                      providerAccepted: v3PromptInjected,
+                    };
+                    throw error;
+                  }
                   if (next.done) {
                     teardownPersistentRuntimeInBackground(agent.id, persistentRuntime!, "provider stream ended");
                     yield { type: "error", message: "persistent engine session stopped" };
                     return;
                   }
-                  yield next.value;
-                  if (next.value.type === "turn_done" || next.value.type === "error") return;
+                  const event = next.value;
+                  providerStreamBoundaryFailure = undefined;
+                  yield event;
+                  if (event.type === "turn_done" || event.type === "error") return;
                 }
               },
             }
-          : engine.adapter.seed({
+          : projectProviderStream(providerEventStream(providerRuntimeValue(
+              "seed provider session",
+              () => engine.adapter.seed({
               agentId: agent.id,
               cwd: project.hostPath,
               prompt: freshPrompt,
@@ -678,7 +780,8 @@ export function startProviderRunExecution(
               signal: controller.signal,
               onRuntimeRootExit: () => agentMessageCapabilities.delete(messageCapability),
               onRuntimeSpawned: registerOneShotRuntime,
-            });
+              }),
+            ), "read seeded provider event stream"));
 
       const persistAcceptedSessionSnapshot = (acceptedSessionId: string): void => {
         const artifactIds = [...manifestArtifactIds].sort();
@@ -729,7 +832,9 @@ export function startProviderRunExecution(
             injectionId: v3InjectionId!,
             runId: activeRun.v3SchedulerRunId,
             fencingToken: activeRun.v3FencingToken,
-            providerSessionId: sessionId ?? persistentRuntime?.session.engineAgentId,
+            providerSessionId: sessionId ?? (persistentRuntime
+              ? readProviderSessionIdentifier(persistentRuntime.session)
+              : undefined),
           });
         }
         for await (const event of startStream(sessionId)) {
@@ -759,7 +864,9 @@ export function startProviderRunExecution(
               injectionId: v3InjectionId!,
               runId: activeRun.v3SchedulerRunId,
               fencingToken: activeRun.v3FencingToken,
-              providerSessionId: sessionId ?? persistentRuntime?.session.engineAgentId,
+              providerSessionId: sessionId ?? (persistentRuntime
+                ? readProviderSessionIdentifier(persistentRuntime.session)
+                : undefined),
             });
             v3PromptInjected = true;
             if (continuationHandoff && !continuationHandoffConsumed && !replacementCandidate) {
@@ -928,7 +1035,7 @@ export function startProviderRunExecution(
                 });
               }
             } else if (replacementRollover?.state === "failed" &&
-                replacementRollover.lastError?.startsWith("rollover_seed_overflow:")) {
+                replacementRollover.failureSignal === "seed_overflow") {
               // A seed already above the low-water mark needs operator action.
               // Do not manufacture an infinite succession of fresh sessions.
               suppressPressureForSeedOverflow = true;
@@ -1012,7 +1119,14 @@ export function startProviderRunExecution(
               }
             }
           }
-          if (event.type === "error") runError = event.message;
+          if (event.type === "error") {
+            runError = event.message;
+            runFailureClassification = event.category ?? event.code;
+            projectedProviderNonExecutionEvidence = !providerWorkObserved &&
+              !v3PromptInjected &&
+              (runFailureClassification === "capacity" ||
+                runFailureClassification === "rate_limit");
+          }
         }
         if (!retryFresh) break;
       }
@@ -1020,14 +1134,51 @@ export function startProviderRunExecution(
         runError = "provider ended before prompt injection could be confirmed";
       }
     } catch (err) {
+      const cleanupFailure = takeProviderRuntimeCleanupFailure(err);
+      if (cleanupFailure) {
+        app.log.error({
+          runId,
+          agentId: agent.id,
+          operation: cleanupFailure.operation,
+          category: cleanupFailure.category,
+          ...(cleanupFailure.code ? { code: cleanupFailure.code } : {}),
+          restrictedDetail: cleanupFailure.restrictedDetail,
+        }, "provider event stream cleanup failed after primary provider failure");
+      }
       if (isClosed() || controller.signal.aborted || !ownsActiveRunForAuditDrain(agent.id, activeRun)) return;
       schedulerCancelled = Boolean(activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));
       if (schedulerCancelled) return;
-      const message = err instanceof Error ? err.message : String(err);
+      // Only exceptions crossing an explicit provider operation/session/event
+      // boundary may become canonical provider failures. Scheduler, lease,
+      // persistence, workspace, and rollover exceptions remain internal.
+      const providerFailure = isProviderRuntimeBoundaryError(err)
+        ? err
+        : undefined;
+      const message = providerFailure?.restrictedDetail
+        ?? "Agent execution failed due to an internal runtime error.";
+      const failureEvent = providerFailure
+        ? publicProviderFailureEvent({
+            type: "error",
+            message,
+            ...(providerFailure.code ? { code: providerFailure.code } : {}),
+            category: providerFailure.category,
+          })
+        : { type: "error" as const, message };
+      runFailureClassification = providerFailure?.category;
       const workspaceIssue = await reconcileProjectWorkspace(project, agent);
       projectWorkspaceUnavailable = Boolean(workspaceIssue);
+      if (workspaceIssue) runFailureClassification = undefined;
       runError = workspaceIssue ?? message;
-      await persistRuntimeEvent(agent.id, activeRun, { type: "error", message: runError });
+      if (!providerFailure && !workspaceIssue) {
+        app.log.error({ runId, agentId: agent.id }, "internal provider Run orchestration failed");
+      }
+      await persistRuntimeEvent(
+        agent.id,
+        activeRun,
+        workspaceIssue
+          ? { type: "error", message: workspaceIssue }
+          : failureEvent,
+      );
     } finally {
       runtimeElicitations.clearRun(runId);
       const owned = ownsActiveRunForAuditDrain(agent.id, activeRun);
@@ -1149,15 +1300,19 @@ export function startProviderRunExecution(
             replacementRunRollover.id,
             "outcome_unknown",
             "replacement Run was cancelled before low-water context confirmation",
+            "internal",
+            undefined,
+            "replacement_cancelled",
           );
         } else if (replacementMissingConfirmation) {
           const missingObservation = replacementRunRollover.replacementSessionId
-            ? `replacement session ${replacementRunRollover.replacementSessionId} ended before reporting the required low-water context observation`
+            ? "replacement provider session ended before reporting the required low-water context observation"
             : "replacement Run ended before identifying and confirming a low-water provider session";
           coordinationV3.failContextRollover(
             replacementRunRollover.id,
             runError ? "outcome_unknown" : "failed",
             missingObservation,
+            "internal",
           );
         }
         // The last accepted snapshot still identifies the old provider
@@ -1305,11 +1460,20 @@ export function startProviderRunExecution(
             hash: policySnapshotHash,
           });
         }
-        if (runError && !schedulerCancelled) {
-          if (classifyProviderFailure(runError) === "authentication") {
+        const runFailureKind = runError && runFailureClassification
+          ? classifyProviderFailure(runError, runFailureClassification)
+          : undefined;
+        const publicRunError = runError
+          ? runFailureKind
+            ? publicProviderFailureSummary(runError, runFailureKind) ?? "Provider execution failed."
+            : "Agent execution failed due to an internal runtime error."
+          : undefined;
+        if (runError && publicRunError && !schedulerCancelled) {
+          if (runFailureKind === "authentication") {
             engineAvailability.record({
               engineId: runtimeEngineId,
               available: false,
+              failureCategory: runFailureKind,
               detail: runError,
               source: "provider_run",
             });
@@ -1318,13 +1482,13 @@ export function startProviderRunExecution(
               category: "provider",
               severity: "attention",
               title: `${engines.get(runtimeEngineId)?.adapter.displayName ?? runtimeEngineId} stopped accepting work`,
-              body: `${runError} Queued Runs using this provider are now held.`,
+              body: providerUnavailableNotificationBody(runError, runFailureKind),
               projectId: agent.projectId,
               conversationId: agent.conversationId,
               action: { kind: "open_settings", targetId: runtimeEngineId },
             });
           }
-          notifyManagerOfChildFailure(agent.id, runId, runError);
+          notifyManagerOfChildFailure(agent.id, runId, publicRunError);
         } else if (successfulRunStillAuthoritative) {
           const priorDenial = engineAvailability.denial(runtimeEngineId);
           engineAvailability.record({
@@ -1353,22 +1517,34 @@ export function startProviderRunExecution(
             idempotencyKey: `runtime-abort:${activeRun.v3SchedulerRunId}`,
           });
           else if (runError) {
-            const failureKind = classifyProviderFailure(runError);
+            const failureKind = runFailureClassification
+              ? classifyProviderFailure(runError, runFailureClassification)
+              : undefined;
+            const confirmedNotExecuted = projectedProviderNonExecutionEvidence &&
+              failureKind !== undefined && !providerWorkObserved &&
+              !v3PromptInjected &&
+              (failureKind === "capacity" || failureKind === "rate_limit");
             coordinationV3!.failRun({
             runId: activeRun.v3SchedulerRunId,
             fencingToken: activeRun.v3FencingToken,
             workerId: coordinationV3WorkerId,
             sameRunResumable: false,
-            failureKind,
-            confirmedNotExecuted: !providerWorkObserved && (failureKind === "capacity" || failureKind === "rate_limit"),
+            ...(failureKind ? { failureKind } : {}),
+            ...(confirmedNotExecuted ? { confirmedNotExecuted: true } : {}),
             retryable: !projectWorkspaceUnavailable && failureKind !== "authentication",
-            error: `[${failureKind}] ${runError}`,
-            failureDetail: {
-              phase: v3PromptInjected ? "provider_execution" : "prompt_submission",
-              promptInjectionState: coordinationV3!.agentSnapshot(agent.id).activeRun?.promptInjectionState
-                ?? (v3PromptInjected ? "injected" : "not_injected"),
-              message: runError,
-            },
+            error: failureKind
+              ? publicProviderFailureSummary(runError, failureKind) ?? "Provider execution failed."
+              : runError,
+            ...(failureKind ? {
+              failureDetail: {
+                phase: providerStreamBoundaryFailure
+                  ? `${providerStreamBoundaryFailure.kind}_${providerStreamBoundaryFailure.providerAccepted ? "after" : "before"}_acceptance`
+                  : v3PromptInjected ? "provider_execution" : "prompt_submission",
+                promptInjectionState: coordinationV3!.agentSnapshot(agent.id).activeRun?.promptInjectionState
+                  ?? (v3PromptInjected ? "injected" : "not_injected"),
+                message: runError,
+              },
+            } : {}),
           });
           }
           else {

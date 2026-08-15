@@ -8,6 +8,7 @@ import type {
   RuntimeProcessHandle,
   RuntimeSession,
 } from "@ponderosa/core";
+import { publicProviderFailure } from "@ponderosa/core";
 import type {
   AgentStore,
   CoordinationV3Store,
@@ -29,6 +30,23 @@ import {
 import type { ServerContext } from "../server-context.js";
 import type { ProviderProcessAuthority } from "../provider-process-authority.js";
 import { evaluateContextRolloverPressure } from "../context-rollover-pressure.js";
+import {
+  guardedProviderExceptionStringProperty,
+  restrictedProviderExceptionLogDetail,
+} from "../provider-exception-properties.js";
+import {
+  projectProviderCapabilities,
+  projectProviderCommandResult,
+} from "../provider-success-projection.js";
+import {
+  readProviderContextUsage,
+  readProviderSessionIdentifier,
+} from "../provider-session-success.js";
+import {
+  providerProcessHandleFacade,
+  providerRuntimeOperation,
+  providerSessionFacade,
+} from "../provider-session-facade.js";
 import { registerAgentRunHistoryRoute } from "./agent-audit.js";
 
 interface ProviderCommandRoutesContext {
@@ -70,6 +88,27 @@ export function authorizedManualRolloverConversationId(
   return sourceConversationId && agent.conversationIds.includes(sourceConversationId)
     ? sourceConversationId
     : undefined;
+}
+
+function publicProviderCommandFailure(error: unknown): {
+  error: string;
+  category: ReturnType<typeof publicProviderFailure>["category"];
+  remediation: string;
+} {
+  const code = guardedProviderExceptionStringProperty(error, "code")
+    ?? guardedProviderExceptionStringProperty(error, "errorCode");
+  const category = guardedProviderExceptionStringProperty(error, "category")
+    ?? guardedProviderExceptionStringProperty(error, "failureCategory");
+  const failure = publicProviderFailure({
+    detail: guardedProviderExceptionStringProperty(error, "message"),
+    code,
+    category,
+  });
+  return {
+    error: failure.summary,
+    category: failure.category,
+    remediation: failure.remediation,
+  };
 }
 
 export function registerProviderCommandRoutes(
@@ -167,11 +206,15 @@ app.post<{
   }
   if (engine.adapter.providerUsageCommand?.name === name) {
     if (argumentsText) return reply.code(400).send({ error: `/${name} does not accept arguments` });
-    return {
-      invoked: true,
-      name,
-      usage: await providerUsageState(engine, "stale"),
-    };
+    try {
+      return {
+        invoked: true,
+        name,
+        usage: await providerUsageState(engine, "stale"),
+      };
+    } catch (error) {
+      return reply.code(409).send(publicProviderCommandFailure(error));
+    }
   }
   if (!engine.adapter.openSession) {
     return reply.code(409).send({ error: "this provider cannot open a command-only session" });
@@ -190,6 +233,7 @@ app.post<{
     settled: false,
   };
   const registerProcess = (handle: RuntimeProcessHandle): void => {
+    handle = providerProcessHandleFacade(handle);
     const state: CapabilityDiscoveryProcess = { handle };
     authority.processes.add(state);
     providerProcessAuthority.register(handle, {
@@ -198,13 +242,16 @@ app.post<{
     });
     if (isClosed() || deletingProjectIds.has(project.id) || authority.controller.signal.aborted) {
       void closeCapabilityDiscoveryProcess(state).catch((error) => {
-        app.log.error({ err: error, projectId: project.id }, "project provider-command process cleanup remains pending");
+        app.log.error({
+          providerError: restrictedProviderExceptionLogDetail(error),
+          projectId: project.id,
+        }, "project provider-command process cleanup remains pending");
       });
     }
   };
   let invocation: { catalog: EngineCapabilities; message?: string } | undefined;
   const operation = Promise.resolve().then(async () => {
-    const session = await engine.adapter.openSession!({
+    const rawSession = await providerRuntimeOperation("open provider command session", () => engine.adapter.openSession!({
       agentId: `project-command:${project.id}:${randomUUID()}`,
       cwd: project.hostPath,
       history: [],
@@ -214,9 +261,10 @@ app.post<{
       onRuntimeRootExit: () => undefined,
       onCapabilitiesChanged: () => reportRuntimeCapabilitiesChanged(project.id, engineId),
       signal: authority.controller.signal,
-    });
+    }));
+    const session = providerSessionFacade(rawSession);
     const catalog = session.capabilities
-      ? await session.capabilities()
+      ? projectProviderCapabilities(await session.capabilities())
       : {
           steering: false,
           persistentSessions: false,
@@ -233,8 +281,8 @@ app.post<{
       Object.assign(error, { catalogVersion: catalog.catalogVersion });
       throw error;
     }
-    const result = await session.invokeCommand(name, argumentsText);
-    invocation = { catalog, ...(result?.message ? { message: result.message } : {}) };
+    const result = projectProviderCommandResult(await session.invokeCommand(name, argumentsText));
+    invocation = { catalog, ...(result.message ? { message: result.message } : {}) };
     return catalog;
   });
   authority.operation = operation;
@@ -249,18 +297,16 @@ app.post<{
       ...(invocation?.message ? { message: invocation.message } : {}),
     };
   } catch (error) {
-    const catalogVersion = error && typeof error === "object" && "catalogVersion" in error
-      ? (error as { catalogVersion?: string }).catalogVersion : undefined;
-    return reply.code(409).send({
-      error: error instanceof Error ? error.message : "provider command failed",
-      ...(catalogVersion ? { catalogVersion } : {}),
-    });
+    return reply.code(409).send(publicProviderCommandFailure(error));
   } finally {
     authority.settled = true;
     try {
       await closeCapabilityDiscoveryAuthority(authority);
     } catch (error) {
-      app.log.error({ err: error, projectId: project.id }, "project provider-command process cleanup remains pending");
+      app.log.error({
+        providerError: restrictedProviderExceptionLogDetail(error),
+        projectId: project.id,
+      }, "project provider-command process cleanup remains pending");
     }
   }
 });
@@ -281,15 +327,19 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
     }
     if (engine.adapter.providerUsageCommand?.name === name) {
       if (argumentsText) return reply.code(400).send({ error: `/${name} does not accept arguments` });
-      return {
-        invoked: true,
-        name,
-        usage: await providerUsageState(engine, "stale"),
-      };
+      try {
+        return {
+          invoked: true,
+          name,
+          usage: await providerUsageState(engine, "stale"),
+        };
+      } catch (error) {
+        return reply.code(409).send(publicProviderCommandFailure(error));
+      }
     }
     const invoke = async (session: RuntimeSession): Promise<{ catalog: EngineCapabilities; message?: string }> => {
       const catalog = session.capabilities
-        ? await session.capabilities()
+        ? projectProviderCapabilities(await session.capabilities())
         : {
             steering: false,
             persistentSessions: false,
@@ -309,15 +359,23 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
         Object.assign(error, { catalogVersion: catalog.catalogVersion });
         throw error;
       }
-      const result = await session.invokeCommand(name, argumentsText);
+      const result = projectProviderCommandResult(await session.invokeCommand(name, argumentsText));
       if (name === "compact") {
-        const usage = session.contextUsage?.();
+        let usage: ReturnType<typeof readProviderContextUsage>;
+        try {
+          usage = readProviderContextUsage(session);
+        } catch {
+          // Native compaction already succeeded. Invalid optional telemetry
+          // must not invite a duplicate command retry or influence rollover.
+          usage = undefined;
+        }
         const providerSessionGeneration = usage?.providerSessionGeneration;
-        if (usage && providerSessionGeneration && session.engineAgentId) {
+        if (usage && providerSessionGeneration) {
+          const providerSessionId = readProviderSessionIdentifier(session);
           const cancelled = coordinationV3.cancelContextRolloverAfterNativeCompaction({
             agentId: agent.id,
             providerSessionGeneration,
-            providerSessionId: session.engineAgentId,
+            providerSessionId,
             usedTokens: usage.usedTokens,
           });
           if (cancelled) {
@@ -326,7 +384,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
           }
         }
       }
-      return { catalog, ...(result?.message ? { message: result.message } : {}) };
+      return { catalog, ...(result.message ? { message: result.message } : {}) };
     };
     const liveSession = activeRuns.get(agent.id)?.runtimeSession ??
       reusableRuntime(agent.id)?.session;
@@ -341,9 +399,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
           ...(result.message ? { message: result.message } : {}),
         };
       } catch (error) {
-        const catalogVersion = error && typeof error === "object" && "catalogVersion" in error
-          ? (error as { catalogVersion?: string }).catalogVersion : undefined;
-        return reply.code(409).send({ error: error instanceof Error ? error.message : "provider command failed", ...(catalogVersion ? { catalogVersion } : {}) });
+        return reply.code(409).send(publicProviderCommandFailure(error));
       }
     }
     if (activeRuns.has(agent.id)) {
@@ -380,6 +436,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
       settled: false,
     };
     const registerProcess = (handle: RuntimeProcessHandle): void => {
+      handle = providerProcessHandleFacade(handle);
       const state: CapabilityDiscoveryProcess = { handle };
       authority.processes.add(state);
       providerProcessAuthority.register(handle, {
@@ -389,13 +446,16 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
       });
       if (isClosed() || deletingProjectIds.has(project.id) || deletingAgentIds.has(agent.id) || authority.controller.signal.aborted) {
         void closeCapabilityDiscoveryProcess(state).catch((error) => {
-          app.log.error({ err: error, agentId: agent.id }, "transient provider-command process cleanup remains pending");
+          app.log.error({
+            providerError: restrictedProviderExceptionLogDetail(error),
+            agentId: agent.id,
+          }, "transient provider-command process cleanup remains pending");
         });
       }
     };
     let invocation: { catalog: EngineCapabilities; message?: string } | undefined;
     const operation = Promise.resolve().then(async () => {
-      const session = await engine.adapter.openSession!({
+      const rawSession = await providerRuntimeOperation("open provider command session", () => engine.adapter.openSession!({
         agentId: agent.id,
         cwd: project.hostPath,
         ...(resumeSessionId ? { resumeSessionId } : {}),
@@ -406,7 +466,8 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
         onRuntimeRootExit: () => undefined,
         onCapabilitiesChanged: () => reportRuntimeCapabilitiesChanged(project.id, engine.adapter.id),
         signal: authority.controller.signal,
-      });
+      }));
+      const session = providerSessionFacade(rawSession);
       invocation = await invoke(session);
       return invocation.catalog;
     });
@@ -422,15 +483,16 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
         ...(invocation?.message ? { message: invocation.message } : {}),
       };
     } catch (error) {
-      const catalogVersion = error && typeof error === "object" && "catalogVersion" in error
-        ? (error as { catalogVersion?: string }).catalogVersion : undefined;
-      return reply.code(409).send({ error: error instanceof Error ? error.message : "provider command failed", ...(catalogVersion ? { catalogVersion } : {}) });
+      return reply.code(409).send(publicProviderCommandFailure(error));
     } finally {
       authority.settled = true;
       try {
         await closeCapabilityDiscoveryAuthority(authority);
       } catch (error) {
-        app.log.error({ err: error, agentId: agent.id }, "transient provider-command process cleanup remains pending");
+        app.log.error({
+          providerError: restrictedProviderExceptionLogDetail(error),
+          agentId: agent.id,
+        }, "transient provider-command process cleanup remains pending");
       }
     }
   },
@@ -448,7 +510,15 @@ app.post<{ Params: { id: string } }>("/api/agents/:id/compact", async (request, 
     return reply.code(409).send({ error: "the agent has no accepted provider session to roll over" });
   }
   const runtime = persistentRuntimeForTermination(request.params.id);
-  const usage = runtime?.session.contextUsage?.();
+  let usage: ReturnType<typeof readProviderContextUsage>;
+  try {
+    usage = readProviderContextUsage(runtime?.session);
+  } catch {
+    return reply.code(409).send({
+      error: "Provider returned invalid structured data.",
+      retryable: true,
+    });
+  }
   const preferences = workspace.getPreferences();
   const pressure = evaluateContextRolloverPressure(
     usage ?? { usedTokens: preferences.contextRolloverTokens },

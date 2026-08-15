@@ -1,4 +1,5 @@
 import type { EngineAuthStatus } from "@ponderosa/core";
+import { projectProviderAuthStatus } from "./provider-success-projection.js";
 
 interface CachedStatus {
   expiresAt: number;
@@ -27,7 +28,14 @@ export class EngineAuthStatusCache {
 
     const entry: CachedStatus = { expiresAt: now };
     const pending = load().then(
-      (value) => {
+      (rawValue) => {
+        let value: EngineAuthStatus;
+        try {
+          value = projectProviderAuthStatus(rawValue);
+        } catch (error) {
+          if (this.entries.get(id) === entry) this.entries.delete(id);
+          throw error;
+        }
         if (this.entries.get(id) === entry) {
           this.entries.set(id, { value, expiresAt: this.now() + this.ttlMs });
         }

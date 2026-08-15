@@ -5,6 +5,11 @@ import {
   type Adapter,
   type ModelOption,
 } from "@ponderosa/core";
+import {
+  projectProviderEffortOptions,
+  projectProviderModelIdentifier,
+  projectProviderModelOptions,
+} from "./provider-success-projection.js";
 
 export function providerDynamicTools(): RuntimeDynamicToolSpec[] {
   return [...PONDEROSA_RUNTIME_TOOLS];
@@ -75,7 +80,7 @@ function runtimeSelectionError(
 ): string | undefined {
   const selectedModel = model?.trim() || undefined;
   const selectedEffort = effort?.trim() || undefined;
-  const models = [...adapter.listModels()];
+  const models = projectProviderModelOptions(adapter.listModels());
   const knownModelIds = new Set(models.map((option) => option.id));
   for (const option of additionalModels) {
     if (!knownModelIds.has(option.id)) models.push(option);
@@ -86,8 +91,10 @@ function runtimeSelectionError(
   // that an already-configured model disappeared.
   if (selectedModel && concreteModels.length > 0 && !matchedModel) return "model is not available for engine";
   const knownEfforts = selectedModel
-    ? matchedModel?.efforts ?? (adapter.modelSpecificEfforts ? undefined : adapter.listEfforts(selectedModel))
-    : adapter.listEfforts();
+    ? matchedModel?.efforts ?? (adapter.modelSpecificEfforts
+      ? undefined
+      : projectProviderEffortOptions(adapter.listEfforts(selectedModel)))
+    : projectProviderEffortOptions(adapter.listEfforts());
   if (selectedEffort && knownEfforts && !knownEfforts.some((option) => option.id === selectedEffort)) {
     return selectedModel ? "effort is not available for model" : "effort is not available for engine";
   }
@@ -102,7 +109,7 @@ function runtimeSpeedSelectionError(
   const selectedSpeed = speed?.trim() || undefined;
   if (!selectedSpeed || selectedSpeed === "standard") return;
   const selectedModel = model?.trim() || undefined;
-  const models = [...adapter.listModels()];
+  const models = projectProviderModelOptions(adapter.listModels());
   const knownModelIds = new Set(models.map(option => option.id));
   for (const option of additionalModels) {
     if (!knownModelIds.has(option.id)) models.push(option);
@@ -139,21 +146,21 @@ function concreteRuntimeSelection(
   layers: Array<{ model?: string; effort?: string } | undefined>,
   additionalModels: ModelOption[] = [],
 ): { model?: string; effort?: string } {
-  const models = [...adapter.listModels()];
+  const models = projectProviderModelOptions(adapter.listModels());
   const knownModelIds = new Set(models.map((option) => option.id));
   for (const option of additionalModels) {
     if (!knownModelIds.has(option.id)) models.push(option);
   }
   const model = layers.map((layer) => layer?.model?.trim()).find((candidate) => candidate && !runtimeSelectionError(adapter, candidate, undefined, additionalModels))
-    ?? adapter.defaultModel?.()
+    ?? projectProviderModelIdentifier(adapter.defaultModel?.())
     ?? models.find((option) => option.id)?.id;
   const modelDefaultEffort = models.find((option) => option.id === model)?.defaultEffort;
   const modelCatalogUnknown = models.length > 0 && !models.some((option) => Boolean(option.id));
   const effort = !model && (adapter.modelSpecificEfforts || modelCatalogUnknown) ? undefined : [
     ...layers.map((layer) => layer?.effort?.trim()),
     modelDefaultEffort,
-    adapter.defaultEffort?.(model),
-    adapter.listEfforts(model)[0]?.id,
+    projectProviderModelIdentifier(adapter.defaultEffort?.(model)),
+    projectProviderEffortOptions(adapter.listEfforts(model))[0]?.id,
   ].find((candidate) => candidate && !runtimeSelectionError(adapter, model, candidate, additionalModels));
   return { ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
 }

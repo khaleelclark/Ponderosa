@@ -3,9 +3,11 @@ import type Database from "better-sqlite3";
 import type {
   CoordinationRequestState,
   ProviderInputSourceManifest,
+  ProviderFailureCategory,
 } from "@ponderosa/core";
 import {
   activationRetryDisposition,
+  publicProviderFailureSummary,
 } from "@ponderosa/core";
 import { stableJson } from "./coordination-v3-canonical-json.js";
 import type { CoordinationV3ActivationLifecycleAuthority } from "./coordination-v3-activation-lifecycle-authority.js";
@@ -16,6 +18,16 @@ import type {
   CancellationResult,
   UpdateRequestV3Input,
 } from "./coordination-v3-types.js";
+
+const UNSAFE_INTERNAL_ERROR_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/gu;
+
+function boundedInternalRunError(value: string | undefined): string {
+  const normalized = (value ?? "scheduler dispatch rejected")
+    .replace(UNSAFE_INTERNAL_ERROR_CONTROL, " ")
+    .trim();
+  const characters = Array.from(normalized || "scheduler dispatch rejected");
+  return characters.slice(0, 2_000).join("");
+}
 
 /** Owns provider-input fences and terminal scheduler Run transitions. */
 export class CoordinationV3RunLifecycleAuthority {
@@ -257,6 +269,13 @@ export class CoordinationV3RunLifecycleAuthority {
     providerSessionId?: string;
     now?: string;
   }): void {
+    if (input.providerTurnId !== undefined && (
+      typeof input.providerTurnId !== "string"
+      || input.providerTurnId.length > 512
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(input.providerTurnId)
+    )) {
+      throw new Error("provider turn id must be a bounded identifier");
+    }
     const now = input.now ?? new Date().toISOString();
     this.sqlite.transaction(() => {
       this.support.getFencedRun(input.runId, input.fencingToken);
@@ -377,12 +396,7 @@ export class CoordinationV3RunLifecycleAuthority {
     error?: string;
     maxDeliveryFailures?: number;
     confirmedNotExecuted?: boolean;
-    failureKind?:
-      | "capacity"
-      | "rate_limit"
-      | "authentication"
-      | "context"
-      | "unknown";
+    failureKind?: ProviderFailureCategory;
     failureDetail?: {
       phase: string;
       promptInjectionState: "not_injected" | "injecting" | "injected";
@@ -405,6 +419,7 @@ export class CoordinationV3RunLifecycleAuthority {
         `).run(
           stableJson({
             ...input.failureDetail,
+            ...(input.failureKind ? { category: input.failureKind } : {}),
             ...(input.failureDetail.stderr
               ? { stderr: input.failureDetail.stderr.slice(-8_192) }
               : {}),
@@ -418,6 +433,15 @@ export class CoordinationV3RunLifecycleAuthority {
           input.fencingToken,
         );
       }
+      const hasProviderFailure = input.failureKind !== undefined ||
+        input.failureDetail !== undefined;
+      const failureCategory = hasProviderFailure
+        ? input.failureKind ?? "unknown"
+        : undefined;
+      const durableError = hasProviderFailure
+        ? publicProviderFailureSummary(input.error, failureCategory)
+          ?? "Provider execution failed."
+        : boundedInternalRunError(input.error);
       const disposition = input.confirmedNotExecuted
         ? "retry"
         : activationRetryDisposition({
@@ -472,9 +496,6 @@ export class CoordinationV3RunLifecycleAuthority {
         LIMIT 1
       `).get(input.runId, run.agent_id, run.project_id) as { id: string } | undefined;
       if (disposition === "retry") {
-        const error = (
-          input.error ?? "scheduler dispatch rejected"
-        ).slice(0, 2_000);
         const requestedMaximum = input.maxDeliveryFailures ?? 5;
         const maximum = Number.isFinite(requestedMaximum)
           ? Math.max(1, Math.floor(requestedMaximum))
@@ -514,7 +535,7 @@ export class CoordinationV3RunLifecycleAuthority {
               terminal_at = COALESCE(terminal_at, ?)
             WHERE id = ? AND state = 'requested'
               AND handoff_event_id IS NULL
-          `).run(error, now, now, requestedRollover.id);
+          `).run(durableError, now, now, requestedRollover.id);
           this.cancelPendingRolloverHandoff(requestedRollover.id, now);
         }
         const terminalOutcome = input.retryable === false || candidateReplacement || attachedRequestedHandoff
@@ -550,6 +571,7 @@ export class CoordinationV3RunLifecycleAuthority {
           UPDATE agent_activations
           SET delivery_failures = delivery_failures + 1,
             last_delivery_error = ?,
+            provider_failure_category = ?,
             state = CASE
               WHEN ? IS NOT NULL OR (? = 1 AND delivery_failures + 1 >= ?)
                 THEN 'failed'
@@ -571,7 +593,8 @@ export class CoordinationV3RunLifecycleAuthority {
             WHERE run_id = ?
           ) AND state = 'attached'
         `).run(
-          error,
+          durableError,
+          failureCategory ?? null,
           terminalOutcome ?? null,
           providerUnavailable ? 0 : 1,
           maximum,
@@ -669,7 +692,7 @@ export class CoordinationV3RunLifecycleAuthority {
             WHERE id = ? AND state = 'requested'
               AND handoff_event_id IS NULL
           `).run(
-            (input.error ?? "rollover handoff Run outcome became unknown before durable commit").slice(0, 2_000),
+            durableError,
             now,
             now,
             requestedRollover.id,
@@ -697,7 +720,9 @@ export class CoordinationV3RunLifecycleAuthority {
         this.markRelatedRequestsOutcomeUnknown(
           input.runId,
           now,
-          "provider_outcome_unknown",
+          hasProviderFailure
+            ? "provider_outcome_unknown"
+            : "scheduler_outcome_unknown",
           [
             "open",
             "in_progress",
@@ -727,8 +752,7 @@ export class CoordinationV3RunLifecycleAuthority {
       const rows = this.sqlite.prepare(`
         SELECT id, payload_json FROM agent_activations
         WHERE agent_id = ? AND state = 'retry_pending'
-          AND (last_delivery_error LIKE '[capacity] %'
-            OR last_delivery_error LIKE '[rate_limit] %')
+          AND provider_failure_category IN ('capacity', 'rate_limit')
         ORDER BY id
       `).all(agentId) as Array<{ id: string; payload_json: string }>;
       if (!rows.length) return { activationIds: [], resumed: 0 };
@@ -744,8 +768,7 @@ export class CoordinationV3RunLifecycleAuthority {
         UPDATE agent_activations
         SET payload_json = ?, available_at = ?, updated_at = ?
         WHERE id = ? AND agent_id = ? AND state = 'retry_pending'
-          AND (last_delivery_error LIKE '[capacity] %'
-            OR last_delivery_error LIKE '[rate_limit] %')
+          AND provider_failure_category IN ('capacity', 'rate_limit')
       `);
       const activationIds: string[] = [];
       for (const row of rows) {
@@ -831,6 +854,8 @@ export class CoordinationV3RunLifecycleAuthority {
       this.sqlite.prepare(`
         UPDATE context_rollovers
         SET state = 'outcome_unknown',
+          failure_signal = 'replacement_cancelled',
+          failure_provenance = 'internal',
           last_error = 'replacement Run was cancelled before low-water context confirmation',
           updated_at = ?, terminal_at = COALESCE(terminal_at, ?)
         WHERE state = 'continuation_ready'
@@ -845,6 +870,7 @@ export class CoordinationV3RunLifecycleAuthority {
       this.sqlite.prepare(`
         UPDATE context_rollovers
         SET state = 'outcome_unknown',
+          failure_provenance = 'internal',
           last_error = CASE
             WHEN handoff_event_id IS NULL
               THEN 'rollover handoff Run was cancelled before durable commit'

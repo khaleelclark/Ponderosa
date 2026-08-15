@@ -15,6 +15,12 @@ import type {
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { EngineAuthStatusCache } from "../engine-auth-cache.js";
 import type { EngineAvailabilityStore } from "../engine-availability-store.js";
+import {
+  providerUnavailableNotificationBody,
+  publicProviderExceptionResponse,
+} from "../provider-availability-detail.js";
+import { restrictedProviderExceptionLogDetail } from "../provider-exception-properties.js";
+import { projectProviderAvailabilityStatus } from "../provider-success-projection.js";
 
 interface EngineRouteRegistration {
   adapter: Adapter;
@@ -183,9 +189,14 @@ export function registerEngineRoutes(
       const registration = engines.get(request.params.id);
       if (!registration) return reply.code(404).send({ error: "unknown engine" });
       authStatuses.invalidate(request.params.id);
-      const auth = registration.authStatus
-        ? await authStatuses.get(request.params.id, registration.authStatus)
-        : { authenticated: true };
+      let auth: EngineAuthStatus;
+      try {
+        auth = registration.authStatus
+          ? await authStatuses.get(request.params.id, registration.authStatus)
+          : { authenticated: true };
+      } catch {
+        return engineDto(registration);
+      }
       if (!auth.authenticated) return engineDto(registration);
       if (!registration.availabilityProbe) {
         const refreshed = await engineDto(registration);
@@ -197,16 +208,22 @@ export function registerEngineRoutes(
       }
       let result: EngineAvailabilityStatus;
       try {
-        result = await registration.availabilityProbe();
+        result = projectProviderAvailabilityStatus(await registration.availabilityProbe());
       } catch (error) {
+        request.log.warn({
+          providerError: restrictedProviderExceptionLogDetail(error),
+          engineId: request.params.id,
+        }, "provider availability probe failed");
         result = {
           available: false,
-          detail: error instanceof Error ? error.message : String(error),
+          failureCategory: "unavailable",
+          detail: publicProviderExceptionResponse(error, "unavailable").error,
         };
       }
-      availability.record({
+      const evidence = availability.record({
         engineId: request.params.id,
         available: result.available,
+        ...(result.failureCategory ? { failureCategory: result.failureCategory } : {}),
         ...(result.detail ? { detail: result.detail } : {}),
         source: "operator_probe",
       });
@@ -219,8 +236,7 @@ export function registerEngineRoutes(
           category: "provider",
           severity: "attention",
           title: `${registration.adapter.displayName} is unavailable`,
-          body: result.detail
-            ?? "The provider rejected the explicit access test. Queued work remains held.",
+          body: providerUnavailableNotificationBody(evidence.detail, evidence.failureCategory),
           action: { kind: "open_settings", targetId: request.params.id },
         });
       }
@@ -242,17 +258,11 @@ export function registerEngineRoutes(
     if (!registration.adapter.discoverModelCatalog) {
       return reply.code(404).send({ error: "this engine does not provide model discovery" });
     }
-    try {
-      return await discoverModelCatalog(
-        project,
-        registration.adapter,
-        request.query.refresh === "true" || request.query.refresh === "1",
-      );
-    } catch (error) {
-      return reply.code(503).send({
-        error: error instanceof Error ? error.message : "model discovery failed",
-      });
-    }
+    return discoverModelCatalog(
+      project,
+      registration.adapter,
+      request.query.refresh === "true" || request.query.refresh === "1",
+    );
   });
 
   app.post<{
@@ -340,8 +350,15 @@ export function registerEngineRoutes(
           engineId: adapter.id,
           discovered: snapshot.discovered,
           ...(snapshot.refreshing ? { refreshing: true } : {}),
-          ...capabilities,
+          steering: capabilities.steering,
+          persistentSessions: capabilities.persistentSessions,
+          ...(capabilities.sessionId === undefined ? {} : { sessionId: capabilities.sessionId }),
+          ...(capabilities.selectedModel === undefined ? {} : { selectedModel: capabilities.selectedModel }),
+          ...(capabilities.model === undefined ? {} : { model: capabilities.model }),
+          ...(capabilities.catalogVersion === undefined ? {} : { catalogVersion: capabilities.catalogVersion }),
           commands: capabilities.commands,
+          mcpServers: capabilities.mcpServers,
+          composerCapabilities: capabilities.composerCapabilities,
         };
       }));
     },

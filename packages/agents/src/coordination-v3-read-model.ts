@@ -5,7 +5,12 @@ import type {
   CoordinationRequestState,
   CoordinationRequestUpdateKind,
 } from "@ponderosa/core";
+import { publicProviderFailureSummary } from "@ponderosa/core";
 import { inspectorDetails, inspectorJson, inspectorWakePolicy } from "./coordination-v3-inspector.js";
+import {
+  providerSafeActivationPayload,
+  publicActivationDeliveryError,
+} from "./coordination-v3-provider-failure-projection.js";
 import type {
   CoordinationAttentionCandidateCursor,
   CoordinationAttentionCandidateKind,
@@ -872,7 +877,8 @@ export class CoordinationV3ReadModel {
 
       const activationSelection = selection("activation", "id");
       const activationRows = trimUnscopedOverflow(this.sqlite.prepare(`
-        SELECT id, agent_id, kind, state, delivery_failures, last_delivery_error, available_at, created_at, updated_at
+        SELECT id, agent_id, kind, state, delivery_failures,
+          provider_failure_category, available_at, created_at, updated_at
         FROM agent_activations
         WHERE project_id = ? AND (? IS NULL OR scope_key = ?) ${activationSelection.sql}
         ORDER BY CASE WHEN state IN ('pending', 'retry_pending', 'attached') THEN 0 ELSE 1 END,
@@ -882,12 +888,16 @@ export class CoordinationV3ReadModel {
         ...activationSelection.params, queryLimit,
       ) as Array<{
         id: string; agent_id: string; kind: string; state: string;
-        delivery_failures: number; last_delivery_error: string | null; available_at: string;
+        delivery_failures: number; available_at: string;
+        provider_failure_category: string | null;
         created_at: string; updated_at: string;
       }>);
       for (const row of activationRows) {
-        const providerFailure = /^\[(capacity|rate_limit)\]\s/u.exec(row.last_delivery_error ?? "")?.[1] as
-          | "capacity" | "rate_limit" | undefined;
+        const providerFailure: "capacity" | "rate_limit" | undefined =
+          row.provider_failure_category === "capacity" ||
+          row.provider_failure_category === "rate_limit"
+          ? row.provider_failure_category as "capacity" | "rate_limit"
+          : undefined;
         const providerRecovery = row.state === "retry_pending" && providerFailure ? {
           classification: providerFailure,
           activationIds: [row.id],
@@ -1113,7 +1123,22 @@ export class CoordinationV3ReadModel {
       const selectedUpdateRows = this.sqlite.prepare(`
         SELECT * FROM (
           SELECT id, kind, actor_kind, actor_id, in_reply_to_update_id,
-            payload_json, resulting_state, resulting_version, created_at
+            payload_json, resulting_state, resulting_version, created_at,
+            COALESCE(provider_failure_category, (
+              SELECT COALESCE(activation.provider_failure_category, 'unknown')
+              FROM agent_activations activation
+              WHERE json_valid(coordination_request_updates.payload_json)
+                AND activation.id = json_extract(
+                  coordination_request_updates.payload_json, '$.activationId'
+                )
+                AND EXISTS (
+                  SELECT 1 FROM scheduler_run_activations attached
+                  JOIN scheduler_runs scheduler ON scheduler.id = attached.run_id
+                  WHERE attached.activation_id = activation.id
+                    AND scheduler.provider_failure_json IS NOT NULL
+                )
+              LIMIT 1
+            )) AS provider_failure_category
           FROM coordination_request_updates
           WHERE request_id = ?
           ORDER BY created_at DESC, id DESC
@@ -1130,6 +1155,7 @@ export class CoordinationV3ReadModel {
         resulting_state: CoordinationRequestState;
         resulting_version: number;
         created_at: string;
+        provider_failure_category: string | null;
       }>;
       const updatesTruncated = selectedUpdateRows.length > REQUEST_LIFECYCLE_UPDATE_LIMIT;
       const updateRows = updatesTruncated ? selectedUpdateRows.slice(1) : selectedUpdateRows;
@@ -1185,7 +1211,14 @@ export class CoordinationV3ReadModel {
         },
         updates: updateRows.map((row) => {
           const payload = parseStoredJson(row.payload_json);
-          const text = boundedLifecycleText(payload);
+          const text = row.provider_failure_category
+            ? {
+                text: publicProviderFailureSummary(
+                  undefined,
+                  row.provider_failure_category,
+                ) ?? "Provider execution failed.",
+              }
+            : boundedLifecycleText(payload);
           const artifacts = artifactsByUpdate.get(row.id) ?? [];
           return {
             id: row.id,
@@ -1257,24 +1290,45 @@ export class CoordinationV3ReadModel {
       if (input.kind === "activation") {
         const row = this.sqlite.prepare(`
           SELECT id, kind, priority, dispatch_policy, prompt_class, delivery_failures, terminal_outcome,
-            last_delivery_error, payload_json, terminal_at
+            last_delivery_error, provider_failure_category,
+            EXISTS (
+              SELECT 1 FROM scheduler_run_activations attached
+              JOIN scheduler_runs scheduler ON scheduler.id = attached.run_id
+              WHERE attached.activation_id = agent_activations.id
+                AND scheduler.provider_failure_json IS NOT NULL
+            ) AS has_provider_failure,
+            payload_json, terminal_at
           FROM agent_activations
           WHERE id = ? AND project_id = ? AND (? IS NULL OR scope_key = ?)
         `).get(input.recordId, input.projectId, scopeKey ?? null, scopeKey ?? null) as {
           id: string; kind: string; priority: number; dispatch_policy: string; prompt_class: string;
           delivery_failures: number; terminal_outcome: string | null; last_delivery_error: string | null;
+          provider_failure_category: string | null; has_provider_failure: number;
           payload_json: string; terminal_at: string | null;
         } | undefined;
+        const lastDeliveryError = row ? publicActivationDeliveryError({
+          lastDeliveryError: row.last_delivery_error,
+          providerFailureCategory: row.provider_failure_category,
+          hasProviderFailure: Boolean(row.has_provider_failure),
+        }) : undefined;
+        const publicPayload = row
+          ? JSON.stringify(providerSafeActivationPayload(this.sqlite, row.id, row.payload_json))
+          : undefined;
         return row ? inspectorDetails(["Activation ID", row.id], ["Kind", row.kind], ["Priority", row.priority],
           ["Dispatch", row.dispatch_policy], ["Prompt class", row.prompt_class], ["Delivery failures", row.delivery_failures],
-          ["Terminal outcome", row.terminal_outcome], ["Last error", row.last_delivery_error],
-          ["Payload", inspectorJson(row.payload_json)], ["Terminal time", row.terminal_at]) : undefined;
+          ["Terminal outcome", row.terminal_outcome], ["Last error", lastDeliveryError],
+          ["Payload", inspectorJson(publicPayload ?? "{}")], ["Terminal time", row.terminal_at]) : undefined;
       }
       if (input.kind === "run") {
         const row = this.sqlite.prepare(`
           SELECT scheduler.id, scheduler.status, scheduler.fencing_token, scheduler.prompt_injection_state,
             scheduler.context_disposition, scheduler.lease_expires_at, scheduler.terminal_at,
-            scheduler.provider_failure_json,
+            CASE WHEN scheduler.provider_failure_json IS NULL THEN 0 ELSE 1 END AS has_provider_failure,
+            json_extract(
+              CASE WHEN json_valid(scheduler.provider_failure_json)
+                THEN scheduler.provider_failure_json ELSE '{}' END,
+              '$.category'
+            ) AS provider_failure_category,
             provider.execution_id, provider.prompt_hash, execution.status AS execution_status,
             execution.wake_cause, execution.completed_at
           FROM scheduler_runs scheduler
@@ -1286,13 +1340,20 @@ export class CoordinationV3ReadModel {
           id: string; status: string; fencing_token: number; prompt_injection_state: string; context_disposition: string;
           lease_expires_at: string; terminal_at: string | null; execution_id: string | null; prompt_hash: string | null;
           execution_status: string | null; wake_cause: string | null; completed_at: string | null;
-          provider_failure_json: string | null;
+          has_provider_failure: 0 | 1;
+          provider_failure_category: string | null;
         } | undefined;
+        const providerFailureSummary = row?.has_provider_failure
+          ? publicProviderFailureSummary(undefined, row.provider_failure_category ?? "unknown")
+          : undefined;
         return row ? inspectorDetails(["Execution Run ID", row.execution_id], ["Scheduler Run ID", row.id],
           ["Scheduler status", row.status], ["Execution projection status", row.execution_status], ["Wake cause", row.wake_cause],
           ["Fence", row.fencing_token], ["Prompt injection", row.prompt_injection_state],
           ["Provider context", row.context_disposition], ["Prompt hash", row.prompt_hash],
-          ["Provider failure", inspectorJson(row.provider_failure_json)],
+          ["Provider failure summary", providerFailureSummary],
+          ["Operator action", providerFailureSummary
+            ? "Review provider access and retry the affected work when the provider is available."
+            : undefined],
           ["Lease expires", row.lease_expires_at], ["Scheduler terminal time", row.terminal_at],
           ["Execution completed time", row.completed_at]) : undefined;
       }

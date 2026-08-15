@@ -6,7 +6,11 @@
 import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { EngineAuthStatus, EngineAvailabilityStatus } from "@ponderosa/core";
+import {
+  classifyProviderFailure,
+  type EngineAuthStatus,
+  type EngineAvailabilityStatus,
+} from "@ponderosa/core";
 import { spawnContainedCli } from "./contained-spawn.js";
 import { runtimeProcessHandle } from "./process-termination.js";
 import { runtimeEnvironment } from "./runtime-environment.js";
@@ -162,7 +166,9 @@ export async function claudeAvailabilityStatus(
   readAuth: () => Promise<EngineAuthStatus> = () => claudeAuthStatus(env),
 ): Promise<EngineAvailabilityStatus> {
   const auth = await readAuth();
-  if (!auth.authenticated) return { available: false, detail: auth.detail };
+  if (!auth.authenticated) {
+    return { available: false, failureCategory: "authentication", detail: auth.detail };
+  }
   const bin = env.PONDEROSA_CLAUDE_BIN?.trim() || "claude";
   try {
     const { stdout } = await run(bin, [
@@ -181,16 +187,23 @@ export async function claudeAvailabilityStatus(
     try {
       const result = JSON.parse(stdout) as { is_error?: boolean; subtype?: string; error?: string };
       if (result.is_error || result.subtype === "error") {
-        return { available: false, detail: result.error ?? "Claude rejected the subscription-backed test request" };
+        const detail = result.error ?? "Claude rejected the subscription-backed test request";
+        return { available: false, failureCategory: classifyProviderFailure(detail), detail };
       }
     } catch {
-      if (!stdout.trim()) return { available: false, detail: "Claude returned no entitlement-test result" };
+      if (!stdout.trim()) {
+        return { available: false, failureCategory: "unavailable", detail: "Claude returned no entitlement-test result" };
+      }
     }
     return { available: true, detail: "Claude accepted a subscription-backed test request" };
   } catch (error) {
     const failure = error as Error & { stderr?: string; stdout?: string };
     const detail = failure.stderr?.trim() || failure.stdout?.trim() || failure.message || String(error);
-    return { available: false, detail: detail.slice(0, 1_000) };
+    return {
+      available: false,
+      failureCategory: classifyProviderFailure(detail),
+      detail: detail.slice(0, 1_000),
+    };
   }
 }
 

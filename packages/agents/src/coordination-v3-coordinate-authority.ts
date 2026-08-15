@@ -254,7 +254,7 @@ export class CoordinationV3CoordinateAuthority {
             AND rollover.agent_id = ?
             AND rollover.state IN ('failed','outcome_unknown')
             AND rollover.handoff_event_id IS NOT NULL
-            AND rollover.last_error NOT LIKE 'rollover_seed_overflow:%'
+            AND rollover.failure_signal IS NOT 'seed_overflow'
             AND lineage_request.id = ?
             AND lineage_request.project_id = rollover.project_id
             AND lineage_request.recipient_agent_id = rollover.agent_id

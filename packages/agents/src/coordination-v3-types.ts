@@ -9,6 +9,7 @@ import type {
   CoordinationReplyAuthority,
   CoordinationRequestState,
   CoordinationRequestUpdateKind,
+  ProviderFailureCategory,
   RequestLifetime,
   TriggerRunBudgetDto,
   TriggerOccurrenceState,
@@ -74,6 +75,8 @@ export interface UpdateRequestV3Input {
   runAuthorization?: RunAuthorizationV3;
   inReplyToUpdateId?: string;
   payload?: unknown;
+  /** Durable structured classification for a provider-derived system update. */
+  providerFailureCategory?: ProviderFailureCategory;
   artifacts?: RuntimeArtifactInputV3[];
   now?: string;
 }
@@ -186,6 +189,8 @@ export interface ContextRolloverV3 {
   replacementVerifiedAt?: string;
   visibleResponseCommittedAt?: string;
   completionReason?: "replacement_verified" | "native_compaction" | "no_continuation_required";
+  failureSignal?: "seed_overflow" | "replacement_cancelled";
+  failureProvenance: "provider" | "internal";
   lastError?: string;
   createdAt: string;
   updatedAt: string;

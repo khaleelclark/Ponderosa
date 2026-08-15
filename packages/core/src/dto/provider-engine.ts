@@ -1,5 +1,6 @@
 import type { EngineId, EffortOption, EngineModelOption, EngineModelValidationError, ModelOption } from "../adapter.js";
 import type { TokenUsage } from "../events.js";
+import type { ProviderFailureCategory } from "../provider-failure-summary.js";
 
 export interface ProviderInputSourceManifestV1 {
   schemaVersion: 1;
@@ -190,6 +191,8 @@ export interface EngineDto {
   reachability: "unverified" | "checking" | "reachable" | "degraded";
   /** Positive/negative provider evidence behind reachability and intake. */
   availabilityDetail?: string;
+  /** Canonical static-detail category; absent for positive/unverified status. */
+  availabilityCategory?: ProviderFailureCategory;
 }
 
 export interface ProjectEngineCapabilitiesDto {

@@ -34,7 +34,10 @@ import { createDeploymentControl } from "./deployment-control.js";
 import { documentationReferences } from "./documentation-reference/index.js";
 import { EngineAuthStatusCache } from "./engine-auth-cache.js";
 import { EngineAvailabilityStore } from "./engine-availability-store.js";
-import { createEngineControlPlane } from "./engine-control-plane.js";
+import {
+  createEngineControlPlane,
+  ProviderAdapterBoundaryError,
+} from "./engine-control-plane.js";
 import { createLinkPreviewService } from "./link-preview-service.js";
 import { createLauncherSecurity } from "./launcher-security.js";
 import { createOperationalNotifications } from "./operational-notifications.js";
@@ -46,6 +49,8 @@ import {
   publicWebAssetRequest,
 } from "./public-web-assets.js";
 import { ProviderUsageCache } from "./provider-usage-cache.js";
+import { providerUnavailableNotificationBody } from "./provider-availability-detail.js";
+import { restrictedProviderExceptionLogDetail } from "./provider-exception-properties.js";
 import { ProviderProcessAuthority } from "./provider-process-authority.js";
 import { registerAgentSurface } from "./routes/agent-surface.js";
 import { registerApplicationRoutes } from "./routes/application-routes.js";
@@ -391,7 +396,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       category: "provider",
       severity: "attention",
       title: `${engines.get(engineId)?.adapter.displayName ?? engineId} is unavailable`,
-      body: `${denial.detail ?? "The provider rejected runtime access."} Queued work is held until access is explicitly rechecked or a successful authorized Run proves recovery.`,
+      body: providerUnavailableNotificationBody(denial.detail, denial.failureCategory),
       action: { kind: "open_settings", targetId: engineId },
     });
     if (!providerEnabled(engineId)) resolveOperationalNotification(`provider:${engineId}:unavailable`);
@@ -650,6 +655,15 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       },
     },
   }) as unknown as PonderosaServer;
+  app.setErrorHandler((error, request, reply) => {
+    if (!(error instanceof ProviderAdapterBoundaryError)) throw error;
+    request.log.error({
+      providerError: restrictedProviderExceptionLogDetail(error),
+      engineId: error.engineId,
+      operation: error.operation,
+    }, "provider adapter operation failed at public boundary");
+    return reply.code(503).send(error.publicResponse);
+  });
   app.log.info(store.startupProfile(), "agent store startup completed");
   const limits = { ...ASSET_LIMITS, maxAttachmentsPerMessage: ASSET_LIMITS.maxAssetsPerMessage };
   const serverContext: ServerContext = { opts, documentationReferences, limits, agentDetail, store, tokenUsage };

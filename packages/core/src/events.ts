@@ -2,6 +2,8 @@
 // (inside packages/engines only) into this discriminated union, so the server,
 // projectors, and UI all render uniformly and never see runtime-specific shapes.
 
+import type { ProviderFailureCategory } from "./provider-failure-summary.js";
+
 /**
  * Status of an engine-reported work item inside an agent run.
  */
@@ -30,6 +32,9 @@ export type ProviderErrorCode =
   | "invalid_model"
   | "model_not_found"
   | "authentication_failed"
+  | "rate_limit"
+  | "capacity"
+  | "context_length"
   | "organization_policy"
   | "plan_entitlement"
   | "network"
@@ -126,7 +131,15 @@ export type AgentEvent =
       /** Individual provider requests, when reported, for request-tiered pricing. */
       providerRequestUsage?: TokenUsage[];
     }
-  | { type: "error"; message: string; code?: ProviderErrorCode };
+  | {
+      type: "error";
+      /** Finite code-owned public summary after the canonical append boundary. */
+      message: string;
+      code?: ProviderErrorCode;
+      category?: ProviderFailureCategory;
+      /** Finite code-owned action paired with category and message. */
+      remediation?: string;
+    };
 
 /**
  * One line of an agent's append-only event log (`events.jsonl`, SPEC §4/§7).

@@ -5,6 +5,7 @@ import type { CreateActivationV3Input } from "./coordination-v3-runtime-communic
 import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runtime-scope-authority.js";
 import type { CoordinationV3StoreSupport } from "./coordination-v3-store-support.js";
 import type { UpdateRequestV3Input } from "./coordination-v3-types.js";
+import { publicActivationDeliveryError } from "./coordination-v3-provider-failure-projection.js";
 
 type DependencyKind = "decision" | "join";
 
@@ -262,7 +263,8 @@ export class CoordinationV3QuestionAuthority {
     const rows = this.sqlite.prepare(`
       SELECT DISTINCT request.id AS request_id,
         request.open_question_update_id AS question_update_id,
-        activation.id AS activation_id, activation.last_delivery_error
+        activation.id AS activation_id, activation.last_delivery_error,
+        activation.provider_failure_category
       FROM agent_activations activation
       JOIN activation_sources source
         ON source.activation_id = activation.id
@@ -283,6 +285,7 @@ export class CoordinationV3QuestionAuthority {
       question_update_id: string;
       activation_id: string;
       last_delivery_error: string | null;
+      provider_failure_category: string | null;
     }>;
     for (const row of rows) {
       if (this.questionSuspended(row.question_update_id)) continue;
@@ -294,9 +297,10 @@ export class CoordinationV3QuestionAuthority {
         kind: "outcome_unknown",
         actor: { kind: "supervisor", id: "v3-activation-supervisor" },
         payload: {
-          reason:
-            row.last_delivery_error ??
-            "question continuation could not execute",
+          reason: publicActivationDeliveryError({
+            lastDeliveryError: row.last_delivery_error,
+            providerFailureCategory: row.provider_failure_category,
+          }) ?? "question continuation could not execute",
           activationId: row.activation_id,
           questionUpdateId: row.question_update_id,
         },

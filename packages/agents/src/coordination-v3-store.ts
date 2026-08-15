@@ -6,6 +6,7 @@ import {
   type CoordinationReplyAuthority,
   type TriggerDefinitionDto,
   type TriggerOccurrenceDto,
+  type ProviderFailureCategory,
 } from "@ponderosa/core";
 import { CoordinationV3ReadModel } from "./coordination-v3-read-model.js";
 import { CoordinationV3RequestReadModel } from "./coordination-v3-request-read-model.js";
@@ -1109,7 +1110,7 @@ export class CoordinationV3Store {
     error?: string;
     maxDeliveryFailures?: number;
     confirmedNotExecuted?: boolean;
-    failureKind?: "capacity" | "rate_limit" | "authentication" | "context" | "unknown";
+    failureKind?: ProviderFailureCategory;
     failureDetail?: {
       phase: string;
       promptInjectionState: "not_injected" | "injecting" | "injected";
@@ -1264,8 +1265,22 @@ export class CoordinationV3Store {
     return this.contextRolloverAuthority.cancelAfterNativeCompaction(input);
   }
 
-  failContextRollover(id: string, state: "failed" | "outcome_unknown", error: string, now?: string): ContextRolloverV3 {
-    return this.contextRolloverAuthority.fail(id, state, error, now);
+  failContextRollover(
+    id: string,
+    state: "failed" | "outcome_unknown",
+    error: string,
+    provenance: ContextRolloverV3["failureProvenance"],
+    now?: string,
+    failureSignal?: ContextRolloverV3["failureSignal"],
+  ): ContextRolloverV3 {
+    return this.contextRolloverAuthority.fail(
+      id,
+      state,
+      error,
+      provenance,
+      now,
+      failureSignal,
+    );
   }
 
   private createActivation(input: CreateActivationV3Input): string {

@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
+import {
+  classifyProviderFailure,
+} from "@ponderosa/core";
 import type {
   EngineModelDiscoveryOptions,
   EngineModelOption,
@@ -149,6 +152,14 @@ export function normalizeClaudeProviderModels(input: unknown): EngineModelOption
 export function claudeProviderErrorCode(rawCode: unknown, detail = ""): ProviderErrorCode | undefined {
   const code = typeof rawCode === "string" ? rawCode : "";
   const combined = `${code} ${detail}`;
+  const structuredProviderCategory = code
+    ? classifyProviderFailure("", code)
+    : "unknown";
+  if (structuredProviderCategory === "authentication") return "authentication_failed";
+  if (structuredProviderCategory === "rate_limit") return "rate_limit";
+  if (structuredProviderCategory === "capacity") return "capacity";
+  if (structuredProviderCategory === "context_length") return "context_length";
+  if (structuredProviderCategory === "unavailable") return "network";
   if (/oauth_org_not_allowed|availableModels|organization.*(?:policy|allow|disabled)|managed policy/iu.test(combined)) {
     return "organization_policy";
   }
@@ -158,6 +169,10 @@ export function claudeProviderErrorCode(rawCode: unknown, detail = ""): Provider
   if (/authentication_failed|expired.*oauth|unauthori[sz]ed|sign.?in required/iu.test(combined)) {
     return "authentication_failed";
   }
+  const providerCategory = classifyProviderFailure(detail);
+  if (providerCategory === "rate_limit") return "rate_limit";
+  if (providerCategory === "capacity") return "capacity";
+  if (providerCategory === "context_length") return "context_length";
   if (/invalid_model|\b400\b.*model/iu.test(combined)) return "invalid_model";
   if (/model_not_found|\b404\b.*model/iu.test(combined)) return "model_not_found";
   if (/network|ECONN|ENOTFOUND|ETIMEDOUT|socket|fetch failed/iu.test(combined)) return "network";
@@ -183,6 +198,12 @@ function validationError(
         return `Claude could not find "${modelId}". The model may not exist or may no longer be available to this account.`;
       case "authentication":
         return "Claude authentication has expired. Sign in with Claude Code, then retry validation.";
+      case "rate_limit":
+        return "Claude usage limit was reached. Wait for the limit to reset, then retry validation.";
+      case "capacity":
+        return "Claude is temporarily at capacity. Retry validation when capacity is available.";
+      case "context_length":
+        return "Claude rejected the validation request because its context limit was reached.";
       case "organization_policy":
         return `Your organization policy does not allow "${modelId}". Check Claude's availableModels policy with your administrator.`;
       case "plan_entitlement":

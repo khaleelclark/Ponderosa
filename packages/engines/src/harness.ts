@@ -9,6 +9,7 @@
 // Ctrl-C cancels the run (AbortSignal → SIGTERM → SIGKILL), exercising cancel.
 
 import type { AgentEvent, ChatMessage } from "@ponderosa/core";
+import { projectAgentEvent } from "./agent-event-projection.js";
 import { CodexAdapter } from "./codex.js";
 
 interface Args {
@@ -157,7 +158,8 @@ async function main(): Promise<void> {
         onRuntimeRootExit: () => undefined,
       });
 
-  for await (const ev of stream) {
+  for await (const yielded of stream) {
+    const ev = projectAgentEvent(yielded);
     if (ev.type === "session") sessionId = ev.sessionId;
     printEvent(ev);
   }

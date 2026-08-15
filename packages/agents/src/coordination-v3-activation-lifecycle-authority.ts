@@ -1,12 +1,14 @@
 import type Database from "better-sqlite3";
 import type {
   CoordinationRequestUpdateKind,
+  ProviderFailureCategory,
 } from "@ponderosa/core";
 import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runtime-scope-authority.js";
 import type {
   ActivationTerminalOutcome,
   UpdateRequestV3Input,
 } from "./coordination-v3-types.js";
+import { publicActivationDeliveryError } from "./coordination-v3-provider-failure-projection.js";
 
 /** Settles Activations that can no longer execute and their dependent work. */
 export class CoordinationV3ActivationLifecycleAuthority {
@@ -70,7 +72,8 @@ export class CoordinationV3ActivationLifecycleAuthority {
     const placeholders = activationIds.map(() => "?").join(", ");
     const requests = this.sqlite.prepare(`
       SELECT DISTINCT request.id, activation.id AS activation_id,
-        activation.terminal_outcome, activation.last_delivery_error
+        activation.terminal_outcome, activation.last_delivery_error,
+        activation.provider_failure_category
       FROM agent_activations activation
       JOIN activation_sources source
         ON source.activation_id = activation.id
@@ -89,6 +92,7 @@ export class CoordinationV3ActivationLifecycleAuthority {
       activation_id: string;
       terminal_outcome: ActivationTerminalOutcome;
       last_delivery_error: string | null;
+      provider_failure_category: ProviderFailureCategory | null;
     }>;
     for (const request of requests) {
       const kind: CoordinationRequestUpdateKind =
@@ -107,9 +111,14 @@ export class CoordinationV3ActivationLifecycleAuthority {
         payload: {
           activationId: request.activation_id,
           activationOutcome: request.terminal_outcome,
-          reason:
-            request.last_delivery_error ?? "activation could not execute",
+          reason: publicActivationDeliveryError({
+            lastDeliveryError: request.last_delivery_error,
+            providerFailureCategory: request.provider_failure_category,
+            }) ?? "activation could not execute",
         },
+        ...(request.provider_failure_category
+          ? { providerFailureCategory: request.provider_failure_category }
+          : {}),
         now,
       });
     }

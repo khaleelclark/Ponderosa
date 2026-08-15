@@ -4,6 +4,7 @@
 // (AGENTS.md invariant 2).
 
 import type { AgentEvent } from "./events.js";
+import type { ProviderFailureCategory } from "./provider-failure-summary.js";
 
 /** A stable engine identifier, e.g. "codex" or "claude". */
 export type EngineId = string;
@@ -77,6 +78,9 @@ export type EngineModelValidationError =
   | "invalid_model"
   | "model_not_found"
   | "authentication"
+  | "rate_limit"
+  | "capacity"
+  | "context_length"
   | "organization_policy"
   | "plan_entitlement"
   | "network"
@@ -473,6 +477,8 @@ export interface EngineAuthStatus {
 /** Positive provider evidence gathered only after an explicit operator check. */
 export interface EngineAvailabilityStatus {
   available: boolean;
-  /** Provider-safe detail explaining the result of the check. */
+  /** Optional structured adapter-owned category; preferred over provider prose. */
+  failureCategory?: ProviderFailureCategory;
+  /** Raw provider detail for restricted evidence/classification, never direct projection. */
   detail?: string;
 }
