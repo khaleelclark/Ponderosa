@@ -1035,7 +1035,7 @@ export function ConversationView({
                 onLoadEarlier: () => void loadOlderHistory(),
               }}
             >
-              {collaborationQuery.isError ? (
+              {collaborationQuery.isError && !collaborationQuery.data ? (
                 <Alert
                   severity="error"
                   action={
