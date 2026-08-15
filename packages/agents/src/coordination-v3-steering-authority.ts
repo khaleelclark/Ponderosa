@@ -194,6 +194,66 @@ export class CoordinationV3SteeringAuthority {
     })();
   }
 
+  failSteeringForActivationCompilation(input: {
+    injectionId: string;
+    runId: string;
+    fencingToken: number;
+    activationId: string;
+    errorCode: string;
+    errorDetail?: string;
+    now?: string;
+  }): void {
+    const now = input.now ?? new Date().toISOString();
+    this.sqlite.transaction(() => {
+      const run = this.support.getFencedRun(input.runId, input.fencingToken);
+      if (run.status !== "running") {
+        throw new Error("Run is not authoritative for steering containment");
+      }
+      const injection = this.sqlite.prepare(`
+        SELECT activation_ids_json FROM scheduler_prompt_injections
+        WHERE id = ? AND run_id = ? AND kind = 'steer' AND state = 'pending'
+      `).get(input.injectionId, input.runId) as { activation_ids_json: string } | undefined;
+      if (!injection) throw new Error("pending steering injection not found");
+      const activationIds = JSON.parse(injection.activation_ids_json) as string[];
+      if (!activationIds.includes(input.activationId)) {
+        throw new Error("offending activation is not attached to the steering injection");
+      }
+      const detail = input.errorDetail
+        ? (input.errorCode + ": " + input.errorDetail).slice(0, 2_000)
+        : input.errorCode;
+      this.sqlite.prepare(`
+        UPDATE agent_activations
+        SET state = 'failed', terminal_outcome = 'permanent_failure',
+          last_delivery_error = ?, updated_at = ?, terminal_at = ?
+        WHERE id = ? AND state = 'attached'
+      `).run(detail, now, now, input.activationId);
+      const retriedIds = activationIds.filter((id) => id !== input.activationId);
+      if (retriedIds.length) {
+        const placeholders = retriedIds.map(() => "?").join(", ");
+        this.sqlite.prepare(`
+          UPDATE agent_activations
+          SET state = 'retry_pending', available_at = ?, updated_at = ?,
+            last_delivery_error = ?, terminal_outcome = NULL, terminal_at = NULL
+          WHERE id IN (${placeholders}) AND state = 'attached'
+        `).run(
+          now,
+          now,
+          "Steering preparation was retried after isolating another activation.",
+          ...retriedIds,
+        );
+      }
+      this.sqlite.prepare(`
+        UPDATE scheduler_prompt_injections
+        SET state = 'cancelled', updated_at = ?, terminal_at = ?
+        WHERE id = ? AND run_id = ? AND state = 'pending'
+      `).run(now, now, input.injectionId, input.runId);
+      this.activationLifecycle.settleRequestsForFailedActivations(
+        [input.activationId],
+        now,
+      );
+    })();
+  }
+
   deferSteering(input: {
     injectionId: string;
     runId: string;

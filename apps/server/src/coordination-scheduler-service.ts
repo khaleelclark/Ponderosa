@@ -19,6 +19,7 @@ import {
 import { collectReachableArtifactIds } from "./artifact-refs.js";
 import {
   type AutomaticResultMaterial,
+  ActivationPromptCompilationError,
   compileActivationPrompt,
   CoordinationV3Scheduler,
 } from "./coordination-v3-scheduler.js";
@@ -41,84 +42,125 @@ type ArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>
 const AUTOMATIC_RESULT_PROVIDER_PACKET_UTF8_LIMIT = 256 * 1024;
 const PROVIDER_INTAKE_CHECK_BUDGET_MS = 500;
 
-export function exactCorrelatedResultArtifactOwners(
+export interface CorrelatedArtifactReference {
+  artifactId: string;
+  source: "structured_exact_result" | "managed_text_link" | "unrelated";
+  expectedOwnerId?: string;
+}
+
+export function correlatedResultArtifactReferences(
   activation: SchedulerLease["activations"][number],
-): Map<string, string | null> {
-  const owners = new Map<string, string | null>();
+): CorrelatedArtifactReference[] {
   const payload = activation.payload && typeof activation.payload === "object"
     ? activation.payload as Record<string, unknown>
     : {};
-  const add = (value: unknown, ownerId: unknown): void => {
-    const expectedOwner = typeof ownerId === "string" && ownerId ? ownerId : null;
-    for (const artifactId of collectReachableArtifactIds(value)) {
-      if (!owners.has(artifactId)) {
-        owners.set(artifactId, expectedOwner);
-        continue;
+  const references = new Map<string, CorrelatedArtifactReference>();
+  const addStructured = (value: unknown, ownerId: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    const expectedOwnerId = typeof ownerId === "string" && ownerId ? ownerId : undefined;
+    const visit = (node: unknown): void => {
+      if (Array.isArray(node)) {
+        for (const item of node) visit(item);
+        return;
       }
-      if (owners.get(artifactId) !== expectedOwner) owners.set(artifactId, null);
-    }
+      if (!node || typeof node !== "object") return;
+      for (const [key, child] of Object.entries(node as Record<string, unknown>)) {
+        if ((key === "artifactId" || key === "resultRef" || key === "resultArtifactId") &&
+            typeof child === "string") {
+          for (const artifactId of collectReachableArtifactIds(child)) {
+            const current = references.get(artifactId);
+            references.set(artifactId, {
+              artifactId,
+              source: "structured_exact_result",
+              ...((!current || current.expectedOwnerId === expectedOwnerId) && expectedOwnerId
+                ? { expectedOwnerId }
+                : {}),
+            });
+          }
+        } else {
+          visit(child);
+        }
+      }
+    };
+    visit(value);
   };
   if (activation.kind === "coordination_outcome") {
-    add(payload.update, payload.updateId);
+    addStructured(payload.update, payload.updateId);
   } else if (activation.kind === "coordination_late_result") {
     const late = payload.lateResult && typeof payload.lateResult === "object"
       ? payload.lateResult as Record<string, unknown>
       : {};
-    add(late.update, late.updateId);
+    addStructured(late.update, late.updateId);
   } else if (activation.kind.startsWith("coordination_join_")) {
     for (const item of Array.isArray(payload.outcomes) ? payload.outcomes : []) {
       const outcome = item && typeof item === "object" ? item as Record<string, unknown> : {};
       const update = outcome.update && typeof outcome.update === "object"
         ? outcome.update as Record<string, unknown>
         : {};
-      add(update.payload, update.id);
+      addStructured(update.payload, update.id);
     }
   } else if (
     activation.kind === "coordination_question" ||
     activation.kind === "coordination_answer" ||
     activation.kind === "coordination_dependency_resolved"
   ) {
-    add(payload.update, payload.updateId ?? payload.inReplyToUpdateId);
+    addStructured(payload.update, payload.updateId ?? payload.inReplyToUpdateId);
   }
-  return owners;
+  const serializedPayload = JSON.stringify(payload);
+  for (const artifactId of collectReachableArtifactIds(payload)) {
+    if (references.has(artifactId)) continue;
+    references.set(artifactId, {
+      artifactId,
+      source: serializedPayload.includes(`ponderosa://artifact/${artifactId}`)
+        ? "managed_text_link"
+        : "unrelated",
+    });
+  }
+  return [...references.values()];
 }
 
-export function resolveCoordinationResultArtifacts(input: {
+export async function resolveCoordinationResultArtifacts(input: {
   activation: SchedulerLease["activations"][number];
   projectId: string;
   runtimeArtifact(artifactId: string): RuntimeArtifactV3 | undefined;
-  authoritative(artifact: RuntimeArtifactV3): {
+  authoritative(artifact: RuntimeArtifactV3): Promise<{
     byteLength: number;
     contentHash: string;
     body: Buffer;
     localPath: string;
-  } | undefined;
-}): AutomaticResultMaterial[] {
+  } | undefined>;
+}): Promise<AutomaticResultMaterial[]> {
   if (!input.activation.kind.startsWith("coordination_")) return [];
-  const exactOwners = exactCorrelatedResultArtifactOwners(input.activation);
-  return [...collectReachableArtifactIds(input.activation.payload)].flatMap((artifactId) => {
-    const artifact = input.runtimeArtifact(artifactId);
-    const exactOwnerId = exactOwners.get(artifactId);
-    const exactReference = exactOwners.has(artifactId);
+  const references = correlatedResultArtifactReferences(input.activation);
+  const materials: AutomaticResultMaterial[] = [];
+  for (const reference of references) {
+    if (reference.source !== "structured_exact_result") continue;
+    const artifact = input.runtimeArtifact(reference.artifactId);
     if (!artifact || artifact.ownerKind !== "request_update" || artifact.projectId !== input.projectId ||
-        (exactReference && (exactOwnerId === null || artifact.ownerId !== exactOwnerId))) {
-      if (exactReference) {
-        throw new Error(`exact correlated result artifact contract mismatch: ${artifactId}`);
-      }
-      return [];
+        !reference.expectedOwnerId || artifact.ownerId !== reference.expectedOwnerId) {
+      throw new ActivationPromptCompilationError({
+        code: "exact_artifact_contract_mismatch",
+        activation: input.activation,
+      });
     }
-    const authoritative = input.authoritative(artifact);
-    if (!authoritative) throw new Error(`correlated result artifact is unavailable: ${artifactId}`);
-    return [{
-      artifactId,
+    const authoritative = await input.authoritative(artifact);
+    if (!authoritative) {
+      throw new ActivationPromptCompilationError({
+        code: "correlated_artifact_unavailable",
+        activation: input.activation,
+      });
+    }
+    materials.push({
+      artifactId: reference.artifactId,
       title: artifact.title,
       mediaType: artifact.mediaType,
       byteLength: authoritative.byteLength,
       sha256: authoritative.contentHash,
       content: authoritative.body.toString("utf8"),
       localPath: authoritative.localPath,
-    }];
-  });
+    });
+  }
+  return materials;
 }
 
 interface CoordinationSchedulerContext {
@@ -209,9 +251,8 @@ return new CoordinationV3Scheduler(
     const activationPayloads = lease.activations
       .map((activation) => activation.payload)
       .filter((payload): payload is Record<string, unknown> => Boolean(payload) && typeof payload === "object");
-    // A leased delivery is no longer editable queue state. Publish that
-    // transition immediately so the composer removes it before provider
-    // startup completes (or fails).
+    // A leased delivery is preparing and no longer editable queue state.
+    // Started is reserved for the durable provider-submission boundary.
     for (const activation of lease.activations) {
       const payload = activation.payload && typeof activation.payload === "object"
         ? activation.payload as { communication?: CommunicationEvent; dispatch?: { conversationId?: string; sourceConversationId?: string } }
@@ -220,7 +261,7 @@ return new CoordinationV3Scheduler(
       if (communication?.sender.kind !== "user" || communication.sender.userId !== "local-operator") continue;
       const conversationId = payload?.dispatch?.sourceConversationId ?? payload?.dispatch?.conversationId ?? communication.conversationId;
       if (conversationId) appendWorkspace({
-        type: "queued_message_changed", conversationId, deliveryId: activation.id, action: "started",
+        type: "queued_message_changed", conversationId, deliveryId: activation.id, action: "preparing",
       });
     }
     const communication = activationPayloads
@@ -376,15 +417,43 @@ return new CoordinationV3Scheduler(
         };
       }
     },
-    compilePrompt: (lease) => compileActivationPrompt(lease, {
-      maxUtf8Bytes: AUTOMATIC_RESULT_PROVIDER_PACKET_UTF8_LIMIT,
-      resolveResultArtifacts: (activation) => resolveCoordinationResultArtifacts({
-        activation,
-        projectId: lease.projectId,
-        runtimeArtifact: artifactId => coordinationV3.runtimeArtifact(artifactId),
-        authoritative: artifact => assets.authoritativeRuntimeArtifact(lease.projectId, artifact),
-      }),
-    }),
+    compilePrompt: async (lease, { signal, deadlineAt, setPreparingActivation }) => {
+      const materials = new Map<string, AutomaticResultMaterial[]>();
+      for (const activation of lease.activations) {
+        signal.throwIfAborted();
+        setPreparingActivation(activation);
+        try {
+          materials.set(activation.id, await resolveCoordinationResultArtifacts({
+            activation,
+            projectId: lease.projectId,
+            runtimeArtifact: artifactId => coordinationV3.runtimeArtifact(artifactId),
+            authoritative: artifact => assets.authoritativeRuntimeArtifactAsync(
+              lease.projectId,
+              artifact,
+              signal,
+            ),
+          }));
+        } catch (error) {
+          if (signal.aborted || Date.now() >= deadlineAt) {
+            throw new ActivationPromptCompilationError({
+              code: "activation_prompt_invalid",
+              activation,
+              detail: "preparation_watchdog_exceeded",
+            });
+          }
+          throw error;
+        } finally {
+          setPreparingActivation();
+        }
+      }
+      signal.throwIfAborted();
+      return compileActivationPrompt(lease, {
+        maxUtf8Bytes: AUTOMATIC_RESULT_PROVIDER_PACKET_UTF8_LIMIT,
+        signal,
+        deadlineAt,
+        resolveResultArtifacts: activation => materials.get(activation.id) ?? [],
+      });
+    },
     dispatchProviderOperation: async (operation) => {
       const entry = [...activeRuns.entries()].find(([, run]) => run.runId === operation.runId);
       if (!entry) {

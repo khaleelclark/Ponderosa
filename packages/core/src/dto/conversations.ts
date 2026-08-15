@@ -117,6 +117,8 @@ export interface ConversationMessageDto {
 
 export type MessageDeliveryReceiptState =
   | "queued"
+  | "preparing"
+  | "retrying"
   | "steering"
   | "started"
   | "delivered"
@@ -486,7 +488,7 @@ export interface CreateMultiAgentDirectMessageRequest {
 export interface MultiAgentDirectMessageResponse {
   messageId: string;
   replayed: boolean;
-  recipients: Array<{ agentId: string; queued: boolean; deliveryId?: string; state?: "queued" | "steered" | "started" }>;
+  recipients: Array<{ agentId: string; queued: boolean; deliveryId?: string; state?: "queued" | "preparing" | "retrying" | "steered" | "started" }>;
 }
 
 export interface QueuedConversationMessageDto {

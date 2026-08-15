@@ -1046,6 +1046,18 @@ export class CoordinationV3Store {
     })();
   }
 
+  failSteeringForActivationCompilation(input: {
+    injectionId: string;
+    runId: string;
+    fencingToken: number;
+    activationId: string;
+    errorCode: string;
+    errorDetail?: string;
+    now?: string;
+  }): void {
+    this.steeringAuthority.failSteeringForActivationCompilation(input);
+  }
+
   preparePromptInjection(input: {
     injectionId: string; runId: string; fencingToken: number; prompt: string; now?: string;
   }): void {
@@ -1095,6 +1107,18 @@ export class CoordinationV3Store {
 
   requiredReplyAuthoritiesForRun(runId: string): CoordinationReplyAuthority[] {
     return this.requiredReplyAuthority.authoritiesForRun(runId);
+  }
+
+  failRunForActivationCompilation(input: {
+    runId: string;
+    fencingToken: number;
+    workerId: string;
+    activationId: string;
+    errorCode: string;
+    errorDetail?: string;
+    now?: string;
+  }): void {
+    this.runLifecycleAuthority.failRunForActivationCompilation(input);
   }
 
   failRun(input: {

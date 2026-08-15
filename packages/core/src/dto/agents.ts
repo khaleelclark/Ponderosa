@@ -262,7 +262,11 @@ export interface AgentHealthDto {
   reason: AgentOperationalReason;
   /** Runtime generation and bounded liveness window, when work is active. */
   executionId?: string;
+  /** Durable scheduler lease authority, even before a provider process exists. */
+  schedulerRunId?: string;
+  leaseStartedAt?: string;
   leaseExpiresAt?: string;
+  promptInjectionState?: "not_injected" | "injecting" | "injected";
   runtimeOwnership?: "running" | "stalled" | "cancelling" | "interrupted";
   /** Present only while the server canonically owns an active execution. */
   runtimeActivity?: {

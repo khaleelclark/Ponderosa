@@ -40,7 +40,7 @@ export function useAgentHealth(projectId: string | undefined, enabled = true) {
     enabled: Boolean(projectId) && enabled,
     refetchInterval: (query) => {
       const agents = query.state.data?.agents ?? [];
-      return agents.some((agent) => agent.status === "running" || agent.status === "waiting" || agent.status === "compacting")
+      return agents.some((agent) => agent.status === "running" || agent.status === "preparing" || agent.status === "waiting" || agent.status === "compacting")
         ? 5_000 : 30_000;
     },
   });

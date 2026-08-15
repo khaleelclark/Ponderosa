@@ -11,9 +11,11 @@ const BEARER_CREDENTIAL = /(\bbearer\s+)([a-z0-9._~+/=-]{8,})/gi;
 export class BrowserSessionError extends Error {
   constructor(
     message: string,
-    readonly statusCode: 400 | 404 | 409 | 503 = 400,
+    readonly statusCode: 400 | 403 | 404 | 409 | 413 | 415 | 503 = 400,
+    readonly code?: string,
   ) {
     super(message);
+    this.name = "BrowserSessionError";
   }
 }
 

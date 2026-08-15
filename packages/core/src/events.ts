@@ -27,7 +27,10 @@ export interface TokenUsage {
 
 export type BrowserControlOwner = "agent" | "operator";
 export type BrowserSessionStatus = "opening" | "ready" | "closed" | "failed";
-export type BrowserActionKind = "navigate" | "click" | "type" | "key" | "scroll" | "inspect" | "control";
+export type BrowserActionKind =
+  | "navigate" | "click" | "type" | "key" | "scroll" | "inspect" | "control"
+  | "page_open" | "page_activate" | "page_close" | "page_limit"
+  | "upload" | "upload_cancel";
 export type ProviderErrorCode =
   | "invalid_model"
   | "model_not_found"

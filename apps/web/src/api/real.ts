@@ -20,6 +20,7 @@ import type {
   BrowserControlRequest,
   BrowserOperatorInputRequest,
   BrowserSessionDto,
+  BrowserUploadResponseDto,
   CancelAgentRunRequest,
   CancelAgentRunResponse,
   CancelMessageDeliveryRequest,
@@ -831,6 +832,26 @@ export const realApi = {
   closeBrowserSession(projectId: string, agentId: string, runId: string): Promise<BrowserSessionDto> {
     return requestJson<BrowserSessionDto>(browserPath(projectId, agentId, runId), { method: "DELETE" });
   },
+  activateBrowserPage(projectId: string, agentId: string, runId: string, pageId: string, expectedControlEpoch: number): Promise<BrowserSessionDto> {
+    return requestJson<BrowserSessionDto>(browserPath(projectId, agentId, runId) + "/pages/" + encodeURIComponent(pageId) + "/active", {
+      method: "PUT", body: JSON.stringify({ expectedControlEpoch }),
+    });
+  },
+  closeBrowserPage(projectId: string, agentId: string, runId: string, pageId: string, expectedControlEpoch: number): Promise<BrowserSessionDto> {
+    return requestJson<BrowserSessionDto>(browserPath(projectId, agentId, runId) + "/pages/" + encodeURIComponent(pageId), {
+      method: "DELETE", body: JSON.stringify({ expectedControlEpoch }),
+    });
+  },
+  uploadBrowserArtifact(projectId: string, agentId: string, runId: string, artifactId: string, selector: string | undefined, expectedControlEpoch: number): Promise<BrowserUploadResponseDto> {
+    return requestJson<BrowserUploadResponseDto>(browserPath(projectId, agentId, runId) + "/upload", {
+      method: "POST", body: JSON.stringify({ artifactId, selector, expectedControlEpoch }),
+    });
+  },
+  cancelBrowserFileChooser(projectId: string, agentId: string, runId: string, expectedControlEpoch: number): Promise<BrowserSessionDto> {
+    return requestJson<BrowserSessionDto>(browserPath(projectId, agentId, runId) + "/file-chooser", {
+      method: "DELETE", body: JSON.stringify({ expectedControlEpoch }),
+    });
+  },
   setBrowserControl(projectId: string, agentId: string, runId: string, request: BrowserControlRequest): Promise<BrowserSessionDto> {
     return requestJson<BrowserSessionDto>(`${browserPath(projectId, agentId, runId)}/control`, {
       method: "PUT", body: JSON.stringify(request satisfies BrowserControlRequest),
@@ -864,6 +885,26 @@ export const realApi = {
   },
   closeProjectBrowser(projectId: string): Promise<ProjectBrowserSessionDto> {
     return requestJson<ProjectBrowserSessionDto>(`/api/projects/${encodeURIComponent(projectId)}/browser`, { method: "DELETE" });
+  },
+  activateProjectBrowserPage(projectId: string, pageId: string, expectedControlEpoch: number): Promise<ProjectBrowserSessionDto> {
+    return requestJson<ProjectBrowserSessionDto>("/api/projects/" + encodeURIComponent(projectId) + "/browser/pages/" + encodeURIComponent(pageId) + "/active", {
+      method: "PUT", body: JSON.stringify({ expectedControlEpoch }),
+    });
+  },
+  closeProjectBrowserPage(projectId: string, pageId: string, expectedControlEpoch: number): Promise<ProjectBrowserSessionDto> {
+    return requestJson<ProjectBrowserSessionDto>("/api/projects/" + encodeURIComponent(projectId) + "/browser/pages/" + encodeURIComponent(pageId), {
+      method: "DELETE", body: JSON.stringify({ expectedControlEpoch }),
+    });
+  },
+  uploadProjectBrowserArtifact(projectId: string, artifactId: string, selector: string | undefined, expectedControlEpoch: number): Promise<BrowserUploadResponseDto> {
+    return requestJson<BrowserUploadResponseDto>("/api/projects/" + encodeURIComponent(projectId) + "/browser/upload", {
+      method: "POST", body: JSON.stringify({ artifactId, selector, expectedControlEpoch }),
+    });
+  },
+  cancelProjectBrowserFileChooser(projectId: string, expectedControlEpoch: number): Promise<ProjectBrowserSessionDto> {
+    return requestJson<ProjectBrowserSessionDto>("/api/projects/" + encodeURIComponent(projectId) + "/browser/file-chooser", {
+      method: "DELETE", body: JSON.stringify({ expectedControlEpoch }),
+    });
   },
   setProjectBrowserControl(projectId: string, request: ProjectBrowserControlRequest): Promise<ProjectBrowserSessionDto> {
     return requestJson<ProjectBrowserSessionDto>(`/api/projects/${encodeURIComponent(projectId)}/browser/control`, {

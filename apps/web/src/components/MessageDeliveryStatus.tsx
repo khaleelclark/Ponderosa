@@ -18,6 +18,8 @@ function deliveryLabel(
 ): string {
   switch (receipt.state) {
     case "queued": return `Queued for ${recipientName}.`;
+    case "preparing": return `Preparing a Run for ${recipientName}.`;
+    case "retrying": return `Retrying delivery to ${recipientName}.`;
     case "steering": return `Steering ${recipientName}; awaiting provider acknowledgement.`;
     case "started": return `Started a Run for ${recipientName}.`;
     case "delivered": return `Delivered to ${recipientName}.`;
@@ -42,6 +44,8 @@ function deliveryLabel(
 function compactDeliveryLabel(receipt: Pick<MessageDeliveryReceiptDto, "state">): string {
   switch (receipt.state) {
     case "queued": return "Queued";
+    case "preparing": return "Preparing";
+    case "retrying": return "Retrying";
     case "steering": return "Steering";
     case "started": return "Started";
     case "delivered": return "Delivered";
@@ -60,7 +64,7 @@ function compactDeliveryLabel(receipt: Pick<MessageDeliveryReceiptDto, "state">)
 
 function severity(receipt: MessageDeliveryReceiptDto): "success" | "info" | "warning" | "error" {
   if (receipt.state === "delivered" || receipt.state === "processed" || receipt.state === "recovered") return "success";
-  if (receipt.state === "unconfirmed" || receipt.state === "waiting_for_run" || receipt.state === "recovery_queued" || receipt.state === "recovering") return "warning";
+  if (receipt.state === "retrying" || receipt.state === "unconfirmed" || receipt.state === "waiting_for_run" || receipt.state === "recovery_queued" || receipt.state === "recovering") return "warning";
   if (receipt.state === "undelivered" || receipt.state === "retry_exhausted" || receipt.state === "failed") return "error";
   return "info";
 }

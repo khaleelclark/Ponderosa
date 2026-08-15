@@ -4,6 +4,7 @@ import type {
   ProjectBrowserControlRequest,
   ProjectBrowserNavigateRequest,
   ProjectBrowserSessionDto,
+  BrowserUploadRequest,
 } from "@ponderosa/core";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import {
@@ -40,7 +41,10 @@ type BrowserRouteParams = { projectId: string; id: string; runId: string };
 
 function browserRouteError(reply: FastifyReply, error: unknown) {
   if (error instanceof BrowserSessionError) {
-    return reply.code(error.statusCode).send({ error: error.message });
+    return reply.code(error.statusCode).send({
+      error: error.message,
+      ...(error.code ? { code: error.code } : {}),
+    });
   }
   throw error;
 }
@@ -220,6 +224,95 @@ export function registerBrowserRoutes(
     },
   );
 
+  app.put<{
+    Params: { projectId: string; pageId: string };
+    Body: { expectedControlEpoch: number };
+  }>(projectBrowserRoute + "/pages/:pageId/active", async (request, reply) => {
+    if (!projectExists(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+    if (!Number.isSafeInteger(request.body?.expectedControlEpoch)) {
+      return reply.code(400).send({ error: "expectedControlEpoch is required" });
+    }
+    try {
+      const session = await projectBrowserSessions.activatePage(
+        projectBrowserScope(request.params.projectId),
+        request.params.pageId,
+        "operator",
+        request.body.expectedControlEpoch,
+      );
+      return projectBrowserDto(request.params.projectId, session);
+    } catch (error) {
+      return browserRouteError(reply, error);
+    }
+  });
+
+  app.delete<{
+    Params: { projectId: string; pageId: string };
+    Body: { expectedControlEpoch: number };
+  }>(projectBrowserRoute + "/pages/:pageId", async (request, reply) => {
+    if (!projectExists(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+    if (!Number.isSafeInteger(request.body?.expectedControlEpoch)) {
+      return reply.code(400).send({ error: "expectedControlEpoch is required" });
+    }
+    try {
+      const session = await projectBrowserSessions.closePage(
+        projectBrowserScope(request.params.projectId),
+        request.params.pageId,
+        "operator",
+        request.body.expectedControlEpoch,
+      );
+      return projectBrowserDto(request.params.projectId, session);
+    } catch (error) {
+      return browserRouteError(reply, error);
+    }
+  });
+
+  app.delete<{
+    Params: { projectId: string };
+    Body: { expectedControlEpoch: number };
+  }>(projectBrowserRoute + "/file-chooser", async (request, reply) => {
+    if (!projectExists(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+    if (!Number.isSafeInteger(request.body?.expectedControlEpoch)) {
+      return reply.code(400).send({ error: "expectedControlEpoch is required" });
+    }
+    try {
+      const session = await projectBrowserSessions.cancelFileChooser(
+        projectBrowserScope(request.params.projectId),
+        "operator",
+        request.body.expectedControlEpoch,
+      );
+      return projectBrowserDto(request.params.projectId, session);
+    } catch (error) {
+      return browserRouteError(reply, error);
+    }
+  });
+
+  app.post<{
+    Params: { projectId: string };
+    Body: BrowserUploadRequest;
+  }>(projectBrowserRoute + "/upload", async (request, reply) => {
+    if (!projectExists(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+    if (!request.body || typeof request.body.artifactId !== "string" ||
+        !Number.isSafeInteger(request.body.expectedControlEpoch) ||
+        (request.body.selector !== undefined && typeof request.body.selector !== "string")) {
+      return reply.code(400).send({ error: "artifactId and expectedControlEpoch are required" });
+    }
+    try {
+      const response = await projectBrowserSessions.upload(
+        projectBrowserScope(request.params.projectId),
+        request.body.artifactId,
+        request.body.selector,
+        "operator",
+        request.body.expectedControlEpoch,
+      );
+      return {
+        session: projectBrowserDto(request.params.projectId, response.session),
+        upload: response.upload,
+      };
+    } catch (error) {
+      return browserRouteError(reply, error);
+    }
+  });
+
   app.get<{ Params: { projectId: string } }>(
     `${projectBrowserRoute}/frame`,
     async (request, reply) => {
@@ -332,6 +425,84 @@ export function registerBrowserRoutes(
       }
     },
   );
+
+  app.put<{
+    Params: BrowserRouteParams & { pageId: string };
+    Body: { expectedControlEpoch: number };
+  }>(browserRoute + "/pages/:pageId/active", async (request, reply) => {
+    if (!Number.isSafeInteger(request.body?.expectedControlEpoch)) {
+      return reply.code(400).send({ error: "expectedControlEpoch is required" });
+    }
+    try {
+      return await browserSessions.activatePage(
+        operatorBrowserScope(request.params),
+        request.params.pageId,
+        "operator",
+        request.body.expectedControlEpoch,
+      );
+    } catch (error) {
+      return browserRouteError(reply, error);
+    }
+  });
+
+  app.delete<{
+    Params: BrowserRouteParams & { pageId: string };
+    Body: { expectedControlEpoch: number };
+  }>(browserRoute + "/pages/:pageId", async (request, reply) => {
+    if (!Number.isSafeInteger(request.body?.expectedControlEpoch)) {
+      return reply.code(400).send({ error: "expectedControlEpoch is required" });
+    }
+    try {
+      return await browserSessions.closePage(
+        operatorBrowserScope(request.params),
+        request.params.pageId,
+        "operator",
+        request.body.expectedControlEpoch,
+      );
+    } catch (error) {
+      return browserRouteError(reply, error);
+    }
+  });
+
+  app.delete<{
+    Params: BrowserRouteParams;
+    Body: { expectedControlEpoch: number };
+  }>(browserRoute + "/file-chooser", async (request, reply) => {
+    if (!Number.isSafeInteger(request.body?.expectedControlEpoch)) {
+      return reply.code(400).send({ error: "expectedControlEpoch is required" });
+    }
+    try {
+      return await browserSessions.cancelFileChooser(
+        operatorBrowserScope(request.params),
+        "operator",
+        request.body.expectedControlEpoch,
+      );
+    } catch (error) {
+      return browserRouteError(reply, error);
+    }
+  });
+
+  app.post<{
+    Params: BrowserRouteParams;
+    Body: BrowserUploadRequest;
+  }>(browserRoute + "/upload", async (request, reply) => {
+    if (!request.body || typeof request.body.artifactId !== "string" ||
+        !Number.isSafeInteger(request.body.expectedControlEpoch) ||
+        (request.body.selector !== undefined && typeof request.body.selector !== "string")) {
+      return reply.code(400).send({ error: "artifactId and expectedControlEpoch are required" });
+    }
+    try {
+      return await browserSessions.upload(
+        operatorBrowserScope(request.params),
+        request.body.artifactId,
+        request.body.selector,
+        "operator",
+        request.body.expectedControlEpoch,
+      );
+    } catch (error) {
+      return browserRouteError(reply, error);
+    }
+  });
 
   app.get<{ Params: BrowserRouteParams }>(`${browserRoute}/frame`, async (request, reply) => {
     try {

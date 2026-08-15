@@ -41,6 +41,49 @@ export function useBrowserController<Session extends BrowserSession>({
   const navigate = useMutation({ mutationFn: (url: string) => adapter.navigate!(url), onSuccess: update });
   const reconnect = useMutation({ mutationFn: adapter.reconnect, onSuccess: update });
   const close = useMutation({ mutationFn: adapter.close, onSuccess: update });
+  const activatePage = useMutation({
+    mutationFn: (pageId: string) => {
+      const session = sessionRef.current;
+      if (!session) throw new Error("The browser session changed. Refresh and try again.");
+      return adapter.activatePage(pageId, session.controlEpoch);
+    },
+    onSuccess: (next) => { update(next); refreshFrame.current(); },
+    onError: () => { void queryClient.invalidateQueries({ queryKey: adapter.queryKey }); },
+  });
+  const closePage = useMutation({
+    mutationFn: (pageId: string) => {
+      const session = sessionRef.current;
+      if (!session) throw new Error("The browser session changed. Refresh and try again.");
+      return adapter.closePage(pageId, session.controlEpoch);
+    },
+    onSuccess: (next) => { update(next); refreshFrame.current(); },
+    onError: () => { void queryClient.invalidateQueries({ queryKey: adapter.queryKey }); },
+  });
+  const upload = useMutation({
+    mutationFn: ({ artifactId, selector }: { artifactId: string; selector?: string }) => {
+      const session = sessionRef.current;
+      if (!session || session.controlOwner !== "operator") {
+        throw new Error("Browser control changed before the upload was sent.");
+      }
+      return adapter.upload(artifactId, selector, session.controlEpoch);
+    },
+    onSuccess: (response) => {
+      update(response.session);
+      refreshFrame.current();
+    },
+    onError: () => { void queryClient.invalidateQueries({ queryKey: adapter.queryKey }); },
+  });
+  const cancelFileChooser = useMutation({
+    mutationFn: () => {
+      const session = sessionRef.current;
+      if (!session || session.controlOwner !== "operator") {
+        throw new Error("Browser control changed before the file chooser was cancelled.");
+      }
+      return adapter.cancelFileChooser(session.controlEpoch);
+    },
+    onSuccess: update,
+    onError: () => { void queryClient.invalidateQueries({ queryKey: adapter.queryKey }); },
+  });
   const control = useMutation({
     mutationFn: (target: BrowserControlTarget) => {
       const session = sessionRef.current;
@@ -96,16 +139,24 @@ export function useBrowserController<Session extends BrowserSession>({
     navigate,
     reconnect,
     close,
+    activatePage,
+    closePage,
+    upload,
+    cancelFileChooser,
     control,
     input,
     sendInput,
     refreshFrame,
-    error: open.error ?? navigate.error ?? reconnect.error ?? close.error ?? control.error ?? input.error,
+    error: open.error ?? navigate.error ?? reconnect.error ?? close.error ?? activatePage.error ?? closePage.error ?? upload.error ?? cancelFileChooser.error ?? control.error ?? input.error,
     resetMutations() {
       open.reset();
       navigate.reset();
       reconnect.reset();
       close.reset();
+      activatePage.reset();
+      closePage.reset();
+      upload.reset();
+      cancelFileChooser.reset();
       control.reset();
       input.reset();
     },

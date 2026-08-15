@@ -96,7 +96,7 @@ export function projectHealthPresentation(
   if (actionable.some((agent) => agent.status === "failed" || agent.status === "stalled")) return { label: "Needs attention", color: "error.main" };
   if (actionable.some((agent) => agent.status === "needs_decision")) return { label: "Needs decision", color: "warning.main" };
   if (actionable.some((agent) => agent.status === "blocked" || agent.status === "interrupted")) return { label: "Blocked", color: "warning.main" };
-  if (actionable.some((agent) => agent.status === "running" || agent.status === "compacting")) return { label: "Active", color: "info.main" };
+  if (actionable.some((agent) => agent.status === "running" || agent.status === "preparing" || agent.status === "compacting")) return { label: "Active", color: "info.main" };
   if (actionable.some((agent) => agent.status === "waiting")) return { label: "Waiting", color: "warning.main" };
   return { label: "Healthy", color: "success.main" };
 }
@@ -190,7 +190,7 @@ export function ProjectOverview({
   });
   const activeAgents = agents.filter((agent) => {
     const status = healthByAgentId.get(agent.id)?.status;
-    return status === "running" || status === "compacting";
+    return status === "running" || status === "preparing" || status === "compacting";
   });
   const activeWork = (work.data?.traces ?? []).filter((trace) => trace.state === "active");
   const importantOutputs = importantArtifacts

@@ -15,6 +15,8 @@ import {
 import type { BrowserSessionDto } from "@ponderosa/core";
 import { useMemo, useState } from "react";
 import { BrowserViewport } from "./browser/BrowserViewport";
+import { BrowserPageStrip } from "./browser/BrowserPageStrip";
+import { BrowserArtifactUpload } from "./browser/BrowserArtifactUpload";
 import { agentBrowserAdapter } from "./browser/browserAdapters";
 import { useBrowserController } from "./browser/useBrowserController";
 import { FeatureErrorBoundary } from "./FeatureErrorBoundary";
@@ -103,6 +105,15 @@ export function AgentBrowserDialog({
             minHeight: 0,
           }}
         >
+          <Box sx={{ display: "grid", gap: 1, minHeight: 0 }}>
+            <BrowserPageStrip
+              pages={session?.pages ?? []}
+              activePageId={session?.activePageId}
+              canManage={operator}
+              busy={browser.activatePage.isPending || browser.closePage.isPending}
+              onActivate={(pageId) => browser.activatePage.mutate(pageId)}
+              onClose={(pageId) => browser.closePage.mutate(pageId)}
+            />
           <BrowserViewport
             adapter={adapter}
             session={session}
@@ -117,6 +128,7 @@ export function AgentBrowserDialog({
               <Alert severity="info">This Agent browser is no longer available.</Alert>
             ) : undefined}
           />
+          </Box>
           {session?.status === "ready" ? operator ? (
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
               <TextField
@@ -157,6 +169,18 @@ export function AgentBrowserDialog({
                 Take Control
               </Button>
             </Stack>
+          ) : null}
+          {session?.capabilities.fileUpload && (operator || session.pendingFileChooser) ? (
+            <BrowserArtifactUpload
+              projectId={projectId}
+              disabled={browser.upload.isPending || browser.cancelFileChooser.isPending}
+              pending={browser.upload.isPending || browser.cancelFileChooser.isPending}
+              chooser={session?.pendingFileChooser}
+              controlOwner={session?.controlOwner ?? "agent"}
+              pageUrl={session?.url}
+              onUpload={(artifactId, selector) => browser.upload.mutate({ artifactId, selector })}
+              onCancel={() => browser.cancelFileChooser.mutate()}
+            />
           ) : null}
           {browser.error ? (
             <Alert severity="error">

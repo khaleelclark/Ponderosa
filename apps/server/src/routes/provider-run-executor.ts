@@ -835,6 +835,10 @@ export function startProviderRunExecution(
               ? readProviderSessionIdentifier(persistentRuntime.session)
               : undefined),
           });
+          // Submission is the first durable provider boundary. Refresh message
+          // receipts now; acknowledgement will advance the same receipt to
+          // delivered when the first non-error event arrives.
+          publishMessageDeliveryChanged(agent.id);
         }
         for await (const event of startStream(sessionId)) {
           if (event.type === "error" &&

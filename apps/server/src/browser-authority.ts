@@ -1,6 +1,7 @@
 import type { AgentEvent, BrowserSessionDto, ProjectBrowserSessionDto } from "@ponderosa/core";
-import type { AgentStore, LogEvent, StoredLogEvent } from "@ponderosa/agents";
+import { openManagedArtifactContent, type AgentStore, type LogEvent, type StoredLogEvent } from "@ponderosa/agents";
 import {
+  BrowserSessionError,
   BrowserSessionManager,
   chromeBrowserDriverFactory,
   type BrowserDriverFactory,
@@ -28,10 +29,10 @@ export function durableBrowserDriverFactory(
   factory: BrowserDriverFactory,
   register: (handle: Parameters<NonNullable<Parameters<BrowserDriverFactory>[2]>>[0], sessionId: string) => void,
 ): BrowserDriverFactory {
-  return (sessionId, onConsole, onSpawned) => factory(sessionId, onConsole, (handle, options) => {
+  return (sessionId, onConsole, onSpawned, onPageEvent) => factory(sessionId, onConsole, (handle, options) => {
     if (handle.processIdentity) register(handle, sessionId);
     onSpawned?.(handle, options);
-  });
+  }, onPageEvent);
 }
 
 export function createBrowserAuthority(context: BrowserAuthorityContext) {
@@ -52,6 +53,38 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
       purpose: `browser session ${sessionId}`,
     }),
   );
+
+  const resolveUploadArtifact = async (
+    scope: BrowserScope,
+    owner: import("@ponderosa/core").BrowserControlOwner,
+    artifactId: string,
+  ) => {
+    const artifact = store.getProjectArtifact(scope.projectId, artifactId);
+    if (!artifact) {
+      throw new BrowserSessionError("Managed artifact was not found.", 404, "artifact_not_found");
+    }
+    const actorAgentId = scope.actorAgentId ?? scope.agentId;
+    const canRead = owner === "operator"
+      ? store.operatorCanReadProjectArtifact(scope.projectId, artifactId)
+      : store.agentCanReadProjectArtifact(scope.projectId, artifactId, actorAgentId);
+    if (!canRead) {
+      throw new BrowserSessionError("This actor cannot read the managed artifact.", 403, "artifact_unauthorized");
+    }
+    if (!artifact.size || !artifact.sha256 || !artifact.mediaType) {
+      throw new BrowserSessionError("Managed artifact metadata is incomplete.", 409, "artifact_content_changed");
+    }
+    const content = await openManagedArtifactContent(
+      dataDir,
+      scope.projectId,
+      artifactId,
+      artifact.size,
+      artifact.sha256,
+    );
+    if (!content) {
+      throw new BrowserSessionError("Managed artifact content is unavailable.", 409, "artifact_content_changed");
+    }
+    return { artifact, content };
+  };
 
   const browserSessions = new BrowserSessionManager(
     dataDir,
@@ -89,6 +122,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
         );
       });
     },
+    resolveUploadArtifact,
   );
   const projectBrowserGrants = new Map<string, { agentId: string; runId: string }>();
   const projectBrowserSessions = new BrowserSessionManager(
@@ -135,6 +169,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
         );
       });
     },
+    resolveUploadArtifact,
   );
 
   function browserScopeForRun(agentId: string, run: ActiveRun): BrowserScope | undefined {
@@ -193,8 +228,13 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
       controlOwner: ready ? session.controlOwner : "operator",
       ...(ready && grant ? { controllerAgentId: grant.agentId, controllerRunId: grant.runId } : {}),
       controlEpoch: session.controlEpoch,
+      capabilities: session.capabilities,
       ...(session.url ? { url: session.url } : {}),
       ...(session.title ? { title: session.title } : {}),
+      ...(session.activePageId ? { activePageId: session.activePageId } : {}),
+      pages: session.pages,
+      pageRevision: session.pageRevision,
+      ...(session.pendingFileChooser ? { pendingFileChooser: session.pendingFileChooser } : {}),
       frameRevision: session.frameRevision,
       openedAt: session.openedAt,
       updatedAt: session.updatedAt,

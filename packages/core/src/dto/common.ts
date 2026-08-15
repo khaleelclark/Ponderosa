@@ -17,7 +17,7 @@ export type AgentRunStatus = Exclude<AgentLifecycleStatus, "idle">;
 
 /** Current operator-facing state derived from canonical Run, coordination, and
  * Decision authority. `needs_decision` is not a provider Run state. */
-export type AgentOperationalStatus = AgentLifecycleStatus | "needs_decision";
+export type AgentOperationalStatus = AgentLifecycleStatus | "needs_decision" | "preparing";
 
 export type AgentLifecycleReason =
   | "no_active_work" | "active_run" | "work_item_waiting_approval" | "queued_delivery"
@@ -41,4 +41,5 @@ export interface ProviderBlockedWorkDto {
 export type AgentOperationalReason =
   | AgentLifecycleReason
   | "pending_user_decision"
+  | "run_preparing"
   | "provider_capacity_unavailable";

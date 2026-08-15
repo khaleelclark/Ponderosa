@@ -10,11 +10,19 @@ import type {
 } from "@ponderosa/core";
 
 export interface ActiveRunObservation { startedAt: string; executionId?: string; leaseExpiresAt?: string; ownershipState?: "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted" }
+export interface PreparingRunObservation {
+  runId: string;
+  status: string;
+  leaseStartedAt: string;
+  leaseExpiresAt: string;
+  promptInjectionState: "not_injected" | "injecting" | "injected";
+}
 export interface QueuedDeliveryObservation { createdAt: string }
 export interface AgentHealthProjectionInput {
   scope: AgentHealthProjectionDto["scope"];
   agents: AgentDto[];
   activeRuns: ReadonlyMap<string, ActiveRunObservation>;
+  preparingRuns?: ReadonlyMap<string, PreparingRunObservation>;
   compactingAgents?: ReadonlyMap<string, string>;
   availability?: (agentId: string) => "running" | "runnable" | "waiting" | "idle";
   pendingDecisionAt?: (agentId: string) => string | undefined;
@@ -50,6 +58,7 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
 
   const agents: AgentHealthDto[] = input.agents.map((agent) => {
     const active = input.activeRuns.get(agent.id);
+    const preparing = input.preparingRuns?.get(agent.id);
     const compactingAt = input.compactingAgents?.get(agent.id);
     const availability = input.availability?.(agent.id);
     const pendingDecisionAt = input.pendingDecisionAt?.(agent.id);
@@ -69,6 +78,9 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
     }
     else if (active) observation = activeEvent && activeEvent.status !== "completed" && activeEvent.status !== "idle"
       ? activeEvent : { status: "running", statusTimestamp: active.startedAt, reason: "active_run" };
+    else if (preparing) observation = preparing.promptInjectionState === "injected" || preparing.status === "running"
+      ? { status: "running", statusTimestamp: preparing.leaseStartedAt, reason: "active_run" }
+      : { status: "preparing", statusTimestamp: preparing.leaseStartedAt, reason: "run_preparing" };
     else if (providerBlocked) observation = {
       status: "blocked",
       statusTimestamp: providerBlocked.blockedAt,
@@ -87,7 +99,12 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
       childAgentIds: [...(childIdsByParent.get(agent.id) ?? [])].sort(),
       ...observation,
       ...(active?.executionId ? { executionId: active.executionId } : {}),
-      ...(active?.leaseExpiresAt ? { leaseExpiresAt: active.leaseExpiresAt } : {}),
+      ...(preparing ? {
+        schedulerRunId: preparing.runId,
+        leaseStartedAt: preparing.leaseStartedAt,
+        leaseExpiresAt: preparing.leaseExpiresAt,
+        promptInjectionState: preparing.promptInjectionState,
+      } : active?.leaseExpiresAt ? { leaseExpiresAt: active.leaseExpiresAt } : {}),
       ...(active?.ownershipState && ["running", "stalled", "cancelling", "interrupted"].includes(active.ownershipState)
         ? { runtimeOwnership: active.ownershipState as "running" | "stalled" | "cancelling" | "interrupted" } : {}),
       ...(active && (active.ownershipState === undefined || active.ownershipState === "running") && active.executionId

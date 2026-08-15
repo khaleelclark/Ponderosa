@@ -18,7 +18,7 @@ export type WorkspaceEvent =
   | { type: "draft_changed"; conversationId: string; revision: number; cleared: boolean }
   | { type: "draft_conflict"; conversationId: string; revision: number }
   | { type: "notification_changed"; notificationId?: string; conversationId?: string; action: "created" | "updated" | "read" | "cleared" }
-  | { type: "queued_message_changed"; conversationId: string; deliveryId: string; action: "queued" | "edited" | "steered" | "cancelled" | "started" }
+  | { type: "queued_message_changed"; conversationId: string; deliveryId: string; action: "queued" | "edited" | "steered" | "cancelled" | "preparing" | "retrying" | "started" }
   | { type: "message_delivery_changed"; /** Absent on legacy persisted events. */ projectId?: string; agentId: string; conversationIds?: string[] }
   | {
       type: "coordination_changed";

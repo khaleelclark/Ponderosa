@@ -14,6 +14,10 @@ export interface CoordinationV3SchedulerMetrics {
   claimedRuns: number;
   acceptedRuns: number;
   rejectedRuns: number;
+  compilationFailures: number;
+  poisonActivations: number;
+  preInjectionRecoveries: number;
+  activePreparations: number;
   outboxSignals: number;
   dispatchLatencyCount: number;
   dispatchLatencyTotalMs: number;
@@ -29,6 +33,36 @@ export const DISPATCH_LATENCY_SAMPLE_LIMIT = 256;
 
 export interface ActivationPromptCompilation {
   prompt: string;
+}
+
+export type ActivationPromptCompilationErrorCode =
+  | "exact_artifact_contract_mismatch"
+  | "correlated_artifact_unavailable"
+  | "activation_payload_too_large"
+  | "activation_prompt_invalid";
+
+export class ActivationPromptCompilationError extends Error {
+  readonly retryable = false;
+
+  constructor(readonly failure: {
+    code: ActivationPromptCompilationErrorCode;
+    activation: SchedulerLease["activations"][number];
+    detail?: string;
+  }) {
+    super(`Activation ${failure.activation.id} (${failure.activation.kind}) failed prompt compilation: ${failure.code}`);
+    this.name = "ActivationPromptCompilationError";
+  }
+
+  get code(): ActivationPromptCompilationErrorCode { return this.failure.code; }
+  get activationId(): string { return this.failure.activation.id; }
+  get activationKind(): string { return this.failure.activation.kind; }
+}
+
+export class ActivationPromptPreparationTimeoutError extends Error {
+  constructor() {
+    super("Activation prompt preparation exceeded its deadline");
+    this.name = "ActivationPromptPreparationTimeoutError";
+  }
 }
 
 export interface AutomaticResultMaterial {
@@ -53,6 +87,10 @@ export class CoordinationV3Scheduler {
     claimedRuns: 0,
     acceptedRuns: 0,
     rejectedRuns: 0,
+    compilationFailures: 0,
+    poisonActivations: 0,
+    preInjectionRecoveries: 0,
+    activePreparations: 0,
     outboxSignals: 0,
     dispatchLatencyCount: 0,
     dispatchLatencyTotalMs: 0,
@@ -84,7 +122,12 @@ export class CoordinationV3Scheduler {
        * is durably recorded. The callback must never return a lossy preview. */
       compilePrompt?: (
         lease: SchedulerLease | SteeringLease,
-      ) => ActivationPromptCompilation;
+        context: {
+          signal: AbortSignal;
+          deadlineAt: number;
+          setPreparingActivation(activation?: SchedulerLease["activations"][number]): void;
+        },
+      ) => ActivationPromptCompilation | Promise<ActivationPromptCompilation>;
       dispatchProviderOperation?: (operation: ProviderOperation) => Promise<CoordinationV3DispatchResult>;
       /** Project authoritative SQLite outbox effects before the related
        * Activation can be leased. Handlers must be idempotent across retries. */
@@ -215,9 +258,11 @@ export class CoordinationV3Scheduler {
         while (true) {
           const steering = this.store.leaseNextSteering({ workerId: this.options.workerId, now });
           if (!steering) break;
-          const compilation = this.options.compilePrompt?.(steering) ?? compileActivationPrompt(steering);
-          const { prompt } = compilation;
+          let compilation: ActivationPromptCompilation;
+          let prompt: string;
           try {
+            compilation = await this.compilePromptWithDeadline(steering);
+            prompt = compilation.prompt;
             this.store.preparePromptInjection({
               injectionId: steering.injectionId,
               runId: steering.runId,
@@ -225,9 +270,38 @@ export class CoordinationV3Scheduler {
               prompt,
             });
           } catch (error) {
-            // Cancellation/deletion may advance the fence after leasing. That
-            // race is already durably settled and must not reject the drain.
+            this.metrics.rejectedRuns += 1;
             this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
+            try {
+              if (error instanceof ActivationPromptCompilationError) {
+                this.metrics.compilationFailures += 1;
+                this.metrics.poisonActivations += 1;
+                this.store.failSteeringForActivationCompilation({
+                  injectionId: steering.injectionId,
+                  runId: steering.runId,
+                  fencingToken: steering.fencingToken,
+                  activationId: error.activationId,
+                  errorCode: error.code,
+                  errorDetail: error.failure.detail,
+                });
+              } else {
+                this.metrics.preInjectionRecoveries += 1;
+                this.store.deferSteering({
+                  injectionId: steering.injectionId,
+                  runId: steering.runId,
+                  fencingToken: steering.fencingToken,
+                  retryDelayMs: 500,
+                  preserveSteering: true,
+                });
+              }
+            } catch (containmentError) {
+              // Cancellation/deletion may advance the fence after leasing. That
+              // race is already durably settled and must not reject the drain.
+              this.metrics.lastDispatchError = containmentError instanceof Error
+                ? containmentError.message
+                : String(containmentError);
+            }
+            this.options.onMessageDeliveryChanged?.(steering.agentId);
             continue;
           }
           let result: CoordinationV3DispatchResult;
@@ -273,9 +347,12 @@ export class CoordinationV3Scheduler {
         dispatched += 1;
         this.metrics.claimedRuns += 1;
         const started = Date.now();
-        const compilation = this.options.compilePrompt?.(lease) ?? compileActivationPrompt(lease);
-        const { prompt } = compilation;
+        this.metrics.activePreparations += 1;
+        let compilation: ActivationPromptCompilation;
+        let prompt: string;
         try {
+          compilation = await this.compilePromptWithDeadline(lease);
+          prompt = compilation.prompt;
           this.store.preparePromptInjection({
             injectionId: lease.injectionId,
             runId: lease.runId,
@@ -283,9 +360,45 @@ export class CoordinationV3Scheduler {
             prompt,
           });
         } catch (error) {
+          this.metrics.rejectedRuns += 1;
           this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
+          try {
+            if (error instanceof ActivationPromptCompilationError) {
+              this.metrics.compilationFailures += 1;
+              this.metrics.poisonActivations += 1;
+              this.store.failRunForActivationCompilation({
+                runId: lease.runId,
+                fencingToken: lease.fencingToken,
+                workerId: this.options.workerId,
+                activationId: error.activationId,
+                errorCode: error.code,
+                errorDetail: error.failure.detail,
+                now: new Date(Date.now()).toISOString(),
+              });
+            } else {
+              this.metrics.preInjectionRecoveries += 1;
+              this.store.failRun({
+                runId: lease.runId,
+                fencingToken: lease.fencingToken,
+                workerId: this.options.workerId,
+                sameRunResumable: false,
+                confirmedNotExecuted: true,
+                retryable: true,
+                error: error instanceof Error ? error.message : String(error),
+                now: new Date(Date.now()).toISOString(),
+              });
+            }
+          } catch (containmentError) {
+            this.metrics.lastDispatchError = containmentError instanceof Error
+              ? containmentError.message
+              : String(containmentError);
+          } finally {
+            this.metrics.activePreparations -= 1;
+          }
+          this.options.onMessageDeliveryChanged?.(lease.agentId);
           continue;
         }
+        this.metrics.activePreparations -= 1;
         let result: CoordinationV3DispatchResult;
         try {
           result = await this.dispatch(lease, prompt, compilation);
@@ -334,6 +447,43 @@ export class CoordinationV3Scheduler {
     return dispatched;
   }
 
+  private async compilePromptWithDeadline(
+    lease: SchedulerLease | SteeringLease,
+  ): Promise<ActivationPromptCompilation> {
+    const controller = new AbortController();
+    const deadlineAt = Date.now() + 30_000;
+    let timeout: NodeJS.Timeout | undefined;
+    let preparingActivation: SchedulerLease["activations"][number] | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => {
+        controller.abort();
+        reject(preparingActivation
+          ? new ActivationPromptCompilationError({
+            code: "activation_prompt_invalid",
+            activation: preparingActivation,
+            detail: "preparation_watchdog_exceeded",
+          })
+          : new ActivationPromptPreparationTimeoutError());
+      }, 30_000);
+      timeout.unref?.();
+    });
+    try {
+      const compilation = this.options.compilePrompt
+        ? this.options.compilePrompt(lease, {
+          signal: controller.signal,
+          deadlineAt,
+          setPreparingActivation: activation => { preparingActivation = activation; },
+        })
+        : Promise.resolve(compileActivationPrompt(lease, {
+          signal: controller.signal,
+          deadlineAt,
+        }));
+      return await Promise.race([compilation, deadline]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  }
+
   private schedule(delayMs: number): void {
     if (this.timer || this.stopped) return;
     this.timer = setTimeout(() => {
@@ -378,21 +528,39 @@ export interface ActivationPromptCompilationOptions {
   resolveResultArtifacts?: (
     activation: SchedulerLease["activations"][number],
   ) => readonly AutomaticResultMaterial[];
+  signal?: AbortSignal;
+  deadlineAt?: number;
 }
 
 export function compileActivationPrompt(
   lease: SchedulerLease | SteeringLease,
   options: ActivationPromptCompilationOptions = {},
 ): ActivationPromptCompilation {
+  const checkDeadline = (activation?: SchedulerLease["activations"][number]): void => {
+    if (options.signal?.aborted || (options.deadlineAt !== undefined && Date.now() >= options.deadlineAt)) {
+      if (activation) {
+        throw new ActivationPromptCompilationError({
+          code: "activation_prompt_invalid",
+          activation,
+          detail: "preparation_watchdog_exceeded",
+        });
+      }
+      throw new ActivationPromptPreparationTimeoutError();
+    }
+  };
+  checkDeadline();
   const classOrder = { human: 0, blocker: 1, coordination: 2, ordinary: 3 } as const;
   const ordered = [...lease.activations].sort((a, b) =>
     classOrder[a.promptClass] - classOrder[b.promptClass] || b.priority - a.priority,
   );
+  checkDeadline();
   const hasTrigger = ordered.some((activation) => activation.kind === "trigger_occurrence");
   const resultMaterials = new Map<string, AutomaticResultMaterial>();
   const activationResultMaterials = new Map<string, AutomaticResultMaterial[]>();
   for (const activation of ordered) {
+    checkDeadline(activation);
     for (const material of options.resolveResultArtifacts?.(activation) ?? []) {
+      checkDeadline(activation);
       if (resultMaterials.has(material.artifactId)) continue;
       resultMaterials.set(material.artifactId, material);
       const current = activationResultMaterials.get(activation.id) ?? [];
@@ -401,7 +569,17 @@ export function compileActivationPrompt(
     }
   }
   const renderMaterialized = (inlineResults: boolean): string[] => ordered.map((activation, index) => {
-    const serialized = JSON.stringify(activation.payload);
+    checkDeadline(activation);
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(activation.payload);
+    } catch {
+      throw new ActivationPromptCompilationError({
+        code: "activation_prompt_invalid",
+        activation,
+      });
+    }
+    checkDeadline(activation);
     const payload = activation.payload && typeof activation.payload === "object"
       ? activation.payload as Record<string, unknown>
       : {};
@@ -445,7 +623,9 @@ export function compileActivationPrompt(
       ]),
     ].join("\n");
   });
-  const renderPrompt = (inlineResults: boolean): string => [
+  const renderPrompt = (inlineResults: boolean): string => {
+    checkDeadline();
+    const prompt = [
     "[ACTIVE WORK · SCHEDULER | AUTHORITATIVE]",
     `Run: ${lease.runId}. Prompt injection fence: ${lease.injectionId}.`,
     `After acknowledging this prompt, include steeringInjectionId:${lease.injectionId} in any ponderosa_message call.`,
@@ -466,16 +646,27 @@ export function compileActivationPrompt(
         : "Complete correlated result content exceeded the hard provider-input envelope. Each result is preserved in a server-validated local file below; read the entire file and integrate it exactly once.",
     ] : []),
     ...renderMaterialized(inlineResults),
-  ].join("\n");
+    ].join("\n");
+    checkDeadline();
+    return prompt;
+  };
   const inlinePrompt = renderPrompt(true);
   const hardLimit = options.maxUtf8Bytes ?? Number.POSITIVE_INFINITY;
+  checkDeadline();
   if (Buffer.byteLength(inlinePrompt, "utf8") <= hardLimit) return { prompt: inlinePrompt };
   if (!resultMaterials.size) {
-    throw new Error("complete Activation payload exceeds the hard provider-input envelope and has no lossless file fallback");
+    throw new ActivationPromptCompilationError({
+      code: "activation_payload_too_large",
+      activation: ordered[0]!,
+    });
   }
   const filePrompt = renderPrompt(false);
+  checkDeadline();
   if (Buffer.byteLength(filePrompt, "utf8") > hardLimit) {
-    throw new Error("Activation metadata exceeds the hard provider-input envelope after lossless result-file fallback");
+    throw new ActivationPromptCompilationError({
+      code: "activation_payload_too_large",
+      activation: ordered[0]!,
+    });
   }
   return { prompt: filePrompt };
 }

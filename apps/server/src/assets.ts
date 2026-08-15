@@ -8,6 +8,7 @@ import {
   attachmentsDir,
   MANAGED_ARTIFACT_MAX_BYTES,
   managedArtifactContentPath,
+  openManagedArtifactContent,
   readManagedArtifactContent,
   type RuntimeArtifactInputV3,
   type RuntimeAttachmentReservationReceiptV3,
@@ -90,15 +91,19 @@ function hasStrictImageContainer(body: Buffer, mediaType: AssetDto["mediaType"])
   return true;
 }
 
+const ASSET_EXTENSIONS: Readonly<Record<AssetDto["mediaType"], readonly string[]>> = {
+  "image/png": [".png"], "image/jpeg": [".jpg", ".jpeg"], "image/webp": [".webp"],
+  "application/pdf": [".pdf"], "text/plain": [".txt", ".md", ".csv", ".log"],
+  "application/json": [".json"], "application/zip": [".zip"],
+};
+
+export function assetExtensionsForMediaType(mediaType: AssetDto["mediaType"]): readonly string[] {
+  return ASSET_EXTENSIONS[mediaType];
+}
+
 function extensionMatches(name: string, mediaType: AssetDto["mediaType"]): boolean {
   const extension = path.extname(name).toLocaleLowerCase();
-  if (!extension) return true;
-  const allowed: Record<AssetDto["mediaType"], string[]> = {
-    "image/png": [".png"], "image/jpeg": [".jpg", ".jpeg"], "image/webp": [".webp"],
-    "application/pdf": [".pdf"], "text/plain": [".txt", ".md", ".csv", ".log"],
-    "application/json": [".json"], "application/zip": [".zip"],
-  };
-  return allowed[mediaType].includes(extension);
+  return !extension || assetExtensionsForMediaType(mediaType).includes(extension);
 }
 
 function contentTypeMatches(declared: string | undefined, detected: AssetDto["mediaType"]): boolean {
@@ -453,6 +458,42 @@ export class AssetStore {
     const expectedIdentity = { projectId, ...expected };
     if (!runtimeArtifactIdentityMatches(registeredIdentity, expectedIdentity)) return undefined;
     return this.readAuthoritativeRuntimeArtifact(registered);
+  }
+
+  async authoritativeRuntimeArtifactAsync(
+    projectId: string,
+    expected: RuntimeArtifactInputV3,
+    signal?: AbortSignal,
+  ): Promise<AuthoritativeRuntimeArtifact | undefined> {
+    const registered = this.authority.runtimeArtifact(projectId, expected.id);
+    if (!registered || registered.projectId !== projectId) return undefined;
+    const { createdAt: _createdAt, ...registeredIdentity } = registered;
+    if (!runtimeArtifactIdentityMatches(registeredIdentity, { projectId, ...expected })) return undefined;
+    const artifact = this.validRuntimeArtifactMetadata(registered);
+    if (!artifact) return undefined;
+    const content = await openManagedArtifactContent(
+      this.dataDir,
+      projectId,
+      artifact.id,
+      artifact.byteLength,
+      artifact.blobHash,
+      { signal },
+    );
+    if (!content) return undefined;
+    try {
+      const body = await content.readRange(artifact.byteLength, signal);
+      try { new TextDecoder("utf-8", { fatal: true }).decode(body); }
+      catch { return undefined; }
+      return {
+        artifact,
+        body,
+        localPath: managedArtifactContentPath(this.dataDir, projectId, artifact.id),
+        contentHash: artifact.blobHash,
+        byteLength: body.length,
+      };
+    } finally {
+      await content.close();
+    }
   }
 
   /** Validate runtime-artifact ledger identity without reading its blob. */

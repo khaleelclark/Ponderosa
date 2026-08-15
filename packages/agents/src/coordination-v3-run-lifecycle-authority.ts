@@ -380,6 +380,79 @@ export class CoordinationV3RunLifecycleAuthority {
     })();
   }
 
+  failRunForActivationCompilation(input: {
+    runId: string;
+    fencingToken: number;
+    workerId: string;
+    activationId: string;
+    errorCode: string;
+    errorDetail?: string;
+    now?: string;
+  }): void {
+    const now = input.now ?? new Date().toISOString();
+    this.sqlite.transaction(() => {
+      const run = this.support.getFencedRun(input.runId, input.fencingToken);
+      if (run.status !== "leased" || run.prompt_injection_state !== "not_injected" ||
+          run.lease_owner !== input.workerId) {
+        throw new Error("Run is not an authoritative leased preparation");
+      }
+      const attached = this.sqlite.prepare(`
+        SELECT activation.id, activation.agent_id
+        FROM agent_activations activation
+        JOIN scheduler_run_activations attachment
+          ON attachment.activation_id = activation.id
+        WHERE attachment.run_id = ? AND activation.id = ?
+          AND activation.state = 'attached'
+      `).get(input.runId, input.activationId) as { id: string; agent_id: string } | undefined;
+      if (!attached || attached.agent_id !== run.agent_id) {
+        throw new Error("offending activation is not attached to the Run");
+      }
+      this.support.nextFence(run.agent_id as string);
+      const detail = input.errorDetail
+        ? (input.errorCode + ": " + input.errorDetail).slice(0, 2_000)
+        : input.errorCode;
+      this.sqlite.prepare(`
+        UPDATE scheduler_runs
+        SET status = 'failed', side_effects_fenced_at = ?,
+          provider_failure_json = ?, updated_at = ?, terminal_at = ?
+        WHERE id = ? AND fencing_token = ? AND status = 'leased'
+          AND prompt_injection_state = 'not_injected'
+      `).run(
+        now,
+        stableJson({ category: "prompt_compilation", code: input.errorCode }),
+        now,
+        now,
+        input.runId,
+        input.fencingToken,
+      );
+      this.sqlite.prepare(`
+        UPDATE agent_activations
+        SET state = 'failed', terminal_outcome = 'permanent_failure',
+          last_delivery_error = ?, updated_at = ?, terminal_at = ?
+        WHERE id = ? AND state = 'attached'
+      `).run(detail, now, now, input.activationId);
+      this.sqlite.prepare(`
+        UPDATE agent_activations
+        SET state = 'retry_pending', available_at = ?, updated_at = ?,
+          last_delivery_error = ?, terminal_outcome = NULL, terminal_at = NULL
+        WHERE id IN (
+          SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?
+        ) AND id <> ? AND state = 'attached'
+      `).run(now, now, "Run preparation was retried after isolating another activation.", input.runId, input.activationId);
+      this.sqlite.prepare(`
+        UPDATE scheduler_prompt_injections
+        SET state = 'cancelled', updated_at = ?, terminal_at = ?
+        WHERE run_id = ? AND state = 'pending'
+      `).run(now, now, input.runId);
+      this.activationLifecycle.settleRequestsForFailedActivations(
+        [input.activationId],
+        now,
+      );
+      this.settleRetriedRequiredReply(input.runId, now);
+      this.recoverRequiredReply(input.runId, now);
+    })();
+  }
+
   failRun(input: {
     runId: string;
     fencingToken: number;

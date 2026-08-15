@@ -442,7 +442,9 @@ export class CoordinationV3RuntimeCommunicationReadModel {
           injection?.kind === "steer"
           && (injection.state === "pending" || injection.state === "submitted")
         ) state = "steering";
-        else if (activation.state === "attached") state = "started";
+        else if (injection?.kind === "turn" && injection.state === "submitted") state = "started";
+        else if (activation.state === "attached") state = "preparing";
+        else if (activation.state === "retry_pending") state = "retrying";
         else state = "queued";
         return {
           activationId: activation.id,

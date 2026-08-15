@@ -184,12 +184,14 @@ export function registerAgentRuntimeToolRoutes(
 
   app.post<{
     Body: {
-      operation?: "open" | "navigate" | "inspect" | "act" | "screenshot" | "take_control" | "close";
+      operation?: "open" | "navigate" | "inspect" | "switch_page" | "close_page" | "upload" | "act" | "screenshot" | "take_control" | "close";
       url?: string;
       action?: unknown;
       selector?: unknown;
       text?: unknown;
       key?: unknown;
+      page_id?: unknown;
+      artifact_id?: unknown;
     };
   }>("/api/agent-browser", async (request, reply) => {
     const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
@@ -221,8 +223,49 @@ export function registerAgentRuntimeToolRoutes(
           const session = await sessionManager.navigate(scope, request.body.url, "agent");
           return { session, snapshot: await sessionManager.inspect(scope) };
         }
-        case "inspect":
-          return { session: sessionManager.get(scope.agentId), snapshot: await sessionManager.inspect(scope) };
+        case "inspect": {
+          const session = sessionManager.get(scope.agentId);
+          return {
+            session,
+            pages: session ? { activePageId: session.activePageId, pages: session.pages } : undefined,
+            snapshot: await sessionManager.inspect(scope),
+          };
+        }
+        case "switch_page": {
+          if (typeof request.body.page_id !== "string") throw new BrowserSessionError("page_id is required");
+          const current = sessionManager.get(scope.agentId);
+          if (!current) throw new BrowserSessionError("browser session is unavailable", 404);
+          const session = await sessionManager.activatePage(scope, request.body.page_id, "agent", current.controlEpoch);
+          return { session, pages: { activePageId: session.activePageId, pages: session.pages }, snapshot: await sessionManager.inspect(scope) };
+        }
+        case "close_page": {
+          if (typeof request.body.page_id !== "string") throw new BrowserSessionError("page_id is required");
+          const current = sessionManager.get(scope.agentId);
+          if (!current) throw new BrowserSessionError("browser session is unavailable", 404);
+          const session = await sessionManager.closePage(scope, request.body.page_id, "agent", current.controlEpoch);
+          return { session, pages: { activePageId: session.activePageId, pages: session.pages }, snapshot: await sessionManager.inspect(scope) };
+        }
+        case "upload": {
+          if (typeof request.body.artifact_id !== "string") throw new BrowserSessionError("artifact_id is required");
+          if (request.body.selector !== undefined && typeof request.body.selector !== "string") {
+            throw new BrowserSessionError("selector must be a string");
+          }
+          const current = sessionManager.get(scope.agentId);
+          if (!current) throw new BrowserSessionError("browser session is unavailable", 404);
+          const response = await sessionManager.upload(
+            scope,
+            request.body.artifact_id,
+            request.body.selector as string | undefined,
+            "agent",
+            current.controlEpoch,
+          );
+          return {
+            session: response.session,
+            upload: response.upload,
+            snapshot: await sessionManager.inspect(scope),
+            note: "The file was attached to the browser input; the form was not submitted.",
+          };
+        }
         case "act": {
           const session = await sessionManager.act(scope, request.body);
           return { session, snapshot: await sessionManager.inspect(scope) };

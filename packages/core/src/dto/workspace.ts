@@ -401,6 +401,50 @@ export interface WorkspaceFileViewDto {
   downloadUrl?: string;
 }
 
+export interface BrowserPageDto {
+  id: string;
+  title?: string;
+  url?: string;
+  openerPageId?: string;
+  active: boolean;
+  isNew: boolean;
+  closable: boolean;
+}
+
+export interface BrowserPendingFileChooserDto {
+  pageId: string;
+  mode: "selectSingle" | "selectMultiple";
+  requestedAt: string;
+  expiresAt: string;
+  controlOwner: BrowserControlOwner;
+  controlEpoch: number;
+}
+
+export interface BrowserUploadRequest {
+  artifactId: string;
+  selector?: string;
+  expectedControlEpoch: number;
+}
+
+export interface BrowserUploadReceiptDto {
+  artifactId: string;
+  displayName: string;
+  mediaType: string;
+  size: number;
+  sha256: string;
+  attachedAt: string;
+}
+
+export interface BrowserUploadResponseDto {
+  session: BrowserSessionDto;
+  upload: BrowserUploadReceiptDto;
+}
+
+export interface BrowserCapabilitiesDto {
+  multiPage: boolean;
+  fileUpload: boolean;
+}
+
 /** One ephemeral host browser bound to an exact active Run. */
 export interface BrowserSessionDto {
   id: string;
@@ -412,8 +456,13 @@ export interface BrowserSessionDto {
   controlOwner: BrowserControlOwner;
   /** Monotonic fence for operator input. Stale tabs cannot keep typing. */
   controlEpoch: number;
+  capabilities: BrowserCapabilitiesDto;
   url?: string;
   title?: string;
+  activePageId?: string;
+  pages: BrowserPageDto[];
+  pageRevision: number;
+  pendingFileChooser?: BrowserPendingFileChooserDto;
   frameRevision: number;
   openedAt: string;
   updatedAt: string;
@@ -430,8 +479,13 @@ export interface ProjectBrowserSessionDto {
   controllerAgentId?: string;
   controllerRunId?: string;
   controlEpoch: number;
+  capabilities: BrowserCapabilitiesDto;
   url?: string;
   title?: string;
+  activePageId?: string;
+  pages: BrowserPageDto[];
+  pageRevision: number;
+  pendingFileChooser?: BrowserPendingFileChooserDto;
   frameRevision: number;
   openedAt: string;
   updatedAt: string;
@@ -544,6 +598,8 @@ export interface ReadinessDto {
     artifactFilesystem: ReadinessCheckDto;
     /** Native authority that contains complete provider process trees. */
     processContainment: ReadinessCheckDto;
+    /** Browser profile/upload residue awaiting durable cleanup. Diagnostic only. */
+    browserResidueCleanup: ReadinessCheckDto;
     runtimes: ReadinessCheckDto;
     communicationMigration: ReadinessCheckDto;
   };

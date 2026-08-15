@@ -535,6 +535,17 @@ export function createServerReadModels(context: ReadModelContext) {
       }
     }
     const ownership = new Map<string, ActiveRunObservation>(activeRuns);
+    const preparingRuns = new Map(agents.flatMap((agent) => {
+      if (ownership.has(agent.id)) return [];
+      const run = coordinationV3.agentSnapshot(agent.id).activeRun;
+      return run ? [[agent.id, {
+        runId: run.id,
+        status: run.status,
+        leaseStartedAt: run.leaseStartedAt,
+        leaseExpiresAt: run.leaseExpiresAt,
+        promptInjectionState: run.promptInjectionState,
+      }]] as const : [];
+    }));
     const durableRolloverAgents = new Map(
       coordinationV3.activeContextRollovers(scope.type === "project" ? scope.id : undefined)
         .filter((rollover) => agents.some((agent) => agent.id === rollover.agentId))
@@ -544,6 +555,7 @@ export function createServerReadModels(context: ReadModelContext) {
       scope,
       agents,
       activeRuns: ownership,
+      preparingRuns,
       compactingAgents: new Map([...scheduledSessionRollovers, ...durableRolloverAgents]),
       availability: (agentId) => coordinationV3.getAgentAvailability(agentId),
       pendingDecisionAt: (agentId) => pendingDecisionAt.get(agentId),

@@ -11,6 +11,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import { BrowserViewport } from "./browser/BrowserViewport";
+import { BrowserPageStrip } from "./browser/BrowserPageStrip";
+import { BrowserArtifactUpload } from "./browser/BrowserArtifactUpload";
 import { projectBrowserAdapter } from "./browser/browserAdapters";
 import { useBrowserController } from "./browser/useBrowserController";
 import { FeatureErrorBoundary } from "./FeatureErrorBoundary";
@@ -112,6 +114,15 @@ export function ProjectBrowserDialog({
         <Tooltip title="Restart Browser Process"><span><IconButton aria-label="Reconnect Interactive Browser" disabled={!session || browser.reconnect.isPending} onClick={() => browser.reconnect.mutate()}><RefreshIcon /></IconButton></span></Tooltip>
         <Button color="inherit" disabled={!session || session.status === "closed" || browser.close.isPending} onClick={() => browser.close.mutate()}>Close Browser</Button>
       </Box>
+      <Box sx={{ display: "grid", gap: 1, minHeight: 0 }}>
+        <BrowserPageStrip
+          pages={session?.pages ?? []}
+          activePageId={session?.activePageId}
+          canManage={operator}
+          busy={browser.activatePage.isPending || browser.closePage.isPending}
+          onActivate={(pageId) => browser.activatePage.mutate(pageId)}
+          onClose={(pageId) => browser.closePage.mutate(pageId)}
+        />
       <BrowserViewport
         adapter={adapter}
         session={session}
@@ -131,6 +142,7 @@ export function ProjectBrowserDialog({
             ? <Stack spacing={1} alignItems="center"><Typography color="grey.300">No Interactive Browser is open.</Typography><Button variant="contained" onClick={() => browser.open.mutate(address.trim() || undefined)}>Open Browser</Button></Stack>
             : undefined}
       />
+      </Box>
       <Stack spacing={1}>
         {session?.status === "ready" ? operator ? <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
           <TextField size="small" fullWidth label="Type into focused page control" value={typeText} onChange={(event) => setTypeText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); submitText(); } }} />
@@ -139,6 +151,18 @@ export function ProjectBrowserDialog({
             {runningAgents.map((agent) => <Button key={agent.id} color="warning" variant="outlined" disabled={browser.control.isPending} onClick={() => browser.control.mutate({ owner: "agent", agentId: agent.id })}>Give {agent.title} Control</Button>)}
           </Stack>
         </Stack> : <Stack direction="row" spacing={1} alignItems="center"><Typography variant="body2" sx={{ flex: 1 }}>The selected Agent has temporary control for its current Run.</Typography><Button variant="contained" onClick={() => browser.control.mutate({ owner: "operator" })}>Take Control Back</Button></Stack> : null}
+        {projectId && session?.capabilities.fileUpload && (operator || session.pendingFileChooser) ? (
+          <BrowserArtifactUpload
+            projectId={projectId}
+            disabled={browser.upload.isPending || browser.cancelFileChooser.isPending}
+            pending={browser.upload.isPending || browser.cancelFileChooser.isPending}
+            chooser={session?.pendingFileChooser}
+            controlOwner={session?.controlOwner ?? "operator"}
+            pageUrl={session?.url}
+            onUpload={(artifactId, selector) => browser.upload.mutate({ artifactId, selector })}
+            onCancel={() => browser.cancelFileChooser.mutate()}
+          />
+        ) : null}
         {operator && runningAgents.length === 0 ? <Typography variant="caption" color="text.secondary">Start an Agent Run to make it available for temporary control.</Typography> : null}
         {browser.error ? <Alert severity="error">{browser.error instanceof Error ? browser.error.message : String(browser.error)}</Alert> : null}
       </Stack>

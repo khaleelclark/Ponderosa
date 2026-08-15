@@ -130,12 +130,14 @@ export class CoordinationV3SchedulerStatusReadModel {
       ORDER BY created_at DESC, id DESC LIMIT 100
     `).all(agentId) as Array<{ id: string; kind: string; priority: number; state: string; created_at: string }>;
     const activeRun = this.sqlite.prepare(`
-      SELECT id, status, fencing_token, prompt_injection_state, context_disposition, lease_expires_at
+      SELECT id, status, fencing_token, prompt_injection_state, context_disposition,
+        created_at, lease_expires_at
       FROM scheduler_runs WHERE agent_id = ? AND status IN ('leased', 'running') LIMIT 1
     `).get(agentId) as {
       id: string; status: string; fencing_token: number;
       prompt_injection_state: "not_injected" | "injecting" | "injected";
-      context_disposition: "fresh_task" | "continued_session" | "reseeded"; lease_expires_at: string;
+      context_disposition: "fresh_task" | "continued_session" | "reseeded";
+      created_at: string; lease_expires_at: string;
     } | undefined;
     return {
       availability: this.getAgentAvailability(agentId),
@@ -164,6 +166,7 @@ export class CoordinationV3SchedulerStatusReadModel {
         id: activeRun.id, status: activeRun.status, fencingToken: activeRun.fencing_token,
         promptInjectionState: activeRun.prompt_injection_state,
         providerContextDisposition: activeRun.context_disposition,
+        leaseStartedAt: activeRun.created_at,
         leaseExpiresAt: activeRun.lease_expires_at,
       } } : {}),
     };

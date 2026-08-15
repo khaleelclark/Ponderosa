@@ -355,6 +355,33 @@ export const PONDEROSA_BROWSER_TOOLS: RuntimeDynamicToolSpec[] = [
     inputSchema: { type: "object", additionalProperties: false, properties: {} },
   },
   {
+    name: "ponderosa_browser_switch_page",
+    description: "Switch the owned browser to an admitted page by its opaque page ID. The current Run and browser grant remain unchanged.",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["page_id"],
+      properties: { page_id: { type: "string", minLength: 1, maxLength: 200 } },
+    },
+  },
+  {
+    name: "ponderosa_browser_close_page",
+    description: "Close an admitted browser page by its opaque page ID. The browser keeps a safe fallback page when necessary.",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["page_id"],
+      properties: { page_id: { type: "string", minLength: 1, maxLength: 200 } },
+    },
+  },
+  {
+    name: "ponderosa_browser_upload",
+    description: "Attach one readable Project-managed artifact to a file input in the owned browser. Never accepts a host path. Use selector for an explicit input[type=file], or omit it after a page file chooser opens.",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["artifact_id"],
+      properties: {
+        artifact_id: { type: "string", minLength: 1, maxLength: 128 },
+        selector: { type: "string", minLength: 1, maxLength: 500 },
+      },
+    },
+  },
+  {
     name: "ponderosa_browser_act",
     description: "Operate the owned browser by CSS selector or key. Fails while the operator has control. Fill text is never copied into the activity summary.",
     inputSchema: {

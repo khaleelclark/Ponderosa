@@ -25,6 +25,7 @@ import { applyCollectionPageHeaders, sendCollectionPageError, sqliteCollectionPa
 import { projectedProjectCount } from "../readiness.js";
 import { writeLauncherShutdownReceipt } from "../launcher-shutdown-receipt.js";
 import { processBirthMarker } from "@ponderosa/engines";
+import { browserResidueCleanupStatus } from "../browser-session-manager.js";
 
 interface ServerControlRoutesContext {
   opts: CreateServerOptions;
@@ -509,6 +510,11 @@ app.get("/api/ready", async (_request, reply): Promise<ReadinessDto> => {
         ? `canonical communication projection verification pending for ${pendingProjects} project(s); new work remains available`
         : `canonical communication projections=drift in ${driftedProjects} quarantined project(s); new work remains available`,
   };
+  const browserCleanup = browserResidueCleanupStatus(opts.dataDir);
+  const browserResidueCleanup = {
+    ok: browserCleanup.failed === 0,
+    detail: `${browserCleanup.pending} pending browser residue cleanup(s); ${browserCleanup.failed} with failed attempts`,
+  };
   const acceptingDurableIntake = !isClosed() && dataDirectory.ok && projections.ok &&
     artifactFilesystem.ok && processContainment.ok;
   const leasingRuns = coordinationV3Scheduler.isLeasingRuns();
@@ -528,6 +534,7 @@ app.get("/api/ready", async (_request, reply): Promise<ReadinessDto> => {
       projections,
       artifactFilesystem,
       processContainment,
+      browserResidueCleanup,
       runtimes,
       communicationMigration,
     },
@@ -540,6 +547,8 @@ app.get("/api/ready", async (_request, reply): Promise<ReadinessDto> => {
     configuredRuntimeCount: engines.size,
     intakeReadyRuntimeCount: intakeReady,
     reachableRuntimeCount: reachable,
+    browserResidueCleanupPending: browserCleanup.pending,
+    browserResidueCleanupFailed: browserCleanup.failed,
   }, "readiness check completed");
   if (!canAcceptWork) reply.code(503);
   return body;
@@ -617,6 +626,11 @@ app.get("/api/diagnostics/ready", async (_request, reply): Promise<ReadinessDto>
   };
   // Projection drift is project-scoped diagnostic state. It must not make
   // unrelated clean projects or the entire daemon reject new work.
+  const browserCleanup = browserResidueCleanupStatus(opts.dataDir);
+  const browserResidueCleanup = {
+    ok: browserCleanup.failed === 0,
+    detail: `${browserCleanup.pending} pending browser residue cleanup(s); ${browserCleanup.failed} with failed attempts`,
+  };
   const acceptingDurableIntake = !isClosed() && dataDirectory.ok && projections.ok &&
     artifactFilesystem.ok && processContainment.ok;
   const leasingRuns = coordinationV3Scheduler.isLeasingRuns();
@@ -636,6 +650,7 @@ app.get("/api/diagnostics/ready", async (_request, reply): Promise<ReadinessDto>
       projections,
       artifactFilesystem,
       processContainment,
+      browserResidueCleanup,
       runtimes,
       communicationMigration,
     },
@@ -648,6 +663,8 @@ app.get("/api/diagnostics/ready", async (_request, reply): Promise<ReadinessDto>
     configuredRuntimeCount: engines.size,
     intakeReadyRuntimeCount: intakeReady,
     reachableRuntimeCount: reachable,
+    browserResidueCleanupPending: browserCleanup.pending,
+    browserResidueCleanupFailed: browserCleanup.failed,
   }, "readiness diagnostic completed");
   if (!canAcceptWork) reply.code(503);
   return body;
