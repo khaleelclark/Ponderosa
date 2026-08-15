@@ -1,4 +1,5 @@
 import type { RuntimeSession, RuntimeSteerResult, RuntimeTurnInput } from "@ponderosa/core";
+import { isProxy } from "node:util/types";
 import {
   projectProviderContextUsage,
   projectProviderSessionIdentifier,
@@ -13,12 +14,13 @@ function descriptorValue(value: unknown, property: string): unknown {
   try {
     let cursor: object | null = value as object;
     for (let depth = 0; cursor && depth < 8; depth += 1) {
-      const descriptor = Reflect.getOwnPropertyDescriptor(cursor, property);
+      if (isProxy(cursor)) throw new Error("Provider returned invalid structured data.");
+      const descriptor = Object.getOwnPropertyDescriptor(cursor, property);
       if (descriptor) {
         if (!("value" in descriptor)) throw new Error("Provider returned invalid structured data.");
         return descriptor.value;
       }
-      cursor = Reflect.getPrototypeOf(cursor);
+      cursor = Object.getPrototypeOf(cursor);
     }
   } catch {
     throw new Error("Provider returned invalid structured data.");

@@ -17,6 +17,7 @@ import type {
   RuntimeSteerResult,
 } from "@ponderosa/core";
 import { normalizeProviderFailureCategory } from "@ponderosa/core";
+import { isProxy } from "node:util/types";
 
 const MAX_CAPABILITY_ROWS = 1_000;
 const MAX_MODEL_ROWS = 500;
@@ -90,17 +91,18 @@ function dataRecord(
 ): Map<string, unknown> {
   try {
     budget.node(depth);
-    if (value === null || typeof value !== "object" || Array.isArray(value)) reject(boundary);
-    const prototype = Reflect.getPrototypeOf(value);
+    if (value === null || typeof value !== "object" || isProxy(value) || Array.isArray(value)) reject(boundary);
+    const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) reject(boundary);
     const allowed = new Set(allowedKeys);
     const result = new Map<string, unknown>();
-    for (const key of Reflect.ownKeys(value)) {
+    for (const key of Object.getOwnPropertyNames(value)) {
       if (typeof key !== "string" || !allowed.has(key)) reject(boundary);
-      const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (!descriptor || !("value" in descriptor)) reject(boundary);
       result.set(key, descriptor.value);
     }
+    if (Object.getOwnPropertySymbols(value).length > 0) reject(boundary);
     return result;
   } catch {
     return reject(boundary);
@@ -117,21 +119,23 @@ function projectedArray<T>(
 ): T[] {
   try {
     budget.node(depth);
-    if (!Array.isArray(value) || Reflect.getPrototypeOf(value) !== Array.prototype) reject(boundary);
-    const lengthDescriptor = Reflect.getOwnPropertyDescriptor(value, "length");
+    if (value === null || typeof value !== "object" || isProxy(value) ||
+        !Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) reject(boundary);
+    const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
     const rawLength = lengthDescriptor && "value" in lengthDescriptor
       ? lengthDescriptor.value
       : undefined;
     if (typeof rawLength !== "number" || !Number.isSafeInteger(rawLength)
       || rawLength < 0 || rawLength > limit) reject(boundary);
     const length = rawLength;
-    const keys = Reflect.ownKeys(value);
+    const keys = Object.getOwnPropertyNames(value);
+    if (Object.getOwnPropertySymbols(value).length > 0) reject(boundary);
     if (keys.length !== length + 1 || !keys.includes("length")) reject(boundary);
     const result: T[] = [];
     for (let index = 0; index < length; index += 1) {
       const key = String(index);
       if (!keys.includes(key)) reject(boundary);
-      const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (!descriptor || !("value" in descriptor)) reject(boundary);
       result.push(project(descriptor.value, depth + 1));
     }

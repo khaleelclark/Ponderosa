@@ -1265,8 +1265,20 @@ export class CoordinationV3Store {
     return this.contextRolloverAuthority.cancelAfterNativeCompaction(input);
   }
 
-  failContextRollover(id: string, state: "failed" | "outcome_unknown", error: string, now?: string): ContextRolloverV3 {
-    return this.contextRolloverAuthority.fail(id, state, error, now);
+  failContextRollover(
+    id: string,
+    state: "failed" | "outcome_unknown",
+    error: string,
+    now?: string,
+    failureSignal?: ContextRolloverV3["failureSignal"],
+  ): ContextRolloverV3 {
+    return this.contextRolloverAuthority.fail(
+      id,
+      state,
+      error,
+      now,
+      failureSignal,
+    );
   }
 
   private createActivation(input: CreateActivationV3Input): string {

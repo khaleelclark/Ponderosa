@@ -19,6 +19,16 @@ import type {
   UpdateRequestV3Input,
 } from "./coordination-v3-types.js";
 
+const UNSAFE_INTERNAL_ERROR_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/gu;
+
+function boundedInternalRunError(value: string | undefined): string {
+  const normalized = (value ?? "scheduler dispatch rejected")
+    .replace(UNSAFE_INTERNAL_ERROR_CONTROL, " ")
+    .trim();
+  const characters = Array.from(normalized || "scheduler dispatch rejected");
+  return characters.slice(0, 2_000).join("");
+}
+
 /** Owns provider-input fences and terminal scheduler Run transitions. */
 export class CoordinationV3RunLifecycleAuthority {
   constructor(
@@ -423,10 +433,15 @@ export class CoordinationV3RunLifecycleAuthority {
           input.fencingToken,
         );
       }
-      const publicError = publicProviderFailureSummary(
-        input.error ?? "scheduler dispatch rejected",
-        input.failureKind,
-      ) ?? "Provider execution failed.";
+      const hasProviderFailure = input.failureKind !== undefined ||
+        input.failureDetail !== undefined;
+      const failureCategory = hasProviderFailure
+        ? input.failureKind ?? "unknown"
+        : undefined;
+      const durableError = hasProviderFailure
+        ? publicProviderFailureSummary(input.error, failureCategory)
+          ?? "Provider execution failed."
+        : boundedInternalRunError(input.error);
       const disposition = input.confirmedNotExecuted
         ? "retry"
         : activationRetryDisposition({
@@ -520,7 +535,7 @@ export class CoordinationV3RunLifecycleAuthority {
               terminal_at = COALESCE(terminal_at, ?)
             WHERE id = ? AND state = 'requested'
               AND handoff_event_id IS NULL
-          `).run(publicError, now, now, requestedRollover.id);
+          `).run(durableError, now, now, requestedRollover.id);
           this.cancelPendingRolloverHandoff(requestedRollover.id, now);
         }
         const terminalOutcome = input.retryable === false || candidateReplacement || attachedRequestedHandoff
@@ -578,8 +593,8 @@ export class CoordinationV3RunLifecycleAuthority {
             WHERE run_id = ?
           ) AND state = 'attached'
         `).run(
-          publicError,
-          input.failureKind ?? "unknown",
+          durableError,
+          failureCategory ?? null,
           terminalOutcome ?? null,
           providerUnavailable ? 0 : 1,
           maximum,
@@ -677,7 +692,7 @@ export class CoordinationV3RunLifecycleAuthority {
             WHERE id = ? AND state = 'requested'
               AND handoff_event_id IS NULL
           `).run(
-            publicError,
+            durableError,
             now,
             now,
             requestedRollover.id,
@@ -705,7 +720,9 @@ export class CoordinationV3RunLifecycleAuthority {
         this.markRelatedRequestsOutcomeUnknown(
           input.runId,
           now,
-          "provider_outcome_unknown",
+          hasProviderFailure
+            ? "provider_outcome_unknown"
+            : "scheduler_outcome_unknown",
           [
             "open",
             "in_progress",

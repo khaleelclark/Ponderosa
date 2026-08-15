@@ -13,6 +13,7 @@ import {
   type ConversationMessageDto,
   type ProjectDto,
   type ProviderErrorCode,
+  type ProviderFailureCategory,
   type ProviderInputSourceManifest,
   type RuntimeDynamicToolSpec,
   type RuntimeProcessHandle,
@@ -271,14 +272,21 @@ export function startProviderRunExecution(
     // Consolidate ordinary response deltas into one durable, execution-scoped
     // Work log entry. Communication is created only by explicit intent calls.
     let runError: string | undefined;
-    let runFailureCode: ProviderErrorCode | undefined;
+    let runFailureClassification:
+      | ProviderErrorCode
+      | ProviderFailureCategory
+      | undefined;
     let finalText = "";
     let firstTextSeq: number | undefined;
     let lastTextSeq: number | undefined;
     let v3PromptInjected = false;
     let continuationHandoffConsumed = false;
     let providerWorkObserved = false;
-    let providerGeneratorRejected = false;
+    let projectedProviderNonExecutionEvidence = false;
+    let providerStreamBoundaryFailure: {
+      kind: "turn_submission_rejection" | "iterator_rejection" | "event_projection";
+      providerAccepted: boolean;
+    } | undefined;
     let schedulerCancelled = false;
     let usedFreshFallback = false;
     let projectWorkspaceUnavailable = false;
@@ -610,11 +618,30 @@ export function startProviderRunExecution(
       const projectProviderStream = async function* (
         source: AsyncIterable<AgentEvent>,
       ): AsyncIterable<AgentEvent> {
-        for await (const yielded of source) {
-          // This is the first read of a provider-yielded value. The canonical
-          // copy must precede discriminant checks, scheduler decisions,
-          // persistence, logging, or public streaming.
-          yield projectAgentEvent(yielded);
+        try {
+          for await (const yielded of source) {
+            let event: AgentEvent;
+            try {
+              // This is the first read of a provider-yielded value. The
+              // canonical copy must precede discriminant checks, scheduler
+              // decisions, persistence, logging, or public streaming.
+              event = projectAgentEvent(yielded);
+            } catch (error) {
+              providerStreamBoundaryFailure = {
+                kind: "event_projection",
+                providerAccepted: v3PromptInjected,
+              };
+              throw error;
+            }
+            providerStreamBoundaryFailure = undefined;
+            yield event;
+          }
+        } catch (error) {
+          providerStreamBoundaryFailure ??= {
+            kind: "iterator_rejection",
+            providerAccepted: v3PromptInjected,
+          };
+          throw error;
         }
       };
       const startStream = (sessionId?: string): AsyncIterable<AgentEvent> => sessionId
@@ -622,24 +649,51 @@ export function startProviderRunExecution(
           ? {
               async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
                 if (!persistentTurnStarted) {
-                  await persistentRuntime!.session.startTurn({
-                    prompt,
-                    kind: "collaboration",
-                    model: effectiveModel,
-                    effort: effectiveEffort,
-                    speed: effectiveSpeed,
-                    clientMessageId: communicationEventId,
-                  });
+                  try {
+                    await persistentRuntime!.session.startTurn({
+                      prompt,
+                      kind: "collaboration",
+                      model: effectiveModel,
+                      effort: effectiveEffort,
+                      speed: effectiveSpeed,
+                      clientMessageId: communicationEventId,
+                    });
+                  } catch (error) {
+                    providerStreamBoundaryFailure = {
+                      kind: "turn_submission_rejection",
+                      providerAccepted: v3PromptInjected,
+                    };
+                    throw error;
+                  }
                   persistentTurnStarted = true;
                 }
                 while (true) {
-                  const next = await persistentRuntime!.iterator.next();
+                  let next: IteratorResult<AgentEvent>;
+                  try {
+                    next = await persistentRuntime!.iterator.next();
+                  } catch (error) {
+                    providerStreamBoundaryFailure = {
+                      kind: "iterator_rejection",
+                      providerAccepted: v3PromptInjected,
+                    };
+                    throw error;
+                  }
                   if (next.done) {
                     teardownPersistentRuntimeInBackground(agent.id, persistentRuntime!, "provider stream ended");
                     yield { type: "error", message: "persistent engine session stopped" };
                     return;
                   }
-                  const event = projectAgentEvent(next.value);
+                  let event: AgentEvent;
+                  try {
+                    event = projectAgentEvent(next.value);
+                  } catch (error) {
+                    providerStreamBoundaryFailure = {
+                      kind: "event_projection",
+                      providerAccepted: v3PromptInjected,
+                    };
+                    throw error;
+                  }
+                  providerStreamBoundaryFailure = undefined;
                   yield event;
                   if (event.type === "turn_done" || event.type === "error") return;
                 }
@@ -663,24 +717,51 @@ export function startProviderRunExecution(
           ? {
               async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
                 if (!persistentTurnStarted) {
-                  await persistentRuntime!.session.startTurn({
-                    prompt: freshPrompt,
-                    kind: "collaboration",
-                    model: effectiveModel,
-                    effort: effectiveEffort,
-                    speed: effectiveSpeed,
-                    clientMessageId: communicationEventId,
-                  });
+                  try {
+                    await persistentRuntime!.session.startTurn({
+                      prompt: freshPrompt,
+                      kind: "collaboration",
+                      model: effectiveModel,
+                      effort: effectiveEffort,
+                      speed: effectiveSpeed,
+                      clientMessageId: communicationEventId,
+                    });
+                  } catch (error) {
+                    providerStreamBoundaryFailure = {
+                      kind: "turn_submission_rejection",
+                      providerAccepted: v3PromptInjected,
+                    };
+                    throw error;
+                  }
                   persistentTurnStarted = true;
                 }
                 while (true) {
-                  const next = await persistentRuntime!.iterator.next();
+                  let next: IteratorResult<AgentEvent>;
+                  try {
+                    next = await persistentRuntime!.iterator.next();
+                  } catch (error) {
+                    providerStreamBoundaryFailure = {
+                      kind: "iterator_rejection",
+                      providerAccepted: v3PromptInjected,
+                    };
+                    throw error;
+                  }
                   if (next.done) {
                     teardownPersistentRuntimeInBackground(agent.id, persistentRuntime!, "provider stream ended");
                     yield { type: "error", message: "persistent engine session stopped" };
                     return;
                   }
-                  const event = projectAgentEvent(next.value);
+                  let event: AgentEvent;
+                  try {
+                    event = projectAgentEvent(next.value);
+                  } catch (error) {
+                    providerStreamBoundaryFailure = {
+                      kind: "event_projection",
+                      providerAccepted: v3PromptInjected,
+                    };
+                    throw error;
+                  }
+                  providerStreamBoundaryFailure = undefined;
                   yield event;
                   if (event.type === "turn_done" || event.type === "error") return;
                 }
@@ -1035,7 +1116,11 @@ export function startProviderRunExecution(
           }
           if (event.type === "error") {
             runError = event.message;
-            runFailureCode = event.code;
+            runFailureClassification = event.category ?? event.code;
+            projectedProviderNonExecutionEvidence = !providerWorkObserved &&
+              !v3PromptInjected &&
+              (runFailureClassification === "capacity" ||
+                runFailureClassification === "rate_limit");
           }
         }
         if (!retryFresh) break;
@@ -1054,18 +1139,24 @@ export function startProviderRunExecution(
       // failure audit; public events are projected again at append time.
       const message = guardedProviderExceptionStringProperty(err, "message")
         ?? "Provider execution failed.";
-      providerGeneratorRejected = true;
       const failureEvent = publicProviderFailureEvent({
         type: "error",
         message,
         code: guardedProviderExceptionStringProperty(err, "code")
           ?? guardedProviderExceptionStringProperty(err, "errorCode"),
       });
-      runFailureCode = failureEvent.code;
+      runFailureClassification = failureEvent.category;
       const workspaceIssue = await reconcileProjectWorkspace(project, agent);
       projectWorkspaceUnavailable = Boolean(workspaceIssue);
+      if (workspaceIssue) runFailureClassification = undefined;
       runError = workspaceIssue ?? message;
-      await persistRuntimeEvent(agent.id, activeRun, { type: "error", message: runError });
+      await persistRuntimeEvent(
+        agent.id,
+        activeRun,
+        workspaceIssue
+          ? { type: "error", message: workspaceIssue }
+          : failureEvent,
+      );
     } finally {
       runtimeElicitations.clearRun(runId);
       const owned = ownsActiveRunForAuditDrain(agent.id, activeRun);
@@ -1185,6 +1276,8 @@ export function startProviderRunExecution(
             replacementRunRollover.id,
             "outcome_unknown",
             "replacement Run was cancelled before low-water context confirmation",
+            undefined,
+            "replacement_cancelled",
           );
         } else if (replacementMissingConfirmation) {
           const missingObservation = replacementRunRollover.replacementSessionId
@@ -1341,9 +1434,13 @@ export function startProviderRunExecution(
             hash: policySnapshotHash,
           });
         }
-        const runFailureKind = runError ? classifyProviderFailure(runError, runFailureCode) : undefined;
+        const runFailureKind = runError && runFailureClassification
+          ? classifyProviderFailure(runError, runFailureClassification)
+          : undefined;
         const publicRunError = runError
-          ? publicProviderFailureSummary(runError, runFailureKind) ?? "Provider execution failed."
+          ? runFailureKind
+            ? publicProviderFailureSummary(runError, runFailureKind) ?? "Provider execution failed."
+            : "Agent execution failed due to an internal runtime error."
           : undefined;
         if (runError && publicRunError && !schedulerCancelled) {
           if (runFailureKind === "authentication") {
@@ -1394,24 +1491,34 @@ export function startProviderRunExecution(
             idempotencyKey: `runtime-abort:${activeRun.v3SchedulerRunId}`,
           });
           else if (runError) {
-            const failureKind = classifyProviderFailure(runError, runFailureCode);
+            const failureKind = runFailureClassification
+              ? classifyProviderFailure(runError, runFailureClassification)
+              : undefined;
+            const confirmedNotExecuted = projectedProviderNonExecutionEvidence &&
+              failureKind !== undefined && !providerWorkObserved &&
+              !v3PromptInjected &&
+              (failureKind === "capacity" || failureKind === "rate_limit");
             coordinationV3!.failRun({
             runId: activeRun.v3SchedulerRunId,
             fencingToken: activeRun.v3FencingToken,
             workerId: coordinationV3WorkerId,
             sameRunResumable: false,
-            failureKind,
-            confirmedNotExecuted: !providerWorkObserved && !v3PromptInjected && (
-              providerGeneratorRejected || failureKind === "capacity" || failureKind === "rate_limit"
-            ),
+            ...(failureKind ? { failureKind } : {}),
+            ...(confirmedNotExecuted ? { confirmedNotExecuted: true } : {}),
             retryable: !projectWorkspaceUnavailable && failureKind !== "authentication",
-            error: publicProviderFailureSummary(runError, failureKind) ?? "Provider execution failed.",
-            failureDetail: {
-              phase: v3PromptInjected ? "provider_execution" : "prompt_submission",
-              promptInjectionState: coordinationV3!.agentSnapshot(agent.id).activeRun?.promptInjectionState
-                ?? (v3PromptInjected ? "injected" : "not_injected"),
-              message: runError,
-            },
+            error: failureKind
+              ? publicProviderFailureSummary(runError, failureKind) ?? "Provider execution failed."
+              : runError,
+            ...(failureKind ? {
+              failureDetail: {
+                phase: providerStreamBoundaryFailure
+                  ? `${providerStreamBoundaryFailure.kind}_${providerStreamBoundaryFailure.providerAccepted ? "after" : "before"}_acceptance`
+                  : v3PromptInjected ? "provider_execution" : "prompt_submission",
+                promptInjectionState: coordinationV3!.agentSnapshot(agent.id).activeRun?.promptInjectionState
+                  ?? (v3PromptInjected ? "injected" : "not_injected"),
+                message: runError,
+              },
+            } : {}),
           });
           }
           else {
