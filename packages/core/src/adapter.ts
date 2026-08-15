@@ -165,6 +165,8 @@ export interface RuntimeDynamicToolSpec {
 }
 
 export interface RuntimeDynamicToolCall {
+  /** Stable provider request identity, scoped to the current Run. */
+  id: string;
   name: string;
   arguments: unknown;
 }

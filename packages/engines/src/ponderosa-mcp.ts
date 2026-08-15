@@ -114,7 +114,9 @@ async function handle(request: RpcRequest): Promise<void> {
         headers: { authorization: `Bearer ${messageToken}`, "content-type": "application/json" },
         ...(!isDirectory ? { body: JSON.stringify(browserOperation
           ? { ...(params?.arguments && typeof params.arguments === "object" ? params.arguments : {}), operation: browserOperation }
-          : params?.arguments ?? {}) } : {}),
+          : params?.name === "import_file"
+            ? { ...(params?.arguments && typeof params.arguments === "object" ? params.arguments : {}), toolCallId: String(request.id) }
+            : params?.arguments ?? {}) } : {}),
       });
       const text = await response.text();
       send({

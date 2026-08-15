@@ -12,6 +12,7 @@ import {
   generatedArtifactMetadataIsValid,
   mkdirSyncSafe,
   runtimeArtifactIdentityMatches,
+  type GeneratedArtifactImportReceipt,
   type RegisteredGeneratedArtifact,
   type RegisteredRuntimeArtifact,
   type RuntimeAttachmentAssociation,
@@ -24,7 +25,7 @@ export class AssetAuthority {
       mkdirSyncSafe(dataDir); this.db = new Database(path.join(dataDir, "asset-authority.sqlite"));
       this.db.pragma("journal_mode = WAL"); this.db.pragma("synchronous = FULL"); this.db.pragma("busy_timeout = 500");
       const version = this.db.pragma("user_version", { simple: true }) as number;
-      if (version !== 0 && version !== 6) throw new AssetError(409, "asset authority schema is incompatible");
+      if (version !== 0 && version !== 6 && version !== 7) throw new AssetError(409, "asset authority schema is incompatible");
       this.db.exec(`CREATE TABLE IF NOT EXISTS asset_reservations (
         id TEXT PRIMARY KEY, asset_id TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, agent_id TEXT NOT NULL,
         size INTEGER NOT NULL CHECK(size > 0), created_at INTEGER NOT NULL
@@ -67,7 +68,15 @@ export class AssetAuthority {
       );
       CREATE INDEX IF NOT EXISTS generated_artifact_authority_owner
         ON generated_artifact_authority(project_id, origin_agent_id, id);
-      PRAGMA user_version=6;`);
+      CREATE TABLE IF NOT EXISTS generated_artifact_import_receipts (
+        project_id TEXT NOT NULL, run_id TEXT NOT NULL, tool_call_id TEXT NOT NULL,
+        request_hash TEXT NOT NULL, artifact_id TEXT NOT NULL, projected INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, run_id, tool_call_id),
+        UNIQUE (project_id, artifact_id),
+        FOREIGN KEY (artifact_id) REFERENCES generated_artifact_authority(id)
+      );
+      PRAGMA user_version=7;`);
     } catch (error) { throw error instanceof AssetError ? error : new AssetError(409, `asset authority unavailable: ${error instanceof Error ? error.message : String(error)}`); }
   }
   private now(): number { return (this.db.prepare("SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER) now").get() as { now: number }).now; }
@@ -355,6 +364,120 @@ export class AssetAuthority {
       );
       this.db.exec("COMMIT");
       return this.generatedArtifact(artifact.projectId, artifact.id)!;
+    } catch (error) {
+      if (this.db.inTransaction) this.db.exec("ROLLBACK");
+      throw this.mapped(error);
+    }
+  }
+  registerGeneratedArtifactImport(
+    artifact: RegisteredGeneratedArtifact,
+    identity: { runId: string; toolCallId: string; requestHash: string },
+  ): GeneratedArtifactImportReceipt {
+    if (!generatedArtifactMetadataIsValid(artifact) ||
+        !RUNTIME_UUID.test(identity.runId) ||
+        !identity.toolCallId || identity.toolCallId.length > 256 ||
+        /[\u0000-\u001f\u007f-\u009f]/u.test(identity.toolCallId) ||
+        !/^[a-f0-9]{64}$/.test(identity.requestHash)) {
+      throw new AssetError(400, "generated artifact import identity is invalid");
+    }
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      const prior = this.generatedArtifactImportReceipt(
+        artifact.projectId, identity.runId, identity.toolCallId,
+      );
+      if (prior) {
+        if (prior.requestHash !== identity.requestHash) {
+          throw new AssetError(409, "tool call was already used for a different file import");
+        }
+        this.db.exec("COMMIT");
+        return prior;
+      }
+      const registered = this.generatedArtifact(artifact.projectId, artifact.id);
+      if (registered && JSON.stringify(generatedArtifactIdentity(registered)) !==
+          JSON.stringify(generatedArtifactIdentity(artifact))) {
+        throw new AssetError(409, "generated artifact identity collision");
+      }
+      if (!registered) this.db.prepare(`
+        INSERT INTO generated_artifact_authority(
+          id,project_id,agent_id,origin_agent_id,execution_id,kind,artifact_path,
+          source_path,summary,created_at,media_type,byte_length,blob_hash
+        ) VALUES (?,?,?,?,?,'generated_file',?,?,?,?,?,?,?)
+      `).run(
+        artifact.id, artifact.projectId, artifact.agentId, artifact.originAgentId,
+        artifact.executionId ?? null, artifact.path, artifact.sourcePath ?? null,
+        artifact.summary, artifact.createdAt, artifact.mediaType, artifact.size, artifact.sha256,
+      );
+      this.db.prepare(`
+        INSERT INTO generated_artifact_import_receipts(
+          project_id,run_id,tool_call_id,request_hash,artifact_id,projected,created_at
+        ) VALUES (?,?,?,?,?,0,?)
+      `).run(
+        artifact.projectId, identity.runId, identity.toolCallId,
+        identity.requestHash, artifact.id, artifact.createdAt,
+      );
+      this.db.exec("COMMIT");
+      return this.generatedArtifactImportReceipt(
+        artifact.projectId, identity.runId, identity.toolCallId,
+      )!;
+    } catch (error) {
+      if (this.db.inTransaction) this.db.exec("ROLLBACK");
+      throw this.mapped(error);
+    }
+  }
+  generatedArtifactImportReceipt(
+    projectId: string,
+    runId: string,
+    toolCallId: string,
+  ): GeneratedArtifactImportReceipt | undefined {
+    try {
+      const row = this.db.prepare(`
+        SELECT request_hash requestHash, projected, artifact_id artifactId
+        FROM generated_artifact_import_receipts
+        WHERE project_id=? AND run_id=? AND tool_call_id=?
+      `).get(projectId, runId, toolCallId) as {
+        requestHash: string; projected: number; artifactId: string;
+      } | undefined;
+      if (!row) return undefined;
+      const artifact = this.generatedArtifact(projectId, row.artifactId);
+      if (!artifact) throw new AssetError(409, "generated artifact import receipt is incomplete");
+      return { runId, toolCallId, requestHash: row.requestHash, projected: row.projected === 1, artifact };
+    } catch (error) { throw this.mapped(error); }
+  }
+  pendingGeneratedArtifactImports(): GeneratedArtifactImportReceipt[] {
+    try {
+      const rows = this.db.prepare(`
+        SELECT project_id projectId,run_id runId,tool_call_id toolCallId
+        FROM generated_artifact_import_receipts WHERE projected=0 ORDER BY created_at
+      `).all() as Array<{ projectId: string; runId: string; toolCallId: string }>;
+      return rows.map((row) => this.generatedArtifactImportReceipt(
+        row.projectId, row.runId, row.toolCallId,
+      )!);
+    } catch (error) { throw this.mapped(error); }
+  }
+  markGeneratedArtifactImportProjected(projectId: string, runId: string, toolCallId: string): void {
+    try {
+      const changed = this.db.prepare(`
+        UPDATE generated_artifact_import_receipts SET projected=1
+        WHERE project_id=? AND run_id=? AND tool_call_id=?
+      `).run(projectId, runId, toolCallId).changes;
+      if (changed !== 1) throw new AssetError(409, "generated artifact import receipt is unavailable");
+    } catch (error) { throw this.mapped(error); }
+  }
+  quarantineGeneratedArtifactImport(projectId: string, runId: string, toolCallId: string): void {
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      const receipt = this.generatedArtifactImportReceipt(projectId, runId, toolCallId);
+      if (receipt?.projected) throw new AssetError(409, "projected import cannot be quarantined");
+      if (receipt) {
+        this.db.prepare(`
+          DELETE FROM generated_artifact_import_receipts
+          WHERE project_id=? AND run_id=? AND tool_call_id=? AND projected=0
+        `).run(projectId, runId, toolCallId);
+        this.db.prepare(`
+          DELETE FROM generated_artifact_authority WHERE project_id=? AND id=?
+        `).run(projectId, receipt.artifact.id);
+      }
+      this.db.exec("COMMIT");
     } catch (error) {
       if (this.db.inTransaction) this.db.exec("ROLLBACK");
       throw this.mapped(error);

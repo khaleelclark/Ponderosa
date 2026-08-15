@@ -60,7 +60,7 @@ export interface JsonRpcProcessOptions {
   /** Register authority immediately after spawn, before transport setup. */
   onRuntimeSpawned: (handle: RuntimeProcessHandle) => void;
   onRuntimeRootExit: (detail?: ProviderRootExitDetail) => void;
-  handleServerRequest?: (method: string, params: unknown) => Promise<unknown>;
+  handleServerRequest?: (requestId: number, method: string, params: unknown) => Promise<unknown>;
   /** Observe provider notifications even while the Agent has no active turn and
    * the event iterator is not currently being pulled. */
   onNotification?: (notification: JsonRpcNotification) => void;
@@ -230,7 +230,7 @@ export class JsonRpcProcess {
       return;
     }
     try {
-      const result = await this.opts.handleServerRequest(method, params);
+      const result = await this.opts.handleServerRequest(id, method, params);
       this.write({ id, result });
     } catch (error) {
       this.write({

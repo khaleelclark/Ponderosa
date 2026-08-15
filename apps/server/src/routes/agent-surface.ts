@@ -160,6 +160,7 @@ registerAgentManagementRoutes(app, {
 registerAgentRuntimeToolRoutes(app, {
   store,
   dataDir: opts.dataDir,
+  allowedImportRoots: opts.allowedImportRoots,
   assets,
   publish,
   agentMessageCapabilities,

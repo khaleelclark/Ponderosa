@@ -117,6 +117,8 @@ export interface CreateServerOptions {
   };
   /** Explicit roots exposed by the host folder picker. */
   allowedBrowseRoots?: string[];
+  /** Additional operator-configured roots from which active runs may import files. */
+  allowedImportRoots?: string[];
   /** Immutable source revision for deploy/runtime parity checks. */
   buildRevision?: string;
   /** Host-local origin injected into runtime tools; agents run on this server host. */

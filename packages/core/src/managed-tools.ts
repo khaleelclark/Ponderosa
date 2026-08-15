@@ -413,7 +413,7 @@ export const PONDEROSA_BROWSER_TOOLS: RuntimeDynamicToolSpec[] = [
 
 export const PONDEROSA_IMPORT_FILE_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_import_file",
-  description: "Import one regular host file into this Run's Project files, making it available to the operator, ponderosa_message, and ponderosa_browser_upload. Pass an absolute host path or a path relative to the Project workspace. The server securely copies exact stable bytes into immutable Project-managed storage and returns the artifact ID. Symlinks, empty files, changing files, and files larger than 64 MiB fail closed.",
+  description: "Import one regular host file into this Run's Project files, making it available to the operator, ponderosa_message, and ponderosa_browser_upload when its format is supported. Pass a path relative to the Project workspace, or an absolute path inside an operator-configured import root. The server securely copies exact stable bytes into immutable Project-managed storage and returns the artifact ID. Symlinks, empty files, changing files, files outside authorized roots, and files larger than 64 MiB fail closed.",
   inputSchema: {
     type: "object",
     additionalProperties: false,

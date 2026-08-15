@@ -248,6 +248,22 @@ function validateUploadArtifact(artifact: ArtifactDto, body: Buffer): void {
   }
   throw new BrowserSessionError("Only PDF, DOCX, and plain-text artifacts can be attached.", 415, "unsupported_upload_type");
 }
+export function browserUploadEligibility(
+  artifact: ArtifactDto,
+  body: Buffer,
+): { eligible: true } | { eligible: false; reason: string; code: string } {
+  try {
+    validateUploadArtifactName(artifact);
+    validateUploadArtifact(artifact, body);
+    return { eligible: true };
+  } catch (error) {
+    if (error instanceof BrowserSessionError) {
+      return { eligible: false, reason: error.message, code: error.code ?? "unsupported_upload" };
+    }
+    throw error;
+  }
+}
+
 
 export interface BrowserUploadArtifact {
   artifact: ArtifactDto;

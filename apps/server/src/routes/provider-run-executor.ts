@@ -378,7 +378,9 @@ export function startProviderRunExecution(
               },
               ...(!isDirectory ? { payload: JSON.stringify(browserOperation
                 ? { ...(call.arguments && typeof call.arguments === "object" ? call.arguments : {}), operation: browserOperation }
-                : call.arguments ?? {}) } : {}),
+                : call.name === PONDEROSA_IMPORT_FILE_TOOL.name
+                  ? { ...(call.arguments && typeof call.arguments === "object" ? call.arguments : {}), toolCallId: call.id }
+                  : call.arguments ?? {}) } : {}),
             });
             return {
               success: response.statusCode >= 200 && response.statusCode < 300,

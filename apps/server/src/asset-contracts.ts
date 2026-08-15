@@ -51,6 +51,14 @@ export type RegisteredGeneratedArtifact = ArtifactDto & {
   size: number;
   sha256: string;
 };
+export interface GeneratedArtifactImportReceipt {
+  runId: string;
+  toolCallId: string;
+  requestHash: string;
+  projected: boolean;
+  artifact: RegisteredGeneratedArtifact;
+}
+
 
 export interface AuthoritativeGeneratedArtifact {
   artifact: RegisteredGeneratedArtifact;
@@ -124,17 +132,19 @@ export function generatedArtifactMetadataIsValid(artifact: RegisteredGeneratedAr
   if (leaf !== artifact.id && !leaf.startsWith(`${artifact.id}.`)) return false;
   const extension = path.posix.extname(leaf).toLowerCase();
   const nameExtension = path.extname(artifact.summary).toLowerCase();
-  const expectedMediaType = ({
+  const expectedMediaTypes = ({
     ".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
     ".webp": "image/webp", ".gif": "image/gif", ".svg": "image/svg+xml",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ".jar": "application/java-archive",
-    ".md": "text/markdown", ".txt": "text/plain", ".csv": "text/csv",
+    ".md": ["text/markdown", "text/plain"], ".txt": ["text/plain"],
+    ".csv": ["text/csv", "text/plain"], ".log": ["text/plain"],
     ".json": "application/json", ".html": "text/html", ".zip": "application/zip",
-  } as Record<string, string>)[extension] ?? "application/octet-stream";
-  return Boolean(nameExtension === extension && artifact.mediaType === expectedMediaType &&
+  } as Record<string, string | readonly string[]>)[extension] ?? "application/octet-stream";
+  const acceptedMediaTypes = Array.isArray(expectedMediaTypes) ? expectedMediaTypes : [expectedMediaTypes];
+  return Boolean(nameExtension === extension && acceptedMediaTypes.includes(artifact.mediaType) &&
     !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(artifact.summary));
 }
 
