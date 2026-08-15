@@ -7,7 +7,7 @@ on:
       - "v*-beta.*"
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: native-beta-${{ github.ref }}
@@ -149,8 +149,22 @@ jobs:
           mkdir -p dist/qualification
           node -e "require('node:fs').writeFileSync('dist/qualification/native-failure.json', JSON.stringify({commit:process.env.GITHUB_SHA,runner:process.env.RUNNER_OS,arch:process.arch,note:'Inspect redacted workflow step logs; no provider or signing credentials were supplied.'},null,2)+'\n')"
 
-      - name: Upload native evidence
-        if: always()
+      - name: Upload tagged release assets
+        if: success() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          artifact="$(find dist/installers -maxdepth 1 -type f -name '*.${{ matrix.format }}' -print -quit)"
+          test -n "$artifact"
+          gh release upload "$GITHUB_REF_NAME" \
+            "$artifact" \
+            "$artifact.sha256" \
+            "$artifact.metadata.json" \
+            --clobber
+
+      - name: Upload native evidence for manual runs
+        if: always() && github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: ponderosa-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
