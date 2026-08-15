@@ -31,9 +31,8 @@ WorkingDirectory=/home/khaleel/ponderosa
 Environment=NODE_ENV=production
 # The one greppable, portable data dir (event logs + SQLite projections, SPEC §7).
 Environment=PONDEROSA_DATA_DIR=/home/khaleel/.ponderosa
-# Web Push credentials are generated outside the repository by
-# `pnpm --filter @ponderosa/server push:configure` (see deploy/README.md).
-# The leading `-` keeps Web Push optional on hosts that have not configured it.
+# Ponderosa creates and protects a stable Web Push identity under its data root.
+# Keep the optional environment file only for operator-managed VAPID overrides.
 EnvironmentFile=-%h/.config/ponderosa/push.env
 # Codex agents need full access on the single-operator host so their shell commands
 # can use outbound network operations such as git push / gh pr create.

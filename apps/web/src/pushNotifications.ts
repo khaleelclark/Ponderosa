@@ -11,7 +11,7 @@ export type WebPushState =
   | { kind: "insecure_origin"; message: string }
   | { kind: "permission_default"; message: string }
   | { kind: "permission_denied"; message: string }
-  | { kind: "host_unconfigured"; message: string; setupCommand?: string }
+  | { kind: "host_unconfigured"; message: string }
   | { kind: "permission_granted"; message: string }
   | { kind: "subscription_failed"; message: string }
   | { kind: "active"; message: string };
@@ -46,7 +46,6 @@ export function classifyWebPushState(
   if (host && host.configuration !== "active") return {
     kind: "host_unconfigured",
     message: host.detail ?? (host.configuration === "invalid" ? "This host's Web Push configuration is invalid." : "Web Push is not set up on this host."),
-    ...(host.setupCommand ? { setupCommand: host.setupCommand } : {}),
   };
   if (failure) return { kind: "subscription_failed", message: `Push subscription failed: ${failure} Retry from this device.` };
   if (prerequisites.permission === "denied") return { kind: "permission_denied", message: "Browser notification permission is blocked. Allow notifications in this site's browser settings." };

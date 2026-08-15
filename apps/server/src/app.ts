@@ -263,7 +263,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     reconcileProjectDeletionsWorkspace(store, workspace, publishWorkspace);
   };
   const { vapid, webPushConfiguration, webPushConfigurationDetail, webPushConfigured, webPushDelivery } =
-    createWebPushConfiguration(workspace, publishWorkspaceSince);
+    createWebPushConfiguration(opts.dataDir, workspace, publishWorkspaceSince);
   store.recoverInterruptedExecutions();
   const engines = new Map(opts.engines.map((engine) => [engine.adapter.id, engine]));
   const applyOperatorModelOptions = (): void => {

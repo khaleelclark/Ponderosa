@@ -4,23 +4,23 @@ import {
   WebPushDeliveryManager,
   type WebPushSender,
 } from "./web-push-delivery.js";
+import { resolveWebPushVapid } from "./web-push-vapid.js";
 
 export function createWebPushConfiguration(
+  dataDir: string,
   workspace: WorkspaceStore,
   publishWorkspaceSince: (cursor: number) => void,
 ) {
-
-  const vapid = {
-    publicKey: process.env.PONDEROSA_VAPID_PUBLIC_KEY?.trim(),
-    privateKey: process.env.PONDEROSA_VAPID_PRIVATE_KEY?.trim(),
-    subject: process.env.PONDEROSA_VAPID_SUBJECT?.trim() || "mailto:admin@localhost",
-  };
+  const resolved = resolveWebPushVapid(dataDir);
+  const vapid = resolved.vapid;
   let webPushConfiguration: "active" | "missing" | "invalid" = "missing";
-  let webPushConfigurationDetail = "This host has no VAPID keypair. Run the setup command, then restart Ponderosa.";
+  let webPushConfigurationDetail = resolved.failure ?? "Ponderosa has not established its browser-push identity.";
   let webPushSender: WebPushSender | undefined;
-  if (Boolean(vapid.publicKey) !== Boolean(vapid.privateKey)) {
+  if (resolved.failure) {
     webPushConfiguration = "invalid";
-    webPushConfigurationDetail = "The host VAPID configuration is incomplete. Regenerate the protected configuration file.";
+  } else if (Boolean(vapid.publicKey) !== Boolean(vapid.privateKey)) {
+    webPushConfiguration = "invalid";
+    webPushConfigurationDetail = "The operator-provided browser-push identity is incomplete. Provide both VAPID keys or remove both overrides, then restart the Engine.";
   } else if (vapid.publicKey && vapid.privateKey) {
     try {
       webpush.setVapidDetails(vapid.subject, vapid.publicKey, vapid.privateKey);
@@ -33,7 +33,7 @@ export function createWebPushConfiguration(
       webPushConfigurationDetail = "Host VAPID configuration is active.";
     } catch {
       webPushConfiguration = "invalid";
-      webPushConfigurationDetail = "The host VAPID configuration is invalid. Regenerate the protected configuration file.";
+      webPushConfigurationDetail = "The browser-push identity is invalid. Correct the protected host configuration, then restart the Engine.";
     }
   }
   const webPushConfigured = webPushConfiguration === "active";
