@@ -349,7 +349,6 @@ export interface WebPushStatusDto {
   publicKey?: string;
   /** Safe operator-facing diagnostic; never contains key material. */
   detail?: string;
-  setupCommand?: string;
   /** Present when a device ID was supplied to the status request. */
   deviceRegistered?: boolean;
 }

@@ -157,7 +157,6 @@ export function registerPushRoutes(
     configured: options.configuration.configured,
     configuration: options.configuration.state,
     detail: options.configuration.detail,
-    setupCommand: "pnpm --filter @ponderosa/server push:configure && sudo systemctl restart ponderosa",
     ...(options.configuration.configured ? { publicKey: options.configuration.publicKey } : {}),
     ...(request.query.deviceId
       ? { deviceRegistered: options.workspace.hasPushSubscription(request.query.deviceId) }

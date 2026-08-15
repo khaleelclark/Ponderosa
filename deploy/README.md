@@ -103,44 +103,32 @@ revision, and start it. Pending durable work remains queued. Provider sessions
 without the current persisted tool-contract hash are intentionally reseeded on
 first use; do not edit SQLite or clear Agent history manually.
 
-## Enable browser push notifications
+## Browser push notifications
 
-After the build, initialize VAPID and restart the service with one command as
-the same login user that runs Ponderosa:
+On first startup, Ponderosa creates a stable VAPID identity under
+`$PONDEROSA_DATA_DIR/host-secrets/`. The directory and identity are protected with
+owner-only permissions on POSIX hosts. Creation is atomic and refuses replacement,
+so concurrent starts, reconnects, and upgrades cannot rotate the public key or
+invalidate active browser subscriptions. The private key is never exposed by an
+API and must not be logged, copied into the repository, or edited.
 
-```sh
-pnpm --filter @ponderosa/server push:configure && sudo systemctl restart ponderosa
-```
+Existing installations may continue supplying both `PONDEROSA_VAPID_PUBLIC_KEY`
+and `PONDEROSA_VAPID_PRIVATE_KEY` through the optional systemd environment file.
+Explicit environment keys take precedence and are never replaced. An incomplete
+or invalid override fails closed instead of silently generating a different
+identity. `PONDEROSA_VAPID_SUBJECT` remains an optional contact override.
 
-The command creates `~/.config/ponderosa/push.env` with mode `0600`. The systemd
-unit loads that file, while the leading `-` on `EnvironmentFile` keeps Web Push
-optional. The private key stays outside the repository and must not be logged or
-committed. Its parent directory is forced to mode `0700`; the initializer refuses
-to overwrite an existing keypair so reconnects and upgrades cannot silently
-invalidate active browser subscriptions.
-
-The default VAPID subject is `mailto:admin@localhost`. To identify a real operator
-contact, pass an output path and subject explicitly:
-
-```sh
-pnpm --filter @ponderosa/server push:configure -- \
-  "$HOME/.config/ponderosa/push.env" "mailto:operator@example.com"
-```
-
-Do not replace an existing VAPID keypair while browser subscriptions are active:
-subscriptions are bound to its public key. The generator refuses to overwrite the
-file for this reason. After restarting, verify configuration without exposing the
-private key:
+After startup, verify configuration without exposing the private key:
 
 ```sh
 curl -sS http://127.0.0.1:8787/api/push/status
 ```
 
 The response should contain `"configured":true`, `"configuration":"active"`,
-and the public key. `missing` includes the safe setup command; `invalid` means the
-host file is incomplete or contains unusable VAPID material. The browser settings
-screen separately reports unsupported browsers, insecure origins, default or
-denied permission, subscription failure, and an active device subscription.
+and the public key. `invalid` means automatic identity generation/storage failed
+or an operator override is incomplete or unusable. The browser settings screen
+separately reports unsupported browsers, insecure origins, default or denied
+permission, subscription failure, and an active device subscription.
 
 ## Enable interactive agent browsers
 

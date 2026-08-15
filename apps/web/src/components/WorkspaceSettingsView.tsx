@@ -342,11 +342,6 @@ function NotificationSettingsSection({
         aria-live="polite"
       >
         {pushState.message} In-app notifications remain available.
-        {pushState.kind === "host_unconfigured" && pushState.setupCommand ? (
-          <Box component="code" sx={{ display: "block", mt: 1, overflowWrap: "anywhere" }}>
-            {pushState.setupCommand}
-          </Box>
-        ) : null}
       </Alert>
       <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
         {pushState.kind === "active" ? (

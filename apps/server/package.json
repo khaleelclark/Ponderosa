@@ -8,8 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/main.js",
-    "dev": "node --watch --experimental-strip-types src/main.ts",
-    "push:configure": "node dist/configure-web-push.js"
+    "dev": "node --watch --experimental-strip-types src/main.ts"
   },
   "dependencies": {
     "@ponderosa/agents": "workspace:*",
