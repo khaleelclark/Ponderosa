@@ -1,7 +1,6 @@
 import type Database from "better-sqlite3";
 import { and, eq } from "drizzle-orm";
 import {
-  publicProviderFailureEvent,
   type AgentDto,
   type AgentLifecycleReason,
   type AgentLifecycleStatus,
@@ -76,10 +75,7 @@ export class AgentEventSessionAuthority {
       // projection may not leave an unprojectable user_message in events.jsonl.
       throw new Error("communication scope cannot project to requested surface");
     }
-    const canonicalEvent = event.type === "error"
-      ? publicProviderFailureEvent(event)
-      : event;
-    const stored = this.eventProjection.append(agentId, projectId, canonicalEvent);
+    const stored = this.eventProjection.append(agentId, projectId, event);
     const message = communicationMessageProjection(agentId, stored);
     if (communicationEventId && message) {
       this.appendCommunicationProjection(projectId, {

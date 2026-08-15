@@ -2,6 +2,7 @@ import { isProxy } from "node:util/types";
 import {
   classifyProviderFailure,
   publicProviderFailure,
+  publicProviderFailureEvent,
   type AgentEvent,
   type RuntimeProcessIdentity,
   type RuntimeProcessHandle,
@@ -261,6 +262,7 @@ export function providerEventStream(
       } catch (error) {
         throw boundaryError(operation, error);
       }
+      let naturallyExhausted = false;
       try {
         while (true) {
           const rawResult = await providerRuntimeOperation(operation, () => Reflect.apply(next, iterator, []));
@@ -270,15 +272,21 @@ export function providerEventStream(
           } catch (error) {
             throw boundaryError(operation, error);
           }
-          if (result.done) return;
+          if (result.done) {
+            naturallyExhausted = true;
+            return;
+          }
           try {
-            yield projectAgentEvent(result.value);
+            const event = projectAgentEvent(result.value);
+            yield event.type === "error"
+              ? publicProviderFailureEvent(event)
+              : event;
           } catch (error) {
             throw boundaryError("project provider event", error);
           }
         }
       } finally {
-        if (finish) {
+        if (finish && !naturallyExhausted) {
           await providerRuntimeOperation(operation, () => Reflect.apply(finish!, iterator, []));
         }
       }
