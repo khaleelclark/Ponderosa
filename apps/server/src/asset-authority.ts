@@ -74,7 +74,8 @@ export class AssetAuthority {
         created_at TEXT NOT NULL,
         PRIMARY KEY (project_id, run_id, tool_call_id),
         UNIQUE (project_id, artifact_id),
-        FOREIGN KEY (artifact_id) REFERENCES generated_artifact_authority(id)
+        FOREIGN KEY (project_id, artifact_id)
+          REFERENCES generated_artifact_authority(project_id, id)
       );
       PRAGMA user_version=7;`);
     } catch (error) { throw error instanceof AssetError ? error : new AssetError(409, `asset authority unavailable: ${error instanceof Error ? error.message : String(error)}`); }
