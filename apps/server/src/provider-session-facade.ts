@@ -24,6 +24,7 @@ const MAX_RATE_LIMIT_LINES = 100;
 const MAX_RATE_LIMIT_LINE_CHARACTERS = 1_024;
 const UNSAFE_IDENTITY_CONTROL = /[\u0000-\u001f\u007f-\u009f]/u;
 const providerBoundaryErrors = new WeakSet<object>();
+const providerCleanupFailures = new WeakMap<object, ProviderRuntimeBoundaryError>();
 
 type PropertyKeyLike = string | symbol;
 
@@ -210,6 +211,18 @@ export function isProviderRuntimeBoundaryError(
     : false;
 }
 
+/** Consume a secondary provider cleanup failure retained against the primary
+ * boundary error. The primary classification and remediation remain the
+ * canonical failure; this secondary evidence is restricted to server logs. */
+export function takeProviderRuntimeCleanupFailure(
+  value: unknown,
+): ProviderRuntimeBoundaryError | undefined {
+  if (!isProviderRuntimeBoundaryError(value)) return undefined;
+  const cleanupFailure = providerCleanupFailures.get(value);
+  if (cleanupFailure) providerCleanupFailures.delete(value);
+  return cleanupFailure;
+}
+
 function boundaryError(operation: string, error: unknown): ProviderRuntimeBoundaryError {
   return isProviderRuntimeBoundaryError(error)
     ? error
@@ -263,6 +276,7 @@ export function providerEventStream(
         throw boundaryError(operation, error);
       }
       let naturallyExhausted = false;
+      let primaryFailure: ProviderRuntimeBoundaryError | undefined;
       try {
         while (true) {
           const rawResult = await providerRuntimeOperation(operation, () => Reflect.apply(next, iterator, []));
@@ -285,9 +299,21 @@ export function providerEventStream(
             throw boundaryError("project provider event", error);
           }
         }
+      } catch (error) {
+        primaryFailure = boundaryError(operation, error);
+        throw primaryFailure;
       } finally {
         if (finish && !naturallyExhausted) {
-          await providerRuntimeOperation(operation, () => Reflect.apply(finish!, iterator, []));
+          try {
+            await providerRuntimeOperation(
+              `${operation} cleanup`,
+              () => Reflect.apply(finish!, iterator, []),
+            );
+          } catch (error) {
+            const cleanupFailure = boundaryError(`${operation} cleanup`, error);
+            if (!primaryFailure) throw cleanupFailure;
+            providerCleanupFailures.set(primaryFailure, cleanupFailure);
+          }
         }
       }
     },

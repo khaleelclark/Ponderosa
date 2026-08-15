@@ -46,6 +46,7 @@ import {
   providerRuntimeValue,
   providerProcessHandleFacade,
   providerSessionFacade,
+  takeProviderRuntimeCleanupFailure,
 } from "../provider-session-facade.js";
 import { cleanupRuntimeAttachments } from "../runtime-attachments.js";
 import type { AgentMessageRunContext } from "./agent-message-run.js";
@@ -1129,6 +1130,17 @@ export function startProviderRunExecution(
         runError = "provider ended before prompt injection could be confirmed";
       }
     } catch (err) {
+      const cleanupFailure = takeProviderRuntimeCleanupFailure(err);
+      if (cleanupFailure) {
+        app.log.error({
+          runId,
+          agentId: agent.id,
+          operation: cleanupFailure.operation,
+          category: cleanupFailure.category,
+          ...(cleanupFailure.code ? { code: cleanupFailure.code } : {}),
+          restrictedDetail: cleanupFailure.restrictedDetail,
+        }, "provider event stream cleanup failed after primary provider failure");
+      }
       if (isClosed() || controller.signal.aborted || !ownsActiveRunForAuditDrain(agent.id, activeRun)) return;
       schedulerCancelled = Boolean(activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));
       if (schedulerCancelled) return;
