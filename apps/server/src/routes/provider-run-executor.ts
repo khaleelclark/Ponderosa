@@ -897,6 +897,8 @@ export function startProviderRunExecution(
                   body: observed.lastError ?? "Fresh context did not restore enough headroom.",
                   projectId: agent.projectId,
                   conversationId: routingConversationId,
+                  agentId: agent.id,
+                  action: { kind: "open_agent", targetId: agent.id },
                 });
                 runError = observed.lastError ?? "replacement context remained above the rollover low-water mark";
                 break;
@@ -964,6 +966,8 @@ export function startProviderRunExecution(
                       body: error instanceof Error ? error.message : "The canonical rollover boundary was unavailable.",
                       projectId: agent.projectId,
                       conversationId: routingConversationId,
+                      agentId: agent.id,
+                      action: { kind: "open_agent", targetId: agent.id },
                     });
                     continue;
                   }
@@ -1123,6 +1127,8 @@ export function startProviderRunExecution(
             : "The provider ended before committing its continuation handoff. Retry the task or request another context refresh; the old provider generation may be retried safely.",
           projectId: agent.projectId,
           conversationId: routingConversationId,
+          agentId: agent.id,
+          action: { kind: "open_agent", targetId: agent.id },
         });
       }
       const replacementCancelled = Boolean(

@@ -927,6 +927,10 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.agentCatalog.listAgentEngineAssignments();
   }
 
+  getAgentTitleProjection(agentIds: readonly string[]): ReadonlyMap<string, string> {
+    return this.agentCatalog.getAgentTitleProjection(agentIds);
+  }
+
   getAgent(id: string): AgentDto | undefined {
     return this.agentCatalog.getAgent(id);
   }

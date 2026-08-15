@@ -221,6 +221,8 @@ export interface WorkspaceNotificationDto {
   /** Every Project chat where the affected Agent currently participates. */
   conversationIds?: string[];
   agentId?: string;
+  /** Current display title projected by notification reads; not notification identity. */
+  agentTitle?: string;
   /** All Agents directly affected by this current issue. */
   agentIds?: string[];
   communicationEventId?: string;
