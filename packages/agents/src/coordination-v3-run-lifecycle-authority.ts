@@ -855,6 +855,7 @@ export class CoordinationV3RunLifecycleAuthority {
         UPDATE context_rollovers
         SET state = 'outcome_unknown',
           failure_signal = 'replacement_cancelled',
+          failure_provenance = 'internal',
           last_error = 'replacement Run was cancelled before low-water context confirmation',
           updated_at = ?, terminal_at = COALESCE(terminal_at, ?)
         WHERE state = 'continuation_ready'
@@ -869,6 +870,7 @@ export class CoordinationV3RunLifecycleAuthority {
       this.sqlite.prepare(`
         UPDATE context_rollovers
         SET state = 'outcome_unknown',
+          failure_provenance = 'internal',
           last_error = CASE
             WHEN handoff_event_id IS NULL
               THEN 'rollover handoff Run was cancelled before durable commit'

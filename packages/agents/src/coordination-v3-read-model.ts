@@ -7,7 +7,10 @@ import type {
 } from "@ponderosa/core";
 import { publicProviderFailureSummary } from "@ponderosa/core";
 import { inspectorDetails, inspectorJson, inspectorWakePolicy } from "./coordination-v3-inspector.js";
-import { publicActivationDeliveryError } from "./coordination-v3-provider-failure-projection.js";
+import {
+  providerSafeActivationPayload,
+  publicActivationDeliveryError,
+} from "./coordination-v3-provider-failure-projection.js";
 import type {
   CoordinationAttentionCandidateCursor,
   CoordinationAttentionCandidateKind,
@@ -1288,18 +1291,6 @@ export class CoordinationV3ReadModel {
         const row = this.sqlite.prepare(`
           SELECT id, kind, priority, dispatch_policy, prompt_class, delivery_failures, terminal_outcome,
             last_delivery_error, provider_failure_category,
-            (
-              SELECT request_update.provider_failure_category
-              FROM json_tree(
-                CASE WHEN json_valid(agent_activations.payload_json)
-                  THEN agent_activations.payload_json ELSE '{}' END
-              ) payload_node
-              JOIN coordination_request_updates request_update
-                ON payload_node.key = 'updateId'
-                AND payload_node.value = request_update.id
-              WHERE request_update.provider_failure_category IS NOT NULL
-              LIMIT 1
-            ) AS request_provider_failure_category,
             EXISTS (
               SELECT 1 FROM scheduler_run_activations attached
               JOIN scheduler_runs scheduler ON scheduler.id = attached.run_id
@@ -1313,7 +1304,6 @@ export class CoordinationV3ReadModel {
           id: string; kind: string; priority: number; dispatch_policy: string; prompt_class: string;
           delivery_failures: number; terminal_outcome: string | null; last_delivery_error: string | null;
           provider_failure_category: string | null; has_provider_failure: number;
-          request_provider_failure_category: string | null;
           payload_json: string; terminal_at: string | null;
         } | undefined;
         const lastDeliveryError = row ? publicActivationDeliveryError({
@@ -1321,14 +1311,9 @@ export class CoordinationV3ReadModel {
           providerFailureCategory: row.provider_failure_category,
           hasProviderFailure: Boolean(row.has_provider_failure),
         }) : undefined;
-        const publicPayload = row?.request_provider_failure_category
-          ? JSON.stringify({
-              providerFailure: publicProviderFailureSummary(
-                undefined,
-                row.request_provider_failure_category,
-              ) ?? "Provider execution failed.",
-            })
-          : row?.payload_json;
+        const publicPayload = row
+          ? JSON.stringify(providerSafeActivationPayload(this.sqlite, row.id, row.payload_json))
+          : undefined;
         return row ? inspectorDetails(["Activation ID", row.id], ["Kind", row.kind], ["Priority", row.priority],
           ["Dispatch", row.dispatch_policy], ["Prompt class", row.prompt_class], ["Delivery failures", row.delivery_failures],
           ["Terminal outcome", row.terminal_outcome], ["Last error", lastDeliveryError],

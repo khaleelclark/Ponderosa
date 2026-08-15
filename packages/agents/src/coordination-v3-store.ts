@@ -1269,6 +1269,7 @@ export class CoordinationV3Store {
     id: string,
     state: "failed" | "outcome_unknown",
     error: string,
+    provenance: ContextRolloverV3["failureProvenance"],
     now?: string,
     failureSignal?: ContextRolloverV3["failureSignal"],
   ): ContextRolloverV3 {
@@ -1276,6 +1277,7 @@ export class CoordinationV3Store {
       id,
       state,
       error,
+      provenance,
       now,
       failureSignal,
     );

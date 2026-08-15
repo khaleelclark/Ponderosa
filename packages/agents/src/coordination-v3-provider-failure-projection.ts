@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { publicProviderFailureSummary } from "@ponderosa/core";
 
-interface ProviderFailureUpdateProjection {
+export interface ProviderFailureUpdateProjection {
   id: string;
   payload: Record<string, unknown>;
 }
@@ -79,11 +79,12 @@ function defineJsonProperty(
   });
 }
 
-function sanitizeMaterializedProviderUpdates(
+export function sanitizeMaterializedProviderUpdates(
   value: unknown,
   updates: Map<string, ProviderFailureUpdateProjection>,
   budget = { nodes: 0 },
   depth = 0,
+  parentKey?: string,
 ): { value: unknown; changed: boolean } {
   budget.nodes += 1;
   if (budget.nodes > 100_000 || depth > 128) {
@@ -109,7 +110,7 @@ function sanitizeMaterializedProviderUpdates(
   const directUpdate = typeof record.updateId === "string"
     ? updates.get(record.updateId)
     : undefined;
-  const wrappedUpdate = typeof record.id === "string" &&
+  const wrappedUpdate = parentKey === "update" && typeof record.id === "string" &&
       Object.prototype.hasOwnProperty.call(record, "payload")
     ? updates.get(record.id)
     : undefined;
@@ -131,6 +132,7 @@ function sanitizeMaterializedProviderUpdates(
       updates,
       budget,
       depth + 1,
+      key,
     );
     defineJsonProperty(projected, key, next.value);
     changed ||= next.changed;

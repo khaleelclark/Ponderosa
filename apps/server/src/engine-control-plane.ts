@@ -38,6 +38,7 @@ import {
   projectProviderModelOptions,
   projectProviderModelValidation,
 } from "./provider-success-projection.js";
+import { providerProcessHandleFacade } from "./provider-session-facade.js";
 import type {
   CapabilityDiscoveryAuthority,
   CapabilityDiscoveryProcess,
@@ -422,6 +423,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     };
     engineCapabilityDiscoveryAuthorities.add(authority);
     const registerProcess = (handle: RuntimeProcessHandle): void => {
+      handle = providerProcessHandleFacade(handle);
       const state: CapabilityDiscoveryProcess = { handle };
       authority.processes.add(state);
       providerProcessAuthority.register(handle, {
@@ -668,6 +670,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     };
     engineModelCatalogDiscoveryAuthorities.add(authority);
     const registerProcess = (handle: RuntimeProcessHandle): void => {
+      handle = providerProcessHandleFacade(handle);
       const state: CapabilityDiscoveryProcess = { handle };
       authority.processes.add(state);
       providerProcessAuthority.register(handle, {
@@ -778,6 +781,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     };
     engineModelCatalogDiscoveryAuthorities.add(authority);
     const registerProcess = (handle: RuntimeProcessHandle): void => {
+      handle = providerProcessHandleFacade(handle);
       const state: CapabilityDiscoveryProcess = { handle };
       authority.processes.add(state);
       providerProcessAuthority.register(handle, {

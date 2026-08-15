@@ -42,6 +42,11 @@ import {
   readProviderContextUsage,
   readProviderSessionIdentifier,
 } from "../provider-session-success.js";
+import {
+  providerProcessHandleFacade,
+  providerRuntimeOperation,
+  providerSessionFacade,
+} from "../provider-session-facade.js";
 import { registerAgentRunHistoryRoute } from "./agent-audit.js";
 
 interface ProviderCommandRoutesContext {
@@ -228,6 +233,7 @@ app.post<{
     settled: false,
   };
   const registerProcess = (handle: RuntimeProcessHandle): void => {
+    handle = providerProcessHandleFacade(handle);
     const state: CapabilityDiscoveryProcess = { handle };
     authority.processes.add(state);
     providerProcessAuthority.register(handle, {
@@ -245,7 +251,7 @@ app.post<{
   };
   let invocation: { catalog: EngineCapabilities; message?: string } | undefined;
   const operation = Promise.resolve().then(async () => {
-    const session = await engine.adapter.openSession!({
+    const rawSession = await providerRuntimeOperation("open provider command session", () => engine.adapter.openSession!({
       agentId: `project-command:${project.id}:${randomUUID()}`,
       cwd: project.hostPath,
       history: [],
@@ -255,7 +261,8 @@ app.post<{
       onRuntimeRootExit: () => undefined,
       onCapabilitiesChanged: () => reportRuntimeCapabilitiesChanged(project.id, engineId),
       signal: authority.controller.signal,
-    });
+    }));
+    const session = providerSessionFacade(rawSession);
     const catalog = session.capabilities
       ? projectProviderCapabilities(await session.capabilities())
       : {
@@ -429,6 +436,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
       settled: false,
     };
     const registerProcess = (handle: RuntimeProcessHandle): void => {
+      handle = providerProcessHandleFacade(handle);
       const state: CapabilityDiscoveryProcess = { handle };
       authority.processes.add(state);
       providerProcessAuthority.register(handle, {
@@ -447,7 +455,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
     };
     let invocation: { catalog: EngineCapabilities; message?: string } | undefined;
     const operation = Promise.resolve().then(async () => {
-      const session = await engine.adapter.openSession!({
+      const rawSession = await providerRuntimeOperation("open provider command session", () => engine.adapter.openSession!({
         agentId: agent.id,
         cwd: project.hostPath,
         ...(resumeSessionId ? { resumeSessionId } : {}),
@@ -458,7 +466,8 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
         onRuntimeRootExit: () => undefined,
         onCapabilitiesChanged: () => reportRuntimeCapabilitiesChanged(project.id, engine.adapter.id),
         signal: authority.controller.signal,
-      });
+      }));
+      const session = providerSessionFacade(rawSession);
       invocation = await invoke(session);
       return invocation.catalog;
     });

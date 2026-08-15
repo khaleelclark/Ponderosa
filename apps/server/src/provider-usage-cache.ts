@@ -7,6 +7,7 @@ import {
 } from "@ponderosa/core";
 import { guardedProviderExceptionStringProperty } from "./provider-exception-properties.js";
 import { projectProviderUsage } from "./provider-success-projection.js";
+import { providerProcessHandleFacade } from "./provider-session-facade.js";
 
 const DEFAULT_STALE_MS = 5 * 60_000;
 
@@ -112,6 +113,7 @@ export class ProviderUsageCache {
         signal: authority.controller.signal,
         timeoutMs: this.timeoutMs,
         onRuntimeSpawned: (handle) => {
+          handle = providerProcessHandleFacade(handle);
           authority.processes.add(handle);
           this.registerProcess?.(handle, target.adapter.id);
           if (this.closed || authority.controller.signal.aborted) {

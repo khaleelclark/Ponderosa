@@ -25,7 +25,6 @@ import { randomUUID } from "node:crypto";
 import type { LogEvent } from "@ponderosa/agents";
 import {
   classifyProviderFailure,
-  projectAgentEvent,
   shouldRolloverEngineSession,
 } from "@ponderosa/engines";
 import type { FastifyInstance } from "fastify";
@@ -39,8 +38,15 @@ import type {
 import { evaluateContextRolloverPressure } from "../context-rollover-pressure.js";
 import type { ContextCursor } from "../context-cursors.js";
 import { providerUnavailableNotificationBody } from "../provider-availability-detail.js";
-import { guardedProviderExceptionStringProperty } from "../provider-exception-properties.js";
 import { readProviderSessionIdentifier } from "../provider-session-success.js";
+import {
+  isProviderRuntimeBoundaryError,
+  providerEventStream,
+  providerRuntimeOperation,
+  providerRuntimeValue,
+  providerProcessHandleFacade,
+  providerSessionFacade,
+} from "../provider-session-facade.js";
 import { cleanupRuntimeAttachments } from "../runtime-attachments.js";
 import type { AgentMessageRunContext } from "./agent-message-run.js";
 
@@ -315,7 +321,7 @@ export function startProviderRunExecution(
         onRuntimeSpawned: (handle: RuntimeProcessHandle) => void,
         identity: object,
       ): Promise<PersistentRuntime> => {
-        const session = await engine.adapter.openSession!({
+        const rawSession = await providerRuntimeOperation("open provider session", () => engine.adapter.openSession!({
           agentId: agent.id,
           cwd: project.hostPath,
           resumeSessionId: sessionResumeId,
@@ -490,7 +496,8 @@ export function startProviderRunExecution(
           onRuntimeRootExit: (detail) => persistentRootExited(agent.id, identity, detail),
           onCapabilitiesChanged: () => reportRuntimeCapabilitiesChanged(project.id, engine.adapter.id),
           signal: controller.signal,
-        });
+        }));
+        const session = providerSessionFacade(rawSession);
         return {
           identity,
           session,
@@ -511,6 +518,7 @@ export function startProviderRunExecution(
         // can spawn or await anything.
         const operation = Promise.resolve()
           .then(() => openPersistentRuntime(sessionResumeId, (handle) => {
+            handle = providerProcessHandleFacade(handle);
             providerProcessAuthority.register(handle, {
               purpose: "persistent provider runtime",
               projectId: project.id,
@@ -547,6 +555,13 @@ export function startProviderRunExecution(
               try {
                 await teardownOpeningRuntime(agent.id, state, "provider readiness failed");
               } catch (closeError) {
+                if (isProviderRuntimeBoundaryError(error)) {
+                  app.log.error(
+                    { agentId: agent.id, runId },
+                    "provider readiness cleanup remains pending after provider rejection",
+                  );
+                  throw error;
+                }
                 throw new AggregateError(
                   [error, closeError],
                   `provider runtime readiness and cleanup failed for ${agent.id}`,
@@ -593,6 +608,7 @@ export function startProviderRunExecution(
       }
       let persistentTurnStarted = false;
       const registerOneShotRuntime = (handle: RuntimeProcessHandle): void => {
+        handle = providerProcessHandleFacade(handle);
         providerProcessAuthority.register(handle, {
           purpose: "provider Run",
           projectId: project.id,
@@ -619,26 +635,16 @@ export function startProviderRunExecution(
         source: AsyncIterable<AgentEvent>,
       ): AsyncIterable<AgentEvent> {
         try {
-          for await (const yielded of source) {
-            let event: AgentEvent;
-            try {
-              // This is the first read of a provider-yielded value. The
-              // canonical copy must precede discriminant checks, scheduler
-              // decisions, persistence, logging, or public streaming.
-              event = projectAgentEvent(yielded);
-            } catch (error) {
-              providerStreamBoundaryFailure = {
-                kind: "event_projection",
-                providerAccepted: v3PromptInjected,
-              };
-              throw error;
-            }
+          for await (const event of source) {
             providerStreamBoundaryFailure = undefined;
             yield event;
           }
         } catch (error) {
           providerStreamBoundaryFailure ??= {
-            kind: "iterator_rejection",
+            kind: isProviderRuntimeBoundaryError(error) &&
+              error.operation === "project provider event"
+              ? "event_projection"
+              : "iterator_rejection",
             providerAccepted: v3PromptInjected,
           };
           throw error;
@@ -673,7 +679,10 @@ export function startProviderRunExecution(
                     next = await persistentRuntime!.iterator.next();
                   } catch (error) {
                     providerStreamBoundaryFailure = {
-                      kind: "iterator_rejection",
+                      kind: isProviderRuntimeBoundaryError(error) &&
+                        error.operation === "project provider event"
+                        ? "event_projection"
+                        : "iterator_rejection",
                       providerAccepted: v3PromptInjected,
                     };
                     throw error;
@@ -683,23 +692,16 @@ export function startProviderRunExecution(
                     yield { type: "error", message: "persistent engine session stopped" };
                     return;
                   }
-                  let event: AgentEvent;
-                  try {
-                    event = projectAgentEvent(next.value);
-                  } catch (error) {
-                    providerStreamBoundaryFailure = {
-                      kind: "event_projection",
-                      providerAccepted: v3PromptInjected,
-                    };
-                    throw error;
-                  }
+                  const event = next.value;
                   providerStreamBoundaryFailure = undefined;
                   yield event;
                   if (event.type === "turn_done" || event.type === "error") return;
                 }
               },
             }
-          : projectProviderStream(engine.adapter.continue({
+          : projectProviderStream(providerEventStream(providerRuntimeValue(
+              "continue provider session",
+              () => engine.adapter.continue({
               agentId: agent.id,
               cwd: project.hostPath,
               prompt,
@@ -712,7 +714,8 @@ export function startProviderRunExecution(
               signal: controller.signal,
               onRuntimeRootExit: () => agentMessageCapabilities.delete(messageCapability),
               onRuntimeSpawned: registerOneShotRuntime,
-            }))
+              }),
+            ), "read continued provider event stream"))
         : persistentRuntime
           ? {
               async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
@@ -741,7 +744,10 @@ export function startProviderRunExecution(
                     next = await persistentRuntime!.iterator.next();
                   } catch (error) {
                     providerStreamBoundaryFailure = {
-                      kind: "iterator_rejection",
+                      kind: isProviderRuntimeBoundaryError(error) &&
+                        error.operation === "project provider event"
+                        ? "event_projection"
+                        : "iterator_rejection",
                       providerAccepted: v3PromptInjected,
                     };
                     throw error;
@@ -751,23 +757,16 @@ export function startProviderRunExecution(
                     yield { type: "error", message: "persistent engine session stopped" };
                     return;
                   }
-                  let event: AgentEvent;
-                  try {
-                    event = projectAgentEvent(next.value);
-                  } catch (error) {
-                    providerStreamBoundaryFailure = {
-                      kind: "event_projection",
-                      providerAccepted: v3PromptInjected,
-                    };
-                    throw error;
-                  }
+                  const event = next.value;
                   providerStreamBoundaryFailure = undefined;
                   yield event;
                   if (event.type === "turn_done" || event.type === "error") return;
                 }
               },
             }
-          : projectProviderStream(engine.adapter.seed({
+          : projectProviderStream(providerEventStream(providerRuntimeValue(
+              "seed provider session",
+              () => engine.adapter.seed({
               agentId: agent.id,
               cwd: project.hostPath,
               prompt: freshPrompt,
@@ -780,7 +779,8 @@ export function startProviderRunExecution(
               signal: controller.signal,
               onRuntimeRootExit: () => agentMessageCapabilities.delete(messageCapability),
               onRuntimeSpawned: registerOneShotRuntime,
-            }));
+              }),
+            ), "read seeded provider event stream"));
 
       const persistAcceptedSessionSnapshot = (acceptedSessionId: string): void => {
         const artifactIds = [...manifestArtifactIds].sort();
@@ -1132,24 +1132,30 @@ export function startProviderRunExecution(
       if (isClosed() || controller.signal.aborted || !ownsActiveRunForAuditDrain(agent.id, activeRun)) return;
       schedulerCancelled = Boolean(activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));
       if (schedulerCancelled) return;
-      // Adapter rejection values are untrusted. Do not perform instanceof,
-      // coercion, serialization, or ordinary property access here: any of
-      // those operations can trap and prevent the durable Run transition in
-      // finally. Safely readable detail remains restricted to the scheduler
-      // failure audit; public events are projected again at append time.
-      const message = guardedProviderExceptionStringProperty(err, "message")
-        ?? "Provider execution failed.";
-      const failureEvent = publicProviderFailureEvent({
-        type: "error",
-        message,
-        code: guardedProviderExceptionStringProperty(err, "code")
-          ?? guardedProviderExceptionStringProperty(err, "errorCode"),
-      });
-      runFailureClassification = failureEvent.category;
+      // Only exceptions crossing an explicit provider operation/session/event
+      // boundary may become canonical provider failures. Scheduler, lease,
+      // persistence, workspace, and rollover exceptions remain internal.
+      const providerFailure = isProviderRuntimeBoundaryError(err)
+        ? err
+        : undefined;
+      const message = providerFailure?.restrictedDetail
+        ?? "Agent execution failed due to an internal runtime error.";
+      const failureEvent = providerFailure
+        ? publicProviderFailureEvent({
+            type: "error",
+            message,
+            ...(providerFailure.code ? { code: providerFailure.code } : {}),
+            category: providerFailure.category,
+          })
+        : { type: "error" as const, message };
+      runFailureClassification = providerFailure?.category;
       const workspaceIssue = await reconcileProjectWorkspace(project, agent);
       projectWorkspaceUnavailable = Boolean(workspaceIssue);
       if (workspaceIssue) runFailureClassification = undefined;
       runError = workspaceIssue ?? message;
+      if (!providerFailure && !workspaceIssue) {
+        app.log.error({ runId, agentId: agent.id }, "internal provider Run orchestration failed");
+      }
       await persistRuntimeEvent(
         agent.id,
         activeRun,
@@ -1276,6 +1282,7 @@ export function startProviderRunExecution(
             replacementRunRollover.id,
             "outcome_unknown",
             "replacement Run was cancelled before low-water context confirmation",
+            "internal",
             undefined,
             "replacement_cancelled",
           );
@@ -1287,6 +1294,7 @@ export function startProviderRunExecution(
             replacementRunRollover.id,
             runError ? "outcome_unknown" : "failed",
             missingObservation,
+            "internal",
           );
         }
         // The last accepted snapshot still identifies the old provider

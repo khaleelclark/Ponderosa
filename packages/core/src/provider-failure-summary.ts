@@ -205,8 +205,10 @@ export function publicProviderFailure(input: {
 }): PublicProviderFailure {
   const explicitCategory = categoryFromStructuredCode(input.category);
   const structuredCode = categoryFromStructuredCode(input.code);
-  const category = explicitCategory
+  const category = (explicitCategory && explicitCategory !== "unknown" ? explicitCategory : undefined)
     ?? (structuredCode && structuredCode !== "unknown" ? structuredCode : undefined)
+    ?? explicitCategory
+    ?? structuredCode
     ?? highConfidenceTextCategory(input.detail ?? "");
   return {
     category,

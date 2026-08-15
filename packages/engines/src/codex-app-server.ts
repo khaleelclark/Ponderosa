@@ -447,7 +447,7 @@ export class CodexAppServerSession implements RuntimeSession {
   private providerModelGeneration = 0;
   private readonly mcpStartup = new Map<string, { status: string; error?: string }>();
   readonly events: AsyncIterable<AgentEvent>;
-  get processIdentity() { return this.rpc.processIdentity; }
+  readonly processIdentity: RuntimeSession["processIdentity"];
 
   private constructor(
     readonly engineAgentId: string,
@@ -459,6 +459,7 @@ export class CodexAppServerSession implements RuntimeSession {
     private readonly configuredMcps: EngineMcpServer[],
     private readonly onCapabilitiesChanged: (() => void) | undefined,
   ) {
+    this.processIdentity = rpc.processIdentity;
     if (fresh) this.baselineTotal = zeroUsage();
     this.events = this.eventStream();
   }

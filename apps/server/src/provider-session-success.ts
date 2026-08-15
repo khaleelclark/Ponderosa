@@ -1,5 +1,6 @@
 import type { RuntimeSession, RuntimeSteerResult, RuntimeTurnInput } from "@ponderosa/core";
 import { isProxy } from "node:util/types";
+import { isProviderRuntimeBoundaryError } from "./provider-session-facade.js";
 import {
   projectProviderContextUsage,
   projectProviderSessionIdentifier,
@@ -38,7 +39,8 @@ export async function invokeProviderSteer(
   let result: unknown;
   try {
     result = await Reflect.apply(method, session, [input]);
-  } catch {
+  } catch (error) {
+    if (isProviderRuntimeBoundaryError(error)) throw error;
     throw new Error("Provider steering failed.");
   }
   return projectProviderSteerResult(result);
@@ -60,7 +62,8 @@ export function readProviderContextUsage(
   let value: unknown;
   try {
     value = Reflect.apply(method, session, []);
-  } catch {
+  } catch (error) {
+    if (isProviderRuntimeBoundaryError(error)) throw error;
     throw new Error("Provider returned invalid structured data.");
   }
   return projectProviderContextUsage(value);

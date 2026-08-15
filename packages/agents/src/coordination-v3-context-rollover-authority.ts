@@ -11,6 +11,16 @@ import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js
 import type { ContextRolloverState, ContextRolloverV3 } from "./coordination-v3-types.js";
 
 const MAX_CONTEXT_ROLLOVER_RECENT_TAIL_IDS = 80;
+const MAX_INTERNAL_ROLLOVER_FAILURE_CHARACTERS = 1_000;
+const UNSAFE_INTERNAL_ROLLOVER_FAILURE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
+
+function boundedInternalRolloverFailure(error: string): string {
+  const value = error.trim();
+  if (!value || UNSAFE_INTERNAL_ROLLOVER_FAILURE.test(value)) {
+    return "Context rollover failed due to an internal runtime error.";
+  }
+  return value.slice(0, MAX_INTERNAL_ROLLOVER_FAILURE_CHARACTERS);
+}
 
 interface RolloverRow {
   id: string; project_id: string; agent_id: string; state: ContextRolloverState;
@@ -36,6 +46,7 @@ interface RolloverRow {
   visible_response_committed_at: string | null;
   completion_reason: ContextRolloverV3["completionReason"] | null;
   failure_signal: ContextRolloverV3["failureSignal"] | null;
+  failure_provenance: ContextRolloverV3["failureProvenance"];
   last_error: string | null; created_at: string; updated_at: string; terminal_at: string | null;
 }
 
@@ -338,6 +349,7 @@ export class CoordinationV3ContextRolloverAuthority {
   failUnidentifiedReplacementAfterRestart(id: string, now = new Date().toISOString()): ContextRolloverV3 {
     this.sqlite.prepare(`
       UPDATE context_rollovers SET state = 'outcome_unknown',
+        failure_provenance = 'internal',
         last_error = 'server restarted after replacement input commit but before the candidate provider session was durably identified',
         updated_at = ?, terminal_at = COALESCE(terminal_at, ?)
       WHERE id = ? AND state = 'continuation_ready'
@@ -774,6 +786,7 @@ export class CoordinationV3ContextRolloverAuthority {
         id,
         "failed",
         "replacement context remained above the rollover low-water mark",
+        "internal",
         now,
         "seed_overflow",
       );
@@ -838,15 +851,19 @@ export class CoordinationV3ContextRolloverAuthority {
     id: string,
     state: "failed" | "outcome_unknown",
     error: string,
+    provenance: ContextRolloverV3["failureProvenance"],
     now = new Date().toISOString(),
     failureSignal?: ContextRolloverV3["failureSignal"],
   ): ContextRolloverV3 {
-    const publicError = publicProviderFailureSummary(error) ?? "Provider execution failed.";
+    const publicError = provenance === "provider"
+      ? publicProviderFailureSummary(error) ?? "Provider execution failed."
+      : boundedInternalRolloverFailure(error);
     this.sqlite.transaction(() => {
       this.sqlite.prepare(`
-        UPDATE context_rollovers SET state = ?, failure_signal = ?, last_error = ?, updated_at = ?, terminal_at = ?
+        UPDATE context_rollovers SET state = ?, failure_signal = ?, failure_provenance = ?,
+          last_error = ?, updated_at = ?, terminal_at = ?
         WHERE id = ? AND state IN ('requested','handoff_committed','session_retiring','continuation_ready')
-      `).run(state, failureSignal ?? null, publicError, now, now, id);
+      `).run(state, failureSignal ?? null, provenance, publicError, now, now, id);
       this.sqlite.prepare(`
         UPDATE agent_activations SET state = 'cancelled', updated_at = ?, terminal_at = ?
         WHERE kind IN ('context_rollover_handoff','context_rollover_continuation')
@@ -893,7 +910,9 @@ export class CoordinationV3ContextRolloverAuthority {
 
   private view(row: RolloverRow): ContextRolloverV3 {
     const publicLastError = row.last_error
-      ? publicProviderFailureSummary(row.last_error) ?? "Provider execution failed."
+      ? row.failure_provenance === "provider"
+        ? publicProviderFailureSummary(row.last_error) ?? "Provider execution failed."
+        : boundedInternalRolloverFailure(row.last_error)
       : undefined;
     return {
       id: row.id, projectId: row.project_id, agentId: row.agent_id, state: row.state,
@@ -937,6 +956,7 @@ export class CoordinationV3ContextRolloverAuthority {
       ...(publicLastError ? { lastError: publicLastError } : {}),
       ...(row.completion_reason ? { completionReason: row.completion_reason } : {}),
       ...(row.failure_signal ? { failureSignal: row.failure_signal } : {}),
+      failureProvenance: row.failure_provenance,
       createdAt: row.created_at, updatedAt: row.updated_at,
       ...(row.terminal_at ? { terminalAt: row.terminal_at } : {}),
     };

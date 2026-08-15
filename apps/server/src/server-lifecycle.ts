@@ -370,6 +370,7 @@ export function registerServerLifecycle(
               rollover.id,
               "outcome_unknown",
               "server restarted before the provider committed a bounded rollover handoff",
+              "internal",
             );
             createOperationalNotification({
               dedupeKey: `context-rollover:${rollover.id}:outcome-unknown`,
@@ -424,6 +425,7 @@ export function registerServerLifecycle(
             rollover.id,
             "outcome_unknown",
             "server restarted after the replacement session was recorded but before low-water context confirmation",
+            "internal",
           );
           createOperationalNotification({
             dedupeKey: `context-rollover:${rollover.id}:confirmation-missing`,
@@ -442,6 +444,7 @@ export function registerServerLifecycle(
           initial.id,
           "outcome_unknown",
           error instanceof Error ? error.message : String(error),
+          "internal",
         );
         createOperationalNotification({
           dedupeKey: `context-rollover:${initial.id}:recovery-failed`,
