@@ -30,6 +30,8 @@ import {
   importedAgentHistoryPath,
 } from "./paths.js";
 
+const MAX_AGENT_TITLE_PROJECTION_IDS = 500;
+
 export class AgentCatalogAuthority {
   constructor(
     private readonly dataDir: string,
@@ -138,6 +140,23 @@ export class AgentCatalogAuthority {
       const assignment = row as { id: string; active_engine: string };
       return { id: assignment.id, activeEngine: assignment.active_engine };
     });
+  }
+
+  /** Notification and directory summaries need current labels without
+   * hydrating Agent memberships, state, or filesystem-backed history. */
+  getAgentTitleProjection(agentIds: readonly string[]): ReadonlyMap<string, string> {
+    const distinctAgentIds = [...new Set(agentIds)]
+      .filter(Boolean)
+      .slice(0, MAX_AGENT_TITLE_PROJECTION_IDS);
+    if (distinctAgentIds.length === 0) return new Map();
+    const placeholders = distinctAgentIds.map(() => "?").join(", ");
+    const rows = this.client.prepare(`
+      SELECT id, title
+      FROM agents
+      WHERE deleted_at IS NULL
+        AND id IN (${placeholders})
+    `).all(...distinctAgentIds) as Array<{ id: string; title: string }>;
+    return new Map(rows.map((row) => [row.id, row.title] as const));
   }
 
   getAgent(id: string): AgentDto | undefined {

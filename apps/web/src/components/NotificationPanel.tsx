@@ -268,7 +268,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
                   <Box aria-hidden sx={{ width: 8, height: 8, mt: .75, borderRadius: "50%", bgcolor: filter === "updates" ? "primary.main" : item.severity === "urgent" ? "error.main" : "warning.main", flex: "0 0 auto" }} />
                   <ListItemText
                     primary={<Stack direction="row" spacing={1} sx={{ minWidth: 0, alignItems: "center" }}><Typography variant="body2" fontWeight={item.readAt ? 600 : 800} noWrap sx={{ minWidth: 0, flex: 1 }}>{item.title}</Typography>{item.severity && item.severity !== "info" ? <Chip size="small" color={item.severity === "urgent" ? "error" : "warning"} label={item.severity === "urgent" ? "Urgent" : "Issue"} /> : null}<Typography variant="caption" color="text.secondary" sx={{ flex: "0 0 auto" }}>{notificationTime(item.createdAt)}</Typography></Stack>}
-                    secondary={<Stack spacing={0.5}>{affectedAgentLabel(item) ? <Typography variant="caption" color="text.secondary">Affected Agent · {affectedAgentLabel(item)}</Typography> : null}{item.conversationId && conversations.get(item.conversationId) ? <Typography variant="caption" color="text.secondary">{conversations.get(item.conversationId)!.title}</Typography> : null}<Typography variant="body2" color="text.secondary">{item.body}</Typography>{item.kind === "decision" && item.decision && (item.status ?? "open") === "open"
+                    secondary={<Stack spacing={0.5}>{affectedAgentLabel(item) ? <Typography variant="caption" color="text.secondary">Affected Agent · {affectedAgentLabel(item)}</Typography> : null}{item.conversationId && conversations.get(item.conversationId) ? <Typography variant="caption" color="text.secondary">{conversations.get(item.conversationId)!.title}</Typography> : null}<Typography variant="body2" color="text.secondary" sx={{ display: "-webkit-box", overflow: "hidden", overflowWrap: "anywhere", WebkitBoxOrient: "vertical", WebkitLineClamp: 2 }}>{item.body}</Typography>{item.kind === "decision" && item.decision && (item.status ?? "open") === "open"
                       ? <DecisionActions decision={notificationDecision(item)!} compact />
                       : item.kind === "operational" && (item.status ?? "open") === "open" ? <Stack direction="row" spacing={1}><Button size="small" onClick={(event) => { event.stopPropagation(); void setStatus(item, "resolved"); }}>Mark Resolved</Button><Button size="small" color="inherit" onClick={(event) => { event.stopPropagation(); void setStatus(item, "dismissed"); }}>Dismiss</Button></Stack> : item.status && item.status !== "open" ? <Typography variant="caption" color="text.secondary">{item.status}</Typography> : null}
                     {item.projectId && (item.kind === "operational" || ["coordination", "trigger", "decision"].includes(item.category ?? "")) ? <Button size="small" sx={{ alignSelf: "flex-start" }} onClick={(event) => {
@@ -279,7 +279,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
                         onNavigate(route);
                       }
                     }}>Review Work Details</Button> : null}</Stack>}
-                    secondaryTypographyProps={{ component: "div", sx: { display: "-webkit-box", overflow: "hidden", overflowWrap: "anywhere", WebkitBoxOrient: "vertical", WebkitLineClamp: 2 } }}
+                    secondaryTypographyProps={{ component: "div" }}
                   />
                 </ListItemButton>
               </ListItem>)}
