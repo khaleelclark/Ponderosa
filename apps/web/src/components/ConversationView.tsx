@@ -1035,7 +1035,25 @@ export function ConversationView({
                 onLoadEarlier: () => void loadOlderHistory(),
               }}
             >
-              {collaborationInitiallyLoading ? (
+              {collaborationQuery.isError ? (
+                <Alert
+                  severity="error"
+                  action={
+                    <Button
+                      color="inherit"
+                      size="small"
+                      disabled={collaborationQuery.isFetching}
+                      onClick={() => void collaborationQuery.refetch()}
+                    >
+                      Retry
+                    </Button>
+                  }
+                  sx={{ m: 1.5 }}
+                >
+                  Team Chat could not be loaded. Check the server connection and
+                  try again.
+                </Alert>
+              ) : collaborationInitiallyLoading ? (
                 <Stack
                   direction="row"
                   alignItems="center"
