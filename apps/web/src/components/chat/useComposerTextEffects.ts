@@ -19,7 +19,7 @@ interface UseComposerInsertTextRequestOptions {
   inputRef: RefObject<HTMLTextAreaElement>;
   insertTextRequest: ComposerProps["insertTextRequest"];
   setCaret: Dispatch<SetStateAction<number>>;
-  setText: Dispatch<SetStateAction<string>>;
+  updateText: Dispatch<SetStateAction<string>>;
 }
 
 export function useComposerInsertTextRequest({
@@ -32,7 +32,7 @@ export function useComposerInsertTextRequest({
   inputRef,
   insertTextRequest,
   setCaret,
-  setText,
+  updateText,
 }: UseComposerInsertTextRequestOptions): void {
   useEffect(() => {
     if (
@@ -43,7 +43,7 @@ export function useComposerInsertTextRequest({
     if (conversationDraftId && !draftReady.current && !draftQuery.isError)
       return;
     appliedInsertRequest.current = insertTextRequest.id;
-    setText(current => {
+    updateText(current => {
       const requested = insertTextRequest.text.trim();
       if (
         requested &&
@@ -72,6 +72,7 @@ export function useComposerInsertTextRequest({
     draftQuery?.isError,
     draftReadyVersion,
     insertTextRequest,
+    updateText,
   ]);
 }
 

@@ -241,8 +241,10 @@ export function selectComposerFiles(
 export type ComposerAttachmentState = { files: File[]; error?: string };
 export type ComposerAttachmentAction =
   | { type: "add"; candidates: File[]; limits?: AssetLimitsDto }
+  | { type: "prepend"; files: File[] }
   | { type: "remove"; index: number }
   | { type: "replace"; files: File[]; error?: string }
+  | { type: "set_error"; error: string }
   | { type: "clear_error" }
   | { type: "clear" };
 
@@ -252,6 +254,12 @@ export function composerAttachmentReducer(
 ): ComposerAttachmentState {
   if (action.type === "clear") return { files: [] };
   if (action.type === "clear_error") return { files: state.files };
+  if (action.type === "set_error") {
+    return { ...state, error: action.error };
+  }
+  if (action.type === "prepend") {
+    return { files: [...action.files, ...state.files] };
+  }
   if (action.type === "remove") {
     return {
       files: state.files.filter((_, index) => index !== action.index),

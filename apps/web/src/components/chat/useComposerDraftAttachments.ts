@@ -1,6 +1,7 @@
 import type { AssetLimitsDto, DraftAttachmentDto } from "@ponderosa/core";
 import {
   useCallback,
+  useEffect,
   useRef,
   useState,
   type Dispatch,
@@ -23,6 +24,8 @@ interface ComposerDraftAttachments {
   attachmentIds: MutableRefObject<Map<File, string>>;
   attachmentVersion: number;
   clear(): void;
+  locallyRemovedIds: MutableRefObject<Set<string>>;
+  mergeRestored(restored: RestoredDraftAttachment[]): void;
   removeFile(index: number): void;
   replaceRestored(restored: RestoredDraftAttachment[]): void;
   retryUpload(file: File): void;
@@ -42,14 +45,20 @@ export function useComposerDraftAttachments({
   dispatch,
   draftOwnerId,
   files,
+  onEdit,
+  onBeforeClear,
 }: {
   assetLimits?: AssetLimitsDto;
   conversationDraftId?: string;
   dispatch: Dispatch<ComposerAttachmentAction>;
   draftOwnerId: string;
   files: File[];
+  onEdit(removedAttachmentId?: string): void;
+  onBeforeClear(): void;
 }): ComposerDraftAttachments {
   const attachmentIds = useRef(new Map<File, string>());
+  const locallyRemovedIds = useRef(new Set<string>());
+  const locallyRemovedFiles = useRef(new WeakSet<File>());
   const [uploadStates, setUploadStates] = useState<
     Map<File, { status: DraftUploadStatus; error?: string }>
   >(() => new Map());
@@ -57,10 +66,21 @@ export function useComposerDraftAttachments({
   const activeUploads = useRef(0);
   const generation = useRef(0);
   const pumpUploads = useRef<() => void>(() => undefined);
+  const mounted = useRef(true);
   const [attachmentVersion, setAttachmentVersion] = useState(0);
 
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      generation.current += 1;
+      pendingUploads.current = [];
+      activeUploads.current = 0;
+    };
+  }, []);
+
   pumpUploads.current = () => {
-    if (!conversationDraftId) return;
+    if (!mounted.current || !conversationDraftId) return;
     while (activeUploads.current < 4 && pendingUploads.current.length > 0) {
       const file = pendingUploads.current.shift()!;
       const state = uploadStates.get(file);
@@ -75,7 +95,20 @@ export function useComposerDraftAttachments({
       void api
         .uploadDraftAttachment(conversationDraftId, draftOwnerId, file)
         .then(attachment => {
-          if (uploadGeneration !== generation.current) return;
+          if (
+            !mounted.current ||
+            uploadGeneration !== generation.current ||
+            locallyRemovedFiles.current.has(file)
+          ) {
+            void api
+              .deleteDraftAttachment(
+                conversationDraftId,
+                draftOwnerId,
+                attachment.id,
+              )
+              .catch(() => undefined);
+            return;
+          }
           attachmentIds.current.set(file, attachment.id);
           setUploadStates(current =>
             new Map(current).set(file, { status: "complete" }),
@@ -83,7 +116,8 @@ export function useComposerDraftAttachments({
           setAttachmentVersion(value => value + 1);
         })
         .catch((error: unknown) => {
-          if (uploadGeneration !== generation.current) return;
+          if (!mounted.current || uploadGeneration !== generation.current)
+            return;
           setUploadStates(current =>
             new Map(current).set(file, {
               status: "failed",
@@ -92,7 +126,8 @@ export function useComposerDraftAttachments({
           );
         })
         .finally(() => {
-          if (uploadGeneration !== generation.current) return;
+          if (!mounted.current || uploadGeneration !== generation.current)
+            return;
           activeUploads.current -= 1;
           pumpUploads.current();
         });
@@ -113,11 +148,16 @@ export function useComposerDraftAttachments({
   const addFiles = useCallback((candidates: File[]) => {
     const selection = selectComposerFiles(files, candidates, assetLimits);
     dispatch({ type: "add", candidates, limits: assetLimits });
+    for (const file of selection.accepted) {
+      locallyRemovedFiles.current.delete(file);
+    }
+    if (selection.accepted.length > 0) onEdit();
     queueUploads(selection.accepted);
-  }, [assetLimits, dispatch, files, queueUploads]);
+  }, [assetLimits, dispatch, files, onEdit, queueUploads]);
 
   const retryUpload = useCallback((file: File) => {
     if (!conversationDraftId || attachmentIds.current.has(file)) return;
+    locallyRemovedFiles.current.delete(file);
     setUploadStates(current =>
       new Map(current).set(file, { status: "queued" }),
     );
@@ -130,6 +170,8 @@ export function useComposerDraftAttachments({
     if (!file) return;
     const id = attachmentIds.current.get(file);
     attachmentIds.current.delete(file);
+    if (id) locallyRemovedIds.current.add(id);
+    else locallyRemovedFiles.current.add(file);
     pendingUploads.current = pendingUploads.current.filter(
       candidate => candidate !== file,
     );
@@ -139,34 +181,67 @@ export function useComposerDraftAttachments({
       return next;
     });
     dispatch({ type: "remove", index });
+    onEdit(id);
     setAttachmentVersion(value => value + 1);
     if (conversationDraftId && id) {
       void api
         .deleteDraftAttachment(conversationDraftId, draftOwnerId, id)
         .catch(() => undefined);
     }
-  }, [conversationDraftId, dispatch, draftOwnerId, files]);
+  }, [conversationDraftId, dispatch, draftOwnerId, files, onEdit]);
+
+  const mergeRestored = useCallback((restored: RestoredDraftAttachment[]) => {
+    const existingIds = new Set(attachmentIds.current.values());
+    const additions = restored.filter(
+      ({ attachment }) =>
+        !existingIds.has(attachment.id) &&
+        !locallyRemovedIds.current.has(attachment.id),
+    );
+    if (additions.length === 0) return;
+    for (const { attachment, file } of additions) {
+      attachmentIds.current.set(file, attachment.id);
+    }
+    setUploadStates(current => {
+      const next = new Map(current);
+      for (const { file } of additions) {
+        next.set(file, { status: "complete" });
+      }
+      return next;
+    });
+    dispatch({
+      type: "prepend",
+      files: additions.map(({ file }) => file),
+    });
+    setAttachmentVersion(value => value + 1);
+  }, [dispatch]);
 
   const clear = useCallback(() => {
+    // Invalidate Composer hydration before clearing deletion tombstones.
+    onBeforeClear();
     generation.current += 1;
     attachmentIds.current.clear();
+    locallyRemovedIds.current.clear();
+    locallyRemovedFiles.current = new WeakSet<File>();
     pendingUploads.current = [];
     activeUploads.current = 0;
     setUploadStates(new Map());
     dispatch({ type: "clear" });
     setAttachmentVersion(value => value + 1);
-  }, [dispatch]);
+  }, [dispatch, onBeforeClear]);
 
   const replaceRestored = useCallback((restored: RestoredDraftAttachment[]) => {
     generation.current += 1;
     pendingUploads.current = [];
     activeUploads.current = 0;
+    const retained = restored.filter(
+      ({ attachment }) => !locallyRemovedIds.current.has(attachment.id),
+    );
     attachmentIds.current = new Map(
-      restored.map(({ attachment, file }) => [file, attachment.id]),
+      retained.map(({ attachment, file }) => [file, attachment.id]),
     );
     setUploadStates(
       new Map(
-        restored.map(({ file }) => [
+        retained.map(({ file }) => [
           file,
           { status: "complete" as const },
         ]),
@@ -174,7 +249,7 @@ export function useComposerDraftAttachments({
     );
     dispatch({
       type: "replace",
-      files: restored.map(({ file }) => file),
+      files: retained.map(({ file }) => file),
     });
     setAttachmentVersion(value => value + 1);
   }, [dispatch]);
@@ -184,6 +259,8 @@ export function useComposerDraftAttachments({
     attachmentIds,
     attachmentVersion,
     clear,
+    locallyRemovedIds,
+    mergeRestored,
     removeFile,
     replaceRestored,
     retryUpload,
