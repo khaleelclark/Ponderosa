@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createECDH, randomUUID, timingSafeEqual } from "node:crypto";
 import webpush from "web-push";
 
 const VAPID_DIRECTORY = "host-secrets";
@@ -30,7 +30,6 @@ interface PersistedWebPushVapidDetails {
   version: 1;
   publicKey: string;
   privateKey: string;
-  subject: string;
 }
 
 export interface ResolvedWebPushVapid {
@@ -77,16 +76,51 @@ function readPersistedVapid(file: string): PersistedWebPushVapidDetails {
   }
   const candidate = parsed as Partial<PersistedWebPushVapidDetails>;
   if (candidate.version !== 1 || typeof candidate.publicKey !== "string" ||
-      typeof candidate.privateKey !== "string" || typeof candidate.subject !== "string" ||
-      !candidate.publicKey.trim() || !candidate.privateKey.trim() || !candidate.subject.trim()) {
+      typeof candidate.privateKey !== "string" || !candidate.publicKey.trim() ||
+      !candidate.privateKey.trim()) {
     throw new Error("the browser-push identity is incomplete");
   }
-  return {
+  const persisted = {
     version: 1,
     publicKey: candidate.publicKey.trim(),
     privateKey: candidate.privateKey.trim(),
-    subject: candidate.subject.trim(),
-  };
+  } satisfies PersistedWebPushVapidDetails;
+  validateMatchingVapidKeys(persisted.publicKey, persisted.privateKey);
+  return persisted;
+}
+
+function validateMatchingVapidKeys(publicKey: string, privateKey: string): void {
+  const publicKeyBytes = Buffer.from(publicKey, "base64url");
+  const privateKeyBytes = Buffer.from(privateKey, "base64url");
+  if (publicKeyBytes.byteLength !== 65 || privateKeyBytes.byteLength !== 32) {
+    throw new Error("the browser-push identity has invalid key lengths");
+  }
+  let derivedPublicKey: Buffer;
+  try {
+    const ecdh = createECDH("prime256v1");
+    ecdh.setPrivateKey(privateKeyBytes);
+    derivedPublicKey = ecdh.getPublicKey(undefined, "uncompressed");
+  } catch {
+    throw new Error("the browser-push identity contains an invalid private key");
+  }
+  if (derivedPublicKey.byteLength !== publicKeyBytes.byteLength ||
+      !timingSafeEqual(derivedPublicKey, publicKeyBytes)) {
+    throw new Error("the browser-push public and private keys do not match");
+  }
+}
+
+function currentVapidSubject(): string {
+  const subject = process.env.PONDEROSA_VAPID_SUBJECT?.trim() || DEFAULT_VAPID_SUBJECT;
+  let parsed: URL;
+  try {
+    parsed = new URL(subject);
+  } catch {
+    throw new Error("the browser-push contact subject is not a valid URL");
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "mailto:") {
+    throw new Error("the browser-push contact subject must use https: or mailto:");
+  }
+  return subject;
 }
 
 function publishGeneratedVapid(
@@ -138,12 +172,30 @@ function loadOrCreatePersistedVapid(dataDir: string): PersistedWebPushVapidDetai
   }
 
   const keys = webpush.generateVAPIDKeys();
-  return publishGeneratedVapid(directory, file, {
+  const generated = {
     version: 1,
     publicKey: keys.publicKey,
     privateKey: keys.privateKey,
-    subject: process.env.PONDEROSA_VAPID_SUBJECT?.trim() || DEFAULT_VAPID_SUBJECT,
-  });
+  } satisfies PersistedWebPushVapidDetails;
+  validateMatchingVapidKeys(generated.publicKey, generated.privateKey);
+  return publishGeneratedVapid(directory, file, generated);
+}
+
+function failedResolution(subject: string, error: unknown): ResolvedWebPushVapid {
+  const errorCode = (error as NodeJS.ErrnoException).code;
+  const reason = errorCode === "EACCES" || errorCode === "EPERM"
+    ? "access to the protected identity was denied"
+    : errorCode === "ENOSPC"
+      ? "the host has no storage space available"
+      : errorCode === "EROFS"
+        ? "the Ponderosa data directory is read-only"
+        : error instanceof Error && error.message.startsWith("the ")
+          ? error.message
+          : "the protected identity could not be generated or loaded";
+  return {
+    vapid: { subject },
+    failure: `Ponderosa could not activate its protected browser-push identity because ${reason}. Correct any VAPID environment overrides and check that the Ponderosa data directory is writable, then restart the Engine.`,
+  };
 }
 
 /**
@@ -154,13 +206,27 @@ function loadOrCreatePersistedVapid(dataDir: string): PersistedWebPushVapidDetai
 export function resolveWebPushVapid(dataDir: string): ResolvedWebPushVapid {
   const environmentPublicKey = process.env.PONDEROSA_VAPID_PUBLIC_KEY?.trim();
   const environmentPrivateKey = process.env.PONDEROSA_VAPID_PRIVATE_KEY?.trim();
-  const environmentSubject = process.env.PONDEROSA_VAPID_SUBJECT?.trim() || DEFAULT_VAPID_SUBJECT;
+  let subject: string;
+  try {
+    // The subject is runtime configuration rather than identity. Validate it
+    // before any keypair is created or persisted so a typo remains recoverable.
+    subject = currentVapidSubject();
+  } catch (error) {
+    return failedResolution(DEFAULT_VAPID_SUBJECT, error);
+  }
   if (environmentPublicKey || environmentPrivateKey) {
+    if (environmentPublicKey && environmentPrivateKey) {
+      try {
+        validateMatchingVapidKeys(environmentPublicKey, environmentPrivateKey);
+      } catch (error) {
+        return failedResolution(subject, error);
+      }
+    }
     return {
       vapid: {
         publicKey: environmentPublicKey,
         privateKey: environmentPrivateKey,
-        subject: environmentSubject,
+        subject,
       },
     };
   }
@@ -171,23 +237,10 @@ export function resolveWebPushVapid(dataDir: string): ResolvedWebPushVapid {
       vapid: {
         publicKey: persisted.publicKey,
         privateKey: persisted.privateKey,
-        subject: persisted.subject,
+        subject,
       },
     };
   } catch (error) {
-    const errorCode = (error as NodeJS.ErrnoException).code;
-    const reason = errorCode === "EACCES" || errorCode === "EPERM"
-      ? "access to the protected identity was denied"
-      : errorCode === "ENOSPC"
-        ? "the host has no storage space available"
-        : errorCode === "EROFS"
-          ? "the Ponderosa data directory is read-only"
-          : error instanceof Error && error.message.startsWith("the ")
-            ? error.message
-            : "the protected identity could not be generated or loaded";
-    return {
-      vapid: { subject: environmentSubject },
-      failure: `Ponderosa could not create or read its protected browser-push identity because ${reason}. Check that the Ponderosa data directory is writable, then restart the Engine.`,
-    };
+    return failedResolution(subject, error);
   }
 }
