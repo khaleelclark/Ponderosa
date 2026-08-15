@@ -19,6 +19,7 @@ import type {
 } from "@ponderosa/core";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { normalizeResetPages } from "../collections";
+import { providerAvailabilityMessage } from "../providerAvailability";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { agentBelongsToConversation, type AgentStatus } from "../agents";
@@ -742,6 +743,15 @@ export function ConversationView({
   const efforts = selectedRuntime.efforts;
   const speeds = selectedRuntime.speeds;
   const engineReady = selectedRuntime.ready;
+  const engineUnavailableMessage = !engineReady
+    ? activeEngine
+      ? providerAvailabilityMessage(activeEngine)
+      : "The selected provider is unavailable."
+    : undefined;
+  const collaborationInitiallyLoading =
+    collaborationQuery.isPending &&
+    collaborationMessages.length === 0 &&
+    operationalEvents.length === 0;
 
   const transcriptTitle =
     activeView === "collaboration"
@@ -945,13 +955,6 @@ export function ConversationView({
                     else onOpenAgentWork(focusId);
                   }}
                 />
-                {!engineReady ? (
-                  <Alert severity="warning" sx={{ mb: 1.5 }}>
-                    {activeEngine?.displayName ?? "The selected engine"} is not
-                    signed in. Sign in on the host, or pick a signed-in engine,
-                    before spawning agents.
-                  </Alert>
-                ) : null}
                 {(activeBrowsers.data ?? [])
                   .filter(session => conversationAgents.some(agent => agent.id === session.agentId))
                   .map(session => {
@@ -1032,19 +1035,50 @@ export function ConversationView({
                 onLoadEarlier: () => void loadOlderHistory(),
               }}
             >
-              <CollaborationTimeline
-                operationalEvents={operationalEvents}
-                collaborationMessages={collaborationMessages}
-                projectId={conversation.projectId}
-                projectRoot={project?.hostPath}
-                healthByAgentId={healthByAgentId}
-                operatorProfile={preferencesQuery.data?.profile}
-                agentTitle={agentTitle}
-                agentIdForHandle={agentIdForHandle}
-                onOpenAgent={onOpenAgent}
-                onOpenReview={onOpenReview}
-                onOpenFileActivity={onOpenFileActivity}
-              />
+              {collaborationQuery.isError && !collaborationQuery.data ? (
+                <Alert
+                  severity="error"
+                  action={
+                    <Button
+                      color="inherit"
+                      size="small"
+                      disabled={collaborationQuery.isFetching}
+                      onClick={() => void collaborationQuery.refetch()}
+                    >
+                      Retry
+                    </Button>
+                  }
+                  sx={{ m: 1.5 }}
+                >
+                  Team Chat could not be loaded. Check the server connection and
+                  try again.
+                </Alert>
+              ) : collaborationInitiallyLoading ? (
+                <Stack
+                  direction="row"
+                  alignItems="center"
+                  justifyContent="center"
+                  spacing={1}
+                  sx={{ minHeight: 120, color: "text.secondary" }}
+                >
+                  <CircularProgress size={16} color="inherit" />
+                  <Typography variant="body2">Loading Team Chat…</Typography>
+                </Stack>
+              ) : (
+                <CollaborationTimeline
+                  operationalEvents={operationalEvents}
+                  collaborationMessages={collaborationMessages}
+                  projectId={conversation.projectId}
+                  projectRoot={project?.hostPath}
+                  healthByAgentId={healthByAgentId}
+                  operatorProfile={preferencesQuery.data?.profile}
+                  agentTitle={agentTitle}
+                  agentIdForHandle={agentIdForHandle}
+                  onOpenAgent={onOpenAgent}
+                  onOpenReview={onOpenReview}
+                  onOpenFileActivity={onOpenFileActivity}
+                />
+              )}
             </ChatSurface>
           </Box>
         ) : null}
@@ -1147,6 +1181,12 @@ export function ConversationView({
       <ChatComposerDock
         visible={!agentWorkOpen && activeView === "main"}
       >
+        {activeView === "main" && engineUnavailableMessage ? (
+          <Alert severity="warning" sx={{ mx: 1.5, mt: 1 }}>
+            {engineUnavailableMessage} Choose a ready provider below, tag an
+            existing Agent, or use #broadcast.
+          </Alert>
+        ) : null}
         {activeView === "main" && queuedMessageNotice ? (
           <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>
             {queuedMessageNotice}
@@ -1250,6 +1290,7 @@ export function ConversationView({
             }
             busyMentionHandles={busyMentionHandles}
             allowUnmentionedSend={engineReady}
+            sendUnavailableReason={engineUnavailableMessage}
             placeholder={
               engineReady
                 ? "Write a message…"
