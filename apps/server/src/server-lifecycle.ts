@@ -379,6 +379,8 @@ export function registerServerLifecycle(
               body: "The server restarted before the Agent committed its continuation handoff. Existing scheduler recovery remains authoritative.",
               projectId: rollover.projectId,
               conversationId: rollover.conversationId,
+              agentId: rollover.agentId,
+              action: { kind: "open_agent", targetId: rollover.agentId },
             });
             continue;
           }
@@ -451,6 +453,8 @@ export function registerServerLifecycle(
           body: error instanceof Error ? error.message : String(error),
           projectId: initial.projectId,
           conversationId: initial.conversationId,
+          agentId: initial.agentId,
+          action: { kind: "open_agent", targetId: initial.agentId },
         });
       }
     }

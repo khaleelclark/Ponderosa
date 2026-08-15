@@ -13,7 +13,7 @@ export interface NotificationRoutesOptions {
     | "readNotification"
     | "setNotificationStatus"
   >;
-  readonly store: Pick<AgentStore, "getConversation" | "getProject">;
+  readonly store: Pick<AgentStore, "getAgent" | "getConversation" | "getProject">;
   readonly publishWorkspaceSince: (cursor: number) => void;
   readonly reconcileCommunicationFailureNotifications: () => void;
   readonly reconcileCoordinationAttentionNotifications: () => void;
@@ -40,7 +40,14 @@ export function registerNotificationListRoute(
   app.get("/api/notifications", async () => {
     options.reconcileCommunicationFailureNotifications();
     options.reconcileCoordinationAttentionNotifications();
-    return options.workspace.listNotifications();
+    return options.workspace.listNotifications().map((notification) => {
+      if (!notification.agentId) return notification;
+      const agent = options.store.getAgent(notification.agentId);
+      return {
+        ...notification,
+        ...(agent ? { agentTitle: agent.title } : {}),
+      };
+    });
   });
 }
 
