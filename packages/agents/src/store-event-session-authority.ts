@@ -61,7 +61,7 @@ export class AgentEventSessionAuthority {
     return recovered;
   }
 
-  appendEvent(agentId: string, event: LogEvent): StoredLogEvent {
+  appendEvent(agentId: string, event: LogEvent, ts?: string): StoredLogEvent {
     if (!this.getAgent(agentId)) throw new Error(`unknown or deleted agent: ${agentId}`);
     const projectId = this.projectIdOf(agentId);
     const communicationEventId = event.type === "communication_projection" || event.type === "user_message"
@@ -75,7 +75,7 @@ export class AgentEventSessionAuthority {
       // projection may not leave an unprojectable user_message in events.jsonl.
       throw new Error("communication scope cannot project to requested surface");
     }
-    const stored = this.eventProjection.append(agentId, projectId, event);
+    const stored = this.eventProjection.append(agentId, projectId, event, ts);
     const message = communicationMessageProjection(agentId, stored);
     if (communicationEventId && message) {
       this.appendCommunicationProjection(projectId, {

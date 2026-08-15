@@ -481,7 +481,7 @@ export class CodexAppServerSession implements RuntimeSession {
       onRuntimeSpawned: opts.onRuntimeSpawned,
       onRuntimeRootExit: opts.onRuntimeRootExit,
       onNotification: (notification) => session?.observeNotification(notification),
-      handleServerRequest: async (method, params) => {
+      handleServerRequest: async (requestId, method, params) => {
         if (method === "mcpServer/elicitation/request") {
           if (!opts.handleElicitation) throw new Error("MCP elicitation is unavailable");
           return opts.handleElicitation(normalizeElicitationRequest(params));
@@ -491,6 +491,7 @@ export class CodexAppServerSession implements RuntimeSession {
         }
         const call = params as DynamicToolCallParams;
         const result = await opts.handleDynamicToolCall({
+          id: String(requestId),
           name: call.namespace ? `${call.namespace}.${call.tool}` : call.tool,
           arguments: call.arguments,
         });

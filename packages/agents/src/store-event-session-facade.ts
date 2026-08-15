@@ -12,8 +12,8 @@ import type { AgentEventSessionAuthority } from "./store-event-session-authority
 export abstract class AgentEventSessionFacade {
   protected abstract readonly eventSession: AgentEventSessionAuthority;
 
-  appendEvent(agentId: string, event: LogEvent): StoredLogEvent {
-    return this.eventSession.appendEvent(agentId, event);
+  appendEvent(agentId: string, event: LogEvent, ts?: string): StoredLogEvent {
+    return this.eventSession.appendEvent(agentId, event, ts);
   }
 
   readEvents(agentId: string): StoredLogEvent[] {

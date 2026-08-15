@@ -45,6 +45,8 @@ const app = createServer({
   releaseChannel: process.env.PONDEROSA_RELEASE_CHANNEL,
   ...(launcherSecurity ? { launcherSecurity } : {}),
   agentBaseUrl: process.env.PONDEROSA_AGENT_BASE_URL ?? internalAgentBaseUrl(config.host, config.port),
+  allowedImportRoots: (process.env.PONDEROSA_IMPORT_ROOTS ?? "")
+    .split(path.delimiter).map((root) => root.trim()).filter(Boolean),
 });
 if (shutdownRecovery) {
   const launcherRoot = process.env.PONDEROSA_LAUNCHER_DATA_DIR;

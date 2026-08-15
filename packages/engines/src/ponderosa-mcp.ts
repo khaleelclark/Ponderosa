@@ -10,6 +10,7 @@ const messageUrl = process.env.PONDEROSA_AGENT_MESSAGE_URL;
 const coordinateUrl = process.env.PONDEROSA_AGENT_COORDINATE_URL;
 const updateRequestUrl = process.env.PONDEROSA_AGENT_UPDATE_REQUEST_URL;
 const browserUrl = process.env.PONDEROSA_AGENT_BROWSER_URL;
+const importFileUrl = process.env.PONDEROSA_AGENT_IMPORT_FILE_URL;
 const spawnUrl = process.env.PONDEROSA_AGENT_SPAWN_URL;
 const decisionUrl = process.env.PONDEROSA_AGENT_DECISION_URL;
 const manageUrl = process.env.PONDEROSA_AGENT_MANAGE_URL;
@@ -89,9 +90,11 @@ async function handle(request: RpcRequest): Promise<void> {
       : params?.name === "coordinate"
         ? coordinateUrl
         : params?.name === "update_request"
-            ? updateRequestUrl
-            : params?.name === "message"
-              ? messageUrl
+          ? updateRequestUrl
+          : params?.name === "message"
+            ? messageUrl
+            : params?.name === "import_file"
+              ? importFileUrl
               : params?.name === "decision"
                 ? decisionUrl
                 : params?.name === "manage"
@@ -99,8 +102,8 @@ async function handle(request: RpcRequest): Promise<void> {
                   : isDirectory
                     ? directoryUrl && `${directoryUrl}${typeof args.agentId === "string" && args.agentId.trim() ? `/${encodeURIComponent(args.agentId.trim())}` : ""}`
                     : browserOperation
-                        ? browserUrl
-                        : undefined;
+                      ? browserUrl
+                      : undefined;
     if (!targetUrl || !messageToken) {
       send({ jsonrpc: "2.0", id: request.id, result: { isError: true, content: [{ type: "text", text: "The requested Ponderosa capability is unavailable." }] } });
       return;
@@ -111,7 +114,9 @@ async function handle(request: RpcRequest): Promise<void> {
         headers: { authorization: `Bearer ${messageToken}`, "content-type": "application/json" },
         ...(!isDirectory ? { body: JSON.stringify(browserOperation
           ? { ...(params?.arguments && typeof params.arguments === "object" ? params.arguments : {}), operation: browserOperation }
-          : params?.arguments ?? {}) } : {}),
+          : params?.name === "import_file"
+            ? { ...(params?.arguments && typeof params.arguments === "object" ? params.arguments : {}), toolCallId: String(request.id) }
+            : params?.arguments ?? {}) } : {}),
       });
       const text = await response.text();
       send({

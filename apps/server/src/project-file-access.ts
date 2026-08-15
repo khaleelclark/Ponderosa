@@ -18,7 +18,7 @@ import {
   writeSecureFileAtomic,
 } from "@ponderosa/native-host";
 
-export type WorkspaceArtifactReadPurpose = "generated_capture" | "legacy_pdf";
+export type WorkspaceArtifactReadPurpose = "generated_capture" | "host_import" | "legacy_pdf";
 
 export interface SafeProjectFile {
   body: Buffer;
@@ -50,8 +50,11 @@ function closeDescriptors(descriptors: readonly number[]): void {
   }
 }
 
-function isWithin(root: string, candidate: string): boolean {
-  return candidate === root || candidate.startsWith(`${root}${path.sep}`);
+function containedRelativePath(root: string, candidate: string): string | undefined {
+  const relative = path.relative(root, candidate);
+  if (!relative || path.isAbsolute(relative) || relative === ".." ||
+      relative.startsWith(`..${path.sep}`)) return undefined;
+  return relative;
 }
 
 function relativeProjectPath(rootPath: string, rootReal: string, requestedPath: string): string | undefined {
@@ -59,11 +62,8 @@ function relativeProjectPath(rootPath: string, rootReal: string, requestedPath: 
   const requested = path.isAbsolute(requestedPath)
     ? path.resolve(requestedPath)
     : path.resolve(rootReal, requestedPath);
-  const relative = isWithin(rootReal, requested)
-    ? path.relative(rootReal, requested)
-    : isWithin(nominalRoot, requested)
-      ? path.relative(nominalRoot, requested)
-      : undefined;
+  const relative = containedRelativePath(rootReal, requested)
+    ?? containedRelativePath(nominalRoot, requested);
   if (!relative || path.isAbsolute(relative)) return undefined;
   const components = relative.split(path.sep);
   if (components.some((component) => !component || component === "." || component === "..")) return undefined;

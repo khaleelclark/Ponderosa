@@ -27,6 +27,7 @@ import {
   type AuthoritativeGeneratedArtifact,
   type AuthoritativeRuntimeArtifact,
   type AuthoritativeRuntimeAttachment,
+  type GeneratedArtifactImportReceipt,
   type RegisteredGeneratedArtifact,
   type RegisteredRuntimeArtifact,
   type RuntimeAttachmentAssociation,
@@ -38,6 +39,7 @@ export { ASSET_LIMITS, AssetError, generatedArtifactMetadataIsValid } from "./as
 export type {
   AuthoritativeGeneratedArtifact,
   AuthoritativeRuntimeArtifact,
+  GeneratedArtifactImportReceipt,
   AuthoritativeRuntimeAttachment,
   RegisteredGeneratedArtifact,
   RuntimeAttachmentAssociation,
@@ -598,6 +600,50 @@ export class AssetStore {
     }
     return this.authority.registerGeneratedArtifact(artifact);
   }
+  registerPublishedGeneratedArtifactImport(
+    artifact: RegisteredGeneratedArtifact,
+    publication: { size: number; sha256: string },
+    identity: { runId: string; toolCallId: string; requestHash: string },
+  ): GeneratedArtifactImportReceipt {
+    if (!generatedArtifactMetadataIsValid(artifact) ||
+        publication.size !== artifact.size ||
+        publication.sha256 !== artifact.sha256) {
+      throw new AssetError(
+        409,
+        "generated artifact publication proof does not match its import identity",
+      );
+    }
+    return this.authority.registerGeneratedArtifactImport(artifact, identity);
+  }
+
+  generatedArtifactImportReceipt(
+    projectId: string,
+    runId: string,
+    toolCallId: string,
+  ): GeneratedArtifactImportReceipt | undefined {
+    return this.authority.generatedArtifactImportReceipt(projectId, runId, toolCallId);
+  }
+
+  pendingGeneratedArtifactImports(): GeneratedArtifactImportReceipt[] {
+    return this.authority.pendingGeneratedArtifactImports();
+  }
+
+  generatedArtifactImportIsAvailable(receipt: GeneratedArtifactImportReceipt): boolean {
+    return this.readGeneratedArtifact(receipt.artifact) !== undefined;
+  }
+
+  markGeneratedArtifactImportProjected(receipt: GeneratedArtifactImportReceipt): void {
+    this.authority.markGeneratedArtifactImportProjected(
+      receipt.artifact.projectId, receipt.runId, receipt.toolCallId,
+    );
+  }
+
+  quarantineGeneratedArtifactImport(receipt: GeneratedArtifactImportReceipt): void {
+    this.authority.quarantineGeneratedArtifactImport(
+      receipt.artifact.projectId, receipt.runId, receipt.toolCallId,
+    );
+  }
+
 
   /** Resolve a generated file only when the current catalog and immutable
    * authority agree exactly. Bytes come from the already-opened no-follow

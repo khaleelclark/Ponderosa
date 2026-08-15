@@ -66,8 +66,8 @@ export class AgentEventProjectionStore {
     private readonly recordProjectArtifact: (artifact: ManagedArtifact) => void,
   ) {}
 
-  append(agentId: string, projectId: string, event: LogEvent): StoredLogEvent {
-    const stored = this.logFor(agentId, projectId).append(event);
+  append(agentId: string, projectId: string, event: LogEvent, ts?: string): StoredLogEvent {
+    const stored = this.logFor(agentId, projectId).append(event, ts);
     const state = this.stateFor(agentId, projectId);
     const { state: nextState, ops } = projectEvent(agentId, state, stored);
     this.states.set(agentId, nextState);
