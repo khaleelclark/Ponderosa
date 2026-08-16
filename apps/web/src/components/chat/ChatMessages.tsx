@@ -430,6 +430,7 @@ function ChatMarkdown({
   operatorHandle,
   compact = false,
   small = false,
+  preserveWhitespace = false,
 }: {
   children: string;
   agentIdForHandle?(handle: string): string | undefined;
@@ -441,6 +442,7 @@ function ChatMarkdown({
   operatorHandle?: string;
   compact?: boolean;
   small?: boolean;
+  preserveWhitespace?: boolean;
 }): JSX.Element {
   return (
     <Box
@@ -452,14 +454,14 @@ function ChatMarkdown({
         // Let Markdown own block separation. Preserving whitespace on the
         // container also renders the source newlines between paragraphs,
         // headings, and lists as additional visual rows.
-        whiteSpace: "normal",
+        whiteSpace: preserveWhitespace ? "pre-wrap" : "normal",
         "& > :first-of-type": { mt: 0 },
         "& > :last-child": { mb: 0 },
         fontSize: small
           ? { xs: "0.79rem", sm: "0.82rem" }
           : { xs: "0.875rem", sm: "0.9375rem" },
         lineHeight: small ? 1.42 : { xs: 1.44, sm: 1.48 },
-        "& p": { my: compact ? 0.15 : 0.35, maxWidth: "100%", whiteSpace: "normal", overflowWrap: "anywhere", wordBreak: "break-word" },
+        "& p": { my: compact ? 0.15 : 0.35, maxWidth: "100%", whiteSpace: preserveWhitespace ? "pre-wrap" : "normal", overflowWrap: "anywhere", wordBreak: "break-word" },
         "& h1, & h2, & h3, & h4": { mt: 1.05, mb: 0.4, lineHeight: 1.22 },
         "& h1": { fontSize: { xs: "1.22rem", sm: "1.35rem" } },
         "& h2": { fontSize: { xs: "1.1rem", sm: "1.2rem" } },
@@ -531,7 +533,7 @@ export function CommunicationDocumentCard({ document }: { document: Communicatio
   return <ChatDocumentCard document={document} renderMarkdown={(content) => <ChatMarkdown>{content}</ChatMarkdown>} />;
 }
 
-export function ChatMessageBody({ text, citations, collapseLongMessage = true, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, projectId, operatorHandle, compactMarkdown = false, smallText = false }: {
+export function ChatMessageBody({ text, citations, collapseLongMessage = true, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, projectId, operatorHandle, compactMarkdown = false, smallText = false, preserveWhitespace = false }: {
   text: string;
   citations?: VerifiedCitationDto[];
   collapseLongMessage?: boolean;
@@ -544,6 +546,7 @@ export function ChatMessageBody({ text, citations, collapseLongMessage = true, a
   operatorHandle?: string;
   compactMarkdown?: boolean;
   smallText?: boolean;
+  preserveWhitespace?: boolean;
 }): JSX.Element {
   const collapsible = collapseLongMessage && isLongChatMessage(text);
   const [expanded, setExpanded] = useState(false);
@@ -561,7 +564,7 @@ export function ChatMessageBody({ text, citations, collapseLongMessage = true, a
           } : {}),
         }}
       >
-        <ChatMarkdown agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} projectId={projectId} operatorHandle={operatorHandle} compact={compactMarkdown} small={smallText}>
+        <ChatMarkdown agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} projectId={projectId} operatorHandle={operatorHandle} compact={compactMarkdown} small={smallText} preserveWhitespace={preserveWhitespace}>
           {collapsible && !expanded ? collapsedLongMessagePreview(text) : text}
         </ChatMarkdown>
       </Box>

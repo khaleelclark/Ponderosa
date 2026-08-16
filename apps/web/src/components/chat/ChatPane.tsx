@@ -458,6 +458,7 @@ function ChatPaneComponent({
                   citations={message.citations}
                   collapseLongMessage={receivedInput}
                   compactMarkdown
+                  preserveWhitespace={message.role === "user"}
                   agentIdForHandle={agentIdForHandle}
                   agentMentionForHandle={handle =>
                     authoredAgentMentionForHandle(
@@ -520,6 +521,7 @@ function ChatPaneComponent({
                     compactSuccessTooltip={false}
                   />
                 ) : undefined,
+              actions: <CopyMessageButton text={message.text} />,
               }}
             />
           </Fragment>
