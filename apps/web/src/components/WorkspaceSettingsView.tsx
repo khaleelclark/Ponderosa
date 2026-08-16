@@ -606,6 +606,13 @@ function ProviderSettingsSection({
         return (
           <Paper key={engine.id} variant="outlined" sx={{ p: 2.5 }}>
             <FormControlLabel
+              sx={{
+                maxWidth: "100%",
+                "& .MuiFormControlLabel-label": {
+                  minWidth: 0,
+                  maxWidth: "100%",
+                },
+              }}
               control={
                 <Switch
                   checked={engine.enabled !== false}
@@ -614,11 +621,18 @@ function ProviderSettingsSection({
                 />
               }
               label={
-                <Box>
+                <Box sx={{ minWidth: 0, maxWidth: "100%" }}>
                   <Typography fontWeight={800}>{engine.displayName}</Typography>
                   <Typography
                     variant="caption"
                     color={engine.intakeReady ? "text.secondary" : "warning.main"}
+                    sx={{
+                      display: "block",
+                      maxWidth: "100%",
+                      overflowWrap: "anywhere",
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                    }}
                   >
                     {engine.reachability === "reachable"
                       ? "Reachable"
