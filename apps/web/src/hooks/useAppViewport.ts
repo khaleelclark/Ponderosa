@@ -65,7 +65,7 @@ export function useAppViewport(): void {
       );
     };
     const scheduleUpdate = () => {
-      if (frame !== undefined) window.cancelAnimationFrame(frame);
+      if (frame !== undefined) return;
       frame = window.requestAnimationFrame(update);
     };
 

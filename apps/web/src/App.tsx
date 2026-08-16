@@ -847,10 +847,11 @@ export default function App({
       <MobileWorkspaceActionsProvider>
       <Box
         sx={{
-          position: "absolute",
+          position: "fixed",
           insetInline: 0,
-          top: "var(--ponderosa-app-viewport-block-offset, 0px)",
+          top: 0,
           height: "var(--ponderosa-app-viewport-block-size, 100dvh)",
+          transform: "translateY(var(--ponderosa-app-viewport-block-offset, 0px))",
           width: "100%",
           minHeight: 0,
           minWidth: 0,
