@@ -847,6 +847,9 @@ export default function App({
       <MobileWorkspaceActionsProvider>
       <Box
         sx={{
+          position: "absolute",
+          insetInline: 0,
+          top: "var(--ponderosa-app-viewport-block-offset, 0px)",
           height: "var(--ponderosa-app-viewport-block-size, 100dvh)",
           width: "100%",
           minHeight: 0,

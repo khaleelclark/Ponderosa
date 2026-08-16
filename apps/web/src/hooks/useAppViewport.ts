@@ -1,6 +1,8 @@
 import { useLayoutEffect } from "react";
 
 export const APP_VIEWPORT_BLOCK_SIZE = "--ponderosa-app-viewport-block-size";
+export const APP_VIEWPORT_BLOCK_OFFSET =
+  "--ponderosa-app-viewport-block-offset";
 
 interface AppViewportMetrics {
   innerHeight: number;
@@ -8,9 +10,9 @@ interface AppViewportMetrics {
 }
 
 /**
- * Return the visible viewport's lower edge in layout coordinates. Mobile
- * browsers either resize the layout viewport for the keyboard or pan a smaller
- * visual viewport over it; offsetTop + height handles both models.
+ * Return the visible viewport height. Mobile browsers can pan a smaller visual
+ * viewport over the layout viewport when the keyboard opens, so height and
+ * offset must remain separate layout inputs.
  */
 export function appViewportBlockSize({
   innerHeight,
@@ -18,16 +20,28 @@ export function appViewportBlockSize({
 }: AppViewportMetrics): number {
   const layoutHeight = Math.max(1, Math.round(innerHeight));
   if (!visualViewport || visualViewport.scale !== 1) return layoutHeight;
-  const visualBottom = Math.round(
-    visualViewport.offsetTop + visualViewport.height,
+  return Math.max(
+    1,
+    Math.min(layoutHeight, Math.round(visualViewport.height)),
   );
-  return Math.max(1, Math.min(layoutHeight, visualBottom));
 }
 
 /**
- * Own the application height in one place. CSS dynamic viewport units remain
- * the no-JavaScript fallback; VisualViewport closes the remaining keyboard and
- * browser-chrome gaps without introducing a second fixed/sticky chat surface.
+ * Return the visual viewport's position in layout coordinates. This keeps the
+ * application inside the keyboard-safe region when iOS pans the viewport.
+ */
+export function appViewportBlockOffset({
+  visualViewport,
+}: AppViewportMetrics): number {
+  if (!visualViewport || visualViewport.scale !== 1) return 0;
+  return Math.max(0, Math.round(visualViewport.offsetTop));
+}
+
+/**
+ * Own the application viewport geometry in one place. CSS dynamic viewport
+ * units remain the no-JavaScript fallback; VisualViewport closes the remaining
+ * keyboard and browser-chrome gaps without introducing a second fixed/sticky
+ * chat surface.
  */
 export function useAppViewport(): void {
   useLayoutEffect(() => {
@@ -37,12 +51,17 @@ export function useAppViewport(): void {
 
     const update = () => {
       frame = undefined;
+      const metrics: AppViewportMetrics = {
+        innerHeight: window.innerHeight,
+        ...(viewport ? { visualViewport: viewport } : {}),
+      };
       root.style.setProperty(
         APP_VIEWPORT_BLOCK_SIZE,
-        `${appViewportBlockSize({
-          innerHeight: window.innerHeight,
-          ...(viewport ? { visualViewport: viewport } : {}),
-        })}px`,
+        `${appViewportBlockSize(metrics)}px`,
+      );
+      root.style.setProperty(
+        APP_VIEWPORT_BLOCK_OFFSET,
+        `${appViewportBlockOffset(metrics)}px`,
       );
     };
     const scheduleUpdate = () => {
@@ -62,6 +81,7 @@ export function useAppViewport(): void {
       window.removeEventListener("resize", scheduleUpdate);
       window.removeEventListener("orientationchange", scheduleUpdate);
       root.style.removeProperty(APP_VIEWPORT_BLOCK_SIZE);
+      root.style.removeProperty(APP_VIEWPORT_BLOCK_OFFSET);
     };
   }, []);
 }
