@@ -22,7 +22,7 @@ import { useAgent, useAgentHealth, useAgentPresets, useConversations, useAgents 
 import { queryKeys } from "../queryKeys";
 import { enginesWithModelCatalog } from "../conversationEngine";
 import { useWorkspaceDirectory, workspaceDirectoryItems } from "../hooks/useWorkspaceDirectory";
-import { assertNeverRoute, type ProjectRoute } from "../routeRegistry";
+import { assertNeverRoute, routeToPath, type ProjectRoute } from "../routeRegistry";
 import type { Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
 import { AgentsTab } from "./AgentsTab";
@@ -353,6 +353,7 @@ export function ProjectShell({
   const browserAgent = route.agentId ? agents.find(agent => agent.id === route.agentId) : undefined;
   main = route.agentId && route.runId ? (
     <AgentBrowserDialog
+      key={`${route.agentId}:${route.runId}`}
       projectId={projectId}
       agentId={route.agentId}
       runId={route.runId}
@@ -428,6 +429,7 @@ export function ProjectShell({
     main = <WorkspaceFileView projectId={projectId} path={route.path} onBack={() => navigate({ kind: "project", projectId })} />;
   } else if (route.kind === "projectWork") {
     main = <AgentWorkInspector
+      key={`${projectId}:${route.conversationId ?? ""}:${route.focusId ?? ""}`}
       open
       projectId={projectId}
       conversationId={route.conversationId}
@@ -510,7 +512,7 @@ export function ProjectShell({
     return (
       <Box sx={{ width: "100%", maxWidth: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
         {loading ? <LinearProgress /> : <Box />}
-        <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}><WorkspaceErrorBoundary title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
+        <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}><WorkspaceErrorBoundary resetKey={routeToPath(route)} title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
         {dialogs}
       </Box>
     );
@@ -518,7 +520,7 @@ export function ProjectShell({
 
   return (
     <Box sx={{ width: "100%", maxWidth: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid" }}>
-      <Box component="section" aria-label="Project workspace" sx={{ minHeight: 0, minWidth: 0, display: "grid", bgcolor: "background.default" }}><WorkspaceErrorBoundary title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
+      <Box component="section" aria-label="Project workspace" sx={{ minHeight: 0, minWidth: 0, display: "grid", bgcolor: "background.default" }}><WorkspaceErrorBoundary resetKey={routeToPath(route)} title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
       {dialogs}
     </Box>
   );
