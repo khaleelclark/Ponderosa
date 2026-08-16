@@ -648,6 +648,7 @@ export function Composer({
   useComposerDraftStorageWrite({
     draftStorageKey,
     text,
+    textRef,
   });
 
   useEffect(() => {
