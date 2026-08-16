@@ -116,7 +116,9 @@ Existing installations may continue supplying both `PONDEROSA_VAPID_PUBLIC_KEY`
 and `PONDEROSA_VAPID_PRIVATE_KEY` through the optional systemd environment file.
 Explicit environment keys take precedence and are never replaced. An incomplete
 or invalid override fails closed instead of silently generating a different
-identity. `PONDEROSA_VAPID_SUBJECT` remains an optional runtime contact override.
+identity. The automatic contact subject is a stable public project-owner URL so
+Apple Push receives a valid HTTPS identity rather than a rejected localhost
+address. `PONDEROSA_VAPID_SUBJECT` remains an optional runtime contact override.
 It is validated before key generation and is not persisted with the keypair, so
 correcting or removing a bad subject recovers on restart without rotating keys.
 

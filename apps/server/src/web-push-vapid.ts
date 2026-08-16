@@ -18,7 +18,12 @@ import webpush from "web-push";
 const VAPID_DIRECTORY = "host-secrets";
 const VAPID_FILE = "web-push-vapid.json";
 const MAX_VAPID_FILE_BYTES = 16 * 1024;
-const DEFAULT_VAPID_SUBJECT = "mailto:admin@localhost";
+// Apple Push rejects localhost contact subjects with BadJwtToken even when the
+// VAPID keypair and browser subscription are otherwise valid. Keep the
+// automatic identity self-contained, but identify its application server with
+// a stable public HTTPS contact URI. Operators can still override this with
+// PONDEROSA_VAPID_SUBJECT without rotating the persisted keypair.
+const DEFAULT_VAPID_SUBJECT = "https://github.com/khaleelclark";
 
 export interface WebPushVapidDetails {
   publicKey?: string;
