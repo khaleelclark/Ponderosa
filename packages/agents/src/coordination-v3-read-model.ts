@@ -973,7 +973,7 @@ export class CoordinationV3ReadModel {
       for (const row of occurrenceRows) {
         add({
           id: `trigger:${row.id}`, recordId: row.id, referenceIds: [row.id, row.trigger_id], kind: "trigger", state: row.state,
-          title: row.name ?? row.snapshot_name ?? "Trigger occurrence",
+          title: row.name ?? row.snapshot_name ?? "Automation occurrence",
           summary: row.state === "activated" ? "This outside event queued work for the Agent."
             : row.state === "pending" ? "This outside event is waiting to queue work."
               : `This outside event ended ${row.state.replaceAll("_", " ")}.`,
@@ -1365,8 +1365,8 @@ export class CoordinationV3ReadModel {
         id: string; trigger_id: string; attempts: number; input_hash: string;
         last_error: string | null; trigger_snapshot_json: string;
       } | undefined;
-      return row ? inspectorDetails(["Occurrence ID", row.id], ["Trigger ID", row.trigger_id], ["Attempts", row.attempts],
+      return row ? inspectorDetails(["Occurrence ID", row.id], ["Automation ID", row.trigger_id], ["Attempts", row.attempts],
         ["Input hash", row.input_hash], ["Last error", row.last_error],
-        ["Trigger snapshot", inspectorJson(row.trigger_snapshot_json)]) : undefined;
+        ["Automation snapshot", inspectorJson(row.trigger_snapshot_json)]) : undefined;
     }
 }

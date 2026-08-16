@@ -143,7 +143,7 @@ export function ConversationDialogs({
       >
         <Alert severity="warning">
           This permanently deletes the Chat and its history. Assigned Agents
-          are preserved and become unassigned. Related Triggers and pending
+          are preserved and become unassigned. Related Automations and pending
           work are cancelled. Stop any active assigned Agent before deleting.
         </Alert>
       </ResourceDeletionDialog>

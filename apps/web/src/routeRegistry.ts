@@ -115,7 +115,7 @@ const ROUTE_REGISTRY = {
   allTriggers: {
     toPath: () => "/triggers",
     workspaceTabKey: () => "all-triggers",
-    tabLabel: () => "All Triggers",
+    tabLabel: () => "All Automations",
     tabIcon: "bolt",
     scope: "global",
     initialSidebarSection: "triggers",

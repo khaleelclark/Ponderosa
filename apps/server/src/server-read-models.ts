@@ -294,9 +294,9 @@ export function createServerReadModels(context: ReadModelContext) {
               ? record.state === "open" ? `${owner} is waiting for ${Math.max(0, (record.total ?? 0) - (record.completed ?? 0))} more result${(record.total ?? 0) - (record.completed ?? 0) === 1 ? "" : "s"}`
                 : record.state === "satisfied" ? `${owner} received every result it was waiting for`
                   : `${owner}'s wait ended ${record.state}`
-              : record.state === "activated" ? `${record.subtype ?? "A trigger"} woke ${owner}`
-                : record.state === "pending" ? `${record.subtype ?? "A trigger"} is waiting to wake ${owner}`
-                  : `${record.subtype ?? "A trigger"} ended ${record.state.replaceAll("_", " ")}`;
+              : record.state === "activated" ? `${record.subtype ?? "An automation"} woke ${owner}`
+                : record.state === "pending" ? `${record.subtype ?? "An automation"} is waiting to wake ${owner}`
+                  : `${record.subtype ?? "An automation"} ended ${record.state.replaceAll("_", " ")}`;
       return {
         id: record.id,
         kind: record.kind,

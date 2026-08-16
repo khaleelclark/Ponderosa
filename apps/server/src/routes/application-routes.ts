@@ -502,12 +502,12 @@ app.get<{ Params: { id: string } }>("/api/agent-trigger-occurrences/:id", async 
   const capability = token ? agentMessageCapabilities.get(token) : undefined;
   const active = capability ? activeRuns.get(capability.agentId) : undefined;
   if (!capability || !active || !capabilityOwnsAuthoritativeRun(capability, active) || active.messageCapability !== token) {
-    return reply.code(401).send({ error: "Trigger occurrence capability is not authorized for an active Run" });
+    return reply.code(401).send({ error: "Automation occurrence capability is not authorized for an active Run" });
   }
   const occurrence = coordinationV3.getTriggerOccurrence(request.params.id);
-  if (!occurrence || occurrence.agentId !== capability.agentId) return reply.code(404).send({ error: "Trigger occurrence not found" });
+  if (!occurrence || occurrence.agentId !== capability.agentId) return reply.code(404).send({ error: "Automation occurrence not found" });
   if (!occurrence.activationId || coordinationV3.activationPayloads(capability.agentId, [occurrence.activationId], capability.runId).length !== 1) {
-    return reply.code(404).send({ error: "Trigger occurrence is not attached to this Run" });
+    return reply.code(404).send({ error: "Automation occurrence is not attached to this Run" });
   }
   return occurrence;
 });

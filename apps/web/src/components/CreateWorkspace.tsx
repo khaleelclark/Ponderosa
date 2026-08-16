@@ -83,7 +83,7 @@ const resourcePresentation = {
   },
   trigger: {
     icon: <BoltOutlinedIcon />,
-    title: "Create Trigger",
+    title: "Create Automation",
     description: "Configure automation that starts Agent work from a schedule or event.",
   },
 } satisfies Record<Extract<Route, { kind: "create" }>["resource"], {
@@ -395,7 +395,7 @@ function TriggerCreateForm({
             `${option.agent.title} — ${option.project.label}`}
           isOptionEqualToValue={(option, value) =>
             option.agent.id === value.agent.id}
-          noOptionsText="No Trigger-ready Agents found"
+          noOptionsText="No Automation-ready Agents found"
           ListboxProps={{ style: { maxHeight: 320 } }}
           renderInput={params => (
             <TextField

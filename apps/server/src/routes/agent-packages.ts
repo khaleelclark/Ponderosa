@@ -485,7 +485,7 @@ export function registerAgentPackageRoutes(
             )
           ) {
             throw new Error(
-              "template packages cannot contain history, artifacts, or Triggers",
+              "template packages cannot contain history, artifacts, or Automations",
             );
           }
           if (node.history !== undefined && !Array.isArray(node.history)) {
@@ -522,7 +522,7 @@ export function registerAgentPackageRoutes(
             throw new Error("Agent artifacts must be an array");
           }
           if (node.triggers !== undefined && !Array.isArray(node.triggers)) {
-            throw new Error("Agent Triggers must be an array");
+            throw new Error("Agent Automations must be an array");
           }
         }
         if (
@@ -725,14 +725,14 @@ export function registerAgentPackageRoutes(
           }));
           const triggers = (node.triggers ?? []).map(
             (candidate): PlannedTrigger => {
-              const trigger = triggerObject(candidate, "portable Trigger");
+              const trigger = triggerObject(candidate, "portable Automation");
               exactTriggerFields(
                 trigger,
                 [
                   "name", "instructions", "sourceKind", "sourceConfig",
                   "enabled", "runBudget",
                 ],
-                "portable Trigger",
+                "portable Automation",
               );
               const parsed = parseCreateTrigger({
                 ...trigger,
@@ -740,7 +740,7 @@ export function registerAgentPackageRoutes(
               });
               if (candidate.enabled !== false) {
                 throw new Error(
-                  "imported Triggers must be explicitly disabled",
+                  "imported Automations must be explicitly disabled",
                 );
               }
               if (
@@ -750,7 +750,7 @@ export function registerAgentPackageRoutes(
                 || parsed.instructions.trim().length > 20_000
               ) {
                 throw new Error(
-                  "imported Trigger name or instructions exceed supported limits",
+                  "imported Automation name or instructions exceed supported limits",
                 );
               }
               if (
@@ -762,7 +762,7 @@ export function registerAgentPackageRoutes(
                 )
               ) {
                 throw new Error(
-                  "Trigger Run budget limit must be an integer between 1 and 1000000",
+                  "Automation Run budget limit must be an integer between 1 and 1000000",
                 );
               }
               const schedule = parsed.sourceKind === "schedule"
@@ -796,7 +796,7 @@ export function registerAgentPackageRoutes(
             || triggers.filter((trigger) =>
               trigger.sourceKind === "filesystem").length > 25
           ) {
-            throw new Error("imported Agent exceeds supported Trigger limits");
+            throw new Error("imported Agent exceeds supported Automation limits");
           }
           return {
             ...node,

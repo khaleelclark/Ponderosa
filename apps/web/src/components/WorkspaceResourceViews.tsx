@@ -367,23 +367,23 @@ export function AllTriggersWorkspace({
     : undefined;
   const createButton = (
     <Button variant="contained" startIcon={<AddIcon />} onClick={onCreate}>
-      New Trigger
+      New Automation
     </Button>
   );
   return <CollectionWorkspace
     icon={<BoltOutlinedIcon />}
-    title={scopeTitle ?? (scopedProject ? "Project Triggers" : "All Triggers")}
+    title={scopeTitle ?? (scopedProject ? "Project Automations" : "All Automations")}
     detail={
       directoryQuery.requestState.hasResolved
         ? scopedProject
-          ? `${directory.total} ${directory.total === 1 ? "Trigger" : "Triggers"} in ${scopedProject.label}`
+          ? `${directory.total} ${directory.total === 1 ? "Automation" : "Automations"} in ${scopedProject.label}`
           : filtersActive
-            ? `${directory.total} matching ${directory.total === 1 ? "Trigger" : "Triggers"}`
-            : `${directory.total} ${directory.total === 1 ? "Trigger" : "Triggers"} across Ponderosa`
+            ? `${directory.total} matching ${directory.total === 1 ? "Automation" : "Automations"}`
+            : `${directory.total} ${directory.total === 1 ? "Automation" : "Automations"} across Ponderosa`
         : undefined
     }
     primaryAction={createButton}
-    toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Triggers" reorderHint>
+    toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Automations" reorderHint>
       <CollectionDirectoryControls
         projects={filterProjectId ? undefined : projects}
         projectId={filterProjectId ? undefined : projectId}
@@ -393,7 +393,7 @@ export function AllTriggersWorkspace({
       />
       {embedded ? createButton : null}
     </CollectionToolbar>}
-    listLabel={scopeTitle ?? "All Triggers"}
+    listLabel={scopeTitle ?? "All Automations"}
     busy={directoryQuery.requestState.isInitialLoading || directoryQuery.requestState.isRefreshing || directoryQuery.requestState.isFetchingNextPage}
     variant={embedded ? "embedded" : "page"}
   >
@@ -415,7 +415,7 @@ export function AllTriggersWorkspace({
           />
           <CollectionTimestamp value={trigger.updatedAt} hideBelow="md" />
         </Stack>}
-        starAction={<Tooltip title={starred.has(key) ? "Unstar Trigger" : "Star Trigger"}><IconButton aria-label={starred.has(key) ? `Unstar ${trigger.name}` : `Star ${trigger.name}`} onClick={() => onPreferences(toggleWorkspaceResourceStar(preferences, "trigger", trigger.id))}>{starred.has(key) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip>}
+        starAction={<Tooltip title={starred.has(key) ? "Unstar Automation" : "Star Automation"}><IconButton aria-label={starred.has(key) ? `Unstar ${trigger.name}` : `Star ${trigger.name}`} onClick={() => onPreferences(toggleWorkspaceResourceStar(preferences, "trigger", trigger.id))}>{starred.has(key) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip>}
         overflowAction={<Tooltip title={`Actions for ${trigger.name}`}><IconButton data-resource-menu-trigger aria-haspopup="menu" aria-expanded={menu?.resource.trigger.id === trigger.id} aria-label={`Actions for ${trigger.name}`} onClick={(event) => setMenu({ anchor: event.currentTarget, resource: menuResource })}><MoreVertIcon /></IconButton></Tooltip>}
         onOpen={() => {
           markWorkspaceResourceUsed(queryClient, "trigger", trigger.id);
@@ -453,10 +453,10 @@ export function AllTriggersWorkspace({
       request={directoryQuery.requestState}
       itemCount={ordered.length}
       filtersActive={filtersActive}
-      resourceLabel="Triggers"
-      emptyTitle="No Triggers Yet"
-      emptyDetail="Create a Trigger to automate Agent work."
-      noMatchTitle="No Triggers match these filters"
+      resourceLabel="Automations"
+      emptyTitle="No Automations Yet"
+      emptyDetail="Create an Automation to automate Agent work."
+      noMatchTitle="No Automations match these filters"
       noMatchDetail={filterProjectId ? "Try a different search." : "Try a different search or Project filter."}
       onClearFilters={() => { setSearch(""); if (!filterProjectId) setProjectId(""); }}
     />
@@ -467,7 +467,7 @@ export function AllTriggersWorkspace({
       actions={[
         {
           id: "settings",
-          label: "Trigger Settings",
+          label: "Automation Settings",
           icon: <SettingsOutlinedIcon fontSize="small" />,
           onSelect: ({ route, trigger }) => {
             if (route.kind === "agent")
@@ -491,14 +491,14 @@ export function AllTriggersWorkspace({
     />
     <TextInputDialog
       open={triggerAction?.kind === "rename"}
-      title="Rename Trigger"
-      label="Trigger name"
+      title="Rename Automation"
+      label="Automation name"
       initialValue={triggerAction?.trigger.name ?? ""}
       confirmLabel="Save"
       pendingLabel="Saving…"
       pending={renameTrigger.isPending}
       error={renameTrigger.isError ? String(renameTrigger.error) : undefined}
-      validate={(value) => value.trim() ? undefined : "Enter a Trigger name."}
+      validate={(value) => value.trim() ? undefined : "Enter an Automation name."}
       onCancel={() => {
         renameTrigger.reset();
         setTriggerAction(undefined);
@@ -510,7 +510,7 @@ export function AllTriggersWorkspace({
     />
     <ResourceDeletionDialog
       open={triggerAction?.kind === "delete"}
-      resourceType="Trigger"
+      resourceType="Automation"
       resourceName={triggerAction?.trigger.name}
       pendingLabel="Deleting…"
       pending={deleteTrigger.isPending}

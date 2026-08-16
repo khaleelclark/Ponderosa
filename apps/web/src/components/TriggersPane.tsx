@@ -405,7 +405,7 @@ export function TriggersPane({
             editing.conversationId === agent.conversationId,
           )}
           disabled
-          helperText="This Trigger stays attached to its current Project chat."
+          helperText="This Automation stays attached to its current Project chat."
         />
       ) : (
         <FormControl fullWidth><InputLabel id="trigger-chat-label">Project chat</InputLabel><Select labelId="trigger-chat-label" label="Project chat" value={conversationId} onChange={(event) => setConversationId(event.target.value)}>{agent.conversationIds.map((id) => <MenuItem key={id} value={id}>{triggerChatOptionLabel(currentChatLabel(id), id === agent.conversationId)}</MenuItem>)}</Select></FormControl>
@@ -427,7 +427,7 @@ export function TriggersPane({
   const editorActions = (
     <Stack direction="row" spacing={1} sx={{ justifyContent: "flex-end" }}>
       <Button onClick={closeCreateEditor}>Cancel</Button>
-      <Button variant="contained" disabled={create.isPending || saveEdit.isPending || !name.trim() || !instructions.trim() || !conversationId || sourceConfigurationInvalid || (budgetEnabled && (!Number.isSafeInteger(Number(budgetLimit)) || Number(budgetLimit) < 1))} onClick={() => editing ? saveEdit.mutate() : create.mutate()}>{create.isPending || saveEdit.isPending ? "Saving…" : editing ? "Save Changes" : "Create Trigger"}</Button>
+      <Button variant="contained" disabled={create.isPending || saveEdit.isPending || !name.trim() || !instructions.trim() || !conversationId || sourceConfigurationInvalid || (budgetEnabled && (!Number.isSafeInteger(Number(budgetLimit)) || Number(budgetLimit) < 1))} onClick={() => editing ? saveEdit.mutate() : create.mutate()}>{create.isPending || saveEdit.isPending ? "Saving…" : editing ? "Save Changes" : "Create Automation"}</Button>
     </Stack>
   );
 
@@ -441,10 +441,10 @@ export function TriggersPane({
             onClick={closeCreateEditor}
             sx={{ mb: 1 }}
           >
-            Back to Triggers
+            Back to Automations
           </Button>
           <Typography variant="h5" component="h2" fontWeight={800}>
-            Trigger Settings
+            Automation Settings
           </Typography>
           <Typography variant="body2" color="text.secondary">
             Manage {editing?.name} without leaving this Agent.
@@ -456,12 +456,12 @@ export function TriggersPane({
     ) : null}
     <Stack spacing={2} sx={{ display: createOnly || inlineSettings ? "none" : undefined }}>
       <Alert severity="warning">
-        <strong>Triggers run automatically with this Agent&apos;s full access.</strong> External event payloads are untrusted data and stay separate from your instructions, but a Trigger can still change files, run commands, use connected tools, and contact collaborators. Use narrow instructions and accept only trusted sources.
+        <strong>Automations run automatically with this Agent&apos;s full access.</strong> External event payloads are untrusted data and stay separate from your instructions, but an Automation can still change files, run commands, use connected tools, and contact collaborators. Use narrow instructions and accept only trusted sources.
       </Alert>
       <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
         <Box sx={{ flex: 1 }}>
-          <Typography variant="h6">Triggers</Typography>
-          <Typography variant="body2" color="text.secondary">Each Trigger belongs to this Agent and one of its Project chats. Work is always queued.</Typography>
+          <Typography variant="h6">Automations</Typography>
+          <Typography variant="body2" color="text.secondary">Each Automation belongs to this Agent and one of its Project chats. Work is always queued.</Typography>
         </Box>
         <Button
           variant="contained"
@@ -476,20 +476,20 @@ export function TriggersPane({
             setCreateOpen(true);
           }}
         >
-          New Trigger
+          New Automation
         </Button>
       </Stack>
-      {agent.conversationIds.length === 0 ? <Alert severity="info">Assign this Agent to a Project chat before creating a Trigger.</Alert> : null}
-      {triggers.isLoading ? <Typography color="text.secondary">Loading Triggers…</Typography> : null}
+      {agent.conversationIds.length === 0 ? <Alert severity="info">Assign this Agent to a Project chat before creating an Automation.</Alert> : null}
+      {triggers.isLoading ? <Typography color="text.secondary">Loading Automations…</Typography> : null}
       {triggers.isError ? <Alert severity="error">{triggers.error.message}</Alert> : null}
-      {(triggerItems).length === 0 && !triggers.isLoading ? <Typography color="text.secondary">No Triggers yet.</Typography> : null}
+      {(triggerItems).length === 0 && !triggers.isLoading ? <Typography color="text.secondary">No Automations yet.</Typography> : null}
       {(triggerItems).map((trigger) => {
         const latestOccurrence = latestOccurrences.get(trigger.id);
         const currentFailure = latestOccurrence?.lastError
           ?? (latestOccurrence?.state === "dead_lettered" ? "The latest occurrence could not start." : undefined);
         const lastOccurredAt = latestOccurrence?.occurredAt ?? trigger.lastFiredAt;
         const scheduleStatus = triggerScheduleStatus(trigger);
-        return <Card key={trigger.id} variant="outlined" aria-label={`${trigger.name} Trigger`}>
+        return <Card key={trigger.id} variant="outlined" aria-label={`${trigger.name} Automation`}>
         <CardContent>
           <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
             <Typography variant="subtitle1" sx={{ fontWeight: 700, flex: 1 }}>{trigger.name}</Typography>
@@ -532,11 +532,11 @@ export function TriggersPane({
         </Collapse>
       </Card>;
       })}
-      {triggers.hasNextPage ? <Button disabled={triggers.isFetchingNextPage} onClick={() => void triggers.fetchNextPage()}>{triggers.isFetchingNextPage ? "Loading..." : "Load more Triggers"}</Button> : null}
+      {triggers.hasNextPage ? <Button disabled={triggers.isFetchingNextPage} onClick={() => void triggers.fetchNextPage()}>{triggers.isFetchingNextPage ? "Loading..." : "Load more Automations"}</Button> : null}
       {deletedTriggerOccurrences.length ? <Card variant="outlined">
         <CardContent>
-          <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>Deleted Trigger history</Typography>
-          <Typography variant="body2" color="text.secondary">Immutable occurrence records remain inspectable after their Trigger is deleted.</Typography>
+          <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>Deleted Automation history</Typography>
+          <Typography variant="body2" color="text.secondary">Immutable occurrence records remain inspectable after their Automation is deleted.</Typography>
           {deletedTriggerOccurrences.map((occurrence) => <OccurrenceAudit key={occurrence.id} occurrence={occurrence} onOpenAgentWork={onOpenAgentWork} />)}
         </CardContent>
       </Card> : null}
@@ -553,7 +553,7 @@ export function TriggersPane({
       title="Allow more automatic Runs"
       label="Additional Runs"
       initialValue="5"
-      helperText="Applies to the Trigger’s current budget period."
+      helperText="Applies to the Automation’s current budget period."
       confirmLabel="Allow Runs"
       pendingLabel="Saving…"
       pending={allowRuns.isPending}
@@ -586,7 +586,7 @@ export function TriggersPane({
     </ConfirmDialog>
     <ResourceDeletionDialog
       open={Boolean(deleteTrigger)}
-      resourceType="Trigger"
+      resourceType="Automation"
       resourceName={deleteTrigger?.name}
       pendingLabel="Deleting…"
       pending={remove.isPending}
@@ -603,7 +603,7 @@ export function TriggersPane({
     </ResourceDeletionDialog>
 
     <Dialog open={!createOnly && createOpen && !inlineSettings} onClose={closeCreateEditor} fullWidth maxWidth="sm">
-      <DialogTitle>{editing ? "Edit Trigger" : "Create Trigger"}</DialogTitle>
+      <DialogTitle>{editing ? "Edit Automation" : "Create Automation"}</DialogTitle>
       <DialogContent>
         <Box sx={{ pt: 1 }}>{editorFields}</Box>
       </DialogContent>

@@ -21,4 +21,4 @@ Reporting relationships define ownership, escalation, creation, and lifecycle. T
 
 ## Inspect and change the tree
 
-Agent Detail is the audit hub for Chat, Work log, Activity, Changed Files, Review, Runs, Files & results, and Triggers. Re-parenting and deletion preserve historical authorship and execution provenance. Deleting a manager recursively includes remaining descendants in one server-previewed atomic cascade. Promote or re-parent anything you want to keep before confirming deletion.
+Agent Detail is the audit hub for Chat, Work log, Activity, Changed Files, Review, Runs, Files & results, and Automations. Re-parenting and deletion preserve historical authorship and execution provenance. Deleting a manager recursively includes remaining descendants in one server-previewed atomic cascade. Promote or re-parent anything you want to keep before confirming deletion.

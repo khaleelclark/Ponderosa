@@ -94,10 +94,10 @@ export class CoordinationV3TriggerRegistry {
     const name = input.name.trim();
     const instructions = input.instructions.trim();
     if (!name || name.length > 120) {
-      throw new Error("trigger name must be between 1 and 120 characters");
+      throw new Error("Automation name must be between 1 and 120 characters");
     }
     if (!instructions || instructions.length > 20_000) {
-      throw new Error("trigger instructions must be between 1 and 20000 characters");
+      throw new Error("Automation instructions must be between 1 and 20000 characters");
     }
     this.validateRunBudget(input.runBudget);
     const now = input.now ?? new Date().toISOString();
@@ -110,14 +110,14 @@ export class CoordinationV3TriggerRegistry {
       const ownedCount = (this.sqlite.prepare(`
         SELECT COUNT(*) AS count FROM trigger_definitions WHERE agent_id = ?
       `).get(input.agentId) as { count: number }).count;
-      if (ownedCount >= 100) throw new Error("an Agent may own at most 100 Triggers");
+      if (ownedCount >= 100) throw new Error("an Agent may own at most 100 Automations");
       if (input.sourceKind === "filesystem") {
         const watcherCount = (this.sqlite.prepare(`
           SELECT COUNT(*) AS count FROM trigger_definitions
           WHERE agent_id = ? AND source_kind = 'filesystem'
         `).get(input.agentId) as { count: number }).count;
         if (watcherCount >= 25) {
-          throw new Error("an Agent may own at most 25 filesystem Triggers");
+          throw new Error("an Agent may own at most 25 filesystem Automations");
         }
       }
       this.sqlite.prepare(`
@@ -186,7 +186,7 @@ export class CoordinationV3TriggerRegistry {
       this.resetExpiredBudgets(now);
       const row = this.definitionRow(id);
       if (!row) return undefined;
-      if (row.run_budget_limit === null) throw new Error("this Trigger has no Run budget");
+      if (row.run_budget_limit === null) throw new Error("this Automation has no Run budget");
       this.sqlite.prepare(`
         UPDATE trigger_definitions
         SET run_budget_allowance = run_budget_allowance + ?, updated_at = ?
@@ -209,10 +209,10 @@ export class CoordinationV3TriggerRegistry {
         ? row.instructions
         : input.instructions.trim();
       if (!name || name.length > 120) {
-        throw new Error("trigger name must be between 1 and 120 characters");
+        throw new Error("Automation name must be between 1 and 120 characters");
       }
       if (!instructions || instructions.length > 20_000) {
-        throw new Error("trigger instructions must be between 1 and 20000 characters");
+        throw new Error("Automation instructions must be between 1 and 20000 characters");
       }
       if (input.runBudget !== undefined && input.runBudget !== null) {
         this.validateRunBudget(input.runBudget);
@@ -251,7 +251,7 @@ export class CoordinationV3TriggerRegistry {
         id,
       );
       if (input.enabled === false) {
-        this.cancelPendingWork(id, "Trigger disabled", now);
+        this.cancelPendingWork(id, "Automation disabled", now);
       }
       return this.get(id);
     })();
@@ -260,7 +260,7 @@ export class CoordinationV3TriggerRegistry {
   delete(id: string, now = new Date().toISOString()): boolean {
     return this.sqlite.transaction(() => {
       if (!this.definitionRow(id)) return false;
-      this.cancelPendingWork(id, "Trigger deleted", now);
+      this.cancelPendingWork(id, "Automation deleted", now);
       return this.sqlite.prepare(`
         DELETE FROM trigger_definitions WHERE id = ?
       `).run(id).changes === 1;
@@ -314,15 +314,15 @@ export class CoordinationV3TriggerRegistry {
   }): TriggerFilesystemBurst {
     const now = input.now ?? new Date().toISOString();
     if (!input.path || !input.eventType) {
-      throw new Error("filesystem Trigger path and event type are required");
+      throw new Error("filesystem Automation path and event type are required");
     }
     if (!Number.isSafeInteger(input.maxCapturedPaths) || input.maxCapturedPaths < 1) {
-      throw new Error("filesystem Trigger captured path limit must be positive");
+      throw new Error("filesystem Automation captured path limit must be positive");
     }
     return this.sqlite.transaction(() => {
       const definition = this.definitionRow(input.triggerId);
       if (!definition || !definition.enabled || definition.source_kind !== "filesystem") {
-        throw new Error("filesystem Trigger is unavailable");
+        throw new Error("filesystem Automation is unavailable");
       }
       const existing = this.sqlite.prepare(`
         SELECT * FROM trigger_filesystem_bursts WHERE trigger_id = ?
@@ -504,11 +504,11 @@ export class CoordinationV3TriggerRegistry {
       || budget.limit > 1_000_000
     ) {
       throw new Error(
-        "Trigger Run budget limit must be an integer between 1 and 1000000",
+        "Automation Run budget limit must be an integer between 1 and 1000000",
       );
     }
     if (!["day", "week", "month", "lifetime"].includes(budget.period)) {
-      throw new Error("Trigger Run budget period must be day, week, month, or lifetime");
+      throw new Error("Automation Run budget period must be day, week, month, or lifetime");
     }
   }
 

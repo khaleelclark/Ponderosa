@@ -182,7 +182,7 @@ export function registerTriggerRoutes(
         } satisfies CreateTriggerResponse);
       } catch (error) {
         return reply.code(400).send({
-          error: error instanceof Error ? error.message : "invalid Trigger",
+          error: error instanceof Error ? error.message : "invalid Automation",
         });
       }
     },
@@ -193,7 +193,7 @@ export function registerTriggerRoutes(
     async (request, reply) => {
       const current = coordination.getTriggerDefinition(request.params.id);
       if (!current) {
-        return reply.code(404).send({ error: "Trigger not found" });
+        return reply.code(404).send({ error: "Automation not found" });
       }
       if (rejectQuarantinedMutation(current, reply)) return reply;
       try {
@@ -238,7 +238,7 @@ export function registerTriggerRoutes(
         return trigger;
       } catch (error) {
         return reply.code(400).send({
-          error: error instanceof Error ? error.message : "invalid Trigger",
+          error: error instanceof Error ? error.message : "invalid Automation",
         });
       }
     },
@@ -249,7 +249,7 @@ export function registerTriggerRoutes(
     async (request, reply) => {
       const current = coordination.getTriggerDefinition(request.params.id);
       if (!current) {
-        return reply.code(404).send({ error: "Trigger not found" });
+        return reply.code(404).send({ error: "Automation not found" });
       }
       if (rejectQuarantinedMutation(current, reply)) return reply;
       coordination.deleteTriggerDefinition(current.id);
@@ -271,13 +271,13 @@ export function registerTriggerRoutes(
     async (request, reply) => {
       const current = coordination.getTriggerDefinition(request.params.id);
       if (!current) {
-        return reply.code(404).send({ error: "Trigger not found" });
+        return reply.code(404).send({ error: "Automation not found" });
       }
       if (rejectQuarantinedMutation(current, reply)) return reply;
       if (current.sourceKind !== "webhook") {
         return reply
           .code(400)
-          .send({ error: "only webhook Triggers have signing secrets" });
+          .send({ error: "only webhook Automations have signing secrets" });
       }
       const secret = sources.createWebhookSecret();
       const trigger = coordination.updateTriggerDefinition(current.id, {
@@ -306,7 +306,7 @@ export function registerTriggerRoutes(
     async (request, reply) => {
       const current = coordination.getTriggerDefinition(request.params.id);
       if (!current) {
-        return reply.code(404).send({ error: "Trigger not found" });
+        return reply.code(404).send({ error: "Automation not found" });
       }
       if (rejectQuarantinedMutation(current, reply)) return reply;
       try {
@@ -315,7 +315,7 @@ export function registerTriggerRoutes(
           request.body?.additionalRuns ?? 0,
         );
         if (!trigger) {
-          return reply.code(404).send({ error: "Trigger not found" });
+          return reply.code(404).send({ error: "Automation not found" });
         }
         reconcileOperationalNotifications();
         notifyScheduler();
@@ -381,7 +381,7 @@ export function registerTriggerRoutes(
     "/api/trigger-occurrences/:id",
     async (request, reply) =>
       coordination.getTriggerOccurrence(request.params.id) ??
-      reply.code(404).send({ error: "Trigger occurrence not found" }),
+      reply.code(404).send({ error: "Automation occurrence not found" }),
   );
 
   app.post<{ Params: { id: string }; Body: unknown }>(
@@ -397,7 +397,7 @@ export function registerTriggerRoutes(
       ) {
         return reply
           .code(415)
-          .send({ error: "Trigger webhooks require a JSON Content-Type" });
+          .send({ error: "Automation webhooks require a JSON Content-Type" });
       }
       const eventId = request.headers["x-ponderosa-event-id"];
       const timestamp = request.headers["x-ponderosa-timestamp"];
@@ -433,8 +433,8 @@ export function registerTriggerRoutes(
           return reply.code(400).send({ error: message });
         }
         if (
-          message === "webhook Trigger not found" ||
-          message === "webhook Trigger owner is unavailable"
+          message === "webhook Automation not found" ||
+          message === "webhook Automation owner is unavailable"
         ) {
           return reply.code(404).send({ error: message });
         }

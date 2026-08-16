@@ -354,7 +354,7 @@ export function ProjectArtifactsView({
             },
             {
               value: "triggers",
-              label: "Triggers",
+              label: "Automations",
               icon: <BoltOutlinedIcon />,
             },
             {

@@ -184,7 +184,7 @@ export function ImportAgentForm({
   };
 
   return <Stack spacing={2}>
-      <Alert severity="info">Imported history remains private historical context and does not appear as new chat messages. Triggers import disabled with new secrets.</Alert>
+      <Alert severity="info">Imported history remains private historical context and does not appear as new chat messages. Automations import disabled with new secrets.</Alert>
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" } }}>
         <Button component="label" variant="outlined" startIcon={<UploadFileOutlinedIcon />}>
           Choose JSON File

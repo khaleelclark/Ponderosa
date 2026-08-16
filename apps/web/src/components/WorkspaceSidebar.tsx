@@ -740,7 +740,7 @@ export function WorkspaceSidebar({
           sx={{ alignItems: "center", mb: 0.25 }}
         >
           <ListItemButton
-            aria-label={`Open triggers for ${destination.agent.title}`}
+            aria-label={`Open Automations for ${destination.agent.title}`}
             onClick={() =>
               openTriggerManager(
                 destination.project.id,
@@ -793,10 +793,10 @@ export function WorkspaceSidebar({
   const triggersPanel = (
     <SharedSidebarPanel
       icon={<BoltOutlinedIcon />}
-      title="Triggers"
+      title="Automations"
       total={triggerDirectoryQuery.requestState.hasResolved ? triggerDirectory.total : undefined}
       busy={triggerDirectoryQuery.requestState.isInitialLoading || triggerDirectoryQuery.requestState.isRefreshing || triggerDirectoryQuery.requestState.isFetchingNextPage}
-      searchLabel="Search triggers or agents"
+      searchLabel="Search Automations or Agents"
       searchValue={filter}
       onSearchValueChange={setFilter}
       starredRows={triggerResourceRows(
@@ -812,8 +812,8 @@ export function WorkspaceSidebar({
             ),
         ),
       )}
-      collectionFeedback={<CollectionStateFeedback request={triggerDirectoryQuery.requestState} itemCount={filteredTriggers.length} filtersActive={Boolean(filter.trim())} resourceLabel="Triggers" emptyTitle="No Triggers Configured Yet" noMatchTitle="No configured Triggers match" onClearFilters={() => setFilter("")} compact />}
-      viewAllLabel="View All Triggers"
+      collectionFeedback={<CollectionStateFeedback request={triggerDirectoryQuery.requestState} itemCount={filteredTriggers.length} filtersActive={Boolean(filter.trim())} resourceLabel="Automations" emptyTitle="No Automations Configured Yet" noMatchTitle="No configured Automations match" onClearFilters={() => setFilter("")} compact />}
+      viewAllLabel="View All Automations"
       viewAllIcon={<BoltOutlinedIcon />}
       onViewAll={() => onNavigate({ kind: "allTriggers" })}
       onViewAllContextMenu={anchor =>

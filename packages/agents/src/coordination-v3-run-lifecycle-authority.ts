@@ -219,7 +219,7 @@ export class CoordinationV3RunLifecycleAuthority {
       `).get(input.runId) as { trigger_id: string } | undefined;
       if (unavailableTrigger) {
         throw new Error(
-          `Trigger ${unavailableTrigger.trigger_id} was deleted before prompt injection`,
+          `Automation ${unavailableTrigger.trigger_id} was deleted before prompt injection`,
         );
       }
       const changed = this.sqlite.prepare(`

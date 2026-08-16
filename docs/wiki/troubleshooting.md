@@ -12,7 +12,7 @@ Start with the status Ponderosa owns rather than guessing from a quiet provider 
 
 ## Work remains queued
 
-Check global leasing, configured concurrency, engine availability, Trigger budgets, and whether an earlier FIFO user turn owns the next boundary. A provider-confirmed entitlement denial deliberately prevents new leases without dropping queued work. A waiting Join is not a hung Run; it becomes actionable when its immutable condition changes.
+Check global leasing, configured concurrency, engine availability, Automation budgets, and whether an earlier FIFO user turn owns the next boundary. A provider-confirmed entitlement denial deliberately prevents new leases without dropping queued work. A waiting Join is not a hung Run; it becomes actionable when its immutable condition changes.
 
 ## Steering is unconfirmed
 

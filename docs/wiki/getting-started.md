@@ -23,4 +23,4 @@ For ordinary work, open a Project chat and write naturally. A plain request beco
 
 ## Know the boundary
 
-Agents intentionally have the same host access as the account running Ponderosa. The file-browser API is narrower and stays inside registered Project paths, but an Agent's shell is not a pretend sandbox. Review instructions and automatic Triggers accordingly. Provider authentication remains in the provider's own login store and must never be copied into a Project or wiki page.
+Agents intentionally have the same host access as the account running Ponderosa. The file-browser API is narrower and stays inside registered Project paths, but an Agent's shell is not a pretend sandbox. Review instructions and Automations accordingly. Provider authentication remains in the provider's own login store and must never be copied into a Project or wiki page.

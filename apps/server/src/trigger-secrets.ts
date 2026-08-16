@@ -12,9 +12,9 @@ export class TriggerSecretStore {
     const keyPath = path.join(dataDir, "trigger-secrets.key");
     try {
       const keyStat = statSync(keyPath);
-      if (!keyStat.isFile()) throw new Error("Trigger secret encryption key must be a regular file");
+      if (!keyStat.isFile()) throw new Error("Automation secret encryption key must be a regular file");
       if (process.platform !== "win32" && (keyStat.mode & 0o077) !== 0) {
-        throw new Error("Trigger secret encryption key must be owner-only (0600)");
+        throw new Error("Automation secret encryption key must be owner-only (0600)");
       }
       this.key = readFileSync(keyPath);
     } catch (error) {
@@ -22,7 +22,7 @@ export class TriggerSecretStore {
       this.key = randomBytes(32);
       writeFileSync(keyPath, this.key, { mode: 0o600, flag: "wx" });
     }
-    if (this.key.length !== 32) throw new Error("invalid Trigger secret encryption key");
+    if (this.key.length !== 32) throw new Error("invalid Automation secret encryption key");
   }
 
   create(): { secret: string; ciphertext: string; fingerprint: string } {
@@ -32,7 +32,7 @@ export class TriggerSecretStore {
 
   decrypt(encoded: string): string {
     const packed = Buffer.from(encoded, "base64url");
-    if (packed.length < 29) throw new Error("invalid encrypted Trigger secret");
+    if (packed.length < 29) throw new Error("invalid encrypted Automation secret");
     const iv = packed.subarray(0, 12);
     const tag = packed.subarray(12, 28);
     const ciphertext = packed.subarray(28);

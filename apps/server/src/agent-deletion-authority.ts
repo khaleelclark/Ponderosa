@@ -239,7 +239,7 @@ export function createAgentDeletionAuthority(
     try { contextCursors.deleteAgents(new Set(receipt.deletedAgentIds)); }
     catch (error) { errors.push(error instanceof Error ? error.message : "context cleanup failed"); }
     try { await refreshTriggerSources(); }
-    catch (error) { errors.push(error instanceof Error ? error.message : "Trigger refresh failed"); }
+    catch (error) { errors.push(error instanceof Error ? error.message : "Automation refresh failed"); }
     if (errors.length > 0) {
       try { store.recordAgentDeletionCleanupError(receipt.id, errors.join("; ")); }
       catch { /* the durable receipt remains pending for startup reconciliation */ }
