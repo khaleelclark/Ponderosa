@@ -183,7 +183,7 @@ export function registerProjectDeletionRoutes(
       projectBrowserGrants.delete(project.id);
       coordinationV3.prepareProjectDeletion(project.id);
       void triggerSources.refresh().catch((error) => {
-        logError({ err: error, projectId: project.id }, "Project Trigger source quarantine cleanup failed");
+        logError({ err: error, projectId: project.id }, "Project Automation source quarantine cleanup failed");
       });
       for (const agentId of agentIds) {
         closeLinkPreviewsForAgent(agentId, "project deleted");

@@ -46,7 +46,7 @@ export function ProjectDeletionDialog({
       onConfirm={() => remove.mutate()}
     >
       <Alert severity="warning" sx={{ mb: 1.5 }}>
-        This permanently deletes the Project’s Chats, Agents, Triggers, Runs,
+        This permanently deletes the Project’s Chats, Agents, Automations, Runs,
         work items, and Files &amp; Results. Active work is cancelled. The
         working folder and its source files are preserved.
       </Alert>

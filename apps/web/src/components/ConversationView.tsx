@@ -1145,7 +1145,7 @@ export function ConversationView({
             projects={project ? [project] : []}
             filterProjectId={conversation.projectId}
             filterConversationId={conversation.id}
-            scopeTitle={`${conversation.title} Triggers`}
+            scopeTitle={`${conversation.title} Automations`}
             embedded
             preferences={preferences}
             onPreferences={onPreferences}

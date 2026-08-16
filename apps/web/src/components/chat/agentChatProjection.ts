@@ -8,7 +8,7 @@ import type { AgentRunDto, MessageDto } from "@ponderosa/core";
  * ambient Project or Team room into Agent Chat.
  *
  * Runs are likewise Agent-scoped. Agent Chat is the consolidated audit surface
- * for everything this Agent did, including Project requests and Triggers.
+ * for everything this Agent did, including Project requests and Automations.
  */
 export function projectAgentChat(
   messages: MessageDto[],

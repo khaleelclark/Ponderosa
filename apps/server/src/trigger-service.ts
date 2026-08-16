@@ -298,14 +298,14 @@ export class TriggerSourceService {
     payload: unknown;
     remoteAddress?: string;
   }): { occurrenceId: string; state: "pending" | "activated" | "cancelled" | "dead_lettered"; replayed: boolean } {
-    if (!this.sourceAvailable()) throw new Error("Trigger sources are unavailable");
+    if (!this.sourceAvailable()) throw new Error("Automation sources are unavailable");
     const trigger = this.options.coordination.getTriggerDefinition(input.triggerId);
-    if (!trigger || !trigger.enabled || trigger.sourceKind !== "webhook") throw new Error("webhook Trigger not found");
-    if (!(this.options.projectAvailable?.(trigger.projectId) ?? true)) throw new Error("webhook Trigger owner is unavailable");
+    if (!trigger || !trigger.enabled || trigger.sourceKind !== "webhook") throw new Error("webhook Automation not found");
+    if (!(this.options.projectAvailable?.(trigger.projectId) ?? true)) throw new Error("webhook Automation owner is unavailable");
     const agent = this.options.store.getAgent(trigger.agentId);
     const conversation = this.options.store.getConversation(trigger.conversationId);
     if (!agent || agent.archived || !conversation || conversation.archived || !agent.conversationIds.includes(conversation.id)) {
-      throw new Error("webhook Trigger owner is unavailable");
+      throw new Error("webhook Automation owner is unavailable");
     }
     if (!input.eventId.trim() || input.eventId.length > 200) throw new Error("X-Ponderosa-Event-Id is required");
     const timestampSeconds = Number(input.timestamp);
@@ -315,7 +315,7 @@ export class TriggerSourceService {
       throw new Error("webhook timestamp is outside the replay window");
     }
     const ciphertext = this.options.coordination.getTriggerSecretCiphertext(trigger.id);
-    if (!ciphertext) throw new Error("webhook Trigger has no signing secret");
+    if (!ciphertext) throw new Error("webhook Automation has no signing secret");
     const secret = this.secrets.decrypt(ciphertext);
     const expected = `v1=${createHmac("sha256", secret).update(`${input.timestamp}.${input.eventId}.`).update(input.rawBody).digest("hex")}`;
     if (!this.secrets.equal(expected, input.signature)) throw new Error("invalid webhook signature");

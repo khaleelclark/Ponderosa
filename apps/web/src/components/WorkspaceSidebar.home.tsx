@@ -140,7 +140,7 @@ export function HomeSidebarPanel({
         ? [{
             id: `trigger:${trigger.id}`,
             title: trigger.name,
-            detail: `${destination.project.label} · Trigger`,
+            detail: `${destination.project.label} · Automation`,
             updatedAt: trigger.updatedAt,
             route: {
               kind: "agent",

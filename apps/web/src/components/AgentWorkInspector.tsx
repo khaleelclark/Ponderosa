@@ -34,7 +34,7 @@ function kindLabel(kind: AgentWorkItemDto["kind"]): string {
   if (kind === "join") return "Waiting";
   if (kind === "request") return "Assigned work";
   if (kind === "run") return "Run";
-  if (kind === "trigger") return "Trigger";
+  if (kind === "trigger") return "Automation";
   return "Decision";
 }
 
@@ -425,7 +425,7 @@ export function AgentWorkInspector({
               <Box>
                 <Typography variant="subtitle2">Advanced Technical Model</Typography>
                 <Typography variant="caption" color="text.secondary">
-                  Inspect Requests, Joins, Activations, Runs, Decisions, and Trigger occurrences.
+                  Inspect Requests, Joins, Activations, Runs, Decisions, and Automation occurrences.
                 </Typography>
               </Box>
             </AccordionSummary>

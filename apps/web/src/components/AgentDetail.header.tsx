@@ -36,7 +36,7 @@ export const AGENT_DETAIL_TABS: Array<{
 }> = [
   { value: "chat", label: "Chat", icon: <ChatBubbleOutlineIcon /> },
   { value: "subagents", label: "Subagents", icon: <AccountTreeOutlinedIcon /> },
-  { value: "triggers", label: "Triggers", icon: <BoltOutlinedIcon /> },
+  { value: "triggers", label: "Automations", icon: <BoltOutlinedIcon /> },
   {
     value: "artifacts",
     label: "Files & Results",

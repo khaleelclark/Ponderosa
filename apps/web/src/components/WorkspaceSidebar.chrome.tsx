@@ -130,7 +130,7 @@ export function WorkspaceSidebarRail({
         >
           <SmartToyOutlinedIcon />
         </RailButton>
-        <RailButton label="Triggers" selected={showingTriggers} onClick={onShowTriggers}>
+        <RailButton label="Automations" selected={showingTriggers} onClick={onShowTriggers}>
           <BoltOutlinedIcon />
         </RailButton>
       </Stack>
@@ -180,7 +180,7 @@ const createOptions = [
   },
   {
     kind: "trigger",
-    label: "Trigger",
+    label: "Automation",
     description: "Automation that starts Agent work from an event.",
     icon: <BoltOutlinedIcon />,
   },

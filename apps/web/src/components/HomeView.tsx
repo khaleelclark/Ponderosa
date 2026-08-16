@@ -171,7 +171,7 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
     ...projectItems.map(({ project }) => ({ id: `project:${project.id}`, title: project.label, detail: "Project", updatedAt: project.lastUsedAt ?? project.createdAt, route: { kind: "project", projectId: project.id } as Route, icon: <FolderOutlinedIcon fontSize="small" /> })),
     ...conversationItems.map(({ conversation, project }) => ({ id: `conversation:${conversation.id}`, title: conversation.title, detail: `${project.label} · Chat`, updatedAt: conversation.updatedAt, route: { kind: "conversation", projectId: project.id, conversationId: conversation.id } as Route, icon: <ChatBubbleOutlineIcon fontSize="small" /> })),
     ...agentItems.map(({ agent, project }) => ({ id: `agent:${agent.id}`, title: agent.title, detail: `${project.label} · Agent`, updatedAt: agent.updatedAt, route: { kind: "agent", projectId: project.id, agentId: agent.id } as Route, icon: <SmartToyOutlinedIcon fontSize="small" /> })),
-    ...triggerItems.map(({ trigger, project, agent }) => ({ id: `trigger:${trigger.id}`, title: trigger.name, detail: `${project.label} · Trigger`, updatedAt: trigger.updatedAt, route: { kind: "agent", projectId: project.id, agentId: agent.id, view: "triggers" } as Route, icon: <BoltOutlinedIcon fontSize="small" /> })),
+    ...triggerItems.map(({ trigger, project, agent }) => ({ id: `trigger:${trigger.id}`, title: trigger.name, detail: `${project.label} · Automation`, updatedAt: trigger.updatedAt, route: { kind: "agent", projectId: project.id, agentId: agent.id, view: "triggers" } as Route, icon: <BoltOutlinedIcon fontSize="small" /> })),
   ];
   const starredIds = starredWorkspaceResources(preferences);
   const orderedResources = sortWorkspaceResources(allResources, "last_used", [], (item) => item.id, (item) => item.title, (item) => workspaceResourceRecencyTime(recencyQuery.data, item.id, item.updatedAt));
@@ -223,7 +223,7 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
             Create
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            Create a new Project, Chat, Agent, or Trigger to get started. You can also open existing Projects from the sidebar.
+            Create a new Project, Chat, Agent, or Automation to get started. You can also open existing Projects from the sidebar.
           </Typography>
           </Box>
           <Button
@@ -249,7 +249,7 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
             { label: "Project", icon: <FolderOutlinedIcon />, disabled: false, action: onCreateProject },
             { label: "Chat", icon: <ChatBubbleOutlineIcon />, disabled: !projects.length, action: onCreateChat },
             { label: "Agent", icon: <SmartToyOutlinedIcon />, disabled: !projects.length, action: onCreateAgent },
-            { label: "Trigger", icon: <BoltOutlinedIcon />, disabled: !projects.length, action: onCreateTrigger },
+            { label: "Automation", icon: <BoltOutlinedIcon />, disabled: !projects.length, action: onCreateTrigger },
           ].map(item => (
             <MenuItem
               key={item.label}
@@ -288,7 +288,7 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
           />
           <CreateEntry
             icon={<BoltOutlinedIcon />}
-            title="Trigger"
+            title="Automation"
             description="An automation that starts Agent work from schedules or filesystem events."
             disabled={!projects.length}
             onCreate={onCreateTrigger}

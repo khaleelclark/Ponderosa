@@ -460,7 +460,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     reply: FastifyReply,
   ): boolean => {
     if (!deletingProjectIds.has(target.projectId) && !deletingAgentIds.has(target.agentId)) return false;
-    void reply.code(409).send({ error: "Trigger owner deletion is in progress" });
+    void reply.code(409).send({ error: "Automation owner deletion is in progress" });
     return true;
   };
   // A crashed daemon may leave scheduler Runs or Activations behind. Reapply
@@ -810,7 +810,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
         severity: "attention",
         title: kind === "watcher" ? `${trigger.name} filesystem watcher stopped` : `${trigger.name} could not persist filesystem activity`,
         body: kind === "watcher"
-          ? `The Trigger was disabled after its Project watcher failed: ${error}`
+          ? `The Automation was disabled after its Project watcher failed: ${error}`
           : `Filesystem activity remains durably pending when possible, but the latest watcher event could not be persisted: ${error}`,
         projectId: trigger.projectId,
         conversationId: trigger.conversationId,

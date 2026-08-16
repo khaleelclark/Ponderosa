@@ -102,7 +102,7 @@ export function triggerSourceConfig(
 }
 
 export function parseCreateTrigger(value: unknown): CreateTriggerRequest {
-  const body = triggerObject(value, "Trigger body");
+  const body = triggerObject(value, "Automation body");
   exactTriggerFields(
     body,
     [
@@ -114,7 +114,7 @@ export function parseCreateTrigger(value: unknown): CreateTriggerRequest {
       "enabled",
       "runBudget",
     ],
-    "Trigger",
+    "Automation",
   );
   if (
     typeof body.conversationId !== "string" ||
@@ -170,11 +170,11 @@ export function parseUpdateTrigger(
   value: unknown,
   sourceKind: TriggerSourceKind,
 ): UpdateTriggerRequest {
-  const body = triggerObject(value, "Trigger patch");
+  const body = triggerObject(value, "Automation patch");
   exactTriggerFields(
     body,
     ["name", "instructions", "sourceConfig", "enabled", "runBudget"],
-    "Trigger patch",
+    "Automation patch",
   );
   if (body.name !== undefined && typeof body.name !== "string") {
     throw new Error("name must be a string");
