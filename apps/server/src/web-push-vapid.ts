@@ -23,7 +23,7 @@ const MAX_VAPID_FILE_BYTES = 16 * 1024;
 // automatic identity self-contained, but identify its application server with
 // a stable public HTTPS contact URI. Operators can still override this with
 // PONDEROSA_VAPID_SUBJECT without rotating the persisted keypair.
-const DEFAULT_VAPID_SUBJECT = "https://github.com/khaleelclark/Ponderosa";
+const DEFAULT_VAPID_SUBJECT = "https://github.com/khaleelclark";
 
 export interface WebPushVapidDetails {
   publicKey?: string;
