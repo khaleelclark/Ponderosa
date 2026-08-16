@@ -16,6 +16,44 @@ export type LazyRouteLoad<Props extends object> = () => Promise<{
   default: ComponentType<Props>;
 }>;
 
+type RenderableLazyRoute = ComponentType<Record<string, unknown>>;
+
+/*
+ * Route loaders are module-level functions. Cache the React.lazy wrapper by
+ * loader so returning to an already downloaded route family does not create a
+ * new payload and briefly reveal the Suspense fallback.
+ */
+const lazyRouteCache = new WeakMap<
+  LazyRouteLoad<object>,
+  RenderableLazyRoute
+>();
+
+function createLazyRoute<Props extends object>(
+  load: LazyRouteLoad<Props>,
+): RenderableLazyRoute {
+  return lazy(load) as unknown as RenderableLazyRoute;
+}
+
+function getLazyRoute<Props extends object>(
+  load: LazyRouteLoad<Props>,
+): RenderableLazyRoute {
+  const cacheKey = load as unknown as LazyRouteLoad<object>;
+  const cached = lazyRouteCache.get(cacheKey);
+  if (cached) return cached;
+
+  const route = createLazyRoute(load);
+  lazyRouteCache.set(cacheKey, route);
+  return route;
+}
+
+function replaceLazyRoute<Props extends object>(
+  load: LazyRouteLoad<Props>,
+): RenderableLazyRoute {
+  const route = createLazyRoute(load);
+  lazyRouteCache.set(load as unknown as LazyRouteLoad<object>, route);
+  return route;
+}
+
 class LazyRouteErrorBoundary extends Component<{
   attempt: number;
   maxRetries: number;
@@ -88,8 +126,10 @@ export function RecoverableLazyRoute<Props extends object>({
   reload?(): void;
 }): JSX.Element {
   const [attempt, setAttempt] = useState(0);
-  const LazyComponent = useMemo(() => lazy(load), [attempt, load]);
-  const RenderableComponent = LazyComponent as unknown as ComponentType<Record<string, unknown>>;
+  const RenderableComponent = useMemo(
+    () => attempt === 0 ? getLazyRoute(load) : replaceLazyRoute(load),
+    [attempt, load],
+  );
   return (
     <LazyRouteErrorBoundary
       key={attempt}

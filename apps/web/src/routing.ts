@@ -14,7 +14,7 @@
 // workspace-tab routes) are persisted locally; all real data still comes from
 // the server.
 
-import { useCallback, useEffect, useState } from "react";
+import { startTransition, useCallback, useEffect, useState } from "react";
 import type { AgentTelemetryStream, ConversationChannel } from "@ponderosa/core";
 import { routeToPath } from "./routeRegistry";
 
@@ -217,7 +217,9 @@ export function useRoute(): {
   const [route, setRoute] = useState<Route>(() => parseRoute(window.location.pathname, window.location.search));
 
   useEffect(() => {
-    const onPop = () => setRoute(parseRoute(window.location.pathname, window.location.search));
+    const onPop = () => startTransition(() => {
+      setRoute(parseRoute(window.location.pathname, window.location.search));
+    });
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
@@ -225,7 +227,7 @@ export function useRoute(): {
   const navigate = useCallback((next: Route, options?: { replace?: boolean }) => {
     const path = routeToPath(next);
     if (path === `${window.location.pathname}${window.location.search}`) {
-      setRoute(next);
+      startTransition(() => setRoute(next));
       return;
     }
     if (options?.replace) {
@@ -233,7 +235,7 @@ export function useRoute(): {
     } else {
       window.history.pushState(null, "", path);
     }
-    setRoute(next);
+    startTransition(() => setRoute(next));
   }, []);
 
   return { route, navigate };

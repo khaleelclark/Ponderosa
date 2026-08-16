@@ -10,7 +10,7 @@ import { HomeView } from "./components/HomeView";
 import type { ProjectBrowserRequest } from "./components/ProjectBrowserContext";
 import { RecoverableLazyRoute } from "./components/RecoverableLazyRoute";
 import type { Route } from "./routing";
-import { assertNeverRoute, isProjectRoute, routeToPath } from "./routeRegistry";
+import { assertNeverRoute, isProjectRoute } from "./routeRegistry";
 import type { ColorMode } from "./theme";
 
 type RemovableWorkspaceResourceRoute = Extract<
@@ -95,7 +95,6 @@ export function WorkspaceRouteOutlet({
   onResourceDeleted,
   onToggleColorMode,
 }: WorkspaceRouteOutletProps): JSX.Element {
-  const routePath = routeToPath(route);
   return (
     <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
       {loadError ? (
@@ -114,13 +113,20 @@ export function WorkspaceRouteOutlet({
         </Box>
       ) : route.kind === "create" ? (
         <RecoverableLazyRoute
-          key={routePath}
+          key={[
+            "create",
+            route.resource,
+            route.projectId ?? "",
+            route.conversationId ?? "",
+            route.managerAgentId ?? "",
+            route.agentId ?? "",
+          ].join(":")}
           load={loadCreateWorkspace}
           componentProps={{ route, projects, engines, preferences, onCancel: onCancelCreate, onNavigate }}
         />
       ) : route.kind === "wiki" ? (
         <RecoverableLazyRoute
-          key={routePath}
+          key="wiki"
           load={loadWikiView}
           componentProps={{ articleId: route.articleId, navigate: onNavigate }}
         />
@@ -145,13 +151,13 @@ export function WorkspaceRouteOutlet({
         </Box>
       ) : route.kind === "allChat" ? (
         <RecoverableLazyRoute
-          key={routePath}
+          key="all-chat"
           load={loadAllChatView}
           componentProps={{ onNavigate, notifications }}
         />
       ) : route.kind === "projects" ? (
         <RecoverableLazyRoute
-          key={routePath}
+          key="projects"
           load={loadAllProjectsView}
           componentProps={{
             projects,
@@ -165,7 +171,7 @@ export function WorkspaceRouteOutlet({
         />
       ) : route.kind === "allAgents" ? (
         <RecoverableLazyRoute
-          key={routePath}
+          key="all-agents"
           load={loadAllAgentsWorkspace}
           componentProps={{
             projects,
@@ -188,7 +194,7 @@ export function WorkspaceRouteOutlet({
         />
       ) : route.kind === "allChats" ? (
         <RecoverableLazyRoute
-          key={routePath}
+          key="all-chats"
           load={loadAllChatsWorkspace}
           componentProps={{
             projects,
@@ -203,7 +209,7 @@ export function WorkspaceRouteOutlet({
         />
       ) : route.kind === "allTriggers" ? (
         <RecoverableLazyRoute
-          key={routePath}
+          key="all-triggers"
           load={loadAllTriggersWorkspace}
           componentProps={{
             projects,
@@ -216,7 +222,7 @@ export function WorkspaceRouteOutlet({
         />
       ) : route.kind === "settings" ? (
         <RecoverableLazyRoute
-          key={routePath}
+          key="settings"
           load={loadWorkspaceSettingsView}
           componentProps={{
             preferences,
@@ -230,13 +236,13 @@ export function WorkspaceRouteOutlet({
         />
       ) : route.kind === "profile" ? (
         <RecoverableLazyRoute
-          key={routePath}
+          key="profile"
           load={loadOperatorProfileWorkspace}
           componentProps={{ preferences, onPreferences }}
         />
       ) : route.kind === "usage" ? (
         <RecoverableLazyRoute
-          key={routePath}
+          key="usage"
           load={loadWorkspaceSettingsView}
           componentProps={{
             preferences,
@@ -252,7 +258,7 @@ export function WorkspaceRouteOutlet({
       ) : isProjectRoute(route) ? (
         selectedProjectId ? (
           <RecoverableLazyRoute
-            key={routePath}
+            key={`project:${selectedProjectId}`}
             load={loadProjectShell}
             componentProps={{
               projectId: selectedProjectId,
