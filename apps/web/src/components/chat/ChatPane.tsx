@@ -1,5 +1,4 @@
-import TagIcon from "@mui/icons-material/Tag";
-import { Box, ButtonBase, Chip, IconButton, Stack, Tooltip } from "@mui/material";
+import { Box, ButtonBase, Chip, Stack } from "@mui/material";
 import { PONDEROSA_MESSAGE_TOOL } from "@ponderosa/core";
 import type {
   AgentActivityDto,
@@ -105,7 +104,6 @@ function ChatPaneComponent({
   onOpenAgent,
   onOpenMessageSource,
   onCommunicationVisible,
-  onMentionAgent,
   onScrollPositionChange,
   previewScope,
   scrollStorageKey,
@@ -133,7 +131,6 @@ function ChatPaneComponent({
     communicationEventId: string | undefined,
     visible: boolean,
   ): void;
-  onMentionAgent?(): void;
   onScrollPositionChange?(element: HTMLElement, nearBottom: boolean): void;
   previewScope?: LinkPreviewScope;
   scrollStorageKey?: string;
@@ -520,30 +517,9 @@ function ChatPaneComponent({
                     }
                     onOpenAgent={onOpenAgent}
                     compactSuccess={message.communicationIntent === "user_dm"}
+                    compactSuccessTooltip={false}
                   />
                 ) : undefined,
-              actions: (
-                <>
-                  <CopyMessageButton
-                    text={resolveMessageMentionText(
-                      message.text,
-                      message.agentMentions,
-                    )}
-                  />
-                  {message.authorAgentId === message.agentId &&
-                  onMentionAgent ? (
-                    <Tooltip title={`Mention ${senderLabel}`}>
-                      <IconButton
-                        size="small"
-                        aria-label={`Mention ${senderLabel}`}
-                        onClick={onMentionAgent}
-                      >
-                        <TagIcon fontSize="inherit" />
-                      </IconButton>
-                    </Tooltip>
-                  ) : null}
-                </>
-              ),
               }}
             />
           </Fragment>

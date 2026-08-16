@@ -75,12 +75,14 @@ export function MessageDeliveryStatus({
   recipientName,
   onOpenAgent,
   compactSuccess = false,
+  compactSuccessTooltip = true,
 }: {
   projectId?: string;
   receipts?: MessageDeliveryReceiptDto[];
   recipientName(agentId: string): string;
   onOpenAgent?(agentId: string): void;
   compactSuccess?: boolean;
+  compactSuccessTooltip?: boolean;
 }): JSX.Element | null {
   const queryClient = useQueryClient();
   const [now, setNow] = useState(Date.now());
@@ -105,15 +107,19 @@ export function MessageDeliveryStatus({
         deliveryLabel(receipt, recipientName(receipt.targetAgentId), now),
       )
       .join(" ");
-    return (
-      <Tooltip title={label}>
-        <CheckCircleOutlineIcon
-          role="status"
-          aria-label={label}
-          sx={{ fontSize: 14, color: "success.main" }}
-        />
-      </Tooltip>
+    const compactLabel = receipts
+      .map(receipt => compactDeliveryLabel(receipt))
+      .join(". ");
+    const statusIcon = (
+      <CheckCircleOutlineIcon
+        role="status"
+        aria-label={compactSuccessTooltip ? label : compactLabel}
+        sx={{ fontSize: 14, color: "success.main" }}
+      />
     );
+    return compactSuccessTooltip ? (
+      <Tooltip title={label}>{statusIcon}</Tooltip>
+    ) : statusIcon;
   }
   const letRunFinish = async (receipt: MessageDeliveryReceiptDto) => {
     if (!receipt.injectionId) return;

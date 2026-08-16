@@ -23,7 +23,6 @@ import { api } from "../api";
 import {
   AGENT_HISTORY_PAGE_SIZE,
 } from "../agentHistoryPagination";
-import { createClientId } from "../clientId";
 import {
   agentStatusColor,
   agentStatusLabel,
@@ -39,7 +38,7 @@ import {
 } from "../hooks/queries";
 import { useAgentStream } from "../hooks/useAgentStream";
 import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
-import { agentIdForMentionHandle, agentMentionHandle } from "../mentions";
+import { agentIdForMentionHandle } from "../mentions";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import {
   highlightFocusedMessage,
@@ -161,10 +160,6 @@ export function AgentDetail({
   const [queuedMessageNotice, setQueuedMessageNotice] = useState<
     string | undefined
   >();
-  const [mentionInsertRequest, setMentionInsertRequest] = useState<{
-    id: string;
-    text: string;
-  }>();
   const [agentWorkFocus, setAgentWorkFocus] = useState<string>();
   const [recheckEngineOpen, setRecheckEngineOpen] = useState(false);
   const focusedMessage = useRef<string>();
@@ -599,13 +594,6 @@ export function AgentDetail({
       ),
     [onOpenCommunicationSource],
   );
-  const mentionCurrentAgent = useCallback(() => {
-    if (!detail) return;
-    setMentionInsertRequest({
-      id: createClientId(),
-      text: `#${agentMentionHandle(detail.agent.title)}`,
-    });
-  }, [detail?.agent.title]);
   const chatPreviewScope = useMemo(
     () =>
       detail && projectedHealth?.runtimeActivity?.executionId
@@ -974,7 +962,6 @@ export function AgentDetail({
         onOpenAgent={onOpenAgent}
         onOpenAgentSettings={onOpenAgentSettings}
         onOpenMessageSource={openCommunicationSourceFromMessage}
-        onMentionAgent={() => mentionCurrentAgent()}
         onLoadOlderChat={() => void loadOlderCombinedTimeline()}
         onLoadOlderTelemetry={() => void loadOlderTelemetry()}
         onOpenFile={openActivityFile}
@@ -1033,7 +1020,6 @@ export function AgentDetail({
           projectId: detail.agent.projectId,
           draftStorageKey: chatStateKey("draft", `agent.${agentId}`),
           conversationDraftId: `agent:${agentId}`,
-          insertTextRequest: mentionInsertRequest,
           controls: agentRuntimeControls,
           disabled: sendMessage.isPending || updateRuntimeSettings.isPending,
           running: false,
