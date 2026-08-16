@@ -200,6 +200,7 @@ export function AgentDetailPanels({
         artifacts={detail.artifacts}
         agentId={agentId}
         agentTitle={detail.agent.title}
+        projectId={detail.agent.projectId}
         projectRoot={projectRoot}
         initialArtifactId={
           focusTelemetry?.stream === "artifacts"

@@ -29,6 +29,7 @@ export function ArtifactsPane({
   artifacts,
   agentId,
   agentTitle,
+  projectId,
   projectRoot,
   initialArtifactId,
   onSelectArtifact,
@@ -37,6 +38,7 @@ export function ArtifactsPane({
   artifacts: ArtifactDto[];
   agentId: string;
   agentTitle: string;
+  projectId: string;
   projectRoot?: string;
   initialArtifactId?: string;
   onSelectArtifact?(artifactId: string): void;
@@ -132,7 +134,13 @@ export function ArtifactsPane({
           </Box>)}
         </Box>
         <Box sx={{ minWidth: 0, minHeight: 0, overflow: "auto", bgcolor: "background.default" }}>
-        <AgentArtifactPreview artifact={selectedArtifact} agentId={agentId} agentTitle={agentTitle} projectRoot={projectRoot} />
+        <AgentArtifactPreview
+          artifact={selectedArtifact}
+          agentId={agentId}
+          agentTitle={agentTitle}
+          projectId={projectId}
+          projectRoot={projectRoot}
+        />
         </Box>
       </Box>
       <ResourceContextMenu state={artifactMenu} onClose={() => setArtifactMenu(undefined)} onOpenInNewTab={onOpenArtifactInNewTab} />

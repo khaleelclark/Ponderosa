@@ -3,12 +3,26 @@ import { presentProjectPath } from "../../projectPathPresentation";
 
 type PresentedArtifact = Pick<ArtifactDto, "kind" | "path" | "sourcePath" | "summary">;
 
+/** Resolve the workspace path represented by an immutable file-change artifact. */
+export function artifactSourcePath(
+  artifact: Pick<ArtifactDto, "path" | "sourcePath" | "summary">,
+): string {
+  if (artifact.sourcePath) return artifact.sourcePath;
+  const historicalSourcePath = artifact.summary
+    ?.trim()
+    .match(/^(?:create|edit|delete)\s+(.+)$/iu)?.[1]
+    ?.trim();
+  return historicalSourcePath || artifact.path;
+}
+
 export function artifactDisplayPath(
-  artifact: Pick<ArtifactDto, "path" | "sourcePath">,
+  artifact: Pick<ArtifactDto, "path" | "sourcePath" | "summary">,
   projectRoot?: string,
 ): string {
-  const sourcePath = artifact.sourcePath ?? artifact.path;
-  return presentProjectPath(projectRoot ?? "", sourcePath).displayPath;
+  return presentProjectPath(
+    projectRoot ?? "",
+    artifactSourcePath(artifact),
+  ).displayPath;
 }
 
 /**
