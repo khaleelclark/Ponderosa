@@ -198,7 +198,11 @@ export function ComposerTextInput({
             pb: 0.5,
           },
           "& textarea": {
-            fontSize: 15,
+            // iOS Safari auto-zooms focused form controls below 16px. That zoom
+            // detaches the app from the shrinking visual viewport and can move
+            // the composer behind the software keyboard. Keep mobile inputs at
+            // the native-safe size while preserving the denser desktop type.
+            fontSize: { xs: 16, sm: 15 },
             lineHeight: "22px",
             maxHeight: "110px !important",
             overflowY: "auto !important",
