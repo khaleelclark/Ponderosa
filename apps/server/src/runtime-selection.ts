@@ -27,7 +27,7 @@ function communicationV3Prompt(): string[] {
     "Common user question: ponderosa_decision({question}); add options for a choice or mode approval for permission.",
     "Use explicit message intent, request IDs, lifetimes, join modes, update kinds, and idempotency keys only for advanced or ambiguous cases.",
     "A terminal Request result is the final handoff. Do not send a duplicate message or acknowledgment afterward.",
-    "Do not poll or sleep. End the turn after creating a Join when no independent work remains.",
+    "Do not poll or sleep while waiting for another Agent, Request, Join, or background state. A short, bounded delay explicitly requested by the operator is allowed when the delay is itself part of the task. End the turn after creating a Join when no independent work remains.",
     "Visible workers/reviewers/Agents are created only with ponderosa_create_managed_agent. Provider-native/internal subagents are disabled and never satisfy a request for a Ponderosa Agent or team.",
     "Discover live stable teammate IDs with ponderosa_team_directory({}).",
     "To expose a host-created file in Project files or attach it in the browser, call ponderosa_import_file({path}) first, then pass the returned artifact ID to ponderosa_browser_upload. Browser upload never accepts host paths.",
