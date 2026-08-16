@@ -19,10 +19,9 @@ export function spawnContainedCli(input: {
   env: NodeJS.ProcessEnv;
   stdin: "ignore" | "pipe";
 }): ContainedSpawn {
-  if (process.platform === "win32") {
-    return spawnWindowsContainedProcess(input);
-  }
-  return {
+  const contained = process.platform === "win32"
+    ? spawnWindowsContainedProcess(input)
+    : {
     child: nodeSpawn(input.bin, input.args, {
       cwd: input.cwd,
       env: input.env,
@@ -30,4 +29,12 @@ export function spawnContainedCli(input: {
       detached: true,
     }),
   };
+  // Provider executables are optional host dependencies. Always keep a
+  // baseline observer installed so a missing Claude or Codex binary can be
+  // reported by the calling discovery/auth/runtime boundary without Node
+  // treating the ChildProcess `error` event as an uncaught daemon failure.
+  // Callers retain their own listeners to preserve the operation-specific
+  // unavailable/error response.
+  contained.child.on("error", () => undefined);
+  return contained;
 }
