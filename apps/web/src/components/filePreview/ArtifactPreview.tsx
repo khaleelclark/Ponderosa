@@ -85,12 +85,14 @@ export function AgentArtifactPreview({
     >
       <Button
         variant={view === "current" ? "contained" : "outlined"}
+        aria-pressed={view === "current"}
         onClick={() => setView("current")}
       >
         Current file
       </Button>
       <Button
         variant={view === "diff" ? "contained" : "outlined"}
+        aria-pressed={view === "diff"}
         onClick={() => setView("diff")}
       >
         Recorded diff
@@ -104,10 +106,14 @@ export function AgentArtifactPreview({
       previewUrl={currentFile?.previewUrl}
       downloadUrl={currentFile?.downloadUrl}
       loading={currentFileQuery.isLoading}
-      error={currentFileQuery.isError}
+      error={currentFileQuery.isError
+        ? "The current file may have been deleted or is not safely accessible. Select Recorded diff to inspect the saved change."
+        : false}
       truncated={currentFile?.truncated}
       totalBytes={currentFile?.size}
-      emptyMessage="The current file has no safe inline preview. Download it to inspect it."
+      emptyMessage={currentFile?.downloadUrl
+        ? "The current file has no safe inline preview. Download it to inspect it."
+        : "The current file has no safe inline preview. Select Recorded diff to inspect the saved change."}
     /> : <FilePreview
       title={artifactDisplayLabel(artifact, safeArtifactPath)}
       path={safeArtifactPath}
