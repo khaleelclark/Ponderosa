@@ -35,7 +35,7 @@ import {
   workspaceDirectoryItems,
 } from "../hooks/useWorkspaceDirectory";
 import { queryKeys } from "../queryKeys";
-import type { Route } from "../routing";
+import { routeProjectId, type Route } from "../routing";
 import {
   reorderStableIds,
   resourcePreferenceKey,
@@ -60,6 +60,7 @@ import {
 } from "./WorkspaceSidebar.helpers";
 import { CollectionStateFeedback } from "./CollectionPrimitives";
 import {
+  SidebarSectionHeading,
   SharedSidebarPanel,
 } from "./WorkspaceSidebar.parts";
 import {
@@ -238,6 +239,10 @@ export function WorkspaceSidebar({
         .map(item => item.health),
     }];
   });
+  const activeProjectId = routeProjectId(route);
+  const activeProject = activeProjectId
+    ? projectById.get(activeProjectId)
+    : undefined;
   const counts = {
     running:
       agentDirectoryQuery.data?.pages.at(-1)?.activeCount ?? 0,
@@ -440,6 +445,32 @@ export function WorkspaceSidebar({
       searchLabel="Search projects"
       searchValue={filter}
       onSearchValueChange={setFilter}
+      topContent={activeProject ? (
+        <Box component="section" sx={{ mb: 2 }}>
+          <SidebarSectionHeading>Current Project</SidebarSectionHeading>
+          <List disablePadding>
+            <ListItemButton
+              aria-label={`Open Project Browser for ${activeProject.label}`}
+              selected={route.kind === "browser" && !route.agentId}
+              onClick={() => onNavigate({
+                kind: "browser",
+                projectId: activeProject.id,
+              })}
+              sx={{ borderRadius: 1.25, px: 1, py: 0.65 }}
+            >
+              <ListItemIcon sx={{ minWidth: 38 }}>
+                <LanguageIcon fontSize="small" />
+              </ListItemIcon>
+              <ListItemText
+                primary="Project Browser"
+                secondary={activeProject.label}
+                primaryTypographyProps={{ noWrap: true, fontSize: 13 }}
+                secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
+              />
+            </ListItemButton>
+          </List>
+        </Box>
+      ) : undefined}
       starredRows={projectResourceRows(starredProjects)}
       allRows={projectResourceRows(unstarredProjects)}
       collectionFeedback={<CollectionStateFeedback request={projectDirectoryQuery.requestState} itemCount={projectList.length} filtersActive={Boolean(filter.trim())} resourceLabel="Projects" emptyTitle="No Projects Yet" noMatchTitle={"No Projects match “" + filter.trim() + "”."} onClearFilters={() => setFilter("")} compact />}
