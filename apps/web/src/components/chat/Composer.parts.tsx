@@ -38,10 +38,12 @@ export function ComposerDestinationBar({
 export function ComposerTargetDestinationAction({
   broadcast,
   handles,
+  labelPrefix,
   onClear,
 }: {
   broadcast: boolean;
   handles: string[];
+  labelPrefix?: string;
   onClear(): void;
 }): JSX.Element | null {
   const labels = [
@@ -49,9 +51,12 @@ export function ComposerTargetDestinationAction({
     ...handles.map(handle => `#${handle}`),
   ];
   if (labels.length === 0) return null;
-  const label = labels.length > 1
+  const destinationLabel = labels.length > 1
     ? `${labels[0]} +${labels.length - 1}`
     : labels[0]!;
+  const label = labelPrefix
+    ? `${labelPrefix}${destinationLabel.replace(/^#/u, "")}`
+    : destinationLabel;
   return (
     <Chip
       size="small"

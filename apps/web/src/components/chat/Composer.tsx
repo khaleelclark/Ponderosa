@@ -190,6 +190,10 @@ export function Composer({
     handle: string;
     selectionKey: string;
   }>();
+  const [activeDefaultDestination, setActiveDefaultDestination] = useState<{
+    handle: string;
+    selectionKey: string;
+  }>();
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const markUserDraftMutation = useCallback(() => {
     userDraftMutationGeneration.current += 1;
@@ -277,7 +281,14 @@ export function Composer({
     retryUpload: retryDraftUpload,
     uploadStates: draftUploadStates,
   } = draftAttachments;
-  const submissionText = composerSubmissionText(text, pastedText);
+  const composedText = composerSubmissionText(text, pastedText);
+  const submissionText =
+    destinationMode === "project-chat" && activeDefaultDestination
+      ? prependComposerDestination(
+          composedText,
+          activeDefaultDestination.handle,
+        )
+      : composedText;
   const routingMentionHandles = useMemo(
     () =>
       destinationMode === "project-chat"
@@ -374,6 +385,7 @@ export function Composer({
           ? `#${unresolvedAmbiguousTarget} matches more than one Agent. Use a message's # action to choose the exact Agent.`
           : undefined;
   const toggleNewAgentDestination = () => {
+    setActiveDefaultDestination(undefined);
     update(current => {
       if (hasComposerDestination(current, NEW_AGENT_DESTINATION_HANDLE)) {
         return removeHandle(current, NEW_AGENT_DESTINATION_HANDLE);
@@ -600,34 +612,37 @@ export function Composer({
   useEffect(() => {
     if (conversationDraftId && !draftReady.current) return;
     const previous = appliedDefaultDestination.current;
-    if (!defaultDestination) {
+    if (!defaultDestination || destinationMode !== "project-chat") {
       appliedDefaultDestination.current = undefined;
+      setActiveDefaultDestination(undefined);
       return;
     }
     if (previous?.selectionKey === defaultDestination.selectionKey) return;
     appliedDefaultDestination.current = defaultDestination;
-    update(current => {
-      const withoutPrevious = previous && hasComposerDestination(
-        current,
-        previous.handle,
-      )
-        ? removeHandle(current, previous.handle)
-        : current;
-      const mayPopulate =
-        destinationMode !== "project-chat" ||
-        withoutPrevious.trim().length === 0 ||
-        Boolean(previous);
-      return mayPopulate
-        ? prependComposerDestination(withoutPrevious, defaultDestination.handle)
-        : current;
-    });
+    let nextText = textRef.current;
+    if (previous && hasComposerDestination(nextText, previous.handle)) {
+      nextText = removeHandle(nextText, previous.handle);
+    }
+    const containedLegacyDestination = hasComposerDestination(
+      nextText,
+      defaultDestination.handle,
+    );
+    if (containedLegacyDestination) {
+      nextText = removeHandle(nextText, defaultDestination.handle);
+    }
+    const mayPopulate =
+      nextText.trim().length === 0 ||
+      Boolean(previous) ||
+      containedLegacyDestination;
+    if (nextText !== textRef.current) replaceText(nextText);
+    setActiveDefaultDestination(mayPopulate ? defaultDestination : undefined);
   }, [
     conversationDraftId,
     defaultDestination?.handle,
     defaultDestination?.selectionKey,
     destinationMode,
     draftReadyVersion,
-    update,
+    replaceText,
   ]);
 
   useComposerDraftStorageWrite({
@@ -956,6 +971,7 @@ export function Composer({
           draftAttachmentsLocallyEdited.current = false;
           unrestoredDraftAttachmentIds.current = [];
           replaceText("");
+          setActiveDefaultDestination(undefined);
           if (draftStorageKey) writeChatState(draftStorageKey, "");
           replacePastedText(undefined);
           clearDraftAttachments();
@@ -1139,10 +1155,19 @@ export function Composer({
           />
         ) : null}
         {destinationMode === "project-chat" ? (
-          <ComposerProjectDestinationAction
-            newAgentSelected={newAgentSelected}
-            toggleNewAgent={toggleNewAgentDestination}
-          />
+          activeDefaultDestination ? (
+            <ComposerTargetDestinationAction
+              broadcast={false}
+              handles={[activeDefaultDestination.handle]}
+              labelPrefix="To: "
+              onClear={() => setActiveDefaultDestination(undefined)}
+            />
+          ) : (
+            <ComposerProjectDestinationAction
+              newAgentSelected={newAgentSelected}
+              toggleNewAgent={toggleNewAgentDestination}
+            />
+          )
         ) : null}
         {leadingControls ? (
           <Box sx={{ minWidth: 0, maxWidth: "100%" }}>
