@@ -106,6 +106,10 @@ import {
   notificationsForAvailableProjects,
 } from "./attention";
 import { useAppViewport } from "./hooks/useAppViewport";
+import {
+  ActiveNotificationViewProvider,
+  activeNotificationViewForRoute,
+} from "./notificationActiveView";
 
 const OPERATOR_PROFILE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 const OPERATOR_PROFILE_IMAGE_ACCEPT =
@@ -123,6 +127,29 @@ export default function App({
   useAppViewport();
   const queryClient = useQueryClient();
   const { route, navigate } = useRoute();
+  const [pageVisible, setPageVisible] = useState(
+    () => document.visibilityState === "visible",
+  );
+  const activeNotificationView = useMemo(
+    () => activeNotificationViewForRoute(route, pageVisible),
+    [route, pageVisible],
+  );
+
+  useEffect(() => {
+    const updateVisibility = () => setPageVisible(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", updateVisibility);
+    return () => document.removeEventListener("visibilitychange", updateVisibility);
+  }, []);
+
+  useEffect(() => {
+    const publish = () => navigator.serviceWorker?.controller?.postMessage({
+      type: "ponderosa:active-notification-view",
+      view: activeNotificationView ?? null,
+    });
+    publish();
+    navigator.serviceWorker?.addEventListener("controllerchange", publish);
+    return () => navigator.serviceWorker?.removeEventListener("controllerchange", publish);
+  }, [activeNotificationView]);
   const [initialWorkspaceSession] = useState(() => {
     try {
       const restored = restoreWorkspaceTabSession(
@@ -960,6 +987,7 @@ export default function App({
                   display: "grid",
                 }}
               >
+              <ActiveNotificationViewProvider value={activeNotificationView}>
               <WorkspaceConnectionProvider value={workspaceConnection}>
                 <WorkspaceErrorBoundary
                   title="This workspace view could not be displayed."
@@ -1007,6 +1035,7 @@ export default function App({
                   />
                 </WorkspaceErrorBoundary>
               </WorkspaceConnectionProvider>
+              </ActiveNotificationViewProvider>
               </Box>
             </Box>
           </Box>

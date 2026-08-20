@@ -124,6 +124,26 @@ export function registerNotificationMutationRoutes(
     },
   );
 
+  app.post<{ Body: { notificationIds?: unknown } }>(
+    "/api/notifications/read-batch",
+    async (request, reply) => {
+      const notificationIds = request.body?.notificationIds;
+      if (!Array.isArray(notificationIds) || notificationIds.length > 100 ||
+        notificationIds.some((id) => typeof id !== "string" || !id || id.length > 200)) {
+        return reply.code(400).send({
+          error: "notificationIds must contain at most 100 notification IDs",
+        });
+      }
+      const cursor = options.workspace.cursor();
+      let read = 0;
+      for (const id of new Set(notificationIds as string[])) {
+        if (options.workspace.readNotification(id)) read += 1;
+      }
+      options.publishWorkspaceSince(cursor);
+      return { read };
+    },
+  );
+
   app.post("/api/notifications/read", async () => {
     const cursor = options.workspace.cursor();
     const read = options.workspace.readAllNotifications();

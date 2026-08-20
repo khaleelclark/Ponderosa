@@ -102,6 +102,9 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
         workspace.createNotification({
           projectId: stored.event.projectId,
           ...(stored.event.conversationId ? { conversationId: stored.event.conversationId } : {}),
+          ...(stored.event.intent === "direct_to_user"
+            ? { agentId: stored.event.sender.agentId }
+            : {}),
           communicationEventId: stored.event.eventId,
           kind,
           title: store.getAgent(stored.event.sender.agentId)?.title ?? "Agent response",

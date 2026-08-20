@@ -1,19 +1,28 @@
+const activeNotificationViews = new Map();
+
+self.addEventListener("message", (event) => {
+  if (event.data?.type !== "ponderosa:active-notification-view" || !event.source?.id) return;
+  if (event.data.view) activeNotificationViews.set(event.source.id, event.data.view);
+  else activeNotificationViews.delete(event.source.id);
+});
+
+function destinationMatchesView(payload, view) {
+  if (!view || payload.projectId !== view.projectId) return false;
+  return view.kind === "conversation"
+    ? payload.conversationId === view.conversationId
+    : view.kind === "agent" && payload.agentId === view.agentId;
+}
+
 self.addEventListener("push", (event) => {
   if (!event.data) return;
   let payload;
   try { payload = event.data.json(); } catch { return; }
   event.waitUntil((async () => {
-    if (payload.conversationId) {
+    if (payload.conversationId || payload.agentId) {
       const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-      const target = payload.url ? new URL(payload.url, self.location.origin) : undefined;
       const alreadyOpen = windows.some((client) => {
         if (client.visibilityState !== "visible") return false;
-        const clientUrl = new URL(client.url);
-        if (target && clientUrl.pathname === target.pathname && clientUrl.search === target.search) return true;
-        const parts = clientUrl.pathname.split("/").filter(Boolean).map(decodeURIComponent);
-        const projectMatches = !payload.projectId || (parts[0] === "projects" && parts[1] === payload.projectId);
-        const conversationIndex = parts.findIndex((part) => part === "chats" || part === "conversations");
-        return projectMatches && conversationIndex >= 0 && parts[conversationIndex + 1] === payload.conversationId;
+        return destinationMatchesView(payload, activeNotificationViews.get(client.id));
       });
       if (alreadyOpen) return;
     }

@@ -480,6 +480,7 @@ export const realApi = {
     return response.activeNotificationIds;
   },
   async markNotificationRead(notificationId: string): Promise<void> { await requestJson(`/api/notifications/${encodeURIComponent(notificationId)}/read`, { method: "POST" }); },
+  async markNotificationsRead(notificationIds: string[]): Promise<void> { await requestJson("/api/notifications/read-batch", { method: "POST", body: JSON.stringify({ notificationIds }) }); },
   async clearConversationNotifications(conversationId: string, scope?: "messages"): Promise<void> { await requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/notifications/read`, { method: "POST", ...(scope ? { body: JSON.stringify({ scope }) } : {}) }); },
   async markAllNotificationsRead(): Promise<void> { await requestJson("/api/notifications/read", { method: "POST" }); },
   setNotificationStatus(notificationId: string, status: "resolved" | "dismissed"): Promise<WorkspaceNotificationDto> { return requestJson(`/api/notifications/${encodeURIComponent(notificationId)}/status`, { method: "POST", body: JSON.stringify({ status }) }); },

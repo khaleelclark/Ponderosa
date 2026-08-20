@@ -4,6 +4,10 @@ import { useCallback, useEffect, useMemo, useRef } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import { isOrdinaryMessageNotification } from "../workspaceNavigation";
+import {
+  notificationMatchesActiveView,
+  useActiveNotificationView,
+} from "../notificationActiveView";
 
 export function useConversationNotificationVisibility(
   notificationsQuery: { data?: WorkspaceNotificationPageDto | WorkspaceNotificationDto[] },
@@ -13,6 +17,7 @@ export function useConversationNotificationVisibility(
   visible: boolean,
 ) => void {
   const markedVisibleNotificationIds = useRef(new Set<string>());
+  const activeView = useActiveNotificationView();
   const visibleCommunicationEventIds = useRef(new Set<string>());
   const observedNotificationIds = useRef(new Set<string>());
   const retryAttempts = useRef(new Map<string, number>());
@@ -25,16 +30,15 @@ export function useConversationNotificationVisibility(
   const attemptVisible = useRef<(communicationEventId: string) => void>(() => undefined);
 
   attemptVisible.current = (communicationEventId: string) => {
-    if (
-      document.visibilityState === "hidden" ||
-      !visibleCommunicationEventIds.current.has(communicationEventId)
-    ) return;
+    if (document.visibilityState === "hidden") return;
     const matchingNotifications = notifications.current.filter((item) =>
       item.communicationEventId === communicationEventId &&
       !item.readAt &&
       (item.status ?? "open") === "open" &&
       isOrdinaryMessageNotification(item) &&
-      !markedVisibleNotificationIds.current.has(item.id));
+      !markedVisibleNotificationIds.current.has(item.id) &&
+      (visibleCommunicationEventIds.current.has(communicationEventId) ||
+        notificationMatchesActiveView(item, activeView)));
     if (!matchingNotifications.length) return;
     const ids = new Set(matchingNotifications.map((item) => item.id));
     ids.forEach((id) => markedVisibleNotificationIds.current.add(id));
@@ -44,7 +48,7 @@ export function useConversationNotificationVisibility(
       items: current.items.map((item) => ids.has(item.id) ? { ...item, readAt } : item),
       unreadUpdateCount: Math.max(0, current.unreadUpdateCount - ids.size),
     }) : current);
-    void Promise.all(matchingNotifications.map((item) => api.markNotificationRead(item.id)))
+    void api.markNotificationsRead([...ids])
       .then(() => {
         retryAttempts.current.delete(communicationEventId);
         void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
@@ -90,11 +94,17 @@ export function useConversationNotificationVisibility(
       ) newlyArrivedCommunicationEventIds.add(item.communicationEventId);
     }
     newlyArrivedCommunicationEventIds.forEach((communicationEventId) => {
-      if (visibleCommunicationEventIds.current.has(communicationEventId)) {
+      const matchingNotification = notificationItems.find(item =>
+        item.communicationEventId === communicationEventId,
+      );
+      if (
+        visibleCommunicationEventIds.current.has(communicationEventId) ||
+        (matchingNotification && notificationMatchesActiveView(matchingNotification, activeView))
+      ) {
         attemptVisible.current(communicationEventId);
       }
     });
-  }, [notificationItems]);
+  }, [activeView, notificationItems]);
 
   const markCommunicationVisible = useCallback((
     communicationEventId: string | undefined,
