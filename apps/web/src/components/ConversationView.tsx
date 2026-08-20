@@ -77,6 +77,7 @@ import { MasterRespondingIndicator } from "./ConversationComposerStatus";
 import { agentOpeningAgentId } from "./chat/ChatMessages";
 import { ConversationFilesResults } from "./ConversationFilesResults";
 import { ChatComposerDock } from "./chat/ChatComposerDock";
+import { CollectionPagination } from "./CollectionPrimitives";
 
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { notificationTechnicalFocusId } from "../technicalFocus";
@@ -1129,16 +1130,22 @@ export function ConversationView({
               totalCount: membersQuery.data?.pages[0]?.total ?? detailQuery.data?.members?.total,
               variant: "embedded",
             }}
-            collectionFooter={
-              membersQuery.hasNextPage ? (
-                <Button
-                  disabled={membersQuery.isFetchingNextPage}
-                  onClick={() => void membersQuery.fetchNextPage()}
-                >
-                  {membersQuery.isFetchingNextPage ? "Loading..." : "Load more Agents"}
-                </Button>
-              ) : undefined
-            }
+            collectionFooter={(
+              <CollectionPagination
+                resourceLabel="Agents"
+                request={{
+                  hasResolved: Boolean(membersQuery.data),
+                  isInitialLoading: membersQuery.isPending,
+                  isRefreshing: membersQuery.isFetching && !membersQuery.isFetchingNextPage,
+                  isInitialError: !membersQuery.data && membersQuery.isError,
+                  isPaginationError: Boolean(membersQuery.data) && membersQuery.isFetchNextPageError,
+                  isFetchingNextPage: membersQuery.isFetchingNextPage,
+                  hasNextPage: Boolean(membersQuery.hasNextPage),
+                  retry: membersQuery.refetch,
+                  fetchNextPage: membersQuery.fetchNextPage,
+                }}
+              />
+            )}
           />
         ) : activeView === "triggers" ? (
           <AllTriggersWorkspace

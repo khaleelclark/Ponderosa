@@ -13,7 +13,9 @@ import {
   Typography,
 } from "@mui/material";
 import { Children, type ReactNode } from "react";
+import { useInfiniteScrollSentinel } from "../hooks/useInfiniteScrollSentinel";
 import { IconTitle } from "./IconTitle";
+import { LoadingState } from "./LoadingState";
 import { sidebarSurface } from "./WorkspaceSidebar.helpers";
 
 function SidebarSectionHeading({
@@ -158,15 +160,12 @@ function SharedSidebarPanel({
         {empty}
         {collectionFeedback}
         {loadMoreLabel && onLoadMore ? (
-          <Button
-            fullWidth
-            color="inherit"
-            disabled={loadingMore}
-            onClick={onLoadMore}
-            sx={{ mt: 1, color: "text.secondary" }}
-          >
-            {loadingMore ? "Loading…" : loadMoreLabel}
-          </Button>
+          <SidebarPagination
+            title={title}
+            label={loadMoreLabel}
+            loading={loadingMore}
+            onLoadMore={onLoadMore}
+          />
         ) : null}
       </Box>
       <Box
@@ -213,6 +212,38 @@ function SharedSidebarPanel({
         </Button>
       </Box>
     </Box>
+  );
+}
+
+function SidebarPagination({
+  title,
+  label,
+  loading,
+  onLoadMore,
+}: {
+  title: string;
+  label: string;
+  loading: boolean;
+  onLoadMore(): void;
+}): JSX.Element {
+  const sentinelRef = useInfiniteScrollSentinel({
+    enabled: true,
+    loading,
+    onLoadMore,
+  });
+  return (
+    <Stack ref={sentinelRef} spacing={0.5} sx={{ mt: 1 }}>
+      {loading ? <LoadingState resource={title} variant="inline" /> : null}
+      <Button
+        fullWidth
+        color="inherit"
+        disabled={loading}
+        onClick={onLoadMore}
+        sx={{ color: "text.secondary" }}
+      >
+        {label}
+      </Button>
+    </Stack>
   );
 }
 

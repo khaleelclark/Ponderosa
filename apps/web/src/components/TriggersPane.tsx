@@ -34,6 +34,8 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import { ConfirmDialog, ResourceDeletionDialog, TextInputDialog } from "./ConfirmationDialogs";
+import { CollectionPagination } from "./CollectionPrimitives";
+import { LoadingState } from "./LoadingState";
 
 function localFuture(minutes = 5): string {
   return isoToDatetimeLocal(new Date(Date.now() + minutes * 60_000).toISOString());
@@ -582,14 +584,27 @@ export function TriggersPane({
         </CardActions>
         <Collapse in={expandedId === trigger.id}>
           <Box sx={{ px: 2, pb: 2 }}>
-            {occurrences.isLoading ? <Typography variant="body2">Loading history…</Typography> : null}
+            {occurrences.isLoading ? <LoadingState resource="Automation history" variant="inline" /> : null}
             {(occurrences.data ?? []).map((occurrence) => <OccurrenceAudit key={occurrence.id} occurrence={occurrence} onOpenAgentWork={onOpenAgentWork} />)}
             {(occurrences.data ?? []).length === 0 && !occurrences.isLoading ? <Typography variant="body2" color="text.secondary">No occurrences recorded.</Typography> : null}
           </Box>
         </Collapse>
       </Card>;
       })}
-      {triggers.hasNextPage ? <Button disabled={triggers.isFetchingNextPage} onClick={() => void triggers.fetchNextPage()}>{triggers.isFetchingNextPage ? "Loading..." : "Load more Automations"}</Button> : null}
+      <CollectionPagination
+        resourceLabel="Automations"
+        request={{
+          hasResolved: Boolean(triggers.data),
+          isInitialLoading: triggers.isPending,
+          isRefreshing: triggers.isFetching && !triggers.isFetchingNextPage,
+          isInitialError: !triggers.data && triggers.isError,
+          isPaginationError: Boolean(triggers.data) && triggers.isFetchNextPageError,
+          isFetchingNextPage: triggers.isFetchingNextPage,
+          hasNextPage: Boolean(triggers.hasNextPage),
+          retry: triggers.refetch,
+          fetchNextPage: triggers.fetchNextPage,
+        }}
+      />
       {deletedTriggerOccurrences.length ? <Card variant="outlined">
         <CardContent>
           <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>Deleted Automation history</Typography>
