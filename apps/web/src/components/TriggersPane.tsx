@@ -3,6 +3,7 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import KeyIcon from "@mui/icons-material/Key";
+import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import {
   Alert,
   Box,
@@ -83,6 +84,30 @@ function intervalSourceConfig(everyMs: number, original?: { startsAt: string }):
   return { scheduleKind: "interval", everyMs, startsAt: original?.startsAt ?? new Date().toISOString() };
 }
 
+type IntervalUnit = "minutes" | "hours" | "days" | "weeks";
+const INTERVAL_UNIT_MS: Record<IntervalUnit, number> = {
+  minutes: 60_000,
+  hours: 3_600_000,
+  days: 86_400_000,
+  weeks: 604_800_000,
+};
+const MIN_INTERVAL_MS = 60_000;
+const MAX_INTERVAL_MS = 365 * 86_400_000;
+
+function intervalParts(everyMs: number): { value: string; unit: IntervalUnit } {
+  for (const unit of ["weeks", "days", "hours"] as const) {
+    const value = everyMs / INTERVAL_UNIT_MS[unit];
+    if (Number.isInteger(value)) return { value: String(value), unit };
+  }
+  return { value: String(everyMs / INTERVAL_UNIT_MS.minutes), unit: "minutes" };
+}
+
+function intervalSummary(everyMs: number): string {
+  const { value, unit } = intervalParts(everyMs);
+  const singular = Number(value) === 1 ? unit.slice(0, -1) : unit;
+  return `every ${value} ${singular}`;
+}
+
 function filesystemWindowErrors(quietValue: string, maxValue: string): { quiet?: string; max?: string } {
   const quiet = Number(quietValue);
   const max = Number(maxValue);
@@ -113,7 +138,7 @@ function triggerSourceSummary(trigger: Pick<TriggerDefinitionDto, "sourceKind" |
   const schedule = trigger.sourceConfig as Extract<TriggerSourceConfig, { scheduleKind: string }>;
   if (schedule.scheduleKind === "once") return "One-time schedule";
   if (schedule.scheduleKind === "cron") return `Cron schedule · ${schedule.timezone}`;
-  return `Interval schedule · every ${Math.max(1, Math.round(schedule.everyMs / 60_000))} min`;
+  return `Interval schedule · ${intervalSummary(schedule.everyMs)}`;
 }
 
 function lines(value: string): string[] {
@@ -124,6 +149,7 @@ function OccurrenceAudit({ occurrence, onOpenAgentWork }: { occurrence: TriggerO
   return <Box sx={{ py: 1, borderTop: 1, borderColor: "divider" }}>
     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
       <Chip size="small" label={occurrence.state} color={occurrence.state === "dead_lettered" ? "error" : occurrence.state === "cancelled" ? "default" : "success"} />
+      {occurrence.provenance.source === "operator_manual_run" ? <Chip size="small" variant="outlined" label="Manual" /> : null}
       <Typography variant="caption">{new Date(occurrence.occurredAt).toLocaleString()}</Typography>
       <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{occurrence.artifactId}</Typography>
       {onOpenAgentWork ? <Button size="small" onClick={() => onOpenAgentWork(occurrence.id)}>Review Work</Button> : null}
@@ -201,6 +227,7 @@ export function TriggersPane({
   const [allowanceTrigger, setAllowanceTrigger] = useState<TriggerDefinitionDto>();
   const [rotateTrigger, setRotateTrigger] = useState<TriggerDefinitionDto>();
   const [deleteTrigger, setDeleteTrigger] = useState<TriggerDefinitionDto>();
+  const [runDisabledTrigger, setRunDisabledTrigger] = useState<TriggerDefinitionDto>();
   const [expandedId, setExpandedId] = useState<string>();
   const [name, setName] = useState("");
   const [instructions, setInstructions] = useState("");
@@ -208,7 +235,8 @@ export function TriggersPane({
   const [sourceKind, setSourceKind] = useState<TriggerSourceKind>("schedule");
   const [scheduleKind, setScheduleKind] = useState<"once" | "interval" | "cron">("interval");
   const [onceAt, setOnceAt] = useState(localFuture());
-  const [intervalMinutes, setIntervalMinutes] = useState("60");
+  const [intervalValue, setIntervalValue] = useState("1");
+  const [intervalUnit, setIntervalUnit] = useState<IntervalUnit>("hours");
   const [cronExpression, setCronExpression] = useState("0 9 * * 1-5");
   const [timezone, setTimezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
   const [include, setInclude] = useState("**/*");
@@ -225,7 +253,11 @@ export function TriggersPane({
     if (!editing) setConversationId(preferredConversationId);
   }, [agent.id, editing, fixedConversationId, preferredConversationId]);
   const filesystemErrors = filesystemWindowErrors(quietSeconds, maxWindowSeconds);
-  const sourceConfigurationInvalid = sourceKind === "filesystem" && Boolean(filesystemErrors.quiet || filesystemErrors.max);
+  const intervalMs = Number(intervalValue) * INTERVAL_UNIT_MS[intervalUnit];
+  const intervalInvalid = sourceKind === "schedule" && scheduleKind === "interval" && (
+    !intervalValue.trim() || !Number.isFinite(intervalMs) || intervalMs < MIN_INTERVAL_MS || intervalMs > MAX_INTERVAL_MS
+  );
+  const sourceConfigurationInvalid = (sourceKind === "filesystem" && Boolean(filesystemErrors.quiet || filesystemErrors.max)) || intervalInvalid;
 
   useEffect(() => {
     if (!editing && !agent.conversationIds.includes(conversationId))
@@ -247,7 +279,7 @@ export function TriggersPane({
       ? editing.sourceConfig as Extract<CreateTriggerRequest["sourceConfig"], { scheduleKind: string }>
       : undefined;
     const original = editingSchedule?.scheduleKind === "interval" ? editingSchedule : undefined;
-    return intervalSourceConfig(Math.round(Number(intervalMinutes) * 60_000), original);
+    return intervalSourceConfig(Math.round(intervalMs), original);
   };
 
   const resetEditor = (): void => {
@@ -258,7 +290,8 @@ export function TriggersPane({
     setSourceKind("schedule");
     setScheduleKind("interval");
     setOnceAt(localFuture());
-    setIntervalMinutes("60");
+    setIntervalValue("1");
+    setIntervalUnit("hours");
     setCronExpression("0 9 * * 1-5");
     setTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
     setInclude("**/*");
@@ -283,7 +316,11 @@ export function TriggersPane({
       const config = trigger.sourceConfig as Extract<CreateTriggerRequest["sourceConfig"], { scheduleKind: string }>;
       setScheduleKind(config.scheduleKind);
       if (config.scheduleKind === "once") setOnceAt(isoToDatetimeLocal(config.at));
-      else if (config.scheduleKind === "interval") setIntervalMinutes(String(config.everyMs / 60_000));
+      else if (config.scheduleKind === "interval") {
+        const parts = intervalParts(config.everyMs);
+        setIntervalValue(parts.value);
+        setIntervalUnit(parts.unit);
+      }
       else { setCronExpression(config.expression); setTimezone(config.timezone); }
     } else if (trigger.sourceKind === "filesystem") {
       const config = trigger.sourceConfig as { include: string[]; exclude: string[]; quietMs: number; maxWindowMs: number };
@@ -365,6 +402,15 @@ export function TriggersPane({
       setAllowanceTrigger(undefined);
     },
   });
+  const runNow = useMutation({
+    mutationFn: ({ trigger, confirmDisabled }: { trigger: TriggerDefinitionDto; confirmDisabled: boolean }) => api.runTrigger(trigger.id, confirmDisabled),
+    onSuccess: (_, variables) => {
+      void queryClient.invalidateQueries({ queryKey });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.occurrence(variables.trigger.id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.agentOccurrences(agent.id) });
+      setRunDisabledTrigger(undefined);
+    },
+  });
   const occurrences = useQuery({
     queryKey: queryKeys.triggers.occurrence(expandedId),
     queryFn: () => api.listTriggerOccurrences(expandedId!, 50),
@@ -413,7 +459,10 @@ export function TriggersPane({
       <FormControl fullWidth><InputLabel id="trigger-source-label">Source</InputLabel><Select disabled={Boolean(editing)} labelId="trigger-source-label" label="Source" value={sourceKind} onChange={(event) => setSourceKind(event.target.value as TriggerSourceKind)}><MenuItem value="schedule">Schedule</MenuItem><MenuItem value="webhook">Signed Webhook</MenuItem><MenuItem value="filesystem">Project Folder Changes</MenuItem></Select></FormControl>
       {sourceKind === "schedule" ? <>
         <FormControl fullWidth><InputLabel id="schedule-kind-label">Schedule type</InputLabel><Select labelId="schedule-kind-label" label="Schedule type" value={scheduleKind} onChange={(event) => setScheduleKind(event.target.value as typeof scheduleKind)}><MenuItem value="interval">Interval</MenuItem><MenuItem value="once">One Time</MenuItem><MenuItem value="cron">Cron</MenuItem></Select></FormControl>
-        {scheduleKind === "interval" ? <TextField label="Every (minutes)" type="number" value={intervalMinutes} onChange={(event) => setIntervalMinutes(event.target.value)} inputProps={{ min: 1 }} /> : null}
+        {scheduleKind === "interval" ? <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+          <TextField fullWidth label="Every" type="number" value={intervalValue} onChange={(event) => setIntervalValue(event.target.value)} inputProps={{ min: 1, step: 1 }} error={intervalInvalid} helperText={intervalInvalid ? "Choose an interval from 1 minute through 365 days." : "1 minute–365 days"} />
+          <FormControl fullWidth><InputLabel id="trigger-interval-unit-label">Unit</InputLabel><Select labelId="trigger-interval-unit-label" label="Unit" value={intervalUnit} onChange={(event) => setIntervalUnit(event.target.value as IntervalUnit)}><MenuItem value="minutes">Minutes</MenuItem><MenuItem value="hours">Hours</MenuItem><MenuItem value="days">Days</MenuItem><MenuItem value="weeks">Weeks</MenuItem></Select></FormControl>
+        </Stack> : null}
         {scheduleKind === "once" ? <TextField label="Run at" type="datetime-local" value={onceAt} onChange={(event) => setOnceAt(event.target.value)} InputLabelProps={{ shrink: true }} inputProps={{ step: 0.001 }} /> : null}
         {scheduleKind === "cron" ? <><TextField label="Cron expression" value={cronExpression} onChange={(event) => setCronExpression(event.target.value)} helperText="Five fields; minimum frequency is once per minute." /><TextField label="IANA timezone" value={timezone} onChange={(event) => setTimezone(event.target.value)} /></> : null}
       </> : null}
@@ -508,6 +557,14 @@ export function TriggersPane({
           {trigger.webhookPath ? <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1, overflowWrap: "anywhere" }}>Webhook: {trigger.webhookPath} · secret {trigger.secretFingerprint}</Typography> : null}
         </CardContent>
         <CardActions sx={{ flexWrap: "wrap" }}>
+          <Button
+            size="small"
+            startIcon={<PlayArrowIcon />}
+            disabled={runNow.isPending}
+            onClick={() => trigger.enabled
+              ? runNow.mutate({ trigger, confirmDisabled: false })
+              : setRunDisabledTrigger(trigger)}
+          >{runNow.isPending && runNow.variables?.trigger.id === trigger.id ? "Starting…" : "Run Now"}</Button>
           <FormControlLabel control={<Switch inputProps={{ "aria-label": `${trigger.enabled ? "Disable" : "Enable"} ${trigger.name}` }} checked={trigger.enabled} disabled={update.isPending} onChange={(_, enabled) => update.mutate({ trigger, enabled })} />} label={trigger.enabled ? "Enabled" : "Disabled"} />
           <Button size="small" aria-expanded={expandedId === trigger.id} onClick={() => setExpandedId(expandedId === trigger.id ? undefined : trigger.id)}>{expandedId === trigger.id ? "Hide Full Details" : "Open Full Details"}</Button>
           <Button size="small" aria-label={`Edit ${trigger.name}`} onClick={() => openEditor(trigger)}>Edit</Button>
@@ -567,6 +624,23 @@ export function TriggersPane({
         if (allowanceTrigger) allowRuns.mutate({ trigger: allowanceTrigger, additionalRuns: Number(value) });
       }}
     />
+    <ConfirmDialog
+      open={Boolean(runDisabledTrigger)}
+      title="Run this disabled Automation once?"
+      confirmLabel="Run Once"
+      pendingLabel="Starting…"
+      pending={runNow.isPending}
+      error={runNow.isError ? runNow.error.message : undefined}
+      onCancel={() => {
+        runNow.reset();
+        setRunDisabledTrigger(undefined);
+      }}
+      onConfirm={() => {
+        if (runDisabledTrigger) runNow.mutate({ trigger: runDisabledTrigger, confirmDisabled: true });
+      }}
+    >
+      <Typography sx={{ pt: 1 }}>This starts one operator-requested Run without enabling future automatic occurrences or consuming the automatic Run budget.</Typography>
+    </ConfirmDialog>
     <ConfirmDialog
       open={Boolean(rotateTrigger)}
       title="Rotate this webhook secret?"

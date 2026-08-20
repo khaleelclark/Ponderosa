@@ -525,6 +525,8 @@ export interface RecordTriggerOccurrenceInput {
   retryDelayMs?: number;
   payloadMediaType?: string;
   now?: string;
+  /** Operator-confirmed manual runs may execute a disabled definition once. */
+  allowDisabled?: boolean;
 }
 
 export interface TriggerOccurrenceResult {

@@ -47,6 +47,7 @@ import type {
   CreateProjectRequest,
   CreateTriggerRequest,
   CreateTriggerResponse,
+  RunTriggerResponse,
   DecisionDto,
   DraftAttachmentDto,
   EditQueuedMessageRequest,
@@ -711,6 +712,12 @@ export const realApi = {
   },
   allowTriggerRuns(triggerId: string, additionalRuns: number): Promise<TriggerDefinitionDto> {
     return requestJson(`/api/triggers/${encodeURIComponent(triggerId)}/allow-runs`, { method: "POST", body: JSON.stringify({ additionalRuns }) });
+  },
+  runTrigger(triggerId: string, confirmDisabled = false): Promise<RunTriggerResponse> {
+    return requestJson(`/api/triggers/${encodeURIComponent(triggerId)}/run`, {
+      method: "POST",
+      body: JSON.stringify({ confirmDisabled }),
+    });
   },
   listTriggerOccurrences(triggerId: string, limit: number = 100): Promise<TriggerOccurrenceDto[]> {
     return requestJson(`/api/triggers/${encodeURIComponent(triggerId)}/occurrences?limit=${encodeURIComponent(String(limit))}`);
