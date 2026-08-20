@@ -97,6 +97,7 @@ export function ConversationView({
   healthByAgentId,
   projectAgents,
   onOpenProject,
+  onOpenProjectBrowser,
   onOpenAgent,
   onOpenAgentInNewTab,
   onAgentsDeleted,
@@ -126,6 +127,7 @@ export function ConversationView({
   healthByAgentId: Map<string, AgentHealthDto>;
   projectAgents: AgentDto[];
   onOpenProject(): void;
+  onOpenProjectBrowser(): void;
   onOpenAgent(
     agentId: string,
     view?: "technical" | "settings",
@@ -656,7 +658,7 @@ export function ConversationView({
     return agent && message
       ? {
           agent,
-          selectionKey: `${message.communicationEventId ?? message.id}:${agent.title}`,
+          selectionKey: `${agent.id}:${agent.title}`,
         }
       : undefined;
   }, [agents, messages]);
@@ -913,6 +915,7 @@ export function ConversationView({
         transcriptMarkdown={transcriptMarkdown}
         transcriptTitle={transcriptTitle}
         onOpenProject={onOpenProject}
+        onOpenProjectBrowser={onOpenProjectBrowser}
         setAgentWorkOpen={setAgentWorkOpen}
         setRenameValue={setRenameValue}
         setRenameOpen={setRenameOpen}

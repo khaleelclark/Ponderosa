@@ -29,7 +29,6 @@ import { findMentionedHandles, hasBroadcastMention } from "../../mentions";
 import { queryKeys } from "../../queryKeys";
 import { removeHandle } from "./Composer.helpers";
 import {
-  composerDestinationMention,
   hasComposerDestination,
   NEW_AGENT_DESTINATION_HANDLE,
   prependComposerDestination,
@@ -956,16 +955,8 @@ export function Composer({
           draftLocallyEdited.current = false;
           draftAttachmentsLocallyEdited.current = false;
           unrestoredDraftAttachmentIds.current = [];
-          const clearedText =
-            defaultDestination &&
-            !hasComposerDestination(
-              submissionText,
-              NEW_AGENT_DESTINATION_HANDLE,
-            )
-              ? composerDestinationMention(defaultDestination.handle)
-              : "";
-          replaceText(clearedText);
-          if (draftStorageKey) writeChatState(draftStorageKey, clearedText);
+          replaceText("");
+          if (draftStorageKey) writeChatState(draftStorageKey, "");
           replacePastedText(undefined);
           clearDraftAttachments();
         }

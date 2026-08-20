@@ -114,7 +114,8 @@ export function communicationVisibleText(input: {
     ? stripLeadingRoutingHandle(input.text, "broadcast")
     : input.text;
   const resolvedText = resolveMessageMentionText(routedText, input.agentMentions);
-  const prefix = input.intent === "user_dm" || input.intent === "collaboration"
+  const prefix = !input.fromAgent &&
+    (input.intent === "user_dm" || input.intent === "collaboration")
     ? canonicalRecipientPrefix(input.text, input.agentMentions)
     : "";
   return prefix ? `${prefix} ${resolvedText}` : resolvedText;

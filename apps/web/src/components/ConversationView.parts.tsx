@@ -6,6 +6,7 @@ import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutli
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import TagIcon from "@mui/icons-material/Tag";
+import LanguageIcon from "@mui/icons-material/Language";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
@@ -239,6 +240,7 @@ function ConversationHeader({
   transcriptMarkdown,
   transcriptTitle,
   onOpenProject,
+  onOpenProjectBrowser,
   setAgentWorkOpen,
   setRenameValue,
   setRenameOpen,
@@ -254,6 +256,7 @@ function ConversationHeader({
   transcriptMarkdown: string;
   transcriptTitle: string;
   onOpenProject(): void;
+  onOpenProjectBrowser(): void;
   setAgentWorkOpen: Dispatch<SetStateAction<boolean>>;
   setRenameValue: Dispatch<SetStateAction<string>>;
   setRenameOpen: Dispatch<SetStateAction<boolean>>;
@@ -276,6 +279,14 @@ function ConversationHeader({
       }
       actions={
         <>
+          <Tooltip title="Open Project Browser">
+            <IconButton
+              aria-label="Open Project Browser"
+              onClick={onOpenProjectBrowser}
+            >
+              <LanguageIcon />
+            </IconButton>
+          </Tooltip>
           <ChatOverflowMenu
             label={`${activeView === "collaboration" ? "Team Chat" : "Chat"} settings and actions`}
             transcriptMarkdown={transcriptMarkdown}
