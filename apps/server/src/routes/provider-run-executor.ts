@@ -58,45 +58,15 @@ function humanizeProviderName(value: string): string {
     .replaceAll(/\b\p{L}/gu, (letter) => letter.toLocaleUpperCase());
 }
 
-const CONTEXT_ROLLOVER_REFERENCE_PATTERNS = [
-  /https?:\/\/\S+/iu,
-  /ponderosa:\/\/artifact\/[A-Za-z0-9._:-]+/u,
-  /(?:^|\s)\/(?:[^\s/]+\/)+[^\s/]+/u,
-  /(?:^|\s)(?:\.\.\/|\.\/)(?:[^\s/]+\/)*[^\s/]+/u,
-  /\b[A-Za-z]:\\(?:[^\s\\]+\\)*[^\s\\]+/u,
-  /\bPR\s*#?\d+\b/iu,
-  /(?:^|\s)#\d+\b/u,
-  /\b[0-9a-f]{7,40}\b/iu,
-  /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/iu,
-] as const;
-
 export function contextRolloverHandoffValidationError(
   text: string,
 ): string | undefined {
   const handoff = text.trim();
-  const words = handoff.split(/\s+/u).filter(Boolean).length;
-  if (words < 150 || words > 500) {
-    return `handoff must contain 150–500 words; received ${words}`;
+  if (!handoff || !/[\p{L}\p{N}]/u.test(handoff)) {
+    return "handoff must contain meaningful continuation content";
   }
   if (unicodeCodePointLength(handoff) > 20_000) {
     return "handoff must contain 20,000 Unicode characters or fewer";
-  }
-  const normalized = handoff.toLocaleLowerCase();
-  const requiredLabels = [
-    "objective:",
-    "completed work:",
-    "unfinished work:",
-    "blockers:",
-    "exact next action:",
-    "verified facts:",
-    "assumptions:",
-  ];
-  const missingLabels = requiredLabels.filter((label) => !normalized.includes(label));
-  if (missingLabels.length) {
-    return `handoff is missing required section labels: ${missingLabels.join(", ")}`;
-  }
-  if (!CONTEXT_ROLLOVER_REFERENCE_PATTERNS.some((pattern) => pattern.test(handoff))) {
-    return "handoff must include at least one concrete file, path, artifact, PR, URL, commit, or reference identifier";
   }
   return undefined;
 }
@@ -1214,6 +1184,7 @@ export function startProviderRunExecution(
         : durableRollover?.sourceRunId === runId ? durableRollover : undefined;
       let handoffActivationAcknowledged = false;
       let handoffValidationError: string | undefined;
+      let suppressRolloverHandoffOutput = false;
       if (owned && runRollover?.state === "requested" && !runError &&
           !isClosed() && !controller.signal.aborted && !schedulerCancelled) {
         const handoffActivation = attachedActivationPayloads.find((activation) => {
@@ -1226,6 +1197,7 @@ export function startProviderRunExecution(
           : undefined;
         handoffActivationAcknowledged = handoffInjection?.state === "acknowledged";
         if (handoffActivationAcknowledged) {
+          suppressRolloverHandoffOutput = true;
           const handoff = finalText.trim();
           handoffValidationError = contextRolloverHandoffValidationError(handoff);
           if (!handoffValidationError) {
@@ -1242,6 +1214,35 @@ export function startProviderRunExecution(
             }
             coordinationV3.commitContextRolloverHandoff(runRollover.id, handoffId);
             scheduledSessionRollovers.set(agent.id, new Date().toISOString());
+            runRollover = coordinationV3.activeContextRollover(agent.id);
+          } else {
+            const retry = coordinationV3.retryContextRolloverHandoff(
+              runRollover.id,
+              handoffValidationError,
+            );
+            if (retry.scheduled) {
+              app.log.warn({
+                agentId: agent.id,
+                runId,
+                rolloverId: runRollover.id,
+                validationError: handoffValidationError,
+              }, "context rollover handoff was unusable; scheduled one corrective retry");
+              notifyScheduler();
+            } else {
+              coordinationV3.failContextRollover(
+                runRollover.id,
+                "failed",
+                `continuation handoff remained unusable after one corrective retry: ${handoffValidationError}`,
+                "internal",
+              );
+              app.log.error({
+                agentId: agent.id,
+                runId,
+                rolloverId: runRollover.id,
+                validationError: handoffValidationError,
+              }, "context rollover handoff remained unusable after its corrective retry; retained the old context");
+            }
+            resolveOperationalNotification(`context-rollover:${runRollover.id}:handoff-missing`);
             runRollover = coordinationV3.activeContextRollover(agent.id);
           }
         } else if (handoffInjection &&
@@ -1268,26 +1269,12 @@ export function startProviderRunExecution(
         !isClosed() && !controller.signal.aborted && !schedulerCancelled && !runError,
       );
       if (owned && handoffActivationAcknowledged && runRollover?.state === "requested" &&
-          !isClosed() && !controller.signal.aborted && !schedulerCancelled && !runError) {
-        runError = handoffValidationError
-          ? `context rollover handoff was rejected: ${handoffValidationError}`
-          : "context rollover failed: provider ended before committing the required bounded handoff";
+          !handoffValidationError && !isClosed() && !controller.signal.aborted &&
+          !schedulerCancelled && !runError) {
+        runError = "context rollover failed: provider ended before committing the required bounded handoff";
         await persistRuntimeEvent(agent.id, activeRun, {
           type: "error",
           message: runError,
-        });
-        createOperationalNotification({
-          dedupeKey: `context-rollover:${runRollover.id}:handoff-missing`,
-          category: "coordination",
-          severity: "attention",
-          title: `${agent.title} could not refresh context`,
-          body: handoffValidationError
-            ? `The provider returned a malformed continuation handoff: ${handoffValidationError}. Retry the task or request another context refresh; the old provider generation may be retried safely.`
-            : "The provider ended before committing its continuation handoff. Retry the task or request another context refresh; the old provider generation may be retried safely.",
-          projectId: agent.projectId,
-          conversationId: routingConversationId,
-          agentId: agent.id,
-          action: { kind: "open_agent", targetId: agent.id },
         });
       }
       const replacementCancelled = Boolean(
@@ -1371,7 +1358,8 @@ export function startProviderRunExecution(
         publish(agent.id, cancelled);
       }
       if (owned && !isClosed() && !controller.signal.aborted) {
-        if (!rolloverSucceeded && !schedulerCancelled && !runError && finalText.trim() &&
+        if (!rolloverSucceeded && !suppressRolloverHandoffOutput && !schedulerCancelled &&
+            !runError && finalText.trim() &&
             firstTextSeq !== undefined && lastTextSeq !== undefined) {
           const output = store.appendEvent(agent.id, {
             type: "agent_output",

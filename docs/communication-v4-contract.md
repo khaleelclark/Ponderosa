@@ -42,11 +42,14 @@ deep-history retrieval.
 Crossing the context-pressure threshold queues a dedicated blocker-only
 handoff Run at the next scheduler boundary on the retained old provider
 session. The pressure source Run first completes its ordinary task and exact
-output contract. Only the dedicated Run's acknowledged 150–500-word output,
-containing the required objective/completed/unfinished/blocker/next-action/
-verified-fact/assumption sections and a relevant durable reference, can commit
-the continuation handoff; the runtime then retires the old session and
-opens the compatible replacement. This costs one explicit rollover Run but
+output contract. Any acknowledged, nonempty, meaningful handoff within the
+20,000-character hard bound can commit continuity; section headings and
+concrete references improve readability but are not validity requirements. An
+empty, effectively empty, or oversized handoff leaves the old context intact
+and receives at most one corrective retry before automatic rollover stops for
+that provider generation. Pending corrective handoff work remains durable
+across server restarts. The runtime retires the old session only after a usable
+handoff commits. This costs one explicit rollover Run in the ordinary case but
 does not depend on a model overriding an arbitrary active task response.
 
 An automatic rollover may reach `completed` after its source Run already

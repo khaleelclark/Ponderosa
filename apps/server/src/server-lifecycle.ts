@@ -366,23 +366,25 @@ export function registerServerLifecycle(
             rollover.id,
           );
           if (!handoff) {
+            if (coordinationV3.hasViableContextRolloverHandoffActivation(rollover.id)) {
+              resolveOperationalNotification(`context-rollover:${rollover.id}:outcome-unknown`);
+              app.log.info({
+                agentId: rollover.agentId,
+                rolloverId: rollover.id,
+              }, "context rollover retained its durable pending handoff after restart");
+              continue;
+            }
             coordinationV3.failContextRollover(
               rollover.id,
               "outcome_unknown",
-              "server restarted before the provider committed a bounded rollover handoff",
+              "server restarted without a committed or pending rollover handoff",
               "internal",
             );
-            createOperationalNotification({
-              dedupeKey: `context-rollover:${rollover.id}:outcome-unknown`,
-              category: "coordination",
-              severity: "attention",
-              title: "Context refresh needs review",
-              body: "The server restarted before the Agent committed its continuation handoff. Existing scheduler recovery remains authoritative.",
-              projectId: rollover.projectId,
-              conversationId: rollover.conversationId,
+            resolveOperationalNotification(`context-rollover:${rollover.id}:outcome-unknown`);
+            app.log.warn({
               agentId: rollover.agentId,
-              action: { kind: "open_agent", targetId: rollover.agentId },
-            });
+              rolloverId: rollover.id,
+            }, "context rollover had no viable handoff after restart; retained the old context");
             continue;
           }
           rollover = coordinationV3.commitContextRolloverHandoff(rollover.id, handoff.id);

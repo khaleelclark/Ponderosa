@@ -1211,6 +1211,18 @@ export class CoordinationV3Store {
     return this.contextRolloverAuthority.activeForAgent(agentId);
   }
 
+  hasViableContextRolloverHandoffActivation(id: string): boolean {
+    return this.contextRolloverAuthority.hasViableHandoffActivation(id);
+  }
+
+  retryContextRolloverHandoff(
+    id: string,
+    validationError: string,
+    now?: string,
+  ): ReturnType<CoordinationV3ContextRolloverAuthority["retryHandoff"]> {
+    return this.contextRolloverAuthority.retryHandoff(id, validationError, now);
+  }
+
   contextRolloverForReplacementSession(agentId: string, replacementSessionId: string): ContextRolloverV3 | undefined {
     return this.contextRolloverAuthority.forReplacementSession(agentId, replacementSessionId);
   }
