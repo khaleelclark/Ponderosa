@@ -12,6 +12,7 @@ import {
   type RuntimeTurnInput,
   type RuntimeProcessHandle,
 } from "@ponderosa/core";
+import { stripVTControlCharacters } from "node:util";
 import { mapFileChangeKind, providerErrorCodeFromDetail } from "./events.js";
 import { JsonRpcProcess, type JsonRpcNotification } from "./json-rpc-process.js";
 import { renderSeedPrompt } from "./seed-history.js";
@@ -81,6 +82,18 @@ function object(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined;
+}
+
+const UNSAFE_TERMINAL_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/gu;
+
+/**
+ * Normalizes terminal-derived command output before it crosses the strict
+ * provider-event projection boundary. Formatting and unsafe terminal control
+ * characters are transport detail; tabs, line endings, and Unicode are
+ * preserved as command-result content.
+ */
+function sanitizeTerminalOutput(value: string): string {
+  return stripVTControlCharacters(value).replace(UNSAFE_TERMINAL_CONTROL, "");
 }
 
 function isNullableString(value: unknown): value is string | null {
@@ -1005,7 +1018,7 @@ export function mapCodexAppServerNotification(
     return [{
       type: "tool_result",
       id: typeof item.id === "string" ? item.id : "command",
-      output: typeof item.aggregatedOutput === "string" ? item.aggregatedOutput : "",
+      output: typeof item.aggregatedOutput === "string" ? sanitizeTerminalOutput(item.aggregatedOutput) : "",
       ...(typeof item.exitCode === "number" && item.exitCode !== 0 ? { isError: true } : {}),
     }];
   }
