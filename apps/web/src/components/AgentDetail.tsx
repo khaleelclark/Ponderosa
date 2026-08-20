@@ -38,7 +38,7 @@ import {
 } from "../hooks/queries";
 import { useAgentStream } from "../hooks/useAgentStream";
 import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
-import { agentIdForMentionHandle } from "../mentions";
+import { agentIdForMentionHandle, agentMentionHandle } from "../mentions";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import {
   highlightFocusedMessage,

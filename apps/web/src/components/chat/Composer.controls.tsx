@@ -295,11 +295,13 @@ export function ComposerTextInput({
           )
         }
         onKeyDown={event => {
+          const textarea = inputRef.current;
           if (
             event.key === "Backspace" &&
             inlineDestination &&
-            event.currentTarget.selectionStart === 0 &&
-            event.currentTarget.selectionEnd === 0
+            text.length === 0 &&
+            textarea?.selectionStart === 0 &&
+            textarea.selectionEnd === 0
           ) {
             event.preventDefault();
             inlineDestination.onClear();

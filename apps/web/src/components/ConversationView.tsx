@@ -1273,6 +1273,11 @@ export function ConversationView({
             destinationMode="project-chat"
             defaultDestination={lastContinuationDestination ? {
               handle: agentMentionHandle(lastContinuationDestination.agent.title),
+              binding: {
+                handle: agentMentionHandle(lastContinuationDestination.agent.title),
+                agentId: lastContinuationDestination.agent.id,
+                currentTitle: lastContinuationDestination.agent.title,
+              },
               selectionKey: lastContinuationDestination.selectionKey,
             } : undefined}
             insertTextRequest={mentionInsertRequest}
