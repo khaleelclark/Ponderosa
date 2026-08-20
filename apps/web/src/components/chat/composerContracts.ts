@@ -14,7 +14,6 @@ export interface ChatComposerContract {
     stagedAttachmentIds?: string[],
     draftOwnerId?: string,
     context?: {
-      implicitRecipientId?: string;
       mentionedAgents?: AgentMentionBindingDto[];
     },
   ): Promise<unknown> | unknown;
@@ -24,7 +23,6 @@ export interface ChatComposerContract {
     stagedAttachmentIds?: string[],
     draftOwnerId?: string,
     context?: {
-      implicitRecipientId?: string;
       mentionedAgents?: AgentMentionBindingDto[];
     },
   ): Promise<unknown> | unknown;

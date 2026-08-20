@@ -1,7 +1,6 @@
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
-import CloseIcon from "@mui/icons-material/Close";
-import ScheduleSendOutlinedIcon from "@mui/icons-material/ScheduleSendOutlined";
+import PersonAddAltOutlinedIcon from "@mui/icons-material/PersonAddAltOutlined";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
 import {
   Button,
@@ -11,7 +10,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import { memo, type RefObject } from "react";
+import { memo } from "react";
 import { ComposerAttachment } from "./ComposerAttachment";
 import type { DraftUploadStatus } from "./ComposerAttachment";
 import type { ComposerProps } from "./Composer.types";
@@ -39,10 +38,12 @@ export function ComposerDestinationBar({
 export function ComposerTargetDestinationAction({
   broadcast,
   handles,
+  labelPrefix,
   onClear,
 }: {
   broadcast: boolean;
   handles: string[];
+  labelPrefix?: string;
   onClear(): void;
 }): JSX.Element | null {
   const labels = [
@@ -50,9 +51,12 @@ export function ComposerTargetDestinationAction({
     ...handles.map(handle => `#${handle}`),
   ];
   if (labels.length === 0) return null;
-  const label = labels.length > 1
+  const destinationLabel = labels.length > 1
     ? `${labels[0]} +${labels.length - 1}`
     : labels[0]!;
+  const label = labelPrefix
+    ? `${labelPrefix}${destinationLabel.replace(/^#/u, "")}`
+    : destinationLabel;
   return (
     <Chip
       size="small"
@@ -77,136 +81,26 @@ export function ComposerTargetDestinationAction({
 }
 
 interface ComposerProjectDestinationActionProps {
-  clearDestination(handle: string): void;
-  continueWith: ComposerProps["continueWith"];
-  hasBroadcastDestination: boolean;
-  hasEveryoneDestination: boolean;
-  inputRef: RefObject<HTMLTextAreaElement>;
-  implicitContinueSelected: boolean;
-  projectDestinations: Array<{ handle: string }>;
-  selectImplicitContinue(selected: boolean): void;
+  newAgentSelected: boolean;
+  toggleNewAgent(): void;
 }
 
 export function ComposerProjectDestinationAction({
-  clearDestination,
-  continueWith,
-  hasBroadcastDestination,
-  hasEveryoneDestination,
-  inputRef,
-  implicitContinueSelected,
-  projectDestinations,
-  selectImplicitContinue,
-}: ComposerProjectDestinationActionProps): JSX.Element | null {
-  const explicitDestinationCount =
-    Number(hasBroadcastDestination) +
-    Number(hasEveryoneDestination) +
-    projectDestinations.length;
-  const continuing =
-    implicitContinueSelected &&
-    Boolean(continueWith) &&
-    explicitDestinationCount === 0;
-  const explicitLabels = [
-    ...(hasBroadcastDestination ? ["#broadcast"] : []),
-    ...(hasEveryoneDestination ? ["#everyone"] : []),
-    ...projectDestinations.map(destination => `#${destination.handle}`),
-  ];
-  const continuingHandleSelected =
-    explicitLabels.length === 1 &&
-    continueWith &&
-    projectDestinations.length === 1 &&
-    projectDestinations[0]!.handle.toLocaleLowerCase() ===
-      continueWith.handle.toLocaleLowerCase();
-  const targetedNextRun = hasBroadcastDestination && projectDestinations.length > 0;
-  const targetedLabels = projectDestinations.map(destination => `#${destination.handle}`);
-  const selectedLabel = targetedNextRun
-    ? `Next run: ${targetedLabels[0]}${targetedLabels.length > 1 ? ` +${targetedLabels.length - 1}` : ""}`
-    : continuing || continuingHandleSelected
-    ? `To: ${continueWith!.title}`
-    : explicitLabels.length > 1
-      ? `${explicitLabels[0]} +${explicitLabels.length - 1}`
-      : (explicitLabels[0] ?? "Destination");
-  const selectedDestinationTitle = targetedNextRun
-    ? `Deliver on next run to ${targetedLabels.join(", ")}. Passive delivery; no Run or reply requested.`
-    : continuing || continuingHandleSelected
-    ? selectedLabel
-    : explicitLabels.join(" ");
-  const clearExplicitDestinations = () => {
-    clearDestination("broadcast");
-    clearDestination("everyone");
-    for (const destination of projectDestinations) {
-      clearDestination(destination.handle);
-    }
-  };
-  const focusInput = () => {
-    window.requestAnimationFrame(() => {
-      const input = inputRef.current;
-      if (!input) return;
-      input.focus();
-      const end = input.value.length;
-      input.setSelectionRange(end, end);
-    });
-  };
-  const chooseNewAgent = () => {
-    clearExplicitDestinations();
-    selectImplicitContinue(false);
-    focusInput();
-  };
-  const hasSelectedDestination =
-    continuing || explicitDestinationCount > 0;
-  if (hasSelectedDestination) {
-    return (
-      <Chip
-        size="small"
-        color={
-          targetedNextRun || hasBroadcastDestination
-            ? "info"
-            : hasEveryoneDestination
-              ? "secondary"
-              : "primary"
-        }
-        icon={
-          targetedNextRun
-            ? <ScheduleSendOutlinedIcon />
-            : hasBroadcastDestination
-              ? <CampaignOutlinedIcon />
-              : undefined
-        }
-        label={selectedLabel}
-        title={selectedDestinationTitle}
-        aria-label={`${selectedLabel}${
-          explicitLabels.length > 1
-            ? `: ${explicitLabels.join(", ")}`
-            : ""
-        }. Press Delete or Backspace to clear.`}
-        onDelete={chooseNewAgent}
-        deleteIcon={<CloseIcon />}
-        sx={{
-          maxWidth: { xs: 124, sm: 240 },
-          height: 34,
-          fontWeight: 700,
-          "& .MuiChip-label": {
-            minWidth: 0,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-          },
-        }}
-      />
-    );
-  }
-  const helperText = "Sending without a recipient starts a new Agent.";
+  newAgentSelected,
+  toggleNewAgent,
+}: ComposerProjectDestinationActionProps): JSX.Element {
   return (
-    <Typography
-      variant="caption"
-      color="text.secondary"
-      sx={{
-        display: { xs: "none", sm: "block" },
-        maxWidth: 360,
-        fontSize: 11,
-        lineHeight: 1.25,
-      }}
+    <Button
+      size="small"
+      variant={newAgentSelected ? "contained" : "text"}
+      color={newAgentSelected ? "primary" : "inherit"}
+      startIcon={<PersonAddAltOutlinedIcon />}
+      aria-pressed={newAgentSelected}
+      onClick={toggleNewAgent}
+      sx={{ whiteSpace: "nowrap", minHeight: 34 }}
     >
-      {helperText}
-    </Typography>
+      {newAgentSelected ? "New Agent selected" : "Spawn New Agent"}
+    </Button>
   );
 }
 

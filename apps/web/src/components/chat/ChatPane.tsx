@@ -26,6 +26,7 @@ import {
   communicationVisibleText,
   individualChatSenderLabel,
   linkPreviewScopeForMessage,
+  resolveMessageMentionText,
   showBroadcastBadge,
   stripDocumentPrefixText,
 } from "./ChatMessages";
@@ -523,7 +524,12 @@ function ChatPaneComponent({
                 ) : undefined,
               actions: (
                 <>
-                  <CopyMessageButton text={message.text} />
+                  <CopyMessageButton
+                    text={resolveMessageMentionText(
+                      message.text,
+                      message.agentMentions,
+                    )}
+                  />
                   {message.authorAgentId === message.agentId &&
                   onMentionAgent ? (
                     <Tooltip title={`Mention ${senderLabel}`}>

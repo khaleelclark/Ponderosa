@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import {
   CoordinationV3Store,
@@ -6,6 +7,7 @@ import {
 } from "@ponderosa/agents";
 import type {
   CreateTriggerResponse,
+  RunTriggerResponse,
   TriggerDefinitionDto,
 } from "@ponderosa/core";
 import type { FastifyInstance, FastifyReply } from "fastify";
@@ -333,6 +335,46 @@ export function registerTriggerRoutes(
             error instanceof Error
               ? error.message
               : "additional Runs could not be allowed",
+        });
+      }
+    },
+  );
+
+  app.post<{ Params: { id: string }; Body: { confirmDisabled?: boolean } }>(
+    "/api/triggers/:id/run",
+    async (request, reply) => {
+      const current = coordination.getTriggerDefinition(request.params.id);
+      if (!current) {
+        return reply.code(404).send({ error: "Automation not found" });
+      }
+      if (rejectQuarantinedMutation(current, reply)) return reply;
+      if (!current.enabled && request.body?.confirmDisabled !== true) {
+        return reply.code(409).send({
+          error: "Confirm this one-time run of the disabled Automation.",
+          confirmationRequired: true,
+        });
+      }
+      try {
+        const now = new Date().toISOString();
+        const result = coordination.recordTriggerOccurrence({
+          triggerId: current.id,
+          occurrenceKey: `manual:${randomUUID()}`,
+          payload: { kind: "manual_run", requestedAt: now },
+          provenance: {
+            source: "operator_manual_run",
+            actor: "operator",
+            requestedAt: now,
+            automaticBudgetConsumed: false,
+          },
+          allowDisabled: !current.enabled,
+          now,
+        });
+        reconcileOperationalNotifications();
+        notifyScheduler();
+        return result satisfies RunTriggerResponse;
+      } catch (error) {
+        return reply.code(400).send({
+          error: error instanceof Error ? error.message : "Automation could not run",
         });
       }
     },

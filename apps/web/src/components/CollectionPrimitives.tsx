@@ -6,7 +6,6 @@ import {
   FormControl,
   InputAdornment,
   InputLabel,
-  LinearProgress,
   MenuItem,
   Paper,
   Select,
@@ -29,6 +28,8 @@ import {
 } from "react";
 import { IconTitle } from "./IconTitle";
 import { relativeTime } from "../agents";
+import { useInfiniteScrollSentinel } from "../hooks/useInfiniteScrollSentinel";
+import { LoadingState } from "./LoadingState";
 
 export interface CollectionWorkspaceProps {
   title: string;
@@ -418,17 +419,7 @@ export function CollectionStateFeedback({
   compact?: boolean;
 }): JSX.Element | null {
   if (request.isInitialLoading) {
-    return <Stack
-      role="status"
-      aria-live="polite"
-      spacing={1}
-      sx={{ py: compact ? 2 : 4, px: compact ? 1 : 2 }}
-    >
-      <LinearProgress />
-      <Typography variant="body2" color="text.secondary">
-        {"Loading " + resourceLabel + "…"}
-      </Typography>
-    </Stack>;
+    return <LoadingState resource={resourceLabel} variant={compact ? "section" : "route"} />;
   }
   if (request.isInitialError) {
     return <Alert
@@ -439,29 +430,49 @@ export function CollectionStateFeedback({
       {"Could not load " + resourceLabel + "."}
     </Alert>;
   }
-  const empty = request.hasResolved && itemCount === 0;
+  const empty =
+    request.hasResolved && itemCount === 0 && !request.hasNextPage;
   return <>
     {empty ? <CollectionEmptyState
       title={filtersActive ? (noMatchTitle ?? "No matching " + resourceLabel) : emptyTitle}
       detail={filtersActive ? noMatchDetail : emptyDetail}
       action={filtersActive && onClearFilters ? { label: "Clear filters", onClick: onClearFilters } : undefined}
     /> : null}
-    {request.isPaginationError ? <Alert
-      severity="warning"
-      action={<Button size="small" onClick={() => void request.fetchNextPage()}>Retry</Button>}
-      sx={{ my: 1 }}
-    >
-      {"Could not load more " + resourceLabel + ". Existing results are still available."}
-    </Alert> : null}
-    {!empty && request.hasNextPage && !request.isPaginationError ? <Button
-      size="small"
-      disabled={request.isFetchingNextPage}
-      onClick={() => void request.fetchNextPage()}
-      sx={{ alignSelf: "center", my: 1 }}
-    >
-      {request.isFetchingNextPage ? "Loading…" : "Load more " + resourceLabel}
-    </Button> : null}
+    {!empty ? <CollectionPagination request={request} resourceLabel={resourceLabel} /> : null}
   </>;
+}
+
+export function CollectionPagination({
+  request,
+  resourceLabel,
+}: {
+  request: WorkspaceDirectoryRequestState;
+  resourceLabel: string;
+}): JSX.Element | null {
+  const sentinelRef = useInfiniteScrollSentinel({
+    enabled: request.hasNextPage && !request.isPaginationError,
+    loading: request.isFetchingNextPage,
+    onLoadMore: request.fetchNextPage,
+  });
+  if (!request.hasNextPage && !request.isPaginationError) return null;
+  if (request.isPaginationError) return <Alert
+    severity="warning"
+    action={<Button size="small" onClick={() => void request.fetchNextPage()}>Retry</Button>}
+    sx={{ my: 1 }}
+  >
+    {"Could not load more " + resourceLabel + ". Existing results are still available."}
+  </Alert>;
+  return (
+    <Stack ref={sentinelRef} sx={{ alignItems: "center", my: 1, minHeight: 32 }}>
+      {request.isFetchingNextPage ? (
+        <LoadingState resource={`more ${resourceLabel}`} variant="inline" />
+      ) : (
+        <Button size="small" onClick={() => void request.fetchNextPage()}>
+          {"Load more " + resourceLabel}
+        </Button>
+      )}
+    </Stack>
+  );
 }
 /**
  * Shared directory timestamp treatment. Relative time is easier to scan across

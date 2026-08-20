@@ -32,12 +32,10 @@ export interface ComposerProps extends ChatComposerContract {
   onMentionedHandlesChange?(handles: string[]): void;
   /** Reports the one exact Agent destination that may own provider commands. */
   onCommandTargetHandleChange?(handle?: string): void;
-  continueWith?: {
-    agentId: string;
+  /** One shared visible destination used by Project, Agent, and All Messages composers. */
+  defaultDestination?: {
     handle: string;
-    title: string;
-    responding?: boolean;
-    /** Changes when a newly committed Direct message should restore selection. */
+    /** Changes when a newly committed destination should populate the draft. */
     selectionKey: string;
   };
 }

@@ -7,7 +7,11 @@ import type {
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { hasBroadcastMention, hasEveryoneMention } from "../mentions";
+import {
+  agentMentionHandle,
+  hasBroadcastMention,
+  hasEveryoneMention,
+} from "../mentions";
 import { api } from "../api";
 import { ApiRequestError } from "../api/types";
 import { createClientId } from "../clientId";
@@ -23,6 +27,10 @@ import {
 import { pickAgentName } from "../parkNames";
 import { queryKeys } from "../queryKeys";
 import type { AgentStatus } from "../agents";
+import {
+  hasComposerDestination,
+  NEW_AGENT_DESTINATION_HANDLE,
+} from "./chat/composerDestination";
 
 interface ConversationMessagingControllerInput {
   conversationId: string;
@@ -59,6 +67,7 @@ export function useConversationMessagingController({
     queryFn: () => api.listQueuedConversationMessages(conversationId),
   });
   const [queuedMessageNotice, setQueuedMessageNotice] = useState<string>();
+  const [spawnNotice, setSpawnNotice] = useState<string>();
   const queuedNoticeDeliveryIds = useRef<Set<string>>(new Set());
   const queuedNoticeBaseline = useRef(0);
   const [activeOperation, setActiveOperation] = useState<{
@@ -134,7 +143,11 @@ export function useConversationMessagingController({
       setActiveOperation({ agentIds: [agent.id], state: "starting" });
       return agent;
     },
-    onSuccess: invalidate,
+    onSuccess: agent => {
+      invalidate();
+      setQueuedMessageNotice(undefined);
+      setSpawnNotice(`Created ${agent.title} and started its first Run.`);
+    },
   });
 
   const sendToAgents = useMutation({
@@ -451,32 +464,42 @@ export function useConversationMessagingController({
     activeRunDelivery: "steer" | "queue" = "steer",
     draftAttachmentIds: string[] = [],
     draftOwnerId?: string,
-    implicitTargetAgentId?: string,
     mentionedAgents: AgentMentionBindingDto[] = [],
   ) => {
+    setSpawnNotice(undefined);
     const broadcastMentioned = hasBroadcastMention(text);
     const broadcastText = managerBroadcastText(text);
     const everyoneMentioned = hasEveryoneMention(text);
+    const newAgentRequested = hasComposerDestination(
+      text,
+      NEW_AGENT_DESTINATION_HANDLE,
+    );
+    const reservedHandleCollision = agents.some(
+      agent =>
+        !agent.archived &&
+        agentMentionHandle(agent.title) === NEW_AGENT_DESTINATION_HANDLE,
+    );
     const explicitlyMentionedAgents = mentionedAgents.flatMap(binding => {
       const agent = agents.find(candidate =>
         candidate.id === binding.agentId && !candidate.archived);
       return agent ? [agent] : [];
     });
-    const implicitTarget =
-      implicitTargetAgentId &&
-      !everyoneMentioned &&
-      explicitlyMentionedAgents.length === 0
-        ? agents.find(
-            agent => agent.id === implicitTargetAgentId && !agent.archived,
-          )
-        : undefined;
     const targets = everyoneMentioned
       ? agents.filter(agent => !agent.archived)
-      : explicitlyMentionedAgents.length > 0
-        ? explicitlyMentionedAgents
-        : implicitTarget
-          ? [implicitTarget]
-          : [];
+      : explicitlyMentionedAgents;
+    if (newAgentRequested && reservedHandleCollision) {
+      throw new Error(
+        "An Agent already uses the reserved #new-agent handle. Rename it before spawning another Agent.",
+      );
+    }
+    if (
+      newAgentRequested &&
+      (broadcastMentioned || everyoneMentioned || targets.length > 0)
+    ) {
+      throw new Error(
+        "#new-agent cannot be combined with another message destination.",
+      );
+    }
     if (broadcastText !== undefined) {
       if (!broadcastText && files.length === 0) {
         throw new Error(
@@ -525,7 +548,7 @@ export function useConversationMessagingController({
     editQueued,
     invalidate,
     operationRunning,
-    queuedMessageNotice,
+    queuedMessageNotice: queuedMessageNotice ?? spawnNotice,
     queuedMessagesQuery,
     sendError: spawn.error ?? sendToAgents.error,
     setQueuedMessageNotice,

@@ -35,6 +35,7 @@ import {
   ChatMessageBody,
   authoredAgentMentionForHandle,
   communicationVisibleText,
+  resolveMessageMentionText,
   showBroadcastBadge,
 } from "./chat/ChatMessages";
 import { Composer } from "./chat/Composer";
@@ -897,7 +898,10 @@ export function AllChatView({
                           aria-label="Copy message"
                           onClick={event => {
                             event.stopPropagation();
-                            void copyText(item.text);
+                            void copyText(resolveMessageMentionText(
+                              item.text,
+                              item.agentMentions,
+                            ));
                           }}
                         >
                           <ContentCopyOutlinedIcon fontSize="inherit" />
@@ -973,6 +977,10 @@ export function AllChatView({
         ) : null}
         <Composer
           destinationMode="target-required"
+          defaultDestination={replyTarget ? {
+            handle: agentMentionHandle(replyTarget.title),
+            selectionKey: `agent:${replyTarget.id}:${replyTarget.title}`,
+          } : undefined}
           requiredRecipient={replyTarget ? {
             handle: agentMentionHandle(replyTarget.title),
             title: replyTarget.title,

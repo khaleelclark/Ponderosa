@@ -332,12 +332,17 @@ class ChromeCdpDriver implements BrowserDriver {
         const info = value && typeof value === "object" ? value as Record<string, unknown> : {};
         if (info.type === "page" && typeof info.targetId === "string") await driver.attachTarget(info);
       }
+      // Target discovery can race the explicit target scan. In that case the
+      // page is registered before its CDP domains are ready, so wait for the
+      // shared lifecycle queue before exposing the session as usable.
+      await driver.eventQueue;
       if (!driver.pagesById.size) {
         const created = await connection.send("Target.createTarget", initialBrowserTargetRequest());
         const targetId = String(created.targetId ?? "");
         if (!targetId) throw new Error("browser did not create a page target");
         await driver.attachTarget({ targetId, type: "page", url: "about:blank", title: "" });
       }
+      await driver.eventQueue;
       if (!driver.activePageId) driver.activateFallback();
       driver.emitPageEvent("page_activate", driver.activePageId, undefined, false, "initial");
       return driver;

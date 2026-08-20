@@ -63,7 +63,9 @@ export class CoordinationV3TriggerOccurrenceAuthority {
     return this.sqlite.transaction(() => {
       const definition = this.triggerRegistry.definitionRow(input.triggerId);
       if (!definition) throw new Error("Automation not found");
-      if (!definition.enabled) throw new Error("Automation is disabled");
+      if (!definition.enabled && !input.allowDisabled) {
+        throw new Error("Automation is disabled");
+      }
       const scopeKey = `conversation:${definition.conversation_id}`;
       const activationConfig = {
         conversationId: definition.conversation_id,
@@ -71,6 +73,7 @@ export class CoordinationV3TriggerOccurrenceAuthority {
         dispatchPolicy: "next_run" as ActivationDispatchPolicy,
         promptClass: "ordinary" as ActivationPromptClass,
         retryDelayMs,
+        allowDisabled: input.allowDisabled === true,
       };
       const triggerSnapshot = {
         id: definition.id,
@@ -276,9 +279,17 @@ export class CoordinationV3TriggerOccurrenceAuthority {
       return this.triggerOccurrenceResult(occurrenceId, false).state;
     }
     const definition = this.triggerRegistry.definitionRow(row.trigger_id);
+    let allowsDisabled = false;
+    try {
+      allowsDisabled = (JSON.parse(row.activation_config_json) as {
+        allowDisabled?: unknown;
+      }).allowDisabled === true;
+    } catch {
+      // The config is validated below and legacy rows never allow disabled runs.
+    }
     if (
       !definition ||
-      !definition.enabled ||
+      (!definition.enabled && !allowsDisabled) ||
       definition.project_id !== row.project_id ||
       definition.agent_id !== row.agent_id
     ) {
@@ -299,6 +310,7 @@ export class CoordinationV3TriggerOccurrenceAuthority {
         dispatchPolicy: ActivationDispatchPolicy;
         promptClass: ActivationPromptClass;
         retryDelayMs: number;
+        allowDisabled?: boolean;
       };
       const payload = JSON.parse(row.payload_json) as unknown;
       const provenance = JSON.parse(row.provenance_json) as unknown;

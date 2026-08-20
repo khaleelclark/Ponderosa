@@ -39,7 +39,7 @@ import type {
   EngineDto,
 } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { api } from "../api";
 import { createClientId } from "../clientId";
 import { queryKeys } from "../queryKeys";
@@ -167,6 +167,9 @@ export function AgentsTab({
   projectId,
   engines,
   conversations,
+  conversationFilterValue,
+  onConversationFilterValueChange,
+  conversationFilterRequest,
   scopeConversationId,
   statusByAgentId,
   healthByAgentId,
@@ -187,6 +190,8 @@ export function AgentsTab({
   collection,
   collectionFooter,
   collectionRequest,
+  organizationDataComplete = true,
+  onLoadOrganizationData,
   visibleLimit,
   progressiveBatchSize,
   renderedAgentIds,
@@ -200,6 +205,10 @@ export function AgentsTab({
   projectId?: string;
   engines: EngineDto[];
   conversations: ConversationDto[];
+  /** Optional server-backed Project Chat filter for paginated directories. */
+  conversationFilterValue?: string;
+  onConversationFilterValueChange?(value: string): void;
+  conversationFilterRequest?: WorkspaceDirectoryRequestState;
   /** Chat whose membership-scoped roster is being rendered. */
   scopeConversationId?: string;
   statusByAgentId: ReadonlyMap<string, AgentStatus>;
@@ -230,6 +239,9 @@ export function AgentsTab({
   };
   collectionFooter?: ReactNode | ((filteredCount: number) => ReactNode);
   collectionRequest?: WorkspaceDirectoryRequestState;
+  organizationDataComplete?: boolean;
+  onLoadOrganizationData?(): Promise<void>;
+
   /** Bound large embedded rosters while retaining full hierarchy context. */
   visibleLimit?: number;
   /** Progressively mount an already-loaded roster without changing filtering,
@@ -245,6 +257,9 @@ export function AgentsTab({
   const queryClient = useQueryClient();
   const [statusFilters, setStatusFilters] = useState<StatusFilter[]>([]);
   const [masterFilter, setMasterFilter] = useState<string>("all");
+  const effectiveMasterFilter = conversationFilterValue ?? masterFilter;
+  const setEffectiveMasterFilter =
+    onConversationFilterValueChange ?? setMasterFilter;
   const [search, setSearch] = useState("");
   const effectiveSearch = searchValue ?? search;
   const setEffectiveSearch = onSearchValueChange ?? setSearch;
@@ -270,10 +285,67 @@ export function AgentsTab({
   const [draggedAgentId, setDraggedAgentId] = useState<string>();
   const [organizationView, setOrganizationView] = useState<
     "hierarchy" | "flat"
-  >("hierarchy");
+  >(() => (organizationDataComplete ? "hierarchy" : "flat"));
+  const [loadingOrganizationData, setLoadingOrganizationData] = useState(false);
   const [collapsedAgentIds, setCollapsedAgentIds] = useState<Set<string>>(
     () => new Set(),
   );
+  const organizationScopeFiltered = Boolean(
+    effectiveSearch.trim() || effectiveMasterFilter !== "all",
+  );
+  const statusCollectionComplete =
+    !collectionRequest ||
+    (collectionRequest.hasResolved &&
+      !collectionRequest.hasNextPage &&
+      !collectionRequest.isPaginationError);
+
+  useEffect(() => {
+    if (onLoadOrganizationData && !organizationDataComplete)
+      setOrganizationView("flat");
+  }, [onLoadOrganizationData, organizationDataComplete]);
+
+  useEffect(() => {
+    if (
+      statusFilters.length === 0 ||
+      statusCollectionComplete ||
+      !collectionRequest?.hasNextPage ||
+      collectionRequest.isFetchingNextPage ||
+      collectionRequest.isPaginationError
+    )
+      return;
+    void collectionRequest.fetchNextPage();
+  }, [
+    collectionRequest,
+    statusCollectionComplete,
+    statusFilters.length,
+  ]);
+
+  const showCompleteHierarchy = async (): Promise<void> => {
+    if (organizationDataComplete || !onLoadOrganizationData) {
+      setOrganizationView("hierarchy");
+      return;
+    }
+    if (organizationScopeFiltered) {
+      setBulkError(
+        "Clear the Agent search and Project Chat filter before loading the complete hierarchy.",
+      );
+      return;
+    }
+    setLoadingOrganizationData(true);
+    setBulkError(undefined);
+    try {
+      await onLoadOrganizationData();
+      setOrganizationView("hierarchy");
+    } catch (error) {
+      setBulkError(
+        error instanceof Error
+          ? error.message
+          : "Could not load the complete Agent hierarchy.",
+      );
+    } finally {
+      setLoadingOrganizationData(false);
+    }
+  };
 
   const updateOrganization = useMutation({
     mutationFn: () => {
@@ -377,8 +449,9 @@ export function AgentsTab({
         if (!matchesAgentStatusFilters(agent, status, statusFilters))
           return false;
         if (
-          masterFilter !== "all" &&
-          !agentBelongsToConversation(agent, masterFilter)
+          !onConversationFilterValueChange &&
+          effectiveMasterFilter !== "all" &&
+          !agentBelongsToConversation(agent, effectiveMasterFilter)
         ) {
           return false;
         }
@@ -395,7 +468,9 @@ export function AgentsTab({
       .map(({ agent }) => agent.id),
   );
   const filtersActive = Boolean(
-    effectiveSearch.trim() || statusFilters.length || masterFilter !== "all",
+    effectiveSearch.trim() ||
+      statusFilters.length ||
+      effectiveMasterFilter !== "all",
   );
   const contextAgentIds =
     organizationView === "hierarchy"
@@ -429,7 +504,7 @@ export function AgentsTab({
       organizationRootAgentId,
       organizationView,
       effectiveSearch.trim().toLocaleLowerCase(),
-      masterFilter,
+      effectiveMasterFilter,
       statusFilters.join(","),
     ].join(":"),
   });
@@ -575,7 +650,7 @@ export function AgentsTab({
           New Agent
         </Button>
       ) : null}
-      {!selectionMode && activeRunTargets.length > 0 ? (
+      {!selectionMode && organizationDataComplete && activeRunTargets.length > 0 ? (
         <Button
           size="small"
           color="error"
@@ -623,13 +698,31 @@ export function AgentsTab({
                 aria-label="Agent organization view"
                 sx={{ border: 1, borderColor: "divider", borderRadius: 1 }}
               >
-                <Tooltip title="Hierarchy">
+                <Tooltip
+                  title={
+                    organizationScopeFiltered && onLoadOrganizationData
+                      ? "Clear search and Project Chat filters to load hierarchy"
+                      : organizationDataComplete
+                        ? "Hierarchy"
+                        : loadingOrganizationData
+                          ? "Loading complete hierarchy…"
+                          : "Load complete hierarchy"
+                  }
+                >
                   <IconButton
                     size="small"
                     color={organizationView === "hierarchy" ? "primary" : "default"}
                     aria-pressed={organizationView === "hierarchy"}
-                    aria-label="Show Agent hierarchy"
-                    onClick={() => setOrganizationView("hierarchy")}
+                    aria-label={
+                      organizationDataComplete
+                        ? "Show Agent hierarchy"
+                        : "Load and show complete Agent hierarchy"
+                    }
+                    disabled={
+                      loadingOrganizationData ||
+                      (Boolean(onLoadOrganizationData) && organizationScopeFiltered)
+                    }
+                    onClick={() => void showCompleteHierarchy()}
                   >
                     <AccountTreeOutlinedIcon fontSize="small" />
                   </IconButton>
@@ -666,7 +759,7 @@ export function AgentsTab({
                 >
                   <MenuItem onClick={() => setStatusFilters([])}>
                     <Checkbox checked={statusFilters.length === 0} />
-                    All ({scopedAgents.length})
+                    All ({scopedAgents.length}{statusCollectionComplete ? "" : " loaded"})
                   </MenuItem>
                   {statusOptions
                     .filter(option => option.value !== "all")
@@ -686,7 +779,7 @@ export function AgentsTab({
                             option.value as StatusFilter,
                           )}
                         />
-                        {option.label} ({option.count})
+                        {option.label} ({option.count}{statusCollectionComplete ? "" : " loaded"})
                       </MenuItem>
                     ))}
                 </Menu>
@@ -702,10 +795,18 @@ export function AgentsTab({
                   <Select
                     labelId="agents-master-filter-label"
                     label="Project Chat"
-                    value={masterFilter}
-                    onChange={(event: SelectChangeEvent) =>
-                      setMasterFilter(event.target.value)
-                    }
+                    value={effectiveMasterFilter}
+                    disabled={Boolean(
+                      conversationFilterRequest?.isInitialLoading ||
+                        conversationFilterRequest?.isRefreshing,
+                    )}
+                    onChange={(event: SelectChangeEvent) => {
+                      if (event.target.value === "__load_more__") {
+                        void conversationFilterRequest?.fetchNextPage();
+                        return;
+                      }
+                      setEffectiveMasterFilter(event.target.value);
+                    }}
                   >
                     <MenuItem value="all">All Project Chats</MenuItem>
                     {conversations.map(master => (
@@ -713,6 +814,19 @@ export function AgentsTab({
                         {master.title}
                       </MenuItem>
                     ))}
+                    {conversationFilterRequest?.hasNextPage ||
+                    conversationFilterRequest?.isPaginationError ? (
+                      <MenuItem
+                        value="__load_more__"
+                        disabled={conversationFilterRequest.isFetchingNextPage}
+                      >
+                        {conversationFilterRequest.isPaginationError
+                          ? "Retry loading Project Chats"
+                          : conversationFilterRequest.isFetchingNextPage
+                            ? "Loading more Project Chats..."
+                            : "Load more Project Chats..."}
+                      </MenuItem>
+                    ) : null}
                   </Select>
                 </FormControl>
               )}
@@ -748,7 +862,10 @@ export function AgentsTab({
           pt: 0,
         }}
       >
-        {filtered.length === 0 && collectionRequest && !collectionRequest.hasResolved ? null : filtered.length === 0 ? (
+        {filtered.length === 0 &&
+        collectionRequest &&
+        (!collectionRequest.hasResolved ||
+          collectionRequest.hasNextPage) ? null : filtered.length === 0 ? (
           <CollectionEmptyState
             title={
               scopedAgents.length === 0
@@ -843,7 +960,9 @@ export function AgentsTab({
                     description={
                       <>
                         {orphaned
-                          ? "Unlinked Agent"
+                          ? organizationDataComplete
+                            ? "Unlinked Agent"
+                            : "Reports to an Agent outside the loaded window"
                           : organizationParent
                             ? `Delegated under ${organizationParent.title}`
                             : profile.role}
@@ -1125,18 +1244,22 @@ export function AgentsTab({
                   icon: <PersonAddAlt1Icon fontSize="small" />,
                   onSelect: onNewAgent,
                 },
-                {
-                  id: "reporting-line",
-                  label: "Change Reporting Line",
-                  icon: <AccountTreeOutlinedIcon fontSize="small" />,
-                  onSelect: (agentId: string) => {
-                    const agent = agentsById.get(agentId);
-                    if (!agent) return;
-                    setOrganizationParentId(agent.managerAgentId ?? "");
-                    updateOrganization.reset();
-                    setPendingOrganization(agent);
-                  },
-                },
+                ...(organizationDataComplete
+                  ? [
+                      {
+                        id: "reporting-line",
+                        label: "Change Reporting Line",
+                        icon: <AccountTreeOutlinedIcon fontSize="small" />,
+                        onSelect: (agentId: string) => {
+                          const agent = agentsById.get(agentId);
+                          if (!agent) return;
+                          setOrganizationParentId(agent.managerAgentId ?? "");
+                          updateOrganization.reset();
+                          setPendingOrganization(agent);
+                        },
+                      },
+                    ]
+                  : []),
                 {
                   id: "delete",
                   label: "Delete",

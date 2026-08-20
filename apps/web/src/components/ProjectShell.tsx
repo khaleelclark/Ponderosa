@@ -36,6 +36,8 @@ import type { ProjectBrowserRequest } from "./ProjectBrowserContext";
 import { WorkspaceReviewPane } from "./files/WorkspaceReviewPane";
 import { WorkspaceFileView } from "./WorkspaceFileView";
 import { WorkspaceErrorBoundary } from "./WorkspaceErrorBoundary";
+import { CollectionPagination } from "./CollectionPrimitives";
+import { LoadingState } from "./LoadingState";
 
 type RemovableWorkspaceResourceRoute = Extract<
   Route,
@@ -252,6 +254,7 @@ export function ProjectShell({
         healthByAgentId={healthByAgentId}
         projectAgents={agents}
         onOpenProject={() => navigate({ kind: "project", projectId })}
+        onOpenProjectBrowser={() => navigate({ kind: "browser", projectId })}
         onOpenAgent={(agentId, view, technicalFocusId) => view
           ? navigate({ kind: "agent", projectId, agentId, view, ...(technicalFocusId ? { technicalFocusId } : {}) })
           : navigate({ kind: "agent", projectId, agentId })}
@@ -374,23 +377,21 @@ export function ProjectShell({
       onClose={() => navigate({ kind: "project", projectId })}
     />
   );
-} else if (route.kind === "agents") {
+  } else if (route.kind === "agents") {
     main = agentDirectoryQuery.isLoading ? (
-      <Box sx={{ p: 2 }}><LinearProgress /></Box>
+      <LoadingState resource="Agents" variant="route" />
     ) : (
       <AgentsTab
         searchValue={agentDirectorySearch}
         onSearchValueChange={setAgentDirectorySearch}
-        collectionFooter={agentDirectoryQuery.hasNextPage ? (
-          <Button
-            color="inherit"
-            disabled={agentDirectoryQuery.isFetchingNextPage}
-            onClick={() => void agentDirectoryQuery.fetchNextPage()}
-          >
-            {agentDirectoryQuery.isFetchingNextPage ? "Loading…" :
-              preferences.agentSort === "last_used" ? "Load older Agents" : "Load more Agents"}
-          </Button>
-        ) : null}
+        collectionFooter={(
+          <CollectionPagination
+            resourceLabel={preferences.agentSort === "last_used"
+              ? "older Agents"
+              : "Agents"}
+            request={agentDirectoryQuery.requestState}
+          />
+        )}
         agents={agents}
         renderedAgentIds={agentDirectoryQuery.data ? visibleAgentIds : undefined}
         projectId={projectId}

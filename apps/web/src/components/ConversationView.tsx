@@ -74,9 +74,13 @@ import { useConversationNotificationVisibility } from "./useConversationNotifica
 import { useConversationHistory } from "./useConversationHistory";
 import { useConversationMessagingController } from "./useConversationMessagingController";
 import { MasterRespondingIndicator } from "./ConversationComposerStatus";
-import { agentOpeningAgentId } from "./chat/ChatMessages";
+import {
+  agentOpeningAgentId,
+  resolveMessageMentionText,
+} from "./chat/ChatMessages";
 import { ConversationFilesResults } from "./ConversationFilesResults";
 import { ChatComposerDock } from "./chat/ChatComposerDock";
+import { CollectionPagination } from "./CollectionPrimitives";
 
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { notificationTechnicalFocusId } from "../technicalFocus";
@@ -93,6 +97,7 @@ export function ConversationView({
   healthByAgentId,
   projectAgents,
   onOpenProject,
+  onOpenProjectBrowser,
   onOpenAgent,
   onOpenAgentInNewTab,
   onAgentsDeleted,
@@ -122,6 +127,7 @@ export function ConversationView({
   healthByAgentId: Map<string, AgentHealthDto>;
   projectAgents: AgentDto[];
   onOpenProject(): void;
+  onOpenProjectBrowser(): void;
   onOpenAgent(
     agentId: string,
     view?: "technical" | "settings",
@@ -646,9 +652,14 @@ export function ConversationView({
         ? message.directMessageAgents[0]!.id
         : undefined
     );
-    const agent = agentId ? agents.find(candidate => candidate.id === agentId) : undefined;
+    const agent = agentId
+      ? agents.find(candidate => candidate.id === agentId && !candidate.archived)
+      : undefined;
     return agent && message
-      ? { agent, selectionKey: message.communicationEventId ?? message.id }
+      ? {
+          agent,
+          selectionKey: `${agent.id}:${agent.title}`,
+        }
       : undefined;
   }, [agents, messages]);
   const mainTranscriptMarkdown = useMemo(
@@ -662,7 +673,10 @@ export function ConversationView({
                 : message.role === "system"
                   ? "System"
                   : "You",
-              text: message.text,
+              text: resolveMessageMentionText(
+                message.text,
+                message.agentMentions,
+              ),
               createdAt: message.createdAt,
               attachments: message.attachments,
               document: message.document,
@@ -682,7 +696,10 @@ export function ConversationView({
                 : message.role === "system"
                   ? "System"
                   : "You",
-              text: message.text,
+              text: resolveMessageMentionText(
+                message.text,
+                message.agentMentions,
+              ),
               createdAt: message.createdAt,
               attachments: message.attachments,
               document: message.document,
@@ -776,7 +793,11 @@ export function ConversationView({
   ];
   const mentionBindings = agents
     .filter(agent => !agent.archived)
-    .map(agent => ({ handle: agentMentionHandle(agent.title), agentId: agent.id }))
+    .map(agent => ({
+      handle: agentMentionHandle(agent.title),
+      agentId: agent.id,
+      currentTitle: agent.title,
+    }))
     .filter(binding => binding.handle &&
       !["broadcast", "user", "everyone"].includes(binding.handle.toLocaleLowerCase()));
   const findMentioned = (text: string): AgentDto[] =>
@@ -894,6 +915,7 @@ export function ConversationView({
         transcriptMarkdown={transcriptMarkdown}
         transcriptTitle={transcriptTitle}
         onOpenProject={onOpenProject}
+        onOpenProjectBrowser={onOpenProjectBrowser}
         setAgentWorkOpen={setAgentWorkOpen}
         setRenameValue={setRenameValue}
         setRenameOpen={setRenameOpen}
@@ -1129,16 +1151,22 @@ export function ConversationView({
               totalCount: membersQuery.data?.pages[0]?.total ?? detailQuery.data?.members?.total,
               variant: "embedded",
             }}
-            collectionFooter={
-              membersQuery.hasNextPage ? (
-                <Button
-                  disabled={membersQuery.isFetchingNextPage}
-                  onClick={() => void membersQuery.fetchNextPage()}
-                >
-                  {membersQuery.isFetchingNextPage ? "Loading..." : "Load more Agents"}
-                </Button>
-              ) : undefined
-            }
+            collectionFooter={(
+              <CollectionPagination
+                resourceLabel="Agents"
+                request={{
+                  hasResolved: Boolean(membersQuery.data),
+                  isInitialLoading: membersQuery.isPending,
+                  isRefreshing: membersQuery.isFetching && !membersQuery.isFetchingNextPage,
+                  isInitialError: !membersQuery.data && membersQuery.isError,
+                  isPaginationError: Boolean(membersQuery.data) && membersQuery.isFetchNextPageError,
+                  isFetchingNextPage: membersQuery.isFetchingNextPage,
+                  hasNextPage: Boolean(membersQuery.hasNextPage),
+                  retry: membersQuery.refetch,
+                  fetchNextPage: membersQuery.fetchNextPage,
+                }}
+              />
+            )}
           />
         ) : activeView === "triggers" ? (
           <AllTriggersWorkspace
@@ -1243,13 +1271,8 @@ export function ConversationView({
             )}
             conversationDraftId={conversationId}
             destinationMode="project-chat"
-            continueWith={lastContinuationDestination ? {
-              agentId: lastContinuationDestination.agent.id,
+            defaultDestination={lastContinuationDestination ? {
               handle: agentMentionHandle(lastContinuationDestination.agent.title),
-              title: lastContinuationDestination.agent.title,
-              responding: Boolean(
-                healthByAgentId.get(lastContinuationDestination.agent.id)?.runtimeActivity,
-              ),
               selectionKey: lastContinuationDestination.selectionKey,
             } : undefined}
             insertTextRequest={mentionInsertRequest}
@@ -1303,7 +1326,6 @@ export function ConversationView({
                 "steer",
                 stagedIds,
                 draftOwnerId,
-                context?.implicitRecipientId,
                 context?.mentionedAgents,
               )
             }
@@ -1314,7 +1336,6 @@ export function ConversationView({
                 "queue",
                 stagedIds,
                 draftOwnerId,
-                context?.implicitRecipientId,
                 context?.mentionedAgents,
               )
             }

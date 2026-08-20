@@ -6,6 +6,7 @@ import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutli
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import TagIcon from "@mui/icons-material/Tag";
+import LanguageIcon from "@mui/icons-material/Language";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
@@ -38,6 +39,7 @@ import {
   CommunicationDocumentCard,
   authoredAgentMentionForHandle,
   communicationVisibleText,
+  resolveMessageMentionText,
   showBroadcastBadge,
   stripDocumentPrefixText,
 } from "./chat/ChatMessages";
@@ -106,16 +108,10 @@ function ConversationMessageComponent({
   const senderName = fromManager
     ? (operatorProfile?.displayName ?? "You")
     : agentTitle(message.authorAgentId);
-  const recipientNames = [
-    ...new Set(
-      (message.collaborationRecipients?.length
-        ? message.collaborationRecipients.map(recipient => recipient.title)
-        : (message.agentMentions ?? []).map(mention => agentTitle(mention.agentId))),
-    ),
-  ];
-  const visibleRecipients = recipientNames.slice(0, 2);
-  const hiddenRecipientCount =
-    recipientNames.length - visibleRecipients.length;
+  const resolvedCopyText = resolveMessageMentionText(
+    copyableText,
+    message.agentMentions,
+  );
 
   return (
     <ChatMessageFrame
@@ -137,24 +133,6 @@ function ConversationMessageComponent({
             message.communicationEventId,
           ) ? (
             <Chip size="small" variant="outlined" label="Broadcast" />
-          ) : conversation === "collaboration" && recipientNames.length ? (
-            <Typography
-              component="span"
-              variant="caption"
-              color="text.secondary"
-              sx={{
-                minWidth: 0,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {"→ "}
-              {visibleRecipients.join(", ")}
-              {hiddenRecipientCount > 0
-                ? ` +${hiddenRecipientCount} more`
-                : ""}
-            </Typography>
           ) : undefined,
         onVisible,
         body: (
@@ -228,7 +206,7 @@ function ConversationMessageComponent({
           ) : undefined,
         actions: (
           <>
-            <CopyMessageButton text={copyableText} />
+            <CopyMessageButton text={resolvedCopyText} />
             {conversation === "main" && message.authorAgentId && onMentionAgent ? (
                 <Tooltip title={`Mention ${senderName}`}>
                   <IconButton
@@ -262,6 +240,7 @@ function ConversationHeader({
   transcriptMarkdown,
   transcriptTitle,
   onOpenProject,
+  onOpenProjectBrowser,
   setAgentWorkOpen,
   setRenameValue,
   setRenameOpen,
@@ -277,6 +256,7 @@ function ConversationHeader({
   transcriptMarkdown: string;
   transcriptTitle: string;
   onOpenProject(): void;
+  onOpenProjectBrowser(): void;
   setAgentWorkOpen: Dispatch<SetStateAction<boolean>>;
   setRenameValue: Dispatch<SetStateAction<string>>;
   setRenameOpen: Dispatch<SetStateAction<boolean>>;
@@ -299,6 +279,14 @@ function ConversationHeader({
       }
       actions={
         <>
+          <Tooltip title="Open Project Browser">
+            <IconButton
+              aria-label="Open Project Browser"
+              onClick={onOpenProjectBrowser}
+            >
+              <LanguageIcon />
+            </IconButton>
+          </Tooltip>
           <ChatOverflowMenu
             label={`${activeView === "collaboration" ? "Team Chat" : "Chat"} settings and actions`}
             transcriptMarkdown={transcriptMarkdown}

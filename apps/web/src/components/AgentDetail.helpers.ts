@@ -14,6 +14,7 @@ import { buildMarkdownTranscript } from "../chatTranscript";
 import { uniqueBy } from "../collections";
 import type { AgentDetailView } from "../routing";
 import { projectAgentChat } from "./chat/agentChatProjection";
+import { resolveMessageMentionText } from "./chat/ChatMessages";
 import { orderedAgentHeaderChats } from "./HeaderRelationshipLinks";
 
 type AgentTab = Exclude<AgentDetailView, "activity">;
@@ -339,7 +340,10 @@ function agentTranscriptMarkdown(
                 : message.authorAgentId
                   ? (agentNameForId(message.authorAgentId) ?? "Agent")
                   : detail.agent.title,
-            text: message.text,
+            text: resolveMessageMentionText(
+              message.text,
+              message.agentMentions,
+            ),
             createdAt: message.createdAt,
             attachments: message.attachments,
             document: message.document,

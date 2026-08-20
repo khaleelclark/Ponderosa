@@ -79,6 +79,13 @@ export interface CreateTriggerResponse {
   webhookSecret?: string;
 }
 
+export interface RunTriggerResponse {
+  occurrenceId: string;
+  activationId?: string;
+  state: TriggerOccurrenceState;
+  replayed: boolean;
+}
+
 export interface TriggerOccurrenceDto {
   id: string;
   artifactId: string;

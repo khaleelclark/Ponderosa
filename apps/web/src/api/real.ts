@@ -47,6 +47,7 @@ import type {
   CreateProjectRequest,
   CreateTriggerRequest,
   CreateTriggerResponse,
+  RunTriggerResponse,
   DecisionDto,
   DraftAttachmentDto,
   EditQueuedMessageRequest,
@@ -479,6 +480,7 @@ export const realApi = {
     return response.activeNotificationIds;
   },
   async markNotificationRead(notificationId: string): Promise<void> { await requestJson(`/api/notifications/${encodeURIComponent(notificationId)}/read`, { method: "POST" }); },
+  async markNotificationsRead(notificationIds: string[]): Promise<void> { await requestJson("/api/notifications/read-batch", { method: "POST", body: JSON.stringify({ notificationIds }) }); },
   async clearConversationNotifications(conversationId: string, scope?: "messages"): Promise<void> { await requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/notifications/read`, { method: "POST", ...(scope ? { body: JSON.stringify({ scope }) } : {}) }); },
   async markAllNotificationsRead(): Promise<void> { await requestJson("/api/notifications/read", { method: "POST" }); },
   setNotificationStatus(notificationId: string, status: "resolved" | "dismissed"): Promise<WorkspaceNotificationDto> { return requestJson(`/api/notifications/${encodeURIComponent(notificationId)}/status`, { method: "POST", body: JSON.stringify({ status }) }); },
@@ -711,6 +713,12 @@ export const realApi = {
   },
   allowTriggerRuns(triggerId: string, additionalRuns: number): Promise<TriggerDefinitionDto> {
     return requestJson(`/api/triggers/${encodeURIComponent(triggerId)}/allow-runs`, { method: "POST", body: JSON.stringify({ additionalRuns }) });
+  },
+  runTrigger(triggerId: string, confirmDisabled = false): Promise<RunTriggerResponse> {
+    return requestJson(`/api/triggers/${encodeURIComponent(triggerId)}/run`, {
+      method: "POST",
+      body: JSON.stringify({ confirmDisabled }),
+    });
   },
   listTriggerOccurrences(triggerId: string, limit: number = 100): Promise<TriggerOccurrenceDto[]> {
     return requestJson(`/api/triggers/${encodeURIComponent(triggerId)}/occurrences?limit=${encodeURIComponent(String(limit))}`);
