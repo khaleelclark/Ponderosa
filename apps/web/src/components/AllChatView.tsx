@@ -977,6 +977,10 @@ export function AllChatView({
         ) : null}
         <Composer
           destinationMode="target-required"
+          defaultDestination={replyTarget ? {
+            handle: agentMentionHandle(replyTarget.title),
+            selectionKey: `agent:${replyTarget.id}:${replyTarget.title}`,
+          } : undefined}
           requiredRecipient={replyTarget ? {
             handle: agentMentionHandle(replyTarget.title),
             title: replyTarget.title,

@@ -650,9 +650,14 @@ export function ConversationView({
         ? message.directMessageAgents[0]!.id
         : undefined
     );
-    const agent = agentId ? agents.find(candidate => candidate.id === agentId) : undefined;
+    const agent = agentId
+      ? agents.find(candidate => candidate.id === agentId && !candidate.archived)
+      : undefined;
     return agent && message
-      ? { agent, selectionKey: message.communicationEventId ?? message.id }
+      ? {
+          agent,
+          selectionKey: `${message.communicationEventId ?? message.id}:${agent.title}`,
+        }
       : undefined;
   }, [agents, messages]);
   const mainTranscriptMarkdown = useMemo(
@@ -1263,13 +1268,8 @@ export function ConversationView({
             )}
             conversationDraftId={conversationId}
             destinationMode="project-chat"
-            continueWith={lastContinuationDestination ? {
-              agentId: lastContinuationDestination.agent.id,
+            defaultDestination={lastContinuationDestination ? {
               handle: agentMentionHandle(lastContinuationDestination.agent.title),
-              title: lastContinuationDestination.agent.title,
-              responding: Boolean(
-                healthByAgentId.get(lastContinuationDestination.agent.id)?.runtimeActivity,
-              ),
               selectionKey: lastContinuationDestination.selectionKey,
             } : undefined}
             insertTextRequest={mentionInsertRequest}
@@ -1323,7 +1323,6 @@ export function ConversationView({
                 "steer",
                 stagedIds,
                 draftOwnerId,
-                context?.implicitRecipientId,
                 context?.mentionedAgents,
               )
             }
@@ -1334,7 +1333,6 @@ export function ConversationView({
                 "queue",
                 stagedIds,
                 draftOwnerId,
-                context?.implicitRecipientId,
                 context?.mentionedAgents,
               )
             }

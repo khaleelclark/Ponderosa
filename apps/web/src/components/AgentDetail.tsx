@@ -1020,6 +1020,10 @@ export function AgentDetail({
         }
         composer={{
           destinationMode: "fixed",
+          defaultDestination: {
+            handle: agentMentionHandle(detail.agent.title),
+            selectionKey: `agent:${detail.agent.id}:${detail.agent.title}`,
+          },
           commands,
           capabilities: engineIsAvailable(engine)
             ? engineCapability?.composerCapabilities

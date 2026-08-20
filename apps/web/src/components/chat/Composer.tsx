@@ -28,6 +28,12 @@ import { createClientId, pageClientId } from "../../clientId";
 import { findMentionedHandles, hasBroadcastMention } from "../../mentions";
 import { queryKeys } from "../../queryKeys";
 import { removeHandle } from "./Composer.helpers";
+import {
+  composerDestinationMention,
+  hasComposerDestination,
+  NEW_AGENT_DESTINATION_HANDLE,
+  prependComposerDestination,
+} from "./composerDestination";
 import type { ComposerProps } from "./Composer.types";
 import {
   ComposerAttachmentList,
@@ -121,7 +127,7 @@ export function Composer({
   removeTextRequest,
   onMentionedHandlesChange,
   onCommandTargetHandleChange,
-  continueWith,
+  defaultDestination,
 }: ComposerProps): JSX.Element {
   const [text, setTextState] = useState(() =>
     draftStorageKey ? (readChatState(draftStorageKey) ?? "") : "",
@@ -181,10 +187,11 @@ export function Composer({
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const appliedInsertRequest = useRef<string>();
   const appliedRemoveRequest = useRef<string>();
+  const appliedDefaultDestination = useRef<{
+    handle: string;
+    selectionKey: string;
+  }>();
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
-  const [implicitContinueSelected, setImplicitContinueSelected] = useState(
-    Boolean(continueWith),
-  );
   const markUserDraftMutation = useCallback(() => {
     userDraftMutationGeneration.current += 1;
   }, []);
@@ -271,19 +278,33 @@ export function Composer({
     retryUpload: retryDraftUpload,
     uploadStates: draftUploadStates,
   } = draftAttachments;
-  useEffect(() => {
-    setImplicitContinueSelected(Boolean(continueWith));
-  }, [continueWith?.selectionKey]);
   const submissionText = composerSubmissionText(text, pastedText);
-  const mentionedHandles = useMemo(
-    () => findMentionedHandles(submissionText, mentionHandles ?? []),
-    [mentionHandles, submissionText],
+  const routingMentionHandles = useMemo(
+    () =>
+      destinationMode === "project-chat"
+        ? [...new Set([...(mentionHandles ?? []), NEW_AGENT_DESTINATION_HANDLE])]
+        : (mentionHandles ?? []),
+    [destinationMode, mentionHandles],
   );
+  const mentionedHandles = useMemo(
+    () => findMentionedHandles(submissionText, routingMentionHandles),
+    [routingMentionHandles, submissionText],
+  );
+  const newAgentSelected =
+    destinationMode === "project-chat" &&
+    mentionedHandles.some(
+      handle =>
+        handle.toLocaleLowerCase() === NEW_AGENT_DESTINATION_HANDLE,
+    );
   const projectDestinationHandles =
     destinationMode === "project-chat"
       ? mentionedHandles.filter(
           handle =>
-            !["broadcast", "everyone"].includes(handle.toLocaleLowerCase()),
+            ![
+              "broadcast",
+              "everyone",
+              NEW_AGENT_DESTINATION_HANDLE,
+            ].includes(handle.toLocaleLowerCase()),
         )
       : [];
   const projectDestinations = projectDestinationHandles.map(handle => ({
@@ -315,15 +336,6 @@ export function Composer({
     mentionedHandles.some(handle => handle.toLocaleLowerCase() === "everyone");
   const targetedNextRunDelivery =
     hasBroadcastDestination && projectDestinations.length > 0;
-  const implicitContinueHandle =
-    destinationMode === "project-chat" &&
-    implicitContinueSelected &&
-    continueWith &&
-    !hasBroadcastDestination &&
-    !hasEveryoneDestination &&
-    projectDestinations.length === 0
-      ? continueWith.handle
-      : undefined;
   const explicitCommandTargetHandle =
     destinationMode === "project-chat" &&
     !hasBroadcastDestination &&
@@ -339,12 +351,18 @@ export function Composer({
         ? targetRequiredDestinations[0]!.handle
         : undefined;
   const commandTargetHandle =
-    explicitCommandTargetHandle ?? implicitContinueHandle;
+    explicitCommandTargetHandle ??
+    (destinationMode === "fixed" ? defaultDestination?.handle : undefined);
   useEffect(() => {
     onCommandTargetHandleChange?.(commandTargetHandle);
   }, [commandTargetHandle, onCommandTargetHandleChange]);
   const destinationError =
-    targetedNextRunDelivery && files.length > 0
+    newAgentSelected &&
+    (hasBroadcastDestination ||
+      hasEveryoneDestination ||
+      projectDestinations.length > 0)
+      ? "#new-agent cannot be combined with another destination."
+      : targetedNextRunDelivery && files.length > 0
       ? "Targeted next-run delivery supports message text only. Remove attachments to send."
       : destinationMode === "target-required" && hasBroadcastDestination
       ? targetRequiredDestinations.length > 0
@@ -356,8 +374,23 @@ export function Composer({
         : destinationMode === "target-required" && unresolvedAmbiguousTarget
           ? `#${unresolvedAmbiguousTarget} matches more than one Agent. Use a message's # action to choose the exact Agent.`
           : undefined;
-  const clearDestination = (handle: string) =>
-    update(current => removeHandle(current, handle));
+  const toggleNewAgentDestination = () => {
+    update(current => {
+      if (hasComposerDestination(current, NEW_AGENT_DESTINATION_HANDLE)) {
+        return removeHandle(current, NEW_AGENT_DESTINATION_HANDLE);
+      }
+      let next = current;
+      for (const handle of [
+        "broadcast",
+        "everyone",
+        ...projectDestinationHandles,
+      ]) {
+        next = removeHandle(next, handle);
+      }
+      return prependComposerDestination(next, NEW_AGENT_DESTINATION_HANDLE);
+    });
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
   const clearRequiredRecipient = () => {
     const handle = targetRequiredHandles[0] ?? requiredRecipient?.handle;
     if (handle) update(current => removeHandle(current, handle));
@@ -382,10 +415,6 @@ export function Composer({
   );
   const mentionedBusyHandles = mentionedHandles.filter(handle =>
     busyHandles.has(handle.toLocaleLowerCase()),
-  );
-  const implicitContinueResponding = Boolean(
-    implicitContinueHandle &&
-      busyHandles.has(implicitContinueHandle.toLocaleLowerCase()),
   );
   const textCanSend = canSubmitComposerText({
     text: submissionText,
@@ -569,6 +598,39 @@ export function Composer({
     };
   }, [conversationDraftId, draftQuery.data, draftStorageKey]);
 
+  useEffect(() => {
+    if (conversationDraftId && !draftReady.current) return;
+    const previous = appliedDefaultDestination.current;
+    if (!defaultDestination) {
+      appliedDefaultDestination.current = undefined;
+      return;
+    }
+    if (previous?.selectionKey === defaultDestination.selectionKey) return;
+    appliedDefaultDestination.current = defaultDestination;
+    update(current => {
+      const withoutPrevious = previous && hasComposerDestination(
+        current,
+        previous.handle,
+      )
+        ? removeHandle(current, previous.handle)
+        : current;
+      const mayPopulate =
+        destinationMode !== "project-chat" ||
+        withoutPrevious.trim().length === 0 ||
+        Boolean(previous);
+      return mayPopulate
+        ? prependComposerDestination(withoutPrevious, defaultDestination.handle)
+        : current;
+    });
+  }, [
+    conversationDraftId,
+    defaultDestination?.handle,
+    defaultDestination?.selectionKey,
+    destinationMode,
+    draftReadyVersion,
+    update,
+  ]);
+
   useComposerDraftStorageWrite({
     draftStorageKey,
     text,
@@ -719,7 +781,7 @@ export function Composer({
     : [];
   const commandDraft = providerCommandInput(
     text.slice(0, caret),
-    explicitCommandTargetHandle,
+    commandTargetHandle,
   );
   const slashMatch = commandDraft
     ? /^\/([\p{L}\p{N}_:-]*)$/u.exec(commandDraft.text)
@@ -820,7 +882,6 @@ export function Composer({
       stagedAttachmentIds?: string[],
       stagedDraftOwnerId?: string,
       context?: {
-        implicitRecipientId?: string;
         mentionedAgents?: import("@ponderosa/core").AgentMentionBindingDto[];
       },
     ) => Promise<unknown> | unknown,
@@ -828,7 +889,7 @@ export function Composer({
     if (sendingRef.current || !canSend) return;
     const commandSubmission = providerCommandInput(
       submissionText,
-      explicitCommandTargetHandle,
+      commandTargetHandle,
     );
     const slash =
       files.length === 0 && commands !== undefined && commandSubmission
@@ -863,15 +924,9 @@ export function Composer({
         candidate.handle.toLocaleLowerCase() === handle.toLocaleLowerCase());
       return binding ? [binding] : [];
     });
-    const submissionContext =
-      implicitContinueHandle || mentionedAgents.length > 0
-        ? {
-            ...(implicitContinueHandle
-              ? { implicitRecipientId: continueWith!.agentId }
-              : {}),
-            ...(mentionedAgents.length > 0 ? { mentionedAgents } : {}),
-          }
-        : undefined;
+    const submissionContext = mentionedAgents.length > 0
+      ? { mentionedAgents }
+      : undefined;
     const runtimeCommandSubmission =
       slash?.command.invocation === "runtime";
     const operation =
@@ -901,8 +956,16 @@ export function Composer({
           draftLocallyEdited.current = false;
           draftAttachmentsLocallyEdited.current = false;
           unrestoredDraftAttachmentIds.current = [];
-          replaceText("");
-          if (draftStorageKey) writeChatState(draftStorageKey, "");
+          const clearedText =
+            defaultDestination &&
+            !hasComposerDestination(
+              submissionText,
+              NEW_AGENT_DESTINATION_HANDLE,
+            )
+              ? composerDestinationMention(defaultDestination.handle)
+              : "";
+          replaceText(clearedText);
+          if (draftStorageKey) writeChatState(draftStorageKey, clearedText);
           replacePastedText(undefined);
           clearDraftAttachments();
         }
@@ -1003,7 +1066,6 @@ export function Composer({
       hasAttachments: files.length > 0,
       agentResponding:
         agentResponding ||
-        implicitContinueResponding ||
         mentionedBusyHandles.length > 0,
       disabled,
     });
@@ -1087,14 +1149,8 @@ export function Composer({
         ) : null}
         {destinationMode === "project-chat" ? (
           <ComposerProjectDestinationAction
-            clearDestination={clearDestination}
-            continueWith={continueWith}
-            hasBroadcastDestination={hasBroadcastDestination}
-            hasEveryoneDestination={hasEveryoneDestination}
-            inputRef={inputRef}
-            implicitContinueSelected={Boolean(implicitContinueHandle)}
-            projectDestinations={projectDestinations}
-            selectImplicitContinue={setImplicitContinueSelected}
+            newAgentSelected={newAgentSelected}
+            toggleNewAgent={toggleNewAgentDestination}
           />
         ) : null}
         {leadingControls ? (
