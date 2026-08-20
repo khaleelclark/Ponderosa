@@ -38,12 +38,10 @@ export function ComposerDestinationBar({
 export function ComposerTargetDestinationAction({
   broadcast,
   handles,
-  labelPrefix,
   onClear,
 }: {
   broadcast: boolean;
   handles: string[];
-  labelPrefix?: string;
   onClear(): void;
 }): JSX.Element | null {
   const labels = [
@@ -54,15 +52,12 @@ export function ComposerTargetDestinationAction({
   const destinationLabel = labels.length > 1
     ? `${labels[0]} +${labels.length - 1}`
     : labels[0]!;
-  const label = labelPrefix
-    ? `${labelPrefix}${destinationLabel.replace(/^#/u, "")}`
-    : destinationLabel;
   return (
     <Chip
       size="small"
       color={broadcast ? "info" : "primary"}
       icon={broadcast ? <CampaignOutlinedIcon /> : undefined}
-      label={label}
+      label={destinationLabel}
       title={labels.join(" ")}
       aria-label={`Destinations: ${labels.join(", ")}`}
       onDelete={onClear}
@@ -99,7 +94,7 @@ export function ComposerProjectDestinationAction({
       onClick={toggleNewAgent}
       sx={{ whiteSpace: "nowrap", minHeight: 34 }}
     >
-      {newAgentSelected ? "New Agent selected" : "Spawn New Agent"}
+      New Agent
     </Button>
   );
 }

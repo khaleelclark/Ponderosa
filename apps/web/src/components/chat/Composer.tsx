@@ -1155,20 +1155,11 @@ export function Composer({
             onClear={clearTargetDestinations}
           />
         ) : null}
-        {destinationMode === "project-chat" ? (
-          activeDefaultDestination ? (
-            <ComposerTargetDestinationAction
-              broadcast={false}
-              handles={[activeDefaultDestination.handle]}
-              labelPrefix="To: "
-              onClear={() => setActiveDefaultDestination(undefined)}
-            />
-          ) : (
-            <ComposerProjectDestinationAction
-              newAgentSelected={newAgentSelected}
-              toggleNewAgent={toggleNewAgentDestination}
-            />
-          )
+        {destinationMode === "project-chat" && !activeDefaultDestination ? (
+          <ComposerProjectDestinationAction
+            newAgentSelected={newAgentSelected}
+            toggleNewAgent={toggleNewAgentDestination}
+          />
         ) : null}
         {leadingControls ? (
           <Box sx={{ minWidth: 0, maxWidth: "100%" }}>
@@ -1197,6 +1188,14 @@ export function Composer({
             menuSuggestions={menuSuggestions}
             destinationMode={destinationMode}
             requiredRecipient={requiredRecipient}
+            inlineDestination={
+              destinationMode === "project-chat" && activeDefaultDestination
+                ? {
+                  handle: activeDefaultDestination.handle,
+                  onClear: () => setActiveDefaultDestination(undefined),
+                }
+                : undefined
+            }
             mentionedBusyHandles={mentionedBusyHandles}
             mentionedHandles={mentionedHandles}
             canSend={canSend}
