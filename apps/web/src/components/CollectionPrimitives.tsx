@@ -430,7 +430,8 @@ export function CollectionStateFeedback({
       {"Could not load " + resourceLabel + "."}
     </Alert>;
   }
-  const empty = request.hasResolved && itemCount === 0;
+  const empty =
+    request.hasResolved && itemCount === 0 && !request.hasNextPage;
   return <>
     {empty ? <CollectionEmptyState
       title={filtersActive ? (noMatchTitle ?? "No matching " + resourceLabel) : emptyTitle}

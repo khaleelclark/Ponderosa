@@ -190,6 +190,7 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
   const conversationDirectoryQuery =
     useWorkspaceDirectory<WorkspaceConversationDirectoryItemDto>("conversation", {
       projectId: projectId || undefined,
+      retainPreviousData: false,
     });
   const conversationDirectory = workspaceDirectoryItems(
     conversationDirectoryQuery.data?.pages,
@@ -224,6 +225,23 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
   const scopedProject = projectId
     ? projects.find(project => project.id === projectId)
     : undefined;
+  const organizationDataComplete =
+    agentDirectoryQuery.requestState.hasResolved &&
+    !agentDirectoryQuery.requestState.hasNextPage &&
+    !agentDirectoryQuery.requestState.isPaginationError &&
+    !search.trim() &&
+    conversationId === "all";
+  const loadCompleteAgentCollection = async (): Promise<void> => {
+    if (search.trim() || conversationId !== "all")
+      throw new Error(
+        "Clear the Agent search and Project Chat filter before loading the complete organization.",
+      );
+    let hasNextPage = agentDirectoryQuery.requestState.hasNextPage;
+    while (hasNextPage) {
+      const result = await agentDirectoryQuery.fetchNextPage();
+      hasNextPage = Boolean(result.hasNextPage);
+    }
+  };
   return <Box sx={{ height: "100%", minHeight: 0, overflow: "hidden" }}>
     <AgentsTab
       collection={{
@@ -238,6 +256,8 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
       searchValue={search}
       onSearchValueChange={setSearch}
       collectionRequest={agentDirectoryQuery.requestState}
+      organizationDataComplete={organizationDataComplete}
+      onLoadOrganizationData={loadCompleteAgentCollection}
       collectionFooter={(filteredCount) => <CollectionStateFeedback
         request={agentDirectoryQuery.requestState}
         itemCount={filteredCount}

@@ -55,6 +55,7 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     conversationId?: string;
     sort?: ProjectSort;
     enabled?: boolean;
+    retainPreviousData?: boolean;
   },
 ) {
   const requestedSearch = options.search?.trim() ?? "";
@@ -91,7 +92,9 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
       lastPage: WorkspaceDirectoryPageDto<T>,
     ) => lastPage.history.cursor,
     enabled: options.enabled ?? true,
-    placeholderData: keepPreviousData,
+    ...(options.retainPreviousData === false
+      ? {}
+      : { placeholderData: keepPreviousData }),
     select: normalizeResetPages,
     staleTime: 5_000,
   });
