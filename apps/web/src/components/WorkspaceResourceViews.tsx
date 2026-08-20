@@ -205,6 +205,7 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
       search,
       projectId: projectId || undefined,
       conversationId: conversationId === "all" ? undefined : conversationId,
+      retainPreviousData: false,
     });
   const agentDirectory = workspaceDirectoryItems(agentDirectoryQuery.data?.pages, preferences);
   const rows = [...agentDirectory.starredItems, ...agentDirectory.items];
@@ -239,6 +240,8 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
     let hasNextPage = agentDirectoryQuery.requestState.hasNextPage;
     while (hasNextPage) {
       const result = await agentDirectoryQuery.fetchNextPage();
+      if (result.isError)
+        throw result.error ?? new Error("Could not load the complete Agent hierarchy.");
       hasNextPage = Boolean(result.hasNextPage);
     }
   };
