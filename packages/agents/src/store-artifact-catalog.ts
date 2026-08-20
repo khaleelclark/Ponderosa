@@ -119,8 +119,17 @@ export class AgentArtifactCatalog {
       executionId: row.execution_id ?? undefined,
       kind: row.kind as ArtifactKind,
       path: row.path,
+      sourcePath: row.source_path ?? undefined,
       summary: row.summary ?? undefined,
       createdAt: row.created_at,
+      mediaType: row.media_type ?? undefined,
+      visibility: row.visibility === "published"
+        ? "published"
+        : row.visibility === "project"
+          ? "project"
+          : undefined,
+      pinned: row.pinned === null ? undefined : row.pinned === 1,
+      size: row.size ?? undefined,
     };
   }
 
