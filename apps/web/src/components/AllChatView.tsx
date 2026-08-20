@@ -35,6 +35,7 @@ import {
   ChatMessageBody,
   authoredAgentMentionForHandle,
   communicationVisibleText,
+  resolveMessageMentionText,
   showBroadcastBadge,
 } from "./chat/ChatMessages";
 import { Composer } from "./chat/Composer";
@@ -897,7 +898,10 @@ export function AllChatView({
                           aria-label="Copy message"
                           onClick={event => {
                             event.stopPropagation();
-                            void copyText(item.text);
+                            void copyText(resolveMessageMentionText(
+                              item.text,
+                              item.agentMentions,
+                            ));
                           }}
                         >
                           <ContentCopyOutlinedIcon fontSize="inherit" />

@@ -134,11 +134,14 @@ export function createServerReadModels(context: ReadModelContext) {
       const agentMentions = resolveAgentMentionBindings(
         message.text,
         recipientAgentIds,
-        recipientMentionIdentities(
-          recipientAgentIds,
-          projectAgents,
-          communication?.identity?.recipientLabels,
-        ),
+        [
+          ...projectAgents,
+          ...recipientMentionIdentities(
+            recipientAgentIds,
+            projectAgents,
+            communication?.identity?.recipientLabels,
+          ),
+        ],
       );
       const deliveryReceipts = deliveryReceiptsByEvent.get(message.communicationEventId) ?? [];
       const coordinationRequests = requestsByEvent.get(message.communicationEventId) ?? [];

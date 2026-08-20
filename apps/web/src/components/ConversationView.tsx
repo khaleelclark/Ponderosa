@@ -74,7 +74,10 @@ import { useConversationNotificationVisibility } from "./useConversationNotifica
 import { useConversationHistory } from "./useConversationHistory";
 import { useConversationMessagingController } from "./useConversationMessagingController";
 import { MasterRespondingIndicator } from "./ConversationComposerStatus";
-import { agentOpeningAgentId } from "./chat/ChatMessages";
+import {
+  agentOpeningAgentId,
+  resolveMessageMentionText,
+} from "./chat/ChatMessages";
 import { ConversationFilesResults } from "./ConversationFilesResults";
 import { ChatComposerDock } from "./chat/ChatComposerDock";
 import { CollectionPagination } from "./CollectionPrimitives";
@@ -663,7 +666,10 @@ export function ConversationView({
                 : message.role === "system"
                   ? "System"
                   : "You",
-              text: message.text,
+              text: resolveMessageMentionText(
+                message.text,
+                message.agentMentions,
+              ),
               createdAt: message.createdAt,
               attachments: message.attachments,
               document: message.document,
@@ -683,7 +689,10 @@ export function ConversationView({
                 : message.role === "system"
                   ? "System"
                   : "You",
-              text: message.text,
+              text: resolveMessageMentionText(
+                message.text,
+                message.agentMentions,
+              ),
               createdAt: message.createdAt,
               attachments: message.attachments,
               document: message.document,
@@ -777,7 +786,11 @@ export function ConversationView({
   ];
   const mentionBindings = agents
     .filter(agent => !agent.archived)
-    .map(agent => ({ handle: agentMentionHandle(agent.title), agentId: agent.id }))
+    .map(agent => ({
+      handle: agentMentionHandle(agent.title),
+      agentId: agent.id,
+      currentTitle: agent.title,
+    }))
     .filter(binding => binding.handle &&
       !["broadcast", "user", "everyone"].includes(binding.handle.toLocaleLowerCase()));
   const findMentioned = (text: string): AgentDto[] =>

@@ -4,7 +4,14 @@ import {
   type CommunicationEvent,
 } from "@ponderosa/core";
 
-const RESERVED_HANDLES = new Set(["broadcast", "everyone", "user"]);
+const RESERVED_HANDLES = new Set([
+  "broadcast",
+  "everyone",
+  "new-agent",
+  "operator",
+  "pto",
+  "user",
+]);
 const NUMERIC_HANDLE_PATTERN = /^\p{N}+$/u;
 
 export function agentMentionHandle(title: string): string {
@@ -42,16 +49,19 @@ export function recipientMentionIdentities(
 }
 
 /**
- * Bind authored display handles to immutable recipient identities. Exact
- * current-name matches are deterministic. A single renamed recipient can also
- * be recovered from the canonical audience without guessing across agents.
+ * Resolve display handles against every Agent in the Project while keeping the
+ * canonical audience authoritative. Current titles drive presentation; the
+ * authored handle remains only as an immutable alias for audit/tooltips.
  */
 export function resolveAgentMentionBindings(
   text: string,
   recipientAgentIds: readonly string[],
   agents: readonly Pick<AgentDto, "id" | "title">[],
-): Array<{ handle: string; agentId: string }> {
-  const recipients = agents.filter(agent => recipientAgentIds.includes(agent.id));
+): Array<{ handle: string; agentId: string; currentTitle: string }> {
+  const currentTitleById = new Map<string, string>();
+  for (const agent of agents) {
+    if (!currentTitleById.has(agent.id)) currentTitleById.set(agent.id, agent.title);
+  }
   const handles = [...new Set(messageTagTokens(text)
     .map(token => token.handle)
     .filter((handle) => !RESERVED_HANDLES.has(handle.toLocaleLowerCase())))];
@@ -59,7 +69,7 @@ export function resolveAgentMentionBindings(
   const usedAgentIds = new Set<string>();
 
   for (const handle of handles) {
-    const matches = [...new Set(recipients
+    const matches = [...new Set(agents
       .filter(agent =>
         agentMentionHandle(agent.title).toLocaleLowerCase() ===
           handle.toLocaleLowerCase())
@@ -76,5 +86,17 @@ export function resolveAgentMentionBindings(
   if (remainingHandles.length === 1 && remainingAgentIds.length === 1) {
     bound.set(remainingHandles[0]!, remainingAgentIds[0]!);
   }
-  return [...bound].map(([handle, agentId]) => ({ handle, agentId }));
+
+  // Canonical Direct/Collaboration recipients remain visible even when the
+  // provider omitted the routing handle from rendered prose.
+  for (const agentId of [...new Set(recipientAgentIds)]) {
+    if (usedAgentIds.has(agentId)) continue;
+    const title = currentTitleById.get(agentId);
+    if (title) bound.set(agentMentionHandle(title), agentId);
+  }
+
+  return [...bound].flatMap(([handle, agentId]) => {
+    const currentTitle = currentTitleById.get(agentId);
+    return currentTitle ? [{ handle, agentId, currentTitle }] : [];
+  });
 }

@@ -38,6 +38,7 @@ import {
   CommunicationDocumentCard,
   authoredAgentMentionForHandle,
   communicationVisibleText,
+  resolveMessageMentionText,
   showBroadcastBadge,
   stripDocumentPrefixText,
 } from "./chat/ChatMessages";
@@ -106,16 +107,10 @@ function ConversationMessageComponent({
   const senderName = fromManager
     ? (operatorProfile?.displayName ?? "You")
     : agentTitle(message.authorAgentId);
-  const recipientNames = [
-    ...new Set(
-      (message.collaborationRecipients?.length
-        ? message.collaborationRecipients.map(recipient => recipient.title)
-        : (message.agentMentions ?? []).map(mention => agentTitle(mention.agentId))),
-    ),
-  ];
-  const visibleRecipients = recipientNames.slice(0, 2);
-  const hiddenRecipientCount =
-    recipientNames.length - visibleRecipients.length;
+  const resolvedCopyText = resolveMessageMentionText(
+    copyableText,
+    message.agentMentions,
+  );
 
   return (
     <ChatMessageFrame
@@ -137,24 +132,6 @@ function ConversationMessageComponent({
             message.communicationEventId,
           ) ? (
             <Chip size="small" variant="outlined" label="Broadcast" />
-          ) : conversation === "collaboration" && recipientNames.length ? (
-            <Typography
-              component="span"
-              variant="caption"
-              color="text.secondary"
-              sx={{
-                minWidth: 0,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {"→ "}
-              {visibleRecipients.join(", ")}
-              {hiddenRecipientCount > 0
-                ? ` +${hiddenRecipientCount} more`
-                : ""}
-            </Typography>
           ) : undefined,
         onVisible,
         body: (
@@ -228,7 +205,7 @@ function ConversationMessageComponent({
           ) : undefined,
         actions: (
           <>
-            <CopyMessageButton text={copyableText} />
+            <CopyMessageButton text={resolvedCopyText} />
             {conversation === "main" && message.authorAgentId && onMentionAgent ? (
                 <Tooltip title={`Mention ${senderName}`}>
                   <IconButton

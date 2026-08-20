@@ -54,29 +54,87 @@ function stripLeadingRoutingHandle(text: string, handle: string): string {
   return remainder.trim() ? remainder.trimStart() : text;
 }
 
+const RESERVED_PRESENTATION_HANDLES = new Set([
+  "broadcast",
+  "everyone",
+  "new-agent",
+  "operator",
+  "pto",
+  "user",
+]);
+
+function mentionHandle(title: string): string {
+  return title.trim().replace(/\s+/gu, "-").replace(/[^\p{L}\p{N}_-]/gu, "");
+}
+
+/** One authoritative name-resolution path shared by rendering, copy, and export. */
+export function resolveMessageMentionText(
+  text: string,
+  mentions: readonly AgentMentionBindingDto[] | undefined,
+): string {
+  const tokens = messageTagTokens(text);
+  if (!tokens.length) return text;
+  let cursor = 0;
+  let resolved = "";
+  for (const token of tokens) {
+    resolved += text.slice(cursor, token.start);
+    const binding = mentions?.find(mention =>
+      mention.handle.toLocaleLowerCase() === token.handle.toLocaleLowerCase());
+    if (binding) resolved += `#${mentionHandle(binding.currentTitle)}`;
+    else if (RESERVED_PRESENTATION_HANDLES.has(token.handle.toLocaleLowerCase())) {
+      resolved += text.slice(token.start, token.end);
+    } else {
+      resolved += `[Unavailable Agent: ${token.handle}]`;
+    }
+    cursor = token.end;
+  }
+  return resolved + text.slice(cursor);
+}
+
+function canonicalRecipientPrefix(
+  text: string,
+  mentions: readonly AgentMentionBindingDto[] | undefined,
+): string {
+  const authoredHandles = new Set(messageTagTokens(text)
+    .map(token => token.handle.toLocaleLowerCase()));
+  return [...new Set((mentions ?? [])
+    .filter(mention => !authoredHandles.has(mention.handle.toLocaleLowerCase()))
+    .map(mention => `#${mentionHandle(mention.currentTitle)}`))]
+    .join(" ");
+}
+
 /** Keep recipient handles visible; only the separately badged Broadcast route is redundant. */
 export function communicationVisibleText(input: {
   text: string;
   intent?: CommunicationIntent;
   fromAgent: boolean;
-  agentMentions?: readonly { handle: string }[];
+  agentMentions?: readonly AgentMentionBindingDto[];
 }): string {
-  return input.intent === "broadcast"
+  const routedText = input.intent === "broadcast"
     ? stripLeadingRoutingHandle(input.text, "broadcast")
     : input.text;
+  const resolvedText = resolveMessageMentionText(routedText, input.agentMentions);
+  const prefix = input.intent === "user_dm" || input.intent === "collaboration"
+    ? canonicalRecipientPrefix(input.text, input.agentMentions)
+    : "";
+  return prefix ? `${prefix} ${resolvedText}` : resolvedText;
 }
 
-/** Preserve the immutable authored label while navigating by stable Agent ID. */
+/** Navigate by stable Agent ID while always displaying the current title. */
 export function authoredAgentMentionForHandle(
   handle: string,
   mentions: readonly AgentMentionBindingDto[] | undefined,
-): { agentId: string; label: string } | undefined {
+): { agentId: string; label: string; authoredLabel: string } | undefined {
   const binding = mentions?.find(
     mention =>
       mention.handle.toLocaleLowerCase() === handle.toLocaleLowerCase(),
   );
   return binding
-    ? { agentId: binding.agentId, label: binding.handle }
+    ? {
+        agentId: binding.agentId,
+        label: mentionHandle(binding.currentTitle),
+        authoredLabel: binding.handle,
+      }
     : undefined;
 }
 
@@ -374,7 +432,7 @@ function ChatMarkdown({
 }: {
   children: string;
   agentIdForHandle?(handle: string): string | undefined;
-  agentMentionForHandle?(handle: string): { agentId: string; label: string } | undefined;
+  agentMentionForHandle?(handle: string): { agentId: string; label: string; authoredLabel?: string } | undefined;
   onOpenAgent?(agentId: string): void;
   onOpenBroadcast?(): void;
   previewScope?: LinkPreviewScope;
@@ -446,6 +504,10 @@ function ChatMarkdown({
             const visibleLabel = operatorMention && handle.toLocaleLowerCase() !== "pto" && operatorHandle
               ? `#${operatorHandle}`
               : boundMention ? `#${boundMention.label}` : label;
+            const mentionTitle = boundMention?.authoredLabel &&
+              boundMention.authoredLabel.toLocaleLowerCase() !== boundMention.label.toLocaleLowerCase()
+                ? `Originally authored as #${boundMention.authoredLabel}`
+                : undefined;
             if (operatorMention) return <Box component="span" sx={messageMentionSx}>{visibleLabel}</Box>;
             if (!agentId) {
               if (["broadcast", "everyone"].includes(handle.toLocaleLowerCase())) {
@@ -453,8 +515,8 @@ function ChatMarkdown({
               }
               return <>{label}</>;
             }
-            if (!onOpenAgent) return <Box component="span" sx={messageMentionSx}>{visibleLabel}</Box>;
-            return <Box className="chat-text-navigation" component="button" type="button" aria-label={`Open agent ${boundMention?.label ?? handle}`} onClick={() => onOpenAgent(agentId)} sx={{ ...messageMentionSx, border: 0, font: "inherit", cursor: "pointer" }}>{visibleLabel}</Box>;
+            if (!onOpenAgent) return <Box component="span" title={mentionTitle} sx={messageMentionSx}>{visibleLabel}</Box>;
+            return <Box className="chat-text-navigation" component="button" type="button" title={mentionTitle} aria-label={`Open agent ${boundMention?.label ?? handle}${mentionTitle ? `. ${mentionTitle}` : ""}`} onClick={() => onOpenAgent(agentId)} sx={{ ...messageMentionSx, border: 0, font: "inherit", cursor: "pointer" }}>{visibleLabel}</Box>;
           },
         }}
       >
@@ -473,7 +535,7 @@ export function ChatMessageBody({ text, citations, collapseLongMessage = true, a
   citations?: VerifiedCitationDto[];
   collapseLongMessage?: boolean;
   agentIdForHandle?(handle: string): string | undefined;
-  agentMentionForHandle?(handle: string): { agentId: string; label: string } | undefined;
+  agentMentionForHandle?(handle: string): { agentId: string; label: string; authoredLabel?: string } | undefined;
   onOpenAgent?(agentId: string): void;
   onOpenBroadcast?(): void;
   previewScope?: LinkPreviewScope;

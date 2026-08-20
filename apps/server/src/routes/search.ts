@@ -56,11 +56,14 @@ export function registerSearchRoutes(
         const agentMentions = resolveAgentMentionBindings(
           item.text,
           recipientIds,
-          recipientMentionIdentities(
-            recipientIds,
-            projectAgents,
-            communication?.identity?.recipientLabels,
-          ),
+          [
+            ...projectAgents,
+            ...recipientMentionIdentities(
+              recipientIds,
+              projectAgents,
+              communication?.identity?.recipientLabels,
+            ),
+          ],
         );
         return agentMentions.length ? { ...item, agentMentions } : item;
       });

@@ -72,6 +72,8 @@ export interface AgentMentionBindingDto {
   handle: string;
   /** Immutable recipient identity used for routing and navigation. */
   agentId: string;
+  /** Current authoritative display title, or the last durable label after deletion. */
+  currentTitle: string;
 }
 
 /** A message in the project-level conversation (a team group chat). */
