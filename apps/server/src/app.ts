@@ -375,6 +375,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     agentWorkProjection,
     createOperationalNotification,
     reconcileCommunicationFailureNotifications,
+    reconcileContextRolloverFormatNotifications,
     reconcileCoordinationAttentionNotifications,
     reconcileProjectDeletionOperationalNotifications,
     reconcileProjectWorkspace,
@@ -663,6 +664,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   // Repair operational projections before the listener accepts reads. Further
   // reconciliation is driven by canonical coordination/delivery mutations.
   reconcileCommunicationFailureNotifications();
+  reconcileContextRolloverFormatNotifications();
   reconcileCoordinationAttentionNotifications();
   const limits = { ...ASSET_LIMITS, maxAttachmentsPerMessage: ASSET_LIMITS.maxAssetsPerMessage };
   const serverContext: ServerContext = { opts, documentationReferences, limits, agentDetail, store, tokenUsage };

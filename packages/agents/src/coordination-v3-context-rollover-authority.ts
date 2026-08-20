@@ -13,6 +13,8 @@ import type { ContextRolloverState, ContextRolloverV3 } from "./coordination-v3-
 const MAX_CONTEXT_ROLLOVER_RECENT_TAIL_IDS = 80;
 const MAX_INTERNAL_ROLLOVER_FAILURE_CHARACTERS = 1_000;
 const UNSAFE_INTERNAL_ROLLOVER_FAILURE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
+const CONTEXT_ROLLOVER_HANDOFF_GUIDANCE =
+  "Produce only one concise, self-contained continuation handoff. Prefer clear sections for the objective, completed and unfinished work, blockers, exact next action, verified facts, and assumptions, but use any readable format. Include concrete references only when they materially help continuity. Keep the handoff at or below 20,000 Unicode characters. Do not call a tool, send a message, resume the task, or repeat its output contract; place the handoff only in the Work log. The Ponderosa runtime, not a provider tool call, owns session replacement.";
 
 function boundedInternalRolloverFailure(error: string): string {
   const value = error.trim();
@@ -156,7 +158,7 @@ export class CoordinationV3ContextRolloverAuthority {
           rolloverId: id,
           detectedOccupancy: input.detectedOccupancy,
           threshold: input.threshold,
-          instruction: "The pressure source Run has ended. Produce only one self-contained 150–500-word bounded handoff using these exact labels: Objective:, Completed work:, Unfinished work:, Blockers:, Exact next action:, Verified facts:, Assumptions:. Include relevant file, path, artifact, or reference identifiers. Do not call a tool, send a message, resume the task, or repeat its output contract; place the handoff only in the Work log. The Ponderosa runtime, not a provider tool call, owns session replacement.",
+          instruction: `The pressure source Run has ended. ${CONTEXT_ROLLOVER_HANDOFF_GUIDANCE}`,
         },
         sourceKind: "context_rollover",
         sourceId: id,
@@ -178,6 +180,68 @@ export class CoordinationV3ContextRolloverAuthority {
       ORDER BY updated_at DESC, id DESC LIMIT 1
     `).get(agentId) as RolloverRow | undefined;
     return row ? this.view(row) : undefined;
+  }
+
+  hasViableHandoffActivation(id: string): boolean {
+    return this.sqlite.prepare(`
+      SELECT 1
+      FROM agent_activations activation
+      JOIN activation_sources source
+        ON source.activation_id = activation.id
+        AND source.source_kind = 'context_rollover'
+        AND source.source_id = ?
+      WHERE activation.kind = 'context_rollover_handoff'
+        AND activation.state IN ('pending','retry_pending')
+        AND json_extract(activation.payload_json, '$.rolloverId') = ?
+      LIMIT 1
+    `).get(id, id) !== undefined;
+  }
+
+  retryHandoff(
+    id: string,
+    validationError: string,
+    now = new Date().toISOString(),
+  ): { rollover: ContextRolloverV3; scheduled: boolean } {
+    return this.sqlite.transaction(() => {
+      const current = this.get(id);
+      if (!current) throw new Error("context rollover not found");
+      if (current.state !== "requested" || current.handoffEventId) {
+        return { rollover: current, scheduled: false };
+      }
+      const handoffAttempts = (this.sqlite.prepare(`
+        SELECT COUNT(*) AS count
+        FROM agent_activations activation
+        JOIN activation_sources source ON source.activation_id = activation.id
+        WHERE source.source_kind = 'context_rollover'
+          AND source.source_id = ?
+          AND activation.kind = 'context_rollover_handoff'
+      `).get(id) as { count: number }).count;
+      if (handoffAttempts >= 2) return { rollover: current, scheduled: false };
+      const diagnostic = boundedInternalRolloverFailure(validationError);
+      this.sqlite.prepare(`
+        UPDATE context_rollovers SET last_error = ?, updated_at = ?
+        WHERE id = ? AND state = 'requested' AND handoff_event_id IS NULL
+      `).run(`initial continuation handoff was unusable: ${diagnostic}`, now, id);
+      this.createActivation({
+        projectId: current.projectId,
+        agentId: current.agentId,
+        scopeKey: current.scopeKey,
+        kind: "context_rollover_handoff",
+        priority: 100,
+        dispatchPolicy: "next_run",
+        promptClass: "blocker",
+        dedupeKey: `context-rollover-handoff-retry:${id}`,
+        payload: {
+          rolloverId: id,
+          retryAttempt: 1,
+          instruction: `The previous continuation handoff could not be used because ${diagnostic}. Retry once. ${CONTEXT_ROLLOVER_HANDOFF_GUIDANCE}`,
+        },
+        sourceKind: "context_rollover",
+        sourceId: id,
+        now,
+      });
+      return { rollover: this.get(id)!, scheduled: true };
+    })();
   }
 
   forReplacementSession(agentId: string, replacementSessionId: string): ContextRolloverV3 | undefined {
@@ -367,7 +431,8 @@ export class CoordinationV3ContextRolloverAuthority {
     this.sqlite.transaction(() => {
       this.sqlite.prepare(`
         UPDATE context_rollovers SET state = 'handoff_committed', handoff_event_id = ?,
-          handoff_committed_at = COALESCE(handoff_committed_at, ?), updated_at = ?
+          handoff_committed_at = COALESCE(handoff_committed_at, ?),
+          last_error = NULL, updated_at = ?
         WHERE id = ? AND state IN ('requested','handoff_committed')
           AND (handoff_event_id IS NULL OR handoff_event_id = ?)
       `).run(handoffEventId, now, now, id, handoffEventId);

@@ -254,6 +254,19 @@ export function createOperationalNotifications(context: OperationalNotifications
       resolveOperationalNotification(notification.dedupeKey);
     });
   };
+  const reconcileContextRolloverFormatNotifications = (): void => {
+    // Older builds incorrectly classified a rejected handoff format as an
+    // operator decision. The retained provider context is still authoritative,
+    // and corrected builds retry unusable output internally, so these notices
+    // have no user-owned resolution and must disappear after deployment.
+    workspace.forEachOpenOperationalNotification("context-rollover:", (notification) => {
+      const key = notification.dedupeKey;
+      if (!key || ![":handoff-missing", ":outcome-unknown"].some(
+        (suffix) => key.endsWith(suffix),
+      )) return;
+      resolveOperationalNotification(key);
+    });
+  };
   const reconcileTriggerOperationalNotifications = (): void => {
     const triggers = coordinationV3.listTriggerDefinitions();
     const retained = new Set<string>();
@@ -306,6 +319,7 @@ export function createOperationalNotifications(context: OperationalNotifications
     createOperationalNotification,
     projectWorkspaceNotificationKey,
     reconcileCommunicationFailureNotifications,
+    reconcileContextRolloverFormatNotifications,
     reconcileCoordinationAttentionNotifications,
     reconcileProjectDeletionOperationalNotifications,
     reconcileProjectWorkspace,
