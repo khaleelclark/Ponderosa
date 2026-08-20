@@ -251,12 +251,17 @@ export function normalizeCodexProviderUsage(
     });
   }
   const multipleLimits = snapshots.length > 1;
-  const windows: ProviderUsageWindow[] = [];
+  const windowCandidates: Array<{
+    durationMinutes: number;
+    limitId: string;
+    positionIndex: number;
+    window: ProviderUsageWindow;
+  }> = [];
   for (const { limitId, snapshot } of snapshots) {
     const limitName = typeof snapshot.limitName === "string" && snapshot.limitName.trim()
       ? snapshot.limitName.trim()
       : undefined;
-    for (const [position, value] of [["primary", snapshot.primary], ["secondary", snapshot.secondary]] as const) {
+    for (const [positionIndex, [position, value]] of [["primary", snapshot.primary], ["secondary", snapshot.secondary]].entries()) {
       const window = record(value);
       if (!window) continue;
       const usedPercent = boundedPercent(window.usedPercent);
@@ -268,14 +273,24 @@ export function normalizeCodexProviderUsage(
       const resetsAt = typeof window.resetsAt === "number" && Number.isFinite(window.resetsAt)
         ? new Date(window.resetsAt * 1_000).toISOString()
         : undefined;
-      windows.push({
-        id: multipleLimits || position === "secondary" ? `${limitId}:${position}:${id}` : id,
-        label: `${limitName ? `${limitName} · ` : ""}${durationLabel(minutes)}`,
-        ...(usedPercent !== undefined ? { usedPercent } : {}),
-        ...(resetsAt ? { resetsAt } : {}),
+      windowCandidates.push({
+        durationMinutes: minutes ?? Number.POSITIVE_INFINITY,
+        limitId,
+        positionIndex,
+        window: {
+          id: multipleLimits || position === "secondary" ? `${limitId}:${position}:${id}` : id,
+          label: `${limitName ? `${limitName} · ` : ""}${durationLabel(minutes)}`,
+          ...(usedPercent !== undefined ? { usedPercent } : {}),
+          ...(resetsAt ? { resetsAt } : {}),
+        },
       });
     }
   }
+  const windows = windowCandidates
+    .sort((left, right) => left.durationMinutes - right.durationMinutes ||
+      left.limitId.localeCompare(right.limitId) ||
+      left.positionIndex - right.positionIndex)
+    .map(({ window }) => window);
   if (windows.length === 0) {
     throw new Error("Codex returned no subscription rate-limit windows");
   }

@@ -15,6 +15,7 @@ import {
   type BrowserSessionManager,
   type BrowserScope,
 } from "../browser-session-manager.js";
+import { BrowserDriverActionError } from "../chrome-cdp-driver.js";
 import type {
   ActiveRun,
   AgentMessageCapability,
@@ -38,6 +39,41 @@ interface AgentRuntimeToolRoutesContext {
     capability: AgentMessageCapability,
     run: ActiveRun | undefined,
   ): boolean;
+}
+
+function browserDriverSessionError(error: BrowserDriverActionError): BrowserSessionError {
+  switch (error.reason) {
+    case "page_not_found":
+      return new BrowserSessionError(
+        "The active browser page is no longer available. Open or activate a page and retry.",
+        404,
+        error.reason,
+      );
+    case "last_page":
+      return new BrowserSessionError("The last browser page cannot be closed.", 409, error.reason);
+    case "invalid_selector":
+      return new BrowserSessionError("The browser selector is invalid.", 400, error.reason);
+    case "selector_not_found":
+      return new BrowserSessionError("The browser could not find that page element.", 404, error.reason);
+    case "selector_not_editable":
+      return new BrowserSessionError("The selected page element cannot be edited.", 409, error.reason);
+    case "upload_disabled":
+      return new BrowserSessionError("Browser file uploads are unavailable for this session.", 503, error.reason);
+    case "selector_not_file_input":
+      return new BrowserSessionError("The selected page element is not a file input.", 409, error.reason);
+    case "file_input_disabled":
+      return new BrowserSessionError("The selected file input is disabled.", 409, error.reason);
+    case "file_type_not_accepted":
+      return new BrowserSessionError("The selected file input does not accept this file type.", 415, error.reason);
+    case "no_pending_file_chooser":
+      return new BrowserSessionError("No browser file chooser is waiting for a file.", 409, error.reason);
+    case "stale_file_chooser":
+      return new BrowserSessionError("The browser file chooser expired. Open it again and retry.", 409, error.reason);
+    case "unsupported_file_chooser":
+      return new BrowserSessionError("This browser file chooser is not supported.", 409, error.reason);
+    case "upload_verification_failed":
+      return new BrowserSessionError("The browser could not verify that the file was attached.", 409, error.reason);
+  }
 }
 function importedArtifactMediaType(file: string): string {
   const extension = path.extname(file).toLowerCase();
@@ -543,6 +579,10 @@ export function registerAgentRuntimeToolRoutes(
       }
     } catch (error) {
       if (error instanceof BrowserSessionError) return reply.code(error.statusCode).send({ error: error.message });
+      if (error instanceof BrowserDriverActionError) {
+        const mapped = browserDriverSessionError(error);
+        return reply.code(mapped.statusCode).send({ error: mapped.message });
+      }
       throw error;
     }
   });
