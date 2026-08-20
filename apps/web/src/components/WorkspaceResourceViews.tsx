@@ -21,11 +21,7 @@ import type {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import {
-  useProjectAgents,
-  useProjectAgentHealth,
-  useProjectConversations,
-} from "../hooks/useProjectCollections";
+import { useProjectAgents } from "../hooks/useProjectCollections";
 import { queryKeys } from "../queryKeys";
 import {
   useWorkspaceDirectory,
@@ -184,85 +180,58 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
   onAgentsDeleted(projectId: string, agentIds: string[]): void;
 }): JSX.Element {
   const [projectId, setProjectId] = useState(filterProjectId ?? "");
+  const [conversationId, setConversationId] = useState("all");
   const [search, setSearch] = useState("");
-  useEffect(() => setProjectId(filterProjectId ?? ""), [filterProjectId]);
-  const scopedProjects = projectId
-    ? projects.filter(project => project.id === projectId)
-    : projects;
-  const agentContextQueries = useProjectAgents(scopedProjects);
-  const conversationContextQueries = useProjectConversations(scopedProjects);
-  const healthContextQueries = useProjectAgentHealth(scopedProjects);
+  useEffect(() => {
+    setProjectId(filterProjectId ?? "");
+    setConversationId("all");
+  }, [filterProjectId]);
   const sort = workspaceResourceSort(preferences, "agent");
+  const conversationDirectoryQuery =
+    useWorkspaceDirectory<WorkspaceConversationDirectoryItemDto>("conversation", {
+      projectId: projectId || undefined,
+    });
+  const conversationDirectory = workspaceDirectoryItems(
+    conversationDirectoryQuery.data?.pages,
+    preferences,
+  );
+  const conversationRows = [
+    ...conversationDirectory.starredItems,
+    ...conversationDirectory.items,
+  ];
   const agentDirectoryQuery =
     useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
       search,
       projectId: projectId || undefined,
+      conversationId: conversationId === "all" ? undefined : conversationId,
     });
   const agentDirectory = workspaceDirectoryItems(agentDirectoryQuery.data?.pages, preferences);
   const rows = [...agentDirectory.starredItems, ...agentDirectory.items];
-  const loadedAgentIds = new Set(rows.map(row => row.agent.id));
-  const agentsById = new Map(
-    agentContextQueries
-      .flatMap(query => query.data ?? [])
-      .filter(agent => !agent.archived)
-      .map(agent => [agent.id, agent] as const),
-  );
-  for (const row of rows) agentsById.set(row.agent.id, row.agent);
-  const agents = [...agentsById.values()];
-  const conversations = conversationContextQueries.flatMap(
-    query => query.data ?? [],
-  );
+  const agents = rows.map(row => row.agent);
+  const conversations = conversationRows.map(row => row.conversation);
   const healthByAgentId = new Map(
-    healthContextQueries.flatMap(query => query.data?.agents ?? [])
-      .map(item => [item.agentId, item] as const),
+    rows.map(row => [row.agent.id, row.health] as const),
   );
-  for (const row of rows) healthByAgentId.set(row.agent.id, row.health);
-  const allHealth = [...healthByAgentId.values()];
-  const statusByAgentId = mergeAgentStatuses(agents, allHealth, new Map());
+  const statusByAgentId = mergeAgentStatuses(
+    agents,
+    [...healthByAgentId.values()],
+    new Map(),
+  );
   const projectByAgentId = new Map(
     rows.map(row => [row.agent.id, { id: row.project.id, label: row.project.label }] as const),
   );
-  for (const project of scopedProjects) {
-    for (const agent of agents) {
-      if (agent.projectId === project.id && !projectByAgentId.has(agent.id)) {
-        projectByAgentId.set(agent.id, { id: project.id, label: project.label });
-      }
-    }
-  }
   const starredIds = starredWorkspaceResources(preferences);
   const scopedProject = projectId
     ? projects.find(project => project.id === projectId)
     : undefined;
-  const contextQueries = [
-    ...agentContextQueries,
-    ...conversationContextQueries,
-    ...healthContextQueries,
-  ];
-  if (
-    contextQueries.some(query => query.isLoading)
-  ) {
-    return <Box sx={{ p: 2 }}><LinearProgress /></Box>;
-  }
-  if (contextQueries.some(query => query.isError)) {
-    return <Box sx={{ p: 2 }}>
-      <Alert
-        severity="error"
-        action={<Button onClick={() => {
-          for (const query of contextQueries) void query.refetch();
-        }}>Retry</Button>}
-      >
-        Agent organization context could not be loaded.
-      </Alert>
-    </Box>;
-  }
   return <Box sx={{ height: "100%", minHeight: 0, overflow: "hidden" }}>
     <AgentsTab
       collection={{
         title: "All Agents",
         detail: agentDirectoryQuery.requestState.hasResolved
           ? scopedProject
-            ? `${agentDirectory.total} ${agentDirectory.total === 1 ? "Agent" : "Agents"} in ${scopedProject.label}`
-            : `${agentDirectory.total} ${agentDirectory.total === 1 ? "Agent" : "Agents"} across Ponderosa`
+            ? String(agentDirectory.total) + " " + (agentDirectory.total === 1 ? "Agent" : "Agents") + " in " + scopedProject.label
+            : String(agentDirectory.total) + " " + (agentDirectory.total === 1 ? "Agent" : "Agents") + " across Ponderosa"
           : undefined,
         totalCount: agentDirectoryQuery.requestState.hasResolved ? agentDirectory.total : undefined,
       }}
@@ -272,30 +241,78 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
       collectionFooter={(filteredCount) => <CollectionStateFeedback
         request={agentDirectoryQuery.requestState}
         itemCount={filteredCount}
-        filtersActive={Boolean(search.trim() || projectId)}
+        filtersActive={Boolean(search.trim() || projectId || conversationId !== "all")}
         resourceLabel="Agents"
         emptyTitle="No Agents Yet"
         emptyDetail="Create an Agent to get started."
         noMatchTitle="No Agents match these filters"
         noMatchDetail="Try a different search, status, Project, or Chat filter."
-        onClearFilters={() => { setSearch(""); if (!filterProjectId) setProjectId(""); }}
+        onClearFilters={() => {
+          setSearch("");
+          setConversationId("all");
+          if (!filterProjectId) setProjectId("");
+        }}
       />}
       toolbarControls={<>
         <CollectionDirectoryControls
           projects={projects}
           projectId={projectId}
-          onProject={setProjectId}
+          onProject={(value) => {
+            setProjectId(value);
+            setConversationId("all");
+          }}
           sort={sort}
           onSort={value => onPreferences(workspaceResourceSortPatch("agent", value))}
           compact
         />
       </>}
-      agents={agents} renderedAgentIds={loadedAgentIds} projectId={projectId || undefined} engines={engines} conversations={conversations} statusByAgentId={statusByAgentId} healthByAgentId={healthByAgentId} projectByAgentId={projectByAgentId} displayOrder={rows.map(row => row.agent.id)} selectionAllowed onReorder={(sourceId, targetId, position) => onPreferences({ agentSort: "custom", agentOrder: reorderStableIds(preferences.agentOrder, rows.map(row => row.agent.id), sourceId, targetId, position) })} starredAgentIds={starredIds} onToggleStar={(agentId) => onPreferences(toggleWorkspaceResourceStar(preferences, "agent", agentId))} onOpenAgent={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentInNewTab={onOpenInNewTab ? (agentId) => { const project = projectByAgentId.get(agentId)!; onOpenInNewTab({ kind: "agent", projectId: project.id, agentId }); } : undefined} onOpenAgentSettings={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId, view: "settings" }); }} onNewAgent={(managerAgentId) => onCreate(
-      managerAgentId
-        ? projectByAgentId.get(managerAgentId)?.id
-        : projectId || undefined,
-      managerAgentId,
-    )} onAgentsDeleted={onAgentsDeleted} showImportAction={false} />
+      agents={agents}
+      projectId={projectId || undefined}
+      engines={engines}
+      conversations={conversations}
+      conversationFilterValue={conversationId}
+      onConversationFilterValueChange={setConversationId}
+      conversationFilterRequest={conversationDirectoryQuery.requestState}
+      statusByAgentId={statusByAgentId}
+      healthByAgentId={healthByAgentId}
+      projectByAgentId={projectByAgentId}
+      displayOrder={rows.map(row => row.agent.id)}
+      selectionAllowed
+      onReorder={(sourceId, targetId, position) => onPreferences({
+        agentSort: "custom",
+        agentOrder: reorderStableIds(
+          preferences.agentOrder,
+          rows.map(row => row.agent.id),
+          sourceId,
+          targetId,
+          position,
+        ),
+      })}
+      starredAgentIds={starredIds}
+      onToggleStar={(agentId) => onPreferences(
+        toggleWorkspaceResourceStar(preferences, "agent", agentId),
+      )}
+      onOpenAgent={(agentId) => {
+        const project = projectByAgentId.get(agentId)!;
+        onNavigate({ kind: "agent", projectId: project.id, agentId });
+      }}
+      onOpenAgentInNewTab={onOpenInNewTab ? (agentId) => {
+        const project = projectByAgentId.get(agentId)!;
+        onOpenInNewTab({ kind: "agent", projectId: project.id, agentId });
+      } : undefined}
+      onOpenAgentSettings={(agentId) => {
+        const project = projectByAgentId.get(agentId)!;
+        onNavigate({ kind: "agent", projectId: project.id, agentId, view: "settings" });
+      }}
+      onNewAgent={(managerAgentId) => onCreate(
+        managerAgentId
+          ? projectByAgentId.get(managerAgentId)?.id
+          : projectId || undefined,
+        managerAgentId,
+      )}
+      onAgentsDeleted={onAgentsDeleted}
+      showImportAction={false}
+    />
   </Box>;
 }
 

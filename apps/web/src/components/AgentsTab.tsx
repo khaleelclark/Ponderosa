@@ -167,6 +167,9 @@ export function AgentsTab({
   projectId,
   engines,
   conversations,
+  conversationFilterValue,
+  onConversationFilterValueChange,
+  conversationFilterRequest,
   scopeConversationId,
   statusByAgentId,
   healthByAgentId,
@@ -200,6 +203,10 @@ export function AgentsTab({
   projectId?: string;
   engines: EngineDto[];
   conversations: ConversationDto[];
+  /** Optional server-backed Project Chat filter for paginated directories. */
+  conversationFilterValue?: string;
+  onConversationFilterValueChange?(value: string): void;
+  conversationFilterRequest?: WorkspaceDirectoryRequestState;
   /** Chat whose membership-scoped roster is being rendered. */
   scopeConversationId?: string;
   statusByAgentId: ReadonlyMap<string, AgentStatus>;
@@ -245,6 +252,9 @@ export function AgentsTab({
   const queryClient = useQueryClient();
   const [statusFilters, setStatusFilters] = useState<StatusFilter[]>([]);
   const [masterFilter, setMasterFilter] = useState<string>("all");
+  const effectiveMasterFilter = conversationFilterValue ?? masterFilter;
+  const setEffectiveMasterFilter =
+    onConversationFilterValueChange ?? setMasterFilter;
   const [search, setSearch] = useState("");
   const effectiveSearch = searchValue ?? search;
   const setEffectiveSearch = onSearchValueChange ?? setSearch;
@@ -377,8 +387,9 @@ export function AgentsTab({
         if (!matchesAgentStatusFilters(agent, status, statusFilters))
           return false;
         if (
-          masterFilter !== "all" &&
-          !agentBelongsToConversation(agent, masterFilter)
+          !onConversationFilterValueChange &&
+          effectiveMasterFilter !== "all" &&
+          !agentBelongsToConversation(agent, effectiveMasterFilter)
         ) {
           return false;
         }
@@ -395,7 +406,9 @@ export function AgentsTab({
       .map(({ agent }) => agent.id),
   );
   const filtersActive = Boolean(
-    effectiveSearch.trim() || statusFilters.length || masterFilter !== "all",
+    effectiveSearch.trim() ||
+      statusFilters.length ||
+      effectiveMasterFilter !== "all",
   );
   const contextAgentIds =
     organizationView === "hierarchy"
@@ -429,7 +442,7 @@ export function AgentsTab({
       organizationRootAgentId,
       organizationView,
       effectiveSearch.trim().toLocaleLowerCase(),
-      masterFilter,
+      effectiveMasterFilter,
       statusFilters.join(","),
     ].join(":"),
   });
@@ -702,10 +715,14 @@ export function AgentsTab({
                   <Select
                     labelId="agents-master-filter-label"
                     label="Project Chat"
-                    value={masterFilter}
-                    onChange={(event: SelectChangeEvent) =>
-                      setMasterFilter(event.target.value)
-                    }
+                    value={effectiveMasterFilter}
+                    onChange={(event: SelectChangeEvent) => {
+                      if (event.target.value === "__load_more__") {
+                        void conversationFilterRequest?.fetchNextPage();
+                        return;
+                      }
+                      setEffectiveMasterFilter(event.target.value);
+                    }}
                   >
                     <MenuItem value="all">All Project Chats</MenuItem>
                     {conversations.map(master => (
@@ -713,6 +730,19 @@ export function AgentsTab({
                         {master.title}
                       </MenuItem>
                     ))}
+                    {conversationFilterRequest?.hasNextPage ||
+                    conversationFilterRequest?.isPaginationError ? (
+                      <MenuItem
+                        value="__load_more__"
+                        disabled={conversationFilterRequest.isFetchingNextPage}
+                      >
+                        {conversationFilterRequest.isPaginationError
+                          ? "Retry loading Project Chats"
+                          : conversationFilterRequest.isFetchingNextPage
+                            ? "Loading more Project Chats..."
+                            : "Load more Project Chats..."}
+                      </MenuItem>
+                    ) : null}
                   </Select>
                 </FormControl>
               )}
