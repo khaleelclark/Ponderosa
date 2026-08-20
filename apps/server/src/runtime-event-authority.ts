@@ -121,15 +121,18 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
         let legacyDestination: string | undefined;
         let captureCommitted = false;
         try {
+          const captureRoot = path.isAbsolute(canonicalEvent.path)
+            ? path.dirname(canonicalEvent.path)
+            : project.hostPath;
           const source = await readWorkspaceArtifactFileAsync({
-            rootPath: project.hostPath,
+            rootPath: captureRoot,
             requestedPath: canonicalEvent.path,
             purpose: "generated_capture",
             maxBytes: 64 * 1024 * 1024,
             requireNonEmpty: true,
             signal: run.controller.signal,
           });
-          if (!source) throw new Error("generated artifact is unavailable through the retained Project root");
+          if (!source) throw new Error("generated artifact is unavailable through retained file authority");
           const body = source.body;
           const artifactId = randomUUID();
           const managedPath = `generated/${artifactId}${path.extname(source.name).toLowerCase()}`;
@@ -202,7 +205,8 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
     try {
       const root = realpathSync(project.hostPath);
       const candidate = realpathSync(path.isAbsolute(event.path) ? event.path : path.resolve(root, event.path));
-      if (candidate !== root && candidate.startsWith(`${root}${path.sep}`)) {
+      const inProject = candidate !== root && candidate.startsWith(`${root}${path.sep}`);
+      if (inProject || path.isAbsolute(event.path)) {
         const info = statSync(candidate);
         const runStartedAt = Date.parse(run.startedAt);
         if (kind === "edit" && info.birthtimeMs > 0 && Number.isFinite(runStartedAt) && info.birthtimeMs >= runStartedAt - 1_000) {

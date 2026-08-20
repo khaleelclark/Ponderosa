@@ -57,7 +57,10 @@ export class ProjectFileAuthority {
     "application/pdf",
   ]);
 
-  constructor(private readonly store: Pick<AgentStore, "getProject">) {}
+  constructor(private readonly store: Pick<
+    AgentStore,
+    "getProject" | "projectHasArtifactSourcePath"
+  >) {}
 
   acquire(projectId: string, weight: number): (() => void) | undefined {
     const now = Date.now();
@@ -206,23 +209,48 @@ export class ProjectFileAuthority {
     return false;
   }
 
-  private async nativeRelativePath(
-    rootPath: string,
+  private async authorizedFileTarget(
+    projectId: string,
+    projectRootPath: string,
     input: string,
-  ): Promise<{ root: string; relative: string; resolved: string } | undefined> {
-    const root = await fs.realpath(rootPath);
+  ): Promise<{
+    root: string;
+    relative: string;
+    resolved: string;
+    requestPath: string;
+  } | undefined> {
+    const root = await fs.realpath(projectRootPath);
     const requested = input.startsWith("file://")
       ? fileURLToPath(input)
       : input;
     const candidate = path.isAbsolute(requested)
       ? path.resolve(requested)
       : path.resolve(root, safeRelativePath(requested));
-    if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) {
-      return undefined;
+    if (candidate === root || candidate.startsWith(`${root}${path.sep}`)) {
+      const relative = path.relative(root, candidate).replaceAll(path.sep, "/");
+      if (!relative || !isProjectFileReferenceAllowed(relative)) return undefined;
+      return {
+        root,
+        relative,
+        resolved: path.join(root, relative),
+        requestPath: relative,
+      };
     }
-    const relative = path.relative(root, candidate).replaceAll(path.sep, "/");
+
+    if (
+      !path.isAbsolute(requested) ||
+      !this.store.projectHasArtifactSourcePath(projectId, requested)
+    ) return undefined;
+
+    const externalRoot = await fs.realpath(path.dirname(candidate));
+    const relative = path.basename(candidate);
     if (!relative || !isProjectFileReferenceAllowed(relative)) return undefined;
-    return { root, relative, resolved: path.join(root, relative) };
+    return {
+      root: externalRoot,
+      relative,
+      resolved: path.join(externalRoot, relative),
+      requestPath: requested,
+    };
   }
 
   async fileForBrowser(
@@ -235,10 +263,14 @@ export class ProjectFileAuthority {
     const project = this.store.getProject(projectId);
     if (!project || !input?.trim()) return undefined;
     try {
-      const target = await this.nativeRelativePath(project.hostPath, input);
+      const target = await this.authorizedFileTarget(
+        projectId,
+        project.hostPath,
+        input,
+      );
       if (!target) return undefined;
       const body = await readSecureFileAsync({
-        root: project.hostPath,
+        root: target.root,
         relativePath: target.relative,
         maxBytes: options.maxBytes,
       });
@@ -267,13 +299,17 @@ export class ProjectFileAuthority {
     const project = this.store.getProject(projectId);
     if (!project || !input?.trim()) return undefined;
     try {
-      const target = await this.nativeRelativePath(project.hostPath, input);
+      const target = await this.authorizedFileTarget(
+        projectId,
+        project.hostPath,
+        input,
+      );
       if (!target) return undefined;
       const segments = target.relative.split("/");
       const leaf = segments.pop()!;
       const parent = segments.join("/");
       const entry = listSecureDirectory({
-        root: project.hostPath,
+        root: target.root,
         relativePath: parent,
       })?.find((candidate) =>
         candidate.name === leaf && candidate.kind === "file");
@@ -292,7 +328,7 @@ export class ProjectFileAuthority {
           : 0;
       const body = readLimit > 0
         ? await readSecureFileAsync({
-          root: project.hostPath,
+          root: target.root,
           relativePath: target.relative,
           maxBytes: readLimit,
           expectedSize: entry.size,
@@ -302,10 +338,10 @@ export class ProjectFileAuthority {
         this.validPreviewMagic(mediaType, body!.subarray(0, 16));
       let text: string | undefined;
       if (textMedia && body && isUtf8(body)) text = body.toString("utf8");
-      const encodedPath = encodeURIComponent(target.relative);
+      const encodedPath = encodeURIComponent(target.requestPath);
       return {
         projectId,
-        path: target.relative,
+        path: target.requestPath,
         name: leaf,
         mediaType,
         size: entry.size,

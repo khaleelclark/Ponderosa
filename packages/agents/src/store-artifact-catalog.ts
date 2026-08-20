@@ -207,6 +207,17 @@ export class AgentArtifactCatalog {
       .map((artifact) => this.withProjectUrls(projectId, artifact));
   }
 
+  /** True only when an exact source path was recorded by an Agent in this Project. */
+  projectHasArtifactSourcePath(projectId: string, sourcePath: string): boolean {
+    return Boolean(this.client.prepare(`
+      SELECT 1
+      FROM artifacts artifact
+      JOIN agents agent ON agent.id = artifact.agent_id
+      WHERE agent.project_id = ? AND artifact.source_path = ?
+      LIMIT 1
+    `).get(projectId, sourcePath));
+  }
+
   rebuildProjectProjection(projectId: string): void {
     for (const event of readRepairableJsonl<ManagedArtifactEvent>(
       managedArtifactsLogPath(this.dataDir, projectId),

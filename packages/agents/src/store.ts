@@ -1236,6 +1236,10 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.artifactCatalog.getProjectArtifacts(projectId);
   }
 
+  projectHasArtifactSourcePath(projectId: string, sourcePath: string): boolean {
+    return this.artifactCatalog.projectHasArtifactSourcePath(projectId, sourcePath);
+  }
+
   getProjectArtifactPage(projectId: string, input: { limit: number; cursor?: string; conversationId?: string }): HistoryPageDto<ArtifactDto> {
     return this.artifactCatalog.getProjectArtifactPage(projectId, input);
   }
