@@ -220,6 +220,7 @@ export function registerApplicationRoutes(
     persistentRootExited,
     persistentRuntimeForTermination,
     reconcileAgentRuntimeAuthority,
+    retireCompletedContextRolloverSession,
     scheduleRuntimeIdleClose,
     teardownOneShotRuntime,
     teardownOpeningRuntime,
@@ -616,6 +617,7 @@ registerAgentMessageRunRoute(app, {
   createOperationalNotification, resolveOperationalNotification, reconcileProjectWorkspace,
   drainDeploymentIdleAuthorities, publishWorkspaceSince, runtimeElicitations,
   ownsActiveRun, cancelRuntimeIdleClose, reconcileAgentRuntimeAuthority,
+  retireCompletedContextRolloverSession,
   scheduleRuntimeLivenessHeartbeat,
   providerProcessAuthority,
 });
@@ -815,6 +817,7 @@ registerProviderCommandRoutes(app, {
   notifyScheduler: notifyScheduler,
   reusableRuntime,
   persistentRuntimeForTermination,
+  retireCompletedContextRolloverSession,
   closeRunBrowser,
   publishMessageDeliveryChanged,
   publish,

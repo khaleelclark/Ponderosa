@@ -515,11 +515,14 @@ export function registerAgentRuntimeToolRoutes(
           return { session, snapshot: await sessionManager.inspect(scope) };
         }
         case "inspect": {
+          if (request.body.selector !== undefined && typeof request.body.selector !== "string") {
+            throw new BrowserSessionError("selector must be a string");
+          }
           const session = sessionManager.get(scope.agentId);
           return {
             session,
             pages: session ? { activePageId: session.activePageId, pages: session.pages } : undefined,
-            snapshot: await sessionManager.inspect(scope),
+            snapshot: await sessionManager.inspect(scope, request.body.selector as string | undefined),
           };
         }
         case "switch_page": {

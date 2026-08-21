@@ -11,7 +11,7 @@ import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import { Button, Chip, Link, Stack, Typography } from "@mui/material";
-import type { AgentDto } from "@ponderosa/core";
+import type { AgentDto, AgentHealthDto } from "@ponderosa/core";
 import {
   agentStatusColor,
   agentStatusLabel,
@@ -47,11 +47,13 @@ export const AGENT_DETAIL_TABS: Array<{
 
 function AgentRunState({
   status,
+  health,
   providerBlocked,
   connectionStatus,
   startedAt,
 }: {
   status: AgentStatus;
+  health?: AgentHealthDto;
   providerBlocked?: boolean;
   connectionStatus: WorkspaceConnectionStatus;
   startedAt?: string;
@@ -71,6 +73,12 @@ function AgentRunState({
         : connectionStatus === "connecting"
           ? "Connecting"
           : "Reconnecting";
+  const details = [
+    "Current: " + runState,
+    health?.latestRun ? "Latest Run: " + agentStatusLabel(health.latestRun.status) : undefined,
+    health?.assignedWorkOutcome ? "Assigned work: " + agentStatusLabel(health.assignedWorkOutcome.status) : undefined,
+    health?.attention ? "Needs attention: " + agentStatusLabel(health.attention.status) : undefined,
+  ].filter(Boolean).join(" · ");
   return (
     <Chip
       size="small"
@@ -78,6 +86,7 @@ function AgentRunState({
       color={connectionStatus === "live" ? agentStatusColor(status) : "warning"}
       variant={connectionStatus === "live" ? "filled" : "outlined"}
       aria-label={`Agent status: ${runState}; ${connectionState.toLocaleLowerCase()}`}
+      title={details}
     />
   );
 }
@@ -90,6 +99,7 @@ interface AgentDetailHeaderProps {
   lineageAgentId?: string;
   lineageLabel: string;
   status: AgentStatus;
+  health?: AgentHealthDto;
   providerBlocked?: boolean;
   connectionStatus: WorkspaceConnectionStatus;
   startedAt?: string;
@@ -121,6 +131,7 @@ export function AgentDetailHeader({
   lineageAgent,
   lineageAgentId,
   lineageLabel,
+  health,
   status,
   providerBlocked,
   connectionStatus,
@@ -192,6 +203,7 @@ export function AgentDetailHeader({
       status={
         <AgentRunState
           status={status}
+          health={health}
           providerBlocked={providerBlocked}
           connectionStatus={connectionStatus}
           startedAt={startedAt}

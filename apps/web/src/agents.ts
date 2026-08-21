@@ -81,8 +81,9 @@ export function deriveAgentStatus(
   if (hints.error) {
     return "failed";
   }
-  const latest = [...runs].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
-  if (latest && ["failed", "cancelled", "interrupted", "blocked", "stalled"].includes(latest.status)) return latest.status;
+  // Finished Runs are history, not the Agent's present availability. Current
+  // problems come from the canonical health projection rather than a stale
+  // terminal Run in a bounded detail payload.
   return "idle";
 }
 

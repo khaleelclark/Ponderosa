@@ -11,6 +11,7 @@ import type {
   RuntimeOwnershipState,
 } from "./app-contracts.js";
 import type { createOperationalNotifications } from "./operational-notifications.js";
+import { readProviderSessionIdentifier } from "./provider-session-success.js";
 
 type OperationalNotifications = ReturnType<typeof createOperationalNotifications>;
 
@@ -254,6 +255,111 @@ export function createRuntimeAuthority(context: RuntimeAuthorityContext) {
       if (!alive) {
         await teardownPersistentRuntime(agentId, reusable, "dead reusable session rejected before Run admission");
       }
+    }
+  }
+
+  async function retireCompletedContextRolloverSession(input: {
+    agentId: string;
+    projectId?: string;
+    rolloverId?: string;
+    providerSessionGeneration?: string;
+  }): Promise<boolean> {
+    const candidateSessionIds = new Set<string>();
+    const acceptedSession = store.resumeSessionState(input.agentId);
+    if (acceptedSession?.sessionId) candidateSessionIds.add(acceptedSession.sessionId);
+    for (const runtime of [reusableRuntime(input.agentId), closingRuntime(input.agentId)?.runtime]) {
+      if (!runtime) continue;
+      try { candidateSessionIds.add(readProviderSessionIdentifier(runtime.session)); }
+      catch { /* an unreadable retained runtime remains fenced by runtime authority */ }
+    }
+
+    const explicitRollover = input.rolloverId
+      ? coordinationV3.contextRollover(input.rolloverId)
+      : input.providerSessionGeneration
+      ? coordinationV3.contextRolloverOwnerForGeneration(
+          input.agentId,
+          input.providerSessionGeneration,
+        )
+      : undefined;
+    const rollover = explicitRollover ?? [...candidateSessionIds]
+      .map((sessionId) => coordinationV3.contextRolloverOwnerForOldSession(input.agentId, sessionId))
+      .find((candidate) => candidate?.state === "completed"
+        && candidate.completionReason === "no_continuation_required");
+    if (!rollover
+      || rollover.agentId !== input.agentId
+      || rollover.state !== "completed"
+      || rollover.completionReason !== "no_continuation_required") return false;
+
+    if (input.providerSessionGeneration
+      && rollover.providerSessionGeneration !== input.providerSessionGeneration) {
+      logError({
+        classification: "context_rollover_generation_conflict",
+        agentId: input.agentId,
+        rolloverId: rollover.id,
+      }, "completed context rollover does not own the provider session generation");
+      throw new Error("context_rollover_generation_conflict");
+    }
+
+    const notificationKey = `context-rollover:${rollover.id}:session-retirement`;
+    try {
+      if (rollover.handoffEventId) {
+        const consumed = store.consumeContinuationHandoff(
+          input.agentId,
+          rollover.handoffEventId,
+          rollover.sourceRunId,
+        );
+        if (!consumed) throw new Error("continuation handoff could not be consumed");
+      }
+      const currentAcceptedSession = store.resumeSessionState(input.agentId);
+      if (currentAcceptedSession?.sessionId === rollover.oldProviderSessionId) {
+        clearAgentResumeSession(input.agentId, "request_context_rollover");
+      }
+      scheduledSessionRollovers.delete(input.agentId);
+      organizationEnvelopeStates.delete(input.agentId);
+
+      const matchingRuntimes = new Map<object, PersistentRuntime>();
+      for (const runtime of [reusableRuntime(input.agentId), closingRuntime(input.agentId)?.runtime]) {
+        if (!runtime) continue;
+        let sessionId: string | undefined;
+        try { sessionId = readProviderSessionIdentifier(runtime.session); }
+        catch { /* teardown authority below remains the fail-closed boundary */ }
+        if (sessionId === rollover.oldProviderSessionId) matchingRuntimes.set(runtime.identity, runtime);
+      }
+      for (const runtime of matchingRuntimes.values()) {
+        const run = activeRuns.get(input.agentId);
+        if (run?.persistentRuntimeIdentity === runtime.identity) {
+          run.persistentRuntimeIdentity = undefined;
+        }
+        await teardownPersistentRuntime(
+          input.agentId,
+          runtime,
+          "completed context rollover retirement",
+          input.projectId,
+        );
+      }
+      try { resolveOperationalNotification(notificationKey); }
+      catch { /* durable session fencing remains authoritative */ }
+      return true;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      logError({
+        err: error,
+        classification: "context_rollover_session_retirement_failed",
+        agentId: input.agentId,
+        rolloverId: rollover.id,
+      }, "completed context rollover session retirement remains pending");
+      try {
+        createOperationalNotification({
+          dedupeKey: notificationKey,
+          category: "system",
+          severity: "urgent",
+          title: "Provider session retirement needs attention",
+          body: `Ponderosa retired a completed context rollover but could not finish revoking its old provider session. New work for this Agent is blocked while cleanup retries. ${detail}`.slice(0, 1_000),
+          projectId: input.projectId ?? store.getAgent(input.agentId)?.projectId,
+          agentId: input.agentId,
+        });
+      } catch { /* retained runtime and accepted-session checks remain fail closed */ }
+      throw new Error("context_rollover_session_retirement_failed");
     }
   }
 
@@ -645,6 +751,7 @@ export function createRuntimeAuthority(context: RuntimeAuthorityContext) {
     persistentRootExited,
     persistentRuntimeForTermination,
     reconcileAgentRuntimeAuthority,
+    retireCompletedContextRolloverSession,
     runAuthorization,
     scheduleRuntimeAuthorityRetry,
     scheduleRuntimeIdleClose,

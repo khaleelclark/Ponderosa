@@ -1,12 +1,15 @@
 import type { EngineId } from "../adapter.js";
 import type { ArtifactKind } from "./artifacts.js";
 import type {
+  AgentLifecycleReason,
   AgentOperationalReason,
   AgentOperationalStatus,
+  AgentRunStatus,
   ProviderBlockedWorkDto,
 } from "./common.js";
 import type { AgentPresetDto } from "./projects.js";
 import type { CreateTriggerRequest } from "./triggers.js";
+import type { AgentRunWakeCause } from "./runs.js";
 
 // ─── Agents ─────────────────────────────────────────────────────────────────
 
@@ -251,6 +254,20 @@ export interface UpdateAgentConversationMembershipsRequest {
   primaryConversationId?: string;
 }
 
+export interface AgentHealthRunSummaryDto {
+  runId: string;
+  status: AgentRunStatus;
+  reason: AgentLifecycleReason;
+  wakeCause?: AgentRunWakeCause;
+  updatedAt: string;
+}
+
+export interface AgentHealthAttentionDto {
+  status: Extract<AgentOperationalStatus, "needs_decision" | "blocked" | "stalled" | "interrupted">;
+  reason: AgentOperationalReason;
+  observedAt: string;
+}
+
 export interface AgentHealthDto {
   /** Stable agent identity; titles and mention handles are presentation only. */
   agentId: string;
@@ -274,6 +291,12 @@ export interface AgentHealthDto {
     executionId: string;
     startedAt: string;
   };
+  /** Most recent execution, regardless of whether it represented assigned work or incidental coordination. */
+  latestRun?: AgentHealthRunSummaryDto;
+  /** Most recent non-incidental assignment outcome. Coordination and collaboration wake-ups never overwrite it. */
+  assignedWorkOutcome?: AgentHealthRunSummaryDto;
+  /** Current actionable issue, separate from current availability and historical Run outcomes. */
+  attention?: AgentHealthAttentionDto;
   /** A provider process currently owns this Agent's resumable session. */
   providerSessionLive?: boolean;
   /** Present while canonical work is retained for provider quota/capacity retry. */

@@ -64,6 +64,12 @@ interface ProviderCommandRoutesContext {
   notifyScheduler(): void;
   reusableRuntime(agentId: string): PersistentRuntime | undefined;
   persistentRuntimeForTermination(agentId: string): PersistentRuntime | undefined;
+  retireCompletedContextRolloverSession(input: {
+    agentId: string;
+    projectId?: string;
+    rolloverId?: string;
+    providerSessionGeneration?: string;
+  }): Promise<boolean>;
   closeRunBrowser(agentId: string, run: ActiveRun, reason: string): Promise<void>;
   publishMessageDeliveryChanged(agentId: string): void;
   publish(agentId: string, stored: StoredLogEvent): void;
@@ -130,6 +136,7 @@ export function registerProviderCommandRoutes(
     notifyScheduler,
     reusableRuntime,
     persistentRuntimeForTermination,
+    retireCompletedContextRolloverSession,
     closeRunBrowser,
     publishMessageDeliveryChanged,
     publish,
@@ -386,8 +393,18 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
       }
       return { catalog, ...(result.message ? { message: result.message } : {}) };
     };
-    const liveSession = activeRuns.get(agent.id)?.runtimeSession ??
-      reusableRuntime(agent.id)?.session;
+    if (activeRuns.has(agent.id)) {
+      return reply.code(409).send({ error: "structured provider commands require an idle runtime", retryable: true });
+    }
+    try {
+      await retireCompletedContextRolloverSession({
+        agentId: agent.id,
+        projectId: project.id,
+      });
+    } catch (error) {
+      return reply.code(409).send(publicProviderCommandFailure(error));
+    }
+    const liveSession = reusableRuntime(agent.id)?.session;
     if (liveSession) {
       try {
         const result = await invoke(liveSession);
@@ -401,9 +418,6 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
       } catch (error) {
         return reply.code(409).send(publicProviderCommandFailure(error));
       }
-    }
-    if (activeRuns.has(agent.id)) {
-      return reply.code(409).send({ error: "the active provider session is still opening", retryable: true });
     }
     if (!engine.adapter.openSession) {
       return reply.code(409).send({ error: "this provider cannot open a command-only session" });
@@ -503,6 +517,14 @@ app.post<{ Params: { id: string } }>("/api/agents/:id/compact", async (request, 
   if (!agent) return reply.code(404).send({ error: "agent not found" });
   if (activeRuns.has(request.params.id)) {
     return reply.code(409).send({ error: "cannot compact an agent with an active run", retryable: true });
+  }
+  try {
+    await retireCompletedContextRolloverSession({
+      agentId: agent.id,
+      projectId: agent.projectId,
+    });
+  } catch (error) {
+    return reply.code(409).send(publicProviderCommandFailure(error));
   }
   const persisted = store.resumeSessionState(agent.id);
   const latestRun = store.getRuns(agent.id).at(-1);

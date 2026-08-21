@@ -804,6 +804,8 @@ export function ProjectArtifactsView({
           {tab === "settings" ? (
             <ProjectSettingsPanel
               project={project}
+              engines={engines}
+              preferences={preferences}
               onDeleted={onProjectDeleted}
             />
           ) : null}

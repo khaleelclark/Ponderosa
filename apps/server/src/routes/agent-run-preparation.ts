@@ -20,6 +20,7 @@ import {
 } from "@ponderosa/core";
 import { attachmentsDir } from "@ponderosa/agents";
 import type { CommunicationV4NextRunDelivery } from "@ponderosa/agents";
+import type { FastifyInstance } from "fastify";
 import { renderSeedPrompt } from "@ponderosa/engines";
 import { inboundContext } from "../agent-mentions.js";
 import { collectReachableArtifactIds } from "../artifact-refs.js";
@@ -173,6 +174,7 @@ const runtimeAttachmentName = (item: AssetDto): string => {
 };
 
 export async function prepareAgentRun(
+  app: FastifyInstance,
   runContext: AgentMessageRunContext,
   input: PrepareAgentRunInput,
 ) {
@@ -189,6 +191,7 @@ export async function prepareAgentRun(
     clearAgentResumeSession,
     cancelRuntimeIdleClose,
     reconcileAgentRuntimeAuthority,
+    retireCompletedContextRolloverSession,
     teardownPersistentRuntime,
     teamDirectory,
     canonicalConversationContext,
@@ -297,6 +300,13 @@ export async function prepareAgentRun(
     artifact.kind === "generated_file" && Boolean(assets.authoritativeGeneratedArtifact(project.id, artifact)));
   const manifestActivationIds = coordinationV3.activationIdsForInjection(v3InjectionId!, runId);
   const manifestActivationPayloads = coordinationV3.activationPayloads(agent.id, manifestActivationIds, runId);
+  // Repair and retire any stale provider generation before reading resume
+  // state or deriving a provider-session contract from it.
+  await reconcileAgentRuntimeAuthority(agent.id);
+  await retireCompletedContextRolloverSession({
+    agentId: agent.id,
+    projectId: project.id,
+  });
   const preflightResumeSessionState = store.resumeSessionState(agent.id);
   const preflightActiveRollover = coordinationV3.activeContextRollover(agent.id);
   const preflightAttachedActivationIds = v3SchedulerRunId
@@ -419,10 +429,7 @@ export async function prepareAgentRun(
   const requestContextRollover = Boolean(
     internalV3Dispatch && v3FreshProviderSession,
   );
-  // An evicted/failed runtime keeps this Agent fenced until its retained
-  // handle confirms exit. Never start a replacement beside it.
-  await reconcileAgentRuntimeAuthority(agent.id);
-  let resumeSessionState = preflightResumeSessionState;
+  let resumeSessionState = store.resumeSessionState(agent.id);
   const attachedActivationIds = preflightAttachedActivationIds;
   const activeRollover = preflightActiveRollover;
   const rolloverOwnsThisContinuation = Boolean(

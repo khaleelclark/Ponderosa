@@ -169,6 +169,7 @@ export function startProviderRunExecution(
     ownsActiveRun,
     persistentRootExited,
     reconcileAgentRuntimeAuthority,
+    retireCompletedContextRolloverSession,
     scheduleRuntimeIdleClose,
     teardownOneShotRuntime,
     teardownOpeningRuntime,
@@ -1378,42 +1379,40 @@ export function startProviderRunExecution(
         });
         refreshProviderUsageAfterRun(runtimeEngineId);
         if (rolloverSucceeded) {
-          coordinationV3.beginContextRolloverRetirement(runRollover!.id);
-          organizationEnvelopeStates.delete(agent.id);
-          const staleRuntime = reusableRuntime(agent.id);
-          if (staleRuntime) {
-            // Retire only the process. The accepted old provider session ID
-            // remains durable until a verified replacement snapshot switches
-            // it atomically.
-            activeRun.persistentRuntimeIdentity = undefined;
-            try {
-              await teardownPersistentRuntime(agent.id, staleRuntime, "continuation handoff rollover", project.id);
-            } catch (error) {
-              // The retained teardown registry keeps replacement fenced and
-              // will retry. The completed source Run and pending handoff
-              // remain durable even though cleanup is still operationally pending.
-              app.log.error({ err: error, agentId: agent.id, runId }, "continuation rollover teardown remains pending");
-            }
-          }
-          const retiringRollover = coordinationV3.contextRollover(runRollover!.id);
-          if (retiringRollover?.state === "session_retiring") {
-            try {
+          try {
+            coordinationV3.beginContextRolloverRetirement(runRollover!.id);
+            const retiringRollover = coordinationV3.contextRollover(runRollover!.id);
+            if (retiringRollover?.state === "session_retiring") {
               const continued = coordinationV3.prepareContextRolloverContinuation({
                 id: retiringRollover.id,
               });
-              if (continued.state === "continuation_ready") notifyScheduler();
-              else if (continued.completionReason === "no_continuation_required" && continued.handoffEventId) {
-                store.consumeContinuationHandoff(agent.id, continued.handoffEventId, runId);
-              }
-            } catch (error) {
-              // Cancellation may fence the Run after teardown started but
-              // before continuation preparation. Its SQLite transaction owns
-              // the rollover terminal state and pending Activation cleanup.
-              if (!activeRun.v3SchedulerRunId ||
-                  !coordinationV3.isSchedulerRunCancelled(activeRun.v3SchedulerRunId)) {
-                throw error;
+              if (continued.state === "continuation_ready") {
+                notifyScheduler();
+              } else if (continued.completionReason === "no_continuation_required") {
+                await retireCompletedContextRolloverSession({
+                  agentId: agent.id,
+                  projectId: project.id,
+                  rolloverId: continued.id,
+                  providerSessionGeneration: continued.providerSessionGeneration,
+                });
+                app.log.info({
+                  agentId: agent.id,
+                  rolloverId: continued.id,
+                  retiredSessionId: continued.oldProviderSessionId,
+                }, "retired completed context rollover provider session");
               }
             }
+          } catch (error) {
+            // Rollover retirement is durable and retried by the centralized
+            // admission guard. It must never prevent mandatory Run release
+            // and scheduler settlement after terminal lifecycle is recorded.
+            app.log.error({
+              err: error,
+              classification: "context_rollover_session_retirement_failed",
+              agentId: agent.id,
+              runId,
+              rolloverId: runRollover!.id,
+            }, "context rollover retirement remains pending after Run finalization");
           }
         } else if (policyRefreshSucceeded) {
           // Workspace/Project policy changes still invalidate the retained

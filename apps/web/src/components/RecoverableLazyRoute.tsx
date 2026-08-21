@@ -28,28 +28,52 @@ const lazyRouteCache = new WeakMap<
   RenderableLazyRoute
 >();
 
+function loadWithTimeout<Props extends object>(
+  load: LazyRouteLoad<Props>,
+  timeoutMs: number,
+): ReturnType<LazyRouteLoad<Props>> {
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      reject(new Error("Workspace route loader timed out after " + timeoutMs + "ms"));
+    }, timeoutMs);
+    load().then(
+      module => {
+        window.clearTimeout(timeout);
+        resolve(module);
+      },
+      error => {
+        window.clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
+
 function createLazyRoute<Props extends object>(
   load: LazyRouteLoad<Props>,
+  timeoutMs: number,
 ): RenderableLazyRoute {
-  return lazy(load) as unknown as RenderableLazyRoute;
+  return lazy(() => loadWithTimeout(load, timeoutMs)) as unknown as RenderableLazyRoute;
 }
 
 function getLazyRoute<Props extends object>(
   load: LazyRouteLoad<Props>,
+  timeoutMs: number,
 ): RenderableLazyRoute {
   const cacheKey = load as unknown as LazyRouteLoad<object>;
   const cached = lazyRouteCache.get(cacheKey);
   if (cached) return cached;
 
-  const route = createLazyRoute(load);
+  const route = createLazyRoute(load, timeoutMs);
   lazyRouteCache.set(cacheKey, route);
   return route;
 }
 
 function replaceLazyRoute<Props extends object>(
   load: LazyRouteLoad<Props>,
+  timeoutMs: number,
 ): RenderableLazyRoute {
-  const route = createLazyRoute(load);
+  const route = createLazyRoute(load, timeoutMs);
   lazyRouteCache.set(load as unknown as LazyRouteLoad<object>, route);
   return route;
 }
@@ -60,6 +84,7 @@ class LazyRouteErrorBoundary extends Component<{
   children: ReactNode;
   onRetry(): void;
   onReload(): void;
+  diagnostic: string;
 }, { failed: boolean }> {
   override state = { failed: false };
 
@@ -68,7 +93,11 @@ class LazyRouteErrorBoundary extends Component<{
   }
 
   override componentDidCatch(error: Error, info: ErrorInfo): void {
-    console.error("Workspace route chunk failed", error, info.componentStack);
+    console.error("Workspace route chunk failed", {
+      route: this.props.diagnostic,
+      error,
+      componentStack: info.componentStack,
+    });
   }
 
   override render(): ReactNode {
@@ -83,6 +112,9 @@ class LazyRouteErrorBoundary extends Component<{
               {canRetry
                 ? "The downloaded view may be stale or temporarily unavailable."
                 : "The view still could not load. Reload Ponderosa to request a fresh application shell."}
+            </Typography>
+            <Typography variant="caption" sx={{ overflowWrap: "anywhere" }}>
+              {this.props.diagnostic}
             </Typography>
             <Button
               color="inherit"
@@ -119,16 +151,26 @@ export function RecoverableLazyRoute<Props extends object>({
   componentProps,
   maxRetries = 1,
   reload = () => window.location.reload(),
+  timeoutMs = 15_000,
 }: {
   load: LazyRouteLoad<Props>;
   componentProps: Props;
   maxRetries?: number;
   reload?(): void;
+  timeoutMs?: number;
 }): JSX.Element {
   const [attempt, setAttempt] = useState(0);
+  const diagnostic = [
+    window.location.pathname,
+    window.location.search,
+    " / ",
+    load.name || "anonymous route loader",
+  ].join("");
   const RenderableComponent = useMemo(
-    () => attempt === 0 ? getLazyRoute(load) : replaceLazyRoute(load),
-    [attempt, load],
+    () => attempt === 0
+      ? getLazyRoute(load, timeoutMs)
+      : replaceLazyRoute(load, timeoutMs),
+    [attempt, load, timeoutMs],
   );
   return (
     <LazyRouteErrorBoundary
@@ -137,6 +179,7 @@ export function RecoverableLazyRoute<Props extends object>({
       maxRetries={maxRetries}
       onRetry={() => setAttempt(current => Math.min(current + 1, maxRetries))}
       onReload={reload}
+      diagnostic={diagnostic}
     >
       <Suspense fallback={<RouteLoading />}>
         <Box

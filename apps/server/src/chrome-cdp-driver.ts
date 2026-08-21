@@ -100,7 +100,7 @@ export interface BrowserDriver extends BrowserTerminationHandle {
   clearUploadedFiles(pageId?: string, uploadId?: string): Promise<void>;
   cancelPendingFileChooser(reason?: string): Promise<void>;
   navigate(url: string): Promise<BrowserPageInfo>;
-  inspect(): Promise<string>;
+  inspect(selector?: string): Promise<string>;
   click(selector: string): Promise<BrowserPageInfo>;
   fill(selector: string, text: string): Promise<BrowserPageInfo>;
   key(key: string): Promise<BrowserPageInfo>;
@@ -239,6 +239,7 @@ class ChromeCdpDriver implements BrowserDriver {
   private readonly pageIdByTarget = new Map<string, string>();
   private readonly pageIdBySession = new Map<string, string>();
   private readonly tombstones = new Set<string>();
+  private readonly inspectionCache = new Map<string, { regions: Record<string, string>; characters: Record<string, number> }>();
   private activePageId = "";
   private closing = false;
   private lifecycleGeneration = 1;
@@ -543,6 +544,7 @@ class ChromeCdpDriver implements BrowserDriver {
     this.pageIdByTarget.delete(page.targetId);
     this.pageIdBySession.delete(page.cdpSessionId);
     this.uploadedInputs.delete(pageId);
+    this.inspectionCache.delete(pageId);
     this.tombstones.add(page.targetId);
     if (this.pendingChooser?.pageId === pageId) this.clearPendingChooser(reason);
     const wasActive = this.activePageId === pageId;
@@ -646,27 +648,203 @@ class ChromeCdpDriver implements BrowserDriver {
     return this.refreshPage(page);
   }
 
-  async inspect(): Promise<string> {
-    const snapshot = await this.evaluate<{ url: string; title: string; text: string; controls: Array<Record<string, string>> }>(`(() => {
-      const selector = (el) => {
-        if (el.id) return '#' + CSS.escape(el.id);
-        const name = el.getAttribute('name');
-        if (name) return el.tagName.toLowerCase() + '[name=' + JSON.stringify(name) + ']';
-        const parts = []; let node = el;
-        while (node && node.nodeType === 1 && parts.length < 5) {
-          let part = node.tagName.toLowerCase();
-          const parent = node.parentElement;
-          if (parent) { const peers = [...parent.children].filter(x => x.tagName === node.tagName); if (peers.length > 1) part += ':nth-of-type(' + (peers.indexOf(node) + 1) + ')'; }
-          parts.unshift(part); node = parent;
-        }
-        return parts.join(' > ');
+  async inspect(regionSelector?: string): Promise<string> {
+    const page = this.currentPage();
+    const snapshot = await this.evaluate<{
+      url: string;
+      title: string;
+      viewport: { width: number; height: number; scrollX: number; scrollY: number };
+      regions: Array<{ id: string; kind: string; label: string; text: string; truncated: boolean; originalCharacters: number }>;
+      controls: Array<Record<string, string | number | boolean | null>>;
+      requestedRegion: { selector: string | null; error: string | null };
+      truncation: { regionCharacters: number; regionLimit: number; controlsReturned: number; controlLimit: number };
+    }>(`(() => {
+      const requestedSelector = ${JSON.stringify(regionSelector ?? null)};
+      const REGION_LIMIT = 4200;
+      const CONTROL_LIMIT = 80;
+      const viewport = { width: innerWidth, height: innerHeight, scrollX, scrollY };
+      const intersectsViewport = (el) => {
+        if (!(el instanceof Element)) return false;
+        const style = getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && r.bottom >= 0 && r.right >= 0 && r.top <= innerHeight && r.left <= innerWidth;
       };
-      const controls = [...document.querySelectorAll('a[href],button,input,textarea,select,[role=button]')].slice(0, 80).map(el => ({
-        selector: selector(el), tag: el.tagName.toLowerCase(), text: (el.innerText || el.getAttribute('aria-label') || el.getAttribute('placeholder') || '').trim().slice(0, 240),
-      }));
-      return { url: location.href, title: document.title || '', text: (document.body?.innerText || '').slice(0, ${MAX_SNAPSHOT_TEXT}), controls };
+      const uniqueSelector = (candidate) => {
+        try { return document.querySelectorAll(candidate).length === 1 ? candidate : null; } catch { return null; }
+      };
+      const stableSelector = (el) => {
+        const durable = ['data-agent-id','data-resource-id','data-project-id','data-conversation-id','data-trigger-id','data-artifact-id','data-testid'];
+        for (const attr of durable) {
+          const value = el.getAttribute(attr);
+          if (value) {
+            const candidate = '[' + attr + '=' + JSON.stringify(value) + ']';
+            const unique = uniqueSelector(candidate);
+            if (unique) return { selector: unique, identityKind: attr.slice(5) };
+          }
+        }
+        if (el.id) {
+          const unique = uniqueSelector('#' + CSS.escape(el.id));
+          if (unique) return { selector: unique, identityKind: 'id' };
+        }
+        const tag = el.tagName.toLowerCase();
+        const name = el.getAttribute('name');
+        if (name) {
+          const unique = uniqueSelector(tag + '[name=' + JSON.stringify(name) + ']');
+          if (unique) return { selector: unique, identityKind: 'name' };
+        }
+        const href = el instanceof HTMLAnchorElement ? el.getAttribute('href') : null;
+        if (href) {
+          const unique = uniqueSelector('a[href=' + JSON.stringify(href) + ']');
+          if (unique) return { selector: unique, identityKind: 'href' };
+        }
+        const aria = el.getAttribute('aria-label');
+        if (aria) {
+          const unique = uniqueSelector(tag + '[aria-label=' + JSON.stringify(aria) + ']');
+          if (unique) return { selector: unique, identityKind: 'aria-label' };
+        }
+        const owner = el.closest('[data-agent-id],[data-resource-id],[data-project-id],[data-conversation-id],[data-trigger-id],[data-artifact-id],[data-testid]');
+        if (owner && owner !== el) {
+          for (const attr of durable) {
+            const ownerValue = owner.getAttribute(attr);
+            if (!ownerValue) continue;
+            const ownerSelector = '[' + attr + '=' + JSON.stringify(ownerValue) + ']';
+            const localAria = el.getAttribute('aria-label');
+            if (localAria) {
+              const candidate = ownerSelector + ' ' + tag + '[aria-label=' + JSON.stringify(localAria) + ']';
+              const unique = uniqueSelector(candidate);
+              if (unique) return { selector: unique, identityKind: attr.slice(5) + '-action' };
+            }
+          }
+        }
+        return { selector: null, identityKind: 'unaddressable' };
+      };
+      const textFrom = (root, visibleOnly = true) => {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        const pieces = [];
+        let originalCharacters = 0;
+        let currentLength = 0;
+        let node;
+        while ((node = walker.nextNode())) {
+          const value = (node.nodeValue || '').replace(/\\s+/g, ' ').trim();
+          if (!value || (visibleOnly && !intersectsViewport(node.parentElement))) continue;
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          const rect = range.getBoundingClientRect();
+          if (visibleOnly && (rect.bottom < 0 || rect.right < 0 || rect.top > innerHeight || rect.left > innerWidth)) continue;
+          originalCharacters += value.length + (pieces.length ? 1 : 0);
+          if (currentLength < REGION_LIMIT) {
+            pieces.push(value);
+            currentLength += value.length + 1;
+          }
+        }
+        const joined = pieces.join(' ');
+        return { text: joined.slice(0, REGION_LIMIT), truncated: originalCharacters > REGION_LIMIT, originalCharacters };
+      };
+      const regionRoots = [];
+      const addRegions = (selector, kind) => {
+        [...document.querySelectorAll(selector)].filter(intersectsViewport).forEach((root, index) => {
+          if (regionRoots.some((entry) => entry.root === root)) return;
+          const label = root.getAttribute('aria-label') || root.getAttribute('data-testid') || root.getAttribute('id') || kind;
+          regionRoots.push({ root, kind, id: kind + ':' + label + ':' + index, label, visibleOnly: true });
+        });
+      };
+      addRegions('dialog,[role=dialog],[role=alertdialog]', 'dialog');
+      addRegions('nav,[role=navigation]', 'navigation');
+      addRegions('main,[role=main]', 'main');
+      if (!regionRoots.some((entry) => entry.kind === 'main') && document.body) {
+        regionRoots.push({ root: document.body, kind: 'viewport', id: 'viewport:body:0', label: 'Visible viewport', visibleOnly: true });
+      }
+      let requestedRegionError = null;
+      if (requestedSelector) {
+        try {
+          const requestedRoot = document.querySelector(requestedSelector);
+          if (requestedRoot) {
+            regionRoots.push({ root: requestedRoot, kind: 'requested', id: 'requested:' + requestedSelector, label: requestedSelector, visibleOnly: false });
+          } else {
+            requestedRegionError = 'selector_not_found';
+          }
+        } catch {
+          requestedRegionError = 'invalid_selector';
+        }
+      }
+      const regions = regionRoots.map((entry) => ({ id: entry.id, kind: entry.kind, label: entry.label, ...textFrom(entry.root, entry.visibleOnly) }));
+      const controls = [...document.querySelectorAll('a[href],button,input,textarea,select,[contenteditable=true],[role=button],[role=link],[role=checkbox],[role=menuitem],[role=tab]')]
+        .filter(intersectsViewport)
+        .slice(0, CONTROL_LIMIT)
+        .map((el) => {
+          const identity = stableSelector(el);
+          const rect = el.getBoundingClientRect();
+          return {
+            controlId: identity.selector || ('unaddressable:' + (el.getAttribute('role') || el.tagName.toLowerCase()) + ':' + (el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 80)),
+            selector: identity.selector,
+            identityKind: identity.identityKind,
+            addressable: Boolean(identity.selector),
+            tag: el.tagName.toLowerCase(),
+            role: el.getAttribute('role') || '',
+            name: (el.getAttribute('aria-label') || el.getAttribute('name') || el.getAttribute('placeholder') || '').trim().slice(0, 160),
+            text: (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el.value : el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 240),
+            disabled: Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true'),
+            x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height),
+          };
+        });
+      return {
+        url: location.href,
+        title: document.title || '',
+        viewport,
+        regions,
+        controls,
+        requestedRegion: { selector: requestedSelector, error: requestedRegionError },
+        truncation: {
+          regionCharacters: regions.reduce((sum, region) => sum + region.originalCharacters, 0),
+          regionLimit: REGION_LIMIT,
+          controlsReturned: controls.length,
+          controlLimit: CONTROL_LIMIT,
+        },
+      };
     })()`);
-    return JSON.stringify(snapshot, null, 2);
+
+    const encodedRegions: Record<string, string> = {};
+    const regionCharacters: Record<string, number> = {};
+    for (const region of snapshot.regions) {
+      encodedRegions[region.id] = JSON.stringify(region);
+      regionCharacters[region.id] = encodedRegions[region.id]!.length;
+    }
+    const previous = this.inspectionCache.get(page.pageId);
+    const changed = snapshot.regions.filter((region) => previous?.regions[region.id] !== encodedRegions[region.id]);
+    const unchangedRegionIds = snapshot.regions
+      .filter((region) => previous?.regions[region.id] === encodedRegions[region.id])
+      .map((region) => region.id);
+    const removedRegionIds = previous
+      ? Object.keys(previous.regions).filter((id) => !(id in encodedRegions))
+      : [];
+    const uncachedCharacters = changed.reduce((sum, region) => sum + regionCharacters[region.id]!, 0);
+    const cachedCharacters = unchangedRegionIds.reduce((sum, id) => sum + (regionCharacters[id] ?? 0), 0);
+    this.inspectionCache.set(page.pageId, { regions: encodedRegions, characters: regionCharacters });
+
+    return JSON.stringify({
+      url: snapshot.url,
+      title: snapshot.title,
+      viewport: snapshot.viewport,
+      mode: previous ? (changed.length || removedRegionIds.length ? "incremental" : "unchanged") : "full",
+      changedRegions: changed,
+      unchangedRegionIds,
+      removedRegionIds,
+      controls: snapshot.controls,
+      requestedRegion: snapshot.requestedRegion,
+      truncation: snapshot.truncation,
+      contextUsage: {
+        uncachedCharacters,
+        cachedCharacters,
+        returnedCharacters: JSON.stringify(changed).length + JSON.stringify(snapshot.controls).length,
+      },
+      _ponderosa: {
+        scope: "visible_viewport",
+        stableControlIdentity: true,
+        offscreenContentOmitted: true,
+        unchangedRegionsOmitted: Boolean(previous),
+      },
+    }, null, 2);
   }
 
   private async selectorPoint(selector: string): Promise<{ x: number; y: number }> {

@@ -351,8 +351,11 @@ export const PONDEROSA_BROWSER_TOOLS: RuntimeDynamicToolSpec[] = [
   },
   {
     name: "ponderosa_browser_inspect",
-    description: "Inspect the owned browser's current URL, title, and a bounded semantic snapshot of visible controls and text.",
-    inputSchema: { type: "object", additionalProperties: false, properties: {} },
+    description: "Inspect the owned browser's current URL, title, and a bounded semantic snapshot of visible controls and text. Optionally request one additional region by a stable selector when the visible snapshot is insufficient.",
+    inputSchema: {
+      type: "object", additionalProperties: false,
+      properties: { selector: { type: "string", minLength: 1, maxLength: 500 } },
+    },
   },
   {
     name: "ponderosa_browser_switch_page",

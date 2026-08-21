@@ -391,6 +391,7 @@ export function WorkspaceSidebar({
         >
           <ListItemButton
             aria-label={`Open project ${snapshot.project.label}`}
+            data-resource-id={`sidebar-project:${snapshot.project.id}`}
             onClick={() => openProject(snapshot)}
             sx={{ borderRadius: 1.25, px: 1, py: 0.65, minWidth: 0 }}
           >
@@ -531,6 +532,7 @@ export function WorkspaceSidebar({
           sx={{ alignItems: "center", mb: 0.25 }}
         >
           <ListItemButton
+            data-resource-id={`sidebar-conversation:${conversation.id}`}
             onClick={() => openChat(chatProject, conversation)}
             sx={{ borderRadius: 1.25, px: 1, py: 0.65, minWidth: 0 }}
           >
@@ -653,6 +655,7 @@ export function WorkspaceSidebar({
           sx={{ alignItems: "center", mb: 0.25 }}
         >
           <ListItemButton
+            data-resource-id={"sidebar-agent:" + agent.id}
             aria-label={`Open agent ${agent.title} in ${projectDisambiguator(agentProject, projects)}`}
             selected={route.kind === "agent" && route.agentId === agent.id}
             onClick={() =>
@@ -772,6 +775,7 @@ export function WorkspaceSidebar({
         >
           <ListItemButton
             aria-label={`Open Automations for ${destination.agent.title}`}
+            data-resource-id={`sidebar-trigger:${trigger.id}`}
             onClick={() =>
               openTriggerManager(
                 destination.project.id,

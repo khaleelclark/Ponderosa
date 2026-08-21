@@ -103,6 +103,7 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
       const key = resourcePreferenceKey("conversation", conversation.id);
       return <ResourceRow
         key={conversation.id}
+        resourceIdentity={`conversation:${conversation.id}`}
         label={conversation.title}
         description={filterProjectId ? undefined : project.label}
         icon={<ChatBubbleOutlineIcon />}
@@ -443,6 +444,7 @@ export function AllTriggersWorkspace({
       const key = resourcePreferenceKey("trigger", trigger.id);
       return <ResourceRow
         key={trigger.id}
+        resourceIdentity={`trigger:${trigger.id}`}
         label={trigger.name}
         description={`${filterProjectId ? "" : `${project.label} · `}${agent.title} · ${trigger.sourceKind.replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase())}`}
         icon={<BoltOutlinedIcon />}
