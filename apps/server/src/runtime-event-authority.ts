@@ -121,11 +121,8 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
         let legacyDestination: string | undefined;
         let captureCommitted = false;
         try {
-          const captureRoot = path.isAbsolute(canonicalEvent.path)
-            ? path.dirname(canonicalEvent.path)
-            : project.hostPath;
           const source = await readWorkspaceArtifactFileAsync({
-            rootPath: captureRoot,
+            rootPath: project.hostPath,
             requestedPath: canonicalEvent.path,
             purpose: "generated_capture",
             maxBytes: 64 * 1024 * 1024,
