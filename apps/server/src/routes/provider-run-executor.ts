@@ -169,6 +169,7 @@ export function startProviderRunExecution(
     ownsActiveRun,
     persistentRootExited,
     reconcileAgentRuntimeAuthority,
+    retireCompletedContextRolloverSession,
     scheduleRuntimeIdleClose,
     teardownOneShotRuntime,
     teardownOpeningRuntime,
@@ -1378,84 +1379,40 @@ export function startProviderRunExecution(
         });
         refreshProviderUsageAfterRun(runtimeEngineId);
         if (rolloverSucceeded) {
-          coordinationV3.beginContextRolloverRetirement(runRollover!.id);
-          const retiringRollover = coordinationV3.contextRollover(runRollover!.id);
-          if (retiringRollover?.state === "session_retiring") {
-            try {
+          try {
+            coordinationV3.beginContextRolloverRetirement(runRollover!.id);
+            const retiringRollover = coordinationV3.contextRollover(runRollover!.id);
+            if (retiringRollover?.state === "session_retiring") {
               const continued = coordinationV3.prepareContextRolloverContinuation({
                 id: retiringRollover.id,
               });
               if (continued.state === "continuation_ready") {
                 notifyScheduler();
               } else if (continued.completionReason === "no_continuation_required") {
-                if (continued.handoffEventId) {
-                  store.consumeContinuationHandoff(agent.id, continued.handoffEventId, runId);
-                }
-                const acceptedSession = store.resumeSessionState(agent.id);
-                if (acceptedSession?.sessionId === continued.oldProviderSessionId) {
-                  const generationOwner = coordinationV3.contextRolloverOwnerForGeneration(
-                    agent.id,
-                    continued.providerSessionGeneration,
-                  );
-                  if (generationOwner?.id !== continued.id
-                    || generationOwner.oldProviderSessionId !== acceptedSession.sessionId) {
-                    app.log.error({
-                      classification: "context_rollover_generation_conflict",
-                      agentId: agent.id,
-                      rolloverId: continued.id,
-                    }, "completed context rollover does not own the accepted provider session");
-                    throw new Error("context_rollover_generation_conflict");
-                  }
-                  try {
-                    clearAgentResumeSession(agent.id, "request_context_rollover");
-                  } catch {
-                    app.log.error({
-                      classification: "context_rollover_session_retirement_failed",
-                      agentId: agent.id,
-                      rolloverId: continued.id,
-                    }, "failed to retire completed context rollover provider session");
-                    throw new Error("context_rollover_session_retirement_failed");
-                  }
-                }
-                scheduledSessionRollovers.delete(agent.id);
-                organizationEnvelopeStates.delete(agent.id);
-                const staleRuntime = reusableRuntime(agent.id);
-                if (staleRuntime) {
-                  try {
-                    const staleRuntimeSessionId = readProviderSessionIdentifier(staleRuntime.session);
-                    if (staleRuntimeSessionId === continued.oldProviderSessionId) {
-                      activeRun.persistentRuntimeIdentity = undefined;
-                      await teardownPersistentRuntime(
-                        agent.id,
-                        staleRuntime,
-                        "completed context rollover retirement",
-                        project.id,
-                      );
-                    }
-                  } catch {
-                    app.log.error({
-                      classification: "context_rollover_session_retirement_failed",
-                      agentId: agent.id,
-                      rolloverId: continued.id,
-                    }, "failed to terminate completed context rollover provider runtime");
-                    throw new Error("context_rollover_session_retirement_failed");
-                  }
-                }
+                await retireCompletedContextRolloverSession({
+                  agentId: agent.id,
+                  projectId: project.id,
+                  rolloverId: continued.id,
+                  providerSessionGeneration: continued.providerSessionGeneration,
+                });
                 app.log.info({
                   agentId: agent.id,
                   rolloverId: continued.id,
                   retiredSessionId: continued.oldProviderSessionId,
                 }, "retired completed context rollover provider session");
               }
-            } catch (error) {
-              // Cancellation may fence the Run after retirement started but
-              // before continuation preparation. Its SQLite transaction owns
-              // the rollover terminal state and pending Activation cleanup.
-              if (!activeRun.v3SchedulerRunId ||
-                  !coordinationV3.isSchedulerRunCancelled(activeRun.v3SchedulerRunId)) {
-                throw error;
-              }
             }
+          } catch (error) {
+            // Rollover retirement is durable and retried by the centralized
+            // admission guard. It must never prevent mandatory Run release
+            // and scheduler settlement after terminal lifecycle is recorded.
+            app.log.error({
+              err: error,
+              classification: "context_rollover_session_retirement_failed",
+              agentId: agent.id,
+              runId,
+              rolloverId: runRollover!.id,
+            }, "context rollover retirement remains pending after Run finalization");
           }
         } else if (policyRefreshSucceeded) {
           // Workspace/Project policy changes still invalidate the retained

@@ -1214,6 +1214,13 @@ export class CoordinationV3Store {
     return this.contextRolloverAuthority.ownerForGeneration(agentId, providerSessionGeneration);
   }
 
+  contextRolloverOwnerForOldSession(
+    agentId: string,
+    oldProviderSessionId: string,
+  ): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.ownerForOldSession(agentId, oldProviderSessionId);
+  }
+
   activeContextRollover(agentId: string): ContextRolloverV3 | undefined {
     return this.contextRolloverAuthority.activeForAgent(agentId);
   }

@@ -130,7 +130,8 @@ export type AgentMessageRunContext =
     "reportRuntimeCapabilitiesChanged" | "refreshProviderUsageAfterRun"> &
   Pick<RuntimeAuthority,
     "cancelRuntimeIdleClose" | "ownsActiveRun" | "ownsActiveRunForAuditDrain" |
-    "persistentRootExited" | "reconcileAgentRuntimeAuthority" | "scheduleRuntimeIdleClose" |
+    "persistentRootExited" | "reconcileAgentRuntimeAuthority" |
+    "retireCompletedContextRolloverSession" | "scheduleRuntimeIdleClose" |
     "teardownOneShotRuntime" | "teardownOpeningRuntime" | "teardownPersistentRuntime" |
     "teardownPersistentRuntimeInBackground"> &
   Pick<RuntimeEventAuthority,

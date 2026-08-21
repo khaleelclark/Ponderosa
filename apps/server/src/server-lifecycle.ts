@@ -54,7 +54,8 @@ type ServerLifecycleContext =
   Pick<OperationalNotifications,
     "createOperationalNotification" | "reconcileProjectDeletionOperationalNotifications" |
     "reconcileTriggerOperationalNotifications" | "resolveOperationalNotification"> &
-  Pick<RuntimeAuthority, "drainProviderRuntimeAuthority"> &
+  Pick<RuntimeAuthority,
+    "drainProviderRuntimeAuthority" | "retireCompletedContextRolloverSession"> &
   Pick<ReadModels, "ensureDecisionResponseActivation"> &
   Pick<CommunicationJournal,
     "refreshCommunicationReconciliation" | "stopCommunicationReconciliation"> &
@@ -146,6 +147,7 @@ export function registerServerLifecycle(
     reconcileTriggerOperationalNotifications,
     resolveOperationalNotification,
     drainProviderRuntimeAuthority,
+    retireCompletedContextRolloverSession,
     ensureDecisionResponseActivation,
     refreshCommunicationReconciliation,
     stopCommunicationReconciliation,
@@ -396,8 +398,13 @@ export function registerServerLifecycle(
           rollover = coordinationV3.prepareContextRolloverContinuation({
             id: rollover.id,
           });
-          if (rollover.completionReason === "no_continuation_required" && rollover.handoffEventId) {
-            store.consumeContinuationHandoff(rollover.agentId, rollover.handoffEventId, rollover.sourceRunId);
+          if (rollover.completionReason === "no_continuation_required") {
+            await retireCompletedContextRolloverSession({
+              agentId: rollover.agentId,
+              projectId: rollover.projectId,
+              rolloverId: rollover.id,
+              providerSessionGeneration: rollover.providerSessionGeneration,
+            });
             continue;
           }
         }
@@ -444,6 +451,15 @@ export function registerServerLifecycle(
           });
         }
       } catch (error) {
+        if (error instanceof Error && (
+          error.message === "context_rollover_session_retirement_failed"
+          || error.message === "context_rollover_generation_conflict"
+        )) {
+          // A completed no-continuation rollover must keep its durable state
+          // while startup remains blocked. Marking it failed here would make
+          // the stale accepted provider session eligible for reuse.
+          throw error;
+        }
         coordinationV3.failContextRollover(
           initial.id,
           "outcome_unknown",

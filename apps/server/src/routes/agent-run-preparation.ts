@@ -50,10 +50,6 @@ import {
   providerToolContractHash,
 } from "../runtime-selection.js";
 import {
-  readProviderContextUsage,
-  readProviderSessionIdentifier,
-} from "../provider-session-success.js";
-import {
   runtimeAttachmentDirectoryForRun,
   runtimeAttachmentDirectoryForSession,
 } from "../runtime-attachments.js";
@@ -195,6 +191,7 @@ export async function prepareAgentRun(
     clearAgentResumeSession,
     cancelRuntimeIdleClose,
     reconcileAgentRuntimeAuthority,
+    retireCompletedContextRolloverSession,
     teardownPersistentRuntime,
     teamDirectory,
     canonicalConversationContext,
@@ -303,6 +300,13 @@ export async function prepareAgentRun(
     artifact.kind === "generated_file" && Boolean(assets.authoritativeGeneratedArtifact(project.id, artifact)));
   const manifestActivationIds = coordinationV3.activationIdsForInjection(v3InjectionId!, runId);
   const manifestActivationPayloads = coordinationV3.activationPayloads(agent.id, manifestActivationIds, runId);
+  // Repair and retire any stale provider generation before reading resume
+  // state or deriving a provider-session contract from it.
+  await reconcileAgentRuntimeAuthority(agent.id);
+  await retireCompletedContextRolloverSession({
+    agentId: agent.id,
+    projectId: project.id,
+  });
   const preflightResumeSessionState = store.resumeSessionState(agent.id);
   const preflightActiveRollover = coordinationV3.activeContextRollover(agent.id);
   const preflightAttachedActivationIds = v3SchedulerRunId
@@ -425,79 +429,7 @@ export async function prepareAgentRun(
   const requestContextRollover = Boolean(
     internalV3Dispatch && v3FreshProviderSession,
   );
-  // An evicted/failed runtime keeps this Agent fenced until its retained
-  // handle confirms exit. Never start a replacement beside it.
-  await reconcileAgentRuntimeAuthority(agent.id);
   let resumeSessionState = store.resumeSessionState(agent.id);
-  if (resumeSessionState) {
-    const retainedRuntime = reusableRuntime(agent.id);
-    let providerSessionGeneration = resumeSessionState.sessionId;
-    if (retainedRuntime) {
-      try {
-        const retainedRuntimeSessionId = readProviderSessionIdentifier(retainedRuntime.session);
-        if (retainedRuntimeSessionId === resumeSessionState.sessionId) {
-          providerSessionGeneration = readProviderContextUsage(retainedRuntime.session)
-            ?.providerSessionGeneration ?? providerSessionGeneration;
-        }
-      } catch {
-        // Provider telemetry is optional. The accepted session ID is the
-        // conservative generation fallback for startup repair.
-      }
-    }
-    const completedRollover = coordinationV3.contextRolloverOwnerForGeneration(
-      agent.id,
-      providerSessionGeneration,
-    );
-    if (completedRollover?.state === "completed"
-      && completedRollover.completionReason === "no_continuation_required") {
-      if (completedRollover.oldProviderSessionId !== resumeSessionState.sessionId) {
-        app.log.error({
-          classification: "context_rollover_generation_conflict",
-          agentId: agent.id,
-          rolloverId: completedRollover.id,
-        }, "completed context rollover does not own the accepted provider session");
-        throw new Error("context_rollover_generation_conflict");
-      }
-      try {
-        if (completedRollover.handoffEventId) {
-          store.consumeContinuationHandoff(
-            agent.id,
-            completedRollover.handoffEventId,
-            completedRollover.sourceRunId,
-          );
-        }
-        const acceptedSession = store.resumeSessionState(agent.id);
-        if (acceptedSession?.sessionId === completedRollover.oldProviderSessionId) {
-          clearAgentResumeSession(agent.id, "request_context_rollover");
-        }
-        scheduledSessionRollovers.delete(agent.id);
-        organizationEnvelopeStates.delete(agent.id);
-        resumeSessionState = store.resumeSessionState(agent.id);
-        if (retainedRuntime
-          && readProviderSessionIdentifier(retainedRuntime.session)
-            === completedRollover.oldProviderSessionId) {
-          await teardownPersistentRuntime(
-            agent.id,
-            retainedRuntime,
-            "completed context rollover retirement",
-            project.id,
-          );
-        }
-        app.log.info({
-          agentId: agent.id,
-          rolloverId: completedRollover.id,
-          retiredSessionId: completedRollover.oldProviderSessionId,
-        }, "repaired completed context rollover provider session retirement");
-      } catch {
-        app.log.error({
-          classification: "context_rollover_session_retirement_failed",
-          agentId: agent.id,
-          rolloverId: completedRollover.id,
-        }, "failed to repair completed context rollover provider session retirement");
-        throw new Error("context_rollover_session_retirement_failed");
-      }
-    }
-  }
   const attachedActivationIds = preflightAttachedActivationIds;
   const activeRollover = preflightActiveRollover;
   const rolloverOwnsThisContinuation = Boolean(
