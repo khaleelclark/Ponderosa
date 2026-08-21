@@ -1,4 +1,3 @@
-import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import { MenuItem, MenuList, Paper, Popper } from "@mui/material";
 import { type ReactNode, useEffect, useRef } from "react";
 
@@ -16,19 +15,14 @@ export interface ResourceContextMenuAction<T> {
   onSelect(resource: T): void;
 }
 
-/**
- * Shared, non-modal menu for repeated resource actions. Opening a Ponderosa tab
- * delegates its foreground/background disposition to the workspace owner.
- */
+/** Shared, non-modal menu for repeated resource actions. */
 export function ResourceContextMenu<T>({
   state,
   onClose,
-  onOpenInNewTab,
   actions = [],
 }: {
   state?: ResourceContextMenuState<T>;
   onClose(): void;
-  onOpenInNewTab?(resource: T): void;
   actions?: readonly ResourceContextMenuAction<T>[];
 }): JSX.Element | null {
   const menuListRef = useRef<HTMLUListElement>(null);
@@ -106,10 +100,6 @@ export function ResourceContextMenu<T>({
           onCloseRef.current();
         }}
       >
-        {onOpenInNewTab ? <MenuItem onClick={() => select(onOpenInNewTab)}>
-          <OpenInNewIcon fontSize="small" sx={{ mr: 1 }} />
-          Open in New Ponderosa Tab
-        </MenuItem> : null}
         {actions.map((action) => <MenuItem
           key={action.id}
           disabled={action.disabled}

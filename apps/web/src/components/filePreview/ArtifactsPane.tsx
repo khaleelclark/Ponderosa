@@ -7,8 +7,6 @@ import { Alert, Box, Chip, InputAdornment, List, ListItemButton, ListItemIcon, L
 import type { ArtifactDto } from "@ponderosa/core";
 import { useEffect, useState } from "react";
 import { telemetryElementId } from "../../telemetryFocus";
-import { ResourceContextMenu } from "../ResourceContextMenu";
-import type { ResourceContextMenuState } from "../ResourceContextMenu";
 import { AgentArtifactPreview } from "./ArtifactPreview";
 import { artifactDisplayLabel, artifactDisplayPath, artifactSearchText } from "./artifactPresentation";
 
@@ -33,7 +31,6 @@ export function ArtifactsPane({
   projectRoot,
   initialArtifactId,
   onSelectArtifact,
-  onOpenArtifactInNewTab,
 }: {
   artifacts: ArtifactDto[];
   agentId: string;
@@ -42,7 +39,6 @@ export function ArtifactsPane({
   projectRoot?: string;
   initialArtifactId?: string;
   onSelectArtifact?(artifactId: string): void;
-  onOpenArtifactInNewTab?(artifactId: string): void;
 }): JSX.Element {
   const orderedArtifacts = artifacts.filter((artifact) => artifact.kind !== "log").sort((left, right) => right.createdAt.localeCompare(left.createdAt) || left.id.localeCompare(right.id));
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | undefined>(
@@ -51,7 +47,6 @@ export function ArtifactsPane({
       : orderedArtifacts[0]?.id,
   );
   const [filter, setFilter] = useState("");
-  const [artifactMenu, setArtifactMenu] = useState<ResourceContextMenuState<string>>();
 
   useEffect(() => {
     if (initialArtifactId && orderedArtifacts.some((artifact) => artifact.id === initialArtifactId)) {
@@ -116,7 +111,6 @@ export function ArtifactsPane({
                     setSelectedArtifactId(artifact.id);
                     onSelectArtifact?.(artifact.id);
                   }}
-                  onContextMenu={(event) => { event.preventDefault(); setArtifactMenu({ anchor: event.currentTarget, resource: artifact.id }); }}
                   aria-current={selected ? "true" : undefined}
                   sx={{ borderRadius: 1.5, mb: 0.25, alignItems: "flex-start", px: 1, py: 0.75 }}
                 >
@@ -143,7 +137,6 @@ export function ArtifactsPane({
         />
         </Box>
       </Box>
-      <ResourceContextMenu state={artifactMenu} onClose={() => setArtifactMenu(undefined)} onOpenInNewTab={onOpenArtifactInNewTab} />
     </Box>
   );
 }

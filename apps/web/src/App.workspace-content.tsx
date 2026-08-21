@@ -45,7 +45,6 @@ interface WorkspaceRouteOutletProps {
   loadError: boolean;
   onRetryLoad(): void;
   onNavigate(route: Route): void;
-  onOpenInNewTab?(route: Route): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onCreate(
     kind: "project" | "chat" | "agent" | "trigger",
@@ -83,7 +82,6 @@ export function WorkspaceRouteOutlet({
   loadError,
   onRetryLoad,
   onNavigate,
-  onOpenInNewTab,
   onPreferences,
   onCreate,
   onCancelCreate,
@@ -140,7 +138,6 @@ export function WorkspaceRouteOutlet({
             notifications={notifications}
             preferences={preferences}
             onNavigate={onNavigate}
-            onOpenInNewTab={onOpenInNewTab}
             onPreferences={onPreferences}
             onCreateProject={() => onCreate("project")}
             onCreateChat={() => onCreate("chat")}
@@ -163,7 +160,6 @@ export function WorkspaceRouteOutlet({
             projects,
             preferences,
             onNavigate,
-            onOpenInNewTab,
             onCreateProject: () => onCreate("project"),
             onProjectDeleted,
             onPreferences,
@@ -180,7 +176,6 @@ export function WorkspaceRouteOutlet({
             preferences,
             onPreferences,
             onNavigate,
-            onOpenInNewTab,
             onCreate: (projectId, managerAgentId) =>
               onCreate("agent", {
                 ...(projectId ? { projectId } : {}),
@@ -202,7 +197,6 @@ export function WorkspaceRouteOutlet({
             preferences,
             onPreferences,
             onNavigate,
-            onOpenInNewTab,
             onCreate: projectId => onCreate("chat", { projectId }),
             onConversationAction,
           }}
@@ -216,7 +210,6 @@ export function WorkspaceRouteOutlet({
             preferences,
             onPreferences,
             onNavigate,
-            onOpenInNewTab,
             onCreate: () => onCreate("trigger"),
           }}
         />
@@ -276,7 +269,6 @@ export function WorkspaceRouteOutlet({
               navigate: onNavigate,
               browserRequest: projectBrowserRequest,
               onBrowserRequestHandled,
-              openInNewTab: onOpenInNewTab,
               onResourceDeleted,
               onProjectDeleted,
               onCreate: (kind, context) => onCreate(kind, context),

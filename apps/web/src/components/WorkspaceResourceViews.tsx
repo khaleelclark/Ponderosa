@@ -53,9 +53,9 @@ type ChatDirectoryResource = {
   conversation: ConversationDto;
 };
 
-export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPreferences, onNavigate, onOpenInNewTab, onCreate, onConversationAction }: {
+export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPreferences, onNavigate, onCreate, onConversationAction }: {
   projects: ProjectDto[]; filterProjectId?: string; preferences: WorkspacePreferencesDto;
-  onPreferences(patch: Partial<WorkspacePreferencesDto>): void; onNavigate(route: Route): void; onOpenInNewTab?(route: Route): void; onCreate(projectId?: string): void;
+  onPreferences(patch: Partial<WorkspacePreferencesDto>): void; onNavigate(route: Route): void; onCreate(projectId?: string): void;
   onConversationAction(kind: "rename" | "delete", conversation: ConversationDto): void;
 }): JSX.Element {
   const [search, setSearch] = useState(""); const [projectId, setProjectId] = useState(filterProjectId ?? ""); const [dragged, setDragged] = useState<string>(); const [menu, setMenu] = useState<ResourceContextMenuState<ChatDirectoryResource>>();
@@ -153,7 +153,6 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
     <ResourceContextMenu
       state={menu}
       onClose={() => setMenu(undefined)}
-      onOpenInNewTab={onOpenInNewTab ? ({ route }) => onOpenInNewTab(route) : undefined}
       actions={[
         {
           id: "rename",
@@ -173,10 +172,10 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
   </CollectionWorkspace>;
 }
 
-export function AllAgentsWorkspace({ projects, engines, filterProjectId, preferences, onPreferences, onNavigate, onOpenInNewTab, onCreate, onAgentsDeleted }: {
+export function AllAgentsWorkspace({ projects, engines, filterProjectId, preferences, onPreferences, onNavigate, onCreate, onAgentsDeleted }: {
   projects: ProjectDto[]; engines: EngineDto[]; filterProjectId?: string; preferences: WorkspacePreferencesDto;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
-  onNavigate(route: Route): void; onOpenInNewTab?(route: Route): void;
+  onNavigate(route: Route): void;
   onCreate(projectId?: string, managerAgentId?: string): void;
   onAgentsDeleted(projectId: string, agentIds: string[]): void;
 }): JSX.Element {
@@ -320,10 +319,6 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
         const project = projectByAgentId.get(agentId)!;
         onNavigate({ kind: "agent", projectId: project.id, agentId });
       }}
-      onOpenAgentInNewTab={onOpenInNewTab ? (agentId) => {
-        const project = projectByAgentId.get(agentId)!;
-        onOpenInNewTab({ kind: "agent", projectId: project.id, agentId });
-      } : undefined}
       onOpenAgentSettings={(agentId) => {
         const project = projectByAgentId.get(agentId)!;
         onNavigate({ kind: "agent", projectId: project.id, agentId, view: "settings" });
@@ -355,7 +350,6 @@ export function AllTriggersWorkspace({
   preferences,
   onPreferences,
   onNavigate,
-  onOpenInNewTab,
   onCreate,
 }: {
   projects: ProjectDto[]; preferences: WorkspacePreferencesDto; onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
@@ -364,7 +358,7 @@ export function AllTriggersWorkspace({
   filterAgentIds?: readonly string[];
   scopeTitle?: string;
   embedded?: boolean;
-  onNavigate(route: Route): void; onOpenInNewTab?(route: Route): void; onCreate(): void;
+  onNavigate(route: Route): void; onCreate(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState(""); const [projectId, setProjectId] = useState(filterProjectId ?? ""); const [dragged, setDragged] = useState<string>(); const [menu, setMenu] = useState<ResourceContextMenuState<TriggerDirectoryResource>>();
@@ -505,7 +499,6 @@ export function AllTriggersWorkspace({
     <ResourceContextMenu
       state={menu}
       onClose={() => setMenu(undefined)}
-      onOpenInNewTab={onOpenInNewTab ? ({ route }) => onOpenInNewTab(route) : undefined}
       actions={[
         {
           id: "settings",

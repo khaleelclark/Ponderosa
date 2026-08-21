@@ -55,13 +55,11 @@ interface AgentDetailPanelsProps {
   onLoadOlderChat(): void;
   onLoadOlderTelemetry(): void;
   onOpenFile(file: ResponseFileActivityDto): void;
-  onOpenFileInNewTab(file: ResponseFileActivityDto): void;
   onNewSubagent(managerAgentId: string): void;
   onAgentsDeleted(agentIds: string[]): void;
   onCreateTrigger(): void;
   onOpenTechnical(focusId?: string): void;
   onOpenArtifact(artifactId: string): void;
-  onOpenArtifactInNewTab(artifactId: string): void;
   onCloseTriggerSettings(): void;
 }
 
@@ -95,13 +93,11 @@ export function AgentDetailPanels({
   onLoadOlderChat,
   onLoadOlderTelemetry,
   onOpenFile,
-  onOpenFileInNewTab,
   onNewSubagent,
   onAgentsDeleted,
   onCreateTrigger,
   onOpenTechnical,
   onOpenArtifact,
-  onOpenArtifactInNewTab,
   onCloseTriggerSettings,
 }: AgentDetailPanelsProps): JSX.Element {
   const queryClient = useQueryClient();
@@ -132,7 +128,6 @@ export function AgentDetailPanels({
           activeExecutionId={activeExecutionId}
           projectRoot={projectRoot}
           onOpenFile={onOpenFile}
-          onOpenFileInNewTab={onOpenFileInNewTab}
           focusId={
             focusTelemetry?.stream === "activity" ||
             focusTelemetry?.stream === "runOutput"
@@ -208,7 +203,6 @@ export function AgentDetailPanels({
             : readChatState(chatStateKey("view", `agent.${agentId}.artifact`))
         }
         onSelectArtifact={onOpenArtifact}
-        onOpenArtifactInNewTab={onOpenArtifactInNewTab}
       />
     ),
     settings: <></>,

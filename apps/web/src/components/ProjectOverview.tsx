@@ -145,7 +145,6 @@ export function ProjectOverview({
   onPreferences,
   onCreateConversation,
   onOpenConversation,
-  onOpenConversationInNewTab,
   onRenameConversation,
   onDeleteConversation,
   onOpenAgentWork,
@@ -162,7 +161,6 @@ export function ProjectOverview({
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onCreateConversation(): void;
   onOpenConversation(conversationId: string): void;
-  onOpenConversationInNewTab?(conversationId: string): void;
   onRenameConversation(conversation: ConversationDto): void;
   onDeleteConversation(conversation: ConversationDto): void;
   onOpenAgentWork(): void;
@@ -348,9 +346,6 @@ export function ProjectOverview({
     <ResourceContextMenu
       state={chatMenu}
       onClose={() => setChatMenu(undefined)}
-      onOpenInNewTab={onOpenConversationInNewTab
-        ? (conversation) => onOpenConversationInNewTab(conversation.id)
-        : undefined}
       actions={[
         { id: "rename", label: "Rename", onSelect: onRenameConversation },
         { id: "delete", label: "Delete", color: "error", onSelect: onDeleteConversation },

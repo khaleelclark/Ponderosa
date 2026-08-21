@@ -62,11 +62,10 @@ function projectDropPreferencePatch(
   return projectOrder === order ? undefined : { projectSort: "custom", projectOrder };
 }
 
-export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNewTab, onCreateProject, onProjectDeleted, onPreferences }: {
+export function AllProjectsView({ projects, preferences, onNavigate, onCreateProject, onProjectDeleted, onPreferences }: {
   projects: ProjectDto[];
   preferences: WorkspacePreferencesDto;
   onNavigate(route: Route): void;
-  onOpenInNewTab?(route: Route): void;
   onCreateProject(): void;
   onProjectDeleted(projectId: string): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
@@ -225,7 +224,6 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
     <ResourceContextMenu
       state={tabMenu}
       onClose={() => setTabMenu(undefined)}
-      onOpenInNewTab={onOpenInNewTab ? ({ route }) => onOpenInNewTab(route) : undefined}
       actions={[
         {
           id: "settings",

@@ -75,7 +75,6 @@ import { useConversationHistory } from "./useConversationHistory";
 import { useConversationMessagingController } from "./useConversationMessagingController";
 import { MasterRespondingIndicator } from "./ConversationComposerStatus";
 import {
-  agentOpeningAgentId,
   resolveMessageMentionText,
 } from "./chat/ChatMessages";
 import { ConversationFilesResults } from "./ConversationFilesResults";
@@ -99,7 +98,6 @@ export function ConversationView({
   onOpenProject,
   onOpenProjectBrowser,
   onOpenAgent,
-  onOpenAgentInNewTab,
   onAgentsDeleted,
   onOpenReview,
   onOpenAgentWork,
@@ -109,7 +107,6 @@ export function ConversationView({
   preferences,
   onPreferences,
   onNavigateTrigger,
-  onOpenTriggerInNewTab,
   onCreateTrigger,
   onDeleted,
 }: {
@@ -133,7 +130,6 @@ export function ConversationView({
     view?: "technical" | "settings",
     technicalFocusId?: string,
   ): void;
-  onOpenAgentInNewTab?(agentId: string): void;
   onAgentsDeleted(agentIds: string[]): void;
   onOpenReview?(agentId: string): void;
   onOpenAgentWork(focusId?: string): void;
@@ -143,7 +139,6 @@ export function ConversationView({
   preferences: WorkspacePreferencesDto;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onNavigateTrigger(route: Route): void;
-  onOpenTriggerInNewTab(route: Route): void;
   onCreateTrigger(agentId?: string): void;
   onDeleted(): void;
 }): JSX.Element {
@@ -635,18 +630,9 @@ export function ConversationView({
     [agentTitle],
   );
   const lastContinuationDestination = useMemo(() => {
-    const freshAgentIds = new Set(messages.flatMap(message => {
-      const agentId = agentOpeningAgentId(message.communicationEventId);
-      return agentId ? [agentId] : [];
-    }));
     const message = [...messages]
       .reverse()
-      .find(candidate =>
-        candidate.communicationIntent === "user_dm" ||
-        (candidate.communicationIntent === "broadcast" &&
-          candidate.authorAgentId !== undefined &&
-          freshAgentIds.has(candidate.authorAgentId)),
-      );
+      .find(candidate => candidate.authorAgentId !== undefined);
     const agentId = message?.authorAgentId ?? (
       message?.directMessageAgents?.length === 1
         ? message.directMessageAgents[0]!.id
@@ -1137,7 +1123,6 @@ export function ConversationView({
             statusByAgentId={statusByAgentId}
             healthByAgentId={healthByAgentId}
             onOpenAgent={agentId => onOpenAgent(agentId)}
-            onOpenAgentInNewTab={onOpenAgentInNewTab}
             onOpenAgentSettings={agentId =>
               onOpenAgent(agentId, "settings")}
             onAgentsDeleted={(_projectId, agentIds) =>
@@ -1178,7 +1163,6 @@ export function ConversationView({
             preferences={preferences}
             onPreferences={onPreferences}
             onNavigate={onNavigateTrigger}
-            onOpenInNewTab={onOpenTriggerInNewTab}
             onCreate={() =>
               onCreateTrigger(
                 conversationAgents.length === 1

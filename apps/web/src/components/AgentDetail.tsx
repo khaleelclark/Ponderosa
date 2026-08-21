@@ -112,9 +112,7 @@ export function AgentDetail({
   onOpenCommunicationSource,
   onOpenMaster,
   onOpenArtifact,
-  onOpenArtifactInNewTab,
   onOpenReview,
-  onOpenReviewInNewTab,
   onOpenBrowser,
   onNewSubagent,
   onCreateTrigger,
@@ -814,10 +812,6 @@ export function AgentDetail({
     if (file.artifactId) onOpenArtifact(file.artifactId);
     else onOpenReview(file.path);
   };
-  const openActivityFileInNewTab = (file: ResponseFileActivityDto) => {
-    if (file.artifactId) onOpenArtifactInNewTab(file.artifactId);
-    else onOpenReviewInNewTab(file.path);
-  };
   const settingsPane = (
     <AgentDetailSettingsController
       agent={detail.agent}
@@ -966,13 +960,11 @@ export function AgentDetail({
         onLoadOlderChat={() => void loadOlderCombinedTimeline()}
         onLoadOlderTelemetry={() => void loadOlderTelemetry()}
         onOpenFile={openActivityFile}
-        onOpenFileInNewTab={openActivityFileInNewTab}
         onNewSubagent={onNewSubagent}
         onAgentsDeleted={onAgentsDeleted}
         onCreateTrigger={onCreateTrigger}
         onOpenTechnical={openTechnicalDetails}
         onOpenArtifact={onOpenArtifact}
-        onOpenArtifactInNewTab={onOpenArtifactInNewTab}
       />
 
       <AgentDetailComposer

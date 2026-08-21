@@ -115,7 +115,6 @@ function ChatPaneComponent({
   activeExecutionId,
   projectRoot,
   onOpenFile,
-  onOpenFileInNewTab,
   focusId,
   hasOlder = false,
   loadingOlder = false,
@@ -142,7 +141,6 @@ function ChatPaneComponent({
   activeExecutionId?: string;
   projectRoot?: string;
   onOpenFile?(file: ResponseFileActivityDto): void;
-  onOpenFileInNewTab?(file: ResponseFileActivityDto): void;
   focusId?: string;
   hasOlder?: boolean;
   loadingOlder?: boolean;
@@ -342,7 +340,6 @@ function ChatPaneComponent({
               projectId={projectId}
               projectRoot={projectRoot}
               onOpenFile={onOpenFile}
-              onOpenFileInNewTab={onOpenFileInNewTab}
               focusId={focusId}
               active={item.run.id === activeExecutionId}
             />
@@ -357,7 +354,6 @@ function ChatPaneComponent({
               projectId={projectId}
               projectRoot={projectRoot}
               onOpenFile={onOpenFile}
-              onOpenFileInNewTab={onOpenFileInNewTab}
               focusId={focusId}
             />
           );
@@ -437,7 +433,6 @@ function ChatPaneComponent({
                       projectId={projectId}
                       projectRoot={projectRoot}
                       onOpenFile={onOpenFile}
-                      onOpenFileInNewTab={onOpenFileInNewTab}
                       focusId={focusId}
                       active={run.id === activeExecutionId}
                       inline

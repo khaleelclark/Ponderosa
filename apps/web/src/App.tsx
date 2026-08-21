@@ -66,7 +66,7 @@ import {
 import { queryKeys } from "./queryKeys";
 import {
   MobileWorkspaceDrawer,
-  MobileWorkspaceHeader,
+  WorkspaceAppHeader,
 } from "./App.mobile";
 import { WorkspaceRouteOutlet } from "./App.workspace-content";
 import {
@@ -479,7 +479,6 @@ export default function App({
     recordWorkspaceRouteUse(next);
     navigate(next);
   };
-  const openWorkspaceRoute = (next: Route) => navigateWorkspace(next);
   const openCreationForm = (
     kind: "project" | "chat" | "agent" | "trigger",
     context?: {
@@ -568,7 +567,7 @@ export default function App({
           overflow: "hidden",
           display: "grid",
           gridTemplateColumns: "minmax(0, 1fr)",
-          gridTemplateRows: { xs: "auto minmax(0, 1fr)", md: "minmax(0, 1fr)" },
+          gridTemplateRows: "auto minmax(0, 1fr)",
           bgcolor: "background.default",
         }}
       >
@@ -593,7 +592,7 @@ export default function App({
         >
           Skip to content
         </Box>
-        <MobileWorkspaceHeader
+        <WorkspaceAppHeader
           preferredQuotaProvider={displayedQuotaProvider}
           engineAvailability={engineAvailability}
           attentionNotifications={notificationCounts.attentionCount}
