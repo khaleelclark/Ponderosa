@@ -1229,10 +1229,10 @@ export class BrowserSessionManager {
     });
   }
 
-  async inspect(scope: BrowserScope): Promise<string> {
+  async inspect(scope: BrowserScope, selector?: string): Promise<string> {
     const session = this.ready(scope);
     return this.pageAction(scope, session, undefined, undefined, async (driver) => ({
-      snapshot: await driver.inspect(),
+      snapshot: await driver.inspect(selector),
       info: await driver.pageInfo(),
     }), ({ snapshot, info }) => {
       this.updateInfo(session, info);

@@ -7,6 +7,7 @@ import type {
   AgentOperationalReason,
   AgentOperationalStatus,
   ProviderBlockedWorkDto,
+  AgentRunDto,
 } from "@ponderosa/core";
 
 export interface ActiveRunObservation { startedAt: string; executionId?: string; leaseExpiresAt?: string; ownershipState?: "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted" }
@@ -28,6 +29,7 @@ export interface AgentHealthProjectionInput {
   pendingDecisionAt?: (agentId: string) => string | undefined;
   providerBlocked?: (agentId: string) => ProviderBlockedWorkDto | undefined;
   latestEvent: (agentId: string) => StatusObservation | undefined;
+  runs?: (agentId: string) => readonly AgentRunDto[];
   now?: string;
 }
 export interface StatusObservation { status: AgentLifecycleStatus; statusTimestamp: string; reason: AgentLifecycleReason; executionId?: string }
@@ -38,13 +40,6 @@ type OperationalObservation = {
   reason: AgentOperationalReason;
   executionId?: string;
 };
-
-const RETAINED_TERMINAL_STATUSES: ReadonlySet<AgentLifecycleStatus> = new Set([
-  "blocked",
-  "cancelled",
-  "failed",
-  "interrupted",
-]);
 
 export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHealthProjectionDto {
   const agentIds = new Set(input.agents.map((agent) => agent.id));
@@ -64,6 +59,16 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
     const pendingDecisionAt = input.pendingDecisionAt?.(agent.id);
     const providerBlocked = input.providerBlocked?.(agent.id);
     const latestEvent = input.latestEvent(agent.id);
+    const runs = [...(input.runs?.(agent.id) ?? [])].sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
+    const summarizeRun = (run: AgentRunDto | undefined) => run ? ({
+      runId: run.id, status: run.status, reason: run.reason,
+      ...(run.wakeCause ? { wakeCause: run.wakeCause } : {}),
+      updatedAt: run.updatedAt,
+    }) : undefined;
+    const latestRun = summarizeRun(runs.at(-1));
+    const assignedWorkOutcome = summarizeRun([...runs].reverse().find((run) =>
+      run.wakeCause !== "coordination" && run.wakeCause !== "collaboration"
+    ));
     const activeEvent = active && latestEvent && latestEvent.statusTimestamp >= active.startedAt &&
       (latestEvent.executionId === active.executionId || latestEvent.statusTimestamp > active.startedAt)
       ? latestEvent : undefined;
@@ -87,7 +92,6 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
       reason: "provider_capacity_unavailable",
     };
     else if (availability === "waiting") observation = { status: "waiting", statusTimestamp: agent.updatedAt, reason: "awaiting_reports" };
-    else if (latestEvent && RETAINED_TERMINAL_STATUSES.has(latestEvent.status)) observation = latestEvent;
     else observation = {
       status: "idle",
       statusTimestamp: agent.updatedAt,
@@ -111,6 +115,15 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
         ? { runtimeActivity: { state: "responding" as const, executionId: active.executionId, startedAt: active.startedAt } }
         : {}),
       ...(providerBlocked ? { providerBlocked } : {}),
+      ...(latestRun ? { latestRun } : {}),
+      ...(assignedWorkOutcome ? { assignedWorkOutcome } : {}),
+      ...(["needs_decision", "blocked", "stalled", "interrupted"].includes(observation.status)
+        ? { attention: {
+            status: observation.status as "needs_decision" | "blocked" | "stalled" | "interrupted",
+            reason: observation.reason,
+            observedAt: observation.statusTimestamp,
+          } }
+        : {}),
     };
   });
   return { scope: input.scope, generatedAt: input.now ?? new Date().toISOString(), agents: agents.sort((a, b) => a.agentId.localeCompare(b.agentId)) };

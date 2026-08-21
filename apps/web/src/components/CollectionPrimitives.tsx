@@ -528,6 +528,7 @@ export interface ResourceRowProps {
     direction: "up" | "down",
   ): false | { position: number; total: number };
   highlighted?: boolean;
+  resourceIdentity?: string;
 }
 
 export function ResourceRow({
@@ -548,6 +549,7 @@ export function ResourceRow({
   onDrop,
   onKeyboardMove,
   highlighted = false,
+  resourceIdentity,
 }: ResourceRowProps): JSX.Element {
   const dragPreviewRef = useRef<HTMLElement>();
   const openTargetRef = useRef<HTMLDivElement>(null);
@@ -640,6 +642,7 @@ export function ResourceRow({
       role="button"
       tabIndex={0}
       aria-label={`Open ${label}`}
+      data-resource-id={resourceIdentity}
       aria-keyshortcuts={
         onKeyboardMove
           ? "Alt+Shift+ArrowUp Alt+Shift+ArrowDown"

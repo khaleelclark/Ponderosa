@@ -172,7 +172,6 @@ its container/actions. This is safe because both currently emit the same
   - `apps/web/src/components/MessageDeliveryStatus.tsx:90-97`
   - `apps/web/src/components/chat/Composer.tsx:94-103,220-226`
   - `apps/web/src/pushNotifications.ts:54-64`
-  - `apps/web/src/workspaceTabs.ts:104-108`
 
 The fallback
 `globalThis.crypto?.randomUUID?.() ?? \`${Date.now()}-${Math.random()}\``
@@ -209,7 +208,6 @@ same cache entries, so behavior is unchanged.
   - `apps/web/src/components/MessageDeliveryStatus.tsx:98-140`
   - `apps/web/src/components/NotificationPanel.tsx:113-130,169-219`
   - `apps/web/src/components/ProjectBrowserDialog.tsx:38-46`
-  - `apps/web/src/components/WorkspaceTabs.tsx:74-81`
   - `apps/web/src/components/AllChatView.tsx:78-80,147-149`
   - `apps/web/src/components/AgentDetail.tsx:574,582`
   - `apps/web/src/components/ImportAgentDialog.tsx:88`
@@ -233,13 +231,11 @@ and invalidations cannot silently diverge through spelling or arity.
   - `apps/web/src/components/AgentDetail.tsx:136-162`
   - `apps/web/src/components/ConversationView.tsx:48,87-105`
   - `apps/web/src/components/WorkspaceSidebar.tsx:71-77,186-194`
-  - `apps/web/src/components/WorkspaceTabs.tsx:26-27,206`
   - `apps/web/src/components/WorkspaceResourceViews.tsx:21-26,70-72,110-111,144-146`
   - `apps/web/src/resourcePreferences.ts:1-67`
 
 `ConversationView` imports `formatExecutionElapsed` from the 1,376-line
-`AgentDetail` component. `WorkspaceTabs` imports `operatorInitials` from the
-744-line `WorkspaceSidebar`. `WorkspaceResourceViews` imports
+`AgentDetail` component. `WorkspaceResourceViews` imports
 `reorderStableIds` from that sidebar as well.
 
 Move duration formatting to a small time utility, operator initials alongside

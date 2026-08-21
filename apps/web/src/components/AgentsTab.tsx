@@ -956,6 +956,7 @@ export function AgentsTab({
                   }}
                 >
                   <ResourceRow
+                    resourceIdentity={"agent:" + agent.id}
                     label={agent.title}
                     description={
                       <>

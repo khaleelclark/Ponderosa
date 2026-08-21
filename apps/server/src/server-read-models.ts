@@ -564,6 +564,7 @@ export function createServerReadModels(context: ReadModelContext) {
       pendingDecisionAt: (agentId) => pendingDecisionAt.get(agentId),
       providerBlocked: (agentId) => coordinationV3.providerBlockedState(agentId),
       latestEvent: (agentId) => store.latestHealthObservation(agentId),
+      runs: (agentId) => store.getRuns(agentId),
     });
     return {
       ...projection,

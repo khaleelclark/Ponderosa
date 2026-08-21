@@ -133,6 +133,7 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
         const menuResource = { route, project: snapshot.project };
         return <ResourceRow
           key={snapshot.project.id}
+          resourceIdentity={`project:${snapshot.project.id}`}
           label={snapshot.project.label}
           description={`${snapshot.displayPath}${recent ? " · Recent chat" : " · No Project chats"}`}
           icon={<FolderOutlinedIcon />}
