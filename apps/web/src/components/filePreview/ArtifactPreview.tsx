@@ -1,13 +1,18 @@
-import { Alert, Box, Chip, Stack } from "@mui/material";
+import { Alert, Box, Button, ButtonGroup, Chip, Stack } from "@mui/material";
 import type { AgentDto, ArtifactContentDto, ArtifactDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { api } from "../../api";
 import { queryKeys } from "../../queryKeys";
 import { FilePreview } from "./FilePreview";
 import { createdFileUnifiedDiff, recordedArtifactDiff } from "./artifactDiff";
 import { previewCapability } from "./mimeCapabilities";
 import { presentProjectPath } from "../../projectPathPresentation";
-import { artifactDisplayLabel, artifactDisplayPath } from "./artifactPresentation";
+import {
+  artifactDisplayLabel,
+  artifactDisplayPath,
+  artifactSourcePath,
+} from "./artifactPresentation";
 
 function ArtifactProvenance({
   artifact,
@@ -26,13 +31,25 @@ export function AgentArtifactPreview({
   artifact,
   agentId,
   agentTitle,
+  projectId,
   projectRoot,
 }: {
   artifact?: ArtifactDto;
   agentId: string;
   agentTitle: string;
+  projectId: string;
   projectRoot?: string;
 }): JSX.Element {
+  const sourcePath = artifact ? artifactSourcePath(artifact) : undefined;
+  const canViewCurrentFile = artifact?.kind === "diff"
+    && sourcePath !== artifact.path;
+  const [view, setView] = useState<"current" | "diff">(
+    canViewCurrentFile ? "current" : "diff",
+  );
+  useEffect(() => {
+    setView(canViewCurrentFile ? "current" : "diff");
+  }, [artifact?.id, canViewCurrentFile]);
+
   const contentQuery = useQuery({
     queryKey: queryKeys.projectArtifacts.agentContent(agentId, artifact?.id),
     queryFn: () => api.getArtifact(agentId, artifact!.id),
@@ -43,15 +60,61 @@ export function AgentArtifactPreview({
         artifactKind: artifact.kind,
       }).kind)),
   });
+  const currentFileQuery = useQuery({
+    queryKey: queryKeys.workspaceFileView.detail(
+      projectId,
+      canViewCurrentFile ? sourcePath ?? "" : "",
+    ),
+    queryFn: () => api.getWorkspaceFileView(projectId, sourcePath!),
+    enabled: canViewCurrentFile && view === "current",
+    retry: false,
+  });
   if (!artifact) return <Box sx={{ p: 2 }}><Alert severity="info">Select a file or result to inspect its contents.</Alert></Box>;
   const content: ArtifactContentDto | undefined = contentQuery.data;
   const safeArtifactPath = artifactDisplayPath(artifact, projectRoot);
   const previewContent = artifact.kind === "diff" && content
     ? recordedArtifactDiff(artifact, content.content, safeArtifactPath)
     : content?.content;
+  const currentFile = currentFileQuery.data;
   return <Box sx={{ p: 1.5, minWidth: 0 }}>
     <ArtifactProvenance artifact={artifact} agentTitle={agentTitle} />
-    <FilePreview
+    {canViewCurrentFile ? <ButtonGroup
+      size="small"
+      aria-label="Choose file view"
+      sx={{ mb: 1 }}
+    >
+      <Button
+        variant={view === "current" ? "contained" : "outlined"}
+        aria-pressed={view === "current"}
+        onClick={() => setView("current")}
+      >
+        Current file
+      </Button>
+      <Button
+        variant={view === "diff" ? "contained" : "outlined"}
+        aria-pressed={view === "diff"}
+        onClick={() => setView("diff")}
+      >
+        Recorded diff
+      </Button>
+    </ButtonGroup> : null}
+    {view === "current" && canViewCurrentFile ? <FilePreview
+      title={currentFile?.name ?? safeArtifactPath}
+      path={currentFile?.path ?? safeArtifactPath}
+      mediaType={currentFile?.mediaType}
+      content={currentFile?.text}
+      previewUrl={currentFile?.previewUrl}
+      downloadUrl={currentFile?.downloadUrl}
+      loading={currentFileQuery.isLoading}
+      error={currentFileQuery.isError
+        ? "The current file may have been deleted or is not safely accessible. Select Recorded diff to inspect the saved change."
+        : false}
+      truncated={currentFile?.truncated}
+      totalBytes={currentFile?.size}
+      emptyMessage={currentFile?.downloadUrl
+        ? "The current file has no safe inline preview. Download it to inspect it."
+        : "The current file has no safe inline preview. Select Recorded diff to inspect the saved change."}
+    /> : <FilePreview
       title={artifactDisplayLabel(artifact, safeArtifactPath)}
       path={safeArtifactPath}
       mediaType={artifact.mediaType}
@@ -65,7 +128,7 @@ export function AgentArtifactPreview({
       truncated={content?.truncated}
       totalBytes={content?.totalBytes}
       emptyMessage="Artifact content is not available yet."
-    />
+    />}
   </Box>;
 }
 

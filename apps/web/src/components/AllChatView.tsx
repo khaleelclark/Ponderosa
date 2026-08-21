@@ -815,6 +815,7 @@ export function AllChatView({
                       })}
                       collapseLongMessage
                       compactMarkdown
+                      preserveWhitespace={fromUser}
                       projectId={item.project.id}
                       operatorHandle={workspacePreferences.data?.profile.handle}
                       agentMentionForHandle={handle => {

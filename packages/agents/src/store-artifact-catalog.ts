@@ -119,8 +119,17 @@ export class AgentArtifactCatalog {
       executionId: row.execution_id ?? undefined,
       kind: row.kind as ArtifactKind,
       path: row.path,
+      sourcePath: row.source_path ?? undefined,
       summary: row.summary ?? undefined,
       createdAt: row.created_at,
+      mediaType: row.media_type ?? undefined,
+      visibility: row.visibility === "published"
+        ? "published"
+        : row.visibility === "project"
+          ? "project"
+          : undefined,
+      pinned: row.pinned === null ? undefined : row.pinned === 1,
+      size: row.size ?? undefined,
     };
   }
 
@@ -196,6 +205,17 @@ export class AgentArtifactCatalog {
         originAgentId: string;
       })
       .map((artifact) => this.withProjectUrls(projectId, artifact));
+  }
+
+  /** True only when an exact source path was recorded by an Agent in this Project. */
+  projectHasArtifactSourcePath(projectId: string, sourcePath: string): boolean {
+    return Boolean(this.client.prepare(`
+      SELECT 1
+      FROM artifacts artifact
+      JOIN agents agent ON agent.id = artifact.agent_id
+      WHERE agent.project_id = ? AND artifact.source_path = ?
+      LIMIT 1
+    `).get(projectId, sourcePath));
   }
 
   rebuildProjectProjection(projectId: string): void {

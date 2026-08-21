@@ -9,6 +9,7 @@ import {
   ClickAwayListener,
   Divider,
   IconButton,
+  InputAdornment,
   MenuItem,
   MenuList,
   Paper,
@@ -140,6 +141,7 @@ export function ComposerTextInput({
   menuSuggestions,
   destinationMode,
   requiredRecipient,
+  inlineDestination,
   mentionedBusyHandles,
   mentionedHandles,
   canSend,
@@ -168,6 +170,7 @@ export function ComposerTextInput({
   menuSuggestions: ComposerMenuSuggestion[];
   destinationMode?: "project-chat" | "fixed" | "target-required";
   requiredRecipient?: { handle: string; title: string; onClear(): void };
+  inlineDestination?: { handle: string; onClear(): void };
   mentionedBusyHandles: string[];
   mentionedHandles: string[];
   canSend: boolean;
@@ -204,7 +207,38 @@ export function ComposerTextInput({
             overflowY: "auto !important",
           },
         }}
-        InputProps={{ disableUnderline: true }}
+        InputProps={{
+          disableUnderline: true,
+          startAdornment: inlineDestination ? (
+            <InputAdornment
+              position="start"
+              sx={{ alignSelf: "flex-start", mt: 0, mr: 0.5, maxWidth: "42%" }}
+            >
+              <Chip
+                size="small"
+                label={`#${inlineDestination.handle}`}
+                title={`Send to #${inlineDestination.handle}`}
+                aria-label={`Recipient: ${inlineDestination.handle}`}
+                onDelete={inlineDestination.onClear}
+                sx={{
+                  maxWidth: "100%",
+                  height: 28,
+                  bgcolor: "action.selected",
+                  color: "primary.main",
+                  fontWeight: 700,
+                  boxShadow:
+                    "inset 0 0 0 1px rgba(127, 196, 142, .18)",
+                  "& .MuiChip-label": {
+                    minWidth: 0,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  },
+                  "& .MuiChip-deleteIcon": { color: "primary.main" },
+                }}
+              />
+            </InputAdornment>
+          ) : undefined,
+        }}
         value={text}
         inputRef={inputRef}
         disabled={disabled || locked}
@@ -261,6 +295,18 @@ export function ComposerTextInput({
           )
         }
         onKeyDown={event => {
+          const textarea = inputRef.current;
+          if (
+            event.key === "Backspace" &&
+            inlineDestination &&
+            text.length === 0 &&
+            textarea?.selectionStart === 0 &&
+            textarea.selectionEnd === 0
+          ) {
+            event.preventDefault();
+            inlineDestination.onClear();
+            return;
+          }
           if (
             shouldIgnoreComposerKey({
               key: event.key,

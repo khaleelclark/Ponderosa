@@ -115,13 +115,15 @@ export function useComposerDraftStorageReset({
 interface UseComposerDraftStorageWriteOptions {
   draftStorageKey: string | undefined;
   text: string;
+  textRef: MutableRefObject<string>;
 }
 
 export function useComposerDraftStorageWrite({
   draftStorageKey,
   text,
+  textRef,
 }: UseComposerDraftStorageWriteOptions): void {
   useEffect(() => {
-    if (draftStorageKey) writeChatState(draftStorageKey, text);
-  }, [draftStorageKey, text]);
+    if (draftStorageKey) writeChatState(draftStorageKey, textRef.current);
+  }, [draftStorageKey, text, textRef]);
 }

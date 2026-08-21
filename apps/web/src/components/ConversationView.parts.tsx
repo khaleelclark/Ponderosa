@@ -139,6 +139,7 @@ function ConversationMessageComponent({
           <ChatMessageBody
             text={visibleText}
             compactMarkdown
+            preserveWhitespace={message.role === "user"}
             citations={message.citations}
             agentIdForHandle={agentIdForHandle}
             agentMentionForHandle={handle =>

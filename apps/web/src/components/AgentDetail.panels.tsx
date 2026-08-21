@@ -52,7 +52,6 @@ interface AgentDetailPanelsProps {
   onOpenMessageSource: NonNullable<
     ComponentProps<typeof ChatPane>["onOpenMessageSource"]
   >;
-  onMentionAgent(): void;
   onLoadOlderChat(): void;
   onLoadOlderTelemetry(): void;
   onOpenFile(file: ResponseFileActivityDto): void;
@@ -93,7 +92,6 @@ export function AgentDetailPanels({
   onOpenAgent,
   onOpenAgentSettings,
   onOpenMessageSource,
-  onMentionAgent,
   onLoadOlderChat,
   onLoadOlderTelemetry,
   onOpenFile,
@@ -143,7 +141,6 @@ export function AgentDetailPanels({
           }
           previewScope={chatPreviewScope}
           scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)}
-          onMentionAgent={onMentionAgent}
           hasOlder={Boolean(
             detail.history?.hasMore || hasOlderTelemetry,
           )}
@@ -203,6 +200,7 @@ export function AgentDetailPanels({
         artifacts={detail.artifacts}
         agentId={agentId}
         agentTitle={detail.agent.title}
+        projectId={detail.agent.projectId}
         projectRoot={projectRoot}
         initialArtifactId={
           focusTelemetry?.stream === "artifacts"

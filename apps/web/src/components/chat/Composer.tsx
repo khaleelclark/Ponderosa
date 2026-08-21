@@ -5,6 +5,7 @@ import {
 } from "@mui/material";
 import { utf8ByteLength } from "@ponderosa/core";
 import type {
+  AgentMentionBindingDto,
   ConversationDraftConflictDto,
   DraftAttachmentDto,
   EngineCommand,
@@ -71,6 +72,10 @@ import { composerSurfaceSx } from "./Composer.styles";
 const DRAFT_OWNER_ID = /^[A-Za-z0-9_-]{1,128}$/u;
 
 export type { ComposerProps } from "./Composer.types";
+
+type ComposerDefaultDestination = NonNullable<
+  ComposerProps["defaultDestination"]
+>;
 
 function providerCommandInput(
   value: string,
@@ -186,14 +191,9 @@ export function Composer({
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const appliedInsertRequest = useRef<string>();
   const appliedRemoveRequest = useRef<string>();
-  const appliedDefaultDestination = useRef<{
-    handle: string;
-    selectionKey: string;
-  }>();
-  const [activeDefaultDestination, setActiveDefaultDestination] = useState<{
-    handle: string;
-    selectionKey: string;
-  }>();
+  const appliedDefaultDestination = useRef<ComposerDefaultDestination>();
+  const [activeDefaultDestination, setActiveDefaultDestination] =
+    useState<ComposerDefaultDestination>();
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const markUserDraftMutation = useCallback(() => {
     userDraftMutationGeneration.current += 1;
@@ -306,17 +306,28 @@ export function Composer({
       handle =>
         handle.toLocaleLowerCase() === NEW_AGENT_DESTINATION_HANDLE,
     );
-  const projectDestinationHandles =
-    destinationMode === "project-chat"
-      ? mentionedHandles.filter(
-          handle =>
-            ![
-              "broadcast",
-              "everyone",
-              NEW_AGENT_DESTINATION_HANDLE,
-            ].includes(handle.toLocaleLowerCase()),
-        )
-      : [];
+  const authoredProjectDestinationHandles = destinationMode === "project-chat"
+    ? findMentionedHandles(composedText, routingMentionHandles).filter(
+        handle =>
+          ![
+            "broadcast",
+            "everyone",
+            NEW_AGENT_DESTINATION_HANDLE,
+          ].includes(handle.toLocaleLowerCase()),
+      )
+    : [];
+  const projectDestinationHandles = destinationMode === "project-chat"
+    ? [
+        ...new Map(
+          [
+            ...(activeDefaultDestination
+              ? [activeDefaultDestination.handle]
+              : []),
+            ...authoredProjectDestinationHandles,
+          ].map(handle => [handle.toLocaleLowerCase(), handle]),
+        ).values(),
+      ]
+    : [];
   const projectDestinations = projectDestinationHandles.map(handle => ({
     handle,
   }));
@@ -648,6 +659,7 @@ export function Composer({
   useComposerDraftStorageWrite({
     draftStorageKey,
     text,
+    textRef,
   });
 
   useEffect(() => {
@@ -933,11 +945,22 @@ export function Composer({
           id !== undefined &&
           !locallyRemovedDraftAttachmentIds.current.has(id),
       );
-    const mentionedAgents = projectDestinationHandles.flatMap((handle) => {
-      const binding = mentionBindings?.find((candidate) =>
+    const mentionedAgentsById = new Map<string, AgentMentionBindingDto>();
+    if (activeDefaultDestination?.binding) {
+      mentionedAgentsById.set(
+        activeDefaultDestination.binding.agentId,
+        activeDefaultDestination.binding,
+      );
+    }
+    for (const handle of authoredProjectDestinationHandles) {
+      const matchingBindings = (mentionBindings ?? []).filter((candidate) =>
         candidate.handle.toLocaleLowerCase() === handle.toLocaleLowerCase());
-      return binding ? [binding] : [];
-    });
+      if (matchingBindings.length === 1) {
+        const binding = matchingBindings[0]!;
+        mentionedAgentsById.set(binding.agentId, binding);
+      }
+    }
+    const mentionedAgents = [...mentionedAgentsById.values()];
     const submissionContext = mentionedAgents.length > 0
       ? { mentionedAgents }
       : undefined;
@@ -1154,20 +1177,11 @@ export function Composer({
             onClear={clearTargetDestinations}
           />
         ) : null}
-        {destinationMode === "project-chat" ? (
-          activeDefaultDestination ? (
-            <ComposerTargetDestinationAction
-              broadcast={false}
-              handles={[activeDefaultDestination.handle]}
-              labelPrefix="To: "
-              onClear={() => setActiveDefaultDestination(undefined)}
-            />
-          ) : (
-            <ComposerProjectDestinationAction
-              newAgentSelected={newAgentSelected}
-              toggleNewAgent={toggleNewAgentDestination}
-            />
-          )
+        {destinationMode === "project-chat" && !activeDefaultDestination ? (
+          <ComposerProjectDestinationAction
+            newAgentSelected={newAgentSelected}
+            toggleNewAgent={toggleNewAgentDestination}
+          />
         ) : null}
         {leadingControls ? (
           <Box sx={{ minWidth: 0, maxWidth: "100%" }}>
@@ -1196,6 +1210,14 @@ export function Composer({
             menuSuggestions={menuSuggestions}
             destinationMode={destinationMode}
             requiredRecipient={requiredRecipient}
+            inlineDestination={
+              destinationMode === "project-chat" && activeDefaultDestination
+                ? {
+                  handle: activeDefaultDestination.handle,
+                  onClear: () => setActiveDefaultDestination(undefined),
+                }
+                : undefined
+            }
             mentionedBusyHandles={mentionedBusyHandles}
             mentionedHandles={mentionedHandles}
             canSend={canSend}

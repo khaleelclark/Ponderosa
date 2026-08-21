@@ -35,6 +35,8 @@ export interface ComposerProps extends ChatComposerContract {
   /** One shared visible destination used by Project, Agent, and All Messages composers. */
   defaultDestination?: {
     handle: string;
+    /** Stable recipient identity; visible handle text is presentation only. */
+    binding?: AgentMentionBindingDto;
     /** Changes when a newly committed destination should populate the draft. */
     selectionKey: string;
   };

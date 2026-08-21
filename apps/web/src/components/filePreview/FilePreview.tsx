@@ -71,7 +71,11 @@ export function FilePreview(props: FilePreviewProps): JSX.Element {
   if (props.loading) {
     body = <Stack direction="row" spacing={1} role="status" aria-live="polite" sx={{ alignItems: "center", justifyContent: "center", minHeight: 120 }}><CircularProgress size={22} /><Typography variant="body2">Loading preview…</Typography></Stack>;
   } else if (props.error) {
-    body = <Alert severity="error">{errorMessage ? `Preview is unavailable: ${errorMessage}` : "Preview is unavailable. Download the file to inspect it."}</Alert>;
+    body = <Alert severity="error">{errorMessage
+      ? `Preview is unavailable: ${errorMessage}`
+      : props.downloadUrl
+        ? "Preview is unavailable. Download the file to inspect it."
+        : "Preview is unavailable."}</Alert>;
   } else if (capability.kind === "image" && props.previewUrl) {
     body = <Box component="img" src={props.previewUrl} alt={props.title} sx={{ display: "block", maxWidth: "100%", maxHeight: props.maxHeight ?? { xs: "55vh", md: "66vh" }, objectFit: "contain", mx: "auto" }} />;
   } else if (capability.kind === "pdf" && props.previewUrl) {
@@ -85,7 +89,7 @@ export function FilePreview(props: FilePreviewProps): JSX.Element {
       ? <Box component="pre" aria-label={`Text preview for ${props.title}`} sx={{ m: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: "monospace", fontSize: 13 }}>{props.content}</Box>
       : <Alert severity="info">This file is empty.</Alert>;
   } else {
-    body = <Alert severity="info">{props.emptyMessage ?? (capability.inline ? "A preview is not available yet." : "This file type cannot be displayed safely in Ponderosa. Download it to open it with a compatible application.")}</Alert>;
+    body = <Alert severity="info">{props.emptyMessage ?? (capability.inline ? "A preview is not available yet." : props.downloadUrl ? "This file type cannot be displayed safely in Ponderosa. Download it to open it with a compatible application." : "This file type cannot be displayed safely in Ponderosa.")}</Alert>;
   }
 
   return <FeatureErrorBoundary feature={`${capability.label} preview`}>
