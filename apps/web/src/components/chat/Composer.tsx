@@ -306,6 +306,16 @@ export function Composer({
       handle =>
         handle.toLocaleLowerCase() === NEW_AGENT_DESTINATION_HANDLE,
     );
+  const authoredProjectDestinationHandles = destinationMode === "project-chat"
+    ? findMentionedHandles(composedText, routingMentionHandles).filter(
+        handle =>
+          ![
+            "broadcast",
+            "everyone",
+            NEW_AGENT_DESTINATION_HANDLE,
+          ].includes(handle.toLocaleLowerCase()),
+      )
+    : [];
   const projectDestinationHandles = destinationMode === "project-chat"
     ? [
         ...new Map(
@@ -313,14 +323,7 @@ export function Composer({
             ...(activeDefaultDestination
               ? [activeDefaultDestination.handle]
               : []),
-            ...mentionedHandles.filter(
-              handle =>
-                ![
-                  "broadcast",
-                  "everyone",
-                  NEW_AGENT_DESTINATION_HANDLE,
-                ].includes(handle.toLocaleLowerCase()),
-            ),
+            ...authoredProjectDestinationHandles,
           ].map(handle => [handle.toLocaleLowerCase(), handle]),
         ).values(),
       ]
@@ -949,10 +952,13 @@ export function Composer({
         activeDefaultDestination.binding,
       );
     }
-    for (const handle of projectDestinationHandles) {
-      const binding = mentionBindings?.find((candidate) =>
+    for (const handle of authoredProjectDestinationHandles) {
+      const matchingBindings = (mentionBindings ?? []).filter((candidate) =>
         candidate.handle.toLocaleLowerCase() === handle.toLocaleLowerCase());
-      if (binding) mentionedAgentsById.set(binding.agentId, binding);
+      if (matchingBindings.length === 1) {
+        const binding = matchingBindings[0]!;
+        mentionedAgentsById.set(binding.agentId, binding);
+      }
     }
     const mentionedAgents = [...mentionedAgentsById.values()];
     const submissionContext = mentionedAgents.length > 0
