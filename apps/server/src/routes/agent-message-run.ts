@@ -680,7 +680,7 @@ export function registerAgentMessageRunRoute(
       }
 
       const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
-      const preparedRun = await prepareAgentRun(runContext, {
+      const preparedRun = await prepareAgentRun(app, runContext, {
         agent,
         project,
         runtimeEngineId,

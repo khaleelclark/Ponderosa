@@ -20,6 +20,7 @@ import {
 } from "@ponderosa/core";
 import { attachmentsDir } from "@ponderosa/agents";
 import type { CommunicationV4NextRunDelivery } from "@ponderosa/agents";
+import type { FastifyInstance } from "fastify";
 import { renderSeedPrompt } from "@ponderosa/engines";
 import { inboundContext } from "../agent-mentions.js";
 import { collectReachableArtifactIds } from "../artifact-refs.js";
@@ -48,6 +49,10 @@ import {
   providerSessionContractHash,
   providerToolContractHash,
 } from "../runtime-selection.js";
+import {
+  readProviderContextUsage,
+  readProviderSessionIdentifier,
+} from "../provider-session-success.js";
 import {
   runtimeAttachmentDirectoryForRun,
   runtimeAttachmentDirectoryForSession,
@@ -173,6 +178,7 @@ const runtimeAttachmentName = (item: AssetDto): string => {
 };
 
 export async function prepareAgentRun(
+  app: FastifyInstance,
   runContext: AgentMessageRunContext,
   input: PrepareAgentRunInput,
 ) {
@@ -422,7 +428,76 @@ export async function prepareAgentRun(
   // An evicted/failed runtime keeps this Agent fenced until its retained
   // handle confirms exit. Never start a replacement beside it.
   await reconcileAgentRuntimeAuthority(agent.id);
-  let resumeSessionState = preflightResumeSessionState;
+  let resumeSessionState = store.resumeSessionState(agent.id);
+  if (resumeSessionState) {
+    const retainedRuntime = reusableRuntime(agent.id);
+    let providerSessionGeneration = resumeSessionState.sessionId;
+    if (retainedRuntime) {
+      try {
+        const retainedRuntimeSessionId = readProviderSessionIdentifier(retainedRuntime.session);
+        if (retainedRuntimeSessionId === resumeSessionState.sessionId) {
+          providerSessionGeneration = readProviderContextUsage(retainedRuntime.session)
+            ?.providerSessionGeneration ?? providerSessionGeneration;
+        }
+      } catch {
+        // Provider telemetry is optional. The accepted session ID is the
+        // conservative generation fallback for startup repair.
+      }
+    }
+    const completedRollover = coordinationV3.contextRolloverOwnerForGeneration(
+      agent.id,
+      providerSessionGeneration,
+    );
+    if (completedRollover?.state === "completed"
+      && completedRollover.completionReason === "no_continuation_required") {
+      if (completedRollover.oldProviderSessionId !== resumeSessionState.sessionId) {
+        app.log.error({
+          classification: "context_rollover_generation_conflict",
+          agentId: agent.id,
+          rolloverId: completedRollover.id,
+        }, "completed context rollover does not own the accepted provider session");
+        throw new Error("context_rollover_generation_conflict");
+      }
+      try {
+        if (completedRollover.handoffEventId) {
+          store.consumeContinuationHandoff(
+            agent.id,
+            completedRollover.handoffEventId,
+            completedRollover.sourceRunId,
+          );
+        }
+        const acceptedSession = store.resumeSessionState(agent.id);
+        if (acceptedSession?.sessionId === completedRollover.oldProviderSessionId) {
+          clearAgentResumeSession(agent.id, "request_context_rollover");
+        }
+        scheduledSessionRollovers.delete(agent.id);
+        organizationEnvelopeStates.delete(agent.id);
+        resumeSessionState = store.resumeSessionState(agent.id);
+        if (retainedRuntime
+          && readProviderSessionIdentifier(retainedRuntime.session)
+            === completedRollover.oldProviderSessionId) {
+          await teardownPersistentRuntime(
+            agent.id,
+            retainedRuntime,
+            "completed context rollover retirement",
+            project.id,
+          );
+        }
+        app.log.info({
+          agentId: agent.id,
+          rolloverId: completedRollover.id,
+          retiredSessionId: completedRollover.oldProviderSessionId,
+        }, "repaired completed context rollover provider session retirement");
+      } catch {
+        app.log.error({
+          classification: "context_rollover_session_retirement_failed",
+          agentId: agent.id,
+          rolloverId: completedRollover.id,
+        }, "failed to repair completed context rollover provider session retirement");
+        throw new Error("context_rollover_session_retirement_failed");
+      }
+    }
+  }
   const attachedActivationIds = preflightAttachedActivationIds;
   const activeRollover = preflightActiveRollover;
   const rolloverOwnsThisContinuation = Boolean(

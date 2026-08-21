@@ -173,6 +173,16 @@ export class CoordinationV3ContextRolloverAuthority {
     return row ? this.view(row) : undefined;
   }
 
+  ownerForGeneration(agentId: string, providerSessionGeneration: string): ContextRolloverV3 | undefined {
+    const row = this.sqlite.prepare(`
+      SELECT * FROM context_rollovers
+      WHERE agent_id = ? AND provider_session_generation = ?
+      ORDER BY created_at DESC, rowid DESC
+      LIMIT 1
+    `).get(agentId, providerSessionGeneration) as RolloverRow | undefined;
+    return row ? this.view(row) : undefined;
+  }
+
   activeForAgent(agentId: string): ContextRolloverV3 | undefined {
     const row = this.sqlite.prepare(`
       SELECT * FROM context_rollovers WHERE agent_id = ?
