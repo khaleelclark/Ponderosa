@@ -371,6 +371,7 @@ export class BrowserSessionManager {
     private readonly emit: (scope: BrowserScope, event: BrowserAuditEvent) => void | Promise<void>,
     private readonly resolveUploadArtifact?: BrowserUploadArtifactResolver,
     private readonly launchAuthority?: Pick<BrowserProfileAuthority, "description" | "acquire">,
+    private readonly admissionAllowed: (scope: BrowserScope) => boolean = () => true,
   ) {
     // Start residue discovery at authority creation so prior recovery
     // directories are visible and draining before the next browser opens.
@@ -385,6 +386,16 @@ export class BrowserSessionManager {
         throw new BrowserSessionError(error.message, error.statusCode);
       }
       throw error;
+    }
+  }
+
+  private assertAdmission(scope: BrowserScope): void {
+    if (!this.admissionAllowed(scope)) {
+      throw new BrowserSessionError(
+        "browser admission is unavailable while its Project or Agent is being deleted",
+        409,
+        "browser_owner_deleting",
+      );
     }
   }
 
@@ -692,6 +703,7 @@ export class BrowserSessionManager {
   }
 
   open(scope: BrowserScope, url?: string, initialOwner: BrowserControlOwner = "agent"): Promise<BrowserSessionDto> {
+    this.assertAdmission(scope);
     const existing = this.sessions.get(scope.agentId);
     if (existing?.dto.status === "ready") {
       if (!sameScope(existing.dto, scope)) {
@@ -746,10 +758,15 @@ export class BrowserSessionManager {
           }
         }
         await recoverBrowserResidue(this.dataDir);
+        // No await may separate this deletion fence from installing the session.
+        // A deletion beginning afterward will observe the installed opening in
+        // its identity-based browser scan and abort it.
+        this.assertAdmission(scope);
         this.sessions.set(scope.agentId, session);
         installed = true;
         this.lifecycle(session, "open_requested");
         const launch = await this.acquireLaunch(scope, session, launchDescription);
+        this.assertAdmission(scope);
         if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "opening") {
           launch?.release();
           session.launchLease = undefined;
@@ -772,6 +789,7 @@ export class BrowserSessionManager {
           session.launchFactoryPending = false;
         }
         publication.finish();
+        this.assertAdmission(scope);
         if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "opening") {
           throw new BrowserSessionError("browser session closed while it was opening", 409);
         }
@@ -781,6 +799,7 @@ export class BrowserSessionManager {
           throw new BrowserSessionError("browser session closed while it was opening", 409);
         }
         const pages = await createdDriver.pages();
+        this.assertAdmission(scope);
         if (this.sessions.get(scope.agentId) !== session || session.driver !== createdDriver || session.dto.status !== "opening") {
           throw new BrowserSessionError("browser session closed while it was opening", 409);
         }
@@ -821,6 +840,7 @@ export class BrowserSessionManager {
   }
 
   async reconnect(scope: BrowserScope): Promise<BrowserSessionDto> {
+    this.assertAdmission(scope);
     const session = this.owned(scope);
     if (session.dto.status === "opening" && session.opening) return session.opening;
     const previousUrl = session.replayUrl;
@@ -851,6 +871,7 @@ export class BrowserSessionManager {
         // we wait for its queued command and replace the process.
         await session.queue.catch(() => undefined);
         await this.closeRetainedHandles(session);
+        this.assertAdmission(scope);
         if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "opening") {
           throw new BrowserSessionError("browser session closed while it was reconnecting", 409);
         }
@@ -860,6 +881,7 @@ export class BrowserSessionManager {
           ...(session.dto.profileName ? { profileName: session.dto.profileName } : {}),
         };
         const launch = await this.acquireLaunch(scope, session, launchDescription);
+        this.assertAdmission(scope);
         if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "opening") {
           launch?.release();
           session.launchLease = undefined;
@@ -879,12 +901,14 @@ export class BrowserSessionManager {
           session.launchFactoryPending = false;
         }
         publication.finish();
+        this.assertAdmission(scope);
         if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "opening") {
           throw new BrowserSessionError("browser session closed while it was reconnecting", 409);
         }
         session.driver = createdDriver;
         if (previousUrl && previousUrl !== "about:blank") await createdDriver.navigate(validateBrowserUrl(previousUrl));
         const pages = await createdDriver.pages();
+        this.assertAdmission(scope);
         if (this.sessions.get(scope.agentId) !== session || session.driver !== createdDriver || session.dto.status !== "opening") {
           throw new BrowserSessionError("browser session closed while it was reconnecting", 409);
         }
@@ -1538,6 +1562,12 @@ export class BrowserSessionManager {
     const session = this.sessions.get(scope.agentId);
     if (!session || !sameScope(session.dto, scope)) return;
     await this.close(scope, reason);
+  }
+
+  async closeAgent(agentId: string, reason: string): Promise<void> {
+    const session = this.sessions.get(agentId);
+    if (!session) return;
+    await this.close(session.dto, reason);
   }
 
   async closeAll(reason: string): Promise<void> {

@@ -214,6 +214,20 @@ export function registerProjectDeletionRoutes(
       const failures = barriers.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
       if (failures.length) throw new AggregateError(failures, "Project deletion is waiting for provider runtime cleanup");
 
+      // Re-scan browser authority after provider drain. Admission is now
+      // quarantined, so reaching this fixed point proves an opening admitted
+      // immediately before deletion cannot survive the irreversible commit.
+      await Promise.all([
+        awaitProjectDeletionBarrier(
+          browserSessions.closeProject(project.id, "project_deleted_final_barrier"),
+          "Run browser final cleanup",
+        ),
+        awaitProjectDeletionBarrier(
+          projectBrowserSessions.closeProject(project.id, "project_deleted_final_barrier"),
+          "Project browser final cleanup",
+        ),
+      ]);
+
       // The drain rescans after every late open/completion. Keep this explicit
       // final assertion beside the irreversible storage boundary.
       if ([...activeRuns.keys()].some((agentId) => agentIds.has(agentId)) ||

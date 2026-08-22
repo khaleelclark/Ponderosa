@@ -65,6 +65,7 @@ type AgentDeletionAuthorityContext =
     refreshTriggerSources(): Promise<void>;
     notifyScheduler(): void;
     closeRunBrowser(agentId: string, run: ActiveRun, reason: string): Promise<void>;
+    closeAgentBrowsers(agentId: string, reason: string): Promise<void>;
     providerProcessAuthority: ProviderProcessAuthority;
     browserProfiles: BrowserProfileAuthority;
   };
@@ -94,6 +95,7 @@ export function createAgentDeletionAuthority(
     refreshTriggerSources,
     notifyScheduler,
     closeRunBrowser,
+    closeAgentBrowsers,
     createOperationalNotification,
     resolveOperationalNotification,
     providerProcessAuthority,
@@ -318,8 +320,7 @@ export function createAgentDeletionAuthority(
     try {
       for (const agentId of expectedAgentIds) {
         closeLinkPreviewsForAgent(agentId, "agent deleted");
-        const run = activeRuns.get(agentId);
-        if (run) await closeRunBrowser(agentId, run, "agent_deleted");
+        await closeAgentBrowsers(agentId, "agent_deleted");
       }
       const deletingSet = new Set(expectedAgentIds);
       // Provider teardown is a pre-commit deletion barrier. The durable receipt
@@ -328,6 +329,12 @@ export function createAgentDeletionAuthority(
       // provider process group can still act with its authority.
       await drainProviderRuntimeAuthority("Agent deletion", deletingSet);
       await providerProcessAuthority.terminateAgents(deletingSet, "Agent deletion");
+      // Provider drain can retire the active Run needed by run-scoped cleanup.
+      // Re-scan by immutable Agent identity before deleting canonical rows so a
+      // browser admitted immediately before quarantine cannot survive commit.
+      for (const agentId of expectedAgentIds) {
+        await closeAgentBrowsers(agentId, "agent_deleted_final_barrier");
+      }
       expectedAgentIds.forEach((agentId) => browserProfiles.removeAgent(agentId));
       committed = store.deleteAgentSubtrees(
         current.rootAgentIds,

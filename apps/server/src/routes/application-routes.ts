@@ -799,7 +799,8 @@ registerBrowserRoutes(app, {
   activeProjectBrowserController: (projectId, agentId) => {
     const agent = agentId ? store.getAgent(agentId) : undefined;
     const run = agent ? activeRuns.get(agent.id) : undefined;
-    if (!agent || agent.projectId !== projectId || !run || !ownsActiveRun(agent.id, run)) return undefined;
+    if (!agent || agent.projectId !== projectId || deletingProjectIds.has(projectId) ||
+        deletingAgentIds.has(agent.id) || !run || !ownsActiveRun(agent.id, run)) return undefined;
     return {
       grant: { agentId: agent.id, runId: run.runId },
       privateScope: () => browserScopeForRun(agent.id, run),

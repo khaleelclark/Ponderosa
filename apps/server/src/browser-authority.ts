@@ -24,6 +24,7 @@ interface BrowserAuthorityContext {
     event: LogEvent | AgentEvent,
   ): Promise<StoredLogEvent | undefined>;
   providerProcessAuthority: ProviderProcessAuthority;
+  browserAdmissionAllowed(scope: BrowserScope): boolean;
 }
 
 export function durableBrowserDriverFactory(
@@ -46,6 +47,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     persistRuntimeEvent,
     logWarn,
     providerProcessAuthority,
+    browserAdmissionAllowed,
   } = context;
 
   const browserFactory = durableBrowserDriverFactory(
@@ -126,6 +128,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     },
     resolveUploadArtifact,
     browserProfiles,
+    browserAdmissionAllowed,
   );
   const projectBrowserGrants = new Map<string, { agentId: string; runId: string }>();
   const projectBrowserSessions = new BrowserSessionManager(
@@ -174,6 +177,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     },
     resolveUploadArtifact,
     browserProfiles,
+    browserAdmissionAllowed,
   );
 
   function browserScopeForRun(agentId: string, run: ActiveRun): BrowserScope | undefined {
@@ -210,6 +214,27 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
       scope ? browserSessions.closeRun(scope, reason) : Promise.resolve(),
       releaseProjectBrowser(),
     ]).then(() => undefined);
+  }
+
+  async function closeAgentBrowsers(agentId: string, reason: string): Promise<void> {
+    const agent = store.getAgent(agentId);
+    const projectId = agent?.projectId;
+    const grant = projectId ? projectBrowserGrants.get(projectId) : undefined;
+    if (projectId && grant?.agentId === agentId) {
+      projectBrowserGrants.delete(projectId);
+      const projectScope = projectBrowserScope(projectId);
+      const session = projectBrowserSessions.get(projectScope.agentId);
+      if (session?.status === "ready" && session.controlOwner === "agent") {
+        try {
+          await projectBrowserSessions.setControl(projectScope, "operator", session.controlEpoch);
+        } catch {
+          // A browser whose deleted controller cannot be returned safely is
+          // closed rather than left stranded under a removed grant.
+          await projectBrowserSessions.close(projectScope, reason);
+        }
+      }
+    }
+    await browserSessions.closeAgent(agentId, reason);
   }
 
   const projectBrowserScope = (projectId: string, grant?: { agentId: string; runId: string }): BrowserScope => ({
@@ -250,6 +275,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     browserScopeForRun,
     browserProfiles,
     browserSessions,
+    closeAgentBrowsers,
     closeRunBrowser,
     projectBrowserDto,
     projectBrowserGrants,

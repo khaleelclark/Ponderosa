@@ -31,6 +31,8 @@ interface AgentRuntimeToolRoutesContext {
   browserSessions: BrowserSessionManager;
   projectBrowserSessions: BrowserSessionManager;
   projectBrowserGrants: Map<string, { agentId: string; runId: string }>;
+  deletingProjectIds: ReadonlySet<string>;
+  deletingAgentIds: ReadonlySet<string>;
   dataDir: string;
   assets: AssetStore;
   publish(agentId: string, stored: StoredLogEvent): void;
@@ -131,6 +133,8 @@ export function registerAgentRuntimeToolRoutes(
     browserSessions,
     projectBrowserSessions,
     projectBrowserGrants,
+    deletingProjectIds,
+    deletingAgentIds,
     allowedImportRoots = [],
     projectBrowserScope,
     capabilityOwnsAuthoritativeRun,
@@ -495,6 +499,9 @@ export function registerAgentRuntimeToolRoutes(
     const agent = capability ? store.getAgent(capability.agentId) : undefined;
     if (!capability || !active || !agent || !capabilityOwnsAuthoritativeRun(capability, active) || active.messageCapability !== token) {
       return reply.code(401).send({ error: "browser capability is not authorized for an active run" });
+    }
+    if (deletingProjectIds.has(agent.projectId) || deletingAgentIds.has(agent.id)) {
+      return reply.code(409).send({ error: "browser owner deletion is in progress" });
     }
     const projectGrant = projectBrowserGrants.get(agent.projectId);
     const borrowingProjectBrowser = projectGrant?.agentId === agent.id && projectGrant.runId === active.runId;
