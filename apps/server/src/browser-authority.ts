@@ -191,53 +191,48 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     };
   }
 
+  async function releaseProjectBrowserGrant(
+    agentId: string,
+    reason: string,
+    exactRunId?: string,
+  ): Promise<void> {
+    const agent = store.getAgent(agentId);
+    const projectId = agent?.projectId;
+    if (!projectId) return;
+    const grant = projectBrowserGrants.get(projectId);
+    if (!grant || grant.agentId !== agentId || (exactRunId !== undefined && grant.runId !== exactRunId)) return;
+    projectBrowserGrants.delete(projectId);
+    const projectScope = projectBrowserScope(projectId);
+    const session = projectBrowserSessions.get(projectScope.agentId);
+    if (session?.status === "opening") {
+      // An opening has no safe control handoff point. Close it and await its
+      // retained process/lease cleanup before releasing the owner authority.
+      await projectBrowserSessions.close(projectScope, reason);
+    } else if (session?.status === "ready" && session.controlOwner === "agent") {
+      try {
+        await projectBrowserSessions.setControl(projectScope, "operator", session.controlEpoch);
+      } catch {
+        // A browser whose former controller cannot be returned safely is
+        // closed rather than left stranded under a removed grant.
+        await projectBrowserSessions.close(projectScope, reason);
+      }
+    }
+  }
+
   function closeRunBrowser(
     agentId: string,
     run: ActiveRun,
     reason: string,
   ): Promise<void> {
     const scope = browserScopeForRun(agentId, run);
-    const releaseProjectBrowser = async (): Promise<void> => {
-      const agent = store.getAgent(agentId);
-      const projectId = agent?.projectId;
-      if (!projectId) return;
-      const grant = projectBrowserGrants.get(projectId);
-      if (!grant || grant.agentId !== agentId || grant.runId !== run.runId) return;
-      projectBrowserGrants.delete(projectId);
-      const projectScope = projectBrowserScope(projectId);
-      const session = projectBrowserSessions.get(projectScope.agentId);
-      if (session?.status === "ready" && session.controlOwner === "agent") {
-        await projectBrowserSessions.setControl(projectScope, "operator", session.controlEpoch).catch(() => undefined);
-      }
-    };
     return Promise.all([
       scope ? browserSessions.closeRun(scope, reason) : Promise.resolve(),
-      releaseProjectBrowser(),
+      releaseProjectBrowserGrant(agentId, reason, run.runId),
     ]).then(() => undefined);
   }
 
   async function closeAgentBrowsers(agentId: string, reason: string): Promise<void> {
-    const agent = store.getAgent(agentId);
-    const projectId = agent?.projectId;
-    const grant = projectId ? projectBrowserGrants.get(projectId) : undefined;
-    if (projectId && grant?.agentId === agentId) {
-      projectBrowserGrants.delete(projectId);
-      const projectScope = projectBrowserScope(projectId);
-      const session = projectBrowserSessions.get(projectScope.agentId);
-      if (session?.status === "opening") {
-        // An opening has no safe control handoff point. Close it and await its
-        // retained process/lease cleanup before Agent deletion can commit.
-        await projectBrowserSessions.close(projectScope, reason);
-      } else if (session?.status === "ready" && session.controlOwner === "agent") {
-        try {
-          await projectBrowserSessions.setControl(projectScope, "operator", session.controlEpoch);
-        } catch {
-          // A browser whose deleted controller cannot be returned safely is
-          // closed rather than left stranded under a removed grant.
-          await projectBrowserSessions.close(projectScope, reason);
-        }
-      }
-    }
+    await releaseProjectBrowserGrant(agentId, reason);
     await browserSessions.closeAgent(agentId, reason);
   }
 
