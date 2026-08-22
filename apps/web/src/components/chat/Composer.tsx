@@ -377,6 +377,8 @@ export function Composer({
     (destinationMode === "fixed" ? defaultDestination?.handle : undefined);
   const commandTargetAgentId =
     destinationMode === "project-chat" &&
+      !hasBroadcastDestination &&
+      !hasEveryoneDestination &&
       activeDefaultDestination?.binding &&
       projectDestinations.length === 1 &&
       projectDestinations[0]?.handle.toLocaleLowerCase() ===
