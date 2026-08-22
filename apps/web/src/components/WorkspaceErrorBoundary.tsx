@@ -42,7 +42,7 @@ export class WorkspaceErrorBoundary extends Component<WorkspaceErrorBoundaryProp
       <Alert severity="error" icon={<ErrorOutlineIcon />}>
         <Stack spacing={1}>
           <Typography fontWeight={800}>{this.props.title ?? "This workspace view could not be displayed."}</Typography>
-          <Typography variant="body2">Your other Ponderosa tabs and navigation are still available.</Typography>
+          <Typography variant="body2">Ponderosa navigation remains available while you retry this workspace view.</Typography>
           <Button color="inherit" variant="outlined" size="small" onClick={this.reset} sx={{ alignSelf: "flex-start" }}>Try Again</Button>
         </Stack>
       </Alert>

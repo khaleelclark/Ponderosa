@@ -84,7 +84,6 @@ export function WorkspaceSidebar({
   notifications,
   drawer = false,
   onNavigate,
-  onOpenInNewTab,
   onCreate,
   onPreferences,
   onRenameConversation,
@@ -101,7 +100,6 @@ export function WorkspaceSidebar({
   notifications: WorkspaceNotificationDto[];
   drawer?: boolean;
   onNavigate(route: Route): void;
-  onOpenInNewTab?(route: Route): void;
   onCreate(kind: "project" | "chat" | "agent" | "trigger"): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onRenameConversation(conversation: ConversationDto): void;
@@ -1004,11 +1002,6 @@ export function WorkspaceSidebar({
       <ResourceContextMenu
         state={menu}
         onClose={() => setMenu(undefined)}
-        onOpenInNewTab={
-          onOpenInNewTab
-            ? resource => onOpenInNewTab(resource.route)
-            : undefined
-        }
         actions={
           menu?.resource.conversation
             ? [

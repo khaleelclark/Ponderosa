@@ -9,7 +9,6 @@ import {
   ClickAwayListener,
   Divider,
   IconButton,
-  InputAdornment,
   MenuItem,
   MenuList,
   Paper,
@@ -29,7 +28,7 @@ import {
   LONG_TEXT_MAX_UTF8_BYTES,
   utf8ByteLength,
 } from "@ponderosa/core";
-import type { RefObject } from "react";
+import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { compactPreviewText } from "./Composer.helpers";
 import { ComposerMentionStatus } from "./Composer.parts";
 import {
@@ -185,9 +184,53 @@ export function ComposerTextInput({
   onClearRequiredRecipient(): void;
   onSend(): void;
 }): JSX.Element {
+  const destinationRef = useRef<HTMLDivElement>(null);
+  const [destinationWidth, setDestinationWidth] = useState(0);
+  useLayoutEffect(() => {
+    const element = destinationRef.current;
+    if (!element || !inlineDestination) {
+      setDestinationWidth(0);
+      return;
+    }
+    const update = () => setDestinationWidth(element.getBoundingClientRect().width);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [inlineDestination?.handle]);
+
   return (
     <>
-      <TextField
+      <Box sx={{ position: "relative", minWidth: 0 }}>
+        {inlineDestination ? (
+          <Chip
+            ref={destinationRef}
+            size="small"
+            label={`#${inlineDestination.handle}`}
+            title={`Send to #${inlineDestination.handle}`}
+            aria-label={`Recipient: ${inlineDestination.handle}`}
+            onDelete={inlineDestination.onClear}
+            sx={{
+              position: "absolute",
+              zIndex: 1,
+              top: 0,
+              left: 2,
+              maxWidth: "min(42%, 240px)",
+              height: 24,
+              bgcolor: "action.selected",
+              color: "primary.main",
+              fontWeight: 700,
+              boxShadow: "inset 0 0 0 1px rgba(127, 196, 142, .18)",
+              "& .MuiChip-label": {
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              },
+              "& .MuiChip-deleteIcon": { color: "primary.main" },
+            }}
+          />
+        ) : null}
+        <TextField
         fullWidth
         multiline
         variant="standard"
@@ -205,39 +248,11 @@ export function ComposerTextInput({
             lineHeight: "22px",
             maxHeight: "110px !important",
             overflowY: "auto !important",
+            textIndent: destinationWidth ? `${destinationWidth + 8}px` : 0,
           },
         }}
         InputProps={{
           disableUnderline: true,
-          startAdornment: inlineDestination ? (
-            <InputAdornment
-              position="start"
-              sx={{ alignSelf: "flex-start", mt: 0, mr: 0.5, maxWidth: "42%" }}
-            >
-              <Chip
-                size="small"
-                label={`#${inlineDestination.handle}`}
-                title={`Send to #${inlineDestination.handle}`}
-                aria-label={`Recipient: ${inlineDestination.handle}`}
-                onDelete={inlineDestination.onClear}
-                sx={{
-                  maxWidth: "100%",
-                  height: 28,
-                  bgcolor: "action.selected",
-                  color: "primary.main",
-                  fontWeight: 700,
-                  boxShadow:
-                    "inset 0 0 0 1px rgba(127, 196, 142, .18)",
-                  "& .MuiChip-label": {
-                    minWidth: 0,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                  },
-                  "& .MuiChip-deleteIcon": { color: "primary.main" },
-                }}
-              />
-            </InputAdornment>
-          ) : undefined,
         }}
         value={text}
         inputRef={inputRef}
@@ -363,7 +378,8 @@ export function ComposerTextInput({
             onSend();
           }
         }}
-      />
+        />
+      </Box>
       <ComposerMentionStatus
         destinationMode={destinationMode}
         mentionedBusyHandles={mentionedBusyHandles}

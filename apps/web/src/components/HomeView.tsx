@@ -41,7 +41,6 @@ import type { Route } from "../routing";
 import { isOpenAttention } from "../attention";
 import { sortWorkspaceResources, starredWorkspaceResources, toggleWorkspaceResourceStar } from "../resourcePreferences";
 import { CollectionStateFeedback } from "./CollectionPrimitives";
-import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 import {
   markWorkspaceResourceUsed,
@@ -114,13 +113,12 @@ function CreateEntry({
   );
 }
 
-export function HomeView({ projects, engines, notifications, preferences, onNavigate, onOpenInNewTab, onPreferences, onCreateProject, onCreateChat, onCreateAgent, onCreateTrigger, onOpenInbox }: {
+export function HomeView({ projects, engines, notifications, preferences, onNavigate, onPreferences, onCreateProject, onCreateChat, onCreateAgent, onCreateTrigger, onOpenInbox }: {
   projects: ProjectDto[];
   engines: EngineDto[];
   notifications: WorkspaceNotificationDto[];
   preferences: WorkspacePreferencesDto;
   onNavigate(route: Route): void;
-  onOpenInNewTab?(route: Route): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onCreateProject(): void;
   onCreateChat(): void;
@@ -130,7 +128,6 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
 }): JSX.Element {
   const queryClient = useQueryClient();
   const recencyQuery = useWorkspaceResourceRecency();
-  const [tabMenu, setTabMenu] = useState<ResourceContextMenuState<Route>>();
   const [createAnchor, setCreateAnchor] = useState<HTMLElement>();
   const [tab, setTab] = useState<"overview" | "work">("overview");
   const directoryOptions = { sort: "last_used" as const };
@@ -298,17 +295,16 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
 
       {needsAttention > 0 ? <Paper variant="outlined" sx={{ p: 2, borderColor: "warning.main" }}><Stack direction="row" spacing={1.25} sx={{ alignItems: "center" }}><WarningAmberOutlinedIcon color="warning" /><Box sx={{ flex: 1 }}><Typography fontWeight={800}>{needsAttention} open {needsAttention === 1 ? "issue" : "issues"}</Typography><Typography variant="body2" color="text.secondary">Review decisions, blockers, and failures that still need action.</Typography></Box><Button onClick={onOpenInbox}>Open Inbox</Button></Stack></Paper> : null}</> : null}
 
-      {tab === "work" ? <>{starred.length ? <Box component="section"><Typography variant="h6" fontWeight={800} sx={{ mb: 1 }}>Starred</Typography><Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">{starred.map((item) => <Chip key={item.id} clickable icon={item.icon} deleteIcon={<StarRoundedIcon />} label={item.title} onClick={() => openResource(item)} onDelete={() => unstar(item)} onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, resource: item.route }); }} sx={{ "& .MuiChip-deleteIcon, & .MuiChip-deleteIcon:hover": { color: "var(--ponderosa-star)" } }} />)}</Stack></Box> : null}
+      {tab === "work" ? <>{starred.length ? <Box component="section"><Typography variant="h6" fontWeight={800} sx={{ mb: 1 }}>Starred</Typography><Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">{starred.map((item) => <Chip key={item.id} clickable icon={item.icon} deleteIcon={<StarRoundedIcon />} label={item.title} onClick={() => openResource(item)} onDelete={() => unstar(item)} sx={{ "& .MuiChip-deleteIcon, & .MuiChip-deleteIcon:hover": { color: "var(--ponderosa-star)" } }} />)}</Stack></Box> : null}
 
       <Box component="section">
         <Typography variant="h6" fontWeight={800} sx={{ mb: 1 }}>Recent</Typography>
         <CollectionStateFeedback request={recentDirectoryRequest} itemCount={recent.length} filtersActive={false} resourceLabel="recent work" emptyTitle="Your Recent Work Will Appear Here" emptyDetail="Create a Project to begin." />
         <Box sx={{ display: homeDirectoryRequest.hasResolved && recent.length ? "grid" : "none", gridTemplateColumns: { xs: "minmax(0, 1fr)", md: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
-          {recent.map((item) => <Paper key={item.id} variant="outlined" onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, resource: item.route }); }}><ButtonBase onClick={() => openResource(item)} sx={{ width: "100%", p: 1.5, gap: 1.25, justifyContent: "flex-start", textAlign: "left" }}><Box sx={{ width: 34, height: 34, borderRadius: 1.5, bgcolor: "action.selected", display: "grid", placeItems: "center", flexShrink: 0 }}>{item.icon}</Box><Box sx={{ minWidth: 0 }}><Typography fontWeight={750} noWrap>{item.title}</Typography><Typography variant="caption" color="text.secondary" noWrap>{item.detail}</Typography></Box></ButtonBase></Paper>)}
+          {recent.map((item) => <Paper key={item.id} variant="outlined"><ButtonBase onClick={() => openResource(item)} sx={{ width: "100%", p: 1.5, gap: 1.25, justifyContent: "flex-start", textAlign: "left" }}><Box sx={{ width: 34, height: 34, borderRadius: 1.5, bgcolor: "action.selected", display: "grid", placeItems: "center", flexShrink: 0 }}>{item.icon}</Box><Box sx={{ minWidth: 0 }}><Typography fontWeight={750} noWrap>{item.title}</Typography><Typography variant="caption" color="text.secondary" noWrap>{item.detail}</Typography></Box></ButtonBase></Paper>)}
         </Box>
       </Box></> : null}
     </Stack>
-    <ResourceContextMenu state={tabMenu} onClose={() => setTabMenu(undefined)} onOpenInNewTab={onOpenInNewTab} />
     </Box>
   </Box>;
 }

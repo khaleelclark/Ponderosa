@@ -9,6 +9,7 @@ import {
 } from "../conversationEngine";
 import { useSendMessage } from "../hooks/useSendMessage";
 import { queryKeys } from "../queryKeys";
+import { uploadFilesForRecipients } from "../conversationRouting";
 import { directAgentDeliveryNotice } from "./AgentDetail.helpers";
 
 interface AgentMessageControllerInput {
@@ -103,7 +104,13 @@ export function useAgentMessageController({
       const sent = (
         draftAttachmentIds.length
           ? Promise.resolve([])
-          : Promise.all(files.map(file => api.uploadAttachment(agentId, file)))
+          : uploadFilesForRecipients(
+              [agentId],
+              files,
+              (recipientId, file) => api.uploadAttachment(recipientId, file),
+              (recipientId, attachment) =>
+                api.deleteAttachment(recipientId, attachment.id),
+            ).then(recipients => recipients[0]?.attachments ?? [])
       ).then(async attachments => {
         try {
           return await sendMessage.mutateAsync(

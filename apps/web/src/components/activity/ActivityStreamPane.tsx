@@ -75,7 +75,6 @@ export function ActivityStreamPane({
   loadingEarlier,
   onLoadEarlier,
   onOpenFile,
-  onOpenFileInNewTab,
   onViewAll,
 }: {
   agentId: string;
@@ -93,7 +92,6 @@ export function ActivityStreamPane({
   loadingEarlier: boolean;
   onLoadEarlier(): void;
   onOpenFile?(file: ResponseFileActivityDto): void;
-  onOpenFileInNewTab?(file: ResponseFileActivityDto): void;
   onViewAll?(): void;
 }): JSX.Element {
   const entries = useMemo(() => buildActivityStream({
@@ -143,7 +141,6 @@ export function ActivityStreamPane({
         focusId={focusId}
         projectRoot={projectRoot}
         onOpenFile={onOpenFile}
-        onOpenFileInNewTab={onOpenFileInNewTab}
       />;
       if (entry.kind === "run_header") return <RunHeaderRow key={entry.id} entry={entry} />;
       if (entry.kind === "thinking") return <ThinkingRow key={entry.id} entry={entry} focusId={focusId} />;
@@ -152,7 +149,6 @@ export function ActivityStreamPane({
         entry={entry}
         focusId={focusId}
         onOpenFile={onOpenFile}
-        onOpenFileInNewTab={onOpenFileInNewTab}
         onViewAll={onViewAll}
         projectId={projectId}
         projectRoot={projectRoot}

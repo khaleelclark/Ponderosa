@@ -97,7 +97,6 @@ export function AgentWorkReceipt({
   projectId,
   projectRoot,
   onOpenFile,
-  onOpenFileInNewTab,
   focusId,
   inline = false,
 }: {
@@ -108,7 +107,6 @@ export function AgentWorkReceipt({
   projectId?: string;
   projectRoot?: string;
   onOpenFile?(file: ResponseFileActivityDto): void;
-  onOpenFileInNewTab?(file: ResponseFileActivityDto): void;
   focusId?: string;
   inline?: boolean;
 }): JSX.Element {
@@ -261,7 +259,6 @@ export function AgentWorkReceipt({
                     focusId={focusId}
                     projectRoot={projectRoot}
                     onOpenFile={onOpenFile}
-                    onOpenFileInNewTab={onOpenFileInNewTab}
                   />
                 );
               }
@@ -281,7 +278,6 @@ export function AgentWorkReceipt({
                     entry={entry}
                     focusId={focusId}
                     onOpenFile={onOpenFile}
-                    onOpenFileInNewTab={onOpenFileInNewTab}
                     projectId={projectId}
                     projectRoot={projectRoot}
                   />

@@ -65,10 +65,6 @@ import {
 import { ProjectSettingsPanel } from "./ProjectSettingsPanel";
 import { ProjectDeletionDialog } from "./ProjectDeletionDialog";
 import { ProjectArtifactPreview } from "./filePreview/ArtifactPreview";
-import {
-  ResourceContextMenu,
-  type ResourceContextMenuState,
-} from "./ResourceContextMenu";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import {
@@ -94,22 +90,18 @@ export function ProjectArtifactsView({
   onPreferences,
   onCreateConversation,
   onOpenConversation,
-  onOpenConversationInNewTab,
   onRenameConversation,
   onDeleteConversation,
   statusByAgentId,
   onOpenAgent,
-  onOpenAgentInNewTab,
   onOpenAgentSettings,
   onAgentsDeleted,
   onNewAgent,
   onNavigateTrigger,
-  onOpenTriggerInNewTab,
   onCreateTrigger,
   onProjectDeleted,
   onOpenEngineStatus,
   onOpenArtifact,
-  onOpenArtifactInNewTab,
   onOpenAgentWork,
   conversations,
   initialView,
@@ -126,22 +118,18 @@ export function ProjectArtifactsView({
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onCreateConversation(): void;
   onOpenConversation(conversationId: string): void;
-  onOpenConversationInNewTab?(conversationId: string): void;
   onRenameConversation(conversation: ConversationDto): void;
   onDeleteConversation(conversation: ConversationDto): void;
   statusByAgentId: ReadonlyMap<string, AgentStatus>;
   onOpenAgent(agentId: string): void;
-  onOpenAgentInNewTab?(agentId: string): void;
   onOpenAgentSettings(agentId: string): void;
   onAgentsDeleted(agentIds: string[]): void;
   onNewAgent(managerAgentId?: string): void;
   onNavigateTrigger(route: Route): void;
-  onOpenTriggerInNewTab(route: Route): void;
   onCreateTrigger(): void;
   onProjectDeleted(projectId: string): void;
   onOpenEngineStatus(): void;
   onOpenArtifact(agentId: string, artifactId: string): void;
-  onOpenArtifactInNewTab?(agentId: string, artifactId: string): void;
   onOpenAgentWork(): void;
   conversations: ConversationDto[];
   initialView?: ProjectDetailView;
@@ -163,10 +151,6 @@ export function ProjectArtifactsView({
   }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [projectDeleteOpen, setProjectDeleteOpen] = useState(false);
-  const [artifactMenu, setArtifactMenu] =
-    useState<
-      ResourceContextMenuState<{ agentId: string; artifactId: string }>
-    >();
   useEffect(() => {
     setTab(initialView ?? "overview");
     setOlderArtifacts(undefined);
@@ -390,7 +374,6 @@ export function ProjectArtifactsView({
                 onPreferences={onPreferences}
                 onCreateConversation={onCreateConversation}
                 onOpenConversation={onOpenConversation}
-                onOpenConversationInNewTab={onOpenConversationInNewTab}
                 onRenameConversation={onRenameConversation}
                 onDeleteConversation={onDeleteConversation}
                 onOpenAgentWork={onOpenAgentWork}
@@ -641,17 +624,6 @@ export function ProjectArtifactsView({
                               aria-label={`Open ${label} (${displayPath}) from ${owner}`}
                               title={displayPath}
                               disabled={!canOpen}
-                              onContextMenu={event => {
-                                if (!agent) return;
-                                event.preventDefault();
-                                setArtifactMenu({
-                                  anchor: event.currentTarget,
-                                  resource: {
-                                    agentId: agent.id,
-                                    artifactId: artifact.id,
-                                  },
-                                });
-                              }}
                               onClick={() => {
                                 if (
                                   artifact.previewUrl ||
@@ -782,7 +754,6 @@ export function ProjectArtifactsView({
               healthByAgentId={healthByAgentId}
               progressiveBatchSize={COLLECTION_PROGRESSIVE_BATCH_SIZE}
               onOpenAgent={onOpenAgent}
-              onOpenAgentInNewTab={onOpenAgentInNewTab}
               onOpenAgentSettings={onOpenAgentSettings}
               onAgentsDeleted={(_projectId, agentIds) =>
                 onAgentsDeleted(agentIds)}
@@ -797,7 +768,6 @@ export function ProjectArtifactsView({
               preferences={preferences}
               onPreferences={onPreferences}
               onNavigate={onNavigateTrigger}
-              onOpenInNewTab={onOpenTriggerInNewTab}
               onCreate={onCreateTrigger}
             />
           ) : null}
@@ -810,16 +780,6 @@ export function ProjectArtifactsView({
             />
           ) : null}
         </Stack>
-        <ResourceContextMenu
-          state={artifactMenu}
-          onClose={() => setArtifactMenu(undefined)}
-          onOpenInNewTab={
-            onOpenArtifactInNewTab
-              ? resource =>
-                  onOpenArtifactInNewTab(resource.agentId, resource.artifactId)
-              : undefined
-          }
-        />
       </Box>
       <Dialog
         open={Boolean(previewArtifact)}

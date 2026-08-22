@@ -174,7 +174,6 @@ export function AgentsTab({
   statusByAgentId,
   healthByAgentId,
   onOpenAgent,
-  onOpenAgentInNewTab,
   onOpenAgentSettings,
   onAgentsDeleted,
   onNewAgent,
@@ -214,7 +213,6 @@ export function AgentsTab({
   statusByAgentId: ReadonlyMap<string, AgentStatus>;
   healthByAgentId: ReadonlyMap<string, AgentHealthDto>;
   onOpenAgent(agentId: string): void;
-  onOpenAgentInNewTab?(agentId: string): void;
   onOpenAgentSettings?(agentId: string): void;
   onAgentsDeleted?(projectId: string, agentIds: string[]): void;
   onNewAgent(managerAgentId?: string): void;
@@ -1218,7 +1216,6 @@ export function AgentsTab({
       <ResourceContextMenu
         state={agentMenu}
         onClose={() => setAgentMenu(undefined)}
-        onOpenInNewTab={onOpenAgentInNewTab}
         actions={
           agentMenu
             ? [

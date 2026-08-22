@@ -66,7 +66,7 @@ export function mobileRouteAfterResourceRemoval(
   return undefined;
 }
 
-interface MobileWorkspaceHeaderProps {
+interface WorkspaceAppHeaderProps {
   preferredQuotaProvider?: string;
   engineAvailability: {
     label: string;
@@ -84,7 +84,7 @@ interface MobileWorkspaceHeaderProps {
   onOpenSettings(): void;
 }
 
-export function MobileWorkspaceHeader({
+export function WorkspaceAppHeader({
   preferredQuotaProvider,
   engineAvailability,
   attentionNotifications,
@@ -96,7 +96,7 @@ export function MobileWorkspaceHeader({
   onOpenNotifications,
   onOpenProfile,
   onOpenSettings,
-}: MobileWorkspaceHeaderProps): JSX.Element {
+}: WorkspaceAppHeaderProps): JSX.Element {
   const [overflowAnchor, setOverflowAnchor] = useState<HTMLElement>();
   const mobileWorkspaceActions = useMobileWorkspaceActions();
   const openOverflow = (event: MouseEvent<HTMLElement>) =>
@@ -116,7 +116,7 @@ export function MobileWorkspaceHeader({
       elevation={0}
       sx={theme => ({
         ...workspaceHeaderSurfaceSx(theme),
-        display: { xs: "block", md: "none" },
+        display: "block",
         borderBottom: 1,
         borderColor: "divider",
       })}
@@ -124,7 +124,7 @@ export function MobileWorkspaceHeader({
       <Toolbar
         sx={{
           minHeight: { xs: 52, sm: 56 },
-          px: { xs: 1.5, sm: 3 },
+          px: { xs: 1.5, sm: 2.5, md: 3 },
           pt: "env(safe-area-inset-top)",
         }}
       >
@@ -198,6 +198,17 @@ export function MobileWorkspaceHeader({
             <MoreVertIcon />
           </IconButton>
         </Tooltip>
+        {profile ? (
+          <Tooltip title="Operator profile">
+            <IconButton
+              aria-label="Open operator profile"
+              onClick={onOpenProfile}
+              sx={{ display: { xs: "none", sm: "inline-flex" }, ml: 0.25 }}
+            >
+              <OperatorAvatar profile={profile} size={28} />
+            </IconButton>
+          </Tooltip>
+        ) : null}
       </Toolbar>
       <Menu
         anchorEl={overflowAnchor}
@@ -338,7 +349,6 @@ interface MobileWorkspaceDrawerProps {
   notifications: WorkspaceNotificationDto[];
   onOpenChange(open: boolean): void;
   onNavigate(route: Route): void;
-  onOpenInNewTab?(route: Route): void;
   onCreate(kind: "project" | "chat" | "agent" | "trigger"): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onConversationAction(
@@ -356,7 +366,6 @@ export function MobileWorkspaceDrawer({
   notifications,
   onOpenChange,
   onNavigate,
-  onOpenInNewTab,
   onCreate,
   onPreferences,
   onConversationAction,

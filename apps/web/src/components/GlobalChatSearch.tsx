@@ -49,12 +49,12 @@ function globalSearchKeyboardAction(
   event: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey">,
   activeIndex: number,
   resultCount: number,
-): { activeIndex: number; openInNewTab?: boolean } | undefined {
+): { activeIndex: number; select?: boolean } | undefined {
   if (resultCount <= 0) return undefined;
   if (event.key === "ArrowDown") return { activeIndex: (activeIndex + 1 + resultCount) % resultCount };
   if (event.key === "ArrowUp") return { activeIndex: activeIndex <= 0 ? resultCount - 1 : activeIndex - 1 };
   if (event.key === "Enter" && activeIndex >= 0 && activeIndex < resultCount) {
-    return { activeIndex, openInNewTab: event.metaKey || event.ctrlKey };
+    return { activeIndex, select: true };
   }
   return undefined;
 }
@@ -125,7 +125,7 @@ function SearchResultRow({
   id?: string;
   active: boolean;
   onActive?(): void;
-  onSelect(openInNewTab?: boolean): void;
+  onSelect(): void;
   ariaLabel: string;
   primary: React.ReactNode;
   secondary: React.ReactNode;
@@ -138,7 +138,7 @@ function SearchResultRow({
     tabIndex={-1}
     onMouseMove={onActive}
     onMouseDown={(event) => event.preventDefault()}
-    onClick={(event) => onSelect(event.metaKey || event.ctrlKey)}
+    onClick={() => onSelect()}
     alignItems="flex-start"
     aria-label={ariaLabel}
     sx={{ borderRadius: 1.5, mb: .5 }}
@@ -150,7 +150,7 @@ function SearchResultRow({
 function GlobalSearchResultItem({ result, query, onSelect, active = false, id, onActive }: {
   result: GlobalChatSearchResultDto;
   query: string;
-  onSelect(openInNewTab?: boolean): void;
+  onSelect(): void;
   active?: boolean;
   id?: string;
   onActive?(): void;
@@ -175,7 +175,7 @@ function GlobalSearchResultItem({ result, query, onSelect, active = false, id, o
 
 function RecentChatItem({ recent, onSelect, active = false, id, onActive }: {
   recent: RecentGlobalChatDto;
-  onSelect(openInNewTab?: boolean): void;
+  onSelect(): void;
   active?: boolean;
   id?: string;
   onActive?(): void;
@@ -213,11 +213,10 @@ export function UnavailableGlobalSearchScopeChip({ scope }: { scope: "Projects" 
   </Tooltip>;
 }
 
-export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
+export function GlobalChatSearch({ open, onClose, onSelect }: {
   open: boolean;
   onClose(): void;
   onSelect(selection: GlobalSearchSelection): void;
-  onOpenInNewTab?(selection: GlobalSearchSelection): void;
 }): JSX.Element {
   const theme = useTheme();
   const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
@@ -275,25 +274,24 @@ export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
     setResultLimit(25);
   }, [query, scope]);
   useEffect(() => { setActiveIndex(-1); }, [entryIdentity]);
-  const chooseSelection = (selection: GlobalSearchSelection, openInNewTab = false) => {
-    if (openInNewTab) (onOpenInNewTab ?? onSelect)(selection);
-    else onSelect(selection);
+  const chooseSelection = (selection: GlobalSearchSelection) => {
+    onSelect(selection);
     onClose();
   };
-  const chooseResult = (result: GlobalChatSearchResultDto, openInNewTab = false) => {
-    chooseSelection({ projectId: result.project.id, chat: result.chat, messageId: result.messageId }, openInNewTab);
+  const chooseResult = (result: GlobalChatSearchResultDto) => {
+    chooseSelection({ projectId: result.project.id, chat: result.chat, messageId: result.messageId });
   };
-  const chooseRecent = (recent: RecentGlobalChatDto, openInNewTab = false) => {
-    chooseSelection({ projectId: recent.project.id, chat: recent.chat }, openInNewTab);
+  const chooseRecent = (recent: RecentGlobalChatDto) => {
+    chooseSelection({ projectId: recent.project.id, chat: recent.chat });
   };
   const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     const action = globalSearchKeyboardAction(event, activeIndex, entries.length);
     if (!action) return;
     event.preventDefault();
     setActiveIndex(action.activeIndex);
-    if (action.openInNewTab !== undefined) {
+    if (action.select) {
       const entry = entries[action.activeIndex];
-      if (entry) chooseSelection(entry.selection, action.openInNewTab);
+      if (entry) chooseSelection(entry.selection);
     }
   };
 
@@ -339,7 +337,7 @@ export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
             onActive={() => setActiveIndex(index)}
             result={result}
             query={debouncedQuery}
-            onSelect={(openInNewTab) => chooseResult(result, openInNewTab)}
+            onSelect={() => chooseResult(result)}
           />)}
         </List>
         </Box> : null : <>
@@ -353,7 +351,7 @@ export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
               onActive={() => setActiveIndex(index)}
               result={result}
               query=""
-              onSelect={(openInNewTab) => chooseResult(result, openInNewTab)}
+              onSelect={() => chooseResult(result)}
             />)}
           </List>
         </Box> : null}
@@ -368,7 +366,7 @@ export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
                 active={activeIndex === index}
                 onActive={() => setActiveIndex(index)}
                 recent={recent}
-                onSelect={(openInNewTab) => chooseRecent(recent, openInNewTab)}
+                onSelect={() => chooseRecent(recent)}
               />;
             })}
           </List>

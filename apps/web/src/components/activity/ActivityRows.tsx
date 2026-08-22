@@ -18,8 +18,6 @@ import { copyText } from "../../clipboard";
 import { queryKeys } from "../../queryKeys";
 import { presentProjectPath } from "../../projectPathPresentation";
 import { telemetryElementId } from "../../telemetryFocus";
-import { ResourceContextMenu } from "../ResourceContextMenu";
-import type { ResourceContextMenuState } from "../ResourceContextMenu";
 import { ChatMessageBody } from "../chat/ChatMessages";
 import { FilePreview } from "../filePreview/FilePreview";
 import { recordedArtifactDiff } from "../filePreview/artifactDiff";
@@ -237,17 +235,14 @@ function GroupedActivityRow({
   focusId,
   projectRoot,
   onOpenFile,
-  onOpenFileInNewTab,
 }: {
   entry: GroupedActionEntry;
   focusId?: string;
   projectRoot?: string;
   onOpenFile?(file: ResponseFileActivityDto): void;
-  onOpenFileInNewTab?(file: ResponseFileActivityDto): void;
 }): JSX.Element {
   const [expanded, setExpanded] = useState(entry.id === focusId);
   const [filePreviewOpen, setFilePreviewOpen] = useState(false);
-  const [fileMenu, setFileMenu] = useState<ResourceContextMenuState<ResponseFileActivityDto>>();
   useEffect(() => {
     if (entry.id === focusId) setExpanded(true);
   }, [entry.id, focusId]);
@@ -316,10 +311,6 @@ function GroupedActivityRow({
   return <Box
     id={telemetryElementId("activity", entry.id)}
     tabIndex={focusId === entry.id ? -1 : undefined}
-    onContextMenu={file && onOpenFileInNewTab ? (event) => {
-      event.preventDefault();
-      setFileMenu({ anchor: event.currentTarget, resource: file });
-    } : undefined}
     sx={{ pr: 0.5, borderBottom: 1, borderColor: "divider", "&:last-child": { borderBottom: 0 } }}
   >
     <Stack direction="row" spacing={0.75} sx={{ py: 0.35, alignItems: "center", minWidth: 0 }}>
@@ -406,7 +397,6 @@ function GroupedActivityRow({
       </Typography> : null}
       {result ? <ActivityOutput result={result} label="Output" collapsedLines={2} /> : null}
     </Box> : null}
-    <ResourceContextMenu state={fileMenu} onClose={() => setFileMenu(undefined)} onOpenInNewTab={onOpenFileInNewTab} />
   </Box>;
 }
 
@@ -415,13 +405,11 @@ export function ActionGroupRow({
   focusId,
   projectRoot,
   onOpenFile,
-  onOpenFileInNewTab,
 }: {
   entries: GroupedActionEntry[];
   focusId?: string;
   projectRoot?: string;
   onOpenFile?(file: ResponseFileActivityDto): void;
-  onOpenFileInNewTab?(file: ResponseFileActivityDto): void;
 }): JSX.Element {
   const containsFocus = entries.some((entry) => entry.id === focusId);
   const [expanded, setExpanded] = useState(containsFocus);
@@ -437,7 +425,6 @@ export function ActionGroupRow({
       focusId={focusId}
       projectRoot={projectRoot}
       onOpenFile={onOpenFile}
-      onOpenFileInNewTab={onOpenFileInNewTab}
     />;
   }
   const summary = `Ran ${entries.length} ${entries.length === 1 ? "activity" : "activities"}`;
@@ -468,7 +455,6 @@ export function ActionGroupRow({
           focusId={focusId}
           projectRoot={projectRoot}
           onOpenFile={onOpenFile}
-          onOpenFileInNewTab={onOpenFileInNewTab}
         />)}
     </Box> : null}
   </Box>;
@@ -599,7 +585,6 @@ export function ResponseRow({
   entry,
   focusId,
   onOpenFile,
-  onOpenFileInNewTab,
   onViewAll,
   projectId,
   projectRoot,
@@ -607,7 +592,6 @@ export function ResponseRow({
   entry: Extract<ActivityStreamEntry, { kind: "response" }>;
   focusId?: string;
   onOpenFile?(file: ResponseFileActivityDto): void;
-  onOpenFileInNewTab?(file: ResponseFileActivityDto): void;
   onViewAll?(): void;
   projectId?: string;
   projectRoot?: string;
@@ -626,7 +610,6 @@ export function ResponseRow({
     {entry.segment.fileActivity?.length ? <ResponseFileActivity
       files={entry.segment.fileActivity}
       onOpenFile={onOpenFile}
-      onOpenFileInNewTab={onOpenFileInNewTab}
       onViewAll={onViewAll}
       projectId={projectId}
       projectRoot={projectRoot}

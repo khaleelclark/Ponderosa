@@ -58,7 +58,6 @@ export function ProjectShell({
   navigate,
   browserRequest,
   onBrowserRequestHandled,
-  openInNewTab,
   onResourceDeleted,
   onProjectDeleted,
   onCreate,
@@ -76,7 +75,6 @@ export function ProjectShell({
   navigate(route: Route, options?: { replace?: boolean }): void;
   browserRequest?: ProjectBrowserRequest;
   onBrowserRequestHandled?(requestId: number): void;
-  openInNewTab?(route: Route): void;
   onResourceDeleted?(route: RemovableWorkspaceResourceRoute): void;
   onProjectDeleted(projectId: string): void;
   onCreate(
@@ -258,7 +256,6 @@ export function ProjectShell({
         onOpenAgent={(agentId, view, technicalFocusId) => view
           ? navigate({ kind: "agent", projectId, agentId, view, ...(technicalFocusId ? { technicalFocusId } : {}) })
           : navigate({ kind: "agent", projectId, agentId })}
-        onOpenAgentInNewTab={(agentId) => openInNewTab?.({ kind: "agent", projectId, agentId })}
         onAgentsDeleted={(agentIds) =>
           agentIds.forEach(agentId =>
             onResourceDeleted?.({ kind: "agent", projectId, agentId }),
@@ -281,7 +278,6 @@ export function ProjectShell({
         preferences={preferences}
         onPreferences={onPreferences}
         onNavigateTrigger={(triggerRoute) => navigate(triggerRoute)}
-        onOpenTriggerInNewTab={(triggerRoute) => openInNewTab?.(triggerRoute)}
         onCreateTrigger={(agentId) => onCreate("trigger", {
           projectId,
           conversationId: route.conversationId,
@@ -333,9 +329,7 @@ export function ProjectShell({
           navigate({ kind: "conversation", projectId, conversationId });
         }}
         onOpenArtifact={(artifactId) => openProjectArtifact(route.agentId, artifactId)}
-        onOpenArtifactInNewTab={(artifactId) => openInNewTab?.({ kind: "agent", projectId, agentId: route.agentId, focusTelemetry: { stream: "artifacts", id: artifactId } })}
         onOpenReview={(path) => navigate({ kind: "review", projectId, agentId: route.agentId, ...(path ? { path } : {}) })}
-        onOpenReviewInNewTab={(path) => openInNewTab?.({ kind: "review", projectId, agentId: route.agentId, ...(path ? { path } : {}) })}
         onOpenBrowser={(runId) => navigate({ kind: "browser", projectId, agentId: route.agentId, runId })}
         onNewSubagent={openNewSubagent}
         onCreateTrigger={() => onCreate("trigger", {
@@ -400,7 +394,6 @@ export function ProjectShell({
         statusByAgentId={statusByAgentId}
         healthByAgentId={healthByAgentId}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
-        onOpenAgentInNewTab={(agentId) => openInNewTab?.({ kind: "agent", projectId, agentId })}
         onOpenAgentSettings={(agentId) =>
           navigate({ kind: "agent", projectId, agentId, view: "settings" })}
         onAgentsDeleted={(_deletedProjectId, agentIds) =>
@@ -424,7 +417,6 @@ export function ProjectShell({
       running={running}
       initialPath={route.path}
       onBack={() => navigate({ kind: "agent", projectId, agentId: route.agentId })}
-      onOpenInNewTab={(path) => openInNewTab?.({ kind: "review", projectId, agentId: route.agentId, path })}
     />;
   } else if (route.kind === "workspaceFile") {
     main = <WorkspaceFileView projectId={projectId} path={route.path} onBack={() => navigate({ kind: "project", projectId })} />;
@@ -463,12 +455,10 @@ export function ProjectShell({
         onCreateConversation={() => onCreate("chat", { projectId })}
         conversations={conversations}
         onOpenConversation={openProjectConversation}
-        onOpenConversationInNewTab={openInNewTab ? (conversationId) => openInNewTab({ kind: "conversation", projectId, conversationId }) : undefined}
         onRenameConversation={onRenameConversation}
         onDeleteConversation={onDeleteConversation}
         statusByAgentId={statusByAgentId}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
-        onOpenAgentInNewTab={(agentId) => openInNewTab?.({ kind: "agent", projectId, agentId })}
         onOpenAgentSettings={(agentId) =>
           navigate({ kind: "agent", projectId, agentId, view: "settings" })}
         onAgentsDeleted={(agentIds) =>
@@ -479,14 +469,12 @@ export function ProjectShell({
           ? openNewSubagent(managerAgentId)
           : onCreate("agent", { projectId })}
         onNavigateTrigger={(triggerRoute) => navigate(triggerRoute)}
-        onOpenTriggerInNewTab={(triggerRoute) => openInNewTab?.(triggerRoute)}
         onCreateTrigger={() => onCreate("trigger", { projectId })}
         onProjectDeleted={() => {
           onProjectDeleted(projectId);
         }}
         onOpenEngineStatus={onOpenEngineStatus}
         onOpenArtifact={openProjectArtifact}
-        onOpenArtifactInNewTab={(agentId, artifactId) => openInNewTab?.({ kind: "agent", projectId, agentId, focusTelemetry: { stream: "artifacts", id: artifactId } })}
         onOpenAgentWork={() => navigate({ kind: "projectWork", projectId })}
       />
   } else {

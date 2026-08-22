@@ -1,27 +1,21 @@
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import { Box, Button, Paper, Stack, Typography } from "@mui/material";
 import type { ResponseFileActivityDto } from "@ponderosa/core";
-import { useState } from "react";
 import { presentProjectPath } from "../../projectPathPresentation";
-import { ResourceContextMenu } from "../ResourceContextMenu";
-import type { ResourceContextMenuState } from "../ResourceContextMenu";
 
 export function ResponseFileActivity({
   files,
   onOpenFile,
-  onOpenFileInNewTab,
   onViewAll,
   projectId,
   projectRoot,
 }: {
   files: ResponseFileActivityDto[];
   onOpenFile?(file: ResponseFileActivityDto): void;
-  onOpenFileInNewTab?(file: ResponseFileActivityDto): void;
   onViewAll?(): void;
   projectId?: string;
   projectRoot?: string;
 }): JSX.Element | null {
-  const [fileMenu, setFileMenu] = useState<ResourceContextMenuState<ResponseFileActivityDto>>();
   if (files.length === 0) return null;
   const additions = files.reduce((total, file) => total + (file.additions ?? 0), 0);
   const deletions = files.reduce((total, file) => total + (file.deletions ?? 0), 0);
@@ -50,11 +44,6 @@ export function ResponseFileActivity({
             return <Stack
               key={`${file.sourceSeq}:${file.path}`}
               direction="row"
-              onContextMenu={(event) => {
-                if (!onOpenFileInNewTab) return;
-                event.preventDefault();
-                setFileMenu({ anchor: event.currentTarget, resource: file });
-              }}
               sx={{ alignItems: "center", minWidth: 0 }}
             >
               <Button
@@ -81,6 +70,5 @@ export function ResponseFileActivity({
       </Paper>
       {onViewAll ? <Button size="small" color="inherit" onClick={onViewAll} sx={{ flexShrink: 0, minWidth: 0, px: 0.75 }}>Review All</Button> : null}
     </Stack>
-    <ResourceContextMenu state={fileMenu} onClose={() => setFileMenu(undefined)} onOpenInNewTab={onOpenFileInNewTab} />
   </Box>;
 }

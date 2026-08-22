@@ -1,5 +1,4 @@
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
-import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import { Alert, Box, Button, Chip, CircularProgress, IconButton, Paper, Stack, Tooltip, Typography } from "@mui/material";
 import type { ChangedFileDto } from "@ponderosa/core";
@@ -9,8 +8,6 @@ import { api } from "../../api";
 import { queryKeys } from "../../queryKeys";
 import { presentProjectPath } from "../../projectPathPresentation";
 import { LazySyntaxHighlightedCode } from "../LazySyntaxHighlightedCode";
-import { ResourceContextMenu } from "../ResourceContextMenu";
-import type { ResourceContextMenuState } from "../ResourceContextMenu";
 import { UnifiedDiffViewer } from "../filePreview/FilePreview";
 import { recordedPathDiff } from "../filePreview/artifactDiff";
 import { languageForPath } from "../filePreview/fileTypes";
@@ -40,7 +37,7 @@ export function recordedPreviewLabel(file: Pick<ChangedFileDto, "diffAvailable">
   return file.diffAvailable ? "Text preview recorded" : "Metadata and provenance only";
 }
 
-export function WorkspaceReviewPane({ projectId, projectRoot, agentId, files, running, initialPath, onBack, onOpenInNewTab }: {
+export function WorkspaceReviewPane({ projectId, projectRoot, agentId, files, running, initialPath, onBack }: {
   projectId: string;
   projectRoot: string;
   agentId?: string;
@@ -48,7 +45,6 @@ export function WorkspaceReviewPane({ projectId, projectRoot, agentId, files, ru
   running: boolean;
   initialPath?: string;
   onBack(): void;
-  onOpenInNewTab?(path: string): void;
 }): JSX.Element {
   const workspace = useQuery({
     queryKey: queryKeys.workspaceChanges.project(projectId),
@@ -59,7 +55,6 @@ export function WorkspaceReviewPane({ projectId, projectRoot, agentId, files, ru
   const changes = workspace.data?.changes ?? [];
   const [selectedPath, setSelectedPath] = useState<string | undefined>(initialPath);
   const [reviewMode, setReviewMode] = useState<"diff" | "file">("diff");
-  const [fileMenu, setFileMenu] = useState<ResourceContextMenuState<string>>();
   const lastInitialPath = useRef(initialPath);
   const recordedMode = workspace.data?.isGitRepository === false;
   const reviewEntries = recordedMode ? files : changes;
@@ -149,7 +144,6 @@ export function WorkspaceReviewPane({ projectId, projectRoot, agentId, files, ru
                   <Chip size="small" color="success" variant="outlined" label={`+${recordedTotals.additions}`} />
                   <Chip size="small" color="error" variant="outlined" label={`−${recordedTotals.deletions}`} />
                 </> : null}
-                {activePath && onOpenInNewTab ? <Button size="small" startIcon={<OpenInNewIcon />} onClick={() => onOpenInNewTab(activePath)}>Open in New Tab</Button> : null}
               </Stack>
               {selectedProvenanceQuery.isLoading ? <CircularProgress size={22} />
                 : selectedProvenanceQuery.isError ? <Alert severity="error">Recorded change details could not be loaded. {String(selectedProvenanceQuery.error)}</Alert>
@@ -176,11 +170,6 @@ export function WorkspaceReviewPane({ projectId, projectRoot, agentId, files, ru
                     aria-label={`Review ${presentedChangePath}`}
                     title={presentedChangePath}
                     onClick={() => setSelectedPath(change.path)}
-                    onContextMenu={(event) => {
-                      if (!onOpenInNewTab) return;
-                      event.preventDefault();
-                      setFileMenu({ anchor: event.currentTarget, resource: change.path });
-                    }}
                     variant={change.path === activePath ? "contained" : "text"}
                     color={change.path === activePath ? "primary" : "inherit"}
                     sx={{ borderRadius: 0, justifyContent: "flex-start", textAlign: "left", px: 1.5, py: 1, minHeight: 48 }}
@@ -204,7 +193,6 @@ export function WorkspaceReviewPane({ projectId, projectRoot, agentId, files, ru
                   {selectedChange?.unstaged ? <Chip size="small" label="Unstaged" color="warning" /> : null}
                   {selectedChange?.untracked ? <Chip size="small" label="Untracked" color="info" /> : null}
                   {selectedProvenance ? <Chip size="small" label={`${selectedProvenance.executionCount} agent run${selectedProvenance.executionCount === 1 ? "" : "s"}`} /> : null}
-                  {activePath && onOpenInNewTab ? <Button size="small" color="inherit" startIcon={<OpenInNewIcon />} onClick={() => onOpenInNewTab(activePath)}>Open in New Tab</Button> : null}
                 </Stack>
                 <Stack direction="row" spacing={0.5} sx={{ mb: 1 }}>
                   <Button size="small" variant={reviewMode === "diff" ? "contained" : "outlined"} onClick={() => setReviewMode("diff")}>Diff</Button>
@@ -244,6 +232,5 @@ export function WorkspaceReviewPane({ projectId, projectRoot, agentId, files, ru
                     </> : <Alert severity="info">Git has no textual diff for this change. It may be binary or metadata-only.</Alert>}
               </Box>
             </Box>}
-    <ResourceContextMenu state={fileMenu} onClose={() => setFileMenu(undefined)} onOpenInNewTab={onOpenInNewTab} />
   </Box>;
 }

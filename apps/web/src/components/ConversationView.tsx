@@ -75,7 +75,6 @@ import { useConversationHistory } from "./useConversationHistory";
 import { useConversationMessagingController } from "./useConversationMessagingController";
 import { MasterRespondingIndicator } from "./ConversationComposerStatus";
 import {
-  agentOpeningAgentId,
   resolveMessageMentionText,
 } from "./chat/ChatMessages";
 import { ConversationFilesResults } from "./ConversationFilesResults";
@@ -99,7 +98,6 @@ export function ConversationView({
   onOpenProject,
   onOpenProjectBrowser,
   onOpenAgent,
-  onOpenAgentInNewTab,
   onAgentsDeleted,
   onOpenReview,
   onOpenAgentWork,
@@ -109,7 +107,6 @@ export function ConversationView({
   preferences,
   onPreferences,
   onNavigateTrigger,
-  onOpenTriggerInNewTab,
   onCreateTrigger,
   onDeleted,
 }: {
@@ -133,7 +130,6 @@ export function ConversationView({
     view?: "technical" | "settings",
     technicalFocusId?: string,
   ): void;
-  onOpenAgentInNewTab?(agentId: string): void;
   onAgentsDeleted(agentIds: string[]): void;
   onOpenReview?(agentId: string): void;
   onOpenAgentWork(focusId?: string): void;
@@ -143,7 +139,6 @@ export function ConversationView({
   preferences: WorkspacePreferencesDto;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onNavigateTrigger(route: Route): void;
-  onOpenTriggerInNewTab(route: Route): void;
   onCreateTrigger(agentId?: string): void;
   onDeleted(): void;
 }): JSX.Element {
@@ -188,6 +183,7 @@ export function ConversationView({
     text: string;
   }>();
   const [commandTargetHandle, setCommandTargetHandle] = useState<string>();
+  const [commandTargetAgentId, setCommandTargetAgentId] = useState<string>();
   const [memberSearch, setMemberSearch] = useState("");
   // The runtime shown by the composer. With one exact Agent destination this
   // mirrors that Agent's durable next-Run selection; otherwise it is the
@@ -263,7 +259,7 @@ export function ConversationView({
         limit: 100,
         search: commandTargetHandle?.replaceAll("-", " "),
       }),
-    enabled: Boolean(commandTargetHandle),
+    enabled: Boolean(commandTargetHandle && !commandTargetAgentId),
     staleTime: 30_000,
   });
   const commandTargetAgents = useMemo(() => {
@@ -278,8 +274,14 @@ export function ConversationView({
         commandTargetHandle.toLocaleLowerCase(),
     );
   }, [commandTargetHandle, commandTargetMembersQuery.data?.items, conversationAgents]);
+  const structurallySelectedCommandTarget = commandTargetAgentId
+    ? agents.find(
+        agent => agent.id === commandTargetAgentId && !agent.archived,
+      )
+    : undefined;
   const commandTargetAgent =
-    commandTargetAgents.length === 1 ? commandTargetAgents[0] : undefined;
+    structurallySelectedCommandTarget ??
+    (commandTargetAgents.length === 1 ? commandTargetAgents[0] : undefined);
   const commandCapabilitiesQuery = useQuery({
     queryKey: queryKeys.engines.capabilitySelection(
       conversation?.projectId,
@@ -635,18 +637,9 @@ export function ConversationView({
     [agentTitle],
   );
   const lastContinuationDestination = useMemo(() => {
-    const freshAgentIds = new Set(messages.flatMap(message => {
-      const agentId = agentOpeningAgentId(message.communicationEventId);
-      return agentId ? [agentId] : [];
-    }));
     const message = [...messages]
       .reverse()
-      .find(candidate =>
-        candidate.communicationIntent === "user_dm" ||
-        (candidate.communicationIntent === "broadcast" &&
-          candidate.authorAgentId !== undefined &&
-          freshAgentIds.has(candidate.authorAgentId)),
-      );
+      .find(candidate => candidate.authorAgentId !== undefined);
     const agentId = message?.authorAgentId ?? (
       message?.directMessageAgents?.length === 1
         ? message.directMessageAgents[0]!.id
@@ -658,7 +651,7 @@ export function ConversationView({
     return agent && message
       ? {
           agent,
-          selectionKey: `${agent.id}:${agent.title}`,
+          selectionKey: `${agent.id}:${message.id}`,
         }
       : undefined;
   }, [agents, messages]);
@@ -1137,7 +1130,6 @@ export function ConversationView({
             statusByAgentId={statusByAgentId}
             healthByAgentId={healthByAgentId}
             onOpenAgent={agentId => onOpenAgent(agentId)}
-            onOpenAgentInNewTab={onOpenAgentInNewTab}
             onOpenAgentSettings={agentId =>
               onOpenAgent(agentId, "settings")}
             onAgentsDeleted={(_projectId, agentIds) =>
@@ -1178,7 +1170,6 @@ export function ConversationView({
             preferences={preferences}
             onPreferences={onPreferences}
             onNavigate={onNavigateTrigger}
-            onOpenInNewTab={onOpenTriggerInNewTab}
             onCreate={() =>
               onCreateTrigger(
                 conversationAgents.length === 1
@@ -1293,6 +1284,7 @@ export function ConversationView({
             mentionBindings={mentionBindings}
             commands={composerCommands}
             onCommandTargetHandleChange={setCommandTargetHandle}
+            onCommandTargetAgentIdChange={setCommandTargetAgentId}
             capabilities={composerRuntime.capabilities}
             onCapabilitiesOpen={() =>
               onRefreshCapabilities({ engineId: activeEngine?.id, model })
