@@ -7,7 +7,10 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import "./global.css";
+import { installServiceWorkerReloadGuard } from "./serviceWorkerReload";
 import { COLOR_MODE_STORAGE_KEY, createPonderosaTheme, loadColorMode, type ColorMode } from "./theme";
+
+installServiceWorkerReloadGuard();
 
 const queryClient = new QueryClient({
   defaultOptions: {

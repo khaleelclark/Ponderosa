@@ -51,7 +51,10 @@ export default defineConfig({
         defer: true,
         features: {
           autoSkipWaiting: true,
-          autoReloadPage: true,
+          // Reloads are fenced by deployed build and browser tab in
+          // serviceWorkerReload.ts. The generated unconditional handler can
+          // turn repeated controller changes into a refresh loop.
+          autoReloadPage: false,
         },
       },
       sw: {
