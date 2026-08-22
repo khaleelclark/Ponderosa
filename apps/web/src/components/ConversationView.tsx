@@ -183,6 +183,7 @@ export function ConversationView({
     text: string;
   }>();
   const [commandTargetHandle, setCommandTargetHandle] = useState<string>();
+  const [commandTargetAgentId, setCommandTargetAgentId] = useState<string>();
   const [memberSearch, setMemberSearch] = useState("");
   // The runtime shown by the composer. With one exact Agent destination this
   // mirrors that Agent's durable next-Run selection; otherwise it is the
@@ -258,7 +259,7 @@ export function ConversationView({
         limit: 100,
         search: commandTargetHandle?.replaceAll("-", " "),
       }),
-    enabled: Boolean(commandTargetHandle),
+    enabled: Boolean(commandTargetHandle && !commandTargetAgentId),
     staleTime: 30_000,
   });
   const commandTargetAgents = useMemo(() => {
@@ -273,8 +274,14 @@ export function ConversationView({
         commandTargetHandle.toLocaleLowerCase(),
     );
   }, [commandTargetHandle, commandTargetMembersQuery.data?.items, conversationAgents]);
+  const structurallySelectedCommandTarget = commandTargetAgentId
+    ? agents.find(
+        agent => agent.id === commandTargetAgentId && !agent.archived,
+      )
+    : undefined;
   const commandTargetAgent =
-    commandTargetAgents.length === 1 ? commandTargetAgents[0] : undefined;
+    structurallySelectedCommandTarget ??
+    (commandTargetAgents.length === 1 ? commandTargetAgents[0] : undefined);
   const commandCapabilitiesQuery = useQuery({
     queryKey: queryKeys.engines.capabilitySelection(
       conversation?.projectId,
@@ -644,7 +651,7 @@ export function ConversationView({
     return agent && message
       ? {
           agent,
-          selectionKey: `${agent.id}:${agent.title}`,
+          selectionKey: `${agent.id}:${message.id}`,
         }
       : undefined;
   }, [agents, messages]);
@@ -1277,6 +1284,7 @@ export function ConversationView({
             mentionBindings={mentionBindings}
             commands={composerCommands}
             onCommandTargetHandleChange={setCommandTargetHandle}
+            onCommandTargetAgentIdChange={setCommandTargetAgentId}
             capabilities={composerRuntime.capabilities}
             onCapabilitiesOpen={() =>
               onRefreshCapabilities({ engineId: activeEngine?.id, model })

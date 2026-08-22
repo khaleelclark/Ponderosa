@@ -10,9 +10,8 @@
 //   /projects
 //   /agents
 //
-// Lightweight navigation preferences (the last selected project and open
-// workspace-tab routes) are persisted locally; all real data still comes from
-// the server.
+// Lightweight navigation preferences, such as the last selected project, are
+// persisted locally; all real data still comes from the server.
 
 import { useCallback, useEffect, useState } from "react";
 import type { AgentTelemetryStream, ConversationChannel } from "@ponderosa/core";

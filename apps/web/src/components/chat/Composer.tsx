@@ -131,6 +131,7 @@ export function Composer({
   removeTextRequest,
   onMentionedHandlesChange,
   onCommandTargetHandleChange,
+  onCommandTargetAgentIdChange,
   defaultDestination,
 }: ComposerProps): JSX.Element {
   const [text, setTextState] = useState(() =>
@@ -374,9 +375,22 @@ export function Composer({
   const commandTargetHandle =
     explicitCommandTargetHandle ??
     (destinationMode === "fixed" ? defaultDestination?.handle : undefined);
+  const commandTargetAgentId =
+    destinationMode === "project-chat" &&
+      activeDefaultDestination?.binding &&
+      projectDestinations.length === 1 &&
+      projectDestinations[0]?.handle.toLocaleLowerCase() ===
+        activeDefaultDestination.handle.toLocaleLowerCase()
+      ? activeDefaultDestination.binding.agentId
+      : destinationMode === "fixed"
+        ? defaultDestination?.binding?.agentId
+        : undefined;
   useEffect(() => {
     onCommandTargetHandleChange?.(commandTargetHandle);
   }, [commandTargetHandle, onCommandTargetHandleChange]);
+  useEffect(() => {
+    onCommandTargetAgentIdChange?.(commandTargetAgentId);
+  }, [commandTargetAgentId, onCommandTargetAgentIdChange]);
   const destinationError =
     newAgentSelected &&
     (hasBroadcastDestination ||
@@ -628,7 +642,15 @@ export function Composer({
       setActiveDefaultDestination(undefined);
       return;
     }
-    if (previous?.selectionKey === defaultDestination.selectionKey) return;
+    if (previous?.selectionKey === defaultDestination.selectionKey) {
+      appliedDefaultDestination.current = defaultDestination;
+      setActiveDefaultDestination(current =>
+        current?.selectionKey === defaultDestination.selectionKey
+          ? defaultDestination
+          : current,
+      );
+      return;
+    }
     appliedDefaultDestination.current = defaultDestination;
     let nextText = textRef.current;
     if (previous && hasComposerDestination(nextText, previous.handle)) {
@@ -649,6 +671,7 @@ export function Composer({
     setActiveDefaultDestination(mayPopulate ? defaultDestination : undefined);
   }, [
     conversationDraftId,
+    defaultDestination?.binding?.currentTitle,
     defaultDestination?.handle,
     defaultDestination?.selectionKey,
     destinationMode,
