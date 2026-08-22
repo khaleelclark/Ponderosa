@@ -9,6 +9,7 @@ import {
 } from "./browser-session-manager.js";
 import type { ActiveRun } from "./app-contracts.js";
 import type { ProviderProcessAuthority } from "./provider-process-authority.js";
+import { BrowserProfileAuthority } from "./browser-profile-authority.js";
 
 interface BrowserAuthorityContext {
   dataDir: string;
@@ -29,10 +30,10 @@ export function durableBrowserDriverFactory(
   factory: BrowserDriverFactory,
   register: (handle: Parameters<NonNullable<Parameters<BrowserDriverFactory>[2]>>[0], sessionId: string) => void,
 ): BrowserDriverFactory {
-  return (sessionId, onConsole, onSpawned, onPageEvent) => factory(sessionId, onConsole, (handle, options) => {
+  return (sessionId, onConsole, onSpawned, onPageEvent, launch) => factory(sessionId, onConsole, (handle, options) => {
     if (handle.processIdentity) register(handle, sessionId);
     onSpawned?.(handle, options);
-  }, onPageEvent);
+  }, onPageEvent, launch);
 }
 
 export function createBrowserAuthority(context: BrowserAuthorityContext) {
@@ -53,6 +54,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
       purpose: `browser session ${sessionId}`,
     }),
   );
+  const browserProfiles = new BrowserProfileAuthority(dataDir);
 
   const resolveUploadArtifact = async (
     scope: BrowserScope,
@@ -123,6 +125,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
       });
     },
     resolveUploadArtifact,
+    browserProfiles,
   );
   const projectBrowserGrants = new Map<string, { agentId: string; runId: string }>();
   const projectBrowserSessions = new BrowserSessionManager(
@@ -170,6 +173,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
       });
     },
     resolveUploadArtifact,
+    browserProfiles,
   );
 
   function browserScopeForRun(agentId: string, run: ActiveRun): BrowserScope | undefined {
@@ -244,6 +248,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
 
   return {
     browserScopeForRun,
+    browserProfiles,
     browserSessions,
     closeRunBrowser,
     projectBrowserDto,

@@ -1,10 +1,13 @@
 import type {
+  CreateBrowserProfileRequest,
   BrowserControlRequest,
   BrowserOperatorInputRequest,
   ProjectBrowserControlRequest,
   ProjectBrowserNavigateRequest,
   ProjectBrowserSessionDto,
   BrowserUploadRequest,
+  UpdateBrowserAgentPreferenceRequest,
+  UpdateBrowserProfileRequest,
 } from "@ponderosa/core";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import {
@@ -12,6 +15,7 @@ import {
   type BrowserScope,
   type BrowserSessionManager,
 } from "../browser-session-manager.js";
+import { BrowserProfileError, type BrowserProfileAuthority } from "../browser-profile-authority.js";
 
 export type ProjectBrowserGrant = { agentId: string; runId: string };
 
@@ -21,9 +25,11 @@ interface ActiveProjectBrowserController {
 }
 
 interface BrowserRoutesContext {
+  browserProfiles: BrowserProfileAuthority;
   browserSessions: BrowserSessionManager;
   projectBrowserSessions: BrowserSessionManager;
   projectExists(projectId: string): boolean;
+  agentExists(projectId: string, agentId: string): boolean;
   projectDeletionInProgress(projectId: string): boolean;
   operatorBrowserScope(params: BrowserRouteParams): BrowserScope;
   projectBrowserScope(projectId: string, grant?: ProjectBrowserGrant): BrowserScope;
@@ -40,6 +46,9 @@ interface BrowserRoutesContext {
 type BrowserRouteParams = { projectId: string; id: string; runId: string };
 
 function browserRouteError(reply: FastifyReply, error: unknown) {
+  if (error instanceof BrowserProfileError) {
+    return reply.code(error.statusCode).send({ error: error.message });
+  }
   if (error instanceof BrowserSessionError) {
     return reply.code(error.statusCode).send({
       error: error.message,
@@ -55,8 +64,10 @@ export function registerBrowserRoutes(
 ): void {
   const {
     browserSessions,
+    browserProfiles,
     projectBrowserSessions,
     projectExists,
+    agentExists,
     projectDeletionInProgress,
     operatorBrowserScope,
     projectBrowserScope,
@@ -66,6 +77,62 @@ export function registerBrowserRoutes(
     deleteProjectBrowserGrant,
     activeProjectBrowserController,
   } = context;
+
+  const browserProfilesRoute = "/api/projects/:projectId/browser-profiles";
+  app.get<{ Params: { projectId: string } }>(browserProfilesRoute, async (request, reply) => {
+    if (!projectExists(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+    try { return browserProfiles.listProfiles(request.params.projectId); }
+    catch (error) { return browserRouteError(reply, error); }
+  });
+  app.post<{ Params: { projectId: string }; Body: CreateBrowserProfileRequest }>(browserProfilesRoute, async (request, reply) => {
+    if (!projectExists(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+    if (projectDeletionInProgress(request.params.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
+    if (typeof request.body?.name !== "string") return reply.code(400).send({ error: "name is required" });
+    try { return reply.code(201).send(browserProfiles.createProfile(request.params.projectId, request.body.name)); }
+    catch (error) { return browserRouteError(reply, error); }
+  });
+  app.put<{ Params: { projectId: string; profileId: string }; Body: UpdateBrowserProfileRequest }>(
+    browserProfilesRoute + "/:profileId",
+    async (request, reply) => {
+      if (!projectExists(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+      if (projectDeletionInProgress(request.params.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
+      if (typeof request.body?.name !== "string") return reply.code(400).send({ error: "name is required" });
+      try { return browserProfiles.renameProfile(request.params.projectId, request.params.profileId, request.body.name); }
+      catch (error) { return browserRouteError(reply, error); }
+    },
+  );
+  app.delete<{ Params: { projectId: string; profileId: string } }>(
+    browserProfilesRoute + "/:profileId",
+    async (request, reply) => {
+      if (!projectExists(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+      if (projectDeletionInProgress(request.params.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
+      try {
+        browserProfiles.deleteProfile(request.params.projectId, request.params.profileId);
+        return reply.code(204).send();
+      } catch (error) { return browserRouteError(reply, error); }
+    },
+  );
+  const agentBrowserPreferenceRoute = "/api/projects/:projectId/agents/:agentId/browser-preference";
+  app.get<{ Params: { projectId: string; agentId: string } }>(agentBrowserPreferenceRoute, async (request, reply) => {
+    if (!agentExists(request.params.projectId, request.params.agentId)) return reply.code(404).send({ error: "agent not found" });
+    try { return browserProfiles.preference(request.params.projectId, request.params.agentId); }
+    catch (error) { return browserRouteError(reply, error); }
+  });
+  app.put<{ Params: { projectId: string; agentId: string }; Body: UpdateBrowserAgentPreferenceRequest }>(
+    agentBrowserPreferenceRoute,
+    async (request, reply) => {
+      if (!agentExists(request.params.projectId, request.params.agentId)) return reply.code(404).send({ error: "agent not found" });
+      if (projectDeletionInProgress(request.params.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
+      try {
+        return browserProfiles.setPreference(
+          request.params.projectId,
+          request.params.agentId,
+          request.body?.mode,
+          request.body?.profileId,
+        );
+      } catch (error) { return browserRouteError(reply, error); }
+    },
+  );
   const projectBrowserRoute = "/api/projects/:projectId/browser";
 
   app.get<{ Params: { projectId: string } }>(projectBrowserRoute, async (request, reply) => {

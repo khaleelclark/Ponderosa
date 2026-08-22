@@ -108,6 +108,10 @@ export type AgentEvent =
       action: BrowserActionKind;
       summary: string;
       url?: string;
+      /** Agent-declared external side effect for operator audit. */
+      consequence?: "submission" | "purchase" | "message" | "account_change" | "other";
+      /** Caller-generated retry identity; repeated attempts stay distinguishable. */
+      attemptId?: string;
     }
   | {
       type: "browser_console";

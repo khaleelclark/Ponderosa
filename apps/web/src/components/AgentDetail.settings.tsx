@@ -1,16 +1,23 @@
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import {
   Alert,
   Box,
   Button,
   Chip,
   FormControlLabel,
+  FormControl,
+  IconButton,
+  InputLabel,
   Link,
+  MenuItem,
   Paper,
   Stack,
   Switch,
+  Select,
+  TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
@@ -20,6 +27,110 @@ import type {
   ConversationDto,
   EngineDto,
 } from "@ponderosa/core";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+import { api } from "../api";
+import { queryKeys } from "../queryKeys";
+
+function AgentBrowserProfileSettings({ agent }: { agent: AgentDto }): JSX.Element {
+  const queryClient = useQueryClient();
+  const [newProfileName, setNewProfileName] = useState("");
+  const profiles = useQuery({
+    queryKey: queryKeys.agentBrowsers.profiles(agent.projectId),
+    queryFn: () => api.listBrowserProfiles(agent.projectId),
+  });
+  const preference = useQuery({
+    queryKey: queryKeys.agentBrowsers.preference(agent.projectId, agent.id),
+    queryFn: () => api.getBrowserAgentPreference(agent.projectId, agent.id),
+  });
+  const updatePreference = useMutation({
+    mutationFn: (value: string) => api.updateBrowserAgentPreference(
+      agent.projectId,
+      agent.id,
+      value === "disposable" ? { mode: "disposable" } : { mode: "trusted", profileId: value },
+    ),
+    onSuccess: value => queryClient.setQueryData(
+      queryKeys.agentBrowsers.preference(agent.projectId, agent.id),
+      value,
+    ),
+  });
+  const createProfile = useMutation({
+    mutationFn: (name: string) => api.createBrowserProfile(agent.projectId, { name }),
+    onSuccess: created => {
+      setNewProfileName("");
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agentBrowsers.profiles(agent.projectId) });
+      updatePreference.mutate(created.id);
+    },
+  });
+  const deleteProfile = useMutation({
+    mutationFn: (profileId: string) => api.deleteBrowserProfile(agent.projectId, profileId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agentBrowsers.profiles(agent.projectId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agentBrowsers.preference(agent.projectId, agent.id) });
+    },
+  });
+  const selected = preference.data?.mode === "trusted" && preference.data.profileId
+    ? preference.data.profileId
+    : "disposable";
+  const error = updatePreference.error ?? createProfile.error ?? deleteProfile.error ?? profiles.error ?? preference.error;
+  return (
+    <Paper variant="outlined" sx={{ p: 2 }}>
+      <Typography variant="subtitle1" fontWeight={800}>Hosted Browser</Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+        Disposable profiles start clean. Trusted profiles retain cookies, logins, and site storage on this Ponderosa host and are leased to only one browser at a time.
+      </Typography>
+      <FormControl fullWidth size="small" disabled={preference.isLoading || updatePreference.isPending}>
+        <InputLabel id={`browser-profile-${agent.id}`}>Browser profile</InputLabel>
+        <Select
+          labelId={`browser-profile-${agent.id}`}
+          label="Browser profile"
+          value={selected}
+          onChange={event => updatePreference.mutate(event.target.value)}
+        >
+          <MenuItem value="disposable">Disposable · clean each Run</MenuItem>
+          {(profiles.data ?? []).map(profile => (
+            <MenuItem key={profile.id} value={profile.id}>Trusted · {profile.name}</MenuItem>
+          ))}
+        </Select>
+      </FormControl>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 1.5 }}>
+        <TextField
+          size="small"
+          fullWidth
+          label="New trusted profile"
+          value={newProfileName}
+          onChange={event => setNewProfileName(event.target.value)}
+          inputProps={{ maxLength: 80 }}
+        />
+        <Button
+          variant="outlined"
+          disabled={!newProfileName.trim() || createProfile.isPending}
+          onClick={() => createProfile.mutate(newProfileName)}
+        >
+          Create and use
+        </Button>
+      </Stack>
+      {(profiles.data ?? []).length ? (
+        <Stack spacing={0.5} sx={{ mt: 1.5 }}>
+          {(profiles.data ?? []).map(profile => (
+            <Stack key={profile.id} direction="row" alignItems="center" spacing={1}>
+              <Typography variant="body2" sx={{ flex: 1 }}>{profile.name}</Typography>
+              <IconButton
+                size="small"
+                aria-label={`Delete ${profile.name}`}
+                disabled={deleteProfile.isPending}
+                onClick={() => deleteProfile.mutate(profile.id)}
+              >
+                <DeleteOutlineIcon fontSize="small" />
+              </IconButton>
+            </Stack>
+          ))}
+        </Stack>
+      ) : null}
+      {error ? <Alert severity="error" sx={{ mt: 1.5 }}>{String(error)}</Alert> : null}
+    </Paper>
+  );
+}
 
 interface RuntimeModelChoice {
   id: string;
@@ -139,6 +250,7 @@ export function AgentSettingsPane({
           Manage Chat Assignments
         </Button>
       </Paper>
+      <AgentBrowserProfileSettings agent={agent} />
       <Paper variant="outlined" sx={{ p: 2 }}>
         <Typography variant="subtitle1" fontWeight={800}>
           Organization And Automatic Child Management

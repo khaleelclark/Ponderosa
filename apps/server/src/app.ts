@@ -402,6 +402,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const contextCursors = new ContextCursorStore(opts.dataDir);
   const {
     browserScopeForRun,
+    browserProfiles,
     browserSessions,
     closeRunBrowser,
     projectBrowserDto,
@@ -742,6 +743,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     createOperationalNotification,
     resolveOperationalNotification,
     providerProcessAuthority,
+    browserProfiles,
   });
   const coordinationV3Scheduler = createCoordinationScheduler(app, {
     opts,
@@ -1039,6 +1041,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     commitAgentDeletion,
     contextCursors,
     browserScopeForRun,
+    browserProfiles,
     browserSessions,
     closeRunBrowser,
     projectBrowserDto,

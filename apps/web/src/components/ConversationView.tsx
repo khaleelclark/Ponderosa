@@ -989,8 +989,13 @@ export function ConversationView({
                         }
                         sx={{ mb: 1.5 }}
                       >
-                        {agentTitle} is using the browser
-                        {session.title ? ` · ${session.title}` : ""}.
+                        {session.status === "opening"
+                          ? `${agentTitle}'s browser is ${session.queuePosition ? `queued at position ${session.queuePosition}` : "opening"}`
+                          : `${agentTitle} is using the browser${session.title ? ` · ${session.title}` : ""}`}
+                        {session.profileMode === "trusted" && session.profileName
+                          ? ` · Trusted profile: ${session.profileName}`
+                          : " · Disposable profile"}
+                        {session.controlOwner === "operator" ? " · Operator has control" : ""}.
                       </Alert>
                     );
                   })}

@@ -122,6 +122,12 @@ export function AgentDetail({
   const queryClient = useQueryClient();
   const agentQuery = useAgent(agentId);
   const notificationsQuery = useNotifications();
+  const activeBrowsersQuery = useQuery({
+    queryKey: queryKeys.agentBrowsers.agent(projectId, agentId),
+    queryFn: () => api.listActiveBrowserSessions(projectId),
+    retry: false,
+    refetchInterval: 2_500,
+  });
   const [olderMessages, setOlderMessages] = useState<MessagePageState>();
   const [olderTelemetry, setOlderTelemetry] = useState<TelemetryPageState>({});
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -812,6 +818,7 @@ export function AgentDetail({
     if (file.artifactId) onOpenArtifact(file.artifactId);
     else onOpenReview(file.path);
   };
+  const activeBrowser = activeBrowsersQuery.data?.find(session => session.agentId === agentId);
   const settingsPane = (
     <AgentDetailSettingsController
       agent={detail.agent}
@@ -928,6 +935,28 @@ export function AgentDetail({
           onViewChange?.(value);
         }}
       />
+
+      {activeBrowser ? (
+        <Alert
+          severity="info"
+          action={
+            <Button color="inherit" size="small" onClick={() => onOpenBrowser(activeBrowser.runId)}>
+              View Browser
+            </Button>
+          }
+          sx={{ mx: { xs: 1, sm: 2 }, mt: 1 }}
+        >
+          {activeBrowser.status === "opening"
+            ? activeBrowser.queuePosition
+              ? `Browser queued · position ${activeBrowser.queuePosition}`
+              : "Browser is opening"
+            : `Browser active${activeBrowser.title ? ` · ${activeBrowser.title}` : ""}`}
+          {activeBrowser.profileMode === "trusted" && activeBrowser.profileName
+            ? ` · Trusted profile: ${activeBrowser.profileName}`
+            : " · Disposable profile"}
+          {activeBrowser.controlOwner === "operator" ? " · Operator has control" : ""}
+        </Alert>
+      ) : null}
 
       <AgentDetailPanels
         tab={tab}

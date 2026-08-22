@@ -190,6 +190,12 @@ export const queryKeys = {
       ["agent-browsers", projectId, conversationId] as const,
     session: (projectId: string, agentId: string, runId: string) =>
       ["agent-browser", projectId, agentId, runId] as const,
+    agent: (projectId: string, agentId: string) =>
+      ["agent-browsers", projectId, "agent", agentId] as const,
+    profiles: (projectId: string) =>
+      ["browser-profiles", projectId] as const,
+    preference: (projectId: string, agentId: string) =>
+      ["browser-preference", projectId, agentId] as const,
   },
   hostFolderBrowser: {
     all: ["host-folder-browser"] as const,

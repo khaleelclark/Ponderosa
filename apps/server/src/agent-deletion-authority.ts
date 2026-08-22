@@ -23,6 +23,7 @@ import type { createOperationalNotifications } from "./operational-notifications
 import { cleanupAgentRuntimeAttachments } from "./runtime-attachments.js";
 import type { RuntimeElicitationBroker } from "./runtime-elicitation-broker.js";
 import type { ProviderProcessAuthority } from "./provider-process-authority.js";
+import type { BrowserProfileAuthority } from "./browser-profile-authority.js";
 
 type OperationalNotifications = ReturnType<typeof createOperationalNotifications>;
 
@@ -65,6 +66,7 @@ type AgentDeletionAuthorityContext =
     notifyScheduler(): void;
     closeRunBrowser(agentId: string, run: ActiveRun, reason: string): Promise<void>;
     providerProcessAuthority: ProviderProcessAuthority;
+    browserProfiles: BrowserProfileAuthority;
   };
 
 export function createAgentDeletionAuthority(
@@ -95,6 +97,7 @@ export function createAgentDeletionAuthority(
     createOperationalNotification,
     resolveOperationalNotification,
     providerProcessAuthority,
+    browserProfiles,
   } = context;
 
   const cancelAgentDecisions = (agentIds: Iterable<string>): void => {
@@ -325,6 +328,7 @@ export function createAgentDeletionAuthority(
       // provider process group can still act with its authority.
       await drainProviderRuntimeAuthority("Agent deletion", deletingSet);
       await providerProcessAuthority.terminateAgents(deletingSet, "Agent deletion");
+      expectedAgentIds.forEach((agentId) => browserProfiles.removeAgent(agentId));
       committed = store.deleteAgentSubtrees(
         current.rootAgentIds,
         previewHash,

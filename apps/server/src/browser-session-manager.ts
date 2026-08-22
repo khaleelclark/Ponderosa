@@ -25,6 +25,12 @@ import type {
 } from "./chrome-cdp-driver.js";
 import { browserRuntimeCapabilities, BrowserDriverActionError } from "./chrome-cdp-driver.js";
 import {
+  BrowserProfileError,
+  type BrowserProfileAuthority,
+  type BrowserLaunchDescription,
+  type BrowserLaunchLease,
+} from "./browser-profile-authority.js";
+import {
   boundBrowserSnapshot,
   BrowserSessionError,
   redactBrowserText,
@@ -314,6 +320,8 @@ interface ManagedSession {
   replayUrl?: string;
   lastFrame?: { body: Buffer; revision: number; capturedAt: number };
   frameCapture?: Promise<{ body: Buffer; revision: number }>;
+  launchAbort: AbortController;
+  launchLease?: BrowserLaunchLease;
 }
 
 interface SpawnPublication {
@@ -359,10 +367,56 @@ export class BrowserSessionManager {
     private readonly createDriver: BrowserDriverFactory,
     private readonly emit: (scope: BrowserScope, event: BrowserAuditEvent) => void | Promise<void>,
     private readonly resolveUploadArtifact?: BrowserUploadArtifactResolver,
+    private readonly launchAuthority?: Pick<BrowserProfileAuthority, "description" | "acquire">,
   ) {
     // Start residue discovery at authority creation so prior recovery
     // directories are visible and draining before the next browser opens.
     void recoverBrowserResidue(this.dataDir).catch(() => undefined);
+  }
+
+  private launchDescription(scope: BrowserScope): BrowserLaunchDescription {
+    try {
+      return this.launchAuthority?.description(scope) ?? { profileMode: "disposable" };
+    } catch (error) {
+      if (error instanceof BrowserProfileError) {
+        throw new BrowserSessionError(error.message, error.statusCode);
+      }
+      throw error;
+    }
+  }
+
+  private async acquireLaunch(
+    scope: BrowserScope,
+    session: ManagedSession,
+    description: BrowserLaunchDescription,
+  ): Promise<BrowserLaunchLease | undefined> {
+    if (!this.launchAuthority) return undefined;
+    const lease = await this.launchAuthority.acquire(
+      scope,
+      session.dto.id,
+      description,
+      session.launchAbort.signal,
+      (queuePosition, queueReason) => {
+        if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "opening") return;
+        session.dto = {
+          ...session.dto,
+          queuePosition,
+          queueReason,
+          updatedAt: new Date().toISOString(),
+        };
+      },
+    );
+    session.launchLease = lease;
+    session.dto = {
+      ...session.dto,
+      profileMode: lease.profileMode,
+      ...(lease.profileId ? { profileId: lease.profileId } : { profileId: undefined }),
+      ...(lease.profileName ? { profileName: lease.profileName } : { profileName: undefined }),
+      queuePosition: undefined,
+      queueReason: undefined,
+      updatedAt: new Date().toISOString(),
+    };
+    return lease;
   }
 
   get(agentId: string): BrowserSessionDto | undefined {
@@ -513,6 +567,8 @@ export class BrowserSessionManager {
           throw new AggregateError(uploadFailures, "browser upload cleanup did not complete");
         }
         session.cleanupError = undefined;
+        session.launchLease?.release();
+        session.launchLease = undefined;
         return;
       }
       const results = await Promise.allSettled(handles.map((handle) => this.closeHandle(handle)));
@@ -637,11 +693,13 @@ export class BrowserSessionManager {
       return existing.opening;
     }
     const now = new Date().toISOString();
+    const launchDescription = this.launchDescription(scope);
     const session: ManagedSession = {
       dto: {
         id: randomUUID(),
         ...scope,
         status: "opening",
+        ...launchDescription,
         controlOwner: initialOwner,
         controlEpoch: 1,
         capabilities: browserRuntimeCapabilities(),
@@ -656,6 +714,7 @@ export class BrowserSessionManager {
       stagedUploadDirs: new Map(),
       queue: Promise.resolve(),
       lifecycleEpoch: 1,
+      launchAbort: new AbortController(),
     };
     const publication = spawnPublication();
     session.spawnPublication = publication;
@@ -676,6 +735,12 @@ export class BrowserSessionManager {
         this.sessions.set(scope.agentId, session);
         installed = true;
         this.lifecycle(session, "open_requested");
+        const launch = await this.acquireLaunch(scope, session, launchDescription);
+        if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "opening") {
+          launch?.release();
+          session.launchLease = undefined;
+          throw new BrowserSessionError("browser session closed while it was waiting to open", 409);
+        }
         createdDriver = await this.createDriver(session.dto.id, (level, text) => {
           if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "ready") return;
           this.emit(scope, {
@@ -686,7 +751,7 @@ export class BrowserSessionManager {
             text: redactBrowserText(text).slice(0, MAX_CONSOLE_TEXT),
           });
         }, (handle, options) => this.registerSpawnHandle(scope, session, 1, publication, handle, options),
-        (event) => this.commitPageEvent(scope, session, 1, event));
+        (event) => this.commitPageEvent(scope, session, 1, event), launch?.driver);
         publication.finish();
         if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "opening") {
           throw new BrowserSessionError("browser session closed while it was opening", 409);
@@ -746,6 +811,7 @@ export class BrowserSessionManager {
     session.lifecycleEpoch += 1;
     const reconnectEpoch = session.lifecycleEpoch;
     const publication = spawnPublication();
+    session.launchAbort = new AbortController();
     session.spawnPublication = publication;
     session.dto = {
       ...session.dto,
@@ -769,6 +835,17 @@ export class BrowserSessionManager {
         if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "opening") {
           throw new BrowserSessionError("browser session closed while it was reconnecting", 409);
         }
+        const launchDescription: BrowserLaunchDescription = {
+          profileMode: session.dto.profileMode,
+          ...(session.dto.profileId ? { profileId: session.dto.profileId } : {}),
+          ...(session.dto.profileName ? { profileName: session.dto.profileName } : {}),
+        };
+        const launch = await this.acquireLaunch(scope, session, launchDescription);
+        if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "opening") {
+          launch?.release();
+          session.launchLease = undefined;
+          throw new BrowserSessionError("browser session closed while it was waiting to reconnect", 409);
+        }
         createdDriver = await this.createDriver(session.dto.id, (level, text) => {
           if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "ready") return;
           this.emit(scope, {
@@ -776,7 +853,7 @@ export class BrowserSessionManager {
             level, text: redactBrowserText(text).slice(0, MAX_CONSOLE_TEXT),
           });
         }, (handle, options) => this.registerSpawnHandle(scope, session, reconnectEpoch, publication, handle, options),
-        (event) => this.commitPageEvent(scope, session, reconnectEpoch, event));
+        (event) => this.commitPageEvent(scope, session, reconnectEpoch, event), launch?.driver);
         publication.finish();
         if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "opening") {
           throw new BrowserSessionError("browser session closed while it was reconnecting", 409);
@@ -1244,10 +1321,26 @@ export class BrowserSessionManager {
     }).then(({ snapshot }) => snapshot);
   }
 
-  async act(scope: BrowserScope, input: { action?: unknown; selector?: unknown; text?: unknown; key?: unknown }): Promise<BrowserSessionDto> {
+  async act(scope: BrowserScope, input: {
+    action?: unknown;
+    selector?: unknown;
+    text?: unknown;
+    key?: unknown;
+    consequence?: unknown;
+    attempt_id?: unknown;
+  }): Promise<BrowserSessionDto> {
     const session = this.ready(scope);
     this.assertControl(session, "agent");
     const action = input.action;
+    const consequence = ["submission", "purchase", "message", "account_change", "other"].includes(String(input.consequence ?? ""))
+      ? input.consequence as "submission" | "purchase" | "message" | "account_change" | "other"
+      : undefined;
+    const attemptId = typeof input.attempt_id === "string" && input.attempt_id.length > 0 && input.attempt_id.length <= 120
+      ? input.attempt_id
+      : undefined;
+    if ((input.consequence !== undefined && !consequence) || (input.attempt_id !== undefined && !attemptId) || Boolean(consequence) !== Boolean(attemptId)) {
+      throw new BrowserSessionError("consequential browser actions require both a valid consequence and attempt_id");
+    }
     let work: (driver: BrowserDriver) => Promise<BrowserPageInfo>;
     let summary: string;
     if (action === "click" && typeof input.selector === "string" && input.selector.length > 0 && input.selector.length <= MAX_SELECTOR_TEXT) {
@@ -1281,6 +1374,7 @@ export class BrowserSessionManager {
       this.emit(scope, {
         type: "browser_action", sessionId: session.dto.id, executionId: scope.runId,
         actor: "agent", action: action === "fill" ? "type" : action, summary, url: session.dto.url,
+        ...(consequence ? { consequence, attemptId } : {}),
       });
       return publicDto(session);
     });
@@ -1379,6 +1473,7 @@ export class BrowserSessionManager {
     const opening = session.opening;
     const publication = session.spawnPublication;
     const driver = session.driver ?? session.closingDriver;
+    session.launchAbort.abort();
     session.driver = undefined;
     session.closingDriver = driver;
     session.lifecycleEpoch += 1;

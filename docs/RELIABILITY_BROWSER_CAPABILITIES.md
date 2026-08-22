@@ -69,6 +69,13 @@ If an Agent owns browser control when a chooser opens, the operator sees the req
 - `PONDEROSA_BROWSER_MULTI_PAGE=1` enables managed multi-page sessions outside development.
 - `PONDEROSA_BROWSER_FILE_UPLOAD=1` enables managed artifact upload and chooser interception outside development.
 - Development enables both capabilities automatically.
+- `PONDEROSA_BROWSER_MAX_ACTIVE` bounds concurrent Chrome processes across
+  Agent and Project browsers (default 4, maximum 64).
+- `PONDEROSA_BROWSER_HOSTED_HEADED=0` explicitly disables the hosted display;
+  otherwise Ponderosa uses Xvfb when available and advertises a headless
+  fallback when it is not.
+- `PONDEROSA_BROWSER_XVFB_EXECUTABLE` may identify an absolute packaged Xvfb
+  binary. Operators never provide this path through an API.
 - Production and other non-development environments leave both capabilities disabled unless explicitly enabled.
 
 Recommended rollout:

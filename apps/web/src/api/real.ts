@@ -18,6 +18,8 @@ import type {
   ArtifactContentDto,
   ArtifactDto,
   BrowserControlRequest,
+  BrowserAgentPreferenceDto,
+  BrowserProfileDto,
   BrowserOperatorInputRequest,
   BrowserSessionDto,
   BrowserUploadResponseDto,
@@ -38,6 +40,7 @@ import type {
   ConversationDto,
   CopyAgentPackageRequest,
   CreateAgentPresetRequest,
+  CreateBrowserProfileRequest,
   CreateAgentRequest,
   CreateCollaborationMessageRequest,
   CreateCollaborationMessageResponse,
@@ -98,6 +101,8 @@ import type {
   TokenUsageScope,
   TokenUsageSummaryDto,
   TriggerDefinitionDto,
+  UpdateBrowserAgentPreferenceRequest,
+  UpdateBrowserProfileRequest,
   TriggerOccurrenceDto,
   UpdateAgentConversationMembershipsRequest,
   UpdateAgentOrganizationRequest,
@@ -830,6 +835,31 @@ export const realApi = {
     return requestJson<BrowserSessionDto[]>(
       `/api/projects/${encodeURIComponent(projectId)}/browser-sessions${toQuery({ conversationId })}`,
     );
+  },
+  listBrowserProfiles(projectId: string): Promise<BrowserProfileDto[]> {
+    return requestJson<BrowserProfileDto[]>(`/api/projects/${encodeURIComponent(projectId)}/browser-profiles`);
+  },
+  createBrowserProfile(projectId: string, request: CreateBrowserProfileRequest): Promise<BrowserProfileDto> {
+    return requestJson<BrowserProfileDto>(`/api/projects/${encodeURIComponent(projectId)}/browser-profiles`, {
+      method: "POST", body: JSON.stringify(request),
+    });
+  },
+  updateBrowserProfile(projectId: string, profileId: string, request: UpdateBrowserProfileRequest): Promise<BrowserProfileDto> {
+    return requestJson<BrowserProfileDto>(`/api/projects/${encodeURIComponent(projectId)}/browser-profiles/${encodeURIComponent(profileId)}`, {
+      method: "PUT", body: JSON.stringify(request),
+    });
+  },
+  async deleteBrowserProfile(projectId: string, profileId: string): Promise<void> {
+    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/browser-profiles/${encodeURIComponent(profileId)}`, { method: "DELETE" });
+    if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
+  },
+  getBrowserAgentPreference(projectId: string, agentId: string): Promise<BrowserAgentPreferenceDto> {
+    return requestJson<BrowserAgentPreferenceDto>(`/api/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/browser-preference`);
+  },
+  updateBrowserAgentPreference(projectId: string, agentId: string, request: UpdateBrowserAgentPreferenceRequest): Promise<BrowserAgentPreferenceDto> {
+    return requestJson<BrowserAgentPreferenceDto>(`/api/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/browser-preference`, {
+      method: "PUT", body: JSON.stringify(request),
+    });
   },
   openBrowserSession(projectId: string, agentId: string, runId: string): Promise<BrowserSessionDto> {
     return requestJson<BrowserSessionDto>(browserPath(projectId, agentId, runId), { method: "POST" });

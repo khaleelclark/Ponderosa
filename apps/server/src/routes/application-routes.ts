@@ -88,7 +88,7 @@ type ApplicationRoutesContext =
   Omit<Parameters<typeof registerStreamRoutes>[1],
     "serverClosed" | "maxSubscribersPerStream" | "agentSubscriberCount"> &
   Omit<Parameters<typeof registerBrowserRoutes>[1],
-    "projectExists" | "projectDeletionInProgress" | "operatorBrowserScope" |
+    "projectExists" | "agentExists" | "projectDeletionInProgress" | "operatorBrowserScope" |
     "getProjectBrowserGrant" | "setProjectBrowserGrant" |
     "deleteProjectBrowserGrant" | "activeProjectBrowserController"> &
   Parameters<typeof registerProviderCommandRoutes>[1] &
@@ -186,6 +186,7 @@ export function registerApplicationRoutes(
     commitAgentDeletion,
     contextCursors,
     browserScopeForRun,
+    browserProfiles,
     browserSessions,
     closeRunBrowser,
     projectBrowserDto,
@@ -316,6 +317,7 @@ registerProjectDeletionRoutes(app, {
   projectBrowserGrants,
   browserSessions,
   projectBrowserSessions,
+  browserProfiles,
   agentMessageCapabilities,
   subscribers,
   scheduledSessionRollovers,
@@ -766,9 +768,11 @@ registerStreamRoutes(app, {
 });
 
 registerBrowserRoutes(app, {
+  browserProfiles,
   browserSessions,
   projectBrowserSessions,
   projectExists: (projectId) => Boolean(store.getProject(projectId)),
+  agentExists: (projectId, agentId) => store.getAgent(agentId)?.projectId === projectId,
   projectDeletionInProgress: (projectId) => deletingProjectIds.has(projectId),
   operatorBrowserScope: (params) => {
     const agent = store.getAgent(params.id);

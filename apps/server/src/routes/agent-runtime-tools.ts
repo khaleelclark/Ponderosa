@@ -483,6 +483,8 @@ export function registerAgentRuntimeToolRoutes(
       key?: unknown;
       page_id?: unknown;
       artifact_id?: unknown;
+      consequence?: unknown;
+      attempt_id?: unknown;
     };
   }>("/api/agent-browser", async (request, reply) => {
     const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
