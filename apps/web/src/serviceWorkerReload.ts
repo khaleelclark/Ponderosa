@@ -174,8 +174,10 @@ async function reloadForNewController(): Promise<void> {
       return;
     }
     const now = Date.now();
-    const elapsedSinceReload = current
-      ? Math.max(0, now - current.reloadedAt)
+    // A clock correction must not extend the fence until wall time catches
+    // up. Same-build suppression above remains the durable loop boundary.
+    const elapsedSinceReload = current && current.reloadedAt <= now
+      ? now - current.reloadedAt
       : MINIMUM_RELOAD_INTERVAL_MS;
     if (current && elapsedSinceReload < MINIMUM_RELOAD_INTERVAL_MS) {
       const retryAfterMs = MINIMUM_RELOAD_INTERVAL_MS - elapsedSinceReload;
