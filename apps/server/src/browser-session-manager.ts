@@ -856,7 +856,8 @@ export class BrowserSessionManager {
       ...session.dto,
       status: "opening",
       failure: undefined,
-      controlOwner: "agent",
+      // Reconnection replaces process authority, not interaction authority.
+      // Preserve the explicit operator/Agent owner across the restart.
       controlEpoch: session.dto.controlEpoch + 1,
       updatedAt: new Date().toISOString(),
     };

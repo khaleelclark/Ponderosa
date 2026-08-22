@@ -191,7 +191,10 @@ export function registerBrowserRoutes(
       const blocked = projectMutationGuard(request.params.projectId, reply);
       if (blocked) return blocked;
       try {
-        const scope = projectBrowserScope(request.params.projectId);
+        const scope = projectBrowserScope(
+          request.params.projectId,
+          getProjectBrowserGrant(request.params.projectId),
+        );
         const session = await projectBrowserSessions.reconnect(scope);
         return projectBrowserDto(request.params.projectId, session);
       } catch (error) {

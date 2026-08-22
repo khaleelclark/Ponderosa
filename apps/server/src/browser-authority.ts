@@ -224,7 +224,11 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
       projectBrowserGrants.delete(projectId);
       const projectScope = projectBrowserScope(projectId);
       const session = projectBrowserSessions.get(projectScope.agentId);
-      if (session?.status === "ready" && session.controlOwner === "agent") {
+      if (session?.status === "opening") {
+        // An opening has no safe control handoff point. Close it and await its
+        // retained process/lease cleanup before Agent deletion can commit.
+        await projectBrowserSessions.close(projectScope, reason);
+      } else if (session?.status === "ready" && session.controlOwner === "agent") {
         try {
           await projectBrowserSessions.setControl(projectScope, "operator", session.controlEpoch);
         } catch {
