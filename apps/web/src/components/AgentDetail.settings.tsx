@@ -7,6 +7,11 @@ import {
   Box,
   Button,
   Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
   FormControlLabel,
   FormControl,
   IconButton,
@@ -24,6 +29,7 @@ import {
 import type {
   AgentDto,
   AgentManagementPermissionsDto,
+  BrowserProfileDto,
   ConversationDto,
   EngineDto,
 } from "@ponderosa/core";
@@ -35,6 +41,7 @@ import { queryKeys } from "../queryKeys";
 function AgentBrowserProfileSettings({ agent }: { agent: AgentDto }): JSX.Element {
   const queryClient = useQueryClient();
   const [newProfileName, setNewProfileName] = useState("");
+  const [profileToDelete, setProfileToDelete] = useState<BrowserProfileDto>();
   const profiles = useQuery({
     queryKey: queryKeys.agentBrowsers.profiles(agent.projectId),
     queryFn: () => api.listBrowserProfiles(agent.projectId),
@@ -65,6 +72,7 @@ function AgentBrowserProfileSettings({ agent }: { agent: AgentDto }): JSX.Elemen
   const deleteProfile = useMutation({
     mutationFn: (profileId: string) => api.deleteBrowserProfile(agent.projectId, profileId),
     onSuccess: () => {
+      setProfileToDelete(undefined);
       void queryClient.invalidateQueries({ queryKey: queryKeys.agentBrowsers.profiles(agent.projectId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.agentBrowsers.preference(agent.projectId, agent.id) });
     },
@@ -119,7 +127,10 @@ function AgentBrowserProfileSettings({ agent }: { agent: AgentDto }): JSX.Elemen
                 size="small"
                 aria-label={`Delete ${profile.name}`}
                 disabled={deleteProfile.isPending}
-                onClick={() => deleteProfile.mutate(profile.id)}
+                onClick={() => {
+                  deleteProfile.reset();
+                  setProfileToDelete(profile);
+                }}
               >
                 <DeleteOutlineIcon fontSize="small" />
               </IconButton>
@@ -128,6 +139,32 @@ function AgentBrowserProfileSettings({ agent }: { agent: AgentDto }): JSX.Elemen
         </Stack>
       ) : null}
       {error ? <Alert severity="error" sx={{ mt: 1.5 }}>{String(error)}</Alert> : null}
+      <Dialog
+        open={Boolean(profileToDelete)}
+        onClose={() => !deleteProfile.isPending && setProfileToDelete(undefined)}
+        aria-labelledby="delete-browser-profile-title"
+      >
+        <DialogTitle id="delete-browser-profile-title">
+          Delete trusted profile “{profileToDelete?.name}”?
+        </DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            This permanently deletes its cookies, logins, and site storage. Every Agent assigned to this profile will return to a disposable browser profile.
+          </DialogContentText>
+          {deleteProfile.error ? <Alert severity="error" sx={{ mt: 2 }}>{String(deleteProfile.error)}</Alert> : null}
+        </DialogContent>
+        <DialogActions>
+          <Button disabled={deleteProfile.isPending} onClick={() => setProfileToDelete(undefined)}>Cancel</Button>
+          <Button
+            color="error"
+            variant="contained"
+            disabled={!profileToDelete || deleteProfile.isPending}
+            onClick={() => profileToDelete && deleteProfile.mutate(profileToDelete.id)}
+          >
+            Delete “{profileToDelete?.name}”
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Paper>
   );
 }

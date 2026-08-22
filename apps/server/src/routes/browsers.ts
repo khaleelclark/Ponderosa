@@ -31,6 +31,7 @@ interface BrowserRoutesContext {
   projectExists(projectId: string): boolean;
   agentExists(projectId: string, agentId: string): boolean;
   projectDeletionInProgress(projectId: string): boolean;
+  agentDeletionInProgress(agentId: string): boolean;
   operatorBrowserScope(params: BrowserRouteParams): BrowserScope;
   projectBrowserScope(projectId: string, grant?: ProjectBrowserGrant): BrowserScope;
   projectBrowserDto(projectId: string, session: import("@ponderosa/core").BrowserSessionDto): ProjectBrowserSessionDto;
@@ -69,6 +70,7 @@ export function registerBrowserRoutes(
     projectExists,
     agentExists,
     projectDeletionInProgress,
+    agentDeletionInProgress,
     operatorBrowserScope,
     projectBrowserScope,
     projectBrowserDto,
@@ -77,6 +79,14 @@ export function registerBrowserRoutes(
     deleteProjectBrowserGrant,
     activeProjectBrowserController,
   } = context;
+
+  const projectMutationGuard = (projectId: string, reply: FastifyReply): FastifyReply | undefined => {
+    if (!projectExists(projectId)) return reply.code(404).send({ error: "project not found" });
+    if (projectDeletionInProgress(projectId)) {
+      return reply.code(409).send({ error: "Project deletion is in progress" });
+    }
+    return undefined;
+  };
 
   const browserProfilesRoute = "/api/projects/:projectId/browser-profiles";
   app.get<{ Params: { projectId: string } }>(browserProfilesRoute, async (request, reply) => {
@@ -123,6 +133,7 @@ export function registerBrowserRoutes(
     async (request, reply) => {
       if (!agentExists(request.params.projectId, request.params.agentId)) return reply.code(404).send({ error: "agent not found" });
       if (projectDeletionInProgress(request.params.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
+      if (agentDeletionInProgress(request.params.agentId)) return reply.code(409).send({ error: "Agent deletion is in progress" });
       try {
         return browserProfiles.setPreference(
           request.params.projectId,
@@ -146,10 +157,8 @@ export function registerBrowserRoutes(
   app.post<{ Params: { projectId: string }; Body: Partial<ProjectBrowserNavigateRequest> }>(
     projectBrowserRoute,
     async (request, reply) => {
-      if (!projectExists(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
-      if (projectDeletionInProgress(request.params.projectId)) {
-        return reply.code(409).send({ error: "Project deletion is in progress" });
-      }
+      const blocked = projectMutationGuard(request.params.projectId, reply);
+      if (blocked) return blocked;
       try {
         const scope = projectBrowserScope(request.params.projectId);
         const session = await projectBrowserSessions.open(scope, request.body?.url, "operator");
@@ -163,10 +172,8 @@ export function registerBrowserRoutes(
   app.post<{ Params: { projectId: string }; Body: ProjectBrowserNavigateRequest }>(
     `${projectBrowserRoute}/navigate`,
     async (request, reply) => {
-      if (!projectExists(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
-      if (projectDeletionInProgress(request.params.projectId)) {
-        return reply.code(409).send({ error: "Project deletion is in progress" });
-      }
+      const blocked = projectMutationGuard(request.params.projectId, reply);
+      if (blocked) return blocked;
       try {
         if (typeof request.body?.url !== "string") return reply.code(400).send({ error: "url is required" });
         const scope = projectBrowserScope(request.params.projectId);
@@ -181,10 +188,8 @@ export function registerBrowserRoutes(
   app.post<{ Params: { projectId: string } }>(
     `${projectBrowserRoute}/reconnect`,
     async (request, reply) => {
-      if (!projectExists(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
-      if (projectDeletionInProgress(request.params.projectId)) {
-        return reply.code(409).send({ error: "Project deletion is in progress" });
-      }
+      const blocked = projectMutationGuard(request.params.projectId, reply);
+      if (blocked) return blocked;
       try {
         const scope = projectBrowserScope(request.params.projectId);
         const session = await projectBrowserSessions.reconnect(scope);
@@ -196,7 +201,8 @@ export function registerBrowserRoutes(
   );
 
   app.delete<{ Params: { projectId: string } }>(projectBrowserRoute, async (request, reply) => {
-    if (!projectExists(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+    const blocked = projectMutationGuard(request.params.projectId, reply);
+    if (blocked) return blocked;
     try {
       deleteProjectBrowserGrant(request.params.projectId);
       const session = await projectBrowserSessions.close(
@@ -213,10 +219,8 @@ export function registerBrowserRoutes(
     `${projectBrowserRoute}/control`,
     async (request, reply) => {
       const projectId = request.params.projectId;
-      if (!projectExists(projectId)) return reply.code(404).send({ error: "project not found" });
-      if (projectDeletionInProgress(projectId)) {
-        return reply.code(409).send({ error: "Project deletion is in progress" });
-      }
+      const blocked = projectMutationGuard(projectId, reply);
+      if (blocked) return blocked;
       if (
         (request.body?.owner !== "agent" && request.body?.owner !== "operator")
         || !Number.isSafeInteger(request.body?.expectedControlEpoch)
@@ -268,10 +272,8 @@ export function registerBrowserRoutes(
   app.post<{ Params: { projectId: string }; Body: BrowserOperatorInputRequest }>(
     `${projectBrowserRoute}/input`,
     async (request, reply) => {
-      if (!projectExists(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
-      if (projectDeletionInProgress(request.params.projectId)) {
-        return reply.code(409).send({ error: "Project deletion is in progress" });
-      }
+      const blocked = projectMutationGuard(request.params.projectId, reply);
+      if (blocked) return blocked;
       try {
         if (
           !request.body
@@ -295,7 +297,8 @@ export function registerBrowserRoutes(
     Params: { projectId: string; pageId: string };
     Body: { expectedControlEpoch: number };
   }>(projectBrowserRoute + "/pages/:pageId/active", async (request, reply) => {
-    if (!projectExists(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+    const blocked = projectMutationGuard(request.params.projectId, reply);
+    if (blocked) return blocked;
     if (!Number.isSafeInteger(request.body?.expectedControlEpoch)) {
       return reply.code(400).send({ error: "expectedControlEpoch is required" });
     }
@@ -316,7 +319,8 @@ export function registerBrowserRoutes(
     Params: { projectId: string; pageId: string };
     Body: { expectedControlEpoch: number };
   }>(projectBrowserRoute + "/pages/:pageId", async (request, reply) => {
-    if (!projectExists(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+    const blocked = projectMutationGuard(request.params.projectId, reply);
+    if (blocked) return blocked;
     if (!Number.isSafeInteger(request.body?.expectedControlEpoch)) {
       return reply.code(400).send({ error: "expectedControlEpoch is required" });
     }
@@ -337,7 +341,8 @@ export function registerBrowserRoutes(
     Params: { projectId: string };
     Body: { expectedControlEpoch: number };
   }>(projectBrowserRoute + "/file-chooser", async (request, reply) => {
-    if (!projectExists(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+    const blocked = projectMutationGuard(request.params.projectId, reply);
+    if (blocked) return blocked;
     if (!Number.isSafeInteger(request.body?.expectedControlEpoch)) {
       return reply.code(400).send({ error: "expectedControlEpoch is required" });
     }
@@ -357,7 +362,8 @@ export function registerBrowserRoutes(
     Params: { projectId: string };
     Body: BrowserUploadRequest;
   }>(projectBrowserRoute + "/upload", async (request, reply) => {
-    if (!projectExists(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+    const blocked = projectMutationGuard(request.params.projectId, reply);
+    if (blocked) return blocked;
     if (!request.body || typeof request.body.artifactId !== "string" ||
         !Number.isSafeInteger(request.body.expectedControlEpoch) ||
         (request.body.selector !== undefined && typeof request.body.selector !== "string")) {

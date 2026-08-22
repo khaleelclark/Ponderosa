@@ -58,6 +58,8 @@ function cleanName(value: string): string {
   return name;
 }
 
+const PROFILE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+
 /** Durable profile catalog plus process-local browser leases. Chrome processes
  * cannot survive the owning server, so startup intentionally begins with no
  * active lease while retaining only trusted profile data and assignments. */
@@ -130,6 +132,18 @@ export class BrowserProfileAuthority {
     throw new BrowserProfileError(409, `Browser profile settings are unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
 
+  private profileDirectory(profileId: string): string {
+    if (!PROFILE_ID_PATTERN.test(profileId)) {
+      throw new BrowserProfileError(404, "Browser profile was not found.");
+    }
+    const directory = path.resolve(this.profileRoot, profileId);
+    const relative = path.relative(this.profileRoot, directory);
+    if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new BrowserProfileError(409, "Browser profile storage boundary is invalid.");
+    }
+    return directory;
+  }
+
   listProfiles(projectId: string): BrowserProfileDto[] {
     try {
       return (this.db.prepare(`SELECT id, project_id projectId, name, created_at createdAt, updated_at updatedAt
@@ -178,15 +192,21 @@ export class BrowserProfileAuthority {
   }
 
   deleteProfile(projectId: string, profileId: string): void {
-    if ([...this.active.values()].some((entry) => entry.profileKey === profileId) ||
-        this.pending.some((entry) => entry.profileKey === profileId)) {
+    const profile = this.getProfile(projectId, profileId);
+    if (!profile) throw new BrowserProfileError(404, "Browser profile was not found.");
+    const directory = this.profileDirectory(profile.id);
+    if ([...this.active.values()].some((entry) => entry.profileKey === profile.id) ||
+        this.pending.some((entry) => entry.profileKey === profile.id)) {
       throw new BrowserProfileError(409, "Close or wait for browsers using this trusted profile before deleting it.");
     }
     try {
-      rmSync(path.join(this.profileRoot, profileId), { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
+      // Filesystem-first ordering is retryable: a failed removal leaves the
+      // catalog intact; a later database failure leaves the same canonical
+      // record available so this exact deletion can be retried safely.
+      rmSync(directory, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
       if (this.db.prepare("DELETE FROM browser_profiles WHERE project_id=? AND id=?")
-        .run(projectId, profileId).changes !== 1) {
-        throw new BrowserProfileError(404, "Browser profile was not found.");
+        .run(projectId, profile.id).changes !== 1) {
+        throw new BrowserProfileError(409, "Browser profile deletion did not commit. Retry the deletion.");
       }
     } catch (error) {
       return this.mapped(error);
@@ -202,7 +222,7 @@ export class BrowserProfileAuthority {
     }
     try {
       for (const profile of profiles) {
-        rmSync(path.join(this.profileRoot, profile.id), { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
+        rmSync(this.profileDirectory(profile.id), { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
       }
       this.db.exec("BEGIN IMMEDIATE");
       this.db.prepare("DELETE FROM browser_agent_preferences WHERE project_id=?").run(projectId);

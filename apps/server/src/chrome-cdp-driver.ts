@@ -38,7 +38,7 @@ export interface BrowserDriverLaunchOptions {
 
 export class BrowserDriverActionError extends Error {
   constructor(
-    readonly reason: "invalid_selector" | "selector_not_found" | "selector_not_editable" | "page_not_found" | "last_page" | "upload_disabled" | "selector_not_file_input" | "file_input_disabled" | "file_type_not_accepted" | "no_pending_file_chooser" | "stale_file_chooser" | "unsupported_file_chooser" | "upload_verification_failed",
+    readonly reason: "invalid_selector" | "selector_not_found" | "selector_not_editable" | "page_not_found" | "last_page" | "upload_disabled" | "selector_not_file_input" | "file_input_disabled" | "file_type_not_accepted" | "no_pending_file_chooser" | "stale_file_chooser" | "unsupported_file_chooser" | "stale_upload_context" | "upload_verification_failed",
   ) {
     super(reason);
     this.name = "BrowserDriverActionError";
@@ -172,7 +172,10 @@ async function waitForDisplay(child: ChildProcess, displayNumber: number): Promi
   throw new Error("host browser display did not become ready");
 }
 
-async function spawnHostedDisplay(executable: string): Promise<HostedDisplay> {
+async function spawnHostedDisplay(
+  executable: string,
+  publish?: (display: HostedDisplay) => boolean,
+): Promise<HostedDisplay> {
   for (let attempt = 0; attempt < 64; attempt += 1) {
     const displayNumber = 100 + Math.floor(Math.random() * 900);
     const reservationPath = `/tmp/ponderosa-xvfb-${displayNumber}.lock`;
@@ -204,12 +207,28 @@ async function spawnHostedDisplay(executable: string): Promise<HostedDisplay> {
         .flatMap((name) => process.env[name] === undefined ? [] : [[name, process.env[name]!] as const])),
       detached: process.platform !== "win32",
     });
+    const hostedDisplay = { child, display: `:${displayNumber}`, reservationPath };
+    let externallyOwned = false;
     try {
+      // A detached Xvfb is durable process authority as soon as spawn returns.
+      // Publish it before readiness polling so restart recovery can terminate
+      // it even if this daemon exits during waitForDisplay().
+      externallyOwned = publish?.(hostedDisplay) ?? false;
       await waitForDisplay(child, displayNumber);
-      return { child, display: `:${displayNumber}`, reservationPath };
-    } catch {
-      await terminateBrowserProcess(child).catch(() => undefined);
-      await fs.rm(reservationPath, { force: true }).catch(() => undefined);
+      return hostedDisplay;
+    } catch (error) {
+      if (externallyOwned) throw error;
+      let cleanupError: unknown;
+      try {
+        await terminateBrowserProcess(child);
+        if (processGroupAlive(child)) throw new Error("host browser display process exit was not confirmed");
+        await fs.rm(reservationPath, { force: true });
+      } catch (candidate) {
+        cleanupError = candidate;
+      }
+      if (cleanupError) {
+        throw new AggregateError([error, cleanupError], "host browser display readiness and cleanup failed");
+      }
     }
   }
   throw new Error("host browser display capacity is unavailable");
@@ -390,30 +409,36 @@ class ChromeCdpDriver implements BrowserDriver {
     // Hosts without the packaged display service keep the existing isolated
     // headless browser available and advertise hostedHeaded=false. Hosted
     // deployments include Xvfb, so clients never need local browser software.
-    const display = displayExecutable ? await spawnHostedDisplay(displayExecutable) : undefined;
     const terminationAuthority = {};
+    let display: HostedDisplay | undefined;
     let child: ChildProcess | undefined;
-    const compositeHandle: BrowserTerminationHandle = {
-      terminationAuthority,
-      get processIdentity() { return child ? runtimeProcessIdentity(child) : display ? runtimeProcessIdentity(display.child) : undefined; },
-      isAlive: () => Boolean((child && processGroupAlive(child)) || (display && processGroupAlive(display.child))),
-      close: async () => {
-        const failures: unknown[] = [];
-        if (child) await terminateBrowserProcess(child).catch((error) => failures.push(error));
-        if (display) {
-          await terminateBrowserProcess(display.child).catch((error) => failures.push(error));
-          if (!processGroupAlive(display.child)) {
-            await fs.rm(display.reservationPath, { force: true }).catch((error) => failures.push(error));
-          }
+    const closeAll = async (): Promise<void> => {
+      const failures: unknown[] = [];
+      if (child) await terminateBrowserProcess(child).catch((error) => failures.push(error));
+      if (display) {
+        await terminateBrowserProcess(display.child).catch((error) => failures.push(error));
+        if (!processGroupAlive(display.child)) {
+          await fs.rm(display.reservationPath, { force: true }).catch((error) => failures.push(error));
         }
-        if (!launch.retainProfile) await removeBrowserProfile(profileDir).catch((error) => failures.push(error));
-        if (failures.length) throw new AggregateError(failures, "host browser cleanup did not complete");
-      },
+      }
+      if (!launch.retainProfile) await removeBrowserProfile(profileDir).catch((error) => failures.push(error));
+      if (failures.length) throw new AggregateError(failures, "host browser cleanup did not complete");
     };
     let externallyOwned = false;
-    if (display && onSpawned) {
-      onSpawned(compositeHandle);
-      externallyOwned = true;
+    if (displayExecutable) {
+      display = await spawnHostedDisplay(displayExecutable, (spawned) => {
+        display = spawned;
+        if (!onSpawned) return false;
+        const displayHandle: BrowserTerminationHandle = {
+          terminationAuthority,
+          processIdentity: runtimeProcessIdentity(spawned.child),
+          isAlive: () => processGroupAlive(spawned.child),
+          close: closeAll,
+        };
+        onSpawned(displayHandle);
+        externallyOwned = true;
+        return true;
+      });
     }
     try {
       child = spawn(executable, [
@@ -431,7 +456,7 @@ class ChromeCdpDriver implements BrowserDriver {
         detached: process.platform !== "win32",
       });
     } catch (error) {
-      if (!externallyOwned) await compositeHandle.close();
+      if (!externallyOwned) await closeAll();
       throw error;
     }
     let launchError = "";
@@ -440,7 +465,13 @@ class ChromeCdpDriver implements BrowserDriver {
     child.stderr?.on("data", (chunk: string) => { launchError = `${launchError}${chunk}`.slice(-MAX_BROWSER_LAUNCH_ERROR); });
     try {
       if (onSpawned) {
-        onSpawned(compositeHandle, { complete: true, coversReturnedDriver: true });
+        const browserHandle: BrowserTerminationHandle = {
+          terminationAuthority,
+          processIdentity: runtimeProcessIdentity(child),
+          isAlive: () => processGroupAlive(child!),
+          close: closeAll,
+        };
+        onSpawned(browserHandle, { complete: true, coversReturnedDriver: true });
         externallyOwned = true;
       }
       const input = child.stdio[3] as Writable | null;
@@ -483,7 +514,7 @@ class ChromeCdpDriver implements BrowserDriver {
       driver.emitPageEvent("page_activate", driver.activePageId, undefined, false, "initial");
       return driver;
     } catch (error) {
-      if (!externallyOwned) await compositeHandle.close();
+      if (!externallyOwned) await closeAll();
       const primary = error instanceof Error ? error.message : String(error);
       const diagnostics = redactBrowserText(launchError.trim());
       throw new Error(diagnostics ? `${primary}\n${diagnostics}` : primary);
@@ -1065,20 +1096,33 @@ class ChromeCdpDriver implements BrowserDriver {
     const page = this.currentPage();
     let nodeReference: { nodeId?: number; backendNodeId?: number };
     let objectId: string;
+    let assignmentAttempted = false;
+    const uploadCommand = async (
+      method: string,
+      params: Record<string, unknown>,
+    ): Promise<Record<string, unknown>> => {
+      try {
+        return await this.connection.send(method, params, page.cdpSessionId);
+      } catch {
+        throw new BrowserDriverActionError(
+          assignmentAttempted ? "upload_verification_failed" : "stale_upload_context",
+        );
+      }
+    };
 
     if (input.selector) {
-      const selected = await this.connection.send("Runtime.evaluate", {
+      const selected = await uploadCommand("Runtime.evaluate", {
         expression: `(() => { let el; try { el=document.querySelector(${JSON.stringify(input.selector)}); } catch { return null; } return el; })()`,
         returnByValue: false,
         awaitPromise: true,
         userGesture: true,
-      }, page.cdpSessionId);
+      });
       const remote = selected.result as { objectId?: string; subtype?: string; value?: unknown } | undefined;
       if (!remote?.objectId) {
-        const syntax = await this.connection.send("Runtime.evaluate", {
+        const syntax = await uploadCommand("Runtime.evaluate", {
           expression: `(() => { try { document.querySelector(${JSON.stringify(input.selector)}); return true; } catch { return false; } })()`,
           returnByValue: true,
-        }, page.cdpSessionId);
+        });
         const valid = (syntax.result as { value?: unknown } | undefined)?.value === true;
         throw new BrowserDriverActionError(valid ? "selector_not_found" : "invalid_selector");
       }
@@ -1097,16 +1141,15 @@ class ChromeCdpDriver implements BrowserDriver {
       }
       if (chooser.mode !== "selectSingle") throw new BrowserDriverActionError("unsupported_file_chooser");
       nodeReference = { backendNodeId: chooser.backendNodeId };
-      const resolved = await this.connection.send(
+      const resolved = await uploadCommand(
         "DOM.resolveNode",
         { backendNodeId: chooser.backendNodeId },
-        page.cdpSessionId,
       );
       objectId = String((resolved.object as { objectId?: unknown } | undefined)?.objectId ?? "");
       if (!objectId) throw new BrowserDriverActionError("unsupported_file_chooser");
     }
 
-    const inputStateReply = await this.connection.send("Runtime.callFunctionOn", {
+    const inputStateReply = await uploadCommand("Runtime.callFunctionOn", {
       objectId,
       functionDeclaration: `function(name, mediaType) {
         if (!(this instanceof HTMLInputElement) || this.type !== "file") return {code:"selector_not_file_input"};
@@ -1125,7 +1168,7 @@ class ChromeCdpDriver implements BrowserDriver {
       }`,
       arguments: [{ value: input.expectedName }, { value: input.expectedMediaType }],
       returnByValue: true,
-    }, page.cdpSessionId);
+    });
     const inputState = (inputStateReply.result as { value?: { code?: string } } | undefined)?.value;
     if (inputState?.code !== "ok") {
       const code = inputState?.code;
@@ -1142,15 +1185,15 @@ class ChromeCdpDriver implements BrowserDriver {
       : nodeReference.nodeId
         ? { nodeId: nodeReference.nodeId }
         : { backendNodeId: nodeReference.backendNodeId };
-    await this.connection.send(
-      "DOM.setFileInputFiles",
-      { files: [input.stagedPath], ...reference },
-      page.cdpSessionId,
-    );
     const assigned = this.uploadedInputs.get(page.pageId) ?? [];
     assigned.push({ uploadId: input.uploadId, cdpSessionId: page.cdpSessionId, reference });
     this.uploadedInputs.set(page.pageId, assigned);
-    const metadataReply = await this.connection.send("Runtime.callFunctionOn", {
+    assignmentAttempted = true;
+    await uploadCommand(
+      "DOM.setFileInputFiles",
+      { files: [input.stagedPath], ...reference },
+    );
+    const metadataReply = await uploadCommand("Runtime.callFunctionOn", {
       objectId,
       functionDeclaration: `function() {
         const file = this.files?.[0];
@@ -1162,7 +1205,7 @@ class ChromeCdpDriver implements BrowserDriver {
         };
       }`,
       returnByValue: true,
-    }, page.cdpSessionId);
+    });
     const metadata = (metadataReply.result as {
       value?: { name?: unknown; size?: unknown; type?: unknown; count?: unknown };
     } | undefined)?.value;
@@ -1178,7 +1221,12 @@ class ChromeCdpDriver implements BrowserDriver {
         verified.type !== input.expectedMediaType) {
       throw new BrowserDriverActionError("upload_verification_failed");
     }
-    const info = await this.pageInfo();
+    let info: BrowserPageInfo;
+    try {
+      info = await this.pageInfo();
+    } catch {
+      throw new BrowserDriverActionError("upload_verification_failed");
+    }
     return { ...info, pageId: page.pageId, input: verified };
   }
 

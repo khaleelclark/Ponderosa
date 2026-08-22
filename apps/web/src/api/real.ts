@@ -850,8 +850,7 @@ export const realApi = {
     });
   },
   async deleteBrowserProfile(projectId: string, profileId: string): Promise<void> {
-    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/browser-profiles/${encodeURIComponent(profileId)}`, { method: "DELETE" });
-    if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
+    await requestJson<void>(`/api/projects/${encodeURIComponent(projectId)}/browser-profiles/${encodeURIComponent(profileId)}`, { method: "DELETE" });
   },
   getBrowserAgentPreference(projectId: string, agentId: string): Promise<BrowserAgentPreferenceDto> {
     return requestJson<BrowserAgentPreferenceDto>(`/api/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/browser-preference`);

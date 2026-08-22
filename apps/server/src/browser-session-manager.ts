@@ -322,6 +322,9 @@ interface ManagedSession {
   frameCapture?: Promise<{ body: Buffer; revision: number }>;
   launchAbort: AbortController;
   launchLease?: BrowserLaunchLease;
+  /** True only while an acquired launch lease can still produce process
+   * authority that has not yet been returned or synchronously sealed. */
+  launchFactoryPending: boolean;
 }
 
 interface SpawnPublication {
@@ -442,7 +445,8 @@ export class BrowserSessionManager {
       active: sessions.filter((session) => Boolean(session.driver)).length,
       pendingCleanup: sessions.filter((session) => Boolean(
         session.closingDriver || session.cleanup || session.lateCleanups.size || session.cleanupError ||
-        ((session.dto.status === "closed" || session.dto.status === "failed") && session.spawnHandles.size),
+        ((session.dto.status === "closed" || session.dto.status === "failed") &&
+          (session.spawnHandles.size || (session.launchLease && session.launchFactoryPending))),
       )).length,
       retainedFailures: sessions.filter((session) => Boolean(session.cleanupError)).length,
     };
@@ -565,6 +569,15 @@ export class BrowserSessionManager {
             .map((error) => error instanceof Error ? error.message : String(error))
             .join("; ");
           throw new AggregateError(uploadFailures, "browser upload cleanup did not complete");
+        }
+        const publication = session.spawnPublication;
+        if (session.launchLease && session.launchFactoryPending &&
+            !(publication?.sealed && publication.coversReturnedDriver)) {
+          // Cancellation may arrive before a delayed factory publishes a
+          // process. Retain the exclusive trusted-profile lease until that
+          // factory settles, or until a final published authority proves it
+          // covers every process the factory can still return.
+          return;
         }
         session.cleanupError = undefined;
         session.launchLease?.release();
@@ -715,6 +728,7 @@ export class BrowserSessionManager {
       queue: Promise.resolve(),
       lifecycleEpoch: 1,
       launchAbort: new AbortController(),
+      launchFactoryPending: false,
     };
     const publication = spawnPublication();
     session.spawnPublication = publication;
@@ -741,17 +755,22 @@ export class BrowserSessionManager {
           session.launchLease = undefined;
           throw new BrowserSessionError("browser session closed while it was waiting to open", 409);
         }
-        createdDriver = await this.createDriver(session.dto.id, (level, text) => {
-          if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "ready") return;
-          this.emit(scope, {
-            type: "browser_console",
-            sessionId: session.dto.id,
-            executionId: scope.runId,
-            level,
-            text: redactBrowserText(text).slice(0, MAX_CONSOLE_TEXT),
-          });
-        }, (handle, options) => this.registerSpawnHandle(scope, session, 1, publication, handle, options),
-        (event) => this.commitPageEvent(scope, session, 1, event), launch?.driver);
+        session.launchFactoryPending = true;
+        try {
+          createdDriver = await this.createDriver(session.dto.id, (level, text) => {
+            if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "ready") return;
+            this.emit(scope, {
+              type: "browser_console",
+              sessionId: session.dto.id,
+              executionId: scope.runId,
+              level,
+              text: redactBrowserText(text).slice(0, MAX_CONSOLE_TEXT),
+            });
+          }, (handle, options) => this.registerSpawnHandle(scope, session, 1, publication, handle, options),
+          (event) => this.commitPageEvent(scope, session, 1, event), launch?.driver);
+        } finally {
+          session.launchFactoryPending = false;
+        }
         publication.finish();
         if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "opening") {
           throw new BrowserSessionError("browser session closed while it was opening", 409);
@@ -846,14 +865,19 @@ export class BrowserSessionManager {
           session.launchLease = undefined;
           throw new BrowserSessionError("browser session closed while it was waiting to reconnect", 409);
         }
-        createdDriver = await this.createDriver(session.dto.id, (level, text) => {
-          if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "ready") return;
-          this.emit(scope, {
-            type: "browser_console", sessionId: session.dto.id, executionId: scope.runId,
-            level, text: redactBrowserText(text).slice(0, MAX_CONSOLE_TEXT),
-          });
-        }, (handle, options) => this.registerSpawnHandle(scope, session, reconnectEpoch, publication, handle, options),
-        (event) => this.commitPageEvent(scope, session, reconnectEpoch, event), launch?.driver);
+        session.launchFactoryPending = true;
+        try {
+          createdDriver = await this.createDriver(session.dto.id, (level, text) => {
+            if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "ready") return;
+            this.emit(scope, {
+              type: "browser_console", sessionId: session.dto.id, executionId: scope.runId,
+              level, text: redactBrowserText(text).slice(0, MAX_CONSOLE_TEXT),
+            });
+          }, (handle, options) => this.registerSpawnHandle(scope, session, reconnectEpoch, publication, handle, options),
+          (event) => this.commitPageEvent(scope, session, reconnectEpoch, event), launch?.driver);
+        } finally {
+          session.launchFactoryPending = false;
+        }
         publication.finish();
         if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "opening") {
           throw new BrowserSessionError("browser session closed while it was reconnecting", 409);

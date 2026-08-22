@@ -71,6 +71,8 @@ function browserDriverSessionError(error: BrowserDriverActionError): BrowserSess
       return new BrowserSessionError("The browser file chooser expired. Open it again and retry.", 409, error.reason);
     case "unsupported_file_chooser":
       return new BrowserSessionError("This browser file chooser is not supported.", 409, error.reason);
+    case "stale_upload_context":
+      return new BrowserSessionError("The browser page changed before the file could be attached. Retry on the current page.", 409, error.reason);
     case "upload_verification_failed":
       return new BrowserSessionError("The browser could not verify that the file was attached.", 409, error.reason);
   }
