@@ -560,7 +560,10 @@ export default function App({
           overflow: "hidden",
           display: "grid",
           gridTemplateColumns: "minmax(0, 1fr)",
-          gridTemplateRows: "auto minmax(0, 1fr)",
+          gridTemplateRows: {
+            xs: "auto minmax(0, 1fr)",
+            md: "minmax(0, 1fr)",
+          },
           bgcolor: "background.default",
         }}
       >
