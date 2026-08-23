@@ -25,15 +25,15 @@ export function useAgentProviderCommands({
     argumentsText: string,
   ) => {
     if (command.name === engine?.providerUsageCommand) {
-      const loading: ProviderUsageStateDto = {
-        provider: engine.id,
-        displayName: engine.displayName,
-        authenticated: engine.authentication === "authenticated",
-        refreshing: true,
-        ...(providerUsageState?.reading
-          ? { reading: providerUsageState.reading }
-          : {}),
-      };
+      const loading = providerUsageState
+        ? { ...providerUsageState, refreshing: true }
+        : undefined;
+      if (!loading) {
+        const next = await api.getAgentProviderUsage(agentId, true);
+        setProviderUsageState(next);
+        queryClient.setQueryData(queryKeys.providerUsage.agent(agentId), next);
+        return;
+      }
       setProviderUsageState(loading);
       queryClient.setQueryData(queryKeys.providerUsage.agent(agentId), loading);
       try {
@@ -41,11 +41,7 @@ export function useAgentProviderCommands({
         setProviderUsageState(next);
         queryClient.setQueryData(queryKeys.providerUsage.agent(agentId), next);
       } catch (error) {
-        const failed = {
-          ...loading,
-          refreshing: false,
-          error: error instanceof Error ? error.message : String(error),
-        };
+        const failed = { ...loading, refreshing: false };
         setProviderUsageState(failed);
         queryClient.setQueryData(
           queryKeys.providerUsage.agent(agentId),

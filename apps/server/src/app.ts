@@ -369,6 +369,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const engineAvailability = new EngineAvailabilityStore(opts.dataDir);
   const providerUsage = new ProviderUsageCache(opts.dataDir, undefined, undefined, (handle, providerId) => {
     providerProcessAuthority.register(handle, { purpose: `${providerId} provider usage` });
+  }, (event) => {
+    app.log.warn(event, "provider usage retrieval failed");
   });
   const providerEnabled = (engineId: string): boolean => workspace.getPreferences().providerAvailability[engineId] !== false;
   const {

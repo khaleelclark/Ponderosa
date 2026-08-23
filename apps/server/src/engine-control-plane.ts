@@ -247,20 +247,33 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     }
   };
   const providerUsageTarget = async (registration: EngineRegistration): Promise<ProviderUsageTarget> => {
+    const enabled = providerEnabled(registration.adapter.id);
     const auth = registration.authStatus
       ? await engineAuthStatuses.get(registration.adapter.id, registration.authStatus)
       : { authenticated: true, detail: "authenticated provider" };
+    if (!enabled || !auth.authenticated) {
+      providerUsage.invalidateUnavailable(registration.adapter.id);
+      return {
+        adapter: registration.adapter,
+        displayName: registration.adapter.displayName,
+        enabled,
+        authenticated: auth.authenticated,
+        accountKey: enabled ? "unauthenticated" : "disabled",
+      };
+    }
     const detail = auth.detail?.trim();
+    const accountKey = detail
+      ? createHash("sha256").update(`${registration.adapter.id}\0${detail}`, "utf8").digest("hex")
+      : "authenticated";
     return {
       adapter: registration.adapter,
       displayName: registration.adapter.displayName,
+      enabled,
       authenticated: auth.authenticated,
-      accountKey: detail
-        ? createHash("sha256").update(detail, "utf8").digest("hex")
-        : (auth.authenticated ? "authenticated" : "unauthenticated"),
-      ...(registration.adapter.id === "codex" && auth.authenticated
-        ? { accountLabel: "ChatGPT account" }
-        : {}),
+      accountKey,
+      ...(registration.adapter.id === "codex"
+          ? { accountLabel: "ChatGPT account" }
+          : {}),
     };
   };
   const providerUsageState = async (
@@ -273,13 +286,18 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         ? providerUsage.state(target)
         : providerUsage.refresh(target, refresh === "force");
     } catch (error) {
-      return {
-        provider: registration.adapter.id,
+      const target: ProviderUsageTarget = {
+        adapter: registration.adapter,
         displayName: registration.adapter.displayName,
+        enabled: providerEnabled(registration.adapter.id),
         authenticated: false,
-        refreshing: false,
-        error: publicAuthStatusExceptionDetail(error),
+        accountKey: "provider-status-unavailable",
       };
+      app.log.warn({
+        providerError: restrictedProviderExceptionLogDetail(error),
+        engineId: registration.adapter.id,
+      }, "provider usage target could not be resolved");
+      return providerUsage.unavailableState(target, "server_environment_invalid");
     }
   };
   const providerUsageCenter = async (

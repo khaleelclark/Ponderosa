@@ -550,6 +550,9 @@ export default function App({
   const openSettings = () => {
     navigateWorkspace({ kind: "settings", section: "general" });
   };
+  const openProviderSettings = () => {
+    navigateWorkspace({ kind: "settings", section: "providers" });
+  };
   const openOperatorProfile = () => {
     setOperatorProfileOpen(true);
   };
@@ -604,6 +607,7 @@ export default function App({
           onOpenNotifications={() => setNotificationPanelOpen(true)}
           onOpenProfile={openOperatorProfile}
           onOpenSettings={openSettings}
+          onOpenProviderSettings={openProviderSettings}
         />
 
         <Box

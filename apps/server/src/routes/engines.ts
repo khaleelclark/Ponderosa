@@ -132,11 +132,6 @@ export function registerEngineRoutes(
     async (request, reply): Promise<ProviderUsageStateDto | FastifyReply> => {
       const registration = engines.get(request.params.id);
       if (!registration) return reply.code(404).send({ error: "unknown engine" });
-      if (!registration.adapter.readProviderUsage) {
-        return reply.code(409).send({
-          error: "this provider does not expose subscription usage",
-        });
-      }
       return providerUsageState(registration, "force");
     },
   );
@@ -147,11 +142,7 @@ export function registerEngineRoutes(
       const agent = store.getAgent(request.params.id);
       if (!agent) return reply.code(404).send({ error: "agent not found" });
       const registration = engines.get(agent.activeEngine);
-      if (!registration?.adapter.readProviderUsage) {
-        return reply.code(409).send({
-          error: "this provider does not expose subscription usage",
-        });
-      }
+      if (!registration) return reply.code(404).send({ error: "engine not found" });
       if (request.query.refresh !== undefined && request.query.refresh !== "stale") {
         return reply.code(400).send({ error: "refresh must be stale when provided" });
       }

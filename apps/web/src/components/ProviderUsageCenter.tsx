@@ -1,10 +1,12 @@
 import RefreshIcon from "@mui/icons-material/Refresh";
+import CloseIcon from "@mui/icons-material/Close";
 import {
   Alert,
   Box,
   Button,
   Chip,
   CircularProgress,
+  Collapse,
   Divider,
   LinearProgress,
   Paper,
@@ -14,6 +16,7 @@ import {
 } from "@mui/material";
 import type {
   ProviderUsageCenterDto,
+  ProviderUsageFailureCode,
   ProviderUsageStateDto,
   ProviderUsageWindow,
 } from "@ponderosa/core";
@@ -82,19 +85,53 @@ function UsageWindowRow({ window }: { window: ProviderUsageWindow }): JSX.Elemen
   );
 }
 
+function usageData(state: ProviderUsageStateDto) {
+  return state.status === "fresh" || state.status === "stale" ? state.data : undefined;
+}
+
+function failureActions(code: ProviderUsageFailureCode) {
+  return {
+    settings: ["provider_not_installed", "provider_not_authenticated", "provider_disabled"].includes(code),
+    diagnostics: ["command_timeout", "provider_rate_limited", "provider_temporarily_unavailable", "unknown_failure", "server_environment_invalid"].includes(code),
+    support: code === "invalid_provider_response",
+    retry: !["provider_not_installed", "provider_not_authenticated", "provider_disabled", "usage_not_supported"].includes(code),
+  };
+}
+
 export function ProviderUsageCard({
   state,
   onRefresh,
   onClose,
+  onOpenProviderSettings,
   compact = false,
 }: {
   state: ProviderUsageStateDto;
   onRefresh?: () => void;
   onClose?: () => void;
+  onOpenProviderSettings?: () => void;
   compact?: boolean;
 }): JSX.Element {
   const now = useClock();
-  const reading = state.reading;
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const reading = usageData(state);
+  const failure = state.status === "stale" || state.status === "unavailable" ? state.failure : undefined;
+  const actions = failure ? failureActions(failure.code) : undefined;
+  const copySupportReport = () => {
+    if (!failure) return;
+    void navigator.clipboard.writeText(JSON.stringify({
+      provider: state.provider,
+      status: state.status,
+      failure: {
+        code: failure.code,
+        correlationId: failure.correlationId,
+        occurredAt: failure.occurredAt,
+        durationMs: failure.durationMs,
+        exitCode: failure.exitCode,
+        timedOut: failure.timedOut,
+        runtimeVersion: failure.runtimeVersion,
+      },
+    }, null, 2));
+  };
   return (
     <Paper
       variant="outlined"
@@ -112,7 +149,7 @@ export function ProviderUsageCard({
           ) : null}
         </Box>
         <Stack direction="row" spacing={0.5}>
-          {onRefresh ? (
+          {onRefresh && !failure ? (
             <Button
               size="small"
               startIcon={<RefreshIcon />}
@@ -122,24 +159,26 @@ export function ProviderUsageCard({
               {state.refreshing ? "Refreshing…" : "Refresh"}
             </Button>
           ) : null}
-          {onClose ? <Button size="small" onClick={onClose}>Close</Button> : null}
+          {onClose ? (
+            <Button size="small" aria-label="Close provider usage" onClick={onClose}>
+              <CloseIcon fontSize="small" />
+            </Button>
+          ) : null}
         </Stack>
       </Stack>
 
-      {!state.authenticated ? (
-        <Alert severity="warning" sx={{ mt: 1.25 }}>This provider is not authenticated.</Alert>
-      ) : !reading && state.refreshing ? (
+      {!reading && state.refreshing ? (
         <Stack direction="row" spacing={1.25} sx={{ alignItems: "center", py: 2 }}>
           <CircularProgress size={20} />
           <Typography variant="body2">Loading subscription usage…</Typography>
         </Stack>
-      ) : !reading && state.error ? (
-        <Alert severity="error" sx={{ mt: 1.25 }}>{state.error}</Alert>
-      ) : !reading ? (
-        <Typography variant="body2" color="text.secondary" sx={{ py: 2 }}>
-          No usage reading has been fetched yet.
-        </Typography>
-      ) : (
+      ) : !reading && failure ? (
+        <Alert severity={failure.code === "usage_not_supported" ? "info" : "warning"} sx={{ mt: 1.25 }}>
+          {failure.code === "provider_not_authenticated"
+            ? `Sign in to ${state.displayName} on the Ponderosa host.`
+            : failure.message}
+        </Alert>
+      ) : reading ? (
         <>
           <Stack spacing={1.5} sx={{ mt: 1.5 }}>
             {reading.windows.map((window) => (
@@ -150,19 +189,45 @@ export function ProviderUsageCard({
           <Stack direction="row" justifyContent="space-between" spacing={2}>
             <Typography variant="caption" color="text.secondary">
               Updated {updatedAgo(reading.fetchedAt, now)}
-              {reading.stale ? " · stale" : ""}
+              {state.status === "stale" ? " · stale" : ""}
             </Typography>
             <Typography variant="caption" color="text.secondary">
               {reading.source === "provider-command" ? "Subscription CLI command" : "Subscription CLI RPC"}
             </Typography>
           </Stack>
-          {state.error ? (
+          {failure ? (
             <Alert severity="warning" sx={{ mt: 1.25 }}>
-              Refresh failed: {state.error}. Showing the last successful reading.
+              {failure.message} Showing the last successful reading.
             </Alert>
           ) : null}
         </>
-      )}
+      ) : null}
+      {failure && actions ? (
+        <>
+          <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ mt: 1.25 }}>
+            {actions.settings && onOpenProviderSettings ? (
+              <Button size="small" onClick={onOpenProviderSettings}>Open Provider Settings</Button>
+            ) : null}
+            {actions.retry && onRefresh ? (
+              <Button size="small" startIcon={<RefreshIcon />} disabled={state.refreshing} onClick={onRefresh}>Try Again</Button>
+            ) : null}
+            {actions.diagnostics ? (
+              <Button size="small" onClick={() => setDiagnosticsOpen(value => !value)}>View Diagnostics</Button>
+            ) : null}
+            {actions.support ? (
+              <Button size="small" onClick={copySupportReport}>Copy Support Report</Button>
+            ) : null}
+          </Stack>
+          <Collapse in={diagnosticsOpen}>
+            <Box sx={{ mt: 1, p: 1, borderRadius: 1, bgcolor: "action.hover" }}>
+              <Typography variant="caption" component="div">Code: {failure.code}</Typography>
+              <Typography variant="caption" component="div">Reference: {failure.correlationId}</Typography>
+              {failure.runtimeVersion ? <Typography variant="caption" component="div">Runtime: {failure.runtimeVersion}</Typography> : null}
+              {failure.durationMs !== undefined ? <Typography variant="caption" component="div">Duration: {failure.durationMs} ms</Typography> : null}
+            </Box>
+          </Collapse>
+        </>
+      ) : null}
     </Paper>
   );
 }
@@ -171,8 +236,8 @@ function constrainedProvider(providers: ProviderUsageStateDto[]): ProviderUsageS
   return providers
     .filter((provider) => provider.authenticated)
     .sort((left, right) => {
-      const leftUsed = Math.max(-1, ...(left.reading?.windows.map((window) => window.usedPercent ?? -1) ?? [-1]));
-      const rightUsed = Math.max(-1, ...(right.reading?.windows.map((window) => window.usedPercent ?? -1) ?? [-1]));
+      const leftUsed = Math.max(-1, ...(usageData(left)?.windows.map((window) => window.usedPercent ?? -1) ?? [-1]));
+      const rightUsed = Math.max(-1, ...(usageData(right)?.windows.map((window) => window.usedPercent ?? -1) ?? [-1]));
       return rightUsed - leftUsed || left.displayName.localeCompare(right.displayName);
     })[0];
 }
@@ -194,10 +259,12 @@ export function ProviderQuotaIndicator({
   preferredProvider,
   mobile = false,
   renderTrigger,
+  onOpenProviderSettings,
 }: {
   preferredProvider?: string;
   mobile?: boolean;
   renderTrigger?: (open: (element: HTMLElement) => void) => ReactNode;
+  onOpenProviderSettings?: () => void;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [anchor, setAnchor] = useState<HTMLElement>();
@@ -209,19 +276,21 @@ export function ProviderQuotaIndicator({
       current.state.data?.providers.some((provider) => provider.refreshing) ? 1_000 : false,
     staleTime: 30_000,
   });
-  const authenticated = useMemo(
-    () => (query.data?.providers ?? []).filter((provider) => provider.authenticated),
+  const providers = useMemo(
+    () => query.data?.providers ?? [],
     [query.data],
   );
   useEffect(() => {
     setSelectedProvider(undefined);
   }, [preferredProvider]);
-  const constrained = constrainedProvider(authenticated);
-  const selected = authenticated.find((provider) => provider.provider === selectedProvider)
-    ?? authenticated.find((provider) => provider.provider === preferredProvider)
-    ?? constrained;
-  const maximum = selected?.reading
-    ? Math.max(...selected.reading.windows.map((window) => window.usedPercent ?? -1))
+  const constrained = constrainedProvider(providers);
+  const selected = providers.find((provider) => provider.provider === selectedProvider)
+    ?? providers.find((provider) => provider.provider === preferredProvider)
+    ?? constrained
+    ?? providers[0];
+  const selectedData = selected ? usageData(selected) : undefined;
+  const maximum = selectedData
+    ? Math.max(...selectedData.windows.map((window) => window.usedPercent ?? -1))
     : undefined;
   const label = selected
     ? maximum !== undefined && maximum >= 0
@@ -277,7 +346,7 @@ export function ProviderQuotaIndicator({
         <Box sx={{ p: 1.5 }}>
           <Typography variant="overline" color="text.secondary">Provider usage</Typography>
           <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ mb: 1.25 }}>
-            {[...authenticated]
+            {[...providers]
               .sort((left, right) =>
                 Number(right.provider === preferredProvider) - Number(left.provider === preferredProvider) ||
                 left.displayName.localeCompare(right.displayName)
@@ -297,10 +366,12 @@ export function ProviderQuotaIndicator({
             <ProviderUsageCard
               state={selected}
               onRefresh={() => refresh(selected.provider)}
+              onClose={() => setAnchor(undefined)}
+              onOpenProviderSettings={onOpenProviderSettings}
               compact
             />
           ) : (
-            <Alert severity="info">No authenticated provider exposes subscription usage.</Alert>
+            <Alert severity="info">No provider is configured.</Alert>
           )}
         </Box>
       </Popover>
@@ -336,6 +407,7 @@ export function AgentProviderUsageCard({
       <ProviderUsageCard
         state={state}
         onClose={onClose}
+        onOpenProviderSettings={() => globalThis.location.assign("/settings/providers")}
         onRefresh={() => {
           void api.refreshProviderUsage(state.provider).then((next) => {
             queryClient.setQueryData(queryKeys.providerUsage.agent(agentId), next);

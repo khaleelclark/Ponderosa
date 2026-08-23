@@ -22,6 +22,7 @@ import type {
   OpenRuntimeSessionOptions,
   ProviderUsage,
   ProviderUsageReadOptions,
+  ProviderUsageSnapshot,
   RuntimeProcessHandle,
   RuntimeSession,
   SeedOptions,
@@ -31,7 +32,7 @@ import { streamProcess } from "./process.js";
 import { discoverCliMcps, parseCodexMcpList } from "./capabilities.js";
 import { CodexAppServerSession, discoverCodexAppServerCapabilities } from "./codex-app-server.js";
 import { renderSeedPrompt } from "./seed-history.js";
-import { readCodexProviderUsage } from "./provider-usage.js";
+import { readCodexProviderUsage, readCodexProviderUsageSnapshot } from "./provider-usage.js";
 
 export interface CodexAdapterOptions {
   /** Path/name of the codex binary. Default: "codex". */
@@ -279,6 +280,17 @@ export class CodexAdapter implements Adapter {
 
   readProviderUsage(options: ProviderUsageReadOptions): Promise<ProviderUsage> {
     return readCodexProviderUsage({
+      bin: this.bin,
+      sandboxMode: this.sandboxMode,
+      killGraceMs: this.killGraceMs,
+      options,
+    });
+  }
+
+  readProviderUsageSnapshot(
+    options: ProviderUsageReadOptions,
+  ): Promise<ProviderUsageSnapshot> {
+    return readCodexProviderUsageSnapshot({
       bin: this.bin,
       sandboxMode: this.sandboxMode,
       killGraceMs: this.killGraceMs,

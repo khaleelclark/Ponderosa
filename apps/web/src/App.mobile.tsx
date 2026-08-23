@@ -82,6 +82,7 @@ interface WorkspaceAppHeaderProps {
   onOpenNotifications(): void;
   onOpenProfile(): void;
   onOpenSettings(): void;
+  onOpenProviderSettings(): void;
 }
 
 export function WorkspaceAppHeader({
@@ -96,6 +97,7 @@ export function WorkspaceAppHeader({
   onOpenNotifications,
   onOpenProfile,
   onOpenSettings,
+  onOpenProviderSettings,
 }: WorkspaceAppHeaderProps): JSX.Element {
   const [overflowAnchor, setOverflowAnchor] = useState<HTMLElement>();
   const mobileWorkspaceActions = useMobileWorkspaceActions();
@@ -152,6 +154,7 @@ export function WorkspaceAppHeader({
         </Tooltip>
         <ProviderQuotaIndicator
           preferredProvider={preferredQuotaProvider}
+          onOpenProviderSettings={onOpenProviderSettings}
           mobile
           renderTrigger={openUsage => (
             <Tooltip title="Provider usage">

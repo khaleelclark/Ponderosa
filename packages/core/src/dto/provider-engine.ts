@@ -144,16 +144,43 @@ export interface TokenUsageSummaryDto extends TokenUsage {
   wakeCauses: Array<{ cause: string; runs: number; activations: number }>;
 }
 
-/** One provider's current quota-cache projection. A failed refresh retains the
- * last successful reading and reports the error alongside it. */
-export interface ProviderUsageStateDto {
+export interface ProviderUsageFailureDto {
+  code: import("../adapter.js").ProviderUsageFailureCode;
+  message: string;
+  correlationId: string;
+  occurredAt: string;
+  durationMs?: number;
+  exitCode?: number;
+  timedOut?: boolean;
+  runtimeVersion?: string;
+}
+
+interface ProviderUsageStateBaseDto {
   provider: EngineId;
   displayName: string;
   authenticated: boolean;
-  reading?: import("../adapter.js").ProviderUsage;
   refreshing: boolean;
-  error?: string;
 }
+
+/** One provider's current quota-cache projection. Failed refreshes preserve a
+ * last-known-good reading without conflating quota health with engine health. */
+export type ProviderUsageStateDto = ProviderUsageStateBaseDto & (
+  | {
+      status: "fresh";
+      data: import("../adapter.js").ProviderUsage;
+      retrievedAt: string;
+    }
+  | {
+      status: "stale";
+      data: import("../adapter.js").ProviderUsage;
+      retrievedAt: string;
+      failure: ProviderUsageFailureDto;
+    }
+  | {
+      status: "unavailable";
+      failure: ProviderUsageFailureDto;
+    }
+);
 
 export interface ProviderUsageCenterDto {
   providers: ProviderUsageStateDto[];

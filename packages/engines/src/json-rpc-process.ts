@@ -64,6 +64,9 @@ export interface JsonRpcProcessOptions {
   /** Observe provider notifications even while the Agent has no active turn and
    * the event iterator is not currently being pulled. */
   onNotification?: (notification: JsonRpcNotification) => void;
+  /** Aggregate stdout budget for short-lived helpers whose notification stream
+   * is not consumed. Long-lived runtime sessions leave this unset. */
+  maxOutputBytes?: number;
 }
 
 /** Minimal JSONL JSON-RPC client for subscription-authenticated engine daemons. */
@@ -105,6 +108,7 @@ export class JsonRpcProcess {
       this.stderrTail = (this.stderrTail + chunk).slice(-8192);
     });
     const lines = new LineBuffer();
+    let outputBytes = 0;
     let postExitDrainTimer: NodeJS.Timeout | undefined;
     const clearPostExitDrain = () => {
       if (postExitDrainTimer) clearTimeout(postExitDrainTimer);
@@ -121,6 +125,16 @@ export class JsonRpcProcess {
       void this.close().catch(() => undefined);
     };
     this.child.stdout?.on("data", (chunk: Buffer | string) => {
+      outputBytes += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.byteLength;
+      if (opts.maxOutputBytes !== undefined && outputBytes > opts.maxOutputBytes) {
+        if (!this.closed) {
+          reportRootExit();
+          this.child.stdout?.destroy();
+          this.finish(new Error(`${opts.bin} JSON-RPC output exceeded the aggregate limit`));
+          void this.close().catch(() => undefined);
+        }
+        return;
+      }
       try {
         for (const line of lines.push(chunk)) this.receive(line);
       } catch (error) {

@@ -405,13 +405,60 @@ export interface ProviderUsage {
   stale?: boolean;
 }
 
+export type ProviderUsageFailureCode =
+  | "provider_not_installed"
+  | "provider_not_authenticated"
+  | "provider_disabled"
+  | "usage_not_supported"
+  | "command_timeout"
+  | "invalid_provider_response"
+  | "provider_rate_limited"
+  | "provider_temporarily_unavailable"
+  | "server_environment_invalid"
+  | "unknown_failure";
+
+/** Safe, bounded metadata produced by an adapter when quota retrieval fails. */
+export interface ProviderUsageReadFailureMetadata {
+  exitCode?: number;
+  timedOut?: boolean;
+  runtimeVersion?: string;
+}
+
+export class ProviderUsageReadError extends Error {
+  override readonly name = "ProviderUsageReadError";
+
+  constructor(
+    readonly code: ProviderUsageFailureCode,
+    readonly metadata: ProviderUsageReadFailureMetadata = {},
+  ) {
+    super(code);
+  }
+}
+
 export interface ProviderUsageReadOptions {
   /** Neutral host cwd for CLIs that require one; quota reads are not Project scoped. */
   cwd: string;
   signal: AbortSignal;
   /** Registered synchronously for every provider helper process. */
   onRuntimeSpawned: (handle: RuntimeProcessHandle) => void;
+  /** Reports the provider-owned account as soon as it is known, before quota
+   * retrieval finishes. `undefined` invalidates the observation when ownership
+   * can no longer be verified. */
+  onAccountIdentity?: (identity: ProviderUsageAccountIdentity | undefined) => void;
   timeoutMs?: number;
+}
+
+/** Opaque provider-derived identity used only to isolate host-side usage caches. */
+export interface ProviderUsageAccountIdentity {
+  fingerprint: string;
+  accountLabel?: string;
+}
+
+/** One provider-authoritative quota observation. Identity and usage must be
+ * captured by the same helper session so cache ownership cannot race usage. */
+export interface ProviderUsageSnapshot {
+  identity: ProviderUsageAccountIdentity;
+  usage: ProviderUsage;
 }
 
 /**
@@ -455,6 +502,11 @@ export interface Adapter {
 
   /** Read provider-account quota without creating a Run or sending model text. */
   readProviderUsage?(options: ProviderUsageReadOptions): Promise<ProviderUsage>;
+  /** Atomically read provider-account identity and quota through one helper.
+   * Cache-aware hosts prefer this method when account identity is provider-only. */
+  readProviderUsageSnapshot?(
+    options: ProviderUsageReadOptions,
+  ): Promise<ProviderUsageSnapshot>;
 
   /**
    * Continue the agent's ACTIVE session with the next user message. Resume by
