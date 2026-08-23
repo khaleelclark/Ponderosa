@@ -296,7 +296,14 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
   };
 
   return <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm" fullScreen={fullScreen} aria-labelledby="global-chat-search-title" PaperProps={{ sx: { border: 1, borderColor: "divider", borderRadius: { sm: 2 }, bgcolor: "background.paper", backgroundImage: "none" } }}>
-    <DialogTitle id="global-chat-search-title" sx={{ p: 0, position: "sticky", top: 0, zIndex: 2, bgcolor: "background.paper", borderBottom: 1, borderColor: "divider" }}>
+    <DialogTitle sx={{ p: 0, position: "sticky", top: 0, zIndex: 2, bgcolor: "background.paper", borderBottom: 1, borderColor: "divider" }}>
+      <Typography
+        id="global-chat-search-title"
+        component="h2"
+        sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}
+      >
+        Search Ponderosa
+      </Typography>
       <TextField
           autoFocus
           fullWidth

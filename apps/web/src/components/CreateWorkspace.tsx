@@ -47,6 +47,7 @@ import type { Route } from "../routing";
 import { ConfirmDialog } from "./ConfirmationDialogs";
 import { HostFolderPicker } from "./HostFolderPicker";
 import { IconTitle } from "./IconTitle";
+import { MobileNavigationButton } from "./MobileNavigationContext";
 import { ProjectRuntimeFields } from "./ProjectRuntimeFields";
 import { ProviderAvailabilityAlerts } from "./ProviderAvailabilityAlerts";
 import { TriggersPane } from "./TriggersPane";
@@ -106,12 +107,15 @@ function CreateSurface({
       sx={{ minHeight: 0, overflowY: "auto", px: { xs: 2, md: 4 }, py: 3 }}
     >
       <Box sx={{ width: "100%", maxWidth: 780, mx: "auto" }}>
-        <Box sx={{ minWidth: 0, mb: 2.5 }}>
-          <IconTitle icon={presentation.icon} title={presentation.title} component="h1" />
-          <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-            {presentation.description}
-          </Typography>
-        </Box>
+        <Stack direction="row" spacing={1} sx={{ minWidth: 0, mb: 2.5, alignItems: "flex-start" }}>
+          <MobileNavigationButton />
+          <Box sx={{ minWidth: 0 }}>
+            <IconTitle icon={presentation.icon} title={presentation.title} component="h1" />
+            <Typography color="text.secondary" sx={{ mt: 0.5 }}>
+              {presentation.description}
+            </Typography>
+          </Box>
+        </Stack>
         <Paper variant="outlined" sx={{ p: { xs: 2, sm: 3 } }}>
           {children}
         </Paper>

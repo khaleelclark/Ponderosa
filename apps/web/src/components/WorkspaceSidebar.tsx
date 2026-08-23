@@ -238,6 +238,19 @@ export function WorkspaceSidebar({
     }];
   });
   const activeProjectId = drawerProjectId;
+  const railProjectIds = useRef<string[]>([]);
+  const availableProjectIds = new Set(projects.map(project => project.id));
+  const stableProjectIds = railProjectIds.current.filter(projectId =>
+    availableProjectIds.has(projectId),
+  );
+  for (const project of projects) {
+    if (!stableProjectIds.includes(project.id)) stableProjectIds.push(project.id);
+  }
+  railProjectIds.current = stableProjectIds;
+  const stableRailProjects = stableProjectIds.flatMap(projectId => {
+    const project = projects.find(candidate => candidate.id === projectId);
+    return project ? [project] : [];
+  });
   const activeProject = activeProjectId
     ? projectById.get(activeProjectId)
     : undefined;
@@ -360,8 +373,9 @@ export function WorkspaceSidebar({
   const rail = (
     <ProjectRail
       drawer={drawer}
-      projects={projects}
+      projects={stableRailProjects}
       activeProjectId={activeProjectId}
+      currentProjectId={routedProjectId}
       route={route}
       profile={preferences.profile}
       unreadMessages={counts.unread}

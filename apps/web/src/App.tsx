@@ -69,6 +69,7 @@ import {
   workspaceResourceFromRoute,
 } from "./workspaceRecency";
 import { MobileWorkspaceActionsProvider } from "./components/MobileWorkspaceActionsContext";
+import { MobileNavigationProvider } from "./components/MobileNavigationContext";
 import {
   notificationsForAvailableProjects,
 } from "./attention";
@@ -533,8 +534,9 @@ export default function App({
     <ProjectBrowserContext.Provider
       value={{ projectId: selectedProjectId, open: openProjectBrowser }}
     >
-      <MobileWorkspaceActionsProvider>
-      <Box
+      <MobileNavigationProvider onOpen={() => setMobileNavOpen(true)}>
+        <MobileWorkspaceActionsProvider>
+        <Box
         sx={{
           height: {
             xs: "var(--ponderosa-app-viewport-block-size, 100dvh)",
@@ -782,8 +784,9 @@ export default function App({
           }}
           onClose={() => setEngineStatusOpen(false)}
         />
-      </Box>
-      </MobileWorkspaceActionsProvider>
+        </Box>
+        </MobileWorkspaceActionsProvider>
+      </MobileNavigationProvider>
     </ProjectBrowserContext.Provider>
   );
 }

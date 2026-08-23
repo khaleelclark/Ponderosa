@@ -68,12 +68,14 @@ function projectInitials(label: string): string {
 
 function ProjectRailButton({
   project,
-  selected,
+  current,
+  expanded,
   badge,
   onClick,
 }: {
   project: ProjectDto;
-  selected: boolean;
+  current: boolean;
+  expanded: boolean;
   badge?: number;
   onClick(): void;
 }): JSX.Element {
@@ -82,15 +84,18 @@ function ProjectRailButton({
     <Tooltip title={project.label} placement="right">
       <ButtonBase
         aria-label={badge ? `${project.label}, ${badge} unread` : project.label}
-        aria-current={selected ? "page" : undefined}
+        aria-current={current ? "page" : undefined}
+        aria-expanded={expanded}
         onClick={onClick}
         sx={{
           position: "relative",
           width: 48,
           minWidth: 48,
           height: 48,
-          borderRadius: selected ? 1.5 : 2,
-          bgcolor: selected ? "primary.main" : color,
+          borderRadius: current || expanded ? 1.5 : 2,
+          bgcolor: current ? "primary.main" : expanded ? "action.selected" : color,
+          outline: expanded && !current ? "2px solid" : "none",
+          outlineColor: "primary.main",
           color: "#F5F7F5",
           fontSize: 12,
           fontWeight: 850,
@@ -101,7 +106,7 @@ function ProjectRailButton({
             transform: "translateY(-1px)",
             filter: "brightness(1.12)",
           },
-          "&::before": selected
+          "&::before": current
             ? {
                 content: '\"\"',
                 position: "absolute",
@@ -138,6 +143,7 @@ export function ProjectRail({
   drawer,
   projects,
   activeProjectId,
+  currentProjectId,
   route,
   profile,
   unreadMessages,
@@ -159,6 +165,7 @@ export function ProjectRail({
   drawer: boolean;
   projects: ProjectDto[];
   activeProjectId?: string;
+  currentProjectId?: string;
   route: Route;
   profile: OperatorProfileDto;
   unreadMessages: number;
@@ -256,7 +263,8 @@ export function ProjectRail({
           <ProjectRailButton
             key={project.id}
             project={project}
-            selected={project.id === activeProjectId}
+            current={project.id === currentProjectId}
+            expanded={project.id === activeProjectId}
             badge={projectBadgeCounts.get(project.id)}
             onClick={() => onOpenProject(project)}
           />
@@ -424,7 +432,7 @@ export function ProjectSidebarHeader({
           return (
             <ButtonBase
               key={mode.id}
-              aria-current={section === mode.id ? "page" : undefined}
+              aria-pressed={section === mode.id}
               onClick={() => onSectionChange(mode.id)}
               sx={{
                 minWidth: 0,
@@ -441,7 +449,16 @@ export function ProjectSidebarHeader({
               }}
             >
               {mode.icon}
-              <Typography component="span" sx={{ maxWidth: "100%", fontSize: 9.5, fontWeight: 700 }} noWrap>
+              <Typography
+                component="span"
+                sx={{
+                  maxWidth: "100%",
+                  fontSize: mode.id === "triggers" ? 8.75 : 9.5,
+                  letterSpacing: mode.id === "triggers" ? "-.025em" : undefined,
+                  fontWeight: 700,
+                }}
+                noWrap
+              >
                 {mode.label}
               </Typography>
               {count == null ? null : (

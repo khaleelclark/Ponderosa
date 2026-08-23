@@ -74,16 +74,28 @@ function Section({
 function SummaryCard({
   label,
   value,
+  compactLabel,
+  compactValue,
   onClick,
 }: {
   label: string;
   value: string | number;
+  compactLabel?: string;
+  compactValue?: string | number;
   onClick?(): void;
 }): JSX.Element {
   const content = (
     <Stack spacing={0.25} sx={{ p: 1.5, minWidth: 0, textAlign: "left" }}>
-      <Typography variant="h5" fontWeight={800} noWrap>{value}</Typography>
-      <Typography variant="body2" color="text.secondary" noWrap>{label}</Typography>
+      <Typography variant="h5" fontWeight={800} noWrap>
+        {compactValue === undefined ? value : (
+          <><Box component="span" sx={{ display: { xs: "inline", sm: "none" } }}>{compactValue}</Box><Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>{value}</Box></>
+        )}
+      </Typography>
+      <Typography variant="body2" color="text.secondary" noWrap>
+        {compactLabel === undefined ? label : (
+          <><Box component="span" sx={{ display: { xs: "inline", sm: "none" } }}>{compactLabel}</Box><Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>{label}</Box></>
+        )}
+      </Typography>
     </Stack>
   );
   return (
@@ -206,8 +218,8 @@ export function HomeView({
           <Box sx={{ display: "grid", gridTemplateColumns: { xs: "repeat(2, minmax(0, 1fr))", md: "repeat(4, minmax(0, 1fr))" }, gap: 1.25 }}>
             <SummaryCard label="Active Agents" value={activeCount} onClick={() => onNavigate({ kind: "allAgents" })} />
             <SummaryCard label="Needs Attention" value={attention.length} onClick={onOpenInbox} />
-            <SummaryCard label="Enabled Automations" value={enabledAutomationCount} onClick={() => onNavigate({ kind: "allTriggers" })} />
-            <SummaryCard label="Provider Health" value={provider.label} />
+            <SummaryCard label="Enabled Automations" compactLabel="Automations" value={enabledAutomationCount} onClick={() => onNavigate({ kind: "allTriggers" })} />
+            <SummaryCard label="Provider Health" value={provider.label} compactValue={provider.label === "Engine ready" ? "Ready" : provider.label} />
           </Box>
 
           {projects.length === 0 ? (

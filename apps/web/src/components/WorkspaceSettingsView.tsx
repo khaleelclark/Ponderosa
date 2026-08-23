@@ -48,6 +48,7 @@ import {
   useOperatorProfileForm,
 } from "./OperatorProfileEditor";
 import { IconTitle } from "./IconTitle";
+import { MobileNavigationButton } from "./MobileNavigationContext";
 import {
   parseAgentRunConcurrencyLimit,
   RuntimeSettings,
@@ -74,6 +75,7 @@ function SettingsHeader({
         borderColor: "divider",
       }}
     >
+      <MobileNavigationButton />
       <Box sx={{ minWidth: 0 }}>
         <IconTitle
           icon={profile ? <PersonOutlineIcon /> : <SettingsOutlinedIcon />}

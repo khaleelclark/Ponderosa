@@ -282,10 +282,17 @@ export function NotificationPanel({ open, projects, firstPage, onClose, onNaviga
   };
 
   return <><Dialog open={open} onClose={onClose} fullScreen={fullScreen} fullWidth maxWidth="sm" aria-labelledby="notifications-title">
-    <DialogTitle id="notifications-title" sx={{ pb: 1 }}>
+    <DialogTitle sx={{ pb: 1 }}>
+      <Typography
+        id="notifications-title"
+        component="h2"
+        sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}
+      >
+        Notifications
+      </Typography>
       <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
         <Box sx={{ minWidth: 0, flex: 1 }}>
-          <Typography variant="h6" component="span">Notifications</Typography>
+          <Typography variant="h6" component="span" aria-hidden="true">Notifications</Typography>
           <Typography variant="body2" color="text.secondary">{notificationSummaryText(attentionCount, unreadUpdateCount)}</Typography>
         </Box>
         <IconButton aria-label="Close notifications" onClick={onClose}><CloseIcon /></IconButton>

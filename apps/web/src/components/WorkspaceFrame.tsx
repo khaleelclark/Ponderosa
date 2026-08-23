@@ -20,6 +20,7 @@ import {
 } from "react";
 import { IconTitle } from "./IconTitle";
 import { workspaceHeaderSurfaceSx } from "../theme";
+import { MobileNavigationButton } from "./MobileNavigationContext";
 
 type WorkspaceTabItem<T extends string> = { value: T; label: string; icon?: ReactElement };
 
@@ -179,6 +180,7 @@ export function CompactWorkspaceHeader({
           minWidth: 0,
         }}
       >
+        <MobileNavigationButton />
         <Box
           sx={{
             display: "flex",
@@ -297,6 +299,7 @@ export function TabbedWorkspaceFrame<T extends string>({
           flexWrap="nowrap"
           sx={{ alignItems: { xs: "flex-start", sm: "center" }, minWidth: 0 }}
         >
+          <MobileNavigationButton />
           <Box
             sx={{
               minWidth: 0,
