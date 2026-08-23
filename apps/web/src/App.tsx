@@ -20,7 +20,6 @@ import {
   routeForGlobalSearchSelection,
 } from "./components/GlobalChatSearch";
 import { NotificationPanel } from "./components/NotificationPanel";
-import { OperatorProfileDialog } from "./components/OperatorProfileDialog";
 import { ProjectCreationDialog } from "./components/ProjectCreationDialog";
 import {
   OnboardingCompleteDialog,
@@ -55,7 +54,6 @@ import {
   ProjectBrowserContext,
   type ProjectBrowserRequest,
 } from "./components/ProjectBrowserContext";
-import { engineAvailabilityPresentation } from "./conversationEngine";
 import { recheckProvider } from "./providerAuthRefresh";
 import { changedWorkspaceDirectoryKinds } from "./resourcePreferences";
 import {
@@ -64,10 +62,7 @@ import {
   serializeWorkspaceSidebarState,
 } from "./workspaceSidebarState";
 import { queryKeys } from "./queryKeys";
-import {
-  MobileWorkspaceDrawer,
-  WorkspaceAppHeader,
-} from "./App.mobile";
+import { MobileWorkspaceDrawer } from "./App.mobile";
 import { WorkspaceRouteOutlet } from "./App.workspace-content";
 import {
   markWorkspaceResourceUsed,
@@ -195,16 +190,11 @@ export default function App({
       : notificationsQuery.data?.items ?? [],
     [notificationsQuery.data, projectsQuery.data, projectsQuery.isSuccess],
   );
-  const notificationCounts = {
-    attentionCount: notificationsQuery.data?.attentionCount ?? 0,
-    unreadUpdateCount: notificationsQuery.data?.unreadUpdateCount ?? 0,
-  };
   const engines = enginesQuery.data ?? [];
   const providerEngines = useRef(engines);
   providerEngines.current = engines;
   const providerRecheckAt = useRef(new Map<string, number>());
   const providerRecheckInFlight = useRef(new Set<string>());
-  const engineAvailability = engineAvailabilityPresentation(engines);
   const theme = useTheme();
   const mobileWorkspace = useMediaQuery(theme.breakpoints.down("md"));
 
@@ -213,7 +203,6 @@ export default function App({
     useState(false);
   const [onboardingCompleteOpen, setOnboardingCompleteOpen] = useState(false);
   const onboardingPrompted = useRef(false);
-  const [operatorProfileOpen, setOperatorProfileOpen] = useState(false);
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [engineStatusOpen, setEngineStatusOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -540,9 +529,6 @@ export default function App({
   const openSettings = () => {
     navigateWorkspace({ kind: "settings", section: "general" });
   };
-  const openOperatorProfile = () => {
-    setOperatorProfileOpen(true);
-  };
   return (
     <ProjectBrowserContext.Provider
       value={{ projectId: selectedProjectId, open: openProjectBrowser }}
@@ -560,10 +546,7 @@ export default function App({
           overflow: "hidden",
           display: "grid",
           gridTemplateColumns: "minmax(0, 1fr)",
-          gridTemplateRows: {
-            xs: "auto minmax(0, 1fr)",
-            md: "minmax(0, 1fr)",
-          },
+          gridTemplateRows: "minmax(0, 1fr)",
           bgcolor: "background.default",
         }}
       >
@@ -588,22 +571,6 @@ export default function App({
         >
           Skip to content
         </Box>
-        <WorkspaceAppHeader
-          homeSelected={route.kind === "home"}
-          engineAvailability={engineAvailability}
-          attentionNotifications={notificationCounts.attentionCount}
-          unreadNotificationUpdates={notificationCounts.unreadUpdateCount}
-          profile={preferences.profile}
-          onOpenHome={() => navigateWorkspace({ kind: "home" })}
-          onOpenNavigation={() => setMobileNavOpen(true)}
-          onOpenEngineStatus={() => setEngineStatusOpen(true)}
-          onOpenSearch={() => setGlobalSearchOpen(true)}
-          onOpenNotifications={() => setNotificationPanelOpen(true)}
-          onOpenProfile={openOperatorProfile}
-          onOpenSettings={openSettings}
-          onOpenUsage={() => navigateWorkspace({ kind: "usage" })}
-        />
-
         <Box
           sx={{
             height: "100%",
@@ -814,12 +781,6 @@ export default function App({
             openSettings();
           }}
           onClose={() => setEngineStatusOpen(false)}
-        />
-        <OperatorProfileDialog
-          open={operatorProfileOpen}
-          profile={preferences.profile}
-          onClose={() => setOperatorProfileOpen(false)}
-          onSave={profile => savePreferences({ profile })}
         />
       </Box>
       </MobileWorkspaceActionsProvider>
