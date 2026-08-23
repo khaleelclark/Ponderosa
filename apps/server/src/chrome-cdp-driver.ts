@@ -14,18 +14,31 @@ const MAX_BROWSER_LAUNCH_ERROR = 4_000;
 export interface BrowserRuntimeCapabilities {
   multiPage: boolean;
   fileUpload: boolean;
+  hostedHeaded: boolean;
+  persistentProfiles: boolean;
 }
 
 export function browserRuntimeCapabilities(env: NodeJS.ProcessEnv = process.env): BrowserRuntimeCapabilities {
   return {
     multiPage: env.PONDEROSA_BROWSER_MULTI_PAGE === "1" || env.NODE_ENV === "development",
     fileUpload: env.PONDEROSA_BROWSER_FILE_UPLOAD === "1" || env.NODE_ENV === "development",
+    hostedHeaded: env.PONDEROSA_BROWSER_HOSTED_HEADED !== "0" && Boolean(findVirtualDisplayExecutable(env.PONDEROSA_BROWSER_XVFB_EXECUTABLE)),
+    persistentProfiles: true,
   };
+}
+
+export interface BrowserDriverLaunchOptions {
+  /** Overrides the disposable per-session profile directory. */
+  profileDir?: string;
+  /** Trusted profile contents survive ordinary browser close and restart. */
+  retainProfile?: boolean;
+  /** Request a host display backed headed Chrome process. */
+  hostedHeaded?: boolean;
 }
 
 export class BrowserDriverActionError extends Error {
   constructor(
-    readonly reason: "invalid_selector" | "selector_not_found" | "selector_not_editable" | "page_not_found" | "last_page" | "upload_disabled" | "selector_not_file_input" | "file_input_disabled" | "file_type_not_accepted" | "no_pending_file_chooser" | "stale_file_chooser" | "unsupported_file_chooser" | "upload_verification_failed",
+    readonly reason: "invalid_selector" | "selector_not_found" | "selector_not_editable" | "page_not_found" | "last_page" | "upload_disabled" | "selector_not_file_input" | "file_input_disabled" | "file_type_not_accepted" | "no_pending_file_chooser" | "stale_file_chooser" | "unsupported_file_chooser" | "stale_upload_context" | "upload_verification_failed",
   ) {
     super(reason);
     this.name = "BrowserDriverActionError";
@@ -125,7 +138,101 @@ export type BrowserDriverFactory = (
    * on the final publication; a settled factory is also implicitly complete. */
   onSpawned?: (handle: BrowserTerminationHandle, options?: BrowserSpawnPublicationOptions) => void,
   onPageEvent?: (event: BrowserPageEvent) => void,
+  launch?: BrowserDriverLaunchOptions,
 ) => Promise<BrowserDriver>;
+
+interface HostedDisplay {
+  child: ChildProcess;
+  display: string;
+  reservationPath: string;
+}
+
+function findVirtualDisplayExecutable(configured = process.env.PONDEROSA_BROWSER_XVFB_EXECUTABLE): string | undefined {
+  const candidates = [
+    configured && path.isAbsolute(configured) ? configured : undefined,
+    "/usr/bin/Xvfb",
+    "/usr/local/bin/Xvfb",
+  ].filter((value): value is string => Boolean(value));
+  return candidates.find((candidate) => existsSync(candidate));
+}
+
+async function waitForDisplay(child: ChildProcess, displayNumber: number): Promise<void> {
+  const socket = `/tmp/.X11-unix/X${displayNumber}`;
+  const deadline = Date.now() + 5_000;
+  let spawnError: Error | undefined;
+  child.on("error", (error) => { spawnError = error; });
+  while (Date.now() < deadline) {
+    if (spawnError) throw spawnError;
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error("host browser display exited during startup");
+    }
+    if (existsSync(socket)) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("host browser display did not become ready");
+}
+
+async function spawnHostedDisplay(
+  executable: string,
+  publish?: (display: HostedDisplay) => boolean,
+): Promise<HostedDisplay> {
+  for (let attempt = 0; attempt < 64; attempt += 1) {
+    const displayNumber = 100 + Math.floor(Math.random() * 900);
+    const reservationPath = `/tmp/ponderosa-xvfb-${displayNumber}.lock`;
+    let reservation: import("node:fs/promises").FileHandle;
+    try {
+      reservation = await fs.open(reservationPath, "wx", 0o600);
+      await reservation.close();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        const stale = await fs.stat(reservationPath).then((stat) => Date.now() - stat.mtimeMs > 30_000, () => false);
+        if (stale && !existsSync(`/tmp/.X${displayNumber}-lock`) && !existsSync(`/tmp/.X11-unix/X${displayNumber}`)) {
+          await fs.rm(reservationPath, { force: true }).catch(() => undefined);
+        }
+        continue;
+      }
+      throw error;
+    }
+    if (existsSync(`/tmp/.X${displayNumber}-lock`) || existsSync(`/tmp/.X11-unix/X${displayNumber}`)) {
+      await fs.rm(reservationPath, { force: true });
+      continue;
+    }
+    const child = spawn(executable, [
+      `:${displayNumber}`,
+      "-screen", "0", `${VIEWPORT.width}x${VIEWPORT.height}x24`,
+      "-nolisten", "tcp", "-noreset",
+    ], {
+      stdio: ["ignore", "ignore", "pipe"],
+      env: Object.fromEntries(["PATH", "HOME", "TMPDIR", "XDG_RUNTIME_DIR", "LANG", "LC_ALL"]
+        .flatMap((name) => process.env[name] === undefined ? [] : [[name, process.env[name]!] as const])),
+      detached: process.platform !== "win32",
+    });
+    const hostedDisplay = { child, display: `:${displayNumber}`, reservationPath };
+    let externallyOwned = false;
+    try {
+      // A detached Xvfb is durable process authority as soon as spawn returns.
+      // Publish it before readiness polling so restart recovery can terminate
+      // it even if this daemon exits during waitForDisplay().
+      externallyOwned = publish?.(hostedDisplay) ?? false;
+      await waitForDisplay(child, displayNumber);
+      return hostedDisplay;
+    } catch (error) {
+      if (externallyOwned) throw error;
+      let cleanupError: unknown;
+      try {
+        await terminateBrowserProcess(child);
+        if (processGroupAlive(child)) throw new Error("host browser display process exit was not confirmed");
+        await fs.rm(reservationPath, { force: true });
+      } catch (candidate) {
+        cleanupError = candidate;
+      }
+      if (cleanupError) {
+        throw new AggregateError([error, cleanupError], "host browser display readiness and cleanup failed");
+      }
+    }
+  }
+  throw new Error("host browser display capacity is unavailable");
+}
 
 interface CdpReply {
   id?: number;
@@ -142,6 +249,14 @@ async function terminateBrowserProcess(child: ChildProcess): Promise<void> {
     termGraceMs: 2_000,
     killConfirmationMs: 2_000,
   });
+}
+
+async function waitForBrowserProcessExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (processGroupAlive(child) && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+  }
+  return !processGroupAlive(child);
 }
 
 async function removeBrowserProfile(profileDir: string): Promise<void> {
@@ -248,7 +363,7 @@ class ChromeCdpDriver implements BrowserDriver {
   private readonly uploadedInputs = new Map<string, Array<{
     uploadId: string;
     cdpSessionId: string;
-    reference: { nodeId?: number; backendNodeId?: number };
+    reference: { nodeId?: number; backendNodeId?: number; objectId?: string };
   }>>();
   private pendingChooser?: {
     pageId: string;
@@ -264,8 +379,10 @@ class ChromeCdpDriver implements BrowserDriver {
 
   private constructor(
     private readonly child: ChildProcess,
+    private readonly display: HostedDisplay | undefined,
     private readonly connection: CdpConnection,
     private readonly profileDir: string,
+    private readonly retainProfile: boolean,
     private readonly onConsole: Parameters<BrowserDriverFactory>[1],
     private readonly onPageEvent: Parameters<BrowserDriverFactory>[3],
     private readonly multiPageEnabled: boolean,
@@ -274,7 +391,9 @@ class ChromeCdpDriver implements BrowserDriver {
     readonly processIdentity: RuntimeProcessIdentity | undefined,
   ) {}
 
-  isAlive(): boolean { return processGroupAlive(this.child); }
+  isAlive(): boolean {
+    return processGroupAlive(this.child) || Boolean(this.display && processGroupAlive(this.display.child));
+  }
 
   static async create(
     executable: string,
@@ -282,40 +401,87 @@ class ChromeCdpDriver implements BrowserDriver {
     onConsole: Parameters<BrowserDriverFactory>[1],
     onSpawned?: Parameters<BrowserDriverFactory>[2],
     onPageEvent?: Parameters<BrowserDriverFactory>[3],
+    launch: BrowserDriverLaunchOptions = {},
   ): Promise<ChromeCdpDriver> {
     await fs.mkdir(profileDir, { recursive: true, mode: 0o700 });
-    const child = spawn(executable, [
-      "--headless=new", "--remote-debugging-pipe", `--user-data-dir=${profileDir}`,
-      `--window-size=${VIEWPORT.width},${VIEWPORT.height}`, "--no-first-run",
-      "--no-default-browser-check", "--disable-background-networking", "--disable-component-update",
-      "--disable-dev-shm-usage", "--disable-features=Translate,OptimizationHints", "about:blank",
-    ], {
-      stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
-      env: Object.fromEntries(["PATH", "HOME", "TMPDIR", "XDG_RUNTIME_DIR", "LANG", "LC_ALL"]
-        .flatMap((name) => process.env[name] === undefined ? [] : [[name, process.env[name]!] as const])),
-      detached: process.platform !== "win32",
-    });
-    let launchError = "";
-    child.stderr?.setEncoding("utf8");
-    child.stderr?.on("data", (chunk: string) => { launchError = `${launchError}${chunk}`.slice(-MAX_BROWSER_LAUNCH_ERROR); });
+    const hostedHeaded = launch.hostedHeaded !== false && process.env.PONDEROSA_BROWSER_HOSTED_HEADED !== "0";
+    const displayExecutable = hostedHeaded ? findVirtualDisplayExecutable() : undefined;
+    // Hosts without the packaged display service keep the existing isolated
+    // headless browser available and advertise hostedHeaded=false. Hosted
+    // deployments include Xvfb, so clients never need local browser software.
     const terminationAuthority = {};
-    const processIdentity = runtimeProcessIdentity(child);
-    const spawnHandle: BrowserTerminationHandle = {
-      terminationAuthority,
-      ...(processIdentity ? { processIdentity } : {}),
-      isAlive: () => processGroupAlive(child),
-      close: async () => { await terminateBrowserProcess(child); await removeBrowserProfile(profileDir); },
+    let display: HostedDisplay | undefined;
+    let child: ChildProcess | undefined;
+    const closeAll = async (): Promise<void> => {
+      const failures: unknown[] = [];
+      if (child) await terminateBrowserProcess(child).catch((error) => failures.push(error));
+      if (display) {
+        await terminateBrowserProcess(display.child).catch((error) => failures.push(error));
+        if (!processGroupAlive(display.child)) {
+          await fs.rm(display.reservationPath, { force: true }).catch((error) => failures.push(error));
+        }
+      }
+      if (!launch.retainProfile) await removeBrowserProfile(profileDir).catch((error) => failures.push(error));
+      if (failures.length) throw new AggregateError(failures, "host browser cleanup did not complete");
     };
     let externallyOwned = false;
+    if (displayExecutable) {
+      display = await spawnHostedDisplay(displayExecutable, (spawned) => {
+        display = spawned;
+        if (!onSpawned) return false;
+        const displayHandle: BrowserTerminationHandle = {
+          terminationAuthority,
+          processIdentity: runtimeProcessIdentity(spawned.child),
+          isAlive: () => processGroupAlive(spawned.child),
+          close: closeAll,
+        };
+        onSpawned(displayHandle);
+        externallyOwned = true;
+        return true;
+      });
+    }
     try {
-      if (onSpawned) { onSpawned(spawnHandle, { complete: true, coversReturnedDriver: true }); externallyOwned = true; }
+      child = spawn(executable, [
+        ...(!display ? ["--headless=new"] : []), "--remote-debugging-pipe", `--user-data-dir=${profileDir}`,
+        `--window-size=${VIEWPORT.width},${VIEWPORT.height}`, "--no-first-run",
+        "--no-default-browser-check", "--disable-background-networking", "--disable-component-update",
+        "--disable-dev-shm-usage", "--disable-features=Translate,OptimizationHints", "about:blank",
+      ], {
+        stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
+        env: {
+          ...Object.fromEntries(["PATH", "HOME", "TMPDIR", "XDG_RUNTIME_DIR", "LANG", "LC_ALL"]
+            .flatMap((name) => process.env[name] === undefined ? [] : [[name, process.env[name]!] as const])),
+          ...(display ? { DISPLAY: display.display } : {}),
+        },
+        detached: process.platform !== "win32",
+      });
+    } catch (error) {
+      if (!externallyOwned) await closeAll();
+      throw error;
+    }
+    let launchError = "";
+    child.on("error", (error) => { launchError = `${launchError}${error.message}`.slice(-MAX_BROWSER_LAUNCH_ERROR); });
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => { launchError = `${launchError}${chunk}`.slice(-MAX_BROWSER_LAUNCH_ERROR); });
+    try {
+      if (onSpawned) {
+        const browserHandle: BrowserTerminationHandle = {
+          terminationAuthority,
+          processIdentity: runtimeProcessIdentity(child),
+          isAlive: () => processGroupAlive(child!),
+          close: closeAll,
+        };
+        onSpawned(browserHandle, { complete: true, coversReturnedDriver: true });
+        externallyOwned = true;
+      }
       const input = child.stdio[3] as Writable | null;
       const output = child.stdio[4] as Readable | null;
       if (!input || !output) throw new Error("browser debugging pipe could not be created");
       const connection = new CdpConnection(input, output);
       const capabilities = browserRuntimeCapabilities();
+      const processIdentity = runtimeProcessIdentity(child);
       const driver = new ChromeCdpDriver(
-        child, connection, profileDir, onConsole, onPageEvent,
+        child, display, connection, profileDir, Boolean(launch.retainProfile), onConsole, onPageEvent,
         capabilities.multiPage,
         capabilities.fileUpload,
         terminationAuthority, processIdentity,
@@ -348,7 +514,7 @@ class ChromeCdpDriver implements BrowserDriver {
       driver.emitPageEvent("page_activate", driver.activePageId, undefined, false, "initial");
       return driver;
     } catch (error) {
-      if (!externallyOwned) await spawnHandle.close();
+      if (!externallyOwned) await closeAll();
       const primary = error instanceof Error ? error.message : String(error);
       const diagnostics = redactBrowserText(launchError.trim());
       throw new Error(diagnostics ? `${primary}\n${diagnostics}` : primary);
@@ -930,26 +1096,41 @@ class ChromeCdpDriver implements BrowserDriver {
     const page = this.currentPage();
     let nodeReference: { nodeId?: number; backendNodeId?: number };
     let objectId: string;
+    let assignmentAttempted = false;
+    const uploadCommand = async (
+      method: string,
+      params: Record<string, unknown>,
+    ): Promise<Record<string, unknown>> => {
+      try {
+        return await this.connection.send(method, params, page.cdpSessionId);
+      } catch {
+        throw new BrowserDriverActionError(
+          assignmentAttempted ? "upload_verification_failed" : "stale_upload_context",
+        );
+      }
+    };
 
     if (input.selector) {
-      const selected = await this.connection.send("Runtime.evaluate", {
+      const selected = await uploadCommand("Runtime.evaluate", {
         expression: `(() => { let el; try { el=document.querySelector(${JSON.stringify(input.selector)}); } catch { return null; } return el; })()`,
         returnByValue: false,
         awaitPromise: true,
         userGesture: true,
-      }, page.cdpSessionId);
+      });
       const remote = selected.result as { objectId?: string; subtype?: string; value?: unknown } | undefined;
       if (!remote?.objectId) {
-        const syntax = await this.connection.send("Runtime.evaluate", {
+        const syntax = await uploadCommand("Runtime.evaluate", {
           expression: `(() => { try { document.querySelector(${JSON.stringify(input.selector)}); return true; } catch { return false; } })()`,
           returnByValue: true,
-        }, page.cdpSessionId);
+        });
         const valid = (syntax.result as { value?: unknown } | undefined)?.value === true;
         throw new BrowserDriverActionError(valid ? "selector_not_found" : "invalid_selector");
       }
       objectId = remote.objectId;
-      const requested = await this.connection.send("DOM.requestNode", { objectId }, page.cdpSessionId);
-      nodeReference = { nodeId: Number(requested.nodeId) };
+      // CDP accepts the remote object directly. DOM.requestNode may legally
+      // return no frontend node for hidden/framework-owned file inputs; passing
+      // that missing node produced a raw protocol 500 instead of attaching.
+      nodeReference = {};
     } else {
       const chooser = this.pendingChooser;
       if (!chooser) throw new BrowserDriverActionError("no_pending_file_chooser");
@@ -960,16 +1141,15 @@ class ChromeCdpDriver implements BrowserDriver {
       }
       if (chooser.mode !== "selectSingle") throw new BrowserDriverActionError("unsupported_file_chooser");
       nodeReference = { backendNodeId: chooser.backendNodeId };
-      const resolved = await this.connection.send(
+      const resolved = await uploadCommand(
         "DOM.resolveNode",
         { backendNodeId: chooser.backendNodeId },
-        page.cdpSessionId,
       );
       objectId = String((resolved.object as { objectId?: unknown } | undefined)?.objectId ?? "");
       if (!objectId) throw new BrowserDriverActionError("unsupported_file_chooser");
     }
 
-    const inputStateReply = await this.connection.send("Runtime.callFunctionOn", {
+    const inputStateReply = await uploadCommand("Runtime.callFunctionOn", {
       objectId,
       functionDeclaration: `function(name, mediaType) {
         if (!(this instanceof HTMLInputElement) || this.type !== "file") return {code:"selector_not_file_input"};
@@ -988,7 +1168,7 @@ class ChromeCdpDriver implements BrowserDriver {
       }`,
       arguments: [{ value: input.expectedName }, { value: input.expectedMediaType }],
       returnByValue: true,
-    }, page.cdpSessionId);
+    });
     const inputState = (inputStateReply.result as { value?: { code?: string } } | undefined)?.value;
     if (inputState?.code !== "ok") {
       const code = inputState?.code;
@@ -1000,18 +1180,20 @@ class ChromeCdpDriver implements BrowserDriver {
       );
     }
 
-    const reference = nodeReference.nodeId
-      ? { nodeId: nodeReference.nodeId }
-      : { backendNodeId: nodeReference.backendNodeId };
-    await this.connection.send(
-      "DOM.setFileInputFiles",
-      { files: [input.stagedPath], ...reference },
-      page.cdpSessionId,
-    );
+    const reference = input.selector
+      ? { objectId }
+      : nodeReference.nodeId
+        ? { nodeId: nodeReference.nodeId }
+        : { backendNodeId: nodeReference.backendNodeId };
     const assigned = this.uploadedInputs.get(page.pageId) ?? [];
     assigned.push({ uploadId: input.uploadId, cdpSessionId: page.cdpSessionId, reference });
     this.uploadedInputs.set(page.pageId, assigned);
-    const metadataReply = await this.connection.send("Runtime.callFunctionOn", {
+    assignmentAttempted = true;
+    await uploadCommand(
+      "DOM.setFileInputFiles",
+      { files: [input.stagedPath], ...reference },
+    );
+    const metadataReply = await uploadCommand("Runtime.callFunctionOn", {
       objectId,
       functionDeclaration: `function() {
         const file = this.files?.[0];
@@ -1023,7 +1205,7 @@ class ChromeCdpDriver implements BrowserDriver {
         };
       }`,
       returnByValue: true,
-    }, page.cdpSessionId);
+    });
     const metadata = (metadataReply.result as {
       value?: { name?: unknown; size?: unknown; type?: unknown; count?: unknown };
     } | undefined)?.value;
@@ -1039,7 +1221,12 @@ class ChromeCdpDriver implements BrowserDriver {
         verified.type !== input.expectedMediaType) {
       throw new BrowserDriverActionError("upload_verification_failed");
     }
-    const info = await this.pageInfo();
+    let info: BrowserPageInfo;
+    try {
+      info = await this.pageInfo();
+    } catch {
+      throw new BrowserDriverActionError("upload_verification_failed");
+    }
     return { ...info, pageId: page.pageId, input: verified };
   }
 
@@ -1084,8 +1271,17 @@ class ChromeCdpDriver implements BrowserDriver {
         new Promise<void>((resolve) => { closeTimer = setTimeout(resolve, 250); }),
       ]);
     } finally { if (closeTimer) clearTimeout(closeTimer); }
-    await terminateBrowserProcess(this.child);
-    await removeBrowserProfile(this.profileDir);
+    // Trusted cookies and site storage are durable only after Chrome has
+    // completed its own shutdown. Give Browser.close a bounded opportunity to
+    // flush the profile, then retain the existing TERM/KILL containment path.
+    if (!await waitForBrowserProcessExit(this.child, 2_000)) {
+      await terminateBrowserProcess(this.child);
+    }
+    if (this.display) {
+      await terminateBrowserProcess(this.display.child);
+      await fs.rm(this.display.reservationPath, { force: true });
+    }
+    if (!this.retainProfile) await removeBrowserProfile(this.profileDir);
   }
 }
 
@@ -1101,11 +1297,11 @@ export function findBrowserExecutable(configured = process.env.PONDEROSA_BROWSER
 }
 
 export function chromeBrowserDriverFactory(dataDir: string, executable = findBrowserExecutable()): BrowserDriverFactory {
-  return async (sessionId, onConsole, onSpawned, onPageEvent) => {
+  return async (sessionId, onConsole, onSpawned, onPageEvent, launch = {}) => {
     if (!executable) {
       throw new Error("host browser is unavailable; set PONDEROSA_BROWSER_EXECUTABLE to a Chromium/Chrome binary");
     }
-    const profileDir = path.join(dataDir, "browser-sessions", sessionId);
-    return ChromeCdpDriver.create(executable, profileDir, onConsole, onSpawned, onPageEvent);
+    const profileDir = launch.profileDir ?? path.join(dataDir, "browser-sessions", sessionId);
+    return ChromeCdpDriver.create(executable, profileDir, onConsole, onSpawned, onPageEvent, launch);
   };
 }

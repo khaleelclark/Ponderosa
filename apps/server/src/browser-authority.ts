@@ -9,6 +9,7 @@ import {
 } from "./browser-session-manager.js";
 import type { ActiveRun } from "./app-contracts.js";
 import type { ProviderProcessAuthority } from "./provider-process-authority.js";
+import { BrowserProfileAuthority } from "./browser-profile-authority.js";
 
 interface BrowserAuthorityContext {
   dataDir: string;
@@ -23,16 +24,17 @@ interface BrowserAuthorityContext {
     event: LogEvent | AgentEvent,
   ): Promise<StoredLogEvent | undefined>;
   providerProcessAuthority: ProviderProcessAuthority;
+  browserAdmissionAllowed(scope: BrowserScope): boolean;
 }
 
 export function durableBrowserDriverFactory(
   factory: BrowserDriverFactory,
   register: (handle: Parameters<NonNullable<Parameters<BrowserDriverFactory>[2]>>[0], sessionId: string) => void,
 ): BrowserDriverFactory {
-  return (sessionId, onConsole, onSpawned, onPageEvent) => factory(sessionId, onConsole, (handle, options) => {
+  return (sessionId, onConsole, onSpawned, onPageEvent, launch) => factory(sessionId, onConsole, (handle, options) => {
     if (handle.processIdentity) register(handle, sessionId);
     onSpawned?.(handle, options);
-  }, onPageEvent);
+  }, onPageEvent, launch);
 }
 
 export function createBrowserAuthority(context: BrowserAuthorityContext) {
@@ -45,6 +47,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     persistRuntimeEvent,
     logWarn,
     providerProcessAuthority,
+    browserAdmissionAllowed,
   } = context;
 
   const browserFactory = durableBrowserDriverFactory(
@@ -53,6 +56,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
       purpose: `browser session ${sessionId}`,
     }),
   );
+  const browserProfiles = new BrowserProfileAuthority(dataDir);
 
   const resolveUploadArtifact = async (
     scope: BrowserScope,
@@ -123,6 +127,8 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
       });
     },
     resolveUploadArtifact,
+    browserProfiles,
+    browserAdmissionAllowed,
   );
   const projectBrowserGrants = new Map<string, { agentId: string; runId: string }>();
   const projectBrowserSessions = new BrowserSessionManager(
@@ -170,6 +176,8 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
       });
     },
     resolveUploadArtifact,
+    browserProfiles,
+    browserAdmissionAllowed,
   );
 
   function browserScopeForRun(agentId: string, run: ActiveRun): BrowserScope | undefined {
@@ -183,29 +191,49 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     };
   }
 
+  async function releaseProjectBrowserGrant(
+    agentId: string,
+    reason: string,
+    exactRunId?: string,
+  ): Promise<void> {
+    const agent = store.getAgent(agentId);
+    const projectId = agent?.projectId;
+    if (!projectId) return;
+    const grant = projectBrowserGrants.get(projectId);
+    if (!grant || grant.agentId !== agentId || (exactRunId !== undefined && grant.runId !== exactRunId)) return;
+    projectBrowserGrants.delete(projectId);
+    const projectScope = projectBrowserScope(projectId);
+    const session = projectBrowserSessions.get(projectScope.agentId);
+    if (session?.status === "opening") {
+      // An opening has no safe control handoff point. Close it and await its
+      // retained process/lease cleanup before releasing the owner authority.
+      await projectBrowserSessions.close(projectScope, reason);
+    } else if (session?.status === "ready" && session.controlOwner === "agent") {
+      try {
+        await projectBrowserSessions.setControl(projectScope, "operator", session.controlEpoch);
+      } catch {
+        // A browser whose former controller cannot be returned safely is
+        // closed rather than left stranded under a removed grant.
+        await projectBrowserSessions.close(projectScope, reason);
+      }
+    }
+  }
+
   function closeRunBrowser(
     agentId: string,
     run: ActiveRun,
     reason: string,
   ): Promise<void> {
     const scope = browserScopeForRun(agentId, run);
-    const releaseProjectBrowser = async (): Promise<void> => {
-      const agent = store.getAgent(agentId);
-      const projectId = agent?.projectId;
-      if (!projectId) return;
-      const grant = projectBrowserGrants.get(projectId);
-      if (!grant || grant.agentId !== agentId || grant.runId !== run.runId) return;
-      projectBrowserGrants.delete(projectId);
-      const projectScope = projectBrowserScope(projectId);
-      const session = projectBrowserSessions.get(projectScope.agentId);
-      if (session?.status === "ready" && session.controlOwner === "agent") {
-        await projectBrowserSessions.setControl(projectScope, "operator", session.controlEpoch).catch(() => undefined);
-      }
-    };
     return Promise.all([
       scope ? browserSessions.closeRun(scope, reason) : Promise.resolve(),
-      releaseProjectBrowser(),
+      releaseProjectBrowserGrant(agentId, reason, run.runId),
     ]).then(() => undefined);
+  }
+
+  async function closeAgentBrowsers(agentId: string, reason: string): Promise<void> {
+    await releaseProjectBrowserGrant(agentId, reason);
+    await browserSessions.closeAgent(agentId, reason);
   }
 
   const projectBrowserScope = (projectId: string, grant?: { agentId: string; runId: string }): BrowserScope => ({
@@ -244,7 +272,9 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
 
   return {
     browserScopeForRun,
+    browserProfiles,
     browserSessions,
+    closeAgentBrowsers,
     closeRunBrowser,
     projectBrowserDto,
     projectBrowserGrants,

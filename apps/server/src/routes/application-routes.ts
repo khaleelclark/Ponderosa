@@ -88,7 +88,7 @@ type ApplicationRoutesContext =
   Omit<Parameters<typeof registerStreamRoutes>[1],
     "serverClosed" | "maxSubscribersPerStream" | "agentSubscriberCount"> &
   Omit<Parameters<typeof registerBrowserRoutes>[1],
-    "projectExists" | "projectDeletionInProgress" | "operatorBrowserScope" |
+    "projectExists" | "agentExists" | "projectDeletionInProgress" | "agentDeletionInProgress" | "operatorBrowserScope" |
     "getProjectBrowserGrant" | "setProjectBrowserGrant" |
     "deleteProjectBrowserGrant" | "activeProjectBrowserController"> &
   Parameters<typeof registerProviderCommandRoutes>[1] &
@@ -186,6 +186,7 @@ export function registerApplicationRoutes(
     commitAgentDeletion,
     contextCursors,
     browserScopeForRun,
+    browserProfiles,
     browserSessions,
     closeRunBrowser,
     projectBrowserDto,
@@ -316,6 +317,7 @@ registerProjectDeletionRoutes(app, {
   projectBrowserGrants,
   browserSessions,
   projectBrowserSessions,
+  browserProfiles,
   agentMessageCapabilities,
   subscribers,
   scheduledSessionRollovers,
@@ -766,10 +768,13 @@ registerStreamRoutes(app, {
 });
 
 registerBrowserRoutes(app, {
+  browserProfiles,
   browserSessions,
   projectBrowserSessions,
   projectExists: (projectId) => Boolean(store.getProject(projectId)),
+  agentExists: (projectId, agentId) => store.getAgent(agentId)?.projectId === projectId,
   projectDeletionInProgress: (projectId) => deletingProjectIds.has(projectId),
+  agentDeletionInProgress: (agentId) => deletingAgentIds.has(agentId),
   operatorBrowserScope: (params) => {
     const agent = store.getAgent(params.id);
     if (!agent || agent.projectId !== params.projectId) {
@@ -794,7 +799,8 @@ registerBrowserRoutes(app, {
   activeProjectBrowserController: (projectId, agentId) => {
     const agent = agentId ? store.getAgent(agentId) : undefined;
     const run = agent ? activeRuns.get(agent.id) : undefined;
-    if (!agent || agent.projectId !== projectId || !run || !ownsActiveRun(agent.id, run)) return undefined;
+    if (!agent || agent.projectId !== projectId || deletingProjectIds.has(projectId) ||
+        deletingAgentIds.has(agent.id) || !run || !ownsActiveRun(agent.id, run)) return undefined;
     return {
       grant: { agentId: agent.id, runId: run.runId },
       privateScope: () => browserScopeForRun(agent.id, run),

@@ -401,10 +401,15 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     });
     if (!providerEnabled(engineId)) resolveOperationalNotification(`provider:${engineId}:unavailable`);
   }
+  const deletingProjectIds = new Set(store.listPendingProjectDeletions().map((entry) => entry.projectId));
+  const deletingAgentIds = new Set<string>([...deletingProjectIds].flatMap((projectId) =>
+    store.listAgents(projectId).map((agent) => agent.id)));
   const contextCursors = new ContextCursorStore(opts.dataDir);
   const {
     browserScopeForRun,
+    browserProfiles,
     browserSessions,
+    closeAgentBrowsers,
     closeRunBrowser,
     projectBrowserDto,
     projectBrowserGrants,
@@ -418,6 +423,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     logWarn: (meta, message) => app.log.warn(meta, message),
     persistRuntimeEvent: (agentId, run, event) => persistRuntimeEvent(agentId, run, event as LogEvent),
     providerProcessAuthority,
+    browserAdmissionAllowed: (scope) =>
+      !deletingProjectIds.has(scope.projectId) &&
+      !deletingAgentIds.has(scope.agentId) &&
+      !(scope.actorAgentId && deletingAgentIds.has(scope.actorAgentId)),
   });
   const managedWorkspacesRoot = path.resolve(opts.dataDir, "workspaces");
   const projectFolderPathBoundary = createProjectFolderPathBoundary({
@@ -455,9 +464,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   // Agent chat without allowing clients to forge canonical communication IDs.
   const v3DispatchKey = randomUUID();
   const subscribers = new Map<string, Set<Subscriber>>();
-  const deletingProjectIds = new Set(store.listPendingProjectDeletions().map((entry) => entry.projectId));
-  const deletingAgentIds = new Set<string>([...deletingProjectIds].flatMap((projectId) =>
-    store.listAgents(projectId).map((agent) => agent.id)));
   const rejectQuarantinedTriggerMutation = (
     target: { projectId: string; agentId: string },
     reply: FastifyReply,
@@ -744,6 +750,8 @@ app.server.on("upgrade", linkPreviewUpgrade);
     createOperationalNotification,
     resolveOperationalNotification,
     providerProcessAuthority,
+    browserProfiles,
+    closeAgentBrowsers,
   });
   const coordinationV3Scheduler = createCoordinationScheduler(app, {
     opts,
@@ -942,6 +950,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     engines,
     managementPlans,
     deletingAgentIds,
+    deletingProjectIds,
     cachedModelOptions,
     publicManagementOperations,
     commitAgentDeletion,
@@ -1041,6 +1050,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     commitAgentDeletion,
     contextCursors,
     browserScopeForRun,
+    browserProfiles,
     browserSessions,
     closeRunBrowser,
     projectBrowserDto,

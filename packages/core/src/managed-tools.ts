@@ -386,7 +386,7 @@ export const PONDEROSA_BROWSER_TOOLS: RuntimeDynamicToolSpec[] = [
   },
   {
     name: "ponderosa_browser_act",
-    description: "Operate the owned browser by CSS selector or key. Fails while the operator has control. Fill text is never copied into the activity summary.",
+    description: "Operate the owned browser by CSS selector or key. Fails while the operator has control. Fill text is never copied into the activity summary. Before an action that may submit, purchase, send, or change an account, declare consequence and a stable attempt_id so retries are visible and distinguishable in the audit trail.",
     inputSchema: {
       type: "object", additionalProperties: false, required: ["action"],
       properties: {
@@ -394,6 +394,8 @@ export const PONDEROSA_BROWSER_TOOLS: RuntimeDynamicToolSpec[] = [
         selector: { type: "string", minLength: 1, maxLength: 500 },
         text: { type: "string" },
         key: { type: "string", minLength: 1, maxLength: 40 },
+        consequence: { type: "string", enum: ["submission", "purchase", "message", "account_change", "other"] },
+        attempt_id: { type: "string", minLength: 1, maxLength: 120 },
       },
     },
   },

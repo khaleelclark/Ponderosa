@@ -9,6 +9,7 @@ import type {
 } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
 import type { BrowserSessionManager } from "./browser-session-manager.js";
+import type { BrowserProfileAuthority } from "./browser-profile-authority.js";
 import type { ContextCursorStore } from "./context-cursors.js";
 import type { TriggerSourceService } from "./trigger-service.js";
 import type {
@@ -40,6 +41,7 @@ interface ProjectDeletionCoordinatorContext {
   projectBrowserGrants: Map<string, { agentId: string; runId: string }>;
   browserSessions: BrowserSessionManager;
   projectBrowserSessions: BrowserSessionManager;
+  browserProfiles: BrowserProfileAuthority;
   agentMessageCapabilities: Map<string, AgentMessageCapability>;
   subscribers: Map<string, Set<Subscriber>>;
   scheduledSessionRollovers: Map<string, string>;
@@ -88,6 +90,7 @@ export function registerProjectDeletionRoutes(
     projectBrowserGrants,
     browserSessions,
     projectBrowserSessions,
+    browserProfiles,
     agentMessageCapabilities,
     subscribers,
     scheduledSessionRollovers,
@@ -211,6 +214,20 @@ export function registerProjectDeletionRoutes(
       const failures = barriers.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
       if (failures.length) throw new AggregateError(failures, "Project deletion is waiting for provider runtime cleanup");
 
+      // Re-scan browser authority after provider drain. Admission is now
+      // quarantined, so reaching this fixed point proves an opening admitted
+      // immediately before deletion cannot survive the irreversible commit.
+      await Promise.all([
+        awaitProjectDeletionBarrier(
+          browserSessions.closeProject(project.id, "project_deleted_final_barrier"),
+          "Run browser final cleanup",
+        ),
+        awaitProjectDeletionBarrier(
+          projectBrowserSessions.closeProject(project.id, "project_deleted_final_barrier"),
+          "Project browser final cleanup",
+        ),
+      ]);
+
       // The drain rescans after every late open/completion. Keep this explicit
       // final assertion beside the irreversible storage boundary.
       if ([...activeRuns.keys()].some((agentId) => agentIds.has(agentId)) ||
@@ -222,6 +239,7 @@ export function registerProjectDeletionRoutes(
       if ([...engineModelCatalogDiscoveryAuthorities].some((authority) => authority.projectId === project.id)) {
         throw new Error("Project deletion provider authority changed after draining");
       }
+      browserProfiles.deleteProject(project.id);
 
       cancelAgentDecisions(agentIds);
       for (const agentId of agentIds) {

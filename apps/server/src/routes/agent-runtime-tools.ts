@@ -31,6 +31,8 @@ interface AgentRuntimeToolRoutesContext {
   browserSessions: BrowserSessionManager;
   projectBrowserSessions: BrowserSessionManager;
   projectBrowserGrants: Map<string, { agentId: string; runId: string }>;
+  deletingProjectIds: ReadonlySet<string>;
+  deletingAgentIds: ReadonlySet<string>;
   dataDir: string;
   assets: AssetStore;
   publish(agentId: string, stored: StoredLogEvent): void;
@@ -71,6 +73,8 @@ function browserDriverSessionError(error: BrowserDriverActionError): BrowserSess
       return new BrowserSessionError("The browser file chooser expired. Open it again and retry.", 409, error.reason);
     case "unsupported_file_chooser":
       return new BrowserSessionError("This browser file chooser is not supported.", 409, error.reason);
+    case "stale_upload_context":
+      return new BrowserSessionError("The browser page changed before the file could be attached. Retry on the current page.", 409, error.reason);
     case "upload_verification_failed":
       return new BrowserSessionError("The browser could not verify that the file was attached.", 409, error.reason);
   }
@@ -129,6 +133,8 @@ export function registerAgentRuntimeToolRoutes(
     browserSessions,
     projectBrowserSessions,
     projectBrowserGrants,
+    deletingProjectIds,
+    deletingAgentIds,
     allowedImportRoots = [],
     projectBrowserScope,
     capabilityOwnsAuthoritativeRun,
@@ -483,6 +489,8 @@ export function registerAgentRuntimeToolRoutes(
       key?: unknown;
       page_id?: unknown;
       artifact_id?: unknown;
+      consequence?: unknown;
+      attempt_id?: unknown;
     };
   }>("/api/agent-browser", async (request, reply) => {
     const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
@@ -491,6 +499,9 @@ export function registerAgentRuntimeToolRoutes(
     const agent = capability ? store.getAgent(capability.agentId) : undefined;
     if (!capability || !active || !agent || !capabilityOwnsAuthoritativeRun(capability, active) || active.messageCapability !== token) {
       return reply.code(401).send({ error: "browser capability is not authorized for an active run" });
+    }
+    if (deletingProjectIds.has(agent.projectId) || deletingAgentIds.has(agent.id)) {
+      return reply.code(409).send({ error: "browser owner deletion is in progress" });
     }
     const projectGrant = projectBrowserGrants.get(agent.projectId);
     const borrowingProjectBrowser = projectGrant?.agentId === agent.id && projectGrant.runId === active.runId;

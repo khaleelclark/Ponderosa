@@ -38,6 +38,7 @@ interface AgentSurfaceContext {
   engines: ManagementRoutes["engines"];
   managementPlans: ManagementRoutes["managementPlans"];
   deletingAgentIds: ManagementRoutes["deletingAgentIds"];
+  deletingProjectIds: ReadonlySet<string>;
   cachedModelOptions: ManagementRoutes["cachedModelOptions"];
   publicManagementOperations: ManagementRoutes["publicManagementOperations"];
   commitAgentDeletion: ManagementRoutes["commitAgentDeletion"];
@@ -82,6 +83,7 @@ export function registerAgentSurface(
     engines,
     managementPlans,
     deletingAgentIds,
+    deletingProjectIds,
     cachedModelOptions,
     publicManagementOperations,
     commitAgentDeletion,
@@ -168,6 +170,8 @@ registerAgentRuntimeToolRoutes(app, {
   browserSessions,
   projectBrowserSessions,
   projectBrowserGrants,
+  deletingProjectIds,
+  deletingAgentIds,
   projectBrowserScope,
   capabilityOwnsAuthoritativeRun,
 });

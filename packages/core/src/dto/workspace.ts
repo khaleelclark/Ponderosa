@@ -442,9 +442,46 @@ export interface BrowserUploadResponseDto {
 export interface BrowserCapabilitiesDto {
   multiPage: boolean;
   fileUpload: boolean;
+  /** Chrome is running in the host display service rather than headless mode. */
+  hostedHeaded: boolean;
+  /** The server can retain explicitly configured browser profiles. */
+  persistentProfiles: boolean;
 }
 
-/** One ephemeral host browser bound to an exact active Run. */
+export type BrowserProfileMode = "disposable" | "trusted";
+
+export interface BrowserProfileDto {
+  id: string;
+  projectId: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BrowserAgentPreferenceDto {
+  agentId: string;
+  projectId: string;
+  mode: BrowserProfileMode;
+  profileId?: string;
+  profileName?: string;
+  updatedAt: string;
+}
+
+export interface CreateBrowserProfileRequest {
+  name: string;
+}
+
+export interface UpdateBrowserProfileRequest {
+  name: string;
+}
+
+export interface UpdateBrowserAgentPreferenceRequest {
+  mode: BrowserProfileMode;
+  profileId?: string;
+}
+
+/** One host browser bound to an exact active Run. Browser process ownership is
+ * always ephemeral; only an explicitly selected trusted profile is retained. */
 export interface BrowserSessionDto {
   id: string;
   projectId: string;
@@ -452,6 +489,12 @@ export interface BrowserSessionDto {
   runId: string;
   conversationId?: string;
   status: BrowserSessionStatus;
+  profileMode: BrowserProfileMode;
+  profileId?: string;
+  profileName?: string;
+  /** Present while host capacity or a trusted-profile lease is queued. */
+  queuePosition?: number;
+  queueReason?: "host_capacity" | "profile_in_use";
   controlOwner: BrowserControlOwner;
   /** Monotonic fence for operator input. Stale tabs cannot keep typing. */
   controlEpoch: number;

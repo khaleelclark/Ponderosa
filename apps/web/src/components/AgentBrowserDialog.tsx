@@ -89,9 +89,22 @@ export function AgentBrowserDialog({
                   label={operator ? "You have control" : `${agentTitle} has control`}
                 />
               ) : null}
+              {session ? (
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  label={session.profileMode === "trusted"
+                    ? `Trusted · ${session.profileName ?? "Profile"}`
+                    : "Disposable"}
+                />
+              ) : null}
             </Stack>
             <Typography variant="caption" color="text.secondary" noWrap sx={{ pl: 6 }}>
-              {session?.title || session?.url || "Live browser for this Agent Run"}
+              {session?.status === "opening"
+                ? session.queuePosition
+                  ? `Waiting for browser capacity · queue position ${session.queuePosition}`
+                  : "Starting hosted browser"
+                : session?.title || session?.url || "Live browser for this Agent Run"}
             </Typography>
           </Stack>
         </DialogTitle>
@@ -124,6 +137,12 @@ export function AgentBrowserDialog({
             accent="info.main"
             empty={queryError ? (
               <Alert severity="error">This Agent browser could not be loaded. {queryError}</Alert>
+            ) : session?.status === "opening" ? (
+              <Alert severity="info">
+                {session.queueReason === "profile_in_use"
+                  ? "This trusted profile is in use. The Agent will continue automatically when its FIFO lease is available."
+                  : "This browser is queued for host capacity and will open automatically."}
+              </Alert>
             ) : unavailable ? (
               <Alert severity="info">This Agent browser is no longer available.</Alert>
             ) : undefined}
