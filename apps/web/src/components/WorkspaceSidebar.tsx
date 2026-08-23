@@ -36,7 +36,6 @@ import {
 } from "../hooks/useWorkspaceDirectory";
 import { queryKeys } from "../queryKeys";
 import { routeProjectId, type Route } from "../routing";
-import { restoreProjectRoute } from "../projectNavigation";
 import { useAgent, useConversation } from "../hooks/queries";
 import {
   reorderStableIds,
@@ -133,10 +132,17 @@ export function WorkspaceSidebar({
 
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const routedProjectId = routeProjectId(route);
-  const drawerProjectId = routedProjectId;
+  const [drawerProjectId, setDrawerProjectId] = useState(routedProjectId);
+  const [drawerProjectPanelOpen, setDrawerProjectPanelOpen] = useState(
+    Boolean(routedProjectId),
+  );
+  useEffect(() => {
+    if (!routedProjectId) return;
+    setDrawerProjectId(routedProjectId);
+    setDrawerProjectPanelOpen(true);
+  }, [routedProjectId]);
   const createOverride = sidebarSection === "create";
-  const projectContext = Boolean(drawerProjectId) && !createOverride && route.kind !== "create" &&
-    route.kind !== "wiki" && route.kind !== "settings" && route.kind !== "usage";
+  const projectContext = Boolean(drawerProjectId) && !createOverride;
   const showingAgents = projectContext && projectSection === "agents";
   const showingChats = projectContext && projectSection === "chats";
   const showingTriggers = projectContext && projectSection === "triggers";
@@ -331,11 +337,21 @@ export function WorkspaceSidebar({
     },
   });
   const showNavigation = (next: Route) => {
+    setDrawerProjectId(undefined);
+    setDrawerProjectPanelOpen(false);
     setSidebarSection("home");
     setFilter("");
     onNavigate(next);
   };
   const openProject = (project: ProjectDto) => {
+    if (project.id === activeProjectId) {
+      if (drawer) {
+        setDrawerProjectPanelOpen(open => !open);
+      } else {
+        onCollapsedChange?.(!collapsed);
+      }
+      return;
+    }
     setSidebarSection("home");
     if (activeProjectId) {
       projectBrowseState.current.set(activeProjectId, {
@@ -344,14 +360,11 @@ export function WorkspaceSidebar({
       });
     }
     const remembered = projectBrowseState.current.get(project.id);
+    setDrawerProjectId(project.id);
+    setDrawerProjectPanelOpen(true);
     setProjectSection(remembered?.section ?? "overview");
     setFilter(remembered?.filter ?? "");
     if (!drawer && collapsed) onCollapsedChange?.(false);
-    onNavigate(
-      drawer
-        ? { kind: "project", projectId: project.id }
-        : restoreProjectRoute(project.id, project.lastConversationId),
-    );
   };
   const openTriggerManager = (
     projectId: string,
@@ -378,7 +391,7 @@ export function WorkspaceSidebar({
     <ProjectRail
       drawer={drawer}
       projects={projects}
-      activeProjectId={routedProjectId}
+      activeProjectId={activeProjectId}
       route={route}
       profile={preferences.profile}
       unreadMessages={counts.unread}
@@ -389,6 +402,7 @@ export function WorkspaceSidebar({
       onOpenCreate={() => {
         setSidebarSection("create");
         setFilter("");
+        setDrawerProjectPanelOpen(true);
         if (!drawer && collapsed) onCollapsedChange?.(false);
       }}
       onOpenWiki={() => showNavigation({ kind: "wiki" })}
@@ -941,7 +955,8 @@ export function WorkspaceSidebar({
               : showingProjectOverview
                 ? homePanel
                 : null;
-  const showPanel = Boolean(panel) && !(collapsed && !drawer);
+  const showPanel = Boolean(panel) &&
+    (drawer ? drawerProjectPanelOpen : !collapsed);
   const { resizing, resizeStart } = useWorkspaceSidebarResize(
     width,
     onWidthChange,
