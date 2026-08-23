@@ -120,7 +120,7 @@ export function ChatMessageFrame({
               {openAuthor ? <ButtonBase
                 aria-label={`Open agent ${senderName} from name`}
                 onClick={(event) => { event.stopPropagation(); openAuthor(); }}
-                sx={{ borderRadius: 0.75, textAlign: "left", "& [data-message-sender]": { mb: 0, fontSize: 14 } }}
+                sx={{ minHeight: 28, borderRadius: 0.75, textAlign: "left", "& [data-message-sender]": { mb: 0, fontSize: 14 } }}
               ><MessageSenderLabel name={senderName} /></ButtonBase>
                 : <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: 14 } }}><MessageSenderLabel name={senderName} /></Box>}
               {message.source}
@@ -163,6 +163,7 @@ export function ChatMessageFrame({
                     openAuthor();
                   }}
                   sx={{
+                    minHeight: 28,
                     borderRadius: 0.75,
                     textAlign: "right",
                     "& [data-message-sender]": { mb: 0, fontSize: 14 },
