@@ -374,7 +374,11 @@ export function WorkspaceSidebar({
     <ProjectRail
       drawer={drawer}
       projects={stableRailProjects}
-      activeProjectId={activeProjectId}
+      activeProjectId={
+        projectContext && (drawer ? drawerProjectPanelOpen : !collapsed)
+          ? activeProjectId
+          : undefined
+      }
       currentProjectId={routedProjectId}
       route={route}
       profile={preferences.profile}

@@ -157,6 +157,7 @@ function notificationRoute(notification: WorkspaceNotificationDto): Route | unde
 
 export function HomeView({
   projects,
+  projectsLoaded,
   engines,
   notifications,
   preferences,
@@ -165,6 +166,7 @@ export function HomeView({
   onOpenInbox,
 }: {
   projects: ProjectDto[];
+  projectsLoaded: boolean;
   engines: EngineDto[];
   notifications: WorkspaceNotificationDto[];
   preferences: WorkspacePreferencesDto;
@@ -222,7 +224,7 @@ export function HomeView({
             <SummaryCard label="Provider Health" value={provider.label} compactValue={provider.label === "Engine ready" ? "Ready" : provider.label} />
           </Box>
 
-          {projects.length === 0 ? (
+          {projectsLoaded && projects.length === 0 ? (
             <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}>
               <FolderOutlinedIcon color="action" sx={{ fontSize: 42, mb: 1 }} />
               <Typography variant="h6" fontWeight={800}>Create Your First Project</Typography>

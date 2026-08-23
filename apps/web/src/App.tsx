@@ -660,6 +660,7 @@ export default function App({
                     projectResolution={projectResolution}
                     onRetryProject={() => void routedProjectQuery.refetch()}
                     projects={projects}
+                    projectsLoaded={projectsQuery.isSuccess}
                     engines={engines}
                     notifications={presentedNotifications}
                     preferences={preferences}

@@ -36,6 +36,7 @@ interface WorkspaceRouteOutletProps {
   projectResolution?: "loading" | "missing" | "unavailable";
   onRetryProject(): void;
   projects: ProjectDto[];
+  projectsLoaded: boolean;
   engines: EngineDto[];
   notifications: WorkspaceNotificationDto[];
   preferences: WorkspacePreferencesDto;
@@ -73,6 +74,7 @@ export function WorkspaceRouteOutlet({
   projectResolution,
   onRetryProject,
   projects,
+  projectsLoaded,
   engines,
   notifications,
   preferences,
@@ -127,6 +129,7 @@ export function WorkspaceRouteOutlet({
         >
           <HomeView
             projects={projects}
+            projectsLoaded={projectsLoaded}
             engines={engines}
             notifications={notifications}
             preferences={preferences}

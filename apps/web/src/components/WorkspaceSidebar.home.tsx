@@ -201,7 +201,7 @@ export function HomeSidebarPanel({
             event.preventDefault();
             onOpenResourceMenu(event.currentTarget, item.route);
           }}
-          sx={{ alignItems: "center", mb: 0.25 }}
+          sx={{ alignItems: "center", mb: 0.25, minWidth: 0, width: "100%" }}
         >
           <ListItemButton
             onClick={() => {
@@ -214,7 +214,7 @@ export function HomeSidebarPanel({
               }
               onNavigate(item.route);
             }}
-            sx={{ borderRadius: 1.25, px: 1, py: 0.65, minWidth: 0 }}
+            sx={{ borderRadius: 1.25, px: 1, py: 0.65, minWidth: 0, flex: 1 }}
           >
             <ListItemIcon sx={{ minWidth: 38 }}>{item.icon}</ListItemIcon>
             <ListItemText
@@ -235,6 +235,7 @@ export function HomeSidebarPanel({
             <IconButton
               size="small"
               aria-label={`${starred ? "Unstar" : "Star"} ${item.title}`}
+              sx={{ flex: "0 0 40px" }}
               onClick={() => {
                 const [kind, id] = item.id.split(":", 2) as [
                   "project" | "conversation" | "agent" | "trigger",

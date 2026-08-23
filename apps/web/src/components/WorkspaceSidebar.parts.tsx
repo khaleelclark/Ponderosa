@@ -105,6 +105,7 @@ function SharedSidebarPanel({
         minHeight: 0,
         minWidth: 0,
         display: "grid",
+        gridTemplateColumns: "minmax(0, 1fr)",
         gridTemplateRows: "auto auto minmax(0, 1fr) auto",
         bgcolor: sidebarSurface,
       }}
@@ -148,7 +149,14 @@ function SharedSidebarPanel({
       <Box
         aria-busy={busy}
         className="ponderosa-scroll"
-        sx={{ minHeight: 0, overflowY: "auto", px: 1.25, pb: 1.5 }}
+        sx={{
+          minHeight: 0,
+          minWidth: 0,
+          overflowX: "hidden",
+          overflowY: "auto",
+          px: 1.25,
+          pb: 1.5,
+        }}
       >
         {topContent}
         {hasStarredRows ? (

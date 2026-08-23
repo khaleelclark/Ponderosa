@@ -94,9 +94,7 @@ export function MobileWorkspaceDrawer({
           route={route}
           notifications={notifications}
           onNavigate={next => {
-            const switchingProject = next.kind === "project" &&
-              next.projectId !== routeProjectId(route);
-            if (!switchingProject) close();
+            close();
             onNavigate(next);
           }}
           onCreate={kind => {
