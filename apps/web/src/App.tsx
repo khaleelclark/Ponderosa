@@ -550,7 +550,10 @@ export default function App({
       <MobileWorkspaceActionsProvider>
       <Box
         sx={{
-          height: "var(--ponderosa-app-viewport-block-size, 100dvh)",
+          height: {
+            xs: "var(--ponderosa-app-viewport-block-size, 100dvh)",
+            md: "100dvh",
+          },
           width: "100%",
           minHeight: 0,
           minWidth: 0,
