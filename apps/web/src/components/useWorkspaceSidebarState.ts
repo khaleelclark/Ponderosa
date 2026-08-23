@@ -6,7 +6,7 @@ import {
   routeSynchronizedSidebarSection,
   type RouteSidebarSection,
 } from "../routeRegistry";
-import type { Route } from "../routing";
+import { routeProjectId, type Route } from "../routing";
 import { clampWorkspaceSidebarWidth } from "../workspaceSidebarState";
 import type { ResourceContextMenuState } from "./ResourceContextMenu";
 
@@ -15,6 +15,9 @@ export function useWorkspaceSidebarNavigation(route: Route) {
     useState<RouteSidebarSection>(() => routeInitialSidebarSection(route));
   const previousRoute = useRef(route);
   const [filter, setFilter] = useState("");
+  const [projectSection, setProjectSection] = useState<ProjectSidebarSection>(
+    () => projectSidebarSectionForRoute(route),
+  );
   const [draggedResource, setDraggedResource] = useState<{
     kind: "home" | "chat" | "agent" | "trigger";
     id: string;
@@ -34,6 +37,18 @@ export function useWorkspaceSidebarNavigation(route: Route) {
   useEffect(() => {
     const previous = previousRoute.current;
     previousRoute.current = route;
+    const previousProjectId = routeProjectId(previous);
+    const projectId = routeProjectId(route);
+    if (projectId) {
+      const nextProjectSection = projectSidebarSectionForRoute(route);
+      if (
+        previousProjectId === projectId &&
+        projectSidebarSectionForRoute(previous) !== nextProjectSection
+      ) {
+        setProjectSection(nextProjectSection);
+        setFilter("");
+      }
+    }
     // Directory workplaces are destinations, not sidebar-section commands.
     // Keep the operator's current panel, filter, and scroll state when one opens.
     const section = routeSynchronizedSidebarSection(route);
@@ -58,6 +73,8 @@ export function useWorkspaceSidebarNavigation(route: Route) {
   return {
     sidebarSection,
     setSidebarSection,
+    projectSection,
+    setProjectSection,
     filter,
     setFilter,
     draggedResource,
@@ -66,6 +83,25 @@ export function useWorkspaceSidebarNavigation(route: Route) {
     setMenu,
     openResourceMenu,
   };
+}
+
+export type ProjectSidebarSection =
+  | "overview"
+  | "chats"
+  | "agents"
+  | "triggers";
+
+function projectSidebarSectionForRoute(route: Route): ProjectSidebarSection {
+  if (route.kind === "conversation") return "chats";
+  if (route.kind === "agents" || route.kind === "review") return "agents";
+  if (route.kind === "agent") {
+    return route.view === "triggers" ? "triggers" : "agents";
+  }
+  if (route.kind === "project") {
+    if (route.view === "agents") return "agents";
+    if (route.view === "triggers") return "triggers";
+  }
+  return "overview";
 }
 
 export function useWorkspaceSidebarResize(

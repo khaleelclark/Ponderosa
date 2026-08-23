@@ -42,6 +42,7 @@ import {
   useRoute,
   type Route,
 } from "./routing";
+import { rememberProjectRoute } from "./projectNavigation";
 import { isProjectRoute } from "./routeRegistry";
 import type { ColorMode } from "./theme";
 import {
@@ -463,6 +464,12 @@ export default function App({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
+
+  useEffect(() => {
+    rememberProjectRoute(route);
+    const projectId = routeProjectId(route);
+    if (projectId) saveLastProjectId(projectId);
+  }, [route]);
 
   const recordWorkspaceRouteUse = (next: Route) => {
     const resource = workspaceResourceFromRoute(next);

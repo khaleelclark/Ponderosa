@@ -1,4 +1,3 @@
-import CloseIcon from "@mui/icons-material/Close";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import DataUsageOutlinedIcon from "@mui/icons-material/DataUsageOutlined";
 import MenuIcon from "@mui/icons-material/Menu";
@@ -384,30 +383,15 @@ export function MobileWorkspaceDrawer({
       disableSwipeToOpen
       PaperProps={{
         sx: {
-          width: "min(100vw, 390px)",
+          width: routeProjectId(route) ? "min(100vw, 390px)" : 64,
           maxWidth: "100vw",
           height: "100dvh",
           overflow: "hidden",
+          transition: "width 180ms cubic-bezier(0.2, 0, 0, 1)",
         },
       }}
     >
       <Box sx={{ position: "relative", height: "100%", minHeight: 0 }}>
-        <Tooltip title="Close Navigation">
-          <IconButton
-            aria-label="Close workspace navigation"
-            onClick={close}
-            sx={{
-              position: "absolute",
-              zIndex: 4,
-              top: "max(8px, env(safe-area-inset-top))",
-              right: 8,
-              bgcolor: "background.paper",
-              boxShadow: 1,
-            }}
-          >
-            <CloseIcon />
-          </IconButton>
-        </Tooltip>
         <WorkspaceSidebar
           drawer
           projects={projects}
@@ -415,7 +399,9 @@ export function MobileWorkspaceDrawer({
           route={route}
           notifications={notifications}
           onNavigate={next => {
-            close();
+            const switchingProject = next.kind === "project" &&
+              next.projectId !== routeProjectId(route);
+            if (!switchingProject) close();
             onNavigate(next);
           }}
           onCreate={kind => {
@@ -435,6 +421,7 @@ export function MobileWorkspaceDrawer({
             close();
             onSearch();
           }}
+          onDismiss={close}
         />
       </Box>
     </SwipeableDrawer>

@@ -3,7 +3,6 @@ import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import DataUsageOutlinedIcon from "@mui/icons-material/DataUsageOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
-import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import MenuBookOutlinedIcon from "@mui/icons-material/MenuBookOutlined";
 import NotificationsNoneOutlinedIcon from "@mui/icons-material/NotificationsNoneOutlined";
 import SearchIcon from "@mui/icons-material/Search";
@@ -18,146 +17,13 @@ import {
   ListItemText,
   Stack,
   TextField,
-  Tooltip,
   Typography,
 } from "@mui/material";
 import type { WikiIndexDto, WikiSearchResultDto } from "@ponderosa/core";
 import type { Route } from "../routing";
 import { IconTitle } from "./IconTitle";
-import {
-  SIDEBAR_RAIL_WIDTH,
-  railSurface,
-  sidebarSurface,
-} from "./WorkspaceSidebar.helpers";
-import { RailButton, SidebarSectionHeading } from "./WorkspaceSidebar.parts";
-
-export function WorkspaceSidebarRail({
-  drawer,
-  runningCount,
-  showingAgents,
-  showingChats,
-  showingHome,
-  showingCreate,
-  showingProjects,
-  showingSettings,
-  showingTriggers,
-  showingWiki,
-  onShowAgents,
-  onShowChats,
-  onShowHome,
-  onShowCreate,
-  onShowProjects,
-  onShowSettings,
-  onShowTriggers,
-  onShowWiki,
-}: {
-  drawer: boolean;
-  runningCount: number;
-  showingAgents: boolean;
-  showingChats: boolean;
-  showingHome: boolean;
-  showingCreate: boolean;
-  showingProjects: boolean;
-  showingSettings: boolean;
-  showingTriggers: boolean;
-  showingWiki: boolean;
-  onShowAgents(): void;
-  onShowChats(): void;
-  onShowHome(): void;
-  onShowCreate(): void;
-  onShowProjects(): void;
-  onShowSettings(): void;
-  onShowTriggers(): void;
-  onShowWiki(): void;
-}): JSX.Element {
-  return (
-    <Box
-      component="nav"
-      aria-label={drawer ? "Primary navigation drawer" : "Primary navigation"}
-      sx={{
-        width: drawer ? 64 : SIDEBAR_RAIL_WIDTH,
-        minWidth: drawer ? 64 : SIDEBAR_RAIL_WIDTH,
-        minHeight: 0,
-        borderRight: 1,
-        borderColor: "var(--ponderosa-rail-border)",
-        bgcolor: railSurface,
-        display: "grid",
-        gridTemplateRows: "auto minmax(0, 1fr) auto",
-        justifyItems: "center",
-        py: 1.5,
-      }}
-    >
-      <Stack spacing={0.4} sx={{ alignItems: "center" }}>
-        <Tooltip title="Ponderosa" placement="right">
-          <Box
-            component="img"
-            src="/icons/app-icon.png"
-            alt="Ponderosa"
-            sx={{
-              width: 42,
-              height: 42,
-              mb: 3.25,
-              p: 0.25,
-              borderRadius: 1,
-              objectFit: "cover",
-            }}
-          />
-        </Tooltip>
-        <RailButton label="Home" selected={showingHome} onClick={onShowHome}>
-          <HomeOutlinedIcon />
-        </RailButton>
-        <Box
-          aria-hidden
-          sx={{
-            width: 40,
-            borderTop: 1,
-            borderColor: "var(--ponderosa-rail-border)",
-            my: 0.5,
-          }}
-        />
-        <RailButton label="Projects" selected={showingProjects} onClick={onShowProjects}>
-          <FolderOutlinedIcon />
-        </RailButton>
-        <RailButton label="Chats" selected={showingChats} onClick={onShowChats}>
-          <ChatBubbleOutlineIcon />
-        </RailButton>
-        <RailButton
-          label="Agents"
-          selected={showingAgents}
-          badge={runningCount || undefined}
-          badgeColor="info"
-          onClick={onShowAgents}
-        >
-          <SmartToyOutlinedIcon />
-        </RailButton>
-        <RailButton label="Automations" selected={showingTriggers} onClick={onShowTriggers}>
-          <BoltOutlinedIcon />
-        </RailButton>
-      </Stack>
-      <Box />
-      <Stack spacing={0.65} sx={{ alignItems: "center" }}>
-        <RailButton label="Create" selected={showingCreate} onClick={onShowCreate}>
-          <AddIcon />
-        </RailButton>
-        <Box
-          aria-hidden
-          sx={{
-            width: 40,
-            borderTop: 1,
-            borderColor: "var(--ponderosa-rail-border)",
-            mb: 0.25,
-          }}
-        />
-        <RailButton label="Wiki" selected={showingWiki} onClick={onShowWiki}>
-          <MenuBookOutlinedIcon />
-        </RailButton>
-        <RailButton label="Settings" selected={showingSettings} onClick={onShowSettings}>
-          <SettingsOutlinedIcon />
-        </RailButton>
-      </Stack>
-    </Box>
-  );
-}
+import { sidebarSurface } from "./WorkspaceSidebar.helpers";
+import { SidebarSectionHeading } from "./WorkspaceSidebar.parts";
 
 const createOptions = [
   {

@@ -20,6 +20,7 @@ import type {
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useQueryClient } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import type { AgentStatus } from "../agents";
 import {
   sortWorkspaceResources,
@@ -47,6 +48,13 @@ interface HomeSidebarPanelProps {
   onOpenResourceMenu(anchor: HTMLElement, route: Route): void;
   onOpenAllMessages(): void;
   onViewHome(): void;
+  header?: ReactNode;
+  title?: string;
+  includeProjects?: boolean;
+  showAllMessages?: boolean;
+  hideSearch?: boolean;
+  viewAllLabel?: string;
+  viewAllIcon?: ReactNode;
   onToggleStar(
     kind: "project" | "conversation" | "agent" | "trigger",
     id: string,
@@ -75,6 +83,13 @@ export function HomeSidebarPanel({
   onOpenAllMessages,
   onViewHome,
   onToggleStar,
+  header,
+  title = "Home",
+  includeProjects = true,
+  showAllMessages = true,
+  hideSearch = false,
+  viewAllLabel = "View Home",
+  viewAllIcon = <HomeOutlinedIcon />,
 }: HomeSidebarPanelProps): JSX.Element {
   const queryClient = useQueryClient();
   const recencyQuery = useWorkspaceResourceRecency();
@@ -93,14 +108,14 @@ export function HomeSidebarPanel({
     ),
   );
   const resourceCatalog: HomeResource[] = [
-    ...snapshots.map(snapshot => ({
+    ...(includeProjects ? snapshots.map(snapshot => ({
       id: `project:${snapshot.project.id}`,
       title: snapshot.project.label,
       detail: "Project",
       updatedAt: snapshot.project.lastUsedAt ?? snapshot.project.createdAt,
       route: { kind: "project", projectId: snapshot.project.id } as Route,
       icon: <FolderOutlinedIcon fontSize="small" />,
-    })),
+    })) : []),
     ...snapshots.flatMap(snapshot =>
       snapshot.conversations
         .filter(conversation => !conversation.archived)
@@ -241,13 +256,15 @@ export function HomeSidebarPanel({
 
   return (
     <SharedSidebarPanel
+      header={header}
       icon={<HomeOutlinedIcon />}
-      title="Home"
+      title={title}
       total={resourceCatalog.length}
-      searchLabel="Search Home"
+      searchLabel={`Search ${title}`}
       searchValue={filter}
       onSearchValueChange={onFilterChange}
-      topContent={
+      hideSearch={hideSearch}
+      topContent={showAllMessages ? (
         <ListItemButton
           onClick={onOpenAllMessages}
           onContextMenu={event => {
@@ -275,7 +292,7 @@ export function HomeSidebarPanel({
             secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
           />
         </ListItemButton>
-      }
+      ) : undefined}
       starredRows={rows(starredResources)}
       allRows={rows(unstarredResources)}
       empty={
@@ -285,8 +302,8 @@ export function HomeSidebarPanel({
           </Typography>
         ) : undefined
       }
-      viewAllLabel="View Home"
-      viewAllIcon={<HomeOutlinedIcon />}
+      viewAllLabel={viewAllLabel}
+      viewAllIcon={viewAllIcon}
       onViewAll={onViewHome}
       onViewAllContextMenu={anchor =>
         onOpenResourceMenu(anchor, { kind: "home" })

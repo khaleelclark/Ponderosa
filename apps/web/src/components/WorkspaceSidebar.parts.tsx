@@ -44,10 +44,12 @@ function SidebarSectionHeading({
 function SharedSidebarPanel({
   icon,
   title,
+  header,
   total,
   searchLabel,
   searchValue,
   onSearchValueChange,
+  hideSearch = false,
   topContent,
   starredRows,
   allRows,
@@ -70,10 +72,12 @@ function SharedSidebarPanel({
 }: {
   icon: ReactNode;
   title: string;
+  header?: ReactNode;
   total?: number;
   searchLabel: string;
   searchValue: string;
   onSearchValueChange(value: string): void;
+  hideSearch?: boolean;
   topContent?: ReactNode;
   starredRows: ReactNode;
   allRows: ReactNode;
@@ -105,24 +109,26 @@ function SharedSidebarPanel({
         bgcolor: sidebarSurface,
       }}
     >
-      <Stack
-        direction="row"
-        sx={{
-          alignItems: "baseline",
-          pl: 2.25,
-          pr: drawer ? 7 : 2.25,
-          pt: 2,
-          pb: 1.25,
-        }}
-      >
-        <Box sx={{ flex: 1, minWidth: 0 }}>
-          <IconTitle icon={icon} title={title} />
-        </Box>
-        {total == null ? null : <Typography variant="caption" color="text.secondary">
-          {total} total
-        </Typography>}
-      </Stack>
-      <Box sx={{ px: 1.75, pb: 1.5 }}>
+      {header ?? (
+        <Stack
+          direction="row"
+          sx={{
+            alignItems: "baseline",
+            pl: 2.25,
+            pr: drawer ? 7 : 2.25,
+            pt: 2,
+            pb: 1.25,
+          }}
+        >
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <IconTitle icon={icon} title={title} />
+          </Box>
+          {total == null ? null : <Typography variant="caption" color="text.secondary">
+            {total} total
+          </Typography>}
+        </Stack>
+      )}
+      {hideSearch ? <Box /> : <Box sx={{ px: 1.75, pb: 1.5 }}>
         <TextField
           fullWidth
           size="small"
@@ -138,7 +144,7 @@ function SharedSidebarPanel({
             ),
           }}
         />
-      </Box>
+      </Box>}
       <Box
         aria-busy={busy}
         className="ponderosa-scroll"
