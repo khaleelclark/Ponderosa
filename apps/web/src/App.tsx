@@ -552,7 +552,7 @@ export default function App({
         sx={{
           height: {
             xs: "var(--ponderosa-app-viewport-block-size, 100dvh)",
-            md: "100dvh",
+            md: "100%",
           },
           width: "100%",
           minHeight: 0,
