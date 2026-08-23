@@ -600,6 +600,7 @@ export default function App({
 
         <Box
           sx={{
+            height: "100%",
             minHeight: 0,
             minWidth: 0,
             display: "grid",
@@ -609,7 +610,14 @@ export default function App({
             },
           }}
         >
-          <Box sx={{ display: { xs: "none", md: "block" }, minHeight: 0 }}>
+          <Box
+            sx={{
+              display: { xs: "none", md: "block" },
+              height: "100%",
+              minHeight: 0,
+              overflow: "hidden",
+            }}
+          >
             <WorkspaceSidebar
               projects={projects}
               preferences={preferences}

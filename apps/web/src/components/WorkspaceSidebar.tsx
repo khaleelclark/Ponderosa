@@ -910,6 +910,7 @@ export function WorkspaceSidebar({
             : SIDEBAR_RAIL_WIDTH,
         maxWidth: "100vw",
         height: "100%",
+        alignSelf: "stretch",
         minHeight: 0,
         minWidth: 0,
         borderRight: 1,

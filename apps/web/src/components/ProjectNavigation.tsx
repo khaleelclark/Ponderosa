@@ -190,6 +190,7 @@ export function ProjectRail({
       sx={{
         width: railWidth,
         minWidth: railWidth,
+        height: "100%",
         minHeight: 0,
         borderRight: 1,
         borderColor: "var(--ponderosa-rail-border)",
