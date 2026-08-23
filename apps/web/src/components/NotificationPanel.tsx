@@ -9,7 +9,6 @@ import {
   Dialog,
   DialogActions,
   DialogContent,
-  DialogTitle,
   IconButton,
   List,
   ListItem,
@@ -282,7 +281,7 @@ export function NotificationPanel({ open, projects, firstPage, onClose, onNaviga
   };
 
   return <><Dialog open={open} onClose={onClose} fullScreen={fullScreen} fullWidth maxWidth="sm" aria-labelledby="notifications-title">
-    <DialogTitle sx={{ pb: 1 }}>
+    <Box component="header" sx={{ px: 3, pt: 2, pb: 1 }}>
       <Typography
         id="notifications-title"
         component="h2"
@@ -297,7 +296,7 @@ export function NotificationPanel({ open, projects, firstPage, onClose, onNaviga
         </Box>
         <IconButton aria-label="Close notifications" onClick={onClose}><CloseIcon /></IconButton>
       </Stack>
-    </DialogTitle>
+    </Box>
     <Tabs value={filter} onChange={(_event, value) => setFilter(value as NotificationFilter)} aria-label="Notification filters" sx={{ px: { xs: 1, sm: 2 }, minHeight: 42 }}>
       <Tab value="attention" label={`Needs attention (${attentionCount})`} sx={{ minHeight: 42 }} />
       <Tab value="updates" label={`Updates (${unreadUpdateCount})`} sx={{ minHeight: 42 }} />

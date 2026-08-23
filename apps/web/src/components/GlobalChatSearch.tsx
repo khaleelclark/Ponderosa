@@ -7,7 +7,6 @@ import {
   Chip,
   Dialog,
   DialogContent,
-  DialogTitle,
   IconButton,
   InputAdornment,
   LinearProgress,
@@ -296,7 +295,7 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
   };
 
   return <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm" fullScreen={fullScreen} aria-labelledby="global-chat-search-title" PaperProps={{ sx: { border: 1, borderColor: "divider", borderRadius: { sm: 2 }, bgcolor: "background.paper", backgroundImage: "none" } }}>
-    <DialogTitle sx={{ p: 0, position: "sticky", top: 0, zIndex: 2, bgcolor: "background.paper", borderBottom: 1, borderColor: "divider" }}>
+    <Box component="header" sx={{ p: 0, position: "sticky", top: 0, zIndex: 2, bgcolor: "background.paper", borderBottom: 1, borderColor: "divider" }}>
       <Typography
         id="global-chat-search-title"
         component="h2"
@@ -323,7 +322,7 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
           variant="standard"
           sx={{ px: 2, py: 1.25, "& input": { fontSize: 20, fontWeight: 750 } }}
         />
-    </DialogTitle>
+    </Box>
     <DialogContent sx={{ px: { xs: 1.5, sm: 2 }, pt: "16px !important", pb: 1.5, minHeight: { sm: 520 } }}>
       <Stack direction="row" spacing={.75} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
         {(["all", "chats", "agents"] as const).map((value) => <Chip key={value} clickable label={value[0]!.toUpperCase() + value.slice(1)} color={scope === value ? "primary" : "default"} variant={scope === value ? "filled" : "outlined"} onClick={() => setScope(value)} />)}
