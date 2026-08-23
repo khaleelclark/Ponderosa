@@ -332,11 +332,6 @@ cpSync(
   { recursive: true },
 );
 cpSync(
-  path.join(repositoryRoot, "docs", "wiki"),
-  path.join(bundleRoot, "docs", "wiki"),
-  { recursive: true },
-);
-cpSync(
   path.join(repositoryRoot, "packaging", "qualification"),
   path.join(bundleRoot, "qualification"),
   { recursive: true },

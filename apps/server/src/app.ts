@@ -31,7 +31,6 @@ import { createCommunicationProjectionReconciler } from "./communication-project
 import { ContextCursorStore } from "./context-cursors.js";
 import { createCoordinationScheduler } from "./coordination-scheduler-service.js";
 import { createDeploymentControl } from "./deployment-control.js";
-import { documentationReferences } from "./documentation-reference/index.js";
 import { EngineAuthStatusCache } from "./engine-auth-cache.js";
 import { EngineAvailabilityStore } from "./engine-availability-store.js";
 import {
@@ -676,7 +675,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   reconcileContextRolloverFormatNotifications();
   reconcileCoordinationAttentionNotifications();
   const limits = { ...ASSET_LIMITS, maxAttachmentsPerMessage: ASSET_LIMITS.maxAssetsPerMessage };
-  const serverContext: ServerContext = { opts, documentationReferences, limits, agentDetail, store, tokenUsage };
+  const serverContext: ServerContext = { opts, limits, agentDetail, store, tokenUsage };
   const {
     cachedModelOptions,
     closeCapabilityDiscoveryAuthority,

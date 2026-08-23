@@ -62,7 +62,6 @@ import { registerQueuedMessageRoutes } from "./queued-messages.js";
 import { registerSearchRoutes } from "./search.js";
 import { registerStreamRoutes } from "./streams.js";
 import { registerTriggerRoutes } from "./triggers.js";
-import { registerWikiRoutes } from "./wiki.js";
 import { registerWorkspaceDirectoryRoutes } from "./workspace-directory.js";
 import { registerWorkspacePreferenceRoutes } from "./workspace-preferences.js";
 
@@ -581,7 +580,6 @@ const globalChatSearch = (query: {
   });
 };
 
-registerWikiRoutes(app, serverContext);
 
 registerSearchRoutes(app, { ...serverContext, globalChatSearch, workspace });
 

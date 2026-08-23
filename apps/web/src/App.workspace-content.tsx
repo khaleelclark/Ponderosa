@@ -21,7 +21,6 @@ type RemovableWorkspaceResourceRoute = Extract<
 const loadAllChatView = () => import("./components/AllChatView").then(module => ({ default: module.AllChatView }));
 const loadCreateWorkspace = () => import("./components/CreateWorkspace").then(module => ({ default: module.CreateWorkspace }));
 const loadProjectShell = () => import("./components/ProjectShell").then(module => ({ default: module.ProjectShell }));
-const loadWikiView = () => import("./components/WikiView").then(module => ({ default: module.WikiView }));
 const loadAllProjectsView = () => import("./components/WorkspaceOverview").then(module => ({ default: module.AllProjectsView }));
 const workspaceResourceViews = () => import("./components/WorkspaceResourceViews");
 const loadAllAgentsWorkspace = () => workspaceResourceViews().then(module => ({ default: module.AllAgentsWorkspace }));
@@ -122,12 +121,6 @@ export function WorkspaceRouteOutlet({
           load={loadCreateWorkspace}
           componentProps={{ route, projects, engines, preferences, onCancel: onCancelCreate, onNavigate }}
         />
-      ) : route.kind === "wiki" ? (
-        <RecoverableLazyRoute
-          key="wiki"
-          load={loadWikiView}
-          componentProps={{ articleId: route.articleId, navigate: onNavigate }}
-        />
       ) : route.kind === "home" ? (
         <Box
           sx={{ display: "contents" }}
@@ -138,11 +131,7 @@ export function WorkspaceRouteOutlet({
             notifications={notifications}
             preferences={preferences}
             onNavigate={onNavigate}
-            onPreferences={onPreferences}
             onCreateProject={() => onCreate("project")}
-            onCreateChat={() => onCreate("chat")}
-            onCreateAgent={() => onCreate("agent")}
-            onCreateTrigger={() => onCreate("trigger")}
             onOpenInbox={onOpenInbox}
           />
         </Box>

@@ -201,12 +201,6 @@ export const queryKeys = {
     all: ["host-folder-browser"] as const,
     path: (path: string | undefined) => ["host-folder-browser", path] as const,
   },
-  wiki: {
-    index: ["wiki", "index"] as const,
-    article: (articleId: string | undefined) =>
-      ["wiki", "article", articleId] as const,
-    search: (query: string) => ["wiki", "search", query] as const,
-  },
   projectArtifacts: {
     all: ["project-artifacts"] as const,
     project: (projectId: string) => ["project-artifacts", projectId] as const,

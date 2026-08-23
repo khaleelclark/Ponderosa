@@ -2,19 +2,25 @@ import AddIcon from "@mui/icons-material/Add";
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import CloseIcon from "@mui/icons-material/Close";
+import DataUsageOutlinedIcon from "@mui/icons-material/DataUsageOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import LanguageIcon from "@mui/icons-material/Language";
-import MenuBookOutlinedIcon from "@mui/icons-material/MenuBookOutlined";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
+import NotificationsOutlinedIcon from "@mui/icons-material/NotificationsOutlined";
+import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
+import SearchIcon from "@mui/icons-material/Search";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
+import SpeedOutlinedIcon from "@mui/icons-material/SpeedOutlined";
 import {
   Badge,
   Box,
   ButtonBase,
   IconButton,
+  ListItemIcon,
+  ListItemText,
   Menu,
   MenuItem,
   Stack,
@@ -135,12 +141,17 @@ export function ProjectRail({
   route,
   profile,
   unreadMessages,
+  attentionNotifications,
+  unreadNotificationUpdates,
   projectBadgeCounts,
   onOpenHome,
   onOpenAllMessages,
   onOpenProject,
   onOpenCreate,
-  onOpenWiki,
+  onOpenSearch,
+  onOpenNotifications,
+  onOpenUsage,
+  onOpenEngineStatus,
   onOpenSettings,
   onOpenProfile,
   onClose,
@@ -151,17 +162,27 @@ export function ProjectRail({
   route: Route;
   profile: OperatorProfileDto;
   unreadMessages: number;
+  attentionNotifications: number;
+  unreadNotificationUpdates: number;
   projectBadgeCounts: ReadonlyMap<string, number>;
   onOpenHome(): void;
   onOpenAllMessages(): void;
   onOpenProject(project: ProjectDto): void;
   onOpenCreate(): void;
-  onOpenWiki(): void;
+  onOpenSearch(): void;
+  onOpenNotifications(): void;
+  onOpenUsage(): void;
+  onOpenEngineStatus(): void;
   onOpenSettings(): void;
   onOpenProfile(): void;
   onClose?(): void;
 }): JSX.Element {
   const railWidth = drawer ? 64 : SIDEBAR_RAIL_WIDTH;
+  const [operatorAnchor, setOperatorAnchor] = useState<HTMLElement>();
+  const runOperatorAction = (action: () => void) => {
+    setOperatorAnchor(undefined);
+    action();
+  };
   return (
     <Box
       component="nav"
@@ -186,19 +207,24 @@ export function ProjectRail({
               <CloseIcon />
             </IconButton>
           </Tooltip>
-        ) : (
-          <Tooltip title="Ponderosa" placement="right">
-            <Box
-              component="img"
-              src="/icons/app-icon.png"
-              alt="Ponderosa"
-              sx={{ width: 42, height: 42, mb: 1.5, p: 0.25, borderRadius: 1, objectFit: "cover" }}
-            />
-          </Tooltip>
-        )}
-        <RailButton label="Home" selected={route.kind === "home"} onClick={onOpenHome}>
-          <HomeOutlinedIcon />
-        </RailButton>
+        ) : null}
+        <Tooltip title="Home" placement="right">
+          <ButtonBase
+            aria-label="Home"
+            aria-current={route.kind === "home" ? "page" : undefined}
+            onClick={onOpenHome}
+            sx={{
+              width: 48,
+              height: 48,
+              mb: 1.1,
+              borderRadius: 1.5,
+              bgcolor: route.kind === "home" ? "action.selected" : "transparent",
+              "&:hover": { bgcolor: "action.hover" },
+            }}
+          >
+            <Box component="img" src="/icons/app-icon.png" alt="" sx={{ width: 42, height: 42, p: 0.25, borderRadius: 1, objectFit: "cover" }} />
+          </ButtonBase>
+        </Tooltip>
         <RailButton
           label="All Messages"
           selected={route.kind === "allChat"}
@@ -241,8 +267,17 @@ export function ProjectRail({
           <AddIcon />
         </RailButton>
         <Box aria-hidden sx={{ width: 32, borderTop: 1, borderColor: "var(--ponderosa-rail-border)", my: 0.25 }} />
-        <RailButton label="Wiki" selected={route.kind === "wiki"} onClick={onOpenWiki}>
-          <MenuBookOutlinedIcon />
+        <RailButton label="Search" selected={false} onClick={onOpenSearch}>
+          <SearchIcon />
+        </RailButton>
+        <RailButton
+          label="Notifications"
+          selected={false}
+          badge={attentionNotifications || (unreadNotificationUpdates ? 1 : undefined)}
+          badgeColor={attentionNotifications ? "error" : "primary"}
+          onClick={onOpenNotifications}
+        >
+          <NotificationsOutlinedIcon />
         </RailButton>
         <RailButton label="Settings" selected={route.kind === "settings" || route.kind === "usage"} onClick={onOpenSettings}>
           <SettingsOutlinedIcon />
@@ -251,12 +286,39 @@ export function ProjectRail({
           <IconButton
             aria-label="Open operator profile"
             aria-current={route.kind === "profile" ? "page" : undefined}
-            onClick={onOpenProfile}
+            aria-haspopup="menu"
+            aria-expanded={Boolean(operatorAnchor)}
+            onClick={event => setOperatorAnchor(event.currentTarget)}
             sx={{ width: 48, height: 48, borderRadius: 1.5 }}
           >
             <OperatorAvatar profile={profile} size={34} />
           </IconButton>
         </Tooltip>
+        <Menu
+          anchorEl={operatorAnchor}
+          open={Boolean(operatorAnchor)}
+          onClose={() => setOperatorAnchor(undefined)}
+          anchorOrigin={{ vertical: "top", horizontal: "right" }}
+          transformOrigin={{ vertical: "bottom", horizontal: "left" }}
+          slotProps={{ paper: { sx: { minWidth: 230, ml: 1 } } }}
+        >
+          <MenuItem onClick={() => runOperatorAction(onOpenProfile)}>
+            <ListItemIcon><PersonOutlineIcon /></ListItemIcon>
+            <ListItemText>Operator Profile</ListItemText>
+          </MenuItem>
+          <MenuItem onClick={() => runOperatorAction(onOpenUsage)}>
+            <ListItemIcon><DataUsageOutlinedIcon /></ListItemIcon>
+            <ListItemText>Provider Usage</ListItemText>
+          </MenuItem>
+          <MenuItem onClick={() => runOperatorAction(onOpenEngineStatus)}>
+            <ListItemIcon><SpeedOutlinedIcon /></ListItemIcon>
+            <ListItemText>Provider Status</ListItemText>
+          </MenuItem>
+          <MenuItem onClick={() => runOperatorAction(onOpenSettings)}>
+            <ListItemIcon><SettingsOutlinedIcon /></ListItemIcon>
+            <ListItemText>Settings</ListItemText>
+          </MenuItem>
+        </Menu>
       </Stack>
     </Box>
   );

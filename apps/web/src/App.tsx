@@ -28,7 +28,6 @@ import {
   type SidebarConversationAction,
 } from "./components/WorkspaceDialogs";
 import {
-  useAgent,
   useEngines,
   useNotifications,
   useProjects,
@@ -230,10 +229,6 @@ export default function App({
     enabled: engineStatusOpen,
     staleTime: 30_000,
   });
-  const activeAgentQuery = useAgent(
-    route.kind === "agent" ? route.agentId : undefined,
-  );
-
   useEffect(() => {
     let stopped = false;
 
@@ -273,9 +268,6 @@ export default function App({
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [engines, queryClient]);
-  const preferredQuotaProvider =
-    activeAgentQuery.data?.agent.activeEngine;
-
   useEffect(() => {
     try {
       window.localStorage.setItem(
@@ -386,15 +378,6 @@ export default function App({
   };
 
   const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], homeSort: "last_used" as const, homeOrder: [], chatSort: "last_used" as const, chatOrder: [], agentSort: "last_used" as const, agentOrder: [], triggerSort: "last_used" as const, triggerOrder: [], starredResourceIds: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { directResponses: true, broadcasts: true }, fontFamily: "inter" as const, providerAvailability: {}, defaultUsageProvider: undefined as string | undefined, engineDefaults: {}, claudeModelOptions: [], globalInstructions: "", maxConcurrentAgentRuns: 8, contextRolloverEnabled: false, contextRolloverTokens: 150_000, contextRolloverWindowFraction: 0.7, onboardingCompletedAt: null, profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
-  const usageProviders = engines.filter(engine =>
-    engine.authentication === "authenticated" && Boolean(engine.providerUsageCommand)
-  );
-  const defaultQuotaProvider = usageProviders.some(
-    engine => engine.id === preferences.defaultUsageProvider,
-  )
-    ? preferences.defaultUsageProvider
-    : usageProviders[0]?.id;
-  const displayedQuotaProvider = preferredQuotaProvider ?? defaultQuotaProvider;
   const savePreferences = (patch: Partial<typeof preferences>) => {
     queryClient.setQueryData(queryKeys.workspacePreferences.all, { ...preferences, ...patch });
     void api.updateWorkspacePreferences(patch).then((value) => {
@@ -557,9 +540,6 @@ export default function App({
   const openSettings = () => {
     navigateWorkspace({ kind: "settings", section: "general" });
   };
-  const openProviderSettings = () => {
-    navigateWorkspace({ kind: "settings", section: "providers" });
-  };
   const openOperatorProfile = () => {
     setOperatorProfileOpen(true);
   };
@@ -603,18 +583,19 @@ export default function App({
           Skip to content
         </Box>
         <WorkspaceAppHeader
-          preferredQuotaProvider={displayedQuotaProvider}
+          homeSelected={route.kind === "home"}
           engineAvailability={engineAvailability}
           attentionNotifications={notificationCounts.attentionCount}
           unreadNotificationUpdates={notificationCounts.unreadUpdateCount}
           profile={preferences.profile}
+          onOpenHome={() => navigateWorkspace({ kind: "home" })}
           onOpenNavigation={() => setMobileNavOpen(true)}
           onOpenEngineStatus={() => setEngineStatusOpen(true)}
           onOpenSearch={() => setGlobalSearchOpen(true)}
           onOpenNotifications={() => setNotificationPanelOpen(true)}
           onOpenProfile={openOperatorProfile}
           onOpenSettings={openSettings}
-          onOpenProviderSettings={openProviderSettings}
+          onOpenUsage={() => navigateWorkspace({ kind: "usage" })}
         />
 
         <Box
@@ -644,6 +625,8 @@ export default function App({
                 openSidebarConversationAction("delete", conversation)
               }
               onSearch={() => setGlobalSearchOpen(true)}
+              onOpenNotifications={() => setNotificationPanelOpen(true)}
+              onOpenEngineStatus={() => setEngineStatusOpen(true)}
               collapsed={sidebarPresentation.collapsed}
               width={sidebarPresentation.width}
               onCollapsedChange={collapsed =>
@@ -743,6 +726,8 @@ export default function App({
           onPreferences={savePreferences}
           onConversationAction={openSidebarConversationAction}
           onSearch={() => setGlobalSearchOpen(true)}
+          onOpenNotifications={() => setNotificationPanelOpen(true)}
+          onOpenEngineStatus={() => setEngineStatusOpen(true)}
         />
 
         <SidebarConversationDialogs
@@ -793,10 +778,6 @@ export default function App({
         <OnboardingCompleteDialog
           open={onboardingCompleteOpen}
           onClose={() => setOnboardingCompleteOpen(false)}
-          onOpenWiki={() => {
-            setOnboardingCompleteOpen(false);
-            navigateWorkspace({ kind: "wiki" });
-          }}
         />
         <NotificationPanel
           open={notificationPanelOpen}

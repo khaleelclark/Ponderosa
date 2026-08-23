@@ -11,7 +11,6 @@ export type RouteSidebarSection =
   | "chats"
   | "agents"
   | "triggers"
-  | "wiki"
   | "settings";
 
 
@@ -90,13 +89,6 @@ const ROUTE_REGISTRY = {
     scope: "global",
     initialSidebarSection: "settings",
     synchronizedSidebarSection: "settings",
-  },
-  wiki: {
-    toPath: route =>
-      `/wiki${route.articleId ? `/${encodeURIComponent(route.articleId)}` : ""}`,
-    scope: "global",
-    initialSidebarSection: "wiki",
-    synchronizedSidebarSection: "wiki",
   },
   project: {
     toPath: route =>

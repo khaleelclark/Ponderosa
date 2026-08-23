@@ -11,6 +11,7 @@ import {
   AppBar,
   Badge,
   Box,
+  ButtonBase,
   Divider,
   IconButton,
   ListItemButton,
@@ -34,7 +35,6 @@ import type {
 import { routeProjectId, type Route } from "./routing";
 import { api } from "./api";
 import { OperatorAvatar } from "./components/OperatorAvatar";
-import { ProviderQuotaIndicator } from "./components/ProviderUsageCenter";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { useMobileWorkspaceActions } from "./components/MobileWorkspaceActionsContext";
 import { workspaceHeaderSurfaceSx } from "./theme";
@@ -66,7 +66,7 @@ export function mobileRouteAfterResourceRemoval(
 }
 
 interface WorkspaceAppHeaderProps {
-  preferredQuotaProvider?: string;
+  homeSelected: boolean;
   engineAvailability: {
     label: string;
     severity: "success" | "warning" | "default";
@@ -75,28 +75,30 @@ interface WorkspaceAppHeaderProps {
   attentionNotifications: number;
   unreadNotificationUpdates: number;
   profile?: OperatorProfileDto;
+  onOpenHome(): void;
   onOpenNavigation(): void;
   onOpenEngineStatus(): void;
   onOpenSearch(): void;
   onOpenNotifications(): void;
   onOpenProfile(): void;
   onOpenSettings(): void;
-  onOpenProviderSettings(): void;
+  onOpenUsage(): void;
 }
 
 export function WorkspaceAppHeader({
-  preferredQuotaProvider,
+  homeSelected,
   engineAvailability,
   attentionNotifications,
   unreadNotificationUpdates,
   profile,
+  onOpenHome,
   onOpenNavigation,
   onOpenEngineStatus,
   onOpenSearch,
   onOpenNotifications,
   onOpenProfile,
   onOpenSettings,
-  onOpenProviderSettings,
+  onOpenUsage,
 }: WorkspaceAppHeaderProps): JSX.Element {
   const [overflowAnchor, setOverflowAnchor] = useState<HTMLElement>();
   const mobileWorkspaceActions = useMobileWorkspaceActions();
@@ -117,7 +119,7 @@ export function WorkspaceAppHeader({
       elevation={0}
       sx={theme => ({
         ...workspaceHeaderSurfaceSx(theme),
-        display: "block",
+        display: { xs: "block", md: "none" },
         borderBottom: 1,
         borderColor: "divider",
       })}
@@ -136,7 +138,13 @@ export function WorkspaceAppHeader({
         >
           <MenuIcon />
         </IconButton>
-        <Box aria-label="Ponderosa" sx={{ flex: 1, minWidth: 0 }}>
+        <ButtonBase
+          aria-label="Home"
+          aria-current={homeSelected ? "page" : undefined}
+          onClick={onOpenHome}
+          sx={{ flex: 1, minWidth: 0, justifyContent: "flex-start", gap: 0.75, borderRadius: 1, px: 0.5 }}
+        >
+          <Box component="img" src="/icons/app-icon.png" alt="" sx={{ width: 28, height: 28, borderRadius: 0.75, objectFit: "cover" }} />
           <Typography
             variant="h6"
             component="div"
@@ -145,27 +153,12 @@ export function WorkspaceAppHeader({
           >
             Ponderosa
           </Typography>
-        </Box>
+        </ButtonBase>
         <Tooltip title="Search">
           <IconButton aria-label="Search Ponderosa" onClick={onOpenSearch}>
             <SearchIcon />
           </IconButton>
         </Tooltip>
-        <ProviderQuotaIndicator
-          preferredProvider={preferredQuotaProvider}
-          onOpenProviderSettings={onOpenProviderSettings}
-          mobile
-          renderTrigger={openUsage => (
-            <Tooltip title="Provider usage">
-              <IconButton
-                aria-label="Open provider usage"
-                onClick={event => openUsage(event.currentTarget)}
-              >
-                <DataUsageOutlinedIcon />
-              </IconButton>
-            </Tooltip>
-          )}
-        />
         <Tooltip title={attentionNotifications
           ? `${attentionNotifications} ${attentionNotifications === 1 ? "item needs" : "items need"} attention`
           : unreadNotificationUpdates
@@ -304,6 +297,15 @@ export function WorkspaceAppHeader({
         <MenuItem
           onClick={() => {
             setOverflowAnchor(undefined);
+            onOpenUsage();
+          }}
+        >
+          <ListItemIcon><DataUsageOutlinedIcon /></ListItemIcon>
+          <ListItemText>Provider Usage</ListItemText>
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
+            setOverflowAnchor(undefined);
             onOpenEngineStatus();
           }}
         >
@@ -358,6 +360,8 @@ interface MobileWorkspaceDrawerProps {
     conversation: ConversationDto,
   ): void;
   onSearch(): void;
+  onOpenNotifications(): void;
+  onOpenEngineStatus(): void;
 }
 
 export function MobileWorkspaceDrawer({
@@ -372,6 +376,8 @@ export function MobileWorkspaceDrawer({
   onPreferences,
   onConversationAction,
   onSearch,
+  onOpenNotifications,
+  onOpenEngineStatus,
 }: MobileWorkspaceDrawerProps): JSX.Element {
   const close = () => onOpenChange(false);
   return (
@@ -383,7 +389,7 @@ export function MobileWorkspaceDrawer({
       disableSwipeToOpen
       PaperProps={{
         sx: {
-          width: routeProjectId(route) ? "min(100vw, 390px)" : 64,
+          width: "auto",
           maxWidth: "100vw",
           height: "100dvh",
           overflow: "hidden",
@@ -420,6 +426,14 @@ export function MobileWorkspaceDrawer({
           onSearch={() => {
             close();
             onSearch();
+          }}
+          onOpenNotifications={() => {
+            close();
+            onOpenNotifications();
+          }}
+          onOpenEngineStatus={() => {
+            close();
+            onOpenEngineStatus();
           }}
           onDismiss={close}
         />

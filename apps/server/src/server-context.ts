@@ -1,6 +1,5 @@
 import type { AgentStore, WorkspaceStore } from "@ponderosa/agents";
 import type { AgentDetailDto, AssetLimitsDto, GlobalChatSearchResponseDto, TokenUsageRangeDto, TokenUsageSummaryDto } from "@ponderosa/core";
-import type { documentationReferences } from "./documentation-reference/index.js";
 
 /**
  * Read-only authority handed to extracted route domains. Every member must be a
@@ -13,7 +12,6 @@ export interface ServerContext {
     readonly buildVersion?: string;
     readonly buildRevision?: string;
   };
-  readonly documentationReferences: typeof documentationReferences;
   readonly limits: Readonly<AssetLimitsDto & { maxAttachmentsPerMessage: number }>;
   readonly agentDetail: (
     agentId: string,

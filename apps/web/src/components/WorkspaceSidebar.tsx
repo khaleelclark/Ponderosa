@@ -27,9 +27,10 @@ import type {
   WorkspaceProjectDirectoryItemDto,
   WorkspaceTriggerDirectoryItemDto,
 } from "@ponderosa/core";
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { isOpenAttention, isUnreadNotificationUpdate } from "../attention";
 import {
   useWorkspaceDirectory,
   workspaceDirectoryItems,
@@ -69,7 +70,6 @@ import {
 import {
   CreateSidebarPanel,
   SettingsSidebarPanel,
-  WikiSidebarPanel,
 } from "./WorkspaceSidebar.chrome";
 import { ProjectRail, ProjectSidebarHeader } from "./ProjectNavigation";
 import { HomeSidebarPanel } from "./WorkspaceSidebar.home";
@@ -77,8 +77,6 @@ import {
   useWorkspaceSidebarNavigation,
   useWorkspaceSidebarResize,
 } from "./useWorkspaceSidebarState";
-
-const WIKI_SEARCH_PAGE_SIZE = 15;
 
 export function WorkspaceSidebar({
   projects,
@@ -92,6 +90,8 @@ export function WorkspaceSidebar({
   onRenameConversation,
   onDeleteConversation,
   onSearch,
+  onOpenNotifications,
+  onOpenEngineStatus,
   onDismiss,
   collapsed = false,
   width = SIDEBAR_RAIL_WIDTH + SIDEBAR_PANEL_WIDTH,
@@ -109,6 +109,8 @@ export function WorkspaceSidebar({
   onRenameConversation(conversation: ConversationDto): void;
   onDeleteConversation(conversation: ConversationDto): void;
   onSearch?(): void;
+  onOpenNotifications?(): void;
+  onOpenEngineStatus?(): void;
   onDismiss?(): void;
   collapsed?: boolean;
   width?: number;
@@ -130,7 +132,6 @@ export function WorkspaceSidebar({
     openResourceMenu,
   } = useWorkspaceSidebarNavigation(route);
 
-  const normalizedFilter = filter.trim().toLocaleLowerCase();
   const routedProjectId = routeProjectId(route);
   const [drawerProjectId, setDrawerProjectId] = useState(routedProjectId);
   const [drawerProjectPanelOpen, setDrawerProjectPanelOpen] = useState(
@@ -148,21 +149,7 @@ export function WorkspaceSidebar({
   const showingTriggers = projectContext && projectSection === "triggers";
   const showingProjectOverview = projectContext && projectSection === "overview";
   const showingCreate = createOverride;
-  const showingWiki = !projectContext && sidebarSection === "wiki";
   const showingSettings = !projectContext && sidebarSection === "settings";
-  const [debouncedWikiFilter, setDebouncedWikiFilter] = useState("");
-  useEffect(() => {
-    const next = showingWiki ? filter.trim() : "";
-    if (next.length < 2) {
-      setDebouncedWikiFilter("");
-      return;
-    }
-    const timer = globalThis.setTimeout(
-      () => setDebouncedWikiFilter(next),
-      250,
-    );
-    return () => globalThis.clearTimeout(timer);
-  }, [filter, showingWiki]);
   const directorySearch = projectContext ? filter : "";
   const directorySort = showingProjectOverview ? "last_used" as const : undefined;
   const projectDirectoryQuery =
@@ -270,8 +257,10 @@ export function WorkspaceSidebar({
         !notification.readAt &&
         (notification.status ?? "open") === "open" &&
         Boolean(notification.conversationId) &&
-        isOrdinaryMessageNotification(notification),
+      isOrdinaryMessageNotification(notification),
     ).length,
+    attention: notifications.filter(isOpenAttention).length,
+    updates: notifications.filter(isUnreadNotificationUpdate).length,
   };
   const projectBadgeCounts = new Map<string, number>();
   for (const notification of notifications) {
@@ -287,25 +276,6 @@ export function WorkspaceSidebar({
       (projectBadgeCounts.get(notification.projectId) ?? 0) + 1,
     );
   }
-  const wikiIndexQuery = useQuery({
-    queryKey: queryKeys.wiki.index,
-    queryFn: () => api.getWikiIndex(),
-    enabled: showingWiki,
-    staleTime: 60_000,
-  });
-  const wikiSearchQuery = useInfiniteQuery({
-    queryKey: queryKeys.wiki.search(debouncedWikiFilter),
-    queryFn: ({ pageParam }) =>
-      api.searchWiki(
-        debouncedWikiFilter,
-        WIKI_SEARCH_PAGE_SIZE,
-        pageParam,
-      ),
-    initialPageParam: undefined as string | undefined,
-    getNextPageParam: lastPage => lastPage.nextCursor,
-    enabled: showingWiki && debouncedWikiFilter.length >= 2,
-    staleTime: 60_000,
-  });
   const healthQuery = useQuery({
     queryKey: queryKeys.health.all,
     queryFn: () => api.getHealth(),
@@ -395,6 +365,8 @@ export function WorkspaceSidebar({
       route={route}
       profile={preferences.profile}
       unreadMessages={counts.unread}
+      attentionNotifications={counts.attention}
+      unreadNotificationUpdates={counts.updates}
       projectBadgeCounts={projectBadgeCounts}
       onOpenHome={() => showNavigation({ kind: "home" })}
       onOpenAllMessages={() => showNavigation({ kind: "allChat" })}
@@ -405,7 +377,10 @@ export function WorkspaceSidebar({
         setDrawerProjectPanelOpen(true);
         if (!drawer && collapsed) onCollapsedChange?.(false);
       }}
-      onOpenWiki={() => showNavigation({ kind: "wiki" })}
+      onOpenSearch={() => onSearch?.()}
+      onOpenNotifications={() => onOpenNotifications?.()}
+      onOpenUsage={() => showNavigation({ kind: "usage" })}
+      onOpenEngineStatus={() => onOpenEngineStatus?.()}
       onOpenSettings={() => showNavigation({ kind: "settings" })}
       onOpenProfile={() => showNavigation({ kind: "profile" })}
       onClose={onDismiss}
@@ -885,44 +860,6 @@ export function WorkspaceSidebar({
     />
   );
 
-  const wikiSections = wikiIndexQuery.data?.sections ?? [];
-  const wikiSearchResults = wikiSearchQuery.data?.pages.flatMap(
-    page => page.results,
-  ) ?? [];
-  const wikiSearchTotal = wikiSearchQuery.data?.pages[0]?.total ?? 0;
-  const wikiSearchPending = normalizedFilter.length >= 2 &&
-    (debouncedWikiFilter.toLocaleLowerCase() !== normalizedFilter ||
-      wikiSearchQuery.isLoading);
-  const wikiSearchError = !wikiSearchPending && wikiSearchQuery.isError;
-  const activeWikiArticleId =
-    route.kind === "wiki"
-      ? (route.articleId ?? wikiIndexQuery.data?.sections[0]?.articles[0]?.id)
-      : undefined;
-    const wikiPanel = (
-    <WikiSidebarPanel
-      activeArticleId={activeWikiArticleId}
-      drawer={drawer}
-      filter={filter}
-      isError={wikiIndexQuery.isError}
-      isLoading={wikiIndexQuery.isLoading}
-      sections={wikiSections}
-      searchError={wikiSearchError}
-      searchLoading={wikiSearchPending}
-      searchResults={wikiSearchResults}
-      searchTotal={wikiSearchTotal}
-      hasMoreSearchResults={wikiSearchQuery.hasNextPage}
-      loadingMoreSearchResults={wikiSearchQuery.isFetchingNextPage}
-      onFilterChange={setFilter}
-      onLoadMoreSearchResults={() => void wikiSearchQuery.fetchNextPage()}
-      onNavigateArticle={articleId => {
-        onNavigate({ kind: "wiki", articleId });
-      }}
-      onOpenArticleMenu={(anchor, articleId) => {
-        openResourceMenu(anchor, { kind: "wiki", articleId });
-      }}
-    />
-  );
-
   const settingsPanel = (
     <SettingsSidebarPanel
       route={route}
@@ -942,9 +879,7 @@ export function WorkspaceSidebar({
   );
   const panel = showingCreate
     ? createPanel
-    : showingWiki
-      ? wikiPanel
-      : showingSettings
+    : showingSettings
         ? settingsPanel
         : showingAgents
           ? agentsPanel

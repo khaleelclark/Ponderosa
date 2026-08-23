@@ -67,7 +67,6 @@ export type Route =
   | { kind: "settings"; section?: "general" | "providers" | "notifications" | "activity" }
   | { kind: "profile" }
   | { kind: "usage"; projectId?: string }
-  | { kind: "wiki"; articleId?: string }
   | { kind: "project"; projectId: string; view?: ProjectDetailView }
   | { kind: "workspaceFile"; projectId: string; path: string }
   | { kind: "projectWork"; projectId: string; conversationId?: string; focusId?: string }
@@ -131,7 +130,6 @@ export function parseRoute(pathname: string, search = ""): Route {
   }
   if (parts.length === 1 && parts[0] === "profile") return { kind: "profile" };
   if (parts.length === 1 && parts[0] === "usage") return { kind: "usage", ...(query.get("project") ? { projectId: query.get("project")! } : {}) };
-  if (parts[0] === "wiki") return { kind: "wiki", ...(parts[1] ? { articleId: decodeURIComponent(parts[1]) } : {}) };
   if (parts[0] !== "projects" || !parts[1]) {
     return { kind: "home" };
   }

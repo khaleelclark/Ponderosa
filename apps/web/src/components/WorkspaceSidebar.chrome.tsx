@@ -3,27 +3,21 @@ import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import DataUsageOutlinedIcon from "@mui/icons-material/DataUsageOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
-import MenuBookOutlinedIcon from "@mui/icons-material/MenuBookOutlined";
 import NotificationsNoneOutlinedIcon from "@mui/icons-material/NotificationsNoneOutlined";
-import SearchIcon from "@mui/icons-material/Search";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import {
   Box,
-  InputAdornment,
   List,
   ListItemButton,
   ListItemIcon,
   ListItemText,
   Stack,
-  TextField,
   Typography,
 } from "@mui/material";
-import type { WikiIndexDto, WikiSearchResultDto } from "@ponderosa/core";
 import type { Route } from "../routing";
 import { IconTitle } from "./IconTitle";
 import { sidebarSurface } from "./WorkspaceSidebar.helpers";
-import { SidebarSectionHeading } from "./WorkspaceSidebar.parts";
 
 const createOptions = [
   {
@@ -117,228 +111,6 @@ export function CreateSidebarPanel({
           </ListItemButton>
         ))}
       </List>
-    </Box>
-  );
-}
-
-export function WikiSidebarPanel({
-  activeArticleId,
-  drawer,
-  filter,
-  isError,
-  isLoading,
-  sections,
-  searchError,
-  searchLoading,
-  searchResults,
-  searchTotal,
-  hasMoreSearchResults,
-  loadingMoreSearchResults,
-  onFilterChange,
-  onLoadMoreSearchResults,
-  onNavigateArticle,
-  onOpenArticleMenu,
-}: {
-  activeArticleId?: string;
-  drawer: boolean;
-  filter: string;
-  isError: boolean;
-  isLoading: boolean;
-  sections: WikiIndexDto["sections"];
-  searchError: boolean;
-  searchLoading: boolean;
-  searchResults: WikiSearchResultDto[];
-  searchTotal: number;
-  hasMoreSearchResults: boolean;
-  loadingMoreSearchResults: boolean;
-  onFilterChange(value: string): void;
-  onLoadMoreSearchResults(): void;
-  onNavigateArticle(articleId: string): void;
-  onOpenArticleMenu(anchor: HTMLElement, articleId: string): void;
-}): JSX.Element {
-  const searchText = filter.trim();
-  const searching = Boolean(searchText);
-  return (
-    <Box
-      sx={{
-        minHeight: 0,
-        minWidth: 0,
-        display: "grid",
-        gridTemplateRows: "auto auto minmax(0, 1fr)",
-        bgcolor: sidebarSurface,
-      }}
-    >
-      <Stack
-        direction="row"
-        sx={{
-          alignItems: "center",
-          pl: 2.25,
-          pr: drawer ? 7 : 2.25,
-          pt: 2,
-          pb: 1.25,
-        }}
-      >
-        <IconTitle icon={<MenuBookOutlinedIcon />} title="Wiki" />
-      </Stack>
-      <Box sx={{ px: 1.75, pb: 1.5 }}>
-        <TextField
-          fullWidth
-          size="small"
-          value={filter}
-          onChange={event => onFilterChange(event.target.value)}
-          placeholder="Search Wiki"
-          inputProps={{ "aria-label": "Search Wiki" }}
-          InputProps={{
-            startAdornment: (
-              <InputAdornment position="start">
-                <SearchIcon />
-              </InputAdornment>
-            ),
-          }}
-        />
-      </Box>
-      <Box
-        component="nav"
-        aria-label="Wiki navigation"
-        className="ponderosa-scroll"
-        sx={{ minHeight: 0, overflowY: "auto", px: 1.25, pb: 2 }}
-      >
-        {!searching && isLoading ? (
-          <Typography variant="body2" color="text.secondary" sx={{ p: 1 }}>
-            Loading Wiki…
-          </Typography>
-        ) : null}
-        {!searching && isError ? (
-          <Typography variant="body2" color="error" sx={{ p: 1 }}>
-            Wiki navigation could not be loaded.
-          </Typography>
-        ) : null}
-        {searching && searchText.length < 2 ? (
-          <Typography variant="body2" color="text.secondary" sx={{ p: 1 }}>
-            Type at least two characters to search article text.
-          </Typography>
-        ) : null}
-        {searching && searchText.length >= 2 && searchLoading ? (
-          <Typography variant="body2" color="text.secondary" sx={{ p: 1 }}>
-            Searching Wiki…
-          </Typography>
-        ) : null}
-        {searching && searchText.length >= 2 && searchError &&
-        searchResults.length === 0 ? (
-          <Typography variant="body2" color="error" sx={{ p: 1 }}>
-            Wiki search could not be loaded.
-          </Typography>
-        ) : null}
-        {searching && !searchLoading && searchResults.length > 0 ? (
-          <Box component="section" sx={{ mb: 2 }}>
-            <SidebarSectionHeading>
-              {searchTotal === 1 ? "1 Result" : `${searchTotal} Results`}
-            </SidebarSectionHeading>
-            <List dense disablePadding>
-              {searchResults.map(result => (
-                <ListItemButton
-                  key={result.article.id}
-                  selected={result.article.id === activeArticleId}
-                  onClick={() => onNavigateArticle(result.article.id)}
-                  onContextMenu={event => {
-                    event.preventDefault();
-                    onOpenArticleMenu(event.currentTarget, result.article.id);
-                  }}
-                  sx={{
-                    borderRadius: 1.25,
-                    alignItems: "flex-start",
-                    py: 0.8,
-                    mb: 0.35,
-                  }}
-                >
-                  <ListItemText
-                    primary={result.article.title}
-                    secondary={result.snippet}
-                    primaryTypographyProps={{
-                      fontSize: 13,
-                      fontWeight: result.article.id === activeArticleId ? 800 : 650,
-                    }}
-                    secondaryTypographyProps={{
-                      fontSize: 11.5,
-                      lineHeight: 1.4,
-                      sx: {
-                        mt: 0.25,
-                        display: "-webkit-box",
-                        WebkitBoxOrient: "vertical",
-                        WebkitLineClamp: 2,
-                        overflow: "hidden",
-                      },
-                    }}
-                  />
-                </ListItemButton>
-              ))}
-              {hasMoreSearchResults ? (
-                <ListItemButton
-                  disabled={loadingMoreSearchResults}
-                  onClick={onLoadMoreSearchResults}
-                  sx={{ borderRadius: 1.25, mt: 0.5 }}
-                >
-                  <ListItemText
-                    primary={loadingMoreSearchResults
-                      ? "Loading more results…"
-                      : searchError
-                        ? "Retry loading results"
-                        : "Load more results"}
-                    primaryTypographyProps={{
-                      color: "primary.main",
-                      fontSize: 12.5,
-                      fontWeight: 750,
-                    }}
-                  />
-                </ListItemButton>
-              ) : null}
-              {searchError ? (
-                <Typography color="error" variant="caption" sx={{ px: 1, py: 0.75 }}>
-                  More Wiki results could not be loaded. The results above are still available.
-                </Typography>
-              ) : null}
-            </List>
-          </Box>
-        ) : null}
-        {!searching && sections.map(section => (
-          <Box component="section" key={section.id} sx={{ mb: 2 }}>
-            <SidebarSectionHeading>{section.title}</SidebarSectionHeading>
-            <List dense disablePadding>
-              {section.articles.map(article => (
-                <ListItemButton
-                  key={article.id}
-                  selected={article.id === activeArticleId}
-                  onClick={() => onNavigateArticle(article.id)}
-                  onContextMenu={event => {
-                    event.preventDefault();
-                    onOpenArticleMenu(event.currentTarget, article.id);
-                  }}
-                  sx={{ borderRadius: 1.25, mb: 0.25 }}
-                >
-                  <ListItemText
-                    primary={article.title}
-                    primaryTypographyProps={{
-                      fontSize: 13,
-                      fontWeight: article.id === activeArticleId ? 800 : 600,
-                    }}
-                  />
-                </ListItemButton>
-              ))}
-            </List>
-          </Box>
-        ))}
-        {searching && searchText.length >= 2 && !searchLoading &&
-        !searchError && searchResults.length === 0 ? (
-          <Typography variant="body2" color="text.secondary" sx={{ p: 1 }}>
-            {`No Wiki articles match “${searchText}”.`}
-          </Typography>
-        ) : null}
-        {!searching && !isLoading && !isError && sections.length === 0 ? (
-          <Typography variant="body2" color="text.secondary" sx={{ p: 1 }}>
-            No Wiki articles are available.
-          </Typography>
-        ) : null}
-      </Box>
     </Box>
   );
 }

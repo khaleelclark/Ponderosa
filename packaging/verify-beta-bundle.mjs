@@ -28,7 +28,6 @@ const required = [
   path.join(bundle, "app", "web", "dist", "index.html"),
   path.join(bundle, "schema", "0000_current_schema.sql"),
   path.join(bundle, "qualification", "verify-installed-bundle.mjs"),
-  path.join(bundle, "docs", "wiki", "getting-started.md"),
 ];
 for (const pathname of required) {
   if (!existsSync(pathname)) throw new Error(`Bundle is incomplete: ${pathname}`);

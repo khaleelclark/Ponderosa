@@ -128,9 +128,6 @@ import type {
   WorkspaceResourceRecencyListDto,
   WorkspaceStatusDto,
   WorkspaceStreamStatusDto,
-  WikiArticleDto,
-  WikiIndexDto,
-  WikiSearchResponseDto,
 } from "@ponderosa/core";
 import {
   AGENT_DETAIL_PAGE_SIZE,
@@ -268,16 +265,7 @@ function browserPath(projectId: string, agentId: string, runId: string): string 
 }
 
 export const realApi = {
-  getWikiIndex(): Promise<WikiIndexDto> {
-    return requestJson<WikiIndexDto>("/api/wiki");
-  },
   getAssetLimits(): Promise<AssetLimitsDto> { return requestJson<AssetLimitsDto>("/api/asset-limits"); },
-  getWikiArticle(id: string): Promise<WikiArticleDto> {
-    return requestJson<WikiArticleDto>(`/api/wiki/articles/${encodeURIComponent(id)}`);
-  },
-  searchWiki(query: string, limit = 20, cursor?: string): Promise<WikiSearchResponseDto> {
-    return requestJson<WikiSearchResponseDto>(`/api/wiki/search${toQuery({ q: query, limit, cursor })}`);
-  },
   listProjects(): Promise<ProjectDto[]> {
     return collectCollectionPages<ProjectDto>("/api/projects");
   },
