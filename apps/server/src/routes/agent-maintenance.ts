@@ -145,13 +145,16 @@ export function registerAgentMaintenanceRoutes(
         return reply.code(409).send({ error: "Agent deletion is already in progress" });
       }
       try {
+        const previous = store.getAgent(request.params.id);
         const agent = store.updateAgentOrganization(request.params.id, request.body);
         if (!agent) return reply.code(404).send({ error: "agent not found" });
-        appendWorkspace({
-          type: "project_changed",
-          projectId: agent.projectId,
-          action: "updated",
-        });
+        if ((previous?.managerAgentId ?? null) !== (agent.managerAgentId ?? null)) {
+          appendWorkspace({
+            type: "project_changed",
+            projectId: agent.projectId,
+            action: "updated",
+          });
+        }
         return agent;
       } catch (error) {
         return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid agent organization" });

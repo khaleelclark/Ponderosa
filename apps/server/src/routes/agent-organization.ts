@@ -9,11 +9,13 @@ import type {
 } from "@ponderosa/core";
 import type { AgentStore } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   collectionGenerationKey,
   sendCollectionPageError,
   sqliteCollectionGeneration,
   sqliteCollectionPage,
+  StaleCollectionCursorError,
   type CollectionQuery,
 } from "../collection-page.js";
 
@@ -31,6 +33,42 @@ const ORGANIZATION_STATUSES = new Set<AgentOperationalStatus>([
   "stalled",
   "interrupted",
 ]);
+
+const ORGANIZATION_CURSOR_KEY = randomBytes(32);
+const MAX_SIGNED_ORGANIZATION_CURSOR_LENGTH = 4_096;
+
+function signOrganizationCursor(rawCursor: string): string {
+  const signature = createHmac("sha256", ORGANIZATION_CURSOR_KEY)
+    .update(rawCursor)
+    .digest("base64url");
+  return `v1.${rawCursor}.${signature}`;
+}
+
+function unwrapOrganizationCursor(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  if (value.length > MAX_SIGNED_ORGANIZATION_CURSOR_LENGTH) {
+    throw new StaleCollectionCursorError();
+  }
+  const parts = value.split(".");
+  if (
+    parts.length !== 3 ||
+    parts[0] !== "v1" ||
+    !parts[1] ||
+    !/^[A-Za-z0-9_-]+$/.test(parts[1]) ||
+    !parts[2] ||
+    !/^[A-Za-z0-9_-]+$/.test(parts[2])
+  ) {
+    throw new StaleCollectionCursorError();
+  }
+  const actual = Buffer.from(parts[2], "base64url");
+  const expected = createHmac("sha256", ORGANIZATION_CURSOR_KEY)
+    .update(parts[1])
+    .digest();
+  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
+    throw new StaleCollectionCursorError();
+  }
+  return parts[1];
+}
 
 interface OrganizationQuery extends CollectionQuery {
   scope?: AgentOrganizationScope;
@@ -166,10 +204,13 @@ export function registerAgentOrganizationRoutes(
     `;
 
     try {
-      const idPage = sqliteCollectionPage<string>(
-        context.store.sqlite,
-        request.query,
-        {
+      const rawCursor = unwrapOrganizationCursor(request.query.cursor);
+      let idPage;
+      try {
+        idPage = sqliteCollectionPage<string>(
+          context.store.sqlite,
+          { ...request.query, cursor: rawCursor },
+          {
           baseSql,
           params,
           order: "title",
@@ -178,8 +219,14 @@ export function registerAgentOrganizationRoutes(
           defaultLimit: 25,
           maxLimit: 100,
           hydrate: id => id,
-        },
-      );
+          },
+        );
+      } catch (error) {
+        if (request.query.cursor && !(error instanceof StaleCollectionCursorError)) {
+          throw new StaleCollectionCursorError();
+        }
+        throw error;
+      }
       const specialGroupCounts = context.store.sqlite.prepare(`
         SELECT
           SUM(CASE WHEN a.deleted_at IS NULL AND a.archived = 0
@@ -295,7 +342,7 @@ export function registerAgentOrganizationRoutes(
         items,
         total: idPage.total,
         limit: idPage.limit,
-        ...(idPage.cursor ? { nextCursor: idPage.cursor } : {}),
+        ...(idPage.cursor ? { nextCursor: signOrganizationCursor(idPage.cursor) } : {}),
         collectionGeneration,
         specialGroupCounts: {
           independent: specialGroupCounts.independent ?? 0,
