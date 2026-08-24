@@ -1,4 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useSyncExternalStore } from "react";
 import { api } from "../api";
 import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
 import { queryKeys } from "../queryKeys";
@@ -14,8 +15,50 @@ export function useWorkspacePreferences() {
   return useQuery({ queryKey: queryKeys.workspacePreferences.all, queryFn: () => api.getWorkspacePreferences() });
 }
 
+interface NotificationFetchRevisionStore {
+  getSnapshot(): number;
+  subscribe(listener: () => void): () => void;
+}
+
+const notificationFetchRevisionStores = new WeakMap<QueryClient, NotificationFetchRevisionStore>();
+
+function notificationFetchRevisionStore(queryClient: QueryClient): NotificationFetchRevisionStore {
+  const existing = notificationFetchRevisionStores.get(queryClient);
+  if (existing) return existing;
+  let revision = 0;
+  const listeners = new Set<() => void>();
+  queryClient.getQueryCache().subscribe((event) => {
+    if (
+      event.type !== "updated" ||
+      event.action.type !== "success" ||
+      event.action.manual ||
+      event.query.queryKey.length !== queryKeys.notifications.all.length ||
+      event.query.queryKey.some((part: unknown, index: number) => part !== queryKeys.notifications.all[index])
+    ) return;
+    revision += 1;
+    listeners.forEach((listener) => listener());
+  });
+  const store = {
+    getSnapshot: () => revision,
+    subscribe(listener: () => void) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+  notificationFetchRevisionStores.set(queryClient, store);
+  return store;
+}
+
 export function useNotifications() {
-  return useQuery({ queryKey: queryKeys.notifications.all, queryFn: () => api.listNotifications() });
+  const queryClient = useQueryClient();
+  const revisionStore = notificationFetchRevisionStore(queryClient);
+  const successfulFetchRevision = useSyncExternalStore(
+    revisionStore.subscribe,
+    revisionStore.getSnapshot,
+    revisionStore.getSnapshot,
+  );
+  const query = useQuery({ queryKey: queryKeys.notifications.all, queryFn: () => api.listNotifications() });
+  return { ...query, successfulFetchRevision };
 }
 
 export function useAllChat(limit = 50) {

@@ -843,6 +843,7 @@ export default function App({
           open={notificationPanelOpen}
           projects={projects}
           firstPage={notificationsQuery.data}
+          firstPageRevision={notificationsQuery.successfulFetchRevision}
           onClose={closeNotifications}
           onNavigate={navigateWorkspace}
           onOpenSettings={openSettings}

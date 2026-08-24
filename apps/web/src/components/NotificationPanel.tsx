@@ -45,6 +45,19 @@ interface NotificationGroup {
   items: WorkspaceNotificationDto[];
 }
 
+interface RetainedNotificationPage extends WorkspaceNotificationPageDto {
+  requestedCursor: string;
+}
+
+interface HistoryOperation {
+  epoch: number;
+  kind: "load" | "reconcile";
+  canonicalRevision: number;
+  panelGeneration: number;
+  startCursor: string;
+  terminalBoundaryCursor?: string;
+}
+
 function compareNotificationsNewestFirst(a: WorkspaceNotificationDto, b: WorkspaceNotificationDto): number {
   return b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id);
 }
@@ -147,10 +160,11 @@ function notificationSummaryText(openActionCount: number, unacknowledgedActionCo
   return "You’re all caught up";
 }
 
-export function NotificationPanel({ open, projects, firstPage, onClose, onNavigate, onOpenSettings }: {
+export function NotificationPanel({ open, projects, firstPage, firstPageRevision, onClose, onNavigate, onOpenSettings }: {
   open: boolean;
   projects: ProjectDto[];
   firstPage?: WorkspaceNotificationPageDto;
+  firstPageRevision: number;
   onClose(): void;
   onNavigate(route: Route): void;
   onOpenSettings?(): void;
@@ -162,20 +176,29 @@ export function NotificationPanel({ open, projects, firstPage, onClose, onNaviga
   const [reconcilingOlder, setReconcilingOlder] = useState(false);
   const [historyReconcileFailed, setHistoryReconcileFailed] = useState(false);
   const [historyReconcileNonce, setHistoryReconcileNonce] = useState(0);
-  const [olderPages, setOlderPages] = useState<WorkspaceNotificationPageDto[]>([]);
-  const olderPagesRef = useRef<WorkspaceNotificationPageDto[]>([]);
-  const historyGeneration = useRef(0);
+  const [olderPages, setOlderPages] = useState<RetainedNotificationPage[]>([]);
+  const olderPagesRef = useRef<RetainedNotificationPage[]>([]);
+  const panelGeneration = useRef(0);
+  const operationEpoch = useRef(0);
+  const activeHistoryOperation = useRef<HistoryOperation>();
   const retainedPagesCanonical = useRef(true);
-  const historyContext = useRef({ open, firstPage });
-  if (historyContext.current.open !== open || historyContext.current.firstPage !== firstPage) {
-    if (open && olderPagesRef.current.length > 0 && historyContext.current.firstPage !== firstPage) {
+  const reconciledRevision = useRef(firstPageRevision);
+  const historyContext = useRef({ open, firstPageRevision, firstPageCursor: firstPage?.nextCursor ?? "" });
+  if (historyContext.current.open !== open) {
+    panelGeneration.current += 1;
+    operationEpoch.current += 1;
+    activeHistoryOperation.current = undefined;
+  }
+  if (historyContext.current.firstPageRevision !== firstPageRevision) {
+    operationEpoch.current += 1;
+    activeHistoryOperation.current = undefined;
+    if (open && olderPagesRef.current.length > 0) {
       retainedPagesCanonical.current = false;
     }
-    historyContext.current = { open, firstPage };
-    historyGeneration.current += 1;
   }
+  historyContext.current = { open, firstPageRevision, firstPageCursor: firstPage?.nextCursor ?? "" };
   const replaceOlderPages = useCallback((
-    update: (current: WorkspaceNotificationPageDto[]) => WorkspaceNotificationPageDto[],
+    update: (current: RetainedNotificationPage[]) => RetainedNotificationPage[],
   ) => {
     const next = update(olderPagesRef.current);
     olderPagesRef.current = next;
@@ -266,48 +289,96 @@ export function NotificationPanel({ open, projects, firstPage, onClose, onNaviga
   const nextCursor = olderPages.length > 0
     ? olderPages.at(-1)?.nextCursor
     : firstPage?.nextCursor;
+  const revisionUnreconciled = open && reconciledRevision.current !== firstPageRevision;
+  const historyOperationActive = Boolean(activeHistoryOperation.current);
   useEffect(() => {
     if (open && !wasOpen.current) {
       replaceOlderPages(() => []);
       retainedPagesCanonical.current = true;
+      reconciledRevision.current = firstPageRevision;
       pendingAcknowledgements.current.clear();
       pendingReads.current.clear();
       setHistoryReconcileFailed(false);
       setFilter(openActionCount ? "attention" : "updates");
     }
     if (!open) {
-      historyGeneration.current += 1;
       setLoadingOlder(false);
       setReconcilingOlder(false);
     }
     wasOpen.current = open;
-  }, [openActionCount, open, replaceOlderPages]);
+  }, [firstPageRevision, openActionCount, open, replaceOlderPages]);
 
   useEffect(() => {
-    setLoadingOlder(false);
-  }, [firstPage]);
-
-  useEffect(() => {
-    if (!open || !firstPage || olderPagesRef.current.length === 0) return;
-    const generation = historyGeneration.current;
-    const loadedPageCount = olderPagesRef.current.length;
-    let disposed = false;
+    if (!open || !firstPage || reconciledRevision.current === firstPageRevision) return;
+    if (olderPagesRef.current.length === 0) {
+      retainedPagesCanonical.current = true;
+      reconciledRevision.current = firstPageRevision;
+      setLoadingOlder(false);
+      return;
+    }
+    const priorPages = olderPagesRef.current;
+    const loadedPageCount = priorPages.length;
+    const priorLastPage = priorPages.at(-1)!;
+    const priorTailWasTerminal = !priorLastPage.nextCursor;
+    const priorTailBoundary = priorTailWasTerminal ? {
+      id: notificationsNewestFirst(priorLastPage.items).at(-1)?.id,
+      cursor: priorLastPage.requestedCursor,
+    } : undefined;
+    const epoch = ++operationEpoch.current;
+    const operation: HistoryOperation = {
+      epoch,
+      kind: "reconcile",
+      canonicalRevision: firstPageRevision,
+      panelGeneration: panelGeneration.current,
+      startCursor: firstPage.nextCursor ?? "",
+      ...(priorTailBoundary ? { terminalBoundaryCursor: priorTailBoundary.cursor } : {}),
+    };
+    activeHistoryOperation.current = operation;
+    const operationIsCurrent = () =>
+      activeHistoryOperation.current === operation &&
+      activeHistoryOperation.current?.kind === operation.kind &&
+      operationEpoch.current === operation.epoch &&
+      historyContext.current.open &&
+      historyContext.current.firstPageRevision === operation.canonicalRevision &&
+      historyContext.current.firstPageCursor === operation.startCursor &&
+      operation.terminalBoundaryCursor === priorTailBoundary?.cursor &&
+      panelGeneration.current === operation.panelGeneration;
     const reconcile = async () => {
+      setLoadingOlder(false);
       setReconcilingOlder(true);
       setHistoryReconcileFailed(false);
       try {
-        const pages: WorkspaceNotificationPageDto[] = [];
+        const pages: RetainedNotificationPage[] = [];
         let cursor = firstPage.nextCursor;
         for (let index = 0; index < loadedPageCount && cursor; index += 1) {
           const requestedCursor = cursor;
           const page = await api.listNotifications(requestedCursor);
+          if (!operationIsCurrent()) return;
           if (page.nextCursor === requestedCursor) {
             throw new Error("Notification history did not advance.");
           }
-          pages.push(page);
+          pages.push({ ...page, requestedCursor });
           cursor = page.nextCursor;
         }
-        if (disposed || !open || historyGeneration.current !== generation) return;
+        if (priorTailBoundary?.id && !pages.some((page) => page.items.some((item) => item.id === priorTailBoundary.id)) && cursor) {
+          const requestedCursor = cursor;
+          const spillPage = await api.listNotifications(requestedCursor);
+          if (!operationIsCurrent()) return;
+          if (spillPage.nextCursor === requestedCursor) {
+            throw new Error("Notification history did not advance.");
+          }
+          pages.push({ ...spillPage, requestedCursor });
+          cursor = spillPage.nextCursor;
+        }
+        if (
+          priorTailWasTerminal &&
+          priorTailBoundary?.id &&
+          !pages.some((page) => page.items.some((item) => item.id === priorTailBoundary.id)) &&
+          cursor
+        ) {
+          throw new Error("The previously loaded end of notification history moved beyond the bounded refresh. Retry to restore the complete loaded history.");
+        }
+        if (!operationIsCurrent()) return;
         replaceOlderPages(() => pages.map((page) => ({
           ...page,
           items: page.items.map((item) => {
@@ -323,21 +394,28 @@ export function NotificationPanel({ open, projects, firstPage, onClose, onNaviga
           }),
         })));
         retainedPagesCanonical.current = true;
+        reconciledRevision.current = firstPageRevision;
       } catch (reason) {
-        if (disposed || historyGeneration.current !== generation) return;
+        if (!operationIsCurrent()) return;
         setHistoryReconcileFailed(true);
         setError(reason instanceof Error
           ? `Loaded notification history could not be refreshed: ${reason.message}`
           : "Loaded notification history could not be refreshed.");
       } finally {
-        if (!disposed && historyGeneration.current === generation) {
+        if (operationIsCurrent()) {
+          activeHistoryOperation.current = undefined;
           setReconcilingOlder(false);
         }
       }
     };
     void reconcile();
-    return () => { disposed = true; };
-  }, [firstPage, historyReconcileNonce, open, replaceOlderPages]);
+    return () => {
+      if (activeHistoryOperation.current === operation) {
+        operationEpoch.current += 1;
+        activeHistoryOperation.current = undefined;
+      }
+    };
+  }, [firstPage?.nextCursor, firstPageRevision, historyReconcileNonce, open, replaceOlderPages]);
   const visibleNotifications = filterNotifications(notifications, filter);
   const totalForFilter = filter === "attention" ? openActionCount : unreadUpdateCount;
   const remainingForFilter = Math.max(0, totalForFilter - visibleNotifications.length);
@@ -355,16 +433,43 @@ export function NotificationPanel({ open, projects, firstPage, onClose, onNaviga
   const groups = groupNotificationsByProject(visibleNotifications);
 
   const loadOlder = async () => {
-    if (!nextCursor || loadingOlder || reconcilingOlder) return;
-    const generation = historyGeneration.current;
+    const currentPages = olderPagesRef.current;
+    const currentNextCursor = currentPages.length > 0
+      ? currentPages.at(-1)?.nextCursor
+      : firstPage?.nextCursor;
+    if (
+      !currentNextCursor ||
+      activeHistoryOperation.current ||
+      reconciledRevision.current !== historyContext.current.firstPageRevision ||
+      !historyContext.current.open
+    ) return;
+    const operation: HistoryOperation = {
+      epoch: ++operationEpoch.current,
+      kind: "load",
+      canonicalRevision: historyContext.current.firstPageRevision,
+      panelGeneration: panelGeneration.current,
+      startCursor: currentNextCursor,
+    };
+    activeHistoryOperation.current = operation;
+    const operationIsCurrent = () =>
+      activeHistoryOperation.current === operation &&
+      activeHistoryOperation.current?.kind === operation.kind &&
+      operationEpoch.current === operation.epoch &&
+      historyContext.current.open &&
+      historyContext.current.firstPageRevision === operation.canonicalRevision &&
+      panelGeneration.current === operation.panelGeneration;
     setLoadingOlder(true);
     setError(undefined);
     try {
-      const page = await api.listNotifications(nextCursor);
-      if (page.nextCursor === nextCursor) throw new Error("Notification history did not advance.");
-      if (!open || historyGeneration.current !== generation) return;
-      replaceOlderPages((current) => [...current, {
+      const page = await api.listNotifications(operation.startCursor);
+      if (!operationIsCurrent()) return;
+      if (page.nextCursor === operation.startCursor) throw new Error("Notification history did not advance.");
+      const current = olderPagesRef.current;
+      const expectedCursor = current.length > 0 ? current.at(-1)?.nextCursor : firstPage?.nextCursor;
+      if (expectedCursor !== operation.startCursor) return;
+      replaceOlderPages((pages) => [...pages, {
         ...page,
+        requestedCursor: operation.startCursor,
         items: page.items.map((item) => {
           const acknowledgedAt = pendingAcknowledgements.current.get(item.id);
           const readAt = pendingReads.current.get(item.id);
@@ -376,11 +481,14 @@ export function NotificationPanel({ open, projects, firstPage, onClose, onNaviga
         }),
       }]);
     } catch (reason) {
-      if (historyGeneration.current === generation) {
+      if (operationIsCurrent()) {
         setError(reason instanceof Error ? reason.message : "Older notifications could not be loaded.");
       }
     } finally {
-      if (historyGeneration.current === generation) setLoadingOlder(false);
+      if (operationIsCurrent()) {
+        activeHistoryOperation.current = undefined;
+        setLoadingOlder(false);
+      }
     }
   };
 
@@ -537,7 +645,7 @@ export function NotificationPanel({ open, projects, firstPage, onClose, onNaviga
           setError(undefined);
           setHistoryReconcileNonce((current) => current + 1);
         }}>Retry notification refresh</Button> : null}
-        {nextCursor ? <Button disabled={loadingOlder || reconcilingOlder} onClick={() => void loadOlder()}>
+        {nextCursor ? <Button disabled={loadingOlder || reconcilingOlder || revisionUnreconciled || historyOperationActive || historyReconcileFailed} onClick={() => void loadOlder()}>
           {loadingOlder ? "Loading older notifications…" : reconcilingOlder
             ? "Refreshing loaded notifications…" : remainingForFilter
             ? `Load older (${remainingForFilter} ${filter === "attention" ? "attention" : "updates"} remaining)`
