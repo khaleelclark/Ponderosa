@@ -54,20 +54,39 @@ export function monitorSpeechSurfaceAccessibility(
   let observer: MutationObserver | undefined;
   let resizeObserver: ResizeObserver | undefined;
   let fallbackInterval: number | undefined;
+  const listeners: Array<{
+    target: Document | Window;
+    type: string;
+    listener: EventListener;
+  }> = [];
 
   const cleanup = () => {
     if (!active) return;
     active = false;
-    observer?.disconnect();
-    resizeObserver?.disconnect();
-    if (fallbackInterval !== undefined) {
-      window.clearInterval(fallbackInterval);
+    try {
+      observer?.disconnect();
+    } catch {
+      // Continue releasing every resource if a browser shim rejects cleanup.
     }
-    document.removeEventListener("visibilitychange", check);
-    window.removeEventListener("hashchange", check);
-    window.removeEventListener("pagehide", handlePageHide);
-    window.removeEventListener("popstate", check);
-    window.removeEventListener("resize", check);
+    try {
+      resizeObserver?.disconnect();
+    } catch {
+      // Continue releasing every resource if a browser shim rejects cleanup.
+    }
+    if (fallbackInterval !== undefined) {
+      try {
+        window.clearInterval(fallbackInterval);
+      } catch {
+        // Continue releasing listeners if a browser shim rejects cleanup.
+      }
+    }
+    for (const { target, type, listener } of listeners) {
+      try {
+        target.removeEventListener(type, listener);
+      } catch {
+        // Best-effort cleanup must not prevent the remaining removals.
+      }
+    }
   };
   const handleInactive = () => {
     if (!active) return;
@@ -78,28 +97,42 @@ export function monitorSpeechSurfaceAccessibility(
     if (active && !speechSurfaceIsAccessible(element())) handleInactive();
   };
   const handlePageHide = () => handleInactive();
+  const addListener = (
+    target: Document | Window,
+    type: string,
+    listener: EventListener,
+  ) => {
+    const registration = { target, type, listener };
+    listeners.push(registration);
+    target.addEventListener(type, listener);
+  };
 
-  if (typeof MutationObserver === "undefined") {
-    fallbackInterval = window.setInterval(check, 200);
-  } else {
-    observer = new MutationObserver(check);
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: SURFACE_ATTRIBUTE_FILTER,
-      childList: true,
-      subtree: true,
-    });
+  try {
+    if (typeof MutationObserver === "undefined") {
+      fallbackInterval = window.setInterval(check, 200);
+    } else {
+      observer = new MutationObserver(check);
+      observer.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: SURFACE_ATTRIBUTE_FILTER,
+        childList: true,
+        subtree: true,
+      });
+    }
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(check);
+      const surface = element();
+      if (surface) resizeObserver.observe(surface);
+    }
+    addListener(document, "visibilitychange", check);
+    addListener(window, "hashchange", check);
+    addListener(window, "pagehide", handlePageHide);
+    addListener(window, "popstate", check);
+    addListener(window, "resize", check);
+    check();
+    return cleanup;
+  } catch (error) {
+    cleanup();
+    throw error;
   }
-  if (typeof ResizeObserver !== "undefined") {
-    resizeObserver = new ResizeObserver(check);
-    const surface = element();
-    if (surface) resizeObserver.observe(surface);
-  }
-  document.addEventListener("visibilitychange", check);
-  window.addEventListener("hashchange", check);
-  window.addEventListener("pagehide", handlePageHide);
-  window.addEventListener("popstate", check);
-  window.addEventListener("resize", check);
-  check();
-  return cleanup;
 }

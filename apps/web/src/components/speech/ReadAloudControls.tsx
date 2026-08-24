@@ -16,7 +16,9 @@ type ReadAloudStatus = "idle" | "speaking" | "paused" | "stopped" | "error";
 
 interface ActiveReadAloud {
   ownerId: string;
-  stop(): void;
+  surfaceCleanup?: () => void;
+  utterance: SpeechSynthesisUtterance;
+  stop(): Error | undefined;
 }
 
 let activeReadAloud: ActiveReadAloud | undefined;
@@ -32,69 +34,129 @@ export function ReadAloudControls({ text }: { text: string }): JSX.Element {
   const unavailable = speechSynthesisUnavailableReason();
   const speakableText = speakableMessageText(text);
 
-  const stopVisibilityMonitoring = () => {
-    visibilityCleanupRef.current?.();
-    visibilityCleanupRef.current = undefined;
-  };
-
-  const stop = () => {
-    if (activeReadAloud?.ownerId !== ownerId) return;
-    stopVisibilityMonitoring();
-    window.speechSynthesis.cancel();
-    activeReadAloud = undefined;
-    utteranceRef.current = undefined;
-    if (mountedRef.current) {
-      setError(undefined);
-      setStatus("stopped");
+  const stopVisibilityMonitoring = (owner?: ActiveReadAloud) => {
+    const cleanup = owner
+      ? owner.surfaceCleanup
+      : visibilityCleanupRef.current;
+    if (owner) owner.surfaceCleanup = undefined;
+    if (visibilityCleanupRef.current === cleanup) {
+      visibilityCleanupRef.current = undefined;
+    }
+    try {
+      cleanup?.();
+    } catch {
+      // Speech ownership must still be released if cleanup rejects.
     }
   };
 
-  const beginVisibilityMonitoring = () => {
-    stopVisibilityMonitoring();
-    visibilityCleanupRef.current = monitorSpeechSurfaceAccessibility(
-      () => rootRef.current,
-      () => {
-        if (activeReadAloud?.ownerId === ownerId) stop();
-      },
-    );
+  const releaseOwner = (owner: ActiveReadAloud) => {
+    stopVisibilityMonitoring(owner);
+    if (activeReadAloud === owner) activeReadAloud = undefined;
+    if (utteranceRef.current === owner.utterance) {
+      utteranceRef.current = undefined;
+    }
+  };
+
+  const stopOwner = (owner: ActiveReadAloud): Error | undefined => {
+    if (activeReadAloud !== owner) {
+      releaseOwner(owner);
+      return undefined;
+    }
+    releaseOwner(owner);
+    let cancelError: Error | undefined;
+    try {
+      window.speechSynthesis.cancel();
+    } catch (error) {
+      cancelError =
+        error instanceof Error
+          ? error
+          : new Error("Speech cancellation failed.");
+    }
+    if (mountedRef.current) {
+      if (cancelError) {
+        setError("The browser could not read this message aloud.");
+        setStatus("error");
+      } else {
+        setError(undefined);
+        setStatus("stopped");
+      }
+    }
+    return cancelError;
+  };
+
+  const stop = () => {
+    const owner = activeReadAloud;
+    if (owner?.ownerId === ownerId) stopOwner(owner);
   };
 
   const start = () => {
-    if (
-      unavailable ||
-      !speakableText ||
-      !speechSurfaceIsAccessible(rootRef.current)
-    ) return;
-    activeReadAloud?.stop();
+    if (unavailable || !speakableText) return;
     setError(undefined);
-    const utterance = new SpeechSynthesisUtterance(speakableText);
-    utterance.lang = navigator.language || "en-US";
-    utterance.onstart = () => {
-      if (mountedRef.current) setStatus("speaking");
-    };
-    utterance.onend = () => {
-      if (activeReadAloud?.ownerId === ownerId) activeReadAloud = undefined;
-      stopVisibilityMonitoring();
-      utteranceRef.current = undefined;
-      if (mountedRef.current) setStatus("stopped");
-    };
-    utterance.onerror = event => {
-      if (activeReadAloud?.ownerId === ownerId) activeReadAloud = undefined;
-      stopVisibilityMonitoring();
-      utteranceRef.current = undefined;
-      if (!mountedRef.current) return;
-      if (event.error === "canceled" || event.error === "interrupted") {
-        setStatus("stopped");
+    let owner: ActiveReadAloud | undefined;
+    let speechMayBeQueued = false;
+    try {
+      if (!speechSurfaceIsAccessible(rootRef.current)) return;
+      const utterance = new SpeechSynthesisUtterance(speakableText);
+      owner = {
+        ownerId,
+        utterance,
+        stop: () => (owner ? stopOwner(owner) : undefined),
+      };
+      const exactOwner = owner;
+      utterance.lang = navigator.language || "en-US";
+      utterance.onstart = () => {
+        if (activeReadAloud === exactOwner && mountedRef.current) {
+          setStatus("speaking");
+        }
+      };
+      utterance.onend = () => {
+        if (activeReadAloud !== exactOwner) return;
+        releaseOwner(exactOwner);
+        if (mountedRef.current) setStatus("stopped");
+      };
+      utterance.onerror = event => {
+        if (activeReadAloud !== exactOwner) return;
+        releaseOwner(exactOwner);
+        if (!mountedRef.current) return;
+        if (event.error === "canceled" || event.error === "interrupted") {
+          setStatus("stopped");
+          return;
+        }
+        setError("The browser could not read this message aloud.");
+        setStatus("error");
+      };
+
+      const replacementError = activeReadAloud?.stop();
+      if (replacementError) throw replacementError;
+      utteranceRef.current = utterance;
+      activeReadAloud = exactOwner;
+      const cleanup = monitorSpeechSurfaceAccessibility(
+        () => rootRef.current,
+        () => stopOwner(exactOwner),
+      );
+      exactOwner.surfaceCleanup = cleanup;
+      if (activeReadAloud !== exactOwner) {
+        stopVisibilityMonitoring(exactOwner);
         return;
       }
+      visibilityCleanupRef.current = cleanup;
+      speechMayBeQueued = true;
+      window.speechSynthesis.speak(utterance);
+      if (activeReadAloud === exactOwner) setStatus("speaking");
+    } catch {
+      const ownsSynthesis = owner !== undefined && activeReadAloud === owner;
+      if (owner) releaseOwner(owner);
+      if (ownsSynthesis || speechMayBeQueued) {
+        try {
+          window.speechSynthesis.cancel();
+        } catch {
+          // The failed owner is fenced even if browser cancellation rejects.
+        }
+      }
+      if (!mountedRef.current) return;
       setError("The browser could not read this message aloud.");
       setStatus("error");
-    };
-    utteranceRef.current = utterance;
-    activeReadAloud = { ownerId, stop };
-    beginVisibilityMonitoring();
-    window.speechSynthesis.speak(utterance);
-    setStatus("speaking");
+    }
   };
 
   const toggle = () => {
@@ -116,10 +178,8 @@ export function ReadAloudControls({ text }: { text: string }): JSX.Element {
     return () => {
       mountedRef.current = false;
       stopVisibilityMonitoring();
-      if (activeReadAloud?.ownerId === ownerId) {
-        window.speechSynthesis.cancel();
-        activeReadAloud = undefined;
-      }
+      const owner = activeReadAloud;
+      if (owner?.ownerId === ownerId) stopOwner(owner);
       utteranceRef.current = undefined;
     };
   }, [ownerId]);
