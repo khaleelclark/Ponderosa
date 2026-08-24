@@ -247,7 +247,7 @@ CREATE TABLE agents (
   updated_at TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0,
   manager_agent_id TEXT, spawned_by_agent_id TEXT, spawned_by_execution_id TEXT,
   spawn_prompt TEXT, spawn_idempotency_key TEXT, preset_snapshot_json TEXT
-, model TEXT, effort TEXT, active_session_contract_hash TEXT, active_session_artifact_ids_json TEXT NOT NULL DEFAULT '[]', allow_automatic_descendant_deletion INTEGER NOT NULL DEFAULT 0, allow_automatic_descendant_reorganization INTEGER NOT NULL DEFAULT 0, deleted_at TEXT, creation_idempotency_key TEXT);
+, model TEXT, effort TEXT, active_session_contract_hash TEXT, active_session_artifact_ids_json TEXT NOT NULL DEFAULT '[]', allow_automatic_descendant_deletion INTEGER NOT NULL DEFAULT 0, allow_automatic_descendant_reorganization INTEGER NOT NULL DEFAULT 0, deleted_at TEXT, creation_idempotency_key TEXT, working_copy_json TEXT NOT NULL);
 CREATE TABLE agent_handle_reservations (
   project_id TEXT NOT NULL,
   normalized_handle TEXT NOT NULL,

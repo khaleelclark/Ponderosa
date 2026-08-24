@@ -14,6 +14,7 @@ import type { AgentJson, ConversationJson, PresetEvent, ProjectJson } from "./st
 import { AgentArtifactCatalog } from "./store-artifact-catalog.js";
 import { AgentCatalogAuthority } from "./store-agent-catalog-authority.js";
 import { AgentEventProjectionStore } from "./store-event-projection.js";
+import { sharedWorkingCopy } from "./working-copy.js";
 import {
   activityProjection,
   agentConversationMemberships,
@@ -184,6 +185,7 @@ export class AgentProjectionRebuilder {
           agentId: t.id,
           reservedAt: t.createdAt,
         }).onConflictDoNothing().run();
+        const workingCopy = t.workingCopy ?? sharedWorkingCopy(p, t.updatedAt);
         const membershipIds = [...new Set(t.conversationIds ?? (t.conversationId ? [t.conversationId] : []))];
         const primaryConversationId = t.conversationId && membershipIds.includes(t.conversationId)
           ? t.conversationId
@@ -212,13 +214,14 @@ export class AgentProjectionRebuilder {
             spawnIdempotencyKey: t.spawnIdempotencyKey ?? null,
             presetSnapshotJson: t.presetSnapshot ? JSON.stringify(t.presetSnapshot) : null,
             creationIdempotencyKey: t.creationIdempotencyKey ?? null,
+            workingCopyJson: JSON.stringify(workingCopy),
           })
           .run();
         membershipIds.forEach((conversationId, position) => {
           this.db.insert(agentConversationMemberships).values({ agentId: t.id, conversationId, position }).run();
         });
-        if (t.handle !== handle || t.conversationIds === undefined || t.conversationId !== primaryConversationId) {
-          writeJson(tj, { ...t, handle, conversationId: primaryConversationId, conversationIds: membershipIds });
+        if (t.handle !== handle || t.conversationIds === undefined || t.conversationId !== primaryConversationId || !t.workingCopy) {
+          writeJson(tj, { ...t, handle, conversationId: primaryConversationId, conversationIds: membershipIds, workingCopy });
         }
 
         const importedHistoryFile = importedAgentHistoryPath(this.dataDir, projectId, agentId);

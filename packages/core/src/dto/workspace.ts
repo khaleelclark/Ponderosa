@@ -1,5 +1,5 @@
 import type { EngineId } from "../adapter.js";
-import type { AgentDto, AgentHealthDto } from "./agents.js";
+import type { AgentDto, AgentHealthDto, AgentWorkingCopyDto } from "./agents.js";
 import type { BrowserControlOwner, BrowserSessionStatus } from "../events.js";
 import type { ConversationDto } from "./conversations.js";
 import type { HistoryWindowDto } from "./common.js";
@@ -401,9 +401,11 @@ export interface WorkspaceChangeDto {
   untracked: boolean;
 }
 
-/** GET /api/projects/:id/workspace response. */
+/** GET /api/agents/:id/workspace response. */
 export interface WorkspaceStatusDto {
   projectId: string;
+  agentId: string;
+  workingCopy: AgentWorkingCopyDto;
   isGitRepository: boolean;
   branch?: string;
   head?: string;
@@ -411,9 +413,11 @@ export interface WorkspaceStatusDto {
   changes: WorkspaceChangeDto[];
 }
 
-/** GET /api/projects/:id/workspace/file response. */
+/** GET /api/agents/:id/workspace/file response. */
 export interface WorkspaceFileReviewDto {
   projectId: string;
+  agentId: string;
+  workingCopyId: string;
   path: string;
   exists: boolean;
   /** Current UTF-8 file body when it is small enough and safe to display. */

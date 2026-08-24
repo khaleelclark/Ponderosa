@@ -72,6 +72,7 @@ export const agents = sqliteTable("agents", {
   spawnIdempotencyKey: text("spawn_idempotency_key"),
   presetSnapshotJson: text("preset_snapshot_json"),
   creationIdempotencyKey: text("creation_idempotency_key"),
+  workingCopyJson: text("working_copy_json").notNull(),
 });
 
 /** Retains every allocated handle so rename/deletion can never recycle it. */

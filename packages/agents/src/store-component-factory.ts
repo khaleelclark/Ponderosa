@@ -205,6 +205,7 @@ export function createAgentStoreComponents(
     db,
     client,
     ports.getAgentPreset,
+    ports.getProject,
     ports.updateAgentOrganization,
   );
   const communicationJournal = new AgentCommunicationJournalAuthority(

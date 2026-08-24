@@ -100,6 +100,8 @@ export interface AgentJson {
   spawnIdempotencyKey?: string;
   creationIdempotencyKey?: string;
   presetSnapshot?: AgentDto["presetSnapshot"];
+  /** Missing only while the launch migration writes the explicit Shared contract. */
+  workingCopy?: AgentDto["workingCopy"];
 }
 
 export interface AgentSpawnOrigin {

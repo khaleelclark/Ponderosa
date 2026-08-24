@@ -26,6 +26,26 @@ export interface AgentManagementPermissionsDto {
   allowAutomaticDescendantReorganization: boolean;
 }
 
+export type AgentWorkingCopyMode = "shared" | "separate_git";
+export type AgentWorkingCopyState = "ready" | "unavailable";
+
+/** Durable filesystem identity used by one Agent across Runs and provider sessions. */
+export interface AgentWorkingCopyDto {
+  /** Stable identity; provider sessions and provenance must not cross identities. */
+  id: string;
+  mode: AgentWorkingCopyMode;
+  state: AgentWorkingCopyState;
+  /** Exact authoritative host root. This is not a security sandbox boundary. */
+  rootPath: string;
+  /** Separate Git copies have one stable branch owned by this Agent. */
+  branch?: string;
+  /** Commit used when the Separate Git copy was first created. */
+  baseHead?: string;
+  /** Safe operator-facing reason when the requested mode cannot be used. */
+  failure?: string;
+  updatedAt: string;
+}
+
 /** A stable, addressable agent identity. Mirrors the `agents` projection. */
 export interface AgentDto {
   id: string;
@@ -51,6 +71,8 @@ export interface AgentDto {
   managerAgentId?: string;
   /** Explicit operator-granted authority over this Agent's descendants. */
   managementPermissions: AgentManagementPermissionsDto;
+  /** Explicit Shared folder or opt-in Separate Git copy contract. */
+  workingCopy: AgentWorkingCopyDto;
   /** Stable creation provenance for an agent spawned by another agent. */
   spawnedByAgentId?: string;
   spawnedByExecutionId?: string;
@@ -201,6 +223,8 @@ export interface UpdateAgentRequest {
   model?: string | null;
   /** Durable next-Run reasoning effort. Null clears the Agent override. */
   effort?: string | null;
+  /** Changes the next-Run filesystem identity. Never falls back to Shared. */
+  workingCopyMode?: AgentWorkingCopyMode;
   managementPermissions?: AgentManagementPermissionsDto;
 }
 

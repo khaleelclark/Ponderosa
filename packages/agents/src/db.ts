@@ -51,6 +51,7 @@ const publicProviderRequestUpdatesMigration = "0009_public_provider_request_upda
 const providerActivationExecutionPayloadsMigration = "0010_provider_activation_execution_payloads.ts";
 const nestedProviderActivationExecutionPayloadsMigration = "0011_nested_provider_activation_execution_payloads.ts";
 const contextRolloverFailureProvenanceMigration = "0012_context_rollover_failure_provenance.ts";
+const workingCopyAuthorityMigration = "0013_working_copy_authority.ts";
 const latestLegacyMigration = "0035_coordination_question_suspensions.sql";
 
 // Fingerprint of the complete schema that was current when the launch baseline
@@ -256,6 +257,40 @@ function establishAgentMentionHandles(sqlite: Database.Database): void {
         ON agents (project_id, creation_idempotency_key)
         WHERE creation_idempotency_key IS NOT NULL;
     `);
+  })();
+}
+
+function establishWorkingCopyAuthoritySchema(sqlite: Database.Database): void {
+  const applied = sqlite
+    .prepare(`SELECT 1 FROM ${schemaVersionTable} WHERE name = ?`)
+    .get(workingCopyAuthorityMigration) !== undefined;
+  if (applied) return;
+  sqlite.transaction(() => {
+    const columns = new Set((sqlite.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>)
+      .map((column) => column.name));
+    if (!columns.has("working_copy_json")) {
+      sqlite.exec("ALTER TABLE agents ADD COLUMN working_copy_json TEXT");
+    }
+    const projectsById = new Map((sqlite.prepare(
+      "SELECT id, host_path FROM projects",
+    ).all() as Array<{ id: string; host_path: string }>).map((project) => [project.id, project.host_path]));
+    const update = sqlite.prepare("UPDATE agents SET working_copy_json = ? WHERE id = ?");
+    for (const row of sqlite.prepare(
+      "SELECT id, project_id, updated_at, working_copy_json FROM agents",
+    ).all() as Array<{ id: string; project_id: string; updated_at: string; working_copy_json: string | null }>) {
+      if (row.working_copy_json) continue;
+      const rootPath = projectsById.get(row.project_id);
+      if (!rootPath) throw new Error("Agent working-copy migration found no Project root");
+      update.run(JSON.stringify({
+        id: `shared:${row.project_id}`,
+        mode: "shared",
+        state: "ready",
+        rootPath,
+        updatedAt: row.updated_at,
+      }), row.id);
+    }
+    sqlite.prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
+      .run(workingCopyAuthorityMigration, new Date().toISOString());
   })();
 }
 
@@ -875,6 +910,7 @@ export function openDb(file: string): OpenedDb {
   establishContextRolloverAtomicitySchema(sqlite);
   establishContextRolloverFailureProvenance(sqlite);
   establishSchemaExtensions(sqlite);
+  establishWorkingCopyAuthoritySchema(sqlite);
   establishPublicProviderRequestUpdates(sqlite);
   establishProviderActivationExecutionPayloads(sqlite);
   establishNestedProviderActivationExecutionPayloads(sqlite);

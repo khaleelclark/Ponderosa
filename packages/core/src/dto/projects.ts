@@ -6,7 +6,7 @@ import type { EngineId } from "../adapter.js";
 export interface ProjectDto {
   id: string;
   label: string;
-  /** Absolute host path = the cwd root for agents working in this project. */
+  /** Absolute host path for the Project's explicit Shared folder. */
   hostPath: string;
   createdAt: string;
   lastUsedAt?: string;

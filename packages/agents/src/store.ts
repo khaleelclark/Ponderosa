@@ -942,6 +942,13 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.agentCatalog.getAgent(id);
   }
 
+  updateAgentWorkingCopy(
+    id: string,
+    workingCopy: AgentDto["workingCopy"],
+  ): AgentDto | undefined {
+    return this.agentCatalog.updateAgentWorkingCopy(id, workingCopy);
+  }
+
   setImportedHistory(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[]): void {
     this.agentCatalog.setImportedHistory(agentId, source, messages);
   }

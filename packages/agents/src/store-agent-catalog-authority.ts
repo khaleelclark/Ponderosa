@@ -9,11 +9,13 @@ import type {
   CreateAgentRequest,
   MessageDto,
   PortableAgentHistoryMessageDto,
+  ProjectDto,
   UpdateAgentOrganizationRequest,
 } from "@ponderosa/core";
 import { allocateAgentMentionHandle } from "@ponderosa/core";
 import type { Db } from "./db.js";
 import { normalizeAgentTitle } from "./agent-identity.js";
+import { sharedWorkingCopy } from "./working-copy.js";
 import { requireManagementPermissions } from "./store-agent-management.js";
 import { readJson, writeJson } from "./store-filesystem.js";
 import type {
@@ -39,6 +41,7 @@ export class AgentCatalogAuthority {
     private readonly db: Db,
     private readonly client: Database.Database,
     private readonly getAgentPreset: (presetId: string) => AgentPresetDto | undefined,
+    private readonly getProject: (projectId: string) => ProjectDto | undefined,
     private readonly updateAgentOrganization: (
       agentId: string,
       input: UpdateAgentOrganizationRequest,
@@ -67,6 +70,9 @@ export class AgentCatalogAuthority {
     const presetSnapshot = preset ? { id: preset.id, name: preset.name, description: preset.description, guidance: preset.guidance, engine: preset.engine, model: preset.model, effort: preset.effort } : undefined;
     const model = preset?.model ?? input.model;
     const effort = preset?.effort ?? input.effort;
+    const project = this.getProject(projectId);
+    if (!project) throw new Error("unknown project");
+    const workingCopy = sharedWorkingCopy(project, now);
     const managementPermissions = input.managementPermissions
       ? requireManagementPermissions(input.managementPermissions)
       : { allowAutomaticDescendantDeletion: false, allowAutomaticDescendantReorganization: false };
@@ -90,6 +96,7 @@ export class AgentCatalogAuthority {
       spawnIdempotencyKey: origin?.idempotencyKey,
       presetSnapshot,
       creationIdempotencyKey,
+      workingCopy,
     };
     mkdirSync(agentDir(this.dataDir, projectId, id), { recursive: true });
     mkdirSync(artifactsDir(this.dataDir, projectId, id), { recursive: true });
@@ -123,7 +130,9 @@ export class AgentCatalogAuthority {
         spawnIdempotencyKey: origin?.idempotencyKey ?? null,
         presetSnapshotJson: presetSnapshot ? JSON.stringify(presetSnapshot) : null,
         creationIdempotencyKey: creationIdempotencyKey ?? null,
-      }).run();
+        workingCopyJson: JSON.stringify(workingCopy),
+      })
+      .run();
       if (input.conversationId) {
         this.db.insert(agentConversationMemberships).values({ agentId: id, conversationId: input.conversationId, position: 0 }).run();
       }
@@ -195,6 +204,45 @@ export class AgentCatalogAuthority {
   getAgent(id: string): AgentDto | undefined {
     const row = this.db.select().from(agents).where(and(eq(agents.id, id), isNull(agents.deletedAt))).get();
     return row ? this.agentRowToDto(row) : undefined;
+  }
+
+  updateAgentWorkingCopy(
+    id: string,
+    workingCopy: AgentDto["workingCopy"],
+  ): AgentDto | undefined {
+    const row = this.db.select().from(agents).where(and(
+      eq(agents.id, id),
+      isNull(agents.deletedAt),
+    )).get();
+    if (!row) return undefined;
+    const project = this.getProject(row.projectId);
+    if (!project) throw new Error("Agent Project is unavailable");
+    if (workingCopy.mode === "shared" && (
+      workingCopy.id !== `shared:${project.id}` ||
+      workingCopy.rootPath !== project.hostPath ||
+      workingCopy.state !== "ready" ||
+      workingCopy.branch !== undefined ||
+      workingCopy.baseHead !== undefined ||
+      workingCopy.failure !== undefined
+    )) throw new Error("invalid Shared folder identity");
+    if (workingCopy.mode === "separate_git" && (
+      !workingCopy.id.startsWith("copy:") ||
+      !workingCopy.rootPath ||
+      !workingCopy.branch ||
+      (workingCopy.state === "ready" && workingCopy.failure !== undefined) ||
+      (workingCopy.state === "unavailable" && !workingCopy.failure)
+    )) throw new Error("invalid Separate Git copy identity");
+    const json = readJson<AgentJson>(agentJsonPath(this.dataDir, row.projectId, id));
+    writeJson(agentJsonPath(this.dataDir, row.projectId, id), {
+      ...json,
+      workingCopy,
+      updatedAt: workingCopy.updatedAt,
+    });
+    this.db.update(agents).set({
+      workingCopyJson: JSON.stringify(workingCopy),
+      updatedAt: workingCopy.updatedAt,
+    }).where(eq(agents.id, id)).run();
+    return this.rowToAgentDto(id);
   }
 
   setImportedHistory(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[]): void {
@@ -327,6 +375,7 @@ export class AgentCatalogAuthority {
       spawnedByExecutionId: row.spawnedByExecutionId ?? undefined,
       spawnPrompt: row.spawnPrompt ?? undefined,
       presetSnapshot: row.presetSnapshotJson ? JSON.parse(row.presetSnapshotJson) as AgentDto["presetSnapshot"] : undefined,
+      workingCopy: JSON.parse(row.workingCopyJson) as AgentDto["workingCopy"],
       ...(imported ? { importedHistoryCount: imported.messages.length, importedFrom: imported.source } : {}),
     };
   }
