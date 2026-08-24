@@ -1397,7 +1397,7 @@ export function ConversationView({
       <Dialog
         open={createAgentOpen}
         onClose={() => setCreateAgentOpen(false)}
-        aria-label="Create Agent"
+        slotProps={{ paper: { "aria-label": "Create Agent" } }}
         fullWidth
         maxWidth="md"
       >
