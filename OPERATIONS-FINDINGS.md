@@ -302,3 +302,18 @@ This append-only experiment ledger records product and operating friction observ
 - Scope: One new 383-line architecture document over unsafe runtime parent `37921f1`; no source, manifest, lockfile, dependency, generated material, configuration, A1, or Phase B change. Strict typecheck, full production build, and exact diff checks passed; worktree is clean.
 - Remaining gate: Same independent safety reviewer is reviewing lease/platform semantics, rooted VFS escape resistance, protected-domain completeness, compatibility fencing, migration/rollback ordering, and A1 commit boundaries. A0 approval permits implementation planning only, never runtime integration. A1 remains forbidden until disposition.
 - Owner: Reliability/Mobile under authorized Phase A-Native scope.
+
+## 2026-08-24T06:08:02Z — UI-002 follow-up — Dismissed create/import can navigate later from stale Chat context
+
+- Severity: High
+- Classification: Confirmed managed-operation lifecycle defect; corrected UI head not approved
+- Confirmed: Yes — same-reviewer rereview of exact head `9b8974c7bcf90252b7d2d28b56d8656ba482292b` found that modal dismissal is not fenced to in-flight Create/Import authority.
+- Reproduction:
+  1. In Chat A, stage text plus a long-paste card or attachment; open `New Agent`, start Create or Import, and hold the endpoint response.
+  2. Press Escape/click the backdrop while Create is pending, or use Import's still-enabled visible Cancel. The modal closes although the managed request remains live.
+  3. Reopen the surface or navigate to Chat/Project B before the first request succeeds.
+  4. The late success callback retains Chat A's navigation authority and can pull the operator to the created/imported Agent, unmount the apparently preserved composer, or coexist with a second submitted operation.
+- Impact: Apparent cancellation does not cancel work, can cause duplicate managed operations, and can navigate from stale conversation context into another Project/Chat without a current user action.
+- Confirmed positives: The exact composer now remains mounted during idle modal use, preserving typed text, long paste, and queued/uploading/ready attachments; ordinary idle Cancel, accessibility, no hidden `#new-agent`, first Send, failure restoration, and Voice textual compatibility remain correct.
+- Recommended fix: Once Create/Import submission begins, disable Escape, backdrop, visible Cancel, and reopening; expose pending state accessibly. Fence late success to the exact active modal instance and origin conversation/Project so dismissed, superseded, or stale callbacks cannot navigate or clear another Chat. Do not imply UI dismissal cancels server work or broaden server semantics.
+- Owner: UI Integration. Same-reviewer exact-head approval remains required.
