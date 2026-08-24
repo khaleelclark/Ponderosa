@@ -21,35 +21,82 @@ export interface DictationController {
 
 export function useDictation(
   onFinalTranscript: (transcript: string) => void,
+  onSettlingChange: (settling: boolean) => void,
 ): DictationController {
   const unavailableReason = dictationUnavailableReason();
   const [status, setStatus] = useState<DictationStatus>("ready");
   const [error, setError] = useState<string>();
   const recognitionRef = useRef<BrowserSpeechRecognition>();
+  const generationRef = useRef(0);
+  const settlingRef = useRef(false);
   const requestedEndRef = useRef<RequestedEnd>();
   const errorRef = useRef(false);
   const mountedRef = useRef(true);
   const transcriptHandlerRef = useRef(onFinalTranscript);
+  const settlingHandlerRef = useRef(onSettlingChange);
   transcriptHandlerRef.current = onFinalTranscript;
+  settlingHandlerRef.current = onSettlingChange;
 
-  const releaseRecognition = useCallback(() => {
-    const recognition = recognitionRef.current;
-    if (!recognition) return;
-    recognition.onstart = null;
-    recognition.onresult = null;
-    recognition.onerror = null;
-    recognition.onend = null;
-    recognitionRef.current = undefined;
+  const updateSettling = useCallback((next: boolean) => {
+    if (settlingRef.current === next) return;
+    settlingRef.current = next;
+    settlingHandlerRef.current(next);
   }, []);
+
+  const releaseRecognition = useCallback(
+    (recognition: BrowserSpeechRecognition) => {
+      recognition.onstart = null;
+      recognition.onresult = null;
+      recognition.onerror = null;
+      recognition.onend = null;
+      if (recognitionRef.current === recognition) {
+        recognitionRef.current = undefined;
+      }
+    },
+    [],
+  );
+
+  const abandonRecognition = useCallback(
+    (
+      recognition: BrowserSpeechRecognition,
+      generation: number,
+      message: string,
+    ) => {
+      if (generationRef.current !== generation) return;
+      generationRef.current += 1;
+      releaseRecognition(recognition);
+      requestedEndRef.current = undefined;
+      errorRef.current = true;
+      try {
+        recognition.abort();
+      } catch {
+        // The generation is already fenced and every callback detached.
+      }
+      updateSettling(false);
+      if (!mountedRef.current) return;
+      setError(
+        `${message} Pending speech may not have been added; review the draft before sending.`,
+      );
+      setStatus("error");
+    },
+    [releaseRecognition, updateSettling],
+  );
 
   const begin = useCallback(() => {
     const Recognition = speechRecognitionConstructor();
     if (!Recognition || unavailableReason) return;
     const existingRecognition = recognitionRef.current;
-    releaseRecognition();
-    existingRecognition?.abort();
+    if (existingRecognition) releaseRecognition(existingRecognition);
+    try {
+      existingRecognition?.abort();
+    } catch {
+      // The old generation is detached before the new one starts.
+    }
+    const generation = generationRef.current + 1;
+    generationRef.current = generation;
     requestedEndRef.current = undefined;
     errorRef.current = false;
+    updateSettling(true);
     setError(undefined);
     setStatus("starting");
 
@@ -60,9 +107,12 @@ export function useDictation(
     recognition.maxAlternatives = 1;
     recognitionRef.current = recognition;
     recognition.onstart = () => {
-      if (mountedRef.current) setStatus("listening");
+      if (generationRef.current === generation && mountedRef.current) {
+        setStatus("listening");
+      }
     };
     recognition.onresult = event => {
+      if (generationRef.current !== generation) return;
       const finalTranscripts: string[] = [];
       for (let index = event.resultIndex; index < event.results.length; index += 1) {
         const result = event.results[index];
@@ -76,16 +126,20 @@ export function useDictation(
       }
     };
     recognition.onerror = event => {
+      if (generationRef.current !== generation) return;
       if (event.error === "aborted" && requestedEndRef.current) return;
-      errorRef.current = true;
-      if (!mountedRef.current) return;
-      setError(dictationErrorMessage(event.error, event.message));
-      setStatus("error");
+      abandonRecognition(
+        recognition,
+        generation,
+        dictationErrorMessage(event.error, event.message),
+      );
     };
     recognition.onend = () => {
+      if (generationRef.current !== generation) return;
       const requestedEnd = requestedEndRef.current;
-      releaseRecognition();
+      releaseRecognition(recognition);
       requestedEndRef.current = undefined;
+      updateSettling(false);
       if (!mountedRef.current || errorRef.current) return;
       setStatus(requestedEnd === "pause" ? "paused" : "stopped");
     };
@@ -93,16 +147,20 @@ export function useDictation(
     try {
       recognition.start();
     } catch (startError) {
-      releaseRecognition();
-      errorRef.current = true;
-      setError(
+      abandonRecognition(
+        recognition,
+        generation,
         startError instanceof Error
           ? startError.message
           : "Voice dictation could not start.",
       );
-      setStatus("error");
     }
-  }, [releaseRecognition, unavailableReason]);
+  }, [
+    abandonRecognition,
+    releaseRecognition,
+    unavailableReason,
+    updateSettling,
+  ]);
 
   const pause = useCallback(() => {
     const recognition = recognitionRef.current;
@@ -112,15 +170,15 @@ export function useDictation(
     try {
       recognition.stop();
     } catch (pauseError) {
-      releaseRecognition();
-      setError(
+      abandonRecognition(
+        recognition,
+        generationRef.current,
         pauseError instanceof Error
           ? pauseError.message
           : "Voice dictation could not pause.",
       );
-      setStatus("error");
     }
-  }, [releaseRecognition]);
+  }, [abandonRecognition]);
 
   const stop = useCallback(() => {
     const recognition = recognitionRef.current;
@@ -133,31 +191,50 @@ export function useDictation(
     try {
       recognition.stop();
     } catch (stopError) {
-      releaseRecognition();
-      setError(
+      abandonRecognition(
+        recognition,
+        generationRef.current,
         stopError instanceof Error
           ? stopError.message
           : "Voice dictation could not stop cleanly.",
       );
-      setStatus("error");
     }
-  }, [releaseRecognition]);
+  }, [abandonRecognition]);
 
   useEffect(() => {
     mountedRef.current = true;
     const endForNavigation = () => {
+      generationRef.current += 1;
       requestedEndRef.current = "stop";
-      recognitionRef.current?.abort();
+      const recognition = recognitionRef.current;
+      if (recognition) {
+        releaseRecognition(recognition);
+        try {
+          recognition.abort();
+        } catch {
+          // Navigation already fenced this generation.
+        }
+      }
+      updateSettling(false);
     };
     window.addEventListener("pagehide", endForNavigation);
     return () => {
       window.removeEventListener("pagehide", endForNavigation);
       mountedRef.current = false;
+      generationRef.current += 1;
       requestedEndRef.current = "stop";
-      recognitionRef.current?.abort();
-      releaseRecognition();
+      const recognition = recognitionRef.current;
+      if (recognition) {
+        releaseRecognition(recognition);
+        try {
+          recognition.abort();
+        } catch {
+          // Unmount already fenced this generation.
+        }
+      }
+      updateSettling(false);
     };
-  }, [releaseRecognition]);
+  }, [releaseRecognition, updateSettling]);
 
   return {
     error,

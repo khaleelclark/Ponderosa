@@ -183,6 +183,8 @@ export function Composer({
   const [draftReadyVersion, setDraftReadyVersion] = useState(0);
   const sendingRef = useRef(false);
   const [sending, setSending] = useState(false);
+  const dictationSettlingRef = useRef(false);
+  const [dictationSettling, setDictationSettling] = useState(false);
   const [caret, setCaret] = useState(0);
   const [highlighted, setHighlighted] = useState(0);
   const [suppressMenu, setSuppressMenu] = useState(false);
@@ -252,6 +254,10 @@ export function Composer({
     },
     [update],
   );
+  const handleDictationSettlingChange = useCallback((settling: boolean) => {
+    dictationSettlingRef.current = settling;
+    setDictationSettling(settling);
+  }, []);
   const replacePastedText = useCallback(
     (
       next:
@@ -504,6 +510,7 @@ export function Composer({
     files.every(file => draftAttachmentIds.current.has(file));
   const canSend =
     !sending &&
+    !dictationSettling &&
     !destinationError &&
     targetRequiredRecipientTagged &&
     draftUploadsReady &&
@@ -966,6 +973,12 @@ export function Composer({
       },
     ) => Promise<unknown> | unknown,
   ) => {
+    if (dictationSettlingRef.current) {
+      setSendError(
+        "Stop voice dictation and wait for final text before sending.",
+      );
+      return;
+    }
     if (sendingRef.current || !canSend) return;
     const commandSubmission = providerCommandInput(
       submissionText,
@@ -1225,8 +1238,9 @@ export function Composer({
           onApplyCapability={applyCapability}
         />
         <DictationControls
-          disabled={disabled || composerLocked}
+          disabled={disabled || composerLocked || sending}
           onFinalTranscript={insertDictatedText}
+          onSettlingChange={handleDictationSettlingChange}
         />
         {destinationMode === "target-required" ? (
           <ComposerTargetDestinationAction
@@ -1328,7 +1342,11 @@ export function Composer({
           onCancel={onCancel}
           queue={queue}
           recipientRequiredMessage={recipientRequiredMessage}
-          sendUnavailableReason={sendUnavailableReason}
+          sendUnavailableReason={
+            dictationSettling
+              ? "Stop voice dictation and wait for final text before sending."
+              : sendUnavailableReason
+          }
           send={send}
           showQueue={showQueue}
           steer={steer}

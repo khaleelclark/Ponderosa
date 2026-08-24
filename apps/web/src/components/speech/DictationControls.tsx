@@ -13,11 +13,13 @@ import { useDictation } from "./useDictation";
 export function DictationControls({
   disabled,
   onFinalTranscript,
+  onSettlingChange,
 }: {
   disabled: boolean;
   onFinalTranscript(transcript: string): void;
+  onSettlingChange(settling: boolean): void;
 }): JSX.Element {
-  const dictation = useDictation(onFinalTranscript);
+  const dictation = useDictation(onFinalTranscript, onSettlingChange);
   const active = ["starting", "listening", "pausing", "stopping"].includes(
     dictation.status,
   );
