@@ -586,6 +586,36 @@ export function AgentOrganizationTree({
       setStoppingAll(false);
     }
   };
+  const focusAfterDeletion = (deletedAgentIds: readonly string[]) => {
+    const deletedIds = new Set(deletedAgentIds);
+    const rows = [...(treeRef.current?.querySelectorAll<HTMLElement>("[role='treeitem']") ?? [])];
+    const firstDeletedIndex = rows.findIndex(row => {
+      const id = row.dataset.agentId;
+      return id ? deletedIds.has(id) : false;
+    });
+    const following = firstDeletedIndex >= 0
+      ? rows.slice(firstDeletedIndex + 1).find(row => {
+          const id = row.dataset.agentId;
+          return id ? !deletedIds.has(id) : false;
+        })
+      : undefined;
+    const preceding = firstDeletedIndex > 0
+      ? rows.slice(0, firstDeletedIndex).reverse().find(row => {
+          const id = row.dataset.agentId;
+          return id ? !deletedIds.has(id) : false;
+        })
+      : undefined;
+    const targetId = following?.dataset.agentId ?? preceding?.dataset.agentId;
+    setFocusedId(targetId);
+    globalThis.setTimeout(() => {
+      focusTreeRow(
+        treeRef.current,
+        targetId
+          ? `[data-agent-id="${CSS.escape(targetId)}"]`
+          : "[role='treeitem']",
+      );
+    }, 100);
+  };
   return (
     <Box sx={{ height: "100%", minHeight: 0, display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr)" }}>
       <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", px: { xs: 1.5, md: 2 }, py: 1.25, borderBottom: 1, borderColor: "divider" }}>
@@ -749,6 +779,7 @@ export function AgentOrganizationTree({
           rootAgentIds={[pendingDelete.id]}
           onClose={() => setPendingDelete(undefined)}
           onDeleted={agentIds => {
+            focusAfterDeletion(agentIds);
             setPendingDelete(undefined);
             onAgentsDeleted(agentIds);
             void queryClient.invalidateQueries({ queryKey: queryKeys.agents.organizationProject(projectId) });
@@ -766,6 +797,7 @@ export function AgentOrganizationTree({
           confirmationText="DELETE SELECTED"
           onClose={() => setBulkDeleteOpen(false)}
           onDeleted={agentIds => {
+            focusAfterDeletion(agentIds);
             leaveSelectionMode();
             onAgentsDeleted(agentIds);
             void queryClient.invalidateQueries({ queryKey: queryKeys.agents.organizationProject(projectId) });
