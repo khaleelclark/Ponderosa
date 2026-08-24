@@ -151,3 +151,31 @@ This append-only experiment ledger records product and operating friction observ
 - Result: The prominent `New Agent` control now opens the existing managed Create Agent flow, has no pressed/hidden composer mode, does not rewrite the draft, and scopes the callback to the active conversation. The change is limited to `ConversationView.tsx` and `Composer.parts.tsx`; it does not change server semantics.
 - Qualification: Repository-wide strict typecheck and production build passed. Temporary exact-build desktop/mobile exercises confirmed dialog open/cancel, unchanged drafts, no cross-conversation state leak, and ordinary zero-Agent first Send creating one Agent/Run and clearing the submitted draft.
 - Remaining gate: Exact head is frozen in a filesystem read-only detached worktree for independent adversarial review, including compatibility analysis against the frozen Voice slice. Do not integrate or deploy until approved; any confirmed finding must be corrected and rereviewed at the new exact head.
+
+## 2026-08-24T05:33:30Z — WC-001 — Working-copy identity is not consistently fenced, owned, visible, or preserved
+
+- Severity: Critical
+- Classification: Confirmed Agent Working Copies defects; frozen head not approved
+- Confirmed: Yes — independent adversarial review of exact head `496b0dea10091965823e6308e47292d05a2feed8` found three P1 and three P2 defects.
+- Reproduction and impact:
+  1. Pause Run preparation after it snapshots the old working-copy identity but before `activeRuns` claims the Agent; change mode, then resume. The mode API reports success while the Run starts in the old folder. Transient structured-command sessions have the same unfenced gap.
+  2. Pre-create the deterministic `ponderosa/<agent>` branch or replace a retained root with another repository on the expected branch. Provision/resolve accepts the unproven branch or repository because it does not persist and verify Git common-directory/worktree-admin ownership.
+  3. Remove, move, chmod, or change the branch/metadata of a ready Separate root. Resolution fails, but durable Agent state and the Settings chip remain `Ready` rather than transitioning to visible `Unavailable`.
+  4. Enable Separate as Agent Alpha, switch Shared, rename to Beta, then re-enable Separate. The retained root remains on Alpha's branch while the newly derived Beta branch is required, leaving no repair/reconnect path.
+  5. Click a relative file link emitted by a Separate Agent. The client omits Agent identity, so the viewer reads Shared and returns the wrong same-named file or 404.
+  6. Change the same relative path in Shared and Separate Runs. Canonical file-change and artifact provenance omit working-copy identity, merging histories that must remain distinguishable.
+- Recommended fix: Fence mode changes, Run admission, and command authority together; persist and validate exact Git ownership; durably invalidate failed retained identities; preserve/reconnect retained metadata across mode/title changes; carry Agent working-copy routing for Agent-authored links; and add immutable identity to file/artifact provenance. Keep broad scheduler checkpoint/executor work deferred and require exact-head rereview.
+- Owner: Agent Working Copies. No integration or deployment until corrected and approved.
+
+## 2026-08-24T05:33:39Z — REL-001 follow-up — Canonical paths still do not pin the locked directory identity
+
+- Severity: High
+- Classification: Confirmed remaining Phase A safety defect; third frozen head not approved
+- Confirmed: Yes — same-reviewer rereview of exact head `37921f18047305d409b2f738fb67dc8bb582718c` reproduced one high- and one medium-severity pathname-displacement failure.
+- Reproduction:
+  1. Acquire the lock in canonical directory D, rename D to D.old, and create a replacement D before layout inspection. Lexical ownership still matches, Ponderosa writes the V1 marker and opens state in replacement D, and another process can acquire replacement D's lock while the first lock remains in D.old.
+  2. During release, after owner A removes its token child, externally displace its now-empty lock directory. Let contender B create the original lock directory and pause before publishing its owner child. A's subsequent nonrecursive `rmdir` removes B's partially published claim.
+- Impact: Directory replacement can restore concurrent writers despite the canonical-path correction. Release can also destroy another contender's in-progress claim, producing an avoidable fail-stop.
+- Confirmed corrections retained: Launcher no longer deletes daemon locks; input-symlink retargeting is fixed; stable-path protocol contenders receive atomic no-replace acquisition; missing/malformed/unknown layout markers fail closed; safe stable-directory first run remains intact.
+- Recommended fix: Bind lock and all store operations to stable directory identity and make release identity-atomic under displacement. If Node and repository constraints cannot provide this without native locking, descriptor-relative I/O, a dependency, or a broad rewrite, stop with a precise design blocker rather than landing another incomplete correction. Phase B remains frozen.
+- Owner: Reliability/Mobile.
