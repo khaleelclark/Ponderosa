@@ -217,3 +217,12 @@ This append-only experiment ledger records product and operating friction observ
 - Recommended architecture: A platform-native process-lifetime directory lease released only by kernel unlock/handle close; descriptor/handle-relative no-follow filesystem primitives for every child operation; and either a rooted SQLite VFS or a dedicated AgentStore subprocess bootstrapped from the acquired identity and exposed through bounded RPC. POSIX and Windows semantics require explicit qualification. A lock-only dependency is insufficient.
 - Decision required: Authorize the native/isolated-store scope with a revised milestone, explicitly narrow the supported threat model to stable configured path/ancestors, or defer the safety slice as a documented blocker. Phase B remains frozen; reverting `37921f1` is unsafe because it restores confirmed launcher and symlink defects.
 - Owner: Product Lead decision; Reliability/Mobile remains frozen.
+
+## 2026-08-24T05:41:22Z — DOCS-001 disposition — Corrected System Articulation approved and integrated
+
+- Status: Resolved and independently approved with no remaining severity-ranked findings.
+- Reviewed source head: `2fa7ee946875f0c2b40f52e32dc8af1cf5db0d5a` against baseline `29d395352a5b8382103f568936afde4d75c0d692`.
+- Integration commits: `f84b0a58` (`docs: explain the durable Ponderosa system`), `f49c0d60` (`docs: correct provider retrieval contracts`), and `656d7240` (`docs: correct reviewed system boundaries`) on `experiment/project-rail-runtime`.
+- Evidence: Same reviewer confirmed all six prior findings corrected; conditional `ponderosa_history`, removed `ponderosa_docs`, provider-contract hash consequences, proposed-Next limits, browser authority, persistence, and upgrade wording match current source contracts. Base-to-head and correction-only `git diff --check` passed; the detached review worktree remained clean and read-only.
+- Residual limitation: The destructive baseline layout-marker behavior is documented accurately but remains an unintegrated runtime blocker tracked by REL-001/REL-002. Documentation approval does not approve that runtime path.
+- Rollback: Revert the three integration commits newest-first. No schema or data rollback is involved.
