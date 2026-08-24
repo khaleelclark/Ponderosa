@@ -6,11 +6,12 @@ import type {
   AgentLifecycleStatus,
   AgentOperationalReason,
   AgentOperationalStatus,
+  AgentPhaseDto,
   ProviderBlockedWorkDto,
   AgentRunDto,
 } from "@ponderosa/core";
 
-export interface ActiveRunObservation { startedAt: string; executionId?: string; leaseExpiresAt?: string; ownershipState?: "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted" }
+export interface ActiveRunObservation { startedAt: string; executionId?: string; schedulerRunId?: string; leaseExpiresAt?: string; ownershipState?: "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted" }
 export interface PreparingRunObservation {
   runId: string;
   status: string;
@@ -28,6 +29,13 @@ export interface AgentHealthProjectionInput {
   availability?: (agentId: string) => "running" | "runnable" | "waiting" | "idle";
   pendingDecisionAt?: (agentId: string) => string | undefined;
   providerBlocked?: (agentId: string) => ProviderBlockedWorkDto | undefined;
+  executionPhase?: (
+    agentId: string,
+    executionId: string,
+  ) => Extract<AgentPhaseDto, { kind: "running_command" | "using_tool" }> | undefined;
+  waitingPhase?: (
+    agentId: string,
+  ) => Extract<AgentPhaseDto, { kind: "waiting_on_request" | "waiting_on_join" }> | undefined;
   latestEvent: (agentId: string) => StatusObservation | undefined;
   runs?: (agentId: string) => readonly AgentRunDto[];
   now?: string;
@@ -42,6 +50,7 @@ type OperationalObservation = {
 };
 
 export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHealthProjectionDto {
+  const generatedAt = input.now ?? new Date().toISOString();
   const agentIds = new Set(input.agents.map((agent) => agent.id));
   const childIdsByParent = new Map<string, Set<string>>();
   for (const agent of input.agents) {
@@ -78,7 +87,7 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
     else if (compactingAt) observation = { status: "compacting", statusTimestamp: compactingAt, reason: "session_rollover_scheduled" };
     else if (active?.ownershipState === "stalled") observation = { status: "stalled", statusTimestamp: active.startedAt, reason: "runtime_event_consumer_stalled" };
     else if (active?.ownershipState === "interrupted") observation = { status: "interrupted", statusTimestamp: active.startedAt, reason: "execution_interrupted" };
-    else if (active?.leaseExpiresAt && active.leaseExpiresAt < (input.now ?? new Date().toISOString())) {
+    else if (active?.leaseExpiresAt && active.leaseExpiresAt < generatedAt) {
       observation = { status: "blocked", statusTimestamp: active.leaseExpiresAt, reason: "execution_lease_expired" };
     }
     else if (active) observation = activeEvent && activeEvent.status !== "completed" && activeEvent.status !== "idle"
@@ -97,11 +106,35 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
       statusTimestamp: agent.updatedAt,
       reason: availability === "runnable" ? "queued_delivery" : "no_active_work",
     };
+    let phase: AgentPhaseDto | undefined;
+    if (observation.status === "running" && active?.ownershipState === "cancelling") {
+      phase = {
+        kind: "stopping",
+        observedAt: generatedAt,
+        ...(active.executionId ? { executionId: active.executionId } : {}),
+        ...(active.schedulerRunId ? { schedulerRunId: active.schedulerRunId } : {}),
+      };
+    } else if (
+      observation.status === "running"
+      && active?.executionId
+      && (active.ownershipState === undefined || active.ownershipState === "running")
+    ) {
+      const evidence = input.executionPhase?.(agent.id, active.executionId);
+      if (evidence?.executionId === active.executionId) {
+        phase = {
+          ...evidence,
+          ...(active.schedulerRunId ? { schedulerRunId: active.schedulerRunId } : {}),
+        };
+      }
+    } else if (observation.status === "waiting") {
+      phase = input.waitingPhase?.(agent.id);
+    }
     return {
       agentId: agent.id,
       ...(managerAgentId ? { managerAgentId } : {}),
       childAgentIds: [...(childIdsByParent.get(agent.id) ?? [])].sort(),
       ...observation,
+      ...(phase ? { phase } : {}),
       ...(active?.executionId ? { executionId: active.executionId } : {}),
       ...(preparing ? {
         schedulerRunId: preparing.runId,
@@ -126,5 +159,5 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
         : {}),
     };
   });
-  return { scope: input.scope, generatedAt: input.now ?? new Date().toISOString(), agents: agents.sort((a, b) => a.agentId.localeCompare(b.agentId)) };
+  return { scope: input.scope, generatedAt, agents: agents.sort((a, b) => a.agentId.localeCompare(b.agentId)) };
 }

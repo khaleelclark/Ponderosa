@@ -733,6 +733,16 @@ export class CoordinationV3Store {
     return this.schedulerStatusReadModel.getAgentAvailability(agentId);
   }
 
+  activeWaitDependency(
+    agentId: string,
+    scope: import("@ponderosa/core").AgentHealthProjectionDto["scope"],
+  ): Extract<
+    import("@ponderosa/core").AgentPhaseDto,
+    { kind: "waiting_on_request" | "waiting_on_join" }
+  > | undefined {
+    return this.schedulerStatusReadModel.activeWaitDependency(agentId, scope);
+  }
+
   providerBlockedState(agentId: string): import("@ponderosa/core").ProviderBlockedWorkDto | undefined {
     return this.schedulerStatusReadModel.providerBlockedState(agentId);
   }

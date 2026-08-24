@@ -268,6 +268,48 @@ export interface AgentHealthAttentionDto {
   observedAt: string;
 }
 
+export type AgentPhaseKind =
+  | "running_command"
+  | "using_tool"
+  | "waiting_on_request"
+  | "waiting_on_join"
+  | "stopping";
+
+export type AgentPhaseDto =
+  | {
+      kind: "running_command" | "using_tool";
+      observedAt: string;
+      /** Exact current execution and open call identities; no call payload is exposed. */
+      executionId: string;
+      schedulerRunId?: string;
+      callId: string;
+    }
+  | {
+      kind: "waiting_on_request";
+      observedAt: string;
+      requestId: string;
+      /** Total canonical dependencies, including any omitted from the bounded identities. */
+      dependencyCount: number;
+      additionalDependencyCount: number;
+      counterpartyAgentIds: string[];
+    }
+  | {
+      kind: "waiting_on_join";
+      observedAt: string;
+      joinId: string;
+      /** Bounded unresolved Request identities selected from the open Join set. */
+      requestIds: string[];
+      dependencyCount: number;
+      additionalDependencyCount: number;
+      counterpartyAgentIds: string[];
+    }
+  | {
+      kind: "stopping";
+      observedAt: string;
+      executionId?: string;
+      schedulerRunId?: string;
+    };
+
 export interface AgentHealthDto {
   /** Stable agent identity; titles and mention handles are presentation only. */
   agentId: string;
@@ -277,6 +319,8 @@ export interface AgentHealthDto {
   /** Timestamp of the authoritative observation that selected `status`. */
   statusTimestamp: string;
   reason: AgentOperationalReason;
+  /** Optional evidence-backed detail decorating the coarse operational status. */
+  phase?: AgentPhaseDto;
   /** Runtime generation and bounded liveness window, when work is active. */
   executionId?: string;
   /** Durable scheduler lease authority, even before a provider process exists. */

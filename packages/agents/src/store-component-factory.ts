@@ -42,6 +42,7 @@ import { AgentManagementAuthority } from "./store-agent-management-authority.js"
 import { AgentProjectDeletionAuthority } from "./store-project-deletion-authority.js";
 import { AgentProjectionRebuilder } from "./store-projection-rebuilder.js";
 import { AgentRunUsageReadModel } from "./store-run-usage-read-model.js";
+import { AgentPhaseReadModel } from "./store-agent-phase-read-model.js";
 import { AgentTelemetryReadModel } from "./store-telemetry-read-model.js";
 import { AgentWorkspaceCatalogAuthority } from "./store-workspace-catalog-authority.js";
 import { setCompactionHistoryConversationVisibility } from "./compaction-history-retrieval.js";
@@ -140,6 +141,7 @@ export interface OpenAgentStoreData {
 }
 
 export interface AgentStoreComponents {
+  phaseReadModel: AgentPhaseReadModel;
   telemetry: AgentTelemetryReadModel;
   fileActivity: AgentFileActivityReadModel;
   chatFeed: AgentChatFeedProjection;
@@ -331,6 +333,7 @@ export function createAgentStoreComponents(
     (agentId, status, executionFilter) =>
       fileActivity.byExecution(agentId, status, executionFilter),
   );
+  const phaseReadModel = new AgentPhaseReadModel(client);
   const runUsage = new AgentRunUsageReadModel(
     db,
     client,
@@ -387,6 +390,7 @@ export function createAgentStoreComponents(
   );
 
   return {
+    phaseReadModel,
     telemetry,
     fileActivity,
     chatFeed,

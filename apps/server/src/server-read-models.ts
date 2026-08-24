@@ -537,7 +537,15 @@ export function createServerReadModels(context: ReadModelContext) {
         pendingDecisionAt.set(decision.agentId, decision.updatedAt);
       }
     }
-    const ownership = new Map<string, ActiveRunObservation>(activeRuns);
+    const ownership = new Map<string, ActiveRunObservation>(
+      [...activeRuns].map(([agentId, run]) => [agentId, {
+        startedAt: run.startedAt,
+        executionId: run.executionId,
+        schedulerRunId: run.v3SchedulerRunId,
+        leaseExpiresAt: run.leaseExpiresAt,
+        ownershipState: run.ownershipState,
+      }]),
+    );
     const preparingRuns = new Map(agents.flatMap((agent) => {
       if (ownership.has(agent.id)) return [];
       const run = coordinationV3.agentSnapshot(agent.id).activeRun;
@@ -563,6 +571,10 @@ export function createServerReadModels(context: ReadModelContext) {
       availability: (agentId) => coordinationV3.getAgentAvailability(agentId),
       pendingDecisionAt: (agentId) => pendingDecisionAt.get(agentId),
       providerBlocked: (agentId) => coordinationV3.providerBlockedState(agentId),
+      executionPhase: (agentId, executionId) =>
+        store.activeExecutionPhase(agentId, executionId),
+      waitingPhase: (agentId) =>
+        coordinationV3.activeWaitDependency(agentId, scope),
       latestEvent: (agentId) => store.latestHealthObservation(agentId),
       runs: (agentId) => store.getRuns(agentId),
     });

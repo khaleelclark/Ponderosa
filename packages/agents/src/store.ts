@@ -48,6 +48,7 @@ import type {
   UpdateConversationRequest,
   UpdateAgentRequest,
   UpdateAgentOrganizationRequest,
+  AgentPhaseDto,
 } from "@ponderosa/core";
 import type { GlobalChatSearchInput } from "./store-chat-search-read-model.js";
 import {
@@ -68,6 +69,7 @@ import {
 } from "./compaction-history-retrieval.js";
 import type { AgentChatFeedProjection } from "./store-chat-feed-projection.js";
 import type { AgentTelemetryReadModel } from "./store-telemetry-read-model.js";
+import type { AgentPhaseReadModel } from "./store-agent-phase-read-model.js";
 import type { AgentFileActivityReadModel } from "./store-file-activity-read-model.js";
 import type { AgentRunUsageReadModel } from "./store-run-usage-read-model.js";
 import type { AgentArtifactCatalog } from "./store-artifact-catalog.js";
@@ -118,6 +120,7 @@ export type {
   AgentManagementAuthorization,
 } from "./store-types.js";
 export class AgentStore extends AgentEventSessionFacade {
+  private readonly phaseReadModel!: AgentPhaseReadModel;
   private readonly db: Db;
   private readonly client: Database.Database;
   private readonly telemetry!: AgentTelemetryReadModel;
@@ -1084,6 +1087,14 @@ export class AgentStore extends AgentEventSessionFacade {
     totalUtf8Bytes: number;
   } | undefined {
     return this.telemetry.getRunOutputText(agentId, seq);
+  }
+
+  /** Exact open call evidence is rebuilt from canonical log events. */
+  activeExecutionPhase(
+    agentId: string,
+    executionId: string,
+  ): Extract<AgentPhaseDto, { kind: "running_command" | "using_tool" }> | undefined {
+    return this.phaseReadModel.activeExecutionPhase(agentId, executionId);
   }
 
   /** Execution activity is rebuilt from canonical log events, never from live-only UI state. */
