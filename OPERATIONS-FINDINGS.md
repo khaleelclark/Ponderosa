@@ -274,3 +274,11 @@ This append-only experiment ledger records product and operating friction observ
 - Impact: High-value progress and review signals are buried; comparisons across correction rounds become slow and error-prone, especially for long safety assignments.
 - Recommended fix: Render assignment/handoff envelopes as collapsed summaries by default: role/slice, state, exact base/head, changed files, verification, findings, decision needed, and lineage. Preserve the immutable full payload behind an expand/copy action and highlight only the diff from the prior assignment or handoff.
 - Owner: Ponderosa direct-Agent conversation projection and client UI.
+
+## 2026-08-24T05:54:07Z — UI-002 follow-up — Composer-preserving correction frozen for rereview
+
+- Status: The confirmed Cancel/data-loss defect is corrected in exact head `9b8974c7bcf90252b7d2d28b56d8656ba482292b`; same-reviewer approval pending.
+- Correction: The existing composer remains mounted behind a locally presented, accessibly labeled `AgentCreateSurface`; Cancel removes only the creation surface. The prominent action is disabled while Send is pending and still never injects `#new-agent`. Create/import retain the existing managed creation contract.
+- Scope: Two new commits over rejected head `e221edbe`, limited to `ConversationView.tsx` and `Composer.parts.tsx`; Voice-owned files and server contracts are unchanged. Baseline-to-head has no path overlap with the frozen Voice slice and a read-only merge-tree completed without conflicts.
+- Qualification: Repository strict typecheck and production build passed. Temporary exact-build desktop/mobile exercises confirmed preservation of ordinary text, 12,050/10,050-character paste cards, queued/uploading/ready attachments, cross-conversation isolation, disabled creation during held Send, and unchanged ordinary zero-Agent first Send. No deployment occurred.
+- Remaining gate: Exact head is frozen in a fresh filesystem read-only detached worktree for same-reviewer rereview. Combined UI/Voice live qualification remains required after both slices are individually approved and integrated.
