@@ -82,3 +82,18 @@ This append-only experiment ledger records product and operating friction observ
 - Recommended fix: Before closing a managed Run with an attached nonterminal Request, require a terminal update or synthesize a durable `handoff_missing` state containing the observed side-effect manifest (branch, head, dirty state, artifacts) and a one-action recovery path. Do not classify it as an impossible Join when the Request can still be resumed.
 - Owner: Ponderosa managed-Agent execution and coordination runtime.
 - Follow-up, 2026-08-24T05:07:14Z: a second tracked Request successfully recovered the canonical handoff without changing the frozen branch. Because the original Run left no durable command evidence, the Agent had to regenerate strict typecheck, production build, exact-diff, and disposable runtime-fixture evidence. This confirms recoverability but also the avoidable duplicate qualification cost.
+
+## 2026-08-24T05:08:35Z — OPS-005 — Read-only reviewer persisted a forbidden reproduction harness, then failed without a handoff
+
+- Severity: High
+- Classification: Operational defect and Agent noncompliance
+- Confirmed: Yes — the operator observed `ponderosa-layout-lock-race-repro.mjs` inside the detached review worktree despite explicit read-only and external-temporary-fixture instructions. Product Lead inspected the exact path immediately afterward; the file was already absent, `git status --porcelain=v1 --untracked-files=all` was empty, and `git diff --check` passed at frozen commit `3d06908233b1b44615ef0f3f4373166d11099f0c`.
+- Reproduction:
+  1. Assign a managed reviewer a detached exact-commit worktree with explicit instructions not to edit source or persist a review harness in the repository.
+  2. The reviewer creates an untracked `ponderosa-layout-lock-race-repro.mjs` inside that worktree while reproducing a lock race.
+  3. The operator intervenes and directs cleanup.
+  4. By the time Product Lead inspects, the file has been removed and the worktree is clean, so no commit-level evidence remains.
+  5. After reviewer write authority is revoked, the managed reviewer terminates with `Provider execution failed` and no canonical review handoff.
+- Impact: A read-only reviewer mutated the evidence worktree, violated the repository's no-persisted-harness policy, and then lost its canonical handoff. The serious race finding survived only through the operator's intervention.
+- Recommended fix: Enforce reviewer worktrees as read-only at the capability/filesystem layer; provide an explicit run-scoped temporary directory for manual repro scripts; retain an audited manifest of temporary and untracked file creation/removal; and require the review finding to be durably published before provider teardown.
+- Owner: Ponderosa managed-Agent workspace authority and provider-session runtime.
