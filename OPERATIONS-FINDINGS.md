@@ -226,3 +226,11 @@ This append-only experiment ledger records product and operating friction observ
 - Evidence: Same reviewer confirmed all six prior findings corrected; conditional `ponderosa_history`, removed `ponderosa_docs`, provider-contract hash consequences, proposed-Next limits, browser authority, persistence, and upgrade wording match current source contracts. Base-to-head and correction-only `git diff --check` passed; the detached review worktree remained clean and read-only.
 - Residual limitation: The destructive baseline layout-marker behavior is documented accurately but remains an unintegrated runtime blocker tracked by REL-001/REL-002. Documentation approval does not approve that runtime path.
 - Rollback: Revert the three integration commits newest-first. No schema or data rollback is involved.
+
+## 2026-08-24T05:42:04Z — REL-002 decision — Native identity scope authorized
+
+- Authority: The operator selected `Authorize native scope` for the confirmed data-directory identity blocker.
+- Revised milestone: Reliability Phase A-Native may add the minimum production native directory-lease layer and bounded rooted AgentStore/VFS or identity-bound process boundary required to pin filesystem and SQLite operations to one acquired directory identity. Projection-checkpointing, provider-executor rewrites, unrelated store redesign, automated-test work, and Phase B remain outside authority.
+- Sequence: Freeze an architecture/platform contract first; then implement in small dependency-ordered commits only if the design provides kernel-managed lease release without namespace deletion, descriptor/handle-relative no-follow filesystem operations, and SQLite journal/WAL binding to the same identity. An incomplete pathname-based safety patch must not land.
+- Review gate: Require frozen-install, strict typecheck, full production build, exact diff/security review, disposable external runtime exercises including rebind/contention/crash/SQLite cases, and fresh same-reviewer exact-head approval before integration. Phase B remains frozen.
+- Owner: Reliability/Mobile under the expanded Phase A-Native authority.
