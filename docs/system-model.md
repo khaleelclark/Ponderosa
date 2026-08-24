@@ -109,9 +109,11 @@ Project file and folder references.
 
 The product calls scheduled, webhook, and filesystem Triggers **Automations**.
 An Automation stores operator-authored instructions separately from each
-untrusted occurrence payload. Every accepted occurrence has identity,
-provenance, an input hash, and a managed artifact before it can create an
-Activation.
+untrusted occurrence payload. Every accepted occurrence is a durable occurrence
+row with identity, a definition snapshot, provenance, payload media type, and
+an input hash. That row advances to an Activation; its bounded payload and
+retrieval path are authorized only for an active Run to which the occurrence's
+Activation is attached. The occurrence is not a managed artifact.
 
 Automations run with the same host authority as their Agent; they are not a
 sandbox. Filesystem contents and webhook bodies are data, not instructions, and
@@ -126,11 +128,17 @@ approval, present choices, or accept text. Approval and choice include a
 "Something else" path. A blocking Decision means the Agent has no safe
 independent work left; a non-blocking Decision lets unrelated work continue.
 
-The response is stored with the question and resumes dependent work through
-normal Activation scheduling. Some provider connection or form elicitations
-also use Decisions. Sensitive submitted form values are forwarded to the live
-provider request and are deliberately excluded from the durable Decision
-record.
+An ordinary Agent Decision response is stored with the question and resumes
+dependent work through normal Activation scheduling.
+
+Live provider connection and form elicitations are different. Ponderosa keeps
+the waiting provider call in memory and persists only an operator-facing
+Decision shell; sensitive URLs, form definitions, and submitted values are not
+part of that durable record. A confirmation, decline, or form submission returns
+directly to the waiting provider call without scheduling another Agent
+Activation. If the operator instead uses the free-form "Something else" path,
+Ponderosa declines the live provider request, records the text as the Decision
+response, and schedules new Agent work to handle it.
 
 ## Context, compaction, and history
 
@@ -141,9 +149,14 @@ entire Project, roster, audit trail, or every prior message on each turn.
 
 Provider sessions can be resumed while their policy, Engine, model, tool
 contract, and context remain compatible. Under context pressure, Ponderosa can
-schedule a dedicated bounded handoff, start a replacement session from
-canonical context, verify the replacement, and then retire the old session. A
-handoff is a continuity bridge, not a new authority or organizational memory.
+schedule a dedicated bounded handoff on the old provider session. After a
+usable handoff commits, Ponderosa tears down the old runtime process before the
+replacement Run opens a fresh provider process, but retains the old
+accepted-session snapshot as the durable fallback. Only after the replacement
+reports occupancy below the required low-water mark does one canonical
+acceptance event switch that snapshot and consume the handoff. An unverified
+replacement is discarded without changing the accepted snapshot. A handoff is
+a continuity bridge, not a new authority or organizational memory.
 
 `ponderosa_history` is a conditional continuity aid, not a universal history
 API. It is added only to a replacement session after a Ponderosa-managed
@@ -161,9 +174,12 @@ to Agent context.
 ## Project files, attachments, and artifacts
 
 The current runtime opens provider work in the Project's selected host folder.
-Those **Project files** remain ordinary user-owned files outside Ponderosa's data
-directory. File-change events record what a Run changed; the projection is an
-audit view, not a second working tree or a backup of the Project folder.
+For a Project registered from an existing folder, that folder can live outside
+Ponderosa's data directory. When Ponderosa creates a new Project folder, it
+lives under `PONDEROSA_DATA_DIR/workspaces`. In either case, those **Project
+files** remain ordinary user-owned source files. File-change events record what
+a Run changed; the projection is an audit view, not a second working tree or a
+backup of the Project folder.
 
 **Attachments** are validated copies staged for or associated with messages.
 They are addressed by opaque IDs, not arbitrary browser-supplied host paths.
@@ -182,7 +198,8 @@ or size limits. Browser upload accepts one of these authorized managed
 artifacts, never an arbitrary host path.
 
 Deleting a Project removes Ponderosa-owned state only after runtime authority is
-fenced and drained. It must not delete the selected Project source folder.
+fenced and drained. It does not delete the registered Project folder, including
+a Ponderosa-created folder under `PONDEROSA_DATA_DIR/workspaces`.
 
 ## Browser capability
 
@@ -267,20 +284,29 @@ Authority is domain-specific:
   state. Those rows are not rebuilt from JSONL.
 - UI timelines, Files & Results, Agent status, and notification summaries are
   projections of canonical state.
-- Managed artifact storage owns immutable generated/imported bytes. The selected
-  Project folder remains separately user-owned.
+- Managed artifact storage owns immutable generated/imported bytes. Project
+  working folders remain ordinary user-owned source content and are not deleted
+  with their Project records.
 
-The Ponderosa data directory is the backup unit for Ponderosa-owned state;
-selected Project folders require their own backup. A coherent service upgrade
-pauses new leasing, waits for active provider and browser authority to drain,
-then replaces and restarts the Engine. Durable intake can remain queued during
-the drain.
+The Ponderosa data directory contains Ponderosa-owned state and any
+Ponderosa-created Project folders under its `workspaces` directory. Existing
+folders registered as Projects can live elsewhere. A complete backup must
+therefore cover the entire data directory plus every registered Project folder
+outside it; Project source content cannot be reconstructed from file-change
+events. A coherent service upgrade pauses new leasing, waits for active provider
+and browser authority to drain, then replaces and restarts the Engine. Durable
+intake can remain queued during the drain.
 
 Database changes use a verified launch baseline and ordered transactional schema
-extensions. An unknown or damaged legacy schema fails closed instead of being
-guessed into compatibility. A changed provider tool or prompt contract also
-invalidates the persisted session contract, so the next compatible Run starts
-with a fresh/reseeded provider session rather than resuming stale tools.
+extensions. During SQLite open, an existing database outside the supported
+launch baseline, including a damaged legacy schema, fails closed instead of
+being guessed into compatibility. That claim is limited to SQLite schema
+handling: at this branch head, a missing or unrecognized data-directory layout
+marker still enters the destructive V1 cutover before ownership is acquired.
+No fail-closed layout-marker correction is integrated here. A changed provider
+tool or prompt contract also invalidates the persisted session contract, so the
+next compatible Run starts with a fresh/reseeded provider session rather than
+resuming stale tools.
 
 See [Deployment](../deploy/README.md) for the drain and recovery procedure.
 

@@ -56,9 +56,15 @@ concrete references improve readability but are not validity requirements. An
 empty, effectively empty, or oversized handoff leaves the old context intact
 and receives at most one corrective retry before automatic rollover stops for
 that provider generation. Pending corrective handoff work remains durable
-across server restarts. The runtime retires the old session only after a usable
-handoff commits. This costs one explicit rollover Run in the ordinary case but
-does not depend on a model overriding an arbitrary active task response.
+across server restarts. After a usable handoff commits, Ponderosa tears down the
+old provider runtime process before the replacement Run opens a fresh provider
+process. That teardown does not switch accepted resume authority: the durable
+old-session snapshot remains the fallback until the replacement reports
+occupancy below the required low-water mark. One canonical acceptance event then
+switches the snapshot and consumes the handoff atomically; a failed or
+unverified replacement does neither. This costs one explicit rollover Run in
+the ordinary case but does not depend on a model overriding an arbitrary active
+task response.
 
 An automatic rollover may reach `completed` after its source Run already
 committed the visible reply, because no extra continuation Run is owed for that
