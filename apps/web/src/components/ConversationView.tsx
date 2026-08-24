@@ -1359,7 +1359,7 @@ export function ConversationView({
         {activeView === "main" && targetedNextRunReceipts.data ? (
           <TargetedNextRunReceipts receipts={targetedNextRunReceipts.data.receipts} />
         ) : null}
-        {activeView === "main" ? (
+        <>
           <ComposerProjectCreationProvider
             disabled={busy}
             onCreateAgent={openAgentCreation}
@@ -1368,7 +1368,7 @@ export function ConversationView({
             <Composer
               draftStorageKey={chatStateKey(
                 "draft",
-                `conversation.${conversationId}.${activeView}`,
+                `conversation.${conversationId}.main`,
               )}
               conversationDraftId={conversationId}
               destinationMode="project-chat"
@@ -1452,7 +1452,7 @@ export function ConversationView({
               cancelPending={cancelOperationPending}
             />
           </ComposerProjectCreationProvider>
-        ) : null}
+        </>
       </ChatComposerDock>
 
       <ConversationDialogs
