@@ -282,3 +282,14 @@ This append-only experiment ledger records product and operating friction observ
 - Scope: Two new commits over rejected head `e221edbe`, limited to `ConversationView.tsx` and `Composer.parts.tsx`; Voice-owned files and server contracts are unchanged. Baseline-to-head has no path overlap with the frozen Voice slice and a read-only merge-tree completed without conflicts.
 - Qualification: Repository strict typecheck and production build passed. Temporary exact-build desktop/mobile exercises confirmed preservation of ordinary text, 12,050/10,050-character paste cards, queued/uploading/ready attachments, cross-conversation isolation, disabled creation during held Send, and unchanged ordinary zero-Agent first Send. No deployment occurred.
 - Remaining gate: Exact head is frozen in a fresh filesystem read-only detached worktree for same-reviewer rereview. Combined UI/Voice live qualification remains required after both slices are individually approved and integrated.
+
+## 2026-08-24T06:00:27Z — WC-001 follow-up — Broad dirty correction requires a per-finding scope map
+
+- Severity: High
+- Classification: Confirmed implementation-scope risk; pre-freeze intervention
+- Confirmed: Yes — operator observed 38 dirty files; Product Lead immediately re-audited the active worktree and found 40 modified files, 292 insertions / 95 deletions, spanning server routes, web views/hooks/routing, projections/schema/store, and core DTOs/events.
+- Risk: The breadth may be justified by the six confirmed findings, but without an exact file-to-finding map, unrelated redesign or opportunistic cleanup can hide inside provenance/file-link work. It also makes the two P1 runtime/identity fixes difficult to review independently.
+- Required pre-freeze evidence: Map every changed file to exactly one of: P1 admission/command fencing; P1 Git branch/repository ownership; P1 durable unavailable state; P2 retained-copy recovery; P2 Agent-authored relative file routing; or P2 immutable file/artifact provenance. For each cluster state the invariant, dependency order, necessity of every file, and exact commit boundary; explicitly disclose unavoidable cross-cluster files.
+- Required disposition: Split the P1 runtime/identity corrections ahead of file-link/provenance work; drop or revert unrelated redesign/refactors/migration expansion; attribute typecheck/build/manual evidence per cluster; and do not freeze until the worktree is clean and the map matches the exact diff.
+- Gate: Independent exact-head review and the repository no-tests policy remain unchanged. Product Lead delivered this scope gate to the running writer immediately; no file in the writer worktree was changed by Product Lead.
+- Owner: Agent Working Copies writer, with Product Lead pre-freeze audit.
