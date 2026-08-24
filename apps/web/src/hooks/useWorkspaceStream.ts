@@ -530,7 +530,10 @@ export function useWorkspaceStream(
       }),
     ].filter(query => query.getObserversCount() > 0);
     const reconcilePhaseEvidence = async (): Promise<boolean> => {
-      const queries = activePhaseQueries();
+      const queries = activePhaseQueries().map(query => ({
+        queryKey: query.queryKey,
+        dataUpdatedAt: query.state.dataUpdatedAt,
+      }));
       await Promise.all(queries.map(query => queryClient.invalidateQueries({
         queryKey: query.queryKey,
         exact: true,
@@ -545,7 +548,7 @@ export function useWorkspaceStream(
           || (
             current.state.status === "success"
             && current.state.fetchStatus === "idle"
-            && !current.state.isInvalidated
+            && current.state.dataUpdatedAt > query.dataUpdatedAt
           );
       });
     };
