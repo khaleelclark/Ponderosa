@@ -114,3 +114,16 @@ This append-only experiment ledger records product and operating friction observ
 - Impact: A live owner can lose its lock, allowing a third process to acquire the data directory concurrently; or the process can inspect/open a directory different from the one it locked. Either violates the fail-closed startup invariant and can expose canonical state to concurrent writers.
 - Recommended fix: Use one bounded exact-identity lock protocol for acquisition and release, with no separate read-then-pathname-unlink decision; remove PID-only launcher lock deletion and delegate to the same authority or fail closed; canonicalize and bind the data-directory identity once before every locked operation. A prepared nonempty owner directory claimed atomically and released by removing only the token-specific child plus nonrecursive `rmdir` is one candidate, but the corrected implementation must prove its platform semantics rather than rely on prose. Require disposable contention/symlink exercises and exact-head rereview before Phase B.
 - Owner: Reliability/Mobile. Phase B remains frozen.
+
+## 2026-08-24T05:19:30Z — VOICE-001 — Voice MVP can lose dictated text, speak from hidden surfaces, and read system notices
+
+- Severity: High
+- Classification: Confirmed Voice MVP defects; frozen head not approved
+- Confirmed: Yes — independent read-only adversarial review of exact head `3edc4aa36024e4b144fed96af213ee0f5bd9fd9d` found two high-severity lifecycle failures and one medium authorship-gating failure.
+- Reproduction:
+  1. Start dictation, finalize one phrase, begin another, and press Send before the second phrase finalizes. Submission snapshots only the first phrase; recognition inserts the second while the request is pending; successful Send clears the post-snapshot draft mutation, so the second phrase is neither sent nor retained.
+  2. Start read-aloud on a long Agent message, then switch to a Project Chat subview or preserved Agent detail panel that hides the source without unmounting it. Audio continues while its pause/stop control is no longer visible.
+  3. Produce a durable system-authored notice and open All Messages. The item receives Agent read-aloud controls because the gate checks only “not user” rather than `author.kind === "agent"`.
+- Impact: User-authored text can be lost during an ordinary Send; speech can continue unexpectedly after in-app navigation, including potentially sensitive content; and system notices are misrepresented as Agent speech.
+- Recommended fix: Coordinate recognition shutdown/final flush with submission or preserve every post-snapshot draft mutation without auto-sending speech; stop the active synthesis owner when its message surface becomes inactive/hidden, not only on unmount/pagehide; gate All Messages read-aloud strictly on Agent authorship. Requalify drafts, explicit Send, cross-view cleanup, and authorship before exact-head rereview.
+- Owner: Voice Conversation MVP. Branch remains frozen until overlapping UI-002 composer changes are finalized and sequenced.
