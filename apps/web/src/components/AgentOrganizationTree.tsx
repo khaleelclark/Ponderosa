@@ -1,5 +1,7 @@
 import AddIcon from "@mui/icons-material/Add";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
+import CheckBoxIcon from "@mui/icons-material/CheckBox";
+import CheckBoxOutlineBlankIcon from "@mui/icons-material/CheckBoxOutlineBlank";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
@@ -13,10 +15,8 @@ import {
   Alert,
   Box,
   Button,
-  Checkbox,
   Chip,
   FormControl,
-  IconButton,
   InputLabel,
   LinearProgress,
   MenuItem,
@@ -43,6 +43,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../api";
 import {
   isLiveOrganizationNode,
@@ -86,6 +87,7 @@ interface TreeState {
   focusedId?: string;
   setFocusedId(id: string): void;
   treeRef: MutableRefObject<HTMLDivElement | null>;
+  childControlsHost: HTMLDivElement | null;
   ownerLoading: boolean;
   connectionStatus: "connecting" | "live" | "reconnecting" | "stale" | "unavailable";
   phaseEvidenceFresh: boolean;
@@ -161,10 +163,15 @@ function OrganizationRow({
       } else if (parentId) {
         focusTreeRow(state.treeRef.current, `[data-agent-id="${CSS.escape(parentId)}"]`);
       }
+    } else if (event.key === " " && live && state.selectionMode) {
+      event.preventDefault();
+      state.toggleSelection(node.id);
     } else if (event.key === "Enter" && live) {
       event.preventDefault();
-      if (state.selectionMode) state.toggleSelection(node.id);
-      else state.onOpenAgent(node.id);
+      state.onOpenAgent(node.id);
+    } else if ((event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) && live) {
+      event.preventDefault();
+      state.onActions(node, event.currentTarget);
     }
   };
   return (
@@ -176,9 +183,15 @@ function OrganizationRow({
       aria-setsize={setSize}
       aria-posinset={index + 1}
       aria-expanded={expandable ? expanded : undefined}
+      aria-selected={live && state.selectionMode ? state.selectedAgentIds.has(node.id) : undefined}
+      aria-keyshortcuts={live ? "Shift+F10" : undefined}
       tabIndex={state.focusedId === node.id ? 0 : -1}
       onFocus={() => state.setFocusedId(node.id)}
       onKeyDown={handleKeyDown}
+      onClick={live ? () => {
+        if (state.selectionMode) state.toggleSelection(node.id);
+        else state.onOpenAgent(node.id);
+      } : undefined}
       sx={{ outline: "none", ml: `${Math.min(level - 1, 5) * 18}px` }}
     >
       <Stack
@@ -203,45 +216,48 @@ function OrganizationRow({
         }}
       >
         {live && state.selectionMode ? (
-          <Checkbox
-            checked={state.selectedAgentIds.has(node.id)}
-            onChange={() => state.toggleSelection(node.id)}
-            onClick={event => event.stopPropagation()}
-            inputProps={{ "aria-label": `Select ${node.title}` }}
-            sx={{ width: 44, height: 44, flex: "0 0 auto" }}
-          />
+          <Box
+            role="presentation"
+            aria-hidden="true"
+            sx={{ width: 44, height: 44, flex: "0 0 auto", display: "grid", placeItems: "center" }}
+          >
+            {state.selectedAgentIds.has(node.id) ? <CheckBoxIcon color="primary" /> : <CheckBoxOutlineBlankIcon />}
+          </Box>
         ) : null}
         {live && state.allowExpansion ? (
-          <IconButton
-            tabIndex={-1}
-            aria-label={expandable
-              ? `${expanded ? "Collapse" : "Expand"} ${node.title}`
-              : `${node.title} has no direct reports`}
-            disabled={!expandable}
-            onClick={() => state.setExpanded(current => {
+          <Box
+            component="span"
+            role="presentation"
+            aria-hidden="true"
+            title={expandable ? `${expanded ? "Collapse" : "Expand"} ${node.title}` : undefined}
+            onClick={expandable ? event => {
+              event.stopPropagation();
+              state.setExpanded(current => {
               const next = new Set(current);
               if (next.has(node.id)) next.delete(node.id);
               else next.add(node.id);
               return next;
-            })}
-            sx={{ width: 44, height: 44, flex: "0 0 auto" }}
+              });
+            } : undefined}
+            sx={{
+              width: 44,
+              height: 44,
+              flex: "0 0 auto",
+              display: "grid",
+              placeItems: "center",
+              cursor: expandable ? "pointer" : "default",
+            }}
           >
             {expandable
               ? expanded ? <KeyboardArrowDownIcon /> : <KeyboardArrowRightIcon />
               : <Box sx={{ width: 24 }} />}
-          </IconButton>
+          </Box>
         ) : (
           <Box sx={{ width: 12, flex: "0 0 auto" }} />
         )}
         <SmartToyOutlinedIcon color={live ? "inherit" : "disabled"} />
         <Box
-          component={live ? "button" : "div"}
-          type={live ? "button" : undefined}
-          tabIndex={live ? -1 : undefined}
-          onClick={live ? () => {
-            if (state.selectionMode) state.toggleSelection(node.id);
-            else state.onOpenAgent(node.id);
-          } : undefined}
+          role="presentation"
           sx={{
             minWidth: 0,
             flex: 1,
@@ -287,24 +303,30 @@ function OrganizationRow({
           </Stack>
         ) : null}
         {live ? (
-          <IconButton
-            aria-label={`Actions for ${node.title}`}
-            tabIndex={-1}
-            onClick={event => state.onActions(node, event.currentTarget)}
-            sx={{ width: 44, height: 44 }}
+          <Box
+            component="span"
+            role="presentation"
+            aria-hidden="true"
+            title={`Actions for ${node.title}`}
+            onClick={event => {
+              event.stopPropagation();
+              state.onActions(node, event.currentTarget);
+            }}
+            sx={{ width: 44, height: 44, display: "grid", placeItems: "center", cursor: "pointer" }}
           >
             <MoreVertIcon />
-          </IconButton>
+          </Box>
         ) : null}
       </Stack>
       {expanded ? (
-        <OrganizationChildren parentId={node.id} level={level + 1} state={state} />
+        <OrganizationChildren parentId={node.id} parentTitle={node.title} level={level + 1} state={state} />
       ) : null}
     </Box>
   );
 }
 
 function OrganizationRows({
+  id,
   items,
   level,
   total,
@@ -312,6 +334,7 @@ function OrganizationRows({
   parentId,
   state,
 }: {
+  id?: string;
   items: AgentOrganizationNodeDto[];
   level: number;
   total?: number;
@@ -320,7 +343,7 @@ function OrganizationRows({
   state: TreeState;
 }): JSX.Element {
   return (
-    <Stack role={parentId ? "group" : undefined} spacing={0.75} sx={{ mt: parentId ? 0.75 : 0 }}>
+    <Stack id={id} role={parentId ? "group" : "presentation"} spacing={0.75} sx={{ mt: parentId ? 0.75 : 0 }}>
       {items.map((node, index) => (
         <OrganizationRow
           key={node.id}
@@ -337,35 +360,51 @@ function OrganizationRows({
 }
 
 function PageFooter({
+  label,
+  controlsId,
   hasNextPage,
   fetching,
   error,
+  initialError = false,
   onMore,
 }: {
+  label: string;
+  controlsId: string;
   hasNextPage: boolean;
   fetching: boolean;
   error: boolean;
+  initialError?: boolean;
   onMore(): void;
 }): JSX.Element | null {
-  if (!hasNextPage && !error) return null;
+  if (!hasNextPage && !error && !initialError) return null;
   return (
-    <Button
-      color={error ? "error" : "inherit"}
-      disabled={fetching}
-      onClick={onMore}
-      sx={{ minHeight: 44, mt: 0.75 }}
-    >
-      {fetching ? "Loading…" : error ? "Retry this page" : "Load more"}
-    </Button>
+    <Stack role="group" aria-label={`${label} paging`} direction="row" spacing={1} sx={{ alignItems: "center" }}>
+      <Typography variant="caption" color="text.secondary">{label}</Typography>
+      <Button
+        color={error || initialError ? "error" : "inherit"}
+        disabled={fetching}
+        onClick={event => {
+          event.stopPropagation();
+          onMore();
+        }}
+        aria-controls={controlsId}
+        aria-label={`${error || initialError ? "Retry" : "Load more"} ${label}`}
+        sx={{ minHeight: 44 }}
+      >
+        {fetching ? "Loading…" : error || initialError ? "Retry this page" : "Load more"}
+      </Button>
+    </Stack>
   );
 }
 
 function OrganizationChildren({
   parentId,
+  parentTitle,
   level,
   state,
 }: {
   parentId: string;
+  parentTitle: string;
   level: number;
   state: TreeState;
 }): JSX.Element {
@@ -380,27 +419,29 @@ function OrganizationChildren({
       `[data-parent-id="${CSS.escape(parentId)}"]`,
     );
   }, [parentId, query.items.length, state.focusedId, state.treeRef]);
+  const groupId = `agent-organization-children-${parentId}`;
+  const pageControls = (
+    <PageFooter
+      label={`Direct reports for ${parentTitle}`}
+      controlsId={groupId}
+      hasNextPage={Boolean(query.hasNextPage)}
+      fetching={query.isFetchingNextPage}
+      error={query.isFetchNextPageError}
+      initialError={query.isError && !query.pages}
+      onMore={() => void (query.isError ? query.refetch() : query.fetchNextPage())}
+    />
+  );
   return (
-    <Box aria-busy={query.isFetching}>
-      {query.isLoading ? <LinearProgress aria-label="Loading direct reports" /> : null}
-      {query.isError && !query.pages ? (
-        <Alert severity="error" action={<Button onClick={() => void query.refetch()}>Retry</Button>}>
-          Direct reports could not be loaded.
-        </Alert>
-      ) : null}
+    <Box role="presentation" aria-busy={query.isFetching}>
       <OrganizationRows
+        id={groupId}
         items={query.items}
         level={level}
         total={query.summary?.total ?? query.items.length}
         parentId={parentId}
         state={{ ...state, ownerLoading: query.isFetching }}
       />
-      <PageFooter
-        hasNextPage={Boolean(query.hasNextPage)}
-        fetching={query.isFetchingNextPage}
-        error={query.isFetchNextPageError}
-        onMore={() => void (query.isFetchNextPageError ? query.refetch() : query.fetchNextPage())}
-      />
+      {state.childControlsHost ? createPortal(pageControls, state.childControlsHost) : null}
     </Box>
   );
 }
@@ -449,6 +490,7 @@ export function AgentOrganizationTree({
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(() => new Set());
   const [visibleCount, setVisibleCount] = useState(0);
+  const [childControlsHost, setChildControlsHost] = useState<HTMLDivElement | null>(null);
   const mountedNodeIds = useRef(new Set<string>());
   const mountedLiveNodeIds = useRef(new Set<string>());
   useEffect(() => {
@@ -502,8 +544,9 @@ export function AgentOrganizationTree({
   }, []);
   useEffect(() => {
     const first = roots.items[0]?.id ?? orphans.items[0]?.id ?? deleted.items[0]?.id;
-    if (first) setFocusedId(current => current ?? first);
-  }, [deleted.items, orphans.items, roots.items]);
+    if (!first) return;
+    setFocusedId(current => current && mountedNodeIds.current.has(current) ? current : first);
+  }, [deleted.items, focusedId, orphans.items, roots.items]);
   const state: TreeState = {
     projectId,
     expanded,
@@ -511,6 +554,7 @@ export function AgentOrganizationTree({
     focusedId,
     setFocusedId,
     treeRef,
+    childControlsHost,
     ownerLoading: roots.isFetching,
     connectionStatus: connection.status,
     phaseEvidenceFresh: connection.phaseEvidenceFresh,
@@ -702,73 +746,116 @@ export function AgentOrganizationTree({
             The Agent organization could not be loaded.
           </Alert>
         ) : null}
-        <Stack ref={treeRef} role="tree" aria-label="Agent organization" spacing={1.5} aria-busy={roots.isFetching || undefined}>
-          <Box>
-            <Typography variant="subtitle2" sx={{ mb: 0.75 }}>
-              {filtered ? "Filtered Agents" : `Reports to you (${summary?.specialGroupCounts.independent ?? 0})`}
+        <Stack role="group" aria-label="Agent organization sections" spacing={0.75} sx={{ mb: 1 }}>
+          <Typography variant="subtitle2">
+            {filtered ? "Filtered Agents" : `Reports to you (${summary?.specialGroupCounts.independent ?? 0})`}
+          </Typography>
+          {filtered ? (
+            <Typography variant="caption" color="text.secondary">
+              Flat, server-paged results with canonical owner breadcrumbs. Status applies to each bounded candidate page.
             </Typography>
-            {filtered ? (
-              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.75 }}>
-                Flat, server-paged results with canonical owner breadcrumbs. Status applies to each bounded candidate page.
-              </Typography>
-            ) : null}
-            <OrganizationRows items={roots.items} level={1} total={topLevelSetSize} state={state} />
-            <PageFooter
-              hasNextPage={Boolean(roots.hasNextPage)}
-              fetching={roots.isFetchingNextPage}
-              error={roots.isFetchNextPageError}
-              onMore={() => void (roots.isFetchNextPageError ? roots.refetch() : roots.fetchNextPage())}
-            />
-          </Box>
-          {!filtered && (summary?.specialGroupCounts.orphaned ?? 0) > 0 ? (
-            <Box>
+          ) : null}
+          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+            {!filtered && (summary?.specialGroupCounts.orphaned ?? 0) > 0 ? (
               <Button
                 color="inherit"
                 startIcon={orphansExpanded ? <KeyboardArrowDownIcon /> : <KeyboardArrowRightIcon />}
                 onClick={() => setOrphansExpanded(value => !value)}
                 aria-expanded={orphansExpanded}
+                aria-controls="agent-organization-orphaned"
                 aria-label={`${orphansExpanded ? "Collapse" : "Expand"} Orphaned Agents`}
                 sx={{ minHeight: 44 }}
               >
                 Orphaned ({summary?.specialGroupCounts.orphaned ?? 0})
               </Button>
-              {orphansExpanded ? (
-                <Box aria-busy={orphans.isFetching || undefined}>
-                  <OrganizationRows items={orphans.items} level={1} total={topLevelSetSize} startIndex={rootTotal} state={{ ...state, ownerLoading: orphans.isFetching }} />
-                  <PageFooter hasNextPage={Boolean(orphans.hasNextPage)} fetching={orphans.isFetchingNextPage} error={orphans.isFetchNextPageError} onMore={() => void (orphans.isFetchNextPageError ? orphans.refetch() : orphans.fetchNextPage())} />
-                </Box>
-              ) : null}
-            </Box>
-          ) : null}
-          {!filtered && (summary?.specialGroupCounts.deleted ?? 0) > 0 ? (
-            <Box>
+            ) : null}
+            {!filtered && (summary?.specialGroupCounts.deleted ?? 0) > 0 ? (
               <Button
                 color="inherit"
                 startIcon={deletedExpanded ? <KeyboardArrowDownIcon /> : <KeyboardArrowRightIcon />}
                 onClick={() => setDeletedExpanded(value => !value)}
                 aria-expanded={deletedExpanded}
+                aria-controls="agent-organization-deleted"
                 aria-label={`${deletedExpanded ? "Collapse" : "Expand"} Deleted History`}
                 sx={{ minHeight: 44 }}
               >
                 Deleted History ({summary?.specialGroupCounts.deleted ?? 0})
               </Button>
-              {deletedExpanded ? (
-                <Box aria-busy={deleted.isFetching || undefined}>
-                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.75 }}>
-                    Minimal tombstones only. Deleted Agents cannot expand or reconstruct ancestry.
-                  </Typography>
-                  <OrganizationRows
-                    items={deleted.items}
-                    level={1}
-                    total={topLevelSetSize}
-                    startIndex={rootTotal + (orphansExpanded ? orphanTotal : 0)}
-                    state={{ ...state, allowExpansion: false, ownerLoading: false }}
-                  />
-                  <PageFooter hasNextPage={Boolean(deleted.hasNextPage)} fetching={deleted.isFetchingNextPage} error={deleted.isFetchNextPageError} onMore={() => void (deleted.isFetchNextPageError ? deleted.refetch() : deleted.fetchNextPage())} />
-                </Box>
-              ) : null}
+            ) : null}
+          </Stack>
+          {!filtered && deletedExpanded && (summary?.specialGroupCounts.deleted ?? 0) > 0 ? (
+            <Typography variant="caption" color="text.secondary">
+              Deleted History contains minimal tombstones only. Deleted Agents cannot expand or reconstruct ancestry.
+            </Typography>
+          ) : null}
+        </Stack>
+        <Stack ref={treeRef} role="tree" aria-label="Agent organization" spacing={1.5} aria-busy={roots.isFetching || undefined}>
+          <Box
+            id="agent-organization-roots"
+            role="group"
+            aria-label={filtered ? "Filtered Agents" : "Reports to you"}
+            aria-busy={roots.isFetching || undefined}
+          >
+            <OrganizationRows items={roots.items} level={1} total={topLevelSetSize} state={state} />
+          </Box>
+          {!filtered && orphansExpanded && (summary?.specialGroupCounts.orphaned ?? 0) > 0 ? (
+            <Box
+              id="agent-organization-orphaned"
+              role="group"
+              aria-label="Orphaned Agents"
+              aria-busy={orphans.isFetching || undefined}
+            >
+              <OrganizationRows items={orphans.items} level={1} total={topLevelSetSize} startIndex={rootTotal} state={{ ...state, ownerLoading: orphans.isFetching }} />
             </Box>
           ) : null}
+          {!filtered && deletedExpanded && (summary?.specialGroupCounts.deleted ?? 0) > 0 ? (
+            <Box
+              id="agent-organization-deleted"
+              role="group"
+              aria-label="Deleted History"
+              aria-description="Minimal tombstones only. Deleted Agents cannot expand or reconstruct ancestry."
+              aria-busy={deleted.isFetching || undefined}
+            >
+              <OrganizationRows
+                items={deleted.items}
+                level={1}
+                total={topLevelSetSize}
+                startIndex={rootTotal + (orphansExpanded ? orphanTotal : 0)}
+                state={{ ...state, allowExpansion: false, ownerLoading: false }}
+              />
+            </Box>
+          ) : null}
+        </Stack>
+        <Stack role="group" aria-label="Agent organization paging" spacing={0.75} sx={{ mt: 1 }}>
+          <PageFooter
+            label={filtered ? "Filtered Agents" : "Reports to you"}
+            controlsId="agent-organization-roots"
+            hasNextPage={Boolean(roots.hasNextPage)}
+            fetching={roots.isFetchingNextPage}
+            error={roots.isFetchNextPageError}
+            onMore={() => void (roots.isFetchNextPageError ? roots.refetch() : roots.fetchNextPage())}
+          />
+          {!filtered && orphansExpanded ? (
+            <PageFooter
+              label="Orphaned Agents"
+              controlsId="agent-organization-orphaned"
+              hasNextPage={Boolean(orphans.hasNextPage)}
+              fetching={orphans.isFetchingNextPage}
+              error={orphans.isFetchNextPageError}
+              onMore={() => void (orphans.isFetchNextPageError ? orphans.refetch() : orphans.fetchNextPage())}
+            />
+          ) : null}
+          {!filtered && deletedExpanded ? (
+            <PageFooter
+              label="Deleted History"
+              controlsId="agent-organization-deleted"
+              hasNextPage={Boolean(deleted.hasNextPage)}
+              fetching={deleted.isFetchingNextPage}
+              error={deleted.isFetchNextPageError}
+              onMore={() => void (deleted.isFetchNextPageError ? deleted.refetch() : deleted.fetchNextPage())}
+            />
+          ) : null}
+          <Stack ref={setChildControlsHost} spacing={0.75} />
         </Stack>
       </Box>
       <ImportAgentDialog open={importOpen} projectId={projectId} engines={engines} conversations={conversations} initialConversationId={conversations[0]?.id} onClose={() => setImportOpen(false)} onImported={onOpenAgent} />
