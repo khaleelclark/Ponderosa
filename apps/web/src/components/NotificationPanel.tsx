@@ -199,9 +199,6 @@ export function NotificationPanel({ open, projects, firstPage, onClose, onNaviga
     () => new Set(projects.map(project => project.id)),
     [projects],
   );
-  useEffect(() => {
-    setOlderPages([]);
-  }, [firstPage]);
   const notifications = useMemo(() => {
     const unique = new Map<string, WorkspaceNotificationDto>();
     for (const page of [firstPage, ...olderPages]) {
@@ -216,6 +213,7 @@ export function NotificationPanel({ open, projects, firstPage, onClose, onNaviga
   const nextCursor = olderPages.at(-1)?.nextCursor ?? firstPage?.nextCursor;
   useEffect(() => {
     if (open && !wasOpen.current) {
+      setOlderPages([]);
       setFilter(openActionCount ? "attention" : "updates");
     }
     wasOpen.current = open;
