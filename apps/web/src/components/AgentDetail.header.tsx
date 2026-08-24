@@ -50,12 +50,14 @@ function AgentRunState({
   status,
   health,
   connectionStatus,
+  phaseEvidenceFresh,
   startedAt,
   agentNameForId,
 }: {
   status: AgentStatus;
   health?: AgentHealthDto;
   connectionStatus: WorkspaceConnectionStatus;
+  phaseEvidenceFresh: boolean;
   startedAt?: string;
   agentNameForId(agentId: string): string | undefined;
 }): JSX.Element {
@@ -63,6 +65,7 @@ function AgentRunState({
   const presentation = agentStatusPresentation(health, {
     status,
     connectionStatus,
+    phaseEvidenceFresh,
     agentNameForId,
   });
   const elapsed = startedAt ? formatExecutionElapsed(startedAt, now) : undefined;
@@ -106,6 +109,7 @@ interface AgentDetailHeaderProps {
   status: AgentStatus;
   health?: AgentHealthDto;
   connectionStatus: WorkspaceConnectionStatus;
+  phaseEvidenceFresh: boolean;
   startedAt?: string;
   agentNameForId(agentId: string): string | undefined;
   running: boolean;
@@ -139,6 +143,7 @@ export function AgentDetailHeader({
   health,
   status,
   connectionStatus,
+  phaseEvidenceFresh,
   startedAt,
   agentNameForId,
   running,
@@ -210,6 +215,7 @@ export function AgentDetailHeader({
           status={status}
           health={health}
           connectionStatus={connectionStatus}
+          phaseEvidenceFresh={phaseEvidenceFresh}
           startedAt={startedAt}
           agentNameForId={agentNameForId}
         />

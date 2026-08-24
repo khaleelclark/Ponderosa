@@ -247,6 +247,7 @@ export function HomeSidebarPanel({
                 status={item.status}
                 health={item.health}
                 connectionStatus={workspaceConnection.status}
+                phaseEvidenceFresh={workspaceConnection.phaseEvidenceFresh}
                 agentNameForId={agentId => agentNamesById.get(agentId)}
               />
             ) : null}

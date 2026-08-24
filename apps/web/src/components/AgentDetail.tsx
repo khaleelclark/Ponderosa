@@ -891,6 +891,7 @@ export function AgentDetail({
         status={status}
         health={projectedHealth}
         connectionStatus={agentConnectionStatus}
+        phaseEvidenceFresh={workspaceConnection.phaseEvidenceFresh}
         startedAt={runtimeActivity?.startedAt}
         agentNameForId={agentNameForId}
         running={running}

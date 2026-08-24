@@ -61,6 +61,8 @@ export type WorkspaceConnectionStatus =
 
 export interface WorkspaceConnectionState {
   status: WorkspaceConnectionStatus;
+  /** Canonical phase-bearing queries have reconciled after stream catch-up. */
+  phaseEvidenceFresh: boolean;
   lastSuccessfulSyncAt?: string;
   prolongedDisconnect: boolean;
   announcement?: string;
@@ -492,6 +494,7 @@ export function useWorkspaceStream(
   const instanceId = useRef(initialInstanceId());
   const [connection, setConnection] = useState<WorkspaceConnectionState>({
     status: "connecting",
+    phaseEvidenceFresh: false,
     prolongedDisconnect: false,
   });
 
@@ -505,6 +508,82 @@ export function useWorkspaceStream(
     const decisionConversationInvalidator =
       createDecisionConversationInvalidator(queryClient);
     let replayReconcileTimer: ReturnType<typeof setTimeout> | undefined;
+    let phaseReconcileTimer: ReturnType<typeof setTimeout> | undefined;
+    let phaseReconcileGeneration = 0;
+    let phaseCatchUpCursor: number | undefined;
+    let stopped = false;
+    let disconnected = false;
+    const markPhaseEvidenceStale = () => {
+      phaseReconcileGeneration += 1;
+      if (phaseReconcileTimer) clearTimeout(phaseReconcileTimer);
+      phaseReconcileTimer = undefined;
+      setConnection(current => current.phaseEvidenceFresh
+        ? { ...current, phaseEvidenceFresh: false }
+        : current);
+    };
+    const activePhaseQueries = () => [
+      ...queryClient.getQueryCache().findAll({
+        queryKey: queryKeys.agents.healthAll,
+      }),
+      ...queryClient.getQueryCache().findAll({
+        queryKey: queryKeys.workspaceDirectory.kind("agent"),
+      }),
+    ].filter(query => query.getObserversCount() > 0);
+    const reconcilePhaseEvidence = async (): Promise<boolean> => {
+      const queries = activePhaseQueries();
+      await Promise.all(queries.map(query => queryClient.invalidateQueries({
+        queryKey: query.queryKey,
+        exact: true,
+      })));
+      return queries.every(query => {
+        const current = queryClient.getQueryCache().find({
+          queryKey: query.queryKey,
+          exact: true,
+        });
+        return !current
+          || current.getObserversCount() === 0
+          || (
+            current.state.status === "success"
+            && current.state.fetchStatus === "idle"
+            && !current.state.isInvalidated
+          );
+      });
+    };
+    const schedulePhaseReconciliation = (delayMs = 250) => {
+      if (
+        stopped
+        || disconnected
+        || (phaseCatchUpCursor !== undefined && cursor.current < phaseCatchUpCursor)
+      ) return;
+      if (phaseReconcileTimer) clearTimeout(phaseReconcileTimer);
+      const generation = phaseReconcileGeneration;
+      phaseReconcileTimer = setTimeout(() => {
+        phaseReconcileTimer = undefined;
+        void reconcilePhaseEvidence()
+          .then(reconciled => {
+            if (
+              stopped
+              || disconnected
+              || generation !== phaseReconcileGeneration
+            ) return;
+            if (!reconciled) {
+              schedulePhaseReconciliation(1_000);
+              return;
+            }
+            setConnection(current => ({
+              ...current,
+              phaseEvidenceFresh: true,
+            }));
+          })
+          .catch(() => {
+            if (
+              !stopped
+              && !disconnected
+              && generation === phaseReconcileGeneration
+            ) schedulePhaseReconciliation(1_000);
+          });
+      }, delayMs);
+    };
     const invalidateAll = () => {
       agentWorkInvalidator.dispose();
       agentDetailInvalidator.dispose();
@@ -543,6 +622,12 @@ export function useWorkspaceStream(
       cursor.current = reconciliation.cursor;
       persistWorkspaceCursor(reconciliation.cursor, instanceId.current ?? undefined);
       const event = envelope.event;
+      const changesPhaseEvidence = workspaceAgentEventChangesPhase(event)
+        || event.type === "coordination_changed"
+        || event.type === "notification_changed";
+      if (reconciliation.gap || envelope.replayed || changesPhaseEvidence) {
+        markPhaseEvidenceStale();
+      }
       const deletedProjectId = reconcileDeletedProjectEvent(
         envelope,
         (projectId, at) => onProjectDeleted.current?.(projectId, at),
@@ -567,6 +652,7 @@ export function useWorkspaceStream(
       }
       if (reconciliation.gap) {
         invalidateAll();
+        schedulePhaseReconciliation();
         return;
       }
       // Replayed workspace events are historical catch-up. The canonical
@@ -578,6 +664,7 @@ export function useWorkspaceStream(
         replayReconcileTimer = setTimeout(() => {
           replayReconcileTimer = undefined;
           invalidateAll();
+          schedulePhaseReconciliation();
         }, 250);
         return;
       }
@@ -702,14 +789,13 @@ export function useWorkspaceStream(
         }
         agentWorkInvalidator.schedule();
       }
+      if (changesPhaseEvidence) schedulePhaseReconciliation();
     };
-    let stopped = false;
     let subscription: StreamSubscription | undefined;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let reconnectingNoticeTimer: ReturnType<typeof setTimeout> | undefined;
     let staleNoticeTimer: ReturnType<typeof setTimeout> | undefined;
     let connectedOnce = false;
-    let disconnected = false;
     let instanceMismatchDelay = INSTANCE_MISMATCH_INITIAL_DELAY_MS;
     const clearConnectionTimers = () => {
       if (reconnectingNoticeTimer) clearTimeout(reconnectingNoticeTimer);
@@ -720,6 +806,7 @@ export function useWorkspaceStream(
     const noteDisconnect = () => {
       if (stopped || disconnected) return;
       disconnected = true;
+      markPhaseEvidenceStale();
       reconnectingNoticeTimer = setTimeout(() => {
         reconnectingNoticeTimer = undefined;
         if (!stopped && disconnected) {
@@ -747,6 +834,7 @@ export function useWorkspaceStream(
       clearConnectionTimers();
       setConnection(current => ({
         status: "live",
+        phaseEvidenceFresh: false,
         lastSuccessfulSyncAt: new Date().toISOString(),
         prolongedDisconnect: false,
         announcement: current.prolongedDisconnect
@@ -765,6 +853,8 @@ export function useWorkspaceStream(
             instanceId.current && instanceId.current !== status.instanceId,
           );
           if (changedInstance) {
+            markPhaseEvidenceStale();
+            phaseCatchUpCursor = undefined;
             cursor.current = 0;
             instanceId.current = status.instanceId;
             persistWorkspaceCursor(0, status.instanceId);
@@ -783,6 +873,8 @@ export function useWorkspaceStream(
             }
             return;
           }
+          markPhaseEvidenceStale();
+          phaseCatchUpCursor = status.cursor;
           noteConnected();
           instanceMismatchDelay = INSTANCE_MISMATCH_INITIAL_DELAY_MS;
           if (status.reset || cursor.current > status.cursor) {
@@ -791,6 +883,7 @@ export function useWorkspaceStream(
           }
           instanceId.current = status.instanceId;
           persistWorkspaceCursor(cursor.current, status.instanceId);
+          schedulePhaseReconciliation();
         },
         onError: noteDisconnect,
       });
@@ -803,6 +896,7 @@ export function useWorkspaceStream(
       if (reconnectTimer) clearTimeout(reconnectTimer);
       clearConnectionTimers();
       if (replayReconcileTimer) clearTimeout(replayReconcileTimer);
+      if (phaseReconcileTimer) clearTimeout(phaseReconcileTimer);
       agentWorkInvalidator.dispose();
       agentDetailInvalidator.dispose();
       agentStateInvalidator.dispose();

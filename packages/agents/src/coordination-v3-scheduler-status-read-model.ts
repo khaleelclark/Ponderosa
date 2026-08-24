@@ -93,27 +93,26 @@ export class CoordinationV3SchedulerStatusReadModel {
         FROM coordination_joins join_record
         JOIN coordination_join_members member ON member.join_id = join_record.id
         JOIN coordination_requests request ON request.id = member.request_id
-        WHERE join_record.owner_agent_id = ? AND join_record.state = 'open'
+        WHERE join_record.id = ?
+          AND join_record.owner_agent_id = ? AND join_record.state = 'open'
           AND request.terminal_at IS NULL
           ${scopeMatches("join_record")}
-      `).get(agentId, ...scopeParameters) as { count: number }).count;
+      `).get(latestJoin.id, agentId, ...scopeParameters) as { count: number }).count;
       if (dependencyCount < 1) return undefined;
       const requests = this.sqlite.prepare(`
         SELECT request.id, request.recipient_agent_id,
-          MAX(join_record.updated_at) AS join_updated_at,
-          MAX(join_record.id) AS join_id,
           MIN(member.position) AS member_position
         FROM coordination_joins join_record
         JOIN coordination_join_members member ON member.join_id = join_record.id
         JOIN coordination_requests request ON request.id = member.request_id
-        WHERE join_record.owner_agent_id = ? AND join_record.state = 'open'
+        WHERE join_record.id = ?
+          AND join_record.owner_agent_id = ? AND join_record.state = 'open'
           AND request.terminal_at IS NULL
           ${scopeMatches("join_record")}
         GROUP BY request.id, request.recipient_agent_id
-        ORDER BY join_updated_at DESC, join_id DESC,
-          member_position, request.id
+        ORDER BY member_position, request.id
         LIMIT ${MAX_PHASE_DEPENDENCY_IDENTITIES}
-      `).all(agentId, ...scopeParameters) as Array<{
+      `).all(latestJoin.id, agentId, ...scopeParameters) as Array<{
         id: string;
         recipient_agent_id: string;
       }>;

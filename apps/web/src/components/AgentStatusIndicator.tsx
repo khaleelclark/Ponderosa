@@ -11,6 +11,7 @@ interface AgentStatusIndicatorProps {
   status: AgentStatus;
   health?: AgentHealthDto;
   connectionStatus?: AgentStatusConnection;
+  phaseEvidenceFresh?: boolean;
   agentNameForId?: (agentId: string) => string | undefined;
 }
 
@@ -18,12 +19,14 @@ export function AgentStatusIndicator({
   status,
   health,
   connectionStatus,
+  phaseEvidenceFresh,
   agentNameForId,
 }: AgentStatusIndicatorProps): JSX.Element {
   const color = agentStatusColor(status);
   const presentation = agentStatusPresentation(health, {
     status,
     connectionStatus,
+    phaseEvidenceFresh,
     agentNameForId,
   });
 

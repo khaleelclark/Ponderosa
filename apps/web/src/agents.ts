@@ -154,6 +154,7 @@ export function agentStatusPresentation(
   options: {
     status?: AgentStatus;
     connectionStatus?: AgentStatusConnection;
+    phaseEvidenceFresh?: boolean;
     agentNameForId?: (agentId: string) => string | undefined;
   } = {},
 ): AgentStatusPresentation {
@@ -167,7 +168,12 @@ export function agentStatusPresentation(
     detail: `Agent status: ${coarseLabel}`,
   };
   const phase = health?.phase;
-  if (!phase || options.connectionStatus !== "live" || health.status !== status) {
+  if (
+    !phase
+    || options.connectionStatus !== "live"
+    || options.phaseEvidenceFresh !== true
+    || health.status !== status
+  ) {
     return coarse;
   }
 
@@ -211,13 +217,10 @@ export function agentStatusPresentation(
     || phase.dependencyCount < 1
     || phase.additionalDependencyCount < 0
   ) return coarse;
-  const counterpartyName = phase.counterpartyAgentIds
-    .map((agentId) => options.agentNameForId?.(agentId))
-    .find(Boolean);
   const label = phase.dependencyCount > 1
-    ? `Waiting on ${phase.dependencyCount} requests`
-    : counterpartyName
-      ? `Waiting on ${counterpartyName}`
+    ? "Waiting on requests"
+    : phase.counterpartyAgentIds.length
+      ? "Waiting on Agent"
       : "Waiting on request";
   const identity = phase.kind === "waiting_on_join"
     ? [
@@ -225,7 +228,18 @@ export function agentStatusPresentation(
         phase.requestIds.length ? `Requests ${phase.requestIds.join(", ")}` : undefined,
       ].filter(Boolean).join("; ")
     : `Request ${phase.requestId}`;
-  const detail = `Agent status: ${label}; ${identity}; ${phase.dependencyCount} unresolved ${phase.dependencyCount === 1 ? "request" : "requests"}`;
+  const counterparties = phase.counterpartyAgentIds.length
+    ? `Agents ${phase.counterpartyAgentIds.map((agentId) => {
+        const name = options.agentNameForId?.(agentId);
+        return name ? `${name} (${agentId})` : agentId;
+      }).join(", ")}`
+    : undefined;
+  const detail = [
+    `Agent status: ${label}`,
+    counterparties,
+    identity,
+    `${phase.dependencyCount} unresolved ${phase.dependencyCount === 1 ? "request" : "requests"}`,
+  ].filter(Boolean).join("; ");
   return { label, accessibleLabel: detail, detail };
 }
 

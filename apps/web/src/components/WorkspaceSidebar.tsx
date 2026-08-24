@@ -698,6 +698,7 @@ export function WorkspaceSidebar({
                 status={status}
                 health={health}
                 connectionStatus={workspaceConnection.status}
+                phaseEvidenceFresh={workspaceConnection.phaseEvidenceFresh}
                 agentNameForId={agentId => agentNamesById.get(agentId)}
               />
             ) : null}

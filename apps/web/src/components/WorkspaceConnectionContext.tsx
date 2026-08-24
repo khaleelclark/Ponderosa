@@ -3,6 +3,7 @@ import type { WorkspaceConnectionState } from "../hooks/useWorkspaceStream";
 
 const WorkspaceConnectionContext = createContext<WorkspaceConnectionState>({
   status: "connecting",
+  phaseEvidenceFresh: false,
   prolongedDisconnect: false,
 });
 

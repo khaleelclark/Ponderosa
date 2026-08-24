@@ -904,6 +904,7 @@ export function AgentsTab({
               const statusPresentation = agentStatusPresentation(health, {
                 status,
                 connectionStatus: workspaceConnection.status,
+                phaseEvidenceFresh: workspaceConnection.phaseEvidenceFresh,
                 agentNameForId: agentId => agentNamesById.get(agentId),
               });
               const profile = agentRoleProfile(agent);

@@ -301,6 +301,7 @@ export function HomeView({
                 {working.slice(0, 8).map(item => {
                   const presentation = agentStatusPresentation(item.health, {
                     connectionStatus: workspaceConnection.status,
+                    phaseEvidenceFresh: workspaceConnection.phaseEvidenceFresh,
                     agentNameForId: agentId => agentNamesById.get(agentId),
                   });
                   return (
