@@ -198,7 +198,7 @@ export function registerAgentCoordinationRoutes(
       awaitResult?: boolean;
       lifetime?: RequestLifetime;
       deadlineAt?: string;
-      requests?: Array<{ requestId?: string; recipientAgentId?: string; text?: string; lifetime?: RequestLifetime }>;
+      requests?: Array<{ requestId?: string; recoveryOfRequestId?: string; recipientAgentId?: string; text?: string; lifetime?: RequestLifetime }>;
       join?: { id?: string; mode?: "all" | "any" | "quorum"; quorum?: number; deadlineAt?: string; satisfyingOutcomes?: CoordinationRequestState[]; requestIds?: string[]; wakePolicy?: "each_result" | "final_only" };
     };
   }>("/api/agent-coordinate", async (request, reply) => {
@@ -282,13 +282,20 @@ export function registerAgentCoordinationRoutes(
         return reply.code(400).send({ error: "each request must be an object" });
       }
       const unknownRequest = Object.keys(candidate).filter((key) =>
-        !["requestId", "recipientAgentId", "text", "lifetime"].includes(key));
+        !["requestId", "recoveryOfRequestId", "recipientAgentId", "text", "lifetime"].includes(key));
       if (unknownRequest.length) {
         return reply.code(400).send({ error: `unknown request field(s): ${unknownRequest.join(", ")}` });
       }
       if ((candidate.requestId !== undefined && typeof candidate.requestId !== "string") ||
+          (candidate.recoveryOfRequestId !== undefined && typeof candidate.recoveryOfRequestId !== "string") ||
           typeof candidate.recipientAgentId !== "string" || typeof candidate.text !== "string") {
         return reply.code(400).send({ error: "request identifiers and text must be strings" });
+      }
+      if (candidate.recoveryOfRequestId !== undefined && (
+        !candidate.recoveryOfRequestId.trim() ||
+        candidate.recoveryOfRequestId.length > 200
+      )) {
+        return reply.code(400).send({ error: "recoveryOfRequestId must contain 1 to 200 characters" });
       }
       if (!candidate.lifetime || typeof candidate.lifetime !== "object" || Array.isArray(candidate.lifetime)) continue;
       const lifetime = candidate.lifetime as RequestLifetime & Record<string, unknown>;
@@ -343,7 +350,7 @@ export function registerAgentCoordinationRoutes(
       : body.lifetime ?? (body.deadlineAt?.trim()
         ? { kind: "deadline" as const, at: body.deadlineAt.trim() }
         : { kind: "indefinite" as const });
-    const requests: Array<{ requestId?: string; recipientAgentId?: string; text?: string; lifetime?: RequestLifetime }> = shorthand ? commonDelegations.map((delegation) => ({
+    const requests: Array<{ requestId?: string; recoveryOfRequestId?: string; recipientAgentId?: string; text?: string; lifetime?: RequestLifetime }> = shorthand ? commonDelegations.map((delegation) => ({
       recipientAgentId: delegation.recipientAgentId,
       text: delegation.text,
       lifetime: commonLifetime,
@@ -370,7 +377,7 @@ export function registerAgentCoordinationRoutes(
     if (!capability.conversationId || !author.conversationIds.includes(capability.conversationId)) {
       return reply.code(409).send({ error: "coordination requires an active Team Chat scope" });
     }
-    const normalized: Array<{ requestId: string; recipientAgentId: string; text: string; lifetime: RequestLifetime }> = [];
+    const normalized: Array<{ requestId: string; recoveryOfRequestId?: string; recipientAgentId: string; text: string; lifetime: RequestLifetime }> = [];
     for (let requestIndex = 0; requestIndex < requests.length; requestIndex += 1) {
       const candidate = requests[requestIndex]!;
       const recipientAgentId = candidate.recipientAgentId?.trim();
@@ -392,6 +399,9 @@ export function registerAgentCoordinationRoutes(
         recipientAgentId,
         text,
         lifetime: candidate.lifetime,
+        ...(candidate.recoveryOfRequestId?.trim()
+          ? { recoveryOfRequestId: candidate.recoveryOfRequestId.trim() }
+          : {}),
       });
     }
     if (join && !(join.mode === "all" || join.mode === "any" || join.mode === "quorum")) {
@@ -430,6 +440,9 @@ export function registerAgentCoordinationRoutes(
             .update(`${author.projectId}\0${candidate.requestId}`)
             .digest("hex")}`,
           payload: { text: candidate.text, requesterRunId: capability.runId, ...(completionMode ? { completionMode } : {}) },
+          ...(candidate.recoveryOfRequestId
+            ? { recoveryOfRequestId: candidate.recoveryOfRequestId }
+            : {}),
           ...(capability.defaultReply ? { replyAuthority: capability.defaultReply } : {}),
         })),
         ...(join ? { join: {

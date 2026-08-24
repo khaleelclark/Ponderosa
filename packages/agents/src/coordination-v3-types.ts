@@ -44,6 +44,8 @@ export interface CoordinateV3Input {
     lifetime: RequestLifetime;
     communicationEventId?: string;
     payload?: unknown;
+    /** Exact terminal predecessor this server-authorized Request recovers. */
+    recoveryOfRequestId?: string;
     /** Server-derived canonical reply route inherited by requester continuations. */
     replyAuthority?: CoordinationReplyAuthority;
   }>;
@@ -97,6 +99,7 @@ export interface CoordinationRequestV3View {
   state: CoordinationRequestState;
   version: number;
   payload: unknown;
+  recoverySuccessorRequestId?: string;
 }
 
 export interface CoordinationRequestDeliveryView {

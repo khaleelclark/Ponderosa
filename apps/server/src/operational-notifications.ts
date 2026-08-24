@@ -169,13 +169,40 @@ export function createOperationalNotifications(context: OperationalNotifications
           limit: 200,
         });
         const items = new Map(inspector.items.map((item) => [item.id, item]));
+        const candidateRequest = candidate.kind === "request"
+          ? coordinationV3.getRequest(candidate.recordId)
+          : undefined;
+        const pendingDirectRecovery = Boolean(
+          candidateRequest?.recoverySuccessorRequestId &&
+          ["failed", "outcome_unknown"].includes(candidateRequest.state) &&
+          !coordinationV3.requestRetryStatus(candidateRequest.id).completedRequestId,
+        );
         const trace = inspector.traces.find((entry) =>
-          entry.state === "attention" && entry.itemIds.includes(focusId));
+          entry.state === "attention" && entry.itemIds.includes(focusId))
+          ?? (pendingDirectRecovery
+            ? inspector.traces.find((entry) => entry.itemIds.includes(focusId))
+            : undefined);
         if (!trace) continue;
         const related = trace.itemIds.flatMap((id) => items.get(id) ? [items.get(id)!] : []);
         if (related.some((item) => item.kind === "decision" && item.state === "pending")) continue;
-        const failedRequest = [...related].reverse().find((item) => item.kind === "request"
-          && ["blocked", "failed", "outcome_unknown", "expired", "recipient_unavailable"].includes(item.state));
+        const focusedRecoveryRequest = pendingDirectRecovery
+          ? items.get(focusId)
+          : undefined;
+        const failedRequest = focusedRecoveryRequest?.kind === "request"
+          ? focusedRecoveryRequest
+          : [...related].reverse().find((item) => {
+          if (item.kind !== "request" || ![
+            "blocked",
+            "failed",
+            "outcome_unknown",
+            "expired",
+            "recipient_unavailable",
+          ].includes(item.state)) return false;
+          return !(
+            ["failed", "outcome_unknown"].includes(item.state) &&
+            coordinationV3.requestRetryStatus(item.recordId).completedRequestId
+          );
+        });
         const failedJoin = [...related].reverse().find((item) => item.kind === "join"
           && ["impossible", "expired"].includes(item.state));
         const failedTrigger = [...related].reverse().find((item) => item.kind === "trigger"

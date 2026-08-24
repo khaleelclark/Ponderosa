@@ -762,9 +762,13 @@ export function registerAgentCommunicationRoutes(
       if (idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
       try {
         const requestId = `${original.id}:retry:${createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 16)}`;
-        const payload = original.payload && typeof original.payload === "object"
-          ? { ...original.payload as Record<string, unknown>, retryOfRequestId: original.id, recoveryInstruction: "Audit current state before executing; do not blindly replay prior side effects." }
-          : { text: String(original.payload ?? ""), retryOfRequestId: original.id, recoveryInstruction: "Audit current state before executing; do not blindly replay prior side effects." };
+        const originalPayload = original.payload && typeof original.payload === "object"
+          ? original.payload as Record<string, unknown>
+          : undefined;
+        const { retryOfRequestId: _legacyRetryMarker, ...canonicalPayload } = originalPayload ?? {};
+        const payload = originalPayload
+          ? { ...canonicalPayload, recoveryInstruction: "Audit current state before executing; do not blindly replay prior side effects." }
+          : { text: String(original.payload ?? ""), recoveryInstruction: "Audit current state before executing; do not blindly replay prior side effects." };
         const result = coordinationV3.coordinate({
           projectId: original.projectId,
           ...(original.conversationId ? { conversationId: original.conversationId } : {}),
@@ -772,7 +776,13 @@ export function registerAgentCommunicationRoutes(
           actorScope: "user:local-operator",
           idempotencyKey,
           rolloverRecoveryForRequestId: original.id,
-          requests: [{ requestId, recipientAgentId: recipient.id, lifetime: { kind: "indefinite" }, payload }],
+          requests: [{
+            requestId,
+            recoveryOfRequestId: original.id,
+            recipientAgentId: recipient.id,
+            lifetime: { kind: "indefinite" },
+            payload,
+          }],
           ...(request.body?.createJoin === false ? {} : { join: { id: `${requestId}:join`, mode: "all" as const } }),
         });
         const recoveredRollover = coordinationV3.contextRolloverRecoveryForRequest(

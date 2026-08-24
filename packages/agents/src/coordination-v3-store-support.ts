@@ -27,6 +27,7 @@ export interface RequestRow {
   open_question_update_id: string | null;
   payload_json: string;
   reply_authority_json: string | null;
+  superseded_by_request_id: string | null;
   created_at: string;
   updated_at: string;
 }

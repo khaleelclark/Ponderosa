@@ -64,6 +64,7 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
           required: ["recipientAgentId", "text", "lifetime"],
           properties: {
             requestId: { type: "string", minLength: 1, maxLength: 200 },
+            recoveryOfRequestId: { type: "string", minLength: 1, maxLength: 200, description: "Exact recoverable terminal Request this successor replaces. The server validates requester, recipient, Project, Team Chat, actor, state, and lineage." },
             recipientAgentId: { type: "string", minLength: 1, maxLength: 200, description: "Stable recipient agent ID." },
             text: { type: "string", minLength: 1, description: "Complete bounded, self-contained request. Include exact constraints, values, artifact paths, and requested output; the recipient cannot see your hidden prompt. Do not split it into objective/context fields." },
             lifetime: REQUEST_LIFETIME_SCHEMA,
