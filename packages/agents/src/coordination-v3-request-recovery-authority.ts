@@ -9,6 +9,21 @@ const RECOVERABLE_REQUEST_STATES = new Set<CoordinationRequestState>([
   "recipient_unavailable",
 ]);
 const LEGACY_RECOVERY_LIMIT = 10_000;
+const LEGACY_RECOVERY_LIMIT_ERROR_CODE =
+  "coordination_legacy_recovery_candidate_limit_exceeded";
+
+class RecoveryBindingValidationError extends Error {}
+
+export class CoordinationLegacyRecoveryLimitError extends Error {
+  readonly code = LEGACY_RECOVERY_LIMIT_ERROR_CODE;
+
+  constructor() {
+    super(
+      `${LEGACY_RECOVERY_LIMIT_ERROR_CODE}: Ponderosa cannot start because more than ${LEGACY_RECOVERY_LIMIT} legacy Request recovery candidates require reconciliation. Remove or migrate the legacy retry markers, then restart Ponderosa.`,
+    );
+    this.name = "CoordinationLegacyRecoveryLimitError";
+  }
+}
 
 interface RecoveryRequestRow {
   id: string;
@@ -34,24 +49,30 @@ export class CoordinationV3RequestRecoveryAuthority {
   }): void {
     const { predecessorRequestId, successorRequestId } = input;
     if (predecessorRequestId === successorRequestId) {
-      throw new Error("a recovery Request cannot recover itself");
+      throw new RecoveryBindingValidationError("a recovery Request cannot recover itself");
     }
     const predecessor = this.request(predecessorRequestId);
     const successor = this.request(successorRequestId);
     if (!RECOVERABLE_REQUEST_STATES.has(predecessor.state)) {
-      throw new Error("the predecessor Request is not in a recoverable terminal state");
+      throw new RecoveryBindingValidationError(
+        "the predecessor Request is not in a recoverable terminal state",
+      );
     }
     if (
       predecessor.project_id !== successor.project_id ||
       predecessor.conversation_id !== successor.conversation_id
     ) {
-      throw new Error("recovery Requests must remain in the exact Project and Team Chat");
+      throw new RecoveryBindingValidationError(
+        "recovery Requests must remain in the exact Project and Team Chat",
+      );
     }
     if (
       predecessor.requester_agent_id !== successor.requester_agent_id ||
       predecessor.recipient_agent_id !== successor.recipient_agent_id
     ) {
-      throw new Error("recovery Requests must preserve the exact requester and recipient");
+      throw new RecoveryBindingValidationError(
+        "recovery Requests must preserve the exact requester and recipient",
+      );
     }
     const operator = input.actorScope === "user:local-operator";
     const requester = Boolean(
@@ -60,13 +81,17 @@ export class CoordinationV3RequestRecoveryAuthority {
       input.actorAgentId === successor.requester_agent_id,
     );
     if (!operator && !requester) {
-      throw new Error("the actor is not authorized to recover this Request");
+      throw new RecoveryBindingValidationError(
+        "the actor is not authorized to recover this Request",
+      );
     }
     if (
       predecessor.superseded_by_request_id &&
       predecessor.superseded_by_request_id !== successor.id
     ) {
-      throw new Error("the predecessor Request already has an exact successor");
+      throw new RecoveryBindingValidationError(
+        "the predecessor Request already has an exact successor",
+      );
     }
     const ownedPredecessor = this.sqlite.prepare(`
       SELECT id FROM coordination_requests
@@ -74,7 +99,9 @@ export class CoordinationV3RequestRecoveryAuthority {
       LIMIT 1
     `).get(successor.id, predecessor.id);
     if (ownedPredecessor) {
-      throw new Error("the successor Request is already bound to another predecessor");
+      throw new RecoveryBindingValidationError(
+        "the successor Request is already bound to another predecessor",
+      );
     }
     const createsCycle = Boolean(this.sqlite.prepare(`
       WITH RECURSIVE successors(id) AS (
@@ -87,52 +114,64 @@ export class CoordinationV3RequestRecoveryAuthority {
       )
       SELECT 1 FROM successors WHERE id = ? LIMIT 1
     `).get(successor.id, predecessor.id));
-    if (createsCycle) throw new Error("Request recovery lineage cannot contain a cycle");
+    if (createsCycle) {
+      throw new RecoveryBindingValidationError(
+        "Request recovery lineage cannot contain a cycle",
+      );
+    }
     if (predecessor.superseded_by_request_id === successor.id) return;
     const changed = this.sqlite.prepare(`
       UPDATE coordination_requests SET superseded_by_request_id = ?
       WHERE id = ? AND superseded_by_request_id IS NULL
     `).run(successor.id, predecessor.id).changes;
-    if (changed !== 1) throw new Error("Request recovery lineage changed concurrently");
+    if (changed !== 1) {
+      throw new RecoveryBindingValidationError(
+        "Request recovery lineage changed concurrently",
+      );
+    }
   }
 
   /** Bounded compatibility import for historical rows written before the
    * structured edge became authoritative. Invalid, ambiguous, or cyclic
    * payload claims are ignored and can never overwrite a canonical edge. */
-  reconcileLegacyPayloadRelations(): { linked: number; truncated: boolean } {
-    const rows = this.sqlite.prepare(`
-      SELECT id,
-        json_extract(payload_json, '$.retryOfRequestId') AS predecessor_id
-      FROM coordination_requests
-      WHERE json_valid(payload_json)
-        AND json_type(payload_json, '$.retryOfRequestId') = 'text'
-        AND length(json_extract(payload_json, '$.retryOfRequestId')) BETWEEN 1 AND 200
-      ORDER BY created_at, id
-      LIMIT ?
-    `).all(LEGACY_RECOVERY_LIMIT + 1) as Array<{
-      id: string;
-      predecessor_id: string;
-    }>;
-    let linked = 0;
-    for (const row of rows.slice(0, LEGACY_RECOVERY_LIMIT)) {
-      try {
-        const successor = this.request(row.id);
-        this.bind({
-          predecessorRequestId: row.predecessor_id,
-          successorRequestId: row.id,
-          actorScope: successor.requester_agent_id
-            ? `legacy-agent:${successor.requester_agent_id}`
-            : "legacy-unowned",
-          ...(successor.requester_agent_id
-            ? { actorAgentId: successor.requester_agent_id }
-            : {}),
-        });
-        linked += 1;
-      } catch {
-        // Legacy payload is compatibility evidence, never mutation authority.
+  reconcileLegacyPayloadRelations(): void {
+    const reconcile = this.sqlite.transaction(() => {
+      const rows = this.sqlite.prepare(`
+        SELECT id,
+          json_extract(payload_json, '$.retryOfRequestId') AS predecessor_id
+        FROM coordination_requests
+        WHERE json_valid(payload_json)
+          AND json_type(payload_json, '$.retryOfRequestId') = 'text'
+          AND length(json_extract(payload_json, '$.retryOfRequestId')) BETWEEN 1 AND 200
+        ORDER BY created_at, id
+        LIMIT ?
+      `).all(LEGACY_RECOVERY_LIMIT + 1) as Array<{
+        id: string;
+        predecessor_id: string;
+      }>;
+      if (rows.length > LEGACY_RECOVERY_LIMIT) {
+        throw new CoordinationLegacyRecoveryLimitError();
       }
-    }
-    return { linked, truncated: rows.length > LEGACY_RECOVERY_LIMIT };
+      for (const row of rows) {
+        try {
+          const successor = this.request(row.id);
+          this.bind({
+            predecessorRequestId: row.predecessor_id,
+            successorRequestId: row.id,
+            actorScope: successor.requester_agent_id
+              ? `legacy-agent:${successor.requester_agent_id}`
+              : "legacy-unowned",
+            ...(successor.requester_agent_id
+              ? { actorAgentId: successor.requester_agent_id }
+              : {}),
+          });
+        } catch (error) {
+          if (!(error instanceof RecoveryBindingValidationError)) throw error;
+          // Legacy payload is compatibility evidence, never mutation authority.
+        }
+      }
+    });
+    reconcile.immediate();
   }
 
   private request(requestId: string): RecoveryRequestRow {
@@ -141,7 +180,11 @@ export class CoordinationV3RequestRecoveryAuthority {
         recipient_agent_id, state, superseded_by_request_id
       FROM coordination_requests WHERE id = ?
     `).get(requestId) as RecoveryRequestRow | undefined;
-    if (!row) throw new Error("recovery predecessor Request was not found");
+    if (!row) {
+      throw new RecoveryBindingValidationError(
+        "recovery predecessor Request was not found",
+      );
+    }
     return row;
   }
 }
