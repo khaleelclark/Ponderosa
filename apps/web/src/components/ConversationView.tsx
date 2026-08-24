@@ -88,6 +88,13 @@ import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { notificationTechnicalFocusId } from "../technicalFocus";
 import { useRuntimeControls } from "../hooks/useRuntimeControls";
 
+interface AgentCreationSession {
+  id: number;
+  projectId: string;
+  conversationId: string;
+  project: ProjectDto;
+}
+
 export function ConversationView({
   conversationId,
   focusMessageId,
@@ -180,7 +187,20 @@ export function ConversationView({
   const [renameValue, setRenameValue] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
-  const [createAgentOpen, setCreateAgentOpen] = useState(false);
+  const [createAgentSession, setCreateAgentSession] =
+    useState<AgentCreationSession>();
+  const [createAgentPending, setCreateAgentPending] = useState(false);
+  const createAgentPendingRef = useRef(false);
+  const createAgentSessionRef = useRef<AgentCreationSession>();
+  const createAgentSessionId = useRef(0);
+  const currentConversationRef = useRef<{
+    conversationId: string;
+    projectId?: string;
+  }>({ conversationId });
+  useEffect(() => () => {
+    createAgentSessionRef.current = undefined;
+    createAgentPendingRef.current = false;
+  }, []);
   const [agentWorkOpen, setAgentWorkOpen] = useState(false);
   const collaborationVisited = useRef(activeView === "collaboration");
   const [agentWorkFocus, setAgentWorkFocus] = useState<string>();
@@ -217,6 +237,23 @@ export function ConversationView({
   useConversationActiveViewPersistence(activeView, conversationId);
 
   const conversation = detailQuery.data?.conversation;
+  currentConversationRef.current = {
+    conversationId,
+    projectId: conversation?.projectId,
+  };
+  useEffect(() => {
+    const session = createAgentSessionRef.current;
+    if (
+      session &&
+      (session.conversationId !== conversationId ||
+        (conversation && session.projectId !== conversation.projectId))
+    ) {
+      createAgentSessionRef.current = undefined;
+      createAgentPendingRef.current = false;
+      setCreateAgentSession(undefined);
+      setCreateAgentPending(false);
+    }
+  }, [conversation, conversationId]);
   const activeBrowsers = useQuery({
     queryKey: queryKeys.agentBrowsers.conversation(conversation?.projectId, conversationId),
     queryFn: () => api.listActiveBrowserSessions(conversation!.projectId, conversationId),
@@ -560,6 +597,47 @@ export function ConversationView({
         (candidate: ProjectDto) => candidate.id === conversation.projectId,
       )
     : undefined;
+  const openAgentCreation = () => {
+    if (!conversation || !project || createAgentSessionRef.current) return;
+    const session = {
+      id: ++createAgentSessionId.current,
+      projectId: conversation.projectId,
+      conversationId: conversation.id,
+      project,
+    };
+    createAgentSessionRef.current = session;
+    createAgentPendingRef.current = false;
+    setCreateAgentPending(false);
+    setCreateAgentSession(session);
+  };
+  const dismissAgentCreation = (sessionId: number) => {
+    if (
+      createAgentPendingRef.current ||
+      createAgentSessionRef.current?.id !== sessionId
+    ) return;
+    createAgentSessionRef.current = undefined;
+    setCreateAgentSession(undefined);
+  };
+  const updateAgentCreationPending = (sessionId: number, pending: boolean) => {
+    if (createAgentSessionRef.current?.id !== sessionId) return;
+    createAgentPendingRef.current = pending;
+    setCreateAgentPending(pending);
+  };
+  const completeAgentCreation = (sessionId: number, agentId: string) => {
+    const session = createAgentSessionRef.current;
+    const current = currentConversationRef.current;
+    if (
+      !session ||
+      session.id !== sessionId ||
+      current.projectId !== session.projectId ||
+      current.conversationId !== session.conversationId
+    ) return;
+    createAgentSessionRef.current = undefined;
+    createAgentPendingRef.current = false;
+    setCreateAgentSession(undefined);
+    setCreateAgentPending(false);
+    onOpenAgent(agentId);
+  };
   const selectedRuntime = useRuntimeControls({
     engine: activeEngine,
     preferences: preferencesQuery.data,
@@ -1270,8 +1348,8 @@ export function ConversationView({
         ) : null}
         {activeView === "main" ? (
           <ComposerProjectCreationProvider
-            disabled={busy}
-            onCreateAgent={() => setCreateAgentOpen(true)}
+            disabled={busy || Boolean(createAgentSession)}
+            onCreateAgent={openAgentCreation}
           >
             <Composer
               draftStorageKey={chatStateKey(
@@ -1395,29 +1473,36 @@ export function ConversationView({
       />
 
       <Dialog
-        open={createAgentOpen}
-        onClose={() => setCreateAgentOpen(false)}
-        slotProps={{ paper: { "aria-label": "Create Agent" } }}
+        open={Boolean(createAgentSession)}
+        onClose={() => {
+          if (createAgentSession) dismissAgentCreation(createAgentSession.id);
+        }}
+        disableEscapeKeyDown={createAgentPending}
+        slotProps={{
+          paper: {
+            "aria-label": "Create Agent",
+            "aria-busy": createAgentPending || undefined,
+          },
+        }}
         fullWidth
         maxWidth="md"
       >
         <DialogContent>
-          {createAgentOpen ? (
+          {createAgentSession ? (
             <AgentCreateSurface
-              projects={project ? [project] : []}
+              key={createAgentSession.id}
+              projects={[createAgentSession.project]}
               engines={engines}
-              initialProjectId={conversation.projectId}
-              fixedProjectId={conversation.projectId}
-              fixedConversationId={conversation.id}
-              onCancel={() => setCreateAgentOpen(false)}
-              onCreated={(_projectId, agent) => {
-                setCreateAgentOpen(false);
-                onOpenAgent(agent.id);
-              }}
-              onImported={(_projectId, agentId) => {
-                setCreateAgentOpen(false);
-                onOpenAgent(agentId);
-              }}
+              initialProjectId={createAgentSession.projectId}
+              fixedProjectId={createAgentSession.projectId}
+              fixedConversationId={createAgentSession.conversationId}
+              onPendingChange={pending =>
+                updateAgentCreationPending(createAgentSession.id, pending)}
+              onCancel={() => dismissAgentCreation(createAgentSession.id)}
+              onCreated={(_projectId, agent) =>
+                completeAgentCreation(createAgentSession.id, agent.id)}
+              onImported={(_projectId, agentId) =>
+                completeAgentCreation(createAgentSession.id, agentId)}
             />
           ) : null}
         </DialogContent>

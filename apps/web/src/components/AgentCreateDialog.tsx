@@ -44,6 +44,7 @@ export interface AgentCreateFormProps {
   initialName?: string;
   onCancel(): void;
   onCreated(projectId: string, agent: AgentDto): void;
+  onPendingChange?(pending: boolean): void;
 }
 
 export interface AgentCreateSurfaceProps extends AgentCreateFormProps {
@@ -63,6 +64,7 @@ export function AgentCreateForm({
   initialName,
   onCancel,
   onCreated,
+  onPendingChange,
 }: AgentCreateFormProps): JSX.Element {
   const queryClient = useQueryClient();
   const [projectId, setProjectId] = useState(
@@ -101,6 +103,7 @@ export function AgentCreateForm({
   const [initialMessage, setInitialMessage] = useState("");
   const titleEditedRef = useRef(Boolean(initialName));
   const managerEditedRef = useRef(false);
+  const pendingRef = useRef(false);
 
   useEffect(() => {
     titleEditedRef.current = Boolean(initialName);
@@ -180,6 +183,10 @@ export function AgentCreateForm({
         });
       }
       onCreated(projectId, agent);
+    },
+    onSettled: () => {
+      pendingRef.current = false;
+      onPendingChange?.(false);
     },
   });
 
@@ -356,7 +363,12 @@ export function AgentCreateForm({
         <Alert severity="error">{String(create.error)}</Alert>
       ) : null}
       <Stack direction="row" spacing={1} sx={{ justifyContent: "flex-end" }}>
-        <Button disabled={create.isPending} onClick={onCancel}>
+        <Button
+          disabled={create.isPending}
+          onClick={() => {
+            if (!pendingRef.current) onCancel();
+          }}
+        >
           Cancel
         </Button>
         <Button
@@ -364,7 +376,11 @@ export function AgentCreateForm({
           disabled={
             !projectId || !title.trim() || !engine || create.isPending
           }
-          onClick={() => create.mutate()}
+          onClick={() => {
+            pendingRef.current = true;
+            onPendingChange?.(true);
+            create.mutate();
+          }}
         >
           {create.isPending ? "Creating…" : "Create Agent"}
         </Button>
@@ -400,9 +416,15 @@ export function AgentCreateSurface({
   fixedConversationId,
   onCancel,
   onImported,
+  onPendingChange,
   ...createProps
 }: AgentCreateSurfaceProps): JSX.Element {
   const [mode, setMode] = useState<"create" | "import">("create");
+  const [pending, setPending] = useState(false);
+  const updatePending = (nextPending: boolean) => {
+    setPending(nextPending);
+    onPendingChange?.(nextPending);
+  };
   const [importProjectId, setImportProjectId] = useState(
     fixedProjectId ??
       (projects.some(project => project.id === initialProjectId)
@@ -415,12 +437,21 @@ export function AgentCreateSurface({
     enabled: mode === "import" && Boolean(importProjectId),
   });
 
+  const busyStatus = pending ? (
+    <Alert severity="info" role="status" aria-live="polite">
+      {mode === "import"
+        ? "Importing Agent… Keep this window open."
+        : "Creating Agent… Keep this window open."}
+    </Alert>
+  ) : null;
+
   if (mode === "import") {
     const conversations =
       importConversations.data?.filter(conversation => !conversation.archived) ??
       [];
     return (
       <Stack spacing={2}>
+        {busyStatus}
         <Stack
           direction="row"
           spacing={1}
@@ -435,6 +466,7 @@ export function AgentCreateSurface({
           <Button
             color="inherit"
             startIcon={<ArrowBackIcon />}
+            disabled={pending}
             onClick={() => setMode("create")}
           >
             Create New
@@ -473,6 +505,7 @@ export function AgentCreateSurface({
             }
             onCancel={onCancel}
             onImported={agentId => onImported(importProjectId, agentId)}
+            onPendingChange={updatePending}
           />
         ) : (
           <Alert severity="info">
@@ -485,6 +518,7 @@ export function AgentCreateSurface({
 
   return (
     <Stack spacing={1.5}>
+      {busyStatus}
       <Stack
         direction="row"
         spacing={1}
@@ -499,6 +533,7 @@ export function AgentCreateSurface({
         <Button
           variant="outlined"
           startIcon={<UploadFileOutlinedIcon />}
+          disabled={pending}
           onClick={() => setMode("import")}
         >
           Import Agent
@@ -511,6 +546,7 @@ export function AgentCreateSurface({
         fixedProjectId={fixedProjectId}
         fixedConversationId={fixedConversationId}
         onCancel={onCancel}
+        onPendingChange={updatePending}
         {...createProps}
       />
     </Stack>
