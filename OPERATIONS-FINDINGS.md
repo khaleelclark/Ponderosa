@@ -66,3 +66,18 @@ This append-only experiment ledger records product and operating friction observ
 - Recommended fix: Persist and surface a redacted provider exit/failure summary with execution phase, whether a provider session was established, last durable side-effect boundary, and an explicit safe-to-retry assessment. Preserve the exact Request lineage while preventing unbounded automatic retries.
 - Owner: Ponderosa scheduler/provider-session runtime.
 - Follow-up, 2026-08-24T05:03:11Z: only after the third `outcome_unknown` result and writer revocation did a separate managed-child failure surface the actionable cause “Provider rejected the request.” The delayed, disconnected diagnostic confirms that the canonical Join outcome omitted information already available elsewhere in the runtime. The original worktree was re-audited clean and ownership was transferred to a Codex-backed replacement Agent.
+
+## 2026-08-24T05:04:22Z — OPS-004 — Completed managed work became an impossible Join without a terminal handoff
+
+- Severity: Medium
+- Classification: Operational defect
+- Confirmed: Yes — Product Lead audited the Reliability/Mobile worktree after its opening Join reported `run_completed_without_request_update`.
+- Reproduction:
+  1. Assign a managed Agent a staged implementation Request with a required exact-commit handoff.
+  2. The Agent creates clean commit `3d06908233b1b44615ef0f3f4373166d11099f0c` implementing the requested Phase A safety change and ends its Run.
+  3. The Agent does not call the canonical Request-update capability before ending.
+  4. The manager receives an impossible Join with `outcome_unknown` rather than the commit, verification, or a recoverable incomplete-handoff state.
+  5. The manager must inspect Git manually, freeze the discovered commit, notify the Agent to stop Phase B, and create a second Request solely to recover evidence.
+- Impact: Correct completed work is indistinguishable from lost or partial work at the coordination layer; sequencing gates can be missed and duplicate execution becomes likely.
+- Recommended fix: Before closing a managed Run with an attached nonterminal Request, require a terminal update or synthesize a durable `handoff_missing` state containing the observed side-effect manifest (branch, head, dirty state, artifacts) and a one-action recovery path. Do not classify it as an impossible Join when the Request can still be resumed.
+- Owner: Ponderosa managed-Agent execution and coordination runtime.
