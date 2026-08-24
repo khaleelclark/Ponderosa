@@ -179,10 +179,12 @@ export function registerArtifactRoutes(
     const generatedPdfSource = async (): Promise<GeneratedFile | undefined> => {
       const agent = store.getAgentDetail(agentId, 1, false)?.agent;
       if (!project || !agent || agent.projectId !== project.id) return undefined;
+      const workingRoot = await projectFileAuthority.rootPath(projectId, agentId);
+      if (!workingRoot) return undefined;
       const generatedPath = store.getGeneratedPdfPath(agent.id, artifactId);
       if (!generatedPath) return undefined;
       const source = await readWorkspaceArtifactFileAsync({
-        rootPath: project.hostPath,
+        rootPath: workingRoot,
         requestedPath: generatedPath,
         purpose: "legacy_pdf",
         maxBytes: 32 * 1024 * 1024,

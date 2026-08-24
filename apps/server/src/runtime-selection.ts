@@ -61,6 +61,7 @@ export const PROVIDER_TOOL_CONTRACT_HASH = providerToolContractHash(
 
 export function providerSessionContractHash(
   engine: string,
+  workingCopyId: string,
   model?: string,
   effort?: string,
   toolContractHash = PROVIDER_TOOL_CONTRACT_HASH,
@@ -70,6 +71,7 @@ export function providerSessionContractHash(
     engine,
     model: model?.trim() || null,
     effort: effort?.trim() || null,
+    workingCopyId: workingCopyId.trim(),
   })).digest("hex");
 }
 

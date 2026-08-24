@@ -196,6 +196,7 @@ export async function prepareAgentRun(
     teamDirectory,
     canonicalConversationContext,
     agentCanReadRuntimeArtifact,
+    workingCopies,
   } = runContext;
   const {
     agent,
@@ -225,6 +226,7 @@ export async function prepareAgentRun(
   if (!engine.adapter.trustedSystemPromptChannel) {
     throw new Error(`${engine.adapter.displayName} cannot receive trusted runtime instructions`);
   }
+  const workingCopy = await workingCopies.resolve(agent, project);
 
   const routingConversationId = sourceConversationId ?? agent.conversationId;
   const sourceChannel: AgentMessageChannel = requestedSourceChannel === "main"
@@ -362,6 +364,7 @@ export async function prepareAgentRun(
   const providerToolHash = providerToolContractHash(availableRuntimeTools, communicationPrompt);
   const runtimeSessionContractHash = providerSessionContractHash(
     runtimeEngineId,
+    workingCopy.id,
     effectiveModel,
     effectiveEffort,
     providerToolHash,
@@ -1107,6 +1110,7 @@ ${freshGuidedPrompt}${attachmentContext}${coalescedActivationContext}`;
     systemPrompt: effectiveSystemPrompt,
     systemPromptHash: createHash("sha256").update(effectiveSystemPrompt).digest("hex"),
     runtimeSessionContractHash: effectiveRuntimeSessionContractHash,
+    workingCopy,
     availableRuntimeTools,
     availableRuntimeToolNames,
     historyRetrievalBoundary,

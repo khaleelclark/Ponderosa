@@ -115,14 +115,13 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
     publish(agentId, stored);
     if (canonicalEvent.type === "file_change" && canonicalEvent.kind !== "delete") {
       const agent = store.getAgent(agentId);
-      const project = agent ? store.getProject(agent.projectId) : undefined;
       const mediaType = generatedArtifactMediaType(canonicalEvent.path, canonicalEvent.kind);
-      if (agent && project && mediaType) {
+      if (agent && mediaType) {
         let legacyDestination: string | undefined;
         let captureCommitted = false;
         try {
           const source = await readWorkspaceArtifactFileAsync({
-            rootPath: project.hostPath,
+            rootPath: run.workingCopy.rootPath,
             requestedPath: canonicalEvent.path,
             purpose: "generated_capture",
             maxBytes: 64 * 1024 * 1024,
@@ -193,17 +192,25 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
     return stored;
   }
 
-  function normalizeRuntimeFileChange(agentId: string, run: ActiveRun, event: LogEvent): LogEvent {
-    if (event.type !== "file_change" || event.kind === "delete") return event;
-    const agent = store.getAgent(agentId);
-    const project = agent ? store.getProject(agent.projectId) : undefined;
-    if (!project) return event;
+  function normalizeRuntimeFileChange(_agentId: string, run: ActiveRun, event: LogEvent): LogEvent {
+    if (event.type !== "file_change") return event;
     let kind = event.kind;
+    let canonicalPath = event.path;
     try {
-      const root = realpathSync(project.hostPath);
-      const candidate = realpathSync(path.isAbsolute(event.path) ? event.path : path.resolve(root, event.path));
-      const inProject = candidate !== root && candidate.startsWith(`${root}${path.sep}`);
-      if (inProject || path.isAbsolute(event.path)) {
+      const root = realpathSync(run.workingCopy.rootPath);
+      const nominalCandidate = path.isAbsolute(event.path)
+        ? path.resolve(event.path)
+        : path.resolve(root, event.path);
+      const nominalRelative = path.relative(root, nominalCandidate);
+      const nominalInWorkingCopy = nominalRelative && !path.isAbsolute(nominalRelative) &&
+        nominalRelative !== ".." && !nominalRelative.startsWith(`..${path.sep}`);
+      if (nominalInWorkingCopy) canonicalPath = nominalRelative.split(path.sep).join("/");
+      if (kind !== "delete") {
+        const candidate = realpathSync(nominalCandidate);
+        const relative = path.relative(root, candidate);
+        const inWorkingCopy = relative && !path.isAbsolute(relative) && relative !== ".." &&
+          !relative.startsWith(`..${path.sep}`);
+        if (inWorkingCopy) canonicalPath = relative.split(path.sep).join("/");
         const info = statSync(candidate);
         const runStartedAt = Date.parse(run.startedAt);
         if (kind === "edit" && info.birthtimeMs > 0 && Number.isFinite(runStartedAt) && info.birthtimeMs >= runStartedAt - 1_000) {
@@ -215,9 +222,10 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
       // cannot be inspected. Workspace confinement is enforced again during
       // managed-artifact capture.
     }
-    const diff = normalizeProviderFileDiff(event.diff, kind, event.path);
+    const diff = normalizeProviderFileDiff(event.diff, kind, canonicalPath);
     return {
       ...event,
+      path: canonicalPath,
       kind,
       ...(diff ? { diff } : {}),
     };

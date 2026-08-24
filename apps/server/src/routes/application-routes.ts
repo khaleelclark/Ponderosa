@@ -27,6 +27,7 @@ import {
 } from "../project-files.js";
 import { runtimeSelectionError } from "../runtime-selection.js";
 import { displayProjectPath } from "../project-path-display.js";
+import { AgentWorkingCopyService } from "../agent-working-copy-service.js";
 import type { ServerContext } from "../server-context.js";
 import type { RuntimeElicitationBroker } from "../runtime-elicitation-broker.js";
 import { registerAgentAuditRoutes } from "./agent-audit.js";
@@ -79,9 +80,9 @@ type ApplicationRoutesContext =
     "projectDeletionInProgress" | "assetMetadata"> &
   Parameters<typeof registerAgentCreationRoutes>[1] &
   Omit<Parameters<typeof registerAgentPackageRoutes>[1], "dataDir" | "coordination"> &
-  Parameters<typeof registerAgentMaintenanceRoutes>[1] &
+  Omit<Parameters<typeof registerAgentMaintenanceRoutes>[1], "workingCopies"> &
   Omit<Parameters<typeof registerAgentMessageRunRoute>[1],
-    "deploymentDraining" | "assetMetadata"> &
+    "deploymentDraining" | "assetMetadata" | "workingCopies"> &
   Parameters<typeof registerWorkspacePreferenceRoutes>[1] &
   Parameters<typeof registerNotificationListRoute>[1] &
   Omit<Parameters<typeof registerPushRoutes>[1], "configuration"> &
@@ -91,7 +92,7 @@ type ApplicationRoutesContext =
     "projectExists" | "agentExists" | "projectDeletionInProgress" | "agentDeletionInProgress" | "operatorBrowserScope" |
     "getProjectBrowserGrant" | "setProjectBrowserGrant" |
     "deleteProjectBrowserGrant" | "activeProjectBrowserController"> &
-  Parameters<typeof registerProviderCommandRoutes>[1] &
+  Omit<Parameters<typeof registerProviderCommandRoutes>[1], "workingCopies"> &
   Omit<Parameters<typeof registerArtifactRoutes>[1],
     "dataDir" | "projectFileAuthority"> &
   Omit<Parameters<typeof registerEngineRoutes>[1],
@@ -282,6 +283,7 @@ export function registerApplicationRoutes(
     setMaxConcurrentRuns,
     drainDeploymentIdleAuthorities,
   } = context;
+  const workingCopies = new AgentWorkingCopyService(opts.dataDir, store);
 
 registerLinkPreviewRoutes(app);
 
@@ -559,6 +561,8 @@ registerAgentUsageRoute(app, serverContext);
 registerAgentMaintenanceRoutes(app, {
   store, coordinationV3, workspace, engines, triggerSources, deletingAgentIds,
   cachedModelOptions, commitAgentDeletion,
+  activeRuns, workingCopies, clearAgentResumeSession,
+  persistentRuntimeForTermination, teardownPersistentRuntime,
   notifyScheduler: notifyScheduler,
   appendWorkspace,
 });
@@ -624,6 +628,7 @@ registerAgentMessageRunRoute(app, {
   retireCompletedContextRolloverSession,
   scheduleRuntimeLivenessHeartbeat,
   providerProcessAuthority,
+  workingCopies,
 });
 
 registerWorkspacePreferenceRoutes(app, {
@@ -833,10 +838,11 @@ registerProviderCommandRoutes(app, {
   providerUsageState,
   reportRuntimeCapabilitiesChanged,
   providerProcessAuthority,
+  workingCopies,
 });
 
 registerCommunicationDocumentRoutes(app, authoritativeCommunicationDocument);
-const projectFileAuthority = new ProjectFileAuthority(store);
+const projectFileAuthority = new ProjectFileAuthority(store, workingCopies);
 registerArtifactRoutes(app, {
   store,
   assets,
@@ -850,7 +856,7 @@ registerLegacyFilesRoute(app, serverContext);
 
 registerProjectFileRoutes(app, projectFileAuthority, store);
 
-registerLegacyWorkspaceRoutes(app, serverContext);
+registerLegacyWorkspaceRoutes(app, serverContext, workingCopies);
 
 registerEngineRoutes(app, {
   engines,

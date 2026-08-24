@@ -11,7 +11,7 @@ import type {
   RuntimeProcessHandle,
   RuntimeSession,
 } from "@ponderosa/core";
-import type { AgentStore, StoredLogEvent } from "@ponderosa/agents";
+import type { AgentStore, ResolvedAgentWorkingCopy, StoredLogEvent } from "@ponderosa/agents";
 import { ASSET_LIMITS } from "./assets.js";
 
 export type RuntimeOwnershipState = "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
@@ -145,6 +145,7 @@ export interface ActiveRun {
   leaseExpiresAt: string;
   controller: AbortController;
   messageCapability: string;
+  workingCopy: ResolvedAgentWorkingCopy;
   leaseTimer?: NodeJS.Timeout;
   livenessTimer?: NodeJS.Timeout;
   generation: number;

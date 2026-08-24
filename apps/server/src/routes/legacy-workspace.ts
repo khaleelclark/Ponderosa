@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { workspaceFile, workspaceStatus } from "../git-status.js";
 import { readScopedPath } from "../project-files.js";
 import type { ServerContext } from "../server-context.js";
+import type { AgentWorkingCopyService } from "../agent-working-copy-service.js";
 
 export function registerLegacyFilesRoute(
   app: FastifyInstance,
@@ -23,18 +24,27 @@ export function registerLegacyFilesRoute(
 export function registerLegacyWorkspaceRoutes(
   app: FastifyInstance,
   { store }: ServerContext,
+  workingCopies: AgentWorkingCopyService,
 ): void {
-  app.get<{ Params: { id: string } }>("/api/projects/:id/workspace", async (request, reply) => {
-    const project = store.getProject(request.params.id);
-    if (!project) return reply.code(404).send({ error: "project not found" });
-    return workspaceStatus(project.id, project.hostPath);
+  app.get<{ Params: { id: string } }>("/api/agents/:id/workspace", async (request, reply) => {
+    const agent = store.getAgent(request.params.id);
+    const project = agent ? store.getProject(agent.projectId) : undefined;
+    if (!agent || !project) return reply.code(404).send({ error: "agent not found" });
+    try {
+      const root = await workingCopies.resolve(agent, project);
+      return workspaceStatus(project.id, agent.id, agent.workingCopy, root.rootPath);
+    } catch (error) {
+      return reply.code(409).send({ error: error instanceof Error ? error.message : "working folder unavailable" });
+    }
   });
 
-  app.get<{ Params: { id: string }; Querystring: { path?: string } }>("/api/projects/:id/workspace/file", async (request, reply) => {
-    const project = store.getProject(request.params.id);
-    if (!project) return reply.code(404).send({ error: "project not found" });
+  app.get<{ Params: { id: string }; Querystring: { path?: string } }>("/api/agents/:id/workspace/file", async (request, reply) => {
+    const agent = store.getAgent(request.params.id);
+    const project = agent ? store.getProject(agent.projectId) : undefined;
+    if (!agent || !project) return reply.code(404).send({ error: "agent not found" });
     try {
-      return await workspaceFile(project.id, project.hostPath, request.query.path);
+      const root = await workingCopies.resolve(agent, project);
+      return await workspaceFile(project.id, agent.id, root.id, root.rootPath, request.query.path);
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid workspace path" });
     }

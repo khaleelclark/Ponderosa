@@ -54,6 +54,7 @@ import type { createOperationalNotifications } from "../operational-notification
 import type { createCommunicationDocumentAuthority } from "../communication-document-authority.js";
 import type { ContextCursorStore } from "../context-cursors.js";
 import type { RuntimeElicitationBroker } from "../runtime-elicitation-broker.js";
+import type { AgentWorkingCopyService } from "../agent-working-copy-service.js";
 import type { ProviderProcessAuthority } from "../provider-process-authority.js";
 import {
   concreteRuntimeSelection,
@@ -204,6 +205,7 @@ export type AgentMessageRunContext =
     publishWorkspaceSince(cursor: number): void;
     runtimeElicitations: RuntimeElicitationBroker;
     providerProcessAuthority: ProviderProcessAuthority;
+    workingCopies: AgentWorkingCopyService;
   };
 
 export function registerAgentMessageRunRoute(
@@ -733,6 +735,7 @@ export function registerAgentMessageRunRoute(
         policySnapshotHash,
         systemPrompt,
         runtimeSessionContractHash: effectiveRuntimeSessionContractHash,
+        workingCopy,
         availableRuntimeTools,
         availableRuntimeToolNames,
         historyRetrievalBoundary,
@@ -842,6 +845,7 @@ export function registerAgentMessageRunRoute(
       });
       const activeRun: ActiveRun = {
         runId, startedAt, executionId: runId, leaseExpiresAt: leaseExpiry(), controller, messageCapability,
+        workingCopy,
         ...(routingConversationId ? { conversationId: routingConversationId } : {}),
         ...(trackedV3FencingToken !== undefined
           ? { v3SchedulerRunId: runId, v3FencingToken: trackedV3FencingToken }
@@ -950,6 +954,7 @@ export function registerAgentMessageRunRoute(
         runId,
         runtimeEngineId,
         runtimeSessionContractHash: effectiveRuntimeSessionContractHash,
+        workingCopy,
         availableRuntimeTools,
         runtimeAttachmentDirectory,
         runtimeAttachmentCleanupAfterRun,

@@ -17,6 +17,7 @@ import {
   safeRelativePath,
 } from "../project-files.js";
 import { contentTypeForStatic } from "../static-content.js";
+import type { AgentWorkingCopyService } from "../agent-working-copy-service.js";
 
 export const PROJECT_FILE_PREVIEW_WEIGHT = 1;
 export const PROJECT_FILE_DOWNLOAD_WEIGHT = 2;
@@ -59,8 +60,17 @@ export class ProjectFileAuthority {
 
   constructor(private readonly store: Pick<
     AgentStore,
-    "getProject" | "projectHasArtifactSourcePath"
-  >) {}
+    "getProject" | "getAgent" | "projectHasArtifactSourcePath"
+  >, private readonly workingCopies: AgentWorkingCopyService) {}
+
+  async rootPath(projectId: string, agentId?: string): Promise<string | undefined> {
+    const project = this.store.getProject(projectId);
+    if (!project) return undefined;
+    if (!agentId) return project.hostPath;
+    const agent = this.store.getAgent(agentId);
+    if (!agent || agent.projectId !== projectId) return undefined;
+    return (await this.workingCopies.resolve(agent, project)).rootPath;
+  }
 
   acquire(projectId: string, weight: number): (() => void) | undefined {
     const now = Date.now();
@@ -257,15 +267,16 @@ export class ProjectFileAuthority {
     projectId: string,
     input: string | undefined,
     options: { maxBytes: number; previewMediaType?: string },
+    agentId?: string,
   ): Promise<
     { body: Readable; name: string; mediaType: string; size: number } | undefined
   > {
-    const project = this.store.getProject(projectId);
-    if (!project || !input?.trim()) return undefined;
+    const rootPath = await this.rootPath(projectId, agentId);
+    if (!rootPath || !input?.trim()) return undefined;
     try {
       const target = await this.authorizedFileTarget(
         projectId,
-        project.hostPath,
+        rootPath,
         input,
       );
       if (!target) return undefined;
@@ -295,13 +306,14 @@ export class ProjectFileAuthority {
   async view(
     projectId: string,
     input: string | undefined,
+    agentId?: string,
   ): Promise<WorkspaceFileViewDto | undefined> {
-    const project = this.store.getProject(projectId);
-    if (!project || !input?.trim()) return undefined;
+    const rootPath = await this.rootPath(projectId, agentId);
+    if (!rootPath || !input?.trim()) return undefined;
     try {
       const target = await this.authorizedFileTarget(
         projectId,
-        project.hostPath,
+        rootPath,
         input,
       );
       if (!target) return undefined;
@@ -339,6 +351,7 @@ export class ProjectFileAuthority {
       let text: string | undefined;
       if (textMedia && body && isUtf8(body)) text = body.toString("utf8");
       const encodedPath = encodeURIComponent(target.requestPath);
+      const agentQuery = agentId ? `&agentId=${encodeURIComponent(agentId)}` : "";
       return {
         projectId,
         path: target.requestPath,
@@ -351,10 +364,10 @@ export class ProjectFileAuthority {
           (textMedia && text === undefined) ||
           entry.size > PROJECT_DOWNLOAD_MAX_BYTES,
         ...(previewable ? {
-          previewUrl: `/api/projects/${encodeURIComponent(projectId)}/workspace-files/preview?path=${encodedPath}`,
+          previewUrl: `/api/projects/${encodeURIComponent(projectId)}/workspace-files/preview?path=${encodedPath}${agentQuery}`,
         } : {}),
         ...(entry.size <= PROJECT_DOWNLOAD_MAX_BYTES ? {
-          downloadUrl: `/api/projects/${encodeURIComponent(projectId)}/workspace-files/download?path=${encodedPath}`,
+          downloadUrl: `/api/projects/${encodeURIComponent(projectId)}/workspace-files/download?path=${encodedPath}${agentQuery}`,
         } : {}),
       };
     } catch {
@@ -366,11 +379,11 @@ export class ProjectFileAuthority {
 export function registerProjectFileRoutes(
   app: FastifyInstance,
   authority: ProjectFileAuthority,
-  store: Pick<AgentStore, "getProject">,
+  store: Pick<AgentStore, "getProject" | "getAgent">,
 ): void {
   app.get<{
     Params: { projectId: string };
-    Querystring: { path?: string };
+    Querystring: { path?: string; agentId?: string };
   }>(
     "/api/projects/:projectId/workspace-files/view-info",
     async (request, reply) => {
@@ -380,6 +393,7 @@ export function registerProjectFileRoutes(
       const file = await authority.view(
         request.params.projectId,
         request.query.path,
+        request.query.agentId,
       );
       if (!file) {
         return reply
@@ -392,7 +406,7 @@ export function registerProjectFileRoutes(
 
   app.get<{
     Params: { projectId: string };
-    Querystring: { path?: string };
+    Querystring: { path?: string; agentId?: string };
   }>(
     "/api/projects/:projectId/workspace-files/preview",
     async (request, reply) => {
@@ -424,6 +438,7 @@ export function registerProjectFileRoutes(
           maxBytes: PROJECT_PREVIEW_MAX_BYTES,
           previewMediaType: mediaType,
         },
+        request.query.agentId,
       );
       if (!file) {
         release();
@@ -446,7 +461,7 @@ export function registerProjectFileRoutes(
 
   app.get<{
     Params: { projectId: string };
-    Querystring: { path?: string };
+    Querystring: { path?: string; agentId?: string };
   }>(
     "/api/projects/:projectId/workspace-files/download",
     async (request, reply) => {
@@ -467,6 +482,7 @@ export function registerProjectFileRoutes(
         request.params.projectId,
         request.query.path,
         { maxBytes: PROJECT_DOWNLOAD_MAX_BYTES },
+        request.query.agentId,
       );
       if (!file) {
         release();

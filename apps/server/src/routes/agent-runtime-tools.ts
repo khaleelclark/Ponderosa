@@ -359,10 +359,11 @@ export function registerAgentRuntimeToolRoutes(
     if (!project) {
       return reply.code(404).send({ error: "run Project is unavailable" });
     }
+    const workingRoot = active.workingCopy.rootPath;
     const absoluteSourcePath = path.isAbsolute(requestedPath)
       ? path.resolve(requestedPath)
-      : path.resolve(project.hostPath, requestedPath);
-    const importRoot = importRootFor(project.hostPath, allowedImportRoots, absoluteSourcePath);
+      : path.resolve(workingRoot, requestedPath);
+    const importRoot = importRootFor(workingRoot, allowedImportRoots, absoluteSourcePath);
     if (!importRoot) {
       return reply.code(403).send({
         error: "host file is outside the Project workspace and configured import roots",

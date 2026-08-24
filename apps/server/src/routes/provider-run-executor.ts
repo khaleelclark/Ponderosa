@@ -23,7 +23,7 @@ import {
   publicProviderFailureSummary,
 } from "@ponderosa/core";
 import { randomUUID } from "node:crypto";
-import type { LogEvent } from "@ponderosa/agents";
+import type { LogEvent, ResolvedAgentWorkingCopy } from "@ponderosa/agents";
 import {
   classifyProviderFailure,
   shouldRolloverEngineSession,
@@ -117,6 +117,7 @@ export interface ProviderRunExecutionInput {
   runId: string;
   runtimeEngineId: string;
   runtimeSessionContractHash: string;
+  workingCopy: ResolvedAgentWorkingCopy;
   runtimeAttachmentDirectory: string | undefined;
   runtimeAttachmentCleanupAfterRun: boolean;
   seedHistory: ChatMessage[];
@@ -229,6 +230,7 @@ export function startProviderRunExecution(
     runId,
     runtimeEngineId,
     runtimeSessionContractHash,
+    workingCopy,
     runtimeAttachmentDirectory,
     runtimeAttachmentCleanupAfterRun,
     seedHistory,
@@ -296,7 +298,7 @@ export function startProviderRunExecution(
       ): Promise<PersistentRuntime> => {
         const rawSession = await providerRuntimeOperation("open provider session", () => engine.adapter.openSession!({
           agentId: agent.id,
-          cwd: project.hostPath,
+          cwd: workingCopy.rootPath,
           resumeSessionId: sessionResumeId,
           history: sessionResumeId ? [] : seedHistory,
           systemPrompt,
@@ -677,7 +679,7 @@ export function startProviderRunExecution(
               "continue provider session",
               () => engine.adapter.continue({
               agentId: agent.id,
-              cwd: project.hostPath,
+              cwd: workingCopy.rootPath,
               prompt,
               systemPrompt,
               resumeSessionId: sessionId,
@@ -742,7 +744,7 @@ export function startProviderRunExecution(
               "seed provider session",
               () => engine.adapter.seed({
               agentId: agent.id,
-              cwd: project.hostPath,
+              cwd: workingCopy.rootPath,
               prompt: freshPrompt,
               history: seedHistory,
               systemPrompt,

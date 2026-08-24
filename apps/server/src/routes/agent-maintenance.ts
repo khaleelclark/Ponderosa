@@ -15,9 +15,10 @@ import {
   type WorkspaceStore,
 } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
-import type { EngineRegistration } from "../app-contracts.js";
+import type { ActiveRun, EngineRegistration, PersistentRuntime } from "../app-contracts.js";
 import { runtimeSelectionError } from "../runtime-selection.js";
 import type { TriggerSourceService } from "../trigger-service.js";
+import type { AgentWorkingCopyService } from "../agent-working-copy-service.js";
 
 interface AgentMaintenanceRoutesContext {
   store: AgentStore;
@@ -26,6 +27,16 @@ interface AgentMaintenanceRoutesContext {
   engines: ReadonlyMap<string, EngineRegistration>;
   triggerSources: TriggerSourceService;
   deletingAgentIds: Set<string>;
+  activeRuns: ReadonlyMap<string, ActiveRun>;
+  workingCopies: AgentWorkingCopyService;
+  clearAgentResumeSession(agentId: string, reason: string): void;
+  persistentRuntimeForTermination(agentId: string): PersistentRuntime | undefined;
+  teardownPersistentRuntime(
+    agentId: string,
+    runtime: PersistentRuntime,
+    reason: string,
+    projectId?: string,
+  ): Promise<void>;
   cachedModelOptions(adapter: EngineRegistration["adapter"], projectId?: string): ModelOption[];
   commitAgentDeletion(
     rootAgentIds: string[],
@@ -51,6 +62,11 @@ export function registerAgentMaintenanceRoutes(
     engines,
     triggerSources,
     deletingAgentIds,
+    activeRuns,
+    workingCopies,
+    clearAgentResumeSession,
+    persistentRuntimeForTermination,
+    teardownPersistentRuntime,
     cachedModelOptions,
     commitAgentDeletion,
     notifyScheduler,
@@ -66,7 +82,7 @@ export function registerAgentMaintenanceRoutes(
       const current = store.getAgent(request.params.id);
       if (!current) return reply.code(404).send({ error: "agent not found" });
       const body = request.body ?? {};
-      const allowedFields = new Set(["title", "archived", "activeEngine", "model", "effort", "managementPermissions"]);
+      const allowedFields = new Set(["title", "archived", "activeEngine", "model", "effort", "workingCopyMode", "managementPermissions"]);
       if (Object.keys(body).some((key) => !allowedFields.has(key))) {
         return reply.code(400).send({ error: "unknown agent field" });
       }
@@ -97,6 +113,37 @@ export function registerAgentMaintenanceRoutes(
       if (body.effort !== undefined && body.effort !== null && typeof body.effort !== "string") {
         return reply.code(400).send({ error: "effort must be a string or null" });
       }
+      if (body.workingCopyMode !== undefined &&
+          body.workingCopyMode !== "shared" && body.workingCopyMode !== "separate_git") {
+        return reply.code(400).send({ error: "workingCopyMode must be shared or separate_git" });
+      }
+      if (body.workingCopyMode !== undefined) {
+        if (activeRuns.has(current.id)) {
+          return reply.code(409).send({
+            error: "Stop this Agent's active Run before changing its working folder.",
+          });
+        }
+        const project = store.getProject(current.projectId);
+        if (!project) return reply.code(409).send({ error: "Agent Project is unavailable" });
+        const runtime = persistentRuntimeForTermination(current.id);
+        if (runtime) {
+          try {
+            await teardownPersistentRuntime(
+              current.id,
+              runtime,
+              "working-copy mode changed",
+              project.id,
+            );
+          } catch {
+            return reply.code(409).send({
+              error: "The current provider session could not be closed safely. Try again before changing the working folder.",
+            });
+          }
+        }
+        clearAgentResumeSession(current.id, "working_copy_changed");
+        const changed = await workingCopies.setMode(current, project, body.workingCopyMode);
+        if (Object.keys(body).every((key) => key === "workingCopyMode")) return changed;
+      }
       const runtimeSettingsChanged = body.activeEngine !== undefined || body.model !== undefined || body.effort !== undefined;
       let runtimePatch: Pick<UpdateAgentRequest, "activeEngine" | "model" | "effort"> = {};
       if (runtimeSettingsChanged) {
@@ -117,6 +164,7 @@ export function registerAgentMaintenanceRoutes(
       }
       const agent = store.updateAgent(request.params.id, {
         ...body,
+        workingCopyMode: undefined,
         ...runtimePatch,
         ...(normalizedTitle !== undefined ? { title: normalizedTitle } : {}),
       });

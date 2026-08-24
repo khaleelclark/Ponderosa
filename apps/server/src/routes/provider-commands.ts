@@ -29,6 +29,7 @@ import {
 } from "../runtime-selection.js";
 import type { ServerContext } from "../server-context.js";
 import type { ProviderProcessAuthority } from "../provider-process-authority.js";
+import type { AgentWorkingCopyService } from "../agent-working-copy-service.js";
 import { evaluateContextRolloverPressure } from "../context-rollover-pressure.js";
 import {
   guardedProviderExceptionStringProperty,
@@ -85,6 +86,7 @@ interface ProviderCommandRoutesContext {
   ): Promise<ProviderUsageStateDto>;
   reportRuntimeCapabilitiesChanged(projectId: string, engineId: string): void;
   providerProcessAuthority: ProviderProcessAuthority;
+  workingCopies: AgentWorkingCopyService;
 }
 
 export function authorizedManualRolloverConversationId(
@@ -146,6 +148,7 @@ export function registerProviderCommandRoutes(
     providerUsageState,
     reportRuntimeCapabilitiesChanged,
     providerProcessAuthority,
+    workingCopies,
   } = context;
 
 app.post<{ Params: { id: string }; Body?: CancelAgentRunRequest }>("/api/agents/:id/cancel", async (request, reply) => {
@@ -428,6 +431,14 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
     // one structured command, and close it without creating a chat message,
     // Activation, or provider turn. The authority registry makes Project
     // deletion and daemon shutdown wait for the transient process as well.
+    let workingCopy: Awaited<ReturnType<AgentWorkingCopyService["resolve"]>>;
+    try {
+      workingCopy = await workingCopies.resolve(agent, project);
+    } catch (error) {
+      return reply.code(409).send({
+        error: error instanceof Error ? error.message : "This Agent's working folder is unavailable.",
+      });
+    }
     const latestRun = store.getRuns(agent.id).at(-1);
     const selection = concreteRuntimeSelection(engine.adapter, [
       { model: latestRun?.model ?? agent.model ?? agent.presetSnapshot?.model, effort: latestRun?.effort ?? agent.effort ?? agent.presetSnapshot?.effort },
@@ -437,6 +448,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
     const persisted = store.resumeSessionState(agent.id);
     const runtimeSessionContractHash = providerSessionContractHash(
       agent.activeEngine,
+      workingCopy.id,
       selection.model,
       selection.effort,
     );
@@ -471,7 +483,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
     const operation = Promise.resolve().then(async () => {
       const rawSession = await providerRuntimeOperation("open provider command session", () => engine.adapter.openSession!({
         agentId: agent.id,
-        cwd: project.hostPath,
+        cwd: workingCopy.rootPath,
         ...(resumeSessionId ? { resumeSessionId } : {}),
         history: [],
         model: selection.model,
