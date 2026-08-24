@@ -66,10 +66,26 @@ export function useDictation(
 
   const releaseRecognition = useCallback(
     (recognition: BrowserSpeechRecognition) => {
-      recognition.onstart = null;
-      recognition.onresult = null;
-      recognition.onerror = null;
-      recognition.onend = null;
+      try {
+        recognition.onstart = null;
+      } catch {
+        // Continue fencing even if a browser implementation rejects cleanup.
+      }
+      try {
+        recognition.onresult = null;
+      } catch {
+        // Continue fencing even if a browser implementation rejects cleanup.
+      }
+      try {
+        recognition.onerror = null;
+      } catch {
+        // Continue fencing even if a browser implementation rejects cleanup.
+      }
+      try {
+        recognition.onend = null;
+      } catch {
+        // Continue fencing even if a browser implementation rejects cleanup.
+      }
       if (recognitionRef.current === recognition) {
         recognitionRef.current = undefined;
         stopSurfaceMonitoring();
@@ -78,56 +94,67 @@ export function useDictation(
     [stopSurfaceMonitoring],
   );
 
-  const abandonRecognition = useCallback(
+  const abandonGeneration = useCallback(
     (
-      recognition: BrowserSpeechRecognition,
+      recognition: BrowserSpeechRecognition | undefined,
       generation: number,
       message: string,
+      warnAboutPendingSpeech = true,
     ) => {
       if (generationRef.current !== generation) return;
       generationRef.current += 1;
       clearSettleTimer();
-      releaseRecognition(recognition);
+      stopSurfaceMonitoring();
+      if (recognition) releaseRecognition(recognition);
       requestedEndRef.current = undefined;
       errorRef.current = true;
-      try {
-        recognition.abort();
-      } catch {
-        // The generation is already fenced and every callback detached.
+      if (recognition) {
+        try {
+          recognition.abort();
+        } catch {
+          // The generation is already fenced and every callback detached.
+        }
       }
       updateSettling(false);
       if (!mountedRef.current) return;
       setError(
-        `${message} Pending speech may not have been added; review the draft before sending.`,
+        warnAboutPendingSpeech
+          ? `${message} Pending speech may not have been added; review the draft before sending.`
+          : message,
       );
       setStatus("error");
     },
-    [clearSettleTimer, releaseRecognition, updateSettling],
+    [
+      clearSettleTimer,
+      releaseRecognition,
+      stopSurfaceMonitoring,
+      updateSettling,
+    ],
   );
 
   const abandonForSurfaceLoss = useCallback(() => {
     const recognition = recognitionRef.current;
     if (!recognition) return;
-    abandonRecognition(
+    abandonGeneration(
       recognition,
       generationRef.current,
       "Voice dictation stopped because this message composer became inaccessible.",
     );
-  }, [abandonRecognition]);
+  }, [abandonGeneration]);
 
   const scheduleSettleTimeout = useCallback(
     (recognition: BrowserSpeechRecognition, generation: number) => {
       clearSettleTimer();
       settleTimerRef.current = window.setTimeout(() => {
         settleTimerRef.current = undefined;
-        abandonRecognition(
+        abandonGeneration(
           recognition,
           generation,
           "Voice dictation did not finish in time.",
         );
       }, DICTATION_SETTLE_TIMEOUT_MS);
     },
-    [abandonRecognition, clearSettleTimer],
+    [abandonGeneration, clearSettleTimer],
   );
 
   const begin = useCallback(() => {
@@ -156,70 +183,93 @@ export function useDictation(
     setError(undefined);
     setStatus("starting");
 
-    const recognition = new Recognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = navigator.language || "en-US";
-    recognition.maxAlternatives = 1;
-    recognitionRef.current = recognition;
-    recognition.onstart = () => {
-      if (generationRef.current === generation && mountedRef.current) {
-        setStatus("listening");
-      }
-    };
-    recognition.onresult = event => {
-      if (generationRef.current !== generation) return;
-      const finalTranscripts: string[] = [];
-      for (let index = event.resultIndex; index < event.results.length; index += 1) {
-        const result = event.results[index];
-        const transcript = result?.[0]?.transcript;
-        if (result?.isFinal && transcript?.trim()) {
-          finalTranscripts.push(transcript.trim());
-        }
-      }
-      if (finalTranscripts.length) {
-        transcriptHandlerRef.current(finalTranscripts.join(" "));
-      }
-    };
-    recognition.onerror = event => {
-      if (generationRef.current !== generation) return;
-      if (event.error === "aborted" && requestedEndRef.current) return;
-      abandonRecognition(
-        recognition,
-        generation,
-        dictationErrorMessage(event.error, event.message),
-      );
-    };
-    recognition.onend = () => {
-      if (generationRef.current !== generation) return;
-      generationRef.current += 1;
-      const requestedEnd = requestedEndRef.current;
-      clearSettleTimer();
-      releaseRecognition(recognition);
-      requestedEndRef.current = undefined;
-      updateSettling(false);
-      if (!mountedRef.current || errorRef.current) return;
-      setStatus(requestedEnd === "pause" ? "paused" : "stopped");
-    };
-
-    surfaceCleanupRef.current = monitorSpeechSurfaceAccessibility(
-      () => surfaceRef.current,
-      abandonForSurfaceLoss,
-    );
-
+    let recognition: BrowserSpeechRecognition | undefined;
     try {
-      recognition.start();
+      recognition = new Recognition();
+      if (generationRef.current !== generation || !mountedRef.current) {
+        try {
+          recognition.abort();
+        } catch {
+          // A concurrent lifecycle fence already owns this generation.
+        }
+        return;
+      }
+      const activeRecognition = recognition;
+      recognitionRef.current = activeRecognition;
+      activeRecognition.continuous = true;
+      activeRecognition.interimResults = true;
+      activeRecognition.lang = navigator.language || "en-US";
+      activeRecognition.maxAlternatives = 1;
+      if (generationRef.current !== generation) return;
+      activeRecognition.onstart = () => {
+        if (generationRef.current === generation && mountedRef.current) {
+          setStatus("listening");
+        }
+      };
+      activeRecognition.onresult = event => {
+        if (generationRef.current !== generation) return;
+        const finalTranscripts: string[] = [];
+        for (
+          let index = event.resultIndex;
+          index < event.results.length;
+          index += 1
+        ) {
+          const result = event.results[index];
+          const transcript = result?.[0]?.transcript;
+          if (result?.isFinal && transcript?.trim()) {
+            finalTranscripts.push(transcript.trim());
+          }
+        }
+        if (finalTranscripts.length) {
+          transcriptHandlerRef.current(finalTranscripts.join(" "));
+        }
+      };
+      activeRecognition.onerror = event => {
+        if (generationRef.current !== generation) return;
+        if (event.error === "aborted" && requestedEndRef.current) return;
+        abandonGeneration(
+          activeRecognition,
+          generation,
+          dictationErrorMessage(event.error, event.message),
+        );
+      };
+      activeRecognition.onend = () => {
+        if (generationRef.current !== generation) return;
+        generationRef.current += 1;
+        const requestedEnd = requestedEndRef.current;
+        clearSettleTimer();
+        releaseRecognition(activeRecognition);
+        requestedEndRef.current = undefined;
+        updateSettling(false);
+        if (!mountedRef.current || errorRef.current) return;
+        setStatus(requestedEnd === "pause" ? "paused" : "stopped");
+      };
+      if (generationRef.current !== generation) return;
+
+      const stopMonitoring = monitorSpeechSurfaceAccessibility(
+        () => surfaceRef.current,
+        abandonForSurfaceLoss,
+      );
+      if (generationRef.current !== generation) {
+        stopMonitoring();
+        return;
+      }
+      surfaceCleanupRef.current = stopMonitoring;
+      activeRecognition.start();
     } catch (startError) {
-      abandonRecognition(
+      const detail =
+        startError instanceof Error && startError.message.trim()
+          ? ` ${startError.message.trim()}`
+          : "";
+      abandonGeneration(
         recognition,
         generation,
-        startError instanceof Error
-          ? startError.message
-          : "Voice dictation could not start.",
+        `Voice dictation could not start.${detail} Check microphone access and try again.`,
+        false,
       );
     }
   }, [
-    abandonRecognition,
+    abandonGeneration,
     abandonForSurfaceLoss,
     clearSettleTimer,
     releaseRecognition,
@@ -238,7 +288,7 @@ export function useDictation(
     try {
       recognition.stop();
     } catch (pauseError) {
-      abandonRecognition(
+      abandonGeneration(
         recognition,
         generation,
         pauseError instanceof Error
@@ -246,12 +296,26 @@ export function useDictation(
           : "Voice dictation could not pause.",
       );
     }
-  }, [abandonRecognition, scheduleSettleTimeout]);
+  }, [abandonGeneration, scheduleSettleTimeout]);
 
   const stop = useCallback(() => {
     const recognition = recognitionRef.current;
     if (!recognition) {
-      setStatus("stopped");
+      const wasSettling = settlingRef.current;
+      generationRef.current += 1;
+      clearSettleTimer();
+      stopSurfaceMonitoring();
+      requestedEndRef.current = undefined;
+      updateSettling(false);
+      if (wasSettling) {
+        errorRef.current = true;
+        setError(
+          "Voice dictation stopped before it finished. Pending speech may not have been added; review the draft before sending.",
+        );
+        setStatus("error");
+      } else {
+        setStatus("stopped");
+      }
       return;
     }
     requestedEndRef.current = "stop";
@@ -261,7 +325,7 @@ export function useDictation(
     try {
       recognition.stop();
     } catch (stopError) {
-      abandonRecognition(
+      abandonGeneration(
         recognition,
         generation,
         stopError instanceof Error
@@ -269,25 +333,24 @@ export function useDictation(
           : "Voice dictation could not stop cleanly.",
       );
     }
-  }, [abandonRecognition, scheduleSettleTimeout]);
+  }, [
+    abandonGeneration,
+    clearSettleTimer,
+    scheduleSettleTimeout,
+    stopSurfaceMonitoring,
+    updateSettling,
+  ]);
 
   useEffect(() => {
     mountedRef.current = true;
     const endForNavigation = () => {
-      generationRef.current += 1;
-      clearSettleTimer();
-      stopSurfaceMonitoring();
-      requestedEndRef.current = "stop";
       const recognition = recognitionRef.current;
-      if (recognition) {
-        releaseRecognition(recognition);
-        try {
-          recognition.abort();
-        } catch {
-          // Navigation already fenced this generation.
-        }
-      }
-      updateSettling(false);
+      if (!recognition && !settlingRef.current) return;
+      abandonGeneration(
+        recognition,
+        generationRef.current,
+        "Voice dictation stopped because this page became inactive.",
+      );
     };
     window.addEventListener("pagehide", endForNavigation);
     return () => {
@@ -309,6 +372,7 @@ export function useDictation(
       updateSettling(false);
     };
   }, [
+    abandonGeneration,
     clearSettleTimer,
     releaseRecognition,
     stopSurfaceMonitoring,
