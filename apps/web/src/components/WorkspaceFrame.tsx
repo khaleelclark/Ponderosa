@@ -298,7 +298,7 @@ export function TabbedWorkspaceFrame<T extends string>({
           direction="row"
           spacing={1}
           useFlexGap
-          flexWrap="nowrap"
+          flexWrap={{ xs: "wrap", sm: "nowrap" }}
           sx={{ alignItems: { xs: "flex-start", sm: "center" }, minWidth: 0 }}
         >
           <MobileNavigationButton />
@@ -322,8 +322,10 @@ export function TabbedWorkspaceFrame<T extends string>({
             sx={{
               alignItems: "center",
               justifyContent: "flex-end",
-              flexWrap: "nowrap",
-              flexShrink: 0,
+              flexWrap: "wrap",
+              flex: { xs: "1 0 100%", sm: "0 1 auto" },
+              minWidth: 0,
+              maxWidth: "100%",
             }}
           >
             <PrimaryHeaderActionsOutlet />

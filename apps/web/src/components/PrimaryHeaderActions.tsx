@@ -3,7 +3,7 @@ import {
   createContext,
   useCallback,
   useContext,
-  useEffect,
+  useLayoutEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -32,6 +32,7 @@ export function PrimaryHeaderActionsProvider({
 }): JSX.Element {
   const theme = useTheme();
   const mobile = useMediaQuery(theme.breakpoints.down("sm"));
+  const [fallbackOutlet, setFallbackOutlet] = useState<HTMLDivElement | null>(null);
   const [outlets, setOutlets] = useState<HTMLElement[]>([]);
   const register = useCallback<RegisterHeaderActionOutlet>((element) => {
     setOutlets(current => [...current.filter(candidate => candidate !== element), element]);
@@ -44,11 +45,35 @@ export function PrimaryHeaderActionsProvider({
 
   return (
     <PrimaryHeaderActionsContext.Provider value={value}>
-      {children}
+      <Box
+        sx={{
+          minHeight: 0,
+          minWidth: 0,
+          display: "grid",
+          gridTemplateRows: "auto minmax(0, 1fr)",
+        }}
+      >
+        <Box
+          ref={setFallbackOutlet}
+          data-primary-header-actions-fallback
+          sx={{
+            minHeight: { xs: 44, sm: 40 },
+            px: { xs: 0.5, sm: 1.5 },
+            display: activeOutlet ? "none" : "flex",
+            alignItems: "center",
+            justifyContent: "flex-end",
+            borderBottom: 1,
+            borderColor: "divider",
+          }}
+        />
+        <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
+          {children}
+        </Box>
+      </Box>
       <ProviderQuotaIndicator
         preferredProvider={preferredProvider}
         mobile={mobile}
-        portalTarget={activeOutlet ?? null}
+        portalTarget={activeOutlet ?? fallbackOutlet}
         onOpenProviderSettings={onOpenProviderSettings}
       />
     </PrimaryHeaderActionsContext.Provider>
@@ -59,7 +84,7 @@ export function PrimaryHeaderActionsProvider({
 export function PrimaryHeaderActionsOutlet(): JSX.Element {
   const register = useContext(PrimaryHeaderActionsContext);
   const [element, setElement] = useState<HTMLDivElement | null>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!element || !register) return;
     return register(element);
   }, [element, register]);
