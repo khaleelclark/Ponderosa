@@ -34,7 +34,10 @@ import { notificationTechnicalFocusId } from "../technicalFocus";
 import { notificationDecision } from "../decisions";
 import { DecisionActions } from "./decisions/DecisionActions";
 import { NotificationAcknowledgementBoundary } from "./NotificationAcknowledgementBoundary";
-import { useNotificationAcknowledgement } from "../hooks/useNotificationAcknowledgement";
+import {
+  useNotificationAcknowledgement,
+  type NotificationAcknowledgementOptimisticTarget,
+} from "../hooks/useNotificationAcknowledgement";
 
 interface NotificationGroup {
   key: string;
@@ -162,16 +165,34 @@ export function NotificationPanel({ open, projects, firstPage, onClose, onNaviga
   const acknowledgeNotifications = useNotificationAcknowledgement((reason) => {
     setError(reason instanceof Error ? reason.message : "Action review could not be saved.");
   });
+  const olderPagesOptimisticTarget = useMemo<NotificationAcknowledgementOptimisticTarget>(
+    () => ({
+      apply(notificationIds, acknowledgedAt) {
+        const ids = new Set(notificationIds);
+        setOlderPages((current) => current.map((page) => ({
+          ...page,
+          items: page.items.map((item) => ids.has(item.id) && isOpenAttention(item) && !item.acknowledgedAt
+            ? { ...item, acknowledgedAt }
+            : item),
+        })));
+      },
+      rollback(notificationIds, acknowledgedAt) {
+        const ids = new Set(notificationIds);
+        setOlderPages((current) => current.map((page) => ({
+          ...page,
+          items: page.items.map((item) => {
+            if (!ids.has(item.id) || item.acknowledgedAt !== acknowledgedAt) return item;
+            const { acknowledgedAt: _acknowledgedAt, ...unacknowledged } = item;
+            return unacknowledged;
+          }),
+        })));
+      },
+    }),
+    [],
+  );
   const acknowledgePresentedNotifications = (notificationIds: readonly string[]) => {
-    acknowledgeNotifications(notificationIds);
-    const ids = new Set(notificationIds);
-    const acknowledgedAt = new Date().toISOString();
-    setOlderPages((current) => current.map((page) => ({
-      ...page,
-      items: page.items.map((item) => ids.has(item.id) && isOpenAttention(item) && !item.acknowledgedAt
-        ? { ...item, acknowledgedAt }
-        : item),
-    })));
+    setError(undefined);
+    acknowledgeNotifications(notificationIds, olderPagesOptimisticTarget);
   };
   const wasOpen = useRef(false);
   const availableProjectIds = useMemo(

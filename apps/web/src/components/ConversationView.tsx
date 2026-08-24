@@ -966,7 +966,6 @@ export function ConversationView({
                   notifications={(notificationsQuery.data?.items ?? []).filter((item) => item.kind !== "decision")}
                   projectId={conversation.projectId}
                   conversationId={conversationId}
-                  conversationAgentIds={agents.map(agent => agent.id)}
                   onOpen={item => {
                     const focusId = notificationTechnicalFocusId(item);
                     if (item.agentId)

@@ -109,14 +109,12 @@ export function AttentionSurface({
   projectId,
   conversationId,
   agentId,
-  conversationAgentIds,
   onOpen,
 }: {
   notifications: WorkspaceNotificationDto[];
   projectId?: string;
   conversationId?: string;
   agentId?: string;
-  conversationAgentIds?: string[];
   onOpen?(item: WorkspaceNotificationDto): void;
 }): JSX.Element | null {
   const queryClient = useQueryClient();
@@ -129,7 +127,6 @@ export function AttentionSurface({
     ...(projectId ? { projectId } : {}),
     ...(conversationId ? { conversationId } : {}),
     ...(agentId ? { agentId } : {}),
-    ...(conversationAgentIds ? { conversationAgentIds } : {}),
   });
   const refresh = async () => {
     await Promise.all([

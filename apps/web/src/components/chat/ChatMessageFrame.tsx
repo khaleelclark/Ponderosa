@@ -45,7 +45,8 @@ export function ChatMessageFrame({
         intersecting && document.visibilityState === "visible" && document.hasFocus(),
       );
     const observer = new IntersectionObserver((entries) => {
-      intersecting = Boolean(entries[0]?.isIntersecting);
+      const entry = entries[0];
+      intersecting = Boolean(entry?.isIntersecting && entry.intersectionRatio >= 0.5);
       report();
     }, { threshold: 0.5 });
     const onVisibilityChange = () => report();

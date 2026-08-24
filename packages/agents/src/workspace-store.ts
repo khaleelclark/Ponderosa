@@ -185,7 +185,7 @@ export class WorkspaceStore {
   }
 
   private notificationSearchIndexEligible(item: WorkspaceNotificationDto): boolean {
-    return item.kind !== "collaboration" && (item.status ?? "open") !== "dismissed" && !item.readAt;
+    return notificationLiveKind(item) === "update";
   }
 
   private updateNotificationSearchIndex(item: WorkspaceNotificationDto, add: boolean): void {
