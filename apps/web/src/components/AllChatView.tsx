@@ -64,6 +64,7 @@ import { useConversationNotificationVisibility } from "./useConversationNotifica
 import { NotificationAcknowledgementBoundary } from "./NotificationAcknowledgementBoundary";
 import { useNotificationAcknowledgement } from "../hooks/useNotificationAcknowledgement";
 import { ChatComposerDock } from "./chat/ChatComposerDock";
+import { ReadAloudControls } from "./speech/ReadAloudControls";
 
 function allChatSourceRoute(item: AllChatItemDto): Route {
   if (item.source.kind === "agent") {
@@ -921,6 +922,19 @@ export function AllChatView({
                           <ContentCopyOutlinedIcon fontSize="inherit" />
                         </IconButton>
                       </Tooltip>
+                      {!fromUser ? (
+                        <ReadAloudControls
+                          text={resolveMessageMentionText(
+                            communicationVisibleText({
+                              text: item.text,
+                              intent: item.communicationIntent,
+                              fromAgent: true,
+                              agentMentions: item.agentMentions,
+                            }),
+                            item.agentMentions,
+                          )}
+                        />
+                      ) : null}
                       {!fromUser && item.directMessageAgent ? (
                         <Tooltip
                           title={`Mention ${item.directMessageAgent.title}`}

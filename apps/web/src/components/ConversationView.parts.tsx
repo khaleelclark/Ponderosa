@@ -63,6 +63,7 @@ import {
   routineTeamLifecycleEvent,
   type PresentedTeamOperationalEvent,
 } from "./teamChatPresentation";
+import { ReadAloudControls } from "./speech/ReadAloudControls";
 
 function ConversationMessageComponent({
   message,
@@ -212,6 +213,14 @@ function ConversationMessageComponent({
         actions: (
           <>
             <CopyMessageButton text={resolvedCopyText} />
+            {message.authorAgentId ? (
+              <ReadAloudControls
+                text={resolveMessageMentionText(
+                  visibleText,
+                  message.agentMentions,
+                )}
+              />
+            ) : null}
             {conversation === "main" && message.authorAgentId && onMentionAgent ? (
                 <Tooltip title={`Mention ${senderName}`}>
                   <IconButton
