@@ -50,3 +50,18 @@ This append-only experiment ledger records product and operating friction observ
 - Impact: The documented common path fails in a normal top-level Project Chat and costs an avoidable recovery attempt.
 - Recommended fix: Make the active capability expose one canonical reply route for this activation, or have the prompt explicitly require the resolved intent from the outset.
 - Owner: Ponderosa communication capability/runtime.
+
+## 2026-08-24T05:01:23Z — OPS-003 — Provider failures surfaced only as outcome unknown after automatic retry
+
+- Severity: Medium
+- Classification: Operational defect
+- Confirmed: Yes — both Claude-backed specialist openings reproduced the same terminal state, and each automatic recovery attempt produced another `provider_outcome_unknown` result.
+- Reproduction:
+  1. Create tracked managed Agents with valid opening Requests and aggregate Joins.
+  2. Observe the Working Copies and System Articulation Agents become idle without a canonical result while their Joins terminate as impossible with `outcome_unknown`.
+  3. Allow Ponderosa's recovery Request to audit and retry the original assignment.
+  4. Observe the retry also terminate as `provider_outcome_unknown` without a user-facing provider failure summary.
+  5. Audit both assigned Git worktrees: each remains clean at the exact baseline, proving no repository side effect but not explaining the provider failure.
+- Impact: The manager receives no actionable cause, cannot distinguish pre-execution provider failure from lost post-write acknowledgment without a separate filesystem audit, and must manually reconstruct safe retry state.
+- Recommended fix: Persist and surface a redacted provider exit/failure summary with execution phase, whether a provider session was established, last durable side-effect boundary, and an explicit safe-to-retry assessment. Preserve the exact Request lineage while preventing unbounded automatic retries.
+- Owner: Ponderosa scheduler/provider-session runtime.
