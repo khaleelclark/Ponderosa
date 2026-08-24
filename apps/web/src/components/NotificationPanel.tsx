@@ -263,7 +263,9 @@ export function NotificationPanel({ open, projects, firstPage, onClose, onNaviga
   const openActionCount = firstPage?.openActionCount ?? 0;
   const unacknowledgedActionCount = firstPage?.unacknowledgedActionCount ?? 0;
   const unreadUpdateCount = firstPage?.unreadUpdateCount ?? 0;
-  const nextCursor = olderPages.at(-1)?.nextCursor ?? firstPage?.nextCursor;
+  const nextCursor = olderPages.length > 0
+    ? olderPages.at(-1)?.nextCursor
+    : firstPage?.nextCursor;
   useEffect(() => {
     if (open && !wasOpen.current) {
       replaceOlderPages(() => []);
