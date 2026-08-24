@@ -2,19 +2,22 @@
 
 This append-only experiment ledger records product and operating friction observed while using Ponderosa. `Confirmed` means the behavior was observed directly by the operator or Product Lead; it does not mean the root cause or fix has been reviewed.
 
-## 2026-08-24T05:00:00Z — UI-001 — New Chat promise conflicts with no-Agent send failure
+## 2026-08-24T05:00:00Z — UI-001 — Initial no-Agent send-failure observation (superseded)
 
-- Severity: High
-- Classification: Defect
-- Confirmed: Yes — operator reproduction on the isolated `:20443` service; Product Lead source inspection confirmed the empty state promises that sending starts the first Agent. A fresh no-Agent-state recheck is required immediately before the fix because the Product Lead's first live attempt was contaminated by the adjacent New Agent toggle described in UI-002.
-- Reproduction:
-  1. Open a Project with zero active Agents and its initial `New Chat`.
-  2. Observe: “Send a request to start your first agent — its completed answer returns here.”
-  3. Enter a request and press Send without selecting an Agent.
-  4. Send fails with “There are no active Agents to notify”; the draft remains intact.
-- Impact: The primary first-run path contradicts its own guidance and blocks a new user at the moment they expect Ponderosa to start working.
-- Recommended fix: Make the advertised first-send path atomically create the first managed Agent and opening Request, or change the empty-state/composer interaction to require and visibly guide Agent creation before Send. Preserve the draft on every failed path. Resolve the product choice within the existing reviewed managed-Agent creation contract, not with a second assignment mechanism.
-- Owner: UI Integration, with server contract inspection as read-only evidence; escalate before changing creation semantics beyond the reviewed contract.
+- Severity: None — evidence correction
+- Classification: Initial observation; not a confirmed defect
+- Confirmed: No. UI Integration reproduced the path in a genuinely fresh zero-Agent Project on the isolated `:20443` service: ordinary first Send correctly created an Agent, started its Run, and cleared the draft. This controlled reproduction supersedes the earlier report that Send failed with “There are no active Agents to notify.”
+- Initial observation:
+  1. A new Chat displayed: “Send a request to start your first agent — its completed answer returns here.”
+  2. An attempted Send was reported to fail with “There are no active Agents to notify” while preserving the draft.
+  3. Product Lead could not independently reproduce that failure because UI-002's hidden `#new-agent` intent contaminated the available Projects.
+- Superseding reproduction:
+  1. Open a genuinely fresh Project with zero Agents and its initial `New Chat`.
+  2. Enter an ordinary request without injecting `#new-agent` intent and press Send.
+  3. Ponderosa creates the first Agent, starts its Run, and clears the successfully submitted draft as advertised.
+- Impact: No current first-Send defect is established. Treating the initial observation as confirmed could cause a regression in the working managed-Agent creation path.
+- Recommended action: Make no UI-001 product change. Preserve the working ordinary first-Send behavior during UI-002 fixes and requalify it after integration.
+- Owner: Closed as superseded evidence; UI Integration retains regression responsibility only.
 
 ## 2026-08-24T05:00:00Z — UI-002 — Prominent New Agent control does not open Agent creation
 
