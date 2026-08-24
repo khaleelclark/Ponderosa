@@ -10,7 +10,12 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import { memo } from "react";
+import {
+  createContext,
+  memo,
+  type ReactNode,
+  useContext,
+} from "react";
 import { ComposerAttachment } from "./ComposerAttachment";
 import type { DraftUploadStatus } from "./ComposerAttachment";
 import type { ComposerProps } from "./Composer.types";
@@ -80,18 +85,37 @@ interface ComposerProjectDestinationActionProps {
   toggleNewAgent(): void;
 }
 
+const ComposerProjectCreationContext = createContext<(() => void) | undefined>(
+  undefined,
+);
+
+export function ComposerProjectCreationProvider({
+  children,
+  onCreateAgent,
+}: {
+  children: ReactNode;
+  onCreateAgent(): void;
+}): JSX.Element {
+  return (
+    <ComposerProjectCreationContext.Provider value={onCreateAgent}>
+      {children}
+    </ComposerProjectCreationContext.Provider>
+  );
+}
+
 export function ComposerProjectDestinationAction({
-  newAgentSelected,
-  toggleNewAgent,
+  newAgentSelected: _newAgentSelected,
+  toggleNewAgent: _toggleNewAgent,
 }: ComposerProjectDestinationActionProps): JSX.Element {
+  const onCreateAgent = useContext(ComposerProjectCreationContext);
   return (
     <Button
       size="small"
-      variant={newAgentSelected ? "contained" : "text"}
-      color={newAgentSelected ? "primary" : "inherit"}
+      variant="text"
+      color="inherit"
       startIcon={<PersonAddAltOutlinedIcon />}
-      aria-pressed={newAgentSelected}
-      onClick={toggleNewAgent}
+      onClick={onCreateAgent}
+      disabled={!onCreateAgent}
       sx={{ whiteSpace: "nowrap", minHeight: 34 }}
     >
       New Agent

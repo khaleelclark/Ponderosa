@@ -38,6 +38,7 @@ import {
   findMentionedAgents,
 } from "../mentions";
 import { Composer } from "./chat/Composer";
+import { ComposerProjectCreationProvider } from "./chat/Composer.parts";
 import { QueuedMessageTray } from "./chat/QueuedMessageTray";
 import { ChatSurface } from "./chat/ChatSurface";
 import { buildMarkdownTranscript } from "../chatTranscript";
@@ -1264,92 +1265,96 @@ export function ConversationView({
           <TargetedNextRunReceipts receipts={targetedNextRunReceipts.data.receipts} />
         ) : null}
         {activeView === "main" ? (
-          <Composer
-            draftStorageKey={chatStateKey(
-              "draft",
-              `conversation.${conversationId}.${activeView}`,
-            )}
-            conversationDraftId={conversationId}
-            destinationMode="project-chat"
-            defaultDestination={lastContinuationDestination ? {
-              handle: agentMentionHandle(lastContinuationDestination.agent.title),
-              binding: {
+          <ComposerProjectCreationProvider
+            onCreateAgent={() => onNewAgent(conversation)}
+          >
+            <Composer
+              draftStorageKey={chatStateKey(
+                "draft",
+                `conversation.${conversationId}.${activeView}`,
+              )}
+              conversationDraftId={conversationId}
+              destinationMode="project-chat"
+              defaultDestination={lastContinuationDestination ? {
                 handle: agentMentionHandle(lastContinuationDestination.agent.title),
-                agentId: lastContinuationDestination.agent.id,
-                currentTitle: lastContinuationDestination.agent.title,
-              },
-              selectionKey: lastContinuationDestination.selectionKey,
-            } : undefined}
-            insertTextRequest={mentionInsertRequest}
-            controls={runtimeControls}
-            disabled={
-              busy ||
-              persistTargetRuntime.isPending ||
-              persistDefaults.isPending
-            }
-            running={operationRunning}
-            allowSendWhileRunning
-            mentionHandles={mentionHandles}
-            mentionBindings={mentionBindings}
-            commands={composerCommands}
-            onCommandTargetHandleChange={setCommandTargetHandle}
-            onCommandTargetAgentIdChange={setCommandTargetAgentId}
-            capabilities={composerRuntime.capabilities}
-            onCapabilitiesOpen={() =>
-              onRefreshCapabilities({ engineId: activeEngine?.id, model })
-            }
-            onCommand={
-              commandTargetAgent
-                ? (command, argumentsText) => {
-                    const invocation = api.invokeProviderCommand(
-                      commandTargetAgent.id,
-                      {
-                        name: command.name,
-                        ...(argumentsText ? { argumentsText } : {}),
-                      },
-                    );
-                    return invocation.then(result =>
-                      setQueuedMessageNotice(
-                        result.message ??
-                          `/${command.name} invoked for ${commandTargetAgent.title}.`,
-                      ),
-                    );
-                  }
-                : undefined
-            }
-            busyMentionHandles={busyMentionHandles}
-            allowUnmentionedSend={engineReady}
-            sendUnavailableReason={engineUnavailableMessage}
-            placeholder={
-              engineReady
-                ? "Write a message…"
-                : "Choose an available Agent with # or use #broadcast"
-            }
-            onSend={(text, files, stagedIds, draftOwnerId, context) =>
-              submit(
-                text,
-                files,
-                "steer",
-                stagedIds,
-                draftOwnerId,
-                context?.mentionedAgents,
-              )
-            }
-            onQueue={(text, files, stagedIds, draftOwnerId, context) =>
-              submit(
-                text,
-                files,
-                "queue",
-                stagedIds,
-                draftOwnerId,
-                context?.mentionedAgents,
-              )
-            }
-            agentResponding={false}
-            projectId={conversation.projectId}
-            onCancel={stopOperation}
-            cancelPending={cancelOperationPending}
-          />
+                binding: {
+                  handle: agentMentionHandle(lastContinuationDestination.agent.title),
+                  agentId: lastContinuationDestination.agent.id,
+                  currentTitle: lastContinuationDestination.agent.title,
+                },
+                selectionKey: lastContinuationDestination.selectionKey,
+              } : undefined}
+              insertTextRequest={mentionInsertRequest}
+              controls={runtimeControls}
+              disabled={
+                busy ||
+                persistTargetRuntime.isPending ||
+                persistDefaults.isPending
+              }
+              running={operationRunning}
+              allowSendWhileRunning
+              mentionHandles={mentionHandles}
+              mentionBindings={mentionBindings}
+              commands={composerCommands}
+              onCommandTargetHandleChange={setCommandTargetHandle}
+              onCommandTargetAgentIdChange={setCommandTargetAgentId}
+              capabilities={composerRuntime.capabilities}
+              onCapabilitiesOpen={() =>
+                onRefreshCapabilities({ engineId: activeEngine?.id, model })
+              }
+              onCommand={
+                commandTargetAgent
+                  ? (command, argumentsText) => {
+                      const invocation = api.invokeProviderCommand(
+                        commandTargetAgent.id,
+                        {
+                          name: command.name,
+                          ...(argumentsText ? { argumentsText } : {}),
+                        },
+                      );
+                      return invocation.then(result =>
+                        setQueuedMessageNotice(
+                          result.message ??
+                            `/${command.name} invoked for ${commandTargetAgent.title}.`,
+                        ),
+                      );
+                    }
+                  : undefined
+              }
+              busyMentionHandles={busyMentionHandles}
+              allowUnmentionedSend={engineReady}
+              sendUnavailableReason={engineUnavailableMessage}
+              placeholder={
+                engineReady
+                  ? "Write a message…"
+                  : "Choose an available Agent with # or use #broadcast"
+              }
+              onSend={(text, files, stagedIds, draftOwnerId, context) =>
+                submit(
+                  text,
+                  files,
+                  "steer",
+                  stagedIds,
+                  draftOwnerId,
+                  context?.mentionedAgents,
+                )
+              }
+              onQueue={(text, files, stagedIds, draftOwnerId, context) =>
+                submit(
+                  text,
+                  files,
+                  "queue",
+                  stagedIds,
+                  draftOwnerId,
+                  context?.mentionedAgents,
+                )
+              }
+              agentResponding={false}
+              projectId={conversation.projectId}
+              onCancel={stopOperation}
+              cancelPending={cancelOperationPending}
+            />
+          </ComposerProjectCreationProvider>
         ) : null}
       </ChatComposerDock>
 
