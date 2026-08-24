@@ -68,6 +68,8 @@ import {
   useComposerMentionedHandlesChange,
 } from "./useComposerTextEffects";
 import { composerSurfaceSx } from "./Composer.styles";
+import { DictationControls } from "../speech/DictationControls";
+import { insertSpeechText } from "../speech/speechText";
 
 const DRAFT_OWNER_ID = /^[A-Za-z0-9_-]{1,128}$/u;
 
@@ -222,6 +224,33 @@ export function Composer({
       replaceText(resolved);
     },
     [markDraftEdited, replaceText],
+  );
+  const insertDictatedText = useCallback(
+    (transcript: string) => {
+      const input = inputRef.current;
+      const selectionStart = input?.selectionStart ?? textRef.current.length;
+      const selectionEnd = input?.selectionEnd ?? selectionStart;
+      let nextCaret = selectionStart;
+      update(current => {
+        const insertion = insertSpeechText(
+          current,
+          transcript,
+          selectionStart,
+          selectionEnd,
+        );
+        nextCaret = insertion.caret;
+        return insertion.text;
+      });
+      setSendError(undefined);
+      setCaret(nextCaret);
+      setHighlighted(0);
+      setSuppressMenu(false);
+      requestAnimationFrame(() => {
+        inputRef.current?.focus();
+        inputRef.current?.setSelectionRange(nextCaret, nextCaret);
+      });
+    },
+    [update],
   );
   const replacePastedText = useCallback(
     (
@@ -1194,6 +1223,10 @@ export function Composer({
           }}
           onFilterChange={setCapabilityFilter}
           onApplyCapability={applyCapability}
+        />
+        <DictationControls
+          disabled={disabled || composerLocked}
+          onFinalTranscript={insertDictatedText}
         />
         {destinationMode === "target-required" ? (
           <ComposerTargetDestinationAction
