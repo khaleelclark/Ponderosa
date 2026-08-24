@@ -530,27 +530,12 @@ export function useWorkspaceStream(
       }),
     ].filter(query => query.getObserversCount() > 0);
     const reconcilePhaseEvidence = async (): Promise<boolean> => {
-      const queries = activePhaseQueries().map(query => ({
-        queryKey: query.queryKey,
-        dataUpdatedAt: query.state.dataUpdatedAt,
-      }));
+      const queries = activePhaseQueries();
       await Promise.all(queries.map(query => queryClient.invalidateQueries({
         queryKey: query.queryKey,
         exact: true,
-      })));
-      return queries.every(query => {
-        const current = queryClient.getQueryCache().find({
-          queryKey: query.queryKey,
-          exact: true,
-        });
-        return !current
-          || current.getObserversCount() === 0
-          || (
-            current.state.status === "success"
-            && current.state.fetchStatus === "idle"
-            && current.state.dataUpdatedAt > query.dataUpdatedAt
-          );
-      });
+      }, { throwOnError: true })));
+      return true;
     };
     const schedulePhaseReconciliation = (delayMs = 250) => {
       if (
