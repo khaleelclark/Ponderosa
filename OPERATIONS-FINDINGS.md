@@ -187,3 +187,18 @@ This append-only experiment ledger records product and operating friction observ
 - Preserved evidence: The independently approved conditional `ponderosa_history` and removed `ponderosa_docs` wording is byte-unchanged, as are `README.md` and `packages/core/src/managed-tools.ts` from the previously reviewed head.
 - Qualification: The correction is one clean Markdown-only commit over the rejected head; parent and full-range `git diff --check` passed. Parent frozen install, strict typecheck, and production build evidence remains applicable because no source/tool bytes changed.
 - Remaining gate: Exact head is frozen in a fresh filesystem read-only detached worktree for rereview by the same factual-contract reviewer. Do not integrate or deploy until approved.
+
+## 2026-08-24T05:38:43Z — UI-002 follow-up — Agent creation transition can discard unsaved composer payloads
+
+- Severity: High
+- Classification: Confirmed data-loss defect in the first UI-002 correction; frozen head not approved
+- Confirmed: Yes — independent adversarial review of exact head `e221edbe23b50ad554aa07e63b3e8982906207b4` traced the route transition through composer unmount and the existing draft/attachment lifecycles.
+- Reproduction:
+  1. In a zero-Agent Project Chat, paste more than 10,000 characters so the component-only `Pasted text` card is staged, or attach a file while its durable draft write/upload is queued, in flight, or inside the 500 ms debounce window.
+  2. Click the prominent `New Agent` action, which opens the route-based creation surface and unmounts the composer.
+  3. Cancel Agent creation and return to the Chat.
+  4. The long-paste payload and/or staged attachment is gone: long paste is not part of normal local/server text draft writes, and unmount aborts queued/in-flight attachment work before the delayed durable snapshot is guaranteed.
+- Impact: A user can lose authored content merely by inspecting and canceling the advertised creation flow, contradicting the draft-preservation invariant.
+- Confirmed positives: The action is accessible, opens the existing managed creation path, no longer injects hidden `#new-agent`, does not leak mode across conversations, and does not change ordinary first-Send server semantics. Frozen Voice changes merge without a textual conflict.
+- Recommended fix: Preserve the exact live composer instance while the creation surface is active, or durably snapshot and restore the complete composed state—including component-only pasted text and queued/in-flight/resolved attachments—before transition. Sequence or disable the action during Send. Keep Voice-owned composer files untouched; if that boundary makes the fix impossible, report the overlap rather than creating concurrent edits. Require desktop/mobile and same-reviewer exact-head rereview.
+- Owner: UI Integration. Do not integrate or deploy the current head.
