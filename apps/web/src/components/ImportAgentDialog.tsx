@@ -261,6 +261,7 @@ export function ImportAgentForm({
       <Stack direction="row" spacing={1} sx={{ justifyContent: "flex-end" }}>
       <Button disabled={importAgents.isPending} onClick={closeForm}>Cancel</Button>
       <Button variant="contained" disabled={!packageBlob || !packagePreview || inspecting || invalidPermissionShape || !conversationId || sourceEngines.some((source) => !engineMapping[source]) || (elevatedAgents.length > 0 && !acknowledgeElevatedPermissions) || importAgents.isPending} onClick={() => {
+        if (pendingRef.current) return;
         pendingRef.current = true;
         onPendingChange?.(true);
         importAgents.mutate();

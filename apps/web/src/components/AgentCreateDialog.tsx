@@ -377,6 +377,7 @@ export function AgentCreateForm({
             !projectId || !title.trim() || !engine || create.isPending
           }
           onClick={() => {
+            if (pendingRef.current) return;
             pendingRef.current = true;
             onPendingChange?.(true);
             create.mutate();
