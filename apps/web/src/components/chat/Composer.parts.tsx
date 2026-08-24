@@ -14,6 +14,7 @@ import {
   createContext,
   memo,
   type ReactNode,
+  type RefObject,
   useContext,
 } from "react";
 import { ComposerAttachment } from "./ComposerAttachment";
@@ -88,6 +89,7 @@ interface ComposerProjectDestinationActionProps {
 interface ComposerProjectCreationContextValue {
   disabled: boolean;
   onCreateAgent(): void;
+  triggerRef?: RefObject<HTMLButtonElement>;
 }
 
 const ComposerProjectCreationContext =
@@ -97,13 +99,17 @@ export function ComposerProjectCreationProvider({
   children,
   disabled = false,
   onCreateAgent,
+  triggerRef,
 }: {
   children: ReactNode;
   disabled?: boolean;
   onCreateAgent(): void;
+  triggerRef?: RefObject<HTMLButtonElement>;
 }): JSX.Element {
   return (
-    <ComposerProjectCreationContext.Provider value={{ disabled, onCreateAgent }}>
+    <ComposerProjectCreationContext.Provider
+      value={{ disabled, onCreateAgent, triggerRef }}
+    >
       {children}
     </ComposerProjectCreationContext.Provider>
   );
@@ -116,6 +122,7 @@ export function ComposerProjectDestinationAction({
   const creation = useContext(ComposerProjectCreationContext);
   return (
     <Button
+      ref={creation?.triggerRef}
       size="small"
       variant="text"
       color="inherit"

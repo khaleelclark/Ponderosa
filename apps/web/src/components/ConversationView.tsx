@@ -21,7 +21,14 @@ import type {
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { normalizeResetPages } from "../collections";
 import { providerAvailabilityMessage } from "../providerAvailability";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { api } from "../api";
 import { agentBelongsToConversation, type AgentStatus } from "../agents";
 import {
@@ -193,6 +200,8 @@ export function ConversationView({
   const createAgentPendingRef = useRef(false);
   const createAgentSessionRef = useRef<AgentCreationSession>();
   const createAgentSessionId = useRef(0);
+  const createAgentTriggerRef = useRef<HTMLButtonElement>(null);
+  const restoreCreateAgentFocusRef = useRef(false);
   const currentConversationRef = useRef<{
     conversationId: string;
     projectId?: string;
@@ -201,6 +210,11 @@ export function ConversationView({
     createAgentSessionRef.current = undefined;
     createAgentPendingRef.current = false;
   }, []);
+  useLayoutEffect(() => {
+    if (createAgentSession || !restoreCreateAgentFocusRef.current) return;
+    createAgentTriggerRef.current?.focus();
+    restoreCreateAgentFocusRef.current = false;
+  }, [createAgentSession]);
   const [agentWorkOpen, setAgentWorkOpen] = useState(false);
   const collaborationVisited = useRef(activeView === "collaboration");
   const [agentWorkFocus, setAgentWorkFocus] = useState<string>();
@@ -616,6 +630,7 @@ export function ConversationView({
       createAgentSessionRef.current?.id !== sessionId
     ) return;
     createAgentSessionRef.current = undefined;
+    restoreCreateAgentFocusRef.current = true;
     setCreateAgentSession(undefined);
   };
   const updateAgentCreationPending = (sessionId: number, pending: boolean) => {
@@ -1350,6 +1365,7 @@ export function ConversationView({
           <ComposerProjectCreationProvider
             disabled={busy}
             onCreateAgent={openAgentCreation}
+            triggerRef={createAgentTriggerRef}
           >
             <Composer
               draftStorageKey={chatStateKey(
