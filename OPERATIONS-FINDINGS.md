@@ -202,3 +202,18 @@ This append-only experiment ledger records product and operating friction observ
 - Confirmed positives: The action is accessible, opens the existing managed creation path, no longer injects hidden `#new-agent`, does not leak mode across conversations, and does not change ordinary first-Send server semantics. Frozen Voice changes merge without a textual conflict.
 - Recommended fix: Preserve the exact live composer instance while the creation surface is active, or durably snapshot and restore the complete composed state—including component-only pasted text and queued/in-flight/resolved attachments—before transition. Sequence or disable the action during Send. Keep Voice-owned composer files untouched; if that boundary makes the fix impossible, report the overlap rather than creating concurrent edits. Require desktop/mobile and same-reviewer exact-head rereview.
 - Owner: UI Integration. Do not integrate or deploy the current head.
+
+## 2026-08-24T05:39:36Z — REL-002 — Exact data-directory identity requires a native or isolated store boundary
+
+- Severity: Critical
+- Classification: Confirmed design blocker; requested invariant cannot be completed within the authorized portable Node/core scope
+- Confirmed: Yes — bounded design audit left the clean branch unchanged at `37921f18047305d409b2f738fb67dc8bb582718c` and reproduced directory, ancestor, and partial-release rebinding outside the repository.
+- Evidence:
+  1. AgentStore layout, projects, journal, SQLite, and component authorities retain pathname strings across many modules and descendants.
+  2. Node 22 directory handles support identity observation but expose no portable descriptor-relative `openat`/`mkdirat`/`renameat`/`unlinkat` family or compare-and-remove-directory primitive. Stat/watch checks cannot close the name-resolution race.
+  3. `better-sqlite3` opens from a filename or serialized buffer; it cannot bind its database, journal, and WAL operations to the already acquired directory handle without a custom VFS or an identity-bound store process.
+  4. Canonical-directory and ancestor displacement redirected marker/journal writes into replacement trees while the held descriptor still identified the original. Partial claim replacement during release reproduced deletion of the contender's empty claim.
+- Impact: Another bounded pathname-lock correction cannot prove the required identity invariant. Landing one would misrepresent safety; removing clean release would force unsafe manual reclamation on every restart.
+- Recommended architecture: A platform-native process-lifetime directory lease released only by kernel unlock/handle close; descriptor/handle-relative no-follow filesystem primitives for every child operation; and either a rooted SQLite VFS or a dedicated AgentStore subprocess bootstrapped from the acquired identity and exposed through bounded RPC. POSIX and Windows semantics require explicit qualification. A lock-only dependency is insufficient.
+- Decision required: Authorize the native/isolated-store scope with a revised milestone, explicitly narrow the supported threat model to stable configured path/ancestors, or defer the safety slice as a documented blocker. Phase B remains frozen; reverting `37921f1` is unsafe because it restores confirmed launcher and symlink defects.
+- Owner: Product Lead decision; Reliability/Mobile remains frozen.
