@@ -348,3 +348,13 @@ This append-only experiment ledger records product and operating friction observ
 - Decision required: Defending configured-root/ancestor rebinding and cooperative Ponderosa contenders is implementable, but defending active same-user descendant namespace replacement requires a stronger privilege/sandbox boundary. Choose an explicit bounded trust model, expand to privileged isolation, or defer Phase A. This decision must precede A0 correction and A1 remains forbidden.
 - Confirmed positives: Kernel-managed no-namespace lease direction, retained-root handling for root/ancestor displacement, fail-closed marker contract, stable first run, and explicit macOS/Windows stop gates remain sound design foundations.
 - Owner: Product Lead decision, then Reliability/Mobile A0 correction and same-reviewer rereview.
+
+## 2026-08-24T06:20:22Z — OPS-010 — Overflowed review handoff renders only an opaque artifact transport reference
+
+- Severity: High
+- Classification: Confirmed operational result-rendering defect; related to OPS-006 but not a duplicate association failure
+- Confirmed: Yes — the consequential Layout Safety Rereviewer result appeared in Chat only as `Full result: ponderosa://artifact/text-…`, without its verdict, summary, or an obviously usable one-click artifact control.
+- Reproduction: Complete a long exact-head safety review whose canonical handoff overflows into a managed text artifact; inspect the projected Chat result. The visible message exposes the internal transport reference rather than the review's `NOT APPROVED` verdict and findings summary.
+- Impact: An operator can miss a blocking safety disposition or mistake an opaque URI for a complete handoff. The durable artifact exists, so this is distinct from OPS-006's broken call/result association: the defect is operator-facing overflow projection and access.
+- Recommended fix: Project a compact structured envelope before overflow: verdict/status, severity counts, top findings, exact reviewed head, required next action, artifact title/size, and a keyboard/screen-reader-accessible `Open full result` action. Keep the raw transport reference available only in expanded diagnostics/copy metadata, and show an explicit receipt if artifact loading fails.
+- Owner: Ponderosa correlated-result projection, artifact routing, and Chat UI.
