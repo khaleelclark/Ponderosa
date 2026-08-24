@@ -108,9 +108,10 @@ export function monitorSpeechSurfaceAccessibility(
   };
 
   try {
-    if (typeof MutationObserver === "undefined") {
-      fallbackInterval = window.setInterval(check, 200);
-    } else {
+    const hasMutationObserver = typeof MutationObserver !== "undefined";
+    const hasResizeObserver = typeof ResizeObserver !== "undefined";
+
+    if (hasMutationObserver) {
       observer = new MutationObserver(check);
       observer.observe(document.documentElement, {
         attributes: true,
@@ -119,10 +120,13 @@ export function monitorSpeechSurfaceAccessibility(
         subtree: true,
       });
     }
-    if (typeof ResizeObserver !== "undefined") {
+    if (hasResizeObserver) {
       resizeObserver = new ResizeObserver(check);
       const surface = element();
       if (surface) resizeObserver.observe(surface);
+    }
+    if (!hasMutationObserver || !hasResizeObserver) {
+      fallbackInterval = window.setInterval(check, 200);
     }
     addListener(document, "visibilitychange", check);
     addListener(window, "hashchange", check);
