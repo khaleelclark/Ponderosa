@@ -353,8 +353,17 @@ This append-only experiment ledger records product and operating friction observ
 
 - Severity: High
 - Classification: Confirmed operational result-rendering defect; related to OPS-006 but not a duplicate association failure
-- Confirmed: Yes — the consequential Layout Safety Rereviewer result appeared in Chat only as `Full result: ponderosa://artifact/text-…`, without its verdict, summary, or an obviously usable one-click artifact control.
-- Reproduction: Complete a long exact-head safety review whose canonical handoff overflows into a managed text artifact; inspect the projected Chat result. The visible message exposes the internal transport reference rather than the review's `NOT APPROVED` verdict and findings summary.
-- Impact: An operator can miss a blocking safety disposition or mistake an opaque URI for a complete handoff. The durable artifact exists, so this is distinct from OPS-006's broken call/result association: the defect is operator-facing overflow projection and access.
+- Confirmed: Yes — the consequential Layout Safety Rereviewer result is available through Files & Results, but its Chat projection showed only `Full result: ponderosa://artifact/text-…`, without the verdict, summary, visible artifact action, or guidance that the full result could be opened elsewhere.
+- Reproduction: Complete a long exact-head safety review whose canonical handoff overflows into a managed text artifact; inspect the projected Chat result. Chat exposes the internal transport reference rather than the review's `NOT APPROVED` verdict and findings summary. Open Files & Results separately to find the usable artifact.
+- Impact: An operator can miss a blocking safety disposition or mistake an opaque URI for a complete handoff. The durable artifact is recoverable through Files & Results, so this is distinct from OPS-006's broken call/result association: the defect is Chat discoverability, summary, and direct access rather than artifact loss.
 - Recommended fix: Project a compact structured envelope before overflow: verdict/status, severity counts, top findings, exact reviewed head, required next action, artifact title/size, and a keyboard/screen-reader-accessible `Open full result` action. Keep the raw transport reference available only in expanded diagnostics/copy metadata, and show an explicit receipt if artifact loading fails.
 - Owner: Ponderosa correlated-result projection, artifact routing, and Chat UI.
+
+## 2026-08-24T06:22:08Z — REL-003 decision — Explicit bounded root trust selected
+
+- Authority: The operator chose the bounded trust model and explicitly declined privileged isolation/sandbox expansion.
+- Protected boundary: Phase A-Native must resist configured-root and ancestor rebinding, accidental namespace changes, and cooperative or competing Ponderosa processes. It must fail closed for unsupported filesystem semantics and preserve the missing/malformed/unknown-marker safety invariant.
+- Explicit non-goal: The design must not claim resistance to an actively hostile same-user process mutating descendants inside the already acquired protected root. Such direct host tampering is outside the authority boundary and may cause denial/fail-stop; this is consistent with the product statement that isolation is not a sandbox.
+- Required A0 correction: Add the asset-authority database and sidecars; restrict SQLite to a safe port behind a process-wide open barrier; define descriptor/handle non-inheritance and Windows owner-thread behavior; detect filesystem capability before mutation with handle-based no-cross resolution; prove a legacy-rejected compatibility fence; and require dormant groundwork plus one version-gated atomic activation boundary.
+- Gate: Corrected A0 documentation only, then same-reviewer exact-head rereview. A1 and Phase B remain forbidden until explicit A0 approval.
+- Owner: Reliability/Mobile.
