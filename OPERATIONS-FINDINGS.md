@@ -179,3 +179,11 @@ This append-only experiment ledger records product and operating friction observ
 - Confirmed corrections retained: Launcher no longer deletes daemon locks; input-symlink retargeting is fixed; stable-path protocol contenders receive atomic no-replace acquisition; missing/malformed/unknown layout markers fail closed; safe stable-directory first run remains intact.
 - Recommended fix: Bind lock and all store operations to stable directory identity and make release identity-atomic under displacement. If Node and repository constraints cannot provide this without native locking, descriptor-relative I/O, a dependency, or a broad rewrite, stop with a precise design blocker rather than landing another incomplete correction. Phase B remains frozen.
 - Owner: Reliability/Mobile.
+
+## 2026-08-24T05:36:16Z — DOCS-001 follow-up — Reviewed system-boundary corrections frozen
+
+- Status: All six confirmed documentation findings are corrected in exact head `2fa7ee946875f0c2b40f52e32dc8af1cf5db0d5a`; independent same-reviewer approval pending.
+- Correction: The docs now scope fail-closed behavior to SQLite launch-baseline/schema checks and explicitly disclose the still-destructive baseline layout cutover; distinguish external selected folders from Ponderosa-created `<dataDir>/workspaces` in location and backup guidance; describe Trigger occurrence rows precisely; split durable Agent Decisions from live in-memory provider elicitations; separate runtime teardown from accepted-session snapshot switching; and distinguish disposable browser profiles from trusted persistent Project profiles.
+- Preserved evidence: The independently approved conditional `ponderosa_history` and removed `ponderosa_docs` wording is byte-unchanged, as are `README.md` and `packages/core/src/managed-tools.ts` from the previously reviewed head.
+- Qualification: The correction is one clean Markdown-only commit over the rejected head; parent and full-range `git diff --check` passed. Parent frozen install, strict typecheck, and production build evidence remains applicable because no source/tool bytes changed.
+- Remaining gate: Exact head is frozen in a fresh filesystem read-only detached worktree for rereview by the same factual-contract reviewer. Do not integrate or deploy until approved.
