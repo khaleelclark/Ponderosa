@@ -64,11 +64,11 @@ import {
 import {
   agentBelongsToConversation,
   agentStatusColor,
-  agentStatusLabel,
-  isProviderBlockedHealth,
+  agentStatusPresentation,
   orderedAgentOrganization,
   type AgentStatus,
 } from "../agents";
+import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
 import {
   agentHasCollapsedAncestor,
   agentHierarchyContextIds,
@@ -253,6 +253,7 @@ export function AgentsTab({
   organizationRootAgentId?: string;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const workspaceConnection = useWorkspaceConnection();
   const [statusFilters, setStatusFilters] = useState<StatusFilter[]>([]);
   const [masterFilter, setMasterFilter] = useState<string>("all");
   const effectiveMasterFilter = conversationFilterValue ?? masterFilter;
@@ -398,6 +399,9 @@ export function AgentsTab({
 
   const organizationRows = orderedAgentOrganization(agents);
   const agentsById = new Map(agents.map(agent => [agent.id, agent]));
+  const agentNamesById = new Map(
+    (relationshipAgents ?? agents).map(agent => [agent.id, agent.title]),
+  );
   const childrenByManager = new Map<string, AgentDto[]>();
   for (const agent of agents) {
     if (!agent.managerAgentId || !agentsById.has(agent.managerAgentId))
@@ -896,6 +900,12 @@ export function AgentsTab({
           <Stack spacing={0.75} role="tree" aria-label="Agent organization">
             {visibleFiltered.map(({ agent, depth }, index) => {
               const status = statusByAgentId.get(agent.id) ?? "idle";
+              const health = healthByAgentId.get(agent.id);
+              const statusPresentation = agentStatusPresentation(health, {
+                status,
+                connectionStatus: workspaceConnection.status,
+                agentNameForId: agentId => agentNamesById.get(agentId),
+              });
               const profile = agentRoleProfile(agent);
               const organizationParent = resolveAgentRelationshipParent(
                 agent,
@@ -1025,10 +1035,10 @@ export function AgentsTab({
                       >
                         <Chip
                           size="small"
-                          label={isProviderBlockedHealth(healthByAgentId.get(agent.id))
-                            ? "Provider blocked"
-                            : agentStatusLabel(status)}
+                          label={statusPresentation.label}
                           color={agentStatusColor(status)}
+                          aria-label={statusPresentation.accessibleLabel}
+                          title={statusPresentation.detail}
                         />
                         <Typography
                           variant="caption"

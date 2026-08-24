@@ -16,6 +16,7 @@ import {
   Typography,
 } from "@mui/material";
 import type {
+  AgentHealthDto,
   TriggerDefinitionDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
@@ -36,6 +37,7 @@ import {
 import { AgentStatusIndicator } from "./AgentStatusIndicator";
 import { starColor } from "./WorkspaceSidebar.helpers";
 import { SharedSidebarPanel } from "./WorkspaceSidebar.parts";
+import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
 
 interface HomeSidebarPanelProps {
   snapshots: WorkspaceProjectSnapshot[];
@@ -69,6 +71,7 @@ type HomeResource = {
   route: Route;
   icon: JSX.Element;
   status?: AgentStatus;
+  health?: AgentHealthDto;
 };
 
 export function HomeSidebarPanel({
@@ -92,12 +95,23 @@ export function HomeSidebarPanel({
   viewAllIcon = <HomeOutlinedIcon />,
 }: HomeSidebarPanelProps): JSX.Element {
   const queryClient = useQueryClient();
+  const workspaceConnection = useWorkspaceConnection();
   const recencyQuery = useWorkspaceResourceRecency();
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const starredResourceIds = starredWorkspaceResources(preferences);
   const agentStatusById = new Map<string, AgentStatus>(
     snapshots.flatMap(snapshot =>
       snapshot.health.map(entry => [entry.agentId, entry.status] as const),
+    ),
+  );
+  const agentHealthById = new Map(
+    snapshots.flatMap(snapshot =>
+      snapshot.health.map(entry => [entry.agentId, entry] as const),
+    ),
+  );
+  const agentNamesById = new Map(
+    snapshots.flatMap(snapshot =>
+      snapshot.agents.map(agent => [agent.id, agent.title] as const),
     ),
   );
   const agentDestinations = new Map(
@@ -147,6 +161,7 @@ export function HomeSidebarPanel({
           } as Route,
           icon: <SmartToyOutlinedIcon fontSize="small" />,
           status: agentStatusById.get(agent.id) ?? "idle",
+          health: agentHealthById.get(agent.id),
         })),
     ),
     ...triggers.flatMap(trigger => {
@@ -227,7 +242,14 @@ export function HomeSidebarPanel({
               }}
               secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
             />
-            {item.status ? <AgentStatusIndicator status={item.status} /> : null}
+            {item.status ? (
+              <AgentStatusIndicator
+                status={item.status}
+                health={item.health}
+                connectionStatus={workspaceConnection.status}
+                agentNameForId={agentId => agentNamesById.get(agentId)}
+              />
+            ) : null}
           </ListItemButton>
           <Tooltip
             title={starred ? `Unstar ${item.title}` : `Star ${item.title}`}

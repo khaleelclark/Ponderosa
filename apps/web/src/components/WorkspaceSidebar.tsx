@@ -77,6 +77,7 @@ import {
   useWorkspaceSidebarNavigation,
   useWorkspaceSidebarResize,
 } from "./useWorkspaceSidebarState";
+import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
 
 export function WorkspaceSidebar({
   projects,
@@ -118,6 +119,7 @@ export function WorkspaceSidebar({
   onWidthChange?(width: number): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const workspaceConnection = useWorkspaceConnection();
   const {
     sidebarSection,
     setSidebarSection,
@@ -604,13 +606,18 @@ export function WorkspaceSidebar({
   type AgentSidebarRow = {
     agent: (typeof agentItems)[number]["agent"];
     project: (typeof agentItems)[number]["project"];
+    health?: WorkspaceAgentDirectoryItemDto["health"];
     status?: (typeof agentItems)[number]["health"]["status"];
   };
   const allAgentRows: AgentSidebarRow[] = agentItems.map(({ agent, project, health }) => ({
     agent,
     project,
+    health,
     status: health.status,
   }));
+  const agentNamesById = new Map(
+    allAgentRows.map(row => [row.agent.id, row.agent.title]),
+  );
   const activeAgentRow: AgentSidebarRow | undefined =
     route.kind === "agent" &&
     activeProject &&
@@ -620,7 +627,7 @@ export function WorkspaceSidebar({
       : undefined;
   const agentRows = allAgentRows;
   const agentResourceRows = (items: AgentSidebarRow[]) =>
-    items.map(({ agent, project: agentProject, status }) => {
+    items.map(({ agent, project: agentProject, health, status }) => {
       const starred = starredResourceIds.has(
         resourcePreferenceKey("agent", agent.id),
       );
@@ -686,7 +693,14 @@ export function WorkspaceSidebar({
               }}
               secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
             />
-            {status ? <AgentStatusIndicator status={status} /> : null}
+            {status ? (
+              <AgentStatusIndicator
+                status={status}
+                health={health}
+                connectionStatus={workspaceConnection.status}
+                agentNameForId={agentId => agentNamesById.get(agentId)}
+              />
+            ) : null}
           </ListItemButton>
           <Tooltip title={`${starred ? "Unstar" : "Star"} ${agent.title}`}>
             <IconButton

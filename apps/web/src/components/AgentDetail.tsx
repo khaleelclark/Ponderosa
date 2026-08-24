@@ -27,7 +27,6 @@ import {
   agentStatusColor,
   agentStatusLabel,
   deriveAgentStatus,
-  isProviderBlockedHealth,
   type AgentStatus,
 } from "../agents";
 import {
@@ -891,9 +890,9 @@ export function AgentDetail({
         lineageLabel={lineageLabel}
         status={status}
         health={projectedHealth}
-        providerBlocked={isProviderBlockedHealth(projectedHealth)}
         connectionStatus={agentConnectionStatus}
         startedAt={runtimeActivity?.startedAt}
+        agentNameForId={agentNameForId}
         running={running}
         stopping={cancelRun.isPending}
         tab={tab}

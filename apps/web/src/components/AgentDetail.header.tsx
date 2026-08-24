@@ -15,6 +15,7 @@ import type { AgentDto, AgentHealthDto } from "@ponderosa/core";
 import {
   agentStatusColor,
   agentStatusLabel,
+  agentStatusPresentation,
   type AgentStatus,
 } from "../agents";
 import { transcriptFileName } from "../chatTranscript";
@@ -48,22 +49,26 @@ export const AGENT_DETAIL_TABS: Array<{
 function AgentRunState({
   status,
   health,
-  providerBlocked,
   connectionStatus,
   startedAt,
+  agentNameForId,
 }: {
   status: AgentStatus;
   health?: AgentHealthDto;
-  providerBlocked?: boolean;
   connectionStatus: WorkspaceConnectionStatus;
   startedAt?: string;
+  agentNameForId(agentId: string): string | undefined;
 }): JSX.Element {
   const now = useAgentRunClock(startedAt);
-  const runState = providerBlocked
-    ? "Provider blocked"
-    : startedAt
-    ? `${agentStatusLabel(status)} · ${formatExecutionElapsed(startedAt, now)}`
-    : agentStatusLabel(status);
+  const presentation = agentStatusPresentation(health, {
+    status,
+    connectionStatus,
+    agentNameForId,
+  });
+  const elapsed = startedAt ? formatExecutionElapsed(startedAt, now) : undefined;
+  const runState = elapsed
+    ? `${presentation.label} · ${elapsed}`
+    : presentation.label;
   const connectionState = connectionStatus === "live"
     ? "Live"
     : connectionStatus === "stale"
@@ -74,7 +79,7 @@ function AgentRunState({
           ? "Connecting"
           : "Reconnecting";
   const details = [
-    "Current: " + runState,
+    "Current: " + presentation.detail,
     health?.latestRun ? "Latest Run: " + agentStatusLabel(health.latestRun.status) : undefined,
     health?.assignedWorkOutcome ? "Assigned work: " + agentStatusLabel(health.assignedWorkOutcome.status) : undefined,
     health?.attention ? "Needs attention: " + agentStatusLabel(health.attention.status) : undefined,
@@ -85,7 +90,7 @@ function AgentRunState({
       label={`${runState} · ${connectionState}`}
       color={connectionStatus === "live" ? agentStatusColor(status) : "warning"}
       variant={connectionStatus === "live" ? "filled" : "outlined"}
-      aria-label={`Agent status: ${runState}; ${connectionState.toLocaleLowerCase()}`}
+      aria-label={`${presentation.accessibleLabel}${elapsed ? `; ${elapsed}` : ""}; ${connectionState.toLocaleLowerCase()}`}
       title={details}
     />
   );
@@ -100,9 +105,9 @@ interface AgentDetailHeaderProps {
   lineageLabel: string;
   status: AgentStatus;
   health?: AgentHealthDto;
-  providerBlocked?: boolean;
   connectionStatus: WorkspaceConnectionStatus;
   startedAt?: string;
+  agentNameForId(agentId: string): string | undefined;
   running: boolean;
   stopping: boolean;
   tab: AgentTab;
@@ -133,9 +138,9 @@ export function AgentDetailHeader({
   lineageLabel,
   health,
   status,
-  providerBlocked,
   connectionStatus,
   startedAt,
+  agentNameForId,
   running,
   stopping,
   tab,
@@ -204,9 +209,9 @@ export function AgentDetailHeader({
         <AgentRunState
           status={status}
           health={health}
-          providerBlocked={providerBlocked}
           connectionStatus={connectionStatus}
           startedAt={startedAt}
+          agentNameForId={agentNameForId}
         />
       }
       actions={

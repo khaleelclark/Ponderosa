@@ -231,6 +231,17 @@ function workspaceEventInvalidatesAllChat(event: WorkspaceEvent): boolean {
     || (event.type === "agent_event" && event.category === "message");
 }
 
+function workspaceAgentEventChangesPhase(
+  event: WorkspaceEvent,
+): event is Extract<WorkspaceEvent, { type: "agent_event" }> {
+  return event.type === "agent_event" && (
+    event.category === "lifecycle"
+    || event.eventType === "command"
+    || event.eventType === "tool_call"
+    || event.eventType === "tool_result"
+  );
+}
+
 function workspaceEventChangesResourceRecency(event: WorkspaceEvent): boolean {
   return event.type === "resource_used"
     || event.type === "agent_event"
@@ -588,9 +599,11 @@ export function useWorkspaceStream(
         void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("project") });
       } else if (event.type === "trigger_changed") {
         void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("trigger") });
-      } else if (event.type === "agent_event" && event.category === "lifecycle") {
+      } else if (workspaceAgentEventChangesPhase(event)) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("agent") });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("project") });
+        if (event.category === "lifecycle") {
+          void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("project") });
+        }
       }
       if (event.type === "preferences_updated") return;
       if (event.type === "project_changed") {
@@ -659,8 +672,10 @@ export function useWorkspaceStream(
         for (const queryKey of fileActivityConversationQueryKeys(event)) {
           void queryClient.invalidateQueries({ queryKey });
         }
-        if (event.category === "lifecycle") {
+        if (workspaceAgentEventChangesPhase(event)) {
           agentStateInvalidator.schedule(event.projectId);
+        }
+        if (event.category === "lifecycle") {
           collaborationChatInvalidator.schedule(event.conversationIds);
           agentWorkInvalidator.schedule(event.projectId);
         }

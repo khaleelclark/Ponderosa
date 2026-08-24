@@ -22,6 +22,7 @@ import type {
   WorkspaceTriggerDirectoryItemDto,
 } from "@ponderosa/core";
 import type { ReactNode } from "react";
+import { agentStatusPresentation } from "../agents";
 import { isOpenAttention } from "../attention";
 import { engineAvailabilityPresentation } from "../conversationEngine";
 import {
@@ -30,6 +31,7 @@ import {
 } from "../hooks/useWorkspaceDirectory";
 import type { Route } from "../routing";
 import { CompactWorkspaceHeader } from "./WorkspaceFrame";
+import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
 
 const ACTIVE_STATUSES = new Set([
   "running",
@@ -114,12 +116,16 @@ function ItemCard({
   title,
   detail,
   status,
+  statusAccessibleLabel,
+  statusDetail,
   onClick,
 }: {
   icon: JSX.Element;
   title: string;
   detail: string;
   status?: string;
+  statusAccessibleLabel?: string;
+  statusDetail?: string;
   onClick(): void;
 }): JSX.Element {
   return (
@@ -135,7 +141,15 @@ function ItemCard({
           <Typography fontWeight={750} noWrap>{title}</Typography>
           <Typography variant="caption" color="text.secondary" noWrap>{detail}</Typography>
         </Box>
-        {status ? <Chip size="small" variant="outlined" label={status} /> : null}
+        {status ? (
+          <Chip
+            size="small"
+            variant="outlined"
+            label={status}
+            aria-label={statusAccessibleLabel}
+            title={statusDetail}
+          />
+        ) : null}
       </ButtonBase>
     </Paper>
   );
@@ -174,12 +188,16 @@ export function HomeView({
   onCreateProject(): void;
   onOpenInbox(): void;
 }): JSX.Element {
+  const workspaceConnection = useWorkspaceConnection();
   const directoryOptions = { sort: "last_used" as const };
   const agentQuery = useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", directoryOptions);
   const triggerQuery = useWorkspaceDirectory<WorkspaceTriggerDirectoryItemDto>("trigger", directoryOptions);
   const agentDirectory = workspaceDirectoryItems(agentQuery.data?.pages, preferences);
   const triggerDirectory = workspaceDirectoryItems(triggerQuery.data?.pages, preferences);
   const agentItems = [...agentDirectory.starredItems, ...agentDirectory.items];
+  const agentNamesById = new Map(
+    agentItems.map(item => [item.agent.id, item.agent.title]),
+  );
   const triggerItems = [...triggerDirectory.starredItems, ...triggerDirectory.items];
   const attention = notifications
     .filter(isOpenAttention)
@@ -280,16 +298,24 @@ export function HomeView({
           >
             {working.length ? (
               <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
-                {working.slice(0, 8).map(item => (
-                  <ItemCard
-                    key={item.agent.id}
-                    icon={<SmartToyOutlinedIcon />}
-                    title={item.agent.title}
-                    detail={item.project.label}
-                    status={humanizeStatus(item.health.status)}
-                    onClick={() => onNavigate({ kind: "agent", projectId: item.project.id, agentId: item.agent.id })}
-                  />
-                ))}
+                {working.slice(0, 8).map(item => {
+                  const presentation = agentStatusPresentation(item.health, {
+                    connectionStatus: workspaceConnection.status,
+                    agentNameForId: agentId => agentNamesById.get(agentId),
+                  });
+                  return (
+                    <ItemCard
+                      key={item.agent.id}
+                      icon={<SmartToyOutlinedIcon />}
+                      title={item.agent.title}
+                      detail={item.project.label}
+                      status={presentation.label}
+                      statusAccessibleLabel={presentation.accessibleLabel}
+                      statusDetail={presentation.detail}
+                      onClick={() => onNavigate({ kind: "agent", projectId: item.project.id, agentId: item.agent.id })}
+                    />
+                  );
+                })}
               </Box>
             ) : (
               <Paper variant="outlined" sx={{ p: 2 }}><Typography color="text.secondary">No Agents are active right now.</Typography></Paper>

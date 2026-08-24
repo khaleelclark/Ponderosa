@@ -16,6 +16,8 @@ export function workspaceAgentEventCategory(event: LogEvent): Extract<WorkspaceE
     case "agent_lifecycle": return "lifecycle";
     case "file_change": return "file";
     case "command":
+    case "tool_call":
+    case "tool_result":
     case "work_item_update":
     case "test_result":
     case "browser_session":
