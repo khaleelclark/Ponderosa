@@ -8,6 +8,7 @@ import {
 } from "./browserSpeech";
 
 type RequestedEnd = "pause" | "stop";
+const DICTATION_SETTLE_TIMEOUT_MS = 3_000;
 
 export interface DictationController {
   error?: string;
@@ -29,6 +30,7 @@ export function useDictation(
   const recognitionRef = useRef<BrowserSpeechRecognition>();
   const generationRef = useRef(0);
   const settlingRef = useRef(false);
+  const settleTimerRef = useRef<number>();
   const requestedEndRef = useRef<RequestedEnd>();
   const errorRef = useRef(false);
   const mountedRef = useRef(true);
@@ -41,6 +43,13 @@ export function useDictation(
     if (settlingRef.current === next) return;
     settlingRef.current = next;
     settlingHandlerRef.current(next);
+  }, []);
+
+  const clearSettleTimer = useCallback(() => {
+    if (settleTimerRef.current !== undefined) {
+      window.clearTimeout(settleTimerRef.current);
+      settleTimerRef.current = undefined;
+    }
   }, []);
 
   const releaseRecognition = useCallback(
@@ -64,6 +73,7 @@ export function useDictation(
     ) => {
       if (generationRef.current !== generation) return;
       generationRef.current += 1;
+      clearSettleTimer();
       releaseRecognition(recognition);
       requestedEndRef.current = undefined;
       errorRef.current = true;
@@ -79,12 +89,28 @@ export function useDictation(
       );
       setStatus("error");
     },
-    [releaseRecognition, updateSettling],
+    [clearSettleTimer, releaseRecognition, updateSettling],
+  );
+
+  const scheduleSettleTimeout = useCallback(
+    (recognition: BrowserSpeechRecognition, generation: number) => {
+      clearSettleTimer();
+      settleTimerRef.current = window.setTimeout(() => {
+        settleTimerRef.current = undefined;
+        abandonRecognition(
+          recognition,
+          generation,
+          "Voice dictation did not finish in time.",
+        );
+      }, DICTATION_SETTLE_TIMEOUT_MS);
+    },
+    [abandonRecognition, clearSettleTimer],
   );
 
   const begin = useCallback(() => {
     const Recognition = speechRecognitionConstructor();
     if (!Recognition || unavailableReason) return;
+    clearSettleTimer();
     const existingRecognition = recognitionRef.current;
     if (existingRecognition) releaseRecognition(existingRecognition);
     try {
@@ -136,7 +162,9 @@ export function useDictation(
     };
     recognition.onend = () => {
       if (generationRef.current !== generation) return;
+      generationRef.current += 1;
       const requestedEnd = requestedEndRef.current;
+      clearSettleTimer();
       releaseRecognition(recognition);
       requestedEndRef.current = undefined;
       updateSettling(false);
@@ -157,6 +185,7 @@ export function useDictation(
     }
   }, [
     abandonRecognition,
+    clearSettleTimer,
     releaseRecognition,
     unavailableReason,
     updateSettling,
@@ -167,18 +196,20 @@ export function useDictation(
     if (!recognition) return;
     requestedEndRef.current = "pause";
     setStatus("pausing");
+    const generation = generationRef.current;
+    scheduleSettleTimeout(recognition, generation);
     try {
       recognition.stop();
     } catch (pauseError) {
       abandonRecognition(
         recognition,
-        generationRef.current,
+        generation,
         pauseError instanceof Error
           ? pauseError.message
           : "Voice dictation could not pause.",
       );
     }
-  }, [abandonRecognition]);
+  }, [abandonRecognition, scheduleSettleTimeout]);
 
   const stop = useCallback(() => {
     const recognition = recognitionRef.current;
@@ -188,23 +219,26 @@ export function useDictation(
     }
     requestedEndRef.current = "stop";
     setStatus("stopping");
+    const generation = generationRef.current;
+    scheduleSettleTimeout(recognition, generation);
     try {
       recognition.stop();
     } catch (stopError) {
       abandonRecognition(
         recognition,
-        generationRef.current,
+        generation,
         stopError instanceof Error
           ? stopError.message
           : "Voice dictation could not stop cleanly.",
       );
     }
-  }, [abandonRecognition]);
+  }, [abandonRecognition, scheduleSettleTimeout]);
 
   useEffect(() => {
     mountedRef.current = true;
     const endForNavigation = () => {
       generationRef.current += 1;
+      clearSettleTimer();
       requestedEndRef.current = "stop";
       const recognition = recognitionRef.current;
       if (recognition) {
@@ -222,6 +256,7 @@ export function useDictation(
       window.removeEventListener("pagehide", endForNavigation);
       mountedRef.current = false;
       generationRef.current += 1;
+      clearSettleTimer();
       requestedEndRef.current = "stop";
       const recognition = recognitionRef.current;
       if (recognition) {
@@ -234,7 +269,7 @@ export function useDictation(
       }
       updateSettling(false);
     };
-  }, [releaseRecognition, updateSettling]);
+  }, [clearSettleTimer, releaseRecognition, updateSettling]);
 
   return {
     error,
