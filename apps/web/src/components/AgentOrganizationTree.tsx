@@ -87,6 +87,7 @@ interface TreeState {
   focusedId?: string;
   setFocusedId(id: string): void;
   treeRef: MutableRefObject<HTMLDivElement | null>;
+  pendingChildFocusRef: MutableRefObject<string | undefined>;
   childControlsHost: HTMLDivElement | null;
   ownerLoading: boolean;
   connectionStatus: "connecting" | "live" | "reconnecting" | "stale" | "unavailable";
@@ -104,6 +105,20 @@ function focusTreeRow(tree: HTMLDivElement | null, selector: string): void {
   globalThis.setTimeout(() => {
     tree?.querySelector<HTMLElement>(selector)?.focus();
   }, 0);
+}
+
+function ownsTreeItemEvent(currentTarget: HTMLElement, target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest("[role='treeitem']") === currentTarget;
+}
+
+function ownsPresentationEvent(currentTarget: HTMLElement, target: EventTarget | null): boolean {
+  return target instanceof Element &&
+    target.closest("[role='treeitem']") === currentTarget.closest("[role='treeitem']");
+}
+
+function findTreeRow(tree: HTMLDivElement | null, agentId: string | undefined): HTMLElement | undefined {
+  if (!agentId) return undefined;
+  return tree?.querySelector<HTMLElement>(`[data-agent-id="${CSS.escape(agentId)}"]`) ?? undefined;
 }
 
 function OrganizationRow({
@@ -136,6 +151,8 @@ function OrganizationRow({
       })
     : undefined;
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!ownsTreeItemEvent(event.currentTarget, event.target)) return;
+    event.stopPropagation();
     const rows = [...(state.treeRef.current?.querySelectorAll<HTMLElement>("[role='treeitem']") ?? [])];
     const currentIndex = rows.indexOf(event.currentTarget);
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -147,14 +164,15 @@ function OrganizationRow({
     } else if (event.key === "ArrowRight" && expandable) {
       event.preventDefault();
       if (!expanded) {
+        state.pendingChildFocusRef.current = node.id;
         state.setExpanded(current => new Set(current).add(node.id));
-        focusTreeRow(state.treeRef.current, `[data-parent-id="${CSS.escape(node.id)}"]`);
       } else {
         focusTreeRow(state.treeRef.current, `[data-parent-id="${CSS.escape(node.id)}"]`);
       }
     } else if (event.key === "ArrowLeft" && live) {
       event.preventDefault();
       if (expanded) {
+        if (state.pendingChildFocusRef.current === node.id) state.pendingChildFocusRef.current = undefined;
         state.setExpanded(current => {
           const next = new Set(current);
           next.delete(node.id);
@@ -186,11 +204,22 @@ function OrganizationRow({
       aria-selected={live && state.selectionMode ? state.selectedAgentIds.has(node.id) : undefined}
       aria-keyshortcuts={live ? "Shift+F10" : undefined}
       tabIndex={state.focusedId === node.id ? 0 : -1}
-      onFocus={() => state.setFocusedId(node.id)}
+      onFocus={event => {
+        if (!ownsTreeItemEvent(event.currentTarget, event.target)) return;
+        state.setFocusedId(node.id);
+      }}
       onKeyDown={handleKeyDown}
-      onClick={live ? () => {
+      onClick={live ? event => {
+        if (!ownsTreeItemEvent(event.currentTarget, event.target)) return;
+        event.stopPropagation();
         if (state.selectionMode) state.toggleSelection(node.id);
         else state.onOpenAgent(node.id);
+      } : undefined}
+      onContextMenu={live ? event => {
+        if (!ownsTreeItemEvent(event.currentTarget, event.target)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        state.onActions(node, event.currentTarget);
       } : undefined}
       sx={{ outline: "none", ml: `${Math.min(level - 1, 5) * 18}px` }}
     >
@@ -231,12 +260,17 @@ function OrganizationRow({
             aria-hidden="true"
             title={expandable ? `${expanded ? "Collapse" : "Expand"} ${node.title}` : undefined}
             onClick={expandable ? event => {
+              if (!ownsPresentationEvent(event.currentTarget, event.target)) return;
               event.stopPropagation();
               state.setExpanded(current => {
-              const next = new Set(current);
-              if (next.has(node.id)) next.delete(node.id);
-              else next.add(node.id);
-              return next;
+                const next = new Set(current);
+                if (next.has(node.id)) {
+                  next.delete(node.id);
+                  if (state.pendingChildFocusRef.current === node.id) state.pendingChildFocusRef.current = undefined;
+                } else {
+                  next.add(node.id);
+                }
+                return next;
               });
             } : undefined}
             sx={{
@@ -309,6 +343,7 @@ function OrganizationRow({
             aria-hidden="true"
             title={`Actions for ${node.title}`}
             onClick={event => {
+              if (!ownsPresentationEvent(event.currentTarget, event.target)) return;
               event.stopPropagation();
               state.onActions(node, event.currentTarget);
             }}
@@ -359,9 +394,18 @@ function OrganizationRows({
   );
 }
 
+interface PageMoreResult {
+  hasNextPage: boolean;
+  failed: boolean;
+}
+
 function PageFooter({
   label,
   controlsId,
+  focusScopeKey,
+  itemIds,
+  fallbackAgentId,
+  treeRef,
   hasNextPage,
   fetching,
   error,
@@ -370,22 +414,91 @@ function PageFooter({
 }: {
   label: string;
   controlsId: string;
+  focusScopeKey: string;
+  itemIds: readonly string[];
+  fallbackAgentId?: string;
+  treeRef: MutableRefObject<HTMLDivElement | null>;
   hasNextPage: boolean;
   fetching: boolean;
   error: boolean;
   initialError?: boolean;
-  onMore(): void;
+  onMore(): Promise<PageMoreResult>;
 }): JSX.Element | null {
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const mountedRef = useRef(true);
+  const scopeKeyRef = useRef(focusScopeKey);
+  const itemIdsRef = useRef(itemIds);
+  const fallbackAgentIdRef = useRef(fallbackAgentId);
+  const activationRef = useRef(0);
+  const focusTimerRef = useRef<ReturnType<typeof globalThis.setTimeout>>();
+  scopeKeyRef.current = focusScopeKey;
+  itemIdsRef.current = itemIds;
+  fallbackAgentIdRef.current = fallbackAgentId;
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (focusTimerRef.current !== undefined) globalThis.clearTimeout(focusTimerRef.current);
+    };
+  }, []);
+
+  const handleMore = async () => {
+    const activation = activationRef.current + 1;
+    activationRef.current = activation;
+    const activationScopeKey = focusScopeKey;
+    const previousIds = new Set(itemIds);
+    let result: PageMoreResult;
+    try {
+      result = await onMore();
+    } catch {
+      result = { hasNextPage: true, failed: true };
+    }
+    if (!mountedRef.current || activationRef.current !== activation || scopeKeyRef.current !== activationScopeKey) return;
+    if (focusTimerRef.current !== undefined) globalThis.clearTimeout(focusTimerRef.current);
+    const focusAfterCommit = (remainingAttempts: number) => {
+      focusTimerRef.current = globalThis.setTimeout(() => {
+        focusTimerRef.current = undefined;
+        if (!mountedRef.current || activationRef.current !== activation || scopeKeyRef.current !== activationScopeKey) return;
+        if (result.failed || result.hasNextPage) {
+          const button = buttonRef.current;
+          if ((!button?.isConnected || button.disabled) && remainingAttempts > 0) {
+            focusAfterCommit(remainingAttempts - 1);
+            return;
+          }
+          button?.focus();
+          return;
+        }
+        const currentItemIds = itemIdsRef.current;
+        const firstNewId = currentItemIds.find(agentId => !previousIds.has(agentId));
+        if (!firstNewId && remainingAttempts > 0) {
+          focusAfterCommit(remainingAttempts - 1);
+          return;
+        }
+        const target = findTreeRow(treeRef.current, firstNewId) ??
+          findTreeRow(treeRef.current, fallbackAgentIdRef.current) ??
+          findTreeRow(treeRef.current, currentItemIds.at(-1)) ??
+          treeRef.current?.querySelector<HTMLElement>("[role='treeitem'][tabindex='0'], [role='treeitem']") ??
+          undefined;
+        if (target?.isConnected && treeRef.current?.contains(target)) target.focus();
+      }, 0);
+    };
+    focusAfterCommit(3);
+  };
   if (!hasNextPage && !error && !initialError) return null;
   return (
     <Stack role="group" aria-label={`${label} paging`} direction="row" spacing={1} sx={{ alignItems: "center" }}>
       <Typography variant="caption" color="text.secondary">{label}</Typography>
       <Button
+        ref={buttonRef}
         color={error || initialError ? "error" : "inherit"}
         disabled={fetching}
+        onKeyDown={event => event.stopPropagation()}
+        onKeyUp={event => event.stopPropagation()}
+        onPointerDown={event => event.stopPropagation()}
+        onPointerUp={event => event.stopPropagation()}
         onClick={event => {
           event.stopPropagation();
-          onMore();
+          void handleMore();
         }}
         aria-controls={controlsId}
         aria-label={`${error || initialError ? "Retry" : "Load more"} ${label}`}
@@ -413,22 +526,43 @@ function OrganizationChildren({
     parentAgentId: parentId,
   });
   useEffect(() => {
-    if (state.focusedId !== parentId || query.items.length === 0) return;
+    if (state.pendingChildFocusRef.current !== parentId || query.items.length === 0) return;
+    state.pendingChildFocusRef.current = undefined;
     focusTreeRow(
       state.treeRef.current,
       `[data-parent-id="${CSS.escape(parentId)}"]`,
     );
-  }, [parentId, query.items.length, state.focusedId, state.treeRef]);
+  }, [parentId, query.items.length, state.pendingChildFocusRef, state.treeRef]);
+  useEffect(() => () => {
+    if (state.pendingChildFocusRef.current === parentId) state.pendingChildFocusRef.current = undefined;
+  }, [parentId, state.pendingChildFocusRef]);
   const groupId = `agent-organization-children-${parentId}`;
   const pageControls = (
     <PageFooter
       label={`Direct reports for ${parentTitle}`}
       controlsId={groupId}
+      focusScopeKey={`${state.projectId}:children:${parentId}`}
+      itemIds={query.items.map(item => item.id)}
+      fallbackAgentId={parentId}
+      treeRef={state.treeRef}
       hasNextPage={Boolean(query.hasNextPage)}
       fetching={query.isFetchingNextPage}
       error={query.isFetchNextPageError}
       initialError={query.isError && !query.pages}
-      onMore={() => void (query.isError ? query.refetch() : query.fetchNextPage())}
+      onMore={async () => {
+        if (query.isError) {
+          const result = await query.refetch();
+          return {
+            hasNextPage: Boolean(result.data?.pages.at(-1)?.nextCursor),
+            failed: result.isError,
+          };
+        }
+        const result = await query.fetchNextPage();
+        return {
+          hasNextPage: Boolean(result.hasNextPage),
+          failed: result.isFetchNextPageError,
+        };
+      }}
     />
   );
   return (
@@ -472,6 +606,7 @@ export function AgentOrganizationTree({
   const queryClient = useQueryClient();
   const connection = useWorkspaceConnection();
   const treeRef = useRef<HTMLDivElement | null>(null);
+  const pendingChildFocusRef = useRef<string>();
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<"" | AgentOperationalStatus>("");
@@ -554,6 +689,7 @@ export function AgentOrganizationTree({
     focusedId,
     setFocusedId,
     treeRef,
+    pendingChildFocusRef,
     childControlsHost,
     ownerLoading: roots.isFetching,
     connectionStatus: connection.status,
@@ -830,29 +966,77 @@ export function AgentOrganizationTree({
           <PageFooter
             label={filtered ? "Filtered Agents" : "Reports to you"}
             controlsId="agent-organization-roots"
+            focusScopeKey={`${projectId}:roots:${search}:${status}`}
+            itemIds={roots.items.map(item => item.id)}
+            treeRef={treeRef}
             hasNextPage={Boolean(roots.hasNextPage)}
             fetching={roots.isFetchingNextPage}
             error={roots.isFetchNextPageError}
-            onMore={() => void (roots.isFetchNextPageError ? roots.refetch() : roots.fetchNextPage())}
+            onMore={async () => {
+              if (roots.isFetchNextPageError) {
+                const result = await roots.refetch();
+                return {
+                  hasNextPage: Boolean(result.data?.pages.at(-1)?.nextCursor),
+                  failed: result.isError,
+                };
+              }
+              const result = await roots.fetchNextPage();
+              return {
+                hasNextPage: Boolean(result.hasNextPage),
+                failed: result.isFetchNextPageError,
+              };
+            }}
           />
           {!filtered && orphansExpanded ? (
             <PageFooter
               label="Orphaned Agents"
               controlsId="agent-organization-orphaned"
+              focusScopeKey={`${projectId}:orphaned`}
+              itemIds={orphans.items.map(item => item.id)}
+              treeRef={treeRef}
               hasNextPage={Boolean(orphans.hasNextPage)}
               fetching={orphans.isFetchingNextPage}
               error={orphans.isFetchNextPageError}
-              onMore={() => void (orphans.isFetchNextPageError ? orphans.refetch() : orphans.fetchNextPage())}
+              onMore={async () => {
+                if (orphans.isFetchNextPageError) {
+                  const result = await orphans.refetch();
+                  return {
+                    hasNextPage: Boolean(result.data?.pages.at(-1)?.nextCursor),
+                    failed: result.isError,
+                  };
+                }
+                const result = await orphans.fetchNextPage();
+                return {
+                  hasNextPage: Boolean(result.hasNextPage),
+                  failed: result.isFetchNextPageError,
+                };
+              }}
             />
           ) : null}
           {!filtered && deletedExpanded ? (
             <PageFooter
               label="Deleted History"
               controlsId="agent-organization-deleted"
+              focusScopeKey={`${projectId}:deleted`}
+              itemIds={deleted.items.map(item => item.id)}
+              treeRef={treeRef}
               hasNextPage={Boolean(deleted.hasNextPage)}
               fetching={deleted.isFetchingNextPage}
               error={deleted.isFetchNextPageError}
-              onMore={() => void (deleted.isFetchNextPageError ? deleted.refetch() : deleted.fetchNextPage())}
+              onMore={async () => {
+                if (deleted.isFetchNextPageError) {
+                  const result = await deleted.refetch();
+                  return {
+                    hasNextPage: Boolean(result.data?.pages.at(-1)?.nextCursor),
+                    failed: result.isError,
+                  };
+                }
+                const result = await deleted.fetchNextPage();
+                return {
+                  hasNextPage: Boolean(result.hasNextPage),
+                  failed: result.isFetchNextPageError,
+                };
+              }}
             />
           ) : null}
           <Stack ref={setChildControlsHost} spacing={0.75} />
