@@ -922,7 +922,7 @@ export function AllChatView({
                           <ContentCopyOutlinedIcon fontSize="inherit" />
                         </IconButton>
                       </Tooltip>
-                      {!fromUser ? (
+                      {item.author.kind === "agent" ? (
                         <ReadAloudControls
                           text={resolveMessageMentionText(
                             communicationVisibleText({

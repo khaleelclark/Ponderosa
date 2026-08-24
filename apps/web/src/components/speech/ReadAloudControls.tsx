@@ -17,17 +17,38 @@ interface ActiveReadAloud {
 
 let activeReadAloud: ActiveReadAloud | undefined;
 
+function speechSurfaceIsVisible(element: HTMLElement | null): boolean {
+  if (
+    !element ||
+    !element.isConnected ||
+    document.visibilityState !== "visible" ||
+    element.getClientRects().length === 0
+  ) {
+    return false;
+  }
+  const style = window.getComputedStyle(element);
+  return style.display !== "none" && style.visibility !== "hidden";
+}
+
 export function ReadAloudControls({ text }: { text: string }): JSX.Element {
   const ownerId = useId();
+  const rootRef = useRef<HTMLSpanElement | null>(null);
   const utteranceRef = useRef<SpeechSynthesisUtterance>();
+  const visibilityCleanupRef = useRef<() => void>();
   const mountedRef = useRef(true);
   const [status, setStatus] = useState<ReadAloudStatus>("idle");
   const [error, setError] = useState<string>();
   const unavailable = speechSynthesisUnavailableReason();
   const speakableText = speakableMessageText(text);
 
+  const stopVisibilityMonitoring = () => {
+    visibilityCleanupRef.current?.();
+    visibilityCleanupRef.current = undefined;
+  };
+
   const stop = () => {
     if (activeReadAloud?.ownerId !== ownerId) return;
+    stopVisibilityMonitoring();
     window.speechSynthesis.cancel();
     activeReadAloud = undefined;
     utteranceRef.current = undefined;
@@ -35,6 +56,51 @@ export function ReadAloudControls({ text }: { text: string }): JSX.Element {
       setError(undefined);
       setStatus("stopped");
     }
+  };
+
+  const beginVisibilityMonitoring = () => {
+    stopVisibilityMonitoring();
+    let frame: number | undefined;
+    const stopIfInactive = () => {
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        frame = undefined;
+        if (
+          activeReadAloud?.ownerId === ownerId &&
+          !speechSurfaceIsVisible(rootRef.current)
+        ) {
+          stop();
+        }
+      });
+    };
+    const observer = new MutationObserver(stopIfInactive);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["aria-hidden", "class", "hidden", "style"],
+      subtree: true,
+    });
+    const resizeObserver = typeof ResizeObserver === "undefined"
+      ? undefined
+      : new ResizeObserver(stopIfInactive);
+    if (rootRef.current) resizeObserver?.observe(rootRef.current);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible") stop();
+      else stopIfInactive();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("hashchange", stopIfInactive);
+    window.addEventListener("pagehide", stop);
+    window.addEventListener("popstate", stopIfInactive);
+    visibilityCleanupRef.current = () => {
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+      observer.disconnect();
+      resizeObserver?.disconnect();
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("hashchange", stopIfInactive);
+      window.removeEventListener("pagehide", stop);
+      window.removeEventListener("popstate", stopIfInactive);
+    };
+    stopIfInactive();
   };
 
   const start = () => {
@@ -48,11 +114,13 @@ export function ReadAloudControls({ text }: { text: string }): JSX.Element {
     };
     utterance.onend = () => {
       if (activeReadAloud?.ownerId === ownerId) activeReadAloud = undefined;
+      stopVisibilityMonitoring();
       utteranceRef.current = undefined;
       if (mountedRef.current) setStatus("stopped");
     };
     utterance.onerror = event => {
       if (activeReadAloud?.ownerId === ownerId) activeReadAloud = undefined;
+      stopVisibilityMonitoring();
       utteranceRef.current = undefined;
       if (!mountedRef.current) return;
       if (event.error === "canceled" || event.error === "interrupted") {
@@ -64,6 +132,7 @@ export function ReadAloudControls({ text }: { text: string }): JSX.Element {
     };
     utteranceRef.current = utterance;
     activeReadAloud = { ownerId, stop };
+    beginVisibilityMonitoring();
     window.speechSynthesis.speak(utterance);
     setStatus("speaking");
   };
@@ -84,11 +153,9 @@ export function ReadAloudControls({ text }: { text: string }): JSX.Element {
 
   useEffect(() => {
     mountedRef.current = true;
-    const endForNavigation = () => stop();
-    window.addEventListener("pagehide", endForNavigation);
     return () => {
-      window.removeEventListener("pagehide", endForNavigation);
       mountedRef.current = false;
+      stopVisibilityMonitoring();
       if (activeReadAloud?.ownerId === ownerId) {
         window.speechSynthesis.cancel();
         activeReadAloud = undefined;
@@ -115,7 +182,7 @@ export function ReadAloudControls({ text }: { text: string }): JSX.Element {
           : "";
 
   return (
-    <Box component="span" sx={speechControlGroupSx}>
+    <Box ref={rootRef} component="span" sx={speechControlGroupSx}>
       <Tooltip title={label}>
         <span>
           <IconButton
