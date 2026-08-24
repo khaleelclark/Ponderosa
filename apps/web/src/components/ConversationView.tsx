@@ -1348,7 +1348,7 @@ export function ConversationView({
         ) : null}
         {activeView === "main" ? (
           <ComposerProjectCreationProvider
-            disabled={busy || Boolean(createAgentSession)}
+            disabled={busy}
             onCreateAgent={openAgentCreation}
           >
             <Composer
