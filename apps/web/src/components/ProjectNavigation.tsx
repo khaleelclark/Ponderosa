@@ -326,7 +326,7 @@ export function ProjectRail({
           </MenuItem>
           <MenuItem onClick={() => runOperatorAction(onOpenUsage)}>
             <ListItemIcon><DataUsageOutlinedIcon /></ListItemIcon>
-            <ListItemText>Provider Usage</ListItemText>
+            <ListItemText>Provider Activity</ListItemText>
           </MenuItem>
           <MenuItem onClick={() => runOperatorAction(onOpenEngineStatus)}>
             <ListItemIcon><SpeedOutlinedIcon /></ListItemIcon>

@@ -53,6 +53,7 @@ import {
   parseAgentRunConcurrencyLimit,
   RuntimeSettings,
 } from "./RuntimeSettings";
+import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 
 const GLOBAL_AGENT_INSTRUCTIONS_LABEL = "Global Agent Instructions";
 const GLOBAL_AGENT_INSTRUCTIONS_HELPER_TEXT =
@@ -76,7 +77,7 @@ function SettingsHeader({
       }}
     >
       <MobileNavigationButton />
-      <Box sx={{ minWidth: 0 }}>
+      <Box sx={{ minWidth: 0, flex: 1 }}>
         <IconTitle
           icon={profile ? <PersonOutlineIcon /> : <SettingsOutlinedIcon />}
           title={profile ? "Operator Profile" : "Settings"}
@@ -88,6 +89,7 @@ function SettingsHeader({
             : "Workspace appearance, notifications, providers, and Agent defaults"}
         </Typography>
       </Box>
+      <PrimaryHeaderActionsOutlet />
     </Stack>
   );
 }

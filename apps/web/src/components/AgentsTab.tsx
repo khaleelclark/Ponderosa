@@ -78,6 +78,7 @@ import {
   resolveAgentRelationshipParent,
   type StatusFilter,
 } from "./AgentsTab.helpers";
+import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 
 function AgentRosterShell({
   collection,
@@ -151,6 +152,7 @@ function AgentRosterShell({
             </Typography>
           ) : null}
         </Box>
+        <PrimaryHeaderActionsOutlet />
         {headerActions}
       </Stack>
       {toolbar}

@@ -11,6 +11,7 @@ import { LazySyntaxHighlightedCode } from "../LazySyntaxHighlightedCode";
 import { UnifiedDiffViewer } from "../filePreview/FilePreview";
 import { recordedPathDiff } from "../filePreview/artifactDiff";
 import { languageForPath } from "../filePreview/fileTypes";
+import { PrimaryHeaderActionsOutlet } from "../PrimaryHeaderActions";
 
 function resolveWorkspaceReviewPath(
   changes: ReadonlyArray<{ path: string }>,
@@ -109,6 +110,7 @@ export function WorkspaceReviewPane({ projectId, projectRoot, agentId, files, ru
       {workspace.data?.head ? <Typography variant="caption" color="text.secondary">{workspace.data.head}</Typography> : null}
       <Chip size="small" label={`${displayedChangeCount} change${displayedChangeCount === 1 ? "" : "s"}`} color={displayedChangeCount ? "warning" : "default"} />
       <Box sx={{ flex: 1 }} />
+      <PrimaryHeaderActionsOutlet />
       <Tooltip title="Refresh Workspace Changes"><IconButton aria-label="Refresh workspace changes" size="small" onClick={() => void workspace.refetch()}><RefreshIcon /></IconButton></Tooltip>
     </Stack>
     {workspace.isLoading ? <Box sx={{ p: 2 }}><CircularProgress size={22} /></Box>

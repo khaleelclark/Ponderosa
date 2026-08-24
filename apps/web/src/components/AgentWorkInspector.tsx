@@ -23,6 +23,7 @@ import { api } from "../api";
 import { copyText } from "../clipboard";
 import { queryKeys } from "../queryKeys";
 import { isChatNearBottom, scrollChatToBottom, ScrollToLatestButton } from "./chat/scroll";
+import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 import { RequestLifecycleCard } from "./RequestLifecycleCard";
 
 export interface AgentWorkFocus {
@@ -235,6 +236,7 @@ export function AgentWorkInspector({
           <Typography variant="h6">Diagnostics</Typography>
           <Typography variant="caption" color="text.secondary">Understand why work stopped or behaved unexpectedly.</Typography>
         </Box>
+        <PrimaryHeaderActionsOutlet />
         <Button
           size="small"
           color="inherit"

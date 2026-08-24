@@ -52,6 +52,7 @@ import { ProjectRuntimeFields } from "./ProjectRuntimeFields";
 import { ProviderAvailabilityAlerts } from "./ProviderAvailabilityAlerts";
 import { TriggersPane } from "./TriggersPane";
 import { AgentCreateSurface } from "./AgentCreateDialog";
+import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 
 const UNSET = "";
 type TriggerAgentOption = {
@@ -109,12 +110,13 @@ function CreateSurface({
       <Box sx={{ width: "100%", maxWidth: 780, mx: "auto" }}>
         <Stack direction="row" spacing={1} sx={{ minWidth: 0, mb: 2.5, alignItems: "flex-start" }}>
           <MobileNavigationButton />
-          <Box sx={{ minWidth: 0 }}>
+          <Box sx={{ minWidth: 0, flex: 1 }}>
             <IconTitle icon={presentation.icon} title={presentation.title} component="h1" />
             <Typography color="text.secondary" sx={{ mt: 0.5 }}>
               {presentation.description}
             </Typography>
           </Box>
+          <PrimaryHeaderActionsOutlet />
         </Stack>
         <Paper variant="outlined" sx={{ p: { xs: 2, sm: 3 } }}>
           {children}

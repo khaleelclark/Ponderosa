@@ -17,6 +17,7 @@ import { projectBrowserAdapter } from "./browser/browserAdapters";
 import { useBrowserController } from "./browser/useBrowserController";
 import { FeatureErrorBoundary } from "./FeatureErrorBoundary";
 import type { ProjectBrowserRequest } from "./ProjectBrowserContext";
+import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 
 export function ProjectBrowserDialog({
   projectId, open, request, onRequestHandled, onClose, embedded = false, backLabel = "Back to Project",
@@ -101,6 +102,7 @@ export function ProjectBrowserDialog({
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
           {embedded ? <Tooltip title={backLabel}><IconButton aria-label={backLabel} onClick={onClose}><ArrowBackIcon /></IconButton></Tooltip> : null}
           <Typography variant="h6" noWrap sx={{ flex: 1, minWidth: 0 }}>Interactive Browser</Typography>
+          <PrimaryHeaderActionsOutlet />
           {session?.status === "ready" ? <Chip size="small" variant="outlined" color={operator ? "success" : "warning"} label={operator ? "You have control" : `${controllerName ?? "Agent"} has control`} /> : null}
           {session?.status === "ready" ? <Chip size="small" variant="outlined" label={session.capabilities.hostedHeaded ? "Hosted browser" : "Headless fallback"} /> : null}
           {!embedded ? <Tooltip title="Close Panel"><IconButton aria-label="Close Interactive Browser" onClick={onClose}><CloseIcon /></IconButton></Tooltip> : null}

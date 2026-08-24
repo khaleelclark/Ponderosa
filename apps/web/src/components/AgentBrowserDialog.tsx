@@ -20,6 +20,7 @@ import { BrowserArtifactUpload } from "./browser/BrowserArtifactUpload";
 import { agentBrowserAdapter } from "./browser/browserAdapters";
 import { useBrowserController } from "./browser/useBrowserController";
 import { FeatureErrorBoundary } from "./FeatureErrorBoundary";
+import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 
 export function AgentBrowserDialog({
   projectId,
@@ -81,6 +82,7 @@ export function AgentBrowserDialog({
               <Typography variant="h6" noWrap sx={{ flex: 1, minWidth: 0 }}>
                 {agentTitle}&apos;s Browser
               </Typography>
+              <PrimaryHeaderActionsOutlet />
               {session?.status === "ready" ? (
                 <Chip
                   size="small"
