@@ -9,7 +9,15 @@ const ACKNOWLEDGEMENT_BATCH_LIMIT = 100;
 
 export interface NotificationAcknowledgementOptimisticTarget {
   apply(notificationIds: readonly string[], acknowledgedAt: string): void;
-  rollback(notificationIds: readonly string[], acknowledgedAt: string): void;
+  commit?(notificationIds: readonly string[], acknowledgedAt: string): void;
+  rollback(
+    notificationIds: readonly string[],
+    acknowledgedAt: string,
+  ): {
+    revertedIds: readonly string[];
+    /** IDs whose current canonical receipt/count must win over local rollback. */
+    deferCountIds?: readonly string[];
+  };
 }
 
 export type AcknowledgeNotifications = (
@@ -28,7 +36,7 @@ export function useNotificationAcknowledgement(
   const optimisticCountedAt = useRef(new Map<string, string>());
   const rollbackTargets = useRef(new Map<
     string,
-    Set<NotificationAcknowledgementOptimisticTarget["rollback"]>
+    Set<NotificationAcknowledgementOptimisticTarget>
   >());
   const timer = useRef<ReturnType<typeof setTimeout>>();
   const mounted = useRef(false);
@@ -42,6 +50,24 @@ export function useNotificationAcknowledgement(
     notificationIds.forEach((id) => pending.current.delete(id));
     if (!notificationIds.length) return;
     void api.acknowledgeNotifications(notificationIds).then(() => {
+      const groupedCommits = new Map<
+        NotificationAcknowledgementOptimisticTarget,
+        Map<string, string[]>
+      >();
+      for (const id of notificationIds) {
+        const acknowledgedAt = optimisticAt.current.get(id);
+        if (!acknowledgedAt) continue;
+        for (const target of rollbackTargets.current.get(id) ?? []) {
+          const byTimestamp = groupedCommits.get(target) ?? new Map<string, string[]>();
+          const ids = byTimestamp.get(acknowledgedAt) ?? [];
+          ids.push(id);
+          byTimestamp.set(acknowledgedAt, ids);
+          groupedCommits.set(target, byTimestamp);
+        }
+      }
+      groupedCommits.forEach((byTimestamp, target) => {
+        byTimestamp.forEach((ids, acknowledgedAt) => target.commit?.(ids, acknowledgedAt));
+      });
       notificationIds.forEach((id) => {
         optimisticAt.current.delete(id);
         optimisticCountedAt.current.delete(id);
@@ -51,43 +77,63 @@ export function useNotificationAcknowledgement(
     }).catch((reason) => {
       const failedIds = new Set(notificationIds);
       const rollbackIds = notificationIds.filter((id) => optimisticAt.current.has(id));
-      const rollbackCount = notificationIds.filter((id) =>
-        optimisticCountedAt.current.get(id) === optimisticAt.current.get(id)).length;
+      const revertedIds = new Set<string>();
+      const deferCountIds = new Set<string>();
+      const groupedRollbacks = new Map<
+        NotificationAcknowledgementOptimisticTarget,
+        Map<string, string[]>
+      >();
+      for (const id of rollbackIds) {
+        const acknowledgedAt = optimisticAt.current.get(id);
+        if (!acknowledgedAt) continue;
+        for (const target of rollbackTargets.current.get(id) ?? []) {
+          const byTimestamp = groupedRollbacks.get(target) ?? new Map<string, string[]>();
+          const ids = byTimestamp.get(acknowledgedAt) ?? [];
+          ids.push(id);
+          byTimestamp.set(acknowledgedAt, ids);
+          groupedRollbacks.set(target, byTimestamp);
+        }
+      }
+      groupedRollbacks.forEach((byTimestamp, target) => {
+        byTimestamp.forEach((ids, acknowledgedAt) => {
+          const result = target.rollback(ids, acknowledgedAt);
+          result.revertedIds.forEach((id) => revertedIds.add(id));
+          result.deferCountIds?.forEach((id) => deferCountIds.add(id));
+        });
+      });
       queryClient.setQueryData<WorkspaceNotificationPageDto>(
         queryKeys.notifications.all,
         (current) => {
           if (!current) return current;
           const items = current.items.map((item) => {
             const expected = optimisticAt.current.get(item.id);
-            if (!failedIds.has(item.id) || !expected || item.acknowledgedAt !== expected) return item;
+            if (!failedIds.has(item.id) || !expected) return item;
+            if (item.acknowledgedAt && item.acknowledgedAt !== expected) {
+              deferCountIds.add(item.id);
+              return item;
+            }
+            if (item.acknowledgedAt !== expected) return item;
+            revertedIds.add(item.id);
             const { acknowledgedAt: _acknowledgedAt, ...unacknowledged } = item;
             return unacknowledged;
           });
+          const restoredCount = notificationIds.filter((id) => {
+            const expected = optimisticAt.current.get(id);
+            return Boolean(
+              expected
+              && optimisticCountedAt.current.get(id) === expected
+              && revertedIds.has(id)
+              && !deferCountIds.has(id),
+            );
+          }).length;
           return {
             ...current,
             items,
-            unacknowledgedActionCount: current.unacknowledgedActionCount + rollbackCount,
+            unacknowledgedActionCount:
+              current.unacknowledgedActionCount + restoredCount,
           };
         },
       );
-      const groupedRollbacks = new Map<
-        NotificationAcknowledgementOptimisticTarget["rollback"],
-        Map<string, string[]>
-      >();
-      for (const id of rollbackIds) {
-        const acknowledgedAt = optimisticAt.current.get(id);
-        if (!acknowledgedAt) continue;
-        for (const rollback of rollbackTargets.current.get(id) ?? []) {
-          const byTimestamp = groupedRollbacks.get(rollback) ?? new Map<string, string[]>();
-          const ids = byTimestamp.get(acknowledgedAt) ?? [];
-          ids.push(id);
-          byTimestamp.set(acknowledgedAt, ids);
-          groupedRollbacks.set(rollback, byTimestamp);
-        }
-      }
-      groupedRollbacks.forEach((byTimestamp, rollback) => {
-        byTimestamp.forEach((ids, acknowledgedAt) => rollback(ids, acknowledgedAt));
-      });
       notificationIds.forEach((id) => {
         optimisticAt.current.delete(id);
         optimisticCountedAt.current.delete(id);
@@ -124,9 +170,9 @@ export function useNotificationAcknowledgement(
       pending.current.add(id);
       optimisticAt.current.set(id, acknowledgedAt);
       if (optimisticTarget) {
-        const rollbacks = rollbackTargets.current.get(id) ?? new Set();
-        rollbacks.add(optimisticTarget.rollback);
-        rollbackTargets.current.set(id, rollbacks);
+        const targets = rollbackTargets.current.get(id) ?? new Set();
+        targets.add(optimisticTarget);
+        rollbackTargets.current.set(id, targets);
       }
     });
     optimisticTarget?.apply(exactIds, acknowledgedAt);

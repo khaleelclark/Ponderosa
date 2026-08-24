@@ -22,7 +22,7 @@ import {
 import type { ConversationDto, ProjectDto, WorkspaceNotificationDto, WorkspaceNotificationPageDto } from "@ponderosa/core";
 import { queryKeys } from "../queryKeys";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import type { Route } from "../routing";
 import {
@@ -159,7 +159,30 @@ export function NotificationPanel({ open, projects, firstPage, onClose, onNaviga
   const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
   const queryClient = useQueryClient();
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [reconcilingOlder, setReconcilingOlder] = useState(false);
+  const [historyReconcileFailed, setHistoryReconcileFailed] = useState(false);
+  const [historyReconcileNonce, setHistoryReconcileNonce] = useState(0);
   const [olderPages, setOlderPages] = useState<WorkspaceNotificationPageDto[]>([]);
+  const olderPagesRef = useRef<WorkspaceNotificationPageDto[]>([]);
+  const historyGeneration = useRef(0);
+  const retainedPagesCanonical = useRef(true);
+  const historyContext = useRef({ open, firstPage });
+  if (historyContext.current.open !== open || historyContext.current.firstPage !== firstPage) {
+    if (open && olderPagesRef.current.length > 0 && historyContext.current.firstPage !== firstPage) {
+      retainedPagesCanonical.current = false;
+    }
+    historyContext.current = { open, firstPage };
+    historyGeneration.current += 1;
+  }
+  const replaceOlderPages = useCallback((
+    update: (current: WorkspaceNotificationPageDto[]) => WorkspaceNotificationPageDto[],
+  ) => {
+    const next = update(olderPagesRef.current);
+    olderPagesRef.current = next;
+    setOlderPages(next);
+  }, []);
+  const pendingAcknowledgements = useRef(new Map<string, string>());
+  const pendingReads = useRef(new Map<string, string>());
   const [filter, setFilter] = useState<NotificationFilter>("updates");
   const [error, setError] = useState<string>();
   const acknowledgeNotifications = useNotificationAcknowledgement((reason) => {
@@ -169,26 +192,54 @@ export function NotificationPanel({ open, projects, firstPage, onClose, onNaviga
     () => ({
       apply(notificationIds, acknowledgedAt) {
         const ids = new Set(notificationIds);
-        setOlderPages((current) => current.map((page) => ({
+        notificationIds.forEach((id) => pendingAcknowledgements.current.set(id, acknowledgedAt));
+        replaceOlderPages((current) => current.map((page) => ({
           ...page,
           items: page.items.map((item) => ids.has(item.id) && isOpenAttention(item) && !item.acknowledgedAt
             ? { ...item, acknowledgedAt }
             : item),
         })));
       },
+      commit(notificationIds, acknowledgedAt) {
+        notificationIds.forEach((id) => {
+          if (pendingAcknowledgements.current.get(id) === acknowledgedAt) {
+            pendingAcknowledgements.current.delete(id);
+          }
+        });
+      },
       rollback(notificationIds, acknowledgedAt) {
         const ids = new Set(notificationIds);
-        setOlderPages((current) => current.map((page) => ({
+        const revertedIds = new Set<string>();
+        const deferCountIds = new Set<string>();
+        if (!retainedPagesCanonical.current) {
+          notificationIds.forEach((id) => deferCountIds.add(id));
+        }
+        replaceOlderPages((current) => current.map((page) => ({
           ...page,
           items: page.items.map((item) => {
-            if (!ids.has(item.id) || item.acknowledgedAt !== acknowledgedAt) return item;
+            if (!ids.has(item.id)) return item;
+            if (item.acknowledgedAt && item.acknowledgedAt !== acknowledgedAt) {
+              deferCountIds.add(item.id);
+              return item;
+            }
+            if (item.acknowledgedAt !== acknowledgedAt) return item;
+            revertedIds.add(item.id);
             const { acknowledgedAt: _acknowledgedAt, ...unacknowledged } = item;
             return unacknowledged;
           }),
         })));
+        notificationIds.forEach((id) => {
+          if (pendingAcknowledgements.current.get(id) === acknowledgedAt) {
+            pendingAcknowledgements.current.delete(id);
+          }
+        });
+        return {
+          revertedIds: [...revertedIds],
+          deferCountIds: [...deferCountIds],
+        };
       },
     }),
-    [],
+    [replaceOlderPages],
   );
   const acknowledgePresentedNotifications = (notificationIds: readonly string[]) => {
     setError(undefined);
@@ -202,7 +253,9 @@ export function NotificationPanel({ open, projects, firstPage, onClose, onNaviga
   const notifications = useMemo(() => {
     const unique = new Map<string, WorkspaceNotificationDto>();
     for (const page of [firstPage, ...olderPages]) {
-      for (const notification of page?.items ?? []) unique.set(notification.id, notification);
+      for (const notification of page?.items ?? []) {
+        if (!unique.has(notification.id)) unique.set(notification.id, notification);
+      }
     }
     return notificationsForAvailableProjects([...unique.values()], availableProjectIds)
       .sort(compareNotificationsNewestFirst);
@@ -213,11 +266,76 @@ export function NotificationPanel({ open, projects, firstPage, onClose, onNaviga
   const nextCursor = olderPages.at(-1)?.nextCursor ?? firstPage?.nextCursor;
   useEffect(() => {
     if (open && !wasOpen.current) {
-      setOlderPages([]);
+      replaceOlderPages(() => []);
+      retainedPagesCanonical.current = true;
+      pendingAcknowledgements.current.clear();
+      pendingReads.current.clear();
+      setHistoryReconcileFailed(false);
       setFilter(openActionCount ? "attention" : "updates");
     }
+    if (!open) {
+      historyGeneration.current += 1;
+      setLoadingOlder(false);
+      setReconcilingOlder(false);
+    }
     wasOpen.current = open;
-  }, [openActionCount, open]);
+  }, [openActionCount, open, replaceOlderPages]);
+
+  useEffect(() => {
+    setLoadingOlder(false);
+  }, [firstPage]);
+
+  useEffect(() => {
+    if (!open || !firstPage || olderPagesRef.current.length === 0) return;
+    const generation = historyGeneration.current;
+    const loadedPageCount = olderPagesRef.current.length;
+    let disposed = false;
+    const reconcile = async () => {
+      setReconcilingOlder(true);
+      setHistoryReconcileFailed(false);
+      try {
+        const pages: WorkspaceNotificationPageDto[] = [];
+        let cursor = firstPage.nextCursor;
+        for (let index = 0; index < loadedPageCount && cursor; index += 1) {
+          const requestedCursor = cursor;
+          const page = await api.listNotifications(requestedCursor);
+          if (page.nextCursor === requestedCursor) {
+            throw new Error("Notification history did not advance.");
+          }
+          pages.push(page);
+          cursor = page.nextCursor;
+        }
+        if (disposed || !open || historyGeneration.current !== generation) return;
+        replaceOlderPages(() => pages.map((page) => ({
+          ...page,
+          items: page.items.map((item) => {
+            const acknowledgedAt = pendingAcknowledgements.current.get(item.id);
+            const readAt = pendingReads.current.get(item.id);
+            if (item.acknowledgedAt) pendingAcknowledgements.current.delete(item.id);
+            if (item.readAt) pendingReads.current.delete(item.id);
+            return {
+              ...item,
+              ...(!item.acknowledgedAt && acknowledgedAt ? { acknowledgedAt } : {}),
+              ...(!item.readAt && readAt ? { readAt } : {}),
+            };
+          }),
+        })));
+        retainedPagesCanonical.current = true;
+      } catch (reason) {
+        if (disposed || historyGeneration.current !== generation) return;
+        setHistoryReconcileFailed(true);
+        setError(reason instanceof Error
+          ? `Loaded notification history could not be refreshed: ${reason.message}`
+          : "Loaded notification history could not be refreshed.");
+      } finally {
+        if (!disposed && historyGeneration.current === generation) {
+          setReconcilingOlder(false);
+        }
+      }
+    };
+    void reconcile();
+    return () => { disposed = true; };
+  }, [firstPage, historyReconcileNonce, open, replaceOlderPages]);
   const visibleNotifications = filterNotifications(notifications, filter);
   const totalForFilter = filter === "attention" ? openActionCount : unreadUpdateCount;
   const remainingForFilter = Math.max(0, totalForFilter - visibleNotifications.length);
@@ -235,22 +353,38 @@ export function NotificationPanel({ open, projects, firstPage, onClose, onNaviga
   const groups = groupNotificationsByProject(visibleNotifications);
 
   const loadOlder = async () => {
-    if (!nextCursor || loadingOlder) return;
+    if (!nextCursor || loadingOlder || reconcilingOlder) return;
+    const generation = historyGeneration.current;
     setLoadingOlder(true);
     setError(undefined);
     try {
       const page = await api.listNotifications(nextCursor);
       if (page.nextCursor === nextCursor) throw new Error("Notification history did not advance.");
-      setOlderPages((current) => [...current, page]);
+      if (!open || historyGeneration.current !== generation) return;
+      replaceOlderPages((current) => [...current, {
+        ...page,
+        items: page.items.map((item) => {
+          const acknowledgedAt = pendingAcknowledgements.current.get(item.id);
+          const readAt = pendingReads.current.get(item.id);
+          return {
+            ...item,
+            ...(!item.acknowledgedAt && acknowledgedAt ? { acknowledgedAt } : {}),
+            ...(!item.readAt && readAt ? { readAt } : {}),
+          };
+        }),
+      }]);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Older notifications could not be loaded.");
+      if (historyGeneration.current === generation) {
+        setError(reason instanceof Error ? reason.message : "Older notifications could not be loaded.");
+      }
     } finally {
-      setLoadingOlder(false);
+      if (historyGeneration.current === generation) setLoadingOlder(false);
     }
   };
 
   const markRead = (item: WorkspaceNotificationDto) => {
     const readAt = new Date().toISOString();
+    pendingReads.current.set(item.id, readAt);
     queryClient.setQueryData<WorkspaceNotificationPageDto>(queryKeys.notifications.all, (current) => current ? ({
       ...current,
       items: current.items.map((candidate) => candidate.id === item.id ? { ...candidate, readAt } : candidate),
@@ -258,13 +392,52 @@ export function NotificationPanel({ open, projects, firstPage, onClose, onNaviga
         ? Math.max(0, current.unreadUpdateCount - 1)
         : current.unreadUpdateCount,
     }) : current);
-    setOlderPages((current) => current.map((page) => ({
+    replaceOlderPages((current) => current.map((page) => ({
       ...page,
       items: page.items.map((candidate) => candidate.id === item.id ? { ...candidate, readAt } : candidate),
     })));
     void api.markNotificationRead(item.id).then(() => {
+      if (pendingReads.current.get(item.id) === readAt) pendingReads.current.delete(item.id);
       return queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
     }).catch((reason) => {
+      let reverted = false;
+      let deferCountRollback = !retainedPagesCanonical.current;
+      queryClient.setQueryData<WorkspaceNotificationPageDto>(queryKeys.notifications.all, (current) => {
+        if (!current) return current;
+        const items = current.items.map((candidate) => {
+          if (candidate.id !== item.id) return candidate;
+          if (candidate.readAt && candidate.readAt !== readAt) {
+            deferCountRollback = true;
+            return candidate;
+          }
+          if (candidate.readAt !== readAt) return candidate;
+          reverted = true;
+          const { readAt: _readAt, ...unread } = candidate;
+          return unread;
+        });
+        return { ...current, items };
+      });
+      replaceOlderPages((current) => current.map((page) => ({
+        ...page,
+        items: page.items.map((candidate) => {
+          if (candidate.id !== item.id) return candidate;
+          if (candidate.readAt && candidate.readAt !== readAt) {
+            deferCountRollback = true;
+            return candidate;
+          }
+          if (candidate.readAt !== readAt) return candidate;
+          reverted = true;
+          const { readAt: _readAt, ...unread } = candidate;
+          return unread;
+        }),
+      })));
+      if (reverted && !deferCountRollback && isUnreadNotificationUpdate(item)) {
+        queryClient.setQueryData<WorkspaceNotificationPageDto>(queryKeys.notifications.all, (current) => current ? ({
+          ...current,
+          unreadUpdateCount: current.unreadUpdateCount + 1,
+        }) : current);
+      }
+      if (pendingReads.current.get(item.id) === readAt) pendingReads.current.delete(item.id);
       setError(reason instanceof Error ? reason.message : "Notification could not be marked read.");
       void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
     });
@@ -355,8 +528,16 @@ export function NotificationPanel({ open, projects, firstPage, onClose, onNaviga
           </Box>;
         })}
         {visibleNotifications.length === 0 && totalForFilter === 0 ? <Box sx={{ py: 5, textAlign: "center" }}><Typography fontWeight={750}>{filter === "attention" ? "Nothing needs attention" : "No unread updates"}</Typography><Typography variant="body2" color="text.secondary">{filter === "attention" ? "Open decisions, blockers, and failures stay here until they are resolved or dismissed." : "New Agent responses and broadcasts will appear here."}</Typography></Box> : null}
-        {nextCursor ? <Button disabled={loadingOlder} onClick={() => void loadOlder()}>
-          {loadingOlder ? "Loading older notifications…" : remainingForFilter
+        {reconcilingOlder ? <Typography variant="caption" color="text.secondary" role="status">
+          Refreshing loaded notification history…
+        </Typography> : null}
+        {historyReconcileFailed ? <Button onClick={() => {
+          setError(undefined);
+          setHistoryReconcileNonce((current) => current + 1);
+        }}>Retry notification refresh</Button> : null}
+        {nextCursor ? <Button disabled={loadingOlder || reconcilingOlder} onClick={() => void loadOlder()}>
+          {loadingOlder ? "Loading older notifications…" : reconcilingOlder
+            ? "Refreshing loaded notifications…" : remainingForFilter
             ? `Load older (${remainingForFilter} ${filter === "attention" ? "attention" : "updates"} remaining)`
             : "Load older notifications"}
         </Button> : null}

@@ -55,6 +55,7 @@ export function ChatMessageFrame({
     window.addEventListener("focus", onVisibilityChange);
     window.addEventListener("blur", onVisibilityChange);
     return () => {
+      message.onVisible?.(false);
       observer.disconnect();
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("focus", onVisibilityChange);
