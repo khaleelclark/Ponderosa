@@ -71,10 +71,11 @@ function safeFailure(error: unknown): string {
 
 export class AgentWorkingCopyService {
   private readonly managedRoot: string;
+  private readonly modeChanges = new Map<string, Promise<void>>();
 
   constructor(
     dataDir: string,
-    private readonly store: Pick<AgentStore, "updateAgentWorkingCopy">,
+    private readonly store: Pick<AgentStore, "getAgent" | "updateAgentWorkingCopy">,
   ) {
     this.managedRoot = path.resolve(dataDir, "working-copies");
   }
@@ -116,6 +117,28 @@ export class AgentWorkingCopyService {
   }
 
   async setMode(
+    agent: AgentDto,
+    project: ProjectDto,
+    mode: AgentWorkingCopyMode,
+  ): Promise<AgentDto> {
+    const preceding = this.modeChanges.get(agent.id) ?? Promise.resolve();
+    const operation = preceding.catch(() => undefined).then(() => {
+      const current = this.store.getAgent(agent.id);
+      if (!current || current.projectId !== project.id) {
+        throw new Error("Agent became unavailable while changing its working folder");
+      }
+      return this.applyMode(current, project, mode);
+    });
+    const fence = operation.then(() => undefined, () => undefined);
+    this.modeChanges.set(agent.id, fence);
+    try {
+      return await operation;
+    } finally {
+      if (this.modeChanges.get(agent.id) === fence) this.modeChanges.delete(agent.id);
+    }
+  }
+
+  private async applyMode(
     agent: AgentDto,
     project: ProjectDto,
     mode: AgentWorkingCopyMode,
