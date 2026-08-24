@@ -13,6 +13,7 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
   FormControl,
   IconButton,
@@ -26,6 +27,8 @@ import {
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
 import type {
+  AgentDto,
+  AgentHealthDto,
   AgentOperationalStatus,
   AgentOrganizationNodeDto,
   ConversationDto,
@@ -50,6 +53,7 @@ import { agentStatusColor, agentStatusPresentation } from "../agents";
 import { useAgentOrganization } from "../hooks/useAgentOrganization";
 import { queryKeys } from "../queryKeys";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
+import { stopActiveAgentRuns } from "./AgentsTab";
 import { TextInputDialog } from "./ConfirmationDialogs";
 import { ImportAgentDialog } from "./ImportAgentDialog";
 import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
@@ -86,9 +90,12 @@ interface TreeState {
   connectionStatus: "connecting" | "live" | "reconnecting" | "stale" | "unavailable";
   phaseEvidenceFresh: boolean;
   allowExpansion: boolean;
+  selectionMode: boolean;
+  selectedAgentIds: ReadonlySet<string>;
+  toggleSelection(agentId: string): void;
   onOpenAgent(agentId: string): void;
   onActions(node: AgentOrganizationNodeDto, anchor: HTMLElement): void;
-  registerNode(agentId: string, parentId?: string): () => void;
+  registerNode(agentId: string, parentId: string | undefined, live: boolean): () => void;
 }
 
 function focusTreeRow(tree: HTMLDivElement | null, selector: string): void {
@@ -108,7 +115,7 @@ function OrganizationRow({
   node: AgentOrganizationNodeDto;
   index: number;
   level: number;
-  setSize: number;
+  setSize?: number;
   parentId?: string;
   state: TreeState;
 }): JSX.Element {
@@ -116,8 +123,8 @@ function OrganizationRow({
   const expanded = live && state.expanded.has(node.id);
   const expandable = live && state.allowExpansion && node.directReportCount > 0;
   useEffect(
-    () => state.registerNode(node.id, parentId),
-    [node.id, parentId, state.registerNode],
+    () => state.registerNode(node.id, parentId, live),
+    [live, node.id, parentId, state.registerNode],
   );
   const presentation = live
     ? agentStatusPresentation(node.health, {
@@ -156,7 +163,8 @@ function OrganizationRow({
       }
     } else if (event.key === "Enter" && live) {
       event.preventDefault();
-      state.onOpenAgent(node.id);
+      if (state.selectionMode) state.toggleSelection(node.id);
+      else state.onOpenAgent(node.id);
     }
   };
   return (
@@ -194,6 +202,15 @@ function OrganizationRow({
           },
         }}
       >
+        {live && state.selectionMode ? (
+          <Checkbox
+            checked={state.selectedAgentIds.has(node.id)}
+            onChange={() => state.toggleSelection(node.id)}
+            onClick={event => event.stopPropagation()}
+            inputProps={{ "aria-label": `Select ${node.title}` }}
+            sx={{ width: 44, height: 44, flex: "0 0 auto" }}
+          />
+        ) : null}
         {live && state.allowExpansion ? (
           <IconButton
             tabIndex={-1}
@@ -221,7 +238,10 @@ function OrganizationRow({
           component={live ? "button" : "div"}
           type={live ? "button" : undefined}
           tabIndex={live ? -1 : undefined}
-          onClick={live ? () => state.onOpenAgent(node.id) : undefined}
+          onClick={live ? () => {
+            if (state.selectionMode) state.toggleSelection(node.id);
+            else state.onOpenAgent(node.id);
+          } : undefined}
           sx={{
             minWidth: 0,
             flex: 1,
@@ -288,12 +308,14 @@ function OrganizationRows({
   items,
   level,
   total,
+  startIndex = 0,
   parentId,
   state,
 }: {
   items: AgentOrganizationNodeDto[];
   level: number;
-  total: number;
+  total?: number;
+  startIndex?: number;
   parentId?: string;
   state: TreeState;
 }): JSX.Element {
@@ -303,7 +325,7 @@ function OrganizationRows({
         <OrganizationRow
           key={node.id}
           node={node}
-          index={index}
+          index={startIndex + index}
           level={level}
           setSize={total}
           parentId={parentId}
@@ -388,6 +410,8 @@ export function AgentOrganizationTree({
   scopeLabel,
   engines,
   conversations,
+  projectAgents,
+  projectHealth,
   onOpenAgent,
   onOpenAgentSettings,
   onAgentsDeleted,
@@ -397,6 +421,8 @@ export function AgentOrganizationTree({
   scopeLabel: string;
   engines: EngineDto[];
   conversations: ConversationDto[];
+  projectAgents: AgentDto[];
+  projectHealth: AgentHealthDto[];
   onOpenAgent(agentId: string): void;
   onOpenAgentSettings(agentId: string): void;
   onAgentsDeleted(agentIds: string[]): void;
@@ -417,7 +443,14 @@ export function AgentOrganizationTree({
   const [selectedNode, setSelectedNode] = useState<AgentOrganizationNodeDto>();
   const [pendingRename, setPendingRename] = useState<{ id: string; title: string }>();
   const [pendingDelete, setPendingDelete] = useState<{ id: string; title: string }>();
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [bulkError, setBulkError] = useState<string>();
+  const [stoppingAll, setStoppingAll] = useState(false);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(() => new Set());
+  const [visibleCount, setVisibleCount] = useState(0);
   const mountedNodeIds = useRef(new Set<string>());
+  const mountedLiveNodeIds = useRef(new Set<string>());
   useEffect(() => {
     const timer = globalThis.setTimeout(() => setSearch(searchInput.trim()), 250);
     return () => globalThis.clearTimeout(timer);
@@ -436,11 +469,22 @@ export function AgentOrganizationTree({
     scope: "deleted",
     enabled: !filtered && deletedExpanded,
   });
-  const registerNode = useMemo(() => (agentId: string, parentId?: string) => {
+  const registerNode = useMemo(() => (agentId: string, parentId: string | undefined, live: boolean) => {
+    const added = !mountedNodeIds.current.has(agentId);
     mountedNodeIds.current.add(agentId);
+    if (live) mountedLiveNodeIds.current.add(agentId);
+    if (added) setVisibleCount(count => count + 1);
     return () => {
-      mountedNodeIds.current.delete(agentId);
+      const removed = mountedNodeIds.current.delete(agentId);
+      mountedLiveNodeIds.current.delete(agentId);
+      if (removed) setVisibleCount(count => Math.max(0, count - 1));
       setExpanded(current => pruneExpandedAgentIds(current, [agentId]));
+      setSelectedAgentIds(current => {
+        if (!current.has(agentId)) return current;
+        const next = new Set(current);
+        next.delete(agentId);
+        return next;
+      });
       setFocusedId(current => {
         if (current !== agentId) return current;
         const survivingParentId = parentId && mountedNodeIds.current.has(parentId)
@@ -471,6 +515,14 @@ export function AgentOrganizationTree({
     connectionStatus: connection.status,
     phaseEvidenceFresh: connection.phaseEvidenceFresh,
     allowExpansion: !filtered,
+    selectionMode,
+    selectedAgentIds,
+    toggleSelection: agentId => setSelectedAgentIds(current => {
+      const next = new Set(current);
+      if (next.has(agentId)) next.delete(agentId);
+      else next.add(agentId);
+      return next;
+    }),
     onOpenAgent,
     onActions: (node, anchor) => {
       setSelectedNode(node);
@@ -488,21 +540,105 @@ export function AgentOrganizationTree({
     },
   });
   const summary = roots.summary;
+  const rootTotal = summary?.total ?? roots.items.length;
+  const orphanTotal = orphans.summary?.total ?? summary?.specialGroupCounts.orphaned ?? orphans.items.length;
+  const deletedTotal = deleted.summary?.total ?? summary?.specialGroupCounts.deleted ?? deleted.items.length;
+  const topLevelSetSize = filtered
+    ? status ? undefined : rootTotal
+    : rootTotal + (orphansExpanded ? orphanTotal : 0) + (deletedExpanded ? deletedTotal : 0);
+  const visibleLiveAgentIds = [...mountedLiveNodeIds.current];
+  const allVisibleSelected = visibleLiveAgentIds.length > 0 &&
+    visibleLiveAgentIds.every(id => selectedAgentIds.has(id));
+  const activeRunTargets = useMemo(() => {
+    const healthByAgentId = new Map(projectHealth.map(health => [health.agentId, health]));
+    return projectAgents.flatMap(agent => {
+      const runId = healthByAgentId.get(agent.id)?.runtimeActivity?.executionId;
+      return runId ? [{ agentId: agent.id, runId }] : [];
+    });
+  }, [projectAgents, projectHealth]);
+  const leaveSelectionMode = () => {
+    setSelectionMode(false);
+    setSelectedAgentIds(new Set());
+    setBulkDeleteOpen(false);
+  };
+  const toggleVisibleSelection = () => {
+    setSelectedAgentIds(current => {
+      const next = new Set(current);
+      const select = visibleLiveAgentIds.some(id => !current.has(id));
+      visibleLiveAgentIds.forEach(id => select ? next.add(id) : next.delete(id));
+      return next;
+    });
+  };
+  const stopAll = async () => {
+    setStoppingAll(true);
+    setBulkError(undefined);
+    try {
+      const { stopped, failed } = await stopActiveAgentRuns(activeRunTargets);
+      if (failed) {
+        setBulkError(`${stopped} agents stopped; ${failed} could not be stopped. Retry or open those agents for details.`);
+      }
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.health(projectId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.organizationProject(projectId) }),
+      ]);
+    } finally {
+      setStoppingAll(false);
+    }
+  };
   return (
     <Box sx={{ height: "100%", minHeight: 0, display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr)" }}>
-      <Stack direction="row" spacing={1} sx={{ alignItems: "center", px: { xs: 1.5, md: 2 }, py: 1.25, borderBottom: 1, borderColor: "divider" }}>
+      <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", px: { xs: 1.5, md: 2 }, py: 1.25, borderBottom: 1, borderColor: "divider" }}>
         <AccountTreeOutlinedIcon />
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Typography component="h1" variant="h6">Agent organization</Typography>
           <Typography variant="caption" color="text.secondary">{scopeLabel} · ownership from canonical reporting lines</Typography>
         </Box>
         <PrimaryHeaderActionsOutlet />
-        <Button variant="outlined" startIcon={<FileUploadOutlinedIcon />} onClick={() => setImportOpen(true)} sx={{ minHeight: 44, display: { xs: "none", sm: "inline-flex" } }}>
-          Import
-        </Button>
-        <Button variant="contained" startIcon={<AddIcon />} onClick={() => onNewAgent()} sx={{ minHeight: 44 }}>
-          New Agent
-        </Button>
+        {selectionMode ? (
+          <>
+            <Button color="inherit" onClick={toggleVisibleSelection} sx={{ minHeight: 44 }}>
+              {allVisibleSelected ? "Clear Visible" : "Select All Visible"}
+            </Button>
+            <Button
+              color="error"
+              variant="outlined"
+              disabled={selectedAgentIds.size === 0}
+              onClick={() => setBulkDeleteOpen(true)}
+              sx={{ minHeight: 44 }}
+            >
+              Delete Selected ({selectedAgentIds.size})
+            </Button>
+            <Button color="inherit" onClick={leaveSelectionMode} sx={{ minHeight: 44 }}>
+              Cancel Selection
+            </Button>
+          </>
+        ) : (
+          <>
+            {visibleLiveAgentIds.length > 0 ? (
+              <Button variant="outlined" color="inherit" onClick={() => setSelectionMode(true)} sx={{ minHeight: 44 }}>
+                Select Agents
+              </Button>
+            ) : null}
+            {activeRunTargets.length > 0 ? (
+              <Button
+                color="error"
+                variant="outlined"
+                disabled={stoppingAll}
+                onClick={() => void stopAll()}
+                sx={{ minHeight: 44 }}
+              >
+                {stoppingAll ? "Stopping…" : "Stop All"}
+              </Button>
+            ) : null}
+            <Button variant="outlined" startIcon={<FileUploadOutlinedIcon />} onClick={() => setImportOpen(true)} sx={{ minHeight: 44, display: { xs: "none", sm: "inline-flex" } }}>
+              Import
+            </Button>
+            <Button variant="contained" startIcon={<AddIcon />} onClick={() => onNewAgent()} sx={{ minHeight: 44 }}>
+              New Agent
+            </Button>
+          </>
+        )}
       </Stack>
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ p: 1.25, borderBottom: 1, borderColor: "divider" }}>
         <TextField
@@ -527,8 +663,9 @@ export function AgentOrganizationTree({
       </Stack>
       <Box sx={{ overflowY: "auto", minHeight: 0, p: { xs: 1, sm: 1.5, md: 2 } }}>
         <Box aria-live="polite" sx={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>
-          {roots.isFetching ? "Refreshing Agent organization" : `${roots.items.length} Agents visible`}
+          {roots.isFetching ? "Refreshing Agent organization" : `${visibleCount} Agent rows visible`}
         </Box>
+        {bulkError ? <Alert severity="warning" sx={{ mb: 1 }}>{bulkError}</Alert> : null}
         {roots.isLoading ? <LinearProgress aria-label="Loading Agent organization" /> : null}
         {roots.isError && !roots.pages ? (
           <Alert severity="error" action={<Button onClick={() => void roots.refetch()}>Retry</Button>}>
@@ -545,7 +682,7 @@ export function AgentOrganizationTree({
                 Flat, server-paged results with canonical owner breadcrumbs. Status applies to each bounded candidate page.
               </Typography>
             ) : null}
-            <OrganizationRows items={roots.items} level={1} total={summary?.total ?? roots.items.length} state={state} />
+            <OrganizationRows items={roots.items} level={1} total={topLevelSetSize} state={state} />
             <PageFooter
               hasNextPage={Boolean(roots.hasNextPage)}
               fetching={roots.isFetchingNextPage}
@@ -567,7 +704,7 @@ export function AgentOrganizationTree({
               </Button>
               {orphansExpanded ? (
                 <Box aria-busy={orphans.isFetching || undefined}>
-                  <OrganizationRows items={orphans.items} level={1} total={orphans.summary?.total ?? orphans.items.length} state={{ ...state, ownerLoading: orphans.isFetching }} />
+                  <OrganizationRows items={orphans.items} level={1} total={topLevelSetSize} startIndex={rootTotal} state={{ ...state, ownerLoading: orphans.isFetching }} />
                   <PageFooter hasNextPage={Boolean(orphans.hasNextPage)} fetching={orphans.isFetchingNextPage} error={orphans.isFetchNextPageError} onMore={() => void (orphans.isFetchNextPageError ? orphans.refetch() : orphans.fetchNextPage())} />
                 </Box>
               ) : null}
@@ -590,7 +727,13 @@ export function AgentOrganizationTree({
                   <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.75 }}>
                     Minimal tombstones only. Deleted Agents cannot expand or reconstruct ancestry.
                   </Typography>
-                  <OrganizationRows items={deleted.items} level={1} total={deleted.summary?.total ?? deleted.items.length} state={{ ...state, allowExpansion: false, ownerLoading: false }} />
+                  <OrganizationRows
+                    items={deleted.items}
+                    level={1}
+                    total={topLevelSetSize}
+                    startIndex={rootTotal + (orphansExpanded ? orphanTotal : 0)}
+                    state={{ ...state, allowExpansion: false, ownerLoading: false }}
+                  />
                   <PageFooter hasNextPage={Boolean(deleted.hasNextPage)} fetching={deleted.isFetchingNextPage} error={deleted.isFetchNextPageError} onMore={() => void (deleted.isFetchNextPageError ? deleted.refetch() : deleted.fetchNextPage())} />
                 </Box>
               ) : null}
@@ -609,6 +752,25 @@ export function AgentOrganizationTree({
             setPendingDelete(undefined);
             onAgentsDeleted(agentIds);
             void queryClient.invalidateQueries({ queryKey: queryKeys.agents.organizationProject(projectId) });
+            void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(projectId) });
+            void queryClient.invalidateQueries({ queryKey: queryKeys.agents.health(projectId) });
+          }}
+        />
+      ) : null}
+      {bulkDeleteOpen ? (
+        <AgentDeletionDialog
+          open
+          projectId={projectId}
+          rootAgentIds={[...selectedAgentIds]}
+          title="Delete selected agents?"
+          confirmationText="DELETE SELECTED"
+          onClose={() => setBulkDeleteOpen(false)}
+          onDeleted={agentIds => {
+            leaveSelectionMode();
+            onAgentsDeleted(agentIds);
+            void queryClient.invalidateQueries({ queryKey: queryKeys.agents.organizationProject(projectId) });
+            void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(projectId) });
+            void queryClient.invalidateQueries({ queryKey: queryKeys.agents.health(projectId) });
           }}
         />
       ) : null}

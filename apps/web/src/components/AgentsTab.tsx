@@ -41,7 +41,6 @@ import type {
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useState } from "react";
 import { api } from "../api";
-import { createClientId } from "../clientId";
 import { queryKeys } from "../queryKeys";
 import { ImportAgentDialog } from "./ImportAgentDialog";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
@@ -79,6 +78,26 @@ import {
   type StatusFilter,
 } from "./AgentsTab.helpers";
 import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
+
+export interface ActiveAgentRunTarget {
+  agentId: string;
+  runId: string;
+}
+
+export async function stopActiveAgentRuns(
+  targets: readonly ActiveAgentRunTarget[],
+): Promise<{ stopped: number; failed: number }> {
+  const results = await Promise.allSettled(
+    targets.map(({ agentId, runId }) =>
+      api.cancelRun(agentId, {
+        targetRunId: runId,
+        idempotencyKey: `bulk-stop:${agentId}:${runId}`,
+      }),
+    ),
+  );
+  const failed = results.filter(item => item.status === "rejected").length;
+  return { stopped: targets.length - failed, failed };
+}
 
 function AgentRosterShell({
   collection,
@@ -558,18 +577,10 @@ export function AgentsTab({
   const stopAll = async () => {
     setStoppingAll(true);
     setBulkError(undefined);
-    const results = await Promise.allSettled(
-      activeRunTargets.map(({ agentId, runId }) =>
-        api.cancelRun(agentId, {
-          targetRunId: runId,
-          idempotencyKey: `bulk-stop:${agentId}:${runId}:${createClientId()}`,
-        }),
-      ),
-    );
-    const failed = results.filter(item => item.status === "rejected").length;
+    const { stopped, failed } = await stopActiveAgentRuns(activeRunTargets);
     if (failed)
       setBulkError(
-        `${activeRunTargets.length - failed} agents stopped; ${failed} could not be stopped. Retry or open those agents for details.`,
+        `${stopped} agents stopped; ${failed} could not be stopped. Retry or open those agents for details.`,
       );
     await queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
     setStoppingAll(false);

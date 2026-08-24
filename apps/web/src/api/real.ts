@@ -571,10 +571,11 @@ export const realApi = {
       search?: string;
       status?: AgentOperationalStatus;
     },
+    signal?: AbortSignal,
   ): Promise<AgentOrganizationPageDto & { reset?: boolean }> {
     const path = `/api/projects/${encodeURIComponent(projectId)}/agent-organization${toQuery(options)}`;
     try {
-      return await requestJson<AgentOrganizationPageDto>(path);
+      return await requestJson<AgentOrganizationPageDto>(path, { signal });
     } catch (error) {
       if (!(error instanceof ApiRequestError) || error.status !== 409 || !options.cursor) throw error;
       return {
@@ -583,6 +584,7 @@ export const realApi = {
             ...options,
             cursor: undefined,
           })}`,
+          { signal },
         )),
         reset: true,
       };

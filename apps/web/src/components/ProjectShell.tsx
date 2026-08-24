@@ -89,8 +89,8 @@ export function ProjectShell({
   const queryClient = useQueryClient();
 
   const conversationsQuery = useConversations(projectId);
-  const agentsQuery = useAgents(projectId, route.kind !== "agents");
-  const healthQuery = useAgentHealth(projectId, route.kind !== "agents");
+  const agentsQuery = useAgents(projectId);
+  const healthQuery = useAgentHealth(projectId);
   const conversations = conversationsQuery.data ?? [];
   const agents = agentsQuery.data ?? [];
   const projectedHealth = healthQuery.data?.agents ?? [];
@@ -362,6 +362,8 @@ export function ProjectShell({
         projectId={projectId}
         engines={projectEngines}
         conversations={conversations}
+        projectAgents={agents}
+        projectHealth={projectedHealth}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
         onOpenAgentSettings={(agentId) =>
           navigate({ kind: "agent", projectId, agentId, view: "settings" })}
