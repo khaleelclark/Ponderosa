@@ -317,3 +317,17 @@ This append-only experiment ledger records product and operating friction observ
 - Confirmed positives: The exact composer now remains mounted during idle modal use, preserving typed text, long paste, and queued/uploading/ready attachments; ordinary idle Cancel, accessibility, no hidden `#new-agent`, first Send, failure restoration, and Voice textual compatibility remain correct.
 - Recommended fix: Once Create/Import submission begins, disable Escape, backdrop, visible Cancel, and reopening; expose pending state accessibly. Fence late success to the exact active modal instance and origin conversation/Project so dismissed, superseded, or stale callbacks cannot navigate or clear another Chat. Do not imply UI dismissal cancels server work or broaden server semantics.
 - Owner: UI Integration. Same-reviewer exact-head approval remains required.
+
+## 2026-08-24T06:12:16Z — WC-001 follow-up — Exact clean head still mixes P1 state with broad P2 projection work
+
+- Severity: High
+- Classification: Confirmed pre-review scope/commit-boundary defect; clean status is not acceptance
+- Confirmed: Yes — Product Lead audited exact head `b876f811` against prior frozen head `496b0dea`: 54 paths, 755 insertions / 306 deletions across three commits. The branch subsequently advanced to `1786a819`, adding a one-file failure-transition guard, without resolving the broad commit boundary.
+- Commit audit:
+  1. `3a698799` changes 8 files (+307/-86) for Separate Git ownership and related durable identity/recovery authority.
+  2. `f438e1ae` changes 6 files (+138/-114) for Run admission and command fencing.
+  3. `b876f811` changes 43 files (+313/-109) across documentation, assets/server routes, 17 web paths, schema/projections/store, and core events/DTOs. It combines the P1 durable-unavailable surface with P2 relative file-link routing and immutable file/artifact provenance.
+  4. Later `1786a819` changes one catalog-authority file (+42/-14) but does not make the 43-file predecessor independently reviewable.
+- Required mapping: Before any rewrite or freeze, provide a complete table for all 54 `b876f811` paths assigning each to exactly one reviewer finding, plus invariant, necessity, and exact commit; disclose unavoidable overlaps and list the post-`b876f811` delta separately.
+- Product Lead disposition: The broad provenance/link commit must be split before independent review or integration. Isolate Git ownership/retained identity, admission/command fencing, durable unavailable transitions, Agent-authored relative-link routing, and canonical file/artifact provenance as reviewable units; isolate retained-copy recovery or justify its exact shared authority. Drop unrelated redesign or cleanup. Preserve the no-tests policy and exact-head review gate.
+- Owner: Agent Working Copies writer; current branch is not frozen or accepted.
