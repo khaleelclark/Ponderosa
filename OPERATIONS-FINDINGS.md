@@ -234,3 +234,43 @@ This append-only experiment ledger records product and operating friction observ
 - Sequence: Freeze an architecture/platform contract first; then implement in small dependency-ordered commits only if the design provides kernel-managed lease release without namespace deletion, descriptor/handle-relative no-follow filesystem operations, and SQLite journal/WAL binding to the same identity. An incomplete pathname-based safety patch must not land.
 - Review gate: Require frozen-install, strict typecheck, full production build, exact diff/security review, disposable external runtime exercises including rebind/contention/crash/SQLite cases, and fresh same-reviewer exact-head approval before integration. Phase B remains frozen.
 - Owner: Reliability/Mobile under the expanded Phase A-Native authority.
+
+## 2026-08-24T05:49:58Z — OPS-006 — Activity cards lose tool-result association
+
+- Severity: Medium
+- Classification: Confirmed operational UI defect
+- Confirmed: Yes — operator observed Product Lead activity cards render `Unmatched tool result` for both execution and Decision activity while the underlying work continued successfully.
+- Reproduction: Run Product Lead work that emits an execution result and opens a `ponderosa_decision`; inspect the corresponding activity cards. The result payload is present in the workflow, but the card cannot associate it with the initiating tool activity and labels it unmatched.
+- Impact: The visible activity stream falsely suggests broken execution, obscures which action produced a result, and makes debugging or auditing a live orchestration materially harder even when the workflow succeeds.
+- Recommended fix: Persist and project one stable activity/call/result identity through execution, Decision creation/response, retries, compaction, and rendering. When association fails, show the durable IDs and recovery state rather than a generic unmatched label, and add a visible completion association once reconciled.
+- Owner: Ponderosa activity projection and Work-log UI.
+
+## 2026-08-24T05:49:58Z — OPS-007 — Needs Your Attention lacks completion receipts and retains superseded failures
+
+- Severity: Medium
+- Classification: Confirmed operational lifecycle/UI defect; related to OPS-003 rather than a duplicate provider-failure finding
+- Confirmed: Yes — after the operator answered the native-architecture choice, `Needs Your Attention` showed no clear completion receipt and continued to surface stale `outcome_unknown` items belonging to superseded, revoked, or replaced work.
+- Reproduction: Accumulate provider `outcome_unknown` items, revoke/replace their writer, then answer a later blocking architecture Decision. Reopen `Needs Your Attention`: the answered item lacks an unambiguous resolved receipt while obsolete earlier alerts remain actionable-looking.
+- Impact: Operators cannot reliably tell whether a consequential choice was accepted, and stale alerts compete with real current decisions. Repeated provider/ownership evidence remains tracked in OPS-003; this finding concerns attention-item resolution and presentation.
+- Recommended fix: Project an explicit accepted/resolved receipt with answer, timestamp, affected workflow, and next state. Auto-resolve items when their Request/Agent is cancelled, superseded, revoked, or replaced; retain them in history with lineage. Provide explicit select/bulk-dismiss for eligible historical items and issue a durable dismissal receipt.
+- Owner: Ponderosa Decision/attention projection and client UI.
+
+## 2026-08-24T05:49:58Z — OPS-008 — Subagents roster obscures current ownership and lineage
+
+- Severity: Medium
+- Classification: Confirmed information-architecture defect
+- Confirmed: Yes — operator observed a flat 15-row Subagents list mixing active replacements, failed originals, reviewers, revoked writers, and completed Agents.
+- Reproduction: Run a staged experiment with writer failure/replacement and exact-head reviewers; open Subagents after several slices complete. All lifecycle roles appear in one undifferentiated flat list.
+- Impact: The current owner of a slice is difficult to identify, failed originals continue to look peer-equivalent to replacements, and reviewer/worker history consumes the same visual priority as active work. This compounds the delayed ownership-transfer problem recorded in OPS-003.
+- Recommended fix: Group by `Active ownership`, `Awaiting/reviewing`, `Completed`, and `History/failed/revoked`; show slice/role, manager, replacement-of/replaced-by lineage, current Request/Run state, and exact review target. Default to current ownership while retaining searchable audit history.
+- Owner: Ponderosa organization projection and Subagents UI.
+
+## 2026-08-24T05:49:58Z — OPS-009 — Direct Agent chat buries updates beneath repeated full prompts
+
+- Severity: Low
+- Classification: Confirmed usability defect, not merely a visual preference
+- Confirmed: Yes — operator observed direct Agent chats repeatedly render full assignment and canonical handoff prompts ahead of the useful status, diff, finding, or decision content.
+- Reproduction: Open a writer or reviewer Agent chat after an opening assignment, correction Request, and handoff. The full instruction payloads are expanded inline and repeated, forcing the operator to scan past large blocks to find what changed.
+- Impact: High-value progress and review signals are buried; comparisons across correction rounds become slow and error-prone, especially for long safety assignments.
+- Recommended fix: Render assignment/handoff envelopes as collapsed summaries by default: role/slice, state, exact base/head, changed files, verification, findings, decision needed, and lineage. Preserve the immutable full payload behind an expand/copy action and highlight only the diff from the prior assignment or handoff.
+- Owner: Ponderosa direct-Agent conversation projection and client UI.
