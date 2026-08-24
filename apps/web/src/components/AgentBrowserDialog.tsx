@@ -45,6 +45,10 @@ export function AgentBrowserDialog({
   const [typeText, setTypeText] = useState("");
   const session = browser.session;
   const operator = session?.status === "ready" && session.controlOwner === "operator";
+  const controlOwnerLabel = operator ? "You have control" : `${agentTitle} has control`;
+  const profileLabel = session?.profileMode === "trusted"
+    ? `Trusted · ${session.profileName ?? "Profile"}`
+    : "Disposable";
 
   const submitText = () => {
     if (!typeText) return;
@@ -71,37 +75,74 @@ export function AgentBrowserDialog({
       }}
     >
       <FeatureErrorBoundary feature={`${agentTitle} browser`}>
-        <DialogTitle id="agent-browser-title">
+        <DialogTitle id="agent-browser-title" sx={{ minWidth: 0, maxWidth: "100%", overflow: "hidden" }}>
           <Stack spacing={0.25}>
-            <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
-              <Tooltip title={backLabel}>
-                <IconButton aria-label={backLabel} onClick={onClose}>
-                  <ArrowBackIcon />
-                </IconButton>
-              </Tooltip>
-              <Typography variant="h6" noWrap sx={{ flex: 1, minWidth: 0 }}>
-                {agentTitle}&apos;s Browser
-              </Typography>
-              <PrimaryHeaderActionsOutlet />
-              {session?.status === "ready" ? (
-                <Chip
-                  size="small"
-                  variant="outlined"
-                  color={operator ? "success" : "info"}
-                  label={operator ? "You have control" : `${agentTitle} has control`}
-                />
-              ) : null}
-              {session ? (
-                <Chip
-                  size="small"
-                  variant="outlined"
-                  label={session.profileMode === "trusted"
-                    ? `Trusted · ${session.profileName ?? "Profile"}`
-                    : "Disposable"}
-                />
-              ) : null}
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              spacing={{ xs: 0.75, sm: 1 }}
+              sx={{ alignItems: { xs: "stretch", sm: "center" }, minWidth: 0 }}
+            >
+              <Stack direction="row" spacing={1} sx={{ alignItems: "center", flex: 1, minWidth: 0 }}>
+                <Tooltip title={backLabel}>
+                  <IconButton aria-label={backLabel} onClick={onClose}>
+                    <ArrowBackIcon />
+                  </IconButton>
+                </Tooltip>
+                <Typography variant="h6" noWrap sx={{ flex: 1, minWidth: 0 }}>
+                  {agentTitle}&apos;s Browser
+                </Typography>
+              </Stack>
+              <Stack
+                direction="row"
+                spacing={1}
+                useFlexGap
+                flexWrap="wrap"
+                sx={{
+                  alignItems: "center",
+                  justifyContent: { xs: "flex-start", sm: "flex-end" },
+                  minWidth: 0,
+                  width: { xs: "100%", sm: "auto" },
+                  maxWidth: "100%",
+                  flexShrink: 1,
+                }}
+              >
+                <PrimaryHeaderActionsOutlet />
+                {session?.status === "ready" ? (
+                  <Tooltip title={controlOwnerLabel}>
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      color={operator ? "success" : "info"}
+                      label={controlOwnerLabel}
+                      aria-label={controlOwnerLabel}
+                      sx={{
+                        minWidth: 0,
+                        maxWidth: { xs: "100%", sm: 240 },
+                        flexShrink: 1,
+                        "& .MuiChip-label": { overflow: "hidden", textOverflow: "ellipsis" },
+                      }}
+                    />
+                  </Tooltip>
+                ) : null}
+                {session ? (
+                  <Tooltip title={profileLabel}>
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      label={profileLabel}
+                      aria-label={profileLabel}
+                      sx={{
+                        minWidth: 0,
+                        maxWidth: { xs: "100%", sm: 240 },
+                        flexShrink: 1,
+                        "& .MuiChip-label": { overflow: "hidden", textOverflow: "ellipsis" },
+                      }}
+                    />
+                  </Tooltip>
+                ) : null}
+              </Stack>
             </Stack>
-            <Typography variant="caption" color="text.secondary" noWrap sx={{ pl: 6 }}>
+            <Typography variant="caption" color="text.secondary" noWrap sx={{ pl: { xs: 0, sm: 6 } }}>
               {session?.status === "opening"
                 ? session.queuePosition
                   ? `Waiting for browser capacity · queue position ${session.queuePosition}`
