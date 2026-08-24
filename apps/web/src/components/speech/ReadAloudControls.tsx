@@ -7,6 +7,10 @@ import { useEffect, useId, useRef, useState } from "react";
 import { speechSynthesisUnavailableReason } from "./browserSpeech";
 import { speechControlGroupSx, visuallyHiddenSpeechStatusSx } from "./speechStyles";
 import { speakableMessageText } from "./speechText";
+import {
+  monitorSpeechSurfaceAccessibility,
+  speechSurfaceIsAccessible,
+} from "./speechSurfaceAccessibility";
 
 type ReadAloudStatus = "idle" | "speaking" | "paused" | "stopped" | "error";
 
@@ -16,19 +20,6 @@ interface ActiveReadAloud {
 }
 
 let activeReadAloud: ActiveReadAloud | undefined;
-
-function speechSurfaceIsVisible(element: HTMLElement | null): boolean {
-  if (
-    !element ||
-    !element.isConnected ||
-    document.visibilityState !== "visible" ||
-    element.getClientRects().length === 0
-  ) {
-    return false;
-  }
-  const style = window.getComputedStyle(element);
-  return style.display !== "none" && style.visibility !== "hidden";
-}
 
 export function ReadAloudControls({ text }: { text: string }): JSX.Element {
   const ownerId = useId();
@@ -60,51 +51,20 @@ export function ReadAloudControls({ text }: { text: string }): JSX.Element {
 
   const beginVisibilityMonitoring = () => {
     stopVisibilityMonitoring();
-    let frame: number | undefined;
-    const stopIfInactive = () => {
-      if (frame !== undefined) window.cancelAnimationFrame(frame);
-      frame = window.requestAnimationFrame(() => {
-        frame = undefined;
-        if (
-          activeReadAloud?.ownerId === ownerId &&
-          !speechSurfaceIsVisible(rootRef.current)
-        ) {
-          stop();
-        }
-      });
-    };
-    const observer = new MutationObserver(stopIfInactive);
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["aria-hidden", "class", "hidden", "style"],
-      subtree: true,
-    });
-    const resizeObserver = typeof ResizeObserver === "undefined"
-      ? undefined
-      : new ResizeObserver(stopIfInactive);
-    if (rootRef.current) resizeObserver?.observe(rootRef.current);
-    const handleVisibilityChange = () => {
-      if (document.visibilityState !== "visible") stop();
-      else stopIfInactive();
-    };
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    window.addEventListener("hashchange", stopIfInactive);
-    window.addEventListener("pagehide", stop);
-    window.addEventListener("popstate", stopIfInactive);
-    visibilityCleanupRef.current = () => {
-      if (frame !== undefined) window.cancelAnimationFrame(frame);
-      observer.disconnect();
-      resizeObserver?.disconnect();
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.removeEventListener("hashchange", stopIfInactive);
-      window.removeEventListener("pagehide", stop);
-      window.removeEventListener("popstate", stopIfInactive);
-    };
-    stopIfInactive();
+    visibilityCleanupRef.current = monitorSpeechSurfaceAccessibility(
+      () => rootRef.current,
+      () => {
+        if (activeReadAloud?.ownerId === ownerId) stop();
+      },
+    );
   };
 
   const start = () => {
-    if (unavailable || !speakableText) return;
+    if (
+      unavailable ||
+      !speakableText ||
+      !speechSurfaceIsAccessible(rootRef.current)
+    ) return;
     activeReadAloud?.stop();
     setError(undefined);
     const utterance = new SpeechSynthesisUtterance(speakableText);

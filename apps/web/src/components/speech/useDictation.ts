@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { RefObject } from "react";
 import {
   dictationErrorMessage,
   dictationUnavailableReason,
@@ -6,6 +7,10 @@ import {
   type BrowserSpeechRecognition,
   type DictationStatus,
 } from "./browserSpeech";
+import {
+  monitorSpeechSurfaceAccessibility,
+  speechSurfaceIsAccessible,
+} from "./speechSurfaceAccessibility";
 
 type RequestedEnd = "pause" | "stop";
 const DICTATION_SETTLE_TIMEOUT_MS = 3_000;
@@ -23,6 +28,7 @@ export interface DictationController {
 export function useDictation(
   onFinalTranscript: (transcript: string) => void,
   onSettlingChange: (settling: boolean) => void,
+  surfaceRef: RefObject<HTMLElement | null>,
 ): DictationController {
   const unavailableReason = dictationUnavailableReason();
   const [status, setStatus] = useState<DictationStatus>("ready");
@@ -31,6 +37,7 @@ export function useDictation(
   const generationRef = useRef(0);
   const settlingRef = useRef(false);
   const settleTimerRef = useRef<number>();
+  const surfaceCleanupRef = useRef<() => void>();
   const requestedEndRef = useRef<RequestedEnd>();
   const errorRef = useRef(false);
   const mountedRef = useRef(true);
@@ -52,6 +59,11 @@ export function useDictation(
     }
   }, []);
 
+  const stopSurfaceMonitoring = useCallback(() => {
+    surfaceCleanupRef.current?.();
+    surfaceCleanupRef.current = undefined;
+  }, []);
+
   const releaseRecognition = useCallback(
     (recognition: BrowserSpeechRecognition) => {
       recognition.onstart = null;
@@ -60,9 +72,10 @@ export function useDictation(
       recognition.onend = null;
       if (recognitionRef.current === recognition) {
         recognitionRef.current = undefined;
+        stopSurfaceMonitoring();
       }
     },
-    [],
+    [stopSurfaceMonitoring],
   );
 
   const abandonRecognition = useCallback(
@@ -92,6 +105,16 @@ export function useDictation(
     [clearSettleTimer, releaseRecognition, updateSettling],
   );
 
+  const abandonForSurfaceLoss = useCallback(() => {
+    const recognition = recognitionRef.current;
+    if (!recognition) return;
+    abandonRecognition(
+      recognition,
+      generationRef.current,
+      "Voice dictation stopped because this message composer became inaccessible.",
+    );
+  }, [abandonRecognition]);
+
   const scheduleSettleTimeout = useCallback(
     (recognition: BrowserSpeechRecognition, generation: number) => {
       clearSettleTimer();
@@ -110,6 +133,13 @@ export function useDictation(
   const begin = useCallback(() => {
     const Recognition = speechRecognitionConstructor();
     if (!Recognition || unavailableReason) return;
+    if (!speechSurfaceIsAccessible(surfaceRef.current)) {
+      setError(
+        "Voice dictation is unavailable while this message composer is inactive.",
+      );
+      setStatus("error");
+      return;
+    }
     clearSettleTimer();
     const existingRecognition = recognitionRef.current;
     if (existingRecognition) releaseRecognition(existingRecognition);
@@ -172,6 +202,11 @@ export function useDictation(
       setStatus(requestedEnd === "pause" ? "paused" : "stopped");
     };
 
+    surfaceCleanupRef.current = monitorSpeechSurfaceAccessibility(
+      () => surfaceRef.current,
+      abandonForSurfaceLoss,
+    );
+
     try {
       recognition.start();
     } catch (startError) {
@@ -185,8 +220,10 @@ export function useDictation(
     }
   }, [
     abandonRecognition,
+    abandonForSurfaceLoss,
     clearSettleTimer,
     releaseRecognition,
+    surfaceRef,
     unavailableReason,
     updateSettling,
   ]);
@@ -239,6 +276,7 @@ export function useDictation(
     const endForNavigation = () => {
       generationRef.current += 1;
       clearSettleTimer();
+      stopSurfaceMonitoring();
       requestedEndRef.current = "stop";
       const recognition = recognitionRef.current;
       if (recognition) {
@@ -257,6 +295,7 @@ export function useDictation(
       mountedRef.current = false;
       generationRef.current += 1;
       clearSettleTimer();
+      stopSurfaceMonitoring();
       requestedEndRef.current = "stop";
       const recognition = recognitionRef.current;
       if (recognition) {
@@ -269,7 +308,12 @@ export function useDictation(
       }
       updateSettling(false);
     };
-  }, [clearSettleTimer, releaseRecognition, updateSettling]);
+  }, [
+    clearSettleTimer,
+    releaseRecognition,
+    stopSurfaceMonitoring,
+    updateSettling,
+  ]);
 
   return {
     error,

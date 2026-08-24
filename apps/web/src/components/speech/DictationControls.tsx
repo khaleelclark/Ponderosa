@@ -2,7 +2,7 @@ import MicNoneIcon from "@mui/icons-material/MicNone";
 import PauseIcon from "@mui/icons-material/Pause";
 import StopIcon from "@mui/icons-material/Stop";
 import { Box, IconButton, Tooltip, Typography } from "@mui/material";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import {
   speechControlGroupSx,
   speechStatusSx,
@@ -19,7 +19,12 @@ export function DictationControls({
   onFinalTranscript(transcript: string): void;
   onSettlingChange(settling: boolean): void;
 }): JSX.Element {
-  const dictation = useDictation(onFinalTranscript, onSettlingChange);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const dictation = useDictation(
+    onFinalTranscript,
+    onSettlingChange,
+    rootRef,
+  );
   const active = ["starting", "listening", "pausing", "stopping"].includes(
     dictation.status,
   );
@@ -59,7 +64,7 @@ export function DictationControls({
                 : undefined;
 
   return (
-    <Box sx={speechControlGroupSx}>
+    <Box ref={rootRef} sx={speechControlGroupSx}>
       <Tooltip title={primaryLabel}>
         <span>
           <IconButton
