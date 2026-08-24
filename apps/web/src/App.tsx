@@ -78,6 +78,7 @@ import {
   ActiveNotificationViewProvider,
   activeNotificationViewForRoute,
 } from "./notificationActiveView";
+import { PrimaryHeaderActionsProvider } from "./components/PrimaryHeaderActions";
 
 const OPERATOR_PROFILE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 const OPERATOR_PROFILE_IMAGE_ACCEPT =
@@ -726,6 +727,12 @@ export default function App({
               >
               <ActiveNotificationViewProvider value={activeNotificationView}>
               <WorkspaceConnectionProvider value={workspaceConnection}>
+              <PrimaryHeaderActionsProvider
+                preferredProvider={preferences.defaultUsageProvider}
+                onOpenProviderSettings={() =>
+                  navigateWorkspace({ kind: "settings", section: "providers" })
+                }
+              >
                 <WorkspaceErrorBoundary
                   title="This workspace view could not be displayed."
                   resetKey={JSON.stringify(route)}
@@ -767,6 +774,7 @@ export default function App({
                     onToggleColorMode={onToggleColorMode}
                   />
                 </WorkspaceErrorBoundary>
+              </PrimaryHeaderActionsProvider>
               </WorkspaceConnectionProvider>
               </ActiveNotificationViewProvider>
               </Box>

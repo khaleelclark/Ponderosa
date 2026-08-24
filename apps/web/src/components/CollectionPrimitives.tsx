@@ -31,6 +31,7 @@ import { relativeTime } from "../agents";
 import { useInfiniteScrollSentinel } from "../hooks/useInfiniteScrollSentinel";
 import { LoadingState } from "./LoadingState";
 import { MobileNavigationButton } from "./MobileNavigationContext";
+import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 
 export interface CollectionWorkspaceProps {
   title: string;
@@ -156,6 +157,7 @@ export function CollectionHeader({
         </Box>
       ) : null}
     </Stack>
+    <PrimaryHeaderActionsOutlet />
   </Stack>;
 }
 

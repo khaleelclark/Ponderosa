@@ -21,6 +21,7 @@ import {
 import { IconTitle } from "./IconTitle";
 import { workspaceHeaderSurfaceSx } from "../theme";
 import { MobileNavigationButton } from "./MobileNavigationContext";
+import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 
 type WorkspaceTabItem<T extends string> = { value: T; label: string; icon?: ReactElement };
 
@@ -219,6 +220,7 @@ export function CompactWorkspaceHeader({
             </Typography>
           ) : null}
         </Box>
+        <PrimaryHeaderActionsOutlet />
         {action}
       </Stack>
     </Box>
@@ -324,6 +326,7 @@ export function TabbedWorkspaceFrame<T extends string>({
               flexShrink: 0,
             }}
           >
+            <PrimaryHeaderActionsOutlet />
             {status}
             {actions}
             <Tooltip title="Collapse workspace header">
