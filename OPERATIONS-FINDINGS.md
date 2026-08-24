@@ -331,3 +331,20 @@ This append-only experiment ledger records product and operating friction observ
 - Required mapping: Before any rewrite or freeze, provide a complete table for all 54 `b876f811` paths assigning each to exactly one reviewer finding, plus invariant, necessity, and exact commit; disclose unavoidable overlaps and list the post-`b876f811` delta separately.
 - Product Lead disposition: The broad provenance/link commit must be split before independent review or integration. Isolate Git ownership/retained identity, admission/command fencing, durable unavailable transitions, Agent-authored relative-link routing, and canonical file/artifact provenance as reviewable units; isolate retained-copy recovery or justify its exact shared authority. Drop unrelated redesign or cleanup. Preserve the no-tests policy and exact-head review gate.
 - Owner: Agent Working Copies writer; current branch is not frozen or accepted.
+
+## 2026-08-24T06:19:04Z — REL-003 — Native authority design overclaims descendant mutation safety and omits protected authorities
+
+- Severity: Critical
+- Classification: Confirmed Phase A0 architecture/security defects; A1 not approved
+- Confirmed: Yes — same independent safety reviewer rejected exact A0 head `4b2e743620935d3a78946beee371141b82107f10` with three high- and four medium-severity design findings.
+- Findings:
+  1. POSIX `unlinkat`/rename remain name-relative after identity verification. A same-user actor can replace an opened child before deletion/replacement, so the contract cannot promise exact identity-conditioned descendant mutation under its declared threat model. Fix requires either an explicit trust boundary or immutable/no-replace names plus non-destructive/offline reclamation.
+  2. The protected inventory omits `asset-authority.sqlite` and its journal/WAL/temp/shm files even though that database owns artifact reservations, usage, associations, and audit authority. Root displacement could split artifact bytes from their authority ledger.
+  3. The frozen SQLite driver exposes ATTACH URI `vfs=`, `VACUUM INTO`, backup destinations, extension loading, unsafe/raw handle access, and `.name`; these can bypass or reveal the rooted VFS. A process-wide native open barrier and restricted database port/authorizer are required for every rooted connection.
+  4. POSIX lease release is last-duplicate-close, not simply parent death; fork/exec inheritance must be prevented and exercised. Windows mutex ownership is thread-affine, requiring non-inheritable handles and one native owner thread with correct abandonment/finalizer behavior.
+  5. Filesystem capability detection currently follows possible pathname creation, and mount/reparse crossing enforcement is underspecified. Detection must precede mutation and use platform handle-based equivalents such as Linux `openat2` no-cross/no-symlink resolution.
+  6. The permanent compatibility fence lacks an encoding guaranteed to be rejected by known destructive legacy launcher parsers. Upgrade/shutdown must be exercised with the old launcher binary, not only the new no-touch path.
+  7. Proposed A1 commits lack one atomic activation boundary: partial heads could enable rooted AgentStore while AssetStore, `projects/**` consumers, or workers still reopen pathname roots. Groundwork must stay dormant until one version-gated cutover; protected worker I/O cannot receive serialized `dataDir`.
+- Decision required: Defending configured-root/ancestor rebinding and cooperative Ponderosa contenders is implementable, but defending active same-user descendant namespace replacement requires a stronger privilege/sandbox boundary. Choose an explicit bounded trust model, expand to privileged isolation, or defer Phase A. This decision must precede A0 correction and A1 remains forbidden.
+- Confirmed positives: Kernel-managed no-namespace lease direction, retained-root handling for root/ancestor displacement, fail-closed marker contract, stable first run, and explicit macOS/Windows stop gates remain sound design foundations.
+- Owner: Product Lead decision, then Reliability/Mobile A0 correction and same-reviewer rereview.
