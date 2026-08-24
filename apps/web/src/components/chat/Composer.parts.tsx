@@ -129,7 +129,11 @@ export function ComposerProjectDestinationAction({
       startIcon={<PersonAddAltOutlinedIcon />}
       onClick={creation?.onCreateAgent}
       disabled={!creation || creation.disabled}
-      sx={{ whiteSpace: "nowrap", minHeight: 34 }}
+      sx={{
+        whiteSpace: "nowrap",
+        minHeight: { xs: 44, sm: 34 },
+        "@media (pointer: coarse)": { minHeight: 44 },
+      }}
     >
       New Agent
     </Button>

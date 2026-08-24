@@ -239,8 +239,6 @@ export function ConversationView({
     collaborationVisited,
     conversationId,
     focusedMessage,
-    initialView,
-    setActiveView,
     setOlderCollaboration,
     setOlderMain,
   });
