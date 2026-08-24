@@ -32,6 +32,7 @@ import type { RuntimeElicitationBroker } from "../runtime-elicitation-broker.js"
 import { registerAgentAuditRoutes } from "./agent-audit.js";
 import { registerAgentCreationRoutes } from "./agent-creation.js";
 import { registerAgentMaintenanceRoutes } from "./agent-maintenance.js";
+import { registerAgentOrganizationRoutes } from "./agent-organization.js";
 import { registerAgentMessageRunRoute } from "./agent-message-run.js";
 import { registerAgentPackageRoutes } from "./agent-packages.js";
 import { registerAgentPresetRoutes } from "./agent-presets.js";
@@ -440,6 +441,8 @@ app.get<{ Params: { id: string }; Querystring: CollectionQuery }>("/api/projects
   }
 });
 
+registerAgentOrganizationRoutes(app, { store, agentHealth });
+
 registerAgentPresetRoutes(app, {
   store,
   validateRuntimeSelection: (input, projectId) => {
@@ -557,6 +560,7 @@ registerAgentMaintenanceRoutes(app, {
   store, coordinationV3, workspace, engines, triggerSources, deletingAgentIds,
   cachedModelOptions, commitAgentDeletion,
   notifyScheduler: notifyScheduler,
+  appendWorkspace,
 });
 
 const globalChatSearch = (query: {

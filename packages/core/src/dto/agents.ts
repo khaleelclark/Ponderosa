@@ -247,6 +247,58 @@ export interface AgentOrganizationEvent {
   createdAt: string;
 }
 
+export type AgentOrganizationScope = "roots" | "children" | "orphaned" | "deleted";
+
+export type AgentOrganizationRelationDto =
+  | { kind: "independent" }
+  | { kind: "managed"; manager: { id: string; title: string } }
+  | { kind: "orphaned"; managerAgentId: string }
+  | { kind: "deleted"; deletedAt: string };
+
+/** The exact live status evidence allowed on the bounded organization surface. */
+export type AgentOrganizationHealthDto = Pick<
+  AgentHealthDto,
+  | "status"
+  | "statusTimestamp"
+  | "reason"
+  | "phase"
+  | "executionId"
+  | "schedulerRunId"
+  | "runtimeOwnership"
+  | "attention"
+>;
+
+export type AgentOrganizationNodeDto =
+  | {
+      id: string;
+      projectId: string;
+      title: string;
+      activeEngine: EngineId;
+      updatedAt: string;
+      relation: Exclude<AgentOrganizationRelationDto, { kind: "deleted" }>;
+      directReportCount: number;
+      health?: AgentOrganizationHealthDto;
+    }
+  | {
+      id: string;
+      title: string;
+      relation: Extract<AgentOrganizationRelationDto, { kind: "deleted" }>;
+    };
+
+export interface AgentOrganizationPageDto {
+  scope: AgentOrganizationScope;
+  items: AgentOrganizationNodeDto[];
+  total: number;
+  limit: number;
+  nextCursor?: string;
+  collectionGeneration: string;
+  specialGroupCounts: {
+    independent: number;
+    orphaned: number;
+    deleted: number;
+  };
+}
+
 /** PUT /api/agents/:id/conversation-memberships body. Replaces membership atomically. */
 export interface UpdateAgentConversationMembershipsRequest {
   conversationIds: string[];

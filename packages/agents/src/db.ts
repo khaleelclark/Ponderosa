@@ -765,6 +765,11 @@ function establishReadIndexes(sqlite: Database.Database): void {
       ON conversations (project_id, updated_at DESC, title, id);
     CREATE INDEX IF NOT EXISTS idx_agents_project_directory
       ON agents (project_id, deleted_at, archived, updated_at DESC, title, id);
+    CREATE INDEX IF NOT EXISTS idx_agents_project_organization
+      ON agents (
+        project_id, manager_agent_id, deleted_at, archived,
+        title COLLATE NOCASE, id
+      );
     CREATE INDEX IF NOT EXISTS idx_trigger_definitions_project_directory
       ON trigger_definitions (project_id, updated_at DESC, name, id);
     CREATE INDEX IF NOT EXISTS idx_trigger_definitions_agent_directory

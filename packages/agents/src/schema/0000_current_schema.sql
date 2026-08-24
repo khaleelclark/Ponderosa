@@ -807,6 +807,11 @@ CREATE INDEX idx_agents_manager ON agents (manager_agent_id);
 CREATE INDEX idx_agents_project ON agents (project_id);
 CREATE INDEX idx_agents_project_directory
   ON agents (project_id, deleted_at, archived, updated_at DESC, title, id);
+CREATE INDEX idx_agents_project_organization
+  ON agents (
+    project_id, manager_agent_id, deleted_at, archived,
+    title COLLATE NOCASE, id
+  );
 CREATE INDEX idx_all_chat_feed_keyset
   ON all_chat_feed_projection (order_key DESC, row_key DESC);
 CREATE INDEX idx_artifact_source_projection

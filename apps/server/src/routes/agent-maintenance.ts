@@ -33,6 +33,11 @@ interface AgentMaintenanceRoutesContext {
     authorization?: AgentManagementAuthorization,
   ): Promise<CommitAgentDeletionResponse>;
   notifyScheduler(): void;
+  appendWorkspace(event: {
+    type: "project_changed";
+    projectId: string;
+    action: "updated";
+  }): unknown;
 }
 
 export function registerAgentMaintenanceRoutes(
@@ -49,6 +54,7 @@ export function registerAgentMaintenanceRoutes(
     cachedModelOptions,
     commitAgentDeletion,
     notifyScheduler,
+    appendWorkspace,
   } = context;
 
   app.patch<{ Params: { id: string }; Body: UpdateAgentRequest }>(
@@ -140,7 +146,13 @@ export function registerAgentMaintenanceRoutes(
       }
       try {
         const agent = store.updateAgentOrganization(request.params.id, request.body);
-        return agent ?? reply.code(404).send({ error: "agent not found" });
+        if (!agent) return reply.code(404).send({ error: "agent not found" });
+        appendWorkspace({
+          type: "project_changed",
+          projectId: agent.projectId,
+          action: "updated",
+        });
+        return agent;
       } catch (error) {
         return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid agent organization" });
       }
