@@ -28,6 +28,8 @@ import {
 } from "@mui/material";
 import type {
   AgentDto,
+  AgentDetailDto,
+  AgentWorkingCopyMode,
   AgentManagementPermissionsDto,
   BrowserProfileDto,
   ConversationDto,
@@ -37,6 +39,66 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
+
+function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.Element {
+  const queryClient = useQueryClient();
+  const changeMode = useMutation({
+    mutationFn: (workingCopyMode: AgentWorkingCopyMode) =>
+      api.updateAgent(agent.id, { workingCopyMode }),
+    onSuccess: updated => {
+      queryClient.setQueryData<AgentDto[]>(
+        queryKeys.agents.project(agent.projectId),
+        current => current?.map(candidate => candidate.id === updated.id ? updated : candidate),
+      );
+      queryClient.setQueriesData<AgentDetailDto>(
+        { queryKey: queryKeys.agents.detailPrefix(agent.id) },
+        current => current ? { ...current, agent: updated } : current,
+      );
+    },
+  });
+  const workingCopy = changeMode.data?.id === agent.id
+    ? changeMode.data.workingCopy
+    : agent.workingCopy;
+  const label = workingCopy.mode === "separate_git" ? "Separate Git copy" : "Shared folder";
+  return (
+    <Paper variant="outlined" sx={{ p: 2 }}>
+      <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", mb: 0.75 }}>
+        <Typography variant="subtitle1" fontWeight={800} sx={{ flex: 1 }}>Working Folder</Typography>
+        <Chip
+          size="small"
+          color={workingCopy.state === "ready" ? "success" : "error"}
+          label={workingCopy.state === "ready" ? `${label} · Ready` : `${label} · Needs attention`}
+        />
+      </Stack>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+        Shared is best when Agents need to see each other's changes immediately. Separate Git gives this Agent its own branch and folder for code work.
+      </Typography>
+      <FormControl fullWidth size="small" disabled={changeMode.isPending}>
+        <InputLabel id={`working-copy-${agent.id}`}>Working folder</InputLabel>
+        <Select
+          labelId={`working-copy-${agent.id}`}
+          label="Working folder"
+          value={workingCopy.mode}
+          onChange={event => changeMode.mutate(event.target.value as AgentWorkingCopyMode)}
+        >
+          <MenuItem value="shared">Shared folder</MenuItem>
+          <MenuItem value="separate_git">Separate Git copy</MenuItem>
+        </Select>
+      </FormControl>
+      {workingCopy.mode === "separate_git" && workingCopy.state === "ready" ? (
+        <Alert severity="info" sx={{ mt: 1.5 }}>
+          Changes stay on this Agent's Git branch{workingCopy.branch ? ` (${workingCopy.branch})` : ""}. This separates work; it does not limit what the Agent can access on the host.
+        </Alert>
+      ) : null}
+      {workingCopy.state === "unavailable" ? (
+        <Alert severity="error" sx={{ mt: 1.5 }}>
+          {workingCopy.failure ?? "This working folder is unavailable."} Runs stay paused instead of using the Shared folder.
+        </Alert>
+      ) : null}
+      {changeMode.error ? <Alert severity="error" sx={{ mt: 1.5 }}>{String(changeMode.error)}</Alert> : null}
+    </Paper>
+  );
+}
 
 function AgentBrowserProfileSettings({ agent }: { agent: AgentDto }): JSX.Element {
   const queryClient = useQueryClient();
@@ -287,6 +349,7 @@ export function AgentSettingsPane({
           Manage Chat Assignments
         </Button>
       </Paper>
+      <AgentWorkingCopySettings agent={agent} />
       <AgentBrowserProfileSettings agent={agent} />
       <Paper variant="outlined" sx={{ p: 2 }}>
         <Typography variant="subtitle1" fontWeight={800}>

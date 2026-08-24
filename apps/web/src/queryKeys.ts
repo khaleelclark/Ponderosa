@@ -132,16 +132,16 @@ export const queryKeys = {
   },
   workspaceStatus: {
     all: ["workspace-status"] as const,
-    project: (projectId: string) => ["workspace-status", projectId] as const,
+    agent: (agentId: string) => ["workspace-status", agentId] as const,
   },
   workspaceFile: {
     all: ["workspace-file"] as const,
-    project: (projectId: string) => ["workspace-file", projectId] as const,
-    detail: (projectId: string, path: string | undefined) =>
-      ["workspace-file", projectId, path] as const,
+    agent: (agentId: string) => ["workspace-file", agentId] as const,
+    detail: (agentId: string, path: string | undefined) =>
+      ["workspace-file", agentId, path] as const,
   },
   workspaceChanges: {
-    project: (projectId: string) => ["workspace", projectId] as const,
+    agent: (agentId: string) => ["workspace", agentId] as const,
     file: (
       agentId: string | undefined,
       path: string | undefined,
@@ -149,8 +149,8 @@ export const queryKeys = {
     ) => ["changed-file", agentId, path, lastSeq] as const,
   },
   workspaceFileView: {
-    detail: (projectId: string, path: string) =>
-      ["workspace-file-view", projectId, path] as const,
+    detail: (projectId: string, path: string, agentId?: string) =>
+      ["workspace-file-view", projectId, agentId, path] as const,
   },
   agentWork: {
     all: ["agent-work"] as const,

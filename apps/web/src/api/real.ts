@@ -802,17 +802,17 @@ export const realApi = {
   getFiles(projectId: string, path?: string): Promise<FilesResponse> {
     return requestJson<FilesResponse>(`/api/files${toQuery({ projectId, path })}`);
   },
-  getWorkspaceStatus(projectId: string): Promise<WorkspaceStatusDto> {
-    return requestJson<WorkspaceStatusDto>(`/api/projects/${encodeURIComponent(projectId)}/workspace`);
+  getWorkspaceStatus(agentId: string): Promise<WorkspaceStatusDto> {
+    return requestJson<WorkspaceStatusDto>(`/api/agents/${encodeURIComponent(agentId)}/workspace`);
   },
-  getWorkspaceFile(projectId: string, path: string): Promise<WorkspaceFileReviewDto> {
+  getWorkspaceFile(agentId: string, path: string): Promise<WorkspaceFileReviewDto> {
     return requestJson<WorkspaceFileReviewDto>(
-      `/api/projects/${encodeURIComponent(projectId)}/workspace/file${toQuery({ path })}`,
+      `/api/agents/${encodeURIComponent(agentId)}/workspace/file${toQuery({ path })}`,
     );
   },
-  getWorkspaceFileView(projectId: string, path: string): Promise<WorkspaceFileViewDto> {
+  getWorkspaceFileView(projectId: string, path: string, agentId?: string): Promise<WorkspaceFileViewDto> {
     return requestJson<WorkspaceFileViewDto>(
-      `/api/projects/${encodeURIComponent(projectId)}/workspace-files/view-info${toQuery({ path })}`,
+      `/api/projects/${encodeURIComponent(projectId)}/workspace-files/view-info${toQuery({ path, agentId })}`,
     );
   },
   getArtifact(agentId: string, artifactId: string): Promise<ArtifactContentDto> {
