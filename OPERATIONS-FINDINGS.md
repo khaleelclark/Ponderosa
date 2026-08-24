@@ -127,3 +127,19 @@ This append-only experiment ledger records product and operating friction observ
 - Impact: User-authored text can be lost during an ordinary Send; speech can continue unexpectedly after in-app navigation, including potentially sensitive content; and system notices are misrepresented as Agent speech.
 - Recommended fix: Coordinate recognition shutdown/final flush with submission or preserve every post-snapshot draft mutation without auto-sending speech; stop the active synthesis owner when its message surface becomes inactive/hidden, not only on unmount/pagehide; gate All Messages read-aloud strictly on Agent authorship. Requalify drafts, explicit Send, cross-view cleanup, and authorship before exact-head rereview.
 - Owner: Voice Conversation MVP. Branch remains frozen until overlapping UI-002 composer changes are finalized and sequenced.
+
+## 2026-08-24T05:30:16Z — DOCS-001 — System articulation overstates current safety and conflates durable and live lifecycles
+
+- Severity: High
+- Classification: Confirmed documentation and provider-contract accuracy defects; frozen head not approved
+- Confirmed: Yes — independent read-only factual-contract review of exact head `0b963adcecf5c42681126d33ed3fdc1d05d400cd` found one high-, three medium-, and two low-severity inaccuracies.
+- Reproduction:
+  1. Compare `docs/system-model.md`'s claim that unknown or damaged legacy state fails closed with the baseline data-layout path: layout inspection occurs before ownership and a missing/unknown marker triggers recursive deletion. Only the SQLite launch-baseline check fails closed at this head.
+  2. Compare the statement that Project files are outside the data directory with new-folder Projects, which are created under `<dataDir>/workspaces`; only selected existing folders are necessarily external.
+  3. Compare the described pre-Activation Automation “managed artifact” with the implemented durable occurrence row containing identity, provenance, hash, and run-scoped retrieval.
+  4. Compare durable Agent Decision responses, which create response Activations, with live provider elicitations, whose values normally return directly through an in-memory broker to the waiting provider call; only free-form diversion creates an Activation.
+  5. Follow rollover sequencing: provider runtime/process teardown before replacement and accepted-session snapshot switching after low-water verification are distinct events, but the docs call both “session retirement.”
+  6. Compare trusted Project browser profiles, which persist cookies/storage by design, with deployment wording that says every browser always uses a fresh temporary profile and credentials are never stored.
+- Impact: Operators could rely on a destructive baseline startup path as though it were fail-closed, omit managed workspaces from backups, misunderstand durable Automation and Decision boundaries, or misjudge browser credential persistence. Ambiguous rollover wording also obscures the actual session-acceptance boundary.
+- Recommended fix: Narrow the safety statement to the current SQLite schema check until the separately reviewed layout fix is integrated; distinguish managed and external Project folders in location/backup guidance; describe the Automation occurrence record precisely; split durable Decisions from live elicitations; name runtime teardown and accepted-session switching separately; and scope disposable-browser claims while documenting trusted-profile persistence. Preserve the independently approved conditional `ponderosa_history` and removed `ponderosa_docs` wording. Require exact-head factual rereview before integration.
+- Owner: Documentation/System Articulation. Integration remains blocked for this slice.
