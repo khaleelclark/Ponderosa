@@ -101,3 +101,16 @@ This append-only experiment ledger records product and operating friction observ
 - Impact: A read-only reviewer mutated the evidence worktree, violated the repository's no-persisted-harness policy, and then lost its canonical handoff. The serious race finding survived only through the operator's intervention.
 - Recommended fix: Enforce reviewer worktrees as read-only at the capability/filesystem layer; provide an explicit run-scoped temporary directory for manual repro scripts; retain an audited manifest of temporary and untracked file creation/removal; and require the review finding to be durably published before provider teardown.
 - Owner: Ponderosa managed-Agent workspace authority and provider-session runtime.
+
+## 2026-08-24T05:18:37Z — REL-001 — Data-directory lock release and launcher cleanup can delete a replacement live lock
+
+- Severity: High
+- Classification: Confirmed safety defect; corrected Phase A head not approved
+- Confirmed: Yes — fresh independent adversarial rereview of exact head `c6a4d3ac888aa1e423eccbae9617c8a54c6edc54` found two destructive check/use races and one directory-identity gap.
+- Reproduction:
+  1. Owned-lock release reads and token-checks `.ponderosa-daemon.lock`; replace that pathname with another process's live lock before the subsequent `rmSync`. Release deletes the replacement lock because the decision used the earlier read.
+  2. Launcher cleanup reads a matching PID from the daemon lock; replace the pathname before its subsequent `rmSync`. Cleanup deletes the replacement lock, and PID reuse can independently make the old equality check match a later process.
+  3. Point the data-directory pathname through a symlink to directory A, acquire A's lock, then retarget the symlink to directory B before layout inspection. The lexical path check still passes while Ponderosa inspects and opens B without holding B's lock.
+- Impact: A live owner can lose its lock, allowing a third process to acquire the data directory concurrently; or the process can inspect/open a directory different from the one it locked. Either violates the fail-closed startup invariant and can expose canonical state to concurrent writers.
+- Recommended fix: Use one bounded exact-identity lock protocol for acquisition and release, with no separate read-then-pathname-unlink decision; remove PID-only launcher lock deletion and delegate to the same authority or fail closed; canonicalize and bind the data-directory identity once before every locked operation. A prepared nonempty owner directory claimed atomically and released by removing only the token-specific child plus nonrecursive `rmdir` is one candidate, but the corrected implementation must prove its platform semantics rather than rely on prose. Require disposable contention/symlink exercises and exact-head rereview before Phase B.
+- Owner: Reliability/Mobile. Phase B remains frozen.
