@@ -208,17 +208,88 @@ export default function App({
   const [engineStatusOpen, setEngineStatusOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
+  const overlayReturnFocus = useRef<HTMLElement>();
   const [sidebarConversationAction, setSidebarConversationAction] =
     useState<SidebarConversationAction>();
   const [projectBrowserRequest, setProjectBrowserRequest] =
     useState<ProjectBrowserRequest>();
   const projectBrowserRequestId = useRef(0);
+  const rememberOverlayTrigger = () => {
+    overlayReturnFocus.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : undefined;
+  };
+  const restoreFocus = (previous: HTMLElement | undefined) => {
+    window.requestAnimationFrame(() => {
+      if (
+        previous?.isConnected &&
+        previous.getClientRects().length > 0 &&
+        !previous.closest('[aria-hidden="true"]')
+      ) {
+        previous.focus();
+        return;
+      }
+      const stableNavigationTarget = [
+        ...document.querySelectorAll<HTMLElement>(
+          '[aria-label="Open workspace navigation"], nav[aria-label="Project navigation"] [aria-label="Home"]',
+        ),
+      ].find(candidate => (
+        candidate.getClientRects().length > 0 &&
+        !candidate.closest('[aria-hidden="true"]')
+      ));
+      stableNavigationTarget?.focus();
+    });
+  };
+  const restoreOverlayTrigger = () => {
+    const previous = overlayReturnFocus.current;
+    overlayReturnFocus.current = undefined;
+    restoreFocus(previous);
+  };
+  const openGlobalSearch = () => {
+    rememberOverlayTrigger();
+    setGlobalSearchOpen(true);
+  };
+  const closeGlobalSearch = () => {
+    setGlobalSearchOpen(false);
+    restoreOverlayTrigger();
+  };
+  const openNotifications = () => {
+    rememberOverlayTrigger();
+    setNotificationPanelOpen(true);
+  };
+  const closeNotifications = () => {
+    setNotificationPanelOpen(false);
+    restoreOverlayTrigger();
+  };
+  const openEngineStatus = () => {
+    rememberOverlayTrigger();
+    setEngineStatusOpen(true);
+  };
+  const closeEngineStatus = () => {
+    setEngineStatusOpen(false);
+    restoreOverlayTrigger();
+  };
+  const setMobileNavigationOpen = (open: boolean) => {
+    if (open) rememberOverlayTrigger();
+    setMobileNavOpen(open);
+    if (!open) restoreOverlayTrigger();
+  };
   const readinessQuery = useQuery({
     queryKey: queryKeys.readiness.all,
     queryFn: () => api.getReadiness(),
     enabled: engineStatusOpen,
     staleTime: 30_000,
   });
+  useEffect(() => {
+    if (mobileWorkspace || !mobileNavOpen) return;
+    const drawerTrigger = overlayReturnFocus.current;
+    overlayReturnFocus.current = undefined;
+    setMobileNavOpen(false);
+    // Let the Drawer transition release its focus trap before moving focus to
+    // the equivalent desktop navigation control.
+    const focusTimer = window.setTimeout(() => restoreFocus(drawerTrigger), 400);
+    return () => window.clearTimeout(focusTimer);
+  }, [mobileWorkspace]);
   useEffect(() => {
     let stopped = false;
 
@@ -432,7 +503,7 @@ export default function App({
     const onKeyDown = (event: KeyboardEvent) => {
       if (!isGlobalSearchShortcut(event)) return;
       event.preventDefault();
-      setGlobalSearchOpen(true);
+      openGlobalSearch();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -534,7 +605,7 @@ export default function App({
     <ProjectBrowserContext.Provider
       value={{ projectId: selectedProjectId, open: openProjectBrowser }}
     >
-      <MobileNavigationProvider onOpen={() => setMobileNavOpen(true)}>
+      <MobileNavigationProvider onOpen={() => setMobileNavigationOpen(true)}>
         <MobileWorkspaceActionsProvider>
         <Box
         sx={{
@@ -555,6 +626,10 @@ export default function App({
         <Box
           component="a"
           href="#main-content"
+          onClick={event => {
+            event.preventDefault();
+            document.getElementById("main-content")?.focus();
+          }}
           sx={{
             position: "fixed",
             top: 8,
@@ -607,9 +682,9 @@ export default function App({
               onDeleteConversation={conversation =>
                 openSidebarConversationAction("delete", conversation)
               }
-              onSearch={() => setGlobalSearchOpen(true)}
-              onOpenNotifications={() => setNotificationPanelOpen(true)}
-              onOpenEngineStatus={() => setEngineStatusOpen(true)}
+              onSearch={openGlobalSearch}
+              onOpenNotifications={openNotifications}
+              onOpenEngineStatus={openEngineStatus}
               collapsed={sidebarPresentation.collapsed}
               width={sidebarPresentation.width}
               onCollapsedChange={collapsed =>
@@ -623,6 +698,7 @@ export default function App({
           <Box
             component="main"
             id="main-content"
+            tabIndex={-1}
             sx={{
               minHeight: 0,
               minWidth: 0,
@@ -678,10 +754,10 @@ export default function App({
                     onPreferences={savePreferences}
                     onCreate={openCreationForm}
                     onCancelCreate={cancelCreationWorkspace}
-                    onOpenInbox={() => setNotificationPanelOpen(true)}
+                    onOpenInbox={openNotifications}
                     onProjectDeleted={handleProjectDeleted}
                     onConversationAction={openSidebarConversationAction}
-                    onOpenEngineStatus={() => setEngineStatusOpen(true)}
+                    onOpenEngineStatus={openEngineStatus}
                     onBrowserRequestHandled={requestId =>
                       setProjectBrowserRequest(current =>
                         consumeProjectBrowserRequest(current, requestId),
@@ -699,19 +775,19 @@ export default function App({
         </Box>
 
         <MobileWorkspaceDrawer
-          open={mobileNavOpen}
+          open={mobileWorkspace && mobileNavOpen}
           projects={projects}
           preferences={preferences}
           route={route}
           notifications={presentedNotifications}
-          onOpenChange={setMobileNavOpen}
+          onOpenChange={setMobileNavigationOpen}
           onNavigate={navigateWorkspace}
           onCreate={replaceWorkspaceWithCreationForm}
           onPreferences={savePreferences}
           onConversationAction={openSidebarConversationAction}
-          onSearch={() => setGlobalSearchOpen(true)}
-          onOpenNotifications={() => setNotificationPanelOpen(true)}
-          onOpenEngineStatus={() => setEngineStatusOpen(true)}
+          onSearch={openGlobalSearch}
+          onOpenNotifications={openNotifications}
+          onOpenEngineStatus={openEngineStatus}
         />
 
         <SidebarConversationDialogs
@@ -730,7 +806,7 @@ export default function App({
 
         <GlobalChatSearch
           open={globalSearchOpen}
-          onClose={() => setGlobalSearchOpen(false)}
+          onClose={closeGlobalSearch}
           onSelect={selection => {
             saveLastProjectId(selection.projectId);
             if (selection.chat.kind === "conversation") {
@@ -767,7 +843,7 @@ export default function App({
           open={notificationPanelOpen}
           projects={projects}
           firstPage={notificationsQuery.data}
-          onClose={() => setNotificationPanelOpen(false)}
+          onClose={closeNotifications}
           onNavigate={navigateWorkspace}
           onOpenSettings={openSettings}
         />
@@ -780,10 +856,10 @@ export default function App({
             readinessQuery.isError ? String(readinessQuery.error) : undefined
           }
           onOpenSettings={() => {
-            setEngineStatusOpen(false);
+            closeEngineStatus();
             openSettings();
           }}
-          onClose={() => setEngineStatusOpen(false)}
+          onClose={closeEngineStatus}
         />
         </Box>
         </MobileWorkspaceActionsProvider>

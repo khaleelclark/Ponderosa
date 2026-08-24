@@ -76,6 +76,7 @@ export function MobileWorkspaceDrawer({
       onClose={close}
       disableDiscovery
       swipeAreaWidth={8}
+      ModalProps={{ disableRestoreFocus: true }}
       PaperProps={{
         sx: {
           width: "auto",

@@ -23,6 +23,12 @@ export interface AgentTelemetryFocus {
 }
 
 export type AgentDetailView = "chat" | "activity" | "subagents" | "triggers" | "artifacts" | "settings" | "technical";
+export type ConversationDetailView =
+  | "main"
+  | "collaboration"
+  | "files"
+  | "agents"
+  | "triggers";
 export type ProjectDetailView =
   | "overview"
   | "files"
@@ -39,6 +45,21 @@ const PROJECT_DETAIL_VIEWS: readonly ProjectDetailView[] = [
   "triggers",
   "settings",
 ];
+
+const CONVERSATION_DETAIL_VIEWS: readonly ConversationDetailView[] = [
+  "main",
+  "collaboration",
+  "files",
+  "agents",
+  "triggers",
+];
+
+export function isConversationDetailView(
+  value: unknown,
+): value is ConversationDetailView {
+  return typeof value === "string" &&
+    (CONVERSATION_DETAIL_VIEWS as readonly string[]).includes(value);
+}
 
 export function isAgentDetailView(value: unknown): value is AgentDetailView {
   return typeof value === "string" && (AGENT_DETAIL_VIEWS as readonly string[]).includes(value);
@@ -71,7 +92,7 @@ export type Route =
   | { kind: "workspaceFile"; projectId: string; path: string }
   | { kind: "projectWork"; projectId: string; conversationId?: string; focusId?: string }
   | { kind: "browser"; projectId: string; agentId?: string; runId?: string; conversationId?: string }
-  | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel; urlDriven?: boolean }
+  | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel; view?: ConversationDetailView; urlDriven?: boolean }
   | { kind: "agents"; projectId: string }
   | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus; technicalFocusId?: string; view?: AgentDetailView; triggerId?: string }
   | { kind: "review"; projectId: string; agentId: string; path?: string };
@@ -89,7 +110,15 @@ export function parseRoute(pathname: string, search = ""): Route {
     : undefined;
   const reviewPath = query.get("path")?.trim() || undefined;
   const technicalFocusId = query.get("focus")?.trim() || undefined;
-  const channel = query.get("view") === "team" ? "collaboration" as const : undefined;
+  const requestedConversationView = query.get("view")?.trim();
+  const conversationView = requestedConversationView === "team"
+    ? "collaboration" as const
+    : requestedConversationView === "automations"
+      ? "triggers" as const
+      : isConversationDetailView(requestedConversationView)
+        ? requestedConversationView
+        : undefined;
+  const channel = conversationView === "collaboration" ? "collaboration" as const : undefined;
   const requestedAgentView = query.get("view")?.trim();
   const agentView = isAgentDetailView(requestedAgentView) ? requestedAgentView : undefined;
   const projectView = isProjectDetailView(requestedAgentView) ? requestedAgentView : undefined;
@@ -162,6 +191,7 @@ export function parseRoute(pathname: string, search = ""): Route {
       urlDriven: true,
       ...(focusMessageId ? { focusMessageId } : {}),
       ...(channel ? { channel } : {}),
+      ...(conversationView ? { view: conversationView } : {}),
     };
   }
   if (parts[2] === "agents" && parts[3]) {

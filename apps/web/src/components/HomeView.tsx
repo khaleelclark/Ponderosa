@@ -215,9 +215,16 @@ export function HomeView({
         title="Home"
         context="Across every Project"
       />
-      <Box sx={{ p: { xs: 2, sm: 3, lg: 4 } }}>
+      <Box sx={{ p: { xs: 2, sm: 3, lg: 4 }, containerType: "inline-size" }}>
         <Stack spacing={3} sx={{ width: "100%", maxWidth: 1320, mx: "auto" }}>
-          <Box sx={{ display: "grid", gridTemplateColumns: { xs: "repeat(2, minmax(0, 1fr))", md: "repeat(4, minmax(0, 1fr))" }, gap: 1.25 }}>
+          <Box sx={{
+            display: "grid",
+            gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+            gap: 1.25,
+            "@container (min-width: 760px)": {
+              gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+            },
+          }}>
             <SummaryCard label="Active Agents" value={activeCount} onClick={() => onNavigate({ kind: "allAgents" })} />
             <SummaryCard label="Needs Attention" value={attention.length} onClick={onOpenInbox} />
             <SummaryCard label="Enabled Automations" compactLabel="Automations" value={enabledAutomationCount} onClick={() => onNavigate({ kind: "allTriggers" })} />

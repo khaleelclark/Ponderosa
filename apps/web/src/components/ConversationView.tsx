@@ -9,7 +9,6 @@ import {
 import type {
   AgentHealthDto,
   EngineDto,
-  ConversationChannel,
   ConversationDto,
   ProjectDto,
   ProjectEngineCapabilitiesDto,
@@ -49,7 +48,7 @@ import { TargetedNextRunReceipts } from "./TargetedNextRunReceipts";
 import { queryKeys } from "../queryKeys";
 import { AgentsTab } from "./AgentsTab";
 import { AllTriggersWorkspace } from "./WorkspaceResourceViews";
-import type { Route } from "../routing";
+import type { ConversationDetailView, Route } from "../routing";
 import {
   conversationComposerRuntime,
   reconcileQueuedProjectMessages,
@@ -89,6 +88,7 @@ export function ConversationView({
   conversationId,
   focusMessageId,
   initialView,
+  onViewChange,
   engines,
   engineCapabilities,
   onRefreshCapabilities,
@@ -112,7 +112,8 @@ export function ConversationView({
 }: {
   conversationId: string;
   focusMessageId?: string;
-  initialView?: ConversationChannel;
+  initialView?: ConversationDetailView;
+  onViewChange?(view: ConversationDetailView): void;
   engines: EngineDto[];
   engineCapabilities: ProjectEngineCapabilitiesDto[];
   onRefreshCapabilities(context?: {
@@ -915,7 +916,10 @@ export function ConversationView({
         onNewAgent={onNewAgent}
         setImportOpen={setImportOpen}
         setDeleteOpen={setDeleteOpen}
-        setActiveView={setActiveView}
+        setActiveView={next => {
+          setActiveView(next);
+          onViewChange?.(next);
+        }}
       />
 
       <Box

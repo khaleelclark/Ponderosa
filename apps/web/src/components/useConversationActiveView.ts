@@ -1,4 +1,4 @@
-import type { ConversationChannel } from "@ponderosa/core";
+import type { ConversationDetailView } from "../routing";
 import {
   useEffect,
   useState,
@@ -8,16 +8,11 @@ import {
 } from "react";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 
-export type ConversationActiveView =
-  | "main"
-  | "collaboration"
-  | "files"
-  | "agents"
-  | "triggers";
+export type ConversationActiveView = ConversationDetailView;
 
 export function useConversationActiveViewState(
   conversationId: string,
-  initialView: ConversationChannel | undefined,
+  initialView: ConversationDetailView | undefined,
 ): [
   ConversationActiveView,
   Dispatch<SetStateAction<ConversationActiveView>>,
@@ -49,7 +44,7 @@ export function useConversationResetEffect({
   collaborationVisited: MutableRefObject<boolean>;
   conversationId: string;
   focusedMessage: MutableRefObject<string | undefined>;
-  initialView: ConversationChannel | undefined;
+  initialView: ConversationDetailView | undefined;
   setActiveView: Dispatch<SetStateAction<ConversationActiveView>>;
   setOlderCollaboration(value: undefined): void;
   setOlderMain(value: undefined): void;
@@ -59,6 +54,9 @@ export function useConversationResetEffect({
     setOlderMain(undefined);
     setOlderCollaboration(undefined);
     focusedMessage.current = undefined;
+  }, [conversationId]);
+
+  useEffect(() => {
     const saved = readChatState(
       chatStateKey("view", `conversation.${conversationId}`),
     );

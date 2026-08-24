@@ -186,9 +186,18 @@ export function ProjectRail({
 }): JSX.Element {
   const railWidth = drawer ? 64 : SIDEBAR_RAIL_WIDTH;
   const [operatorAnchor, setOperatorAnchor] = useState<HTMLElement>();
-  const runOperatorAction = (action: () => void) => {
+  const closeOperatorMenu = () => {
+    const trigger = operatorAnchor;
     setOperatorAnchor(undefined);
-    action();
+    window.requestAnimationFrame(() => trigger?.isConnected && trigger.focus());
+  };
+  const runOperatorAction = (action: () => void) => {
+    const trigger = operatorAnchor;
+    setOperatorAnchor(undefined);
+    window.requestAnimationFrame(() => {
+      if (trigger?.isConnected) trigger.focus();
+      action();
+    });
   };
   return (
     <Box
@@ -306,7 +315,7 @@ export function ProjectRail({
         <Menu
           anchorEl={operatorAnchor}
           open={Boolean(operatorAnchor)}
-          onClose={() => setOperatorAnchor(undefined)}
+          onClose={closeOperatorMenu}
           anchorOrigin={{ vertical: "top", horizontal: "right" }}
           transformOrigin={{ vertical: "bottom", horizontal: "left" }}
           slotProps={{ paper: { sx: { minWidth: 230, ml: 1 } } }}
@@ -369,9 +378,18 @@ export function ProjectSidebarHeader({
 }): JSX.Element {
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement>();
   const openMenu = (event: MouseEvent<HTMLElement>) => setMenuAnchor(event.currentTarget);
-  const run = (action: () => void) => {
+  const closeMenu = () => {
+    const trigger = menuAnchor;
     setMenuAnchor(undefined);
-    action();
+    window.requestAnimationFrame(() => trigger?.isConnected && trigger.focus());
+  };
+  const run = (action: () => void) => {
+    const trigger = menuAnchor;
+    setMenuAnchor(undefined);
+    window.requestAnimationFrame(() => {
+      if (trigger?.isConnected) trigger.focus();
+      action();
+    });
   };
   return (
     <Box sx={{ pt: 1.75, pb: 1, pr: drawer ? 6 : 0 }}>
@@ -432,8 +450,22 @@ export function ProjectSidebarHeader({
           return (
             <ButtonBase
               key={mode.id}
+              data-project-section={mode.id}
               aria-pressed={section === mode.id}
-              onClick={() => onSectionChange(mode.id)}
+              onClick={() => {
+                onSectionChange(mode.id);
+                window.requestAnimationFrame(() => {
+                  const visibleTarget = Array.from(
+                    document.querySelectorAll<HTMLElement>(
+                      `[data-project-section="${mode.id}"]`,
+                    ),
+                  ).find(candidate => (
+                    candidate.getClientRects().length > 0 &&
+                    !candidate.closest('[aria-hidden="true"]')
+                  ));
+                  visibleTarget?.focus();
+                });
+              }}
               sx={{
                 minWidth: 0,
                 minHeight: 52,
@@ -470,7 +502,7 @@ export function ProjectSidebarHeader({
           );
         })}
       </Box>
-      <Menu anchorEl={menuAnchor} open={Boolean(menuAnchor)} onClose={() => setMenuAnchor(undefined)}>
+      <Menu anchorEl={menuAnchor} open={Boolean(menuAnchor)} onClose={closeMenu}>
         <MenuItem onClick={() => run(onOpenBrowser)}>
           <LanguageIcon fontSize="small" sx={{ mr: 1.25 }} /> Project Browser
         </MenuItem>

@@ -128,7 +128,18 @@ const ROUTE_REGISTRY = {
     toPath: route => {
       const query = new URLSearchParams();
       if (route.focusMessageId) query.set("message", route.focusMessageId);
-      if (route.channel === "collaboration") query.set("view", "team");
+      const view = route.view ??
+        (route.channel === "collaboration" ? "collaboration" : undefined);
+      if (view && view !== "main") {
+        query.set(
+          "view",
+          view === "collaboration"
+            ? "team"
+            : view === "triggers"
+              ? "automations"
+              : view,
+        );
+      }
       const suffix = query.size ? `?${query.toString()}` : "";
       return `/projects/${encodeURIComponent(route.projectId)}/chats/${encodeURIComponent(route.conversationId)}${suffix}`;
     },

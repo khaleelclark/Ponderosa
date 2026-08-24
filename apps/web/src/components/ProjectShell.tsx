@@ -244,7 +244,15 @@ export function ProjectShell({
         key={route.conversationId}
         conversationId={route.conversationId}
         focusMessageId={route.focusMessageId}
-        initialView={route.urlDriven ? (route.channel ?? "main") : route.channel}
+        initialView={route.urlDriven
+          ? (route.view ?? route.channel ?? "main")
+          : (route.view ?? route.channel)}
+        onViewChange={view => navigate({
+          kind: "conversation",
+          projectId,
+          conversationId: route.conversationId,
+          ...(view === "main" ? {} : { view }),
+        })}
         engines={projectEngines}
         engineCapabilities={engineCapabilities}
         onRefreshCapabilities={refreshCapabilities}

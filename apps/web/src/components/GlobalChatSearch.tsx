@@ -20,7 +20,12 @@ import {
   useMediaQuery,
   useTheme,
 } from "@mui/material";
-import type { GlobalChatSearchResultDto, RecentGlobalChatDto, SearchHighlightRangeDto } from "@ponderosa/core";
+import type {
+  GlobalChatSearchResultDto,
+  RecentGlobalChatDto,
+  SearchHighlightRangeDto,
+  WorkspaceAgentDirectoryItemDto,
+} from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
@@ -159,7 +164,9 @@ function GlobalSearchResultItem({ result, query, onSelect, active = false, id, o
     active={active}
     onActive={onActive}
     onSelect={onSelect}
-    ariaLabel={`Open ${result.chat.title} at message by ${result.author.label}`}
+    ariaLabel={result.messageId
+      ? `Open ${result.chat.title} at message by ${result.author.label}`
+      : `Open Agent ${result.chat.title}`}
     primary={<Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
         <Typography fontWeight={700} noWrap sx={{ minWidth: 0 }}>{result.chat.title}</Typography>
         {result.unread ? <Box component="span" aria-label="Unread" sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: "primary.main", flexShrink: 0 }} /> : null}
@@ -244,14 +251,47 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
     staleTime: 5_000,
     refetchOnReconnect: true,
   });
+  const matchingAgents = useQuery({
+    queryKey: ["global-search-agent-titles", debouncedQuery, resultLimit],
+    queryFn: () => api.getWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>(
+      "agent",
+      { search: debouncedQuery, limit: resultLimit },
+    ),
+    enabled: open && Boolean(debouncedQuery) && scope !== "chats",
+    staleTime: 5_000,
+    refetchOnReconnect: true,
+  });
+  const titleMatches = useMemo<GlobalChatSearchResultDto[]>(() => {
+    const seen = new Set(
+      (search.data?.results ?? [])
+        .filter(result => result.chat.kind === "agent")
+        .map(result => result.chat.id),
+    );
+    return [
+      ...(matchingAgents.data?.starredItems ?? []),
+      ...(matchingAgents.data?.items ?? []),
+    ].filter(item => !seen.has(item.agent.id)).map(item => ({
+      project: { id: item.project.id, label: item.project.label },
+      chat: { kind: "agent" as const, id: item.agent.id, title: item.agent.title },
+      messageId: "",
+      author: { kind: "agent" as const, label: item.agent.title, agentId: item.agent.id },
+      timestamp: item.agent.updatedAt,
+      snippet: `Agent in ${item.project.label}`,
+      highlights: [],
+      unread: false,
+    }));
+  }, [matchingAgents.data, search.data?.results]);
+  const agentTitleSearchEnabled = open && Boolean(debouncedQuery) && scope !== "chats";
+  const isSearching = search.isFetching ||
+    (agentTitleSearchEnabled && matchingAgents.isFetching);
   const unread = useMemo(() => search.data?.results.filter((result) => result.unread) ?? [], [search.data]);
   const openAttentionCount = notifications.data?.attentionCount ?? 0;
-  const visibleResults = useMemo(() => (search.data?.results ?? []).filter((result) => {
+  const visibleResults = useMemo(() => [...(search.data?.results ?? []), ...titleMatches].filter((result) => {
     if (scope === "all") return true;
     if (scope === "chats") return result.chat.kind === "conversation";
     if (scope === "agents") return result.chat.kind === "agent";
     return false;
-  }), [scope, search.data]);
+  }), [scope, search.data, titleMatches]);
   const entries = useMemo(() => debouncedQuery
     ? visibleResults.map((result) => ({
       key: `result:${result.chat.kind}:${result.chat.id}:${result.messageId}`,
@@ -325,12 +365,12 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
     </Box>
     <DialogContent sx={{ px: { xs: 1.5, sm: 2 }, pt: "16px !important", pb: 1.5, minHeight: { sm: 520 } }}>
       <Stack direction="row" spacing={.75} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
-        {(["all", "chats", "agents"] as const).map((value) => <Chip key={value} clickable label={value[0]!.toUpperCase() + value.slice(1)} color={scope === value ? "primary" : "default"} variant={scope === value ? "filled" : "outlined"} onClick={() => setScope(value)} />)}
+        {(["all", "chats", "agents"] as const).map((value) => <Chip key={value} clickable aria-pressed={scope === value} label={value[0]!.toUpperCase() + value.slice(1)} color={scope === value ? "primary" : "default"} variant={scope === value ? "filled" : "outlined"} onClick={() => setScope(value)} />)}
         <UnavailableGlobalSearchScopeChip scope="Projects" />
         <UnavailableGlobalSearchScopeChip scope="Files" />
       </Stack>
-      {search.isFetching ? <LinearProgress aria-label="Searching chats" sx={{ mb: 1 }} /> : null}
-      {search.isError ? <Alert severity="error" sx={{ mb: 1 }}>Search is unavailable. Check the server connection and try again.</Alert> : null}
+      {isSearching ? <LinearProgress aria-label="Searching Ponderosa" sx={{ mb: 1 }} /> : null}
+      {search.isError || (agentTitleSearchEnabled && matchingAgents.isError) ? <Alert severity="error" sx={{ mb: 1 }}>Search is unavailable. Check the server connection and try again.</Alert> : null}
       <Box id="global-search-results" role="listbox" aria-label="Global search suggestions">
       {debouncedQuery ? visibleResults.length > 0 ?
         <Box role="group" aria-label={scope === "all" ? "Results" : scope}>
@@ -379,8 +419,8 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
         </Box> : null}
       </>}
       </Box>
-      {debouncedQuery && !search.isFetching && visibleResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 2, textAlign: "center" }}>{`No ${scope === "all" ? "messages" : scope} match “${debouncedQuery}”.`}</Typography> : null}
-      {!debouncedQuery && !search.isFetching && unread.length === 0 && (search.data?.recentChats.length ?? 0) === 0 ? <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: .5 }}>{openAttentionCount ? `${openAttentionCount} item${openAttentionCount === 1 ? "" : "s"} needs attention.` : "You’re all caught up."}</Typography> : null}
+      {debouncedQuery && !isSearching && visibleResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 2, textAlign: "center" }}>{`No ${scope === "all" ? "messages or Agents" : scope} match “${debouncedQuery}”.`}</Typography> : null}
+      {!debouncedQuery && !isSearching && unread.length === 0 && (search.data?.recentChats.length ?? 0) === 0 ? <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: .5 }}>{openAttentionCount ? `${openAttentionCount} item${openAttentionCount === 1 ? "" : "s"} needs attention.` : "You’re all caught up."}</Typography> : null}
       {search.data?.truncated ? <Stack spacing={1} sx={{ mt: 1 }}>
         <Alert severity="info">Showing the newest matches from a bounded search. Add more terms to narrow the result.</Alert>
         {resultLimit < 50 ? <Button

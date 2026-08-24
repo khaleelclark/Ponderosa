@@ -31,6 +31,7 @@ import {
   type Dispatch,
   type SetStateAction,
 } from "react";
+import type { ConversationDetailView } from "../routing";
 import { transcriptFileName } from "../chatTranscript";
 import { CopyMessageButton } from "./CopyMessageButton";
 import { ResponseFileActivity } from "./activity/ResponseFileActivity";
@@ -264,9 +265,7 @@ function ConversationHeader({
   onNewAgent(master: ConversationDto, managerAgentId?: string): void;
   setImportOpen: Dispatch<SetStateAction<boolean>>;
   setDeleteOpen: Dispatch<SetStateAction<boolean>>;
-  setActiveView: Dispatch<
-    SetStateAction<"main" | "collaboration" | "files" | "agents" | "triggers">
-  >;
+  setActiveView(view: ConversationDetailView): void;
 }): JSX.Element {
   return (
     <TabbedWorkspaceFrame
