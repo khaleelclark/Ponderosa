@@ -844,6 +844,7 @@ export default function App({
           projects={projects}
           firstPage={notificationsQuery.data}
           firstPageRevision={notificationsQuery.successfulFetchRevision}
+          getFirstPageRevision={notificationsQuery.getSuccessfulFetchRevision}
           onClose={closeNotifications}
           onNavigate={navigateWorkspace}
           onOpenSettings={openSettings}

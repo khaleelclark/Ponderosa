@@ -13,10 +13,12 @@ export function useConversationNotificationVisibility(
   visible: boolean,
 ) => void {
   const markedVisibleNotificationIds = useRef(new Set<string>());
+  const optimisticReadAt = useRef(new Map<string, string>());
   const visibleCommunicationEventIds = useRef(new Set<string>());
   const observedNotificationIds = useRef(new Set<string>());
   const retryAttempts = useRef(new Map<string, number>());
   const retryTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const mounted = useRef(false);
   const notificationItems = useMemo(() => Array.isArray(notificationsQuery.data)
     ? notificationsQuery.data
     : notificationsQuery.data?.items ?? [], [notificationsQuery.data]);
@@ -37,28 +39,69 @@ export function useConversationNotificationVisibility(
     const ids = new Set(matchingNotifications.map((item) => item.id));
     ids.forEach((id) => markedVisibleNotificationIds.current.add(id));
     const readAt = new Date().toISOString();
-    queryClient.setQueryData<WorkspaceNotificationPageDto>(queryKeys.notifications.all, (current) => current ? ({
-      ...current,
-      items: current.items.map((item) => ids.has(item.id) ? { ...item, readAt } : item),
-      unreadUpdateCount: Math.max(0, current.unreadUpdateCount - ids.size),
-    }) : current);
+    queryClient.setQueryData<WorkspaceNotificationPageDto>(queryKeys.notifications.all, (current) => {
+      if (!current) return current;
+      let appliedCount = 0;
+      const items = current.items.map((item) => {
+        if (
+          !ids.has(item.id) ||
+          item.readAt ||
+          (item.status ?? "open") !== "open" ||
+          !isOrdinaryMessageNotification(item)
+        ) return item;
+        optimisticReadAt.current.set(item.id, readAt);
+        appliedCount += 1;
+        return { ...item, readAt };
+      });
+      return {
+        ...current,
+        items,
+        unreadUpdateCount: Math.max(0, current.unreadUpdateCount - appliedCount),
+      };
+    });
     void api.markNotificationsRead([...ids])
       .then(() => {
+        ids.forEach((id) => {
+          if (optimisticReadAt.current.get(id) === readAt) {
+            optimisticReadAt.current.delete(id);
+          }
+        });
         retryAttempts.current.delete(communicationEventId);
         void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
       })
       .catch(() => {
-        ids.forEach((id) => markedVisibleNotificationIds.current.delete(id));
         queryClient.setQueryData<WorkspaceNotificationPageDto>(
           queryKeys.notifications.all,
-          (current) => current ? ({
-            ...current,
-            items: current.items.map((item) =>
-              ids.has(item.id) ? { ...item, readAt: undefined } : item),
-            unreadUpdateCount: current.unreadUpdateCount + ids.size,
-          }) : current,
+          (current) => {
+            if (!current) return current;
+            const revertedIds = new Set<string>();
+            const items = current.items.map((item) => {
+              if (
+                !ids.has(item.id) ||
+                optimisticReadAt.current.get(item.id) !== readAt ||
+                item.readAt !== readAt ||
+                (item.status ?? "open") !== "open" ||
+                !isOrdinaryMessageNotification(item)
+              ) return item;
+              revertedIds.add(item.id);
+              const { readAt: _readAt, ...unread } = item;
+              return unread;
+            });
+            revertedIds.forEach((id) => markedVisibleNotificationIds.current.delete(id));
+            return {
+              ...current,
+              items,
+              unreadUpdateCount: current.unreadUpdateCount + revertedIds.size,
+            };
+          },
         );
+        ids.forEach((id) => {
+          if (optimisticReadAt.current.get(id) === readAt) {
+            optimisticReadAt.current.delete(id);
+          }
+        });
         void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
+        if (!mounted.current) return;
         const attempt = retryAttempts.current.get(communicationEventId) ?? 0;
         if (attempt >= 3) return;
         retryAttempts.current.set(communicationEventId, attempt + 1);
@@ -70,9 +113,13 @@ export function useConversationNotificationVisibility(
       });
   };
 
-  useEffect(() => () => {
-    retryTimers.current.forEach(clearTimeout);
-    retryTimers.current.clear();
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      retryTimers.current.forEach(clearTimeout);
+      retryTimers.current.clear();
+    };
   }, []);
 
   useEffect(() => {

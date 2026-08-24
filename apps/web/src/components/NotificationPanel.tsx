@@ -160,11 +160,12 @@ function notificationSummaryText(openActionCount: number, unacknowledgedActionCo
   return "You’re all caught up";
 }
 
-export function NotificationPanel({ open, projects, firstPage, firstPageRevision, onClose, onNavigate, onOpenSettings }: {
+export function NotificationPanel({ open, projects, firstPage, firstPageRevision, getFirstPageRevision, onClose, onNavigate, onOpenSettings }: {
   open: boolean;
   projects: ProjectDto[];
   firstPage?: WorkspaceNotificationPageDto;
   firstPageRevision: number;
+  getFirstPageRevision(): number;
   onClose(): void;
   onNavigate(route: Route): void;
   onOpenSettings?(): void;
@@ -289,7 +290,11 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
   const nextCursor = olderPages.length > 0
     ? olderPages.at(-1)?.nextCursor
     : firstPage?.nextCursor;
-  const revisionUnreconciled = open && reconciledRevision.current !== firstPageRevision;
+  const liveFirstPageRevision = getFirstPageRevision();
+  const revisionUnreconciled = open && (
+    reconciledRevision.current !== firstPageRevision ||
+    liveFirstPageRevision !== firstPageRevision
+  );
   const historyOperationActive = Boolean(activeHistoryOperation.current);
   useEffect(() => {
     if (open && !wasOpen.current) {
@@ -340,6 +345,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
       operationEpoch.current === operation.epoch &&
       historyContext.current.open &&
       historyContext.current.firstPageRevision === operation.canonicalRevision &&
+      getFirstPageRevision() === operation.canonicalRevision &&
       historyContext.current.firstPageCursor === operation.startCursor &&
       operation.terminalBoundaryCursor === priorTailBoundary?.cursor &&
       panelGeneration.current === operation.panelGeneration;
@@ -415,7 +421,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
         activeHistoryOperation.current = undefined;
       }
     };
-  }, [firstPage?.nextCursor, firstPageRevision, historyReconcileNonce, open, replaceOlderPages]);
+  }, [firstPage?.nextCursor, firstPageRevision, getFirstPageRevision, historyReconcileNonce, open, replaceOlderPages]);
   const visibleNotifications = filterNotifications(notifications, filter);
   const totalForFilter = filter === "attention" ? openActionCount : unreadUpdateCount;
   const remainingForFilter = Math.max(0, totalForFilter - visibleNotifications.length);
@@ -441,6 +447,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
       !currentNextCursor ||
       activeHistoryOperation.current ||
       reconciledRevision.current !== historyContext.current.firstPageRevision ||
+      getFirstPageRevision() !== historyContext.current.firstPageRevision ||
       !historyContext.current.open
     ) return;
     const operation: HistoryOperation = {
@@ -457,6 +464,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
       operationEpoch.current === operation.epoch &&
       historyContext.current.open &&
       historyContext.current.firstPageRevision === operation.canonicalRevision &&
+      getFirstPageRevision() === operation.canonicalRevision &&
       panelGeneration.current === operation.panelGeneration;
     setLoadingOlder(true);
     setError(undefined);

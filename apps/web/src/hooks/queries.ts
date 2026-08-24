@@ -58,7 +58,11 @@ export function useNotifications() {
     revisionStore.getSnapshot,
   );
   const query = useQuery({ queryKey: queryKeys.notifications.all, queryFn: () => api.listNotifications() });
-  return { ...query, successfulFetchRevision };
+  return {
+    ...query,
+    successfulFetchRevision,
+    getSuccessfulFetchRevision: revisionStore.getSnapshot,
+  };
 }
 
 export function useAllChat(limit = 50) {
