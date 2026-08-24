@@ -531,10 +531,14 @@ export function useWorkspaceStream(
     ].filter(query => query.getObserversCount() > 0);
     const reconcilePhaseEvidence = async (): Promise<boolean> => {
       const queries = activePhaseQueries();
-      await Promise.all(queries.map(query => queryClient.invalidateQueries({
-        queryKey: query.queryKey,
-        exact: true,
-      }, { throwOnError: true })));
+      if (!queries.length) return true;
+      await queryClient.refetchQueries({
+        type: "active",
+        predicate: query => queries.includes(query),
+      }, {
+        cancelRefetch: false,
+        throwOnError: true,
+      });
       return true;
     };
     const schedulePhaseReconciliation = (delayMs = 250) => {
