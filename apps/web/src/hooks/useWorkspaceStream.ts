@@ -39,6 +39,7 @@ const DIRECTLY_PROJECT_SCOPED_QUERY_ROOTS = new Set([
   "project",
   "conversations",
   "agents",
+  "agent-organization",
   "agent-health",
   "agent-presets",
   "decisions",
@@ -387,7 +388,7 @@ function createAgentDetailInvalidator(
  * Agent detail remains event-driven; this only prevents the shared list from
  * refetching once for every event in a short lifecycle burst. */
 function createAgentStateInvalidator(
-  queryClient: Pick<QueryClient, "invalidateQueries">,
+  queryClient: QueryClient,
   delayMs = 350,
 ): { schedule(projectId: string): void; flush(): void; dispose(): void } {
   const projectIds = new Set<string>();
@@ -398,6 +399,10 @@ function createAgentStateInvalidator(
     for (const projectId of projectIds) {
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(projectId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.health(projectId) });
+      invalidateActiveQueries(
+        queryClient,
+        queryKeys.agents.organizationProject(projectId),
+      );
     }
     projectIds.clear();
   };
@@ -527,6 +532,9 @@ export function useWorkspaceStream(
       ...queryClient.getQueryCache().findAll({
         queryKey: queryKeys.workspaceDirectory.kind("agent"),
       }),
+      ...queryClient.getQueryCache().findAll({
+        queryKey: queryKeys.agents.organizationAll,
+      }).filter(query => query.queryKey[2] !== "deleted"),
     ];
     const activePhaseQueries = () => phaseQueries().filter(query => query.isActive());
     let observedActivePhaseQueries = new Set(activePhaseQueries());
@@ -593,6 +601,7 @@ export function useWorkspaceStream(
       const [root, kind] = event.query.queryKey;
       if (
         root !== queryKeys.agents.healthAll[0]
+        && root !== queryKeys.agents.organizationAll[0]
         && !(root === queryKeys.workspaceDirectory.all[0] && kind === "agent")
       ) return;
       const nextActivePhaseQueries = new Set(activePhaseQueries());
@@ -617,6 +626,7 @@ export function useWorkspaceStream(
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
       invalidateActiveQueries(queryClient, queryKeys.agents.all);
+      invalidateActiveQueries(queryClient, queryKeys.agents.organizationAll);
       invalidateActiveQueries(queryClient, queryKeys.agents.healthAll);
       invalidateActiveQueries(queryClient, queryKeys.agents.detailAll);
       void queryClient.invalidateQueries({ queryKey: queryKeys.collaborationAll });
@@ -715,6 +725,12 @@ export function useWorkspaceStream(
       if (event.type === "preferences_updated") return;
       if (event.type === "project_changed") {
         void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
+        // Mark collapsed sibling pages stale as ownership may have changed,
+        // while refetching only pages that are currently visible.
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.agents.organizationProject(event.projectId),
+          refetchType: browserPageIsVisible() ? "active" : "none",
+        });
         if (deletedProjectId) {
           void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
           void queryClient.invalidateQueries({ queryKey: queryKeys.globalSearch.all });
@@ -803,6 +819,7 @@ export function useWorkspaceStream(
       else if (event.type === "notification_changed") {
         void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
         invalidateActiveQueries(queryClient, queryKeys.agents.healthAll);
+        invalidateActiveQueries(queryClient, queryKeys.agents.organizationAll);
         void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("agent") });
         if (event.conversationId) {
           decisionConversationInvalidator.schedule(event.conversationId);

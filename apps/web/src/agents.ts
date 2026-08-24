@@ -2,7 +2,7 @@
 // user-facing status vocabulary so the Agents tab, sidebar, and detail view
 // stay consistent. The underlying data model remains AgentDto/AgentDetailDto.
 
-import type { AgentOperationalStatus, AgentDetailDto, AgentDto, AgentHealthDto } from "@ponderosa/core";
+import type { AgentOperationalStatus, AgentDetailDto, AgentDto, AgentHealthDto, AgentOrganizationHealthDto } from "@ponderosa/core";
 
 export interface AgentOrganizationRow {
   agent: AgentDto;
@@ -150,7 +150,7 @@ export interface AgentStatusPresentation {
 }
 
 export function agentStatusPresentation(
-  health: AgentHealthDto | undefined,
+  health: AgentHealthDto | AgentOrganizationHealthDto | undefined,
   options: {
     status?: AgentStatus;
     connectionStatus?: AgentStatusConnection;

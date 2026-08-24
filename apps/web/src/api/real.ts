@@ -7,6 +7,9 @@ import type {
   AgentDto,
   AgentExportMode,
   AgentHealthProjectionDto,
+  AgentOperationalStatus,
+  AgentOrganizationPageDto,
+  AgentOrganizationScope,
   AgentPortablePackageDto,
   AgentPresetDto,
   AgentStreamStatusDto,
@@ -557,6 +560,33 @@ export const realApi = {
   },
   listAgentsPage(projectId: string, options: { limit?: number; cursor?: string; search?: string } = {}): Promise<CollectionPage<AgentDto>> {
     return requestCollectionPage<AgentDto>(`/api/projects/${encodeURIComponent(projectId)}/agents${toQuery({ limit: options.limit, cursor: options.cursor, search: options.search })}`);
+  },
+  async getAgentOrganizationPage(
+    projectId: string,
+    options: {
+      scope: AgentOrganizationScope;
+      parentAgentId?: string;
+      limit?: number;
+      cursor?: string;
+      search?: string;
+      status?: AgentOperationalStatus;
+    },
+  ): Promise<AgentOrganizationPageDto & { reset?: boolean }> {
+    const path = `/api/projects/${encodeURIComponent(projectId)}/agent-organization${toQuery(options)}`;
+    try {
+      return await requestJson<AgentOrganizationPageDto>(path);
+    } catch (error) {
+      if (!(error instanceof ApiRequestError) || error.status !== 409 || !options.cursor) throw error;
+      return {
+        ...(await requestJson<AgentOrganizationPageDto>(
+          `/api/projects/${encodeURIComponent(projectId)}/agent-organization${toQuery({
+            ...options,
+            cursor: undefined,
+          })}`,
+        )),
+        reset: true,
+      };
+    }
   },
   createAgentRecord(projectId: string, request: CreateAgentRequest): Promise<AgentDto> {
     return requestJson<AgentDto>(`/api/projects/${encodeURIComponent(projectId)}/agents`, {

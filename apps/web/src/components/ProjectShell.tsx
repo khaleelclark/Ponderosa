@@ -12,7 +12,6 @@ import type {
   ResponseFileActivityDto,
   WorkspaceNotificationDto,
   WorkspacePreferencesDto,
-  WorkspaceAgentDirectoryItemDto,
 } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -21,11 +20,11 @@ import { mergeAgentStatuses } from "../agents";
 import { useAgent, useAgentHealth, useAgentPresets, useConversations, useAgents } from "../hooks/queries";
 import { queryKeys } from "../queryKeys";
 import { enginesWithModelCatalog } from "../conversationEngine";
-import { useWorkspaceDirectory, workspaceDirectoryItems } from "../hooks/useWorkspaceDirectory";
 import { assertNeverRoute, routeToPath, type ProjectRoute } from "../routeRegistry";
 import type { Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
 import { AgentsTab } from "./AgentsTab";
+import { AgentOrganizationTree } from "./AgentOrganizationTree";
 import { PresetManagerDialog } from "./dialogs";
 import { ConversationView } from "./ConversationView";
 import { ProjectArtifactsView } from "./ProjectArtifactsView";
@@ -36,8 +35,6 @@ import type { ProjectBrowserRequest } from "./ProjectBrowserContext";
 import { WorkspaceReviewPane } from "./files/WorkspaceReviewPane";
 import { WorkspaceFileView } from "./WorkspaceFileView";
 import { WorkspaceErrorBoundary } from "./WorkspaceErrorBoundary";
-import { CollectionPagination } from "./CollectionPrimitives";
-import { LoadingState } from "./LoadingState";
 
 type RemovableWorkspaceResourceRoute = Extract<
   Route,
@@ -91,33 +88,12 @@ export function ProjectShell({
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
   const queryClient = useQueryClient();
 
-  const pagedAgentRoster = route.kind === "agents";
-  const [agentDirectorySearch, setAgentDirectorySearch] = useState("");
-  const agentDirectoryQuery =
-    useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
-      search: agentDirectorySearch,
-      projectId,
-      enabled: pagedAgentRoster,
-    });
-  const agentDirectory = workspaceDirectoryItems(agentDirectoryQuery.data?.pages, preferences);
   const conversationsQuery = useConversations(projectId);
-  const agentsQuery = useAgents(projectId);
-  const healthQuery = useAgentHealth(projectId);
-  const agentDirectoryRows = [
-    ...agentDirectory.starredItems,
-    ...agentDirectory.items,
-  ];
+  const agentsQuery = useAgents(projectId, route.kind !== "agents");
+  const healthQuery = useAgentHealth(projectId, route.kind !== "agents");
   const conversations = conversationsQuery.data ?? [];
-  const agents = useMemo(() => {
-    const byId = new Map((agentsQuery.data ?? []).map(agent => [agent.id, agent]));
-    for (const item of agentDirectoryRows) byId.set(item.agent.id, item.agent);
-    return [...byId.values()];
-  }, [agentDirectoryRows, agentsQuery.data]);
-  const projectedHealth = healthQuery.data?.agents ??
-    agentDirectoryRows.map(item => item.health);
-  const visibleAgentIds = new Set(
-    agentDirectoryRows.map(item => item.agent.id),
-  );
+  const agents = agentsQuery.data ?? [];
+  const projectedHealth = healthQuery.data?.agents ?? [];
   const presetsQuery = useAgentPresets(projectId);
   const claudeEngine = engines.find((engine) => engine.id === "claude");
   const modelCatalogQuery = useQuery({
@@ -380,31 +356,16 @@ export function ProjectShell({
     />
   );
   } else if (route.kind === "agents") {
-    main = agentDirectoryQuery.isLoading ? (
-      <LoadingState resource="Agents" variant="route" />
-    ) : (
-      <AgentsTab
-        searchValue={agentDirectorySearch}
-        onSearchValueChange={setAgentDirectorySearch}
-        collectionFooter={(
-          <CollectionPagination
-            resourceLabel={preferences.agentSort === "last_used"
-              ? "older Agents"
-              : "Agents"}
-            request={agentDirectoryQuery.requestState}
-          />
-        )}
-        agents={agents}
-        renderedAgentIds={agentDirectoryQuery.data ? visibleAgentIds : undefined}
+    main = (
+      <AgentOrganizationTree
+        key={projectId}
         projectId={projectId}
         engines={projectEngines}
         conversations={conversations}
-        statusByAgentId={statusByAgentId}
-        healthByAgentId={healthByAgentId}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
         onOpenAgentSettings={(agentId) =>
           navigate({ kind: "agent", projectId, agentId, view: "settings" })}
-        onAgentsDeleted={(_deletedProjectId, agentIds) =>
+        onAgentsDeleted={(agentIds) =>
           agentIds.forEach(agentId =>
             onResourceDeleted?.({ kind: "agent", projectId, agentId }),
           )}

@@ -90,6 +90,22 @@ export const queryKeys = {
     healthAll: ["agent-health"] as const,
     health: (projectId: string | undefined) => ["agent-health", projectId] as const,
     presets: (projectId: string | undefined) => ["agent-presets", projectId] as const,
+    organizationAll: ["agent-organization"] as const,
+    organizationProject: (projectId: string) => ["agent-organization", projectId] as const,
+    organizationPage: (
+      projectId: string,
+      scope: "roots" | "children" | "orphaned" | "deleted",
+      parentAgentId: string | undefined,
+      search: string,
+      status: string | undefined,
+    ) => [
+      "agent-organization",
+      projectId,
+      scope,
+      parentAgentId ?? "",
+      search,
+      status ?? "",
+    ] as const,
   },
   triggers: {
     all: ["triggers"] as const,
