@@ -285,7 +285,7 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
   const isSearching = search.isFetching ||
     (agentTitleSearchEnabled && matchingAgents.isFetching);
   const unread = useMemo(() => search.data?.results.filter((result) => result.unread) ?? [], [search.data]);
-  const openAttentionCount = notifications.data?.attentionCount ?? 0;
+  const openAttentionCount = notifications.data?.openActionCount ?? 0;
   const visibleResults = useMemo(() => [...(search.data?.results ?? []), ...titleMatches].filter((result) => {
     if (scope === "all") return true;
     if (scope === "chats") return result.chat.kind === "conversation";

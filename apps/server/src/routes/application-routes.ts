@@ -714,8 +714,6 @@ app.post<{ Params: { id: string }; Body: { optionId?: string; text?: string; con
   }
   const cursor = workspace.cursor();
   const decision = workspace.resolveDecision(current.id, { ...(optionId ? { optionId } : {}), ...(text ? { text } : {}), respondedAt })!;
-  const notification = workspace.findNotification((item) => item.dedupeKey === `decision:${decision.id}` && (item.status ?? "open") === "open");
-  if (notification) workspace.setNotificationStatus(notification.id, "resolved");
   publishWorkspaceSince(cursor);
   if (current.runtimeAction) {
     if (text) {

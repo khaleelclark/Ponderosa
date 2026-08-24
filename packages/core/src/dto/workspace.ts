@@ -236,7 +236,11 @@ export interface WorkspaceNotificationDto {
   title: string;
   body: string;
   createdAt: string;
+  /** Durable receipt that the operator reviewed this still-open action. */
+  acknowledgedAt?: string;
+  /** Durable receipt that an informational authored update was seen. */
   readAt?: string;
+  /** Canonical closure/dismissal time for an action that is no longer open. */
   resolvedAt?: string;
   decision?: Pick<DecisionDto, "id" | "mode" | "options" | "allowOther" | "status" | "runtimeAction">;
   /** Human-facing recovery context for one current coordination problem. */
@@ -257,7 +261,10 @@ export interface WorkspaceNotificationDto {
  * this live feed. */
 export interface WorkspaceNotificationPageDto {
   items: WorkspaceNotificationDto[];
-  attentionCount: number;
+  /** All unresolved actions, including actions the operator already reviewed. */
+  openActionCount: number;
+  /** Unresolved actions that have not yet been reviewed. */
+  unacknowledgedActionCount: number;
   unreadUpdateCount: number;
   nextCursor?: string;
 }

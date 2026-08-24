@@ -107,8 +107,6 @@ export function createAgentDeletionAuthority(
     for (const agentId of agentIds) for (const decision of workspace.cancelDecisionsForAgent(agentId)) {
       runtimeElicitations.cancel(decision.id);
       coordinationV3.releaseDecisionQuestionSuspensions(decision.id);
-      const notification = workspace.findNotification((item) => item.dedupeKey === `decision:${decision.id}` && (item.status ?? "open") === "open");
-      if (notification) workspace.setNotificationStatus(notification.id, "resolved");
     }
     publishWorkspaceSince(cursor);
   };

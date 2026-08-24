@@ -61,6 +61,8 @@ import { useRuntimeControls } from "../hooks/useRuntimeControls";
 import { AUTO_ALLOWED_DECISION_OPTION_ID } from "./ConversationView.helpers";
 import { CompactWorkspaceHeader } from "./WorkspaceFrame";
 import { useConversationNotificationVisibility } from "./useConversationNotificationVisibility";
+import { NotificationAcknowledgementBoundary } from "./NotificationAcknowledgementBoundary";
+import { useNotificationAcknowledgement } from "../hooks/useNotificationAcknowledgement";
 import { ChatComposerDock } from "./chat/ChatComposerDock";
 
 function allChatSourceRoute(item: AllChatItemDto): Route {
@@ -147,6 +149,7 @@ export function AllChatView({
     { data: notifications },
     queryClient,
   );
+  const acknowledgeNotifications = useNotificationAcknowledgement();
   const [older, setOlder] = useState<{
     items: AllChatItemDto[];
     decisions: AllChatDecisionEventDto[];
@@ -727,14 +730,24 @@ export function AllChatView({
           sx={{ width: "100%", maxWidth: 1280, mx: "auto", py: 1 }}
         >
           {timeline.map(entry => {
-            if (entry.kind === "decision") return <Box component="article" key={entry.id} id={entry.id} sx={{ width: "min(1120px, 100%)", mx: "auto" }}>
+            if (entry.kind === "decision") {
+              const notification = notifications.find((item) =>
+                item.decision?.id === entry.item.decision.id && (item.status ?? "open") === "open");
+              const card = <Box component="article" key={entry.id} id={entry.id} sx={{ width: "min(1120px, 100%)", mx: "auto" }}>
               <DecisionCard
                 decision={entry.item.decision}
                 title={entry.item.decision.question}
                 context={entry.item.decision.context}
               />
               <Typography variant="caption" color="text.secondary">{entry.item.project.label} · {entry.item.source.title}</Typography>
-            </Box>;
+              </Box>;
+              return notification ? <NotificationAcknowledgementBoundary
+                key={entry.id}
+                notificationId={notification.id}
+                acknowledged={Boolean(notification.acknowledgedAt)}
+                onAcknowledge={acknowledgeNotifications}
+              >{card}</NotificationAcknowledgementBoundary> : card;
+            }
             if (entry.kind === "decision-response") {
               const automatic =
                 entry.item.decision.response?.optionId ===

@@ -4,10 +4,6 @@ import { useCallback, useEffect, useMemo, useRef } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import { isOrdinaryMessageNotification } from "../workspaceNavigation";
-import {
-  notificationMatchesActiveView,
-  useActiveNotificationView,
-} from "../notificationActiveView";
 
 export function useConversationNotificationVisibility(
   notificationsQuery: { data?: WorkspaceNotificationPageDto | WorkspaceNotificationDto[] },
@@ -17,7 +13,6 @@ export function useConversationNotificationVisibility(
   visible: boolean,
 ) => void {
   const markedVisibleNotificationIds = useRef(new Set<string>());
-  const activeView = useActiveNotificationView();
   const visibleCommunicationEventIds = useRef(new Set<string>());
   const observedNotificationIds = useRef(new Set<string>());
   const retryAttempts = useRef(new Map<string, number>());
@@ -37,8 +32,7 @@ export function useConversationNotificationVisibility(
       (item.status ?? "open") === "open" &&
       isOrdinaryMessageNotification(item) &&
       !markedVisibleNotificationIds.current.has(item.id) &&
-      (visibleCommunicationEventIds.current.has(communicationEventId) ||
-        notificationMatchesActiveView(item, activeView)));
+      visibleCommunicationEventIds.current.has(communicationEventId));
     if (!matchingNotifications.length) return;
     const ids = new Set(matchingNotifications.map((item) => item.id));
     ids.forEach((id) => markedVisibleNotificationIds.current.add(id));
@@ -94,17 +88,11 @@ export function useConversationNotificationVisibility(
       ) newlyArrivedCommunicationEventIds.add(item.communicationEventId);
     }
     newlyArrivedCommunicationEventIds.forEach((communicationEventId) => {
-      const matchingNotification = notificationItems.find(item =>
-        item.communicationEventId === communicationEventId,
-      );
-      if (
-        visibleCommunicationEventIds.current.has(communicationEventId) ||
-        (matchingNotification && notificationMatchesActiveView(matchingNotification, activeView))
-      ) {
+      if (visibleCommunicationEventIds.current.has(communicationEventId)) {
         attemptVisible.current(communicationEventId);
       }
     });
-  }, [activeView, notificationItems]);
+  }, [notificationItems]);
 
   const markCommunicationVisible = useCallback((
     communicationEventId: string | undefined,

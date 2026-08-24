@@ -42,7 +42,7 @@ export function ChatMessageFrame({
     let intersecting = false;
     const report = () =>
       message.onVisible?.(
-        intersecting && document.visibilityState !== "hidden",
+        intersecting && document.visibilityState === "visible" && document.hasFocus(),
       );
     const observer = new IntersectionObserver((entries) => {
       intersecting = Boolean(entries[0]?.isIntersecting);
@@ -51,9 +51,13 @@ export function ChatMessageFrame({
     const onVisibilityChange = () => report();
     observer.observe(element);
     document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", onVisibilityChange);
+    window.addEventListener("blur", onVisibilityChange);
     return () => {
       observer.disconnect();
       document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", onVisibilityChange);
+      window.removeEventListener("blur", onVisibilityChange);
     };
   }, [message.id, message.onVisible]);
   const avatar = (

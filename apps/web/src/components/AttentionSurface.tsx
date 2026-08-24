@@ -11,6 +11,8 @@ import { copyText } from "../clipboard";
 import { notificationDecision } from "../decisions";
 import { queryKeys } from "../queryKeys";
 import { DecisionCard } from "./decisions/DecisionCard";
+import { NotificationAcknowledgementBoundary } from "./NotificationAcknowledgementBoundary";
+import { useNotificationAcknowledgement } from "../hooks/useNotificationAcknowledgement";
 
 function outcomeLabel(outcome: NonNullable<WorkspaceNotificationDto["resolution"]>["outcome"]): string {
   return outcome.replaceAll("_", " ").replace(/^./, (value) => value.toUpperCase());
@@ -121,6 +123,8 @@ export function AttentionSurface({
   const [open, setOpen] = useState(false);
   const [expandedIssueId, setExpandedIssueId] = useState<string>();
   const [copiedIssueId, setCopiedIssueId] = useState<string>();
+  const [acknowledgementError, setAcknowledgementError] = useState<unknown>();
+  const acknowledgeNotifications = useNotificationAcknowledgement(setAcknowledgementError);
   const items = scopedAttention(notifications, {
     ...(projectId ? { projectId } : {}),
     ...(conversationId ? { conversationId } : {}),
@@ -135,7 +139,7 @@ export function AttentionSurface({
     ]);
   };
   const resolve = useMutation({
-    mutationFn: (notificationId: string) => api.setNotificationStatus(notificationId, "resolved"),
+    mutationFn: (notificationId: string) => api.setNotificationStatus(notificationId, "dismissed"),
     onSuccess: refresh,
   });
   const retry = useMutation({
@@ -150,19 +154,24 @@ export function AttentionSurface({
   if (!items.length) return null;
   const first = items[0]!;
   const firstCopy = issueCopy(first);
-  const urgent = items.some((item) => item.severity === "urgent");
+  const unacknowledgedItems = items.filter((item) => !item.acknowledgedAt);
+  const urgent = unacknowledgedItems.some((item) => item.severity === "urgent");
   const pending = resolve.isPending || retry.isPending;
 
   return <>
     <Alert
-      severity={urgent ? "error" : "warning"}
+      severity={urgent ? "error" : unacknowledgedItems.length ? "warning" : "info"}
       icon={<ReportProblemOutlinedIcon />}
-      action={<Button color="inherit" size="small" onClick={() => setOpen(true)}>{items.length === 1 ? "Review" : "Review All"}</Button>}
+      action={<Button color="inherit" size="small" onClick={() => setOpen(true)}>{unacknowledgedItems.length ? (items.length === 1 ? "Review" : "Review All") : "View"}</Button>}
       sx={{ mx: { xs: 1.5, md: 2.5 }, mt: 1.5, alignItems: "center", "& .MuiAlert-message": { width: "100%", minWidth: 0 } }}
     >
-      <Typography variant="body2" fontWeight={850}>{items.length === 1 ? firstCopy.title : `${items.length} items need your attention`}</Typography>
+      <Typography variant="body2" fontWeight={850}>{unacknowledgedItems.length
+        ? (items.length === 1 ? firstCopy.title : `${items.length} items need your attention`)
+        : `${items.length} open action${items.length === 1 ? "" : "s"}`}</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
-        {items.length === 1 ? firstCopy.explanation : `${firstCopy.title} and ${items.length - 1} more.`}
+        {unacknowledgedItems.length
+          ? (items.length === 1 ? firstCopy.explanation : `${firstCopy.title} and ${items.length - 1} more.`)
+          : "Reviewed. This stays visible until the underlying work is resolved or you dismiss it."}
       </Typography>
     </Alert>
     <Dialog open={open} onClose={() => setOpen(false)} fullWidth maxWidth="sm" aria-labelledby="current-issues-title">
@@ -176,9 +185,15 @@ export function AttentionSurface({
             const copy = issueCopy(item);
             const coordination = item.resolution?.kind === "coordination_request" ? item.resolution : undefined;
             const expanded = expandedIssueId === item.id;
-            return <Box key={item.id}>
+            return <NotificationAcknowledgementBoundary
+              key={item.id}
+              notificationId={item.id}
+              acknowledged={Boolean(item.acknowledgedAt)}
+              onAcknowledge={acknowledgeNotifications}
+            ><Box>
             {index ? <Divider sx={{ mb: 2 }} /> : null}
             <Stack spacing={1.25}>
+              <Chip size="small" color={item.acknowledgedAt ? "default" : "primary"} label={item.acknowledgedAt ? "Reviewed · still open" : "New action"} sx={{ alignSelf: "flex-start" }} />
               {item.kind === "decision" && item.decision
                 ? <DecisionCard decision={notificationDecision(item)!} title={item.title} context={item.body} />
                 : <Box>
@@ -237,9 +252,9 @@ export function AttentionSurface({
                 </Box>
               </Collapse>
             </Stack>
-          </Box>;
+          </Box></NotificationAcknowledgementBoundary>;
           })}
-          {resolve.isError || retry.isError ? <Alert severity="error">{(resolve.error ?? retry.error) instanceof Error ? (resolve.error ?? retry.error as Error).message : "The issue could not be updated. Review the current state and try again."}</Alert> : null}
+          {resolve.isError || retry.isError || acknowledgementError ? <Alert severity="error">{(resolve.error ?? retry.error ?? acknowledgementError) instanceof Error ? (resolve.error ?? retry.error ?? acknowledgementError as Error).message : "The issue could not be updated. Review the current state and try again."}</Alert> : null}
         </Stack>
       </DialogContent>
       <DialogActions><Button onClick={() => setOpen(false)}>Close</Button></DialogActions>

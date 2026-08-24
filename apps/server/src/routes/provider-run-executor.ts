@@ -462,9 +462,6 @@ export function startProviderRunExecution(
               const cancelCursor = workspace.cursor();
               runtimeElicitations.cancel(decision.id);
               workspace.cancelDecision(decision.id);
-              const notification = workspace.findNotification((item) =>
-                item.dedupeKey === `decision:${decision.id}` && (item.status ?? "open") === "open");
-              if (notification) workspace.setNotificationStatus(notification.id, "resolved");
               publishWorkspaceSince(cancelCursor);
             }
             return response;

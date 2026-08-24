@@ -783,14 +783,6 @@ export function registerAgentCommunicationRoutes(
             `context-rollover:${recoveredRollover.id}:confirmation-missing`,
           );
         }
-        const notificationCursor = workspace.cursor();
-        workspace.forEachNotification((notification) => {
-          if ((notification.status ?? "open") === "open" && notification.resolution?.kind === "coordination_request"
-              && notification.resolution.requestId === original.id) {
-            workspace.setNotificationStatus(notification.id, "resolved");
-          }
-        });
-        publishWorkspaceSince(notificationCursor);
         const conversationIds = original.conversationId
           ? [original.conversationId]
           : [];

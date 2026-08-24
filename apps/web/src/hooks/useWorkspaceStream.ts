@@ -12,7 +12,7 @@ import type {
 import { api } from "../api";
 import type { StreamSubscription } from "../api/types";
 import { queryKeys } from "../queryKeys";
-import { isOpenAttention, isUnreadNotificationUpdate } from "../attention";
+import { isOpenAttention, isUnreadNotificationUpdate, isUnacknowledgedAction } from "../attention";
 import {
   browserPageIsVisible,
   invalidateForBrowserPage,
@@ -86,7 +86,8 @@ export function reconcileDeletedProjectClientState(
     queryKeys.notifications.all,
     current => {
       if (!current) return current;
-      let removedAttention = 0;
+      let removedOpenActions = 0;
+      let removedUnacknowledgedActions = 0;
       let removedUpdates = 0;
       const items = current.items.map(notification => {
         if (notification.projectId !== projectId) return notification;
@@ -94,19 +95,20 @@ export function reconcileDeletedProjectClientState(
           const { projectId: _deletedProjectId, ...workspaceNotification } = notification;
           return workspaceNotification;
         }
-        if (isOpenAttention(notification)) removedAttention += 1;
+        if (isOpenAttention(notification)) removedOpenActions += 1;
+        if (isUnacknowledgedAction(notification)) removedUnacknowledgedActions += 1;
         else if (isUnreadNotificationUpdate(notification)) removedUpdates += 1;
         return {
           ...notification,
           status: "resolved" as const,
-          readAt: notification.readAt ?? at,
           resolvedAt: notification.resolvedAt ?? at,
         };
       });
       return {
         ...current,
         items,
-        attentionCount: Math.max(0, current.attentionCount - removedAttention),
+        openActionCount: Math.max(0, current.openActionCount - removedOpenActions),
+        unacknowledgedActionCount: Math.max(0, current.unacknowledgedActionCount - removedUnacknowledgedActions),
         unreadUpdateCount: Math.max(0, current.unreadUpdateCount - removedUpdates),
       };
     },

@@ -6,15 +6,14 @@ export interface NotificationRoutesOptions {
   readonly workspace: Pick<
     WorkspaceStore,
     | "activeNotificationIds"
+    | "acknowledgeNotifications"
     | "cursor"
+    | "getNotification"
     | "listNotificationPage"
-    | "readAllNotifications"
-    | "readConversation"
-    | "readConversationMessages"
     | "readNotification"
     | "setNotificationStatus"
   >;
-  readonly store: Pick<AgentStore, "getAgentTitleProjection" | "getConversation" | "getProject">;
+  readonly store: Pick<AgentStore, "getAgentTitleProjection">;
   readonly publishWorkspaceSince: (cursor: number) => void;
 }
 
@@ -75,7 +74,8 @@ export function registerNotificationListRoute(
     });
     return {
       items,
-      attentionCount: page.attentionCount,
+      openActionCount: page.openActionCount,
+      unacknowledgedActionCount: page.unacknowledgedActionCount,
       unreadUpdateCount: page.unreadUpdateCount,
       ...(page.nextCursor
         ? { nextCursor: Buffer.from(JSON.stringify(page.nextCursor)).toString("base64url") }
@@ -118,9 +118,32 @@ export function registerNotificationMutationRoutes(
     async (request, reply) => {
       const cursor = options.workspace.cursor();
       const notification = options.workspace.readNotification(request.params.id);
-      if (!notification) return reply.code(404).send({ error: "notification not found" });
+      if (!notification) {
+        return options.workspace.getNotification(request.params.id)
+          ? reply.code(409).send({ error: "action notifications must be acknowledged, not marked read" })
+          : reply.code(404).send({ error: "notification not found" });
+      }
       options.publishWorkspaceSince(cursor);
       return { read: true };
+    },
+  );
+
+  app.post<{ Body: { notificationIds?: unknown } }>(
+    "/api/notifications/acknowledge-batch",
+    async (request, reply) => {
+      const notificationIds = request.body?.notificationIds;
+      if (!Array.isArray(notificationIds) || notificationIds.length > 100 ||
+        notificationIds.some((id) => typeof id !== "string" || !id || id.length > 200)) {
+        return reply.code(400).send({
+          error: "notificationIds must contain at most 100 notification IDs",
+        });
+      }
+      const cursor = options.workspace.cursor();
+      const acknowledged = options.workspace.acknowledgeNotifications(
+        [...new Set(notificationIds as string[])],
+      );
+      options.publishWorkspaceSince(cursor);
+      return { acknowledged };
     },
   );
 
@@ -144,29 +167,6 @@ export function registerNotificationMutationRoutes(
     },
   );
 
-  app.post("/api/notifications/read", async () => {
-    const cursor = options.workspace.cursor();
-    const read = options.workspace.readAllNotifications();
-    options.publishWorkspaceSince(cursor);
-    return { read };
-  });
-
-  app.post<{ Params: { id: string }; Body: { scope?: "messages" } }>(
-    "/api/conversations/:id/notifications/read",
-    async (request, reply) => {
-      if (!options.store.getConversation(request.params.id)) {
-        return reply.code(404).send({ error: "conversation not found" });
-      }
-      const cursor = options.workspace.cursor();
-      if (request.body?.scope === "messages") {
-        options.workspace.readConversationMessages(request.params.id);
-      } else {
-        options.workspace.readConversation(request.params.id);
-      }
-      options.publishWorkspaceSince(cursor);
-      return { read: true };
-    },
-  );
 }
 
 export function registerPushRoutes(

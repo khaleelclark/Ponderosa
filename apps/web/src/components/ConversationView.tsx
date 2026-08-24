@@ -1019,6 +1019,7 @@ export function ConversationView({
               onOpenFileActivity={onOpenFileActivity}
               mentionAgent={mentionAgent}
               markCommunicationVisible={markCommunicationVisible}
+              notifications={notificationsQuery.data?.items ?? []}
             />
           </ChatSurface>
         </Box>
