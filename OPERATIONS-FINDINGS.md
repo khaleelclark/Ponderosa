@@ -143,3 +143,11 @@ This append-only experiment ledger records product and operating friction observ
 - Impact: Operators could rely on a destructive baseline startup path as though it were fail-closed, omit managed workspaces from backups, misunderstand durable Automation and Decision boundaries, or misjudge browser credential persistence. Ambiguous rollover wording also obscures the actual session-acceptance boundary.
 - Recommended fix: Narrow the safety statement to the current SQLite schema check until the separately reviewed layout fix is integrated; distinguish managed and external Project folders in location/backup guidance; describe the Automation occurrence record precisely; split durable Decisions from live elicitations; name runtime teardown and accepted-session switching separately; and scope disposable-browser claims while documenting trusted-profile persistence. Preserve the independently approved conditional `ponderosa_history` and removed `ponderosa_docs` wording. Require exact-head factual rereview before integration.
 - Owner: Documentation/System Articulation. Integration remains blocked for this slice.
+
+## 2026-08-24T05:31:16Z — UI-002 follow-up — Explicit Agent creation fix frozen for review
+
+- Status: Corrected in the UI Integration branch; independent approval pending.
+- Exact correction: `e221edbe23b50ad554aa07e63b3e8982906207b4` on `experiment/next-ui-integration`, one commit over baseline and clean.
+- Result: The prominent `New Agent` control now opens the existing managed Create Agent flow, has no pressed/hidden composer mode, does not rewrite the draft, and scopes the callback to the active conversation. The change is limited to `ConversationView.tsx` and `Composer.parts.tsx`; it does not change server semantics.
+- Qualification: Repository-wide strict typecheck and production build passed. Temporary exact-build desktop/mobile exercises confirmed dialog open/cancel, unchanged drafts, no cross-conversation state leak, and ordinary zero-Agent first Send creating one Agent/Run and clearing the submitted draft.
+- Remaining gate: Exact head is frozen in a filesystem read-only detached worktree for independent adversarial review, including compatibility analysis against the frozen Voice slice. Do not integrate or deploy until approved; any confirmed finding must be corrected and rereviewed at the new exact head.
