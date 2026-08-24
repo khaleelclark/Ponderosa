@@ -349,15 +349,15 @@ This append-only experiment ledger records product and operating friction observ
 - Confirmed positives: Kernel-managed no-namespace lease direction, retained-root handling for root/ancestor displacement, fail-closed marker contract, stable first run, and explicit macOS/Windows stop gates remain sound design foundations.
 - Owner: Product Lead decision, then Reliability/Mobile A0 correction and same-reviewer rereview.
 
-## 2026-08-24T06:20:22Z — OPS-010 — Overflowed review handoff renders only an opaque artifact transport reference
+## 2026-08-24T06:20:22Z — OPS-010 — Overflowed review result is poorly discoverable across Agent scope
 
 - Severity: High
-- Classification: Confirmed operational result-rendering defect; related to OPS-006 but not a duplicate association failure
-- Confirmed: Yes — the consequential Layout Safety Rereviewer result is available through Files & Results, but its Chat projection showed only `Full result: ponderosa://artifact/text-…`, without the verdict, summary, visible artifact action, or guidance that the full result could be opened elsewhere.
-- Reproduction: Complete a long exact-head safety review whose canonical handoff overflows into a managed text artifact; inspect the projected Chat result. Chat exposes the internal transport reference rather than the review's `NOT APPROVED` verdict and findings summary. Open Files & Results separately to find the usable artifact.
-- Impact: An operator can miss a blocking safety disposition or mistake an opaque URI for a complete handoff. The durable artifact is recoverable through Files & Results, so this is distinct from OPS-006's broken call/result association: the defect is Chat discoverability, summary, and direct access rather than artifact loss.
-- Recommended fix: Project a compact structured envelope before overflow: verdict/status, severity counts, top findings, exact reviewed head, required next action, artifact title/size, and a keyboard/screen-reader-accessible `Open full result` action. Keep the raw transport reference available only in expanded diagnostics/copy metadata, and show an explicit receipt if artifact loading fails.
-- Owner: Ponderosa correlated-result projection, artifact routing, and Chat UI.
+- Classification: Confirmed cross-Agent result-discoverability and Chat-summary defect; related to OPS-006 but not a duplicate association failure
+- Confirmed: Yes — expanding the Layout Safety Rereviewer message with `Show Full Message` reveals the complete consequential report inline, so the bytes are durably stored and readable. The collapsed Chat projection still shows only `Full result: ponderosa://artifact/text-…`, without its `NOT APPROVED` verdict, summary, or visible artifact action. Product Lead's Files & Results simultaneously reports no result because the managed artifact belongs to the reviewer Agent rather than Product Lead.
+- Reproduction: Complete a long exact-head review whose handoff overflows into a reviewer-owned managed text artifact. In Product Lead Chat, observe the opaque raw URI in the collapsed message; expand `Show Full Message` to reveal the report inline. Then open Product Lead Files & Results and observe that the result is absent because that view is Agent-scoped, even though the visible conversation contains the reviewer result.
+- Impact: An operator can miss a blocking safety disposition, mistake a raw transport URI for the complete handoff, or search the receiving Agent's Files & Results and conclude that no result exists. The defect is not artifact loss: it is missing compact Chat articulation plus undisclosed cross-Agent ownership/routing that makes the durable result difficult to rediscover.
+- Recommended fix: Project a compact structured envelope before overflow: verdict/status, severity counts, top findings, exact reviewed head, required next action, artifact title/size, owning Agent, and a keyboard/screen-reader-accessible `Open full result` action that resolves the owner-scoped artifact from the receiving conversation. Files & Results should either offer conversation-visible cross-Agent results with clear ownership or provide an explicit route to the reviewer Agent's result. Keep the raw transport reference only in expanded diagnostics/copy metadata, and show an explicit receipt if artifact loading fails.
+- Owner: Ponderosa correlated-result projection, cross-Agent artifact routing/scope, Files & Results, and Chat UI.
 
 ## 2026-08-24T06:22:08Z — REL-003 decision — Explicit bounded root trust selected
 
