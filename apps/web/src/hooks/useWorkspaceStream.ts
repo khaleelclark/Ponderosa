@@ -520,14 +520,16 @@ export function useWorkspaceStream(
     let stopped = false;
     let disconnected = false;
     let connectedOnce = false;
-    const activePhaseQueries = () => [
+    const phaseQueries = () => [
       ...queryClient.getQueryCache().findAll({
         queryKey: queryKeys.agents.healthAll,
       }),
       ...queryClient.getQueryCache().findAll({
         queryKey: queryKeys.workspaceDirectory.kind("agent"),
       }),
-    ].filter(query => query.getObserversCount() > 0);
+    ];
+    const activePhaseQueries = () => phaseQueries().filter(query => query.isActive());
+    let observedActivePhaseQueries = new Set(activePhaseQueries());
     const markPhaseEvidenceStale = () => {
       phaseReconcileGeneration += 1;
       phaseQueryBoundaries = capturePhaseQueryBoundaries(activePhaseQueries());
@@ -585,15 +587,20 @@ export function useWorkspaceStream(
       if (
         event.type !== "observerAdded"
         && event.type !== "observerRemoved"
+        && event.type !== "observerOptionsUpdated"
         && event.type !== "removed"
       ) return;
-      if (event.type === "observerAdded" && event.query.getObserversCount() !== 1) return;
-      if (event.type === "observerRemoved" && event.query.getObserversCount() !== 0) return;
       const [root, kind] = event.query.queryKey;
       if (
         root !== queryKeys.agents.healthAll[0]
         && !(root === queryKeys.workspaceDirectory.all[0] && kind === "agent")
       ) return;
+      const nextActivePhaseQueries = new Set(activePhaseQueries());
+      if (
+        nextActivePhaseQueries.size === observedActivePhaseQueries.size
+        && [...nextActivePhaseQueries].every(query => observedActivePhaseQueries.has(query))
+      ) return;
+      observedActivePhaseQueries = nextActivePhaseQueries;
       markPhaseEvidenceStale();
       schedulePhaseReconciliation();
     });

@@ -22,7 +22,7 @@ export function capturePhaseQueryBoundaries(
 }
 
 function isCurrentActiveQuery(queryClient: QueryClient, query: Query): boolean {
-  return query.getObserversCount() > 0
+  return query.isActive()
     && queryClient.getQueryCache().find({
       queryKey: query.queryKey,
       exact: true,
@@ -61,7 +61,7 @@ interface StartedPhaseFetch {
 
 /**
  * Drain requests that already existed at a phase-changing event boundary, then
- * start and verify one distinct canonical fetch for every currently mounted
+ * start and verify one distinct canonical fetch for every currently active
  * phase-bearing query. The caller supplies a generation fence so completions
  * from an older event can never certify a newer one.
  */
