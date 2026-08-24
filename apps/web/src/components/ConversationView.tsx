@@ -3,6 +3,8 @@ import {
   Box,
   Button,
   CircularProgress,
+  Dialog,
+  DialogContent,
   Stack,
   Typography,
 } from "@mui/material";
@@ -80,6 +82,7 @@ import {
 import { ConversationFilesResults } from "./ConversationFilesResults";
 import { ChatComposerDock } from "./chat/ChatComposerDock";
 import { CollectionPagination } from "./CollectionPrimitives";
+import { AgentCreateSurface } from "./AgentCreateDialog";
 
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { notificationTechnicalFocusId } from "../technicalFocus";
@@ -177,6 +180,7 @@ export function ConversationView({
   const [renameValue, setRenameValue] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [createAgentOpen, setCreateAgentOpen] = useState(false);
   const [agentWorkOpen, setAgentWorkOpen] = useState(false);
   const collaborationVisited = useRef(activeView === "collaboration");
   const [agentWorkFocus, setAgentWorkFocus] = useState<string>();
@@ -1266,7 +1270,8 @@ export function ConversationView({
         ) : null}
         {activeView === "main" ? (
           <ComposerProjectCreationProvider
-            onCreateAgent={() => onNewAgent(conversation)}
+            disabled={busy}
+            onCreateAgent={() => setCreateAgentOpen(true)}
           >
             <Composer
               draftStorageKey={chatStateKey(
@@ -1388,6 +1393,35 @@ export function ConversationView({
         onDeleteClose={() => setDeleteOpen(false)}
         onDelete={() => deleteConversation.mutate()}
       />
+
+      <Dialog
+        open={createAgentOpen}
+        onClose={() => setCreateAgentOpen(false)}
+        aria-label="Create Agent"
+        fullWidth
+        maxWidth="md"
+      >
+        <DialogContent>
+          {createAgentOpen ? (
+            <AgentCreateSurface
+              projects={project ? [project] : []}
+              engines={engines}
+              initialProjectId={conversation.projectId}
+              fixedProjectId={conversation.projectId}
+              fixedConversationId={conversation.id}
+              onCancel={() => setCreateAgentOpen(false)}
+              onCreated={(_projectId, agent) => {
+                setCreateAgentOpen(false);
+                onOpenAgent(agent.id);
+              }}
+              onImported={(_projectId, agentId) => {
+                setCreateAgentOpen(false);
+                onOpenAgent(agentId);
+              }}
+            />
+          ) : null}
+        </DialogContent>
+      </Dialog>
 
     </Box>
   );

@@ -85,19 +85,25 @@ interface ComposerProjectDestinationActionProps {
   toggleNewAgent(): void;
 }
 
-const ComposerProjectCreationContext = createContext<(() => void) | undefined>(
-  undefined,
-);
+interface ComposerProjectCreationContextValue {
+  disabled: boolean;
+  onCreateAgent(): void;
+}
+
+const ComposerProjectCreationContext =
+  createContext<ComposerProjectCreationContextValue | undefined>(undefined);
 
 export function ComposerProjectCreationProvider({
   children,
+  disabled = false,
   onCreateAgent,
 }: {
   children: ReactNode;
+  disabled?: boolean;
   onCreateAgent(): void;
 }): JSX.Element {
   return (
-    <ComposerProjectCreationContext.Provider value={onCreateAgent}>
+    <ComposerProjectCreationContext.Provider value={{ disabled, onCreateAgent }}>
       {children}
     </ComposerProjectCreationContext.Provider>
   );
@@ -107,15 +113,15 @@ export function ComposerProjectDestinationAction({
   newAgentSelected: _newAgentSelected,
   toggleNewAgent: _toggleNewAgent,
 }: ComposerProjectDestinationActionProps): JSX.Element {
-  const onCreateAgent = useContext(ComposerProjectCreationContext);
+  const creation = useContext(ComposerProjectCreationContext);
   return (
     <Button
       size="small"
       variant="text"
       color="inherit"
       startIcon={<PersonAddAltOutlinedIcon />}
-      onClick={onCreateAgent}
-      disabled={!onCreateAgent}
+      onClick={creation?.onCreateAgent}
+      disabled={!creation || creation.disabled}
       sx={{ whiteSpace: "nowrap", minHeight: 34 }}
     >
       New Agent
