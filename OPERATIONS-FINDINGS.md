@@ -293,3 +293,12 @@ This append-only experiment ledger records product and operating friction observ
 - Required disposition: Split the P1 runtime/identity corrections ahead of file-link/provenance work; drop or revert unrelated redesign/refactors/migration expansion; attribute typecheck/build/manual evidence per cluster; and do not freeze until the worktree is clean and the map matches the exact diff.
 - Gate: Independent exact-head review and the repository no-tests policy remain unchanged. Product Lead delivered this scope gate to the running writer immediately; no file in the writer worktree was changed by Product Lead.
 - Owner: Agent Working Copies writer, with Product Lead pre-freeze audit.
+
+## 2026-08-24T06:01:55Z — REL-002 follow-up — Native authority architecture frozen before implementation
+
+- Status: Phase A0 design is frozen at exact head `4b2e743620935d3a78946beee371141b82107f10`; Phase A1 and Phase B have not begun.
+- Selected design: Extend the existing `@ponderosa/native-host` N-API boundary with one retained identity-keyed OS lease; kernel unlock/handle close is the only clean release. Protected filesystem operations become descriptor/handle-relative and no-follow, and the AgentStore SQLite connection uses a rooted native VFS so the database, journal, WAL, and shared-memory files remain bound to the same directory identity.
+- Platform contract: POSIX uses a lease on the retained root descriptor; Windows uses a same-user Global mutex keyed by volume/file identity plus a root handle that withholds delete sharing. Linux local filesystems, macOS/APFS, and Windows/NTFS require exact-host qualification; unknown/network filesystems fail before protected mutation. The document claims design, not current runtime support.
+- Scope: One new 383-line architecture document over unsafe runtime parent `37921f1`; no source, manifest, lockfile, dependency, generated material, configuration, A1, or Phase B change. Strict typecheck, full production build, and exact diff checks passed; worktree is clean.
+- Remaining gate: Same independent safety reviewer is reviewing lease/platform semantics, rooted VFS escape resistance, protected-domain completeness, compatibility fencing, migration/rollback ordering, and A1 commit boundaries. A0 approval permits implementation planning only, never runtime integration. A1 remains forbidden until disposition.
+- Owner: Reliability/Mobile under authorized Phase A-Native scope.
