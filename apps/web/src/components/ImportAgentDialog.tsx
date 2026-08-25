@@ -43,6 +43,7 @@ export function ImportAgentForm({
   initialConversationId,
   onCancel,
   onImported,
+  onPendingChange,
 }: {
   projectId: string;
   engines: EngineDto[];
@@ -50,6 +51,7 @@ export function ImportAgentForm({
   initialConversationId?: string;
   onCancel(): void;
   onImported(agentId: string): void;
+  onPendingChange?(pending: boolean): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [packageBlob, setPackageBlob] = useState<Blob>();
@@ -63,6 +65,7 @@ export function ImportAgentForm({
   const [error, setError] = useState<string>();
   const previewWorker = useRef<Worker>();
   const previewRequestId = useRef(0);
+  const pendingRef = useRef(false);
 
   const clearPackageDraft = useCallback(() => {
     previewRequestId.current += 1;
@@ -77,6 +80,7 @@ export function ImportAgentForm({
   }, []);
 
   const closeForm = () => {
+    if (pendingRef.current) return;
     clearPackageDraft();
     setConversationId("");
     onCancel();
@@ -133,6 +137,10 @@ export function ImportAgentForm({
       onImported(result.rootAgentId);
     },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "Import failed"),
+    onSettled: () => {
+      pendingRef.current = false;
+      onPendingChange?.(false);
+    },
   });
   const inspectPackage = useCallback((blob: Blob, sourceName?: string) => {
     if (blob.size > MAX_IMPORT_FILE_BYTES) {
@@ -251,8 +259,13 @@ export function ImportAgentForm({
       </Alert> : null}
       {error ? <Alert severity="error">{error}</Alert> : null}
       <Stack direction="row" spacing={1} sx={{ justifyContent: "flex-end" }}>
-      <Button onClick={closeForm}>Cancel</Button>
-      <Button variant="contained" disabled={!packageBlob || !packagePreview || inspecting || invalidPermissionShape || !conversationId || sourceEngines.some((source) => !engineMapping[source]) || (elevatedAgents.length > 0 && !acknowledgeElevatedPermissions) || importAgents.isPending} onClick={() => importAgents.mutate()}>
+      <Button disabled={importAgents.isPending} onClick={closeForm}>Cancel</Button>
+      <Button variant="contained" disabled={!packageBlob || !packagePreview || inspecting || invalidPermissionShape || !conversationId || sourceEngines.some((source) => !engineMapping[source]) || (elevatedAgents.length > 0 && !acknowledgeElevatedPermissions) || importAgents.isPending} onClick={() => {
+        if (pendingRef.current) return;
+        pendingRef.current = true;
+        onPendingChange?.(true);
+        importAgents.mutate();
+      }}>
         {importAgents.isPending ? "Importing…" : "Import"}
       </Button>
       </Stack>
@@ -276,8 +289,33 @@ export function ImportAgentDialog({
   onClose(): void;
   onImported(agentId: string): void;
 }): JSX.Element {
+  const [pending, setPending] = useState(false);
+  const pendingRef = useRef(false);
+  const generationRef = useRef(0);
+  const openRef = useRef(false);
+  if (open && !openRef.current) generationRef.current += 1;
+  openRef.current = open;
+  const generation = generationRef.current;
+  useEffect(() => () => {
+    generationRef.current += 1;
+    openRef.current = false;
+  }, []);
+  const updatePending = (nextPending: boolean) => {
+    pendingRef.current = nextPending;
+    setPending(nextPending);
+  };
+  const close = () => {
+    if (!pendingRef.current) onClose();
+  };
   return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
+    <Dialog
+      open={open}
+      onClose={close}
+      disableEscapeKeyDown={pending}
+      fullWidth
+      maxWidth="md"
+      slotProps={{ paper: { "aria-busy": pending || undefined } }}
+    >
       <DialogTitle>Import Agent or Organization</DialogTitle>
       <DialogContent sx={{ pt: "12px !important" }}>
         {open ? (
@@ -286,8 +324,20 @@ export function ImportAgentDialog({
             engines={engines}
             conversations={conversations}
             initialConversationId={initialConversationId}
-            onCancel={onClose}
+            onCancel={close}
+            onPendingChange={nextPending => {
+              if (
+                openRef.current &&
+                generationRef.current === generation
+              ) updatePending(nextPending);
+            }}
             onImported={agentId => {
+              if (
+                !openRef.current ||
+                generationRef.current !== generation
+              ) return;
+              pendingRef.current = false;
+              setPending(false);
               onClose();
               onImported(agentId);
             }}
