@@ -1037,6 +1037,7 @@ export function AgentDetail({
           capabilities: engineIsAvailable(engine)
             ? engineCapability?.composerCapabilities
             : [],
+          enableVoiceDictation: true,
           onCapabilitiesOpen: () =>
             onRefreshCapabilities({ engineId: engine?.id, model, agentId }),
           projectId: detail.agent.projectId,

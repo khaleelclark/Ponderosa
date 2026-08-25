@@ -113,6 +113,7 @@ export function Composer({
   onCapabilitiesOpen,
   attachmentsEnabled = true,
   attachmentsUnavailableReason,
+  enableVoiceDictation = false,
   busyMentionHandles,
   allowUnmentionedSend = true,
   sendUnavailableReason,
@@ -1237,11 +1238,13 @@ export function Composer({
           onFilterChange={setCapabilityFilter}
           onApplyCapability={applyCapability}
         />
-        <DictationControls
-          disabled={disabled || composerLocked || sending}
-          onFinalTranscript={insertDictatedText}
-          onSettlingChange={handleDictationSettlingChange}
-        />
+        {enableVoiceDictation ? (
+          <DictationControls
+            disabled={disabled || composerLocked || sending}
+            onFinalTranscript={insertDictatedText}
+            onSettlingChange={handleDictationSettlingChange}
+          />
+        ) : null}
         {destinationMode === "target-required" ? (
           <ComposerTargetDestinationAction
             broadcast={hasBroadcastDestination}
