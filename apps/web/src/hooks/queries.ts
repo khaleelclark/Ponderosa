@@ -1,4 +1,5 @@
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import type { WorkspaceNotificationProjectionDto } from "@ponderosa/core";
 import { useSyncExternalStore } from "react";
 import { api } from "../api";
 import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
@@ -63,6 +64,49 @@ export function useNotifications() {
     successfulFetchRevision,
     getSuccessfulFetchRevision: revisionStore.getSnapshot,
   };
+}
+
+const NOTIFICATION_PROJECTION_SCOPE_BATCH_SIZE = 200;
+
+function scopeBatches(ids: readonly string[]): string[][] {
+  const batches: string[][] = [];
+  for (let index = 0; index < ids.length; index += NOTIFICATION_PROJECTION_SCOPE_BATCH_SIZE) {
+    batches.push(ids.slice(index, index + NOTIFICATION_PROJECTION_SCOPE_BATCH_SIZE));
+  }
+  return batches;
+}
+
+/** Fetch exact notification counts in resource-bounded batches. Each response
+ * contains only scalar summaries for requested scopes, never notification rows. */
+export function useNotificationProjection(
+  projectIds: readonly string[],
+  conversationIds: readonly string[],
+) {
+  const normalizedProjectIds = [...new Set(projectIds)].sort();
+  const normalizedConversationIds = [...new Set(conversationIds)].sort();
+  return useQuery({
+    queryKey: queryKeys.notifications.projection(
+      normalizedProjectIds,
+      normalizedConversationIds,
+    ),
+    queryFn: async (): Promise<WorkspaceNotificationProjectionDto> => {
+      const projectBatches = scopeBatches(normalizedProjectIds);
+      const conversationBatches = scopeBatches(normalizedConversationIds);
+      const requestCount = Math.max(projectBatches.length, conversationBatches.length, 1);
+      const pages = await Promise.all(Array.from({ length: requestCount }, (_, index) =>
+        api.getNotificationProjection({
+          projectIds: projectBatches[index] ?? [],
+          conversationIds: conversationBatches[index] ?? [],
+        })));
+      const first = pages[0]!;
+      return {
+        workspace: first.workspace,
+        allMessages: first.allMessages,
+        projects: Object.assign({}, ...pages.map(page => page.projects)),
+        conversations: Object.assign({}, ...pages.map(page => page.conversations)),
+      };
+    },
+  });
 }
 
 export function useAllChat(limit = 50) {

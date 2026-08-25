@@ -20,7 +20,7 @@ import {
 import type {
   AgentHealthDto,
   TriggerDefinitionDto,
-  WorkspaceNotificationDto,
+  WorkspaceNotificationCountProjectionDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useQueryClient } from "@tanstack/react-query";
@@ -32,7 +32,6 @@ import {
 } from "../resourcePreferences";
 import type { Route } from "../routing";
 import type { WorkspaceProjectSnapshot } from "../workspaceNavigation";
-import { unreadProjectionForConversation } from "../workspaceNavigation";
 import {
   markWorkspaceResourceUsed,
   useWorkspaceResourceRecency,
@@ -47,7 +46,8 @@ interface HomeSidebarPanelProps {
   snapshots: WorkspaceProjectSnapshot[];
   triggers: TriggerDefinitionDto[];
   preferences: WorkspacePreferencesDto;
-  notifications: WorkspaceNotificationDto[];
+  unreadByConversation: Readonly<Record<string, WorkspaceNotificationCountProjectionDto>>;
+  allMessagesUnread: WorkspaceNotificationCountProjectionDto;
   filter: string;
   drawer: boolean;
   onFilterChange(value: string): void;
@@ -83,7 +83,8 @@ export function HomeSidebarPanel({
   snapshots,
   triggers,
   preferences,
-  notifications,
+  unreadByConversation,
+  allMessagesUnread,
   filter,
   drawer,
   onFilterChange,
@@ -215,7 +216,7 @@ export function HomeSidebarPanel({
     items.map(item => {
       const starred = starredResourceIds.has(item.id);
       const unread = item.route.kind === "conversation"
-        ? unreadProjectionForConversation(notifications, item.route.conversationId)
+        ? unreadByConversation[item.route.conversationId]
         : undefined;
       return (
         <Stack
@@ -228,6 +229,7 @@ export function HomeSidebarPanel({
           sx={{ alignItems: "center", mb: 0.25, minWidth: 0, width: "100%" }}
         >
           <ListItemButton
+            aria-label={`${item.title}${unread?.importantCount ? `, ${unread.importantCount} important unread` : ""}${unread?.ordinaryCount ? `, ${unread.ordinaryCount} ordinary unread` : ""}`}
             onClick={() => {
               if (item.id.startsWith("trigger:")) {
                 markWorkspaceResourceUsed(
@@ -259,10 +261,12 @@ export function HomeSidebarPanel({
                 aria-label={`${unread.importantCount} important unread`}
                 sx={{ height: 20, minWidth: 24, fontWeight: 800, color: "#fff" }}
               />
-            ) : unread?.ordinaryCount ? (
+            ) : null}
+            {unread?.ordinaryCount ? (
               <Box
                 component="span"
-                aria-label="Unread activity"
+                role="img"
+                aria-label={`${unread.ordinaryCount} ordinary unread`}
                 sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: "text.secondary", flexShrink: 0 }}
               />
             ) : null}
@@ -314,6 +318,7 @@ export function HomeSidebarPanel({
       hideSearch={hideSearch}
       topContent={showAllMessages ? (
         <ListItemButton
+          aria-label={`All Messages${allMessagesUnread.importantCount ? `, ${allMessagesUnread.importantCount} important unread` : ""}${allMessagesUnread.ordinaryCount ? `, ${allMessagesUnread.ordinaryCount} ordinary unread` : ""}`}
           onClick={onOpenAllMessages}
           onContextMenu={event => {
             event.preventDefault();
@@ -335,10 +340,27 @@ export function HomeSidebarPanel({
             primaryTypographyProps={{
               noWrap: true,
               fontSize: 13,
-              fontWeight: 700,
+              fontWeight: allMessagesUnread.totalCount ? 800 : 700,
             }}
             secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
           />
+          {allMessagesUnread.importantCount ? (
+            <Chip
+              size="small"
+              color="error"
+              label={allMessagesUnread.importantCount}
+              aria-label={`${allMessagesUnread.importantCount} important unread`}
+              sx={{ height: 20, minWidth: 24, fontWeight: 800, color: "#fff" }}
+            />
+          ) : null}
+          {allMessagesUnread.ordinaryCount ? (
+            <Box
+              component="span"
+              role="img"
+              aria-label={`${allMessagesUnread.ordinaryCount} ordinary unread`}
+              sx={{ width: 8, height: 8, ml: 0.75, borderRadius: "50%", bgcolor: "text.secondary", flexShrink: 0 }}
+            />
+          ) : null}
         </ListItemButton>
       ) : undefined}
       starredRows={rows(starredResources)}

@@ -16,7 +16,7 @@ import { Children, type ReactNode } from "react";
 import { useInfiniteScrollSentinel } from "../hooks/useInfiniteScrollSentinel";
 import { IconTitle } from "./IconTitle";
 import { LoadingState } from "./LoadingState";
-import { sidebarSurface } from "./WorkspaceSidebar.helpers";
+import { railSurface, sidebarSurface } from "./WorkspaceSidebar.helpers";
 
 function SidebarSectionHeading({
   children,
@@ -267,6 +267,8 @@ function RailButton({
   badge,
   dot = false,
   badgeColor = "primary",
+  badgeStatus,
+  dotStatus = "unread activity",
   children,
   onClick,
 }: {
@@ -275,15 +277,22 @@ function RailButton({
   badge?: number;
   dot?: boolean;
   badgeColor?: "default" | "primary" | "info" | "error";
+  badgeStatus?: string;
+  dotStatus?: string;
   children: ReactNode;
   onClick(): void;
 }): JSX.Element {
   return (
     <Tooltip title={label} placement="right">
       <IconButton
-        aria-label={badge ? label + ", " + badge : dot ? label + ", unread" : label}
+        aria-label={badge
+          ? `${label}, ${badgeStatus ?? badge}`
+          : dot
+            ? `${label}, ${dotStatus}`
+            : label}
         onClick={onClick}
         sx={{
+          position: "relative",
           width: 48,
           height: 48,
           borderRadius: 1,
@@ -310,6 +319,13 @@ function RailButton({
         >
           {children}
         </Badge>
+        {badge && dot ? (
+          <Box
+            component="span"
+            aria-hidden
+            sx={{ position: "absolute", right: 7, bottom: 7, width: 8, height: 8, borderRadius: "50%", bgcolor: "text.secondary", border: `2px solid ${railSurface}` }}
+          />
+        ) : null}
       </IconButton>
     </Tooltip>
   );

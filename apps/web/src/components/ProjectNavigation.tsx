@@ -84,11 +84,7 @@ function ProjectRailButton({
   return (
     <Tooltip title={project.label} placement="right">
       <ButtonBase
-        aria-label={unread?.importantCount
-          ? `${project.label}, ${unread.importantCount} important unread`
-          : unread?.ordinaryCount
-            ? `${project.label}, unread activity`
-            : project.label}
+        aria-label={`${project.label}${unread?.importantCount ? `, ${unread.importantCount} important unread` : ""}${unread?.ordinaryCount ? `, ${unread.ordinaryCount} ordinary unread` : ""}`}
         aria-current={current ? "page" : undefined}
         aria-expanded={expanded}
         onClick={onClick}
@@ -141,6 +137,13 @@ function ProjectRailButton({
         >
           <span>{projectInitials(project.label)}</span>
         </Badge>
+        {unread?.importantCount && unread.ordinaryCount ? (
+          <Box
+            component="span"
+            aria-hidden
+            sx={{ position: "absolute", right: 3, bottom: 3, width: 8, height: 8, borderRadius: "50%", bgcolor: "text.secondary", border: `2px solid ${railSurface}` }}
+          />
+        ) : null}
       </ButtonBase>
     </Tooltip>
   );
@@ -253,8 +256,10 @@ export function ProjectRail({
           label="All Messages"
           selected={route.kind === "allChat"}
           badge={allMessagesUnread.importantCount || undefined}
-          dot={!allMessagesUnread.importantCount && Boolean(allMessagesUnread.ordinaryCount)}
+          dot={Boolean(allMessagesUnread.ordinaryCount)}
           badgeColor={allMessagesUnread.importantCount ? "error" : "default"}
+          badgeStatus={`${allMessagesUnread.importantCount} important unread${allMessagesUnread.ordinaryCount ? `, ${allMessagesUnread.ordinaryCount} ordinary unread` : ""}`}
+          dotStatus={`${allMessagesUnread.ordinaryCount} ordinary unread`}
           onClick={onOpenAllMessages}
         >
           <ForumOutlinedIcon />

@@ -23,6 +23,7 @@ import type {
   WorkspaceAgentDirectoryItemDto,
   WorkspaceConversationDirectoryItemDto,
   WorkspaceNotificationDto,
+  WorkspaceNotificationPageDto,
   WorkspacePreferencesDto,
   WorkspaceProjectDirectoryItemDto,
   WorkspaceTriggerDirectoryItemDto,
@@ -37,7 +38,7 @@ import {
 } from "../hooks/useWorkspaceDirectory";
 import { queryKeys } from "../queryKeys";
 import { routeProjectId, type Route } from "../routing";
-import { useAgent, useConversation } from "../hooks/queries";
+import { useAgent, useConversation, useNotificationProjection } from "../hooks/queries";
 import {
   reorderStableIds,
   resourcePreferenceKey,
@@ -47,11 +48,8 @@ import {
   workspaceResourceSort,
 } from "../resourcePreferences";
 import {
-  isOrdinaryMessageNotification,
   projectDisambiguator,
-  unreadNotificationProjection,
-  unreadProjectionForConversation,
-  unreadProjectionForProject,
+  type UnreadNotificationProjection,
 } from "../workspaceNavigation";
 import { clampWorkspaceSidebarWidth } from "../workspaceSidebarState";
 import { markWorkspaceResourceUsed } from "../workspaceRecency";
@@ -87,6 +85,7 @@ export function WorkspaceSidebar({
   preferences,
   route,
   notifications,
+  notificationCounts,
   drawer = false,
   onNavigate,
   onCreate,
@@ -106,6 +105,7 @@ export function WorkspaceSidebar({
   preferences: WorkspacePreferencesDto;
   route: Route;
   notifications: WorkspaceNotificationDto[];
+  notificationCounts?: Pick<WorkspaceNotificationPageDto, "unacknowledgedActionCount" | "unreadUpdateCount">;
   drawer?: boolean;
   onNavigate(route: Route): void;
   onCreate(kind: "project" | "chat" | "agent" | "trigger"): void;
@@ -223,6 +223,21 @@ export function WorkspaceSidebar({
     ...triggerDirectory.starredItems,
     ...triggerDirectory.items,
   ];
+  const projectionConversationIds = [
+    ...chatItems.map(item => item.conversation.id),
+    ...(route.kind === "conversation" ? [route.conversationId] : []),
+  ];
+  const notificationProjectionQuery = useNotificationProjection(
+    projects.map(project => project.id),
+    projectionConversationIds,
+  );
+  const emptyUnread: UnreadNotificationProjection = {
+    importantCount: 0,
+    ordinaryCount: 0,
+    totalCount: 0,
+  };
+  const conversationUnread = (conversationId: string): UnreadNotificationProjection =>
+    notificationProjectionQuery.data?.conversations[conversationId] ?? emptyUnread;
   const homeProjectIds = new Set(drawerProjectId ? [drawerProjectId] : []);
   const projectById = new Map(projects.map(project => [project.id, project]));
   for (const item of projectItems) projectById.set(item.project.id, item.project);
@@ -270,17 +285,13 @@ export function WorkspaceSidebar({
   const counts = {
     running:
       agentDirectoryQuery.data?.pages.at(-1)?.activeCount ?? 0,
-    attention: notifications.filter(isOpenAttention).length,
-    updates: notifications.filter(isUnreadNotificationUpdate).length,
+    attention: notificationCounts?.unacknowledgedActionCount ?? notifications.filter(isOpenAttention).length,
+    updates: notificationCounts?.unreadUpdateCount ?? notifications.filter(isUnreadNotificationUpdate).length,
   };
-  const allMessagesUnread = unreadNotificationProjection(
-    notifications.filter(notification =>
-      Boolean(notification.conversationId) &&
-      isOrdinaryMessageNotification(notification)),
-  );
+  const allMessagesUnread = notificationProjectionQuery.data?.allMessages ?? emptyUnread;
   const projectUnread = new Map(projects.map(project => [
     project.id,
-    unreadProjectionForProject(notifications, project.id),
+    notificationProjectionQuery.data?.projects[project.id] ?? emptyUnread,
   ]));
   const healthQuery = useQuery({
     queryKey: queryKeys.health.all,
@@ -436,7 +447,8 @@ export function WorkspaceSidebar({
       snapshots={snapshots}
       triggers={triggerItems.map(item => item.trigger)}
       preferences={preferences}
-      notifications={notifications}
+      unreadByConversation={notificationProjectionQuery.data?.conversations ?? {}}
+      allMessagesUnread={allMessagesUnread}
       filter={filter}
       drawer={drawer}
       onFilterChange={setFilter}
@@ -469,7 +481,7 @@ export function WorkspaceSidebar({
       const starred = starredResourceIds.has(
         resourcePreferenceKey("conversation", conversation.id),
       );
-      const unread = unreadProjectionForConversation(notifications, conversation.id);
+      const unread = conversationUnread(conversation.id);
       return (
         <Stack
           key={conversation.id}
@@ -512,6 +524,7 @@ export function WorkspaceSidebar({
         >
           <ListItemButton
             data-resource-id={`sidebar-conversation:${conversation.id}`}
+            aria-label={`Open Chat ${conversation.title}${unread.importantCount ? `, ${unread.importantCount} important unread` : ""}${unread.ordinaryCount ? `, ${unread.ordinaryCount} ordinary unread` : ""}`}
             onClick={() => openChat(chatProject, conversation)}
             sx={{ borderRadius: 1.25, px: 1, py: 0.65, minWidth: 0 }}
           >
@@ -536,10 +549,12 @@ export function WorkspaceSidebar({
                 aria-label={`${unread.importantCount} important unread`}
                 sx={{ height: 20, minWidth: 24, fontWeight: 800, color: "#fff" }}
               />
-            ) : unread.ordinaryCount ? (
+            ) : null}
+            {unread.ordinaryCount ? (
               <Box
                 component="span"
-                aria-label="Unread activity"
+                role="img"
+                aria-label={`${unread.ordinaryCount} ordinary unread`}
                 sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: "text.secondary", flexShrink: 0 }}
               />
             ) : null}

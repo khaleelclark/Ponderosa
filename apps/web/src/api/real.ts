@@ -123,6 +123,8 @@ import type {
   WorkspaceFileViewDto,
   WorkspaceNotificationDto,
   WorkspaceNotificationPageDto,
+  WorkspaceNotificationProjectionDto,
+  WorkspaceNotificationProjectionRequestDto,
   WorkspaceDirectoryItemDto,
   WorkspaceDirectoryKind,
   WorkspaceDirectoryPageDto,
@@ -467,6 +469,14 @@ export const realApi = {
   listNotifications(cursor?: string, limit = 100): Promise<WorkspaceNotificationPageDto> {
     return requestJson<WorkspaceNotificationPageDto>(`/api/notifications${toQuery({ limit, cursor })}`);
   },
+  getNotificationProjection(
+    request: WorkspaceNotificationProjectionRequestDto,
+  ): Promise<WorkspaceNotificationProjectionDto> {
+    return requestJson<WorkspaceNotificationProjectionDto>("/api/notifications/projection", {
+      method: "POST",
+      body: JSON.stringify(request satisfies WorkspaceNotificationProjectionRequestDto),
+    });
+  },
   async activeNotificationIds(notificationIds: string[]): Promise<string[]> {
     if (!notificationIds.length) return [];
     const response = await requestJson<{ activeNotificationIds: string[] }>("/api/notifications/active", {
@@ -477,6 +487,13 @@ export const realApi = {
   },
   async markNotificationRead(notificationId: string): Promise<void> { await requestJson(`/api/notifications/${encodeURIComponent(notificationId)}/read`, { method: "POST" }); },
   async markNotificationsRead(notificationIds: string[]): Promise<void> { await requestJson("/api/notifications/read-batch", { method: "POST", body: JSON.stringify({ notificationIds }) }); },
+  async markNotificationCommunicationsRead(communicationEventIds: string[]): Promise<number> {
+    const response = await requestJson<{ read: number }>("/api/notifications/read-visible", {
+      method: "POST",
+      body: JSON.stringify({ communicationEventIds }),
+    });
+    return response.read;
+  },
   async acknowledgeNotifications(notificationIds: string[]): Promise<void> { await requestJson("/api/notifications/acknowledge-batch", { method: "POST", body: JSON.stringify({ notificationIds }) }); },
   setNotificationStatus(notificationId: string, status: "resolved" | "dismissed"): Promise<WorkspaceNotificationDto> { return requestJson(`/api/notifications/${encodeURIComponent(notificationId)}/status`, { method: "POST", body: JSON.stringify({ status }) }); },
   retryCoordinationRequest(requestId: string, request: { idempotencyKey?: string; createJoin?: boolean } = {}): Promise<RetryCoordinationRequestResponse> {

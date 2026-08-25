@@ -1,5 +1,9 @@
 import type { AgentStore, WorkspaceStore } from "@ponderosa/agents";
-import type { WebPushSubscriptionDto, WorkspaceNotificationPageDto } from "@ponderosa/core";
+import type {
+  WebPushSubscriptionDto,
+  WorkspaceNotificationPageDto,
+  WorkspaceNotificationProjectionRequestDto,
+} from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
 
 export interface NotificationRoutesOptions {
@@ -10,7 +14,9 @@ export interface NotificationRoutesOptions {
     | "cursor"
     | "getNotification"
     | "listNotificationPage"
+    | "notificationProjection"
     | "readNotification"
+    | "readNotificationsForCommunicationEvents"
     | "setNotificationStatus"
   >;
   readonly store: Pick<AgentStore, "getAgentTitleProjection">;
@@ -93,6 +99,26 @@ export function registerNotificationListRoute(
       activeNotificationIds: options.workspace.activeNotificationIds([...new Set(notificationIds)]),
     };
   });
+
+  app.post<{ Body: Partial<WorkspaceNotificationProjectionRequestDto> }>(
+    "/api/notifications/projection",
+    async (request, reply) => {
+      const projectIds = request.body?.projectIds;
+      const conversationIds = request.body?.conversationIds;
+      const validIds = (value: unknown): value is string[] => Array.isArray(value) &&
+        value.length <= 200 &&
+        value.every((id) => typeof id === "string" && id.length > 0 && id.length <= 200);
+      if (!validIds(projectIds) || !validIds(conversationIds)) {
+        return reply.code(400).send({
+          error: "projectIds and conversationIds must each contain at most 200 IDs",
+        });
+      }
+      return options.workspace.notificationProjection({
+        projectIds: [...new Set(projectIds)],
+        conversationIds: [...new Set(conversationIds)],
+      });
+    },
+  );
 }
 
 export function registerNotificationMutationRoutes(
@@ -162,6 +188,25 @@ export function registerNotificationMutationRoutes(
       for (const id of new Set(notificationIds as string[])) {
         if (options.workspace.readNotification(id)) read += 1;
       }
+      options.publishWorkspaceSince(cursor);
+      return { read };
+    },
+  );
+
+  app.post<{ Body: { communicationEventIds?: unknown } }>(
+    "/api/notifications/read-visible",
+    async (request, reply) => {
+      const communicationEventIds = request.body?.communicationEventIds;
+      if (!Array.isArray(communicationEventIds) || communicationEventIds.length > 100 ||
+        communicationEventIds.some((id) => typeof id !== "string" || !id || id.length > 200)) {
+        return reply.code(400).send({
+          error: "communicationEventIds must contain at most 100 Communication event IDs",
+        });
+      }
+      const cursor = options.workspace.cursor();
+      const read = options.workspace.readNotificationsForCommunicationEvents(
+        [...new Set(communicationEventIds as string[])],
+      );
       options.publishWorkspaceSince(cursor);
       return { read };
     },

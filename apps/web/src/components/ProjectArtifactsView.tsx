@@ -369,7 +369,6 @@ export function ProjectArtifactsView({
                     artifact.pinned || artifact.visibility === "published",
                 )}
                 conversations={conversations}
-                notifications={notifications}
                 preferences={preferences}
                 onPreferences={onPreferences}
                 onCreateConversation={onCreateConversation}

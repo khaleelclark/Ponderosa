@@ -51,6 +51,12 @@ export const queryKeys = {
   },
   notifications: {
     all: ["notifications"] as const,
+    projection: (projectIds: readonly string[], conversationIds: readonly string[]) => [
+      "notifications",
+      "projection",
+      projectIds.join("\0"),
+      conversationIds.join("\0"),
+    ] as const,
   },
   decisions: {
     all: ["decisions"] as const,

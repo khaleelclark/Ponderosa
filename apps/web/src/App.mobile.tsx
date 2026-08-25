@@ -3,6 +3,7 @@ import type {
   ConversationDto,
   ProjectDto,
   WorkspaceNotificationDto,
+  WorkspaceNotificationPageDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
@@ -40,6 +41,7 @@ interface MobileWorkspaceDrawerProps {
   preferences: WorkspacePreferencesDto;
   route: Route;
   notifications: WorkspaceNotificationDto[];
+  notificationCounts?: Pick<WorkspaceNotificationPageDto, "unacknowledgedActionCount" | "unreadUpdateCount">;
   onOpenChange(open: boolean): void;
   onNavigate(route: Route): void;
   onCreate(kind: "project" | "chat" | "agent" | "trigger"): void;
@@ -59,6 +61,7 @@ export function MobileWorkspaceDrawer({
   preferences,
   route,
   notifications,
+  notificationCounts,
   onOpenChange,
   onNavigate,
   onCreate,
@@ -94,6 +97,7 @@ export function MobileWorkspaceDrawer({
           preferences={preferences}
           route={route}
           notifications={notifications}
+          notificationCounts={notificationCounts}
           onNavigate={next => {
             close();
             onNavigate(next);

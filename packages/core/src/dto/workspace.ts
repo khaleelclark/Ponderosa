@@ -269,6 +269,37 @@ export interface WorkspaceNotificationPageDto {
   nextCursor?: string;
 }
 
+/** Exact unread counts for one canonical notification scope. */
+export interface WorkspaceNotificationCountProjectionDto {
+  importantCount: number;
+  ordinaryCount: number;
+  totalCount: number;
+}
+
+/** Exact Project counts split so Project-level attention is never described
+ * as Chat activity. Chat counts dedupe notification IDs even when one
+ * notification projects into several Chats. */
+export interface WorkspaceProjectNotificationProjectionDto
+  extends WorkspaceNotificationCountProjectionDto {
+  chat: WorkspaceNotificationCountProjectionDto & { affectedConversationCount: number };
+  projectLevel: WorkspaceNotificationCountProjectionDto;
+}
+
+/** A bounded request for exact server-side notification projections. Clients
+ * may batch large resource catalogs; notification records never cross this
+ * boundary. */
+export interface WorkspaceNotificationProjectionRequestDto {
+  projectIds: string[];
+  conversationIds: string[];
+}
+
+export interface WorkspaceNotificationProjectionDto {
+  workspace: WorkspaceNotificationCountProjectionDto;
+  allMessages: WorkspaceNotificationCountProjectionDto;
+  projects: Record<string, WorkspaceProjectNotificationProjectionDto>;
+  conversations: Record<string, WorkspaceNotificationCountProjectionDto>;
+}
+
 export interface RetryCoordinationRequestResponse {
   requestIds: string[];
   joinId?: string;

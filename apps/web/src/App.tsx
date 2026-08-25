@@ -674,6 +674,7 @@ export default function App({
               preferences={preferences}
               route={route}
               notifications={presentedNotifications}
+              notificationCounts={notificationsQuery.data}
               onNavigate={navigateWorkspace}
               onCreate={replaceWorkspaceWithCreationForm}
               onPreferences={savePreferences}
@@ -788,6 +789,7 @@ export default function App({
           preferences={preferences}
           route={route}
           notifications={presentedNotifications}
+          notificationCounts={notificationsQuery.data}
           onOpenChange={setMobileNavigationOpen}
           onNavigate={navigateWorkspace}
           onCreate={replaceWorkspaceWithCreationForm}

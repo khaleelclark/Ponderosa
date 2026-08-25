@@ -37,12 +37,13 @@ import type {
   EngineDto,
   ProjectDto,
   ProjectSort,
-  WorkspaceNotificationDto,
+  WorkspaceNotificationCountProjectionDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
+import { useNotificationProjection } from "../hooks/queries";
 import { conversationDisplayTitle } from "../conversationLabels";
 import { engineAvailabilityPresentation, engineIsAvailable } from "../conversationEngine";
 import { queryKeys } from "../queryKeys";
@@ -55,10 +56,6 @@ import {
   workspaceResourceSort,
   workspaceResourceSortPatch,
 } from "../resourcePreferences";
-import {
-  unreadNotificationProjection,
-  unreadProjectionsByConversation,
-} from "../workspaceNavigation";
 import { artifactDisplayLabel, artifactDisplayPath } from "./filePreview/artifactPresentation";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 import {
@@ -143,7 +140,6 @@ export function ProjectOverview({
   healthByAgentId,
   importantArtifacts,
   conversations,
-  notifications,
   preferences,
   onPreferences,
   onCreateConversation,
@@ -159,7 +155,6 @@ export function ProjectOverview({
   healthByAgentId: Map<string, AgentHealthDto>;
   importantArtifacts: ArtifactDto[];
   conversations: ConversationDto[];
-  notifications: WorkspaceNotificationDto[];
   preferences: WorkspacePreferencesDto;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onCreateConversation(): void;
@@ -198,17 +193,21 @@ export function ProjectOverview({
     .filter((artifact) => artifact.pinned || artifact.visibility === "published")
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     .slice(0, 3);
-  const projectNotifications = useMemo(() => notifications.filter(
-    (notification) => notification.projectId === project.id,
-  ), [notifications, project.id]);
-  const unread = useMemo(
-    () => unreadProjectionsByConversation(projectNotifications),
-    [projectNotifications],
+  const notificationProjectionQuery = useNotificationProjection(
+    [project.id],
+    conversations.map(conversation => conversation.id),
   );
-  const projectUnread = useMemo(
-    () => unreadNotificationProjection(projectNotifications),
-    [projectNotifications],
-  );
+  const emptyUnread: WorkspaceNotificationCountProjectionDto = {
+    importantCount: 0,
+    ordinaryCount: 0,
+    totalCount: 0,
+  };
+  const unread = notificationProjectionQuery.data?.conversations ?? {};
+  const projectUnread = notificationProjectionQuery.data?.projects[project.id] ?? {
+    ...emptyUnread,
+    chat: { ...emptyUnread, affectedConversationCount: 0 },
+    projectLevel: emptyUnread,
+  };
   const chatSort = workspaceResourceSort(preferences, "chat");
   const activeConversations = useMemo(() => sortWorkspaceResources(
     conversations.filter((conversation) => !conversation.archived),
@@ -218,13 +217,11 @@ export function ProjectOverview({
     (conversation) => conversation.title,
     (conversation) => conversation.updatedAt,
   ), [chatSort, conversations, preferences.chatOrder]);
-  const affectedChatCount = activeConversations.filter(
-    (conversation) => (unread.get(conversation.id)?.totalCount ?? 0) > 0,
-  ).length;
-  const unreadSummary = projectUnread.totalCount
-    ? affectedChatCount
-      ? `${projectUnread.totalCount} unread across ${affectedChatCount} ${affectedChatCount === 1 ? "Chat" : "Chats"}`
-      : `${projectUnread.totalCount} unread in this Project`
+  const chatUnreadSummary = projectUnread.chat.totalCount
+    ? `${projectUnread.chat.totalCount} unread in ${projectUnread.chat.affectedConversationCount} ${projectUnread.chat.affectedConversationCount === 1 ? "Chat" : "Chats"}`
+    : undefined;
+  const projectLevelUnreadSummary = projectUnread.projectLevel.totalCount
+    ? `${projectUnread.projectLevel.totalCount} Project-level unread`
     : undefined;
   const normalizedFilter = chatFilter.trim().toLocaleLowerCase();
   const visibleConversations = activeConversations.filter((conversation) =>
@@ -244,14 +241,17 @@ export function ProjectOverview({
       <AccordionSummary expandIcon={<ExpandMoreIcon />} aria-controls="project-overview-content">
         <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", width: "100%", minWidth: 0 }}>
           <Typography variant="subtitle1" fontWeight={800} sx={{ flex: 1 }}>Project Overview</Typography>
-          {unreadSummary ? (
+          {projectUnread.importantCount ? (
             <Chip
               size="small"
-              variant="outlined"
-              color={projectUnread.importantCount ? "error" : "default"}
-              label={unreadSummary}
+              color="error"
+              label={`${projectUnread.importantCount} important`}
+              aria-label={`${projectUnread.importantCount} important unread`}
+              sx={{ color: "#fff", fontWeight: 800 }}
             />
           ) : null}
+          {chatUnreadSummary ? <Chip size="small" variant="outlined" label={chatUnreadSummary} /> : null}
+          {projectLevelUnreadSummary ? <Chip size="small" variant="outlined" label={projectLevelUnreadSummary} /> : null}
           <Chip size="small" color={activeAgents.length ? "info" : "default"} label={`${activeAgents.length} active`} />
         </Stack>
       </AccordionSummary>
@@ -319,7 +319,7 @@ export function ProjectOverview({
           <Typography variant="overline" color="text.secondary" sx={{ display: "block", px: 1.5, py: 0.75, bgcolor: "action.hover", borderBottom: 1, borderColor: "divider" }}>{group}</Typography>
           {grouped.map((conversation) => {
             const title = conversationDisplayTitle(conversation, activeConversations);
-            const unreadProjection = unread.get(conversation.id);
+            const unreadProjection = unread[conversation.id];
             const unreadCount = unreadProjection?.totalCount ?? 0;
             const isStarred = starred.has(resourcePreferenceKey("conversation", conversation.id));
             return <Stack
@@ -340,7 +340,11 @@ export function ProjectOverview({
               onContextMenu={(event) => { event.preventDefault(); setChatMenu({ anchor: event.currentTarget, resource: conversation }); }}
               sx={{ alignItems: "center", borderBottom: 1, borderColor: "divider", "&:last-of-type": { borderBottom: 0 }, opacity: draggedChatId === conversation.id ? 0.55 : 1 }}
             >
-              <ListItemButton aria-label={`Open Chat ${title}`} onClick={() => onOpenConversation(conversation.id)} sx={{ minWidth: 0 }}>
+              <ListItemButton
+                aria-label={`Open Chat ${title}${unreadProjection?.importantCount ? `, ${unreadProjection.importantCount} important unread` : ""}${unreadProjection?.ordinaryCount ? `, ${unreadProjection.ordinaryCount} ordinary unread` : ""}`}
+                onClick={() => onOpenConversation(conversation.id)}
+                sx={{ minWidth: 0 }}
+              >
                 <ListItemIcon sx={{ minWidth: 40 }}><ChatBubbleOutlineIcon fontSize="small" /></ListItemIcon>
                 <ListItemText
                   primary={title}
@@ -356,10 +360,12 @@ export function ProjectOverview({
                     aria-label={`${unreadProjection.importantCount} important unread`}
                     sx={{ mr: 0.5, color: "#fff", fontWeight: 800 }}
                   />
-                ) : unreadProjection?.ordinaryCount ? (
+                ) : null}
+                {unreadProjection?.ordinaryCount ? (
                   <Box
                     component="span"
-                    aria-label="Unread activity"
+                    role="img"
+                    aria-label={`${unreadProjection.ordinaryCount} ordinary unread`}
                     sx={{ width: 8, height: 8, mr: 1.25, borderRadius: "50%", bgcolor: "text.secondary", flexShrink: 0 }}
                   />
                 ) : null}

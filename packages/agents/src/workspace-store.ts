@@ -9,7 +9,10 @@ import type {
   UpdateWorkspacePreferencesRequest,
   WorkspaceEvent,
   WorkspaceEventEnvelope,
+  WorkspaceNotificationCountProjectionDto,
   WorkspaceNotificationDto,
+  WorkspaceNotificationProjectionDto,
+  WorkspaceProjectNotificationProjectionDto,
   NotificationPreferencesDto,
   WorkspacePreferencesDto,
   WorkspaceResourceKind,
@@ -105,6 +108,57 @@ function notificationLiveKind(item: WorkspaceNotificationDto): NotificationLiveK
   if (item.kind === "collaboration" || (item.status ?? "open") !== "open") return undefined;
   if (isOpenAttentionNotification(item)) return "attention";
   return !item.readAt && isOpenNotificationUpdate(item) ? "update" : undefined;
+}
+
+const IMPORTANT_MESSAGE_NOTIFICATION_KINDS = new Set<WorkspaceNotificationDto["kind"]>([
+  "direct_responses",
+  "everyone",
+]);
+
+const MESSAGE_NOTIFICATION_KINDS = new Set<WorkspaceNotificationDto["kind"]>([
+  ...IMPORTANT_MESSAGE_NOTIFICATION_KINDS,
+  "broadcasts",
+]);
+
+function unreadProjectionKind(
+  item: WorkspaceNotificationDto,
+): "important" | "ordinary" | undefined {
+  if ((item.status ?? "open") !== "open" || item.kind === "collaboration") return undefined;
+  if (isOpenAttentionNotification(item)) return item.acknowledgedAt ? undefined : "important";
+  if (item.readAt || !MESSAGE_NOTIFICATION_KINDS.has(item.kind)) return undefined;
+  return IMPORTANT_MESSAGE_NOTIFICATION_KINDS.has(item.kind) ? "important" : "ordinary";
+}
+
+interface NotificationProjectionAccumulator {
+  importantIds: Set<string>;
+  ordinaryIds: Set<string>;
+}
+
+function emptyNotificationProjectionAccumulator(): NotificationProjectionAccumulator {
+  return { importantIds: new Set<string>(), ordinaryIds: new Set<string>() };
+}
+
+function addNotificationProjection(
+  accumulator: NotificationProjectionAccumulator,
+  item: WorkspaceNotificationDto,
+  kind: "important" | "ordinary",
+): void {
+  if (kind === "important") {
+    accumulator.importantIds.add(item.id);
+    accumulator.ordinaryIds.delete(item.id);
+  } else if (!accumulator.importantIds.has(item.id)) {
+    accumulator.ordinaryIds.add(item.id);
+  }
+}
+
+function notificationProjectionCounts(
+  accumulator: NotificationProjectionAccumulator,
+): WorkspaceNotificationCountProjectionDto {
+  return {
+    importantCount: accumulator.importantIds.size,
+    ordinaryCount: accumulator.ordinaryIds.size,
+    totalCount: accumulator.importantIds.size + accumulator.ordinaryIds.size,
+  };
 }
 
 export interface WorkspaceNotificationPageCursor {
@@ -1011,6 +1065,114 @@ export class WorkspaceStore {
       if (count > 0) unreadConversationCounts[id] = count;
     }
     return { unreadCommunicationEventIds, unreadConversationCounts };
+  }
+
+  /** Produce exact, identity-deduped unread projections without exposing the
+   * underlying notification collection. The caller bounds which resource
+   * scopes are returned; workspace and All Messages remain scalar summaries. */
+  notificationProjection(input: {
+    projectIds: readonly string[];
+    conversationIds: readonly string[];
+  }): WorkspaceNotificationProjectionDto {
+    const requestedProjectIds = new Set(input.projectIds);
+    const requestedConversationIds = new Set(input.conversationIds);
+    const workspace = emptyNotificationProjectionAccumulator();
+    const allMessages = emptyNotificationProjectionAccumulator();
+    const projects = new Map<string, {
+      total: NotificationProjectionAccumulator;
+      chat: NotificationProjectionAccumulator;
+      projectLevel: NotificationProjectionAccumulator;
+      affectedConversationIds: Set<string>;
+    }>();
+    const conversations = new Map<string, NotificationProjectionAccumulator>();
+
+    for (const projectId of requestedProjectIds) {
+      projects.set(projectId, {
+        total: emptyNotificationProjectionAccumulator(),
+        chat: emptyNotificationProjectionAccumulator(),
+        projectLevel: emptyNotificationProjectionAccumulator(),
+        affectedConversationIds: new Set<string>(),
+      });
+    }
+    for (const conversationId of requestedConversationIds) {
+      conversations.set(conversationId, emptyNotificationProjectionAccumulator());
+    }
+
+    for (const item of this.notifications.values()) {
+      const kind = unreadProjectionKind(item);
+      if (!kind) continue;
+      const navigationConversationIds = new Set([
+        ...(item.conversationId ? [item.conversationId] : []),
+        ...(item.conversationIds ?? []),
+      ]);
+      // Communication notifications are Chat-scoped. An action is Chat-scoped
+      // only when it names one canonical conversation; conversationIds on
+      // operational notifications are navigation destinations, not ownership.
+      const conversationIds = MESSAGE_NOTIFICATION_KINDS.has(item.kind)
+        ? navigationConversationIds
+        : new Set(item.conversationId ? [item.conversationId] : []);
+      addNotificationProjection(workspace, item, kind);
+      if (MESSAGE_NOTIFICATION_KINDS.has(item.kind) && conversationIds.size > 0) {
+        addNotificationProjection(allMessages, item, kind);
+      }
+
+      if (item.projectId) {
+        const project = projects.get(item.projectId);
+        if (project) {
+          addNotificationProjection(project.total, item, kind);
+          const scope = conversationIds.size > 0 ? project.chat : project.projectLevel;
+          addNotificationProjection(scope, item, kind);
+          if (conversationIds.size > 0) {
+            for (const conversationId of conversationIds) {
+              project.affectedConversationIds.add(conversationId);
+            }
+          }
+        }
+      }
+
+      for (const conversationId of conversationIds) {
+        const conversation = conversations.get(conversationId);
+        if (conversation) addNotificationProjection(conversation, item, kind);
+      }
+    }
+
+    return {
+      workspace: notificationProjectionCounts(workspace),
+      allMessages: notificationProjectionCounts(allMessages),
+      projects: Object.fromEntries([...projects].map(([projectId, project]) => {
+        const projected: WorkspaceProjectNotificationProjectionDto = {
+          ...notificationProjectionCounts(project.total),
+          chat: {
+            ...notificationProjectionCounts(project.chat),
+            affectedConversationCount: project.affectedConversationIds.size,
+          },
+          projectLevel: notificationProjectionCounts(project.projectLevel),
+        };
+        return [projectId, projected];
+      })),
+      conversations: Object.fromEntries([...conversations].map(([conversationId, projection]) => [
+        conversationId,
+        notificationProjectionCounts(projection),
+      ])),
+    };
+  }
+
+  /** Resolve unread informational notifications by canonical Communication
+   * identity, including notifications older than the bounded live-feed page. */
+  readNotificationsForCommunicationEvents(communicationEventIds: readonly string[]): number {
+    const notificationIds = new Set<string>();
+    for (const communicationEventId of new Set(communicationEventIds)) {
+      for (const notificationId of this.unreadNotificationIdsByCommunication.get(communicationEventId) ?? []) {
+        notificationIds.add(notificationId);
+      }
+    }
+    if (!notificationIds.size) return 0;
+    const readAt = new Date().toISOString();
+    this.append(
+      { type: "notification_changed", action: "read" },
+      { kind: "notifications_read_ids", notificationIds: [...notificationIds], readAt },
+    );
+    return notificationIds.size;
   }
 
   readNotification(notificationId: string): boolean {
