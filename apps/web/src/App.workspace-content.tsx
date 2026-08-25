@@ -95,7 +95,16 @@ export function WorkspaceRouteOutlet({
   onToggleColorMode,
 }: WorkspaceRouteOutletProps): JSX.Element {
   return (
-    <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
+    <Box
+      sx={{
+        height: "100%",
+        maxHeight: "100%",
+        minHeight: 0,
+        minWidth: 0,
+        display: "grid",
+        gridTemplateRows: "minmax(0, 1fr)",
+      }}
+    >
       {loadError ? (
         <Box sx={{ p: 2 }}>
           <Alert

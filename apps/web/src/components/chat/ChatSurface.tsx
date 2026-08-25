@@ -62,9 +62,11 @@ export function ChatSurface({
           spacing={0}
           sx={{
             width: `min(${contentWidth}px, 100%)`,
+            minHeight: "100%",
             minWidth: 0,
             flexShrink: 0,
             alignSelf: "center",
+            justifyContent: "flex-end",
           }}
         >
           {beforeMessages}
