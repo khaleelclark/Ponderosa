@@ -55,7 +55,10 @@ import {
   workspaceResourceSort,
   workspaceResourceSortPatch,
 } from "../resourcePreferences";
-import { unreadByConversation } from "../workspaceNavigation";
+import {
+  unreadNotificationProjection,
+  unreadProjectionsByConversation,
+} from "../workspaceNavigation";
 import { artifactDisplayLabel, artifactDisplayPath } from "./filePreview/artifactPresentation";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 import {
@@ -195,7 +198,17 @@ export function ProjectOverview({
     .filter((artifact) => artifact.pinned || artifact.visibility === "published")
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     .slice(0, 3);
-  const unread = useMemo(() => unreadByConversation(notifications), [notifications]);
+  const projectNotifications = useMemo(() => notifications.filter(
+    (notification) => notification.projectId === project.id,
+  ), [notifications, project.id]);
+  const unread = useMemo(
+    () => unreadProjectionsByConversation(projectNotifications),
+    [projectNotifications],
+  );
+  const projectUnread = useMemo(
+    () => unreadNotificationProjection(projectNotifications),
+    [projectNotifications],
+  );
   const chatSort = workspaceResourceSort(preferences, "chat");
   const activeConversations = useMemo(() => sortWorkspaceResources(
     conversations.filter((conversation) => !conversation.archived),
@@ -205,6 +218,14 @@ export function ProjectOverview({
     (conversation) => conversation.title,
     (conversation) => conversation.updatedAt,
   ), [chatSort, conversations, preferences.chatOrder]);
+  const affectedChatCount = activeConversations.filter(
+    (conversation) => (unread.get(conversation.id)?.totalCount ?? 0) > 0,
+  ).length;
+  const unreadSummary = projectUnread.totalCount
+    ? affectedChatCount
+      ? `${projectUnread.totalCount} unread across ${affectedChatCount} ${affectedChatCount === 1 ? "Chat" : "Chats"}`
+      : `${projectUnread.totalCount} unread in this Project`
+    : undefined;
   const normalizedFilter = chatFilter.trim().toLocaleLowerCase();
   const visibleConversations = activeConversations.filter((conversation) =>
     !normalizedFilter || conversationDisplayTitle(conversation, activeConversations).toLocaleLowerCase().includes(normalizedFilter));
@@ -223,6 +244,14 @@ export function ProjectOverview({
       <AccordionSummary expandIcon={<ExpandMoreIcon />} aria-controls="project-overview-content">
         <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", width: "100%", minWidth: 0 }}>
           <Typography variant="subtitle1" fontWeight={800} sx={{ flex: 1 }}>Project Overview</Typography>
+          {unreadSummary ? (
+            <Chip
+              size="small"
+              variant="outlined"
+              color={projectUnread.importantCount ? "error" : "default"}
+              label={unreadSummary}
+            />
+          ) : null}
           <Chip size="small" color={activeAgents.length ? "info" : "default"} label={`${activeAgents.length} active`} />
         </Stack>
       </AccordionSummary>
@@ -290,7 +319,8 @@ export function ProjectOverview({
           <Typography variant="overline" color="text.secondary" sx={{ display: "block", px: 1.5, py: 0.75, bgcolor: "action.hover", borderBottom: 1, borderColor: "divider" }}>{group}</Typography>
           {grouped.map((conversation) => {
             const title = conversationDisplayTitle(conversation, activeConversations);
-            const unreadCount = unread.get(conversation.id) ?? 0;
+            const unreadProjection = unread.get(conversation.id);
+            const unreadCount = unreadProjection?.totalCount ?? 0;
             const isStarred = starred.has(resourcePreferenceKey("conversation", conversation.id));
             return <Stack
               key={conversation.id}
@@ -318,7 +348,21 @@ export function ProjectOverview({
                   primaryTypographyProps={{ noWrap: true, fontWeight: unreadCount ? 800 : 650 }}
                   secondaryTypographyProps={{ noWrap: true }}
                 />
-                {unreadCount ? <Chip size="small" color="primary" label={unreadCount} sx={{ mr: 0.5 }} /> : null}
+                {unreadProjection?.importantCount ? (
+                  <Chip
+                    size="small"
+                    color="error"
+                    label={unreadProjection.importantCount}
+                    aria-label={`${unreadProjection.importantCount} important unread`}
+                    sx={{ mr: 0.5, color: "#fff", fontWeight: 800 }}
+                  />
+                ) : unreadProjection?.ordinaryCount ? (
+                  <Box
+                    component="span"
+                    aria-label="Unread activity"
+                    sx={{ width: 8, height: 8, mr: 1.25, borderRadius: "50%", bgcolor: "text.secondary", flexShrink: 0 }}
+                  />
+                ) : null}
               </ListItemButton>
               <Tooltip title={`${isStarred ? "Unstar" : "Star"} ${title}`}>
                 <IconButton

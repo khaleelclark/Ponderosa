@@ -49,6 +49,9 @@ import {
 import {
   isOrdinaryMessageNotification,
   projectDisambiguator,
+  unreadNotificationProjection,
+  unreadProjectionForConversation,
+  unreadProjectionForProject,
 } from "../workspaceNavigation";
 import { clampWorkspaceSidebarWidth } from "../workspaceSidebarState";
 import { markWorkspaceResourceUsed } from "../workspaceRecency";
@@ -267,30 +270,18 @@ export function WorkspaceSidebar({
   const counts = {
     running:
       agentDirectoryQuery.data?.pages.at(-1)?.activeCount ?? 0,
-    unread: notifications.filter(
-      notification =>
-        !notification.readAt &&
-        (notification.status ?? "open") === "open" &&
-        Boolean(notification.conversationId) &&
-      isOrdinaryMessageNotification(notification),
-    ).length,
     attention: notifications.filter(isOpenAttention).length,
     updates: notifications.filter(isUnreadNotificationUpdate).length,
   };
-  const projectBadgeCounts = new Map<string, number>();
-  for (const notification of notifications) {
-    if (
-      !notification.projectId ||
-      notification.readAt ||
-      (notification.status ?? "open") !== "open" ||
-      !notification.conversationId ||
-      !isOrdinaryMessageNotification(notification)
-    ) continue;
-    projectBadgeCounts.set(
-      notification.projectId,
-      (projectBadgeCounts.get(notification.projectId) ?? 0) + 1,
-    );
-  }
+  const allMessagesUnread = unreadNotificationProjection(
+    notifications.filter(notification =>
+      Boolean(notification.conversationId) &&
+      isOrdinaryMessageNotification(notification)),
+  );
+  const projectUnread = new Map(projects.map(project => [
+    project.id,
+    unreadProjectionForProject(notifications, project.id),
+  ]));
   const healthQuery = useQuery({
     queryKey: queryKeys.health.all,
     queryFn: () => api.getHealth(),
@@ -384,10 +375,10 @@ export function WorkspaceSidebar({
       currentProjectId={routedProjectId}
       route={route}
       profile={preferences.profile}
-      unreadMessages={counts.unread}
+      allMessagesUnread={allMessagesUnread}
       attentionNotifications={counts.attention}
       unreadNotificationUpdates={counts.updates}
-      projectBadgeCounts={projectBadgeCounts}
+      projectUnread={projectUnread}
       onOpenHome={() => showNavigation({ kind: "home" })}
       onOpenAllMessages={() => showNavigation({ kind: "allChat" })}
       onOpenProject={openProject}
@@ -423,7 +414,7 @@ export function WorkspaceSidebar({
         triggers: triggerDirectoryQuery.requestState.hasResolved ? triggerDirectory.total : undefined,
       }}
       runningCount={agentDirectoryQuery.requestState.hasResolved ? counts.running : undefined}
-      unreadCount={projectBadgeCounts.get(activeProject.id) ?? 0}
+      unreadCount={projectUnread.get(activeProject.id)?.totalCount ?? 0}
       drawer={drawer}
       onSectionChange={section => {
         setProjectSection(section);
@@ -445,6 +436,7 @@ export function WorkspaceSidebar({
       snapshots={snapshots}
       triggers={triggerItems.map(item => item.trigger)}
       preferences={preferences}
+      notifications={notifications}
       filter={filter}
       drawer={drawer}
       onFilterChange={setFilter}
@@ -477,6 +469,7 @@ export function WorkspaceSidebar({
       const starred = starredResourceIds.has(
         resourcePreferenceKey("conversation", conversation.id),
       );
+      const unread = unreadProjectionForConversation(notifications, conversation.id);
       return (
         <Stack
           key={conversation.id}
@@ -531,10 +524,25 @@ export function WorkspaceSidebar({
               primaryTypographyProps={{
                 noWrap: true,
                 fontSize: 13,
-                fontWeight: starred ? 750 : 500,
+                fontWeight: unread.totalCount ? 800 : starred ? 750 : 500,
               }}
               secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
             />
+            {unread.importantCount ? (
+              <Chip
+                size="small"
+                color="error"
+                label={unread.importantCount}
+                aria-label={`${unread.importantCount} important unread`}
+                sx={{ height: 20, minWidth: 24, fontWeight: 800, color: "#fff" }}
+              />
+            ) : unread.ordinaryCount ? (
+              <Box
+                component="span"
+                aria-label="Unread activity"
+                sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: "text.secondary", flexShrink: 0 }}
+              />
+            ) : null}
           </ListItemButton>
           <Tooltip
             title={

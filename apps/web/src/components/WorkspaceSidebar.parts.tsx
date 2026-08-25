@@ -265,6 +265,7 @@ function RailButton({
   label,
   selected = false,
   badge,
+  dot = false,
   badgeColor = "primary",
   children,
   onClick,
@@ -272,14 +273,15 @@ function RailButton({
   label: string;
   selected?: boolean;
   badge?: number;
-  badgeColor?: "primary" | "info" | "error";
+  dot?: boolean;
+  badgeColor?: "default" | "primary" | "info" | "error";
   children: ReactNode;
   onClick(): void;
 }): JSX.Element {
   return (
     <Tooltip title={label} placement="right">
       <IconButton
-        aria-label={badge ? label + ", " + badge : label}
+        aria-label={badge ? label + ", " + badge : dot ? label + ", unread" : label}
         onClick={onClick}
         sx={{
           width: 48,
@@ -300,8 +302,11 @@ function RailButton({
         <Badge
           color={badgeColor}
           badgeContent={badge}
+          variant={dot && !badge ? "dot" : "standard"}
+          invisible={!badge && !dot}
           max={99}
           slotProps={{ badge: { "aria-hidden": true } }}
+          sx={{ "& .MuiBadge-badge": { color: "#fff", fontWeight: 800 } }}
         >
           {children}
         </Badge>

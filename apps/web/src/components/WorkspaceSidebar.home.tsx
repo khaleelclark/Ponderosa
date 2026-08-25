@@ -7,6 +7,8 @@ import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import {
+  Box,
+  Chip,
   IconButton,
   ListItemButton,
   ListItemIcon,
@@ -18,6 +20,7 @@ import {
 import type {
   AgentHealthDto,
   TriggerDefinitionDto,
+  WorkspaceNotificationDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useQueryClient } from "@tanstack/react-query";
@@ -29,6 +32,7 @@ import {
 } from "../resourcePreferences";
 import type { Route } from "../routing";
 import type { WorkspaceProjectSnapshot } from "../workspaceNavigation";
+import { unreadProjectionForConversation } from "../workspaceNavigation";
 import {
   markWorkspaceResourceUsed,
   useWorkspaceResourceRecency,
@@ -43,6 +47,7 @@ interface HomeSidebarPanelProps {
   snapshots: WorkspaceProjectSnapshot[];
   triggers: TriggerDefinitionDto[];
   preferences: WorkspacePreferencesDto;
+  notifications: WorkspaceNotificationDto[];
   filter: string;
   drawer: boolean;
   onFilterChange(value: string): void;
@@ -78,6 +83,7 @@ export function HomeSidebarPanel({
   snapshots,
   triggers,
   preferences,
+  notifications,
   filter,
   drawer,
   onFilterChange,
@@ -208,6 +214,9 @@ export function HomeSidebarPanel({
   const rows = (items: typeof resources) =>
     items.map(item => {
       const starred = starredResourceIds.has(item.id);
+      const unread = item.route.kind === "conversation"
+        ? unreadProjectionForConversation(notifications, item.route.conversationId)
+        : undefined;
       return (
         <Stack
           key={item.id}
@@ -238,10 +247,25 @@ export function HomeSidebarPanel({
               primaryTypographyProps={{
                 noWrap: true,
                 fontSize: 13,
-                fontWeight: starred ? 750 : 500,
+                fontWeight: unread?.totalCount ? 800 : starred ? 750 : 500,
               }}
               secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
             />
+            {unread?.importantCount ? (
+              <Chip
+                size="small"
+                color="error"
+                label={unread.importantCount}
+                aria-label={`${unread.importantCount} important unread`}
+                sx={{ height: 20, minWidth: 24, fontWeight: 800, color: "#fff" }}
+              />
+            ) : unread?.ordinaryCount ? (
+              <Box
+                component="span"
+                aria-label="Unread activity"
+                sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: "text.secondary", flexShrink: 0 }}
+              />
+            ) : null}
             {item.status ? (
               <AgentStatusIndicator
                 status={item.status}

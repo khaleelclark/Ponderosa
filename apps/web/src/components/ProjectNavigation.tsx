@@ -33,6 +33,7 @@ import type {
 } from "@ponderosa/core";
 import { useState, type MouseEvent, type ReactNode } from "react";
 import type { Route } from "../routing";
+import type { UnreadNotificationProjection } from "../workspaceNavigation";
 import { OperatorAvatar } from "./OperatorAvatar";
 import type { ProjectSidebarSection } from "./useWorkspaceSidebarState";
 import {
@@ -70,20 +71,24 @@ function ProjectRailButton({
   project,
   current,
   expanded,
-  badge,
+  unread,
   onClick,
 }: {
   project: ProjectDto;
   current: boolean;
   expanded: boolean;
-  badge?: number;
+  unread?: UnreadNotificationProjection;
   onClick(): void;
 }): JSX.Element {
   const color = PROJECT_COLORS[hashLabel(project.id || project.label) % PROJECT_COLORS.length];
   return (
     <Tooltip title={project.label} placement="right">
       <ButtonBase
-        aria-label={badge ? `${project.label}, ${badge} unread` : project.label}
+        aria-label={unread?.importantCount
+          ? `${project.label}, ${unread.importantCount} important unread`
+          : unread?.ordinaryCount
+            ? `${project.label}, unread activity`
+            : project.label}
         aria-current={current ? "page" : undefined}
         aria-expanded={expanded}
         onClick={onClick}
@@ -120,15 +125,17 @@ function ProjectRailButton({
         }}
       >
         <Badge
-          color="error"
-          badgeContent={badge}
+          color={unread?.importantCount ? "error" : "default"}
+          badgeContent={unread?.importantCount || undefined}
           max={99}
-          invisible={!badge}
+          variant={!unread?.importantCount && unread?.ordinaryCount ? "dot" : "standard"}
+          invisible={!unread?.totalCount}
           slotProps={{ badge: { "aria-hidden": true } }}
           sx={{
             "& .MuiBadge-badge": {
               border: `3px solid ${railSurface}`,
               fontWeight: 850,
+              color: "#fff",
             },
           }}
         >
@@ -146,10 +153,10 @@ export function ProjectRail({
   currentProjectId,
   route,
   profile,
-  unreadMessages,
+  allMessagesUnread,
   attentionNotifications,
   unreadNotificationUpdates,
-  projectBadgeCounts,
+  projectUnread,
   onOpenHome,
   onOpenAllMessages,
   onOpenProject,
@@ -168,10 +175,10 @@ export function ProjectRail({
   currentProjectId?: string;
   route: Route;
   profile: OperatorProfileDto;
-  unreadMessages: number;
+  allMessagesUnread: UnreadNotificationProjection;
   attentionNotifications: number;
   unreadNotificationUpdates: number;
-  projectBadgeCounts: ReadonlyMap<string, number>;
+  projectUnread: ReadonlyMap<string, UnreadNotificationProjection>;
   onOpenHome(): void;
   onOpenAllMessages(): void;
   onOpenProject(project: ProjectDto): void;
@@ -245,8 +252,9 @@ export function ProjectRail({
         <RailButton
           label="All Messages"
           selected={route.kind === "allChat"}
-          badge={unreadMessages || undefined}
-          badgeColor="error"
+          badge={allMessagesUnread.importantCount || undefined}
+          dot={!allMessagesUnread.importantCount && Boolean(allMessagesUnread.ordinaryCount)}
+          badgeColor={allMessagesUnread.importantCount ? "error" : "default"}
           onClick={onOpenAllMessages}
         >
           <ForumOutlinedIcon />
@@ -274,7 +282,7 @@ export function ProjectRail({
             project={project}
             current={project.id === currentProjectId}
             expanded={project.id === activeProjectId}
-            badge={projectBadgeCounts.get(project.id)}
+            unread={projectUnread.get(project.id)}
             onClick={() => onOpenProject(project)}
           />
         ))}
