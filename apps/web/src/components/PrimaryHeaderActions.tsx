@@ -47,6 +47,7 @@ export function PrimaryHeaderActionsProvider({
     <PrimaryHeaderActionsContext.Provider value={value}>
       <Box
         sx={{
+          height: "100%",
           minHeight: 0,
           minWidth: 0,
           display: "grid",
@@ -57,6 +58,7 @@ export function PrimaryHeaderActionsProvider({
           ref={setFallbackOutlet}
           data-primary-header-actions-fallback
           sx={{
+            gridRow: 1,
             minHeight: { xs: 44, sm: 40 },
             px: { xs: 0.5, sm: 1.5 },
             display: activeOutlet ? "none" : "flex",
@@ -66,7 +68,7 @@ export function PrimaryHeaderActionsProvider({
             borderColor: "divider",
           }}
         />
-        <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
+        <Box sx={{ gridRow: 2, minHeight: 0, minWidth: 0, display: "grid" }}>
           {children}
         </Box>
       </Box>
