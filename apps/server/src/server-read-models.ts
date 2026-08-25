@@ -27,6 +27,7 @@ import type { ActiveRun, PersistentRuntime, RuntimeOwnershipState } from "./app-
 import {
   isRequestCommunicationHandoffKind,
   requestUpdateCommunicationEventId,
+  requestUpdateCommunicationLink,
 } from "./request-update-communication.js";
 
 interface ReadModelContext {
@@ -101,17 +102,30 @@ export function createServerReadModels(context: ReadModelContext) {
     const projectAgents = store.listAgents(projectId);
     const communicationEventIds = messages.flatMap((message) =>
       message.communicationEventId ? [message.communicationEventId] : []);
+    const communicationsByEvent = new Map(communicationEventIds.flatMap((eventId) => {
+      const communication = store.getCommunicationEvent(projectId, eventId);
+      return communication ? [[eventId, communication] as const] : [];
+    }));
+    const requestUpdateLinksByEvent = new Map(communicationEventIds.flatMap((eventId) => {
+      const link = requestUpdateCommunicationLink(communicationsByEvent.get(eventId));
+      return link ? [[eventId, link] as const] : [];
+    }));
     const deliveryReceiptsByEvent = coordinationV3.deliveryReceiptsForCommunications(
       projectId,
       communicationEventIds,
     );
     const requestsByEvent = coordinationV3.requestSummariesForCommunications(
       projectId,
-      communicationEventIds,
+      [
+        ...communicationEventIds,
+        ...[...requestUpdateLinksByEvent.values()].map(
+          (link) => link.sourceCommunicationEventId,
+        ),
+      ],
     );
     return messages.map((message) => {
       if (!message.communicationEventId) return message;
-      const communication = store.getCommunicationEvent(projectId, message.communicationEventId);
+      const communication = communicationsByEvent.get(message.communicationEventId);
       const recipientAgentIds = communicationRecipientAgentIds(communication);
       const directMessageAgents = communication?.schemaVersion === 2 && communication.intent === "user_dm"
         ? recipientAgentIds.map((agentId) => {
@@ -144,7 +158,42 @@ export function createServerReadModels(context: ReadModelContext) {
         ],
       );
       const deliveryReceipts = deliveryReceiptsByEvent.get(message.communicationEventId) ?? [];
-      const coordinationRequests = requestsByEvent.get(message.communicationEventId) ?? [];
+      const requestUpdateLink = requestUpdateLinksByEvent.get(
+        message.communicationEventId,
+      );
+      const requestForUpdate = requestUpdateLink
+        ? coordinationV3.requestForUpdate(requestUpdateLink.updateId)
+        : undefined;
+      const senderAgentId = communication?.sender.kind === "agent"
+        ? communication.sender.agentId
+        : undefined;
+      let peerAgentId: string | undefined;
+      if (requestForUpdate && senderAgentId) {
+        if (senderAgentId === requestForUpdate.recipientAgentId) {
+          peerAgentId = requestForUpdate.requesterAgentId;
+        } else if (senderAgentId === requestForUpdate.requesterAgentId) {
+          peerAgentId = requestForUpdate.recipientAgentId;
+        }
+      }
+      const linkedRequest = requestUpdateLink
+        && requestForUpdate?.id === requestUpdateLink.requestId
+        && requestForUpdate.projectId === projectId
+        && requestForUpdate.conversationId === communication?.conversationId
+        && peerAgentId
+        && communication?.audience.kind === "agents"
+        && communication.audience.agentIds.length === 1
+        && communication.audience.agentIds[0] === peerAgentId
+        ? requestsByEvent.get(requestUpdateLink.sourceCommunicationEventId)
+          ?.find((candidate) =>
+            candidate.recordId === requestUpdateLink.requestId
+            && candidate.communicationEventId === requestUpdateLink.sourceCommunicationEventId
+            && candidate.conversationId === communication.conversationId)
+        : undefined;
+      const coordinationRequests = [...new Map([
+        ...(message.coordinationRequests ?? []),
+        ...(requestsByEvent.get(message.communicationEventId) ?? []),
+        ...(linkedRequest ? [linkedRequest] : []),
+      ].map((candidate) => [candidate.recordId, candidate] as const)).values()];
       return {
         ...message,
         ...(communication ? { communicationIntent: communication.intent } : {}),
@@ -416,6 +465,7 @@ export function createServerReadModels(context: ReadModelContext) {
         text: update.text.trim(),
         createdAt: update.createdAt,
         authorAgentId: update.actorId,
+        coordinationRequests: [operation.request],
       }];
     });
     const messages = [...projectedMessages, ...recoveredRequestHandoffs]
