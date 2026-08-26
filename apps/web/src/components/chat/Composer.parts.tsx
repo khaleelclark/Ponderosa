@@ -10,13 +10,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import {
-  createContext,
-  memo,
-  type ReactNode,
-  type RefObject,
-  useContext,
-} from "react";
+import { memo } from "react";
 import { ComposerAttachment } from "./ComposerAttachment";
 import type { DraftUploadStatus } from "./ComposerAttachment";
 import type { ComposerProps } from "./Composer.types";
@@ -86,49 +80,18 @@ interface ComposerProjectDestinationActionProps {
   toggleNewAgent(): void;
 }
 
-interface ComposerProjectCreationContextValue {
-  disabled: boolean;
-  onCreateAgent(): void;
-  triggerRef?: RefObject<HTMLButtonElement>;
-}
-
-const ComposerProjectCreationContext =
-  createContext<ComposerProjectCreationContextValue | undefined>(undefined);
-
-export function ComposerProjectCreationProvider({
-  children,
-  disabled = false,
-  onCreateAgent,
-  triggerRef,
-}: {
-  children: ReactNode;
-  disabled?: boolean;
-  onCreateAgent(): void;
-  triggerRef?: RefObject<HTMLButtonElement>;
-}): JSX.Element {
-  return (
-    <ComposerProjectCreationContext.Provider
-      value={{ disabled, onCreateAgent, triggerRef }}
-    >
-      {children}
-    </ComposerProjectCreationContext.Provider>
-  );
-}
-
 export function ComposerProjectDestinationAction({
-  newAgentSelected: _newAgentSelected,
-  toggleNewAgent: _toggleNewAgent,
+  newAgentSelected,
+  toggleNewAgent,
 }: ComposerProjectDestinationActionProps): JSX.Element {
-  const creation = useContext(ComposerProjectCreationContext);
   return (
     <Button
-      ref={creation?.triggerRef}
       size="small"
-      variant="text"
-      color="inherit"
+      variant={newAgentSelected ? "contained" : "text"}
+      color={newAgentSelected ? "primary" : "inherit"}
       startIcon={<PersonAddAltOutlinedIcon />}
-      onClick={creation?.onCreateAgent}
-      disabled={!creation || creation.disabled}
+      aria-pressed={newAgentSelected}
+      onClick={toggleNewAgent}
       sx={{
         whiteSpace: "nowrap",
         minHeight: { xs: 44, sm: 34 },
