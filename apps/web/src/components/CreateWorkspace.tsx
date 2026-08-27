@@ -330,6 +330,16 @@ function ChatCreateForm({
       ? initialProjectId!
       : projects[0]?.id ?? "",
   );
+  useEffect(() => {
+    if (!projects.length) return;
+    setProjectId(current => {
+      if (projects.some(project => project.id === current)) return current;
+      if (initialProjectId && projects.some(project => project.id === initialProjectId)) {
+        return initialProjectId;
+      }
+      return projects[0]!.id;
+    });
+  }, [initialProjectId, projects]);
   const create = useMutation({
     mutationFn: () => api.createConversation(projectId, {}),
     onSuccess: async conversation => {
@@ -386,6 +396,16 @@ function TriggerCreateForm({
       ? initialProjectId!
       : projects[0]?.id ?? "",
   );
+  useEffect(() => {
+    if (!projects.length) return;
+    setProjectId(current => {
+      if (projects.some(project => project.id === current)) return current;
+      if (initialProjectId && projects.some(project => project.id === initialProjectId)) {
+        return initialProjectId;
+      }
+      return projects[0]!.id;
+    });
+  }, [initialProjectId, projects]);
   const options = projects
     .flatMap((project, index) => {
       if (project.id !== projectId) return [];
@@ -688,10 +708,17 @@ export function ContextualCreateDialog({
           },
         }}
       >
-        <DialogTitle id="contextual-create-title" sx={{ pr: 7 }}>
+        <DialogTitle sx={{ pr: 7 }}>
           <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
             {icon}
-            <Typography component="span" variant="h6" fontWeight={800}>{title}</Typography>
+            <Typography
+              id="contextual-create-title"
+              component="span"
+              variant="h6"
+              fontWeight={800}
+            >
+              {title}
+            </Typography>
           </Stack>
           <IconButton
             aria-label={`Close ${title}`}

@@ -110,16 +110,46 @@ export function AgentCreateForm({
   const managerEditedRef = useRef(false);
   const pendingRef = useRef(false);
   const initializedRef = useRef(false);
+  const previousProjectIdRef = useRef(projectId);
+
+  useEffect(() => {
+    if (!projects.length) return;
+    setProjectId(current => {
+      if (projects.some(candidate => candidate.id === current)) return current;
+      if (fixedProjectId && projects.some(candidate => candidate.id === fixedProjectId)) {
+        return fixedProjectId;
+      }
+      if (initialProjectId && projects.some(candidate => candidate.id === initialProjectId)) {
+        return initialProjectId;
+      }
+      return projects[0]!.id;
+    });
+  }, [fixedProjectId, initialProjectId, projects]);
 
   useEffect(() => {
     if (initializedRef.current) {
+      if (previousProjectIdRef.current === projectId) return;
+      const previousProjectId = previousProjectIdRef.current;
+      previousProjectIdRef.current = projectId;
       managerEditedRef.current = false;
       setConversationId(effectiveFixedConversationId ?? UNSET);
       setPresetId(UNSET);
       setManagerAgentId(UNSET);
+      if (!previousProjectId) {
+        setEngine(
+          initialEngine ??
+            project?.defaultEngine ??
+            engines.find(engineIsAvailable)?.id ??
+            engines[0]?.id ??
+            UNSET,
+        );
+        setModel(initialModel ?? project?.defaultModel ?? UNSET);
+        setEffort(initialEffort ?? project?.defaultEffort ?? UNSET);
+      }
       return;
     }
     initializedRef.current = true;
+    previousProjectIdRef.current = projectId;
     titleEditedRef.current = Boolean(initialName);
     managerEditedRef.current = false;
     setTitle(initialName ?? pickAgentName([]));
