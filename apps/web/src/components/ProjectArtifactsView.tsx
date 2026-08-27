@@ -1,5 +1,4 @@
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
-import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import DashboardOutlinedIcon from "@mui/icons-material/DashboardOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
@@ -7,7 +6,6 @@ import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import OpenInNewOutlinedIcon from "@mui/icons-material/OpenInNewOutlined";
 import SearchIcon from "@mui/icons-material/Search";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
-import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import {
   Alert,
   Box,
@@ -47,15 +45,12 @@ import type {
   WorkspaceNotificationDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
-import type { ProjectDetailView, Route } from "../routing";
+import type { ProjectDetailView } from "../routing";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import type { AgentStatus } from "../agents";
 import { uniqueBy } from "../collections";
 import { queryKeys } from "../queryKeys";
-import { AgentsTab } from "./AgentsTab";
-import { COLLECTION_PROGRESSIVE_BATCH_SIZE } from "./CollectionPrimitives";
 import { artifactDisplayLabel, artifactSearchText } from "./filePreview/artifactPresentation";
 import {
   ProjectOverview,
@@ -76,7 +71,6 @@ import {
   projectOutputKinds,
   type ProjectFileCategory,
 } from "./ProjectArtifactsView.helpers";
-import { AllTriggersWorkspace } from "./WorkspaceResourceViews";
 
 export function ProjectArtifactsView({
   projectId,
@@ -92,13 +86,6 @@ export function ProjectArtifactsView({
   onOpenConversation,
   onRenameConversation,
   onDeleteConversation,
-  statusByAgentId,
-  onOpenAgent,
-  onOpenAgentSettings,
-  onAgentsDeleted,
-  onNewAgent,
-  onNavigateTrigger,
-  onCreateTrigger,
   onProjectDeleted,
   onOpenEngineStatus,
   onOpenArtifact,
@@ -120,13 +107,6 @@ export function ProjectArtifactsView({
   onOpenConversation(conversationId: string): void;
   onRenameConversation(conversation: ConversationDto): void;
   onDeleteConversation(conversation: ConversationDto): void;
-  statusByAgentId: ReadonlyMap<string, AgentStatus>;
-  onOpenAgent(agentId: string): void;
-  onOpenAgentSettings(agentId: string): void;
-  onAgentsDeleted(agentIds: string[]): void;
-  onNewAgent(managerAgentId?: string): void;
-  onNavigateTrigger(route: Route): void;
-  onCreateTrigger(): void;
   onProjectDeleted(projectId: string): void;
   onOpenEngineStatus(): void;
   onOpenArtifact(agentId: string, artifactId: string): void;
@@ -332,16 +312,6 @@ export function ProjectArtifactsView({
               icon: <Inventory2OutlinedIcon />,
             },
             {
-              value: "agents",
-              label: "Agents",
-              icon: <SmartToyOutlinedIcon />,
-            },
-            {
-              value: "triggers",
-              label: "Automations",
-              icon: <BoltOutlinedIcon />,
-            },
-            {
               value: "settings",
               label: "Settings",
               icon: <SettingsOutlinedIcon />,
@@ -351,10 +321,7 @@ export function ProjectArtifactsView({
       />
       <Box
         sx={{
-          p:
-            tab === "agents" || tab === "triggers" || tab === "settings"
-              ? 0
-              : { xs: 1.5, sm: 3 },
+          p: tab === "settings" ? 0 : { xs: 1.5, sm: 3 },
         }}
       >
         <Stack spacing={1.5} sx={{ width: "100%", minWidth: 0 }}>
@@ -736,39 +703,6 @@ export function ProjectArtifactsView({
                 ))}
               </Box>
             </>
-          ) : null}
-          {tab === "agents" ? (
-            <AgentsTab
-              collection={{
-                title: "Project Agents",
-                detail: `${agents.length} ${agents.length === 1 ? "Agent" : "Agents"} in ${project.label}`,
-                totalCount: agents.length,
-                variant: "embedded",
-              }}
-              agents={agents}
-              projectId={projectId}
-              engines={engines}
-              conversations={conversations}
-              statusByAgentId={statusByAgentId}
-              healthByAgentId={healthByAgentId}
-              progressiveBatchSize={COLLECTION_PROGRESSIVE_BATCH_SIZE}
-              onOpenAgent={onOpenAgent}
-              onOpenAgentSettings={onOpenAgentSettings}
-              onAgentsDeleted={(_projectId, agentIds) =>
-                onAgentsDeleted(agentIds)}
-              onNewAgent={onNewAgent}
-            />
-          ) : null}
-          {tab === "triggers" ? (
-            <AllTriggersWorkspace
-              projects={[project]}
-              filterProjectId={projectId}
-              embedded
-              preferences={preferences}
-              onPreferences={onPreferences}
-              onNavigate={onNavigateTrigger}
-              onCreate={onCreateTrigger}
-            />
           ) : null}
           {tab === "settings" ? (
             <ProjectSettingsPanel

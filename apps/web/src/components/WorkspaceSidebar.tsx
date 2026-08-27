@@ -731,15 +731,9 @@ export function WorkspaceSidebar({
         ),
       )}
       collectionFeedback={<CollectionStateFeedback request={agentDirectoryQuery.requestState} itemCount={agentRows.length} filtersActive={Boolean(filter.trim())} resourceLabel="Agents" emptyTitle="No Active Agents" noMatchTitle={"No Agents match “" + filter.trim() + "”."} onClearFilters={() => setFilter("")} compact />}
-      viewAllLabel="View All Agents"
-      viewAllIcon={<SmartToyOutlinedIcon />}
       loadMoreLabel={agentDirectoryQuery.hasNextPage ? "Load more" : undefined}
       onLoadMore={() => void agentDirectoryQuery.fetchNextPage()}
       loadingMore={agentDirectoryQuery.isFetchingNextPage}
-      onViewAll={() => activeProjectId && onNavigate({ kind: "allAgents", filterProjectId: activeProjectId })}
-      onViewAllContextMenu={anchor =>
-        openResourceMenu(anchor, { kind: "allAgents" })
-      }
       createLabel="Create Agent"
       onCreate={() => activeProjectId && onCreate("agent", { projectId: activeProjectId })}
       drawer={drawer}
@@ -866,15 +860,9 @@ export function WorkspaceSidebar({
         ),
       )}
       collectionFeedback={<CollectionStateFeedback request={triggerDirectoryQuery.requestState} itemCount={filteredTriggers.length} filtersActive={Boolean(filter.trim())} resourceLabel="Automations" emptyTitle="No Automations Configured Yet" noMatchTitle="No configured Automations match" onClearFilters={() => setFilter("")} compact />}
-      viewAllLabel="View All Automations"
-      viewAllIcon={<BoltOutlinedIcon />}
       loadMoreLabel={triggerDirectoryQuery.hasNextPage ? "Load more" : undefined}
       onLoadMore={() => void triggerDirectoryQuery.fetchNextPage()}
       loadingMore={triggerDirectoryQuery.isFetchingNextPage}
-      onViewAll={() => activeProjectId && onNavigate({ kind: "project", projectId: activeProjectId, view: "triggers" })}
-      onViewAllContextMenu={anchor =>
-        openResourceMenu(anchor, { kind: "allTriggers" })
-      }
       createLabel="Create Automation"
       onCreate={() => activeProjectId && onCreate("trigger", { projectId: activeProjectId })}
       drawer={drawer}

@@ -32,8 +32,6 @@ export type ConversationDetailView =
 export type ProjectDetailView =
   | "overview"
   | "files"
-  | "agents"
-  | "triggers"
   | "settings";
 export type CreateResourceKind = "project" | "chat" | "agent" | "trigger";
 
@@ -41,8 +39,6 @@ const AGENT_DETAIL_VIEWS: readonly AgentDetailView[] = ["chat", "activity", "sub
 const PROJECT_DETAIL_VIEWS: readonly ProjectDetailView[] = [
   "overview",
   "files",
-  "agents",
-  "triggers",
   "settings",
 ];
 

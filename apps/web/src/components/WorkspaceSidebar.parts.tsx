@@ -122,9 +122,9 @@ function SharedSidebarPanel({
   onNew?(): void;
   onNewContextMenu?(anchor: HTMLElement): void;
   newDisabled?: boolean;
-  viewAllLabel: string;
-  viewAllIcon: ReactNode;
-  onViewAll(): void;
+  viewAllLabel?: string;
+  viewAllIcon?: ReactNode;
+  onViewAll?(): void;
   onViewAllContextMenu?(anchor: HTMLElement): void;
   createLabel?: string;
   onCreate?(): void;
@@ -218,7 +218,7 @@ function SharedSidebarPanel({
           />
         ) : null}
       </Box>
-      <Box
+      {(newLabel && onNew) || (viewAllLabel && onViewAll) ? <Box
         sx={{
           p: 1.75,
           boxShadow: theme => `inset 0 1px 0 ${theme.palette.divider}`,
@@ -244,23 +244,25 @@ function SharedSidebarPanel({
             {newLabel}
           </Button>
         ) : null}
-        <Button
-          fullWidth
-          startIcon={viewAllIcon}
-          onClick={onViewAll}
-          onContextMenu={event => {
-            if (!onViewAllContextMenu) return;
-            event.preventDefault();
-            onViewAllContextMenu(event.currentTarget);
-          }}
-          sx={{
-            justifyContent: "flex-start",
-            color: "text.secondary",
-          }}
-        >
-          {viewAllLabel}
-        </Button>
-      </Box>
+        {viewAllLabel && onViewAll ? (
+          <Button
+            fullWidth
+            startIcon={viewAllIcon}
+            onClick={onViewAll}
+            onContextMenu={event => {
+              if (!onViewAllContextMenu) return;
+              event.preventDefault();
+              onViewAllContextMenu(event.currentTarget);
+            }}
+            sx={{
+              justifyContent: "flex-start",
+              color: "text.secondary",
+            }}
+          >
+            {viewAllLabel}
+          </Button>
+        ) : null}
+      </Box> : null}
     </Box>
   );
 }

@@ -23,7 +23,6 @@ import { enginesWithModelCatalog } from "../conversationEngine";
 import { assertNeverRoute, routeToPath, type ProjectRoute } from "../routeRegistry";
 import type { Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
-import { AgentsTab } from "./AgentsTab";
 import { AgentOrganizationTree } from "./AgentOrganizationTree";
 import { PresetManagerDialog } from "./dialogs";
 import { ConversationView } from "./ConversationView";
@@ -428,19 +427,6 @@ export function ProjectShell({
         onOpenConversation={openProjectConversation}
         onRenameConversation={onRenameConversation}
         onDeleteConversation={onDeleteConversation}
-        statusByAgentId={statusByAgentId}
-        onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
-        onOpenAgentSettings={(agentId) =>
-          navigate({ kind: "agent", projectId, agentId, view: "settings" })}
-        onAgentsDeleted={(agentIds) =>
-          agentIds.forEach(agentId =>
-            onResourceDeleted?.({ kind: "agent", projectId, agentId }),
-          )}
-        onNewAgent={(managerAgentId) => managerAgentId
-          ? openNewSubagent(managerAgentId)
-          : onCreate("agent", { projectId })}
-        onNavigateTrigger={(triggerRoute) => navigate(triggerRoute)}
-        onCreateTrigger={() => onCreate("trigger", { projectId })}
         onProjectDeleted={() => {
           onProjectDeleted(projectId);
         }}

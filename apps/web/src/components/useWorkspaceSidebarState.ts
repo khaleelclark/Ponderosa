@@ -90,10 +90,6 @@ function projectSidebarSectionForRoute(route: Route): ProjectSidebarSection | un
   if (route.kind === "agent") {
     return route.view === "triggers" ? "triggers" : "agents";
   }
-  if (route.kind === "project") {
-    if (route.view === "agents") return "agents";
-    if (route.view === "triggers") return "triggers";
-  }
   return undefined;
 }
 
