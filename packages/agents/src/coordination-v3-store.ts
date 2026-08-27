@@ -64,7 +64,6 @@ import type {
   RuntimeCommunicationV3View,
   RuntimeArtifactInputV3,
   RuntimeArtifactV3,
-  RuntimeManagedArtifactAttachmentAuthorizationV3,
   PendingActivationV3View,
   TerminalActivationV3View,
   CommunicationAttentionActivationCursor,

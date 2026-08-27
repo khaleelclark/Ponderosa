@@ -17,7 +17,7 @@ import { openDb, type Db } from "./db.js";
 import { readRepairableJsonl } from "./append-jsonl.js";
 import {
   acquireDataDirectoryOwnership,
-  ensureV1Layout,
+  ensureCurrentDataLayout,
   releaseDataDirectoryOwnership,
   type DataDirectoryOwnership,
 } from "./store-data-directory.js";
@@ -159,11 +159,11 @@ export interface AgentStoreComponents {
 }
 
 export function openAgentStoreData(dataDir: string): OpenAgentStoreData {
-  ensureV1Layout(dataDir);
   mkdirSync(dataDir, { recursive: true });
-  mkdirSync(projectsDir(dataDir), { recursive: true });
   const ownership = acquireDataDirectoryOwnership(dataDir);
   try {
+    ensureCurrentDataLayout(dataDir);
+    mkdirSync(projectsDir(dataDir), { recursive: true });
     const deliverySequenceFile = `${dataDir}/delivery-order.jsonl`;
     const deliverySequence = readRepairableJsonl<{ sequence: number }>(
       deliverySequenceFile,
@@ -190,7 +190,6 @@ export function createAgentStoreComponents(
   const workspaceCatalog = new AgentWorkspaceCatalogAuthority(
     dataDir,
     db,
-    client,
     ports.listAgents,
     ports.getConversationMessages,
     ports.persistAgentMemberships,

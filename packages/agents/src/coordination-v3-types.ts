@@ -4,7 +4,6 @@ import type {
   CommunicationAudience,
   CommunicationIntent,
   CoordinationJoinMode,
-  CoordinationJoinState,
   CoordinationJoinWakePolicy,
   CoordinationReplyAuthority,
   CoordinationRequestState,

@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import {
   closeSync,
   existsSync,
-  mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
@@ -11,13 +10,16 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 
+const DATA_DIRECTORY_LOCK_FILE = ".ponderosa-daemon.lock";
+const DATA_LAYOUT_MARKER_FILE = ".ponderosa-layout-version";
+
 interface DataDirectoryOwnership {
   path: string;
   token: string;
 }
 
 function acquireDataDirectoryOwnership(dataDir: string): DataDirectoryOwnership {
-  const path = join(dataDir, ".ponderosa-daemon.lock");
+  const path = join(dataDir, DATA_DIRECTORY_LOCK_FILE);
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const token = randomUUID();
     try {
@@ -58,17 +60,22 @@ function releaseDataDirectoryOwnership(ownership: DataDirectoryOwnership | undef
   } catch { /* a missing/replaced lock is no longer ours */ }
 }
 
-/** V1 is a destructive data-layout cutover; managed source workspaces are external. */
-function ensureV1Layout(dataDir: string): void {
-  const marker = join(dataDir, ".ponderosa-layout-version");
-  if (existsSync(marker) && readFileSync(marker, "utf8").trim() === "1") return;
-  mkdirSync(dataDir, { recursive: true });
-  for (const entry of readdirSync(dataDir)) {
-    if (entry === "workspaces" || entry === ".ponderosa-layout-version") continue;
-    rmSync(join(dataDir, entry), { recursive: true, force: true });
+function ensureCurrentDataLayout(dataDir: string): void {
+  const marker = join(dataDir, DATA_LAYOUT_MARKER_FILE);
+  if (existsSync(marker)) {
+    const version = readFileSync(marker, "utf8").trim();
+    if (version === "1") return;
+    throw new Error(`unsupported Ponderosa data layout version: ${version || "empty"}`);
   }
-  writeFileSync(marker, "1\n", "utf8");
+
+  const existingEntries = readdirSync(dataDir).filter(entry => entry !== DATA_DIRECTORY_LOCK_FILE);
+  if (existingEntries.length > 0) {
+    throw new Error(
+      "Ponderosa data directory is nonempty but has no layout marker; refusing to modify existing data",
+    );
+  }
+  writeFileSync(marker, "1\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
 }
 
-export { acquireDataDirectoryOwnership, releaseDataDirectoryOwnership, ensureV1Layout };
+export { acquireDataDirectoryOwnership, releaseDataDirectoryOwnership, ensureCurrentDataLayout };
 export type { DataDirectoryOwnership };
