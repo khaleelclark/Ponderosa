@@ -88,6 +88,18 @@ function editorSelection(root: HTMLElement): { start: number; end: number } {
   };
 }
 
+function copiedEditorText(root: HTMLElement): string | undefined {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+    return undefined;
+  }
+  const range = selection.getRangeAt(0);
+  if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) {
+    return undefined;
+  }
+  return serializedChildren(range.cloneContents());
+}
+
 function textPoint(
   root: HTMLElement,
   requestedOffset: number,
@@ -332,6 +344,12 @@ export function ComposerTokenEditor({
       }}
       onCompositionStart={compositionStart}
       onCompositionEnd={compositionEnd}
+      onCopy={event => {
+        const copied = copiedEditorText(event.currentTarget);
+        if (copied === undefined) return;
+        event.preventDefault();
+        event.clipboardData.setData("text/plain", copied);
+      }}
       onPaste={onPaste}
       onClick={onClick}
       onSelect={onSelect}
