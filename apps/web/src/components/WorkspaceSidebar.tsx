@@ -69,7 +69,6 @@ import {
   SharedSidebarPanel,
 } from "./WorkspaceSidebar.parts";
 import {
-  CreateSidebarPanel,
   SettingsSidebarPanel,
 } from "./WorkspaceSidebar.chrome";
 import { ProjectRail, ProjectSidebarHeader } from "./ProjectNavigation";
@@ -95,6 +94,7 @@ export function WorkspaceSidebar({
   onSearch,
   onOpenNotifications,
   onOpenEngineStatus,
+  creating,
   onDismiss,
   collapsed = false,
   width = SIDEBAR_RAIL_WIDTH + SIDEBAR_PANEL_WIDTH,
@@ -108,13 +108,22 @@ export function WorkspaceSidebar({
   notificationCounts?: Pick<WorkspaceNotificationPageDto, "unacknowledgedActionCount" | "unreadUpdateCount">;
   drawer?: boolean;
   onNavigate(route: Route): void;
-  onCreate(kind: "project" | "chat" | "agent" | "trigger"): void;
+  onCreate(
+    kind: "project" | "chat" | "agent" | "trigger",
+    context?: {
+      projectId?: string;
+      conversationId?: string;
+      managerAgentId?: string;
+      agentId?: string;
+    },
+  ): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onRenameConversation(conversation: ConversationDto): void;
   onDeleteConversation(conversation: ConversationDto): void;
   onSearch?(): void;
   onOpenNotifications?(): void;
   onOpenEngineStatus?(): void;
+  creating?: "project" | "chat" | "agent" | "trigger";
   onDismiss?(): void;
   collapsed?: boolean;
   width?: number;
@@ -147,13 +156,11 @@ export function WorkspaceSidebar({
     setDrawerProjectId(routedProjectId);
     setDrawerProjectPanelOpen(true);
   }, [routedProjectId]);
-  const createOverride = sidebarSection === "create";
-  const projectContext = Boolean(drawerProjectId) && !createOverride;
+  const projectContext = Boolean(drawerProjectId);
   const showingAgents = projectContext && projectSection === "agents";
   const showingChats = projectContext && projectSection === "chats";
   const showingTriggers = projectContext && projectSection === "triggers";
   const showingProjectOverview = projectContext && projectSection === "overview";
-  const showingCreate = createOverride;
   const showingSettings = !projectContext && sidebarSection === "settings";
   const directorySearch = projectContext ? filter : "";
   const directorySort = showingProjectOverview ? "last_used" as const : undefined;
@@ -393,12 +400,8 @@ export function WorkspaceSidebar({
       onOpenHome={() => showNavigation({ kind: "home" })}
       onOpenAllMessages={() => showNavigation({ kind: "allChat" })}
       onOpenProject={openProject}
-      onOpenCreate={() => {
-        setSidebarSection("create");
-        setFilter("");
-        setDrawerProjectPanelOpen(true);
-        if (!drawer && collapsed) onCollapsedChange?.(false);
-      }}
+      onOpenCreate={() => onCreate("project")}
+      createProjectOpen={creating === "project"}
       onOpenSearch={() => onSearch?.()}
       onOpenNotifications={() => onOpenNotifications?.()}
       onOpenUsage={() => showNavigation({ kind: "usage" })}
@@ -622,6 +625,8 @@ export function WorkspaceSidebar({
       onViewAllContextMenu={anchor =>
         openResourceMenu(anchor, { kind: "allChats" })
       }
+      createLabel="Create Chat"
+      onCreate={() => activeProjectId && onCreate("chat", { projectId: activeProjectId })}
       drawer={drawer}
     />
   );
@@ -779,6 +784,8 @@ export function WorkspaceSidebar({
       onViewAllContextMenu={anchor =>
         openResourceMenu(anchor, { kind: "allAgents" })
       }
+      createLabel="Create Agent"
+      onCreate={() => activeProjectId && onCreate("agent", { projectId: activeProjectId })}
       drawer={drawer}
     />
   );
@@ -912,6 +919,8 @@ export function WorkspaceSidebar({
       onViewAllContextMenu={anchor =>
         openResourceMenu(anchor, { kind: "allTriggers" })
       }
+      createLabel="Create Automation"
+      onCreate={() => activeProjectId && onCreate("trigger", { projectId: activeProjectId })}
       drawer={drawer}
     />
   );
@@ -923,19 +932,7 @@ export function WorkspaceSidebar({
       onNavigate={onNavigate}
     />
   );
-  const createPanel = (
-    <CreateSidebarPanel
-      selected={route.kind === "create" ? route.resource : undefined}
-      drawer={drawer}
-      onCreate={kind => {
-        setSidebarSection("home");
-        onCreate(kind);
-      }}
-    />
-  );
-  const panel = showingCreate
-    ? createPanel
-    : showingSettings
+  const panel = showingSettings
         ? settingsPanel
         : showingAgents
           ? agentsPanel

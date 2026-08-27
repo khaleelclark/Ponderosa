@@ -20,24 +20,52 @@ import { railSurface, sidebarSurface } from "./WorkspaceSidebar.helpers";
 
 function SidebarSectionHeading({
   children,
+  actionLabel,
+  onAction,
+  titleCase = false,
 }: {
   children: ReactNode;
+  actionLabel?: string;
+  onAction?(): void;
+  titleCase?: boolean;
 }): JSX.Element {
   return (
-    <Typography
-      variant="subtitle2"
-      color="text.secondary"
+    <Stack
+      direction="row"
       sx={{
+        alignItems: "center",
         px: 1,
         mb: 0.5,
-        fontSize: 11,
-        fontWeight: 800,
-        letterSpacing: ".06em",
-        textTransform: "uppercase",
       }}
     >
-      {children}
-    </Typography>
+      <Typography
+        variant="subtitle2"
+        color="text.secondary"
+        noWrap
+        sx={{
+          minWidth: 0,
+          flex: 1,
+          fontSize: titleCase ? 13 : 11,
+          fontWeight: 800,
+          letterSpacing: titleCase ? 0 : ".06em",
+          textTransform: titleCase ? "none" : "uppercase",
+        }}
+      >
+        {children}
+      </Typography>
+      {actionLabel && onAction ? (
+        <Tooltip title={actionLabel}>
+          <IconButton
+            size="small"
+            aria-label={actionLabel}
+            onClick={onAction}
+            sx={{ width: 36, height: 36, flex: "0 0 auto" }}
+          >
+            <AddIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+      ) : null}
+    </Stack>
   );
 }
 
@@ -68,6 +96,8 @@ function SharedSidebarPanel({
   viewAllIcon,
   onViewAll,
   onViewAllContextMenu,
+  createLabel,
+  onCreate,
   drawer,
 }: {
   icon: ReactNode;
@@ -96,6 +126,8 @@ function SharedSidebarPanel({
   viewAllIcon: ReactNode;
   onViewAll(): void;
   onViewAllContextMenu?(anchor: HTMLElement): void;
+  createLabel?: string;
+  onCreate?(): void;
   drawer: boolean;
 }): JSX.Element {
   const hasStarredRows = Children.count(starredRows) > 0;
@@ -166,7 +198,11 @@ function SharedSidebarPanel({
           </Box>
         ) : null}
         <Box component="section">
-          <SidebarSectionHeading>
+          <SidebarSectionHeading
+            titleCase={title !== "Home"}
+            actionLabel={createLabel}
+            onAction={onCreate}
+          >
             {title === "Home" ? "Recents" : `All ${title}`}
           </SidebarSectionHeading>
           <List disablePadding>{allRows}</List>

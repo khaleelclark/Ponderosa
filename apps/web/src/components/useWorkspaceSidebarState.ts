@@ -59,15 +59,6 @@ export function useWorkspaceSidebarNavigation(route: Route) {
       }
       return;
     }
-    // Only the global Create flow owns the Create sidebar. Contextual creation
-    // keeps the operator's existing sidebar while replacing the workspace.
-    if (
-      previous.kind === "create" &&
-      previous.surface !== "workspace"
-    ) {
-      setSidebarSection(routeInitialSidebarSection(route));
-      setFilter("");
-    }
   }, [route]);
 
   return {

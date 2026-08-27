@@ -164,6 +164,7 @@ export function ProjectRail({
   onOpenAllMessages,
   onOpenProject,
   onOpenCreate,
+  createProjectOpen = false,
   onOpenSearch,
   onOpenNotifications,
   onOpenUsage,
@@ -186,6 +187,7 @@ export function ProjectRail({
   onOpenAllMessages(): void;
   onOpenProject(project: ProjectDto): void;
   onOpenCreate(): void;
+  createProjectOpen?: boolean;
   onOpenSearch(): void;
   onOpenNotifications(): void;
   onOpenUsage(): void;
@@ -294,7 +296,7 @@ export function ProjectRail({
       </Stack>
 
       <Stack spacing={0.55} sx={{ alignItems: "center" }}>
-        <RailButton label="Create" selected={route.kind === "create"} onClick={onOpenCreate}>
+        <RailButton label="Create Project" selected={createProjectOpen || (route.kind === "create" && route.resource === "project")} onClick={onOpenCreate}>
           <AddIcon />
         </RailButton>
         <Box aria-hidden sx={{ width: 32, borderTop: 1, borderColor: "var(--ponderosa-rail-border)", my: 0.25 }} />

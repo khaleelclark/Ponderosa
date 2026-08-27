@@ -22,6 +22,10 @@ import {
 import { NotificationPanel } from "./components/NotificationPanel";
 import { ProjectCreationDialog } from "./components/ProjectCreationDialog";
 import {
+  ContextualCreateDialog,
+  type CreationRequest,
+} from "./components/CreateWorkspace";
+import {
   OnboardingCompleteDialog,
   SidebarConversationDialogs,
   type SidebarConversationAction,
@@ -121,14 +125,14 @@ export default function App({
   }, [activeNotificationView]);
   const routeRef = useRef(route);
   routeRef.current = route;
-  const creationOrigin = useRef<Route>();
+  const [creationRequest, setCreationRequest] = useState<CreationRequest>();
   const reconcileDeletedProject = (
     projectId: string,
     at = new Date().toISOString(),
   ) => {
     reconcileDeletedProjectClientState(queryClient, projectId, at);
     if (routeProjectId(routeRef.current) === projectId) {
-      creationOrigin.current = undefined;
+      setCreationRequest(current => current?.projectId === projectId ? undefined : current);
       navigate({ kind: "projects" }, { replace: true });
     }
   };
@@ -527,7 +531,6 @@ export default function App({
     }
   };
   const navigateWorkspace = (next: Route) => {
-    if (next.kind !== "create") creationOrigin.current = undefined;
     recordWorkspaceRouteUse(next);
     navigate(next);
   };
@@ -540,20 +543,14 @@ export default function App({
       agentId?: string;
     },
   ) => {
-    if (route.kind !== "create") creationOrigin.current = route;
-    navigateWorkspace({
-      kind: "create",
+    setCreationRequest({
       resource: kind,
-      surface: "workspace",
       ...(context?.projectId ? { projectId: context.projectId } : {}),
       ...(context?.conversationId ? { conversationId: context.conversationId } : {}),
       ...(context?.managerAgentId ? { managerAgentId: context.managerAgentId } : {}),
       ...(context?.agentId ? { agentId: context.agentId } : {}),
     });
   };
-  const replaceWorkspaceWithCreationForm = (
-    kind: "project" | "chat" | "agent" | "trigger",
-  ) => openCreationForm(kind);
   const openProjectBrowser = (url?: string) => {
     if (!selectedProjectId) return;
     projectBrowserRequestId.current += 1;
@@ -582,9 +579,7 @@ export default function App({
       );
   }, [navigateWorkspace]);
   const cancelCreationWorkspace = () => {
-    const destination = creationOrigin.current ?? { kind: "home" as const };
-    creationOrigin.current = undefined;
-    navigateWorkspace(destination);
+    navigateWorkspace({ kind: "home" });
   };
   const removeWorkspaceView = (removedRoute: Extract<Route, { kind: "agent" | "conversation" }>) => {
     const current = routeRef.current;
@@ -675,8 +670,9 @@ export default function App({
               route={route}
               notifications={presentedNotifications}
               notificationCounts={notificationsQuery.data}
+              creating={creationRequest?.resource}
               onNavigate={navigateWorkspace}
-              onCreate={replaceWorkspaceWithCreationForm}
+              onCreate={openCreationForm}
               onPreferences={savePreferences}
               onRenameConversation={conversation =>
                 openSidebarConversationAction("rename", conversation)
@@ -790,9 +786,10 @@ export default function App({
           route={route}
           notifications={presentedNotifications}
           notificationCounts={notificationsQuery.data}
+          creating={creationRequest?.resource}
           onOpenChange={setMobileNavigationOpen}
           onNavigate={navigateWorkspace}
-          onCreate={replaceWorkspaceWithCreationForm}
+          onCreate={openCreationForm}
           onPreferences={savePreferences}
           onConversationAction={openSidebarConversationAction}
           onSearch={openGlobalSearch}
@@ -828,13 +825,22 @@ export default function App({
           }}
         />
 
+        <ContextualCreateDialog
+          request={creationRequest}
+          projects={projects}
+          engines={engines}
+          preferences={preferences}
+          onClose={() => setCreationRequest(undefined)}
+          onNavigate={navigateWorkspace}
+        />
+
         <ProjectCreationDialog
           open={projectDialogOpen}
           onboarding={onboardingProjectCreation}
           engines={engines}
           preferences={preferences}
           onClose={closeProjectCreator}
-          onCreated={(project, onboarding) => {
+          onCreated={(projectId, onboarding) => {
             setProjectDialogOpen(false);
             if (onboarding) {
               const completedAt = new Date().toISOString();
@@ -842,7 +848,7 @@ export default function App({
               setOnboardingProjectCreation(false);
               setOnboardingCompleteOpen(true);
             }
-            navigate({ kind: "project", projectId: project.id });
+            navigate({ kind: "project", projectId });
           }}
         />
         <OnboardingCompleteDialog

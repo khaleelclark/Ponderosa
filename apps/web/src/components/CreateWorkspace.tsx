@@ -1,5 +1,6 @@
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
+import CloseIcon from "@mui/icons-material/Close";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import {
@@ -7,9 +8,13 @@ import {
   Autocomplete,
   Box,
   Button,
+  Dialog,
+  DialogContent,
+  DialogTitle,
   FormControl,
   FormControlLabel,
   InputLabel,
+  IconButton,
   MenuItem,
   Paper,
   Radio,
@@ -19,7 +24,9 @@ import {
   TextField,
   Typography,
   createFilterOptions,
+  useMediaQuery,
 } from "@mui/material";
+import { useTheme } from "@mui/material/styles";
 import type {
   AgentDto,
   EngineDto,
@@ -55,6 +62,19 @@ import { AgentCreateSurface } from "./AgentCreateDialog";
 import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 
 const UNSET = "";
+const anchoredCreationActionsSx = {
+  position: "absolute",
+  zIndex: 2,
+  bottom: 0,
+  left: 0,
+  right: 0,
+  justifyContent: "flex-end",
+  px: { xs: 2, sm: 3 },
+  py: 1.5,
+  bgcolor: "background.paper",
+  borderTop: 1,
+  borderColor: "divider",
+} as const;
 type TriggerAgentOption = {
   project: ProjectDto;
   agent: AgentDto;
@@ -131,11 +151,13 @@ function ProjectCreateForm({
   preferences,
   onCancel,
   onCreated,
+  anchoredActions = false,
 }: {
   engines: EngineDto[];
   preferences: WorkspacePreferencesDto;
   onCancel(): void;
   onCreated(project: ProjectDto): void;
+  anchoredActions?: boolean;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [label, setLabel] = useState("");
@@ -243,7 +265,11 @@ function ProjectCreateForm({
           ) : <Typography variant="body2" color="text.secondary">Ponderosa will create a private empty workspace.</Typography>}
         </Box>
         {createProject.isError ? <Alert severity="error">{String(createProject.error)}</Alert> : null}
-        <Stack direction="row" spacing={1} sx={{ justifyContent: "flex-end" }}>
+        <Stack
+          direction="row"
+          spacing={1}
+          sx={anchoredActions ? anchoredCreationActionsSx : { justifyContent: "flex-end" }}
+        >
           <Button disabled={createProject.isPending} onClick={onCancel}>Cancel</Button>
           <Button
             variant="contained"
@@ -290,11 +316,13 @@ function ChatCreateForm({
   initialProjectId,
   onCancel,
   onCreated,
+  anchoredActions = false,
 }: {
   projects: ProjectDto[];
   initialProjectId?: string;
   onCancel(): void;
   onCreated(projectId: string, conversationId: string): void;
+  anchoredActions?: boolean;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [projectId, setProjectId] = useState(
@@ -320,7 +348,11 @@ function ChatCreateForm({
       </FormControl>
       {!projects.length ? <Alert severity="info">Create a Project before creating a Chat.</Alert> : null}
       {create.isError ? <Alert severity="error">{String(create.error)}</Alert> : null}
-      <Stack direction="row" spacing={1} sx={{ justifyContent: "flex-end" }}>
+      <Stack
+        direction="row"
+        spacing={1}
+        sx={anchoredActions ? anchoredCreationActionsSx : { justifyContent: "flex-end" }}
+      >
         <Button disabled={create.isPending} onClick={onCancel}>Cancel</Button>
         <Button variant="contained" disabled={!projectId || create.isPending} onClick={() => create.mutate()}>
           {create.isPending ? "Creating…" : "Create Chat"}
@@ -337,30 +369,38 @@ function TriggerCreateForm({
   initialAgentId,
   onCancel,
   onCreated,
+  anchoredActions = false,
 }: {
   projects: ProjectDto[];
   initialProjectId?: string;
   initialConversationId?: string;
   initialAgentId?: string;
   onCancel(): void;
-  onCreated(projectId: string, agentId: string): void;
+  onCreated(projectId: string, agentId: string, triggerId: string): void;
+  anchoredActions?: boolean;
 }): JSX.Element {
   const agentQueries = useProjectAgents(projects);
   const conversationQueries = useProjectConversations(projects);
+  const [projectId, setProjectId] = useState(
+    projects.some(project => project.id === initialProjectId)
+      ? initialProjectId!
+      : projects[0]?.id ?? "",
+  );
   const options = projects
     .flatMap((project, index) => {
-      if (initialProjectId && project.id !== initialProjectId) return [];
+      if (project.id !== projectId) return [];
       const chats = conversationQueries[index]?.data ?? [];
       return (agentQueries[index]?.data ?? []).flatMap(agent => {
         if (agent.archived || agent.conversationIds.length === 0) return [];
         if (
           initialConversationId &&
+          project.id === initialProjectId &&
           !agent.conversationIds.includes(initialConversationId)
         ) {
           return [];
         }
         const conversationId =
-          initialConversationId ??
+          (project.id === initialProjectId ? initialConversationId : undefined) ??
           agent.conversationId ??
           agent.conversationIds.find(id =>
             chats.some(chat => chat.id === id && !chat.archived)) ??
@@ -390,15 +430,28 @@ function TriggerCreateForm({
   const selectedOption = options.find(option => option.agent.id === agentId);
   return (
     <Stack spacing={2.25}>
+      <FormControl fullWidth>
+        <InputLabel id="create-automation-project-label">Project</InputLabel>
+        <Select
+          autoFocus
+          labelId="create-automation-project-label"
+          label="Project"
+          value={projectId}
+          onChange={event => setProjectId(event.target.value)}
+        >
+          {projects.map(project => (
+            <MenuItem key={project.id} value={project.id}>{project.label}</MenuItem>
+          ))}
+        </Select>
+      </FormControl>
       <Autocomplete
           fullWidth
           options={options}
           value={selectedOption ?? null}
           onChange={(_event, value) => setAgentId(value?.agent.id ?? "")}
           filterOptions={filterTriggerAgents}
-          groupBy={option => option.project.label}
           getOptionLabel={option =>
-            `${option.agent.title} — ${option.project.label}`}
+            option.agent.title}
           isOptionEqualToValue={(option, value) =>
             option.agent.id === value.agent.id}
           noOptionsText="No Automation-ready Agents found"
@@ -439,8 +492,9 @@ function TriggerCreateForm({
           fixedConversationId={selectedOption.conversationId}
           initialCreateOpen
           createOnly
-          onTriggerCreated={() =>
-            onCreated(selectedOption.project.id, selectedOption.agent.id)}
+          stickyCreateActions={anchoredActions}
+          onTriggerCreated={trigger =>
+            onCreated(selectedOption.project.id, selectedOption.agent.id, trigger.id)}
           onCancelCreate={onCancel}
         />
       ) : (
@@ -467,50 +521,227 @@ export function CreateWorkspace({
   onCancel(): void;
   onNavigate(route: Route): void;
 }): JSX.Element {
+  return <CreateSurface route={route}>
+    <CreateFormContent
+      route={route}
+      projects={projects}
+      engines={engines}
+      preferences={preferences}
+      onCancel={onCancel}
+      onNavigate={onNavigate}
+    />
+  </CreateSurface>;
+}
+
+export type CreationRequest = Omit<
+  Extract<Route, { kind: "create" }>,
+  "kind" | "surface"
+>;
+
+function CreateFormContent({
+  route,
+  projects,
+  engines,
+  preferences,
+  onCancel,
+  onNavigate,
+  onDirty,
+  anchoredActions = false,
+}: {
+  route: Extract<Route, { kind: "create" }>;
+  projects: ProjectDto[];
+  engines: EngineDto[];
+  preferences: WorkspacePreferencesDto;
+  onCancel(): void;
+  onNavigate(route: Route): void;
+  onDirty?(): void;
+  anchoredActions?: boolean;
+}): JSX.Element {
+  const queryClient = useQueryClient();
+  const refresh = (kind: "project" | "conversation" | "agent" | "trigger") => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind(kind) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceResourceRecency.all });
+  };
+  const content = route.resource === "project" ? (
+    <ProjectCreateForm
+      engines={engines}
+      preferences={preferences}
+      onCancel={onCancel}
+      onCreated={project => {
+        refresh("project");
+        onNavigate({ kind: "project", projectId: project.id });
+      }}
+      anchoredActions={anchoredActions}
+    />
+  ) : route.resource === "chat" ? (
+    <ChatCreateForm
+      projects={projects}
+      initialProjectId={route.projectId}
+      onCancel={onCancel}
+      onCreated={(projectId, conversationId) => {
+        refresh("conversation");
+        refresh("project");
+        onNavigate({ kind: "conversation", projectId, conversationId });
+      }}
+      anchoredActions={anchoredActions}
+    />
+  ) : route.resource === "agent" ? (
+    <AgentCreateSurface
+      projects={projects}
+      engines={engines}
+      initialProjectId={route.projectId}
+      fixedConversationId={route.conversationId}
+      initialManagerAgentId={route.managerAgentId}
+      stickyActions={anchoredActions}
+      onCancel={onCancel}
+      onCreated={(projectId, agent) => {
+        refresh("agent");
+        refresh("project");
+        onNavigate({ kind: "agent", projectId, agentId: agent.id });
+      }}
+      onImported={(projectId, agentId) => {
+        refresh("agent");
+        refresh("project");
+        onNavigate({ kind: "agent", projectId, agentId });
+      }}
+    />
+  ) : (
+    <TriggerCreateForm
+      projects={projects}
+      initialProjectId={route.projectId}
+      initialConversationId={route.conversationId}
+      initialAgentId={route.agentId}
+      anchoredActions={anchoredActions}
+      onCancel={onCancel}
+      onCreated={(projectId, agentId, triggerId) => {
+        refresh("trigger");
+        refresh("agent");
+        onNavigate({ kind: "agent", projectId, agentId, view: "triggers", triggerId });
+      }}
+    />
+  );
   return (
-    <CreateSurface route={route}>
-      {route.resource === "project" ? (
-        <ProjectCreateForm
-          engines={engines}
-          preferences={preferences}
-          onCancel={onCancel}
-          onCreated={project => onNavigate({ kind: "project", projectId: project.id })}
-        />
-      ) : route.resource === "chat" ? (
-        <ChatCreateForm
-          projects={projects}
-          initialProjectId={route.projectId}
-          onCancel={onCancel}
-          onCreated={(projectId, conversationId) =>
-            onNavigate({ kind: "conversation", projectId, conversationId })}
-        />
-      ) : route.resource === "agent" ? (
-        <AgentCreateSurface
-          projects={projects}
-          engines={engines}
-          initialProjectId={route.projectId}
-          fixedProjectId={
-            route.conversationId ? route.projectId : undefined
-          }
-          fixedConversationId={route.conversationId}
-          initialManagerAgentId={route.managerAgentId}
-          onCancel={onCancel}
-          onCreated={(projectId, agent) =>
-            onNavigate({ kind: "agent", projectId, agentId: agent.id })}
-          onImported={(projectId, agentId) =>
-            onNavigate({ kind: "agent", projectId, agentId })}
-        />
-      ) : (
-        <TriggerCreateForm
-          projects={projects}
-          initialProjectId={route.projectId}
-          initialConversationId={route.conversationId}
-          initialAgentId={route.agentId}
-          onCancel={onCancel}
-          onCreated={(projectId, agentId) =>
-            onNavigate({ kind: "agent", projectId, agentId, view: "triggers" })}
-        />
-      )}
-    </CreateSurface>
+    <Box
+      onChangeCapture={onDirty}
+      onInputCapture={onDirty}
+      sx={{ minWidth: 0 }}
+    >
+      {content}
+    </Box>
+  );
+}
+
+export function ContextualCreateDialog({
+  request,
+  projects,
+  engines,
+  preferences,
+  onClose,
+  onNavigate,
+}: {
+  request?: CreationRequest;
+  projects: ProjectDto[];
+  engines: EngineDto[];
+  preferences: WorkspacePreferencesDto;
+  onClose(): void;
+  onNavigate(route: Route): void;
+}): JSX.Element {
+  const theme = useTheme();
+  const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
+  const [dirty, setDirty] = useState(false);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  useEffect(() => {
+    if (request) {
+      setDirty(false);
+      setConfirmDiscard(false);
+    }
+  }, [request?.resource, request?.projectId, request?.conversationId, request?.agentId, request?.managerAgentId]);
+  const route = request
+    ? { kind: "create" as const, ...request, surface: "workspace" as const }
+    : undefined;
+  const close = () => {
+    if (dirty) {
+      setConfirmDiscard(true);
+      return;
+    }
+    onClose();
+  };
+  const title = route ? resourcePresentation[route.resource].title : "Create";
+  const icon = route ? resourcePresentation[route.resource].icon : null;
+  return (
+    <>
+      <Dialog
+        open={Boolean(route)}
+        onClose={close}
+        fullScreen={fullScreen}
+        fullWidth
+        maxWidth={route?.resource === "agent" || route?.resource === "trigger" ? "md" : "sm"}
+        aria-labelledby="contextual-create-title"
+        slotProps={{
+          paper: {
+            sx: {
+              position: "relative",
+              maxHeight: fullScreen ? "100dvh" : "min(90dvh, 900px)",
+              display: "grid",
+              gridTemplateRows: "auto minmax(0, 1fr)",
+            },
+          },
+        }}
+      >
+        <DialogTitle id="contextual-create-title" sx={{ pr: 7 }}>
+          <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+            {icon}
+            <Typography component="span" variant="h6" fontWeight={800}>{title}</Typography>
+          </Stack>
+          <IconButton
+            aria-label={`Close ${title}`}
+            onClick={close}
+            sx={{ position: "absolute", right: 12, top: 12 }}
+          >
+            <CloseIcon />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent
+          className="ponderosa-scroll"
+          sx={{
+            minHeight: 0,
+            overflowY: "auto",
+            pt: "12px !important",
+            pb: `max(96px, calc(72px + env(safe-area-inset-bottom)))`,
+          }}
+        >
+          {route ? (
+            <CreateFormContent
+              key={[route.resource, route.projectId ?? "", route.conversationId ?? "", route.agentId ?? "", route.managerAgentId ?? ""].join(":")}
+              route={route}
+              projects={projects}
+              engines={engines}
+              preferences={preferences}
+              onCancel={close}
+              onDirty={() => setDirty(true)}
+              anchoredActions
+              onNavigate={next => {
+                setDirty(false);
+                onClose();
+                onNavigate(next);
+              }}
+            />
+          ) : null}
+        </DialogContent>
+      </Dialog>
+      <ConfirmDialog
+        open={confirmDiscard}
+        title={`Discard this unfinished ${route ? resourcePresentation[route.resource].title.replace("Create ", "") : "item"}?`}
+        confirmLabel="Discard and Close"
+        onCancel={() => setConfirmDiscard(false)}
+        onConfirm={() => {
+          setConfirmDiscard(false);
+          setDirty(false);
+          onClose();
+        }}
+      >
+        <Typography sx={{ pt: 1 }}>Your entered information will be lost.</Typography>
+      </ConfirmDialog>
+    </>
   );
 }

@@ -44,6 +44,7 @@ export function ImportAgentForm({
   onCancel,
   onImported,
   onPendingChange,
+  stickyActions = false,
 }: {
   projectId: string;
   engines: EngineDto[];
@@ -52,6 +53,7 @@ export function ImportAgentForm({
   onCancel(): void;
   onImported(agentId: string): void;
   onPendingChange?(pending: boolean): void;
+  stickyActions?: boolean;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [packageBlob, setPackageBlob] = useState<Blob>();
@@ -258,7 +260,21 @@ export function ImportAgentForm({
         />
       </Alert> : null}
       {error ? <Alert severity="error">{error}</Alert> : null}
-      <Stack direction="row" spacing={1} sx={{ justifyContent: "flex-end" }}>
+      <Stack direction="row" spacing={1} sx={{
+        justifyContent: "flex-end",
+        ...(stickyActions ? {
+          position: "absolute",
+          zIndex: 2,
+          bottom: 0,
+          left: 0,
+          right: 0,
+          px: { xs: 2, sm: 3 },
+          py: 1.5,
+          bgcolor: "background.paper",
+          borderTop: 1,
+          borderColor: "divider",
+        } : {}),
+      }}>
       <Button disabled={importAgents.isPending} onClick={closeForm}>Cancel</Button>
       <Button variant="contained" disabled={!packageBlob || !packagePreview || inspecting || invalidPermissionShape || !conversationId || sourceEngines.some((source) => !engineMapping[source]) || (elevatedAgents.length > 0 && !acknowledgeElevatedPermissions) || importAgents.isPending} onClick={() => {
         if (pendingRef.current) return;

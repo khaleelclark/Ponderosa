@@ -42,9 +42,18 @@ interface MobileWorkspaceDrawerProps {
   route: Route;
   notifications: WorkspaceNotificationDto[];
   notificationCounts?: Pick<WorkspaceNotificationPageDto, "unacknowledgedActionCount" | "unreadUpdateCount">;
+  creating?: "project" | "chat" | "agent" | "trigger";
   onOpenChange(open: boolean): void;
   onNavigate(route: Route): void;
-  onCreate(kind: "project" | "chat" | "agent" | "trigger"): void;
+  onCreate(
+    kind: "project" | "chat" | "agent" | "trigger",
+    context?: {
+      projectId?: string;
+      conversationId?: string;
+      managerAgentId?: string;
+      agentId?: string;
+    },
+  ): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onConversationAction(
     action: "rename" | "delete",
@@ -62,6 +71,7 @@ export function MobileWorkspaceDrawer({
   route,
   notifications,
   notificationCounts,
+  creating,
   onOpenChange,
   onNavigate,
   onCreate,
@@ -98,13 +108,14 @@ export function MobileWorkspaceDrawer({
           route={route}
           notifications={notifications}
           notificationCounts={notificationCounts}
+          creating={creating}
           onNavigate={next => {
             close();
             onNavigate(next);
           }}
-          onCreate={kind => {
+          onCreate={(kind, context) => {
             close();
-            onCreate(kind);
+            onCreate(kind, context);
           }}
           onPreferences={onPreferences}
           onRenameConversation={conversation => {

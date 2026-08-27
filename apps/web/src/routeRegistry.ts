@@ -5,7 +5,6 @@ type RouteOfKind<Kind extends RouteKind> = Extract<Route, { kind: Kind }>;
 
 export type ProjectRoute = Extract<Route, { projectId: string }>;
 export type RouteSidebarSection =
-  | "create"
   | "home"
   | "projects"
   | "chats"
@@ -42,8 +41,7 @@ const ROUTE_REGISTRY = {
       return `/create/${route.resource}${query.size ? `?${query.toString()}` : ""}`;
     },
     scope: "global",
-    initialSidebarSection: "create",
-    synchronizedSidebarSection: "create",
+    initialSidebarSection: "home",
   },
   projects: {
     toPath: () => "/projects",

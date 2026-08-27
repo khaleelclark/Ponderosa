@@ -177,6 +177,7 @@ export function TriggersPane({
   fixedConversationId,
   initialCreateOpen = false,
   createOnly = false,
+  stickyCreateActions = false,
   onCreateTrigger,
   onTriggerCreated,
   onCreateFlowComplete,
@@ -189,6 +190,7 @@ export function TriggersPane({
   fixedConversationId?: string;
   initialCreateOpen?: boolean;
   createOnly?: boolean;
+  stickyCreateActions?: boolean;
   onCreateTrigger?(): void;
   onTriggerCreated?(trigger: TriggerDefinitionDto): void;
   onCreateFlowComplete?(): void;
@@ -476,7 +478,21 @@ export function TriggersPane({
     </Stack>
   );
   const editorActions = (
-    <Stack direction="row" spacing={1} sx={{ justifyContent: "flex-end" }}>
+    <Stack direction="row" spacing={1} sx={{
+      justifyContent: "flex-end",
+      ...(createOnly && stickyCreateActions ? {
+        position: "absolute",
+        zIndex: 2,
+        bottom: 0,
+        left: 0,
+        right: 0,
+        px: { xs: 2, sm: 3 },
+        py: 1.5,
+        bgcolor: "background.paper",
+        borderTop: 1,
+        borderColor: "divider",
+      } : {}),
+    }}>
       <Button onClick={closeCreateEditor}>Cancel</Button>
       <Button variant="contained" disabled={create.isPending || saveEdit.isPending || !name.trim() || !instructions.trim() || !conversationId || sourceConfigurationInvalid || (budgetEnabled && (!Number.isSafeInteger(Number(budgetLimit)) || Number(budgetLimit) < 1))} onClick={() => editing ? saveEdit.mutate() : create.mutate()}>{create.isPending || saveEdit.isPending ? "Saving…" : editing ? "Save Changes" : "Create Automation"}</Button>
     </Stack>

@@ -45,6 +45,7 @@ export interface AgentCreateFormProps {
   onCancel(): void;
   onCreated(projectId: string, agent: AgentDto): void;
   onPendingChange?(pending: boolean): void;
+  stickyActions?: boolean;
 }
 
 export interface AgentCreateSurfaceProps extends AgentCreateFormProps {
@@ -65,6 +66,7 @@ export function AgentCreateForm({
   onCancel,
   onCreated,
   onPendingChange,
+  stickyActions = false,
 }: AgentCreateFormProps): JSX.Element {
   const queryClient = useQueryClient();
   const [projectId, setProjectId] = useState(
@@ -74,6 +76,9 @@ export function AgentCreateForm({
         : projects[0]?.id ?? ""),
   );
   const project = projects.find(candidate => candidate.id === projectId);
+  const effectiveFixedConversationId = projectId === initialProjectId
+    ? fixedConversationId
+    : undefined;
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.project(projectId),
     queryFn: () => api.listAgents(projectId),
@@ -87,8 +92,8 @@ export function AgentCreateForm({
   const presetsQuery = useAgentPresets(projectId || undefined);
   const agents = agentsQuery.data ?? [];
   const chats = chatsQuery.data ?? [];
-  const fixedConversation = fixedConversationId
-    ? chats.find(chat => chat.id === fixedConversationId)
+  const fixedConversation = effectiveFixedConversationId
+    ? chats.find(chat => chat.id === effectiveFixedConversationId)
     : undefined;
   const presets = presetsQuery.data ?? [];
   const [title, setTitle] = useState(initialName ?? "");
@@ -104,8 +109,17 @@ export function AgentCreateForm({
   const titleEditedRef = useRef(Boolean(initialName));
   const managerEditedRef = useRef(false);
   const pendingRef = useRef(false);
+  const initializedRef = useRef(false);
 
   useEffect(() => {
+    if (initializedRef.current) {
+      managerEditedRef.current = false;
+      setConversationId(effectiveFixedConversationId ?? UNSET);
+      setPresetId(UNSET);
+      setManagerAgentId(UNSET);
+      return;
+    }
+    initializedRef.current = true;
     titleEditedRef.current = Boolean(initialName);
     managerEditedRef.current = false;
     setTitle(initialName ?? pickAgentName([]));
@@ -118,13 +132,13 @@ export function AgentCreateForm({
     );
     setModel(initialModel ?? project?.defaultModel ?? UNSET);
     setEffort(initialEffort ?? project?.defaultEffort ?? UNSET);
-    setConversationId(fixedConversationId ?? UNSET);
+    setConversationId(effectiveFixedConversationId ?? UNSET);
     setPresetId(UNSET);
     setManagerAgentId(UNSET);
     setInitialMessage("");
   }, [
     engines,
-    fixedConversationId,
+    effectiveFixedConversationId,
     initialEffort,
     initialEngine,
     initialModel,
@@ -292,7 +306,7 @@ export function AgentCreateForm({
         hideModelWhenEmpty
         hideEffortWhenEmpty
       />
-      {!fixedConversationId ? (
+      {!effectiveFixedConversationId ? (
         <FormControl fullWidth size="small">
           <InputLabel id="create-agent-chat-label">
             Project chat (optional)
@@ -362,7 +376,21 @@ export function AgentCreateForm({
       {create.isError ? (
         <Alert severity="error">{String(create.error)}</Alert>
       ) : null}
-      <Stack direction="row" spacing={1} sx={{ justifyContent: "flex-end" }}>
+      <Stack direction="row" spacing={1} sx={{
+        justifyContent: "flex-end",
+        ...(stickyActions ? {
+          position: "absolute",
+          zIndex: 2,
+          bottom: 0,
+          left: 0,
+          right: 0,
+          px: { xs: 2, sm: 3 },
+          py: 1.5,
+          bgcolor: "background.paper",
+          borderTop: 1,
+          borderColor: "divider",
+        } : {}),
+      }}>
         <Button
           disabled={create.isPending}
           onClick={() => {
@@ -418,6 +446,7 @@ export function AgentCreateSurface({
   onCancel,
   onImported,
   onPendingChange,
+  stickyActions = false,
   ...createProps
 }: AgentCreateSurfaceProps): JSX.Element {
   const [mode, setMode] = useState<"create" | "import">("create");
@@ -507,6 +536,7 @@ export function AgentCreateSurface({
             onCancel={onCancel}
             onImported={agentId => onImported(importProjectId, agentId)}
             onPendingChange={updatePending}
+            stickyActions={stickyActions}
           />
         ) : (
           <Alert severity="info">
@@ -548,6 +578,7 @@ export function AgentCreateSurface({
         fixedConversationId={fixedConversationId}
         onCancel={onCancel}
         onPendingChange={updatePending}
+        stickyActions={stickyActions}
         {...createProps}
       />
     </Stack>
