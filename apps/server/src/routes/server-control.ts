@@ -24,7 +24,7 @@ import { applyCollectionPageHeaders, sendCollectionPageError, sqliteCollectionPa
 import { projectedProjectCount } from "../readiness.js";
 import { writeLauncherShutdownReceipt } from "../launcher-shutdown-receipt.js";
 import { processBirthMarker } from "@ponderosa/engines";
-import { browserResidueCleanupStatus } from "../browser-session-manager.js";
+import { browserResidueCleanupStatus } from "../browser-session-residue.js";
 
 interface ServerControlRoutesContext {
   opts: CreateServerOptions;
