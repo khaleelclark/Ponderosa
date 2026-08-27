@@ -1,6 +1,5 @@
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
-import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import LanguageIcon from "@mui/icons-material/Language";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
@@ -72,7 +71,6 @@ import {
   SettingsSidebarPanel,
 } from "./WorkspaceSidebar.chrome";
 import { ProjectRail, ProjectSidebarHeader } from "./ProjectNavigation";
-import { HomeSidebarPanel } from "./WorkspaceSidebar.home";
 import {
   useWorkspaceSidebarNavigation,
   useWorkspaceSidebarResize,
@@ -160,10 +158,8 @@ export function WorkspaceSidebar({
   const showingAgents = projectContext && projectSection === "agents";
   const showingChats = projectContext && projectSection === "chats";
   const showingTriggers = projectContext && projectSection === "triggers";
-  const showingProjectOverview = projectContext && projectSection === "overview";
   const showingSettings = !projectContext && sidebarSection === "settings";
   const directorySearch = projectContext ? filter : "";
-  const directorySort = showingProjectOverview ? "last_used" as const : undefined;
   const projectDirectoryQuery =
     useWorkspaceDirectory<WorkspaceProjectDirectoryItemDto>("project", {
       search: "",
@@ -173,21 +169,18 @@ export function WorkspaceSidebar({
     useWorkspaceDirectory<WorkspaceConversationDirectoryItemDto>("conversation", {
       search: directorySearch,
       projectId: drawerProjectId,
-      sort: directorySort,
       enabled: projectContext,
     });
   const agentDirectoryQuery =
     useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
-      search: showingAgents || showingProjectOverview ? directorySearch : "",
+      search: showingAgents ? directorySearch : "",
       projectId: drawerProjectId,
-      sort: directorySort,
       enabled: projectContext,
     });
   const triggerDirectoryQuery =
     useWorkspaceDirectory<WorkspaceTriggerDirectoryItemDto>("trigger", {
       search: directorySearch,
       projectId: drawerProjectId,
-      sort: directorySort,
       enabled: projectContext,
     });
   const projectDirectory = workspaceDirectoryItems(
@@ -245,25 +238,8 @@ export function WorkspaceSidebar({
   };
   const conversationUnread = (conversationId: string): UnreadNotificationProjection =>
     notificationProjectionQuery.data?.conversations[conversationId] ?? emptyUnread;
-  const homeProjectIds = new Set(drawerProjectId ? [drawerProjectId] : []);
   const projectById = new Map(projects.map(project => [project.id, project]));
   for (const item of projectItems) projectById.set(item.project.id, item.project);
-  const snapshots = [...homeProjectIds].flatMap(projectId => {
-    const project = projectById.get(projectId);
-    if (!project) return [];
-    return [{
-      project,
-      conversations: chatItems
-        .filter(item => item.project.id === projectId)
-        .map(item => item.conversation),
-      agents: agentItems
-        .filter(item => item.project.id === projectId)
-        .map(item => item.agent),
-      health: agentItems
-        .filter(item => item.project.id === projectId)
-        .map(item => item.health),
-    }];
-  });
   const activeProjectId = drawerProjectId;
   const railProjectIds = useRef<string[]>([]);
   const availableProjectIds = new Set(projects.map(project => project.id));
@@ -356,7 +332,7 @@ export function WorkspaceSidebar({
     const remembered = projectBrowseState.current.get(project.id);
     setDrawerProjectId(project.id);
     setDrawerProjectPanelOpen(true);
-    setProjectSection(remembered?.section ?? "overview");
+    setProjectSection(remembered?.section ?? "chats");
     setFilter(remembered?.filter ?? "");
     if (!drawer && collapsed) onCollapsedChange?.(false);
   };
@@ -421,6 +397,11 @@ export function WorkspaceSidebar({
   const projectHeader = activeProject ? (
     <ProjectSidebarHeader
       project={activeProject}
+      overviewActive={
+        route.kind === "project" &&
+        route.projectId === activeProject.id &&
+        (!route.view || route.view === "overview")
+      }
       section={projectSection}
       counts={{
         chats: chatDirectoryQuery.requestState.hasResolved ? chatDirectory.total : undefined,
@@ -435,37 +416,12 @@ export function WorkspaceSidebar({
         setFilter("");
         projectBrowseState.current.set(activeProject.id, { section, filter: "" });
       }}
+      onOpenOverview={() => onNavigate({ kind: "project", projectId: activeProject.id })}
       onOpenBrowser={() => onNavigate({ kind: "browser", projectId: activeProject.id })}
       onRename={() => setRenamingProject(activeProject)}
       onOpenSettings={() => onNavigate({ kind: "project", projectId: activeProject.id, view: "settings" })}
     />
   ) : undefined;
-  const homePanel = (
-    <HomeSidebarPanel
-      header={projectHeader}
-      title="Overview"
-      includeProjects={false}
-      showAllMessages={false}
-      hideSearch
-      snapshots={snapshots}
-      triggers={triggerItems.map(item => item.trigger)}
-      preferences={preferences}
-      unreadByConversation={notificationProjectionQuery.data?.conversations ?? {}}
-      allMessagesUnread={allMessagesUnread}
-      filter={filter}
-      drawer={drawer}
-      onFilterChange={setFilter}
-      onNavigate={onNavigate}
-      onOpenResourceMenu={(anchor, resourceRoute) =>
-        openResourceMenu(anchor, resourceRoute)
-      }
-      onOpenAllMessages={() => showNavigation({ kind: "allChat" })}
-      onViewHome={() => activeProject && onNavigate({ kind: "project", projectId: activeProject.id })}
-      viewAllLabel="Open Project Overview"
-      viewAllIcon={<FolderOutlinedIcon />}
-      onToggleStar={toggleStar}
-    />
-  );
   const allChatRows = chatItems;
   const activeChatRow =
     route.kind === "conversation" &&
@@ -940,9 +896,7 @@ export function WorkspaceSidebar({
             ? globalChatsPanel
             : showingTriggers
               ? triggersPanel
-              : showingProjectOverview
-                ? homePanel
-                : null;
+              : null;
   const showPanel = Boolean(panel) &&
     (drawer ? drawerProjectPanelOpen : !collapsed);
   const { resizing, resizeStart } = useWorkspaceSidebarResize(

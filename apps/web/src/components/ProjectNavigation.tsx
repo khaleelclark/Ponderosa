@@ -1,11 +1,11 @@
 import AddIcon from "@mui/icons-material/Add";
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
+import ChevronRightRoundedIcon from "@mui/icons-material/ChevronRightRounded";
 import CloseIcon from "@mui/icons-material/Close";
 import DataUsageOutlinedIcon from "@mui/icons-material/DataUsageOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
-import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import LanguageIcon from "@mui/icons-material/Language";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
 import NotificationsOutlinedIcon from "@mui/icons-material/NotificationsOutlined";
@@ -362,7 +362,6 @@ const PROJECT_MODES: Array<{
   label: string;
   icon: ReactNode;
 }> = [
-  { id: "overview", label: "Overview", icon: <HomeOutlinedIcon fontSize="small" /> },
   { id: "chats", label: "Chats", icon: <ChatBubbleOutlineIcon fontSize="small" /> },
   { id: "agents", label: "Agents", icon: <SmartToyOutlinedIcon fontSize="small" /> },
   { id: "triggers", label: "Automations", icon: <BoltOutlinedIcon fontSize="small" /> },
@@ -370,23 +369,27 @@ const PROJECT_MODES: Array<{
 
 export function ProjectSidebarHeader({
   project,
+  overviewActive,
   section,
   counts,
   runningCount,
   unreadCount,
   drawer,
   onSectionChange,
+  onOpenOverview,
   onOpenBrowser,
   onRename,
   onOpenSettings,
 }: {
   project: ProjectDto;
+  overviewActive: boolean;
   section: ProjectSidebarSection;
   counts: { chats?: number; agents?: number; triggers?: number };
   runningCount?: number;
   unreadCount: number;
   drawer: boolean;
   onSectionChange(section: ProjectSidebarSection): void;
+  onOpenOverview(): void;
   onOpenBrowser(): void;
   onRename(): void;
   onOpenSettings(): void;
@@ -409,28 +412,62 @@ export function ProjectSidebarHeader({
   return (
     <Box sx={{ pt: 1.75, pb: 1, pr: drawer ? 6 : 0 }}>
       <Stack direction="row" spacing={1.25} sx={{ alignItems: "center", px: 2 }}>
-        <Box
-          aria-hidden
-          sx={{
-            width: 38,
-            height: 38,
-            borderRadius: 1.5,
-            display: "grid",
-            placeItems: "center",
-            bgcolor: PROJECT_COLORS[hashLabel(project.id) % PROJECT_COLORS.length],
-            color: "#F5F7F5",
-            fontSize: 11,
-            fontWeight: 850,
-          }}
-        >
-          {projectInitials(project.label)}
-        </Box>
-        <Box sx={{ minWidth: 0, flex: 1 }}>
-          <Typography fontWeight={800} noWrap>{project.label}</Typography>
-          <Typography variant="caption" color="text.secondary" noWrap>
-            {runningCount == null ? "Checking activity" : `${runningCount} active`} · {unreadCount} unread
-          </Typography>
-        </Box>
+        <Tooltip title="Open Project Overview" placement="bottom-start">
+          <ButtonBase
+            aria-label={`Open ${project.label} Project Overview`}
+            aria-current={overviewActive ? "page" : undefined}
+            onClick={onOpenOverview}
+            sx={{
+              minWidth: 0,
+              flex: 1,
+              justifyContent: "flex-start",
+              gap: 1.25,
+              mx: -0.75,
+              px: 0.75,
+              py: 0.5,
+              borderRadius: 1.5,
+              textAlign: "left",
+              bgcolor: overviewActive ? "action.selected" : "transparent",
+              "&:hover": {
+                bgcolor: overviewActive ? "action.selected" : "action.hover",
+              },
+              "&:focus-visible": {
+                outline: "2px solid",
+                outlineColor: "primary.main",
+                outlineOffset: 2,
+              },
+            }}
+          >
+            <Box
+              aria-hidden
+              sx={{
+                width: 38,
+                height: 38,
+                flex: "0 0 38px",
+                borderRadius: 1.5,
+                display: "grid",
+                placeItems: "center",
+                bgcolor: PROJECT_COLORS[hashLabel(project.id) % PROJECT_COLORS.length],
+                color: "#F5F7F5",
+                fontSize: 11,
+                fontWeight: 850,
+              }}
+            >
+              {projectInitials(project.label)}
+            </Box>
+            <Box sx={{ minWidth: 0, flex: 1 }}>
+              <Typography fontWeight={800} noWrap>{project.label}</Typography>
+              <Typography variant="caption" color="text.secondary" noWrap>
+                {runningCount == null ? "Checking activity" : `${runningCount} active`} · {unreadCount} unread
+              </Typography>
+            </Box>
+            <ChevronRightRoundedIcon
+              aria-hidden
+              fontSize="small"
+              sx={{ color: "text.secondary", flex: "0 0 auto" }}
+            />
+          </ButtonBase>
+        </Tooltip>
         <IconButton
           aria-label={`Actions for ${project.label}`}
           aria-haspopup="menu"
@@ -445,7 +482,7 @@ export function ProjectSidebarHeader({
         aria-label={`${project.label} navigation`}
         sx={{
           display: "grid",
-          gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+          gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
           gap: 0.5,
           mx: 1.25,
           mt: 1.5,

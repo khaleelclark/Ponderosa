@@ -16,7 +16,7 @@ export function useWorkspaceSidebarNavigation(route: Route) {
   const previousRoute = useRef(route);
   const [filter, setFilter] = useState("");
   const [projectSection, setProjectSection] = useState<ProjectSidebarSection>(
-    () => projectSidebarSectionForRoute(route),
+    () => projectSidebarSectionForRoute(route) ?? "chats",
   );
   const [draggedResource, setDraggedResource] = useState<{
     kind: "home" | "chat" | "agent" | "trigger";
@@ -41,8 +41,11 @@ export function useWorkspaceSidebarNavigation(route: Route) {
     const projectId = routeProjectId(route);
     if (projectId) {
       const nextProjectSection = projectSidebarSectionForRoute(route);
-      if (
-        previousProjectId === projectId &&
+      if (previousProjectId !== projectId) {
+        setProjectSection(nextProjectSection ?? "chats");
+        setFilter("");
+      } else if (
+        nextProjectSection &&
         projectSidebarSectionForRoute(previous) !== nextProjectSection
       ) {
         setProjectSection(nextProjectSection);
@@ -77,12 +80,11 @@ export function useWorkspaceSidebarNavigation(route: Route) {
 }
 
 export type ProjectSidebarSection =
-  | "overview"
   | "chats"
   | "agents"
   | "triggers";
 
-function projectSidebarSectionForRoute(route: Route): ProjectSidebarSection {
+function projectSidebarSectionForRoute(route: Route): ProjectSidebarSection | undefined {
   if (route.kind === "conversation") return "chats";
   if (route.kind === "agents" || route.kind === "review") return "agents";
   if (route.kind === "agent") {
@@ -92,7 +94,7 @@ function projectSidebarSectionForRoute(route: Route): ProjectSidebarSection {
     if (route.view === "agents") return "agents";
     if (route.view === "triggers") return "triggers";
   }
-  return "overview";
+  return undefined;
 }
 
 export function useWorkspaceSidebarResize(
