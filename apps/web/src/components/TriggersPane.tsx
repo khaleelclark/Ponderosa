@@ -203,9 +203,19 @@ export function TriggersPane({
   onCloseTriggerSettings?(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
-  const initialTarget = agents.find(agent => agent.id === fixedTargetAgentId)
-    ?? agents.find(agent => agent.id === initialTargetAgentId)
-    ?? agents[0];
+  // The Automation editor is a relationship editor, so it must not depend on
+  // a surrounding workspace roster finishing first. Load the authoritative
+  // Project roster here as form data; keep the prop as immediate fallback for
+  // embedded surfaces that already have it.
+  const targetAgentsQuery = useQuery({
+    queryKey: ["automation-target-agents", projectId],
+    queryFn: () => api.listAgents(projectId),
+    staleTime: 5_000,
+  });
+  const availableAgents = targetAgentsQuery.data ?? agents;
+  const initialTarget = availableAgents.find(agent => agent.id === fixedTargetAgentId)
+    ?? availableAgents.find(agent => agent.id === initialTargetAgentId)
+    ?? availableAgents[0];
   const preferredConversationId =
     fixedConversationId &&
     initialTarget?.conversationId === fixedConversationId
@@ -276,7 +286,7 @@ export function TriggersPane({
   );
   const sourceConfigurationInvalid = (sourceKind === "filesystem" && Boolean(filesystemErrors.quiet || filesystemErrors.max)) || intervalInvalid;
 
-  const eligibleAgents = agents.filter(agent => agent.conversationId === conversationId);
+  const eligibleAgents = availableAgents.filter(agent => agent.conversationId === conversationId);
   useEffect(() => {
     if (editing || eligibleAgents.some(agent => agent.id === targetAgentId)) return;
     setTargetAgentId(
@@ -503,7 +513,7 @@ export function TriggersPane({
       ) : (
         <TextField
           label="Runs As"
-          value={agents.find(agent => agent.id === targetAgentId)?.title ?? "Unavailable Agent"}
+          value={availableAgents.find(agent => agent.id === targetAgentId)?.title ?? "Unavailable Agent"}
           disabled
         />
       )}
