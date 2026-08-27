@@ -202,6 +202,7 @@ export function ComposerTextInput({
   const [destinationWidth, setDestinationWidth] = useState(0);
   const [scrollTop, setScrollTop] = useState(0);
   const [focused, setFocused] = useState(false);
+  const [, refreshSelection] = useState(0);
   useLayoutEffect(() => {
     const element = destinationRef.current;
     if (!element || !inlineDestination) {
@@ -268,9 +269,31 @@ export function ComposerTextInput({
               const rendered: ReactNode[] = [];
               let cursor = 0;
               let caretRendered = false;
-              const showOverlayCaret =
-                focused &&
-                inputRef.current?.selectionStart === inputRef.current?.selectionEnd;
+              const selectionStart = inputRef.current?.selectionStart ?? caret;
+              const selectionEnd = inputRef.current?.selectionEnd ?? caret;
+              const showOverlaySelection =
+                focused && selectionStart !== selectionEnd;
+              const showOverlayCaret = focused && !showOverlaySelection;
+              const pushSegment = (
+                start: number,
+                end: number,
+                key: string,
+                selected = false,
+              ) => {
+                if (start === end) return;
+                rendered.push(
+                  <Box
+                    component="span"
+                    aria-hidden="true"
+                    key={key}
+                    sx={selected
+                      ? { bgcolor: theme => alpha(theme.palette.primary.main, 0.32) }
+                      : undefined}
+                  >
+                    {text.slice(start, end)}
+                  </Box>,
+                );
+              };
               const pushCaret = (key: string) => {
                 rendered.push(
                   <Box
@@ -299,30 +322,35 @@ export function ComposerTextInput({
                 key: string,
                 includeEnd = false,
               ) => {
+                if (showOverlaySelection) {
+                  const selectedStart = Math.max(start, selectionStart);
+                  const selectedEnd = Math.min(end, selectionEnd);
+                  if (selectedStart < selectedEnd) {
+                    pushSegment(start, selectedStart, `${key}:before`);
+                    pushSegment(
+                      selectedStart,
+                      selectedEnd,
+                      `${key}:selected`,
+                      true,
+                    );
+                    pushSegment(selectedEnd, end, `${key}:after`);
+                  } else {
+                    pushSegment(start, end, key);
+                  }
+                  return;
+                }
                 const containsCaret =
                   showOverlayCaret &&
                   !caretRendered &&
                   caret >= start &&
                   (caret < end || (includeEnd && caret === end));
                 if (!containsCaret) {
-                  rendered.push(
-                    <Box component="span" aria-hidden="true" key={key}>
-                      {text.slice(start, end)}
-                    </Box>,
-                  );
+                  pushSegment(start, end, key);
                   return;
                 }
-                rendered.push(
-                  <Box component="span" aria-hidden="true" key={`${key}:before`}>
-                    {text.slice(start, caret)}
-                  </Box>,
-                );
+                pushSegment(start, caret, `${key}:before`);
                 pushCaret(`${key}:caret`);
-                rendered.push(
-                  <Box component="span" aria-hidden="true" key={`${key}:after`}>
-                    {text.slice(caret, end)}
-                  </Box>,
-                );
+                pushSegment(caret, end, `${key}:after`);
               };
               for (const token of mentionTokens) {
                 pushText(cursor, token.start, `text:${cursor}`);
@@ -334,6 +362,10 @@ export function ComposerTextInput({
                 ) {
                   pushCaret(`token:${token.start}:caret`);
                 }
+                const tokenSelected =
+                  showOverlaySelection &&
+                  selectionStart < token.end &&
+                  selectionEnd > token.start;
                 rendered.push(
                   <Chip
                     key={`${token.start}:${token.handle}`}
@@ -360,9 +392,14 @@ export function ComposerTextInput({
                       fontSize: 16,
                       fontWeight: 700,
                       lineHeight: "22px",
-                      boxShadow: token.valid
-                        ? "inset 0 0 0 1px rgba(127, 196, 142, .18)"
-                        : undefined,
+                      boxShadow: theme => [
+                        token.valid
+                          ? "inset 0 0 0 1px rgba(127, 196, 142, .18)"
+                          : undefined,
+                        tokenSelected
+                          ? `0 0 0 2px ${alpha(theme.palette.primary.main, 0.55)}`
+                          : undefined,
+                      ].filter(Boolean).join(", ") || undefined,
                       textIndent: 0,
                       pointerEvents: "auto",
                       "& .MuiChip-label": {
@@ -411,8 +448,8 @@ export function ComposerTextInput({
               color: "transparent",
               caretColor: "transparent",
               "&::selection": {
-                color: theme => theme.palette.text.primary,
-                bgcolor: theme => alpha(theme.palette.primary.main, 0.32),
+                color: "transparent",
+                bgcolor: "transparent",
               },
             } : {}),
           },
@@ -467,11 +504,18 @@ export function ComposerTextInput({
           }
           onPastedText(combined);
         }}
-        onClick={event =>
+        onClick={event => {
+          refreshSelection(value => value + 1);
           onCaretChange(
             (event.target as HTMLTextAreaElement).selectionStart ?? 0,
-          )
-        }
+          );
+        }}
+        onSelect={event => {
+          refreshSelection(value => value + 1);
+          onCaretChange(
+            (event.target as HTMLTextAreaElement).selectionStart ?? 0,
+          );
+        }}
         onScroll={event => setScrollTop((event.target as HTMLTextAreaElement).scrollTop)}
         onKeyUp={event =>
           onCaretChange(
