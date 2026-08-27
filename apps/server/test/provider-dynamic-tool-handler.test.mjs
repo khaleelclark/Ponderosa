@@ -14,7 +14,10 @@ test("provider tools retain their Run capability and special route payloads", as
     agentId: request.params.agentId,
     authorization: request.headers.authorization,
   }));
-  app.post("/api/agent-import-file", async (request) => request.body);
+  app.post("/api/agent-import-file", async (request) => ({
+    ...request.body,
+    authorization: request.headers.authorization,
+  }));
   app.post("/api/agent-browser", async (request) => request.body);
 
   const browserTool = { name: "ponderosa_browser_navigate", description: "", inputSchema: {} };
@@ -39,6 +42,7 @@ test("provider tools retain their Run capability and special route payloads", as
   })).text), {
     path: "/tmp/result.txt",
     toolCallId: "import-call",
+    authorization: "Bearer run-capability",
   });
   assert.deepEqual(JSON.parse((await handler({
     id: "browser-call",

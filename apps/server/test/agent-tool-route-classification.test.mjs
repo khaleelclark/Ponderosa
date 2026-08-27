@@ -8,6 +8,7 @@ import {
 
 test("agent capabilities cannot cross the operator route boundary", () => {
   assert.equal(agentApiAudience("/api/agent-messages?run=current"), "agent");
+  assert.equal(agentApiAudience("/api/agent-import-file"), "agent");
   assert.equal(agentApiAudience("/api/agent-documents/document-id"), "agent");
   assert.equal(agentApiAudience("/api/agent-presets/preset-id"), "operator");
   assert.equal(agentApiAudience("/api/agent-messages/extra"), undefined);
