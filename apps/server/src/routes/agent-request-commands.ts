@@ -4,7 +4,6 @@ import {
   shouldBackTextWithArtifact,
   type CommunicationEvent,
   type CoordinationRequestUpdateKind,
-  type SendAgentMessageRequest,
 } from "@ponderosa/core";
 import type { AgentStore, CoordinationV3Store } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
@@ -24,10 +23,6 @@ interface AgentRequestCommandRoutesContext {
   coordinationV3: CoordinationV3Store;
   agentMessageCapabilities: ReadonlyMap<string, AgentMessageCapability>;
   activeRuns: ReadonlyMap<string, ActiveRun>;
-  capabilityOwnsAuthoritativeRun(
-    capability: AgentMessageCapability,
-    run: ActiveRun | undefined,
-  ): boolean;
   capabilityMatchesCleanupRun(
     capability: AgentMessageCapability,
     run: ActiveRun | undefined,
@@ -63,7 +58,6 @@ export function registerAgentRequestCommandRoutes(
     coordinationV3,
     agentMessageCapabilities,
     activeRuns,
-    capabilityOwnsAuthoritativeRun,
     capabilityMatchesCleanupRun,
     runAuthorization,
     projectCommunicationArtifact,

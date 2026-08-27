@@ -207,7 +207,6 @@ registerAgentRequestCommandRoutes(app, {
   coordinationV3,
   agentMessageCapabilities,
   activeRuns,
-  capabilityOwnsAuthoritativeRun,
   capabilityMatchesCleanupRun,
   runAuthorization,
   projectCommunicationArtifact,

@@ -3,7 +3,6 @@ import type { FastifyInstance } from "fastify";
 import {
   LONG_TEXT_MAX_UTF8_BYTES,
   canonicalizeProviderText,
-  type AssetDto,
   type CollaborationViewDto,
   type CommunicationEvent,
   type CreateCollaborationMessageRequest,

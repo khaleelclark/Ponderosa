@@ -302,7 +302,6 @@ export class BrowserProfileAuthority {
   }
 
   async acquire(
-    scope: BrowserScope,
     sessionId: string,
     description: BrowserLaunchDescription,
     signal: AbortSignal,

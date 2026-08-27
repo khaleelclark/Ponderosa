@@ -1,13 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createWriteStream, promises as fs } from "node:fs";
+import { promises as fs } from "node:fs";
 import path from "node:path";
-import { pipeline } from "node:stream/promises";
 import type {
   AgentEvent,
   ArtifactDto,
   BrowserControlOwner,
   BrowserOperatorInputRequest,
-  BrowserUploadReceiptDto,
   BrowserUploadResponseDto,
   BrowserSessionDto,
 } from "@ponderosa/core";
@@ -38,21 +36,6 @@ import {
   validateBrowserUrl,
 } from "./browser-security.js";
 
-export {
-  chromeBrowserDriverFactory,
-  findBrowserExecutable,
-  initialBrowserTargetRequest,
-} from "./chrome-cdp-driver.js";
-export type {
-  BrowserDriver,
-  BrowserDriverFactory,
-  BrowserPageEvent,
-  BrowserPageInfo,
-  BrowserPagesInfo,
-  BrowserUploadResult,
-  BrowserSpawnPublicationOptions,
-  BrowserTerminationHandle,
-} from "./chrome-cdp-driver.js";
 export { BrowserSessionError, redactBrowserUrl, validateBrowserUrl } from "./browser-security.js";
 export type { RedactedBrowserUrl } from "./browser-security.js";
 
@@ -406,7 +389,6 @@ export class BrowserSessionManager {
   ): Promise<BrowserLaunchLease | undefined> {
     if (!this.launchAuthority) return undefined;
     const lease = await this.launchAuthority.acquire(
-      scope,
       session.dto.id,
       description,
       session.launchAbort.signal,

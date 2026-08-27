@@ -1,7 +1,6 @@
 import {
   canonicalizeProviderText,
   truncateUnicodeCodePoints,
-  type DecisionDto,
 } from "@ponderosa/core";
 import type { AgentStore, CoordinationV3Store, WorkspaceStore } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";

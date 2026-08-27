@@ -437,7 +437,7 @@ export function createServerReadModels(context: ReadModelContext) {
   function agentDetail(
     agentId: string,
     input: { limit?: number; cursor?: string; focusId?: string } = {},
-  ): import("@ponderosa/core").AgentDetailDto | undefined {
+  ): AgentDetailDto | undefined {
     const limit = input.limit ?? 100;
     // Chat is read through the indexed canonical projection below; do not also
     // hydrate the legacy Agent message table only to replace it.

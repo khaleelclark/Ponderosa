@@ -681,7 +681,7 @@ export function registerAgentMessageRunRoute(
       }
 
       const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
-      const preparedRun = await prepareAgentRun(app, runContext, {
+      const preparedRun = await prepareAgentRun(runContext, {
         agent,
         project,
         runtimeEngineId,
@@ -700,7 +700,6 @@ export function registerAgentMessageRunRoute(
         communication,
         sharedCommunication,
         sharedTaskTurn,
-        directUserTaskTurn,
         sourceMasterMessage,
         pendingTurn,
         requestedSourceChannel: request.body.sourceChannel,

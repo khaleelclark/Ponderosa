@@ -7,7 +7,6 @@ import type { CreateLinkPreviewRequest, LinkPreviewDto } from "@ponderosa/core";
 import type { AgentStore } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
 import { externalFaviconTarget, loadExternalFavicon } from "./external-content.js";
-import { secretEqual } from "./security.js";
 import type {
   ActiveRun,
   CreateServerOptions,

@@ -555,7 +555,7 @@ registerAgentPackageRoutes(app, {
 registerAgentUsageRoute(app, serverContext);
 
 registerAgentMaintenanceRoutes(app, {
-  store, coordinationV3, workspace, engines, triggerSources, deletingAgentIds,
+  store, coordinationV3, engines, triggerSources, deletingAgentIds,
   cachedModelOptions, commitAgentDeletion,
   notifyScheduler: notifyScheduler,
 });

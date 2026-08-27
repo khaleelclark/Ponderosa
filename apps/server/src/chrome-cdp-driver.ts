@@ -8,7 +8,6 @@ import { processGroupAlive, runtimeProcessIdentity, terminateProcessGroup } from
 import { redactBrowserText } from "./browser-security.js";
 
 const VIEWPORT = { width: 1280, height: 720 } as const;
-const MAX_SNAPSHOT_TEXT = 16_000;
 const MAX_BROWSER_LAUNCH_ERROR = 4_000;
 
 export interface BrowserRuntimeCapabilities {

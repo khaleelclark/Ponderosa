@@ -10,7 +10,6 @@ import {
 import type {
   AgentStore,
   CoordinationV3Store,
-  WorkspaceStore,
 } from "@ponderosa/agents";
 import type {
   ActiveRun,
@@ -32,7 +31,6 @@ interface ServerControlRoutesContext {
   serverContext: ServerContext;
   store: AgentStore;
   coordinationV3: CoordinationV3Store;
-  workspace: WorkspaceStore;
   engines: ReadonlyMap<string, EngineRegistration>;
   activeRuns: Map<string, ActiveRun>;
   launcherNow(): number;
@@ -132,7 +130,6 @@ export function registerServerControlRoutes(
     serverContext,
     store,
     coordinationV3,
-    workspace,
     engines,
     activeRuns,
     launcherNow,

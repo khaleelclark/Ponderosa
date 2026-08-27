@@ -132,7 +132,6 @@ export function startProviderRunExecution(
   input: ProviderRunExecutionInput,
 ): void {
   const {
-    opts,
     store,
     workspace,
     coordinationV3,
