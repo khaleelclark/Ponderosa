@@ -19,6 +19,7 @@ import {
   Typography,
 } from "@mui/material";
 import type {
+  AgentMentionBindingDto,
   AssetLimitsDto,
   EngineCommand,
   EngineComposerCapability,
@@ -137,6 +138,7 @@ export function ComposerTextInput({
   destinationMode,
   requiredRecipient,
   mentionTokens,
+  mentionBindings,
   mentionedBusyHandles,
   mentionedHandles,
   canSend,
@@ -165,6 +167,7 @@ export function ComposerTextInput({
   destinationMode?: "project-chat" | "fixed" | "target-required";
   requiredRecipient?: { handle: string; title: string; onClear(): void };
   mentionTokens: ComposerMentionDescriptor[];
+  mentionBindings: AgentMentionBindingDto[];
   mentionedBusyHandles: string[];
   mentionedHandles: string[];
   canSend: boolean;
@@ -196,6 +199,7 @@ export function ComposerTextInput({
         destinationMode={destinationMode}
         requiredRecipient={requiredRecipient}
         mentionDescriptors={mentionTokens}
+        mentionBindings={mentionBindings}
         canSend={canSend}
         onTextChange={onTextChange}
         onFiles={onFiles}

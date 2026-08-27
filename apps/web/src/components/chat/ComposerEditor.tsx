@@ -23,6 +23,7 @@ import {
   type SerializedLexicalNode,
   type Spread,
 } from "lexical";
+import type { AgentMentionBindingDto } from "@ponderosa/core";
 import { LexicalComposer } from "@lexical/react/LexicalComposer";
 import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
 import { ContentEditable } from "@lexical/react/LexicalContentEditable";
@@ -490,6 +491,7 @@ function EditorBridge({
   editorRef,
   text,
   mentionDescriptors,
+  mentionBindings,
   disabled,
   attachmentsEnabled,
   pastedText,
@@ -501,6 +503,7 @@ function EditorBridge({
   editorRef: ForwardedRef<ComposerEditorHandle>;
   text: string;
   mentionDescriptors: readonly ComposerMentionDescriptor[];
+  mentionBindings: readonly AgentMentionBindingDto[];
   disabled: boolean;
   attachmentsEnabled: boolean;
   pastedText?: string;
@@ -598,6 +601,32 @@ function EditorBridge({
         if ($isElementNode(node)) node.getChildren().forEach(visit);
       };
       $getRoot().getChildren().forEach(visit);
+      const currentById = new Map(
+        mentionBindings.map(binding => [binding.agentId, binding]),
+      );
+      let lifecycleChanged = false;
+      for (const node of mentionNodes) {
+        const current = node.getDescriptor();
+        if (current.kind !== "agent" || !current.agentId) continue;
+        const binding = currentById.get(current.agentId);
+        const reconciled = binding
+          ? {
+              ...current,
+              handle: binding.currentHandle,
+              title: binding.currentTitle,
+              valid: true,
+            }
+          : { ...current, valid: false };
+        if (
+          current.handle !== reconciled.handle ||
+          current.title !== reconciled.title ||
+          current.valid !== reconciled.valid
+        ) {
+          node.reconcile(reconciled);
+          lifecycleChanged = true;
+        }
+      }
+      if (lifecycleChanged) return;
       if (mentionNodes.length !== desired.length) {
         const selection = $selectionOffsets();
         $resetCanonicalDocument(canonicalRef.current, desired, selection);
@@ -618,7 +647,7 @@ function EditorBridge({
         }
       }
     });
-  }, [editor, mentionDescriptors]);
+  }, [editor, mentionBindings, mentionDescriptors]);
 
   useEffect(() => {
     const copy = (event: ClipboardEvent | KeyboardEvent | null): boolean => {
@@ -717,6 +746,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
   destinationMode?: "project-chat" | "fixed" | "target-required";
   requiredRecipient?: { handle: string; title: string; onClear(): void };
   mentionDescriptors: ComposerMentionDescriptor[];
+  mentionBindings: AgentMentionBindingDto[];
   canSend: boolean;
   onTextChange(value: string, caret: number): void;
   onFiles(files: File[]): void;
@@ -742,6 +772,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
   destinationMode,
   requiredRecipient,
   mentionDescriptors,
+  mentionBindings,
   canSend,
   onTextChange,
   onFiles,
@@ -906,6 +937,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
           editorRef={assignBridgeRef}
           text={text}
           mentionDescriptors={mentionDescriptors}
+          mentionBindings={mentionBindings}
           disabled={disabled || locked}
           attachmentsEnabled={attachmentsEnabled}
           pastedText={pastedText}

@@ -1406,6 +1406,7 @@ export function Composer({
             destinationMode={destinationMode}
             requiredRecipient={requiredRecipient}
             mentionTokens={mentionTokens}
+            mentionBindings={mentionBindings ?? []}
             mentionedBusyHandles={mentionedBusyHandles}
             mentionedHandles={mentionedHandles}
             canSend={canSend}
