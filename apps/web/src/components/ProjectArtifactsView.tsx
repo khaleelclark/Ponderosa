@@ -18,7 +18,6 @@ import {
   DialogContent,
   DialogTitle,
   FormControl,
-  IconButton,
   InputAdornment,
   InputLabel,
   List,
@@ -89,7 +88,6 @@ export function ProjectArtifactsView({
   onProjectDeleted,
   onOpenEngineStatus,
   onOpenArtifact,
-  onOpenAgentWork,
   conversations,
   initialView,
   onViewChange,
@@ -110,7 +108,6 @@ export function ProjectArtifactsView({
   onProjectDeleted(projectId: string): void;
   onOpenEngineStatus(): void;
   onOpenArtifact(agentId: string, artifactId: string): void;
-  onOpenAgentWork(): void;
   conversations: ConversationDto[];
   initialView?: ProjectDetailView;
   onViewChange(view: ProjectDetailView): void;
@@ -342,12 +339,6 @@ export function ProjectArtifactsView({
                 onOpenConversation={onOpenConversation}
                 onRenameConversation={onRenameConversation}
                 onDeleteConversation={onDeleteConversation}
-                onOpenAgentWork={onOpenAgentWork}
-                onOpenProjectFiles={() =>
-                  document
-                    .getElementById("project-files-and-results")
-                    ?.scrollIntoView({ behavior: "smooth", block: "start" })
-                }
                 onOpenImportantArtifact={artifact => {
                   if (artifact.previewUrl) setPreviewArtifact(artifact);
                   else {

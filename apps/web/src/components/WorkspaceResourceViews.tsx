@@ -38,7 +38,6 @@ import { mergeAgentStatuses } from "../agents";
 import {
   CollectionDirectoryControls,
   CollectionStateFeedback,
-  CollectionHeader,
   CollectionTimestamp,
   CollectionToolbar,
   CollectionWorkspace,

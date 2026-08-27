@@ -9,7 +9,6 @@ import type {
   CreateTriggerRequest,
   CreateTriggerResponse,
   RunTriggerResponse,
-  TriggerDefinitionDto,
 } from "@ponderosa/core";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import {

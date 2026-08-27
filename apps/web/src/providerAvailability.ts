@@ -1,13 +1,10 @@
 import {
   classifyProviderFailure,
-  MAX_PUBLIC_PROVIDER_FAILURE_CHARACTERS,
   publicProviderFailure,
   publicProviderFailureSummary,
   type EngineDto,
   type ProviderFailureCategory,
 } from "@ponderosa/core";
-
-export const MAX_PROVIDER_DIAGNOSTIC_CHARACTERS = MAX_PUBLIC_PROVIDER_FAILURE_CHARACTERS;
 
 /** Provider detail is never rendered; UI diagnostics are finite policy text. */
 export function providerAvailabilityDiagnostic(

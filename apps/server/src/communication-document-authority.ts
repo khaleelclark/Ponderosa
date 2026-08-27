@@ -56,7 +56,7 @@ export function createCommunicationDocumentAuthority(
   }
 
   function agentCanReadRuntimeArtifact(
-    artifact: import("@ponderosa/agents").RuntimeArtifactV3,
+    artifact: RuntimeArtifactV3,
     agentId: string,
   ): boolean {
     if (store.agentCanReadProjectArtifact(artifact.projectId, artifact.id, agentId)) return true;
@@ -77,7 +77,7 @@ export function createCommunicationDocumentAuthority(
 
   function managedProjectArtifactAgreesWithRuntime(
     managed: ArtifactDto,
-    runtime: import("@ponderosa/agents").RuntimeArtifactInputV3,
+    runtime: RuntimeArtifactInputV3,
   ): boolean {
     const provenanceAgrees = runtime.originAgentId
       ? managed.agentId === runtime.originAgentId && managed.originAgentId === runtime.originAgentId &&

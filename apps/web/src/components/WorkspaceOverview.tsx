@@ -12,7 +12,6 @@ import {
   Chip,
   IconButton,
   Tooltip,
-  Typography,
 } from "@mui/material";
 import type { ProjectDto, WorkspacePreferencesDto, WorkspaceProjectDirectoryItemDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";

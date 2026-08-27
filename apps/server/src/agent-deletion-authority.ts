@@ -66,7 +66,6 @@ type AgentDeletionAuthorityContext =
     draftAttachmentSurfaceDir(draftId: string): string;
     refreshTriggerSources(): Promise<void>;
     notifyScheduler(): void;
-    closeRunBrowser(agentId: string, run: ActiveRun, reason: string): Promise<void>;
     closeAgentBrowsers(agentId: string, reason: string): Promise<void>;
     providerProcessAuthority: ProviderProcessAuthority;
     browserProfiles: BrowserProfileAuthority;
@@ -98,7 +97,6 @@ export function createAgentDeletionAuthority(
     draftAttachmentSurfaceDir,
     refreshTriggerSources,
     notifyScheduler,
-    closeRunBrowser,
     closeAgentBrowsers,
     createOperationalNotification,
     resolveOperationalNotification,
@@ -194,7 +192,7 @@ export function createAgentDeletionAuthority(
       if (runtimeTerminationAttempts.get(handle) === attempt) runtimeTerminationAttempts.delete(handle);
     }
   };
-  const processAgentDeletionCleanup = async (receipt: import("@ponderosa/agents").AgentDeletionReceipt): Promise<boolean> => {
+  const processAgentDeletionCleanup = async (receipt: AgentDeletionReceipt): Promise<boolean> => {
     if (receipt.serverCleanupCompleted) return true;
     const errors: string[] = [];
     try { cancelAgentDecisions(receipt.deletedAgentIds); }
@@ -282,7 +280,7 @@ export function createAgentDeletionAuthority(
   const commitAgentDeletion = async (
     rootAgentIds: string[],
     previewHash: string,
-    authorization?: import("@ponderosa/agents").AgentManagementAuthorization,
+    authorization?: AgentManagementAuthorization,
   ): Promise<CommitAgentDeletionResponse> => {
     const previous = store.getAgentDeletionReceiptByPreviewHash(previewHash);
     if (previous) {

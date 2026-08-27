@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, renameSync, rmSync } from "node:fs";
-import type Database from "better-sqlite3";
 import { asc, eq } from "drizzle-orm";
 import type {
   AgentDto,
@@ -43,7 +42,6 @@ export class AgentWorkspaceCatalogAuthority {
   constructor(
     private readonly dataDir: string,
     private readonly db: Db,
-    private readonly client: Database.Database,
     private readonly listAgents: (projectId: string) => AgentDto[],
     private readonly getConversationMessages: (
       conversationId: string,

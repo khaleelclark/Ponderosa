@@ -156,7 +156,7 @@ export class AgentStore extends AgentEventSessionFacade {
     projectCount: number;
   } = { mode: "recovery", openMs: 0, componentsMs: 0, recoveryMs: 0, totalMs: 0, projectCount: 0 };
 
-  constructor(private readonly dataDir: string) {
+  constructor(dataDir: string) {
     super();
     const startupStartedAt = performance.now();
     this.support = new AgentStoreSupport(dataDir);

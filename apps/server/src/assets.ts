@@ -30,7 +30,6 @@ import {
   type GeneratedArtifactImportReceipt,
   type RegisteredGeneratedArtifact,
   type RegisteredRuntimeArtifact,
-  type RuntimeAttachmentAssociation,
   type StoredAsset,
 } from "./asset-contracts.js";
 

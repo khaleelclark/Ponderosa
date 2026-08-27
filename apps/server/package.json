@@ -7,6 +7,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:built": "pnpm build && node --test test/*.test.mjs",
     "start": "node dist/main.js",
     "dev": "node --watch --experimental-strip-types src/main.ts"
   },

@@ -13,7 +13,6 @@ import {
   type AgentManagementAuthorization,
   type AgentStore,
   type CoordinationV3Store,
-  type WorkspaceStore,
 } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
 import type { ActiveRun, EngineRegistration, PersistentRuntime } from "../app-contracts.js";
@@ -24,7 +23,6 @@ import type { AgentWorkingCopyService } from "../agent-working-copy-service.js";
 interface AgentMaintenanceRoutesContext {
   store: AgentStore;
   coordinationV3: CoordinationV3Store;
-  workspace: WorkspaceStore;
   engines: ReadonlyMap<string, EngineRegistration>;
   triggerSources: TriggerSourceService;
   deletingAgentIds: Set<string>;
@@ -59,7 +57,6 @@ export function registerAgentMaintenanceRoutes(
   const {
     store,
     coordinationV3,
-    workspace,
     engines,
     triggerSources,
     deletingAgentIds,

@@ -1,4 +1,4 @@
-import { Avatar, Box, ButtonBase, IconButton, Stack, Tooltip } from "@mui/material";
+import { Avatar, Box, ButtonBase, Stack, Tooltip } from "@mui/material";
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import type { ChatMessagePresentation } from "./contracts";
 import { MessageSenderLabel } from "../MessageSenderLabel";
@@ -130,7 +130,7 @@ export function ChatMessageFrame({
               ><MessageSenderLabel name={senderName} /></ButtonBase>
                 : <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: 14 } }}><MessageSenderLabel name={senderName} /></Box>}
               {message.source}
-              <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact align="start" desktopOnly /></Box>
+              <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} align="start" desktopOnly /></Box>
             </Stack>
           ) : author.kind === "operator" ? (
             <Stack
@@ -156,7 +156,6 @@ export function ChatMessageFrame({
               <Box sx={{ color: "text.secondary" }}>
                 <MessageTimestamp
                   value={message.createdAt}
-                  compact
                   align="end"
                   desktopOnly
                 />

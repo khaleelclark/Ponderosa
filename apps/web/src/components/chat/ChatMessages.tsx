@@ -1,9 +1,7 @@
-import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import CheckIcon from "@mui/icons-material/Check";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
-import LanguageIcon from "@mui/icons-material/Language";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, Tooltip, Typography } from "@mui/material";
 import { messageTagTokens, unicodeCodePointLength } from "@ponderosa/core";

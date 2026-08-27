@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync, statSync, promises as fs } from "node:fs";
 import path from "node:path";
-import type { AgentEvent } from "@ponderosa/core";
 import {
   artifactContentPath,
   publishManagedArtifactContentAsync,

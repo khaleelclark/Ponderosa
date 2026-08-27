@@ -25,7 +25,6 @@ import {
   communicationVisibleText,
   individualChatSenderLabel,
   linkPreviewScopeForMessage,
-  resolveMessageMentionText,
   showBroadcastBadge,
   stripDocumentPrefixText,
 } from "./ChatMessages";

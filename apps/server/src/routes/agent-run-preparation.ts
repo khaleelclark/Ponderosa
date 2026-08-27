@@ -20,7 +20,6 @@ import {
 } from "@ponderosa/core";
 import { attachmentsDir } from "@ponderosa/agents";
 import type { CommunicationV4NextRunDelivery } from "@ponderosa/agents";
-import type { FastifyInstance } from "fastify";
 import { renderSeedPrompt } from "@ponderosa/engines";
 import { inboundContext } from "../agent-mentions.js";
 import { collectReachableArtifactIds } from "../artifact-refs.js";
@@ -74,7 +73,6 @@ interface PrepareAgentRunInput {
   communication: CommunicationEvent | undefined;
   sharedCommunication: Extract<CommunicationEvent, { intent: "broadcast" }> | undefined;
   sharedTaskTurn: boolean;
-  directUserTaskTurn: boolean;
   sourceMasterMessage: ConversationMessageDto | undefined;
   pendingTurn: PendingTurn;
   requestedSourceChannel: "main" | undefined;
@@ -174,7 +172,6 @@ const runtimeAttachmentName = (item: AssetDto): string => {
 };
 
 export async function prepareAgentRun(
-  app: FastifyInstance,
   runContext: AgentMessageRunContext,
   input: PrepareAgentRunInput,
 ) {
@@ -217,7 +214,6 @@ export async function prepareAgentRun(
     communication,
     sharedCommunication,
     sharedTaskTurn,
-    directUserTaskTurn,
     sourceMasterMessage,
     pendingTurn,
     requestedSourceChannel,

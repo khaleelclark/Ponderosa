@@ -44,12 +44,10 @@ function formatMessageTimestamp(
 
 export function MessageTimestamp({
   value,
-  compact = false,
   align = "end",
   desktopOnly = false,
 }: {
   value: string;
-  compact?: boolean;
   align?: "start" | "end";
   desktopOnly?: boolean;
 }): JSX.Element | null {
@@ -105,7 +103,7 @@ export function MessageActionsAndTimestamp({
   const actionButtons = <Box className="chat-message-action-buttons" sx={{ display: "flex", flexShrink: 0, minWidth: 0, flexWrap: "wrap", alignItems: "center", gap: 0.25 }}>{actions}</Box>;
   return <Box className={touchRevealed ? "chat-message-actions revealed" : "chat-message-actions"} onPointerDown={revealOnTouch} sx={{ mt: 0.25, minWidth: 0, minHeight: { xs: 44, sm: 28 }, "& .MuiIconButton-root": { p: 0.35, minWidth: 28, minHeight: 28 }, "& .MuiSvgIcon-root": { fontSize: "1rem" } }}>
     {mobileTimestampRevealed ? <Box sx={{ display: { xs: "block", sm: "none" }, color: "text.secondary", mb: 0.25 }}>
-      <MessageTimestamp value={value} compact align={mobileTimestampAlign} />
+      <MessageTimestamp value={value} align={mobileTimestampAlign} />
     </Box> : null}
     <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ alignItems: "flex-start", minWidth: 0, minHeight: { xs: 44, sm: 28 } }}>
       {actionAlign === "start" ? actionButtons : null}

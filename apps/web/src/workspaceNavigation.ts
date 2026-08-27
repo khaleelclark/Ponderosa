@@ -132,15 +132,6 @@ export function unreadByConversation(notifications: WorkspaceNotificationDto[]):
   ));
 }
 
-export function hasUnreadConversationNotifications(
-  notifications: WorkspaceNotificationDto[],
-  conversationId: string | undefined,
-): boolean {
-  return Boolean(conversationId && notifications.some((notification) =>
-    notification.conversationId === conversationId && !notification.readAt && (notification.status ?? "open") === "open" &&
-    isOrdinaryMessageNotification(notification)));
-}
-
 export function projectDisambiguator(
   project: Pick<ProjectDto, "id" | "label" | "hostPath">,
   projects: ProjectDto[],

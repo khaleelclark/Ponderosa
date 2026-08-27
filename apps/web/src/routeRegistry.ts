@@ -207,11 +207,6 @@ export function isProjectRoute(route: Route): route is ProjectRoute {
   return entryFor(route).scope === "project";
 }
 
-export function isRouteKind(value: unknown): value is RouteKind {
-  return typeof value === "string" &&
-    Object.prototype.hasOwnProperty.call(ROUTE_REGISTRY, value);
-}
-
 export function assertNeverRoute(route: never): never {
   throw new Error(`Unhandled route: ${JSON.stringify(route)}`);
 }

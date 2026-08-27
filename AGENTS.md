@@ -133,11 +133,38 @@ Ponderosa uses REST and SSE. Do not introduce SSR, Next.js, or WebSockets withou
 
 - Use TypeScript throughout.
 - Build in dependency order: engines → agents → server → web.
-- During rapid development, do not create, restore, run, request, recommend, or cite automated tests, test files, test-only fixtures, test-only hooks, or test-only harnesses. Use focused live/manual qualification plus typecheck and build checks instead.
+- Tests must prove user-visible behavior, a safety invariant, or a previously reproduced failure. Prefer the platform's built-in test facilities and existing project tooling; do not add a test dependency when a focused standard-library test is sufficient.
+- Non-trivial logic must leave behind the smallest runnable check that would fail if the behavior regressed. Trivial one-line changes do not require a dedicated test. Typecheck, production builds, and focused live/manual qualification remain required in proportion to risk.
 - Persist commands, tool calls, file changes, failures, and lifecycle events in the audit trail.
 - Keep Project and Agent history bounded by default. Retrieve older evidence explicitly.
 - Project creation requires a validated host folder and subscription-backed engine.
 - Deleting a Project removes Ponderosa-owned state, never the user’s selected source folder.
+
+## Ponytail engineering mode
+
+Act like a lazy senior developer: efficient, not careless. The best code is code that never needs to be written.
+
+After understanding the problem and tracing the real flow end to end, stop at the first rung that holds:
+
+1. Does this need to be built at all? Apply YAGNI.
+2. Does it already exist in this codebase? Reuse the established helper, utility, or pattern.
+3. Does the standard library already solve it? Use that.
+4. Does a native platform feature cover it? Use that.
+5. Does an already-installed dependency solve it? Use that.
+6. Can this be one line without hiding the behavior? Make it one line.
+7. Only then write the minimum new code that works.
+
+For bug fixes, treat the report as a symptom. Trace every caller of the shared function or authority involved and fix the root cause once. A small patch in the wrong layer is not a small fix.
+
+- Do not introduce an abstraction unless the task or repeated concrete use requires it.
+- Avoid new dependencies.
+- Do not add boilerplate, speculative extension points, or compatibility paths nobody requested.
+- Prefer deletion over addition, boring code over clever code, and the fewest correctly placed files.
+- Question complex requests when a smaller existing capability covers the outcome.
+- When equally small options exist, choose the edge-case-correct standard-library or platform behavior.
+- Mark a deliberate simplification with a known ceiling using a `ponytail:` comment that names both the ceiling and the upgrade path.
+
+Ponytail is never an excuse to skip understanding, trust-boundary validation, data-loss prevention, error handling, security, accessibility, or real-hardware calibration.
 
 ## Collaboration and Git safety
 
