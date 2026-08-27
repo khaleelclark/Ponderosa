@@ -18,6 +18,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
+import { alpha } from "@mui/material/styles";
 import type {
   AssetLimitsDto,
   EngineCommand,
@@ -280,8 +281,11 @@ export function ComposerTextInput({
                       display: "inline-flex",
                       alignItems: "baseline",
                       borderRadius: 0.75,
-                      bgcolor: token.valid ? "action.selected" : "error.dark",
-                      color: token.valid ? "primary.light" : "error.contrastText",
+                      bgcolor: theme => token.valid
+                        ? alpha(theme.palette.success.main, theme.palette.mode === "dark" ? 0.2 : 0.12)
+                        : theme.palette.error.dark,
+                      color: token.valid ? "success.main" : "error.contrastText",
+                      boxShadow: token.valid ? "inset 0 0 0 1px currentColor" : undefined,
                       fontWeight: 700,
                       px: 0.35,
                       textIndent: 0,
