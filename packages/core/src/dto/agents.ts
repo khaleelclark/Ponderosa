@@ -26,7 +26,7 @@ export interface AgentManagementPermissionsDto {
 }
 
 export type AgentWorkingCopyMode = "shared" | "separate_git";
-export type AgentWorkingCopyState = "ready" | "unavailable";
+export type AgentWorkingCopyState = "ready" | "unavailable" | "removed";
 
 /** Durable filesystem identity used by one Agent across Runs and provider sessions. */
 export interface AgentWorkingCopyDto {
@@ -308,6 +308,8 @@ export type AgentOrganizationNodeDto =
       id: string;
       title: string;
       relation: Extract<AgentOrganizationRelationDto, { kind: "deleted" }>;
+      /** A deleted Agent's Separate Git copy remains until explicit cleanup. */
+      retainedWorkingCopy?: AgentWorkingCopyDto;
     };
 
 export interface AgentOrganizationPageDto {

@@ -577,6 +577,12 @@ export const realApi = {
   listAgentsPage(projectId: string, options: { limit?: number; cursor?: string; search?: string } = {}): Promise<CollectionPage<AgentDto>> {
     return requestCollectionPage<AgentDto>(`/api/projects/${encodeURIComponent(projectId)}/agents${toQuery({ limit: options.limit, cursor: options.cursor, search: options.search })}`);
   },
+  cleanupDeletedAgentWorkingCopy(projectId: string, agentId: string): Promise<AgentDto["workingCopy"]> {
+    return requestJson<AgentDto["workingCopy"]>(
+      `/api/projects/${encodeURIComponent(projectId)}/deleted-agents/${encodeURIComponent(agentId)}/working-copy`,
+      { method: "DELETE" },
+    );
+  },
   async getAgentOrganizationPage(
     projectId: string,
     options: {

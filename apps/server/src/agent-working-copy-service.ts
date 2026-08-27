@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, realpath } from "node:fs/promises";
+import { lstat, mkdir, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import {
@@ -12,6 +12,7 @@ import {
 } from "@ponderosa/agents";
 import type {
   AgentDto,
+  AgentWorkingCopyDto,
   AgentWorkingCopyMode,
   ProjectDto,
 } from "@ponderosa/core";
@@ -136,6 +137,60 @@ export class AgentWorkingCopyService {
     } finally {
       if (this.modeChanges.get(agent.id) === fence) this.modeChanges.delete(agent.id);
     }
+  }
+
+  /** Permanently remove a deleted Agent's explicitly retained Git copy. */
+  async cleanupRetained(
+    agentId: string,
+    workingCopy: AgentWorkingCopyDto,
+    project: Pick<ProjectDto, "id" | "hostPath">,
+  ): Promise<AgentWorkingCopyDto> {
+    if (workingCopy.mode !== "separate_git" || workingCopy.state === "removed") {
+      throw new Error("This deleted Agent has no retained Separate Git copy");
+    }
+    const expectedRoot = path.join(this.managedRoot, project.id, agentId, "root");
+    if (!samePath(path.resolve(workingCopy.rootPath), expectedRoot) ||
+        !inside(this.managedRoot, expectedRoot)) {
+      throw new Error("The retained Separate Git copy is outside its managed location");
+    }
+    const projectRoot = await realpath(project.hostPath);
+    const topLevel = await realpath(await runGit(projectRoot, ["rev-parse", "--show-toplevel"]));
+    if (!samePath(projectRoot, topLevel)) {
+      throw new Error("The Project Shared folder is not the root of its Git repository");
+    }
+    let rootExists = false;
+    try {
+      const metadata = await lstat(expectedRoot);
+      if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+        throw new Error("The retained Separate Git copy is not a managed directory");
+      }
+      const canonical = await realpath(expectedRoot);
+      if (!samePath(canonical, expectedRoot)) {
+        throw new Error("The retained Separate Git copy resolves somewhere else");
+      }
+      rootExists = true;
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    }
+    if (rootExists) {
+      await runGit(projectRoot, ["worktree", "remove", "--force", expectedRoot]);
+    } else {
+      await runGit(projectRoot, ["worktree", "prune"]);
+    }
+    if (workingCopy.branch) {
+      await runGit(projectRoot, ["check-ref-format", "--branch", workingCopy.branch]);
+      const branchExists = await runGit(projectRoot, [
+        "show-ref", "--verify", "--quiet", `refs/heads/${workingCopy.branch}`,
+      ]).then(() => true, () => false);
+      if (branchExists) await runGit(projectRoot, ["branch", "-D", workingCopy.branch]);
+    }
+    await rm(path.join(this.managedRoot, project.id, agentId), { recursive: true, force: true });
+    return {
+      ...workingCopy,
+      state: "removed",
+      failure: undefined,
+      updatedAt: new Date().toISOString(),
+    };
   }
 
   private async applyMode(

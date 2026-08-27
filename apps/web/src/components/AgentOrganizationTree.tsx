@@ -5,6 +5,7 @@ import CheckBoxOutlineBlankIcon from "@mui/icons-material/CheckBoxOutlineBlank";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
+import FolderDeleteOutlinedIcon from "@mui/icons-material/FolderDeleteOutlined";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import KeyboardArrowRightIcon from "@mui/icons-material/KeyboardArrowRight";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
@@ -55,7 +56,7 @@ import { useAgentOrganization } from "../hooks/useAgentOrganization";
 import { queryKeys } from "../queryKeys";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import { stopActiveAgentRuns } from "./AgentsTab";
-import { TextInputDialog } from "./ConfirmationDialogs";
+import { DestructiveConfirmDialog, TextInputDialog } from "./ConfirmationDialogs";
 import { ImportAgentDialog } from "./ImportAgentDialog";
 import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 import {
@@ -80,6 +81,11 @@ const STATUS_OPTIONS: Array<{ value: "" | AgentOperationalStatus; label: string 
   { value: "idle", label: "Idle" },
 ];
 
+type DeletedOrganizationNode = Extract<
+  AgentOrganizationNodeDto,
+  { relation: { kind: "deleted" } }
+>;
+
 interface TreeState {
   projectId: string;
   expanded: ReadonlySet<string>;
@@ -98,6 +104,7 @@ interface TreeState {
   toggleSelection(agentId: string): void;
   onOpenAgent(agentId: string): void;
   onActions(node: AgentOrganizationNodeDto, anchor: HTMLElement): void;
+  onCleanupRetained(node: DeletedOrganizationNode): void;
   registerNode(agentId: string, parentId: string | undefined, live: boolean): () => void;
 }
 
@@ -335,6 +342,21 @@ function OrganizationRow({
               {node.activeEngine}
             </Typography>
           </Stack>
+        ) : null}
+        {!live && node.retainedWorkingCopy ? (
+          <Button
+            color="error"
+            variant="outlined"
+            size="small"
+            startIcon={<FolderDeleteOutlinedIcon />}
+            onClick={event => {
+              event.stopPropagation();
+              state.onCleanupRetained(node);
+            }}
+            sx={{ minHeight: 40, flex: "0 0 auto" }}
+          >
+            Clean Up Git Copy
+          </Button>
         ) : null}
         {live ? (
           <Box
@@ -619,6 +641,7 @@ export function AgentOrganizationTree({
   const [selectedNode, setSelectedNode] = useState<AgentOrganizationNodeDto>();
   const [pendingRename, setPendingRename] = useState<{ id: string; title: string }>();
   const [pendingDelete, setPendingDelete] = useState<{ id: string; title: string }>();
+  const [pendingCopyCleanup, setPendingCopyCleanup] = useState<DeletedOrganizationNode>();
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [bulkError, setBulkError] = useState<string>();
   const [stoppingAll, setStoppingAll] = useState(false);
@@ -708,6 +731,7 @@ export function AgentOrganizationTree({
       setSelectedNode(node);
       setMenu({ resource: node.id, anchor });
     },
+    onCleanupRetained: setPendingCopyCleanup,
     registerNode,
   };
   const rename = useMutation({
@@ -717,6 +741,13 @@ export function AgentOrganizationTree({
       setPendingRename(undefined);
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.organizationProject(projectId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(projectId) });
+    },
+  });
+  const cleanupRetainedCopy = useMutation({
+    mutationFn: ({ id }: { id: string }) => api.cleanupDeletedAgentWorkingCopy(projectId, id),
+    onSuccess: () => {
+      setPendingCopyCleanup(undefined);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.organizationProject(projectId) });
     },
   });
   const summary = roots.summary;
@@ -1090,6 +1121,23 @@ export function AgentOrganizationTree({
         onCancel={() => setPendingRename(undefined)}
         onConfirm={title => pendingRename && rename.mutate({ id: pendingRename.id, title: title.trim() })}
       />
+      {pendingCopyCleanup?.retainedWorkingCopy ? (
+        <DestructiveConfirmDialog
+          open
+          title={`Clean up ${pendingCopyCleanup.title}'s retained Git copy?`}
+          confirmLabel="Delete Git Copy"
+          pendingLabel="Deleting…"
+          pending={cleanupRetainedCopy.isPending}
+          error={cleanupRetainedCopy.isError ? String(cleanupRetainedCopy.error) : undefined}
+          onCancel={() => setPendingCopyCleanup(undefined)}
+          onConfirm={() => cleanupRetainedCopy.mutate({ id: pendingCopyCleanup.id })}
+        >
+          This permanently removes the retained folder and its Agent-owned branch
+          {pendingCopyCleanup.retainedWorkingCopy.branch
+            ? ` (${pendingCopyCleanup.retainedWorkingCopy.branch})`
+            : ""}. Any unmerged work in that copy will be lost.
+        </DestructiveConfirmDialog>
+      ) : null}
       <ResourceContextMenu
         state={menu}
         onClose={() => setMenu(undefined)}

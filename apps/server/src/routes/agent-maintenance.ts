@@ -1,4 +1,5 @@
 import type {
+  AgentWorkingCopyDto,
   AgentDeletionPreviewRequest,
   CommitAgentDeletionRequest,
   CommitAgentDeletionResponse,
@@ -72,6 +73,38 @@ export function registerAgentMaintenanceRoutes(
     notifyScheduler,
     appendWorkspace,
   } = context;
+
+  app.delete<{ Params: { projectId: string; id: string } }>(
+    "/api/projects/:projectId/deleted-agents/:id/working-copy",
+    async (request, reply) => {
+      const project = store.getProject(request.params.projectId);
+      if (!project) return reply.code(404).send({ error: "project not found" });
+      const row = store.sqlite.prepare(`
+        SELECT working_copy_json FROM agents
+        WHERE id = ? AND project_id = ? AND deleted_at IS NOT NULL
+      `).get(request.params.id, project.id) as { working_copy_json: string } | undefined;
+      if (!row) return reply.code(404).send({ error: "deleted Agent not found" });
+      let workingCopy: AgentWorkingCopyDto;
+      try {
+        workingCopy = JSON.parse(row.working_copy_json) as AgentWorkingCopyDto;
+      } catch {
+        return reply.code(409).send({ error: "The retained working-copy record is invalid" });
+      }
+      try {
+        const removed = await workingCopies.cleanupRetained(request.params.id, workingCopy, project);
+        store.sqlite.prepare(`
+          UPDATE agents SET working_copy_json = ?, updated_at = ?
+          WHERE id = ? AND project_id = ? AND deleted_at IS NOT NULL
+        `).run(JSON.stringify(removed), removed.updatedAt, request.params.id, project.id);
+        appendWorkspace({ type: "project_changed", projectId: project.id, action: "updated" });
+        return removed;
+      } catch (error) {
+        return reply.code(409).send({
+          error: error instanceof Error ? error.message : "Retained Git copy cleanup failed",
+        });
+      }
+    },
+  );
 
   app.patch<{ Params: { id: string }; Body: UpdateAgentRequest }>(
     "/api/agents/:id",

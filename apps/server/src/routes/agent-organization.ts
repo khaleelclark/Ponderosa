@@ -102,6 +102,7 @@ interface DeletedOrganizationRow {
   id: string;
   title: string;
   deleted_at: string;
+  working_copy_json: string;
 }
 
 function placeholders(count: number): string {
@@ -251,7 +252,7 @@ export function registerAgentOrganizationRoutes(
       let items: AgentOrganizationNodeDto[];
       if (scope === "deleted") {
         const rows = idPage.items.length === 0 ? [] : context.store.sqlite.prepare(`
-          SELECT id, title, deleted_at
+          SELECT id, title, deleted_at, working_copy_json
           FROM agents
           WHERE project_id = ? AND deleted_at IS NOT NULL
             AND id IN (${placeholders(idPage.items.length)})
@@ -259,10 +260,14 @@ export function registerAgentOrganizationRoutes(
         const byId = new Map(rows.map(row => [row.id, row]));
         items = idPage.items.flatMap(id => {
           const row = byId.get(id);
+          const workingCopy = row ? JSON.parse(row.working_copy_json) as AgentDto["workingCopy"] : undefined;
           return row ? [{
             id: row.id,
             title: row.title,
             relation: { kind: "deleted" as const, deletedAt: row.deleted_at },
+            ...(workingCopy?.mode === "separate_git" && workingCopy.state !== "removed"
+              ? { retainedWorkingCopy: workingCopy }
+              : {}),
           }] : [];
         });
       } else {
