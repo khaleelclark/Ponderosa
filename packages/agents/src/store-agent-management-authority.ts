@@ -6,7 +6,6 @@ import type {
   AgentOrganizationEvent,
   ConversationDto,
   ProjectDto,
-  UpdateAgentConversationMembershipsRequest,
   UpdateAgentOrganizationRequest,
   UpdateAgentRequest,
 } from "@ponderosa/core";
@@ -33,12 +32,6 @@ export class AgentManagementAuthority {
     private readonly getProject: (projectId: string) => ProjectDto | undefined,
     private readonly getConversation: (conversationId: string) => ConversationDto | undefined,
     private readonly rowToAgentDto: (agentId: string) => AgentDto | undefined,
-    private readonly persistAgentMemberships: (
-      agentId: string,
-      conversationIds: string[],
-      primaryConversationId?: string,
-      beforeProjectionChange?: () => void,
-    ) => void,
     private readonly refreshAllChatFeedProject: (projectId: string) => void,
   ) {}
 
@@ -233,6 +226,9 @@ export class AgentManagementAuthority {
       const parent = this.getAgent(parentId);
       if (!parent || parent.projectId !== agent.projectId) throw new Error("organizational parent must belong to the same project");
       if (parent.archived) throw new Error("organizational parent must be active");
+      if (parent.conversationId !== agent.conversationId) {
+        throw new Error("organizational parent must belong to the same Chat");
+      }
       const visited = new Set<string>([id]);
       let cursor: AgentDto | undefined = parent;
       while (cursor) {
@@ -318,30 +314,6 @@ export class AgentManagementAuthority {
     return readRepairableJsonl<AgentOrganizationEvent>(
       agentOrganizationEventsPath(this.dataDir, projectId), "agent organization log", true,
     );
-  }
-
-  updateAgentConversationMemberships(
-    id: string,
-    input: UpdateAgentConversationMembershipsRequest,
-    beforeMembershipProjectionChange?: (agentId: string, removedConversationIds: string[]) => void,
-  ): AgentDto | undefined {
-    const agent = this.getAgent(id);
-    if (!agent) return undefined;
-    const ids = [...new Set(input.conversationIds)];
-    if (ids.length !== input.conversationIds.length) throw new Error("duplicate conversation membership");
-    if (ids.length > 0 && !input.primaryConversationId) throw new Error("primary conversation is required");
-    if (input.primaryConversationId && !ids.includes(input.primaryConversationId)) {
-      throw new Error("primary conversation must be a member");
-    }
-    for (const conversationId of ids) {
-      const master = this.getConversation(conversationId);
-      if (!master || master.projectId !== agent.projectId) throw new Error("conversation does not belong to project");
-      if (master.archived && !agent.conversationIds.includes(conversationId)) throw new Error("archived conversation cannot accept agents");
-    }
-    const removedConversationIds = agent.conversationIds.filter((conversationId) => !ids.includes(conversationId));
-    this.persistAgentMemberships(id, ids, input.primaryConversationId, () =>
-      beforeMembershipProjectionChange?.(id, removedConversationIds));
-    return this.getAgent(id);
   }
 
   sanitizeOrganizationProjection(projectId: string): void {

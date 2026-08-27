@@ -223,7 +223,7 @@ export class AgentCommunicationJournalAuthority {
       if (!agent || agent.projectId !== event.projectId || agent.archived) throw new Error("communication recipient must be an active agent in its project");
       if (
         event.conversationId
-        && !agent.conversationIds.includes(event.conversationId)
+        && agent.conversationId !== event.conversationId
         && !(event.schemaVersion === 2 && event.intent === "user_dm" && event.sender.kind === "user")
       ) throw new Error("communication recipient must belong to its conversation");
     }
@@ -233,7 +233,7 @@ export class AgentCommunicationJournalAuthority {
         if (!sender || sender.projectId !== event.projectId || sender.archived) {
           throw new Error("collaboration sender must be an active agent in its project");
         }
-        if (event.conversationId && !sender.conversationIds.includes(event.conversationId)) {
+        if (event.conversationId && sender.conversationId !== event.conversationId) {
           throw new Error("collaboration sender must belong to its conversation");
         }
         if (event.audience.agentIds.includes(event.sender.agentId)) {

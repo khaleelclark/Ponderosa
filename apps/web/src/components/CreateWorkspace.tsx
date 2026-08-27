@@ -411,20 +411,15 @@ function TriggerCreateForm({
       if (project.id !== projectId) return [];
       const chats = conversationQueries[index]?.data ?? [];
       return (agentQueries[index]?.data ?? []).flatMap(agent => {
-        if (agent.archived || agent.conversationIds.length === 0) return [];
+        if (agent.archived) return [];
         if (
           initialConversationId &&
           project.id === initialProjectId &&
-          !agent.conversationIds.includes(initialConversationId)
+          agent.conversationId !== initialConversationId
         ) {
           return [];
         }
-        const conversationId =
-          (project.id === initialProjectId ? initialConversationId : undefined) ??
-          agent.conversationId ??
-          agent.conversationIds.find(id =>
-            chats.some(chat => chat.id === id && !chat.archived)) ??
-          agent.conversationIds[0]!;
+        const conversationId = agent.conversationId;
         const chat = chats.find(candidate => candidate.id === conversationId);
         return [{
           project,

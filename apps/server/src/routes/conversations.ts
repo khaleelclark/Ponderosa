@@ -34,7 +34,7 @@ export interface ConversationRouteDependencies {
   ) => AgentHealthProjectionDto;
   teamDirectory: (projectId: string, conversationId?: string, fallbackAgentId?: string, selectedAgentIds?: readonly string[]) => TeamDirectoryDto;
   hasActiveRun: (agentId: string) => boolean;
-  handleAgentConversationRemoval: (agentId: string, conversationId: string) => void;
+  commitAgentDeletion(rootAgentIds: string[], previewHash: string): Promise<{ deletedAgentIds: string[] }>;
   purgeCommunicationV4Conversation: (conversationId: string) => void;
   refreshTriggers: () => Promise<unknown>;
   draftAttachmentSurfaceDir: (draftId: string) => string;
@@ -56,7 +56,7 @@ export function registerConversationRoutes(
     agentHealth,
     teamDirectory,
     hasActiveRun,
-    handleAgentConversationRemoval,
+    commitAgentDeletion,
     purgeCommunicationV4Conversation,
     refreshTriggers,
     draftAttachmentSurfaceDir,
@@ -125,8 +125,7 @@ export function registerConversationRoutes(
           baseSql: `
             SELECT agent.id, agent.title, agent.updated_at
             FROM agents agent
-            JOIN agent_conversation_memberships membership ON membership.agent_id = agent.id
-            WHERE membership.conversation_id = ? AND agent.deleted_at IS NULL
+            WHERE agent.conversation_id = ? AND agent.deleted_at IS NULL
               ${normalizedSearch ? "AND lower(agent.title || ' ' || agent.active_engine || ' ' || COALESCE(agent.model, '')) LIKE ? ESCAPE '\\\\'" : ""}
           `,
           params: normalizedSearch
@@ -205,7 +204,7 @@ export function registerConversationRoutes(
   app.get<{ Params: { id: string } }>("/api/conversations/:id/agent-health", async (request, reply) => {
     const master = store.getConversation(request.params.id);
     if (!master) return reply.code(404).send({ error: "conversation not found" });
-    const agents = store.listAgents(master.projectId).filter((agent) => agent.conversationIds.includes(master.id));
+    const agents = store.listAgents(master.projectId).filter((agent) => agent.conversationId === master.id);
     return agentHealth({ type: "conversation", id: master.id }, agents);
   });
 
@@ -246,13 +245,15 @@ export function registerConversationRoutes(
   app.delete<{ Params: { id: string } }>("/api/conversations/:id", async (request, reply) => {
     const current = store.getConversation(request.params.id);
     if (current) {
-      const linkedAgents = store.listAgents(current.projectId).filter((agent) => agent.conversationIds.includes(current.id));
+      const linkedAgents = store.listAgents(current.projectId).filter((agent) => agent.conversationId === current.id);
       const active = linkedAgents.some((agent) => hasActiveRun(agent.id));
       if (active) return reply.code(409).send({ error: "stop active agents before deleting this Project chat" });
+      if (linkedAgents.length > 0) {
+        const preview = store.previewAgentDeletion(linkedAgents.map((agent) => agent.id));
+        await commitAgentDeletion(preview.rootAgentIds, preview.previewHash);
+      }
     }
-    const deleted = store.deleteConversation(request.params.id, (agentId, conversationId) => {
-      handleAgentConversationRemoval(agentId, conversationId);
-    }, purgeCommunicationV4Conversation);
+    const deleted = store.deleteConversation(request.params.id, purgeCommunicationV4Conversation);
     if (deleted && current) {
       await refreshTriggers();
       const cursor = workspace.cursor();

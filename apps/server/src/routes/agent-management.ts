@@ -80,7 +80,7 @@ export function registerAgentManagementRoutes(
     if (deletingAgentIds.has(owner.id)) {
       return reply.code(409).send({ error: "Agent deletion is already in progress" });
     }
-    if (!capability.conversationId || !owner.conversationIds.includes(capability.conversationId)) {
+    if (!capability.conversationId || owner.conversationId !== capability.conversationId) {
       return reply.code(409).send({ error: "organization management requires an active Team Chat scope" });
     }
     const body = request.body && typeof request.body === "object" && !Array.isArray(request.body) ? request.body as Record<string, unknown> : {};
@@ -422,7 +422,7 @@ export function registerAgentManagementRoutes(
       workspace.createNotification({
         projectId: decision.projectId,
         conversationId: decision.conversationId,
-        conversationIds: owner.conversationIds,
+        conversationIds: [owner.conversationId],
         agentId: decision.agentId,
         agentIds: [decision.agentId],
         kind: "decision",

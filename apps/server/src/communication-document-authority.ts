@@ -42,7 +42,7 @@ export function createCommunicationDocumentAuthority(
   function agentCanReadDocument(event: CommunicationEvent, agentId: string): boolean {
     const agent = store.getAgent(agentId);
     if (!agent || agent.projectId !== event.projectId || agent.archived) return false;
-    if (event.intent === "broadcast") return !event.conversationId || agent.conversationIds.includes(event.conversationId);
+    if (event.intent === "broadcast") return event.conversationId === agent.conversationId;
     if (event.schemaVersion === 2 && event.intent === "user_dm") {
       return (event.audience.kind === "user_agent"
         ? event.audience.agentId === agentId

@@ -148,7 +148,7 @@ export const conversations = sqliteTable("conversations", {
   archived: integer("archived").notNull().default(0),
 });
 
-/** Rebuildable projection of the canonical membership list in agent.json. */
+/** Rebuildable compatibility index of each live Agent's single owner Chat. */
 export const agentConversationMemberships = sqliteTable("agent_conversation_memberships", {
   agentId: text("agent_id").notNull(),
   conversationId: text("conversation_id").notNull(),

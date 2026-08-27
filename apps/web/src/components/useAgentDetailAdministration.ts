@@ -9,14 +9,11 @@ import { queryKeys } from "../queryKeys";
 
 interface AgentDetailAdministrationInput {
   agentId: string;
-  membershipIds: string[];
-  primaryConversationId: string;
   organizationParentId: string;
   settingsEngine: string;
   settingsModel: string;
   settingsEffort: string;
   onRenameClosed(): void;
-  onMembershipClosed(): void;
   onOrganizationClosed(): void;
   onRuntimeSettingsNotice(value?: string): void;
 }
@@ -29,14 +26,11 @@ interface AgentRuntimeSettingsPatch {
 
 export function useAgentDetailAdministration({
   agentId,
-  membershipIds,
-  primaryConversationId,
   organizationParentId,
   settingsEngine,
   settingsModel,
   settingsEffort,
   onRenameClosed,
-  onMembershipClosed,
   onOrganizationClosed,
   onRuntimeSettingsNotice,
 }: AgentDetailAdministrationInput) {
@@ -73,30 +67,6 @@ export function useAgentDetailAdministration({
         queryKey: queryKeys.conversations.detailAll,
       });
       onRenameClosed();
-    },
-  });
-
-  const updateMemberships = useMutation({
-    mutationFn: () =>
-      api.updateAgentConversationMemberships(agentId, {
-        conversationIds: membershipIds,
-        primaryConversationId: membershipIds.length
-          ? primaryConversationId
-          : undefined,
-      }),
-    onSuccess: updated => {
-      onMembershipClosed();
-      queryClient.setQueriesData<AgentDetailDto>(
-        { queryKey: queryKeys.agents.detailPrefix(agentId) },
-        current => (current ? { ...current, agent: updated } : current),
-      );
-      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.conversations.detailAll,
-      });
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.projectArtifacts.project(updated.projectId),
-      });
     },
   });
 
@@ -173,7 +143,6 @@ export function useAgentDetailAdministration({
   return {
     rename,
     updateManagementPermissions,
-    updateMemberships,
     updateOrganization,
     updateRuntimeSettings,
   };

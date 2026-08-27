@@ -22,7 +22,7 @@ import type { Db } from "./db.js";
 import { appendFsyncedJsonl } from "./append-jsonl.js";
 import { readJson, writeJson } from "./store-filesystem.js";
 import type { ConversationJson, PresetEvent, ProjectJson } from "./store-types.js";
-import { agentConversationMemberships, agentPresets, conversations, projects } from "./schema.js";
+import { agentPresets, conversations, projects } from "./schema.js";
 import {
   agentPresetsPath,
   agentsDir,
@@ -49,11 +49,6 @@ export class AgentWorkspaceCatalogAuthority {
       conversationId: string,
       channel?: ConversationChannel,
     ) => ConversationMessageDto[],
-    private readonly persistAgentMemberships: (
-      agentId: string,
-      conversationIds: string[],
-      primaryConversationId?: string,
-    ) => void,
     private readonly refreshAllChatFeedProject: (projectId: string) => void,
     private readonly setHistoryConversationVisibility: (
       projectId: string,
@@ -274,7 +269,7 @@ export class AgentWorkspaceCatalogAuthority {
     return {
       conversation,
       messages: this.getConversationMessages(id, "main"),
-      agents: this.listAgents(conversation.projectId).filter((agent) => agent.conversationIds.includes(id)),
+      agents: this.listAgents(conversation.projectId).filter((agent) => agent.conversationId === id),
     };
   }
 
@@ -283,7 +278,7 @@ export class AgentWorkspaceCatalogAuthority {
     if (!conversation) return undefined;
     return {
       messages: this.getConversationMessages(id, "collaboration"),
-      agents: this.listAgents(conversation.projectId).filter((agent) => agent.conversationIds.includes(id)),
+      agents: this.listAgents(conversation.projectId).filter((agent) => agent.conversationId === id),
     };
   }
 
@@ -330,29 +325,22 @@ export class AgentWorkspaceCatalogAuthority {
     return this.getConversation(id);
   }
 
-  /** Permanently remove a conversation while preserving its agents as unassigned agents. */
+  /** Permanently remove an empty Chat after its owned Agents have been deleted. */
   deleteConversation(
     id: string,
-    beforeMembershipDelete?: (agentId: string, conversationId: string) => void,
     beforeProjectionDelete?: (conversationId: string) => void,
   ): boolean {
     const row = this.db.select().from(conversations).where(eq(conversations.id, id)).get();
     if (!row) return false;
-    const linkedAgents = this.listAgents(row.projectId).filter((agent) => agent.conversationIds.includes(id));
+    const linkedAgents = this.listAgents(row.projectId).filter((agent) => agent.conversationId === id);
+    if (linkedAgents.length > 0) throw new Error("delete the Chat's Agents before deleting the Chat");
     this.db.transaction((tx) => {
-      // Communication V3 shares this SQLite connection, so Trigger deletion,
-      // pending-work cancellation, and membership removal commit atomically.
-      for (const agent of linkedAgents) beforeMembershipDelete?.(agent.id, id);
+      // Communication and Automation cleanup share this SQLite connection, so
+      // no new work can target the Chat after its projection disappears.
       beforeProjectionDelete?.(id);
       this.setHistoryConversationVisibility(row.projectId, id, false);
-      tx.delete(agentConversationMemberships).where(eq(agentConversationMemberships.conversationId, id)).run();
       tx.delete(conversations).where(eq(conversations.id, id)).run();
     });
-    for (const agent of linkedAgents) {
-      const remaining = agent.conversationIds.filter((memberId) => memberId !== id);
-      const primary = agent.conversationId === id ? remaining[0] : agent.conversationId;
-      this.persistAgentMemberships(agent.id, remaining, primary);
-    }
     rmSync(conversationDir(this.dataDir, row.projectId, id), { recursive: true, force: true });
     this.refreshAllChatFeedProject(row.projectId);
     return true;

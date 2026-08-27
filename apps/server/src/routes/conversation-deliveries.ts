@@ -225,7 +225,7 @@ export function registerConversationDeliveryRoutes(
     const validatedAssets: AssetDto[] = [];
     for (const requested of requestedAssets) {
       const owner = store.getAgent(requested.agentId);
-      const stored = owner?.projectId === master.projectId && owner.conversationIds.includes(master.id)
+      const stored = owner?.projectId === master.projectId && owner.conversationId === master.id
         ? await assetMetadata(owner.id, requested.id) : undefined;
       if (!stored) return reply.code(404).send({ error: "asset not found" });
       const { projectId: _projectId, originalFile: _originalFile, previewFile: _previewFile, associatedAt: _associatedAt, ...publicAsset } = stored;

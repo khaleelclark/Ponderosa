@@ -90,10 +90,10 @@ interface ProviderCommandRoutesContext {
 }
 
 export function authorizedManualRolloverConversationId(
-  agent: { conversationIds: readonly string[] },
+  agent: { conversationId: string },
   sourceConversationId?: string,
 ): string | undefined {
-  return sourceConversationId && agent.conversationIds.includes(sourceConversationId)
+  return sourceConversationId && agent.conversationId === sourceConversationId
     ? sourceConversationId
     : undefined;
 }

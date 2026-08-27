@@ -52,10 +52,8 @@ export interface AgentDto {
   projectId: string;
   /** Server-allocated, Project-scoped structural mention handle. */
   handle: string;
-  /** Optional primary Project conversation that groups this agent. */
-  conversationId?: string;
-  /** All Project conversations this agent belongs to. `conversationId` is primary. */
-  conversationIds: string[];
+  /** The single Project Chat that owns this live Agent and supplies its Chat context. */
+  conversationId: string;
   title: string;
   /** The engine currently bound to this agent. */
   activeEngine: EngineId;
@@ -193,7 +191,8 @@ export interface TeamDirectoryDto {
 export interface CreateAgentRequest {
   title: string;
   engine: EngineId;
-  conversationId?: string;
+  /** Every live Agent belongs to exactly one Chat. */
+  conversationId: string;
   model?: string;
   effort?: string;
   /** Per-opening-turn processing tier. "standard" clears provider acceleration. */
@@ -325,13 +324,6 @@ export interface AgentOrganizationPageDto {
     orphaned: number;
     deleted: number;
   };
-}
-
-/** PUT /api/agents/:id/conversation-memberships body. Replaces membership atomically. */
-export interface UpdateAgentConversationMembershipsRequest {
-  conversationIds: string[];
-  /** Must be one of `conversationIds`; omit only when the resulting set is empty. */
-  primaryConversationId?: string;
 }
 
 export interface AgentHealthRunSummaryDto {

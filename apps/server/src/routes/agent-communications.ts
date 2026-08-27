@@ -212,7 +212,7 @@ export function registerAgentCommunicationRoutes(
         return reply.code(409).send({ error: "agent is no longer available" });
       }
       if (!capability.conversationId ||
-          !currentAuthor.conversationIds.includes(capability.conversationId)) {
+          currentAuthor.conversationId !== capability.conversationId) {
         return reply.code(409).send({ error: "next_run requires an active Team Chat scope" });
       }
       const requestedIdempotencyKey = request.body.idempotencyKey?.trim();
@@ -567,7 +567,7 @@ export function registerAgentCommunicationRoutes(
     if (!capability.conversationId) {
       return reply.code(409).send({ error: "agent is not linked to a conversation" });
     }
-    if (!currentAuthor.conversationIds.includes(capability.conversationId)) {
+    if (currentAuthor.conversationId !== capability.conversationId) {
       return reply.code(409).send({ error: "agent is no longer an active member of this conversation" });
     }
     let renderedText = publishedText;

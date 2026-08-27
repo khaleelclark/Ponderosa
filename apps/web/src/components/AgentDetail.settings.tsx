@@ -1,5 +1,4 @@
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
-import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import {
@@ -257,7 +256,6 @@ export function AgentSettingsPane({
   steering,
   onStartFreshSession,
   onOpenMaster,
-  onManageMemberships,
   onOpenAgent,
   onUpdateManagementPermissions,
   onChangeReportingLine,
@@ -292,7 +290,6 @@ export function AgentSettingsPane({
   onRecheckEngine(): void;
   onStartFreshSession(): void;
   onOpenMaster(conversationId: string): void;
-  onManageMemberships(): void;
   onOpenAgent(agentId: string): void;
   onUpdateManagementPermissions(value: AgentManagementPermissionsDto): void;
   onChangeReportingLine(): void;
@@ -327,27 +324,20 @@ export function AgentSettingsPane({
       </Stack>
       <Paper variant="outlined" sx={{ p: 2 }}>
         <Typography variant="subtitle1" fontWeight={800}>
-          Chat Assignments
+          Works In Chat
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
           {master ? (
             <>
-              Home Chat:{" "}
+              This Agent&apos;s context comes from{" "}
               <Link component="button" onClick={() => onOpenMaster(master.id)}>
                 {master.title}
               </Link>
             </>
           ) : (
-            "This Agent is not assigned to a Project Chat."
+            "This Agent's owner Chat is unavailable."
           )}
         </Typography>
-        <Button
-          variant="outlined"
-          startIcon={<ForumOutlinedIcon />}
-          onClick={onManageMemberships}
-        >
-          Manage Chat Assignments
-        </Button>
       </Paper>
       <AgentWorkingCopySettings agent={agent} />
       <AgentBrowserProfileSettings agent={agent} />

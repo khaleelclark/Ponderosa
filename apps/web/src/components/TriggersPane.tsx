@@ -201,9 +201,9 @@ export function TriggersPane({
   const queryClient = useQueryClient();
   const preferredConversationId =
     fixedConversationId &&
-    agent.conversationIds.includes(fixedConversationId)
+    agent.conversationId === fixedConversationId
       ? fixedConversationId
-      : agent.conversationId ?? agent.conversationIds[0] ?? "";
+      : agent.conversationId;
   const queryKey = queryKeys.triggers.agent(agent.id);
   const triggers = useInfiniteQuery({
     queryKey,
@@ -251,8 +251,8 @@ export function TriggersPane({
   const [budgetLimit, setBudgetLimit] = useState("10");
   const [budgetPeriod, setBudgetPeriod] = useState<TriggerBudgetPeriod>("month");
   useEffect(() => {
-    if (initialCreateOpen && agent.conversationIds.length > 0) setCreateOpen(true);
-  }, [agent.id, agent.conversationIds.length, initialCreateOpen]);
+    if (initialCreateOpen) setCreateOpen(true);
+  }, [agent.id, initialCreateOpen]);
   useEffect(() => {
     if (!editing) setConversationId(preferredConversationId);
   }, [agent.id, editing, fixedConversationId, preferredConversationId]);
@@ -264,7 +264,7 @@ export function TriggersPane({
   const sourceConfigurationInvalid = (sourceKind === "filesystem" && Boolean(filesystemErrors.quiet || filesystemErrors.max)) || intervalInvalid;
 
   useEffect(() => {
-    if (!editing && !agent.conversationIds.includes(conversationId))
+    if (!editing && agent.conversationId !== conversationId)
       setConversationId(preferredConversationId);
   }, [agent, conversationId, editing, preferredConversationId]);
 
@@ -447,18 +447,16 @@ export function TriggersPane({
       <Alert severity="warning">This automation will run unattended with full Agent access. Event payloads are untrusted data.</Alert>
       <TextField label="Name" value={name} onChange={(event) => setName(event.target.value)} inputProps={{ maxLength: 120 }} autoFocus required />
       <TextField label="Trusted instructions" value={instructions} onChange={(event) => setInstructions(event.target.value)} multiline minRows={3} required helperText="Describe the action. Do not rely on event payload text as instructions." />
-      {!fixedConversationId ? editing ? (
+      {!fixedConversationId ? (
         <TextField
           label="Project chat"
           value={triggerChatOptionLabel(
-            currentChatLabel(editing.conversationId),
-            editing.conversationId === agent.conversationId,
+            currentChatLabel(editing?.conversationId ?? agent.conversationId),
+            true,
           )}
           disabled
-          helperText="This Automation stays attached to its current Project chat."
+          helperText="This Automation runs in the Agent's owner Chat."
         />
-      ) : (
-        <FormControl fullWidth><InputLabel id="trigger-chat-label">Project chat</InputLabel><Select labelId="trigger-chat-label" label="Project chat" value={conversationId} onChange={(event) => setConversationId(event.target.value)}>{agent.conversationIds.map((id) => <MenuItem key={id} value={id}>{triggerChatOptionLabel(currentChatLabel(id), id === agent.conversationId)}</MenuItem>)}</Select></FormControl>
       ) : null}
       <FormControl fullWidth><InputLabel id="trigger-source-label">Source</InputLabel><Select disabled={Boolean(editing)} labelId="trigger-source-label" label="Source" value={sourceKind} onChange={(event) => setSourceKind(event.target.value as TriggerSourceKind)}><MenuItem value="schedule">Schedule</MenuItem><MenuItem value="webhook">Signed Webhook</MenuItem><MenuItem value="filesystem">Project Folder Changes</MenuItem></Select></FormControl>
       {sourceKind === "schedule" ? <>
@@ -533,7 +531,6 @@ export function TriggersPane({
         <Button
           variant="contained"
           startIcon={<AddIcon />}
-          disabled={agent.conversationIds.length === 0}
           onClick={() => {
             if (onCreateTrigger) {
               onCreateTrigger();
@@ -546,7 +543,6 @@ export function TriggersPane({
           New Automation
         </Button>
       </Stack>
-      {agent.conversationIds.length === 0 ? <Alert severity="info">Assign this Agent to a Project chat before creating an Automation.</Alert> : null}
       {triggers.isLoading ? <Typography color="text.secondary">Loading Automations…</Typography> : null}
       {triggers.isError ? <Alert severity="error">{triggers.error.message}</Alert> : null}
       {(triggerItems).length === 0 && !triggers.isLoading ? <Typography color="text.secondary">No Automations yet.</Typography> : null}

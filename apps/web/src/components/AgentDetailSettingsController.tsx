@@ -36,7 +36,6 @@ interface AgentDetailSettingsControllerProps {
   onSaveRuntimeSettings(): void;
   onRecheckEngine(): void;
   onOpenMaster(conversationId: string): void;
-  onManageMemberships(): void;
   onOpenAgent(agentId: string): void;
   onUpdateManagementPermissions(
     value: AgentDto["managementPermissions"],
@@ -76,7 +75,6 @@ export function AgentDetailSettingsController({
   onSaveRuntimeSettings,
   onRecheckEngine,
   onOpenMaster,
-  onManageMemberships,
   onOpenAgent,
   onUpdateManagementPermissions,
   onChangeReportingLine,
@@ -151,7 +149,6 @@ export function AgentDetailSettingsController({
           );
       }}
       onOpenMaster={onOpenMaster}
-      onManageMemberships={onManageMemberships}
       onOpenAgent={onOpenAgent}
       onUpdateManagementPermissions={onUpdateManagementPermissions}
       onChangeReportingLine={onChangeReportingLine}

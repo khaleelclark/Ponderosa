@@ -47,7 +47,7 @@ export function orderedAgentOrganization(agents: AgentDto[]): AgentOrganizationR
 }
 
 export function agentBelongsToConversation(agent: AgentDto, conversationId: string): boolean {
-  return agent.conversationIds.includes(conversationId);
+  return agent.conversationId === conversationId;
 }
 
 export type AgentStatus = AgentOperationalStatus;

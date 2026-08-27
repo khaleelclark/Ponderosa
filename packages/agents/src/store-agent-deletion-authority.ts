@@ -240,7 +240,6 @@ export class AgentDeletionAuthority {
           writeJson(metadataPath, {
             ...metadata,
             conversationId: undefined,
-            conversationIds: [],
             archived: true,
             deletedAt: row.created_at,
             updatedAt: row.created_at,
@@ -299,7 +298,6 @@ export class AgentDeletionAuthority {
       writeJson(metadataPath, {
         ...metadata,
         conversationId: undefined,
-        conversationIds: [],
         archived: true,
         deletedAt: row.createdAt,
         updatedAt: row.createdAt,

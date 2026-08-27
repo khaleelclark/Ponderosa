@@ -296,7 +296,7 @@ export function createServerReadModels(context: ReadModelContext) {
     if (!conversation) return undefined;
     return {
       conversation,
-      agents: store.listAgents(conversation.projectId).filter((agent) => agent.conversationIds.includes(conversationId)),
+      agents: store.listAgents(conversation.projectId).filter((agent) => agent.conversationId === conversationId),
       messages: [],
     };
   }
@@ -308,7 +308,7 @@ export function createServerReadModels(context: ReadModelContext) {
     const conversation = store.getConversation(conversationId);
     if (!conversation) return undefined;
     const limit = input.limit ?? 100;
-    const agents = store.listAgents(conversation.projectId).filter((agent) => agent.conversationIds.includes(conversationId));
+    const agents = store.listAgents(conversation.projectId).filter((agent) => agent.conversationId === conversationId);
     const names = new Map(agents.map((agent) => [agent.id, agent.title]));
     const operationBoundary = input.operationCursor
       ? decodeTimelineCursor(input.operationCursor, "team:operations", conversationId)
@@ -526,7 +526,7 @@ export function createServerReadModels(context: ReadModelContext) {
         type: "coordination_changed",
         projectId: agent.projectId,
         agentId,
-        conversationIds: options.conversationIds ?? agent.conversationIds,
+        conversationIds: options.conversationIds ?? [agent.conversationId],
       });
       reconcileCoordinationAttentionNotifications();
     }
@@ -540,7 +540,7 @@ export function createServerReadModels(context: ReadModelContext) {
       type: "message_delivery_changed",
       projectId: agent.projectId,
       agentId,
-      conversationIds: agent.conversationIds,
+      conversationIds: [agent.conversationId],
     });
     reconcileCommunicationNotifications();
   }
@@ -553,7 +553,7 @@ export function createServerReadModels(context: ReadModelContext) {
     if (decision.conversationId) {
       const conversation = store.getConversation(decision.conversationId);
       if (!conversation || conversation.projectId !== project.id || conversation.archived ||
-          !agent.conversationIds.includes(conversation.id)) return undefined;
+          agent.conversationId !== conversation.id) return undefined;
     }
     return coordinationV3.enqueueMessageActivation({
       projectId: decision.projectId,
@@ -659,7 +659,7 @@ export function createServerReadModels(context: ReadModelContext) {
       : store.listAgents(projectId);
     const agents = selectedAgents.filter((agent) =>
       !agent.archived && (conversationId
-        ? agent.conversationIds.includes(conversationId)
+        ? agent.conversationId === conversationId
         : fallbackAgentId ? agent.id === fallbackAgentId : true));
     const health = agentHealth({ type: "project", id: projectId }, agents);
     const healthById = new Map(health.agents.map((agent) => [agent.agentId, agent]));

@@ -453,7 +453,7 @@ export function registerAgentMessageRunRoute(
         return reply.code(413).send({ error: "text exceeds the 8 MiB limit" });
       }
       const sourceConversationId = request.body.sourceConversationId;
-      if (sourceConversationId !== undefined && !agent.conversationIds.includes(sourceConversationId)) {
+      if (sourceConversationId !== undefined && agent.conversationId !== sourceConversationId) {
         return reply.code(400).send({ error: "conversation does not belong to agent" });
       }
       if (request.body.sourceChannel === "main" && sourceConversationId) {

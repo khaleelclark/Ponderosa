@@ -217,7 +217,7 @@ export function createOperationalNotifications(context: OperationalNotifications
           const affected = store.getAgent(agentId);
           return affected && !affected.archived ? [affected] : [];
         });
-        const conversationIds = [...new Set(affectedAgents.flatMap((affected) => affected.conversationIds))].sort();
+        const conversationIds = [...new Set(affectedAgents.map((affected) => affected.conversationId))].sort();
         const requestRecord = failedRequest ? coordinationV3.getRequest(failedRequest.recordId) : undefined;
         const requestPayload = requestRecord?.payload && typeof requestRecord.payload === "object" && !Array.isArray(requestRecord.payload)
           ? requestRecord.payload as Record<string, unknown>

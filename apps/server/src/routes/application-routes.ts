@@ -359,8 +359,7 @@ registerConversationRoutes(app, {
   agentHealth,
   teamDirectory,
   hasActiveRun: agentId => activeRuns.has(agentId),
-  handleAgentConversationRemoval: (agentId, conversationId) =>
-    coordinationV3.handleAgentConversationRemoval(agentId, conversationId),
+  commitAgentDeletion,
   purgeCommunicationV4Conversation: conversationId =>
     coordinationV3.purgeCommunicationV4Conversation(conversationId),
   refreshTriggers: () => triggerSources.refresh(),

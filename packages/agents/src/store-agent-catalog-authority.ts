@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import type Database from "better-sqlite3";
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type {
   AgentDto,
   AgentPresetDto,
@@ -72,6 +72,7 @@ export class AgentCatalogAuthority {
     const effort = preset?.effort ?? input.effort;
     const project = this.getProject(projectId);
     if (!project) throw new Error("unknown project");
+    if (!input.conversationId) throw new Error("a Chat is required when creating an Agent");
     const workingCopy = sharedWorkingCopy(project, now);
     const managementPermissions = input.managementPermissions
       ? requireManagementPermissions(input.managementPermissions)
@@ -80,7 +81,6 @@ export class AgentCatalogAuthority {
       id,
       projectId,
       conversationId: input.conversationId,
-      conversationIds: input.conversationId ? [input.conversationId] : [],
       title,
       handle,
       activeEngine: input.engine,
@@ -113,7 +113,7 @@ export class AgentCatalogAuthority {
       this.db.insert(agents).values({
         id,
         projectId,
-        conversationId: input.conversationId ?? null,
+        conversationId: input.conversationId,
         title,
         handle,
         activeEngine: input.engine,
@@ -133,9 +133,11 @@ export class AgentCatalogAuthority {
         workingCopyJson: JSON.stringify(workingCopy),
       })
       .run();
-      if (input.conversationId) {
-        this.db.insert(agentConversationMemberships).values({ agentId: id, conversationId: input.conversationId, position: 0 }).run();
-      }
+      this.db.insert(agentConversationMemberships).values({
+        agentId: id,
+        conversationId: input.conversationId,
+        position: 0,
+      }).run();
     })();
     if (input.managerAgentId) this.updateAgentOrganization(id, { managerAgentId: input.managerAgentId });
     return this.rowToAgentDto(id)!;
@@ -352,10 +354,7 @@ export class AgentCatalogAuthority {
     return {
       id: row.id,
       projectId: row.projectId,
-      conversationId: row.conversationId ?? undefined,
-      conversationIds: this.db.select().from(agentConversationMemberships)
-        .where(eq(agentConversationMemberships.agentId, row.id))
-        .orderBy(asc(agentConversationMemberships.position)).all().map((membership) => membership.conversationId),
+      conversationId: row.conversationId ?? (() => { throw new Error(`live Agent ${row.id} has no owner Chat`); })(),
       title: row.title,
       handle: row.handle,
       activeEngine: row.activeEngine,
@@ -379,34 +378,4 @@ export class AgentCatalogAuthority {
       ...(imported ? { importedHistoryCount: imported.messages.length, importedFrom: imported.source } : {}),
     };
   }
-
-
-  persistAgentMemberships(
-    id: string,
-    conversationIds: string[],
-    primaryConversationId?: string,
-    beforeProjectionChange?: () => void,
-  ): void {
-    const row = this.db.select().from(agents).where(eq(agents.id, id)).get();
-    if (!row) throw new Error(`unknown agent: ${id}`);
-    const now = new Date().toISOString();
-    const jsonPath = agentJsonPath(this.dataDir, row.projectId, id);
-    const json = readJson<AgentJson>(jsonPath);
-    // Canonical metadata is committed first; SQLite remains a rebuildable projection.
-    writeJson(jsonPath, { ...json, conversationId: primaryConversationId, conversationIds, updatedAt: now });
-    try {
-      this.db.transaction((tx) => {
-        beforeProjectionChange?.();
-        tx.delete(agentConversationMemberships).where(eq(agentConversationMemberships.agentId, id)).run();
-        conversationIds.forEach((conversationId, position) => {
-          tx.insert(agentConversationMemberships).values({ agentId: id, conversationId, position }).run();
-        });
-        tx.update(agents).set({ conversationId: primaryConversationId ?? null, updatedAt: now }).where(eq(agents.id, id)).run();
-      });
-    } catch (error) {
-      writeJson(jsonPath, json);
-      throw error;
-    }
-  }
-
 }

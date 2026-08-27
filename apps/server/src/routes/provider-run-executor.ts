@@ -434,7 +434,7 @@ export function startProviderRunExecution(
             workspace.createNotification({
               projectId: decision.projectId,
               conversationId: decision.conversationId,
-              conversationIds: agent.conversationIds,
+              conversationIds: [agent.conversationId],
               agentId: decision.agentId,
               agentIds: [decision.agentId],
               kind: "decision",

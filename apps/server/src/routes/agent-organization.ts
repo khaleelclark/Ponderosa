@@ -287,23 +287,10 @@ export function registerAgentOrganizationRoutes(
           WHERE a.project_id = ? AND a.deleted_at IS NULL AND a.archived = 0
             AND a.id IN (${placeholders(idPage.items.length)})
         `).all(projectId, ...idPage.items) as LiveOrganizationRow[];
-        const agents: AgentDto[] = rows.map(row => ({
-          id: row.id,
-          projectId: row.project_id,
-          conversationIds: [],
-          title: row.title,
-          handle: row.handle,
-          activeEngine: row.active_engine,
-          state: {},
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-          archived: false,
-          ...(row.manager_agent_id ? { managerAgentId: row.manager_agent_id } : {}),
-          managementPermissions: {
-            allowAutomaticDescendantDeletion: false,
-            allowAutomaticDescendantReorganization: false,
-          },
-        }));
+        const agents: AgentDto[] = rows.flatMap(row => {
+          const agent = context.store.getAgent(row.id);
+          return agent ? [agent] : [];
+        });
         const projected = context.agentHealth(
           { type: "project", id: projectId },
           agents,

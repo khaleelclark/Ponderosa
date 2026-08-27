@@ -107,7 +107,6 @@ import type {
   UpdateBrowserAgentPreferenceRequest,
   UpdateBrowserProfileRequest,
   TriggerOccurrenceDto,
-  UpdateAgentConversationMembershipsRequest,
   UpdateAgentOrganizationRequest,
   UpdateAgentPresetRequest,
   UpdateAgentRequest,
@@ -613,7 +612,7 @@ export const realApi = {
       body: JSON.stringify(request satisfies CreateAgentRequest),
     });
   },
-  createAgent(projectId: string, conversationId: string | undefined, options: CreateAgentOptions): Promise<AgentDto> {
+  createAgent(projectId: string, conversationId: string, options: CreateAgentOptions): Promise<AgentDto> {
     return this.createAgentRecord(projectId, {
       title: options.title,
       engine: options.engine as CreateAgentRequest["engine"],
@@ -637,12 +636,6 @@ export const realApi = {
     return requestJson<AgentDto>(`/api/agents/${encodeURIComponent(agentId)}`, {
       method: "PATCH",
       body: JSON.stringify(patch satisfies UpdateAgentRequest),
-    });
-  },
-  updateAgentConversationMemberships(agentId: string, membership: UpdateAgentConversationMembershipsRequest): Promise<AgentDto> {
-    return requestJson<AgentDto>(`/api/agents/${encodeURIComponent(agentId)}/conversation-memberships`, {
-      method: "PUT",
-      body: JSON.stringify(membership satisfies UpdateAgentConversationMembershipsRequest),
     });
   },
   updateAgentOrganization(agentId: string, organization: UpdateAgentOrganizationRequest): Promise<AgentDto> {

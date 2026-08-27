@@ -100,7 +100,7 @@ export function registerAgentCoordinationRoutes(
     if (deletingAgentIds.has(manager.id)) {
       return reply.code(409).send({ error: "Agent deletion is already in progress" });
     }
-    if (!capability.conversationId || !manager.conversationIds.includes(capability.conversationId)) {
+    if (!capability.conversationId || manager.conversationId !== capability.conversationId) {
       return reply.code(409).send({ error: "visible managed Agents require an active Team Chat scope" });
     }
     const idempotencyKey = request.body?.idempotencyKey?.trim();
@@ -131,7 +131,7 @@ export function registerAgentCoordinationRoutes(
     try {
       store.sqlite.transaction(() => {
         child = store.createAgent(manager!.projectId, {
-          title: title!, engine: engineId!, conversationId: capability!.conversationId,
+          title: title!, engine: engineId!, conversationId: capability!.conversationId!,
           model: request.body.model?.trim() || undefined, effort: request.body.effort?.trim() || undefined,
           managerAgentId: manager!.id,
         }, { agentId: manager!.id, executionId: capability!.runId, idempotencyKey: idempotencyKey!, prompt: text! });
@@ -374,7 +374,7 @@ export function registerAgentCoordinationRoutes(
         (requests.length === 0 && existingJoinRequestIds.length === 0)) {
       return reply.code(400).send({ error: "idempotencyKey and at least one new request or existing join request ID are required" });
     }
-    if (!capability.conversationId || !author.conversationIds.includes(capability.conversationId)) {
+    if (!capability.conversationId || author.conversationId !== capability.conversationId) {
       return reply.code(409).send({ error: "coordination requires an active Team Chat scope" });
     }
     const normalized: Array<{ requestId: string; recoveryOfRequestId?: string; recipientAgentId: string; text: string; lifetime: RequestLifetime }> = [];
@@ -389,7 +389,7 @@ export function registerAgentCoordinationRoutes(
       }
       const recipient = store.getAgent(recipientAgentId);
       if (!recipient || recipient.archived || recipient.projectId !== author.projectId ||
-          !recipient.conversationIds.includes(capability.conversationId)) {
+          recipient.conversationId !== capability.conversationId) {
         return reply.code(400).send({ error: "every recipient must be a different active agent in this Team Chat" });
       }
       normalized.push({

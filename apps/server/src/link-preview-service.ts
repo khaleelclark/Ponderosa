@@ -57,7 +57,7 @@ export function createLinkPreviewService(context: LinkPreviewServiceContext) {
       !ownsActiveRun(agent.id, active) || active.runId !== registration.runId || active.executionId !== registration.runId) return false;
     if (!registration.conversationId) return true;
     const conversation = store.getConversation(registration.conversationId);
-    return Boolean(conversation && conversation.projectId === project.id && agent.conversationIds.includes(conversation.id));
+    return Boolean(conversation && conversation.projectId === project.id && agent.conversationId === conversation.id);
   }
 
   function closeLinkPreviewPair(pair: LinkPreviewSocketPair, code = 1001, reason = "preview closed"): void {
@@ -319,7 +319,7 @@ export function createLinkPreviewService(context: LinkPreviewServiceContext) {
     }
     if (conversationId !== undefined) {
       const conversation = store.getConversation(conversationId);
-      if (!conversation || conversation.projectId !== project.id || !agent.conversationIds.includes(conversation.id)) {
+      if (!conversation || conversation.projectId !== project.id || agent.conversationId !== conversation.id) {
         return reply.code(409).send({ error: "preview conversation is not owned by this agent and project" });
       }
     }

@@ -82,8 +82,8 @@ export type ManagedArtifactEvent =
 export interface AgentJson {
   id: string;
   projectId: string;
+  /** Canonical owner Chat. Missing only from immutable deleted-Agent tombstones. */
   conversationId?: string;
-  conversationIds?: string[];
   title: string;
   handle: string;
   activeEngine: string;

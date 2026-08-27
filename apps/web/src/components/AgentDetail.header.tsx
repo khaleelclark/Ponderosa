@@ -5,7 +5,6 @@ import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import DataObjectOutlinedIcon from "@mui/icons-material/DataObjectOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
-import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
@@ -126,7 +125,6 @@ interface AgentDetailHeaderProps {
   onOpenTechnical(): void;
   onRename(): void;
   onCreateAgent(): void;
-  onAssignChats(): void;
   onQuickCopy?: () => void;
   onChangeReportingLine(): void;
   onDelete(): void;
@@ -160,7 +158,6 @@ export function AgentDetailHeader({
   onOpenTechnical,
   onRename,
   onCreateAgent,
-  onAssignChats,
   onQuickCopy,
   onChangeReportingLine,
   onDelete,
@@ -289,11 +286,6 @@ export function AgentDetailHeader({
                 label: "Create Agent",
                 icon: <PersonAddAlt1Icon fontSize="small" />,
                 onSelect: onCreateAgent,
-              },
-              {
-                label: "Assign Chats",
-                icon: <ForumOutlinedIcon fontSize="small" />,
-                onSelect: onAssignChats,
               },
               ...(onQuickCopy
                 ? [

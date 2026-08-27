@@ -662,8 +662,7 @@ export async function prepareAgentRun(
         "Current room data (informational; the active capability enforces delivery):",
         `- room: ${cursorConversationId}`,
         `- channel: ${cursorChannel}`,
-        `- primary room: ${agent.conversationId ?? "none"}`,
-        `- room memberships: ${agent.conversationIds.join(", ") || "none"}`,
+        `- owner Chat: ${agent.conversationId}`,
         '- live teammate identities are available from "$PONDEROSA_AGENT_DIRECTORY_URL" only when needed',
       ].join("\n")
     : undefined;

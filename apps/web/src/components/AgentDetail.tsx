@@ -155,11 +155,8 @@ export function AgentDetail({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
-  const [membershipOpen, setMembershipOpen] = useState(false);
   const [organizationOpen, setOrganizationOpen] = useState(false);
   const [organizationParentId, setOrganizationParentId] = useState("");
-  const [membershipIds, setMembershipIds] = useState<string[]>([]);
-  const [primaryConversationId, setPrimaryConversationId] = useState("");
   const [queuedMessageNotice, setQueuedMessageNotice] = useState<
     string | undefined
   >();
@@ -502,19 +499,15 @@ export function AgentDetail({
   const {
     rename,
     updateManagementPermissions,
-    updateMemberships,
     updateOrganization,
     updateRuntimeSettings,
   } = useAgentDetailAdministration({
     agentId,
-    membershipIds,
-    primaryConversationId,
     organizationParentId,
     settingsEngine,
     settingsModel,
     settingsEffort,
     onRenameClosed: () => setRenameOpen(false),
-    onMembershipClosed: () => setMembershipOpen(false),
     onOrganizationClosed: () => setOrganizationOpen(false),
     onRuntimeSettingsNotice: setRuntimeSettingsNotice,
   });
@@ -851,11 +844,6 @@ export function AgentDetail({
       onSaveRuntimeSettings={() => updateRuntimeSettings.mutate(undefined)}
       onRecheckEngine={() => setRecheckEngineOpen(true)}
       onOpenMaster={onOpenMaster}
-      onManageMemberships={() => {
-        setMembershipIds(detail.agent.conversationIds);
-        setPrimaryConversationId(detail.agent.conversationId ?? "");
-        setMembershipOpen(true);
-      }}
       onOpenAgent={onOpenAgent}
       onUpdateManagementPermissions={value =>
         updateManagementPermissions.mutate(value)
@@ -915,11 +903,6 @@ export function AgentDetail({
           setRenameOpen(true);
         }}
         onCreateAgent={() => onNewSubagent(agentId)}
-        onAssignChats={() => {
-          setMembershipIds(detail.agent.conversationIds);
-          setPrimaryConversationId(detail.agent.conversationId ?? "");
-          setMembershipOpen(true);
-        }}
         onQuickCopy={
           detail.agent.conversationId
             ? () => void quickCopyIntoProjectChat()
@@ -1106,16 +1089,6 @@ export function AgentDetail({
           renameValue,
           setRenameValue,
           rename,
-        }}
-        membership={{
-          membershipOpen,
-          setMembershipOpen,
-          membershipIds,
-          setMembershipIds,
-          conversations,
-          primaryConversationId,
-          setPrimaryConversationId,
-          updateMemberships,
         }}
         organization={{
           open: organizationOpen,

@@ -121,7 +121,7 @@ export function registerAgentPackageRoutes(
       ];
       for (const event of canonicalUserDocuments) {
         const visible = event.conversationId
-          ? agent.conversationIds.includes(event.conversationId)
+          ? agent.conversationId === event.conversationId
           : event.intent === "collaboration"
             ? event.audience.agentIds.includes(agent.id)
             : event.intent === "user_dm"

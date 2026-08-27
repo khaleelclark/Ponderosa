@@ -64,12 +64,6 @@ export interface AgentStoreComponentPorts {
     conversationId: string,
     channel?: ConversationChannel,
   ): ConversationMessageDto[];
-  persistAgentMemberships(
-    agentId: string,
-    conversationIds: string[],
-    primaryConversationId?: string,
-    beforeProjectionChange?: () => void,
-  ): void;
   getAgentPreset(presetId: string): AgentPresetDto | undefined;
   updateAgentOrganization(agentId: string, input: Parameters<AgentCatalogAuthority["updateAgentOrganization"]>[1]): AgentDto | undefined;
   getProject(projectId: string): ProjectDto | undefined;
@@ -195,7 +189,6 @@ export function createAgentStoreComponents(
     client,
     ports.listAgents,
     ports.getConversationMessages,
-    ports.persistAgentMemberships,
     projectId => chatFeed.refreshAllChatFeedProject(projectId),
     (projectId, conversationId, visible) =>
       setCompactionHistoryConversationVisibility(client, projectId, conversationId, visible),
@@ -284,7 +277,6 @@ export function createAgentStoreComponents(
     ports.getProject,
     ports.getConversation,
     ports.rowToAgentDto,
-    ports.persistAgentMemberships,
     projectId => chatFeed.refreshAllChatFeedProject(projectId),
   );
   const agentDeletion = new AgentDeletionAuthority(

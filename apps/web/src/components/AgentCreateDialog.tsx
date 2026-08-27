@@ -194,10 +194,19 @@ export function AgentCreateForm({
     }
   }, [agentsQuery.data, agentsQuery.isSuccess, initialManagerAgentId]);
 
+  useEffect(() => {
+    const available = chats.filter(chat => !chat.archived);
+    setConversationId(current =>
+      available.some(chat => chat.id === current)
+        ? current
+        : effectiveFixedConversationId ?? available[0]?.id ?? UNSET,
+    );
+  }, [chats, effectiveFixedConversationId]);
+
   const activeEngine = engines.find(candidate => candidate.id === engine);
   const create = useMutation({
     mutationFn: () =>
-      api.createAgent(projectId, conversationId || undefined, {
+      api.createAgent(projectId, conversationId, {
         title: title.trim(),
         engine,
         model: modelSelectionIsCompatible(activeEngine, model)
@@ -339,17 +348,16 @@ export function AgentCreateForm({
       {!effectiveFixedConversationId ? (
         <FormControl fullWidth size="small">
           <InputLabel id="create-agent-chat-label">
-            Project chat (optional)
+            Chat
           </InputLabel>
           <Select
             labelId="create-agent-chat-label"
-            label="Project chat (optional)"
+            label="Chat"
             value={conversationId}
             onChange={(event: SelectChangeEvent) =>
               setConversationId(event.target.value)
             }
           >
-            <MenuItem value={UNSET}>Unassigned</MenuItem>
             {chats
               .filter(chat => !chat.archived)
               .map(chat => (
@@ -382,7 +390,7 @@ export function AgentCreateForm({
         >
           <MenuItem value={UNSET}>User / Top Level</MenuItem>
           {agents
-            .filter(agent => !agent.archived)
+            .filter(agent => !agent.archived && agent.conversationId === conversationId)
             .map(agent => (
               <MenuItem key={agent.id} value={agent.id}>
                 {agent.title}
@@ -432,7 +440,7 @@ export function AgentCreateForm({
         <Button
           variant="contained"
           disabled={
-            !projectId || !title.trim() || !engine || create.isPending
+            !projectId || !conversationId || !title.trim() || !engine || create.isPending
           }
           onClick={() => {
             if (pendingRef.current) return;

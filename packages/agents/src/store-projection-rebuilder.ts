@@ -186,10 +186,14 @@ export class AgentProjectionRebuilder {
           reservedAt: t.createdAt,
         }).onConflictDoNothing().run();
         const workingCopy = t.workingCopy ?? sharedWorkingCopy(p, t.updatedAt);
-        const membershipIds = [...new Set(t.conversationIds ?? (t.conversationId ? [t.conversationId] : []))];
-        const primaryConversationId = t.conversationId && membershipIds.includes(t.conversationId)
-          ? t.conversationId
-          : membershipIds[0];
+        const fallbackConversation = this.client.prepare(`
+          SELECT id FROM conversations WHERE project_id = ? AND archived = 0
+          ORDER BY created_at, id LIMIT 1
+        `).get(projectId) as { id: string } | undefined;
+        const primaryConversationId = t.conversationId ?? p.lastConversationId ?? fallbackConversation?.id;
+        if (!t.deletedAt && !primaryConversationId) {
+          throw new Error(`live Agent ${t.id} has no owner Chat`);
+        }
         this.db
           .insert(agents)
           .values({
@@ -217,11 +221,15 @@ export class AgentProjectionRebuilder {
             workingCopyJson: JSON.stringify(workingCopy),
           })
           .run();
-        membershipIds.forEach((conversationId, position) => {
-          this.db.insert(agentConversationMemberships).values({ agentId: t.id, conversationId, position }).run();
-        });
-        if (t.handle !== handle || t.conversationIds === undefined || t.conversationId !== primaryConversationId || !t.workingCopy) {
-          writeJson(tj, { ...t, handle, conversationId: primaryConversationId, conversationIds: membershipIds, workingCopy });
+        if (primaryConversationId) {
+          this.db.insert(agentConversationMemberships).values({
+            agentId: t.id,
+            conversationId: primaryConversationId,
+            position: 0,
+          }).run();
+        }
+        if (t.handle !== handle || t.conversationId !== primaryConversationId || !t.workingCopy) {
+          writeJson(tj, { ...t, handle, conversationId: primaryConversationId, workingCopy });
         }
 
         const importedHistoryFile = importedAgentHistoryPath(this.dataDir, projectId, agentId);

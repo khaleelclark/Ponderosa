@@ -195,7 +195,7 @@ export class TriggerSourceService {
         const conversation = this.options.store.getConversation(trigger.conversationId);
         return trigger.enabled && trigger.sourceKind === "filesystem" &&
           (this.options.projectAvailable?.(trigger.projectId) ?? true) && Boolean(
-          agent && !agent.archived && conversation && !conversation.archived && agent.conversationIds.includes(conversation.id),
+          agent && !agent.archived && conversation && !conversation.archived && agent.conversationId === conversation.id,
         );
       });
     const routesByProject = new Map<string, Map<string, FilesystemRoute>>();
@@ -304,7 +304,7 @@ export class TriggerSourceService {
     if (!(this.options.projectAvailable?.(trigger.projectId) ?? true)) throw new Error("webhook Automation owner is unavailable");
     const agent = this.options.store.getAgent(trigger.agentId);
     const conversation = this.options.store.getConversation(trigger.conversationId);
-    if (!agent || agent.archived || !conversation || conversation.archived || !agent.conversationIds.includes(conversation.id)) {
+    if (!agent || agent.archived || !conversation || conversation.archived || agent.conversationId !== conversation.id) {
       throw new Error("webhook Automation owner is unavailable");
     }
     if (!input.eventId.trim() || input.eventId.length > 200) throw new Error("X-Ponderosa-Event-Id is required");
@@ -347,7 +347,7 @@ export class TriggerSourceService {
         if (!(this.options.projectAvailable?.(trigger.projectId) ?? true)) continue;
         const agent = this.options.store.getAgent(trigger.agentId);
         const conversation = this.options.store.getConversation(trigger.conversationId);
-        if (!agent || agent.archived || !conversation || conversation.archived || !agent.conversationIds.includes(conversation.id)) continue;
+        if (!agent || agent.archived || !conversation || conversation.archived || agent.conversationId !== conversation.id) continue;
         this.fireSchedule(trigger, now);
       } catch {
         // A concurrent edit or one malformed historical definition must not

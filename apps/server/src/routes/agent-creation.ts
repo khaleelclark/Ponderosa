@@ -69,15 +69,15 @@ export function registerAgentCreationRoutes(
 
   app.post<{
     Params: { id: string };
-    Body: { title: string; engine: string; conversationId?: string; model?: string; effort?: string; speed?: string; initialMessage?: string; draftAttachmentIds?: string[]; draftOwnerId?: string; presetId?: string; managerAgentId?: string; awaitResult?: boolean; idempotencyKey?: string };
+    Body: { title: string; engine: string; conversationId: string; model?: string; effort?: string; speed?: string; initialMessage?: string; draftAttachmentIds?: string[]; draftOwnerId?: string; presetId?: string; managerAgentId?: string; awaitResult?: boolean; idempotencyKey?: string };
   }>(
     "/api/projects/:id/agents",
     async (request, reply) => {
       const project = store.getProject(request.params.id);
       if (!project) return reply.code(404).send({ error: "project not found" });
       if (deletingProjectIds.has(request.params.id)) return reply.code(409).send({ error: "Project deletion is already in progress" });
-      if (!request.body?.title || !request.body?.engine) {
-        return reply.code(400).send({ error: "title and engine are required" });
+      if (!request.body?.title || !request.body?.engine || !request.body?.conversationId) {
+        return reply.code(400).send({ error: "title, engine, and Chat are required" });
       }
       const creationIdempotencyKey = request.body.idempotencyKey?.trim();
       if (creationIdempotencyKey && creationIdempotencyKey.length > 200) {
@@ -111,18 +111,15 @@ export function registerAgentCreationRoutes(
         if (deletingAgentIds.has(manager.id)) {
           return reply.code(409).send({ error: "manager deletion is already in progress" });
         }
-        request.body.conversationId ??= manager.conversationId;
-        if (request.body.conversationId && !manager.conversationIds.includes(request.body.conversationId)) {
-          return reply.code(400).send({ error: "manager must belong to the selected conversation" });
+        if (manager.conversationId !== request.body.conversationId) {
+          return reply.code(400).send({ error: "manager must belong to the selected Chat" });
         }
       }
-      if (request.body.conversationId) {
-        const conversation = store.getConversation(request.body.conversationId);
-        if (!conversation || conversation.projectId !== request.params.id) {
-          return reply.code(400).send({ error: "conversation does not belong to project" });
-        }
+      const conversation = store.getConversation(request.body.conversationId);
+      if (!conversation || conversation.projectId !== request.params.id || conversation.archived) {
+        return reply.code(400).send({ error: "Chat does not belong to Project or is archived" });
       }
-      const conversationDefaults = request.body.conversationId ? store.getConversation(request.body.conversationId) : undefined;
+      const conversationDefaults = conversation;
       const resolvedRuntime = concreteRuntimeSelection(requestedAdapter, [
         { model: request.body.model, effort: request.body.effort },
         conversationDefaults?.defaultEngine === request.body.engine ? { model: conversationDefaults.defaultModel, effort: conversationDefaults.defaultEffort } : undefined,

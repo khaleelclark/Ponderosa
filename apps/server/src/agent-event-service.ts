@@ -70,7 +70,7 @@ export function createAgentEventService(context: AgentEventServiceContext) {
         type: "usage_changed",
         projectId: agent.projectId,
         agentId,
-        conversationIds: agent.conversationIds,
+        conversationIds: [agent.conversationId],
         seq: stored.seq,
         ...(("executionId" in event && typeof event.executionId === "string") ? { executionId: event.executionId } : {}),
       });
@@ -81,7 +81,7 @@ export function createAgentEventService(context: AgentEventServiceContext) {
       type: "agent_event",
       projectId: agent.projectId,
       agentId,
-      conversationIds: agent.conversationIds,
+      conversationIds: [agent.conversationId],
       seq: stored.seq,
       eventType: event.type,
       category,
@@ -304,7 +304,7 @@ export function createAgentEventService(context: AgentEventServiceContext) {
         "The agent remains in your organization and can be steered or retried.",
       ].join("\n");
     const sharedConversationId = child.conversationId
-      && manager.conversationIds.includes(child.conversationId)
+      && manager.conversationId === child.conversationId
       ? child.conversationId
       : undefined;
     coordinationV3.recordRuntimeCommunication({

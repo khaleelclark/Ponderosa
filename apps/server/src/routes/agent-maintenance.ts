@@ -210,32 +210,6 @@ export function registerAgentMaintenanceRoutes(
     },
   );
 
-  app.put<{
-    Params: { id: string };
-    Body: { conversationIds: string[]; primaryConversationId?: string };
-  }>("/api/agents/:id/conversation-memberships", async (request, reply) => {
-    if (deletingAgentIds.has(request.params.id)) {
-      return reply.code(409).send({ error: "Agent deletion is already in progress" });
-    }
-    if (!Array.isArray(request.body?.conversationIds)) {
-      return reply.code(400).send({ error: "conversationIds is required" });
-    }
-    try {
-      const agent = store.updateAgentConversationMemberships(request.params.id, request.body, (agentId, removedConversationIds) => {
-        for (const conversationId of removedConversationIds) {
-          coordinationV3.handleAgentConversationRemoval(agentId, conversationId);
-        }
-      });
-      if (agent) {
-        await triggerSources.refresh();
-        notifyScheduler();
-      }
-      return agent ?? reply.code(404).send({ error: "agent not found" });
-    } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid membership" });
-    }
-  });
-
   app.post<{ Params: { id: string }; Body: AgentDeletionPreviewRequest }>(
     "/api/projects/:id/agent-deletions/preview",
     async (request, reply) => {

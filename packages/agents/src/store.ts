@@ -44,7 +44,6 @@ import type {
   RunOutputDto,
   ResponseFileActivityDto,
   UpdateProjectRequest,
-  UpdateAgentConversationMembershipsRequest,
   UpdateConversationRequest,
   UpdateAgentRequest,
   UpdateAgentOrganizationRequest,
@@ -170,8 +169,6 @@ export class AgentStore extends AgentEventSessionFacade {
       const ports: AgentStoreComponentPorts = {
         listAgents: projectId => this.listAgents(projectId),
         getConversationMessages: (conversationId, channel) => this.getConversationMessages(conversationId, channel),
-        persistAgentMemberships: (agentId, conversationIds, primaryConversationId, beforeProjectionChange) =>
-          this.persistAgentMemberships(agentId, conversationIds, primaryConversationId, beforeProjectionChange),
         getAgentPreset: presetId => this.getAgentPreset(presetId),
         updateAgentOrganization: (agentId, input) => this.updateAgentOrganization(agentId, input),
         getProject: projectId => this.getProject(projectId),
@@ -814,12 +811,10 @@ export class AgentStore extends AgentEventSessionFacade {
 
   deleteConversation(
     id: string,
-    beforeMembershipDelete?: (agentId: string, conversationId: string) => void,
     beforeProjectionDelete?: (conversationId: string) => void,
   ): boolean {
     return this.workspaceCatalog.deleteConversation(
       id,
-      beforeMembershipDelete,
       beforeProjectionDelete,
     );
   }
@@ -1025,18 +1020,6 @@ export class AgentStore extends AgentEventSessionFacade {
 
   readAgentOrganizationEvents(projectId: string): AgentOrganizationEvent[] {
     return this.agentManagement.readAgentOrganizationEvents(projectId);
-  }
-
-  updateAgentConversationMemberships(
-    id: string,
-    input: UpdateAgentConversationMembershipsRequest,
-    beforeMembershipProjectionChange?: (agentId: string, removedConversationIds: string[]) => void,
-  ): AgentDto | undefined {
-    return this.agentManagement.updateAgentConversationMemberships(
-      id,
-      input,
-      beforeMembershipProjectionChange,
-    );
   }
 
   previewAgentDeletion(rootAgentIds: string[]): AgentDeletionPreviewDto {
@@ -1388,20 +1371,6 @@ export class AgentStore extends AgentEventSessionFacade {
 
   private rowToAgentDto(id: string): AgentDto | undefined {
     return this.agentCatalog.rowToAgentDto(id);
-  }
-
-  private persistAgentMemberships(
-    id: string,
-    conversationIds: string[],
-    primaryConversationId?: string,
-    beforeProjectionChange?: () => void,
-  ): void {
-    this.agentCatalog.persistAgentMemberships(
-      id,
-      conversationIds,
-      primaryConversationId,
-      beforeProjectionChange,
-    );
   }
 
 }
