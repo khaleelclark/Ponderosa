@@ -316,7 +316,7 @@ export function ComposerTextInput({
                         position: "absolute",
                         zIndex: 3,
                         top: "50%",
-                        right: "-0.75em",
+                        right: "-1em",
                         transform: "translateY(-50%)",
                         width: 12,
                         height: 12,
