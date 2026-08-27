@@ -892,6 +892,9 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
             WebkitUserSelect: "text",
             userSelect: "text",
           },
+          "& .composer-editor-input p": {
+            m: 0,
+          },
           "& .composer-editor-input[contenteditable='false']": {
             color: "text.disabled",
             cursor: "default",
