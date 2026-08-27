@@ -26,7 +26,7 @@ import type {
   ProjectDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { api } from "../api";
 import {
@@ -52,7 +52,6 @@ import { ProviderAvailabilityAlerts } from "./ProviderAvailabilityAlerts";
 import { TriggersPane } from "./TriggersPane";
 import { AgentCreateSurface } from "./AgentCreateDialog";
 
-const UNSET = "";
 type TriggerAgentOption = {
   project: ProjectDto;
   agent: AgentDto;

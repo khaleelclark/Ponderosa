@@ -7,7 +7,6 @@ import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import {
   Box,
-  Chip,
   IconButton,
   List,
   ListItemButton,
@@ -15,7 +14,6 @@ import {
   ListItemText,
   Stack,
   Tooltip,
-  Typography,
 } from "@mui/material";
 import type {
   ConversationDto,
@@ -42,7 +40,6 @@ import {
   sortWorkspaceResources,
   starredWorkspaceResources,
   toggleWorkspaceResourceStar,
-  workspaceResourceSort,
 } from "../resourcePreferences";
 import {
   projectDisambiguator,
@@ -51,7 +48,6 @@ import { clampWorkspaceSidebarWidth } from "../workspaceSidebarState";
 import { markWorkspaceResourceUsed } from "../workspaceRecency";
 import { AgentStatusIndicator } from "./AgentStatusIndicator";
 import { ResourceContextMenu } from "./ResourceContextMenu";
-import { IconTitle } from "./IconTitle";
 import {
   SIDEBAR_PANEL_WIDTH,
   SIDEBAR_RAIL_WIDTH,
@@ -88,7 +84,6 @@ export function WorkspaceSidebar({
   onPreferences,
   onRenameConversation,
   onDeleteConversation,
-  onSearch,
   collapsed = false,
   width = SIDEBAR_RAIL_WIDTH + SIDEBAR_PANEL_WIDTH,
   onCollapsedChange,
@@ -104,7 +99,6 @@ export function WorkspaceSidebar({
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onRenameConversation(conversation: ConversationDto): void;
   onDeleteConversation(conversation: ConversationDto): void;
-  onSearch?(): void;
   collapsed?: boolean;
   width?: number;
   onCollapsedChange?(collapsed: boolean): void;

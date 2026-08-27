@@ -48,15 +48,3 @@ export function agentIdForMentionHandle(
   if (RESERVED_SCOPE_HANDLES.has(normalized)) return undefined;
   return agents.find((agent) => agentMentionHandle(agent.title).toLocaleLowerCase() === normalized)?.id;
 }
-
-/** Resolve every distinct #tag against the agents currently in a conversation. */
-export function findMentionedAgents(text: string, agents: AgentDto[]): AgentDto[] {
-  const byHandle = new Map(
-    agents
-      .map((agent) => [agentMentionHandle(agent.title).toLocaleLowerCase(), agent] as const)
-      .filter(([handle]) => !RESERVED_SCOPE_HANDLES.has(handle)),
-  );
-  return findMentionedHandles(text, byHandle.keys())
-    .map((handle) => byHandle.get(handle.toLocaleLowerCase()))
-    .filter((agent): agent is AgentDto => Boolean(agent));
-}

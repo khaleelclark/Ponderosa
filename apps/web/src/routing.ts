@@ -193,14 +193,6 @@ export function routeProjectId(route: Route): string | undefined {
   return "projectId" in route ? route.projectId : undefined;
 }
 
-export function loadLastProjectId(): string | undefined {
-  try {
-    return window.localStorage.getItem(LAST_PROJECT_KEY) ?? undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 export function saveLastProjectId(projectId: string): void {
   try {
     window.localStorage.setItem(LAST_PROJECT_KEY, projectId);

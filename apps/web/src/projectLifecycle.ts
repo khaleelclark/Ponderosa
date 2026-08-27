@@ -1,4 +1,4 @@
-import type { CreateProjectRequest, ProjectDto } from "@ponderosa/core";
+import type { CreateProjectRequest } from "@ponderosa/core";
 
 export type ProjectFolderMode = "none" | "existing";
 
@@ -30,8 +30,4 @@ export function createProjectRequest(input: {
       ? { hostPath: input.existingPath.trim() }
       : {}),
   };
-}
-
-export function nextProjectAfterDelete(projects: readonly ProjectDto[], deletedId: string): ProjectDto | undefined {
-  return projects.find((project) => project.id !== deletedId);
 }

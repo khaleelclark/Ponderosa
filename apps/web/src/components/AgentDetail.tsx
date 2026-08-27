@@ -3,19 +3,12 @@ import {
   Box,
   Button,
   CircularProgress,
-  IconButton,
 } from "@mui/material";
 import type {
-  AgentHealthDto,
   EngineCommand,
   EngineDto,
-  ConversationDetailDto,
-  ConversationDto,
   MessageDto,
-  ProjectEngineCapabilitiesDto,
   ResponseFileActivityDto,
-  AgentDto,
-  AgentTelemetryStream,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -24,11 +17,8 @@ import {
   AGENT_HISTORY_PAGE_SIZE,
 } from "../agentHistoryPagination";
 import {
-  agentStatusColor,
-  agentStatusLabel,
   deriveAgentStatus,
   isProviderBlockedHealth,
-  type AgentStatus,
 } from "../agents";
 import {
   useAgent,

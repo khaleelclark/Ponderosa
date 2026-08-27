@@ -22,7 +22,7 @@ import { normalizeResetPages } from "../collections";
 import { providerAvailabilityMessage } from "../providerAvailability";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import { agentBelongsToConversation, type AgentStatus } from "../agents";
+import type { AgentStatus } from "../agents";
 import {
   useNotifications,
   useProjects,
@@ -36,7 +36,6 @@ import {
 import {
   agentIdForMentionHandle,
   agentMentionHandle,
-  findMentionedAgents,
 } from "../mentions";
 import { Composer } from "./chat/Composer";
 import { QueuedMessageTray } from "./chat/QueuedMessageTray";
@@ -177,7 +176,6 @@ export function ConversationView({
   const [importOpen, setImportOpen] = useState(false);
   const [agentWorkOpen, setAgentWorkOpen] = useState(false);
   const collaborationVisited = useRef(activeView === "collaboration");
-  const [agentWorkFocus, setAgentWorkFocus] = useState<string>();
   const [mentionInsertRequest, setMentionInsertRequest] = useState<{
     id: string;
     text: string;
@@ -793,9 +791,6 @@ export function ConversationView({
     }))
     .filter(binding => binding.handle &&
       !["broadcast", "user", "everyone"].includes(binding.handle.toLocaleLowerCase()));
-  const findMentioned = (text: string): AgentDto[] =>
-    findMentionedAgents(text, agents);
-
   const busyMentionHandles = agents
     .filter(agent => statusByAgentId.get(agent.id) === "running")
     .map(agent => agentMentionHandle(agent.title));
@@ -1108,7 +1103,6 @@ export function ConversationView({
             open
             projectId={conversation.projectId}
             conversationId={conversationId}
-            focus={agentWorkFocus ? { id: agentWorkFocus } : undefined}
             onClose={() => setAgentWorkOpen(false)}
           />
         ) : activeView === "files" ? (

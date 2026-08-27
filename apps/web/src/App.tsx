@@ -1,14 +1,11 @@
 import {
   Box,
-  useMediaQuery,
-  useTheme,
 } from "@mui/material";
-import type { ConversationDto, ProjectDto } from "@ponderosa/core";
+import type { ConversationDto } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { ApiRequestError } from "./api/types";
-import { ProjectShell } from "./components/ProjectShell";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import { WorkspaceConnectionNotice } from "./components/WorkspaceConnectionNotice";
@@ -83,9 +80,6 @@ import {
   activeNotificationViewForRoute,
 } from "./notificationActiveView";
 
-const OPERATOR_PROFILE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
-const OPERATOR_PROFILE_IMAGE_ACCEPT =
-  "image/png,image/jpeg,image/webp,image/gif,image/avif";
 const PUSH_CLEANUP_RETRY_INITIAL_MS = 1_000;
 const PUSH_CLEANUP_RETRY_MAX_MS = 30_000;
 
@@ -205,8 +199,6 @@ export default function App({
   const providerRecheckAt = useRef(new Map<string, number>());
   const providerRecheckInFlight = useRef(new Set<string>());
   const engineAvailability = engineAvailabilityPresentation(engines);
-  const theme = useTheme();
-  const mobileWorkspace = useMediaQuery(theme.breakpoints.down("md"));
 
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [onboardingProjectCreation, setOnboardingProjectCreation] =
@@ -636,7 +628,6 @@ export default function App({
               onDeleteConversation={conversation =>
                 openSidebarConversationAction("delete", conversation)
               }
-              onSearch={() => setGlobalSearchOpen(true)}
               collapsed={sidebarPresentation.collapsed}
               width={sidebarPresentation.width}
               onCollapsedChange={collapsed =>
@@ -735,7 +726,6 @@ export default function App({
           onCreate={replaceWorkspaceWithCreationForm}
           onPreferences={savePreferences}
           onConversationAction={openSidebarConversationAction}
-          onSearch={() => setGlobalSearchOpen(true)}
         />
 
         <SidebarConversationDialogs

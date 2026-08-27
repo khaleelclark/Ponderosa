@@ -16,15 +16,6 @@ function operatorAvatarUrl(avatarId: string | undefined): string | undefined {
     : undefined;
 }
 
-export function operatorInitials(displayName: string): string {
-  const words = displayName.trim().split(/\s+/).filter(Boolean);
-  if (!words.length) return "U";
-  const initials = words.length === 1
-    ? words[0]!.slice(0, 2)
-    : `${words[0]![0] ?? ""}${words.at(-1)?.[0] ?? ""}`;
-  return initials.toLocaleUpperCase();
-}
-
 export function OperatorAvatar({ profile, size = 36, compactOnMobile = false, fallback }: {
   profile?: OperatorProfileDto;
   size?: number;

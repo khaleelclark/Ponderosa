@@ -14,7 +14,6 @@ import {
   Box,
   Divider,
   IconButton,
-  ListItemButton,
   ListItemIcon,
   ListItemText,
   Menu,
@@ -32,39 +31,12 @@ import type {
   WorkspaceNotificationDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
-import { routeProjectId, type Route } from "./routing";
-import { api } from "./api";
+import type { Route } from "./routing";
 import { OperatorAvatar } from "./components/OperatorAvatar";
 import { ProviderQuotaIndicator } from "./components/ProviderUsageCenter";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { useMobileWorkspaceActions } from "./components/MobileWorkspaceActionsContext";
 import { workspaceHeaderSurfaceSx } from "./theme";
-
-export function mobileRouteAfterResourceRemoval(
-  current: Route,
-  removed: Route,
-): Route | undefined {
-  if (removed.kind === "project") {
-    return routeProjectId(current) === removed.projectId
-      ? { kind: "projects" }
-      : undefined;
-  }
-  if (
-    removed.kind === "conversation" &&
-    current.kind === "conversation" &&
-    current.projectId === removed.projectId &&
-    current.conversationId === removed.conversationId
-  ) {
-    return { kind: "project", projectId: removed.projectId };
-  }
-  if (
-    removed.kind === "agent" && current.kind === "agent" &&
-    current.projectId === removed.projectId && current.agentId === removed.agentId
-  ) {
-    return { kind: "agents", projectId: removed.projectId };
-  }
-  return undefined;
-}
 
 interface WorkspaceAppHeaderProps {
   preferredQuotaProvider?: string;
@@ -358,7 +330,6 @@ interface MobileWorkspaceDrawerProps {
     action: "rename" | "delete",
     conversation: ConversationDto,
   ): void;
-  onSearch(): void;
 }
 
 export function MobileWorkspaceDrawer({
@@ -372,7 +343,6 @@ export function MobileWorkspaceDrawer({
   onCreate,
   onPreferences,
   onConversationAction,
-  onSearch,
 }: MobileWorkspaceDrawerProps): JSX.Element {
   const close = () => onOpenChange(false);
   return (
@@ -430,10 +400,6 @@ export function MobileWorkspaceDrawer({
           onDeleteConversation={conversation => {
             close();
             onConversationAction("delete", conversation);
-          }}
-          onSearch={() => {
-            close();
-            onSearch();
           }}
         />
       </Box>

@@ -6,6 +6,8 @@
     "moduleResolution": "Bundler",
     "jsx": "react-jsx",
     "noEmit": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "types": ["@rsbuild/core/types"]
   },
   "include": ["src", "rsbuild.config.ts"]

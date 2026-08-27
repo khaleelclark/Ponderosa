@@ -1,9 +1,6 @@
-import ArrowBackIcon from "@mui/icons-material/ArrowBack";
-import TuneIcon from "@mui/icons-material/Tune";
-import { Alert, Box, Button, IconButton, LinearProgress, Stack, Typography, useMediaQuery } from "@mui/material";
+import { Alert, Box, Button, LinearProgress, useMediaQuery } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
 import type {
-  AgentDto,
   AgentHealthDto,
   ConversationDto,
   EngineDto,
@@ -15,7 +12,7 @@ import type {
   WorkspaceAgentDirectoryItemDto,
 } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { api } from "../api";
 import { mergeAgentStatuses } from "../agents";
 import { useAgent, useAgentHealth, useAgentPresets, useConversations, useAgents } from "../hooks/queries";
@@ -475,7 +472,6 @@ export function ProjectShell({
         }}
         onOpenEngineStatus={onOpenEngineStatus}
         onOpenArtifact={openProjectArtifact}
-        onOpenAgentWork={() => navigate({ kind: "projectWork", projectId })}
       />
   } else {
     main = assertNeverRoute(route);

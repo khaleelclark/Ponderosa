@@ -1,8 +1,6 @@
-import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import AddIcon from "@mui/icons-material/Add";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
-import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import SearchIcon from "@mui/icons-material/Search";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
@@ -147,8 +145,6 @@ export function ProjectOverview({
   onOpenConversation,
   onRenameConversation,
   onDeleteConversation,
-  onOpenAgentWork,
-  onOpenProjectFiles,
   onOpenImportantArtifact,
 }: {
   project: ProjectDto;
@@ -163,8 +159,6 @@ export function ProjectOverview({
   onOpenConversation(conversationId: string): void;
   onRenameConversation(conversation: ConversationDto): void;
   onDeleteConversation(conversation: ConversationDto): void;
-  onOpenAgentWork(): void;
-  onOpenProjectFiles(): void;
   onOpenImportantArtifact(artifact: ArtifactDto): void;
 }): JSX.Element {
   const [chatFilter, setChatFilter] = useState("");

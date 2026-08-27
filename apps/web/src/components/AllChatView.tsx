@@ -25,7 +25,6 @@ import { api } from "../api";
 import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
 import {
   useAllChat,
-  useConversations,
   useEngines,
   useProjects,
   useWorkspacePreferences,
@@ -267,7 +266,6 @@ export function AllChatView({
     queryFn: () => api.getAgent(selectedAgentId!, AGENT_DETAIL_PAGE_SIZE),
     enabled: Boolean(selectedAgentId),
   });
-  const conversationsQuery = useConversations(selectedProjectId);
   const engines = enginesQuery.data ?? [];
   const project = projectsQuery.data?.find(
     item => item.id === selectedProjectId,
