@@ -49,7 +49,6 @@ import {
   ComposerTextInput,
   type ComposerMenuSuggestion,
 } from "./Composer.controls";
-import type { ComposerEditorElement } from "./Composer.editor";
 import {
   canSubmitComposerText,
   composerAttachmentReducer,
@@ -249,7 +248,7 @@ export function Composer({
     AgentMentionBindingDto[]
   >([]);
   const previousMentionBindings = useRef<AgentMentionBindingDto[]>([]);
-  const inputRef = useRef<ComposerEditorElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const markUserDraftMutation = useCallback(() => {
     userDraftMutationGeneration.current += 1;
   }, []);
@@ -1407,7 +1406,6 @@ export function Composer({
         <Box ref={anchorRef} sx={{ order: -1, flex: "1 0 100%", minWidth: 0 }}>
           <ComposerTextInput
             text={text}
-            caret={caret}
             inputRef={inputRef}
             disabled={disabled}
             locked={composerLocked}

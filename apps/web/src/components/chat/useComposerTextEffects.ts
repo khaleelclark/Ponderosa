@@ -7,7 +7,6 @@ import {
 } from "react";
 import { readChatState, writeChatState } from "../../chatState";
 import { replaceDestination } from "./Composer.helpers";
-import type { ComposerEditorElement } from "./Composer.editor";
 import type { ComposerProps } from "./Composer.types";
 
 interface UseComposerInsertTextRequestOptions {
@@ -17,7 +16,7 @@ interface UseComposerInsertTextRequestOptions {
   draftQuery: { isError: boolean };
   draftReady: MutableRefObject<boolean>;
   draftReadyVersion: number;
-  inputRef: RefObject<ComposerEditorElement>;
+  inputRef: RefObject<HTMLTextAreaElement>;
   insertTextRequest: ComposerProps["insertTextRequest"];
   setCaret: Dispatch<SetStateAction<number>>;
   updateText: Dispatch<SetStateAction<string>>;

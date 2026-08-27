@@ -18,6 +18,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
+import { alpha } from "@mui/material/styles";
 import type {
   AssetLimitsDto,
   EngineCommand,
@@ -28,18 +29,8 @@ import {
   LONG_TEXT_MAX_UTF8_BYTES,
   utf8ByteLength,
 } from "@ponderosa/core";
-import {
-  useLayoutEffect,
-  useRef,
-  useState,
-  type MutableRefObject,
-  type RefObject,
-} from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { compactPreviewText } from "./Composer.helpers";
-import {
-  ComposerTokenEditor,
-  type ComposerEditorElement,
-} from "./Composer.editor";
 import { ComposerMentionStatus } from "./Composer.parts";
 import {
   COMPOSER_MAX_FILE_BYTES,
@@ -137,7 +128,6 @@ export function ComposerNotices({
 
 export function ComposerTextInput({
   text,
-  caret,
   inputRef,
   disabled,
   locked,
@@ -169,8 +159,7 @@ export function ComposerTextInput({
   onSend,
 }: {
   text: string;
-  caret: number;
-  inputRef: MutableRefObject<ComposerEditorElement | null>;
+  inputRef: RefObject<HTMLTextAreaElement>;
   disabled: boolean;
   locked: boolean;
   placeholder?: string;
@@ -209,6 +198,7 @@ export function ComposerTextInput({
 }): JSX.Element {
   const destinationRef = useRef<HTMLDivElement>(null);
   const [destinationWidth, setDestinationWidth] = useState(0);
+  const [scrollTop, setScrollTop] = useState(0);
   useLayoutEffect(() => {
     const element = destinationRef.current;
     if (!element || !inlineDestination) {
@@ -253,29 +243,145 @@ export function ComposerTextInput({
             }}
           />
         ) : null}
-        <ComposerTokenEditor
-          caret={caret}
-          mentionTokens={mentionTokens}
-          textIndent={destinationWidth}
-          locked={locked}
-          onTextChange={onTextChange}
-          onRemoveMention={onRemoveMention}
-          value={text}
-          inputRef={inputRef}
-          disabled={disabled || locked}
-          placeholder={locked ? "Agent is working" : (placeholder ?? "Send a message")}
-          inputProps={{
-            "aria-label": "Message",
-            enterKeyHint: "send",
-            role: comboboxEnabled ? "combobox" : undefined,
-            "aria-autocomplete": comboboxEnabled ? "list" : undefined,
-            "aria-expanded": comboboxEnabled ? menuOpen : undefined,
-            "aria-controls": menuOpen ? listId : undefined,
-            "aria-activedescendant": menuOpen
-              ? `${listId}-option-${highlighted}`
-              : undefined,
-          }}
-          onPaste={event => {
+        {text && mentionTokens.length > 0 ? (
+          <Box
+            sx={{
+              position: "absolute",
+              zIndex: 3,
+              inset: "6px 2px auto 2px",
+              maxHeight: 110,
+              overflow: "hidden",
+              pointerEvents: "none",
+              fontSize: 15,
+              lineHeight: "22px",
+              whiteSpace: "pre-wrap",
+              overflowWrap: "anywhere",
+              color: "text.primary",
+              textIndent: destinationWidth ? `${destinationWidth + 8}px` : 0,
+              transform: `translateY(-${scrollTop}px)`,
+            }}
+          >
+            {(() => {
+              const rendered: ReactNode[] = [];
+              let cursor = 0;
+              for (const token of mentionTokens) {
+                rendered.push(
+                  <Box component="span" aria-hidden="true" key={`text:${cursor}`}>
+                    {text.slice(cursor, token.start)}
+                  </Box>,
+                );
+                rendered.push(
+                  <Chip
+                    key={`${token.start}:${token.handle}`}
+                    component="span"
+                    size="small"
+                    label={`#${token.handle}`}
+                    title={token.kind === "special"
+                      ? token.title
+                      : token.valid
+                        ? `Agent: ${token.title}`
+                        : `Unavailable Agent: ${token.title}`}
+                    aria-label={token.kind === "special"
+                      ? `${token.title} tag`
+                      : token.valid
+                        ? `Agent mention ${token.title}`
+                        : `Unavailable Agent mention ${token.title}`}
+                    onDelete={() => onRemoveMention(token.start, token.end)}
+                    sx={{
+                      display: "inline-flex",
+                      verticalAlign: "baseline",
+                      height: 26,
+                      bgcolor: token.valid ? "action.selected" : "error.dark",
+                      color: token.valid ? "primary.main" : "error.contrastText",
+                      fontSize: 16,
+                      fontWeight: 700,
+                      lineHeight: "22px",
+                      boxShadow: token.valid
+                        ? "inset 0 0 0 1px rgba(127, 196, 142, .18)"
+                        : undefined,
+                      textIndent: 0,
+                      pointerEvents: "auto",
+                      "& .MuiChip-label": {
+                        px: 0.75,
+                      },
+                      "& .MuiChip-deleteIcon": {
+                        color: "inherit",
+                        fontSize: 18,
+                        ml: -0.25,
+                        mr: 0.5,
+                        opacity: 1,
+                      },
+                    }}
+                  />,
+                );
+                cursor = token.end;
+              }
+              rendered.push(
+                <Box component="span" aria-hidden="true" key={`text:${cursor}:end`}>
+                  {text.slice(cursor)}
+                </Box>,
+              );
+              return rendered;
+            })()}
+          </Box>
+        ) : null}
+        <TextField
+        fullWidth
+        multiline
+        variant="standard"
+        minRows={1}
+        maxRows={5}
+        sx={{
+          "& .MuiInputBase-root": {
+            position: "relative",
+            zIndex: 2,
+            alignItems: "flex-end",
+            bgcolor: "transparent",
+            px: 0.25,
+            pt: 0.75,
+            pb: 0.5,
+          },
+          "& textarea": {
+            fontSize: 15,
+            lineHeight: "22px",
+            maxHeight: "110px !important",
+            overflowY: "auto !important",
+            textIndent: destinationWidth ? `${destinationWidth + 8}px` : 0,
+            ...(mentionTokens.length > 0 ? {
+              color: "transparent",
+              caretColor: theme => theme.palette.text.primary,
+              "&::selection": {
+                color: theme => theme.palette.text.primary,
+                bgcolor: theme => alpha(theme.palette.primary.main, 0.32),
+              },
+            } : {}),
+          },
+        }}
+        InputProps={{
+          disableUnderline: true,
+        }}
+        value={text}
+        inputRef={inputRef}
+        disabled={disabled || locked}
+        placeholder={locked ? "Agent is working" : (placeholder ?? "Send a message")}
+        inputProps={{
+          "aria-label": "Message",
+          enterKeyHint: "send",
+          role: comboboxEnabled ? "combobox" : undefined,
+          "aria-autocomplete": comboboxEnabled ? "list" : undefined,
+          "aria-expanded": comboboxEnabled ? menuOpen : undefined,
+          "aria-controls": menuOpen ? listId : undefined,
+          "aria-activedescendant": menuOpen
+            ? `${listId}-option-${highlighted}`
+            : undefined,
+        }}
+        onChange={event =>
+          onTextChange(
+            event.target.value,
+            event.target.selectionStart ?? event.target.value.length,
+          )
+        }
+        onPaste={event => {
           if (disabled || locked) return;
           if (attachmentsEnabled) {
             const files = filesFromClipboard(
@@ -299,36 +405,21 @@ export function ComposerTextInput({
           }
           onPastedText(combined);
         }}
-        onClick={event => {
+        onClick={event =>
           onCaretChange(
-            event.currentTarget.selectionStart,
-          );
-        }}
-        onSelect={event => {
-          onCaretChange(
-            event.currentTarget.selectionStart,
-          );
-        }}
+            (event.target as HTMLTextAreaElement).selectionStart ?? 0,
+          )
+        }
+        onScroll={event => setScrollTop((event.target as HTMLTextAreaElement).scrollTop)}
         onKeyUp={event =>
           onCaretChange(
-            event.currentTarget.selectionStart,
+            (event.target as HTMLTextAreaElement).selectionStart ?? 0,
           )
         }
         onKeyDown={event => {
           const textarea = inputRef.current;
           const selectionStart = textarea?.selectionStart ?? 0;
           const selectionEnd = textarea?.selectionEnd ?? selectionStart;
-          if (
-            (event.key === "Backspace" || event.key === "Delete") &&
-            selectionStart !== selectionEnd
-          ) {
-            event.preventDefault();
-            onTextChange(
-              text.slice(0, selectionStart) + text.slice(selectionEnd),
-              selectionStart,
-            );
-            return;
-          }
           if (selectionStart === selectionEnd) {
             const token = mentionTokens.find(candidate =>
               event.key === "Backspace"
