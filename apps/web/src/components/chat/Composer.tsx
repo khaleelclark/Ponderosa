@@ -552,21 +552,12 @@ export function Composer({
     );
     update(current => {
       if (!selectingNewAgent) {
-        const withoutNewAgent = removeHandle(
+        return removeHandle(
           current,
           NEW_AGENT_DESTINATION_HANDLE,
         );
-        return defaultDestination
-          ? prependComposerDestination(
-              withoutNewAgent,
-              defaultDestination.handle,
-            )
-          : withoutNewAgent;
       }
-      const withoutAutomaticDestination = activeDefaultDestination
-        ? removeHandle(current, activeDefaultDestination.handle)
-        : current;
-      return prependComposerDestination(withoutAutomaticDestination, NEW_AGENT_DESTINATION_HANDLE);
+      return prependComposerDestination(current, NEW_AGENT_DESTINATION_HANDLE);
     });
     setActiveDefaultDestination(
       selectingNewAgent ? undefined : defaultDestination,
@@ -805,26 +796,19 @@ export function Composer({
       return;
     }
     appliedDefaultDestination.current = defaultDestination;
-    let nextText = textRef.current;
+    const nextText = textRef.current;
     const previousWasActive = Boolean(
       previous &&
-      activeDefaultDestination?.selectionKey === previous.selectionKey &&
-      hasComposerDestination(nextText, previous.handle),
+      activeDefaultDestination?.selectionKey === previous.selectionKey,
     );
-    if (previous && previousWasActive) {
-      nextText = removeHandle(nextText, previous.handle);
-    }
     const mayPopulate = nextText.trim().length === 0;
     if (mayPopulate) {
-      nextText = prependComposerDestination(nextText, defaultDestination.handle);
       setActiveDefaultDestination(defaultDestination);
     } else if (previous && previousWasActive) {
-      nextText = prependComposerDestination(nextText, previous.handle);
       setActiveDefaultDestination(previous);
     } else {
       setActiveDefaultDestination(undefined);
     }
-    if (nextText !== textRef.current) replaceText(nextText);
   }, [
     conversationDraftId,
     activeDefaultDestination?.selectionKey,
@@ -833,7 +817,6 @@ export function Composer({
     defaultDestination?.selectionKey,
     destinationMode,
     draftReadyVersion,
-    replaceText,
   ]);
 
   useEffect(() => {

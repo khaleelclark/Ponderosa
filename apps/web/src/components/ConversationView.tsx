@@ -1229,7 +1229,18 @@ export function ConversationView({
           </Alert>
         ) : null}
         {activeView === "main" && queuedMessageNotice ? (
-          <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>
+          <Alert
+            severity="info"
+            sx={{
+              mx: 1.5,
+              mt: 1,
+              minWidth: 0,
+              "& .MuiAlert-message": {
+                minWidth: 0,
+                overflowWrap: "anywhere",
+              },
+            }}
+          >
             {queuedMessageNotice}
           </Alert>
         ) : null}
