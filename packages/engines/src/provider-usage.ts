@@ -8,7 +8,6 @@ import {
   type ProviderUsage,
   type ProviderUsageReadOptions,
   type ProviderUsageWindow,
-  type RuntimeProcessHandle,
 } from "@ponderosa/core";
 import { spawnContainedCli } from "./contained-spawn.js";
 import { JsonRpcProcess } from "./json-rpc-process.js";
