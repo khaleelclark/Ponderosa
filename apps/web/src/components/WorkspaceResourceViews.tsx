@@ -503,7 +503,7 @@ export function AllTriggersWorkspace({
           id: "settings",
           label: "Automation Settings",
           icon: <SettingsOutlinedIcon fontSize="small" />,
-          onSelect: ({ route, trigger }) => {
+          onSelect: ({ route }) => {
             onNavigate(route);
           },
         },

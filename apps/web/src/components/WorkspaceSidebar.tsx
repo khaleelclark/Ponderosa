@@ -1,6 +1,5 @@
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
-import LanguageIcon from "@mui/icons-material/Language";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
@@ -14,7 +13,6 @@ import {
   ListItemText,
   Stack,
   Tooltip,
-  Typography,
 } from "@mui/material";
 import type {
   ConversationDto,
@@ -44,7 +42,6 @@ import {
   sortWorkspaceResources,
   starredWorkspaceResources,
   toggleWorkspaceResourceStar,
-  workspaceResourceSort,
 } from "../resourcePreferences";
 import {
   projectDisambiguator,
@@ -55,7 +52,6 @@ import { markWorkspaceResourceUsed } from "../workspaceRecency";
 import { AgentStatusIndicator } from "./AgentStatusIndicator";
 import { ResourceContextMenu } from "./ResourceContextMenu";
 import { TextInputDialog } from "./ConfirmationDialogs";
-import { IconTitle } from "./IconTitle";
 import {
   SIDEBAR_PANEL_WIDTH,
   SIDEBAR_RAIL_WIDTH,
@@ -392,7 +388,6 @@ export function WorkspaceSidebar({
   );
 
   const starredResourceIds = starredWorkspaceResources(preferences);
-  const projectList = projectItems;
   const toggleStar = (
     kind: "project" | "conversation" | "agent" | "trigger",
     id: string,

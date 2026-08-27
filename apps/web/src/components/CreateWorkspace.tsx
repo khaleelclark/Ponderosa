@@ -33,7 +33,7 @@ import type {
   ProjectDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { api } from "../api";
 import {
@@ -61,7 +61,6 @@ import { TriggersPane } from "./TriggersPane";
 import { AgentCreateSurface } from "./AgentCreateDialog";
 import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 
-const UNSET = "";
 const anchoredCreationActionsSx = {
   position: "absolute",
   zIndex: 2,

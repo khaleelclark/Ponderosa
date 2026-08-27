@@ -78,7 +78,6 @@ export function ProjectArtifactsView({
   health,
   healthByAgentId,
   engines,
-  notifications,
   preferences,
   onPreferences,
   onCreateConversation,

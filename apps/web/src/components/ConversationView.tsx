@@ -27,7 +27,7 @@ import {
   useState,
 } from "react";
 import { api } from "../api";
-import { agentBelongsToConversation, type AgentStatus } from "../agents";
+import type { AgentStatus } from "../agents";
 import {
   useAgents,
   useNotifications,
@@ -41,7 +41,6 @@ import {
 } from "../conversationEngine";
 import {
   agentIdForMentionHandle,
-  findMentionedAgents,
 } from "../mentions";
 import { Composer } from "./chat/Composer";
 import { QueuedMessageTray } from "./chat/QueuedMessageTray";
@@ -184,7 +183,6 @@ export function ConversationView({
   const [importOpen, setImportOpen] = useState(false);
   const [agentWorkOpen, setAgentWorkOpen] = useState(false);
   const collaborationVisited = useRef(activeView === "collaboration");
-  const [agentWorkFocus, setAgentWorkFocus] = useState<string>();
   const [mentionInsertRequest, setMentionInsertRequest] = useState<{
     id: string;
     text: string;
@@ -807,9 +805,6 @@ export function ConversationView({
     }))
     .filter(binding => binding.handle &&
       !["broadcast", "user", "everyone"].includes(binding.handle.toLocaleLowerCase()));
-  const findMentioned = (text: string): AgentDto[] =>
-    findMentionedAgents(text, routingAgents);
-
   const busyMentionHandles = routingAgents
     .filter(agent => statusByAgentId.get(agent.id) === "running")
     .map(agent => agent.handle);
@@ -1125,7 +1120,6 @@ export function ConversationView({
             open
             projectId={conversation.projectId}
             conversationId={conversationId}
-            focus={agentWorkFocus ? { id: agentWorkFocus } : undefined}
             onClose={() => setAgentWorkOpen(false)}
           />
         ) : activeView === "files" ? (
