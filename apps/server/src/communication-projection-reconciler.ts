@@ -314,7 +314,7 @@ export function createCommunicationProjectionReconciler(
         const requestProjectionText = row.sourceKind === "request"
           ? `${recipientAgentIds.flatMap((agentId) => {
               const recipient = store.getAgent(agentId);
-              return recipient ? [`#${agentMentionHandle(recipient.title)}`] : [];
+              return recipient ? [`#${recipient.handle}`] : [];
             }).join(" ")} ${canonical.text}`.trim()
           : undefined;
         const dispatchText = typeof dispatch?.text === "string"
@@ -336,7 +336,8 @@ export function createCommunicationProjectionReconciler(
                   const targetLabel = targetAgentId
                     ? canonical.identity?.recipientLabels?.[targetAgentId] ?? target?.title
                     : undefined;
-                  return targetLabel ? renderDirectMessage(targetLabel, dispatchText) : dispatchText;
+                  const targetHandle = target?.handle ?? (targetLabel ? agentMentionHandle(targetLabel) : undefined);
+                  return targetHandle ? renderDirectMessage(targetHandle, dispatchText) : dispatchText;
                 })()
               : dispatchText;
         const roomTarget = projectionTargets.find((target) =>

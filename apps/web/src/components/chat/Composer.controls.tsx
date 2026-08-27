@@ -28,7 +28,7 @@ import {
   LONG_TEXT_MAX_UTF8_BYTES,
   utf8ByteLength,
 } from "@ponderosa/core";
-import { useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { compactPreviewText } from "./Composer.helpers";
 import { ComposerMentionStatus } from "./Composer.parts";
 import {
@@ -141,6 +141,7 @@ export function ComposerTextInput({
   destinationMode,
   requiredRecipient,
   inlineDestination,
+  mentionTokens,
   mentionedBusyHandles,
   mentionedHandles,
   canSend,
@@ -153,6 +154,7 @@ export function ComposerTextInput({
   onSuppressMenu,
   onApplySuggestion,
   onClearRequiredRecipient,
+  onRemoveMention,
   onSend,
 }: {
   text: string;
@@ -170,6 +172,13 @@ export function ComposerTextInput({
   destinationMode?: "project-chat" | "fixed" | "target-required";
   requiredRecipient?: { handle: string; title: string; onClear(): void };
   inlineDestination?: { handle: string; onClear(): void };
+  mentionTokens: Array<{
+    start: number;
+    end: number;
+    handle: string;
+    title: string;
+    valid: boolean;
+  }>;
   mentionedBusyHandles: string[];
   mentionedHandles: string[];
   canSend: boolean;
@@ -182,10 +191,12 @@ export function ComposerTextInput({
   onSuppressMenu(): void;
   onApplySuggestion(suggestion: ComposerMenuSuggestion): void;
   onClearRequiredRecipient(): void;
+  onRemoveMention(start: number, end: number): void;
   onSend(): void;
 }): JSX.Element {
   const destinationRef = useRef<HTMLDivElement>(null);
   const [destinationWidth, setDestinationWidth] = useState(0);
+  const [scrollTop, setScrollTop] = useState(0);
   useLayoutEffect(() => {
     const element = destinationRef.current;
     if (!element || !inlineDestination) {
@@ -230,6 +241,87 @@ export function ComposerTextInput({
             }}
           />
         ) : null}
+        {text && mentionTokens.length > 0 ? (
+          <Box
+            sx={{
+              position: "absolute",
+              zIndex: 1,
+              inset: "0 2px auto 2px",
+              maxHeight: 110,
+              overflow: "hidden",
+              pointerEvents: "none",
+              fontSize: 15,
+              lineHeight: "22px",
+              whiteSpace: "pre-wrap",
+              overflowWrap: "anywhere",
+              color: "text.primary",
+              textIndent: destinationWidth ? `${destinationWidth + 8}px` : 0,
+              transform: `translateY(-${scrollTop}px)`,
+            }}
+          >
+            {(() => {
+              const rendered: ReactNode[] = [];
+              let cursor = 0;
+              for (const token of mentionTokens) {
+                rendered.push(
+                  <Box component="span" aria-hidden="true" key={`text:${cursor}`}>
+                    {text.slice(cursor, token.start)}
+                  </Box>,
+                );
+                rendered.push(
+                  <Box
+                    component="span"
+                    key={`${token.start}:${token.handle}`}
+                    title={token.valid ? `Agent: ${token.title}` : `Unavailable Agent: ${token.title}`}
+                    aria-label={token.valid
+                      ? `Agent mention ${token.title}`
+                      : `Unavailable Agent mention ${token.title}`}
+                    sx={{
+                      display: "inline-flex",
+                      alignItems: "baseline",
+                      borderRadius: 0.75,
+                      bgcolor: token.valid ? "action.selected" : "error.dark",
+                      color: token.valid ? "primary.light" : "error.contrastText",
+                      fontWeight: 700,
+                      px: 0.35,
+                      textIndent: 0,
+                      pointerEvents: "auto",
+                    }}
+                  >
+                    #{token.handle}
+                    <Box
+                      component="button"
+                      type="button"
+                      aria-label={`Remove Agent mention ${token.title}`}
+                      onClick={() => onRemoveMention(token.start, token.end)}
+                      sx={{
+                        appearance: "none",
+                        border: 0,
+                        bgcolor: "transparent",
+                        color: "inherit",
+                        font: "inherit",
+                        lineHeight: 1,
+                        cursor: "pointer",
+                        p: 0,
+                        ml: 0.35,
+                        opacity: 0.75,
+                      }}
+                    >
+                      ×
+                    </Box>
+                  </Box>,
+                );
+                cursor = token.end;
+              }
+              rendered.push(
+                <Box component="span" aria-hidden="true" key={`text:${cursor}:end`}>
+                  {text.slice(cursor)}
+                </Box>,
+              );
+              return rendered;
+            })()}
+          </Box>
+        ) : null}
         <TextField
         fullWidth
         multiline
@@ -249,6 +341,10 @@ export function ComposerTextInput({
             maxHeight: "110px !important",
             overflowY: "auto !important",
             textIndent: destinationWidth ? `${destinationWidth + 8}px` : 0,
+            ...(mentionTokens.length > 0 ? {
+              color: "transparent",
+              caretColor: "text.primary",
+            } : {}),
           },
         }}
         InputProps={{
@@ -304,6 +400,7 @@ export function ComposerTextInput({
             (event.target as HTMLTextAreaElement).selectionStart ?? 0,
           )
         }
+        onScroll={event => setScrollTop((event.target as HTMLTextAreaElement).scrollTop)}
         onKeyUp={event =>
           onCaretChange(
             (event.target as HTMLTextAreaElement).selectionStart ?? 0,
@@ -311,6 +408,31 @@ export function ComposerTextInput({
         }
         onKeyDown={event => {
           const textarea = inputRef.current;
+          const selectionStart = textarea?.selectionStart ?? 0;
+          const selectionEnd = textarea?.selectionEnd ?? selectionStart;
+          if (selectionStart === selectionEnd) {
+            const token = mentionTokens.find(candidate =>
+              event.key === "Backspace"
+                ? selectionStart > candidate.start && selectionStart <= candidate.end
+                : event.key === "Delete"
+                  ? selectionStart >= candidate.start && selectionStart < candidate.end
+                  : event.key === "ArrowLeft"
+                    ? selectionStart > candidate.start && selectionStart <= candidate.end
+                    : event.key === "ArrowRight"
+                      ? selectionStart >= candidate.start && selectionStart < candidate.end
+                      : false);
+            if (token) {
+              event.preventDefault();
+              if (event.key === "Backspace" || event.key === "Delete") {
+                onRemoveMention(token.start, token.end);
+              } else {
+                const nextCaret = event.key === "ArrowLeft" ? token.start : token.end;
+                textarea?.setSelectionRange(nextCaret, nextCaret);
+                onCaretChange(nextCaret);
+              }
+              return;
+            }
+          }
           if (
             event.key === "Backspace" &&
             inlineDestination &&

@@ -571,7 +571,7 @@ export function registerAgentCommunicationRoutes(
       return reply.code(409).send({ error: "agent is no longer an active member of this conversation" });
     }
     let renderedText = publishedText;
-    let routing: { intents: ConversationDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> } = { intents: [], blocked: [] };
+    let routing: { intents: ConversationDeliveryIntent[]; blocked: Array<{ handle: string; reason: string }> } = { intents: [], blocked: [] };
     if (intent === "collaboration") {
       const recipientAgentIds = inferredRecipientAgentIds;
       if (!Array.isArray(recipientAgentIds) || recipientAgentIds.length === 0) {

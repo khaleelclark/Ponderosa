@@ -10,7 +10,7 @@ import type {
   MultiAgentDirectMessageResponse,
   QueuedConversationMessageDto,
 } from "@ponderosa/core";
-import { messageTagTokens, normalizeCanonicalText, unicodeCodePointLength } from "@ponderosa/core";
+import { messageTagTokens, normalizeCanonicalText } from "@ponderosa/core";
 import type {
   AgentStore,
   ConversationDeliveryIntent,
@@ -20,7 +20,6 @@ import type {
 } from "@ponderosa/agents";
 import { ASSET_LIMITS, AssetError, type AssetStore } from "../assets.js";
 import { renderScopedMessage, stripLeadingScopeTag } from "../agent-mentions.js";
-import { agentMentionHandle } from "../mention-bindings.js";
 
 export interface PreparedCommunicationArtifact {
   id: string;
@@ -166,7 +165,7 @@ export function registerConversationDeliveryRoutes(
         requestedRecipientAgentMentions.some((binding) => !binding ||
           typeof binding.agentId !== "string" || !binding.agentId.trim() ||
           typeof binding.handle !== "string" || !binding.handle.trim()))) {
-      return reply.code(400).send({ error: "targeted next-run Agent bindings must be unique and limited to 100" });
+      return reply.code(400).send({ error: "Broadcast Agent mention bindings must be unique and limited to 100" });
     }
     const recipientAgentMentions =
       (requestedRecipientAgentMentions ?? []) as AgentMentionBindingDto[];
@@ -176,7 +175,7 @@ export function registerConversationDeliveryRoutes(
         new Set(recipientAgentMentions.map((binding) => binding.handle.toLocaleLowerCase())).size !==
           recipientAgentMentions.length
     ) {
-      return reply.code(400).send({ error: "targeted next-run Agent bindings must be unique and limited to 100" });
+      return reply.code(400).send({ error: "Broadcast Agent mention bindings must be unique and limited to 100" });
     }
     if (!Array.isArray(requestedRecipientAttachments) ||
         requestedRecipientAttachments.length > recipientAgentIds.length ||
@@ -196,8 +195,8 @@ export function registerConversationDeliveryRoutes(
     if (projectDeletionInProgress(master.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
     const agentIdsByHandle = new Map<string, string[]>();
     for (const agent of store.listAgents(master.projectId)) {
-      if (agent.archived || !agent.conversationIds.includes(master.id)) continue;
-      const handle = agentMentionHandle(agent.title).toLocaleLowerCase();
+      if (agent.archived) continue;
+      const handle = agent.handle.toLocaleLowerCase();
       if (!handle || ["broadcast", "everyone", "user"].includes(handle)) continue;
       agentIdsByHandle.set(handle, [...(agentIdsByHandle.get(handle) ?? []), agent.id]);
     }
@@ -214,51 +213,13 @@ export function registerConversationDeliveryRoutes(
       const matches = agentIdsByHandle.get(binding.handle.toLocaleLowerCase()) ?? [];
       return matches.length !== 1 || matches[0] !== binding.agentId;
     })) {
-      return reply.code(400).send({ error: "targeted next-run Agent binding is stale, ambiguous, or invalid" });
+      return reply.code(400).send({ error: "Broadcast Agent mention binding is stale, ambiguous, or invalid" });
     }
     const recipientAgents = recipientAgentIds.map((agentId) => store.getAgent(agentId));
     if (recipientAgents.some((agent) =>
-      !agent || agent.archived || agent.projectId !== master.projectId ||
-      !agent.conversationIds.includes(master.id)
+      !agent || agent.archived || agent.projectId !== master.projectId
     )) {
       return reply.code(404).send({ error: "broadcast recipient not found" });
-    }
-    if (recipientAgentIds.length > 0) {
-      if (requestedAssets.length > 0 || requestedRecipientAttachments.length > 0) {
-        return reply.code(400).send({ error: "targeted next-run delivery accepts message text only" });
-      }
-      if (!rawText || unicodeCodePointLength(rawText) > 20_000) {
-        return reply.code(400).send({ error: "targeted next-run text must contain 1 to 20000 Unicode code points" });
-      }
-      if (!idempotencyKey) {
-        return reply.code(400).send({ error: "targeted next-run delivery requires an idempotencyKey" });
-      }
-      try {
-        const result = coordinationV3.publishOperatorNextRunDelivery({
-          projectId: master.projectId,
-          conversationId: master.id,
-          publisherUserId: "local-operator",
-          publisherLabel: "Operator",
-          idempotencyKey,
-          text: rawText,
-          recipientAgentIds,
-        });
-        for (const agentId of recipientAgentIds) {
-          publishCoordinationV3Changed(agentId, { conversationIds: [master.id] });
-        }
-        const receipt = coordinationV3.operatorNextRunDeliveryReceipts({
-          projectId: master.projectId,
-          conversationId: master.id,
-          publisherUserId: "local-operator",
-          limit: 50,
-        }).find((candidate) => candidate.deliveryId === result.delivery.id);
-        if (!receipt) throw new Error("targeted next-run receipt was not committed");
-        return { receipt, replayed: result.replayed };
-      } catch (error) {
-        return reply.code(409).send({
-          error: error instanceof Error ? error.message : "targeted next-run delivery failed",
-        });
-      }
     }
     if (!Array.isArray(requestedAssets) || requestedAssets.length > MAX_ATTACHMENTS_PER_MESSAGE) return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} assets are allowed` });
     const validatedAssets: AssetDto[] = [];
@@ -322,6 +283,13 @@ export function registerConversationDeliveryRoutes(
       intent: "broadcast",
       audience: { kind: "organization", organizationId: master.projectId },
       text: prepared.publishedText,
+      ...(recipientAgentIds.length ? {
+        identity: {
+          senderLabel: "User",
+          recipientLabels: Object.fromEntries(recipientAgents.map(agent => [agent!.id, agent!.title])),
+          recipientHandles: Object.fromEntries(recipientAgents.map(agent => [agent!.id, agent!.handle])),
+        },
+      } : {}),
       ...(validatedAssets.length ? { attachments: validatedAssets } : {}),
       ...(prepared.document ? { document: prepared.document } : {}),
       createdAt,
@@ -487,7 +455,7 @@ export function registerConversationDeliveryRoutes(
     "/api/conversations/:id/direct-messages",
     async (request, reply) => {
       const rawText = request.body?.text ?? "";
-      const recipients = request.body?.recipients ?? [];
+      let recipients = request.body?.recipients ?? [];
       const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
       const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
       const runtimeSelection = requestedRuntimeSelection(request.body ?? {});
@@ -502,7 +470,7 @@ export function registerConversationDeliveryRoutes(
       if (!Array.isArray(recipients) || recipients.length === 0 || recipients.length > 100) {
         return reply.code(400).send({ error: "1 to 100 recipients are required" });
       }
-      const agentIds = recipients.map((recipient) => recipient.agentId?.trim());
+      let agentIds = recipients.map((recipient) => recipient.agentId?.trim());
       if (agentIds.some((id) => !id) || new Set(agentIds).size !== agentIds.length) {
         return reply.code(400).send({ error: "recipient agent IDs must be unique" });
       }
@@ -516,9 +484,22 @@ export function registerConversationDeliveryRoutes(
       if (!master || master.archived) return reply.code(404).send({ error: "conversation not found" });
       if (projectDeletionInProgress(master.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
       const targets = agentIds.map((agentId) => store.getAgent(agentId));
-      if (targets.some((target) => !target || target.archived || !target.conversationIds.includes(master.id))) {
-        return reply.code(404).send({ error: "direct message recipient not found" });
+      const unavailableRecipients: NonNullable<MultiAgentDirectMessageResponse["unavailableRecipients"]> = [];
+      recipients.forEach((recipient, index) => {
+        const target = targets[index];
+        if (!target) unavailableRecipients.push({ agentId: recipient.agentId, reason: "missing" });
+        else if (target.archived) unavailableRecipients.push({ agentId: recipient.agentId, reason: "archived" });
+        else if (target.projectId !== master.projectId) unavailableRecipients.push({ agentId: recipient.agentId, reason: "wrong_project" });
+      });
+      const unavailableIds = new Set(unavailableRecipients.map(recipient => recipient.agentId));
+      recipients = recipients.filter(recipient => !unavailableIds.has(recipient.agentId));
+      if (recipients.length === 0) {
+        return reply.code(409).send({
+          error: "No addressed Agent remains available",
+          unavailableRecipients,
+        });
       }
+      agentIds = recipients.map(recipient => recipient.agentId);
       try {
         const attachmentsByAgent = await Promise.all(recipients.map(async (recipient) => {
           const attached = await Promise.all((recipient.attachmentIds ?? []).map((id) => assetMetadata(recipient.agentId, id)));
@@ -649,6 +630,7 @@ export function registerConversationDeliveryRoutes(
             deliveryId: deliveryIdByAgentId.get(recipient.agentId),
             state: "queued" as const,
           })),
+          ...(unavailableRecipients.length ? { unavailableRecipients } : {}),
         } satisfies MultiAgentDirectMessageResponse;
       } catch (error) {
         if (error instanceof AssetError) return reply.code(error.statusCode).send({ error: error.message });

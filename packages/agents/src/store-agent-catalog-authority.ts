@@ -11,6 +11,7 @@ import type {
   PortableAgentHistoryMessageDto,
   UpdateAgentOrganizationRequest,
 } from "@ponderosa/core";
+import { allocateAgentMentionHandle } from "@ponderosa/core";
 import type { Db } from "./db.js";
 import { normalizeAgentTitle } from "./agent-identity.js";
 import { requireManagementPermissions } from "./store-agent-management.js";
@@ -21,7 +22,7 @@ import type {
   ContextReadBoundary,
   ContextSourcePage,
 } from "./store-types.js";
-import { agentConversationMemberships, agents, importedHistoryMessages } from "./schema.js";
+import { agentConversationMemberships, agentHandleReservations, agents, importedHistoryMessages } from "./schema.js";
 import {
   agentDir,
   agentJsonPath,
@@ -45,9 +46,22 @@ export class AgentCatalogAuthority {
   ) {}
 
   createAgent(projectId: string, input: CreateAgentRequest, origin?: AgentSpawnOrigin): AgentDto {
+    const creationIdempotencyKey = input.idempotencyKey?.trim() || undefined;
+    if (creationIdempotencyKey) {
+      const existing = this.findAgentCreation(projectId, creationIdempotencyKey);
+      if (existing) return existing;
+    }
     const id = randomUUID();
     const now = new Date().toISOString();
     const title = normalizeAgentTitle(input.title);
+    const handle = allocateAgentMentionHandle(
+      title,
+      this.db.select({ handle: agentHandleReservations.handle })
+        .from(agentHandleReservations)
+        .where(eq(agentHandleReservations.projectId, projectId))
+        .all()
+        .map(row => row.handle),
+    );
     const preset = input.presetId ? this.getAgentPreset(input.presetId) : undefined;
     if (input.presetId && (!preset || preset.projectId !== projectId || !preset.enabled)) throw new Error("invalid preset");
     const presetSnapshot = preset ? { id: preset.id, name: preset.name, description: preset.description, guidance: preset.guidance, engine: preset.engine, model: preset.model, effort: preset.effort } : undefined;
@@ -62,6 +76,7 @@ export class AgentCatalogAuthority {
       conversationId: input.conversationId,
       conversationIds: input.conversationId ? [input.conversationId] : [],
       title,
+      handle,
       activeEngine: input.engine,
       model,
       effort,
@@ -74,18 +89,26 @@ export class AgentCatalogAuthority {
       spawnPrompt: origin?.prompt,
       spawnIdempotencyKey: origin?.idempotencyKey,
       presetSnapshot,
+      creationIdempotencyKey,
     };
     mkdirSync(agentDir(this.dataDir, projectId, id), { recursive: true });
     mkdirSync(artifactsDir(this.dataDir, projectId, id), { recursive: true });
     mkdirSync(attachmentsDir(this.dataDir, projectId, id), { recursive: true });
     writeJson(agentJsonPath(this.dataDir, projectId, id), record);
-    this.db
-      .insert(agents)
-      .values({
+    this.client.transaction(() => {
+      this.db.insert(agentHandleReservations).values({
+        projectId,
+        normalizedHandle: handle.toLocaleLowerCase(),
+        handle,
+        agentId: id,
+        reservedAt: now,
+      }).run();
+      this.db.insert(agents).values({
         id,
         projectId,
         conversationId: input.conversationId ?? null,
         title,
+        handle,
         activeEngine: input.engine,
         model: model ?? null,
         effort: effort ?? null,
@@ -99,11 +122,12 @@ export class AgentCatalogAuthority {
         spawnPrompt: origin?.prompt ?? null,
         spawnIdempotencyKey: origin?.idempotencyKey ?? null,
         presetSnapshotJson: presetSnapshot ? JSON.stringify(presetSnapshot) : null,
-      })
-      .run();
-    if (input.conversationId) {
-      this.db.insert(agentConversationMemberships).values({ agentId: id, conversationId: input.conversationId, position: 0 }).run();
-    }
+        creationIdempotencyKey: creationIdempotencyKey ?? null,
+      }).run();
+      if (input.conversationId) {
+        this.db.insert(agentConversationMemberships).values({ agentId: id, conversationId: input.conversationId, position: 0 }).run();
+      }
+    })();
     if (input.managerAgentId) this.updateAgentOrganization(id, { managerAgentId: input.managerAgentId });
     return this.rowToAgentDto(id)!;
   }
@@ -113,6 +137,15 @@ export class AgentCatalogAuthority {
       eq(agents.spawnedByAgentId, agentId),
       eq(agents.spawnedByExecutionId, executionId),
       eq(agents.spawnIdempotencyKey, idempotencyKey),
+      isNull(agents.deletedAt),
+    )).get();
+    return row ? this.agentRowToDto(row) : undefined;
+  }
+
+  findAgentCreation(projectId: string, idempotencyKey: string): AgentDto | undefined {
+    const row = this.db.select().from(agents).where(and(
+      eq(agents.projectId, projectId),
+      eq(agents.creationIdempotencyKey, idempotencyKey),
       isNull(agents.deletedAt),
     )).get();
     return row ? this.agentRowToDto(row) : undefined;
@@ -276,6 +309,7 @@ export class AgentCatalogAuthority {
         .where(eq(agentConversationMemberships.agentId, row.id))
         .orderBy(asc(agentConversationMemberships.position)).all().map((membership) => membership.conversationId),
       title: row.title,
+      handle: row.handle,
       activeEngine: row.activeEngine,
       model: row.model ?? undefined,
       effort: row.effort ?? undefined,

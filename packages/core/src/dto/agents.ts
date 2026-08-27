@@ -30,6 +30,8 @@ export interface AgentManagementPermissionsDto {
 export interface AgentDto {
   id: string;
   projectId: string;
+  /** Server-allocated, Project-scoped structural mention handle. */
+  handle: string;
   /** Optional primary Project conversation that groups this agent. */
   conversationId?: string;
   /** All Project conversations this agent belongs to. `conversationId` is primary. */
@@ -185,6 +187,8 @@ export interface CreateAgentRequest {
   managerAgentId?: string;
   /** Persisted Agent settings. Omitted creation defaults both permissions off. */
   managementPermissions?: AgentManagementPermissionsDto;
+  /** Stable across transport retries so one requested Agent is created once. */
+  idempotencyKey?: string;
 }
 
 /** PATCH /api/agents/:id body (persistent Agent settings). */

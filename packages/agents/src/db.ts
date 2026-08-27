@@ -10,6 +10,8 @@ import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import {
+  allocateAgentMentionHandle,
+  RESERVED_AGENT_MENTION_HANDLES,
   normalizeProviderFailureCategory,
   publicProviderFailureSummary,
   type CoordinationRequestUpdateKind,
@@ -172,6 +174,89 @@ function establishSchemaExtensions(sqlite: Database.Database): void {
         .run(extensionName, new Date().toISOString());
     })();
   }
+}
+
+/** Add durable Project-scoped handles to databases created before mentions
+ * became structural. Existing Agents are allocated deterministically by age;
+ * reservations are retained forever across rename and deletion. */
+function establishAgentMentionHandles(sqlite: Database.Database): void {
+  sqlite.transaction(() => {
+    const columns = new Set(
+      (sqlite.pragma("table_info(agents)") as Array<{ name: string }>)
+        .map(column => column.name),
+    );
+    if (!columns.has("handle")) {
+      sqlite.exec("ALTER TABLE agents ADD COLUMN handle TEXT");
+    }
+    if (!columns.has("creation_idempotency_key")) {
+      sqlite.exec("ALTER TABLE agents ADD COLUMN creation_idempotency_key TEXT");
+    }
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS agent_handle_reservations (
+        project_id TEXT NOT NULL,
+        normalized_handle TEXT NOT NULL,
+        handle TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        reserved_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, normalized_handle)
+      )
+    `);
+    const agents = sqlite.prepare(`
+      SELECT id, project_id, title, handle, created_at
+      FROM agents
+      ORDER BY project_id, created_at, id
+    `).all() as Array<{
+      id: string;
+      project_id: string;
+      title: string;
+      handle: string | null;
+      created_at: string;
+    }>;
+    const occupiedByProject = new Map<string, Set<string>>();
+    const reservations = sqlite.prepare(`
+      SELECT project_id, normalized_handle FROM agent_handle_reservations
+    `).all() as Array<{ project_id: string; normalized_handle: string }>;
+    for (const reservation of reservations) {
+      const occupied = occupiedByProject.get(reservation.project_id) ?? new Set<string>();
+      occupied.add(reservation.normalized_handle.toLocaleLowerCase());
+      occupiedByProject.set(reservation.project_id, occupied);
+    }
+    const updateHandle = sqlite.prepare("UPDATE agents SET handle = ? WHERE id = ?");
+    const reserve = sqlite.prepare(`
+      INSERT OR IGNORE INTO agent_handle_reservations
+        (project_id, normalized_handle, handle, agent_id, reserved_at)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    for (const agent of agents) {
+      const occupied = occupiedByProject.get(agent.project_id) ?? new Set<string>();
+      for (const reserved of RESERVED_AGENT_MENTION_HANDLES) occupied.add(reserved);
+      const requested = agent.handle?.trim();
+      const normalizedRequested = requested?.toLocaleLowerCase();
+      const existingReservation = normalizedRequested
+        ? sqlite.prepare(`
+            SELECT agent_id FROM agent_handle_reservations
+            WHERE project_id = ? AND normalized_handle = ?
+          `).get(agent.project_id, normalizedRequested) as { agent_id: string } | undefined
+        : undefined;
+      const handle = requested &&
+          !RESERVED_AGENT_MENTION_HANDLES.has(normalizedRequested!) &&
+          (!occupied.has(normalizedRequested!) || existingReservation?.agent_id === agent.id)
+        ? requested
+        : allocateAgentMentionHandle(agent.title, occupied);
+      const normalized = handle.toLocaleLowerCase();
+      updateHandle.run(handle, agent.id);
+      reserve.run(agent.project_id, normalized, handle, agent.id, agent.created_at);
+      occupied.add(normalized);
+      occupiedByProject.set(agent.project_id, occupied);
+    }
+    sqlite.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_project_handle
+        ON agents (project_id, lower(handle));
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_creation_idempotency
+        ON agents (project_id, creation_idempotency_key)
+        WHERE creation_idempotency_key IS NOT NULL;
+    `);
+  })();
 }
 
 function repairMaterializedRequestUpdateActivations(
@@ -786,6 +871,7 @@ export function openDb(file: string): OpenedDb {
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("foreign_keys = ON");
   establishSchema(sqlite);
+  establishAgentMentionHandles(sqlite);
   establishContextRolloverAtomicitySchema(sqlite);
   establishContextRolloverFailureProvenance(sqlite);
   establishSchemaExtensions(sqlite);

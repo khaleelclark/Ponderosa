@@ -37,7 +37,7 @@ import {
 } from "../hooks/queries";
 import { useAgentStream } from "../hooks/useAgentStream";
 import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
-import { agentIdForMentionHandle, agentMentionHandle } from "../mentions";
+import { agentIdForMentionHandle } from "../mentions";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import {
   highlightFocusedMessage,
@@ -1030,7 +1030,14 @@ export function AgentDetail({
         composer={{
           destinationMode: "fixed",
           defaultDestination: {
-            handle: agentMentionHandle(detail.agent.title),
+            handle: detail.agent.handle,
+            binding: {
+              projectId: detail.agent.projectId,
+              handle: detail.agent.handle,
+              agentId: detail.agent.id,
+              currentHandle: detail.agent.handle,
+              currentTitle: detail.agent.title,
+            },
             selectionKey: `agent:${detail.agent.id}:${detail.agent.title}`,
           },
           commands,

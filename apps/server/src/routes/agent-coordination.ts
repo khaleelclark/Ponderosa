@@ -166,7 +166,7 @@ export function registerAgentCoordinationRoutes(
     recordCommunication(openingCommunication);
     store.appendConversationMessage(
       capability.conversationId,
-      { role: "assistant", text: `#${agentMentionHandle(child!.title)} ${text}` },
+      { role: "assistant", text: `#${child!.handle} ${text}` },
       manager.id, "collaboration",
       [{ targetAgentId: child!.id, relayDepth: 0, mentionTrail: [], kind: "tag", audience: "mention" }],
       undefined, openingEventId,

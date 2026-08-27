@@ -922,6 +922,10 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.agentCatalog.findAgentSpawn(agentId, executionId, idempotencyKey);
   }
 
+  findAgentCreation(projectId: string, idempotencyKey: string): AgentDto | undefined {
+    return this.agentCatalog.findAgentCreation(projectId, idempotencyKey);
+  }
+
   listAgents(projectId: string): AgentDto[] {
     return this.agentCatalog.listAgents(projectId);
   }

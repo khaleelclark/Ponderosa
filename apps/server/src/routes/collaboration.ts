@@ -130,7 +130,7 @@ export function registerCollaborationRoutes(
     if (!detail) return reply.code(404).send({ error: "conversation not found" });
 
     let renderedText = text;
-    let routing: { intents: ConversationDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> };
+    let routing: { intents: ConversationDeliveryIntent[]; blocked: Array<{ handle: string; reason: string }> };
     if (request.body.recipientAgentIds !== undefined) {
       const ids = request.body.recipientAgentIds;
       if (!Array.isArray(ids) || ids.length === 0 || ids.length > 100) {
@@ -142,7 +142,7 @@ export function registerCollaborationRoutes(
       if (targets.some((target) => !target || target.archived)) {
         return reply.code(400).send({ error: "every collaboration recipient must be an active agent in this conversation" });
       }
-      const recipientPrefix = targets.map((target) => `#${agentMentionHandle(target!.title)}`).join(" ");
+      const recipientPrefix = targets.map((target) => `#${target!.handle}`).join(" ");
       renderedText = text ? `${recipientPrefix} ${text}` : recipientPrefix;
       routing = {
         intents: targets.map((target) => ({

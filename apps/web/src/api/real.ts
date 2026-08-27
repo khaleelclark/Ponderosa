@@ -626,6 +626,7 @@ export const realApi = {
       draftOwnerId: options.draftOwnerId,
       presetId: options.presetId,
       managerAgentId: options.managerAgentId,
+      idempotencyKey: options.idempotencyKey,
     });
   },
   listAgentPresets(projectId: string): Promise<AgentPresetDto[]> { return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-presets`); },

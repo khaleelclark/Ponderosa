@@ -19,6 +19,7 @@ import { projectAgentHealth, type ActiveRunObservation } from "./agent-health.js
 import { sqliteCollectionPage } from "./collection-page.js";
 import { decodeTimelineCursor, encodeTimelineCursor } from "./cursors.js";
 import {
+  agentMentionHandle,
   communicationRecipientAgentIds,
   recipientMentionIdentities,
   resolveAgentMentionBindings,
@@ -133,6 +134,7 @@ export function createServerReadModels(context: ReadModelContext) {
             return {
               id: agentId,
               title: agent?.title ?? communication.identity?.recipientLabels?.[agentId] ?? "Deleted Agent",
+              handle: agent?.handle ?? communication.identity?.recipientHandles?.[agentId] ?? agentMentionHandle(communication.identity?.recipientLabels?.[agentId] ?? "Deleted Agent"),
             };
           })
         : [];
@@ -142,10 +144,12 @@ export function createServerReadModels(context: ReadModelContext) {
             return {
               id: agentId,
               title: agent?.title ?? communication.identity?.recipientLabels?.[agentId] ?? "Deleted Agent",
+              handle: agent?.handle ?? communication.identity?.recipientHandles?.[agentId] ?? agentMentionHandle(communication.identity?.recipientLabels?.[agentId] ?? "Deleted Agent"),
             };
           })
         : [];
       const agentMentions = resolveAgentMentionBindings(
+        projectId,
         message.text,
         recipientAgentIds,
         [
@@ -154,6 +158,7 @@ export function createServerReadModels(context: ReadModelContext) {
             recipientAgentIds,
             projectAgents,
             communication?.identity?.recipientLabels,
+            communication?.identity?.recipientHandles,
           ),
         ],
       );

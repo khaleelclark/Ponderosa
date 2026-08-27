@@ -63,10 +63,6 @@ const RESERVED_PRESENTATION_HANDLES = new Set([
   "user",
 ]);
 
-function mentionHandle(title: string): string {
-  return title.trim().replace(/\s+/gu, "-").replace(/[^\p{L}\p{N}_-]/gu, "");
-}
-
 /** One authoritative name-resolution path shared by rendering, copy, and export. */
 export function resolveMessageMentionText(
   text: string,
@@ -80,7 +76,7 @@ export function resolveMessageMentionText(
     resolved += text.slice(cursor, token.start);
     const binding = mentions?.find(mention =>
       mention.handle.toLocaleLowerCase() === token.handle.toLocaleLowerCase());
-    if (binding) resolved += `#${mentionHandle(binding.currentTitle)}`;
+    if (binding) resolved += `#${binding.currentHandle}`;
     else if (RESERVED_PRESENTATION_HANDLES.has(token.handle.toLocaleLowerCase())) {
       resolved += text.slice(token.start, token.end);
     } else {
@@ -99,7 +95,7 @@ function canonicalRecipientPrefix(
     .map(token => token.handle.toLocaleLowerCase()));
   return [...new Set((mentions ?? [])
     .filter(mention => !authoredHandles.has(mention.handle.toLocaleLowerCase()))
-    .map(mention => `#${mentionHandle(mention.currentTitle)}`))]
+    .map(mention => `#${mention.currentHandle}`))]
     .join(" ");
 }
 
@@ -133,7 +129,7 @@ export function authoredAgentMentionForHandle(
   return binding
     ? {
         agentId: binding.agentId,
-        label: mentionHandle(binding.currentTitle),
+        label: binding.currentHandle,
         authoredLabel: binding.handle,
       }
     : undefined;

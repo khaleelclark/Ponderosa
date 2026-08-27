@@ -69,7 +69,7 @@ export function registerAgentCreationRoutes(
 
   app.post<{
     Params: { id: string };
-    Body: { title: string; engine: string; conversationId?: string; model?: string; effort?: string; speed?: string; initialMessage?: string; draftAttachmentIds?: string[]; draftOwnerId?: string; presetId?: string; managerAgentId?: string; awaitResult?: boolean };
+    Body: { title: string; engine: string; conversationId?: string; model?: string; effort?: string; speed?: string; initialMessage?: string; draftAttachmentIds?: string[]; draftOwnerId?: string; presetId?: string; managerAgentId?: string; awaitResult?: boolean; idempotencyKey?: string };
   }>(
     "/api/projects/:id/agents",
     async (request, reply) => {
@@ -78,6 +78,15 @@ export function registerAgentCreationRoutes(
       if (deletingProjectIds.has(request.params.id)) return reply.code(409).send({ error: "Project deletion is already in progress" });
       if (!request.body?.title || !request.body?.engine) {
         return reply.code(400).send({ error: "title and engine are required" });
+      }
+      const creationIdempotencyKey = request.body.idempotencyKey?.trim();
+      if (creationIdempotencyKey && creationIdempotencyKey.length > 200) {
+        return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
+      }
+      if (creationIdempotencyKey) {
+        const existing = store.findAgentCreation(request.params.id, creationIdempotencyKey);
+        if (existing) return { ...existing, replayed: true };
+        request.body.idempotencyKey = creationIdempotencyKey;
       }
       if (request.body.presetId) {
         const preset = store.getAgentPreset(request.body.presetId);
@@ -318,7 +327,7 @@ export function registerAgentCreationRoutes(
               // canonical communication/activation instead of mutating the
               // user's visible prose with a stale display-name tag.
               text: managed
-                ? `#${agentMentionHandle(agent.title)} ${openingPrepared!.publishedText}`
+                ? `#${agent.handle} ${openingPrepared!.publishedText}`
                 : openingPrepared!.publishedText,
               attachments: openingAttachments,
             },

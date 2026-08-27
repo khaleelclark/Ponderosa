@@ -88,6 +88,7 @@ interface LiveOrganizationRow {
   id: string;
   project_id: string;
   title: string;
+  handle: string;
   active_engine: AgentDto["activeEngine"];
   created_at: string;
   updated_at: string;
@@ -267,7 +268,7 @@ export function registerAgentOrganizationRoutes(
       } else {
         const rows = idPage.items.length === 0 ? [] : context.store.sqlite.prepare(`
           SELECT
-            a.id, a.project_id, a.title, a.active_engine, a.created_at,
+            a.id, a.project_id, a.title, a.handle, a.active_engine, a.created_at,
             a.updated_at, a.manager_agent_id,
             manager.id AS manager_id, manager.title AS manager_title,
             (
@@ -291,6 +292,7 @@ export function registerAgentOrganizationRoutes(
           projectId: row.project_id,
           conversationIds: [],
           title: row.title,
+          handle: row.handle,
           activeEngine: row.active_engine,
           state: {},
           createdAt: row.created_at,

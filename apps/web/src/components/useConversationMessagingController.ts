@@ -5,13 +5,10 @@ import type {
   ConversationDto,
   EngineDto,
 } from "@ponderosa/core";
+import { messageTagTokens } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import {
-  agentMentionHandle,
-  hasBroadcastMention,
-  hasEveryoneMention,
-} from "../mentions";
+import { hasBroadcastMention, hasEveryoneMention } from "../mentions";
 import { api } from "../api";
 import { ApiRequestError } from "../api/types";
 import { createClientId } from "../clientId";
@@ -121,10 +118,14 @@ export function useConversationMessagingController({
       text,
       draftAttachmentIds,
       draftOwnerId,
+      title,
+      idempotencyKey,
     }: {
       text: string;
       draftAttachmentIds: string[];
       draftOwnerId?: string;
+      title: string;
+      idempotencyKey: string;
     }) => {
       if (!conversation) throw new Error("Project chat not loaded");
       setActiveOperation({ agentIds: [], state: "starting" });
@@ -132,12 +133,13 @@ export function useConversationMessagingController({
         conversation.projectId,
         conversationId,
         {
-          title: pickAgentName(detailAgents.map(agent => agent.title)),
+          title,
           engine,
           ...runConfig,
           initialMessage: text,
           draftAttachmentIds,
           draftOwnerId,
+          idempotencyKey,
         },
       );
       setActiveOperation({ agentIds: [agent.id], state: "starting" });
@@ -194,10 +196,19 @@ export function useConversationMessagingController({
             detailAgents.find(agent => agent.id === recipient.agentId)?.title ??
             "Agent",
         );
+      const unavailableTitles = (response.unavailableRecipients ?? []).map(
+        recipient =>
+          detailAgents.find(agent => agent.id === recipient.agentId)?.title ?? "Agent",
+      );
       setQueuedMessageNotice(
-        queuedTitles.length > 0 && variables.activeRunDelivery === "queue"
-          ? `Queued for ${queuedTitles.join(", ")}; it will start when the current response finishes.`
-          : undefined,
+        [
+          ...(queuedTitles.length > 0 && variables.activeRunDelivery === "queue"
+            ? [`Queued for ${queuedTitles.join(", ")}; it will start when the current response finishes.`]
+            : []),
+          ...(unavailableTitles.length
+            ? [`Skipped unavailable recipient${unavailableTitles.length === 1 ? "" : "s"}: ${unavailableTitles.join(", ")}.`]
+            : []),
+        ].join(" ") || undefined,
       );
       queuedNoticeDeliveryIds.current = new Set(
         variables.activeRunDelivery === "queue"
@@ -237,9 +248,6 @@ export function useConversationMessagingController({
       activeRunDelivery: "steer" | "queue";
     }) => {
       const agentIds = agentMentions.map(binding => binding.agentId);
-      if (agentIds.length > 0 && files.length > 0) {
-        throw new Error("Targeted next-run delivery accepts message text only.");
-      }
       const owner = agents.find(agent => !agent.archived);
       if (files.length && !owner) {
         throw new Error(
@@ -474,11 +482,8 @@ export function useConversationMessagingController({
       text,
       NEW_AGENT_DESTINATION_HANDLE,
     );
-    const reservedHandleCollision = agents.some(
-      agent =>
-        !agent.archived &&
-        agentMentionHandle(agent.title) === NEW_AGENT_DESTINATION_HANDLE,
-    );
+    const newAgentCount = messageTagTokens(text).filter(token =>
+      token.handle.toLocaleLowerCase() === NEW_AGENT_DESTINATION_HANDLE).length;
     const explicitlyMentionedAgents = mentionedAgents.flatMap(binding => {
       const agent = agents.find(candidate =>
         candidate.id === binding.agentId && !candidate.archived);
@@ -487,18 +492,20 @@ export function useConversationMessagingController({
     const targets = everyoneMentioned
       ? agents.filter(agent => !agent.archived)
       : explicitlyMentionedAgents;
-    if (newAgentRequested && reservedHandleCollision) {
-      throw new Error(
-        "An Agent already uses the reserved #new-agent handle. Rename it before spawning another Agent.",
-      );
-    }
-    if (
-      newAgentRequested &&
-      (broadcastMentioned || everyoneMentioned || targets.length > 0)
-    ) {
-      throw new Error(
-        "#new-agent cannot be combined with another message destination.",
-      );
+    const requestId = createClientId();
+    const createdAgentIds: string[] = [];
+    const createdTitles = detailAgents.map(agent => agent.title);
+    for (let index = 0; index < newAgentCount; index += 1) {
+      const title = pickAgentName(createdTitles);
+      createdTitles.push(title);
+      const created = await spawn.mutateAsync({
+        text,
+        draftAttachmentIds,
+        draftOwnerId,
+        title,
+        idempotencyKey: `${requestId}:new-agent:${index}`,
+      });
+      createdAgentIds.push(created.id);
     }
     if (broadcastText !== undefined) {
       if (!broadcastText && files.length === 0) {
@@ -509,10 +516,13 @@ export function useConversationMessagingController({
       await broadcast.mutateAsync({
         text: broadcastText,
         files,
-        requestId: createClientId(),
+        requestId,
         agentMentions: broadcastMentioned ? mentionedAgents : [],
         activeRunDelivery,
       });
+      if (createdAgentIds.length > 0) {
+        setActiveOperation({ agentIds: createdAgentIds, state: "starting" });
+      }
       return;
     }
     if (broadcastMentioned) {
@@ -530,12 +540,21 @@ export function useConversationMessagingController({
         agentIds: targets.map(target => target.id),
         text,
         files,
-        requestId: createClientId(),
+        requestId,
         activeRunDelivery,
       });
-    } else {
+    } else if (!newAgentRequested) {
       setActiveOperation({ agentIds: [], state: "starting" });
-      await spawn.mutateAsync({ text, draftAttachmentIds, draftOwnerId });
+      const title = pickAgentName(detailAgents.map(agent => agent.title));
+      await spawn.mutateAsync({
+        text,
+        draftAttachmentIds,
+        draftOwnerId,
+        title,
+        idempotencyKey: `${requestId}:default-agent`,
+      });
+    } else if (createdAgentIds.length > 0) {
+      setActiveOperation({ agentIds: createdAgentIds, state: "starting" });
     }
   };
 

@@ -85,6 +85,7 @@ export interface AgentJson {
   conversationId?: string;
   conversationIds?: string[];
   title: string;
+  handle: string;
   activeEngine: string;
   model?: string;
   effort?: string;
@@ -97,6 +98,7 @@ export interface AgentJson {
   spawnedByExecutionId?: string;
   spawnPrompt?: string;
   spawnIdempotencyKey?: string;
+  creationIdempotencyKey?: string;
   presetSnapshot?: AgentDto["presetSnapshot"];
 }
 

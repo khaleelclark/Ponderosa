@@ -221,7 +221,11 @@ export class AgentCommunicationJournalAuthority {
     for (const agentId of audienceIds) {
       const agent = this.getAgent(agentId);
       if (!agent || agent.projectId !== event.projectId || agent.archived) throw new Error("communication recipient must be an active agent in its project");
-      if (event.conversationId && !agent.conversationIds.includes(event.conversationId)) throw new Error("communication recipient must belong to its conversation");
+      if (
+        event.conversationId
+        && !agent.conversationIds.includes(event.conversationId)
+        && !(event.schemaVersion === 2 && event.intent === "user_dm" && event.sender.kind === "user")
+      ) throw new Error("communication recipient must belong to its conversation");
     }
     if (event.schemaVersion === 2 && event.intent === "collaboration") {
       if (event.sender.kind === "agent") {

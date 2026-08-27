@@ -78,28 +78,48 @@ export function ComposerTargetDestinationAction({
 interface ComposerProjectDestinationActionProps {
   newAgentSelected: boolean;
   toggleNewAgent(): void;
+  replyDestination?: string;
+  onReplyDestination?(): void;
 }
 
 export function ComposerProjectDestinationAction({
   newAgentSelected,
   toggleNewAgent,
+  replyDestination,
+  onReplyDestination,
 }: ComposerProjectDestinationActionProps): JSX.Element {
   return (
-    <Button
-      size="small"
-      variant={newAgentSelected ? "contained" : "text"}
-      color={newAgentSelected ? "primary" : "inherit"}
-      startIcon={<PersonAddAltOutlinedIcon />}
-      aria-pressed={newAgentSelected}
-      onClick={toggleNewAgent}
-      sx={{
-        whiteSpace: "nowrap",
-        minHeight: { xs: 44, sm: 34 },
-        "@media (pointer: coarse)": { minHeight: 44 },
-      }}
-    >
-      New Agent
-    </Button>
+    <Stack direction="row" spacing={0.5} useFlexGap sx={{ flexWrap: "wrap" }}>
+      <Button
+        size="small"
+        variant={newAgentSelected ? "contained" : "text"}
+        color={newAgentSelected ? "primary" : "inherit"}
+        startIcon={<PersonAddAltOutlinedIcon />}
+        aria-pressed={newAgentSelected}
+        onClick={toggleNewAgent}
+        sx={{
+          whiteSpace: "nowrap",
+          minHeight: { xs: 44, sm: 34 },
+          "@media (pointer: coarse)": { minHeight: 44 },
+        }}
+      >
+        New Agent
+      </Button>
+      {replyDestination && onReplyDestination ? (
+        <Button
+          size="small"
+          variant="text"
+          onClick={onReplyDestination}
+          sx={{
+            whiteSpace: "nowrap",
+            minHeight: { xs: 44, sm: 34 },
+            "@media (pointer: coarse)": { minHeight: 44 },
+          }}
+        >
+          Reply to {replyDestination}
+        </Button>
+      ) : null}
+    </Stack>
   );
 }
 

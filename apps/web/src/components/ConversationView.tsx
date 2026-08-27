@@ -29,6 +29,7 @@ import {
 import { api } from "../api";
 import { agentBelongsToConversation, type AgentStatus } from "../agents";
 import {
+  useAgents,
   useNotifications,
   useProjects,
   useWorkspacePreferences,
@@ -40,7 +41,6 @@ import {
 } from "../conversationEngine";
 import {
   agentIdForMentionHandle,
-  agentMentionHandle,
   findMentionedAgents,
 } from "../mentions";
 import { Composer } from "./chat/Composer";
@@ -216,6 +216,8 @@ export function ConversationView({
   useConversationActiveViewPersistence(activeView, conversationId);
 
   const conversation = detailQuery.data?.conversation;
+  const projectAgentsQuery = useAgents(conversation?.projectId);
+  const routingAgents = projectAgentsQuery.data ?? agents;
   const activeBrowsers = useQuery({
     queryKey: queryKeys.agentBrowsers.conversation(conversation?.projectId, conversationId),
     queryFn: () => api.listActiveBrowserSessions(conversation!.projectId, conversationId),
@@ -269,16 +271,16 @@ export function ConversationView({
   });
   const commandTargetAgents = useMemo(() => {
     if (!commandTargetHandle) return [];
-    const byId = new Map(conversationAgents.map(agent => [agent.id, agent]));
+    const byId = new Map(routingAgents.map(agent => [agent.id, agent]));
     for (const agent of commandTargetMembersQuery.data?.items ?? []) {
       byId.set(agent.id, agent);
     }
     return [...byId.values()].filter(
       agent =>
-        agentMentionHandle(agent.title).toLocaleLowerCase() ===
+        agent.handle.toLocaleLowerCase() ===
         commandTargetHandle.toLocaleLowerCase(),
     );
-  }, [commandTargetHandle, commandTargetMembersQuery.data?.items, conversationAgents]);
+  }, [commandTargetHandle, commandTargetMembersQuery.data?.items, routingAgents]);
   const structurallySelectedCommandTarget = commandTargetAgentId
     ? agents.find(
         agent => agent.id === commandTargetAgentId && !agent.archived,
@@ -581,8 +583,13 @@ export function ConversationView({
   });
   const agentTitle = useCallback(
     (agentId: string | undefined): string =>
-      agents.find(agent => agent.id === agentId)?.title ?? "Deleted Agent",
-    [agents],
+      routingAgents.find(agent => agent.id === agentId)?.title ?? "Deleted Agent",
+    [routingAgents],
+  );
+  const agentHandle = useCallback(
+    (agentId: string | undefined): string =>
+      routingAgents.find(agent => agent.id === agentId)?.handle ?? "Deleted-Agent",
+    [routingAgents],
   );
   const {
     busy,
@@ -605,8 +612,8 @@ export function ConversationView({
   } = useConversationMessagingController({
     conversationId,
     conversation,
-    agents,
-    detailAgents: detailQuery.data?.agents ?? [],
+    agents: routingAgents,
+    detailAgents: routingAgents,
     engines,
     engine,
     model,
@@ -629,17 +636,17 @@ export function ConversationView({
     .join(":");
   const agentIdForHandle = useCallback(
     (handle: string): string | undefined =>
-      agentIdForMentionHandle(agents, handle),
-    [agents],
+      agentIdForMentionHandle(routingAgents, handle),
+    [routingAgents],
   );
   const mentionAgent = useCallback(
     (agentId: string) => {
       setMentionInsertRequest({
         id: String(Date.now()),
-        text: `#${agentMentionHandle(agentTitle(agentId))} `,
+        text: `#${agentHandle(agentId)} `,
       });
     },
-    [agentTitle],
+    [agentHandle],
   );
   const lastContinuationDestination = useMemo(() => {
     const message = [...messages]
@@ -651,7 +658,7 @@ export function ConversationView({
         : undefined
     );
     const agent = agentId
-      ? agents.find(candidate => candidate.id === agentId && !candidate.archived)
+      ? routingAgents.find(candidate => candidate.id === agentId && !candidate.archived)
       : undefined;
     return agent && message
       ? {
@@ -659,7 +666,7 @@ export function ConversationView({
           selectionKey: `${agent.id}:${message.id}`,
         }
       : undefined;
-  }, [agents, messages]);
+  }, [messages, routingAgents]);
   const mainTranscriptMarkdown = useMemo(
     () =>
       conversation
@@ -779,9 +786,9 @@ export function ConversationView({
   const mentionHandles = [
     "broadcast",
     "everyone",
-    ...agents
+    ...routingAgents
       .filter(agent => !agent.archived)
-      .map(agent => agentMentionHandle(agent.title))
+      .map(agent => agent.handle)
       .filter(
         handle =>
           !["broadcast", "user", "everyone"].includes(
@@ -789,21 +796,23 @@ export function ConversationView({
           ),
       ),
   ];
-  const mentionBindings = agents
+  const mentionBindings = routingAgents
     .filter(agent => !agent.archived)
     .map(agent => ({
-      handle: agentMentionHandle(agent.title),
+      projectId: conversation?.projectId ?? "",
+      handle: agent.handle,
       agentId: agent.id,
+      currentHandle: agent.handle,
       currentTitle: agent.title,
     }))
     .filter(binding => binding.handle &&
       !["broadcast", "user", "everyone"].includes(binding.handle.toLocaleLowerCase()));
   const findMentioned = (text: string): AgentDto[] =>
-    findMentionedAgents(text, agents);
+    findMentionedAgents(text, routingAgents);
 
-  const busyMentionHandles = agents
+  const busyMentionHandles = routingAgents
     .filter(agent => statusByAgentId.get(agent.id) === "running")
-    .map(agent => agentMentionHandle(agent.title));
+    .map(agent => agent.handle);
 
   const runtimeControls =
     activeView === "main" ? (
@@ -1275,10 +1284,12 @@ export function ConversationView({
           conversationDraftId={conversationId}
           destinationMode="project-chat"
           defaultDestination={lastContinuationDestination ? {
-            handle: agentMentionHandle(lastContinuationDestination.agent.title),
+            handle: lastContinuationDestination.agent.handle,
             binding: {
-              handle: agentMentionHandle(lastContinuationDestination.agent.title),
+              projectId: conversation.projectId,
+              handle: lastContinuationDestination.agent.handle,
               agentId: lastContinuationDestination.agent.id,
+              currentHandle: lastContinuationDestination.agent.handle,
               currentTitle: lastContinuationDestination.agent.title,
             },
             selectionKey: lastContinuationDestination.selectionKey,

@@ -18,6 +18,7 @@ export interface CreateAgentOptions {
   draftOwnerId?: string;
   presetId?: string;
   managerAgentId?: string;
+  idempotencyKey?: string;
 }
 
 export interface StreamSubscription {

@@ -89,6 +89,8 @@ interface CommunicationEventBase {
   identity?: {
     senderLabel: string;
     recipientLabels?: Record<string, string>;
+    /** Immutable send-time handles preserve exact mention presentation after rename/deletion. */
+    recipientHandles?: Record<string, string>;
     /** Send-time origin title for durable cross-chat provenance. */
     conversationLabel?: string;
   };

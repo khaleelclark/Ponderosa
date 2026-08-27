@@ -3,7 +3,7 @@ import {
   Paper,
   Stack,
 } from "@mui/material";
-import { utf8ByteLength } from "@ponderosa/core";
+import { messageTagTokens, utf8ByteLength } from "@ponderosa/core";
 import type {
   AgentMentionBindingDto,
   ConversationDraftConflictDto,
@@ -96,6 +96,24 @@ function providerCommandInput(
     text: value.slice(destination[0].length),
     start: destination[0].length,
   };
+}
+
+function replaceMentionHandle(
+  text: string,
+  previousHandle: string,
+  currentHandle: string,
+): string {
+  const matching = messageTagTokens(text).filter(token =>
+    token.handle.toLocaleLowerCase() === previousHandle.toLocaleLowerCase());
+  if (!matching.length) return text;
+  let cursor = 0;
+  let next = "";
+  for (const token of matching) {
+    next += text.slice(cursor, token.start);
+    next += `#${currentHandle}`;
+    cursor = token.end;
+  }
+  return next + text.slice(cursor);
 }
 
 export function Composer({
@@ -200,6 +218,10 @@ export function Composer({
   const appliedDefaultDestination = useRef<ComposerDefaultDestination>();
   const [activeDefaultDestination, setActiveDefaultDestination] =
     useState<ComposerDefaultDestination>();
+  const [knownMentionBindings, setKnownMentionBindings] = useState<
+    AgentMentionBindingDto[]
+  >([]);
+  const previousMentionBindings = useRef<AgentMentionBindingDto[]>([]);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const markUserDraftMutation = useCallback(() => {
     userDraftMutationGeneration.current += 1;
@@ -259,6 +281,43 @@ export function Composer({
     dictationSettlingRef.current = settling;
     setDictationSettling(settling);
   }, []);
+  useEffect(() => {
+    const currentById = new Map((mentionBindings ?? []).map(binding => [binding.agentId, binding]));
+    let changed = false;
+    let renamedText = textRef.current;
+    for (const previous of previousMentionBindings.current) {
+      const current = currentById.get(previous.agentId);
+      if (!current || current.currentHandle === previous.currentHandle) continue;
+      const replaced = replaceMentionHandle(
+        renamedText,
+        previous.currentHandle,
+        current.currentHandle,
+      );
+      changed ||= replaced !== renamedText;
+      renamedText = replaced;
+    }
+    previousMentionBindings.current = mentionBindings ?? [];
+    if (changed) update(renamedText);
+  }, [mentionBindings, update]);
+
+  useEffect(() => {
+    const handles = new Set(messageTagTokens(text).map(token => token.handle.toLocaleLowerCase()));
+    const currentById = new Map((mentionBindings ?? []).map(binding => [binding.agentId, binding]));
+    setKnownMentionBindings(previous => {
+      const byId = new Map(previous.map(binding => [binding.agentId, binding]));
+      for (const binding of mentionBindings ?? []) {
+        const matches = handles.has(binding.handle.toLocaleLowerCase()) ||
+          handles.has(binding.currentHandle.toLocaleLowerCase());
+        if (matches || byId.has(binding.agentId)) byId.set(binding.agentId, binding);
+      }
+      return [...byId.values()].filter(binding => {
+        const current = currentById.get(binding.agentId);
+        return handles.has(binding.handle.toLocaleLowerCase()) ||
+          handles.has(binding.currentHandle.toLocaleLowerCase()) ||
+          Boolean(current && handles.has(current.currentHandle.toLocaleLowerCase()));
+      });
+    });
+  }, [mentionBindings, text]);
   const replacePastedText = useCallback(
     (
       next:
@@ -328,7 +387,7 @@ export function Composer({
       : composedText;
   const routingMentionHandles = useMemo(
     () =>
-      destinationMode === "project-chat"
+      destinationMode === "project-chat" || destinationMode === "target-required"
         ? [...new Set([...(mentionHandles ?? []), NEW_AGENT_DESTINATION_HANDLE])]
         : (mentionHandles ?? []),
     [destinationMode, mentionHandles],
@@ -337,9 +396,28 @@ export function Composer({
     () => findMentionedHandles(submissionText, routingMentionHandles),
     [routingMentionHandles, submissionText],
   );
-  const newAgentSelected =
-    destinationMode === "project-chat" &&
-    mentionedHandles.some(
+  const mentionTokens = useMemo(() => {
+    const currentById = new Map((mentionBindings ?? []).map(binding => [binding.agentId, binding]));
+    const byHandle = new Map<string, AgentMentionBindingDto>();
+    for (const binding of [...knownMentionBindings, ...(mentionBindings ?? [])]) {
+      byHandle.set(binding.handle.toLocaleLowerCase(), binding);
+      byHandle.set(binding.currentHandle.toLocaleLowerCase(), binding);
+    }
+    return messageTagTokens(text).flatMap(token => {
+      const binding = byHandle.get(token.handle.toLocaleLowerCase());
+      if (!binding) return [];
+      const current = currentById.get(binding.agentId);
+      return [{
+        start: token.start,
+        end: token.end,
+        handle: current?.currentHandle ?? token.handle,
+        title: current?.currentTitle ?? binding.currentTitle,
+        valid: Boolean(current),
+      }];
+    });
+  }, [knownMentionBindings, mentionBindings, text]);
+  const invalidMention = mentionTokens.find(token => !token.valid);
+  const newAgentSelected = mentionedHandles.some(
       handle =>
         handle.toLocaleLowerCase() === NEW_AGENT_DESTINATION_HANDLE,
     );
@@ -372,7 +450,7 @@ export function Composer({
     destinationMode === "target-required"
       ? mentionedHandles.filter(
           handle =>
-            !["broadcast", "everyone"].includes(handle.toLocaleLowerCase()),
+            !["broadcast", "everyone", NEW_AGENT_DESTINATION_HANDLE].includes(handle.toLocaleLowerCase()),
         )
       : [];
   const targetRequiredDestinations = targetRequiredHandles.map(handle => ({
@@ -392,8 +470,6 @@ export function Composer({
   const hasEveryoneDestination =
     destinationMode === "project-chat" &&
     mentionedHandles.some(handle => handle.toLocaleLowerCase() === "everyone");
-  const targetedNextRunDelivery =
-    hasBroadcastDestination && projectDestinations.length > 0;
   const explicitCommandTargetHandle =
     destinationMode === "project-chat" &&
     !hasBroadcastDestination &&
@@ -430,45 +506,49 @@ export function Composer({
     onCommandTargetAgentIdChange?.(commandTargetAgentId);
   }, [commandTargetAgentId, onCommandTargetAgentIdChange]);
   const destinationError =
-    newAgentSelected &&
-    (hasBroadcastDestination ||
-      hasEveryoneDestination ||
-      projectDestinations.length > 0)
-      ? "#new-agent cannot be combined with another destination."
-      : targetedNextRunDelivery && files.length > 0
-      ? "Targeted next-run delivery supports message text only. Remove attachments to send."
+    invalidMention
+      ? `#${invalidMention.handle} no longer identifies an available Agent. Remove it before sending.`
       : destinationMode === "target-required" && hasBroadcastDestination
       ? targetRequiredDestinations.length > 0
         ? "Broadcast is only available in a Project Chat."
         : "#broadcast is not available in Messages Across Ponderosa. Choose an Agent."
-      : destinationMode === "target-required" &&
-          targetRequiredDestinations.length > 1
-        ? "Choose one Agent at a time in Messages Across Ponderosa."
-        : destinationMode === "target-required" && unresolvedAmbiguousTarget
+      : destinationMode === "target-required" && unresolvedAmbiguousTarget
           ? `#${unresolvedAmbiguousTarget} matches more than one Agent. Use a message's # action to choose the exact Agent.`
           : undefined;
   const toggleNewAgentDestination = () => {
-    setActiveDefaultDestination(undefined);
     update(current => {
       if (hasComposerDestination(current, NEW_AGENT_DESTINATION_HANDLE)) {
         return removeHandle(current, NEW_AGENT_DESTINATION_HANDLE);
       }
-      let next = current;
-      for (const handle of [
-        "broadcast",
-        "everyone",
-        ...projectDestinationHandles,
-      ]) {
-        next = removeHandle(next, handle);
-      }
-      return prependComposerDestination(next, NEW_AGENT_DESTINATION_HANDLE);
+      const withoutAutomaticDestination = activeDefaultDestination
+        ? removeHandle(current, activeDefaultDestination.handle)
+        : current;
+      return prependComposerDestination(withoutAutomaticDestination, NEW_AGENT_DESTINATION_HANDLE);
     });
+    setActiveDefaultDestination(undefined);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
+  const restoreDefaultDestination = () => {
+    if (!defaultDestination) return;
+    update(current => prependComposerDestination(
+      removeHandle(current, NEW_AGENT_DESTINATION_HANDLE),
+      defaultDestination.handle,
+    ));
+    setActiveDefaultDestination(defaultDestination);
     requestAnimationFrame(() => inputRef.current?.focus());
   };
   const clearRequiredRecipient = () => {
     const handle = targetRequiredHandles[0] ?? requiredRecipient?.handle;
     if (handle) update(current => removeHandle(current, handle));
     requiredRecipient?.onClear();
+  };
+  const removeMentionAt = (start: number, end: number) => {
+    update(current => `${current.slice(0, start)}${current.slice(end)}`);
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(start, start);
+      setCaret(start);
+    });
   };
   const clearTargetDestinations = () => {
     update(current => {
@@ -500,11 +580,11 @@ export function Composer({
   });
   const targetRequiredRecipientTagged =
     destinationMode !== "target-required" ||
+    newAgentSelected ||
     Boolean(
       requiredRecipient &&
-      targetRequiredHandles.length === 1 &&
-      requiredRecipient.handle.toLocaleLowerCase() ===
-        targetRequiredHandles[0]!.toLocaleLowerCase(),
+      targetRequiredHandles.some(handle =>
+        requiredRecipient.handle.toLocaleLowerCase() === handle.toLocaleLowerCase()),
     );
   const draftUploadsReady =
     !conversationDraftId ||
@@ -521,10 +601,8 @@ export function Composer({
         allowUnmentionedSend &&
         files.length > 0));
   const canCancel = running && Boolean(onCancel);
-  const composerAttachmentsEnabled = attachmentsEnabled && !targetedNextRunDelivery;
-  const composerAttachmentsUnavailableReason = targetedNextRunDelivery
-    ? "Targeted next-run delivery supports message text only."
-    : attachmentsUnavailableReason;
+  const composerAttachmentsEnabled = attachmentsEnabled;
+  const composerAttachmentsUnavailableReason = attachmentsUnavailableReason;
 
   const draftQuery = useQuery({
     queryKey: queryKeys.conversationDraft.detail(
@@ -692,24 +770,28 @@ export function Composer({
     }
     appliedDefaultDestination.current = defaultDestination;
     let nextText = textRef.current;
-    if (previous && hasComposerDestination(nextText, previous.handle)) {
+    const previousWasActive = Boolean(
+      previous &&
+      activeDefaultDestination?.selectionKey === previous.selectionKey &&
+      hasComposerDestination(nextText, previous.handle),
+    );
+    if (previous && previousWasActive) {
       nextText = removeHandle(nextText, previous.handle);
     }
-    const containedLegacyDestination = hasComposerDestination(
-      nextText,
-      defaultDestination.handle,
-    );
-    if (containedLegacyDestination) {
-      nextText = removeHandle(nextText, defaultDestination.handle);
+    const mayPopulate = nextText.trim().length === 0;
+    if (mayPopulate) {
+      nextText = prependComposerDestination(nextText, defaultDestination.handle);
+      setActiveDefaultDestination(defaultDestination);
+    } else if (previous && previousWasActive) {
+      nextText = prependComposerDestination(nextText, previous.handle);
+      setActiveDefaultDestination(previous);
+    } else {
+      setActiveDefaultDestination(undefined);
     }
-    const mayPopulate =
-      nextText.trim().length === 0 ||
-      Boolean(previous) ||
-      containedLegacyDestination;
     if (nextText !== textRef.current) replaceText(nextText);
-    setActiveDefaultDestination(mayPopulate ? defaultDestination : undefined);
   }, [
     conversationDraftId,
+    activeDefaultDestination?.selectionKey,
     defaultDestination?.binding?.currentTitle,
     defaultDestination?.handle,
     defaultDestination?.selectionKey,
@@ -717,6 +799,15 @@ export function Composer({
     draftReadyVersion,
     replaceText,
   ]);
+
+  useEffect(() => {
+    if (
+      activeDefaultDestination &&
+      !hasComposerDestination(text, activeDefaultDestination.handle)
+    ) {
+      setActiveDefaultDestination(undefined);
+    }
+  }, [activeDefaultDestination, text]);
 
   useComposerDraftStorageWrite({
     draftStorageKey,
@@ -824,7 +915,12 @@ export function Composer({
   const mentionMatch = /(?:^|\s)#([\p{L}\p{N}_-]*)$/u.exec(
     text.slice(0, caret),
   );
-  const autocompleteHandles = mentionSuggestionHandles ?? mentionHandles;
+  const autocompleteHandles = [...new Set([
+    ...(mentionSuggestionHandles ?? mentionHandles ?? []),
+    ...((destinationMode === "project-chat" || destinationMode === "target-required")
+      ? [NEW_AGENT_DESTINATION_HANDLE]
+      : []),
+  ])];
   const suggestions =
     mentionMatch && autocompleteHandles && autocompleteHandles.length > 0
       ? autocompleteHandles.filter(handle =>
@@ -1020,7 +1116,10 @@ export function Composer({
         activeDefaultDestination.binding,
       );
     }
-    for (const handle of authoredProjectDestinationHandles) {
+    const structurallyAuthoredHandles = destinationMode === "target-required"
+      ? targetRequiredHandles
+      : authoredProjectDestinationHandles;
+    for (const handle of structurallyAuthoredHandles) {
       const matchingBindings = (mentionBindings ?? []).filter((candidate) =>
         candidate.handle.toLocaleLowerCase() === handle.toLocaleLowerCase());
       if (matchingBindings.length === 1) {
@@ -1252,10 +1351,16 @@ export function Composer({
             onClear={clearTargetDestinations}
           />
         ) : null}
-        {destinationMode === "project-chat" && !activeDefaultDestination ? (
+        {destinationMode === "project-chat" ? (
           <ComposerProjectDestinationAction
             newAgentSelected={newAgentSelected}
             toggleNewAgent={toggleNewAgentDestination}
+            replyDestination={!activeDefaultDestination && defaultDestination
+              ? defaultDestination.binding?.currentTitle ?? defaultDestination.handle
+              : undefined}
+            onReplyDestination={!activeDefaultDestination && defaultDestination
+              ? restoreDefaultDestination
+              : undefined}
           />
         ) : null}
         {leadingControls ? (
@@ -1285,14 +1390,8 @@ export function Composer({
             menuSuggestions={menuSuggestions}
             destinationMode={destinationMode}
             requiredRecipient={requiredRecipient}
-            inlineDestination={
-              destinationMode === "project-chat" && activeDefaultDestination
-                ? {
-                  handle: activeDefaultDestination.handle,
-                  onClear: () => setActiveDefaultDestination(undefined),
-                }
-                : undefined
-            }
+            inlineDestination={undefined}
+            mentionTokens={mentionTokens}
             mentionedBusyHandles={mentionedBusyHandles}
             mentionedHandles={mentionedHandles}
             canSend={canSend}
@@ -1318,6 +1417,7 @@ export function Composer({
               else applyCommand(selected.command);
             }}
             onClearRequiredRecipient={clearRequiredRecipient}
+            onRemoveMention={removeMentionAt}
             onSend={send}
           />
           <ComposerAutocompleteMenu

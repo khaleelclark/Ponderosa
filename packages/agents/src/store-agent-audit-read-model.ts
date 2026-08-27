@@ -12,9 +12,11 @@ import type {
 } from "@ponderosa/core";
 import { asc, eq } from "drizzle-orm";
 import type { CommunicationEvent } from "@ponderosa/core";
+import { agentMentionHandleBase } from "@ponderosa/core";
 import type { Db } from "./db.js";
 import { messages } from "./schema.js";
 import { userDmAgentIds } from "./store-communication.js";
+import { communicationMentionBindings } from "./store-mention-bindings.js";
 
 type Page<T> = (agentId: string, input: { limit: number }) => HistoryPageDto<T>;
 type RunPage = (
@@ -71,14 +73,19 @@ export class AgentAuditReadModel {
               return {
                 id: directAgentId,
                 title: directAgent?.title ?? communication.identity?.recipientLabels?.[directAgentId] ?? "Deleted Agent",
+                handle: directAgent?.handle ?? communication.identity?.recipientHandles?.[directAgentId] ?? agentMentionHandleBase(communication.identity?.recipientLabels?.[directAgentId] ?? "Deleted Agent"),
               };
             })
+          : [];
+        const agentMentions = communication
+          ? communicationMentionBindings(row.text, communication, id => this.getAgent(id))
           : [];
         return {
           id: row.id,
           communicationEventId: row.communicationEventId ?? undefined,
           ...(communication ? { communicationIntent: communication.intent } : {}),
           ...(directMessageAgents.length ? { directMessageAgents } : {}),
+          ...(agentMentions.length ? { agentMentions } : {}),
           agentId: row.agentId,
           seq: row.seq,
           role: authorAgentId

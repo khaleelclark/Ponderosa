@@ -602,7 +602,7 @@ export function registerAgentMessageRunRoute(
         } else {
           sourceMasterMessage = store.appendConversationMessage(directMessageConversationId, {
             role: "user",
-            text: sharedCommunication ? publishedText : renderDirectMessage(agent.title, publishedText),
+            text: sharedCommunication ? publishedText : renderDirectMessage(agent.handle, publishedText),
             attachments: messageAttachments,
           }, undefined, "main", undefined, undefined, communicationEventId);
           if (sharedCommunication) {

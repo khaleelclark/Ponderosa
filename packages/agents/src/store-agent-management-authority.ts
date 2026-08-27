@@ -10,13 +10,17 @@ import type {
   UpdateAgentOrganizationRequest,
   UpdateAgentRequest,
 } from "@ponderosa/core";
+import {
+  agentMentionHandleBase,
+  allocateAgentMentionHandle,
+} from "@ponderosa/core";
 import type { Db } from "./db.js";
 import { normalizeAgentTitle } from "./agent-identity.js";
 import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
 import { requireManagementPermissions } from "./store-agent-management.js";
 import { readJson, writeJson } from "./store-filesystem.js";
 import type { AgentJson, AgentManagementAuthorization } from "./store-types.js";
-import { agents } from "./schema.js";
+import { agentHandleReservations, agents } from "./schema.js";
 import { agentJsonPath, agentOrganizationEventsPath } from "./paths.js";
 
 export class AgentManagementAuthority {
@@ -147,6 +151,18 @@ export class AgentManagementAuthority {
     if (!row || row.deletedAt) return undefined;
     const now = new Date().toISOString();
     const title = patch.title === undefined ? row.title : normalizeAgentTitle(patch.title);
+    const handle = patch.title !== undefined &&
+        agentMentionHandleBase(title).toLocaleLowerCase() !==
+          agentMentionHandleBase(row.title).toLocaleLowerCase()
+      ? allocateAgentMentionHandle(
+          title,
+          this.db.select({ handle: agentHandleReservations.handle })
+            .from(agentHandleReservations)
+            .where(eq(agentHandleReservations.projectId, row.projectId))
+            .all()
+            .map(reservation => reservation.handle),
+        )
+      : row.handle;
     const archived = patch.archived ?? row.archived === 1;
     const activeEngine = patch.activeEngine?.trim() || row.activeEngine;
     const model = patch.model === undefined ? row.model ?? undefined : patch.model?.trim() || undefined;
@@ -170,6 +186,7 @@ export class AgentManagementAuthority {
     writeJson(agentJsonPath(this.dataDir, row.projectId, id), {
       ...json,
       title,
+      handle,
       archived,
       activeEngine,
       model,
@@ -177,10 +194,19 @@ export class AgentManagementAuthority {
       managementPermissions,
       updatedAt: now,
     });
-    this.db
-      .update(agents)
-      .set({
+    this.client.transaction(() => {
+      if (handle.toLocaleLowerCase() !== row.handle.toLocaleLowerCase()) {
+        this.db.insert(agentHandleReservations).values({
+          projectId: row.projectId,
+          normalizedHandle: handle.toLocaleLowerCase(),
+          handle,
+          agentId: id,
+          reservedAt: now,
+        }).run();
+      }
+      this.db.update(agents).set({
         title,
+        handle,
         archived: archived ? 1 : 0,
         activeEngine,
         model: model ?? null,
@@ -191,6 +217,7 @@ export class AgentManagementAuthority {
       })
       .where(eq(agents.id, id))
       .run();
+    })();
     if (archived !== (row.archived === 1)) this.refreshAllChatFeedProject(row.projectId);
     return this.rowToAgentDto(id);
   }

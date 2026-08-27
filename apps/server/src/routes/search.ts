@@ -54,6 +54,7 @@ export function registerSearchRoutes(
         if (!recipientIds.length) return item;
         const projectAgents = store.listAgents(item.project.id);
         const agentMentions = resolveAgentMentionBindings(
+          item.project.id,
           item.text,
           recipientIds,
           [
@@ -62,6 +63,7 @@ export function registerSearchRoutes(
               recipientIds,
               projectAgents,
               communication?.identity?.recipientLabels,
+              communication?.identity?.recipientHandles,
             ),
           ],
         );
