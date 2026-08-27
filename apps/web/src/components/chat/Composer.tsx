@@ -49,6 +49,7 @@ import {
   ComposerTextInput,
   type ComposerMenuSuggestion,
 } from "./Composer.controls";
+import type { ComposerEditorHandle } from "./ComposerEditor";
 import {
   canSubmitComposerText,
   composerAttachmentReducer,
@@ -84,6 +85,7 @@ type ComposerMentionToken = {
   title: string;
   valid: boolean;
   kind: "agent" | "special";
+  agentId?: string;
 };
 
 export type { ComposerProps } from "./Composer.types";
@@ -122,24 +124,6 @@ function providerCommandInput(
     text: value.slice(destination[0].length),
     start: destination[0].length,
   };
-}
-
-function replaceMentionHandle(
-  text: string,
-  previousHandle: string,
-  currentHandle: string,
-): string {
-  const matching = messageTagTokens(text).filter(token =>
-    token.handle.toLocaleLowerCase() === previousHandle.toLocaleLowerCase());
-  if (!matching.length) return text;
-  let cursor = 0;
-  let next = "";
-  for (const token of matching) {
-    next += text.slice(cursor, token.start);
-    next += `#${currentHandle}`;
-    cursor = token.end;
-  }
-  return next + text.slice(cursor);
 }
 
 export function Composer({
@@ -247,8 +231,7 @@ export function Composer({
   const [knownMentionBindings, setKnownMentionBindings] = useState<
     AgentMentionBindingDto[]
   >([]);
-  const previousMentionBindings = useRef<AgentMentionBindingDto[]>([]);
-  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const inputRef = useRef<ComposerEditorHandle | null>(null);
   const markUserDraftMutation = useCallback(() => {
     userDraftMutationGeneration.current += 1;
   }, []);
@@ -278,54 +261,36 @@ export function Composer({
   );
   const insertDictatedText = useCallback(
     (transcript: string) => {
-      const input = inputRef.current;
-      const selectionStart = input?.selectionStart ?? textRef.current.length;
-      const selectionEnd = input?.selectionEnd ?? selectionStart;
-      let nextCaret = selectionStart;
-      update(current => {
-        const insertion = insertSpeechText(
-          current,
-          transcript,
-          selectionStart,
-          selectionEnd,
-        );
-        nextCaret = insertion.caret;
-        return insertion.text;
-      });
+      const selection = inputRef.current?.getSelectionOffsets() ?? {
+        start: textRef.current.length,
+        end: textRef.current.length,
+      };
+      const insertion = insertSpeechText(
+        textRef.current,
+        transcript,
+        selection.start,
+        selection.end,
+      );
+      inputRef.current?.replaceCanonicalRange(
+        0,
+        textRef.current.length,
+        insertion.text,
+      );
       setSendError(undefined);
-      setCaret(nextCaret);
+      setCaret(insertion.caret);
       setHighlighted(0);
       setSuppressMenu(false);
       requestAnimationFrame(() => {
         inputRef.current?.focus();
-        inputRef.current?.setSelectionRange(nextCaret, nextCaret);
+        inputRef.current?.setSelectionOffsets(insertion.caret, insertion.caret);
       });
     },
-    [update],
+    [],
   );
   const handleDictationSettlingChange = useCallback((settling: boolean) => {
     dictationSettlingRef.current = settling;
     setDictationSettling(settling);
   }, []);
-  useEffect(() => {
-    const currentById = new Map((mentionBindings ?? []).map(binding => [binding.agentId, binding]));
-    let changed = false;
-    let renamedText = textRef.current;
-    for (const previous of previousMentionBindings.current) {
-      const current = currentById.get(previous.agentId);
-      if (!current || current.currentHandle === previous.currentHandle) continue;
-      const replaced = replaceMentionHandle(
-        renamedText,
-        previous.currentHandle,
-        current.currentHandle,
-      );
-      changed ||= replaced !== renamedText;
-      renamedText = replaced;
-    }
-    previousMentionBindings.current = mentionBindings ?? [];
-    if (changed) update(renamedText);
-  }, [mentionBindings, update]);
-
   useEffect(() => {
     const handles = new Set(messageTagTokens(text).map(token => token.handle.toLocaleLowerCase()));
     const currentById = new Map((mentionBindings ?? []).map(binding => [binding.agentId, binding]));
@@ -455,6 +420,7 @@ export function Composer({
         title: current?.currentTitle ?? binding.currentTitle,
         valid: Boolean(current),
         kind: "agent",
+        agentId: binding.agentId,
       });
     }
     return tokens;
@@ -581,14 +547,6 @@ export function Composer({
     const handle = targetRequiredHandles[0] ?? requiredRecipient?.handle;
     if (handle) update(current => removeHandle(current, handle));
     requiredRecipient?.onClear();
-  };
-  const removeMentionAt = (start: number, end: number) => {
-    update(current => `${current.slice(0, start)}${current.slice(end)}`);
-    requestAnimationFrame(() => {
-      inputRef.current?.focus();
-      inputRef.current?.setSelectionRange(start, start);
-      setCaret(start);
-    });
   };
   const clearTargetDestinations = () => {
     update(current => {
@@ -740,8 +698,7 @@ export function Composer({
         ? (readChatState(draftStorageKey) ?? "")
         : "";
       const focusedOrEdited =
-        document.activeElement === inputRef.current ||
-        draftLocallyEdited.current;
+        inputRef.current?.isFocused() || draftLocallyEdited.current;
       if (!focusedOrEdited) {
         const nextText =
           draft.revision === 0 && local && !draft.text ? local : draft.text;
@@ -761,8 +718,7 @@ export function Composer({
           id => !locallyRemovedDraftAttachmentIds.current.has(id),
         );
         const focusedOrEdited =
-          document.activeElement === inputRef.current ||
-          draftLocallyEdited.current;
+          inputRef.current?.isFocused() || draftLocallyEdited.current;
         const local = draftStorageKey
           ? (readChatState(draftStorageKey) ?? "")
           : "";
@@ -1018,18 +974,42 @@ export function Composer({
   const applyMention = (handle: string) => {
     const start =
       caret - mentionMatch![0].length + mentionMatch![0].indexOf("#");
-    const next = `${text.slice(0, start)}#${handle} ${text.slice(caret)}`;
-    update(next);
+    const specialTitle = SPECIAL_MENTION_TITLES.get(handle.toLocaleLowerCase());
+    const binding = (mentionBindings ?? []).find(candidate =>
+      [candidate.handle, candidate.currentHandle].some(
+        candidateHandle =>
+          candidateHandle.toLocaleLowerCase() === handle.toLocaleLowerCase(),
+      ),
+    );
+    const descriptor = specialTitle
+      ? {
+          kind: "special" as const,
+          handle,
+          title: specialTitle,
+          valid: true,
+        }
+      : binding
+        ? {
+            kind: "agent" as const,
+            agentId: binding.agentId,
+            handle: binding.currentHandle,
+            title: binding.currentTitle,
+            valid: true,
+          }
+        : undefined;
+    if (inputRef.current && descriptor) {
+      inputRef.current.setSelectionOffsets(start, caret);
+      inputRef.current.insertMention(descriptor);
+      inputRef.current.insertText(" ");
+    } else {
+      update(`${text.slice(0, start)}#${handle} ${text.slice(caret)}`);
+    }
     setHighlighted(0);
-    // Restore focus and place the caret after the inserted handle.
     const nextCaret = start + handle.length + 2;
     requestAnimationFrame(() => {
-      const el = inputRef.current;
-      if (el) {
-        el.focus();
-        el.setSelectionRange(nextCaret, nextCaret);
-        setCaret(nextCaret);
-      }
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionOffsets(nextCaret, nextCaret);
+      setCaret(nextCaret);
     });
   };
 
@@ -1039,15 +1019,18 @@ export function Composer({
   }) => {
     const start = caret - fileMatch![0].length + fileMatch![0].indexOf("@");
     const suffix = entry.kind === "dir" ? "/" : " ";
-    const next = `${text.slice(0, start)}@${entry.path}${suffix}${text.slice(caret)}`;
-    update(next);
+    inputRef.current?.replaceCanonicalRange(
+      start,
+      caret,
+      `@${entry.path}${suffix}`,
+    );
     setHighlighted(0);
     const nextCaret = start + entry.path.length + 1 + suffix.length;
     requestAnimationFrame(() => {
       const el = inputRef.current;
       if (!el) return;
       el.focus();
-      el.setSelectionRange(nextCaret, nextCaret);
+      el.setSelectionOffsets(nextCaret, nextCaret);
       setCaret(nextCaret);
       setSuppressMenu(false);
     });
@@ -1056,15 +1039,18 @@ export function Composer({
   const applyCommand = (command: EngineCommand) => {
     if (engineCommandDisabledReason(command)) return;
     if (!commandDraft) return;
-    const next = `${text.slice(0, commandDraft.start)}${command.insertText}${text.slice(caret)}`;
-    update(next);
+    inputRef.current?.replaceCanonicalRange(
+      commandDraft.start,
+      caret,
+      command.insertText,
+    );
     setHighlighted(0);
     requestAnimationFrame(() => {
       const el = inputRef.current;
       if (!el) return;
       el.focus();
       const nextCaret = commandDraft.start + command.insertText.length;
-      el.setSelectionRange(nextCaret, nextCaret);
+      el.setSelectionOffsets(nextCaret, nextCaret);
       setCaret(nextCaret);
     });
   };
@@ -1072,14 +1058,14 @@ export function Composer({
   const applyCapability = (capability: EngineComposerCapability) => {
     const inserted = insertComposerCapability(text, caret, capability);
     if (!inserted) return;
-    update(inserted.text);
+    inputRef.current?.replaceCanonicalRange(0, text.length, inserted.text);
     setCapabilityMenuAnchor(null);
     setCapabilityFilter("");
     requestAnimationFrame(() => {
       const el = inputRef.current;
       if (!el) return;
       el.focus();
-      el.setSelectionRange(inserted.caret, inserted.caret);
+      el.setSelectionOffsets(inserted.caret, inserted.caret);
       setCaret(inserted.caret);
     });
   };
@@ -1419,7 +1405,6 @@ export function Composer({
             menuSuggestions={menuSuggestions}
             destinationMode={destinationMode}
             requiredRecipient={requiredRecipient}
-            inlineDestination={undefined}
             mentionTokens={mentionTokens}
             mentionedBusyHandles={mentionedBusyHandles}
             mentionedHandles={mentionedHandles}
@@ -1437,7 +1422,6 @@ export function Composer({
               setSendError(undefined);
             }}
             onPasteError={setSendError}
-            onCaretChange={setCaret}
             onHighlightChange={setHighlighted}
             onSuppressMenu={() => setSuppressMenu(true)}
             onApplySuggestion={selected => {
@@ -1446,7 +1430,6 @@ export function Composer({
               else applyCommand(selected.command);
             }}
             onClearRequiredRecipient={clearRequiredRecipient}
-            onRemoveMention={removeMentionAt}
             onSend={send}
           />
           <ComposerAutocompleteMenu
