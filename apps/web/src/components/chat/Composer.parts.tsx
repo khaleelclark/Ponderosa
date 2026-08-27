@@ -79,37 +79,21 @@ interface ComposerProjectDestinationActionProps {
   newAgentSelected: boolean;
   toggleNewAgent(): void;
   replyDestination?: string;
-  onReplyDestination?(): void;
 }
 
 export function ComposerProjectDestinationAction({
   newAgentSelected,
   toggleNewAgent,
   replyDestination,
-  onReplyDestination,
 }: ComposerProjectDestinationActionProps): JSX.Element {
-  return (
-    <Stack direction="row" spacing={0.5} useFlexGap sx={{ flexWrap: "wrap" }}>
-      <Button
-        size="small"
-        variant={newAgentSelected ? "contained" : "text"}
-        color={newAgentSelected ? "primary" : "inherit"}
-        startIcon={<PersonAddAltOutlinedIcon />}
-        aria-pressed={newAgentSelected}
-        onClick={toggleNewAgent}
-        sx={{
-          whiteSpace: "nowrap",
-          minHeight: { xs: 44, sm: 34 },
-          "@media (pointer: coarse)": { minHeight: 44 },
-        }}
-      >
-        New Agent
-      </Button>
-      {replyDestination && onReplyDestination ? (
+  if (replyDestination) {
+    return (
+      <Tooltip title="Switch to a new Agent">
         <Button
           size="small"
           variant="text"
-          onClick={onReplyDestination}
+          color="primary"
+          onClick={toggleNewAgent}
           sx={{
             whiteSpace: "nowrap",
             minHeight: { xs: 44, sm: 34 },
@@ -118,8 +102,25 @@ export function ComposerProjectDestinationAction({
         >
           Reply to {replyDestination}
         </Button>
-      ) : null}
-    </Stack>
+      </Tooltip>
+    );
+  }
+  return (
+    <Button
+      size="small"
+      variant={newAgentSelected ? "contained" : "text"}
+      color={newAgentSelected ? "primary" : "inherit"}
+      startIcon={<PersonAddAltOutlinedIcon />}
+      aria-pressed={newAgentSelected}
+      onClick={toggleNewAgent}
+      sx={{
+        whiteSpace: "nowrap",
+        minHeight: { xs: 44, sm: 34 },
+        "@media (pointer: coarse)": { minHeight: 44 },
+      }}
+    >
+      New Agent
+    </Button>
   );
 }
 

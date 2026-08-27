@@ -72,6 +72,19 @@ import { DictationControls } from "../speech/DictationControls";
 import { insertSpeechText } from "../speech/speechText";
 
 const DRAFT_OWNER_ID = /^[A-Za-z0-9_-]{1,128}$/u;
+const SPECIAL_MENTION_TITLES = new Map([
+  ["broadcast", "Broadcast"],
+  ["everyone", "Everyone"],
+  [NEW_AGENT_DESTINATION_HANDLE, "New Agent"],
+]);
+type ComposerMentionToken = {
+  start: number;
+  end: number;
+  handle: string;
+  title: string;
+  valid: boolean;
+  kind: "agent" | "special";
+};
 
 export type { ComposerProps } from "./Composer.types";
 
@@ -396,25 +409,42 @@ export function Composer({
     () => findMentionedHandles(submissionText, routingMentionHandles),
     [routingMentionHandles, submissionText],
   );
-  const mentionTokens = useMemo(() => {
+  const mentionTokens = useMemo<ComposerMentionToken[]>(() => {
     const currentById = new Map((mentionBindings ?? []).map(binding => [binding.agentId, binding]));
     const byHandle = new Map<string, AgentMentionBindingDto>();
     for (const binding of [...knownMentionBindings, ...(mentionBindings ?? [])]) {
       byHandle.set(binding.handle.toLocaleLowerCase(), binding);
       byHandle.set(binding.currentHandle.toLocaleLowerCase(), binding);
     }
-    return messageTagTokens(text).flatMap(token => {
+    const tokens: ComposerMentionToken[] = [];
+    for (const token of messageTagTokens(text)) {
+      const specialTitle = SPECIAL_MENTION_TITLES.get(
+        token.handle.toLocaleLowerCase(),
+      );
+      if (specialTitle) {
+        tokens.push({
+          start: token.start,
+          end: token.end,
+          handle: token.handle,
+          title: specialTitle,
+          valid: true,
+          kind: "special",
+        });
+        continue;
+      }
       const binding = byHandle.get(token.handle.toLocaleLowerCase());
-      if (!binding) return [];
+      if (!binding) continue;
       const current = currentById.get(binding.agentId);
-      return [{
+      tokens.push({
         start: token.start,
         end: token.end,
         handle: current?.currentHandle ?? token.handle,
         title: current?.currentTitle ?? binding.currentTitle,
         valid: Boolean(current),
-      }];
-    });
+        kind: "agent",
+      });
+    }
+    return tokens;
   }, [knownMentionBindings, mentionBindings, text]);
   const invalidMention = mentionTokens.find(token => !token.valid);
   const newAgentSelected = mentionedHandles.some(
@@ -516,25 +546,31 @@ export function Composer({
           ? `#${unresolvedAmbiguousTarget} matches more than one Agent. Use a message's # action to choose the exact Agent.`
           : undefined;
   const toggleNewAgentDestination = () => {
+    const selectingNewAgent = !hasComposerDestination(
+      textRef.current,
+      NEW_AGENT_DESTINATION_HANDLE,
+    );
     update(current => {
-      if (hasComposerDestination(current, NEW_AGENT_DESTINATION_HANDLE)) {
-        return removeHandle(current, NEW_AGENT_DESTINATION_HANDLE);
+      if (!selectingNewAgent) {
+        const withoutNewAgent = removeHandle(
+          current,
+          NEW_AGENT_DESTINATION_HANDLE,
+        );
+        return defaultDestination
+          ? prependComposerDestination(
+              withoutNewAgent,
+              defaultDestination.handle,
+            )
+          : withoutNewAgent;
       }
       const withoutAutomaticDestination = activeDefaultDestination
         ? removeHandle(current, activeDefaultDestination.handle)
         : current;
       return prependComposerDestination(withoutAutomaticDestination, NEW_AGENT_DESTINATION_HANDLE);
     });
-    setActiveDefaultDestination(undefined);
-    requestAnimationFrame(() => inputRef.current?.focus());
-  };
-  const restoreDefaultDestination = () => {
-    if (!defaultDestination) return;
-    update(current => prependComposerDestination(
-      removeHandle(current, NEW_AGENT_DESTINATION_HANDLE),
-      defaultDestination.handle,
-    ));
-    setActiveDefaultDestination(defaultDestination);
+    setActiveDefaultDestination(
+      selectingNewAgent ? undefined : defaultDestination,
+    );
     requestAnimationFrame(() => inputRef.current?.focus());
   };
   const clearRequiredRecipient = () => {
@@ -1355,11 +1391,10 @@ export function Composer({
           <ComposerProjectDestinationAction
             newAgentSelected={newAgentSelected}
             toggleNewAgent={toggleNewAgentDestination}
-            replyDestination={!activeDefaultDestination && defaultDestination
+            replyDestination={!newAgentSelected && defaultDestination && mentionedHandles.some(
+              handle => handle.toLocaleLowerCase() === defaultDestination.handle.toLocaleLowerCase(),
+            )
               ? defaultDestination.binding?.currentTitle ?? defaultDestination.handle
-              : undefined}
-            onReplyDestination={!activeDefaultDestination && defaultDestination
-              ? restoreDefaultDestination
               : undefined}
           />
         ) : null}

@@ -179,6 +179,7 @@ export function ComposerTextInput({
     handle: string;
     title: string;
     valid: boolean;
+    kind: "agent" | "special";
   }>;
   mentionedBusyHandles: string[];
   mentionedHandles: string[];
@@ -224,7 +225,7 @@ export function ComposerTextInput({
             onDelete={inlineDestination.onClear}
             sx={{
               position: "absolute",
-              zIndex: 1,
+              zIndex: 3,
               top: 0,
               left: 2,
               maxWidth: "min(42%, 240px)",
@@ -246,7 +247,7 @@ export function ComposerTextInput({
           <Box
             sx={{
               position: "absolute",
-              zIndex: 1,
+              zIndex: 3,
               inset: "0 2px auto 2px",
               maxHeight: 110,
               overflow: "hidden",
@@ -273,42 +274,59 @@ export function ComposerTextInput({
                   <Box
                     component="span"
                     key={`${token.start}:${token.handle}`}
-                    title={token.valid ? `Agent: ${token.title}` : `Unavailable Agent: ${token.title}`}
-                    aria-label={token.valid
-                      ? `Agent mention ${token.title}`
-                      : `Unavailable Agent mention ${token.title}`}
+                    title={token.kind === "special"
+                      ? token.title
+                      : token.valid
+                        ? `Agent: ${token.title}`
+                        : `Unavailable Agent: ${token.title}`}
+                    aria-label={token.kind === "special"
+                      ? `${token.title} tag`
+                      : token.valid
+                        ? `Agent mention ${token.title}`
+                        : `Unavailable Agent mention ${token.title}`}
                     sx={{
-                      display: "inline-flex",
-                      alignItems: "baseline",
+                      display: "inline",
+                      position: "relative",
                       borderRadius: 0.75,
                       bgcolor: theme => token.valid
                         ? alpha(theme.palette.success.main, theme.palette.mode === "dark" ? 0.2 : 0.12)
                         : theme.palette.error.dark,
                       color: token.valid ? "success.main" : "error.contrastText",
                       boxShadow: token.valid ? "inset 0 0 0 1px currentColor" : undefined,
-                      fontWeight: 700,
-                      px: 0.35,
+                      boxDecorationBreak: "clone",
+                      WebkitBoxDecorationBreak: "clone",
+                      fontWeight: "inherit",
                       textIndent: 0,
-                      pointerEvents: "auto",
+                      pointerEvents: "none",
                     }}
                   >
                     #{token.handle}
                     <Box
                       component="button"
                       type="button"
-                      aria-label={`Remove Agent mention ${token.title}`}
+                      aria-label={token.kind === "special"
+                        ? `Remove ${token.title} tag`
+                        : `Remove Agent mention ${token.title}`}
                       onClick={() => onRemoveMention(token.start, token.end)}
                       sx={{
                         appearance: "none",
-                        border: 0,
-                        bgcolor: "transparent",
+                        position: "absolute",
+                        zIndex: 3,
+                        top: "0.15em",
+                        right: "-0.45em",
+                        width: 14,
+                        height: 14,
+                        border: "1px solid currentColor",
+                        borderRadius: "50%",
+                        bgcolor: "background.paper",
                         color: "inherit",
                         font: "inherit",
+                        fontSize: 11,
                         lineHeight: 1,
                         cursor: "pointer",
                         p: 0,
-                        ml: 0.35,
-                        opacity: 0.75,
+                        pointerEvents: "auto",
+                        opacity: 0.9,
                       }}
                     >
                       ×
@@ -334,6 +352,8 @@ export function ComposerTextInput({
         maxRows={5}
         sx={{
           "& .MuiInputBase-root": {
+            position: "relative",
+            zIndex: 2,
             alignItems: "flex-end",
             bgcolor: "transparent",
             px: 0.25,
@@ -347,7 +367,11 @@ export function ComposerTextInput({
             textIndent: destinationWidth ? `${destinationWidth + 8}px` : 0,
             ...(mentionTokens.length > 0 ? {
               color: "transparent",
-              caretColor: "text.primary",
+              caretColor: theme => theme.palette.text.primary,
+              "&::selection": {
+                color: theme => theme.palette.text.primary,
+                bgcolor: theme => alpha(theme.palette.primary.main, 0.32),
+              },
             } : {}),
           },
         }}
