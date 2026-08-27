@@ -1406,6 +1406,7 @@ export function Composer({
         <Box ref={anchorRef} sx={{ order: -1, flex: "1 0 100%", minWidth: 0 }}>
           <ComposerTextInput
             text={text}
+            caret={caret}
             inputRef={inputRef}
             disabled={disabled}
             locked={composerLocked}

@@ -128,6 +128,7 @@ export function ComposerNotices({
 
 export function ComposerTextInput({
   text,
+  caret,
   inputRef,
   disabled,
   locked,
@@ -159,6 +160,7 @@ export function ComposerTextInput({
   onSend,
 }: {
   text: string;
+  caret: number;
   inputRef: RefObject<HTMLTextAreaElement>;
   disabled: boolean;
   locked: boolean;
@@ -199,6 +201,7 @@ export function ComposerTextInput({
   const destinationRef = useRef<HTMLDivElement>(null);
   const [destinationWidth, setDestinationWidth] = useState(0);
   const [scrollTop, setScrollTop] = useState(0);
+  const [focused, setFocused] = useState(false);
   useLayoutEffect(() => {
     const element = destinationRef.current;
     if (!element || !inlineDestination) {
@@ -264,12 +267,73 @@ export function ComposerTextInput({
             {(() => {
               const rendered: ReactNode[] = [];
               let cursor = 0;
-              for (const token of mentionTokens) {
+              let caretRendered = false;
+              const showOverlayCaret =
+                focused &&
+                inputRef.current?.selectionStart === inputRef.current?.selectionEnd;
+              const pushCaret = (key: string) => {
                 rendered.push(
-                  <Box component="span" aria-hidden="true" key={`text:${cursor}`}>
-                    {text.slice(cursor, token.start)}
+                  <Box
+                    component="span"
+                    aria-hidden="true"
+                    key={key}
+                    sx={{
+                      display: "inline-block",
+                      width: 0,
+                      height: "1.1em",
+                      borderLeft: "1.5px solid currentColor",
+                      verticalAlign: "text-bottom",
+                      animation: "composer-caret-blink 1s step-end infinite",
+                      "@keyframes composer-caret-blink": {
+                        "0%, 45%": { opacity: 1 },
+                        "46%, 100%": { opacity: 0 },
+                      },
+                    }}
+                  />,
+                );
+                caretRendered = true;
+              };
+              const pushText = (
+                start: number,
+                end: number,
+                key: string,
+                includeEnd = false,
+              ) => {
+                const containsCaret =
+                  showOverlayCaret &&
+                  !caretRendered &&
+                  caret >= start &&
+                  (caret < end || (includeEnd && caret === end));
+                if (!containsCaret) {
+                  rendered.push(
+                    <Box component="span" aria-hidden="true" key={key}>
+                      {text.slice(start, end)}
+                    </Box>,
+                  );
+                  return;
+                }
+                rendered.push(
+                  <Box component="span" aria-hidden="true" key={`${key}:before`}>
+                    {text.slice(start, caret)}
                   </Box>,
                 );
+                pushCaret(`${key}:caret`);
+                rendered.push(
+                  <Box component="span" aria-hidden="true" key={`${key}:after`}>
+                    {text.slice(caret, end)}
+                  </Box>,
+                );
+              };
+              for (const token of mentionTokens) {
+                pushText(cursor, token.start, `text:${cursor}`);
+                if (
+                  showOverlayCaret &&
+                  !caretRendered &&
+                  caret >= token.start &&
+                  caret < token.end
+                ) {
+                  pushCaret(`token:${token.start}:caret`);
+                }
                 rendered.push(
                   <Chip
                     key={`${token.start}:${token.handle}`}
@@ -316,11 +380,7 @@ export function ComposerTextInput({
                 );
                 cursor = token.end;
               }
-              rendered.push(
-                <Box component="span" aria-hidden="true" key={`text:${cursor}:end`}>
-                  {text.slice(cursor)}
-                </Box>,
-              );
+              pushText(cursor, text.length, `text:${cursor}:end`, true);
               return rendered;
             })()}
           </Box>
@@ -349,7 +409,7 @@ export function ComposerTextInput({
             textIndent: destinationWidth ? `${destinationWidth + 8}px` : 0,
             ...(mentionTokens.length > 0 ? {
               color: "transparent",
-              caretColor: theme => theme.palette.text.primary,
+              caretColor: "transparent",
               "&::selection": {
                 color: theme => theme.palette.text.primary,
                 bgcolor: theme => alpha(theme.palette.primary.main, 0.32),
@@ -362,6 +422,8 @@ export function ComposerTextInput({
         }}
         value={text}
         inputRef={inputRef}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
         disabled={disabled || locked}
         placeholder={locked ? "Agent is working" : (placeholder ?? "Send a message")}
         inputProps={{
