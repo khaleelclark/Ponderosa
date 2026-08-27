@@ -272,7 +272,6 @@ export function createAgentStoreComponents(
     ports.getAgent,
     ports.listAgents,
     ports.getProject,
-    ports.getConversation,
     ports.rowToAgentDto,
     projectId => chatFeed.refreshAllChatFeedProject(projectId),
   );

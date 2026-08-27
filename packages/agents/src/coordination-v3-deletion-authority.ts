@@ -15,16 +15,7 @@ export class CoordinationV3DeletionAuthority {
     private readonly sqlite: Database.Database,
     private readonly support: CoordinationV3StoreSupport,
     private readonly cancelAgentRun: (input: CancelAgentRunInput) => unknown,
-    private readonly cancelJoin: (
-      joinId: string,
-      ownerAgentId: string,
-      now?: string,
-    ) => boolean,
     private readonly updateRequest: (input: UpdateRequestV3Input) => unknown,
-    private readonly deleteTriggerDefinition: (
-      triggerId: string,
-      now?: string,
-    ) => boolean,
   ) {}
 
   handleAgentDeletion(

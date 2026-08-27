@@ -298,10 +298,7 @@ export class CoordinationV3Store {
       sqlite,
       this.support,
       input => this.cancelAgentRun(input),
-      (joinId, ownerAgentId, now) =>
-        this.cancelJoin(joinId, ownerAgentId, now),
       input => this.updateRequest(input),
-      (triggerId, now) => this.deleteTriggerDefinition(triggerId, now),
     );
     this.coordinateAuthority = new CoordinationV3CoordinateAuthority(
       sqlite,

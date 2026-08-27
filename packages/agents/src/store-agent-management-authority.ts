@@ -4,7 +4,6 @@ import { eq } from "drizzle-orm";
 import type {
   AgentDto,
   AgentOrganizationEvent,
-  ConversationDto,
   ProjectDto,
   UpdateAgentOrganizationRequest,
   UpdateAgentRequest,
@@ -30,7 +29,6 @@ export class AgentManagementAuthority {
     private readonly getAgent: (agentId: string) => AgentDto | undefined,
     private readonly listAgents: (projectId: string) => AgentDto[],
     private readonly getProject: (projectId: string) => ProjectDto | undefined,
-    private readonly getConversation: (conversationId: string) => ConversationDto | undefined,
     private readonly rowToAgentDto: (agentId: string) => AgentDto | undefined,
     private readonly refreshAllChatFeedProject: (projectId: string) => void,
   ) {}
