@@ -16,7 +16,7 @@ import type {
   WorkspaceStore,
 } from "@ponderosa/agents";
 import { ASSET_LIMITS, AssetError, type AssetStore } from "../assets.js";
-import { agentMentionHandle, hasEveryoneMention } from "../agent-mentions.js";
+import { hasEveryoneMention } from "../agent-mentions.js";
 import type { PreparedCommunicationArtifact } from "./conversation-deliveries.js";
 
 type RuntimeArtifactInput = NonNullable<

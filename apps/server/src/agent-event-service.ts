@@ -17,7 +17,6 @@ import type {
 import type { Subscriber } from "./app-contracts.js";
 import {
   advanceMentionTrail,
-  agentMentionHandle,
   hasEveryoneMention,
   mentionedAgents,
   mentionRelayFingerprint,

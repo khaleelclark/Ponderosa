@@ -10,7 +10,6 @@ import type {
   WorkspaceStore,
 } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
-import { agentMentionHandle } from "../agent-mentions.js";
 import { MAX_ATTACHMENTS_PER_MESSAGE, type EngineRegistration } from "../app-contracts.js";
 import { AssetError, type AssetStore } from "../assets.js";
 import type { createCommunicationArtifactAuthority } from "../communication-artifacts.js";

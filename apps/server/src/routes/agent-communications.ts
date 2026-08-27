@@ -117,7 +117,6 @@ export function registerAgentCommunicationRoutes(
   const {
     store,
     coordinationV3,
-    workspace,
     agentMessageCapabilities,
     activeRuns,
     capabilityOwnsAuthoritativeRun,
@@ -132,7 +131,6 @@ export function registerAgentCommunicationRoutes(
     runtimeArtifactMetadata,
     stageCommunicationArtifact,
     publishCoordinationV3Changed,
-    publishWorkspaceSince,
     resolveOperationalNotification,
     notifyScheduler,
     reconcileRuntimeCommunicationProjections,

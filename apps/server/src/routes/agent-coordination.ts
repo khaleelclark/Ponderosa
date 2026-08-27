@@ -16,7 +16,6 @@ import type {
   CoordinationV3Store,
 } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
-import { agentMentionHandle } from "../agent-mentions.js";
 import type {
   ActiveRun,
   AgentMessageCapability,
