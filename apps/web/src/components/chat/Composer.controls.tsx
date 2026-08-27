@@ -18,7 +18,6 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import { alpha } from "@mui/material/styles";
 import type {
   AssetLimitsDto,
   EngineCommand,
@@ -29,8 +28,18 @@ import {
   LONG_TEXT_MAX_UTF8_BYTES,
   utf8ByteLength,
 } from "@ponderosa/core";
-import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import {
+  useLayoutEffect,
+  useRef,
+  useState,
+  type MutableRefObject,
+  type RefObject,
+} from "react";
 import { compactPreviewText } from "./Composer.helpers";
+import {
+  ComposerTokenEditor,
+  type ComposerEditorElement,
+} from "./Composer.editor";
 import { ComposerMentionStatus } from "./Composer.parts";
 import {
   COMPOSER_MAX_FILE_BYTES,
@@ -161,7 +170,7 @@ export function ComposerTextInput({
 }: {
   text: string;
   caret: number;
-  inputRef: RefObject<HTMLTextAreaElement>;
+  inputRef: MutableRefObject<ComposerEditorElement | null>;
   disabled: boolean;
   locked: boolean;
   placeholder?: string;
@@ -200,9 +209,6 @@ export function ComposerTextInput({
 }): JSX.Element {
   const destinationRef = useRef<HTMLDivElement>(null);
   const [destinationWidth, setDestinationWidth] = useState(0);
-  const [scrollTop, setScrollTop] = useState(0);
-  const [focused, setFocused] = useState(false);
-  const [, refreshSelection] = useState(0);
   useLayoutEffect(() => {
     const element = destinationRef.current;
     if (!element || !inlineDestination) {
@@ -247,240 +253,29 @@ export function ComposerTextInput({
             }}
           />
         ) : null}
-        {text && mentionTokens.length > 0 ? (
-          <Box
-            sx={{
-              position: "absolute",
-              zIndex: 3,
-              inset: "6px 2px auto 2px",
-              maxHeight: 110,
-              overflow: "hidden",
-              pointerEvents: "none",
-              fontSize: 15,
-              lineHeight: "22px",
-              whiteSpace: "pre-wrap",
-              overflowWrap: "anywhere",
-              color: "text.primary",
-              textIndent: destinationWidth ? `${destinationWidth + 8}px` : 0,
-              transform: `translateY(-${scrollTop}px)`,
-            }}
-          >
-            {(() => {
-              const rendered: ReactNode[] = [];
-              let cursor = 0;
-              let caretRendered = false;
-              const selectionStart = inputRef.current?.selectionStart ?? caret;
-              const selectionEnd = inputRef.current?.selectionEnd ?? caret;
-              const showOverlaySelection =
-                focused && selectionStart !== selectionEnd;
-              const showOverlayCaret = focused && !showOverlaySelection;
-              const pushSegment = (
-                start: number,
-                end: number,
-                key: string,
-                selected = false,
-              ) => {
-                if (start === end) return;
-                rendered.push(
-                  <Box
-                    component="span"
-                    aria-hidden="true"
-                    key={key}
-                    sx={selected
-                      ? { bgcolor: theme => alpha(theme.palette.primary.main, 0.32) }
-                      : undefined}
-                  >
-                    {text.slice(start, end)}
-                  </Box>,
-                );
-              };
-              const pushCaret = (key: string) => {
-                rendered.push(
-                  <Box
-                    component="span"
-                    aria-hidden="true"
-                    key={key}
-                    sx={{
-                      display: "inline-block",
-                      width: 0,
-                      height: "1.1em",
-                      borderLeft: "1.5px solid currentColor",
-                      verticalAlign: "text-bottom",
-                      animation: "composer-caret-blink 1s step-end infinite",
-                      "@keyframes composer-caret-blink": {
-                        "0%, 45%": { opacity: 1 },
-                        "46%, 100%": { opacity: 0 },
-                      },
-                    }}
-                  />,
-                );
-                caretRendered = true;
-              };
-              const pushText = (
-                start: number,
-                end: number,
-                key: string,
-                includeEnd = false,
-              ) => {
-                if (showOverlaySelection) {
-                  const selectedStart = Math.max(start, selectionStart);
-                  const selectedEnd = Math.min(end, selectionEnd);
-                  if (selectedStart < selectedEnd) {
-                    pushSegment(start, selectedStart, `${key}:before`);
-                    pushSegment(
-                      selectedStart,
-                      selectedEnd,
-                      `${key}:selected`,
-                      true,
-                    );
-                    pushSegment(selectedEnd, end, `${key}:after`);
-                  } else {
-                    pushSegment(start, end, key);
-                  }
-                  return;
-                }
-                const containsCaret =
-                  showOverlayCaret &&
-                  !caretRendered &&
-                  caret >= start &&
-                  (caret < end || (includeEnd && caret === end));
-                if (!containsCaret) {
-                  pushSegment(start, end, key);
-                  return;
-                }
-                pushSegment(start, caret, `${key}:before`);
-                pushCaret(`${key}:caret`);
-                pushSegment(caret, end, `${key}:after`);
-              };
-              for (const token of mentionTokens) {
-                pushText(cursor, token.start, `text:${cursor}`);
-                if (
-                  showOverlayCaret &&
-                  !caretRendered &&
-                  caret >= token.start &&
-                  caret < token.end
-                ) {
-                  pushCaret(`token:${token.start}:caret`);
-                }
-                const tokenSelected =
-                  showOverlaySelection &&
-                  selectionStart < token.end &&
-                  selectionEnd > token.start;
-                rendered.push(
-                  <Chip
-                    key={`${token.start}:${token.handle}`}
-                    component="span"
-                    size="small"
-                    label={`#${token.handle}`}
-                    title={token.kind === "special"
-                      ? token.title
-                      : token.valid
-                        ? `Agent: ${token.title}`
-                        : `Unavailable Agent: ${token.title}`}
-                    aria-label={token.kind === "special"
-                      ? `${token.title} tag`
-                      : token.valid
-                        ? `Agent mention ${token.title}`
-                        : `Unavailable Agent mention ${token.title}`}
-                    onDelete={() => onRemoveMention(token.start, token.end)}
-                    sx={{
-                      display: "inline-flex",
-                      verticalAlign: "baseline",
-                      height: 26,
-                      bgcolor: token.valid ? "action.selected" : "error.dark",
-                      color: token.valid ? "primary.main" : "error.contrastText",
-                      fontSize: 16,
-                      fontWeight: 700,
-                      lineHeight: "22px",
-                      boxShadow: theme => [
-                        token.valid
-                          ? "inset 0 0 0 1px rgba(127, 196, 142, .18)"
-                          : undefined,
-                        tokenSelected
-                          ? `0 0 0 2px ${alpha(theme.palette.primary.main, 0.55)}`
-                          : undefined,
-                      ].filter(Boolean).join(", ") || undefined,
-                      textIndent: 0,
-                      pointerEvents: "auto",
-                      "& .MuiChip-label": {
-                        px: 0.75,
-                      },
-                      "& .MuiChip-deleteIcon": {
-                        color: "inherit",
-                        fontSize: 18,
-                        ml: -0.25,
-                        mr: 0.5,
-                        opacity: 1,
-                      },
-                    }}
-                  />,
-                );
-                cursor = token.end;
-              }
-              pushText(cursor, text.length, `text:${cursor}:end`, true);
-              return rendered;
-            })()}
-          </Box>
-        ) : null}
-        <TextField
-        fullWidth
-        multiline
-        variant="standard"
-        minRows={1}
-        maxRows={5}
-        sx={{
-          "& .MuiInputBase-root": {
-            position: "relative",
-            zIndex: 2,
-            alignItems: "flex-end",
-            bgcolor: "transparent",
-            px: 0.25,
-            pt: 0.75,
-            pb: 0.5,
-          },
-          "& textarea": {
-            fontSize: 15,
-            lineHeight: "22px",
-            maxHeight: "110px !important",
-            overflowY: "auto !important",
-            textIndent: destinationWidth ? `${destinationWidth + 8}px` : 0,
-            ...(mentionTokens.length > 0 ? {
-              color: "transparent",
-              caretColor: "transparent",
-              "&::selection": {
-                color: "transparent",
-                bgcolor: "transparent",
-              },
-            } : {}),
-          },
-        }}
-        InputProps={{
-          disableUnderline: true,
-        }}
-        value={text}
-        inputRef={inputRef}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
-        disabled={disabled || locked}
-        placeholder={locked ? "Agent is working" : (placeholder ?? "Send a message")}
-        inputProps={{
-          "aria-label": "Message",
-          enterKeyHint: "send",
-          role: comboboxEnabled ? "combobox" : undefined,
-          "aria-autocomplete": comboboxEnabled ? "list" : undefined,
-          "aria-expanded": comboboxEnabled ? menuOpen : undefined,
-          "aria-controls": menuOpen ? listId : undefined,
-          "aria-activedescendant": menuOpen
-            ? `${listId}-option-${highlighted}`
-            : undefined,
-        }}
-        onChange={event =>
-          onTextChange(
-            event.target.value,
-            event.target.selectionStart ?? event.target.value.length,
-          )
-        }
-        onPaste={event => {
+        <ComposerTokenEditor
+          caret={caret}
+          mentionTokens={mentionTokens}
+          textIndent={destinationWidth}
+          locked={locked}
+          onTextChange={onTextChange}
+          onRemoveMention={onRemoveMention}
+          value={text}
+          inputRef={inputRef}
+          disabled={disabled || locked}
+          placeholder={locked ? "Agent is working" : (placeholder ?? "Send a message")}
+          inputProps={{
+            "aria-label": "Message",
+            enterKeyHint: "send",
+            role: comboboxEnabled ? "combobox" : undefined,
+            "aria-autocomplete": comboboxEnabled ? "list" : undefined,
+            "aria-expanded": comboboxEnabled ? menuOpen : undefined,
+            "aria-controls": menuOpen ? listId : undefined,
+            "aria-activedescendant": menuOpen
+              ? `${listId}-option-${highlighted}`
+              : undefined,
+          }}
+          onPaste={event => {
           if (disabled || locked) return;
           if (attachmentsEnabled) {
             const files = filesFromClipboard(
@@ -505,21 +300,18 @@ export function ComposerTextInput({
           onPastedText(combined);
         }}
         onClick={event => {
-          refreshSelection(value => value + 1);
           onCaretChange(
-            (event.target as HTMLTextAreaElement).selectionStart ?? 0,
+            event.currentTarget.selectionStart,
           );
         }}
         onSelect={event => {
-          refreshSelection(value => value + 1);
           onCaretChange(
-            (event.target as HTMLTextAreaElement).selectionStart ?? 0,
+            event.currentTarget.selectionStart,
           );
         }}
-        onScroll={event => setScrollTop((event.target as HTMLTextAreaElement).scrollTop)}
         onKeyUp={event =>
           onCaretChange(
-            (event.target as HTMLTextAreaElement).selectionStart ?? 0,
+            event.currentTarget.selectionStart,
           )
         }
         onKeyDown={event => {
