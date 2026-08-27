@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
+import { fsyncDirectory } from "./store-filesystem.js";
 
 function writeAll(fd: number, bytes: Buffer, errorMessage: string): void {
   let written = 0;
@@ -20,13 +21,6 @@ function writeAll(fd: number, bytes: Buffer, errorMessage: string): void {
     if (count <= 0) throw new Error(errorMessage);
     written += count;
   }
-}
-
-function fsyncDirectory(directory: string): void {
-  if (process.platform === "win32") return;
-  const fd = openSync(directory, "r");
-  try { fsyncSync(fd); }
-  finally { closeSync(fd); }
 }
 
 export function readRepairableJsonl<T>(file: string, label: string, repair = false): T[] {
