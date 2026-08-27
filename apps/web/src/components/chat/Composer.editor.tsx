@@ -6,6 +6,7 @@ import {
   type ClipboardEventHandler,
   type CompositionEventHandler,
   type FocusEventHandler,
+  type InputEventHandler,
   type KeyboardEventHandler,
   type MouseEventHandler,
   type MutableRefObject,
@@ -247,6 +248,17 @@ export function ComposerTokenEditor({
     composing.current = false;
     syncInput(event.currentTarget);
   };
+  const beforeInput: InputEventHandler<HTMLDivElement> = event => {
+    const inputType = event.nativeEvent.inputType;
+    if (!inputType?.startsWith("delete")) return;
+    const selection = editorSelection(event.currentTarget);
+    if (selection.start === selection.end) return;
+    event.preventDefault();
+    onTextChange(
+      value.slice(0, selection.start) + value.slice(selection.end),
+      selection.start,
+    );
+  };
 
   const rendered = [];
   let cursor = 0;
@@ -342,6 +354,7 @@ export function ComposerTokenEditor({
           syncInput(event.currentTarget as ComposerEditorElement);
         }
       }}
+      onBeforeInput={beforeInput}
       onCompositionStart={compositionStart}
       onCompositionEnd={compositionEnd}
       onCopy={event => {
