@@ -271,9 +271,11 @@ export function ComposerTextInput({
                   </Box>,
                 );
                 rendered.push(
-                  <Box
-                    component="span"
+                  <Chip
                     key={`${token.start}:${token.handle}`}
+                    component="span"
+                    size="small"
+                    label={`#${token.handle}`}
                     title={token.kind === "special"
                       ? token.title
                       : token.valid
@@ -284,58 +286,33 @@ export function ComposerTextInput({
                       : token.valid
                         ? `Agent mention ${token.title}`
                         : `Unavailable Agent mention ${token.title}`}
+                    onDelete={() => onRemoveMention(token.start, token.end)}
                     sx={{
-                      display: "inline",
-                      position: "relative",
-                      borderRadius: 0.75,
+                      display: "inline-flex",
+                      verticalAlign: "baseline",
+                      height: 26,
                       bgcolor: token.valid ? "action.selected" : "error.dark",
                       color: token.valid ? "primary.main" : "error.contrastText",
-                      boxShadow: theme => token.valid
-                        ? `0 0 0 3px ${theme.palette.action.selected}, inset 0 0 0 1px rgba(127, 196, 142, .18)`
-                        : undefined,
-                      boxDecorationBreak: "clone",
-                      WebkitBoxDecorationBreak: "clone",
-                      fontWeight: "inherit",
-                      textShadow: token.valid
-                        ? "0.25px 0 currentColor, -0.25px 0 currentColor"
+                      fontSize: 16,
+                      fontWeight: 700,
+                      lineHeight: "22px",
+                      boxShadow: token.valid
+                        ? "inset 0 0 0 1px rgba(127, 196, 142, .18)"
                         : undefined,
                       textIndent: 0,
-                      pointerEvents: "none",
-                    }}
-                  >
-                    #{token.handle}
-                    <Box
-                      component="button"
-                      type="button"
-                      aria-label={token.kind === "special"
-                        ? `Remove ${token.title} tag`
-                        : `Remove Agent mention ${token.title}`}
-                      onClick={() => onRemoveMention(token.start, token.end)}
-                      sx={{
-                        appearance: "none",
-                        position: "absolute",
-                        zIndex: 3,
-                        top: "50%",
-                        right: "-1em",
-                        transform: "translateY(-50%)",
-                        width: 12,
-                        height: 12,
-                        border: "1px solid currentColor",
-                        borderRadius: "50%",
-                        bgcolor: "background.paper",
+                      pointerEvents: "auto",
+                      "& .MuiChip-label": {
+                        px: 0.75,
+                      },
+                      "& .MuiChip-deleteIcon": {
                         color: "inherit",
-                        font: "inherit",
-                        fontSize: 9,
-                        lineHeight: 1,
-                        cursor: "pointer",
-                        p: 0,
-                        pointerEvents: "auto",
-                        opacity: 0.9,
-                      }}
-                    >
-                      ×
-                    </Box>
-                  </Box>,
+                        fontSize: 18,
+                        ml: -0.25,
+                        mr: 0.5,
+                        opacity: 1,
+                      },
+                    }}
+                  />,
                 );
                 cursor = token.end;
               }
