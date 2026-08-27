@@ -318,6 +318,17 @@ export function ComposerTextInput({
           const textarea = inputRef.current;
           const selectionStart = textarea?.selectionStart ?? 0;
           const selectionEnd = textarea?.selectionEnd ?? selectionStart;
+          if (
+            (event.key === "Backspace" || event.key === "Delete") &&
+            selectionStart !== selectionEnd
+          ) {
+            event.preventDefault();
+            onTextChange(
+              text.slice(0, selectionStart) + text.slice(selectionEnd),
+              selectionStart,
+            );
+            return;
+          }
           if (selectionStart === selectionEnd) {
             const token = mentionTokens.find(candidate =>
               event.key === "Backspace"
