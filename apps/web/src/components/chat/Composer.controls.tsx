@@ -312,7 +312,7 @@ export function ComposerTextInput({
                         appearance: "none",
                         position: "absolute",
                         zIndex: 3,
-                        top: "-0.5em",
+                        top: "-0.25em",
                         right: "-0.45em",
                         width: 12,
                         height: 12,
