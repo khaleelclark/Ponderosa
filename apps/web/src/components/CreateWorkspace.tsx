@@ -708,18 +708,15 @@ export function ContextualCreateDialog({
           },
         }}
       >
-        <DialogTitle sx={{ pr: 7 }}>
-          <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-            {icon}
-            <Typography
-              id="contextual-create-title"
-              component="span"
-              variant="h6"
-              fontWeight={800}
-            >
-              {title}
-            </Typography>
-          </Stack>
+        <Box sx={{ position: "relative" }}>
+          <DialogTitle id="contextual-create-title" sx={{ pr: 7 }}>
+            <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+              {icon}
+              <Typography component="span" variant="h6" fontWeight={800}>
+                {title}
+              </Typography>
+            </Stack>
+          </DialogTitle>
           <IconButton
             aria-label={`Close ${title}`}
             onClick={close}
@@ -727,7 +724,7 @@ export function ContextualCreateDialog({
           >
             <CloseIcon />
           </IconButton>
-        </DialogTitle>
+        </Box>
         <DialogContent
           className="ponderosa-scroll"
           sx={{
