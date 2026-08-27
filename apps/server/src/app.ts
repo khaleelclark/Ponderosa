@@ -311,7 +311,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       /^\/api\/projects\/[^/]+\/agents$/u.test(pathname) ||
       /^\/api\/projects\/[^/]+\/import-agents$/u.test(pathname) ||
       /^\/api\/projects\/[^/]+\/message-deliveries\/[^/]+\/(?:retry|cancel)$/u.test(pathname) ||
-      /^\/api\/agents\/[^/]+\/triggers$/u.test(pathname) ||
+      /^\/api\/projects\/[^/]+\/triggers$/u.test(pathname) ||
       /^\/api\/triggers\/[^/]+(?:\/(?:rotate-secret|allow-runs))?$/u.test(pathname) ||
       /^\/api\/trigger-webhooks\/[^/]+$/u.test(pathname) ||
       /^\/api\/decisions\/[^/]+\/respond$/u.test(pathname);
@@ -465,7 +465,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     reply: FastifyReply,
   ): boolean => {
     if (!deletingProjectIds.has(target.projectId) && !deletingAgentIds.has(target.agentId)) return false;
-    void reply.code(409).send({ error: "Automation owner deletion is in progress" });
+    void reply.code(409).send({ error: "Automation Project or execution Agent deletion is in progress" });
     return true;
   };
   // A crashed daemon may leave scheduler Runs or Activations behind. Reapply
@@ -810,7 +810,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
       coordinationV3Scheduler.notify();
       if (!triggerId) return;
       const trigger = coordinationV3.getTriggerDefinition(triggerId);
-      if (trigger) appendWorkspace({ type: "trigger_changed", projectId: trigger.projectId, agentId: trigger.agentId, triggerId, action: "occurrence" });
+      if (trigger) appendWorkspace({ type: "trigger_changed", projectId: trigger.projectId, agentId: trigger.targetAgentId, triggerId, action: "occurrence" });
     },
     onSourceFailure: ({ trigger, kind, error }) => {
       createOperationalNotification({
@@ -823,7 +823,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
           : `Filesystem activity remains durably pending when possible, but the latest watcher event could not be persisted: ${error}`,
         projectId: trigger.projectId,
         conversationId: trigger.conversationId,
-        action: { kind: "open_agent", targetId: trigger.agentId },
+        action: { kind: "open_agent", targetId: trigger.targetAgentId },
       });
     },
     onSourceRecovered: (triggerId, kind) => {

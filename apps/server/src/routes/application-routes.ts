@@ -102,7 +102,6 @@ type ApplicationRoutesContext =
     serverContext: ServerContext;
     registerLinkPreviewRoutes(app: FastifyInstance): void;
     agentWorkProjection: Parameters<typeof registerAgentWorkRoutes>[1]["projection"];
-    triggerSources: Parameters<typeof registerAgentPackageRoutes>[1]["triggerSources"];
     webhookRawBodies: Parameters<typeof registerTriggerRoutes>[1]["webhookRawBodies"];
     agentMessages: Parameters<typeof registerAgentPackageRoutes>[1]["agentMessages"];
     authoritativeCommunicationDocument: Parameters<typeof registerCommunicationDocumentRoutes>[1];
@@ -550,7 +549,6 @@ registerAgentPackageRoutes(app, {
   engines,
   deletingProjectIds,
   cachedModelOptions,
-  triggerSources,
   appendWorkspace,
   agentMessages,
 });

@@ -34,6 +34,7 @@ import type { ProjectBrowserRequest } from "./ProjectBrowserContext";
 import { WorkspaceReviewPane } from "./files/WorkspaceReviewPane";
 import { WorkspaceFileView } from "./WorkspaceFileView";
 import { WorkspaceErrorBoundary } from "./WorkspaceErrorBoundary";
+import { TriggersPane } from "./TriggersPane";
 
 type RemovableWorkspaceResourceRoute = Extract<
   Route,
@@ -354,6 +355,15 @@ export function ProjectShell({
       onClose={() => navigate({ kind: "project", projectId })}
     />
   );
+  } else if (route.kind === "automation") {
+    main = <TriggersPane
+      projectId={projectId}
+      agents={agents}
+      settingsTriggerId={route.triggerId}
+      onCloseTriggerSettings={() => navigate({ kind: "automation", projectId })}
+      onOpenAgentWork={occurrenceId => navigate({ kind: "projectWork", projectId, focusId: `trigger:${occurrenceId}` })}
+      onCreateTrigger={() => onCreate("trigger", { projectId })}
+    />;
   } else if (route.kind === "agents") {
     main = (
       <AgentOrganizationTree

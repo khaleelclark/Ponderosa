@@ -60,10 +60,6 @@ export function triggerChatQueryLabel(
   return triggerChatLabel(conversationId, conversations);
 }
 
-export function triggerChatOptionLabel(label: string, primary: boolean): string {
-  return primary ? `Primary · ${label}` : label;
-}
-
 export function triggerScheduleStatus(trigger: Pick<TriggerDefinitionDto, "enabled" | "sourceKind" | "nextFireAt">): string | undefined {
   if (trigger.sourceKind !== "schedule") return undefined;
   if (!trigger.enabled) return "Not scheduled while disabled";
@@ -172,7 +168,11 @@ function OccurrenceAudit({ occurrence, onOpenAgentWork }: { occurrence: TriggerO
 }
 
 export function TriggersPane({
-  agent,
+  projectId,
+  agents,
+  initialTargetAgentId,
+  fixedTargetAgentId,
+  filterTargetAgentId,
   onOpenAgentWork,
   fixedConversationId,
   initialCreateOpen = false,
@@ -185,7 +185,11 @@ export function TriggersPane({
   settingsTriggerId,
   onCloseTriggerSettings,
 }: {
-  agent: AgentDto;
+  projectId: string;
+  agents: AgentDto[];
+  initialTargetAgentId?: string;
+  fixedTargetAgentId?: string;
+  filterTargetAgentId?: string;
   onOpenAgentWork?(occurrenceId: string): void;
   fixedConversationId?: string;
   initialCreateOpen?: boolean;
@@ -199,26 +203,31 @@ export function TriggersPane({
   onCloseTriggerSettings?(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const initialTarget = agents.find(agent => agent.id === fixedTargetAgentId)
+    ?? agents.find(agent => agent.id === initialTargetAgentId)
+    ?? agents[0];
   const preferredConversationId =
     fixedConversationId &&
-    agent.conversationId === fixedConversationId
+    initialTarget?.conversationId === fixedConversationId
       ? fixedConversationId
-      : agent.conversationId;
-  const queryKey = queryKeys.triggers.agent(agent.id);
+      : initialTarget?.conversationId ?? "";
+  const queryKey = queryKeys.triggers.project(projectId);
   const triggers = useInfiniteQuery({
     queryKey,
     initialPageParam: undefined as string | undefined,
-    queryFn: ({ pageParam }) => api.listTriggersPage(agent.id, { limit: 100, cursor: pageParam }),
+    queryFn: ({ pageParam }) => api.listTriggersPage(projectId, { limit: 100, cursor: pageParam }),
     getNextPageParam: page => page.hasMore ? page.cursor : undefined,
     select: normalizeResetPages,
   });
-  const triggerItems = useMemo(
-    () => triggers.data?.pages.flatMap(page => page.items) ?? [],
-    [triggers.data?.pages],
-  );
+  const triggerItems = useMemo(() => {
+    const items = triggers.data?.pages.flatMap(page => page.items) ?? [];
+    return filterTargetAgentId
+      ? items.filter(trigger => trigger.targetAgentId === filterTargetAgentId)
+      : items;
+  }, [filterTargetAgentId, triggers.data?.pages]);
   const conversations = useQuery({
-    queryKey: queryKeys.conversations.project(agent.projectId),
-    queryFn: () => api.listConversations(agent.projectId),
+    queryKey: queryKeys.conversations.project(projectId),
+    queryFn: () => api.listConversations(projectId),
   });
   const currentChatLabel = (id: string): string => triggerChatQueryLabel(
     id,
@@ -236,6 +245,7 @@ export function TriggersPane({
   const [name, setName] = useState("");
   const [instructions, setInstructions] = useState("");
   const [conversationId, setConversationId] = useState(preferredConversationId);
+  const [targetAgentId, setTargetAgentId] = useState(initialTarget?.id ?? "");
   const [sourceKind, setSourceKind] = useState<TriggerSourceKind>("schedule");
   const [scheduleKind, setScheduleKind] = useState<"once" | "interval" | "cron">("interval");
   const [onceAt, setOnceAt] = useState(localFuture());
@@ -252,10 +262,13 @@ export function TriggersPane({
   const [budgetPeriod, setBudgetPeriod] = useState<TriggerBudgetPeriod>("month");
   useEffect(() => {
     if (initialCreateOpen) setCreateOpen(true);
-  }, [agent.id, initialCreateOpen]);
+  }, [initialCreateOpen, projectId]);
   useEffect(() => {
-    if (!editing) setConversationId(preferredConversationId);
-  }, [agent.id, editing, fixedConversationId, preferredConversationId]);
+    if (!editing) {
+      setConversationId(preferredConversationId);
+      setTargetAgentId(initialTarget?.id ?? "");
+    }
+  }, [editing, fixedConversationId, initialTarget?.id, preferredConversationId, projectId]);
   const filesystemErrors = filesystemWindowErrors(quietSeconds, maxWindowSeconds);
   const intervalMs = Number(intervalValue) * INTERVAL_UNIT_MS[intervalUnit];
   const intervalInvalid = sourceKind === "schedule" && scheduleKind === "interval" && (
@@ -263,10 +276,15 @@ export function TriggersPane({
   );
   const sourceConfigurationInvalid = (sourceKind === "filesystem" && Boolean(filesystemErrors.quiet || filesystemErrors.max)) || intervalInvalid;
 
+  const eligibleAgents = agents.filter(agent => agent.conversationId === conversationId);
   useEffect(() => {
-    if (!editing && agent.conversationId !== conversationId)
-      setConversationId(preferredConversationId);
-  }, [agent, conversationId, editing, preferredConversationId]);
+    if (editing || eligibleAgents.some(agent => agent.id === targetAgentId)) return;
+    setTargetAgentId(
+      eligibleAgents.find(agent => agent.id === fixedTargetAgentId)?.id
+        ?? eligibleAgents[0]?.id
+        ?? "",
+    );
+  }, [editing, eligibleAgents, fixedTargetAgentId, targetAgentId]);
 
   const sourceConfig = (): CreateTriggerRequest["sourceConfig"] => {
     if (sourceKind === "webhook") {
@@ -291,6 +309,7 @@ export function TriggersPane({
     setName("");
     setInstructions("");
     setConversationId(preferredConversationId);
+    setTargetAgentId(initialTarget?.id ?? "");
     setSourceKind("schedule");
     setScheduleKind("interval");
     setOnceAt(localFuture());
@@ -312,6 +331,7 @@ export function TriggersPane({
     setName(trigger.name);
     setInstructions(trigger.instructions);
     setConversationId(trigger.conversationId);
+    setTargetAgentId(trigger.targetAgentId);
     setSourceKind(trigger.sourceKind);
     setBudgetEnabled(Boolean(trigger.runBudget));
     setBudgetLimit(String(trigger.runBudget?.limit ?? 10));
@@ -346,7 +366,7 @@ export function TriggersPane({
 
   const create = useMutation({
     mutationFn: async () => {
-      return api.createTrigger(agent.id, { conversationId, name, instructions, sourceKind, sourceConfig: sourceConfig(), ...(budgetEnabled ? { runBudget: { limit: Number(budgetLimit), period: budgetPeriod } } : {}) });
+      return api.createTrigger(projectId, { conversationId, targetAgentId, name, instructions, sourceKind, sourceConfig: sourceConfig(), ...(budgetEnabled ? { runBudget: { limit: Number(budgetLimit), period: budgetPeriod } } : {}) });
     },
     onSuccess: (response) => {
       void queryClient.invalidateQueries({ queryKey });
@@ -367,6 +387,8 @@ export function TriggersPane({
       const nextSourceConfig = sourceConfig();
       const changed = changedSourceConfig(editing!.sourceConfig, nextSourceConfig);
       return api.updateTrigger(editing!.id, {
+        conversationId,
+        targetAgentId,
         name,
         instructions,
         ...(changed ? { sourceConfig: changed } : {}),
@@ -411,7 +433,7 @@ export function TriggersPane({
     onSuccess: (_, variables) => {
       void queryClient.invalidateQueries({ queryKey });
       void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.occurrence(variables.trigger.id) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.agentOccurrences(agent.id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.projectOccurrences(projectId) });
       setRunDisabledTrigger(undefined);
     },
   });
@@ -421,8 +443,8 @@ export function TriggersPane({
     enabled: Boolean(expandedId),
   });
   const allOccurrences = useQuery({
-    queryKey: queryKeys.triggers.agentOccurrences(agent.id),
-    queryFn: () => api.listAgentTriggerOccurrences(agent.id, 100),
+    queryKey: queryKeys.triggers.projectOccurrences(projectId),
+    queryFn: () => api.listProjectTriggerOccurrences(projectId, 100),
   });
   const latestOccurrences = latestOccurrenceByTrigger(allOccurrences.data ?? []);
   const deletedTriggerOccurrences = (allOccurrences.data ?? []).filter((occurrence) => !(triggerItems).some((trigger) => trigger.id === occurrence.triggerId));
@@ -448,16 +470,46 @@ export function TriggersPane({
       <TextField label="Name" value={name} onChange={(event) => setName(event.target.value)} inputProps={{ maxLength: 120 }} autoFocus required />
       <TextField label="Trusted instructions" value={instructions} onChange={(event) => setInstructions(event.target.value)} multiline minRows={3} required helperText="Describe the action. Do not rely on event payload text as instructions." />
       {!fixedConversationId ? (
+        <FormControl fullWidth>
+          <InputLabel id="trigger-chat-label">Destination Chat</InputLabel>
+          <Select
+            labelId="trigger-chat-label"
+            label="Destination Chat"
+            value={conversationId}
+            onChange={event => setConversationId(event.target.value)}
+          >
+            {(conversations.data ?? []).filter(chat => !chat.deletedAt).map(chat => (
+              <MenuItem key={chat.id} value={chat.id}>{chat.title}</MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+      ) : (
+        <TextField label="Destination Chat" value={currentChatLabel(conversationId)} disabled />
+      )}
+      {!fixedTargetAgentId ? (
+        <FormControl fullWidth>
+          <InputLabel id="trigger-target-agent-label">Runs As</InputLabel>
+          <Select
+            labelId="trigger-target-agent-label"
+            label="Runs As"
+            value={targetAgentId}
+            onChange={event => setTargetAgentId(event.target.value)}
+          >
+            {eligibleAgents.map(agent => (
+              <MenuItem key={agent.id} value={agent.id}>{agent.title}</MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+      ) : (
         <TextField
-          label="Project chat"
-          value={triggerChatOptionLabel(
-            currentChatLabel(editing?.conversationId ?? agent.conversationId),
-            true,
-          )}
+          label="Runs As"
+          value={agents.find(agent => agent.id === targetAgentId)?.title ?? "Unavailable Agent"}
           disabled
-          helperText="This Automation runs in the Agent's owner Chat."
         />
-      ) : null}
+      )}
+      <Typography variant="caption" color="text.secondary">
+        This Project Automation sends each occurrence to the selected Chat and Agent.
+      </Typography>
       <FormControl fullWidth><InputLabel id="trigger-source-label">Source</InputLabel><Select disabled={Boolean(editing)} labelId="trigger-source-label" label="Source" value={sourceKind} onChange={(event) => setSourceKind(event.target.value as TriggerSourceKind)}><MenuItem value="schedule">Schedule</MenuItem><MenuItem value="webhook">Signed Webhook</MenuItem><MenuItem value="filesystem">Project Folder Changes</MenuItem></Select></FormControl>
       {sourceKind === "schedule" ? <>
         <FormControl fullWidth><InputLabel id="schedule-kind-label">Schedule type</InputLabel><Select labelId="schedule-kind-label" label="Schedule type" value={scheduleKind} onChange={(event) => setScheduleKind(event.target.value as typeof scheduleKind)}><MenuItem value="interval">Interval</MenuItem><MenuItem value="once">One Time</MenuItem><MenuItem value="cron">Cron</MenuItem></Select></FormControl>
@@ -492,7 +544,7 @@ export function TriggersPane({
       } : {}),
     }}>
       <Button onClick={closeCreateEditor}>Cancel</Button>
-      <Button variant="contained" disabled={create.isPending || saveEdit.isPending || !name.trim() || !instructions.trim() || !conversationId || sourceConfigurationInvalid || (budgetEnabled && (!Number.isSafeInteger(Number(budgetLimit)) || Number(budgetLimit) < 1))} onClick={() => editing ? saveEdit.mutate() : create.mutate()}>{create.isPending || saveEdit.isPending ? "Saving…" : editing ? "Save Changes" : "Create Automation"}</Button>
+      <Button variant="contained" disabled={create.isPending || saveEdit.isPending || !name.trim() || !instructions.trim() || !conversationId || !targetAgentId || sourceConfigurationInvalid || (budgetEnabled && (!Number.isSafeInteger(Number(budgetLimit)) || Number(budgetLimit) < 1))} onClick={() => editing ? saveEdit.mutate() : create.mutate()}>{create.isPending || saveEdit.isPending ? "Saving…" : editing ? "Save Changes" : "Create Automation"}</Button>
     </Stack>
   );
 
@@ -512,7 +564,7 @@ export function TriggersPane({
             Automation Settings
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            Manage {editing?.name} without leaving this Agent.
+            Manage {editing?.name} without leaving this Project.
           </Typography>
         </Box>
         {editorFields}
@@ -521,12 +573,12 @@ export function TriggersPane({
     ) : null}
     <Stack spacing={2} sx={{ display: createOnly || inlineSettings ? "none" : undefined }}>
       <Alert severity="warning">
-        <strong>Automations run automatically with this Agent&apos;s full access.</strong> External event payloads are untrusted data and stay separate from your instructions, but an Automation can still change files, run commands, use connected tools, and contact collaborators. Use narrow instructions and accept only trusted sources.
+        <strong>Automations run automatically with the selected Agent&apos;s full access.</strong> External event payloads are untrusted data and stay separate from your instructions, but an Automation can still change files, run commands, use connected tools, and contact collaborators. Use narrow instructions and accept only trusted sources.
       </Alert>
       <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
         <Box sx={{ flex: 1 }}>
           <Typography variant="h6">Automations</Typography>
-          <Typography variant="body2" color="text.secondary">Each Automation belongs to this Agent and one of its Project chats. Work is always queued.</Typography>
+          <Typography variant="body2" color="text.secondary">Automations belong to the Project. Each one sends work to a destination Chat and an execution Agent.</Typography>
         </Box>
         <Button
           variant="contained"
@@ -562,6 +614,7 @@ export function TriggersPane({
           </Stack>
           <Typography variant="body2" sx={{ mt: 1, whiteSpace: "pre-wrap" }}>{trigger.instructions}</Typography>
           <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>Project chat: {currentChatLabel(trigger.conversationId)}</Typography>
+          <Typography variant="caption" color="text.secondary" display="block">Runs as: {agents.find(agent => agent.id === trigger.targetAgentId)?.title ?? "Unavailable Agent"}</Typography>
           <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>Source configuration: <code>{JSON.stringify(trigger.sourceConfig)}</code></Typography>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={{ xs: 0.25, sm: 2 }} sx={{ mt: 1 }}>
             <Typography variant="caption" color="text.secondary">Last occurrence: {lastOccurredAt ? new Date(lastOccurredAt).toLocaleString() : "None yet"}</Typography>

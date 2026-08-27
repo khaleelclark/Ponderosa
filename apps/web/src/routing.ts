@@ -91,6 +91,7 @@ export type Route =
   | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel; view?: ConversationDetailView; urlDriven?: boolean }
   | { kind: "agents"; projectId: string }
   | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus; technicalFocusId?: string; view?: AgentDetailView; triggerId?: string }
+  | { kind: "automation"; projectId: string; triggerId?: string }
   | { kind: "review"; projectId: string; agentId: string; path?: string };
 
 const LAST_PROJECT_KEY = "ponderosa.lastProjectId";
@@ -178,6 +179,13 @@ export function parseRoute(pathname: string, search = ""): Route {
     };
   }
   if (parts[2] === "browser") return { kind: "browser", projectId };
+  if (parts[2] === "automations") {
+    return {
+      kind: "automation",
+      projectId,
+      ...(parts[3] ? { triggerId: decodeURIComponent(parts[3]) } : {}),
+    };
+  }
   if (parts[2] === "chats" && parts[3]) {
     return {
       kind: "conversation", projectId, conversationId: decodeURIComponent(parts[3]),

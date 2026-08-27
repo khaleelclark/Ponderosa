@@ -215,6 +215,9 @@ export function WorkspaceSidebar({
     ? [...projectDirectory.starredItems, ...projectDirectory.items]
     : projectFallbackItems;
   const chatItems = [...chatDirectory.starredItems, ...chatDirectory.items];
+  const chatNamesById = new Map(
+    chatItems.map(item => [item.conversation.id, item.conversation.title] as const),
+  );
   const agentItems = [
     ...agentDirectory.starredItems,
     ...agentDirectory.items,
@@ -338,11 +341,11 @@ export function WorkspaceSidebar({
   };
   const openTriggerManager = (
     projectId: string,
-    agentId: string,
+    _agentId: string | undefined,
     triggerId: string,
   ) => {
     markWorkspaceResourceUsed(queryClient, "trigger", triggerId);
-    onNavigate({ kind: "agent", projectId, agentId, view: "triggers" });
+    onNavigate({ kind: "automation", projectId, triggerId });
   };
 
   const openChat = (
@@ -669,7 +672,7 @@ export function WorkspaceSidebar({
             </ListItemIcon>
             <ListItemText
               primary={agent.title}
-              secondary={`${projectDisambiguator(agentProject, projects)} · ${agent.activeEngine}`}
+              secondary={`${chatNamesById.get(agent.conversationId) ?? "Unavailable Chat"} · ${agent.activeEngine}`}
               primaryTypographyProps={{
                 noWrap: true,
                 fontSize: 13,
@@ -742,8 +745,7 @@ export function WorkspaceSidebar({
 
   const filteredTriggers = triggerItems;
   const triggerResourceRows = (items: typeof filteredTriggers) =>
-    items.map(({ trigger, agent, project }) => {
-      const destination = { agent, project };
+    items.map(({ trigger, targetAgent, project }) => {
       const starred = starredResourceIds.has(
         resourcePreferenceKey("trigger", trigger.id),
       );
@@ -776,21 +778,20 @@ export function WorkspaceSidebar({
           onContextMenu={event => {
             event.preventDefault();
             openResourceMenu(event.currentTarget, {
-              kind: "agent",
-              projectId: destination.project.id,
-              agentId: destination.agent.id,
-              view: "triggers",
+              kind: "automation",
+              projectId: project.id,
+              triggerId: trigger.id,
             });
           }}
           sx={{ alignItems: "center", mb: 0.25 }}
         >
           <ListItemButton
-            aria-label={`Open Automations for ${destination.agent.title}`}
+            aria-label={`Open ${trigger.name} Automation`}
             data-resource-id={`sidebar-trigger:${trigger.id}`}
             onClick={() =>
               openTriggerManager(
-                destination.project.id,
-                destination.agent.id,
+                project.id,
+                targetAgent?.id,
                 trigger.id,
               )
             }
@@ -801,7 +802,7 @@ export function WorkspaceSidebar({
             </ListItemIcon>
             <ListItemText
               primary={trigger.name}
-              secondary={`${destination.project.label} · ${destination.agent.title}`}
+              secondary={`${project.label} · ${targetAgent?.title ?? "Reassignment required"}`}
               primaryTypographyProps={{
                 noWrap: true,
                 fontSize: 13,

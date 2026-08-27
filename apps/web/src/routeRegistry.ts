@@ -167,6 +167,12 @@ const ROUTE_REGISTRY = {
     scope: "project",
     initialSidebarSection: "home",
   },
+  automation: {
+    toPath: route =>
+      `/projects/${encodeURIComponent(route.projectId)}/automations${route.triggerId ? `/${encodeURIComponent(route.triggerId)}` : ""}`,
+    scope: "project",
+    initialSidebarSection: "triggers",
+  },
   review: {
     toPath: route =>
       `/projects/${encodeURIComponent(route.projectId)}/reviews/${encodeURIComponent(route.agentId)}${route.path ? `?path=${encodeURIComponent(route.path)}` : ""}`,

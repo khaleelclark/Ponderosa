@@ -8,7 +8,6 @@ import type {
   ProviderBlockedWorkDto,
 } from "./common.js";
 import type { AgentPresetDto } from "./projects.js";
-import type { CreateTriggerRequest } from "./triggers.js";
 import type { AgentRunWakeCause } from "./runs.js";
 
 // ─── Agents ─────────────────────────────────────────────────────────────────
@@ -107,7 +106,6 @@ export interface PortableAgentNodeDto {
   managementPermissions: AgentManagementPermissionsDto;
   history?: PortableAgentHistoryMessageDto[];
   artifacts?: PortableArtifactDto[];
-  triggers?: Array<Omit<CreateTriggerRequest, "conversationId"> & { enabled: false }>;
 }
 export interface AgentPortablePackageDto {
   schema: "ponderosa.agent-package.v1";

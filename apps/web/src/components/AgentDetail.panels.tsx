@@ -181,7 +181,11 @@ export function AgentDetailPanels({
     ),
     triggers: (
       <TriggersPane
-        agent={detail.agent}
+        projectId={detail.agent.projectId}
+        agents={agents}
+        initialTargetAgentId={detail.agent.id}
+        fixedTargetAgentId={detail.agent.id}
+        filterTargetAgentId={detail.agent.id}
         onCreateTrigger={onCreateTrigger}
         settingsTriggerId={triggerSettingsId}
         onCloseTriggerSettings={onCloseTriggerSettings}

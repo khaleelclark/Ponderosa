@@ -406,25 +406,32 @@ function TriggerCreateForm({
       return projects[0]!.id;
     });
   }, [initialProjectId, projects]);
+  const selectedProjectIndex = projects.findIndex(project => project.id === projectId);
+  const chats = selectedProjectIndex >= 0
+    ? (conversationQueries[selectedProjectIndex]?.data ?? []).filter(chat => !chat.deletedAt && !chat.archived)
+    : [];
+  const [conversationId, setConversationId] = useState(initialConversationId ?? "");
+  useEffect(() => {
+    setConversationId(current => {
+      if (chats.some(chat => chat.id === current)) return current;
+      if (initialConversationId && chats.some(chat => chat.id === initialConversationId)) {
+        return initialConversationId;
+      }
+      return chats[0]?.id ?? "";
+    });
+  }, [initialConversationId, projectId, chats.map(chat => chat.id).join(":")]);
   const options = projects
     .flatMap((project, index) => {
       if (project.id !== projectId) return [];
       const chats = conversationQueries[index]?.data ?? [];
       return (agentQueries[index]?.data ?? []).flatMap(agent => {
         if (agent.archived) return [];
-        if (
-          initialConversationId &&
-          project.id === initialProjectId &&
-          agent.conversationId !== initialConversationId
-        ) {
-          return [];
-        }
-        const conversationId = agent.conversationId;
-        const chat = chats.find(candidate => candidate.id === conversationId);
+        if (agent.conversationId !== conversationId) return [];
+        const chat = chats.find(candidate => candidate.id === agent.conversationId);
         return [{
           project,
           agent,
-          conversationId,
+          conversationId: agent.conversationId,
           ...(chat ? { chatTitle: chat.title } : {}),
         }];
       });
@@ -457,6 +464,17 @@ function TriggerCreateForm({
           {projects.map(project => (
             <MenuItem key={project.id} value={project.id}>{project.label}</MenuItem>
           ))}
+        </Select>
+      </FormControl>
+      <FormControl fullWidth>
+        <InputLabel id="create-automation-chat-label">Destination Chat</InputLabel>
+        <Select
+          labelId="create-automation-chat-label"
+          label="Destination Chat"
+          value={conversationId}
+          onChange={event => setConversationId(event.target.value)}
+        >
+          {chats.map(chat => <MenuItem key={chat.id} value={chat.id}>{chat.title}</MenuItem>)}
         </Select>
       </FormControl>
       <Autocomplete
@@ -503,7 +521,10 @@ function TriggerCreateForm({
       {selectedOption ? (
         <TriggersPane
           key={selectedOption.agent.id}
-          agent={selectedOption.agent}
+          projectId={selectedOption.project.id}
+          agents={[selectedOption.agent]}
+          initialTargetAgentId={selectedOption.agent.id}
+          fixedTargetAgentId={selectedOption.agent.id}
           fixedConversationId={selectedOption.conversationId}
           initialCreateOpen
           createOnly
@@ -628,10 +649,10 @@ function CreateFormContent({
       initialAgentId={route.agentId}
       anchoredActions={anchoredActions}
       onCancel={onCancel}
-      onCreated={(projectId, agentId, triggerId) => {
+      onCreated={(projectId, _agentId, triggerId) => {
         refresh("trigger");
         refresh("agent");
-        onNavigate({ kind: "agent", projectId, agentId, view: "triggers", triggerId });
+        onNavigate({ kind: "automation", projectId, triggerId });
       }}
     />
   );

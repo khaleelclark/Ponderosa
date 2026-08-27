@@ -77,6 +77,8 @@ export class CoordinationV3TriggerOccurrenceAuthority {
       };
       const triggerSnapshot = {
         id: definition.id,
+        conversationId: definition.conversation_id,
+        targetAgentId: definition.agent_id,
         name: definition.name,
         instructions: definition.instructions,
         sourceKind: definition.source_kind,

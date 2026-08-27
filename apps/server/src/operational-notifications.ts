@@ -309,7 +309,7 @@ export function createOperationalNotifications(context: OperationalNotifications
           body: `${trigger.budgetState.used} of ${trigger.runBudget!.limit + trigger.budgetState.allowance} ${trigger.runBudget!.period === "lifetime" ? "lifetime automatic Runs" : `automatic Runs per ${trigger.runBudget!.period}`} have been used. New outside events remain queued until the period resets or you allow more Runs.`,
           projectId: trigger.projectId,
           conversationId: trigger.conversationId,
-          action: { kind: "open_agent", targetId: trigger.agentId },
+          action: { kind: "open_agent", targetId: trigger.targetAgentId },
         });
       }
       if (trigger.sourceKind === "filesystem" && !trigger.enabled) retained.add(`trigger:${trigger.id}:watcher-failed`);

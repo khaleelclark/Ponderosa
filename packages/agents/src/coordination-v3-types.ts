@@ -495,7 +495,7 @@ export interface CreateTriggerDefinitionInput {
   id?: string;
   projectId: string;
   conversationId: string;
-  agentId: string;
+  targetAgentId: string;
   name: string;
   instructions: string;
   sourceKind: TriggerSourceKind;
@@ -509,6 +509,8 @@ export interface CreateTriggerDefinitionInput {
 }
 
 export interface UpdateTriggerDefinitionInput {
+  conversationId?: string;
+  targetAgentId?: string;
   name?: string;
   instructions?: string;
   sourceConfig?: TriggerSourceConfig;

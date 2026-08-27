@@ -372,7 +372,7 @@ export function AllTriggersWorkspace({
       api.updateTrigger(trigger.id, { name }),
     onSuccess: (_updated, { trigger }) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.all });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.agent(trigger.agentId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.project(trigger.projectId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("trigger") });
       setTriggerAction(undefined);
     },
@@ -381,7 +381,7 @@ export function AllTriggersWorkspace({
     mutationFn: (trigger: TriggerDefinitionDto) => api.deleteTrigger(trigger.id),
     onSuccess: (_deleted, trigger) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.all });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.agent(trigger.agentId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.project(trigger.projectId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("trigger") });
       setTriggerAction(undefined);
     },
@@ -432,15 +432,15 @@ export function AllTriggersWorkspace({
     busy={directoryQuery.requestState.isInitialLoading || directoryQuery.requestState.isRefreshing || directoryQuery.requestState.isFetchingNextPage}
     variant={embedded ? "embedded" : "page"}
   >
-    {ordered.map(({ project, agent, trigger }, index) => {
-      const route: Route = { kind: "agent", projectId: project.id, agentId: agent.id, view: "triggers" };
+    {ordered.map(({ project, targetAgent, trigger }, index) => {
+      const route: Route = { kind: "automation", projectId: project.id, triggerId: trigger.id };
       const menuResource = { route, trigger };
       const key = resourcePreferenceKey("trigger", trigger.id);
       return <ResourceRow
         key={trigger.id}
         resourceIdentity={`trigger:${trigger.id}`}
         label={trigger.name}
-        description={`${filterProjectId ? "" : `${project.label} · `}${agent.title} · ${trigger.sourceKind.replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase())}`}
+        description={`${filterProjectId ? "" : `${project.label} · `}${targetAgent?.title ?? "Reassignment required"} · ${trigger.sourceKind.replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase())}`}
         icon={<BoltOutlinedIcon />}
         meta={<Stack direction="row" spacing={1.5} sx={{ alignItems: "center" }}>
           <Chip
@@ -505,8 +505,7 @@ export function AllTriggersWorkspace({
           label: "Automation Settings",
           icon: <SettingsOutlinedIcon fontSize="small" />,
           onSelect: ({ route, trigger }) => {
-            if (route.kind === "agent")
-              onNavigate({ ...route, triggerId: trigger.id });
+            onNavigate(route);
           },
         },
         {

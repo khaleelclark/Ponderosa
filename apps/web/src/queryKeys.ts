@@ -115,10 +115,11 @@ export const queryKeys = {
   },
   triggers: {
     all: ["triggers"] as const,
-    agent: (agentId: string) => ["triggers", agentId] as const,
+    project: (projectId: string) => ["triggers", "project", projectId] as const,
     occurrencesAll: ["trigger-occurrences"] as const,
     occurrence: (triggerId: string | undefined) => ["trigger-occurrences", triggerId] as const,
     agentOccurrences: (agentId: string) => ["agent-trigger-occurrences", agentId] as const,
+    projectOccurrences: (projectId: string) => ["project-trigger-occurrences", projectId] as const,
   },
   queuedMessages: {
     conversation: (conversationId: string) => ["queued-messages", conversationId] as const,

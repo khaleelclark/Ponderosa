@@ -245,6 +245,16 @@ export function registerConversationRoutes(
   app.delete<{ Params: { id: string } }>("/api/conversations/:id", async (request, reply) => {
     const current = store.getConversation(request.params.id);
     if (current) {
+      const enabledAutomation = store.sqlite.prepare(`
+        SELECT name FROM trigger_definitions
+        WHERE conversation_id = ? AND enabled = 1
+        ORDER BY name LIMIT 1
+      `).get(current.id) as { name: string } | undefined;
+      if (enabledAutomation) {
+        return reply.code(409).send({
+          error: `Disable or reassign the Automation “${enabledAutomation.name}” before deleting this Chat.`,
+        });
+      }
       const linkedAgents = store.listAgents(current.projectId).filter((agent) => agent.conversationId === current.id);
       const active = linkedAgents.some((agent) => hasActiveRun(agent.id));
       if (active) return reply.code(409).send({ error: "stop active agents before deleting this Project chat" });

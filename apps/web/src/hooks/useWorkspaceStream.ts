@@ -783,9 +783,10 @@ export function useWorkspaceStream(
         }
       }
       else if (event.type === "trigger_changed") {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.agent(event.agentId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.project(event.projectId) });
         void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.occurrence(event.triggerId) });
         void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.agentOccurrences(event.agentId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.projectOccurrences(event.projectId) });
         agentWorkInvalidator.schedule(event.projectId);
       }
       else if (event.type === "agent_event") {

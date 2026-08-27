@@ -99,7 +99,7 @@ export interface WorkspaceAgentDirectoryItemDto {
 export interface WorkspaceTriggerDirectoryItemDto {
   kind: "trigger";
   project: Pick<ProjectDto, "id" | "label" | "hostPath">;
-  agent: Pick<AgentDto, "id" | "title">;
+  targetAgent?: Pick<AgentDto, "id" | "title">;
   trigger: TriggerDefinitionDto;
 }
 

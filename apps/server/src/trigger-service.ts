@@ -191,11 +191,11 @@ export class TriggerSourceService {
     const desired = this.options.coordination.listTriggerDefinitions()
       .filter((trigger) => !onlyProjectId || trigger.projectId === onlyProjectId)
       .filter((trigger) => {
-        const agent = this.options.store.getAgent(trigger.agentId);
+        const agent = this.options.store.getAgent(trigger.targetAgentId);
         const conversation = this.options.store.getConversation(trigger.conversationId);
         return trigger.enabled && trigger.sourceKind === "filesystem" &&
           (this.options.projectAvailable?.(trigger.projectId) ?? true) && Boolean(
-          agent && !agent.archived && conversation && !conversation.archived && agent.conversationId === conversation.id,
+          agent && !agent.archived && conversation && !conversation.deletedAt && !conversation.archived && agent.conversationId === conversation.id,
         );
       });
     const routesByProject = new Map<string, Map<string, FilesystemRoute>>();
@@ -301,11 +301,11 @@ export class TriggerSourceService {
     if (!this.sourceAvailable()) throw new Error("Automation sources are unavailable");
     const trigger = this.options.coordination.getTriggerDefinition(input.triggerId);
     if (!trigger || !trigger.enabled || trigger.sourceKind !== "webhook") throw new Error("webhook Automation not found");
-    if (!(this.options.projectAvailable?.(trigger.projectId) ?? true)) throw new Error("webhook Automation owner is unavailable");
-    const agent = this.options.store.getAgent(trigger.agentId);
+    if (!(this.options.projectAvailable?.(trigger.projectId) ?? true)) throw new Error("Automation Project is unavailable");
+    const agent = this.options.store.getAgent(trigger.targetAgentId);
     const conversation = this.options.store.getConversation(trigger.conversationId);
-    if (!agent || agent.archived || !conversation || conversation.archived || agent.conversationId !== conversation.id) {
-      throw new Error("webhook Automation owner is unavailable");
+    if (!agent || agent.archived || !conversation || conversation.deletedAt || conversation.archived || agent.conversationId !== conversation.id) {
+      throw new Error("Automation destination or execution Agent is unavailable");
     }
     if (!input.eventId.trim() || input.eventId.length > 200) throw new Error("X-Ponderosa-Event-Id is required");
     const timestampSeconds = Number(input.timestamp);
@@ -345,9 +345,9 @@ export class TriggerSourceService {
     for (const trigger of this.options.coordination.listDueScheduleTriggers(now.toISOString())) {
       try {
         if (!(this.options.projectAvailable?.(trigger.projectId) ?? true)) continue;
-        const agent = this.options.store.getAgent(trigger.agentId);
+        const agent = this.options.store.getAgent(trigger.targetAgentId);
         const conversation = this.options.store.getConversation(trigger.conversationId);
-        if (!agent || agent.archived || !conversation || conversation.archived || agent.conversationId !== conversation.id) continue;
+        if (!agent || agent.archived || !conversation || conversation.deletedAt || conversation.archived || agent.conversationId !== conversation.id) continue;
         this.fireSchedule(trigger, now);
       } catch {
         // A concurrent edit or one malformed historical definition must not

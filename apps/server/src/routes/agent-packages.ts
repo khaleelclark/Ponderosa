@@ -6,13 +6,9 @@ import type {
   AgentPortablePackageDto,
   Adapter,
   CopyAgentPackageRequest,
-  CreateTriggerRequest,
   ImportAgentPackageRequest,
   ImportAgentPackageResponse,
   ModelOption,
-  TriggerScheduleConfig,
-  TriggerSourceConfig,
-  TriggerSourceKind,
 } from "@ponderosa/core";
 import {
   openManagedArtifactContent,
@@ -34,12 +30,7 @@ import {
 } from "../assets.js";
 import { runtimeSelectionError } from "../runtime-selection.js";
 import {
-  normalizeTriggerSourceConfig,
-  type TriggerSourceService,
-} from "../trigger-service.js";
-import {
   exactTriggerFields,
-  parseCreateTrigger,
   triggerObject,
 } from "../trigger-validation.js";
 import {
@@ -57,7 +48,6 @@ interface AgentPackageRoutesContext {
   engines: ReadonlyMap<string, { adapter: Adapter }>;
   deletingProjectIds: ReadonlySet<string>;
   cachedModelOptions: (adapter: Adapter, projectId?: string) => ModelOption[];
-  triggerSources: Pick<TriggerSourceService, "createWebhookSecret" | "refresh">;
   appendWorkspace: (event: {
     type: "project_changed";
     projectId: string;
@@ -81,7 +71,6 @@ export function registerAgentPackageRoutes(
     engines,
     deletingProjectIds,
     cachedModelOptions,
-    triggerSources,
     appendWorkspace,
     agentMessages,
   } = context;
@@ -239,16 +228,6 @@ export function registerAgentPackageRoutes(
           dataBase64: await encodePortableArtifact(data),
         };
       }));
-      const triggers = mode === "full"
-        ? coordinationV3.listTriggerDefinitions(agent.id).map((trigger) => ({
-            name: trigger.name,
-            instructions: trigger.instructions,
-            sourceKind: trigger.sourceKind,
-            sourceConfig: trigger.sourceConfig,
-            enabled: false as const,
-            ...(trigger.runBudget ? { runBudget: trigger.runBudget } : {}),
-          }))
-        : undefined;
       return {
         ref: agent.id,
         title: agent.title,
@@ -267,7 +246,6 @@ export function registerAgentPackageRoutes(
           : {}),
         ...(mode !== "template" ? { history } : {}),
         ...(artifacts.length ? { artifacts } : {}),
-        ...(triggers?.length ? { triggers } : {}),
       };
     }));
     return {
@@ -338,14 +316,6 @@ export function registerAgentPackageRoutes(
           error: "destination Project chat is required",
         });
       }
-      type PlannedTrigger = {
-        name: string;
-        instructions: string;
-        sourceKind: TriggerSourceKind;
-        sourceConfig: TriggerSourceConfig;
-        runBudget?: NonNullable<CreateTriggerRequest["runBudget"]>;
-        nextFireAt?: string;
-      };
       type PlannedArtifact =
         NonNullable<AgentPortablePackageDto["agents"][number]["artifacts"]>[number]
         & {
@@ -359,7 +329,7 @@ export function registerAgentPackageRoutes(
         };
       type PlannedNode = Omit<
         AgentPortablePackageDto["agents"][number],
-        "artifacts" | "history" | "triggers"
+        "artifacts" | "history"
       > & {
         targetEngine: string;
         model?: string;
@@ -368,7 +338,6 @@ export function registerAgentPackageRoutes(
           AgentPortablePackageDto["agents"][number]["history"]
         >;
         artifacts: PlannedArtifact[];
-        triggers: PlannedTrigger[];
       };
 
       let portablePackage: AgentPortablePackageDto;
@@ -430,7 +399,7 @@ export function registerAgentPackageRoutes(
             [
               "ref", "title", "engine", "model", "effort",
               "initialInstructions", "managerRef", "managementPermissions",
-              "history", "artifacts", "triggers",
+              "history", "artifacts",
             ],
             "Agent package node",
           );
@@ -481,11 +450,10 @@ export function registerAgentPackageRoutes(
             && (
               node.history !== undefined
               || node.artifacts !== undefined
-              || node.triggers !== undefined
             )
           ) {
             throw new Error(
-              "template packages cannot contain history, artifacts, or Automations",
+              "template packages cannot contain history or artifacts",
             );
           }
           if (node.history !== undefined && !Array.isArray(node.history)) {
@@ -520,9 +488,6 @@ export function registerAgentPackageRoutes(
           }
           if (node.artifacts !== undefined && !Array.isArray(node.artifacts)) {
             throw new Error("Agent artifacts must be an array");
-          }
-          if (node.triggers !== undefined && !Array.isArray(node.triggers)) {
-            throw new Error("Agent Automations must be an array");
           }
         }
         if (
@@ -723,81 +688,6 @@ export function registerAgentPackageRoutes(
               artifactRefMap,
             ).slice(0, 100_000),
           }));
-          const triggers = (node.triggers ?? []).map(
-            (candidate): PlannedTrigger => {
-              const trigger = triggerObject(candidate, "portable Automation");
-              exactTriggerFields(
-                trigger,
-                [
-                  "name", "instructions", "sourceKind", "sourceConfig",
-                  "enabled", "runBudget",
-                ],
-                "portable Automation",
-              );
-              const parsed = parseCreateTrigger({
-                ...trigger,
-                conversationId: conversation.id,
-              });
-              if (candidate.enabled !== false) {
-                throw new Error(
-                  "imported Automations must be explicitly disabled",
-                );
-              }
-              if (
-                !parsed.name.trim()
-                || parsed.name.trim().length > 120
-                || !parsed.instructions.trim()
-                || parsed.instructions.trim().length > 20_000
-              ) {
-                throw new Error(
-                  "imported Automation name or instructions exceed supported limits",
-                );
-              }
-              if (
-                parsed.runBudget
-                && (
-                  !Number.isSafeInteger(parsed.runBudget.limit)
-                  || parsed.runBudget.limit < 1
-                  || parsed.runBudget.limit > 1_000_000
-                )
-              ) {
-                throw new Error(
-                  "Automation Run budget limit must be an integer between 1 and 1000000",
-                );
-              }
-              const schedule = parsed.sourceKind === "schedule"
-                ? parsed.sourceConfig as TriggerScheduleConfig
-                : undefined;
-              const oneTime = schedule?.scheduleKind === "once";
-              const validationTime = oneTime
-                ? new Date(Date.parse(schedule.at) - 1)
-                : new Date();
-              const normalized = normalizeTriggerSourceConfig(
-                parsed.sourceKind,
-                parsed.sourceConfig,
-                validationTime,
-              );
-              return {
-                name: parsed.name.trim(),
-                instructions: parsed.instructions.trim(),
-                sourceKind: parsed.sourceKind,
-                sourceConfig: normalized.config,
-                ...(parsed.runBudget ? { runBudget: parsed.runBudget } : {}),
-                ...(
-                  !oneTime && normalized.nextFireAt
-                    ? { nextFireAt: normalized.nextFireAt }
-                    : {}
-                ),
-              };
-            },
-          );
-          if (
-            triggers.length > 100
-            || triggers.filter((trigger) =>
-              trigger.sourceKind === "filesystem").length > 25
-          ) {
-            throw new Error("imported Agent exceeds supported Automation limits");
-          }
           return {
             ...node,
             title: node.title.trim().slice(0, 80) || "Imported Agent",
@@ -806,7 +696,6 @@ export function registerAgentPackageRoutes(
             ...(effort ? { effort } : {}),
             history,
             artifacts: artifactsByNode.get(node.ref) ?? [],
-            triggers,
           };
         });
       } catch (error) {
@@ -906,29 +795,6 @@ export function registerAgentPackageRoutes(
           );
         }
       }
-      for (const node of importNodes) {
-        for (const importedTrigger of node.triggers) {
-          const agent = created.get(node.ref)!;
-          const webhookSecret = importedTrigger.sourceKind === "webhook"
-            ? triggerSources.createWebhookSecret()
-            : undefined;
-          coordinationV3.createTriggerDefinition({
-            projectId: project.id,
-            conversationId: conversation.id,
-            agentId: agent.id,
-            name: importedTrigger.name,
-            instructions: importedTrigger.instructions,
-            sourceKind: importedTrigger.sourceKind,
-            sourceConfig: importedTrigger.sourceConfig,
-            enabled: false,
-            runBudget: importedTrigger.runBudget,
-            nextFireAt: importedTrigger.nextFireAt,
-            secretCiphertext: webhookSecret?.ciphertext,
-            secretFingerprint: webhookSecret?.fingerprint,
-          });
-        }
-      }
-      await triggerSources.refresh();
       appendWorkspace({
         type: "project_changed",
         projectId: project.id,

@@ -725,17 +725,17 @@ export const realApi = {
       },
     );
   },
-  listTriggers(agentId: string): Promise<TriggerDefinitionDto[]> {
-    return collectCollectionPages<TriggerDefinitionDto>(`/api/agents/${encodeURIComponent(agentId)}/triggers`);
+  listTriggers(projectId: string): Promise<TriggerDefinitionDto[]> {
+    return collectCollectionPages<TriggerDefinitionDto>(`/api/triggers${toQuery({ projectId })}`);
   },
-  listTriggersPage(agentId: string, options: { limit?: number; cursor?: string; search?: string } = {}): Promise<CollectionPage<TriggerDefinitionDto>> {
-    return requestCollectionPage<TriggerDefinitionDto>(`/api/agents/${encodeURIComponent(agentId)}/triggers${toQuery({ limit: options.limit, cursor: options.cursor, search: options.search })}`);
+  listTriggersPage(projectId: string, options: { limit?: number; cursor?: string; search?: string } = {}): Promise<CollectionPage<TriggerDefinitionDto>> {
+    return requestCollectionPage<TriggerDefinitionDto>(`/api/triggers${toQuery({ projectId, limit: options.limit, cursor: options.cursor, search: options.search })}`);
   },
   listAllTriggers(): Promise<TriggerDefinitionDto[]> {
     return collectCollectionPages<TriggerDefinitionDto>("/api/triggers");
   },
-  createTrigger(agentId: string, request: CreateTriggerRequest): Promise<CreateTriggerResponse> {
-    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/triggers`, { method: "POST", body: JSON.stringify(request) });
+  createTrigger(projectId: string, request: CreateTriggerRequest): Promise<CreateTriggerResponse> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/triggers`, { method: "POST", body: JSON.stringify(request) });
   },
   updateTrigger(triggerId: string, request: UpdateTriggerRequest): Promise<TriggerDefinitionDto> {
     return requestJson(`/api/triggers/${encodeURIComponent(triggerId)}`, { method: "PATCH", body: JSON.stringify(request) });
@@ -760,6 +760,9 @@ export const realApi = {
   },
   listAgentTriggerOccurrences(agentId: string, limit: number = 100): Promise<TriggerOccurrenceDto[]> {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/trigger-occurrences?limit=${encodeURIComponent(String(limit))}`);
+  },
+  listProjectTriggerOccurrences(projectId: string, limit: number = 100): Promise<TriggerOccurrenceDto[]> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/trigger-occurrences?limit=${encodeURIComponent(String(limit))}`);
   },
   listEngines(): Promise<EngineDto[]> {
     return requestJson<EngineDto[]>("/api/engines");

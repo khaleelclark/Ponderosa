@@ -128,6 +128,9 @@ export function HomeSidebarPanel({
       ),
     ),
   );
+  const projectsById = new Map(
+    snapshots.map(snapshot => [snapshot.project.id, snapshot.project] as const),
+  );
   const resourceCatalog: HomeResource[] = [
     ...(includeProjects ? snapshots.map(snapshot => ({
       id: `project:${snapshot.project.id}`,
@@ -172,18 +175,18 @@ export function HomeSidebarPanel({
         })),
     ),
     ...triggers.flatMap(trigger => {
-      const destination = agentDestinations.get(trigger.agentId);
-      return destination
+      const destination = agentDestinations.get(trigger.targetAgentId);
+      const project = projectsById.get(trigger.projectId);
+      return project
         ? [{
             id: `trigger:${trigger.id}`,
             title: trigger.name,
-            detail: `${destination.project.label} · Automation`,
+            detail: `${project.label} · Automation${destination ? ` · ${destination.agent.title}` : " · Reassignment required"}`,
             updatedAt: trigger.updatedAt,
             route: {
-              kind: "agent",
-              projectId: destination.project.id,
-              agentId: destination.agent.id,
-              view: "triggers",
+              kind: "automation",
+              projectId: project.id,
+              triggerId: trigger.id,
             } as Route,
             icon: <BoltOutlinedIcon fontSize="small" />,
           }]

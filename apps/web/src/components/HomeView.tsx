@@ -335,9 +335,9 @@ export function HomeView({
                     key={item.trigger.id}
                     icon={<BoltOutlinedIcon />}
                     title={item.trigger.name}
-                    detail={`${item.project.label} · ${item.agent.title}`}
+                    detail={`${item.project.label} · ${item.targetAgent?.title ?? "Reassignment required"}`}
                     status={item.trigger.enabled ? "Enabled" : "Disabled"}
-                    onClick={() => onNavigate({ kind: "agent", projectId: item.project.id, agentId: item.agent.id, view: "triggers", triggerId: item.trigger.id })}
+                    onClick={() => onNavigate({ kind: "automation", projectId: item.project.id, triggerId: item.trigger.id })}
                   />
                 ))}
               </Box>

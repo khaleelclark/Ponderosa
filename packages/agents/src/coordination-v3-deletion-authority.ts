@@ -116,12 +116,6 @@ export class CoordinationV3DeletionAuthority {
           unavailable_reason = 'recipient Agent was deleted'
         WHERE agent_id = ? AND state = 'pending'
       `).run(now, agentId);
-      const ownedTriggers = this.sqlite.prepare(`
-        SELECT id FROM trigger_definitions WHERE agent_id = ?
-      `).all(agentId) as Array<{ id: string }>;
-      for (const trigger of ownedTriggers) {
-        this.deleteTriggerDefinition(trigger.id, now);
-      }
     })();
   }
 
@@ -224,13 +218,6 @@ export class CoordinationV3DeletionAuthority {
           SELECT id FROM communication_v4_next_run_deliveries WHERE conversation_id = ?
         )
       `).run(now, agentId, conversationId);
-      const scopedTriggers = this.sqlite.prepare(`
-        SELECT id FROM trigger_definitions
-        WHERE agent_id = ? AND conversation_id = ?
-      `).all(agentId, conversationId) as Array<{ id: string }>;
-      for (const trigger of scopedTriggers) {
-        this.deleteTriggerDefinition(trigger.id, now);
-      }
     })();
   }
 

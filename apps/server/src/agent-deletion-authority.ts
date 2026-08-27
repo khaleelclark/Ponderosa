@@ -307,6 +307,19 @@ export function createAgentDeletionAuthority(
       false,
     ))();
     const expectedAgentIds = current.affectedAgents.map((agent) => agent.id);
+    const enabledAutomation = expectedAgentIds.length
+      ? store.sqlite.prepare(`
+          SELECT name FROM trigger_definitions
+          WHERE enabled = 1
+            AND agent_id IN (${expectedAgentIds.map(() => "?").join(", ")})
+          ORDER BY name LIMIT 1
+        `).get(...expectedAgentIds) as { name: string } | undefined
+      : undefined;
+    if (enabledAutomation) {
+      throw new Error(
+        `Disable or reassign the Automation “${enabledAutomation.name}” before deleting its execution Agent.`,
+      );
+    }
     if (expectedAgentIds.some((agentId) => deletingAgentIds.has(agentId))) {
       throw new AgentDeletionConflictError(store.previewAgentDeletion(current.rootAgentIds));
     }
