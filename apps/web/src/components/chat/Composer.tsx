@@ -92,6 +92,19 @@ type ComposerDefaultDestination = NonNullable<
   ComposerProps["defaultDestination"]
 >;
 
+function removeAllComposerDestinations(
+  value: string,
+  handle: string,
+): string {
+  let next = value;
+  while (hasComposerDestination(next, handle)) {
+    const removed = removeHandle(next, handle);
+    if (removed === next) break;
+    next = removed;
+  }
+  return next;
+}
+
 function providerCommandInput(
   value: string,
   destinationHandle?: string,
@@ -797,18 +810,24 @@ export function Composer({
     }
     appliedDefaultDestination.current = defaultDestination;
     const nextText = textRef.current;
+    const normalizedText = removeAllComposerDestinations(
+      nextText,
+      defaultDestination.handle,
+    );
     const previousWasActive = Boolean(
       previous &&
       activeDefaultDestination?.selectionKey === previous.selectionKey,
     );
-    const mayPopulate = nextText.trim().length === 0;
-    if (mayPopulate) {
+    const destinationWasInline = normalizedText !== nextText;
+    const mayActivate = normalizedText.trim().length === 0
+      || previousWasActive
+      || destinationWasInline;
+    if (mayActivate) {
       setActiveDefaultDestination(defaultDestination);
-    } else if (previous && previousWasActive) {
-      setActiveDefaultDestination(previous);
     } else {
       setActiveDefaultDestination(undefined);
     }
+    if (destinationWasInline) replaceText(normalizedText);
   }, [
     conversationDraftId,
     activeDefaultDestination?.selectionKey,
@@ -817,16 +836,8 @@ export function Composer({
     defaultDestination?.selectionKey,
     destinationMode,
     draftReadyVersion,
+    replaceText,
   ]);
-
-  useEffect(() => {
-    if (
-      activeDefaultDestination &&
-      !hasComposerDestination(text, activeDefaultDestination.handle)
-    ) {
-      setActiveDefaultDestination(undefined);
-    }
-  }, [activeDefaultDestination, text]);
 
   useComposerDraftStorageWrite({
     draftStorageKey,
