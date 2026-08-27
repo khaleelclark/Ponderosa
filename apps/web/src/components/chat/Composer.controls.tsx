@@ -288,14 +288,17 @@ export function ComposerTextInput({
                       display: "inline",
                       position: "relative",
                       borderRadius: 0.75,
-                      bgcolor: theme => token.valid
-                        ? alpha(theme.palette.success.main, theme.palette.mode === "dark" ? 0.2 : 0.12)
-                        : theme.palette.error.dark,
-                      color: token.valid ? "success.main" : "error.contrastText",
-                      boxShadow: token.valid ? "inset 0 0 0 1px currentColor" : undefined,
+                      bgcolor: token.valid ? "action.selected" : "error.dark",
+                      color: token.valid ? "primary.main" : "error.contrastText",
+                      boxShadow: theme => token.valid
+                        ? `0 0 0 3px ${theme.palette.action.selected}, inset 0 0 0 1px rgba(127, 196, 142, .18)`
+                        : undefined,
                       boxDecorationBreak: "clone",
                       WebkitBoxDecorationBreak: "clone",
                       fontWeight: "inherit",
+                      textShadow: token.valid
+                        ? "0.25px 0 currentColor, -0.25px 0 currentColor"
+                        : undefined,
                       textIndent: 0,
                       pointerEvents: "none",
                     }}
