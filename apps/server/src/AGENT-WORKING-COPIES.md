@@ -30,6 +30,7 @@ broad executor rewrite. Until that work is designed and reviewed, the current
 slice passes the resolved identity explicitly and includes it in the provider
 session contract hash.
 
-Separate-copy removal, branch integration, and automatic conflict handling are
-also deferred. Switching back to Shared leaves the managed Git worktree intact;
-Ponderosa never deletes or merges it implicitly.
+Branch integration and automatic conflict handling remain deferred. Switching
+back to Shared is the explicit cleanup action: Ponderosa removes the managed
+worktree and branch before it records Shared mode. A cleanup failure leaves the
+Agent on its Separate Git copy.

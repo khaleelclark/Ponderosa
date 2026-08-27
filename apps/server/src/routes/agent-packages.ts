@@ -13,6 +13,7 @@ import type {
 import {
   openManagedArtifactContent,
   publishManagedArtifactContentsAsync,
+  removeManagedArtifactContent,
   type AgentStore,
   type CoordinationV3Store,
 } from "@ponderosa/agents";
@@ -47,6 +48,7 @@ interface AgentPackageRoutesContext {
   assets: AssetStore;
   engines: ReadonlyMap<string, { adapter: Adapter }>;
   deletingProjectIds: ReadonlySet<string>;
+  deletingConversationIds: ReadonlySet<string>;
   cachedModelOptions: (adapter: Adapter, projectId?: string) => ModelOption[];
   appendWorkspace: (event: {
     type: "project_changed";
@@ -70,6 +72,7 @@ export function registerAgentPackageRoutes(
     assets,
     engines,
     deletingProjectIds,
+    deletingConversationIds,
     cachedModelOptions,
     appendWorkspace,
     agentMessages,
@@ -311,9 +314,10 @@ export function registerAgentPackageRoutes(
           error: "Project deletion is already in progress",
         });
       }
-      if (!conversation || conversation.projectId !== project.id) {
+      if (!conversation || conversation.projectId !== project.id ||
+          conversation.archived || deletingConversationIds.has(conversation.id)) {
         return reply.code(400).send({
-          error: "destination Project chat is required",
+          error: "an active destination Project Chat is required",
         });
       }
       type PlannedArtifact =
@@ -706,9 +710,41 @@ export function registerAgentPackageRoutes(
         });
       }
 
+      const activeDestinationConversation = () => {
+        const current = store.getConversation(conversation.id);
+        return current?.projectId === project.id && !current.archived &&
+          !deletingConversationIds.has(current.id)
+          ? current
+          : undefined;
+      };
+      const removeUncataloguedPublications = (
+        artifacts: readonly PlannedArtifact[],
+      ) => {
+        for (const artifact of artifacts) {
+          if (store.getProjectArtifact(project.id, artifact.destinationId)) continue;
+          try {
+            removeManagedArtifactContent(
+              context.dataDir,
+              project.id,
+              artifact.destinationId,
+              artifact.data.length,
+              artifact.sha256,
+            );
+          } catch {
+            // Startup repair removes any exact, uncatalogued publication that
+            // could not be reclaimed here without obscuring the Chat conflict.
+          }
+        }
+      };
+
       // Every deterministic decision is complete before the first mutation.
       if (deletingProjectIds.has(project.id)) {
         throw new Error("Project deletion is already in progress");
+      }
+      if (!activeDestinationConversation()) {
+        return reply.code(409).send({
+          error: "The destination Chat is no longer active",
+        });
       }
       const plannedArtifacts = importNodes.flatMap((node) => node.artifacts);
       const publishedArtifacts = await publishManagedArtifactContentsAsync(
@@ -726,11 +762,18 @@ export function registerAgentPackageRoutes(
         ]),
       );
 
+      if (deletingProjectIds.has(project.id) ||
+          !activeDestinationConversation()) {
+        removeUncataloguedPublications(plannedArtifacts);
+        return reply.code(409).send({
+          error: deletingProjectIds.has(project.id)
+            ? "Project deletion is already in progress"
+            : "The destination Chat is no longer active",
+        });
+      }
+
       const created = new Map<string, AgentDto>();
       for (const node of importNodes) {
-        if (deletingProjectIds.has(project.id)) {
-          throw new Error("Project deletion is already in progress");
-        }
         const agent = store.createAgent(project.id, {
           title: node.title,
           engine: node.targetEngine,

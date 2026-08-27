@@ -65,7 +65,6 @@ export interface AgentStoreComponentPorts {
     channel?: ConversationChannel,
   ): ConversationMessageDto[];
   getAgentPreset(presetId: string): AgentPresetDto | undefined;
-  updateAgentOrganization(agentId: string, input: Parameters<AgentCatalogAuthority["updateAgentOrganization"]>[1]): AgentDto | undefined;
   getProject(projectId: string): ProjectDto | undefined;
   getConversation(conversationId: string): ConversationDto | undefined;
   getAgent(agentId: string): AgentDto | undefined;
@@ -199,7 +198,6 @@ export function createAgentStoreComponents(
     client,
     ports.getAgentPreset,
     ports.getProject,
-    ports.updateAgentOrganization,
   );
   const communicationJournal = new AgentCommunicationJournalAuthority(
     dataDir,

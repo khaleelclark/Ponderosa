@@ -40,6 +40,10 @@ export interface AgentWorkingCopyDto {
   branch?: string;
   /** Commit used when the Separate Git copy was first created. */
   baseHead?: string;
+  /** True only after Ponderosa itself successfully created this branch. */
+  branchOwned?: true;
+  /** Durable pre-mutation receipt used to recover a crash during Git creation. */
+  branchCreationIntent?: true;
   /** Safe operator-facing reason when the requested mode cannot be used. */
   failure?: string;
   updatedAt: string;

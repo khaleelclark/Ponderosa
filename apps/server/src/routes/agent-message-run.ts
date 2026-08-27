@@ -243,6 +243,7 @@ export function registerAgentMessageRunRoute(
     publish,
     publishCoordinationV3Changed,
     publishMessageDeliveryChanged,
+    workingCopies,
   } = runContext;
 
   app.post<{
@@ -761,6 +762,23 @@ export function registerAgentMessageRunRoute(
           await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
         }
         return reply.code(404).send({ error: "agent not found" });
+      }
+      try {
+        workingCopies.assertRunAdmission(agent.id, workingCopy);
+      } catch (error) {
+        try {
+          coordinationV3.failRun({
+            runId, fencingToken: v3FencingToken!, workerId: coordinationV3WorkerId,
+            sameRunResumable: false, retryDelayMs: 0,
+          });
+        } catch { /* ownership may already have changed */ }
+        if (runtimeAttachmentCleanupAfterRun) {
+          await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
+        }
+        return reply.code(409).send({
+          error: error instanceof Error ? error.message : "working folder changed; retry safely",
+          retryable: true,
+        });
       }
       let durableClaim: { generation: number };
       try {

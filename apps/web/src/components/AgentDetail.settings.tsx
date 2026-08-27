@@ -78,7 +78,14 @@ function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.Element {
           labelId={`working-copy-${agent.id}`}
           label="Working folder"
           value={workingCopy.mode}
-          onChange={event => changeMode.mutate(event.target.value as AgentWorkingCopyMode)}
+          onChange={event => {
+            const nextMode = event.target.value as AgentWorkingCopyMode;
+            if (workingCopy.mode === "separate_git" && nextMode === "shared" &&
+                !window.confirm("Switch to the Shared folder? This permanently removes this Agent's managed Git copy and its branch.")) {
+              return;
+            }
+            changeMode.mutate(nextMode);
+          }}
         >
           <MenuItem value="shared">Shared folder</MenuItem>
           <MenuItem value="separate_git">Separate Git copy</MenuItem>
@@ -86,11 +93,24 @@ function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.Element {
       </FormControl>
       {workingCopy.mode === "separate_git" && workingCopy.state === "ready" ? (
         <Alert severity="info" sx={{ mt: 1.5 }}>
-          Changes stay on this Agent's Git branch{workingCopy.branch ? ` (${workingCopy.branch})` : ""}. This separates work; it does not limit what the Agent can access on the host.
+          Changes stay on this Agent's Git branch{workingCopy.branch ? ` (${workingCopy.branch})` : ""}. This separates work; it does not limit what the Agent can access on the host. Switching back to Shared permanently removes this managed copy and branch.
         </Alert>
       ) : null}
       {workingCopy.state === "unavailable" ? (
-        <Alert severity="error" sx={{ mt: 1.5 }}>
+        <Alert
+          severity="error"
+          sx={{ mt: 1.5 }}
+          action={workingCopy.mode === "separate_git" ? (
+            <Button
+              color="inherit"
+              size="small"
+              disabled={changeMode.isPending}
+              onClick={() => changeMode.mutate("separate_git")}
+            >
+              Retry
+            </Button>
+          ) : undefined}
+        >
           {workingCopy.failure ?? "This working folder is unavailable."} Runs stay paused instead of using the Shared folder.
         </Alert>
       ) : null}

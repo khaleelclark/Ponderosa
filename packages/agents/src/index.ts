@@ -103,6 +103,7 @@ export {
   publishManagedArtifactContentAsync,
   publishManagedArtifactContents,
   publishManagedArtifactContentsAsync,
+  removeManagedArtifactContent,
   openManagedArtifactContent,
   readManagedArtifactContent,
   repairManagedArtifactContent,

@@ -33,6 +33,7 @@ interface TriggerChangedEvent {
 export interface TriggerRoutesContext {
   readonly store: Pick<AgentStore, "sqlite" | "getAgent" | "getProject" | "getConversation">;
   readonly coordination: CoordinationV3Store;
+  readonly deletingConversationIds: ReadonlySet<string>;
   readonly sources: TriggerSourceService;
   readonly webhookRawBodies: WeakMap<IncomingMessage, Buffer>;
   readonly rejectQuarantinedMutation: (
@@ -52,6 +53,7 @@ export function registerTriggerRoutes(
   const {
     appendWorkspace,
     coordination,
+    deletingConversationIds,
     notifyScheduler,
     reconcileOperationalNotifications,
     rejectQuarantinedMutation,
@@ -117,7 +119,8 @@ export function registerTriggerRoutes(
         });
       }
       const conversation = store.getConversation(body.conversationId);
-      if (!conversation || conversation.projectId !== project.id || conversation.deletedAt) {
+      if (!conversation || conversation.projectId !== project.id || conversation.deletedAt ||
+          conversation.archived || deletingConversationIds.has(conversation.id)) {
         return reply.code(400).send({ error: "Automation destination must be an active Chat in this Project" });
       }
       const targetAgent = store.getAgent(body.targetAgentId);
@@ -185,9 +188,28 @@ export function registerTriggerRoutes(
       if (!current) {
         return reply.code(404).send({ error: "Automation not found" });
       }
-      if (rejectQuarantinedMutation({ projectId: current.projectId, agentId: current.targetAgentId }, reply)) return reply;
       try {
         const body = parseUpdateTrigger(request.body, current.sourceKind);
+        const proposedConversationId = body.conversationId ?? current.conversationId;
+        if (deletingConversationIds.has(current.conversationId) ||
+            deletingConversationIds.has(proposedConversationId)) {
+          return reply.code(409).send({ error: "Automation Chat deletion is in progress" });
+        }
+        const proposedConversation = store.getConversation(proposedConversationId);
+        if (!proposedConversation || proposedConversation.projectId !== current.projectId ||
+            proposedConversation.deletedAt || proposedConversation.archived) {
+          return reply.code(400).send({ error: "Automation destination must be an active Chat in this Project" });
+        }
+        if (rejectQuarantinedMutation(
+          { projectId: current.projectId, agentId: current.targetAgentId },
+          reply,
+        )) return reply;
+        const proposedTargetAgentId = body.targetAgentId ?? current.targetAgentId;
+        if (proposedTargetAgentId !== current.targetAgentId &&
+            rejectQuarantinedMutation(
+              { projectId: current.projectId, agentId: proposedTargetAgentId },
+              reply,
+            )) return reply;
         const needsReschedule =
           body.sourceConfig !== undefined ||
           (body.enabled === true && !current.enabled);

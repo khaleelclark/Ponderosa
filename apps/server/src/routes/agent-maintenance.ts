@@ -91,11 +91,12 @@ export function registerAgentMaintenanceRoutes(
         return reply.code(409).send({ error: "The retained working-copy record is invalid" });
       }
       try {
-        const removed = await workingCopies.cleanupRetained(request.params.id, workingCopy, project);
-        store.sqlite.prepare(`
-          UPDATE agents SET working_copy_json = ?, updated_at = ?
-          WHERE id = ? AND project_id = ? AND deleted_at IS NOT NULL
-        `).run(JSON.stringify(removed), removed.updatedAt, request.params.id, project.id);
+        const removed = await workingCopies.cleanupRetained(request.params.id, workingCopy, project, {
+          allowSourceUnavailable: true,
+        });
+        if (!store.updateDeletedAgentWorkingCopy(request.params.id, removed)) {
+          throw new Error("Deleted Agent became unavailable while recording cleanup");
+        }
         appendWorkspace({ type: "project_changed", projectId: project.id, action: "updated" });
         return removed;
       } catch (error) {
@@ -150,32 +151,44 @@ export function registerAgentMaintenanceRoutes(
           body.workingCopyMode !== "shared" && body.workingCopyMode !== "separate_git") {
         return reply.code(400).send({ error: "workingCopyMode must be shared or separate_git" });
       }
+      if (body.workingCopyMode !== undefined && Object.keys(body).some((key) => key !== "workingCopyMode")) {
+        return reply.code(400).send({
+          error: "Change the working folder separately from other Agent settings.",
+        });
+      }
       if (body.workingCopyMode !== undefined) {
-        if (activeRuns.has(current.id)) {
-          return reply.code(409).send({
-            error: "Stop this Agent's active Run before changing its working folder.",
-          });
-        }
-        const project = store.getProject(current.projectId);
-        if (!project) return reply.code(409).send({ error: "Agent Project is unavailable" });
-        const runtime = persistentRuntimeForTermination(current.id);
-        if (runtime) {
-          try {
+        let releaseModeChange: (() => void) | undefined;
+        try {
+          releaseModeChange = workingCopies.beginModeChange(current.id);
+          if (activeRuns.has(current.id) || coordinationV3.agentSnapshot(current.id).activeRun) {
+            return reply.code(409).send({
+              error: "Stop this Agent's active Run before changing its working folder.",
+            });
+          }
+          await workingCopies.awaitUses(new Set([current.id]));
+          const project = store.getProject(current.projectId);
+          if (!project) return reply.code(409).send({ error: "Agent Project is unavailable" });
+          const runtime = persistentRuntimeForTermination(current.id);
+          if (runtime) {
             await teardownPersistentRuntime(
               current.id,
               runtime,
               "working-copy mode changed",
               project.id,
             );
-          } catch {
-            return reply.code(409).send({
-              error: "The current provider session could not be closed safely. Try again before changing the working folder.",
-            });
           }
+          clearAgentResumeSession(current.id, "working_copy_changed");
+          const changed = await workingCopies.setMode(current, project, body.workingCopyMode);
+          return changed;
+        } catch (error) {
+          return reply.code(409).send({
+            error: error instanceof Error
+              ? error.message
+              : "The working folder could not be changed safely.",
+          });
+        } finally {
+          releaseModeChange?.();
         }
-        clearAgentResumeSession(current.id, "working_copy_changed");
-        const changed = await workingCopies.setMode(current, project, body.workingCopyMode);
-        if (Object.keys(body).every((key) => key === "workingCopyMode")) return changed;
       }
       const runtimeSettingsChanged = body.activeEngine !== undefined || body.model !== undefined || body.effort !== undefined;
       let runtimePatch: Pick<UpdateAgentRequest, "activeEngine" | "model" | "effort"> = {};

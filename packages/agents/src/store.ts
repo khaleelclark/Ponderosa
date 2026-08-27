@@ -170,7 +170,6 @@ export class AgentStore extends AgentEventSessionFacade {
         listAgents: projectId => this.listAgents(projectId),
         getConversationMessages: (conversationId, channel) => this.getConversationMessages(conversationId, channel),
         getAgentPreset: presetId => this.getAgentPreset(presetId),
-        updateAgentOrganization: (agentId, input) => this.updateAgentOrganization(agentId, input),
         getProject: projectId => this.getProject(projectId),
         getConversation: conversationId => this.getConversation(conversationId),
         getAgent: agentId => this.getAgent(agentId),
@@ -937,11 +936,26 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.agentCatalog.getAgent(id);
   }
 
+  listProjectWorkingCopies(projectId: string): Array<{
+    agentId: string;
+    deleted: boolean;
+    workingCopy: AgentDto["workingCopy"];
+  }> {
+    return this.agentCatalog.listProjectWorkingCopies(projectId);
+  }
+
   updateAgentWorkingCopy(
     id: string,
     workingCopy: AgentDto["workingCopy"],
   ): AgentDto | undefined {
     return this.agentCatalog.updateAgentWorkingCopy(id, workingCopy);
+  }
+
+  updateDeletedAgentWorkingCopy(
+    id: string,
+    workingCopy: AgentDto["workingCopy"],
+  ): boolean {
+    return this.agentCatalog.updateDeletedAgentWorkingCopy(id, workingCopy);
   }
 
   setImportedHistory(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[]): void {

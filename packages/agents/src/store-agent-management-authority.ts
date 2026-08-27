@@ -101,7 +101,14 @@ export class AgentManagementAuthority {
     if (!owner || owner.projectId !== authorization.projectId || owner.archived) {
       throw new Error("management owner is no longer active in this Project");
     }
-    const descendants = new Set(this.listAgentSubtree(owner.id).slice(1).map((agent) => agent.id));
+    if (owner.conversationId !== authorization.conversationId) {
+      throw new Error("management owner no longer belongs to the authorized Chat");
+    }
+    const subtree = this.listAgentSubtree(owner.id);
+    if (subtree.some((agent) => agent.conversationId !== authorization.conversationId)) {
+      throw new Error("management authority cannot cross Chat ownership boundaries");
+    }
+    const descendants = new Set(subtree.slice(1).map((agent) => agent.id));
     if (targetAgentIds.some((id) => !descendants.has(id))) {
       throw new Error("management authority changed; a target is no longer inside the owner's subtree");
     }
@@ -233,7 +240,10 @@ export class AgentManagementAuthority {
       let cursor: AgentDto | undefined = parent;
       while (cursor) {
         if (visited.has(cursor.id)) throw new Error("organizational parent would create a cycle");
-        if (cursor.projectId !== agent.projectId || cursor.archived) throw new Error("organizational ancestry must contain active agents from the same project");
+        if (cursor.projectId !== agent.projectId || cursor.archived ||
+            cursor.conversationId !== agent.conversationId) {
+          throw new Error("organizational ancestry must contain active Agents from the same Chat");
+        }
         visited.add(cursor.id);
         cursor = cursor.managerAgentId ? this.getAgent(cursor.managerAgentId) : undefined;
       }
@@ -263,11 +273,23 @@ export class AgentManagementAuthority {
       const projectAgents = this.listAgents(authorization.projectId);
       const byId = new Map(projectAgents.map((agent) => [agent.id, agent]));
       const managerById = new Map(projectAgents.map((agent) => [agent.id, agent.managerAgentId]));
-      const currentDescendants = new Set(this.listAgentSubtree(authorization.ownerAgentId).slice(1).map((agent) => agent.id));
+      const owner = byId.get(authorization.ownerAgentId);
+      if (!owner || owner.conversationId !== authorization.conversationId) {
+        throw new Error("management owner no longer belongs to the authorized Chat");
+      }
+      const currentSubtree = this.listAgentSubtree(authorization.ownerAgentId);
+      if (currentSubtree.some((agent) => agent.conversationId !== authorization.conversationId)) {
+        throw new Error("management authority cannot cross Chat ownership boundaries");
+      }
+      const currentDescendants = new Set(currentSubtree.slice(1).map((agent) => agent.id));
       for (const operation of operations) {
         const target = byId.get(operation.targetAgentId);
         const manager = byId.get(operation.managerAgentId);
         if (!target || !manager || target.archived || manager.archived) throw new Error("reorganization Agents must remain active");
+        if (target.conversationId !== authorization.conversationId ||
+            manager.conversationId !== authorization.conversationId) {
+          throw new Error("reorganization Agents must belong to the authorized Chat");
+        }
         if (manager.id !== authorization.ownerAgentId && !currentDescendants.has(manager.id)) {
           throw new Error("management authority changed; a new manager is no longer inside the owner's subtree");
         }
@@ -277,6 +299,11 @@ export class AgentManagementAuthority {
         let cursor: string | undefined = manager.id;
         while (cursor) {
           if (visited.has(cursor)) throw new Error("organizational parent would create a cycle");
+          const ancestor = byId.get(cursor);
+          if (!ancestor || ancestor.archived ||
+              ancestor.conversationId !== authorization.conversationId) {
+            throw new Error("organizational ancestry must remain inside the authorized Chat");
+          }
           visited.add(cursor);
           cursor = managerById.get(cursor);
         }
@@ -326,7 +353,8 @@ export class AgentManagementAuthority {
       let valid = true;
       while (parentId) {
         const parent = byId.get(parentId);
-        if (!parent || parent.archived || seen.has(parentId)) {
+        if (!parent || parent.archived ||
+            parent.conversationId !== agent.conversationId || seen.has(parentId)) {
           valid = false;
           break;
         }

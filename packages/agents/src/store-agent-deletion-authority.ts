@@ -103,6 +103,10 @@ export class AgentDeletionAuthority {
     }).map((agent) => agent!.id).sort();
     const children = new Map<string, AgentDto[]>();
     for (const agent of projectAgents) if (agent.managerAgentId) {
+      const manager = byId.get(agent.managerAgentId);
+      if (!manager || manager.conversationId !== agent.conversationId) {
+        throw new Error("cross-Chat Agent management must be repaired before deletion");
+      }
       children.set(agent.managerAgentId, [...(children.get(agent.managerAgentId) ?? []), agent]);
     }
     const affectedIds = new Set<string>();

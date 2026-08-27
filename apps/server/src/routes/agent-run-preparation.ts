@@ -226,7 +226,9 @@ export async function prepareAgentRun(
   if (!engine.adapter.trustedSystemPromptChannel) {
     throw new Error(`${engine.adapter.displayName} cannot receive trusted runtime instructions`);
   }
+  workingCopies.assertRunAdmission(agent.id, agent.workingCopy);
   const workingCopy = await workingCopies.resolve(agent, project);
+  workingCopies.assertRunAdmission(agent.id, workingCopy);
 
   const routingConversationId = sourceConversationId ?? agent.conversationId;
   const sourceChannel: AgentMessageChannel = requestedSourceChannel === "main"

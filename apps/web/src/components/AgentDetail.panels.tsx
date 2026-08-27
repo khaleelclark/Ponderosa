@@ -184,6 +184,7 @@ export function AgentDetailPanels({
         projectId={detail.agent.projectId}
         agents={agents}
         initialTargetAgentId={detail.agent.id}
+        fixedConversationId={detail.agent.conversationId}
         fixedTargetAgentId={detail.agent.id}
         filterTargetAgentId={detail.agent.id}
         onCreateTrigger={onCreateTrigger}

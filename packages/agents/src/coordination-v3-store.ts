@@ -924,18 +924,6 @@ export class CoordinationV3Store {
     this.deletionAuthority.handleAgentDeletion(agentId, now);
   }
 
-  /** Revoke one explicit Team Chat capability without affecting the Agent's
-   * memberships or work in its other chats. */
-  handleAgentConversationRemoval(
-    agentId: string,
-    conversationId: string,
-    now = new Date().toISOString(),
-  ): void {
-    this.deletionAuthority.handleAgentConversationRemoval(
-      agentId, conversationId, now,
-    );
-  }
-
   /** Fence and settle a whole project before any provider process is stopped.
    * The canonical project still exists during this phase, so a crash leaves a
    * retryable deletion with no live scheduler ownership. */

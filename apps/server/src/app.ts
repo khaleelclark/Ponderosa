@@ -9,6 +9,7 @@ import Fastify, { type FastifyReply } from "fastify";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { createAgentDeletionAuthority } from "./agent-deletion-authority.js";
+import { AgentWorkingCopyService } from "./agent-working-copy-service.js";
 import {
   type ActiveRun,
   type AgentMessageCapability,
@@ -400,6 +401,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const deletingProjectIds = new Set(store.listPendingProjectDeletions().map((entry) => entry.projectId));
   const deletingAgentIds = new Set<string>([...deletingProjectIds].flatMap((projectId) =>
     store.listAgents(projectId).map((agent) => agent.id)));
+  const deletingConversationIds = new Set<string>();
+  const agentCreationConversationLeases = new Map<string, number>();
   const contextCursors = new ContextCursorStore(opts.dataDir);
   const {
     browserScopeForRun,
@@ -715,6 +718,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     providerProcessAuthority,
   });
 app.server.on("upgrade", linkPreviewUpgrade);
+  const workingCopies = new AgentWorkingCopyService(opts.dataDir, store);
   const {
     cancelAgentDecisions,
     awaitProjectDeletionBarrier,
@@ -739,6 +743,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     detachPersistentRuntime,
     teardownPersistentRuntime,
     drainProviderRuntimeAuthority,
+    drainEngineCapabilityDiscoveries,
     draftAttachmentSurfaceDir,
     refreshTriggerSources: () => triggerSources.refresh(),
     notifyScheduler: () => coordinationV3Scheduler.notify(),
@@ -748,6 +753,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     providerProcessAuthority,
     browserProfiles,
     closeAgentBrowsers,
+    workingCopies,
   });
   const coordinationV3Scheduler = createCoordinationScheduler(app, {
     opts,
@@ -1065,6 +1071,8 @@ app.server.on("upgrade", linkPreviewUpgrade);
     subscribers,
     deletingProjectIds,
     deletingAgentIds,
+    deletingConversationIds,
+    agentCreationConversationLeases,
     rejectQuarantinedTriggerMutation,
     projectDeletionInFlightIds,
     communicationReconciliation,
@@ -1140,6 +1148,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     isDeploymentDraining: deploymentControl.isDraining,
     notifyScheduler: () => coordinationV3Scheduler.notify(),
     setMaxConcurrentRuns: (value) => coordinationV3Scheduler.setMaxConcurrentRuns(value),
+    workingCopies,
   });
 
   return app;

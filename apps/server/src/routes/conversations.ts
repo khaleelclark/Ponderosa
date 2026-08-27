@@ -35,6 +35,8 @@ export interface ConversationRouteDependencies {
   teamDirectory: (projectId: string, conversationId?: string, fallbackAgentId?: string, selectedAgentIds?: readonly string[]) => TeamDirectoryDto;
   hasActiveRun: (agentId: string) => boolean;
   commitAgentDeletion(rootAgentIds: string[], previewHash: string): Promise<{ deletedAgentIds: string[] }>;
+  deletingConversationIds: Set<string>;
+  agentCreationConversationLeases: ReadonlyMap<string, number>;
   purgeCommunicationV4Conversation: (conversationId: string) => void;
   refreshTriggers: () => Promise<unknown>;
   draftAttachmentSurfaceDir: (draftId: string) => string;
@@ -57,6 +59,8 @@ export function registerConversationRoutes(
     teamDirectory,
     hasActiveRun,
     commitAgentDeletion,
+    deletingConversationIds,
+    agentCreationConversationLeases,
     purgeCommunicationV4Conversation,
     refreshTriggers,
     draftAttachmentSurfaceDir,
@@ -214,6 +218,14 @@ export function registerConversationRoutes(
   }>("/api/conversations/:id", async (request, reply) => {
     const current = store.getConversation(request.params.id);
     if (!current) return reply.code(404).send({ error: "conversation not found" });
+    if (deletingConversationIds.has(current.id)) {
+      return reply.code(409).send({ error: "Chat deletion is already in progress" });
+    }
+    if ((agentCreationConversationLeases.get(current.id) ?? 0) > 0) {
+      return reply.code(409).send({
+        error: "Wait for Agent creation to finish before changing this Chat",
+      });
+    }
     if (request.body?.defaultEngine && !engines.has(request.body.defaultEngine)) {
       return reply.code(400).send({ error: "unknown engine" });
     }
@@ -244,27 +256,46 @@ export function registerConversationRoutes(
 
   app.delete<{ Params: { id: string } }>("/api/conversations/:id", async (request, reply) => {
     const current = store.getConversation(request.params.id);
-    if (current) {
-      const enabledAutomation = store.sqlite.prepare(`
-        SELECT name FROM trigger_definitions
-        WHERE conversation_id = ? AND enabled = 1
-        ORDER BY name LIMIT 1
-      `).get(current.id) as { name: string } | undefined;
-      if (enabledAutomation) {
-        return reply.code(409).send({
-          error: `Disable or reassign the Automation “${enabledAutomation.name}” before deleting this Chat.`,
-        });
-      }
-      const linkedAgents = store.listAgents(current.projectId).filter((agent) => agent.conversationId === current.id);
-      const active = linkedAgents.some((agent) => hasActiveRun(agent.id));
-      if (active) return reply.code(409).send({ error: "stop active agents before deleting this Project chat" });
+    if (!current) return reply.code(404).send({ error: "conversation not found" });
+    if (deletingConversationIds.has(current.id)) {
+      return reply.code(409).send({ error: "Chat deletion is already in progress" });
+    }
+    if ((agentCreationConversationLeases.get(current.id) ?? 0) > 0) {
+      return reply.code(409).send({
+        error: "Wait for Agent creation to finish before deleting this Chat",
+      });
+    }
+    const enabledAutomation = store.sqlite.prepare(`
+      SELECT name FROM trigger_definitions
+      WHERE conversation_id = ? AND enabled = 1
+      ORDER BY name LIMIT 1
+    `).get(current.id) as { name: string } | undefined;
+    if (enabledAutomation) {
+      return reply.code(409).send({
+        error: `Disable or reassign the Automation “${enabledAutomation.name}” before deleting this Chat.`,
+      });
+    }
+    const linkedAgents = store.listAgents(current.projectId).filter((agent) => agent.conversationId === current.id);
+    const active = linkedAgents.some((agent) => hasActiveRun(agent.id));
+    if (active) return reply.code(409).send({ error: "stop active agents before deleting this Project chat" });
+
+    // Reserve synchronously before the first await. Archiving is the durable
+    // restart fence: a crash leaves the Chat unable to accept new Agents, and
+    // retrying deletion can safely finish the same cascade.
+    deletingConversationIds.add(current.id);
+    store.updateConversation(current.id, { archived: true });
+    try {
       if (linkedAgents.length > 0) {
         const preview = store.previewAgentDeletion(linkedAgents.map((agent) => agent.id));
         await commitAgentDeletion(preview.rootAgentIds, preview.previewHash);
       }
-    }
-    const deleted = store.deleteConversation(request.params.id, purgeCommunicationV4Conversation);
-    if (deleted && current) {
+      const remainingAgents = store.listAgents(current.projectId)
+        .filter((agent) => agent.conversationId === current.id);
+      if (remainingAgents.length > 0) {
+        throw new Error("Chat deletion could not reach an Agent-free commit boundary");
+      }
+      const deleted = store.deleteConversation(current.id, purgeCommunicationV4Conversation);
+      if (!deleted) return reply.code(404).send({ error: "conversation not found" });
       await refreshTriggers();
       const cursor = workspace.cursor();
       workspace.deleteDraft(current.id);
@@ -275,8 +306,15 @@ export function registerConversationRoutes(
       ]);
       workspace.append({ type: "conversation_changed", projectId: current.projectId, conversationId: current.id, action: "deleted" });
       publishWorkspaceSince(cursor);
+      return { deleted: true };
+    } catch (error) {
+      if (store.getConversation(current.id)) {
+        store.updateConversation(current.id, { archived: current.archived });
+      }
+      throw error;
+    } finally {
+      deletingConversationIds.delete(current.id);
     }
-    return deleted ? { deleted: true } : reply.code(404).send({ error: "conversation not found" });
   });
 
 }

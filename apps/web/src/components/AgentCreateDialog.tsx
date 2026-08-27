@@ -203,6 +203,16 @@ export function AgentCreateForm({
     );
   }, [chats, effectiveFixedConversationId]);
 
+  useEffect(() => {
+    setManagerAgentId(current =>
+      agents.some(agent =>
+        agent.id === current && !agent.archived &&
+        agent.conversationId === conversationId)
+        ? current
+        : UNSET,
+    );
+  }, [agents, conversationId]);
+
   const activeEngine = engines.find(candidate => candidate.id === engine);
   const create = useMutation({
     mutationFn: () =>
@@ -354,9 +364,17 @@ export function AgentCreateForm({
             labelId="create-agent-chat-label"
             label="Chat"
             value={conversationId}
-            onChange={(event: SelectChangeEvent) =>
-              setConversationId(event.target.value)
-            }
+            onChange={(event: SelectChangeEvent) => {
+              const nextConversationId = event.target.value;
+              setConversationId(nextConversationId);
+              setManagerAgentId(current =>
+                agents.some(agent =>
+                  agent.id === current && !agent.archived &&
+                  agent.conversationId === nextConversationId)
+                  ? current
+                  : UNSET,
+              );
+            }}
           >
             {chats
               .filter(chat => !chat.archived)

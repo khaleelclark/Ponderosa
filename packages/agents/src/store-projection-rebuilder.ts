@@ -190,7 +190,17 @@ export class AgentProjectionRebuilder {
           SELECT id FROM conversations WHERE project_id = ? AND archived = 0
           ORDER BY created_at, id LIMIT 1
         `).get(projectId) as { id: string } | undefined;
-        const primaryConversationId = t.conversationId ?? p.lastConversationId ?? fallbackConversation?.id;
+        const conversationExists = (conversationId: string | undefined): conversationId is string =>
+          Boolean(conversationId && this.client.prepare(`
+            SELECT 1 FROM conversations WHERE id = ? AND project_id = ?
+          `).get(conversationId, projectId));
+        const primaryConversationId = t.deletedAt
+          ? undefined
+          : conversationExists(t.conversationId)
+            ? t.conversationId
+            : conversationExists(p.lastConversationId)
+              ? p.lastConversationId
+              : fallbackConversation?.id;
         if (!t.deletedAt && !primaryConversationId) {
           throw new Error(`live Agent ${t.id} has no owner Chat`);
         }

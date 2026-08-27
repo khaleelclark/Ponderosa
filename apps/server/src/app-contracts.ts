@@ -217,6 +217,8 @@ export interface CapabilityDiscoveryProcess {
 
 export interface CapabilityDiscoveryAuthority {
   projectId: string;
+  /** Present when this authority is bound to one Agent working folder. */
+  agentId?: string;
   engineId: string;
   key: string;
   controller: AbortController;

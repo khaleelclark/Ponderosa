@@ -24,6 +24,7 @@ import { cleanupAgentRuntimeAttachments } from "./runtime-attachments.js";
 import type { RuntimeElicitationBroker } from "./runtime-elicitation-broker.js";
 import type { ProviderProcessAuthority } from "./provider-process-authority.js";
 import type { BrowserProfileAuthority } from "./browser-profile-authority.js";
+import type { AgentWorkingCopyService } from "./agent-working-copy-service.js";
 
 type OperationalNotifications = ReturnType<typeof createOperationalNotifications>;
 
@@ -61,6 +62,7 @@ type AgentDeletionAuthorityContext =
       projectId?: string,
     ): Promise<void>;
     drainProviderRuntimeAuthority(reason: string, agentIds?: ReadonlySet<string>): Promise<void>;
+    drainEngineCapabilityDiscoveries(projectId?: string, agentIds?: ReadonlySet<string>): Promise<void>;
     draftAttachmentSurfaceDir(draftId: string): string;
     refreshTriggerSources(): Promise<void>;
     notifyScheduler(): void;
@@ -68,6 +70,7 @@ type AgentDeletionAuthorityContext =
     closeAgentBrowsers(agentId: string, reason: string): Promise<void>;
     providerProcessAuthority: ProviderProcessAuthority;
     browserProfiles: BrowserProfileAuthority;
+    workingCopies: AgentWorkingCopyService;
   };
 
 export function createAgentDeletionAuthority(
@@ -91,6 +94,7 @@ export function createAgentDeletionAuthority(
     detachPersistentRuntime,
     teardownPersistentRuntime,
     drainProviderRuntimeAuthority,
+    drainEngineCapabilityDiscoveries,
     draftAttachmentSurfaceDir,
     refreshTriggerSources,
     notifyScheduler,
@@ -100,6 +104,7 @@ export function createAgentDeletionAuthority(
     resolveOperationalNotification,
     providerProcessAuthority,
     browserProfiles,
+    workingCopies,
   } = context;
 
   const cancelAgentDecisions = (agentIds: Iterable<string>): void => {
@@ -329,11 +334,23 @@ export function createAgentDeletionAuthority(
     expectedAgentIds.forEach((agentId) => deletingAgentIds.add(agentId));
     let committed: AgentDeletionPreviewDto;
     try {
+      const deletingSet = new Set(expectedAgentIds);
+      // Quarantine prevents new folder users from entering. Actively stop every
+      // provider-command and reusable-runtime authority that can already own a
+      // folder lease before waiting for that lease; waiting first would
+      // deadlock deletion against the teardown needed to release it.
+      await drainEngineCapabilityDiscoveries(undefined, deletingSet);
+      await drainProviderRuntimeAuthority("Agent deletion working-folder drain", deletingSet);
+      await providerProcessAuthority.terminateAgents(
+        deletingSet,
+        "Agent deletion working-folder drain",
+      );
+      await workingCopies.awaitModeChanges(deletingSet);
+      await workingCopies.awaitUses(deletingSet);
       for (const agentId of expectedAgentIds) {
         closeLinkPreviewsForAgent(agentId, "agent deleted");
         await closeAgentBrowsers(agentId, "agent_deleted");
       }
-      const deletingSet = new Set(expectedAgentIds);
       // Provider teardown is a pre-commit deletion barrier. The durable receipt
       // remains useful for post-commit file/projection cleanup, but an Agent's
       // canonical row must not disappear while any current- or prior-boot

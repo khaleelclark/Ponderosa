@@ -27,7 +27,6 @@ import {
 } from "../project-files.js";
 import { runtimeSelectionError } from "../runtime-selection.js";
 import { displayProjectPath } from "../project-path-display.js";
-import { AgentWorkingCopyService } from "../agent-working-copy-service.js";
 import type { ServerContext } from "../server-context.js";
 import type { RuntimeElicitationBroker } from "../runtime-elicitation-broker.js";
 import { registerAgentAuditRoutes } from "./agent-audit.js";
@@ -71,7 +70,7 @@ type ApplicationRoutesContext =
   Parameters<typeof registerProjectRoutes>[1] &
   Omit<Parameters<typeof registerProjectDeletionRoutes>[1], "logError"> &
   Omit<Parameters<typeof registerConversationRoutes>[1],
-    "hasActiveRun" | "handleAgentConversationRemoval" |
+    "hasActiveRun" |
     "purgeCommunicationV4Conversation" | "refreshTriggers"> &
   Omit<Parameters<typeof registerConversationDeliveryRoutes>[1],
     "projectDeletionInProgress" | "assetMetadata"> &
@@ -205,6 +204,8 @@ export function registerApplicationRoutes(
     subscribers,
     deletingProjectIds,
     deletingAgentIds,
+    deletingConversationIds,
+    agentCreationConversationLeases,
     rejectQuarantinedTriggerMutation,
     projectDeletionInFlightIds,
     communicationReconciliation,
@@ -281,9 +282,8 @@ export function registerApplicationRoutes(
     notifyScheduler,
     setMaxConcurrentRuns,
     drainDeploymentIdleAuthorities,
+    workingCopies,
   } = context;
-  const workingCopies = new AgentWorkingCopyService(opts.dataDir, store);
-
 registerLinkPreviewRoutes(app);
 
 registerProjectRoutes(app, {
@@ -314,6 +314,7 @@ registerProjectDeletionRoutes(app, {
   engineModelCatalogDiscoveryAuthorities,
   deletingProjectIds,
   deletingAgentIds,
+  agentCreationConversationLeases,
   projectDeletionInFlightIds,
   projectBrowserGrants,
   browserSessions,
@@ -340,6 +341,7 @@ registerProjectDeletionRoutes(app, {
   agentHealth,
   logError: (meta, message) => app.log.error(meta, message),
   providerProcessAuthority,
+  workingCopies,
 });
 
 registerAgentWorkRoutes(app, { store, projection: agentWorkProjection });
@@ -359,6 +361,8 @@ registerConversationRoutes(app, {
   teamDirectory,
   hasActiveRun: agentId => activeRuns.has(agentId),
   commitAgentDeletion,
+  deletingConversationIds,
+  agentCreationConversationLeases,
   purgeCommunicationV4Conversation: conversationId =>
     coordinationV3.purgeCommunicationV4Conversation(conversationId),
   refreshTriggers: () => triggerSources.refresh(),
@@ -467,6 +471,8 @@ registerAgentCreationRoutes(app, {
   engines,
   deletingAgentIds,
   deletingProjectIds,
+  deletingConversationIds,
+  agentCreationConversationLeases,
   cachedModelOptions,
   recordCommunication,
   prepareUserCommunicationText,
@@ -483,6 +489,7 @@ registerTriggerRoutes(app, {
   coordination: coordinationV3,
   sources: triggerSources,
   webhookRawBodies,
+  deletingConversationIds,
   rejectQuarantinedMutation: rejectQuarantinedTriggerMutation,
   appendWorkspace,
   reconcileOperationalNotifications: reconcileTriggerOperationalNotifications,
@@ -548,6 +555,7 @@ registerAgentPackageRoutes(app, {
   assets,
   engines,
   deletingProjectIds,
+  deletingConversationIds,
   cachedModelOptions,
   appendWorkspace,
   agentMessages,

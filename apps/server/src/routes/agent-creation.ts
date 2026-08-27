@@ -32,6 +32,8 @@ interface AgentCreationRoutesContext {
   engines: ReadonlyMap<string, EngineRegistration>;
   deletingAgentIds: ReadonlySet<string>;
   deletingProjectIds: ReadonlySet<string>;
+  deletingConversationIds: ReadonlySet<string>;
+  agentCreationConversationLeases: Map<string, number>;
   cachedModelOptions(adapter: EngineRegistration["adapter"], projectId?: string): ModelOption[];
   recordCommunication(event: CommunicationEvent): CommunicationEvent;
   prepareUserCommunicationText: CommunicationArtifactAuthority["prepareUserCommunicationText"];
@@ -56,6 +58,8 @@ export function registerAgentCreationRoutes(
     engines,
     deletingAgentIds,
     deletingProjectIds,
+    deletingConversationIds,
+    agentCreationConversationLeases,
     cachedModelOptions,
     recordCommunication,
     prepareUserCommunicationText,
@@ -78,6 +82,9 @@ export function registerAgentCreationRoutes(
       if (deletingProjectIds.has(request.params.id)) return reply.code(409).send({ error: "Project deletion is already in progress" });
       if (!request.body?.title || !request.body?.engine || !request.body?.conversationId) {
         return reply.code(400).send({ error: "title, engine, and Chat are required" });
+      }
+      if (deletingConversationIds.has(request.body.conversationId)) {
+        return reply.code(409).send({ error: "Chat deletion is already in progress" });
       }
       const creationIdempotencyKey = request.body.idempotencyKey?.trim();
       if (creationIdempotencyKey && creationIdempotencyKey.length > 200) {
@@ -147,6 +154,12 @@ export function registerAgentCreationRoutes(
       if (draftAttachmentIds.length && !firstTurnDraftOwnerId) {
         return reply.code(400).send({ error: "first-turn draft owner is required" });
       }
+      const leaseConversationId = request.body.conversationId;
+      agentCreationConversationLeases.set(
+        leaseConversationId,
+        (agentCreationConversationLeases.get(leaseConversationId) ?? 0) + 1,
+      );
+      try {
       const draftAttachments = request.body.conversationId && firstTurnDraftOwnerId
         ? await Promise.all(draftAttachmentIds.map((id) =>
             drafts.prepared(
@@ -165,6 +178,27 @@ export function registerAgentCreationRoutes(
       }
       let agent;
       if (deletingProjectIds.has(request.params.id)) return reply.code(409).send({ error: "Project deletion is already in progress" });
+      const creationConversation = store.getConversation(request.body.conversationId);
+      if (deletingConversationIds.has(request.body.conversationId) ||
+          !creationConversation || creationConversation.projectId !== request.params.id ||
+          creationConversation.archived) {
+        return reply.code(409).send({ error: "Chat is unavailable for Agent creation" });
+      }
+      if (request.body.managerAgentId) {
+        const manager = store.getAgent(request.body.managerAgentId);
+        if (!manager || manager.projectId !== request.params.id ||
+            manager.conversationId !== request.body.conversationId ||
+            manager.archived) {
+          return reply.code(409).send({
+            error: "Manager is unavailable for Agent creation",
+          });
+        }
+        if (deletingAgentIds.has(manager.id)) {
+          return reply.code(409).send({
+            error: "Manager deletion is already in progress",
+          });
+        }
+      }
       try {
         agent = store.createAgent(request.params.id, request.body);
       } catch (error) {
@@ -348,6 +382,16 @@ export function registerAgentCreationRoutes(
       }
 
       return { ...agent, ...(managedOpening ? { openingRequestId: managedOpening.requestIds[0], openingJoinId: managedOpening.joinId } : {}) };
+      } finally {
+        const remaining = (agentCreationConversationLeases.get(
+          leaseConversationId,
+        ) ?? 1) - 1;
+        if (remaining > 0) {
+          agentCreationConversationLeases.set(leaseConversationId, remaining);
+        } else {
+          agentCreationConversationLeases.delete(leaseConversationId);
+        }
+      }
     },
   );
 }

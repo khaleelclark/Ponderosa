@@ -414,6 +414,43 @@ export async function publishManagedArtifactContents(
   }
 }
 
+/** Remove one uncatalogued publication only when its retained identity and
+ * immutable contents still match the caller's completed publication. */
+export function removeManagedArtifactContent(
+  dataDir: string,
+  projectId: string,
+  artifactId: string,
+  expectedSize: number,
+  expectedSha256: string,
+): boolean {
+  if (!safeProjectId(projectId) || !safeArtifactId(artifactId) ||
+      activePublications.has(publicationKey(dataDir, projectId, artifactId))) {
+    return false;
+  }
+  const entries = listSecureDirectory({
+    root: dataDir,
+    relativePath: nativeManagedDirectory(projectId),
+  });
+  const entry = entries?.find((candidate) =>
+    candidate.kind === "file" && candidate.name === artifactId
+  );
+  if (!entry || !readManagedArtifactContent(
+    dataDir,
+    projectId,
+    artifactId,
+    expectedSize,
+    expectedSha256,
+  )) {
+    return false;
+  }
+  return removeSecureFile({
+    root: dataDir,
+    relativeDirectory: nativeManagedDirectory(projectId),
+    leaf: artifactId,
+    expectedIdentity: entry.identity,
+  });
+}
+
 /** Remove aged regular blobs not owned by any rebuilt durable reference. The
  * retained directory descriptor and in-process publication reservation close
  * both ancestor-swap and startup/concurrent-publication deletion windows. */
