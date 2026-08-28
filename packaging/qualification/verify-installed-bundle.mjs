@@ -48,7 +48,7 @@ assert(manifest.schemaVersion === 1 && manifest.product === "Ponderosa", "Invali
 assert(manifest.target?.platform === process.platform, "Manifest platform does not match the native host.");
 assert(manifest.target?.arch === process.arch, "Manifest architecture does not match the native host.");
 assert(manifest.nodeVersion === process.version, "Manifest Node version does not match the bundled executable.");
-assert(/^v22\.\d+\.\d+(?:[-+].*)?$/u.test(process.version), "Bundled runtime is not supported Node 22.");
+assert(/^v24\.\d+\.\d+(?:[-+].*)?$/u.test(process.version), "Bundled runtime is not supported Node 24.");
 assert(statSync(process.execPath).size >= 5 * 1024 * 1024, "Bundled Node executable is a thin system launcher.");
 assert(manifest.nodeExecutableBytes === statSync(process.execPath).size, "Bundled Node size does not match its manifest.");
 assert(manifest.nodeExecutableSha256 === sha256(process.execPath), "Bundled Node hash does not match its manifest.");

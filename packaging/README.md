@@ -50,7 +50,7 @@ contain Codex, Claude Code, provider credentials, Projects, or user data.
 
 Bundles are assembled and qualified on their target operating system and
 architecture. The build executes the proposed bundled Node binary, requires
-Node 22, and rejects target metadata that does not match that runtime.
+Node 24, and rejects target metadata that does not match that runtime.
 `beta:verify` loads and exercises `better-sqlite3` and `sharp` from the deployed
 bundle, creates a database from the bundled launch baseline, and checks launcher
 identity. Static cross-assembly is never labeled as verified.

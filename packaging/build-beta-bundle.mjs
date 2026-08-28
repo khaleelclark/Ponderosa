@@ -58,7 +58,7 @@ function nodeRuntimeIdentity(binary) {
   if (bytes < 5 * 1024 * 1024) {
     throw new Error(
       `The proposed bundled Node executable is only ${bytes} bytes and is not self-contained. ` +
-      "Run `pnpm beta:node` to prepare the checksummed official Node 22 runtime.",
+      "Run `pnpm beta:node` to prepare the checksummed official Node 24 runtime.",
     );
   }
   let raw;
@@ -79,8 +79,8 @@ function nodeRuntimeIdentity(binary) {
     );
   }
   const identity = JSON.parse(raw);
-  if (!/^v22\.\d+\.\d+(?:[-+].*)?$/u.test(identity.version)) {
-    throw new Error(`Ponderosa private beta requires bundled Node 22; found ${identity.version ?? "unknown"}.`);
+  if (!/^v24\.\d+\.\d+(?:[-+].*)?$/u.test(identity.version)) {
+    throw new Error(`Ponderosa private beta requires bundled Node 24; found ${identity.version ?? "unknown"}.`);
   }
   for (const field of ["platform", "arch", "modules", "napi"]) {
     if (typeof identity[field] !== "string" || identity[field] === "") {

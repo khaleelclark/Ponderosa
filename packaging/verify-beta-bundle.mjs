@@ -40,8 +40,8 @@ if (manifest.target.platform !== process.platform || manifest.target.arch !== pr
     `this host is ${process.platform}/${process.arch}. Static cross-verification is not release evidence.`,
   );
 }
-if (!/^v22\.\d+\.\d+(?:[-+].*)?$/u.test(manifest.nodeVersion)) {
-  throw new Error(`Manifest does not declare a supported Node 22 runtime: ${manifest.nodeVersion ?? "missing"}`);
+if (!/^v24\.\d+\.\d+(?:[-+].*)?$/u.test(manifest.nodeVersion)) {
+  throw new Error(`Manifest does not declare a supported Node 24 runtime: ${manifest.nodeVersion ?? "missing"}`);
 }
 if (manifest.databaseSchemaVersion !== "0000_current_schema.sql") {
   throw new Error(`Unexpected launch-baseline schema: ${manifest.databaseSchemaVersion ?? "missing"}`);
