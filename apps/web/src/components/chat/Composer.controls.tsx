@@ -530,8 +530,9 @@ export function ComposerAutocompleteMenu({
                   selected={index === highlighted}
                   disabled={Boolean(commandReason)}
                   sx={{ whiteSpace: "normal", alignItems: "flex-start" }}
-                  onMouseDown={event => {
-                    event.preventDefault();
+                  onMouseDown={event => event.preventDefault()}
+                  onClick={event => {
+                    event.stopPropagation();
                     onSelect(suggestion);
                   }}
                 >

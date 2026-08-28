@@ -33,6 +33,7 @@ import {
   hasComposerDestination,
   NEW_AGENT_DESTINATION_HANDLE,
   prependComposerDestination,
+  selectExclusiveNewAgentDestination,
 } from "./composerDestination";
 import type { ComposerProps } from "./Composer.types";
 import {
@@ -989,6 +990,30 @@ export function Composer({
     const start =
       caret - mentionMatch![0].length + mentionMatch![0].indexOf("#");
     const specialTitle = SPECIAL_MENTION_TITLES.get(handle.toLocaleLowerCase());
+    if (
+      destinationMode === "target-required" &&
+      handle.toLocaleLowerCase() === NEW_AGENT_DESTINATION_HANDLE
+    ) {
+      const next = selectExclusiveNewAgentDestination(
+        text,
+        start,
+        caret,
+        [
+          ...targetRequiredHandles,
+          ...(hasBroadcastDestination ? ["broadcast"] : []),
+        ],
+      );
+      requiredRecipient?.onClear();
+      update(next);
+      setHighlighted(0);
+      requestAnimationFrame(() => {
+        inputRef.current?.focus();
+        const nextCaret = inputRef.current?.getCanonicalText().length ?? 0;
+        inputRef.current?.setSelectionOffsets(nextCaret, nextCaret);
+        setCaret(nextCaret);
+      });
+      return;
+    }
     const binding = (mentionBindings ?? []).find(candidate =>
       [candidate.handle, candidate.currentHandle].some(
         candidateHandle =>

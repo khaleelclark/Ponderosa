@@ -17,6 +17,7 @@ import type {
   AllChatItemDto,
   EngineCommand,
   EngineDto,
+  WorkspaceAgentDirectoryItemDto,
   WorkspaceNotificationDto,
 } from "@ponderosa/core";
 import { messageTagTokens } from "@ponderosa/core";
@@ -68,6 +69,12 @@ import { NotificationAcknowledgementBoundary } from "./NotificationAcknowledgeme
 import { useNotificationAcknowledgement } from "../hooks/useNotificationAcknowledgement";
 import { ChatComposerDock } from "./chat/ChatComposerDock";
 import { ReadAloudControls } from "./speech/ReadAloudControls";
+import {
+  ALL_CHAT_REPLY_TARGET_KEY,
+  eligibleAllChatTargets,
+  parseAllChatReplyTarget,
+  type AllChatReplyTarget,
+} from "./allChatRouting";
 
 function allChatSourceRoute(item: AllChatItemDto): Route {
   if (item.source.kind === "agent") {
@@ -105,14 +112,6 @@ type AllMessagesTimelineEntry =
   | { kind: "message"; id: string; at: string; item: AllChatItemDto }
   | { kind: "decision"; id: string; at: string; item: AllChatDecisionEventDto }
   | { kind: "decision-response"; id: string; at: string; item: AllChatDecisionEventDto; choice: string };
-
-type AllChatReplyTarget = {
-  id: string;
-  title: string;
-  handle: string;
-  projectId: string;
-  conversationId?: string;
-};
 
 function allChatDecisionChoice(item: AllChatDecisionEventDto): string | undefined {
   const { decision } = item;
@@ -164,7 +163,9 @@ export function AllChatView({
   }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [selectedId, setSelectedId] = useState<string>();
-  const [replyTarget, setReplyTarget] = useState<AllChatReplyTarget>();
+  const [replyTarget, setReplyTarget] = useState<AllChatReplyTarget | undefined>(
+    () => parseAllChatReplyTarget(readChatState(ALL_CHAT_REPLY_TARGET_KEY)),
+  );
   const [runtimeEngine, setRuntimeEngine] = useState("");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
@@ -213,6 +214,28 @@ export function AllChatView({
   const selected = items.find(item => item.communicationEventId === selectedId);
   const activeProjectId = replyTarget?.projectId ?? selected?.project.id;
   const projectAgentsQuery = useAgents(activeProjectId);
+  const allProjectAgentsQuery = useQuery({
+    queryKey: [...queryKeys.agents.all, "all-chat"],
+    queryFn: async () => {
+      const byId = new Map<string, WorkspaceAgentDirectoryItemDto>();
+      let cursor: string | undefined;
+      do {
+        const page = await api.getWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>(
+          "agent",
+          { limit: 100, cursor },
+        );
+        for (const item of [...page.starredItems, ...page.items]) {
+          byId.set(item.agent.id, item);
+        }
+        const nextCursor = page.history.hasMore ? page.history.cursor : undefined;
+        if (!nextCursor || nextCursor === cursor) break;
+        cursor = nextCursor;
+      } while (cursor);
+      return [...byId.values()];
+    },
+    enabled: !activeProjectId,
+    staleTime: 30_000,
+  });
   const composerTargets = useMemo(() => {
     const byId = new Map<string, AllChatReplyTarget>();
     for (const item of items) {
@@ -235,8 +258,22 @@ export function AllChatView({
         conversationId: agent.conversationId,
       });
     }
-    const eligibleTargets = [...byId.values()].filter(candidate =>
-      !replyTarget?.conversationId || candidate.conversationId === replyTarget.conversationId);
+    if (!activeProjectId) {
+      for (const { project, agent } of allProjectAgentsQuery.data ?? []) {
+        if (agent.archived) continue;
+        byId.set(agent.id, {
+          id: agent.id,
+          title: agent.title,
+          handle: agent.handle,
+          projectId: project.id,
+          conversationId: agent.conversationId,
+        });
+      }
+    }
+    const eligibleTargets = eligibleAllChatTargets(
+      byId.values(),
+      replyTarget?.conversationId,
+    );
     const groups = new Map<string, Array<{ handle: string; target: AllChatReplyTarget }>>();
     for (const target of eligibleTargets) {
       const handle = target.handle;
@@ -267,7 +304,13 @@ export function AllChatView({
       })),
       targetByHandle,
     };
-  }, [activeProjectId, items, projectAgentsQuery.data, replyTarget?.conversationId]);
+  }, [
+    activeProjectId,
+    allProjectAgentsQuery.data,
+    items,
+    projectAgentsQuery.data,
+    replyTarget?.conversationId,
+  ]);
   const decisionEvents = useMemo(
     () => uniqueBy(
       [...(older?.decisions ?? []), ...(query.data?.decisions ?? [])],
@@ -304,11 +347,28 @@ export function AllChatView({
   useEffect(() => {
     setReplyTarget(current => {
       if (!current) return current;
+      if (!projectAgentsQuery.data) return current;
       const agent = projectAgentsQuery.data?.find(candidate => candidate.id === current.id);
-      if (!agent || current.conversationId === agent.conversationId) return current;
-      return { ...current, conversationId: agent.conversationId };
+      if (!agent || agent.archived) return undefined;
+      if (
+        current.title === agent.title &&
+        current.handle === agent.handle &&
+        current.conversationId === agent.conversationId
+      ) return current;
+      return {
+        ...current,
+        title: agent.title,
+        handle: agent.handle,
+        conversationId: agent.conversationId,
+      };
     });
   }, [projectAgentsQuery.data]);
+  useEffect(() => {
+    writeChatState(
+      ALL_CHAT_REPLY_TARGET_KEY,
+      replyTarget ? JSON.stringify(replyTarget) : "",
+    );
+  }, [replyTarget]);
   const replyConversation = conversationsQuery.data?.find(candidate =>
     candidate.id === replyTarget?.conversationId);
   const engines = enginesQuery.data ?? [];
