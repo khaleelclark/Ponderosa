@@ -473,10 +473,9 @@ export function AllChatView({
       const selectedConversationId = selected && selected.source.kind !== "agent"
         ? selected.source.conversationId
         : undefined;
-      const conversation = selectedConversationId
+      const creationConversation = selectedConversationId
         ? conversationsQuery.data?.find(candidate => candidate.id === selectedConversationId)
         : conversationsQuery.data?.find(candidate => !candidate.archived);
-      if (!conversation) throw new Error("This Project has no active Chat for shared context");
       const requestId = createClientId();
       const validAgents = new Map((projectAgentsQuery.data ?? []).filter(agent =>
         !agent.archived).map(agent => [agent.id, agent]));
@@ -492,11 +491,14 @@ export function AllChatView({
       const createdTitles: string[] = [];
       let deliveredRecipientIds: string[] = [];
       let unavailableCount = 0;
+      if (newAgentCount > 0 && !creationConversation) {
+        throw new Error("This Project has no active Chat for the new Agent");
+      }
       for (let index = 0; index < newAgentCount; index += 1) {
         const title = pickAgentName(createdNames);
         createdNames.push(title);
         createdTitles.push(title);
-        const created = await api.createAgent(activeProjectId, conversation.id, {
+        const created = await api.createAgent(activeProjectId, creationConversation!.id, {
           title,
           engine: selectedEngineId ?? project?.defaultEngine ?? "codex",
           ...(selectedRuntime.model ? { model: selectedRuntime.model } : {}),
@@ -511,26 +513,45 @@ export function AllChatView({
         createdAgentIds.push(created.id);
       }
       if (recipientIds.length > 0) {
+        const activeConversations = new Map(
+          (conversationsQuery.data ?? [])
+            .filter(candidate => !candidate.archived)
+            .map(candidate => [candidate.id, candidate]),
+        );
+        const recipientsByConversation = new Map<string, string[]>();
+        for (const agentId of recipientIds) {
+          const conversationId = validAgents.get(agentId)?.conversationId;
+          if (!conversationId || !activeConversations.has(conversationId)) {
+            throw new Error("Every addressed Agent must belong to an active Chat");
+          }
+          const group = recipientsByConversation.get(conversationId) ?? [];
+          group.push(agentId);
+          recipientsByConversation.set(conversationId, group);
+        }
         const uploaded = await uploadFilesForRecipients(
           recipientIds,
           files,
           (agentId, file) => api.uploadAttachment(agentId, file),
           (agentId, attachment) => api.deleteAttachment(agentId, attachment.id),
         );
-        const response = await api.sendMultiAgentDirectMessage(conversation.id, {
-          text: body.trim(),
-          recipients: uploaded.map(({ agentId, attachments }) => ({
-            agentId,
-            attachmentIds: attachments.map(attachment => attachment.id),
-          })),
-          idempotencyKey: requestId,
-          activeRunDelivery: "steer",
-          ...(recipientIds.length === 1 && selectedRuntime.model ? { model: selectedRuntime.model } : {}),
-          ...(recipientIds.length === 1 && selectedRuntime.effort ? { effort: selectedRuntime.effort } : {}),
-          ...(recipientIds.length === 1 && selectedRuntime.speed ? { speed: selectedRuntime.speed } : {}),
-        });
-        deliveredRecipientIds = response.recipients.map(recipient => recipient.agentId);
-        unavailableCount = response.unavailableRecipients?.length ?? 0;
+        const uploadedByAgentId = new Map(uploaded.map(item => [item.agentId, item]));
+        for (const [conversationId, conversationRecipientIds] of recipientsByConversation) {
+          const response = await api.sendMultiAgentDirectMessage(conversationId, {
+            text: body.trim(),
+            recipients: conversationRecipientIds.map((agentId) => ({
+              agentId,
+              attachmentIds: (uploadedByAgentId.get(agentId)?.attachments ?? [])
+                .map(attachment => attachment.id),
+            })),
+            idempotencyKey: `${requestId}:${conversationId}`,
+            activeRunDelivery: "steer",
+            ...(recipientIds.length === 1 && selectedRuntime.model ? { model: selectedRuntime.model } : {}),
+            ...(recipientIds.length === 1 && selectedRuntime.effort ? { effort: selectedRuntime.effort } : {}),
+            ...(recipientIds.length === 1 && selectedRuntime.speed ? { speed: selectedRuntime.speed } : {}),
+          });
+          deliveredRecipientIds.push(...response.recipients.map(recipient => recipient.agentId));
+          unavailableCount += response.unavailableRecipients?.length ?? 0;
+        }
       }
       return {
         recipientIds: [...deliveredRecipientIds, ...createdAgentIds],

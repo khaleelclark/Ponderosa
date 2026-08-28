@@ -269,7 +269,7 @@ export function ConversationView({
   });
   const commandTargetAgents = useMemo(() => {
     if (!commandTargetHandle) return [];
-    const byId = new Map(routingAgents.map(agent => [agent.id, agent]));
+    const byId = new Map(conversationAgents.map(agent => [agent.id, agent]));
     for (const agent of commandTargetMembersQuery.data?.items ?? []) {
       byId.set(agent.id, agent);
     }
@@ -278,7 +278,7 @@ export function ConversationView({
         agent.handle.toLocaleLowerCase() ===
         commandTargetHandle.toLocaleLowerCase(),
     );
-  }, [commandTargetHandle, commandTargetMembersQuery.data?.items, routingAgents]);
+  }, [commandTargetHandle, commandTargetMembersQuery.data?.items, conversationAgents]);
   const structurallySelectedCommandTarget = commandTargetAgentId
     ? agents.find(
         agent => agent.id === commandTargetAgentId && !agent.archived,
@@ -610,8 +610,8 @@ export function ConversationView({
   } = useConversationMessagingController({
     conversationId,
     conversation,
-    agents: routingAgents,
-    detailAgents: routingAgents,
+    agents,
+    detailAgents: detailQuery.data?.agents ?? [],
     engines,
     engine,
     model,
@@ -634,8 +634,8 @@ export function ConversationView({
     .join(":");
   const agentIdForHandle = useCallback(
     (handle: string): string | undefined =>
-      agentIdForMentionHandle(routingAgents, handle),
-    [routingAgents],
+      agentIdForMentionHandle(agents, handle),
+    [agents],
   );
   const mentionAgent = useCallback(
     (agentId: string) => {
@@ -656,7 +656,7 @@ export function ConversationView({
         : undefined
     );
     const agent = agentId
-      ? routingAgents.find(candidate => candidate.id === agentId && !candidate.archived)
+      ? agents.find(candidate => candidate.id === agentId && !candidate.archived)
       : undefined;
     return agent && message
       ? {
@@ -664,7 +664,7 @@ export function ConversationView({
           selectionKey: `${agent.id}:${message.id}`,
         }
       : undefined;
-  }, [messages, routingAgents]);
+  }, [agents, messages]);
   const mainTranscriptMarkdown = useMemo(
     () =>
       conversation
@@ -784,7 +784,7 @@ export function ConversationView({
   const mentionHandles = [
     "broadcast",
     "everyone",
-    ...routingAgents
+    ...agents
       .filter(agent => !agent.archived)
       .map(agent => agent.handle)
       .filter(
@@ -794,7 +794,7 @@ export function ConversationView({
           ),
       ),
   ];
-  const mentionBindings = routingAgents
+  const mentionBindings = agents
     .filter(agent => !agent.archived)
     .map(agent => ({
       projectId: conversation?.projectId ?? "",
@@ -805,7 +805,7 @@ export function ConversationView({
     }))
     .filter(binding => binding.handle &&
       !["broadcast", "user", "everyone"].includes(binding.handle.toLocaleLowerCase()));
-  const busyMentionHandles = routingAgents
+  const busyMentionHandles = agents
     .filter(agent => statusByAgentId.get(agent.id) === "running")
     .map(agent => agent.handle);
 
