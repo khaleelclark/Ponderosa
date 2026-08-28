@@ -340,6 +340,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         attemptCount: number;
         latestAttemptAt: string;
         requiredReplyExhausted: boolean;
+        recipientCurrentlyAuthorized: boolean;
       }>
     >();
     for (const activation of activations) {
@@ -353,7 +354,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
       } catch {
         continue;
       }
-      if (!this.runtimeScopeAuthority.runtimeCommunicationAuthorityAgrees({
+      const authorityInput = {
         projectId,
         sender,
         intent: activation.intent,
@@ -364,7 +365,13 @@ export class CoordinationV3RuntimeCommunicationReadModel {
           kind: activation.kind,
           scopeKey: activation.scope_key,
         }],
-      }, false)) continue;
+      };
+      if (!this.runtimeScopeAuthority.runtimeCommunicationAuthorityAgrees(
+        authorityInput,
+        false,
+      )) continue;
+      const recipientCurrentlyAuthorized =
+        this.runtimeScopeAuthority.runtimeCommunicationAuthorityAgrees(authorityInput);
       let latestByRecipient = latestByCommunication.get(activation.communication_event_id);
       if (!latestByRecipient) {
         latestByRecipient = new Map();
@@ -382,6 +389,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         attemptCount: (previous?.attemptCount ?? 0) + (requiredReply?.attemptCount ?? 1),
         latestAttemptAt,
         requiredReplyExhausted: requiredReply?.exhausted ?? false,
+        recipientCurrentlyAuthorized,
       });
     }
     for (const [communicationEventId, latestByRecipient] of latestByCommunication) {
@@ -390,6 +398,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         attemptCount,
         latestAttemptAt,
         requiredReplyExhausted,
+        recipientCurrentlyAuthorized,
       }) => {
         const injection = this.sqlite.prepare(`
           SELECT injection.id, injection.kind, injection.state, injection.updated_at
@@ -459,6 +468,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
           attemptCount,
           ...(
             (state === "undelivered" || state === "retry_exhausted" || state === "failed")
+            && recipientCurrentlyAuthorized
             && this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(
               activation.project_id,
               activation.agent_id,

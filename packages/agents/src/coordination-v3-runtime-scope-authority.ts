@@ -26,11 +26,10 @@ export class CoordinationV3RuntimeScopeAuthority {
         ? root.communication as Record<string, unknown>
         : root;
       if (typeof communication.conversationId === "string" && communication.conversationId) {
-        // All Messages and Project Chat may address any active Agent in the
-        // Project. Preserve the Chat as the visible source, but use the
-        // Agent's own activation scope when it is not a member of that Chat.
+        // Broadcasts may activate any active Agent in the Project. Direct
+        // messages remain inside the addressed Agent's owning Chat.
         if (
-          (communication.intent === "user_dm" || communication.intent === "broadcast")
+          communication.intent === "broadcast"
           && !this.sqlite.prepare(`
             SELECT 1 FROM agent_conversation_memberships
             WHERE conversation_id = ? AND agent_id = ?
@@ -222,10 +221,7 @@ export class CoordinationV3RuntimeScopeAuthority {
           WHERE conversation_id = ? AND agent_id = ?
         `).get(conversationId, agentId)
       ) {
-        const projectScopedWake = (
-          (input.intent === "user_dm" && audienceAgentIds.has(agentId))
-          || input.intent === "broadcast"
-        )
+        const projectScopedWake = input.intent === "broadcast"
           && input.activations.some((activation) =>
             activation.agentId === agentId
             && activation.scopeKey === `agent:${agentId}`);
@@ -252,7 +248,7 @@ export class CoordinationV3RuntimeScopeAuthority {
         expectedConversationScope
           ? activation.scopeKey !== expectedConversationScope
             && !(
-              (input.intent === "user_dm" || input.intent === "broadcast")
+              input.intent === "broadcast"
               && activation.scopeKey === expectedAgentScope
             )
           : activation.scopeKey !== expectedAgentScope
