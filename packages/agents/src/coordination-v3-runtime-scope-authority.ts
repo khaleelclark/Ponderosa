@@ -248,7 +248,10 @@ export class CoordinationV3RuntimeScopeAuthority {
         expectedConversationScope
           ? activation.scopeKey !== expectedConversationScope
             && !(
-              input.intent === "broadcast"
+              (
+                input.intent === "broadcast"
+                || (!requireCurrentAuthorization && input.intent === "user_dm")
+              )
               && activation.scopeKey === expectedAgentScope
             )
           : activation.scopeKey !== expectedAgentScope
