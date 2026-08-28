@@ -14,6 +14,31 @@ export function engineIsAvailable(engine: Pick<EngineDto, "authentication" | "in
   return Boolean(engine && engine.enabled !== false && engineIsAuthenticated(engine) && engine.intakeReady);
 }
 
+export function engineUnavailableReason(
+  engine: Pick<EngineDto, "authentication" | "intakeReady" | "enabled">,
+): string | undefined {
+  if (engine.enabled === false) return "Disabled";
+  if (engine.authentication === "checking") return "Checking availability";
+  if (engine.authentication !== "authenticated") return "Sign-in required";
+  if (!engine.intakeReady) return "Unavailable";
+  return undefined;
+}
+
+/** Shared creation/import default: never choose arbitrarily among providers. */
+export function soleAvailableEngineId(engines: readonly EngineDto[]): string | undefined {
+  const available = engines.filter(engineIsAvailable);
+  return available.length === 1 ? available[0]!.id : undefined;
+}
+
+export function validEngineSelection(
+  engines: readonly EngineDto[],
+  selected: string | undefined,
+): string | undefined {
+  const explicit = engines.find(engine => engine.id === selected);
+  if (explicit && engineIsAvailable(explicit)) return explicit.id;
+  return soleAvailableEngineId(engines);
+}
+
 /** An operator-disabled provider is intentionally inactive, not unhealthy. */
 export function engineCanTestAccess(engine: Pick<EngineDto, "authentication" | "intakeReady" | "enabled" | "reachability">): boolean {
   return engine.enabled !== false && engineIsAuthenticated(engine) &&

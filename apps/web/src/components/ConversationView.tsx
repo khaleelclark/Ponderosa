@@ -1390,7 +1390,6 @@ export function ConversationView({
             : undefined
         }
         onImportClose={() => setImportOpen(false)}
-        onImported={agentId => onOpenAgent(agentId)}
         onStopCancel={() => {
           if (!cancelOperationPending) setStopConfirmation(undefined);
         }}

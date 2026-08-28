@@ -140,6 +140,28 @@ export interface CopyAgentPackageRequest {
   acknowledgeElevatedManagementPermissions?: boolean;
 }
 export interface ImportAgentPackageResponse { rootAgentId: string; agentIds: string[] }
+export type AgentImportPhase =
+  | "queued"
+  | "creating_records"
+  | "importing_agents"
+  | "importing_history"
+  | "importing_artifacts"
+  | "finalizing"
+  | "completed"
+  | "failed";
+export interface AgentImportOperationDto {
+  id: string;
+  /** Stable client submission identity; exact transport retries reuse one operation. */
+  requestId: string;
+  projectId: string;
+  sourceLabel: string;
+  phase: AgentImportPhase;
+  status: "pending" | "completed" | "failed";
+  createdAt: string;
+  updatedAt: string;
+  result?: ImportAgentPackageResponse;
+  error?: string;
+}
 
 export interface AgentRoleProfile {
   role: string;

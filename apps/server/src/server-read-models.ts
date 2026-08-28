@@ -501,6 +501,12 @@ export function createServerReadModels(context: ReadModelContext) {
     const messagePage = store.getProjectedAgentMessagePage(agentId, { limit, cursor: input.cursor, focusId: input.focusId });
     return {
       ...detail,
+      hasSubagentHistory:
+        store.listAgents(detail.agent.projectId).some(candidate =>
+          candidate.managerAgentId === agentId
+        ) || store.readAgentOrganizationEvents(detail.agent.projectId).some(event =>
+          event.managerAgentId === agentId
+        ),
       messages: withMessagePresentation(detail.agent.projectId, messagePage.messages),
       history: { limit, hasMore: messagePage.hasMore, ...(messagePage.cursor ? { cursor: messagePage.cursor } : {}) },
       coordinationV3: coordinationV3.agentSnapshot(agentId),

@@ -2,10 +2,13 @@ import { Box } from "@mui/material";
 import type { AgentHealthDto } from "@ponderosa/core";
 import type { AgentStatus } from "../agents";
 import {
-  agentStatusColor,
   agentStatusPresentation,
   type AgentStatusConnection,
 } from "../agents";
+import {
+  semanticAgentStatus,
+  semanticStatusColorToken,
+} from "./SemanticStatus";
 
 interface AgentStatusIndicatorProps {
   status: AgentStatus;
@@ -22,7 +25,7 @@ export function AgentStatusIndicator({
   phaseEvidenceFresh,
   agentNameForId,
 }: AgentStatusIndicatorProps): JSX.Element {
-  const color = agentStatusColor(status);
+  const color = semanticStatusColorToken(semanticAgentStatus(status));
   const presentation = agentStatusPresentation(health, {
     status,
     connectionStatus,
@@ -40,7 +43,7 @@ export function AgentStatusIndicator({
         width: 9,
         height: 9,
         borderRadius: "50%",
-        bgcolor: color === "default" ? "text.disabled" : `${color}.main`,
+        bgcolor: color,
         flex: "0 0 auto",
       }}
     />

@@ -113,6 +113,28 @@ export function registerArtifactRoutes(
   );
 
   app.get<{
+    Params: { projectId: string; aid: string };
+  }>(
+    "/api/projects/:projectId/artifacts/:aid",
+    async (request, reply) => {
+      const artifact = store.getProjectArtifact(
+        request.params.projectId,
+        request.params.aid,
+      );
+      if (
+        !artifact ||
+        !store.projectArtifactIsOrganizationVisible(
+          request.params.projectId,
+          request.params.aid,
+        )
+      ) {
+        return reply.code(404).send({ error: "project file not found" });
+      }
+      return artifact;
+    },
+  );
+
+  app.get<{
     Params: { projectId: string };
     Querystring: { limit?: string; cursor?: string; conversationId?: string };
   }>("/api/projects/:projectId/artifacts", async (request, reply) => {

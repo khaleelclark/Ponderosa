@@ -23,7 +23,7 @@ import type {
   AssetLimitsDto,
   EngineCommand,
   EngineComposerCapability,
-  FileEntryDto,
+  ArtifactDto,
 } from "@ponderosa/core";
 import { type RefObject } from "react";
 import { compactPreviewText } from "./Composer.helpers";
@@ -456,7 +456,7 @@ export function ComposerCapabilityPicker({
 export type ComposerMenuSuggestion =
   | { kind: "command"; command: EngineCommand }
   | { kind: "mention"; handle: string }
-  | { kind: "file"; entry: FileEntryDto };
+  | { kind: "file"; entry: ArtifactDto };
 
 export function ComposerAutocompleteMenu({
   open,
@@ -502,7 +502,7 @@ export function ComposerAutocompleteMenu({
                 ? "Commands"
                 : hasMentions
                   ? "Agent tags"
-                  : "Project files and folders"
+                  : "Project Files & Results"
             }
             sx={{
               maxHeight: "min(40vh, 360px)",
@@ -521,7 +521,7 @@ export function ComposerAutocompleteMenu({
                     suggestion.kind === "mention"
                       ? suggestion.handle
                       : suggestion.kind === "file"
-                        ? suggestion.entry.path
+                        ? suggestion.entry.id
                         : suggestion.command.name
                   }
                   id={`${listId}-option-${index}`}
@@ -541,10 +541,9 @@ export function ComposerAutocompleteMenu({
                     <Box>
                       <Typography variant="body2">
                         @{suggestion.entry.path}
-                        {suggestion.entry.kind === "dir" ? "/" : ""}
                       </Typography>
                       <Typography variant="caption" color="text.secondary">
-                        {suggestion.entry.kind === "dir" ? "Folder" : "File"}
+                        Files &amp; Results · {suggestion.entry.kind}
                       </Typography>
                     </Box>
                   ) : (

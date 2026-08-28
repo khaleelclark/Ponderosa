@@ -119,6 +119,30 @@ export function registerProjectDeletionRoutes(
     workingCopies,
   } = context;
 
+  app.get<{ Params: { id: string } }>("/api/projects/:id/deletion-preview", async (request, reply) => {
+    const project = store.getProject(request.params.id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    const agents = store.listAgents(project.id);
+    const agentIds = new Set(agents.map(agent => agent.id));
+    const activeAgents = agents
+      .filter(agent => activeRuns.has(agent.id))
+      .map(agent => ({ id: agent.id, title: agent.title }));
+    const chats = store.listConversations(project.id).length;
+    const automations = coordinationV3.listTriggerDefinitions()
+      .filter(trigger => trigger.projectId === project.id).length;
+    const managedFiles = store.getProjectArtifacts(project.id).length;
+    return {
+      projectId: project.id,
+      chats,
+      agents: agentIds.size,
+      automations,
+      managedFiles,
+      activeAgents,
+      projectBrowserActive: projectBrowserGrants.has(project.id),
+      nonempty: chats + agentIds.size + automations + managedFiles > 0,
+    };
+  });
+
   app.delete<{ Params: { id: string } }>("/api/projects/:id", async (request, reply) => {
     const previousReceipt = store.getProjectDeletionReceipt(request.params.id);
     if (previousReceipt) {

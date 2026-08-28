@@ -16,7 +16,6 @@ import {
   Alert,
   Box,
   Button,
-  Chip,
   FormControl,
   InputLabel,
   LinearProgress,
@@ -51,7 +50,7 @@ import {
   organizationOwnerLabel,
   pruneExpandedAgentIds,
 } from "../agentOrganization";
-import { agentStatusColor, agentStatusPresentation } from "../agents";
+import { agentStatusPresentation } from "../agents";
 import { useAgentOrganization } from "../hooks/useAgentOrganization";
 import { queryKeys } from "../queryKeys";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
@@ -59,6 +58,7 @@ import { stopActiveAgentRuns } from "./AgentsTab";
 import { DestructiveConfirmDialog, TextInputDialog } from "./ConfirmationDialogs";
 import { ImportAgentDialog } from "./ImportAgentDialog";
 import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
+import { SemanticStatus, semanticAgentStatus } from "./SemanticStatus";
 import {
   ResourceContextMenu,
   type ResourceContextMenuState,
@@ -326,12 +326,10 @@ function OrganizationRow({
         </Box>
         {live && presentation ? (
           <Stack spacing={0.25} sx={{ alignItems: "flex-end", maxWidth: { xs: 120, sm: 220 } }}>
-            <Chip
-              size="small"
+            <SemanticStatus
+              status={semanticAgentStatus(node.health?.status ?? "idle")}
               label={presentation.label}
-              color={agentStatusColor(node.health?.status ?? "idle")}
-              aria-label={presentation.accessibleLabel}
-              title={presentation.detail}
+              detail={presentation.detail}
             />
             {node.health?.attention ? (
               <Typography variant="caption" color="error.main" sx={{ textAlign: "right" }}>
@@ -1073,7 +1071,7 @@ export function AgentOrganizationTree({
           <Stack ref={setChildControlsHost} spacing={0.75} />
         </Stack>
       </Box>
-      <ImportAgentDialog open={importOpen} projectId={projectId} engines={engines} conversations={conversations} initialConversationId={conversations[0]?.id} onClose={() => setImportOpen(false)} onImported={onOpenAgent} />
+      <ImportAgentDialog open={importOpen} projectId={projectId} engines={engines} conversations={conversations} initialConversationId={conversations[0]?.id} onClose={() => setImportOpen(false)} />
       {pendingDelete ? (
         <AgentDeletionDialog
           open

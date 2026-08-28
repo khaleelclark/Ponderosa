@@ -75,6 +75,24 @@ export interface ProjectFolderOptionsDto {
   folders: ProjectFolderOptionDto[];
 }
 
+export interface ProjectDeletionPreviewDto {
+  projectId: string;
+  chats: number;
+  agents: number;
+  automations: number;
+  managedFiles: number;
+  activeAgents: Array<{ id: string; title: string }>;
+  projectBrowserActive: boolean;
+  nonempty: boolean;
+}
+
+export interface ProjectDeletionResponseDto {
+  deleted: true;
+  deletionReceiptId: string;
+  cleanupPending: boolean;
+  replayed?: boolean;
+}
+
 export interface HostFolderBrowseDto {
   path: string;
   root: string;

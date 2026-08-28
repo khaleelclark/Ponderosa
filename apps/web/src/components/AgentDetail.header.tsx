@@ -9,10 +9,9 @@ import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
-import { Button, Chip, Link, Stack, Typography } from "@mui/material";
+import { Button, Link, Stack, Typography } from "@mui/material";
 import type { AgentDto, AgentHealthDto } from "@ponderosa/core";
 import {
-  agentStatusColor,
   agentStatusLabel,
   agentStatusPresentation,
   type AgentStatus,
@@ -28,6 +27,7 @@ import {
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 import { useAgentRunClock } from "./useAgentRunClock";
 import type { WorkspaceConnectionStatus } from "../hooks/useWorkspaceStream";
+import { SemanticStatus, semanticAgentStatus } from "./SemanticStatus";
 
 export const AGENT_DETAIL_TABS: Array<{
   value: AgentTab;
@@ -87,13 +87,10 @@ function AgentRunState({
     health?.attention ? "Needs attention: " + agentStatusLabel(health.attention.status) : undefined,
   ].filter(Boolean).join(" · ");
   return (
-    <Chip
-      size="small"
+    <SemanticStatus
+      status={connectionStatus === "live" ? semanticAgentStatus(status) : "needs_attention"}
       label={`${runState} · ${connectionState}`}
-      color={connectionStatus === "live" ? agentStatusColor(status) : "warning"}
-      variant={connectionStatus === "live" ? "filled" : "outlined"}
-      aria-label={`${presentation.accessibleLabel}${elapsed ? `; ${elapsed}` : ""}; ${connectionState.toLocaleLowerCase()}`}
-      title={details}
+      detail={`${presentation.accessibleLabel}${elapsed ? `; ${elapsed}` : ""}; ${connectionState.toLocaleLowerCase()}. ${details}`}
     />
   );
 }
@@ -114,6 +111,7 @@ interface AgentDetailHeaderProps {
   running: boolean;
   stopping: boolean;
   tab: AgentTab;
+  showSubagents: boolean;
   transcriptMarkdown: string;
   transcriptTitle: string;
   onOpenProject(): void;
@@ -147,6 +145,7 @@ export function AgentDetailHeader({
   running,
   stopping,
   tab,
+  showSubagents,
   transcriptMarkdown,
   transcriptTitle,
   onOpenProject,
@@ -316,7 +315,9 @@ export function AgentDetailHeader({
         label: "Agent details",
         value: tab === "technical" ? false : tab,
         onChange: onTabChange,
-        items: AGENT_DETAIL_TABS,
+        items: AGENT_DETAIL_TABS.filter(item =>
+          item.value !== "subagents" || showSubagents
+        ),
       }}
     />
   );

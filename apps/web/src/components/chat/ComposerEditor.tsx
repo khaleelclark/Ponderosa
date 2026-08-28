@@ -1,4 +1,5 @@
 import CloseIcon from "@mui/icons-material/Close";
+import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
 import { Box, Typography } from "@mui/material";
 import {
   $createLineBreakNode,
@@ -70,6 +71,54 @@ export type ComposerMentionDescriptor = {
 
 export type ComposerSelectionOffsets = { start: number; end: number };
 
+export type ComposerProjectFileDescriptor = {
+  projectId: string;
+  artifactId: string;
+  historicalFilename: string;
+  currentFilename: string;
+};
+
+const PROJECT_FILE_REFERENCE_PATTERN = /\[Project file\]\(ponderosa:\/\/project-file\/([^/()\s]+)\/([^?()\s]+)\?historical=([^&()\s]*)&current=([^()\s]*)\)/gu;
+
+export function projectFileCanonicalText(
+  descriptor: ComposerProjectFileDescriptor,
+): string {
+  return `[Project file](ponderosa://project-file/${encodeURIComponent(descriptor.projectId)}/${encodeURIComponent(descriptor.artifactId)}?historical=${encodeURIComponent(descriptor.historicalFilename)}&current=${encodeURIComponent(descriptor.currentFilename)})`;
+}
+
+function projectFileReferences(text: string): Array<ComposerProjectFileDescriptor & {
+  start: number;
+  end: number;
+}> {
+  return [...text.matchAll(PROJECT_FILE_REFERENCE_PATTERN)].flatMap(match => {
+    try {
+      return [{
+        projectId: decodeURIComponent(match[1]!),
+        artifactId: decodeURIComponent(match[2]!),
+        historicalFilename: decodeURIComponent(match[3]!),
+        currentFilename: decodeURIComponent(match[4]!),
+        start: match.index ?? 0,
+        end: (match.index ?? 0) + match[0].length,
+      }];
+    } catch {
+      return [];
+    }
+  });
+}
+
+function readableProjectFileReferences(text: string): string {
+  const references = projectFileReferences(text);
+  if (!references.length) return text;
+  let cursor = 0;
+  let readable = "";
+  for (const reference of references) {
+    readable += text.slice(cursor, reference.start);
+    readable += `@${reference.currentFilename || reference.historicalFilename}`;
+    cursor = reference.end;
+  }
+  return readable + text.slice(cursor);
+}
+
 export interface ComposerEditorHandle {
   focus(): void;
   isFocused(): boolean;
@@ -78,6 +127,11 @@ export interface ComposerEditorHandle {
   setSelectionOffsets(start: number, end: number): void;
   replaceCanonicalRange(start: number, end: number, content: string): void;
   insertMention(descriptor: Omit<ComposerMentionDescriptor, "start" | "end">): void;
+  insertProjectFile(
+    descriptor: ComposerProjectFileDescriptor,
+    replace?: ComposerSelectionOffsets,
+    trailingText?: string,
+  ): void;
   insertText(text: string): void;
   removeMention(nodeKey: string): void;
   resetDocument(canonicalText: string): void;
@@ -94,6 +148,14 @@ type SerializedMentionNode = Spread<
     title: string;
     valid: boolean;
     structural?: boolean;
+  },
+  SerializedLexicalNode
+>;
+
+type SerializedProjectFileNode = Spread<
+  ComposerProjectFileDescriptor & {
+    type: "composer-project-file";
+    version: 1;
   },
   SerializedLexicalNode
 >;
@@ -232,6 +294,186 @@ class ComposerMentionNode extends DecoratorNode<ReactNode> {
       />
     );
   }
+}
+
+class ComposerProjectFileNode extends DecoratorNode<ReactNode> {
+  __projectId: string;
+  __artifactId: string;
+  __historicalFilename: string;
+  __currentFilename: string;
+
+  static override getType(): string {
+    return "composer-project-file";
+  }
+
+  static override clone(node: ComposerProjectFileNode): ComposerProjectFileNode {
+    return new ComposerProjectFileNode(node.getDescriptor(), node.__key);
+  }
+
+  static override importJSON(
+    serialized: SerializedProjectFileNode,
+  ): ComposerProjectFileNode {
+    return new ComposerProjectFileNode(serialized);
+  }
+
+  constructor(descriptor: ComposerProjectFileDescriptor, key?: NodeKey) {
+    super(key);
+    this.__projectId = descriptor.projectId;
+    this.__artifactId = descriptor.artifactId;
+    this.__historicalFilename = descriptor.historicalFilename;
+    this.__currentFilename = descriptor.currentFilename;
+  }
+
+  override exportJSON(): SerializedProjectFileNode {
+    return {
+      ...super.exportJSON(),
+      type: "composer-project-file",
+      version: 1,
+      ...this.getDescriptor(),
+    };
+  }
+
+  override createDOM(): HTMLElement {
+    const element = document.createElement("span");
+    element.style.display = "inline";
+    return element;
+  }
+
+  override updateDOM(): false {
+    return false;
+  }
+
+  override isInline(): true {
+    return true;
+  }
+
+  override isIsolated(): true {
+    return true;
+  }
+
+  override isKeyboardSelectable(): true {
+    return true;
+  }
+
+  override getTextContent(): string {
+    return projectFileCanonicalText(this.getDescriptor());
+  }
+
+  getDescriptor(): ComposerProjectFileDescriptor {
+    return {
+      projectId: this.__projectId,
+      artifactId: this.__artifactId,
+      historicalFilename: this.__historicalFilename,
+      currentFilename: this.__currentFilename,
+    };
+  }
+
+  override decorate(): ReactNode {
+    return (
+      <ComposerProjectFileToken
+        nodeKey={this.__key}
+        filename={this.__currentFilename || this.__historicalFilename}
+      />
+    );
+  }
+}
+
+function $createComposerProjectFileNode(
+  descriptor: ComposerProjectFileDescriptor,
+): ComposerProjectFileNode {
+  return new ComposerProjectFileNode(descriptor);
+}
+
+function $isComposerProjectFileNode(
+  node: LexicalNode | null | undefined,
+): node is ComposerProjectFileNode {
+  return node instanceof ComposerProjectFileNode;
+}
+
+function ComposerProjectFileToken({
+  nodeKey,
+  filename,
+}: {
+  nodeKey: NodeKey;
+  filename: string;
+}): JSX.Element {
+  const [editor] = useLexicalComposerContext();
+  const remove = useCallback(() => {
+    editor.update(() => {
+      const node = $getNodeByKey(nodeKey);
+      if (!$isComposerProjectFileNode(node)) return;
+      const parent = node.getParent();
+      const index = node.getIndexWithinParent();
+      node.remove();
+      if (parent) {
+        const selection = $createRangeSelection();
+        selection.anchor.set(parent.getKey(), index, "element");
+        selection.focus.set(parent.getKey(), index, "element");
+        $setSelection(selection);
+      }
+    });
+    requestAnimationFrame(() => editor.focus());
+  }, [editor, nodeKey]);
+
+  return (
+    <Box
+      component="span"
+      data-composer-project-file="true"
+      data-node-key={nodeKey}
+      contentEditable={false}
+      role="group"
+      aria-label={`Project File ${filename}`}
+      sx={{
+        display: "inline-flex",
+        alignItems: "baseline",
+        maxWidth: "min(70vw, 360px)",
+        mx: "1px",
+        px: 0.75,
+        py: "1px",
+        borderRadius: 1.25,
+        bgcolor: "action.selected",
+        color: "primary.main",
+        boxShadow: "inset 0 0 0 1px rgba(127, 196, 142, .18)",
+        fontSize: "1em",
+        fontWeight: 700,
+        lineHeight: "1.35em",
+        verticalAlign: "baseline",
+        whiteSpace: "nowrap",
+      }}
+    >
+      <InsertDriveFileOutlinedIcon sx={{ mr: 0.4, fontSize: "1em", alignSelf: "center" }} />
+      <Box component="span" sx={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+        @{filename}
+      </Box>
+      <Box
+        component="button"
+        type="button"
+        tabIndex={-1}
+        aria-label={`Remove @${filename}`}
+        onMouseDown={event => event.preventDefault()}
+        onClick={event => {
+          event.preventDefault();
+          event.stopPropagation();
+          remove();
+        }}
+        sx={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          alignSelf: "center",
+          ml: 0.5,
+          p: 0,
+          border: 0,
+          bgcolor: "transparent",
+          color: "inherit",
+          cursor: "pointer",
+          lineHeight: 0,
+        }}
+      >
+        <CloseIcon sx={{ fontSize: "1.05em" }} />
+      </Box>
+    </Box>
+  );
 }
 
 function $createComposerMentionNode(
@@ -483,9 +725,20 @@ function $appendCanonicalContent(
   descriptors: readonly ComposerMentionDescriptor[],
 ): LexicalNode[] {
   const nodes: LexicalNode[] = [];
-  const mentions = descriptorsForCanonicalText(text, descriptors)
-    .slice()
-    .sort((a, b) => a.start - b.start);
+  const references = [
+    ...descriptorsForCanonicalText(text, descriptors).map(descriptor => ({
+      kind: "mention" as const,
+      start: descriptor.start,
+      end: descriptor.end,
+      descriptor,
+    })),
+    ...projectFileReferences(text).map(descriptor => ({
+      kind: "project-file" as const,
+      start: descriptor.start,
+      end: descriptor.end,
+      descriptor,
+    })),
+  ].sort((a, b) => a.start - b.start);
   let cursor = 0;
   const appendText = (value: string) => {
     const parts = value.split("\n");
@@ -494,11 +747,13 @@ function $appendCanonicalContent(
       if (index < parts.length - 1) nodes.push($createLineBreakNode());
     });
   };
-  for (const mention of mentions) {
-    if (mention.start < cursor) continue;
-    appendText(text.slice(cursor, mention.start));
-    nodes.push($createComposerMentionNode(mention));
-    cursor = mention.end;
+  for (const reference of references) {
+    if (reference.start < cursor) continue;
+    appendText(text.slice(cursor, reference.start));
+    nodes.push(reference.kind === "mention"
+      ? $createComposerMentionNode(reference.descriptor)
+      : $createComposerProjectFileNode(reference.descriptor));
+    cursor = reference.end;
   }
   appendText(text.slice(cursor));
   return nodes;
@@ -595,6 +850,18 @@ function EditorBridge({
         const selection = $getSelection();
         if (!$isRangeSelection(selection)) return;
         selection.insertNodes([$createComposerMentionNode(descriptor)]);
+      });
+      requestAnimationFrame(() => editor.focus());
+    },
+    insertProjectFile: (descriptor, replace, trailingText = "") => {
+      editor.update(() => {
+        if (replace) $setSelectionOffsets(replace.start, replace.end);
+        const selection = $getSelection();
+        if (!$isRangeSelection(selection)) return;
+        selection.insertNodes([
+          $createComposerProjectFileNode(descriptor),
+          ...(trailingText ? [$createTextNode(trailingText)] : []),
+        ]);
       });
       requestAnimationFrame(() => editor.focus());
     },
@@ -805,7 +1072,16 @@ function EditorBridge({
       if (!event || !("clipboardData" in event) || !event.clipboardData) return false;
       const selection = $getSelection();
       if (!selection) return false;
-      event.clipboardData.setData("text/plain", selection.getTextContent());
+      const offsets = $selectionOffsets();
+      const start = Math.min(offsets.start, offsets.end);
+      const end = Math.max(offsets.start, offsets.end);
+      const selectedText = $isNodeSelection(selection)
+        ? selection.getTextContent()
+        : $canonicalText().slice(start, end);
+      event.clipboardData.setData(
+        "text/plain",
+        readableProjectFileReferences(selectedText),
+      );
       event.preventDefault();
       return true;
     };
@@ -963,7 +1239,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
   const initialStructuralDestinationRef = useRef(structuralDestination);
   const initialConfig = useRef({
     namespace: "PonderosaComposer",
-    nodes: [ComposerMentionNode],
+    nodes: [ComposerMentionNode, ComposerProjectFileNode],
     onError(error: Error) {
       throw error;
     },

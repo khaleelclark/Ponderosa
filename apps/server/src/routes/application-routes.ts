@@ -559,6 +559,7 @@ registerAgentPackageRoutes(app, {
   cachedModelOptions,
   appendWorkspace,
   agentMessages,
+  createOperationalNotification,
 });
 
 registerAgentUsageRoute(app, serverContext);

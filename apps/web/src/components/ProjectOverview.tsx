@@ -45,6 +45,7 @@ import { useNotificationProjection } from "../hooks/queries";
 import { conversationDisplayTitle } from "../conversationLabels";
 import { engineAvailabilityPresentation, engineIsAvailable } from "../conversationEngine";
 import { queryKeys } from "../queryKeys";
+import { semanticStatusColorToken, type SemanticStatusKind } from "./SemanticStatus";
 import {
   reorderStableIds,
   resourcePreferenceKey,
@@ -88,15 +89,23 @@ export function projectHealthPresentation(
 ): {
   label: string;
   color: "success.main" | "info.main" | "warning.main" | "error.main" | "text.disabled";
+  status: SemanticStatusKind;
 } {
   const actionable = actionableProjectHealth(health, agents, engines).health;
-  if (!actionable) return { label: "Checking", color: "text.disabled" };
-  if (actionable.some((agent) => agent.status === "failed" || agent.status === "stalled")) return { label: "Needs attention", color: "error.main" };
-  if (actionable.some((agent) => agent.status === "needs_decision")) return { label: "Needs decision", color: "warning.main" };
-  if (actionable.some((agent) => agent.status === "blocked" || agent.status === "interrupted")) return { label: "Blocked", color: "warning.main" };
-  if (actionable.some((agent) => agent.status === "running" || agent.status === "preparing" || agent.status === "compacting")) return { label: "Active", color: "info.main" };
-  if (actionable.some((agent) => agent.status === "waiting")) return { label: "Waiting", color: "warning.main" };
-  return { label: "Healthy", color: "success.main" };
+  const result: { label: string; status: SemanticStatusKind } = !actionable
+    ? { label: "Checking", status: "idle" }
+    : actionable.some((agent) => agent.status === "failed" || agent.status === "stalled")
+      ? { label: "Needs attention", status: "needs_attention" }
+      : actionable.some((agent) => agent.status === "needs_decision")
+        ? { label: "Needs decision", status: "needs_attention" }
+        : actionable.some((agent) => agent.status === "blocked" || agent.status === "interrupted")
+          ? { label: "Blocked", status: "blocked" }
+          : actionable.some((agent) => agent.status === "running" || agent.status === "preparing" || agent.status === "compacting")
+            ? { label: "Running", status: "running" }
+            : actionable.some((agent) => agent.status === "waiting")
+              ? { label: "Waiting", status: "waiting" }
+              : { label: "Completed", status: "completed" };
+  return { ...result, color: semanticStatusColorToken(result.status) };
 }
 
 export function projectHealthDetail(

@@ -412,6 +412,7 @@ export function ProjectShell({
         projectId={projectId}
         project={project}
         initialView={route.view}
+        initialArtifactId={route.focusArtifactId}
         onViewChange={(view) =>
           navigate(
             {

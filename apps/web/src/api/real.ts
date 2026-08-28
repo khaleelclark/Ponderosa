@@ -1,5 +1,6 @@
 import type {
   AgentActivityOutputDto,
+  AgentImportOperationDto,
   AssetLimitsDto,
   AgentDeletionPreviewDto,
   AgentDeletionPreviewRequest,
@@ -85,6 +86,8 @@ import type {
   ProjectBrowserControlRequest,
   ProjectBrowserSessionDto,
   ProjectDto,
+  ProjectDeletionPreviewDto,
+  ProjectDeletionResponseDto,
   ProjectSort,
   ProjectEngineModelCatalogDto,
   ProjectEngineCapabilitiesDto,
@@ -306,8 +309,11 @@ export const realApi = {
       body: JSON.stringify(patch satisfies UpdateProjectRequest),
     });
   },
-  deleteProject(projectId: string): Promise<void> {
-    return requestJson<void>(`/api/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" });
+  deleteProject(projectId: string): Promise<ProjectDeletionResponseDto> {
+    return requestJson<ProjectDeletionResponseDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" });
+  },
+  getProjectDeletionPreview(projectId: string): Promise<ProjectDeletionPreviewDto> {
+    return requestJson<ProjectDeletionPreviewDto>(`/api/projects/${encodeURIComponent(projectId)}/deletion-preview`);
   },
   getAgentHealth(projectId: string): Promise<AgentHealthProjectionDto> {
     return requestJson<AgentHealthProjectionDto>(`/api/projects/${encodeURIComponent(projectId)}/agent-health`);
@@ -680,6 +686,9 @@ export const realApi = {
   listProjectArtifacts(projectId: string, limit: number = 100, cursor?: string): Promise<HistoryPageDto<ArtifactDto>> {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/artifacts${toQuery({ limit: String(limit), cursor })}`);
   },
+  getProjectArtifact(projectId: string, artifactId: string): Promise<ArtifactDto> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}`);
+  },
   listConversationArtifacts(projectId: string, conversationId: string, limit: number = 100, cursor?: string): Promise<HistoryPageDto<ArtifactDto>> {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/artifacts${toQuery({ conversationId, limit: String(limit), cursor })}`);
   },
@@ -717,6 +726,33 @@ export const realApi = {
         headers: { "content-type": body.type },
         body,
       },
+    );
+  },
+  startAgentPackageImport(
+    projectId: string,
+    packageBlob: Blob,
+    metadata: Omit<ImportAgentPackageRequest, "package">,
+    requestId: string,
+  ): Promise<AgentImportOperationDto> {
+    const body = new Blob(
+      [`${JSON.stringify(metadata)}\n`, packageBlob],
+      { type: "application/vnd.ponderosa.agent-import" },
+    );
+    return requestJson<AgentImportOperationDto>(
+      `/api/projects/${encodeURIComponent(projectId)}/agent-import-operations`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": body.type,
+          "idempotency-key": requestId,
+        },
+        body,
+      },
+    );
+  },
+  getAgentImportOperation(projectId: string, operationId: string): Promise<AgentImportOperationDto> {
+    return requestJson<AgentImportOperationDto>(
+      `/api/projects/${encodeURIComponent(projectId)}/agent-import-operations/${encodeURIComponent(operationId)}`,
     );
   },
   copyAgent(

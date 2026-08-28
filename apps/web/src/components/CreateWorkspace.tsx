@@ -37,8 +37,10 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { api } from "../api";
 import {
+  engineUnavailableReason,
   engineIsAvailable,
   resolveRuntimeSelection,
+  soleAvailableEngineId,
 } from "../conversationEngine";
 import {
   useProjectAgents,
@@ -167,6 +169,9 @@ function ProjectCreateForm({
   const [defaultEffort, setDefaultEffort] = useState("");
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const [engineToTest, setEngineToTest] = useState<EngineDto>();
+  useEffect(() => {
+    setDefaultEngine(current => current || soleAvailableEngineId(engines) || "");
+  }, [engines]);
   const createProject = useMutation({
     mutationFn: () => api.createProject(createProjectRequest({
       label,
@@ -219,7 +224,7 @@ function ProjectCreateForm({
             <MenuItem value="" disabled>Select a Provider</MenuItem>
             {engines.map(engine => (
               <MenuItem key={engine.id} value={engine.id} disabled={!engineIsAvailable(engine)}>
-                {engine.displayName}{engineIsAvailable(engine) ? "" : engine.authentication === "checking" ? " — Checking" : engine.authentication === "authenticated" ? " — Unavailable" : " — Not Signed In"}
+                {engine.displayName}{engineIsAvailable(engine) ? "" : ` — ${engineUnavailableReason(engine)}`}
               </MenuItem>
             ))}
           </Select>
@@ -272,7 +277,10 @@ function ProjectCreateForm({
           <Button disabled={createProject.isPending} onClick={onCancel}>Cancel</Button>
           <Button
             variant="contained"
-            disabled={projectCreationDisabled({ label, mode: folderMode, existingPath: path, defaultEngine, pending: createProject.isPending })}
+            disabled={
+              !engineIsAvailable(selectedEngine) ||
+              projectCreationDisabled({ label, mode: folderMode, existingPath: path, defaultEngine, pending: createProject.isPending })
+            }
             onClick={() => createProject.mutate()}
           >
             {createProject.isPending ? "Creating…" : "Create Project"}

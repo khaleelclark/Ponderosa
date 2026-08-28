@@ -84,7 +84,7 @@ export type Route =
   | { kind: "settings"; section?: "general" | "providers" | "notifications" | "activity" }
   | { kind: "profile" }
   | { kind: "usage"; projectId?: string }
-  | { kind: "project"; projectId: string; view?: ProjectDetailView }
+  | { kind: "project"; projectId: string; view?: ProjectDetailView; focusArtifactId?: string }
   | { kind: "workspaceFile"; projectId: string; path: string }
   | { kind: "projectWork"; projectId: string; conversationId?: string; focusId?: string }
   | { kind: "browser"; projectId: string; agentId?: string; runId?: string; conversationId?: string }
@@ -119,6 +119,7 @@ export function parseRoute(pathname: string, search = ""): Route {
   const requestedAgentView = query.get("view")?.trim();
   const agentView = isAgentDetailView(requestedAgentView) ? requestedAgentView : undefined;
   const projectView = isProjectDetailView(requestedAgentView) ? requestedAgentView : undefined;
+  const focusArtifactId = query.get("artifact")?.trim() || undefined;
   const parts = cleanPathname!.split("/").filter(Boolean);
   if (parts.length === 0) return { kind: "home" };
   if (
@@ -218,6 +219,7 @@ export function parseRoute(pathname: string, search = ""): Route {
     kind: "project",
     projectId,
     ...(projectView ? { view: projectView } : {}),
+    ...(focusArtifactId ? { focusArtifactId } : {}),
   };
 }
 

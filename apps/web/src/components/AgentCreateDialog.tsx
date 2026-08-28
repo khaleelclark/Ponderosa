@@ -20,8 +20,10 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import {
   effortSelectionIsCompatible,
+  engineUnavailableReason,
   engineIsAvailable,
   modelSelectionIsCompatible,
+  soleAvailableEngineId,
 } from "../conversationEngine";
 import { useAgentPresets } from "../hooks/queries";
 import { pickAgentName } from "../parkNames";
@@ -139,8 +141,7 @@ export function AgentCreateForm({
         setEngine(
           initialEngine ??
             project?.defaultEngine ??
-            engines.find(engineIsAvailable)?.id ??
-            engines[0]?.id ??
+            soleAvailableEngineId(engines) ??
             UNSET,
         );
         setModel(initialModel ?? project?.defaultModel ?? UNSET);
@@ -156,8 +157,7 @@ export function AgentCreateForm({
     setEngine(
       initialEngine ??
         project?.defaultEngine ??
-        engines.find(engineIsAvailable)?.id ??
-        engines[0]?.id ??
+        soleAvailableEngineId(engines) ??
         UNSET,
     );
     setModel(initialModel ?? project?.defaultModel ?? UNSET);
@@ -328,11 +328,7 @@ export function AgentCreateForm({
               disabled={!engineIsAvailable(option)}
             >
               {option.displayName}
-              {engineIsAvailable(option)
-                ? ""
-                : option.authentication === "authenticated"
-                  ? " — Unavailable"
-                  : " — Not Signed In"}
+              {engineIsAvailable(option) ? "" : ` — ${engineUnavailableReason(option)}`}
             </MenuItem>
           ))}
         </Select>
@@ -458,7 +454,8 @@ export function AgentCreateForm({
         <Button
           variant="contained"
           disabled={
-            !projectId || !conversationId || !title.trim() || !engine || create.isPending
+            !projectId || !conversationId || !title.trim() ||
+            !engineIsAvailable(activeEngine) || create.isPending
           }
           onClick={() => {
             if (pendingRef.current) return;
@@ -590,7 +587,6 @@ export function AgentCreateSurface({
                 : conversations[0]?.id
             }
             onCancel={onCancel}
-            onImported={agentId => onImported(importProjectId, agentId)}
             onPendingChange={updatePending}
             stickyActions={stickyActions}
           />

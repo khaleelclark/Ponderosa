@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import type {
+  AgentImportOperationDto,
+  AgentImportPhase,
   AgentDto,
   AgentExportMode,
   AgentPortablePackageDto,
@@ -18,6 +21,7 @@ import {
   type CoordinationV3Store,
 } from "@ponderosa/agents";
 import type { FastifyInstance, FastifyReply } from "fastify";
+import type { createOperationalNotifications } from "../operational-notifications.js";
 import {
   CANONICAL_ARTIFACT_ID,
   portableAgentTopologyError,
@@ -60,6 +64,9 @@ interface AgentPackageRoutesContext {
     text: string;
     createdAt: string;
   }>;
+  createOperationalNotification: ReturnType<
+    typeof createOperationalNotifications
+  >["createOperationalNotification"];
 }
 
 export function registerAgentPackageRoutes(
@@ -76,8 +83,36 @@ export function registerAgentPackageRoutes(
     cachedModelOptions,
     appendWorkspace,
     agentMessages,
+    createOperationalNotification,
   } = context;
   const blobImportContentType = "application/vnd.ponderosa.agent-import";
+  const importOperationDirectory = path.join(context.dataDir, "agent-import-operations");
+  const operationPath = (id: string) => path.join(importOperationDirectory, `${id}.json`);
+  const payloadPath = (id: string) => path.join(importOperationDirectory, `${id}.payload`);
+  const operationByRequest = new Map<string, string>();
+  const operationCache = new Map<string, AgentImportOperationDto>();
+  const requestOperationKey = (projectId: string, requestId: string) =>
+    `${projectId}:${requestId}`;
+  const writeOperation = async (operation: AgentImportOperationDto): Promise<void> => {
+    operationCache.set(operation.id, operation);
+    operationByRequest.set(
+      requestOperationKey(operation.projectId, operation.requestId),
+      operation.id,
+    );
+    await fs.mkdir(importOperationDirectory, { recursive: true });
+    const temporary = `${operationPath(operation.id)}.${randomUUID()}.tmp`;
+    await fs.writeFile(temporary, JSON.stringify(operation), { mode: 0o600 });
+    await fs.rename(temporary, operationPath(operation.id));
+  };
+  const readOperation = async (id: string): Promise<AgentImportOperationDto | undefined> => {
+    if (!/^[0-9a-f-]{36}$/u.test(id)) return undefined;
+    try {
+      return JSON.parse(await fs.readFile(operationPath(id), "utf8")) as AgentImportOperationDto;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+  };
   app.addContentTypeParser(
     blobImportContentType,
     { parseAs: "buffer" },
@@ -303,7 +338,9 @@ export function registerAgentPackageRoutes(
     projectId: string,
     body: ImportAgentPackageRequest,
     reply: FastifyReply,
+    onPhase?: (phase: AgentImportPhase) => Promise<void>,
   ): Promise<unknown> => {
+      await onPhase?.("creating_records");
       const project = store.getProject(projectId);
       const conversation = body?.conversationId
         ? store.getConversation(body.conversationId)
@@ -747,6 +784,7 @@ export function registerAgentPackageRoutes(
         });
       }
       const plannedArtifacts = importNodes.flatMap((node) => node.artifacts);
+      await onPhase?.("importing_artifacts");
       const publishedArtifacts = await publishManagedArtifactContentsAsync(
         context.dataDir,
         project.id,
@@ -773,6 +811,7 @@ export function registerAgentPackageRoutes(
       }
 
       const created = new Map<string, AgentDto>();
+      await onPhase?.("importing_agents");
       for (const node of importNodes) {
         const agent = store.createAgent(project.id, {
           title: node.title,
@@ -820,6 +859,7 @@ export function registerAgentPackageRoutes(
       }
       store.recordProjectArtifacts(catalogArtifacts);
 
+      await onPhase?.("importing_history");
       for (const node of importNodes) {
         const agent = created.get(node.ref)!;
         if (node.history.length) {
@@ -838,6 +878,7 @@ export function registerAgentPackageRoutes(
           );
         }
       }
+      await onPhase?.("finalizing");
       appendWorkspace({
         type: "project_changed",
         projectId: project.id,
@@ -858,6 +899,190 @@ export function registerAgentPackageRoutes(
     { bodyLimit: 1024 * 1024 },
     (request, reply) => importPackage(request.params.id, request.body, reply),
   );
+
+  const runBackgroundImport = async (operationId: string): Promise<void> => {
+    let operation = await readOperation(operationId);
+    if (!operation || operation.status !== "pending") return;
+    const update = async (patch: Partial<AgentImportOperationDto>) => {
+      operation = { ...operation!, ...patch, updatedAt: new Date().toISOString() };
+      await writeOperation(operation);
+      return operation;
+    };
+    const phase = async (next: AgentImportPhase) => {
+      await update({ phase: next });
+      createOperationalNotification({
+        dedupeKey: `agent-import:${operationId}`,
+        category: "system",
+        severity: "info",
+        title: "Agent import in progress",
+        body: next.replaceAll("_", " "),
+        projectId: operation!.projectId,
+        action: { kind: "open_project", targetId: operation!.projectId },
+      });
+    };
+    try {
+      const raw = await fs.readFile(payloadPath(operationId));
+      const { metadata, portable } = await parsePortablePackageUpload(raw);
+      await update({ sourceLabel: portable.sourceLabel.slice(0, 240) });
+      let statusCode = 200;
+      let responseBody: unknown;
+      const backgroundReply = {
+        code(code: number) {
+          statusCode = code;
+          return this;
+        },
+        send(value: unknown) {
+          responseBody = value;
+          return value;
+        },
+      } as unknown as FastifyReply;
+      await importPackage(
+        operation.projectId,
+        { ...metadata, package: portable },
+        backgroundReply,
+        phase,
+      );
+      if (statusCode >= 400) {
+        const record = responseBody && typeof responseBody === "object"
+          ? responseBody as { error?: unknown }
+          : undefined;
+        throw new Error(typeof record?.error === "string" ? record.error : "Import failed");
+      }
+      const result = responseBody as ImportAgentPackageResponse;
+      await update({ phase: "completed", status: "completed", result });
+      createOperationalNotification({
+        dedupeKey: `agent-import:${operationId}`,
+        category: "system",
+        severity: "info",
+        title: "Agent import completed",
+        body: `${operation.sourceLabel} was imported successfully.`,
+        projectId: operation.projectId,
+        agentId: result.rootAgentId,
+        action: { kind: "open_agent", targetId: result.rootAgentId },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Import failed";
+      await update({ phase: "failed", status: "failed", error: message.slice(0, 1_000) });
+      createOperationalNotification({
+        dedupeKey: `agent-import:${operationId}`,
+        category: "system",
+        severity: "urgent",
+        title: "Agent import failed",
+        body: `${operation.sourceLabel}: ${message}`.slice(0, 1_000),
+        projectId: operation.projectId,
+        action: { kind: "open_project", targetId: operation.projectId },
+      });
+    } finally {
+      await fs.unlink(payloadPath(operationId)).catch(() => undefined);
+    }
+  };
+
+  app.post<{
+    Params: { id: string };
+    Headers: { "idempotency-key"?: string };
+    Body: Buffer;
+  }>(
+    "/api/projects/:id/agent-import-operations",
+    { bodyLimit: 96 * 1024 * 1024 },
+    async (request, reply) => {
+      if (!store.getProject(request.params.id)) {
+        return reply.code(404).send({ error: "project not found" });
+      }
+      if (deletingProjectIds.has(request.params.id)) {
+        return reply.code(409).send({ error: "Project deletion is already in progress" });
+      }
+      const requestId = request.headers["idempotency-key"]?.trim();
+      if (!requestId || !/^[A-Za-z0-9_-]{8,128}$/u.test(requestId)) {
+        return reply.code(400).send({ error: "a valid import idempotency key is required" });
+      }
+      const requestKey = requestOperationKey(request.params.id, requestId);
+      const existingId = operationByRequest.get(requestKey);
+      if (existingId) {
+        const existing = operationCache.get(existingId) ?? await readOperation(existingId);
+        if (existing) {
+          return reply.code(existing.status === "pending" ? 202 : 200).send(existing);
+        }
+        operationByRequest.delete(requestKey);
+      }
+      const id = randomUUID();
+      const now = new Date().toISOString();
+      const operation: AgentImportOperationDto = {
+        id,
+        requestId,
+        projectId: request.params.id,
+        sourceLabel: "Agent import",
+        phase: "queued",
+        status: "pending",
+        createdAt: now,
+        updatedAt: now,
+      };
+      operationByRequest.set(requestKey, id);
+      operationCache.set(id, operation);
+      try {
+        await fs.mkdir(importOperationDirectory, { recursive: true });
+        await fs.writeFile(payloadPath(id), request.body, { mode: 0o600, flag: "wx" });
+        await writeOperation(operation);
+      } catch (error) {
+        operationByRequest.delete(requestKey);
+        operationCache.delete(id);
+        await fs.unlink(payloadPath(id)).catch(() => undefined);
+        throw error;
+      }
+      createOperationalNotification({
+        dedupeKey: `agent-import:${id}`,
+        category: "system",
+        severity: "info",
+        title: "Agent import queued",
+        body: "The import continues in the background.",
+        projectId: operation.projectId,
+        action: { kind: "open_project", targetId: operation.projectId },
+      });
+      setImmediate(() => void runBackgroundImport(id));
+      return reply.code(202).send(operation);
+    },
+  );
+
+  app.get<{ Params: { id: string; operationId: string } }>(
+    "/api/projects/:id/agent-import-operations/:operationId",
+    async (request, reply) => {
+      const operation = operationCache.get(request.params.operationId)
+        ?? await readOperation(request.params.operationId);
+      if (!operation || operation.projectId !== request.params.id) {
+        return reply.code(404).send({ error: "import operation not found" });
+      }
+      return operation;
+    },
+  );
+
+  void fs.mkdir(importOperationDirectory, { recursive: true }).then(async () => {
+    const names = await fs.readdir(importOperationDirectory);
+    for (const name of names.filter(candidate => candidate.endsWith(".json"))) {
+      const operation = await readOperation(name.slice(0, -5));
+      if (!operation) continue;
+      operationByRequest.set(
+        requestOperationKey(operation.projectId, operation.requestId),
+        operation.id,
+      );
+      if (operation.status !== "pending") continue;
+      const failed: AgentImportOperationDto = {
+        ...operation,
+        phase: "failed",
+        status: "failed",
+        error: "The server restarted before final import completion could be confirmed. Inspect the Project before retrying.",
+        updatedAt: new Date().toISOString(),
+      };
+      await writeOperation(failed);
+      createOperationalNotification({
+        dedupeKey: `agent-import:${failed.id}`,
+        category: "system",
+        severity: "urgent",
+        title: "Agent import outcome needs inspection",
+        body: failed.error!,
+        projectId: failed.projectId,
+        action: { kind: "open_project", targetId: failed.projectId },
+      });
+    }
+  }).catch(() => undefined);
 
   app.post<{
     Params: { id: string };

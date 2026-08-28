@@ -18,7 +18,6 @@ import {
   Box,
   Button,
   Checkbox,
-  Chip,
   FormControl,
   IconButton,
   InputLabel,
@@ -61,11 +60,11 @@ import {
 } from "./CollectionPrimitives";
 import {
   agentBelongsToConversation,
-  agentStatusColor,
   agentStatusPresentation,
   orderedAgentOrganization,
   type AgentStatus,
 } from "../agents";
+import { SemanticStatus, semanticAgentStatus } from "./SemanticStatus";
 import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
 import {
   agentHasCollapsedAncestor,
@@ -862,7 +861,6 @@ export function AgentsTab({
           conversations={conversations}
           initialConversationId={conversations[0]?.id}
           onClose={() => setImportOpen(false)}
-          onImported={onOpenAgent}
         />
       ) : null}
 
@@ -1046,12 +1044,10 @@ export function AgentsTab({
                         spacing={1.25}
                         sx={{ alignItems: "center", minWidth: 0 }}
                       >
-                        <Chip
-                          size="small"
+                        <SemanticStatus
+                          status={semanticAgentStatus(status)}
                           label={statusPresentation.label}
-                          color={agentStatusColor(status)}
-                          aria-label={statusPresentation.accessibleLabel}
-                          title={statusPresentation.detail}
+                          detail={`${statusPresentation.accessibleLabel}. ${statusPresentation.detail}`}
                         />
                         <Typography
                           variant="caption"

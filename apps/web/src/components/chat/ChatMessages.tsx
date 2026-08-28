@@ -3,11 +3,12 @@ import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
+import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
 import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, Tooltip, Typography } from "@mui/material";
 import { messageTagTokens, unicodeCodePointLength } from "@ponderosa/core";
 import type { AgentMentionBindingDto, CommunicationDocumentReference, CommunicationIntent, MessageDto, VerifiedCitationDto } from "@ponderosa/core";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { copyText } from "../../clipboard";
 import { LazySyntaxHighlightedCode } from "../LazySyntaxHighlightedCode";
@@ -369,6 +370,28 @@ interface MarkdownAstNode {
 
 const MESSAGE_TAG_PREFIX = "#ponderosa-tag:";
 
+function projectFileReference(href: string | undefined): {
+  projectId: string;
+  artifactId: string;
+  historicalFilename: string;
+  currentFilename: string;
+} | undefined {
+  if (!href?.startsWith("ponderosa://project-file/")) return undefined;
+  try {
+    const url = new URL(href);
+    const [projectId, artifactId] = url.pathname.split("/").filter(Boolean);
+    if (!projectId || !artifactId) return undefined;
+    return {
+      projectId: decodeURIComponent(projectId),
+      artifactId: decodeURIComponent(artifactId),
+      historicalFilename: url.searchParams.get("historical") ?? "Project file",
+      currentFilename: url.searchParams.get("current") ?? "",
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export const messageMentionSx = {
   display: "inline",
   px: 0.45,
@@ -475,6 +498,11 @@ function ChatMarkdown({
     >
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMessageTags]}
+        urlTransform={url =>
+          url.startsWith("ponderosa://project-file/")
+            ? url
+            : defaultUrlTransform(url)
+        }
         components={{
           pre: ({ children: code }) => <CopyableCodeBlock>{code}</CopyableCodeBlock>,
           img: ({ src, alt }) => {
@@ -485,6 +513,48 @@ function ChatMarkdown({
               : image;
           },
           a: ({ href, children: label }) => {
+            const fileReference = projectFileReference(href);
+            if (fileReference) {
+              const filename = fileReference.currentFilename || fileReference.historicalFilename;
+              if (!projectId || fileReference.projectId !== projectId) {
+                return <Box component="span">@{filename}</Box>;
+              }
+              const target = `/projects/${encodeURIComponent(projectId)}?view=files&artifact=${encodeURIComponent(fileReference.artifactId)}`;
+              return (
+                <Box
+                  className="chat-text-navigation"
+                  component="a"
+                  href={target}
+                  aria-label={`Open Project File ${filename}`}
+                  onClick={event => {
+                    if (
+                      event.defaultPrevented ||
+                      event.button !== 0 ||
+                      event.metaKey ||
+                      event.ctrlKey ||
+                      event.shiftKey ||
+                      event.altKey
+                    ) return;
+                    event.preventDefault();
+                    window.history.pushState(null, "", target);
+                    window.dispatchEvent(new PopStateEvent("popstate"));
+                  }}
+                  sx={{
+                    ...messageMentionSx,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 0.35,
+                    maxWidth: "100%",
+                    verticalAlign: "middle",
+                  }}
+                >
+                  <InsertDriveFileOutlinedIcon aria-hidden sx={{ fontSize: "1em", flex: "0 0 auto" }} />
+                  <Box component="span" sx={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                    @{filename}
+                  </Box>
+                </Box>
+              );
+            }
             if (!href?.startsWith(MESSAGE_TAG_PREFIX)) return <ChatLink href={href ?? ""} previewScope={previewScope} projectId={projectId}>{label}</ChatLink>;
             const handle = decodeURIComponent(href.slice(MESSAGE_TAG_PREFIX.length));
             if (handle.toLocaleLowerCase() === "broadcast" && onOpenBroadcast) {

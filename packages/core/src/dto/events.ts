@@ -152,6 +152,8 @@ export interface RunOutputTextDto {
  */
 export interface AgentDetailDto {
   agent: AgentDto;
+  /** Stable current-or-historical evidence that this Agent managed another Agent. */
+  hasSubagentHistory?: boolean;
   messages: MessageDto[];
   runOutput: RunOutputDto[];
   activity: AgentActivityDto[];

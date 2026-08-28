@@ -187,6 +187,12 @@ export function AgentDetail({
       olderTelemetry,
     );
   }, [agentQuery.data, olderMessages, olderTelemetry]);
+  const showSubagents = detail?.hasSubagentHistory === true;
+  useEffect(() => {
+    if (tab !== "subagents" || !detail || showSubagents) return;
+    setTab("chat");
+    onViewChange?.("chat");
+  }, [detail, onViewChange, showSubagents, tab]);
   const {
     copyAgentPackage,
     downloadAgentPackage,
@@ -875,6 +881,7 @@ export function AgentDetail({
         running={running}
         stopping={cancelRun.isPending}
         tab={tab}
+        showSubagents={showSubagents}
         transcriptMarkdown={transcriptMarkdown}
         transcriptTitle={transcriptTitle}
         onOpenProject={onOpenProject}

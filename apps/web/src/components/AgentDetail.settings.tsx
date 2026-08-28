@@ -38,9 +38,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
+import { HostPathPresentation } from "./HostPathPresentation";
+import { useMutationNotification } from "./MutationNotifications";
 
 function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.Element {
   const queryClient = useQueryClient();
+  const notify = useMutationNotification();
   const changeMode = useMutation({
     mutationFn: (workingCopyMode: AgentWorkingCopyMode) =>
       api.updateAgent(agent.id, { workingCopyMode }),
@@ -53,6 +56,7 @@ function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.Element {
         { queryKey: queryKeys.agents.detailPrefix(agent.id) },
         current => current ? { ...current, agent: updated } : current,
       );
+      notify({ key: `agent-working-folder:${agent.id}`, message: "Agent working folder updated." });
     },
   });
   const workingCopy = changeMode.data?.id === agent.id
@@ -72,6 +76,15 @@ function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.Element {
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
         Shared is best when Agents need to see each other's changes immediately. Separate Git gives this Agent its own branch and folder for code work.
       </Typography>
+      <Box sx={{ mb: 1.5 }}>
+        <Typography variant="caption" color="text.secondary" display="block">
+          {workingCopy.mode === "separate_git" ? "Agent working copy" : "Project Shared folder"}
+        </Typography>
+        <HostPathPresentation
+          path={workingCopy.rootPath}
+          label={workingCopy.mode === "separate_git" ? "Agent working copy" : "Project Shared folder"}
+        />
+      </Box>
       <FormControl fullWidth size="small" disabled={changeMode.isPending}>
         <InputLabel id={`working-copy-${agent.id}`}>Working folder</InputLabel>
         <Select

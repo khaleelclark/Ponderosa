@@ -6,11 +6,11 @@ import {
 import { messageTagTokens, utf8ByteLength } from "@ponderosa/core";
 import type {
   AgentMentionBindingDto,
+  ArtifactDto,
   ConversationDraftConflictDto,
   DraftAttachmentDto,
   EngineCommand,
   EngineComposerCapability,
-  FileEntryDto,
 } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -49,7 +49,11 @@ import {
   ComposerTextInput,
   type ComposerMenuSuggestion,
 } from "./Composer.controls";
-import type { ComposerEditorHandle } from "./ComposerEditor";
+import {
+  projectFileCanonicalText,
+  type ComposerEditorHandle,
+  type ComposerProjectFileDescriptor,
+} from "./ComposerEditor";
 import {
   canSubmitComposerText,
   composerAttachmentReducer,
@@ -917,12 +921,8 @@ export function Composer({
         )
       : [];
   const fileMatch = /(?:^|\s)@([^\s@#]*)$/u.exec(text.slice(0, caret));
-  const fileToken = fileMatch?.[1] ?? "";
-  const fileSlash = fileToken.lastIndexOf("/");
-  const fileDirectory = fileSlash >= 0 ? fileToken.slice(0, fileSlash) : "";
-  const filePrefix =
-    fileSlash >= 0 ? fileToken.slice(fileSlash + 1) : fileToken;
-  const [fileEntries, setFileEntries] = useState<FileEntryDto[]>([]);
+  const filePrefix = fileMatch?.[1] ?? "";
+  const [fileEntries, setFileEntries] = useState<ArtifactDto[]>([]);
   const fileReferenceActive = Boolean(fileMatch);
   useEffect(() => {
     let cancelled = false;
@@ -933,10 +933,9 @@ export function Composer({
       };
     }
     void api
-      .getFiles(projectId, fileDirectory)
+      .listProjectArtifacts(projectId, 500)
       .then(response => {
-        if (!cancelled)
-          setFileEntries(response.kind === "dir" ? response.entries : []);
+        if (!cancelled) setFileEntries(response.items);
       })
       .catch(() => {
         if (!cancelled) setFileEntries([]);
@@ -944,12 +943,12 @@ export function Composer({
     return () => {
       cancelled = true;
     };
-  }, [fileDirectory, fileReferenceActive, projectId]);
+  }, [fileReferenceActive, projectId]);
   const fileSuggestions = fileMatch
     ? fileEntries.filter(entry =>
-        entry.name
+        entry.path
           .toLocaleLowerCase()
-          .startsWith(filePrefix.toLocaleLowerCase()),
+          .includes(filePrefix.toLocaleLowerCase()),
       )
     : [];
   const commandDraft = providerCommandInput(
@@ -1016,19 +1015,22 @@ export function Composer({
     });
   };
 
-  const applyFileReference = (entry: {
-    path: string;
-    kind: "file" | "dir";
-  }) => {
+  const applyFileReference = (entry: ArtifactDto) => {
     const start = caret - fileMatch![0].length + fileMatch![0].indexOf("@");
-    const suffix = entry.kind === "dir" ? "/" : " ";
-    inputRef.current?.replaceCanonicalRange(
-      start,
-      caret,
-      `@${entry.path}${suffix}`,
+    const filename = entry.path.split(/[\\/]/u).filter(Boolean).at(-1) ?? entry.path;
+    const descriptor: ComposerProjectFileDescriptor = {
+      projectId: projectId!,
+      artifactId: entry.id,
+      historicalFilename: filename,
+      currentFilename: filename,
+    };
+    inputRef.current?.insertProjectFile(
+      descriptor,
+      { start, end: caret },
+      " ",
     );
     setHighlighted(0);
-    const nextCaret = start + entry.path.length + 1 + suffix.length;
+    const nextCaret = start + projectFileCanonicalText(descriptor).length + 1;
     requestAnimationFrame(() => {
       const el = inputRef.current;
       if (!el) return;

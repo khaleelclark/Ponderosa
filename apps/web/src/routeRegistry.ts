@@ -89,8 +89,12 @@ const ROUTE_REGISTRY = {
     synchronizedSidebarSection: "settings",
   },
   project: {
-    toPath: route =>
-      `/projects/${encodeURIComponent(route.projectId)}${route.view && route.view !== "overview" ? `?view=${route.view}` : ""}`,
+    toPath: route => {
+      const query = new URLSearchParams();
+      if (route.view && route.view !== "overview") query.set("view", route.view);
+      if (route.focusArtifactId) query.set("artifact", route.focusArtifactId);
+      return `/projects/${encodeURIComponent(route.projectId)}${query.size ? `?${query.toString()}` : ""}`;
+    },
     scope: "project",
     initialSidebarSection: "home",
   },

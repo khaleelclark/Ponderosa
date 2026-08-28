@@ -36,6 +36,8 @@ import { queryKeys } from "../queryKeys";
 import { ConfirmDialog, ResourceDeletionDialog, TextInputDialog } from "./ConfirmationDialogs";
 import { CollectionPagination } from "./CollectionPrimitives";
 import { LoadingState } from "./LoadingState";
+import { SemanticStatus } from "./SemanticStatus";
+import { useMutationNotification } from "./MutationNotifications";
 
 function localFuture(minutes = 5): string {
   return isoToDatetimeLocal(new Date(Date.now() + minutes * 60_000).toISOString());
@@ -146,7 +148,10 @@ function lines(value: string): string[] {
 function OccurrenceAudit({ occurrence, onOpenAgentWork }: { occurrence: TriggerOccurrenceDto; onOpenAgentWork?(occurrenceId: string): void }): JSX.Element {
   return <Box sx={{ py: 1, borderTop: 1, borderColor: "divider" }}>
     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
-      <Chip size="small" label={occurrence.state} color={occurrence.state === "dead_lettered" ? "error" : occurrence.state === "cancelled" ? "default" : "success"} />
+      <SemanticStatus
+        status={occurrence.state === "dead_lettered" ? "failed" : occurrence.state === "cancelled" ? "disabled" : "completed"}
+        label={occurrence.state.replaceAll("_", " ")}
+      />
       {occurrence.provenance.source === "operator_manual_run" ? <Chip size="small" variant="outlined" label="Manual" /> : null}
       <Typography variant="caption">{new Date(occurrence.occurredAt).toLocaleString()}</Typography>
       <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{occurrence.artifactId}</Typography>
@@ -203,6 +208,7 @@ export function TriggersPane({
   onCloseTriggerSettings?(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const notify = useMutationNotification();
   // The Automation editor is a relationship editor, so it must not depend on
   // a surrounding workspace roster finishing first. Load the authoritative
   // Project roster here as form data; keep the prop as immediate fallback for
@@ -390,6 +396,7 @@ export function TriggersPane({
         onTriggerCreated?.(response.trigger);
         onCreateFlowComplete?.();
       }
+      notify({ key: `automation-created:${response.trigger.id}`, message: "Automation created." });
     },
   });
   const saveEdit = useMutation({
@@ -410,17 +417,22 @@ export function TriggersPane({
       setCreateOpen(false);
       setEditing(undefined);
       onCloseTriggerSettings?.();
+      notify({ key: `automation-updated:${editing?.id ?? "automation"}`, message: "Automation updated." });
     },
   });
   const update = useMutation({
     mutationFn: ({ trigger, enabled }: { trigger: TriggerDefinitionDto; enabled: boolean }) => api.updateTrigger(trigger.id, { enabled }),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey }),
+    onSuccess: (_result, variables) => {
+      void queryClient.invalidateQueries({ queryKey });
+      notify({ key: `automation-enabled:${variables.trigger.id}`, message: variables.enabled ? "Automation enabled." : "Automation disabled." });
+    },
   });
   const remove = useMutation({
     mutationFn: (trigger: TriggerDefinitionDto) => api.deleteTrigger(trigger.id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey });
       setDeleteTrigger(undefined);
+      notify({ key: "automation-deleted", message: "Automation deleted." });
     },
   });
   const rotate = useMutation({
@@ -619,7 +631,9 @@ export function TriggersPane({
           <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
             <Typography variant="subtitle1" sx={{ fontWeight: 700, flex: 1 }}>{trigger.name}</Typography>
             <Chip size="small" label={triggerSourceSummary(trigger)} />
-            <Chip size="small" color={trigger.enabled ? "success" : "default"} label={trigger.enabled ? "Enabled" : "Disabled"} />
+            {trigger.enabled
+              ? <Chip size="small" color="success" label="Enabled" />
+              : <SemanticStatus status="disabled" />}
             {trigger.runBudget && trigger.budgetState ? <Chip size="small" color={trigger.budgetState.held ? "warning" : "default"} label={`${trigger.budgetState.used}/${trigger.runBudget.limit + trigger.budgetState.allowance} automatic Runs · ${trigger.runBudget.period}`} /> : <Chip size="small" label="Unlimited Runs" />}
           </Stack>
           <Typography variant="body2" sx={{ mt: 1, whiteSpace: "pre-wrap" }}>{trigger.instructions}</Typography>

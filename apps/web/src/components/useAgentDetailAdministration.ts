@@ -6,6 +6,7 @@ import type {
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
+import { useMutationNotification } from "./MutationNotifications";
 
 interface AgentDetailAdministrationInput {
   agentId: string;
@@ -35,6 +36,7 @@ export function useAgentDetailAdministration({
   onRuntimeSettingsNotice,
 }: AgentDetailAdministrationInput) {
   const queryClient = useQueryClient();
+  const notify = useMutationNotification();
   const rename = useMutation({
     mutationFn: (title: string) => api.updateAgent(agentId, { title }),
     onSuccess: updated => {
@@ -67,6 +69,7 @@ export function useAgentDetailAdministration({
         queryKey: queryKeys.conversations.detailAll,
       });
       onRenameClosed();
+      notify({ key: `agent-renamed:${agentId}`, message: `Agent renamed to ${updated.title}.` });
     },
   });
 
@@ -85,6 +88,7 @@ export function useAgentDetailAdministration({
         queryKey: queryKeys.agents.project(updated.projectId),
       });
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
+      notify({ key: `agent-organization:${agentId}`, message: "Agent reporting relationship updated." });
     },
   });
 
@@ -101,6 +105,7 @@ export function useAgentDetailAdministration({
         current =>
           current?.map(agent => (agent.id === updated.id ? updated : agent)),
       );
+      notify({ key: `agent-permissions:${agentId}`, message: "Agent permissions saved." });
     },
   });
 
@@ -136,6 +141,7 @@ export function useAgentDetailAdministration({
       onRuntimeSettingsNotice(
         "Saved. These runtime settings apply when the next Run starts.",
       );
+      notify({ key: `agent-runtime:${agentId}`, message: "Agent defaults saved." });
     },
     onError: () => onRuntimeSettingsNotice(undefined),
   });

@@ -58,6 +58,7 @@ import {
 } from "./ProjectOverview";
 import { ProjectSettingsPanel } from "./ProjectSettingsPanel";
 import { ProjectDeletionDialog } from "./ProjectDeletionDialog";
+import { HostPathPresentation } from "./HostPathPresentation";
 import { ProjectArtifactPreview } from "./filePreview/ArtifactPreview";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 import { ChatOverflowMenu } from "./ChatOverflowMenu";
@@ -89,6 +90,7 @@ export function ProjectArtifactsView({
   onOpenArtifact,
   conversations,
   initialView,
+  initialArtifactId,
   onViewChange,
 }: {
   projectId: string;
@@ -109,6 +111,7 @@ export function ProjectArtifactsView({
   onOpenArtifact(agentId: string, artifactId: string): void;
   conversations: ConversationDto[];
   initialView?: ProjectDetailView;
+  initialArtifactId?: string;
   onViewChange(view: ProjectDetailView): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
@@ -142,6 +145,15 @@ export function ProjectArtifactsView({
     queryKey: queryKeys.projectArtifacts.project(projectId),
     queryFn: () => api.listProjectArtifacts(projectId),
   });
+  const focusedArtifact = useQuery({
+    queryKey: ["project-artifact", projectId, initialArtifactId],
+    queryFn: () => api.getProjectArtifact(projectId, initialArtifactId!),
+    enabled: Boolean(initialArtifactId),
+    retry: false,
+  });
+  useEffect(() => {
+    if (focusedArtifact.data) setPreviewArtifact(focusedArtifact.data);
+  }, [focusedArtifact.data]);
   const updateArtifact = useMutation({
     mutationFn: ({
       artifactId,
@@ -241,11 +253,7 @@ export function ProjectArtifactsView({
       <TabbedWorkspaceFrame<ProjectDetailView>
         icon={<FolderOutlinedIcon />}
         title={project.label}
-        context={
-          <Typography variant="body2" color="text.secondary" noWrap>
-            {project.hostPath}
-          </Typography>
-        }
+        context={<HostPathPresentation path={project.hostPath} label="Project Shared folder" />}
         status={
           <Tooltip
             title={`${projectHealthTooltip} Click for AI provider details.`}
@@ -361,6 +369,13 @@ export function ProjectArtifactsView({
           ) : null}
           {tab === "files" ? (
             <>
+              {initialArtifactId && focusedArtifact.isError ? (
+                <Alert severity="warning">
+                  This Project File is no longer available. Its historical
+                  reference is preserved, but Ponderosa will not substitute a
+                  different file with the same name.
+                </Alert>
+              ) : null}
               <Box>
                 <Typography
                   id="project-files-and-results"
