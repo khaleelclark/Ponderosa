@@ -59,6 +59,7 @@ interface MobileWorkspaceDrawerProps {
     action: "rename" | "delete",
     conversation: ConversationDto,
   ): void;
+  onProjectDeleted(projectId: string): void;
   onSearch(): void;
   onOpenNotifications(): void;
   onOpenEngineStatus(): void;
@@ -77,6 +78,7 @@ export function MobileWorkspaceDrawer({
   onCreate,
   onPreferences,
   onConversationAction,
+  onProjectDeleted,
   onSearch,
   onOpenNotifications,
   onOpenEngineStatus,
@@ -125,6 +127,10 @@ export function MobileWorkspaceDrawer({
           onDeleteConversation={conversation => {
             close();
             onConversationAction("delete", conversation);
+          }}
+          onProjectDeleted={projectId => {
+            close();
+            onProjectDeleted(projectId);
           }}
           onSearch={() => {
             close();

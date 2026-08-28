@@ -676,6 +676,7 @@ export default function App({
               onDeleteConversation={conversation =>
                 openSidebarConversationAction("delete", conversation)
               }
+              onProjectDeleted={handleProjectDeleted}
               onSearch={openGlobalSearch}
               onOpenNotifications={openNotifications}
               onOpenEngineStatus={openEngineStatus}
@@ -788,6 +789,7 @@ export default function App({
           onCreate={openCreationForm}
           onPreferences={savePreferences}
           onConversationAction={openSidebarConversationAction}
+          onProjectDeleted={handleProjectDeleted}
           onSearch={openGlobalSearch}
           onOpenNotifications={openNotifications}
           onOpenEngineStatus={openEngineStatus}

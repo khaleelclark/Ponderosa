@@ -1,6 +1,5 @@
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
 import DashboardOutlinedIcon from "@mui/icons-material/DashboardOutlined";
-import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import OpenInNewOutlinedIcon from "@mui/icons-material/OpenInNewOutlined";
@@ -57,11 +56,9 @@ import {
   projectHealthPresentation,
 } from "./ProjectOverview";
 import { ProjectSettingsPanel } from "./ProjectSettingsPanel";
-import { ProjectDeletionDialog } from "./ProjectDeletionDialog";
 import { HostPathPresentation } from "./HostPathPresentation";
 import { ProjectArtifactPreview } from "./filePreview/ArtifactPreview";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
-import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import {
   PROJECT_FILE_CATEGORIES,
   matchesProjectFileCategories,
@@ -129,7 +126,6 @@ export function ProjectArtifactsView({
     hasMore: boolean;
   }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
-  const [projectDeleteOpen, setProjectDeleteOpen] = useState(false);
   useEffect(() => {
     setTab(initialView ?? "overview");
     setOlderArtifacts(undefined);
@@ -278,27 +274,6 @@ export function ProjectArtifactsView({
               {projectHealth.label}
             </Button>
           </Tooltip>
-        }
-        actions={
-          <ChatOverflowMenu
-            label={`Actions for ${project.label}`}
-            transcriptMarkdown=""
-            transcriptFileName=""
-            showExports={false}
-            actions={[
-              {
-                label: "Project Settings",
-                icon: <SettingsOutlinedIcon fontSize="small" />,
-                onSelect: () => changeTab("settings"),
-              },
-              {
-                label: "Delete Project",
-                icon: <DeleteOutlineIcon fontSize="small" />,
-                destructive: true,
-                onSelect: () => setProjectDeleteOpen(true),
-              },
-            ]}
-          />
         }
         tabs={{
           value: tab,
@@ -479,37 +454,6 @@ export function ProjectArtifactsView({
                   ? `${records.length} project items`
                   : `${filtered.length} of ${records.length} project items`}
               </Typography>
-              {(olderArtifacts?.hasMore ??
-              projectArtifacts.data?.history.hasMore) ? (
-                <Button
-                  size="small"
-                  color="inherit"
-                  disabled={loadingOlder}
-                  onClick={() => {
-                    const cursor =
-                      olderArtifacts?.cursor ??
-                      projectArtifacts.data?.history.cursor;
-                    if (!cursor) return;
-                    setLoadingOlder(true);
-                    void api
-                      .listProjectArtifacts(projectId, 100, cursor)
-                      .then(page => {
-                        setOlderArtifacts(current => ({
-                          items: uniqueBy(
-                            [...page.items, ...(current?.items ?? [])],
-                            artifact => artifact.id,
-                          ),
-                          cursor: page.history.cursor,
-                          hasMore: page.history.hasMore,
-                        }));
-                      })
-                      .finally(() => setLoadingOlder(false));
-                  }}
-                  sx={{ alignSelf: "center" }}
-                >
-                  {loadingOlder ? "Loading…" : "Load Older Files"}
-                </Button>
-              ) : null}
               {loading && records.length === 0 ? (
                 <Stack
                   direction="row"
@@ -707,6 +651,37 @@ export function ProjectArtifactsView({
                   </Box>
                 ))}
               </Box>
+              {(olderArtifacts?.hasMore ??
+              projectArtifacts.data?.history.hasMore) ? (
+                <Button
+                  size="small"
+                  color="inherit"
+                  disabled={loadingOlder}
+                  onClick={() => {
+                    const cursor =
+                      olderArtifacts?.cursor ??
+                      projectArtifacts.data?.history.cursor;
+                    if (!cursor) return;
+                    setLoadingOlder(true);
+                    void api
+                      .listProjectArtifacts(projectId, 100, cursor)
+                      .then(page => {
+                        setOlderArtifacts(current => ({
+                          items: uniqueBy(
+                            [...page.items, ...(current?.items ?? [])],
+                            artifact => artifact.id,
+                          ),
+                          cursor: page.history.cursor,
+                          hasMore: page.history.hasMore,
+                        }));
+                      })
+                      .finally(() => setLoadingOlder(false));
+                  }}
+                  sx={{ alignSelf: "center" }}
+                >
+                  {loadingOlder ? "Loading…" : "Load Older Files"}
+                </Button>
+              ) : null}
             </>
           ) : null}
           {tab === "settings" ? (
@@ -866,12 +841,6 @@ export function ProjectArtifactsView({
           <Button onClick={() => setPreviewArtifact(undefined)}>Close</Button>
         </DialogActions>
       </Dialog>
-      <ProjectDeletionDialog
-        project={project}
-        open={projectDeleteOpen}
-        onClose={() => setProjectDeleteOpen(false)}
-        onDeleted={onProjectDeleted}
-      />
     </Box>
   );
 }

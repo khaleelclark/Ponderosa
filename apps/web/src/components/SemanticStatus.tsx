@@ -1,6 +1,7 @@
 import { Chip, type ChipProps } from "@mui/material";
 
 export type SemanticStatusKind =
+  | "enabled"
   | "running"
   | "waiting"
   | "idle"
@@ -15,6 +16,7 @@ const STATUS_PRESENTATION: Record<SemanticStatusKind, {
   color: NonNullable<ChipProps["color"]>;
   variant: NonNullable<ChipProps["variant"]>;
 }> = {
+  enabled: { label: "Enabled", color: "success", variant: "outlined" },
   running: { label: "Running", color: "info", variant: "filled" },
   waiting: { label: "Waiting", color: "warning", variant: "outlined" },
   idle: { label: "Idle", color: "default", variant: "outlined" },

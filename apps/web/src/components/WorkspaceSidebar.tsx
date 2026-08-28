@@ -67,6 +67,7 @@ import {
   SettingsSidebarPanel,
 } from "./WorkspaceSidebar.chrome";
 import { ProjectRail, ProjectSidebarHeader } from "./ProjectNavigation";
+import { ProjectDeletionDialog } from "./ProjectDeletionDialog";
 import {
   useWorkspaceSidebarNavigation,
   useWorkspaceSidebarResize,
@@ -85,6 +86,7 @@ export function WorkspaceSidebar({
   onPreferences,
   onRenameConversation,
   onDeleteConversation,
+  onProjectDeleted,
   onSearch,
   onOpenNotifications,
   onOpenEngineStatus,
@@ -114,6 +116,7 @@ export function WorkspaceSidebar({
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onRenameConversation(conversation: ConversationDto): void;
   onDeleteConversation(conversation: ConversationDto): void;
+  onProjectDeleted(projectId: string): void;
   onSearch?(): void;
   onOpenNotifications?(): void;
   onOpenEngineStatus?(): void;
@@ -282,6 +285,7 @@ export function WorkspaceSidebar({
     staleTime: 60_000,
   });
   const [renamingProject, setRenamingProject] = useState<ProjectDto>();
+  const [deletingProject, setDeletingProject] = useState<ProjectDto>();
   const projectBrowseState = useRef(
     new Map<string, { section: typeof projectSection; filter: string }>(),
   );
@@ -418,6 +422,7 @@ export function WorkspaceSidebar({
       onOpenBrowser={() => onNavigate({ kind: "browser", projectId: activeProject.id })}
       onRename={() => setRenamingProject(activeProject)}
       onOpenSettings={() => onNavigate({ kind: "project", projectId: activeProject.id, view: "settings" })}
+      onDelete={() => setDeletingProject(activeProject)}
     />
   ) : undefined;
   const allChatRows = chatItems;
@@ -996,6 +1001,17 @@ export function WorkspaceSidebar({
           if (renamingProject) renameProject.mutate({ project: renamingProject, label });
         }}
       />
+      {deletingProject ? (
+        <ProjectDeletionDialog
+          project={deletingProject}
+          open
+          onClose={() => setDeletingProject(undefined)}
+          onDeleted={projectId => {
+            setDeletingProject(undefined);
+            onProjectDeleted(projectId);
+          }}
+        />
+      ) : null}
     </Box>
   );
 }

@@ -8,7 +8,6 @@ import {
   Box,
   Button,
   ButtonBase,
-  Chip,
   Paper,
   Stack,
   Typography,
@@ -32,6 +31,11 @@ import {
 import type { Route } from "../routing";
 import { CompactWorkspaceHeader } from "./WorkspaceFrame";
 import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
+import {
+  SemanticStatus,
+  semanticAgentStatus,
+  type SemanticStatusKind,
+} from "./SemanticStatus";
 
 const ACTIVE_STATUSES = new Set([
   "running",
@@ -116,6 +120,7 @@ function ItemCard({
   title,
   detail,
   status,
+  statusLabel,
   statusAccessibleLabel,
   statusDetail,
   onClick,
@@ -123,7 +128,8 @@ function ItemCard({
   icon: JSX.Element;
   title: string;
   detail: string;
-  status?: string;
+  status?: SemanticStatusKind;
+  statusLabel?: string;
   statusAccessibleLabel?: string;
   statusDetail?: string;
   onClick(): void;
@@ -142,12 +148,10 @@ function ItemCard({
           <Typography variant="caption" color="text.secondary" noWrap>{detail}</Typography>
         </Box>
         {status ? (
-          <Chip
-            size="small"
-            variant="outlined"
-            label={status}
-            aria-label={statusAccessibleLabel}
-            title={statusDetail}
+          <SemanticStatus
+            status={status}
+            label={statusLabel}
+            detail={statusDetail ?? statusAccessibleLabel}
           />
         ) : null}
       </ButtonBase>
@@ -275,7 +279,8 @@ export function HomeView({
                       icon={<WarningAmberOutlinedIcon color="warning" />}
                       title={item.title}
                       detail={item.body}
-                      status={item.severity === "urgent" ? "Urgent" : "Review"}
+                      status="needs_attention"
+                      statusLabel={item.severity === "urgent" ? "Urgent" : "Review"}
                       onClick={() => route ? onNavigate(route) : onOpenInbox()}
                     />
                   );
@@ -310,7 +315,8 @@ export function HomeView({
                       icon={<SmartToyOutlinedIcon />}
                       title={item.agent.title}
                       detail={item.project.label}
-                      status={presentation.label}
+                      status={semanticAgentStatus(item.health.status)}
+                      statusLabel={presentation.label}
                       statusAccessibleLabel={presentation.accessibleLabel}
                       statusDetail={presentation.detail}
                       onClick={() => onNavigate({ kind: "agent", projectId: item.project.id, agentId: item.agent.id })}
@@ -336,7 +342,7 @@ export function HomeView({
                     icon={<BoltOutlinedIcon />}
                     title={item.trigger.name}
                     detail={`${item.project.label} · ${item.targetAgent?.title ?? "Reassignment required"}`}
-                    status={item.trigger.enabled ? "Enabled" : "Disabled"}
+                    status={item.trigger.enabled ? "enabled" : "disabled"}
                     onClick={() => onNavigate({ kind: "automation", projectId: item.project.id, triggerId: item.trigger.id })}
                   />
                 ))}
@@ -355,7 +361,8 @@ export function HomeView({
                     icon={<CheckCircleOutlineIcon />}
                     title={item.agent.title}
                     detail={item.project.label}
-                    status={humanizeStatus(item.health.assignedWorkOutcome!.status)}
+                    status={semanticAgentStatus(item.health.assignedWorkOutcome!.status)}
+                    statusLabel={humanizeStatus(item.health.assignedWorkOutcome!.status)}
                     onClick={() => onNavigate({ kind: "agent", projectId: item.project.id, agentId: item.agent.id })}
                   />
                 ))}

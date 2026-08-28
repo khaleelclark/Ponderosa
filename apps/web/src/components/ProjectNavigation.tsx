@@ -4,6 +4,7 @@ import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import ChevronRightRoundedIcon from "@mui/icons-material/ChevronRightRounded";
 import CloseIcon from "@mui/icons-material/Close";
 import DataUsageOutlinedIcon from "@mui/icons-material/DataUsageOutlined";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import LanguageIcon from "@mui/icons-material/Language";
@@ -380,6 +381,7 @@ export function ProjectSidebarHeader({
   onOpenBrowser,
   onRename,
   onOpenSettings,
+  onDelete,
 }: {
   project: ProjectDto;
   overviewActive: boolean;
@@ -393,6 +395,7 @@ export function ProjectSidebarHeader({
   onOpenBrowser(): void;
   onRename(): void;
   onOpenSettings(): void;
+  onDelete(): void;
 }): JSX.Element {
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement>();
   const openMenu = (event: MouseEvent<HTMLElement>) => setMenuAnchor(event.currentTarget);
@@ -563,6 +566,9 @@ export function ProjectSidebarHeader({
         </MenuItem>
         <MenuItem onClick={() => run(onOpenSettings)}>
           <SettingsOutlinedIcon fontSize="small" sx={{ mr: 1.25 }} /> Project Settings
+        </MenuItem>
+        <MenuItem onClick={() => run(onDelete)} sx={{ color: "error.main" }}>
+          <DeleteOutlineIcon fontSize="small" sx={{ mr: 1.25 }} /> Delete Project
         </MenuItem>
       </Menu>
     </Box>
