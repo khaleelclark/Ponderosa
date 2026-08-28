@@ -111,6 +111,7 @@ type AllChatReplyTarget = {
   title: string;
   handle: string;
   projectId: string;
+  conversationId?: string;
 };
 
 function allChatDecisionChoice(item: AllChatDecisionEventDto): string | undefined {
@@ -216,9 +217,12 @@ export function AllChatView({
     const byId = new Map<string, AllChatReplyTarget>();
     for (const item of items) {
       if (!item.directMessageAgent || item.project.id !== activeProjectId) continue;
+      const agent = projectAgentsQuery.data?.find(candidate =>
+        candidate.id === item.directMessageAgent?.id);
       byId.set(item.directMessageAgent.id, {
         ...item.directMessageAgent,
         projectId: item.project.id,
+        conversationId: agent?.conversationId,
       });
     }
     for (const agent of projectAgentsQuery.data ?? []) {
@@ -228,10 +232,13 @@ export function AllChatView({
         title: agent.title,
         handle: agent.handle,
         projectId: activeProjectId,
+        conversationId: agent.conversationId,
       });
     }
+    const eligibleTargets = [...byId.values()].filter(candidate =>
+      !replyTarget?.conversationId || candidate.conversationId === replyTarget.conversationId);
     const groups = new Map<string, Array<{ handle: string; target: AllChatReplyTarget }>>();
-    for (const target of byId.values()) {
+    for (const target of eligibleTargets) {
       const handle = target.handle;
       const normalized = handle.toLocaleLowerCase();
       if (!handle || ["broadcast", "user", "everyone"].includes(normalized)) continue;
@@ -251,7 +258,7 @@ export function AllChatView({
       ambiguousHandles: [...groups.values()]
         .filter((group) => group.length > 1)
         .map((group) => group[0]!.handle),
-      mentionBindings: [...byId.values()].map(target => ({
+      mentionBindings: eligibleTargets.map(target => ({
         projectId: target.projectId,
         handle: target.handle,
         agentId: target.id,
@@ -260,7 +267,7 @@ export function AllChatView({
       })),
       targetByHandle,
     };
-  }, [activeProjectId, items, projectAgentsQuery.data]);
+  }, [activeProjectId, items, projectAgentsQuery.data, replyTarget?.conversationId]);
   const decisionEvents = useMemo(
     () => uniqueBy(
       [...(older?.decisions ?? []), ...(query.data?.decisions ?? [])],
@@ -294,6 +301,16 @@ export function AllChatView({
     enabled: Boolean(selectedAgentId),
   });
   const conversationsQuery = useConversations(selectedProjectId);
+  useEffect(() => {
+    setReplyTarget(current => {
+      if (!current) return current;
+      const agent = projectAgentsQuery.data?.find(candidate => candidate.id === current.id);
+      if (!agent || current.conversationId === agent.conversationId) return current;
+      return { ...current, conversationId: agent.conversationId };
+    });
+  }, [projectAgentsQuery.data]);
+  const replyConversation = conversationsQuery.data?.find(candidate =>
+    candidate.id === replyTarget?.conversationId);
   const engines = enginesQuery.data ?? [];
   const project = projectsQuery.data?.find(
     item => item.id === selectedProjectId,
@@ -470,17 +487,25 @@ export function AllChatView({
       if (!activeProjectId) throw new Error("Select a message to establish a Project first");
       if (!body.trim() && files.length === 0)
         throw new Error("Message text or an attachment is required");
-      const selectedConversationId = selected && selected.source.kind !== "agent"
-        ? selected.source.conversationId
-        : undefined;
-      const creationConversation = selectedConversationId
-        ? conversationsQuery.data?.find(candidate => candidate.id === selectedConversationId)
-        : conversationsQuery.data?.find(candidate => !candidate.archived);
       const requestId = createClientId();
       const validAgents = new Map((projectAgentsQuery.data ?? []).filter(agent =>
         !agent.archived).map(agent => [agent.id, agent]));
       const recipientIds = [...new Set(mentionedAgents.map(binding => binding.agentId))]
         .filter(agentId => validAgents.has(agentId));
+      const recipientConversationIds = [...new Set(recipientIds.flatMap(agentId => {
+        const conversationId = validAgents.get(agentId)?.conversationId;
+        return conversationId ? [conversationId] : [];
+      }))];
+      if (recipientConversationIds.length > 1) {
+        throw new Error("One message can address Agents from only one Chat");
+      }
+      const selectedConversationId = selected && selected.source.kind !== "agent"
+        ? selected.source.conversationId
+        : undefined;
+      const creationConversationId = recipientConversationIds[0] ?? selectedConversationId;
+      const creationConversation = creationConversationId
+        ? conversationsQuery.data?.find(candidate => candidate.id === creationConversationId)
+        : conversationsQuery.data?.find(candidate => !candidate.archived);
       const newAgentCount = messageTagTokens(body).filter(token =>
         token.handle.toLocaleLowerCase() === "new-agent").length;
       if (recipientIds.length === 0 && newAgentCount === 0) {
@@ -513,20 +538,11 @@ export function AllChatView({
         createdAgentIds.push(created.id);
       }
       if (recipientIds.length > 0) {
-        const activeConversations = new Map(
-          (conversationsQuery.data ?? [])
-            .filter(candidate => !candidate.archived)
-            .map(candidate => [candidate.id, candidate]),
-        );
-        const recipientsByConversation = new Map<string, string[]>();
-        for (const agentId of recipientIds) {
-          const conversationId = validAgents.get(agentId)?.conversationId;
-          if (!conversationId || !activeConversations.has(conversationId)) {
-            throw new Error("Every addressed Agent must belong to an active Chat");
-          }
-          const group = recipientsByConversation.get(conversationId) ?? [];
-          group.push(agentId);
-          recipientsByConversation.set(conversationId, group);
+        const conversationId = recipientConversationIds[0];
+        const conversation = conversationsQuery.data?.find(candidate =>
+          candidate.id === conversationId && !candidate.archived);
+        if (!conversationId || !conversation) {
+          throw new Error("Every addressed Agent must belong to one active Chat");
         }
         const uploaded = await uploadFilesForRecipients(
           recipientIds,
@@ -535,23 +551,21 @@ export function AllChatView({
           (agentId, attachment) => api.deleteAttachment(agentId, attachment.id),
         );
         const uploadedByAgentId = new Map(uploaded.map(item => [item.agentId, item]));
-        for (const [conversationId, conversationRecipientIds] of recipientsByConversation) {
-          const response = await api.sendMultiAgentDirectMessage(conversationId, {
-            text: body.trim(),
-            recipients: conversationRecipientIds.map((agentId) => ({
-              agentId,
-              attachmentIds: (uploadedByAgentId.get(agentId)?.attachments ?? [])
-                .map(attachment => attachment.id),
-            })),
-            idempotencyKey: `${requestId}:${conversationId}`,
-            activeRunDelivery: "steer",
-            ...(recipientIds.length === 1 && selectedRuntime.model ? { model: selectedRuntime.model } : {}),
-            ...(recipientIds.length === 1 && selectedRuntime.effort ? { effort: selectedRuntime.effort } : {}),
-            ...(recipientIds.length === 1 && selectedRuntime.speed ? { speed: selectedRuntime.speed } : {}),
-          });
-          deliveredRecipientIds.push(...response.recipients.map(recipient => recipient.agentId));
-          unavailableCount += response.unavailableRecipients?.length ?? 0;
-        }
+        const response = await api.sendMultiAgentDirectMessage(conversationId, {
+          text: body.trim(),
+          recipients: recipientIds.map((agentId) => ({
+            agentId,
+            attachmentIds: (uploadedByAgentId.get(agentId)?.attachments ?? [])
+              .map(attachment => attachment.id),
+          })),
+          idempotencyKey: `${requestId}:${conversationId}`,
+          activeRunDelivery: "steer",
+          ...(recipientIds.length === 1 && selectedRuntime.model ? { model: selectedRuntime.model } : {}),
+          ...(recipientIds.length === 1 && selectedRuntime.effort ? { effort: selectedRuntime.effort } : {}),
+          ...(recipientIds.length === 1 && selectedRuntime.speed ? { speed: selectedRuntime.speed } : {}),
+        });
+        deliveredRecipientIds = response.recipients.map(recipient => recipient.agentId);
+        unavailableCount = response.unavailableRecipients?.length ?? 0;
       }
       return {
         recipientIds: [...deliveredRecipientIds, ...createdAgentIds],
@@ -626,6 +640,8 @@ export function AllChatView({
     setReplyTarget({
       ...item.directMessageAgent,
       projectId: item.project.id,
+      conversationId: projectAgentsQuery.data?.find(candidate =>
+        candidate.id === item.directMessageAgent?.id)?.conversationId,
     });
     setMentionInsertRequest({
       id: `${item.communicationEventId}:${Date.now()}`,
@@ -1106,6 +1122,9 @@ export function AllChatView({
           }
           onCapabilitiesOpen={refreshSelectedCapabilities}
           onCommand={replyTarget ? invokeCommand : undefined}
+          leadingControls={replyConversation ? (
+            <Chip size="small" variant="outlined" label={`In ${replyConversation.title}`} />
+          ) : undefined}
           controls={runtimeControls}
           disabled={send.isPending || updateRuntimeEngine.isPending}
           running={false}
