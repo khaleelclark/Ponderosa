@@ -484,6 +484,11 @@ export function registerConversationDeliveryRoutes(
       if (!master || master.archived) return reply.code(404).send({ error: "conversation not found" });
       if (projectDeletionInProgress(master.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
       const targets = agentIds.map((agentId) => store.getAgent(agentId));
+      if (targets.some((target) =>
+        target && target.projectId === master.projectId && target.conversationId !== master.id
+      )) {
+        return reply.code(409).send({ error: "Addressed Agents must belong to this Chat" });
+      }
       const unavailableRecipients: NonNullable<MultiAgentDirectMessageResponse["unavailableRecipients"]> = [];
       recipients.forEach((recipient, index) => {
         const target = targets[index];
