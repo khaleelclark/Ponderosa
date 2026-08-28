@@ -932,10 +932,22 @@ export function Composer({
         cancelled = true;
       };
     }
-    void api
-      .listProjectArtifacts(projectId, 500)
-      .then(response => {
-        if (!cancelled) setFileEntries(response.items);
+    void (async () => {
+      const items: ArtifactDto[] = [];
+      let cursor: string | undefined;
+      do {
+        const response = await api.listProjectArtifacts(projectId, 500, cursor);
+        items.push(...response.items);
+        const nextCursor = response.history.hasMore
+          ? response.history.cursor
+          : undefined;
+        if (!nextCursor || nextCursor === cursor) break;
+        cursor = nextCursor;
+      } while (!cancelled);
+      return items;
+    })()
+      .then(items => {
+        if (!cancelled) setFileEntries(items);
       })
       .catch(() => {
         if (!cancelled) setFileEntries([]);
