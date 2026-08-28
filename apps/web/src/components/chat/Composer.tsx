@@ -543,6 +543,9 @@ export function Composer({
     );
     requestAnimationFrame(() => inputRef.current?.focus());
   };
+  const clearActiveDefaultDestination = useCallback(() => {
+    setActiveDefaultDestination(undefined);
+  }, []);
   const clearRequiredRecipient = () => {
     const handle = targetRequiredHandles[0] ?? requiredRecipient?.handle;
     if (handle) update(current => removeHandle(current, handle));
@@ -1405,6 +1408,16 @@ export function Composer({
             menuSuggestions={menuSuggestions}
             destinationMode={destinationMode}
             requiredRecipient={requiredRecipient}
+            inlineDestination={activeDefaultDestination
+              ? {
+                  handle: activeDefaultDestination.handle,
+                  title:
+                    activeDefaultDestination.binding?.currentTitle ??
+                    activeDefaultDestination.handle,
+                  agentId: activeDefaultDestination.binding?.agentId,
+                  onClear: clearActiveDefaultDestination,
+                }
+              : undefined}
             mentionTokens={mentionTokens}
             mentionBindings={mentionBindings ?? []}
             mentionedBusyHandles={mentionedBusyHandles}

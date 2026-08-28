@@ -32,7 +32,9 @@ import { HistoryPlugin } from "@lexical/react/LexicalHistoryPlugin";
 import { RichTextPlugin } from "@lexical/react/LexicalRichTextPlugin";
 import {
   forwardRef,
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
@@ -63,6 +65,7 @@ export type ComposerMentionDescriptor = {
   valid: boolean;
   kind: "agent" | "special";
   agentId?: string;
+  structural?: boolean;
 };
 
 export type ComposerSelectionOffsets = { start: number; end: number };
@@ -90,9 +93,14 @@ type SerializedMentionNode = Spread<
     handle: string;
     title: string;
     valid: boolean;
+    structural?: boolean;
   },
   SerializedLexicalNode
 >;
+
+const StructuralDestinationRemovalContext = createContext<
+  (() => void) | undefined
+>(undefined);
 
 class ComposerMentionNode extends DecoratorNode<ReactNode> {
   __kind: "agent" | "special";
@@ -100,6 +108,7 @@ class ComposerMentionNode extends DecoratorNode<ReactNode> {
   __handle: string;
   __title: string;
   __valid: boolean;
+  __structural: boolean;
 
   static override getType(): string {
     return "composer-mention";
@@ -112,6 +121,7 @@ class ComposerMentionNode extends DecoratorNode<ReactNode> {
       node.__title,
       node.__valid,
       node.__agentId,
+      node.__structural,
       node.__key,
     );
   }
@@ -123,6 +133,7 @@ class ComposerMentionNode extends DecoratorNode<ReactNode> {
       serialized.title,
       serialized.valid,
       serialized.agentId,
+      serialized.structural,
     );
   }
 
@@ -132,6 +143,7 @@ class ComposerMentionNode extends DecoratorNode<ReactNode> {
     title: string,
     valid: boolean,
     agentId?: string,
+    structural = false,
     key?: NodeKey,
   ) {
     super(key);
@@ -140,6 +152,7 @@ class ComposerMentionNode extends DecoratorNode<ReactNode> {
     this.__handle = handle;
     this.__title = title;
     this.__valid = valid;
+    this.__structural = structural;
   }
 
   override exportJSON(): SerializedMentionNode {
@@ -152,6 +165,7 @@ class ComposerMentionNode extends DecoratorNode<ReactNode> {
       handle: this.__handle,
       title: this.__title,
       valid: this.__valid,
+      structural: this.__structural,
     };
   }
 
@@ -188,6 +202,7 @@ class ComposerMentionNode extends DecoratorNode<ReactNode> {
       handle: this.__handle,
       title: this.__title,
       valid: this.__valid,
+      structural: this.__structural,
     };
   }
 
@@ -198,6 +213,11 @@ class ComposerMentionNode extends DecoratorNode<ReactNode> {
     writable.__handle = descriptor.handle;
     writable.__title = descriptor.title;
     writable.__valid = descriptor.valid;
+    writable.__structural = descriptor.structural ?? false;
+  }
+
+  isStructural(): boolean {
+    return this.__structural;
   }
 
   override decorate(): ReactNode {
@@ -208,6 +228,7 @@ class ComposerMentionNode extends DecoratorNode<ReactNode> {
         title={this.__title}
         valid={this.__valid}
         kind={this.__kind}
+        structural={this.__structural}
       />
     );
   }
@@ -222,6 +243,7 @@ function $createComposerMentionNode(
     descriptor.title,
     descriptor.valid,
     descriptor.agentId,
+    descriptor.structural,
   );
 }
 
@@ -237,15 +259,24 @@ function ComposerMentionToken({
   title,
   valid,
   kind,
+  structural,
 }: {
   nodeKey: NodeKey;
   handle: string;
   title: string;
   valid: boolean;
   kind: "agent" | "special";
+  structural: boolean;
 }): JSX.Element {
   const [editor] = useLexicalComposerContext();
+  const removeStructuralDestination = useContext(
+    StructuralDestinationRemovalContext,
+  );
   const remove = useCallback(() => {
+    if (structural) {
+      removeStructuralDestination?.();
+      return;
+    }
     editor.update(() => {
       const node = $getNodeByKey(nodeKey);
       if (!$isComposerMentionNode(node)) return;
@@ -260,7 +291,7 @@ function ComposerMentionToken({
       }
     });
     requestAnimationFrame(() => editor.focus());
-  }, [editor, nodeKey]);
+  }, [editor, nodeKey, removeStructuralDestination, structural]);
 
   return (
     <Box
@@ -329,7 +360,19 @@ function ComposerMentionToken({
 }
 
 function nodeTextLength(node: LexicalNode): number {
+  if ($isComposerMentionNode(node) && node.isStructural()) return 0;
   return node.getTextContent().length;
+}
+
+function $canonicalText(): string {
+  const root = $getRoot();
+  const paragraph = root.getFirstChild();
+  if (!paragraph || !$isElementNode(paragraph)) return "";
+  return paragraph.getChildren().map(node =>
+    $isComposerMentionNode(node) && node.isStructural()
+      ? ""
+      : node.getTextContent(),
+  ).join("");
 }
 
 function $canonicalOffsetForPoint(point: {
@@ -342,7 +385,7 @@ function $canonicalOffsetForPoint(point: {
   if (!paragraph || !$isElementNode(paragraph)) return 0;
   const children = paragraph.getChildren();
   if (point.key === root.getKey()) {
-    return point.offset <= 0 ? 0 : paragraph.getTextContentSize();
+    return point.offset <= 0 ? 0 : $canonicalText().length;
   }
   if (point.key === paragraph.getKey() && point.type === "element") {
     return children
@@ -364,7 +407,7 @@ function $canonicalOffsetForPoint(point: {
 
 function $selectionOffsets(): ComposerSelectionOffsets {
   const selection = $getSelection();
-  const end = $getRoot().getTextContentSize();
+  const end = $canonicalText().length;
   if (!$isRangeSelection(selection)) return { start: end, end };
   return {
     start: $canonicalOffsetForPoint(selection.anchor),
@@ -383,7 +426,7 @@ function $pointForCanonicalOffset(offset: number): {
     return { key: root.getKey(), offset: 0, type: "element" };
   }
   const children = paragraph.getChildren();
-  const bounded = Math.max(0, Math.min(offset, paragraph.getTextContentSize()));
+  const bounded = Math.max(0, Math.min(offset, $canonicalText().length));
   let cursor = 0;
   for (let index = 0; index < children.length; index += 1) {
     const child = children[index]!;
@@ -465,11 +508,18 @@ function $resetCanonicalDocument(
   text: string,
   descriptors: readonly ComposerMentionDescriptor[],
   selection?: ComposerSelectionOffsets,
+  structuralDestination?: Omit<ComposerMentionDescriptor, "start" | "end">,
 ): void {
   const root = $getRoot();
   root.clear();
   const paragraph = $createParagraphNode();
   root.append(paragraph);
+  if (structuralDestination) {
+    paragraph.append($createComposerMentionNode({
+      ...structuralDestination,
+      structural: true,
+    }));
+  }
   paragraph.append(...$appendCanonicalContent(text, descriptors));
   const next = selection ?? { start: text.length, end: text.length };
   $setSelectionOffsets(
@@ -492,6 +542,8 @@ function EditorBridge({
   text,
   mentionDescriptors,
   mentionBindings,
+  structuralDestination,
+  onClearStructuralDestination,
   disabled,
   attachmentsEnabled,
   pastedText,
@@ -504,6 +556,8 @@ function EditorBridge({
   text: string;
   mentionDescriptors: readonly ComposerMentionDescriptor[];
   mentionBindings: readonly AgentMentionBindingDto[];
+  structuralDestination?: Omit<ComposerMentionDescriptor, "start" | "end">;
+  onClearStructuralDestination?(): void;
   disabled: boolean;
   attachmentsEnabled: boolean;
   pastedText?: string;
@@ -515,7 +569,9 @@ function EditorBridge({
   const [editor] = useLexicalComposerContext();
   const canonicalRef = useRef(text);
   const descriptorsRef = useRef(mentionDescriptors);
+  const structuralDestinationRef = useRef(structuralDestination);
   descriptorsRef.current = mentionDescriptors;
+  structuralDestinationRef.current = structuralDestination;
 
   useImperativeHandle(editorRef, () => ({
     focus: () => editor.focus(),
@@ -557,10 +613,20 @@ function EditorBridge({
       });
     },
     resetDocument: value => {
-      editor.update(() => $resetCanonicalDocument(value, descriptorsRef.current));
+      editor.update(() => $resetCanonicalDocument(
+        value,
+        descriptorsRef.current,
+        undefined,
+        structuralDestinationRef.current,
+      ));
     },
     clear: () => {
-      editor.update(() => $resetCanonicalDocument("", []));
+      editor.update(() => $resetCanonicalDocument(
+        "",
+        [],
+        undefined,
+        structuralDestinationRef.current,
+      ));
     },
   }), [editor]);
 
@@ -571,9 +637,32 @@ function EditorBridge({
   useEffect(() => {
     return editor.registerUpdateListener(({ editorState, dirtyElements, dirtyLeaves }) => {
       editorState.read(() => {
-        const canonical = $getRoot().getTextContent();
+        const canonical = $canonicalText();
         const offsets = $selectionOffsets();
         canonicalRef.current = canonical;
+        const structuralNodes = $getRoot().getChildren().flatMap(rootChild =>
+          $isElementNode(rootChild)
+            ? rootChild.getChildren().filter(
+                child =>
+                  $isComposerMentionNode(child) && child.isStructural(),
+              )
+            : [],
+        );
+        if (structuralDestination) {
+          if (structuralNodes.length === 0) {
+            queueMicrotask(() => onClearStructuralDestination?.());
+          }
+        } else if (structuralNodes.length > 0) {
+          const structuralNodeKeys = structuralNodes.map(node => node.getKey());
+          queueMicrotask(() => editor.update(() => {
+            for (const structuralNodeKey of structuralNodeKeys) {
+              const current = $getNodeByKey(structuralNodeKey);
+              if ($isComposerMentionNode(current) && current.isStructural()) {
+                current.remove();
+              }
+            }
+          }));
+        }
         if (dirtyElements.size > 0 || dirtyLeaves.size > 0) {
           onTextChange(canonical, offsets.end);
         } else {
@@ -581,16 +670,21 @@ function EditorBridge({
         }
       });
     });
-  }, [editor, onTextChange]);
+  }, [editor, onClearStructuralDestination, onTextChange, structuralDestination]);
 
   useLayoutEffect(() => {
     if (text === canonicalRef.current) return;
     editor.update(() => {
       const selection = $selectionOffsets();
-      $resetCanonicalDocument(text, mentionDescriptors, selection);
+      $resetCanonicalDocument(
+        text,
+        mentionDescriptors,
+        selection,
+        structuralDestination,
+      );
       canonicalRef.current = text;
     });
-  }, [editor, mentionDescriptors, text]);
+  }, [editor, mentionDescriptors, structuralDestination, text]);
 
   useEffect(() => {
     editor.update(() => {
@@ -601,11 +695,63 @@ function EditorBridge({
         if ($isElementNode(node)) node.getChildren().forEach(visit);
       };
       $getRoot().getChildren().forEach(visit);
+      const structuralNodes = mentionNodes.filter(node => node.isStructural());
+      const selectionBeforeStructuralSync = $selectionOffsets();
+      let structuralChanged = false;
+      if (structuralDestination) {
+        const existing = structuralNodes[0];
+        if (existing) {
+          const current = existing.getDescriptor();
+          if (
+            current.handle !== structuralDestination.handle ||
+            current.title !== structuralDestination.title ||
+            current.valid !== structuralDestination.valid ||
+            current.agentId !== structuralDestination.agentId
+          ) {
+            existing.reconcile({
+              ...structuralDestination,
+              structural: true,
+            });
+            structuralChanged = true;
+          }
+        } else {
+          const paragraph = $getRoot().getFirstChild();
+          if ($isElementNode(paragraph)) {
+            const node = $createComposerMentionNode({
+              ...structuralDestination,
+              structural: true,
+            });
+            const first = paragraph.getFirstChild();
+            if (first) first.insertBefore(node);
+            else paragraph.append(node);
+            structuralChanged = true;
+          }
+        }
+        for (const duplicate of structuralNodes.slice(1)) {
+          duplicate.remove();
+          structuralChanged = true;
+        }
+      } else {
+        for (const node of structuralNodes) {
+          node.remove();
+          structuralChanged = true;
+        }
+      }
+      if (structuralChanged) {
+        $setSelectionOffsets(
+          selectionBeforeStructuralSync.start,
+          selectionBeforeStructuralSync.end,
+        );
+        return;
+      }
+      const authoredMentionNodes = mentionNodes.filter(
+        node => !node.isStructural(),
+      );
       const currentById = new Map(
         mentionBindings.map(binding => [binding.agentId, binding]),
       );
       let lifecycleChanged = false;
-      for (const node of mentionNodes) {
+      for (const node of authoredMentionNodes) {
         const current = node.getDescriptor();
         if (current.kind !== "agent" || !current.agentId) continue;
         const binding = currentById.get(current.agentId);
@@ -627,13 +773,18 @@ function EditorBridge({
         }
       }
       if (lifecycleChanged) return;
-      if (mentionNodes.length !== desired.length) {
+      if (authoredMentionNodes.length !== desired.length) {
         const selection = $selectionOffsets();
-        $resetCanonicalDocument(canonicalRef.current, desired, selection);
+        $resetCanonicalDocument(
+          canonicalRef.current,
+          desired,
+          selection,
+          structuralDestination,
+        );
         return;
       }
-      for (let index = 0; index < mentionNodes.length; index += 1) {
-        const node = mentionNodes[index]!;
+      for (let index = 0; index < authoredMentionNodes.length; index += 1) {
+        const node = authoredMentionNodes[index]!;
         const descriptor = desired[index]!;
         const current = node.getDescriptor();
         if (
@@ -647,7 +798,7 @@ function EditorBridge({
         }
       }
     });
-  }, [editor, mentionBindings, mentionDescriptors]);
+  }, [editor, mentionBindings, mentionDescriptors, structuralDestination]);
 
   useEffect(() => {
     const copy = (event: ClipboardEvent | KeyboardEvent | null): boolean => {
@@ -745,6 +896,12 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
   menuSuggestions: ComposerMenuSuggestion[];
   destinationMode?: "project-chat" | "fixed" | "target-required";
   requiredRecipient?: { handle: string; title: string; onClear(): void };
+  inlineDestination?: {
+    handle: string;
+    title: string;
+    agentId?: string;
+    onClear(): void;
+  };
   mentionDescriptors: ComposerMentionDescriptor[];
   mentionBindings: AgentMentionBindingDto[];
   canSend: boolean;
@@ -771,6 +928,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
   menuSuggestions,
   destinationMode,
   requiredRecipient,
+  inlineDestination,
   mentionDescriptors,
   mentionBindings,
   canSend,
@@ -792,6 +950,17 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
   }, [ref]);
   const initialTextRef = useRef(text);
   const initialDescriptorsRef = useRef(mentionDescriptors);
+  const structuralDestination = inlineDestination
+    ? {
+        kind: "agent" as const,
+        agentId: inlineDestination.agentId,
+        handle: inlineDestination.handle,
+        title: inlineDestination.title,
+        valid: true,
+        structural: true,
+      }
+    : undefined;
+  const initialStructuralDestinationRef = useRef(structuralDestination);
   const initialConfig = useRef({
     namespace: "PonderosaComposer",
     nodes: [ComposerMentionNode],
@@ -799,7 +968,12 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
       throw error;
     },
     editorState: () => {
-      $resetCanonicalDocument(initialTextRef.current, initialDescriptorsRef.current);
+      $resetCanonicalDocument(
+        initialTextRef.current,
+        initialDescriptorsRef.current,
+        undefined,
+        initialStructuralDestinationRef.current,
+      );
     },
   }).current;
 
@@ -870,6 +1044,9 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
   };
 
   return (
+    <StructuralDestinationRemovalContext.Provider
+      value={inlineDestination?.onClear}
+    >
     <LexicalComposer initialConfig={initialConfig}>
       <Box
         sx={{
@@ -941,6 +1118,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
           text={text}
           mentionDescriptors={mentionDescriptors}
           mentionBindings={mentionBindings}
+          structuralDestination={structuralDestination}
+          onClearStructuralDestination={inlineDestination?.onClear}
           disabled={disabled || locked}
           attachmentsEnabled={attachmentsEnabled}
           pastedText={pastedText}
@@ -951,5 +1130,6 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
         />
       </Box>
     </LexicalComposer>
+    </StructuralDestinationRemovalContext.Provider>
   );
 });

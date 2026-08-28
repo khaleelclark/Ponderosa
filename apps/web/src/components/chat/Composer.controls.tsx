@@ -137,6 +137,7 @@ export function ComposerTextInput({
   menuSuggestions,
   destinationMode,
   requiredRecipient,
+  inlineDestination,
   mentionTokens,
   mentionBindings,
   mentionedBusyHandles,
@@ -166,6 +167,12 @@ export function ComposerTextInput({
   menuSuggestions: ComposerMenuSuggestion[];
   destinationMode?: "project-chat" | "fixed" | "target-required";
   requiredRecipient?: { handle: string; title: string; onClear(): void };
+  inlineDestination?: {
+    handle: string;
+    title: string;
+    agentId?: string;
+    onClear(): void;
+  };
   mentionTokens: ComposerMentionDescriptor[];
   mentionBindings: AgentMentionBindingDto[];
   mentionedBusyHandles: string[];
@@ -198,6 +205,7 @@ export function ComposerTextInput({
         menuSuggestions={menuSuggestions}
         destinationMode={destinationMode}
         requiredRecipient={requiredRecipient}
+        inlineDestination={inlineDestination}
         mentionDescriptors={mentionTokens}
         mentionBindings={mentionBindings}
         canSend={canSend}
