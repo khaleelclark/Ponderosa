@@ -343,6 +343,25 @@ export function WorkspaceSidebar({
     setFilter(remembered?.filter ?? "");
     if (!drawer && collapsed) onCollapsedChange?.(false);
   };
+  const reorderRailProject = (
+    sourceProjectId: string,
+    targetProjectId: string,
+    position: "before" | "after",
+  ) => {
+    const currentOrder = stableRailProjects.map(project => project.id);
+    const projectOrder = reorderStableIds(
+      currentOrder,
+      currentOrder,
+      sourceProjectId,
+      targetProjectId,
+      position,
+    );
+    if (projectOrder.every((projectId, index) => projectId === currentOrder[index])) {
+      return;
+    }
+    railProjectIds.current = projectOrder;
+    onPreferences({ projectSort: "custom", projectOrder });
+  };
   const openTriggerManager = (
     projectId: string,
     _agentId: string | undefined,
@@ -380,6 +399,7 @@ export function WorkspaceSidebar({
       attentionNotifications={counts.attention}
       unreadNotificationUpdates={counts.updates}
       projectUnread={projectUnread}
+      onReorderProject={reorderRailProject}
       onOpenHome={() => showNavigation({ kind: "home" })}
       onOpenAllMessages={() => showNavigation({ kind: "allChat" })}
       onOpenProject={openProject}
