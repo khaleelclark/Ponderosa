@@ -123,6 +123,7 @@ function ItemCard({
   statusLabel,
   statusAccessibleLabel,
   statusDetail,
+  multilineDetail = false,
   onClick,
 }: {
   icon: JSX.Element;
@@ -132,27 +133,57 @@ function ItemCard({
   statusLabel?: string;
   statusAccessibleLabel?: string;
   statusDetail?: string;
+  multilineDetail?: boolean;
   onClick(): void;
 }): JSX.Element {
   return (
-    <Paper variant="outlined" sx={{ minWidth: 0, overflow: "hidden" }}>
+    <Paper
+      variant="outlined"
+      sx={{ minWidth: 0, height: "100%", overflow: "hidden" }}
+    >
       <ButtonBase
         onClick={onClick}
-        sx={{ width: "100%", p: 1.35, gap: 1.25, justifyContent: "flex-start", textAlign: "left" }}
+        sx={{
+          width: "100%",
+          minHeight: multilineDetail ? 78 : undefined,
+          height: "100%",
+          p: 1.35,
+          gap: 1.25,
+          justifyContent: "flex-start",
+          textAlign: "left",
+          overflow: "hidden",
+        }}
       >
         <Box sx={{ width: 36, height: 36, borderRadius: 1.25, bgcolor: "action.selected", color: "text.secondary", display: "grid", placeItems: "center", flexShrink: 0 }}>
           {icon}
         </Box>
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Typography fontWeight={750} noWrap>{title}</Typography>
-          <Typography variant="caption" color="text.secondary" noWrap>{detail}</Typography>
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            noWrap={!multilineDetail}
+            sx={multilineDetail ? {
+              display: "-webkit-box",
+              minHeight: "2.7em",
+              overflow: "hidden",
+              overflowWrap: "anywhere",
+              WebkitBoxOrient: "vertical",
+              WebkitLineClamp: 2,
+              lineHeight: 1.35,
+            } : undefined}
+          >
+            {detail}
+          </Typography>
         </Box>
         {status ? (
-          <SemanticStatus
-            status={status}
-            label={statusLabel}
-            detail={statusDetail ?? statusAccessibleLabel}
-          />
+          <Box sx={{ flexShrink: 0 }}>
+            <SemanticStatus
+              status={status}
+              label={statusLabel}
+              detail={statusDetail ?? statusAccessibleLabel}
+            />
+          </Box>
         ) : null}
       </ButtonBase>
     </Paper>
@@ -281,6 +312,7 @@ export function HomeView({
                       detail={item.body}
                       status="needs_attention"
                       statusLabel={item.severity === "urgent" ? "Urgent" : "Review"}
+                      multilineDetail
                       onClick={() => route ? onNavigate(route) : onOpenInbox()}
                     />
                   );
