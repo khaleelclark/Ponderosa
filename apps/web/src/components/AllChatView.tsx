@@ -189,6 +189,8 @@ export function AllChatView({
     id: string;
     text: string;
   }>();
+  const mentionedHandlesRef = useRef<string[]>([]);
+  const pendingMentionTargetId = useRef<string>();
   const availableProjectIds = useMemo(
     () => projectsQuery.data
       ? new Set(projectsQuery.data.map(project => project.id))
@@ -655,6 +657,7 @@ export function AllChatView({
     },
   });
   const selectItem = (item: AllChatItemDto) => {
+    pendingMentionTargetId.current = undefined;
     setSelectedId(item.communicationEventId);
     setMentionInsertRequest(undefined);
     setNotice(undefined);
@@ -662,6 +665,7 @@ export function AllChatView({
     send.reset();
   };
   const clearReplyTarget = () => {
+    pendingMentionTargetId.current = undefined;
     if (replyTarget) {
       setMentionRemoveRequest({
         id: `clear:${replyTarget.id}:${Date.now()}`,
@@ -671,6 +675,7 @@ export function AllChatView({
     setReplyTarget(undefined);
   };
   const syncReplyTargetFromMentions = useCallback((handles: string[]) => {
+    mentionedHandlesRef.current = handles;
     const agentHandles = handles.filter(
       (handle) => !["broadcast", "user", "everyone", "new-agent"].includes(handle.toLocaleLowerCase()),
     );
@@ -679,6 +684,13 @@ export function AllChatView({
       return target ? [target] : [];
     });
     setReplyTarget((current) => {
+      if (current && pendingMentionTargetId.current === current.id) {
+        if (agentHandles.some(handle =>
+          current.handle.toLocaleLowerCase() === handle.toLocaleLowerCase())) {
+          pendingMentionTargetId.current = undefined;
+        }
+        return current;
+      }
       if (current && agentHandles.some(handle =>
         current.handle.toLocaleLowerCase() === handle.toLocaleLowerCase())) return current;
       if (resolved.length === 1) return resolved[0];
@@ -689,14 +701,10 @@ export function AllChatView({
     selectItem(item);
     if (!item.directMessageAgent) return;
     const handle = item.directMessageAgent.handle;
-    if (replyTarget?.id === item.directMessageAgent.id) {
-      setMentionRemoveRequest({
-        id: `${item.communicationEventId}:remove:${Date.now()}`,
-        text: `#${handle}`,
-      });
-      setReplyTarget(undefined);
-      return;
-    }
+    pendingMentionTargetId.current = mentionedHandlesRef.current.some(candidate =>
+      candidate.toLocaleLowerCase() === handle.toLocaleLowerCase())
+      ? undefined
+      : item.directMessageAgent.id;
     setReplyTarget({
       ...item.directMessageAgent,
       projectId: item.project.id,
