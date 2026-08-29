@@ -741,6 +741,16 @@ export function WorkspaceSidebar({
                   )}
                 </IconButton>
               </Tooltip>
+            ) : depth > 0 ? (
+              <Box
+                aria-hidden
+                sx={{
+                  width: 12,
+                  borderTop: 1,
+                  borderColor: "primary.main",
+                  opacity: 0.55,
+                }}
+              />
             ) : null}
           </Box>
           <ListItemButton
@@ -754,9 +764,32 @@ export function WorkspaceSidebar({
                 agentId: agent.id,
               })
             }
-            sx={{ borderRadius: 1.25, px: 1, py: 0.65, minWidth: 0 }}
+            sx={{
+              borderRadius: 1.25,
+              px: 1,
+              py: 0.65,
+              minWidth: 0,
+              ...(depth > 0
+                ? {
+                    bgcolor: "var(--ponderosa-delegated-surface)",
+                    borderLeft: 2,
+                    borderLeftColor: "primary.main",
+                    "&:hover": {
+                      bgcolor: "var(--ponderosa-delegated-hover)",
+                    },
+                    "&.Mui-selected": {
+                      bgcolor: "var(--ponderosa-delegated-hover)",
+                    },
+                    "&.Mui-selected:hover": {
+                      bgcolor: "var(--ponderosa-delegated-hover)",
+                    },
+                  }
+                : undefined),
+            }}
           >
-            <ListItemIcon sx={{ minWidth: 38 }}>
+            <ListItemIcon
+              sx={{ minWidth: 38, color: depth > 0 ? "primary.light" : undefined }}
+            >
               <SmartToyOutlinedIcon fontSize="small" />
             </ListItemIcon>
             <ListItemText
