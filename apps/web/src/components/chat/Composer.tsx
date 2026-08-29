@@ -372,12 +372,16 @@ export function Composer({
     retryUpload: retryDraftUpload,
     uploadStates: draftUploadStates,
   } = draftAttachments;
+  const renderedDefaultDestination = destinationMode === "target-required"
+    ? defaultDestination
+    : activeDefaultDestination;
   const composedText = composerSubmissionText(text, pastedText);
   const submissionText =
-    destinationMode === "project-chat" && activeDefaultDestination
+    (destinationMode === "project-chat" || destinationMode === "target-required") &&
+    renderedDefaultDestination
       ? prependComposerDestination(
           composedText,
-          activeDefaultDestination.handle,
+          renderedDefaultDestination.handle,
         )
       : composedText;
   const routingMentionHandles = useMemo(
@@ -744,7 +748,22 @@ export function Composer({
   useEffect(() => {
     if (conversationDraftId && !draftReady.current) return;
     const previous = appliedDefaultDestination.current;
-    if (!defaultDestination || destinationMode !== "project-chat") {
+    if (!defaultDestination) {
+      appliedDefaultDestination.current = undefined;
+      setActiveDefaultDestination(undefined);
+      return;
+    }
+    if (destinationMode === "target-required") {
+      appliedDefaultDestination.current = defaultDestination;
+      setActiveDefaultDestination(undefined);
+      const normalizedText = removeAllComposerDestinations(
+        textRef.current,
+        defaultDestination.handle,
+      );
+      if (normalizedText !== textRef.current) replaceText(normalizedText);
+      return;
+    }
+    if (destinationMode !== "project-chat") {
       appliedDefaultDestination.current = undefined;
       setActiveDefaultDestination(undefined);
       return;
@@ -1426,14 +1445,16 @@ export function Composer({
             menuSuggestions={menuSuggestions}
             destinationMode={destinationMode}
             requiredRecipient={requiredRecipient}
-            inlineDestination={activeDefaultDestination
+            inlineDestination={renderedDefaultDestination
               ? {
-                  handle: activeDefaultDestination.handle,
+                  handle: renderedDefaultDestination.handle,
                   title:
-                    activeDefaultDestination.binding?.currentTitle ??
-                    activeDefaultDestination.handle,
-                  agentId: activeDefaultDestination.binding?.agentId,
-                  onClear: clearActiveDefaultDestination,
+                    renderedDefaultDestination.binding?.currentTitle ??
+                    renderedDefaultDestination.handle,
+                  agentId: renderedDefaultDestination.binding?.agentId,
+                  onClear: destinationMode === "target-required"
+                    ? clearRequiredRecipient
+                    : clearActiveDefaultDestination,
                 }
               : undefined}
             mentionTokens={mentionTokens}

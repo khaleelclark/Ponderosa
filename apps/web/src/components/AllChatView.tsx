@@ -181,10 +181,6 @@ export function AllChatView({
     () => setDirectSendConfirmation(undefined),
     [],
   );
-  const [mentionInsertRequest, setMentionInsertRequest] = useState<{
-    id: string;
-    text: string;
-  }>();
   const [mentionRemoveRequest, setMentionRemoveRequest] = useState<{
     id: string;
     text: string;
@@ -657,7 +653,6 @@ export function AllChatView({
   const selectItem = (item: AllChatItemDto) => {
     pendingMentionTargetId.current = undefined;
     setSelectedId(item.communicationEventId);
-    setMentionInsertRequest(undefined);
     setNotice(undefined);
     setDirectSendConfirmation(undefined);
     send.reset();
@@ -708,10 +703,6 @@ export function AllChatView({
       projectId: item.project.id,
       conversationId: projectAgentsQuery.data?.find(candidate =>
         candidate.id === item.directMessageAgent?.id)?.conversationId,
-    });
-    setMentionInsertRequest({
-      id: `${item.communicationEventId}:${Date.now()}`,
-      text: `#${handle}`,
     });
   };
   const history = older ?? {
@@ -1199,7 +1190,6 @@ export function AllChatView({
               ? `Message ${replyTarget.title} directly`
               : "Select an Agent with # then write a message"
           }
-          insertTextRequest={mentionInsertRequest}
           removeTextRequest={mentionRemoveRequest}
           draftStorageKey="messages:composer"
           onSend={(body, files, draftAttachmentIds = [], draftOwnerId, context) =>
