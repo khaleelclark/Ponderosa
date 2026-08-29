@@ -41,7 +41,6 @@ import {
   ComposerDestinationBar,
   ComposerProjectDestinationAction,
   ComposerSendActions,
-  ComposerTargetDestinationAction,
 } from "./Composer.parts";
 import {
   ComposerAutocompleteMenu,
@@ -554,19 +553,6 @@ export function Composer({
   const clearRequiredRecipient = () => {
     const handle = targetRequiredHandles[0] ?? requiredRecipient?.handle;
     if (handle) update(current => removeHandle(current, handle));
-    requiredRecipient?.onClear();
-  };
-  const clearTargetDestinations = () => {
-    update(current => {
-      let next = current;
-      if (hasBroadcastDestination) {
-        next = removeHandle(next, "broadcast");
-      }
-      for (const handle of targetRequiredHandles) {
-        next = removeHandle(next, handle);
-      }
-      return next;
-    });
     requiredRecipient?.onClear();
   };
   const composerLocked = running && !allowSendWhileRunning;
@@ -1400,13 +1386,6 @@ export function Composer({
             disabled={disabled || composerLocked || sending}
             onFinalTranscript={insertDictatedText}
             onSettlingChange={handleDictationSettlingChange}
-          />
-        ) : null}
-        {destinationMode === "target-required" ? (
-          <ComposerTargetDestinationAction
-            broadcast={hasBroadcastDestination}
-            handles={targetRequiredHandles}
-            onClear={clearTargetDestinations}
           />
         ) : null}
         {destinationMode === "project-chat" ? (

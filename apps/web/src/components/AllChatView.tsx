@@ -371,8 +371,6 @@ export function AllChatView({
       replyTarget ? JSON.stringify(replyTarget) : "",
     );
   }, [replyTarget]);
-  const replyConversation = conversationsQuery.data?.find(candidate =>
-    candidate.id === replyTarget?.conversationId);
   const engines = enginesQuery.data ?? [];
   const project = projectsQuery.data?.find(
     item => item.id === selectedProjectId,
@@ -1188,11 +1186,9 @@ export function AllChatView({
           capabilities={
             selectedEngineCapabilities?.composerCapabilities ?? []
           }
+          enableVoiceDictation
           onCapabilitiesOpen={refreshSelectedCapabilities}
           onCommand={replyTarget ? invokeCommand : undefined}
-          leadingControls={replyConversation ? (
-            <Chip size="small" variant="outlined" label={`In ${replyConversation.title}`} />
-          ) : undefined}
           controls={runtimeControls}
           disabled={send.isPending || updateRuntimeEngine.isPending}
           running={false}
