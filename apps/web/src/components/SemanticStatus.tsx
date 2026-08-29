@@ -14,17 +14,16 @@ export type SemanticStatusKind =
 const STATUS_PRESENTATION: Record<SemanticStatusKind, {
   label: string;
   color: NonNullable<ChipProps["color"]>;
-  variant: NonNullable<ChipProps["variant"]>;
 }> = {
-  enabled: { label: "Enabled", color: "success", variant: "outlined" },
-  running: { label: "Running", color: "info", variant: "filled" },
-  waiting: { label: "Waiting", color: "warning", variant: "outlined" },
-  idle: { label: "Idle", color: "default", variant: "outlined" },
-  completed: { label: "Completed", color: "success", variant: "filled" },
-  needs_attention: { label: "Needs attention", color: "error", variant: "outlined" },
-  blocked: { label: "Blocked", color: "warning", variant: "filled" },
-  failed: { label: "Failed", color: "error", variant: "filled" },
-  disabled: { label: "Disabled", color: "default", variant: "outlined" },
+  enabled: { label: "Enabled", color: "success" },
+  running: { label: "Running", color: "info" },
+  waiting: { label: "Waiting", color: "warning" },
+  idle: { label: "Idle", color: "default" },
+  completed: { label: "Completed", color: "success" },
+  needs_attention: { label: "Needs attention", color: "error" },
+  blocked: { label: "Blocked", color: "warning" },
+  failed: { label: "Failed", color: "error" },
+  disabled: { label: "Disabled", color: "default" },
 };
 
 export function semanticStatusPresentation(kind: SemanticStatusKind) {
@@ -74,7 +73,7 @@ export function SemanticStatus({
       size={size}
       label={visibleLabel}
       color={presentation.color}
-      variant={presentation.variant}
+      variant="filled"
       aria-label={detail ? `${visibleLabel}. ${detail}` : visibleLabel}
       title={detail}
     />
