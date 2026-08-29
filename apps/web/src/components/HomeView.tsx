@@ -107,7 +107,18 @@ function SummaryCard({
   return (
     <Paper variant="outlined" sx={{ minWidth: 0, overflow: "hidden" }}>
       {onClick ? (
-        <ButtonBase onClick={onClick} sx={{ display: "block", width: "100%" }}>
+        <ButtonBase
+          onClick={onClick}
+          sx={{
+            display: "block",
+            width: "100%",
+            transition: theme => theme.transitions.create("background-color", {
+              duration: theme.transitions.duration.shortest,
+            }),
+            "&:hover": { bgcolor: "action.hover" },
+            "&.Mui-focusVisible": { bgcolor: "action.selected" },
+          }}
+        >
           {content}
         </ButtonBase>
       ) : content}
@@ -152,6 +163,11 @@ function ItemCard({
           justifyContent: "flex-start",
           textAlign: "left",
           overflow: "hidden",
+          transition: theme => theme.transitions.create("background-color", {
+            duration: theme.transitions.duration.shortest,
+          }),
+          "&:hover": { bgcolor: "action.hover" },
+          "&.Mui-focusVisible": { bgcolor: "action.selected" },
         }}
       >
         <Box sx={{ width: 36, height: 36, borderRadius: 1.25, bgcolor: "action.selected", color: "text.secondary", display: "grid", placeItems: "center", flexShrink: 0 }}>
