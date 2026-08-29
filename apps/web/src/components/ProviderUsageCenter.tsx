@@ -238,7 +238,10 @@ export function ProviderUsageCard({
 
 function constrainedProvider(providers: ProviderUsageStateDto[]): ProviderUsageStateDto | undefined {
   return providers
-    .filter((provider) => provider.authenticated)
+    .filter((provider) =>
+      provider.authenticated &&
+      !(provider.status === "unavailable" && provider.failure.code === "provider_disabled")
+    )
     .sort((left, right) => {
       const leftUsed = Math.max(-1, ...(usageData(left)?.windows.map((window) => window.usedPercent ?? -1) ?? [-1]));
       const rightUsed = Math.max(-1, ...(usageData(right)?.windows.map((window) => window.usedPercent ?? -1) ?? [-1]));
