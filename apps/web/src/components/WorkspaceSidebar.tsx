@@ -741,16 +741,6 @@ export function WorkspaceSidebar({
                   )}
                 </IconButton>
               </Tooltip>
-            ) : depth > 0 ? (
-              <Box
-                aria-hidden
-                sx={{
-                  width: 12,
-                  borderTop: 1,
-                  borderColor: "primary.main",
-                  opacity: 0.55,
-                }}
-              />
             ) : null}
           </Box>
           <ListItemButton
