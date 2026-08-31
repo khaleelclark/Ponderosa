@@ -365,6 +365,8 @@ try {
     ).href);
     const workspaceReview = await gitStatus.workspaceFile(
       "qualification",
+      "qualification-agent",
+      "qualification-working-copy",
       authorityRoot,
       "nested/safe.txt",
     );
@@ -372,6 +374,8 @@ try {
       "Installed workspace review failed a safe retained-root read.");
     const linkedReview = await gitStatus.workspaceFile(
       "qualification",
+      "qualification-agent",
+      "qualification-working-copy",
       authorityRoot,
       "directory-link/public.txt",
     );
