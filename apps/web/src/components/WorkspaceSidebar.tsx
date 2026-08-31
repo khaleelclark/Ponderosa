@@ -7,6 +7,7 @@ import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import {
   Box,
+  Chip,
   IconButton,
   List,
   ListItemButton,
