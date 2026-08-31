@@ -70,14 +70,6 @@ export interface LauncherState {
   shutdownRequestedAt?: string;
 }
 
-/** One-time upgrade input written by the pre-receipt launcher. Current code
- * may add exact authenticated identity evidence before shutdown, and removes
- * the record only after that authority drains. */
-export type LegacyLauncherState = Omit<
-  LauncherState,
-  "schemaVersion" | "generation" | "shutdownRequestedAt"
-> & { schemaVersion: 1 };
-
 export interface PublicLauncherState extends Omit<LauncherState, "controlToken"> {
   healthy: boolean;
   detail: string;

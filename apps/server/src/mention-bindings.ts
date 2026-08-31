@@ -25,12 +25,12 @@ export function communicationRecipientAgentIds(
   if (communication?.intent === "collaboration") {
     return communication.audience.agentIds;
   }
-  if (communication?.schemaVersion !== 2 || communication.intent !== "user_dm") {
+  if (communication?.intent !== "user_dm") {
     return [];
   }
   return communication.audience.kind === "user_agent"
     ? [communication.audience.agentId]
-    : communication.audience.agentIds;
+    : communication.audience.kind === "user_agents" ? communication.audience.agentIds : [];
 }
 
 /** Current names and immutable send-time labels are aliases for one recipient. */

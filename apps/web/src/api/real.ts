@@ -19,6 +19,7 @@ import type {
   AgentWorkInspectorDto,
   AgentWorkItemDetailsDto,
   AgentWorkItemDto,
+  AssetDto,
   ArtifactContentDto,
   ArtifactDto,
   BrowserControlRequest,
@@ -71,7 +72,6 @@ import type {
   HostFolderCreateDto,
   HistoryPageDto,
   HostFolderBrowseDto,
-  ImageAttachmentDto,
   ImportAgentPackageRequest,
   ImportAgentPackageResponse,
   LetCurrentRunFinishRequest,
@@ -867,8 +867,8 @@ export const realApi = {
       body: JSON.stringify(request satisfies SendMessageRequest),
     });
   },
-  uploadAttachment(agentId: string, file: File): Promise<ImageAttachmentDto> {
-    return requestJson<ImageAttachmentDto>(`/api/agents/${encodeURIComponent(agentId)}/attachments`, {
+  uploadAttachment(agentId: string, file: File): Promise<AssetDto> {
+    return requestJson<AssetDto>(`/api/agents/${encodeURIComponent(agentId)}/attachments`, {
       method: "POST",
       headers: {
         "content-type": "application/octet-stream",

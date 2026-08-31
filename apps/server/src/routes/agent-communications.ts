@@ -428,8 +428,7 @@ export function registerAgentCommunicationRoutes(
         });
         preparedArtifacts.push(messageArtifact);
       }
-      if (documentTitle && documentContent && !explicitDocumentMatchesMessage &&
-          (shouldBackTextWithArtifact(documentContent) || messageNeedsArtifact)) {
+      if (documentTitle && documentContent && (!explicitDocumentMatchesMessage || !messageArtifact)) {
         explicitDocumentArtifact = await stageCommunicationArtifact({
           projectId: currentAuthor.projectId,
           communicationId: communicationEventId,
@@ -446,7 +445,9 @@ export function registerAgentCommunicationRoutes(
       const status = error instanceof AssetError ? error.statusCode : 409;
       return reply.code(status).send({ error: error instanceof Error ? error.message : "long-text artifact staging failed" });
     }
-    const primaryArtifact = messageArtifact ?? explicitDocumentArtifact;
+    const primaryArtifact = documentTitle
+      ? (explicitDocumentMatchesMessage ? messageArtifact ?? explicitDocumentArtifact : explicitDocumentArtifact)
+      : messageArtifact;
     const document = primaryArtifact ? {
       id: replayCommunication?.document?.id ?? primaryArtifact.id,
       artifactId: primaryArtifact.id,
@@ -456,10 +457,6 @@ export function registerAgentCommunicationRoutes(
       authorAgentId: capability.agentId,
       executionId: capability.runId,
       createdAt,
-    } : documentTitle && documentContent ? {
-      id: replayCommunication?.document?.id ?? randomUUID(), title: documentTitle, mediaType: "text/markdown" as const,
-      content: documentContent, byteLength: Buffer.byteLength(documentContent, "utf8"),
-      authorAgentId: capability.agentId, executionId: capability.runId, createdAt,
     } : undefined;
     // The stable artifact reference remains in structured document metadata and
     // tool results. Do not leak the internal ponderosa:// URI into chat prose.

@@ -339,13 +339,7 @@ export class WorkspaceStore {
       ].join("\0"));
     }
     if (record.event.type === "preferences_updated") {
-      const persisted = record.event.preferences as WorkspacePreferencesDto & {
-        providerPermissionMode?: unknown;
-      };
-      const {
-        providerPermissionMode: _legacyProviderPermissionMode,
-        ...preferences
-      } = persisted;
+      const preferences = record.event.preferences;
       this.preferences = {
         ...DEFAULT_PREFERENCES,
         ...preferences,

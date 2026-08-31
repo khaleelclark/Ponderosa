@@ -1326,10 +1326,6 @@ export class AgentStore extends AgentEventSessionFacade {
     );
   }
 
-  getGeneratedPdfPath(agentId: string, artifactIdValue: string): string | undefined {
-    return this.artifactCatalog.getGeneratedPdfPath(agentId, artifactIdValue);
-  }
-
   getGeneratedArtifact(agentId: string, artifactIdValue: string): Extract<LogEvent, { type: "generated_artifact" }> | undefined {
     return this.artifactCatalog.getGeneratedArtifact(agentId, artifactIdValue);
   }

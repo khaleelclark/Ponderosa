@@ -19,7 +19,7 @@ const REQUEST_LIFETIME_SCHEMA = {
  * lifetimes, quorum conditions, and exact recovery. */
 export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_coordinate",
-  description: "Delegate common tracked work to one Agent with {recipientAgentId,text} or fan out atomically with {delegations:[...]}. Every new Request is ordinary next-Run work: it never steers, pauses, cancels, or interrupts a recipient's active Run. Never create a second Request to tell a busy Agent to stop. Cancel your exact original outbound Request with ponderosa_update_request({requestId,kind:\"cancelled\"}); a manager that must enforceably stop an active descendant Run uses ponderosa_manage stop_agent. Ponderosa supplies stable idempotency, an indefinite lifetime by default, and one all-results Join whose default wakePolicy each_result reactivates you as new results arrive while preserving the open parent workflow. For a deadline in the common form, add lifetime:{kind:\"deadline\",at:\"<ISO timestamp>\"}. For ordinary final-only fan-out, keep the common form and set completionMode:\"join\" with wakePolicy:\"final_only\". Use completionMode:\"record\" only for genuine fire-and-observe work; completionMode:\"callback\" preserves the legacy ungrouped per-result wake. Use the advanced requests/join form only for quorum/any conditions, different per-request lifetimes, existing-request recovery, or custom satisfying outcomes. A returned joinId already exists; do not create it again.",
+  description: "Delegate common tracked work to one Agent with {recipientAgentId,text} or fan out atomically with {delegations:[...]}. Every new Request is ordinary next-Run work: it never steers, pauses, cancels, or interrupts a recipient's active Run. Never create a second Request to tell a busy Agent to stop. Cancel your exact original outbound Request with ponderosa_update_request({requestId,kind:\"cancelled\"}); a manager that must enforceably stop an active descendant Run uses ponderosa_manage stop_agent. Ponderosa supplies stable idempotency, an indefinite lifetime by default, and one all-results Join whose default wakePolicy each_result reactivates you as new results arrive while preserving the open parent workflow. For a deadline in the common form, add lifetime:{kind:\"deadline\",at:\"<ISO timestamp>\"}. For ordinary final-only fan-out, keep the common form and set completionMode:\"join\" with wakePolicy:\"final_only\". Use completionMode:\"record\" only for genuine fire-and-observe work; completionMode:\"callback\" wakes once per unjoined result. Use the advanced requests/join form only for quorum/any conditions, different per-request lifetimes, existing-request recovery, or custom satisfying outcomes. A returned joinId already exists; do not create it again.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -51,7 +51,6 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
         type: "string", enum: ["each_result", "final_only"],
         description: "For completionMode join, defaults each_result. each_result wakes on newly terminal members and again only as needed until the Join is terminal; final_only wakes only when the Join condition ends.",
       },
-      awaitResult: { type: "boolean", description: "Legacy common-form alias: true means completionMode join; false means callback. Prefer completionMode." },
       lifetime: {
         ...REQUEST_LIFETIME_SCHEMA,
         description: "Optional common lifetime applied to every delegation. Omit for indefinite; for a deadline use {kind:\"deadline\",at:\"<ISO timestamp>\"}.",
@@ -82,7 +81,7 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
             type: "array", minItems: 1, uniqueItems: true,
             items: { type: "string", enum: ["completed", "blocked", "failed", "cancelled", "superseded", "recipient_unavailable", "outcome_unknown", "expired"] },
           },
-          wakePolicy: { type: "string", enum: ["each_result", "final_only"], description: "Advanced Join delivery policy. Defaults final_only for backward compatibility." },
+          wakePolicy: { type: "string", enum: ["each_result", "final_only"], description: "Advanced Join delivery policy. Defaults final_only." },
           requestIds: {
             type: "array", minItems: 0, maxItems: 100, uniqueItems: true,
             items: { type: "string", minLength: 1, maxLength: 200 },

@@ -458,7 +458,7 @@ export function ProjectShell({
   );
 
   // Workspace navigation is owned by App on every viewport. Mobile opens the
-  // same project hierarchy in an AppBar drawer, so the legacy per-project list
+  // same project hierarchy in an AppBar drawer, so the former per-project list
   // and its title/engine chat-creation form must never become a second flow.
   if (isMobile) {
     return (

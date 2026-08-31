@@ -6,7 +6,7 @@ import {
   type CollaborationViewDto,
   type CommunicationEvent,
   type CreateCollaborationMessageRequest,
-  type ImageAttachmentDto,
+  type AssetDto,
 } from "@ponderosa/core";
 import type {
   AgentStore,
@@ -63,7 +63,7 @@ export interface CollaborationRouteDependencies {
     agentId: string,
     event: CommunicationEvent,
     renderedText: string,
-    attachments?: ImageAttachmentDto[],
+    attachments?: AssetDto[],
   ) => void;
   appendWorkspace: (event: Parameters<WorkspaceStore["append"]>[0]) => unknown;
   publishCoordinationV3Changed: (
@@ -168,7 +168,7 @@ export function registerCollaborationRoutes(
       }
       attachmentIdsByAgent.set(recipient.agentId, recipient.attachmentIds);
     }
-    const attachmentsByAgent = new Map<string, ImageAttachmentDto[]>();
+    const attachmentsByAgent = new Map<string, AssetDto[]>();
     for (const intent of routing.intents) {
       const ids = attachmentIdsByAgent.get(intent.targetAgentId) ?? [];
       const attached = await Promise.all(ids.map((id) => assetMetadata(intent.targetAgentId, id)));

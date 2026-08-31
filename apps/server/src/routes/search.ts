@@ -35,16 +35,13 @@ export function registerSearchRoutes(
       };
       let combined: CombinedCursor | undefined;
       if (request.query.cursor) {
-        try {
-          const parsed = JSON.parse(Buffer.from(request.query.cursor, "base64url").toString("utf8")) as Partial<CombinedCursor>;
-          if (parsed.v === 1) combined = parsed as CombinedCursor;
-        } catch {
-          // A pre-composite cursor remains a valid message cursor.
-        }
+        const parsed = JSON.parse(Buffer.from(request.query.cursor, "base64url").toString("utf8")) as Partial<CombinedCursor>;
+        if (parsed.v !== 1) throw new Error("invalid All Chat cursor");
+        combined = parsed as CombinedCursor;
       }
       const messagePage = combined?.messagesDone
         ? { items: [], history: { limit, hasMore: false } }
-        : store.getAllChatPage({ limit, cursor: combined ? combined.messages : request.query.cursor });
+        : store.getAllChatPage({ limit, cursor: combined?.messages });
       const messageItems = messagePage.items.map(item => {
         const communication = store.getCommunicationEvent(
           item.project.id,
@@ -109,23 +106,6 @@ export function registerSearchRoutes(
       } satisfies AllChatPageDto;
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid All Chat cursor" });
-    }
-  });
-
-  // Keep the former agent-search URL useful for old clients while returning the
-  // same shared DTO and projection semantics as global search.
-  app.get<{ Params: { id: string }; Querystring: { q?: string; limit?: string } }>("/api/agents/:id/search", async (request, reply) => {
-    const agent = store.getAgent(request.params.id);
-    if (!agent) return reply.code(404).send({ error: "agent not found" });
-    try {
-      const response = globalChatSearch({ ...request.query, kind: "agent" });
-      return {
-        ...response,
-        results: response.results.filter((result) => result.chat.kind === "agent" && result.chat.id === agent.id),
-        recentChats: response.recentChats.filter((recent) => recent.chat.kind === "agent" && recent.chat.id === agent.id),
-      };
-    } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid search query" });
     }
   });
 }

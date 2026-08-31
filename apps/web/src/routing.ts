@@ -3,7 +3,7 @@
 //
 //   / (Home overview)
 //   /messages (messages to and from the operator)
-//   /chats (legacy Messages route)
+//   /chats (All Chats)
 //   /projects/:projectId/chats/:conversationId
 //   /projects/:projectId/agents
 //   /projects/:projectId/agents/:agentId

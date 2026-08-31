@@ -414,7 +414,7 @@ export class AgentChatFeedProjection {
       LEFT JOIN agents author_agent ON author_agent.id = search.author_agent_id
       WHERE 1 = 1
         AND (
-          search.communication_intent IN ('broadcast', 'direct_to_user', 'user_dm')
+          search.communication_intent IN ('broadcast', 'user_dm')
           OR (search.communication_intent = 'collaboration' AND search.sender_kind = 'user')
         )
         ${boundary ? "AND (feed.order_key < ? OR (feed.order_key = ? AND feed.row_key < ?))" : ""}
@@ -443,10 +443,12 @@ export class AgentChatFeedProjection {
         : undefined;
       const event = this.communicationIndex(row.projectId).byId.get(row.eventId);
       if (!message || !event) return [];
-      const exactAudienceAgentId = event.schemaVersion === 2 && event.intent === "user_dm"
+      const exactAudienceAgentId = event.intent === "user_dm"
         ? event.audience.kind === "user_agent"
           ? event.audience.agentId
-          : event.audience.agentIds.length === 1 ? event.audience.agentIds[0] : undefined
+          : event.audience.kind === "user_agents" && event.audience.agentIds.length === 1
+            ? event.audience.agentIds[0]
+            : undefined
         : undefined;
       const targetAgentId = row.chatKind === "agent"
         ? row.chatId

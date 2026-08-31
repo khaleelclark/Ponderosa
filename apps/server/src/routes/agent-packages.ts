@@ -154,7 +154,7 @@ export function registerAgentPackageRoutes(
             : event.intent === "user_dm"
               ? (event.audience.kind === "user_agent"
                   ? event.audience.agentId === agent.id
-                  : event.audience.agentIds.includes(agent.id))
+                  : event.audience.kind === "user_agents" && event.audience.agentIds.includes(agent.id))
               : false;
         if (
           visible

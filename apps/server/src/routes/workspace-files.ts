@@ -4,7 +4,7 @@ import { readScopedPath } from "../project-files.js";
 import type { ServerContext } from "../server-context.js";
 import type { AgentWorkingCopyService } from "../agent-working-copy-service.js";
 
-export function registerLegacyFilesRoute(
+export function registerFilesRoute(
   app: FastifyInstance,
   { store }: ServerContext,
 ): void {
@@ -21,7 +21,7 @@ export function registerLegacyFilesRoute(
   });
 }
 
-export function registerLegacyWorkspaceRoutes(
+export function registerAgentWorkspaceRoutes(
   app: FastifyInstance,
   { store }: ServerContext,
   workingCopies: AgentWorkingCopyService,

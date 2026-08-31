@@ -124,12 +124,12 @@ export type AgentEvent =
       type: "browser_screenshot";
       sessionId: string;
       executionId: string;
-      artifactId?: string;
+      artifactId: string;
       path: string;
       width: number;
       height: number;
-      size?: number;
-      sha256?: string;
+      size: number;
+      sha256: string;
     }
   | { type: "work_item_update"; workItemId: string; status: WorkItemStatus; title?: string; executionId?: string }
   | {

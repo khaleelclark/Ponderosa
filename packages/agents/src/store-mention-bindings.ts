@@ -8,10 +8,10 @@ import {
 
 function recipientIds(event: CommunicationEvent): string[] {
   if (event.intent === "collaboration") return event.audience.agentIds;
-  if (event.schemaVersion === 2 && event.intent === "user_dm") {
+  if (event.intent === "user_dm") {
     return event.audience.kind === "user_agent"
       ? [event.audience.agentId]
-      : event.audience.agentIds;
+      : event.audience.kind === "user_agents" ? event.audience.agentIds : [];
   }
   if (event.intent === "broadcast") {
     return [...new Set([

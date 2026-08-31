@@ -6,7 +6,6 @@ import type {
   HistoryPageDto,
 } from "@ponderosa/core";
 import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
-import { artifactId } from "./ids.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";
 import { managedArtifactContentPath, managedArtifactsLogPath } from "./paths.js";
 import type {
@@ -579,22 +578,13 @@ export class AgentArtifactCatalog {
     return this.getProjectArtifact(projectId, artifactIdValue);
   }
 
-  getGeneratedPdfPath(agentId: string, artifactIdValue: string): string | undefined {
-    const stored = this.readAgentEvents(agentId).find((candidate) =>
-      artifactId(agentId, candidate.seq, 0) === artifactIdValue
-      && candidate.event.type === "file_change"
-      && candidate.event.path.toLowerCase().endsWith(".pdf"));
-    return stored?.event.type === "file_change" ? stored.event.path : undefined;
-  }
-
   getGeneratedArtifact(
     agentId: string,
     artifactIdValue: string,
   ): Extract<LogEvent, { type: "generated_artifact" }> | undefined {
     const stored = this.readAgentEvents(agentId).find((candidate) =>
       candidate.event.type === "generated_artifact"
-      && (candidate.event.artifactId ?? artifactId(agentId, candidate.seq, 0))
-        === artifactIdValue);
+      && candidate.event.artifactId === artifactIdValue);
     return stored?.event.type === "generated_artifact" ? stored.event : undefined;
   }
 

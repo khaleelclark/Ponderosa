@@ -48,7 +48,7 @@ import { registerConversationDeliveryRoutes } from "./conversation-deliveries.js
 import { registerConversationRoutes } from "./conversations.js";
 import { registerDraftRoutes } from "./drafts.js";
 import { registerEngineRoutes } from "./engines.js";
-import { registerLegacyFilesRoute, registerLegacyWorkspaceRoutes } from "./legacy-workspace.js";
+import { registerAgentWorkspaceRoutes, registerFilesRoute } from "./workspace-files.js";
 import { registerLimitsRoutes } from "./limits.js";
 import {
   registerNotificationListRoute,
@@ -858,11 +858,11 @@ registerArtifactRoutes(app, {
   managedProjectArtifactAgreesWithRuntime,
 });
 
-registerLegacyFilesRoute(app, serverContext);
+registerFilesRoute(app, serverContext);
 
 registerProjectFileRoutes(app, projectFileAuthority, store);
 
-registerLegacyWorkspaceRoutes(app, serverContext, workingCopies);
+registerAgentWorkspaceRoutes(app, serverContext, workingCopies);
 
 registerEngineRoutes(app, {
   engines,

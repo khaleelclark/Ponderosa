@@ -4,7 +4,6 @@ import {
   type AssetDto,
   type CommunicationEvent,
   type ConversationMessageDto,
-  type ImageAttachmentDto,
   type CollaborationViewDto,
 } from "@ponderosa/core";
 import type {
@@ -132,7 +131,7 @@ export function createAgentEventService(context: AgentEventServiceContext) {
     agentId: string,
     event: CommunicationEvent,
     renderedText: string,
-    attachments?: ImageAttachmentDto[],
+    attachments?: AssetDto[],
   ): void {
     const existing = store.getCommunicationProjection(
       event.projectId,
@@ -265,9 +264,9 @@ export function createAgentEventService(context: AgentEventServiceContext) {
     const master = store.getConversation(conversationId);
     if (!master) return undefined;
     const communication = recordCommunication({
-      eventId: randomUUID(), schemaVersion: 1, projectId: master.projectId, conversationId,
+      eventId: randomUUID(), schemaVersion: 2, projectId: master.projectId, conversationId,
       sender: { kind: "system", component: "collaboration-supervision" },
-      intent: "direct_to_user", audience: { kind: "user", userId: "local-operator" },
+      intent: "user_dm", audience: { kind: "user", userId: "local-operator" },
       text, createdAt: new Date().toISOString(), ...(idempotencyKey ? { idempotencyKey } : {}),
     });
     const existing = communication

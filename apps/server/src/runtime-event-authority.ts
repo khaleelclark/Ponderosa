@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { realpathSync, statSync, promises as fs } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import {
-  artifactContentPath,
   publishManagedArtifactContentAsync,
   type AgentStore,
   type CoordinationV3Store,
@@ -116,8 +115,6 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
       const agent = store.getAgent(agentId);
       const mediaType = generatedArtifactMediaType(canonicalEvent.path, canonicalEvent.kind);
       if (agent && mediaType) {
-        let legacyDestination: string | undefined;
-        let captureCommitted = false;
         try {
           const source = await readWorkspaceArtifactFileAsync({
             rootPath: run.workingCopy.rootPath,
@@ -131,14 +128,6 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
           const body = source.body;
           const artifactId = randomUUID();
           const managedPath = `generated/${artifactId}${path.extname(source.name).toLowerCase()}`;
-          legacyDestination = artifactContentPath(
-            opts.dataDir,
-            agent.projectId,
-            agent.id,
-            managedPath,
-          );
-          await fs.mkdir(path.dirname(legacyDestination), { recursive: true });
-          await fs.writeFile(legacyDestination, body, { flag: "wx", mode: 0o600 });
           const publishedArtifact = await publishManagedArtifactContentAsync(
             opts.dataDir,
             agent.projectId,
@@ -156,7 +145,6 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
             sourcePath: canonicalEvent.path, name: source.name, mediaType, size: body.length,
             sha256: contentHash, visibility: "project",
           });
-          captureCommitted = true;
           const catalogArtifact = {
             id: artifactId, projectId: agent.projectId, agentId: agent.id, originAgentId: agent.id,
             executionId: run.executionId, kind: "generated_file", path: managedPath,
@@ -170,20 +158,6 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
           store.recordProjectArtifact(catalogArtifact);
           publish(agent.id, captured);
         } catch (error) {
-          if (legacyDestination && !captureCommitted) {
-            try {
-              await fs.rm(legacyDestination, { force: true });
-            } catch (cleanupError) {
-              logWarn(
-                {
-                  err: cleanupError,
-                  agentId,
-                  path: canonicalEvent.path,
-                },
-                "uncatalogued legacy generated artifact cleanup failed",
-              );
-            }
-          }
           logWarn({ err: error, agentId, path: canonicalEvent.path }, "generated artifact capture skipped");
         }
       }

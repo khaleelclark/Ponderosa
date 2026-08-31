@@ -4,7 +4,7 @@ import type {
   ArtifactDto,
   CommunicationAudience,
   ConversationChannel,
-  ImageAttachmentDto,
+  AssetDto,
 } from "@ponderosa/core";
 
 export interface ContextReadBoundary {
@@ -150,7 +150,7 @@ export interface MessageDispatchRecord {
   deliveryIntents?: ConversationDeliveryIntent[];
   messageReceiptKey?: string;
   orderKey: string;
-  attachments?: ImageAttachmentDto[];
+  attachments?: AssetDto[];
   artifactIds?: string[];
 }
 
