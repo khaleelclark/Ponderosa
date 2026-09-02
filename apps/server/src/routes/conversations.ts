@@ -37,6 +37,7 @@ export interface ConversationRouteDependencies {
   commitAgentDeletion(rootAgentIds: string[], previewHash: string): Promise<{ deletedAgentIds: string[] }>;
   deletingConversationIds: Set<string>;
   agentCreationConversationLeases: ReadonlyMap<string, number>;
+  conversationDeliveryLeases: ReadonlyMap<string, number>;
   purgeCommunicationV4Conversation: (conversationId: string) => void;
   refreshTriggers: () => Promise<unknown>;
   draftAttachmentSurfaceDir: (draftId: string) => string;
@@ -61,6 +62,7 @@ export function registerConversationRoutes(
     commitAgentDeletion,
     deletingConversationIds,
     agentCreationConversationLeases,
+    conversationDeliveryLeases,
     purgeCommunicationV4Conversation,
     refreshTriggers,
     draftAttachmentSurfaceDir,
@@ -226,6 +228,11 @@ export function registerConversationRoutes(
         error: "Wait for Agent creation to finish before changing this Chat",
       });
     }
+    if (request.body?.archived === true && (conversationDeliveryLeases.get(current.id) ?? 0) > 0) {
+      return reply.code(409).send({
+        error: "Wait for message delivery to finish before archiving this Chat",
+      });
+    }
     if (request.body?.defaultEngine && !engines.has(request.body.defaultEngine)) {
       return reply.code(400).send({ error: "unknown engine" });
     }
@@ -263,6 +270,11 @@ export function registerConversationRoutes(
     if ((agentCreationConversationLeases.get(current.id) ?? 0) > 0) {
       return reply.code(409).send({
         error: "Wait for Agent creation to finish before deleting this Chat",
+      });
+    }
+    if ((conversationDeliveryLeases.get(current.id) ?? 0) > 0) {
+      return reply.code(409).send({
+        error: "Wait for message delivery to finish before deleting this Chat",
       });
     }
     const enabledAutomation = store.sqlite.prepare(`

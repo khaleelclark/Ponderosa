@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import type {
   AgentDto,
   AgentMentionBindingDto,
@@ -50,6 +50,7 @@ export interface ConversationDeliveryRouteDependencies {
   coordinationV3: CoordinationV3Store;
   assets: AssetStore;
   projectDeletionInProgress: (projectId: string) => boolean;
+  conversationDeliveryLeases: Map<string, number>;
   assetMetadata: (agentId: string, id: string) => ReturnType<AssetStore["read"]>;
   prepareUserCommunicationText: (input: {
     projectId: string;
@@ -91,6 +92,24 @@ export interface ConversationDeliveryRouteDependencies {
 
 const MAX_ATTACHMENTS_PER_MESSAGE = ASSET_LIMITS.maxAssetsPerMessage;
 
+function leaseConversationDelivery(
+  reply: FastifyReply,
+  leases: Map<string, number>,
+  conversationId: string,
+): void {
+  leases.set(conversationId, (leases.get(conversationId) ?? 0) + 1);
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    const remaining = (leases.get(conversationId) ?? 1) - 1;
+    if (remaining > 0) leases.set(conversationId, remaining);
+    else leases.delete(conversationId);
+  };
+  reply.raw.once("finish", release);
+  reply.raw.once("close", release);
+}
+
 function isActiveConversationAgent(
   agent: Pick<AgentDto, "projectId" | "conversationId" | "archived"> | undefined,
   conversation: Pick<ConversationDto, "id" | "projectId">,
@@ -128,6 +147,7 @@ export function registerConversationDeliveryRoutes(
     coordinationV3,
     assets,
     projectDeletionInProgress,
+    conversationDeliveryLeases,
     assetMetadata,
     prepareUserCommunicationText,
     runtimeArtifactMetadata,
@@ -198,6 +218,7 @@ export function registerConversationDeliveryRoutes(
     const master = store.getConversation(request.params.id);
     if (!master || master.archived) return reply.code(404).send({ error: "conversation not found" });
     if (projectDeletionInProgress(master.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
+    leaseConversationDelivery(reply, conversationDeliveryLeases, master.id);
     const agentIdsByHandle = new Map<string, string[]>();
     for (const agent of store.listAgents(master.projectId)) {
       if (!isActiveConversationAgent(agent, master)) continue;
@@ -484,6 +505,7 @@ export function registerConversationDeliveryRoutes(
       const master = store.getConversation(request.params.id);
       if (!master || master.archived) return reply.code(404).send({ error: "conversation not found" });
       if (projectDeletionInProgress(master.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
+      leaseConversationDelivery(reply, conversationDeliveryLeases, master.id);
       const targets = agentIds.map((agentId) => store.getAgent(agentId));
       if (targets.some((target) =>
         target && target.projectId === master.projectId && target.conversationId !== master.id

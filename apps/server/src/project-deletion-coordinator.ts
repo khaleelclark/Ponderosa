@@ -39,6 +39,7 @@ interface ProjectDeletionCoordinatorContext {
   deletingProjectIds: Set<string>;
   deletingAgentIds: Set<string>;
   agentCreationConversationLeases: ReadonlyMap<string, number>;
+  conversationDeliveryLeases: ReadonlyMap<string, number>;
   projectDeletionInFlightIds: Set<string>;
   projectBrowserGrants: Map<string, { agentId: string; runId: string }>;
   browserSessions: BrowserSessionManager;
@@ -90,6 +91,7 @@ export function registerProjectDeletionRoutes(
     deletingProjectIds,
     deletingAgentIds,
     agentCreationConversationLeases,
+    conversationDeliveryLeases,
     projectDeletionInFlightIds,
     projectBrowserGrants,
     browserSessions,
@@ -190,6 +192,13 @@ export function registerProjectDeletionRoutes(
     )) {
       return reply.code(409).send({
         error: "Wait for Agent creation to finish before deleting this Project",
+      });
+    }
+    if (store.listConversations(project.id).some((conversation) =>
+      (conversationDeliveryLeases.get(conversation.id) ?? 0) > 0
+    )) {
+      return reply.code(409).send({
+        error: "Wait for message delivery to finish before deleting this Project",
       });
     }
     const agents = store.listAgents(project.id);

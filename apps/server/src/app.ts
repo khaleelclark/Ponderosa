@@ -403,6 +403,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     store.listAgents(projectId).map((agent) => agent.id)));
   const deletingConversationIds = new Set<string>();
   const agentCreationConversationLeases = new Map<string, number>();
+  const conversationDeliveryLeases = new Map<string, number>();
   const contextCursors = new ContextCursorStore(opts.dataDir);
   const {
     browserScopeForRun,
@@ -1070,6 +1071,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     deletingAgentIds,
     deletingConversationIds,
     agentCreationConversationLeases,
+    conversationDeliveryLeases,
     rejectQuarantinedTriggerMutation,
     projectDeletionInFlightIds,
     communicationReconciliation,
