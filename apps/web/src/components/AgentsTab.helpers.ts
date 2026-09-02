@@ -1,7 +1,7 @@
 import type { AgentDto, ConversationDto } from "@ponderosa/core";
 import type { AgentStatus } from "../agents";
 
-export type StatusFilter = AgentStatus | "unassigned";
+export type StatusFilter = AgentStatus;
 
 export function resolveAgentRelationshipParent(
   agent: AgentDto,
@@ -19,7 +19,7 @@ export function resolveAgentConversation(
   scopeConversationId?: string,
 ): ConversationDto | undefined {
   const conversationId = scopeConversationId
-    ? agent.conversationIds.includes(scopeConversationId)
+    ? agent.conversationId === scopeConversationId
       ? scopeConversationId
       : undefined
     : agent.conversationId;
@@ -30,7 +30,7 @@ export function resolveAgentConversation(
 }
 
 const STATUS_FILTERS: Array<{
-  value: Exclude<StatusFilter, "all" | "unassigned">;
+  value: StatusFilter;
   label: string;
 }> = [
   { value: "running", label: "Running" },
@@ -54,7 +54,6 @@ export function agentStatusFilterOptions(
   const counts = agents.reduce(
     (result, agent) => {
       result.status[statusByAgentId.get(agent.id) ?? "idle"] += 1;
-      if (agent.conversationIds.length === 0) result.unassigned += 1;
       return result;
     },
     {
@@ -72,7 +71,6 @@ export function agentStatusFilterOptions(
         failed: 0,
         idle: 0,
       } satisfies Record<AgentStatus, number>,
-      unassigned: 0,
     },
   );
   return [
@@ -81,21 +79,16 @@ export function agentStatusFilterOptions(
       ...option,
       count: counts.status[option.value],
     })),
-    { value: "unassigned", label: "Unassigned", count: counts.unassigned },
   ];
 }
 
 export function matchesAgentStatusFilters(
-  agent: Pick<AgentDto, "conversationIds">,
+  _agent: Pick<AgentDto, "conversationId">,
   status: AgentStatus,
   selected: readonly StatusFilter[],
 ): boolean {
   if (selected.length === 0) return true;
-  return selected.some(filter =>
-    filter === "unassigned"
-      ? agent.conversationIds.length === 0
-      : status === filter,
-  );
+  return selected.some(filter => status === filter);
 }
 
 export function agentHierarchyContextIds(

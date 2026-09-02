@@ -6,17 +6,15 @@ import type {
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
+import { useMutationNotification } from "./MutationNotifications";
 
 interface AgentDetailAdministrationInput {
   agentId: string;
-  membershipIds: string[];
-  primaryConversationId: string;
   organizationParentId: string;
   settingsEngine: string;
   settingsModel: string;
   settingsEffort: string;
   onRenameClosed(): void;
-  onMembershipClosed(): void;
   onOrganizationClosed(): void;
   onRuntimeSettingsNotice(value?: string): void;
 }
@@ -29,18 +27,16 @@ interface AgentRuntimeSettingsPatch {
 
 export function useAgentDetailAdministration({
   agentId,
-  membershipIds,
-  primaryConversationId,
   organizationParentId,
   settingsEngine,
   settingsModel,
   settingsEffort,
   onRenameClosed,
-  onMembershipClosed,
   onOrganizationClosed,
   onRuntimeSettingsNotice,
 }: AgentDetailAdministrationInput) {
   const queryClient = useQueryClient();
+  const notify = useMutationNotification();
   const rename = useMutation({
     mutationFn: (title: string) => api.updateAgent(agentId, { title }),
     onSuccess: updated => {
@@ -73,30 +69,7 @@ export function useAgentDetailAdministration({
         queryKey: queryKeys.conversations.detailAll,
       });
       onRenameClosed();
-    },
-  });
-
-  const updateMemberships = useMutation({
-    mutationFn: () =>
-      api.updateAgentConversationMemberships(agentId, {
-        conversationIds: membershipIds,
-        primaryConversationId: membershipIds.length
-          ? primaryConversationId
-          : undefined,
-      }),
-    onSuccess: updated => {
-      onMembershipClosed();
-      queryClient.setQueriesData<AgentDetailDto>(
-        { queryKey: queryKeys.agents.detailPrefix(agentId) },
-        current => (current ? { ...current, agent: updated } : current),
-      );
-      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.conversations.detailAll,
-      });
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.projectArtifacts.project(updated.projectId),
-      });
+      notify({ key: `agent-renamed:${agentId}`, message: `Agent renamed to ${updated.title}.` });
     },
   });
 
@@ -115,6 +88,7 @@ export function useAgentDetailAdministration({
         queryKey: queryKeys.agents.project(updated.projectId),
       });
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
+      notify({ key: `agent-organization:${agentId}`, message: "Agent reporting relationship updated." });
     },
   });
 
@@ -131,6 +105,7 @@ export function useAgentDetailAdministration({
         current =>
           current?.map(agent => (agent.id === updated.id ? updated : agent)),
       );
+      notify({ key: `agent-permissions:${agentId}`, message: "Agent permissions saved." });
     },
   });
 
@@ -166,6 +141,7 @@ export function useAgentDetailAdministration({
       onRuntimeSettingsNotice(
         "Saved. These runtime settings apply when the next Run starts.",
       );
+      notify({ key: `agent-runtime:${agentId}`, message: "Agent defaults saved." });
     },
     onError: () => onRuntimeSettingsNotice(undefined),
   });
@@ -173,7 +149,6 @@ export function useAgentDetailAdministration({
   return {
     rename,
     updateManagementPermissions,
-    updateMemberships,
     updateOrganization,
     updateRuntimeSettings,
   };

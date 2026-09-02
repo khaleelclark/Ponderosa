@@ -3,12 +3,11 @@ import {
   useMediaQuery,
   useTheme,
 } from "@mui/material";
-import type { ConversationDto, ProjectDto } from "@ponderosa/core";
+import type { ConversationDto } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { ApiRequestError } from "./api/types";
-import { ProjectShell } from "./components/ProjectShell";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import { WorkspaceConnectionNotice } from "./components/WorkspaceConnectionNotice";
@@ -20,15 +19,17 @@ import {
   routeForGlobalSearchSelection,
 } from "./components/GlobalChatSearch";
 import { NotificationPanel } from "./components/NotificationPanel";
-import { OperatorProfileDialog } from "./components/OperatorProfileDialog";
 import { ProjectCreationDialog } from "./components/ProjectCreationDialog";
+import {
+  ContextualCreateDialog,
+  type CreationRequest,
+} from "./components/CreateWorkspace";
 import {
   OnboardingCompleteDialog,
   SidebarConversationDialogs,
   type SidebarConversationAction,
 } from "./components/WorkspaceDialogs";
 import {
-  useAgent,
   useEngines,
   useNotifications,
   useProjects,
@@ -42,6 +43,7 @@ import {
   useRoute,
   type Route,
 } from "./routing";
+import { rememberProjectRoute } from "./projectNavigation";
 import { isProjectRoute } from "./routeRegistry";
 import type { ColorMode } from "./theme";
 import {
@@ -55,7 +57,6 @@ import {
   ProjectBrowserContext,
   type ProjectBrowserRequest,
 } from "./components/ProjectBrowserContext";
-import { engineAvailabilityPresentation } from "./conversationEngine";
 import { recheckProvider } from "./providerAuthRefresh";
 import { changedWorkspaceDirectoryKinds } from "./resourcePreferences";
 import {
@@ -64,16 +65,14 @@ import {
   serializeWorkspaceSidebarState,
 } from "./workspaceSidebarState";
 import { queryKeys } from "./queryKeys";
-import {
-  MobileWorkspaceDrawer,
-  WorkspaceAppHeader,
-} from "./App.mobile";
+import { MobileWorkspaceDrawer } from "./App.mobile";
 import { WorkspaceRouteOutlet } from "./App.workspace-content";
 import {
   markWorkspaceResourceUsed,
   workspaceResourceFromRoute,
 } from "./workspaceRecency";
 import { MobileWorkspaceActionsProvider } from "./components/MobileWorkspaceActionsContext";
+import { MobileNavigationProvider } from "./components/MobileNavigationContext";
 import {
   notificationsForAvailableProjects,
 } from "./attention";
@@ -82,10 +81,8 @@ import {
   ActiveNotificationViewProvider,
   activeNotificationViewForRoute,
 } from "./notificationActiveView";
+import { PrimaryHeaderActionsProvider } from "./components/PrimaryHeaderActions";
 
-const OPERATOR_PROFILE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
-const OPERATOR_PROFILE_IMAGE_ACCEPT =
-  "image/png,image/jpeg,image/webp,image/gif,image/avif";
 const PUSH_CLEANUP_RETRY_INITIAL_MS = 1_000;
 const PUSH_CLEANUP_RETRY_MAX_MS = 30_000;
 
@@ -124,14 +121,14 @@ export default function App({
   }, [activeNotificationView]);
   const routeRef = useRef(route);
   routeRef.current = route;
-  const creationOrigin = useRef<Route>();
+  const [creationRequest, setCreationRequest] = useState<CreationRequest>();
   const reconcileDeletedProject = (
     projectId: string,
     at = new Date().toISOString(),
   ) => {
     reconcileDeletedProjectClientState(queryClient, projectId, at);
     if (routeProjectId(routeRef.current) === projectId) {
-      creationOrigin.current = undefined;
+      setCreationRequest(current => current?.projectId === projectId ? undefined : current);
       navigate({ kind: "projects" }, { replace: true });
     }
   };
@@ -195,16 +192,11 @@ export default function App({
       : notificationsQuery.data?.items ?? [],
     [notificationsQuery.data, projectsQuery.data, projectsQuery.isSuccess],
   );
-  const notificationCounts = {
-    attentionCount: notificationsQuery.data?.attentionCount ?? 0,
-    unreadUpdateCount: notificationsQuery.data?.unreadUpdateCount ?? 0,
-  };
   const engines = enginesQuery.data ?? [];
   const providerEngines = useRef(engines);
   providerEngines.current = engines;
   const providerRecheckAt = useRef(new Map<string, number>());
   const providerRecheckInFlight = useRef(new Set<string>());
-  const engineAvailability = engineAvailabilityPresentation(engines);
   const theme = useTheme();
   const mobileWorkspace = useMediaQuery(theme.breakpoints.down("md"));
 
@@ -213,26 +205,92 @@ export default function App({
     useState(false);
   const [onboardingCompleteOpen, setOnboardingCompleteOpen] = useState(false);
   const onboardingPrompted = useRef(false);
-  const [operatorProfileOpen, setOperatorProfileOpen] = useState(false);
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [engineStatusOpen, setEngineStatusOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
+  const overlayReturnFocus = useRef<HTMLElement>();
   const [sidebarConversationAction, setSidebarConversationAction] =
     useState<SidebarConversationAction>();
   const [projectBrowserRequest, setProjectBrowserRequest] =
     useState<ProjectBrowserRequest>();
   const projectBrowserRequestId = useRef(0);
+  const rememberOverlayTrigger = () => {
+    overlayReturnFocus.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : undefined;
+  };
+  const restoreFocus = (previous: HTMLElement | undefined) => {
+    window.requestAnimationFrame(() => {
+      if (
+        previous?.isConnected &&
+        previous.getClientRects().length > 0 &&
+        !previous.closest('[aria-hidden="true"]')
+      ) {
+        previous.focus();
+        return;
+      }
+      const stableNavigationTarget = [
+        ...document.querySelectorAll<HTMLElement>(
+          '[aria-label="Open workspace navigation"], nav[aria-label="Project navigation"] [aria-label="Home"]',
+        ),
+      ].find(candidate => (
+        candidate.getClientRects().length > 0 &&
+        !candidate.closest('[aria-hidden="true"]')
+      ));
+      stableNavigationTarget?.focus();
+    });
+  };
+  const restoreOverlayTrigger = () => {
+    const previous = overlayReturnFocus.current;
+    overlayReturnFocus.current = undefined;
+    restoreFocus(previous);
+  };
+  const openGlobalSearch = () => {
+    rememberOverlayTrigger();
+    setGlobalSearchOpen(true);
+  };
+  const closeGlobalSearch = () => {
+    setGlobalSearchOpen(false);
+    restoreOverlayTrigger();
+  };
+  const openNotifications = () => {
+    rememberOverlayTrigger();
+    setNotificationPanelOpen(true);
+  };
+  const closeNotifications = () => {
+    setNotificationPanelOpen(false);
+    restoreOverlayTrigger();
+  };
+  const openEngineStatus = () => {
+    rememberOverlayTrigger();
+    setEngineStatusOpen(true);
+  };
+  const closeEngineStatus = () => {
+    setEngineStatusOpen(false);
+    restoreOverlayTrigger();
+  };
+  const setMobileNavigationOpen = (open: boolean) => {
+    if (open) rememberOverlayTrigger();
+    setMobileNavOpen(open);
+    if (!open) restoreOverlayTrigger();
+  };
   const readinessQuery = useQuery({
     queryKey: queryKeys.readiness.all,
     queryFn: () => api.getReadiness(),
     enabled: engineStatusOpen,
     staleTime: 30_000,
   });
-  const activeAgentQuery = useAgent(
-    route.kind === "agent" ? route.agentId : undefined,
-  );
-
+  useEffect(() => {
+    if (mobileWorkspace || !mobileNavOpen) return;
+    const drawerTrigger = overlayReturnFocus.current;
+    overlayReturnFocus.current = undefined;
+    setMobileNavOpen(false);
+    // Let the Drawer transition release its focus trap before moving focus to
+    // the equivalent desktop navigation control.
+    const focusTimer = window.setTimeout(() => restoreFocus(drawerTrigger), 400);
+    return () => window.clearTimeout(focusTimer);
+  }, [mobileWorkspace]);
   useEffect(() => {
     let stopped = false;
 
@@ -272,9 +330,6 @@ export default function App({
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [engines, queryClient]);
-  const preferredQuotaProvider =
-    activeAgentQuery.data?.agent.activeEngine;
-
   useEffect(() => {
     try {
       window.localStorage.setItem(
@@ -385,15 +440,15 @@ export default function App({
   };
 
   const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], homeSort: "last_used" as const, homeOrder: [], chatSort: "last_used" as const, chatOrder: [], agentSort: "last_used" as const, agentOrder: [], triggerSort: "last_used" as const, triggerOrder: [], starredResourceIds: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { directResponses: true, broadcasts: true }, fontFamily: "inter" as const, providerAvailability: {}, defaultUsageProvider: undefined as string | undefined, engineDefaults: {}, claudeModelOptions: [], globalInstructions: "", maxConcurrentAgentRuns: 8, contextRolloverEnabled: false, contextRolloverTokens: 150_000, contextRolloverWindowFraction: 0.7, onboardingCompletedAt: null, profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
-  const usageProviders = engines.filter(engine =>
-    engine.authentication === "authenticated" && Boolean(engine.providerUsageCommand)
-  );
-  const defaultQuotaProvider = usageProviders.some(
-    engine => engine.id === preferences.defaultUsageProvider,
+  const defaultUsageProvider = engines.some(engine =>
+    engine.id === preferences.defaultUsageProvider &&
+    engine.enabled !== false &&
+    Boolean(engine.providerUsageCommand)
   )
     ? preferences.defaultUsageProvider
-    : usageProviders[0]?.id;
-  const displayedQuotaProvider = preferredQuotaProvider ?? defaultQuotaProvider;
+    : engines.find(engine =>
+        engine.enabled !== false && Boolean(engine.providerUsageCommand)
+      )?.id;
   const savePreferences = (patch: Partial<typeof preferences>) => {
     queryClient.setQueryData(queryKeys.workspacePreferences.all, { ...preferences, ...patch });
     void api.updateWorkspacePreferences(patch).then((value) => {
@@ -458,11 +513,17 @@ export default function App({
     const onKeyDown = (event: KeyboardEvent) => {
       if (!isGlobalSearchShortcut(event)) return;
       event.preventDefault();
-      setGlobalSearchOpen(true);
+      openGlobalSearch();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
+
+  useEffect(() => {
+    rememberProjectRoute(route);
+    const projectId = routeProjectId(route);
+    if (projectId) saveLastProjectId(projectId);
+  }, [route]);
 
   const recordWorkspaceRouteUse = (next: Route) => {
     const resource = workspaceResourceFromRoute(next);
@@ -475,7 +536,6 @@ export default function App({
     }
   };
   const navigateWorkspace = (next: Route) => {
-    if (next.kind !== "create") creationOrigin.current = undefined;
     recordWorkspaceRouteUse(next);
     navigate(next);
   };
@@ -488,20 +548,14 @@ export default function App({
       agentId?: string;
     },
   ) => {
-    if (route.kind !== "create") creationOrigin.current = route;
-    navigateWorkspace({
-      kind: "create",
+    setCreationRequest({
       resource: kind,
-      surface: "workspace",
       ...(context?.projectId ? { projectId: context.projectId } : {}),
       ...(context?.conversationId ? { conversationId: context.conversationId } : {}),
       ...(context?.managerAgentId ? { managerAgentId: context.managerAgentId } : {}),
       ...(context?.agentId ? { agentId: context.agentId } : {}),
     });
   };
-  const replaceWorkspaceWithCreationForm = (
-    kind: "project" | "chat" | "agent" | "trigger",
-  ) => openCreationForm(kind);
   const openProjectBrowser = (url?: string) => {
     if (!selectedProjectId) return;
     projectBrowserRequestId.current += 1;
@@ -530,9 +584,7 @@ export default function App({
       );
   }, [navigateWorkspace]);
   const cancelCreationWorkspace = () => {
-    const destination = creationOrigin.current ?? { kind: "home" as const };
-    creationOrigin.current = undefined;
-    navigateWorkspace(destination);
+    navigateWorkspace({ kind: "home" });
   };
   const removeWorkspaceView = (removedRoute: Extract<Route, { kind: "agent" | "conversation" }>) => {
     const current = routeRef.current;
@@ -550,33 +602,35 @@ export default function App({
   const openSettings = () => {
     navigateWorkspace({ kind: "settings", section: "general" });
   };
-  const openProviderSettings = () => {
-    navigateWorkspace({ kind: "settings", section: "providers" });
-  };
-  const openOperatorProfile = () => {
-    setOperatorProfileOpen(true);
-  };
   return (
     <ProjectBrowserContext.Provider
       value={{ projectId: selectedProjectId, open: openProjectBrowser }}
     >
-      <MobileWorkspaceActionsProvider>
-      <Box
+      <MobileNavigationProvider onOpen={() => setMobileNavigationOpen(true)}>
+        <MobileWorkspaceActionsProvider>
+        <Box
         sx={{
-          height: "var(--ponderosa-app-viewport-block-size, 100dvh)",
+          height: {
+            xs: "var(--ponderosa-app-viewport-block-size, 100dvh)",
+            md: "100%",
+          },
           width: "100%",
           minHeight: 0,
           minWidth: 0,
           overflow: "hidden",
           display: "grid",
           gridTemplateColumns: "minmax(0, 1fr)",
-          gridTemplateRows: "auto minmax(0, 1fr)",
+          gridTemplateRows: "minmax(0, 1fr)",
           bgcolor: "background.default",
         }}
       >
         <Box
           component="a"
           href="#main-content"
+          onClick={event => {
+            event.preventDefault();
+            document.getElementById("main-content")?.focus();
+          }}
           sx={{
             position: "fixed",
             top: 8,
@@ -595,23 +649,9 @@ export default function App({
         >
           Skip to content
         </Box>
-        <WorkspaceAppHeader
-          preferredQuotaProvider={displayedQuotaProvider}
-          engineAvailability={engineAvailability}
-          attentionNotifications={notificationCounts.attentionCount}
-          unreadNotificationUpdates={notificationCounts.unreadUpdateCount}
-          profile={preferences.profile}
-          onOpenNavigation={() => setMobileNavOpen(true)}
-          onOpenEngineStatus={() => setEngineStatusOpen(true)}
-          onOpenSearch={() => setGlobalSearchOpen(true)}
-          onOpenNotifications={() => setNotificationPanelOpen(true)}
-          onOpenProfile={openOperatorProfile}
-          onOpenSettings={openSettings}
-          onOpenProviderSettings={openProviderSettings}
-        />
-
         <Box
           sx={{
+            height: "100%",
             minHeight: 0,
             minWidth: 0,
             display: "grid",
@@ -621,14 +661,23 @@ export default function App({
             },
           }}
         >
-          <Box sx={{ display: { xs: "none", md: "block" }, minHeight: 0 }}>
+          <Box
+            sx={{
+              display: { xs: "none", md: "block" },
+              height: "100%",
+              minHeight: 0,
+              overflow: "hidden",
+            }}
+          >
             <WorkspaceSidebar
               projects={projects}
               preferences={preferences}
               route={route}
               notifications={presentedNotifications}
+              notificationCounts={notificationsQuery.data}
+              creating={creationRequest?.resource}
               onNavigate={navigateWorkspace}
-              onCreate={replaceWorkspaceWithCreationForm}
+              onCreate={openCreationForm}
               onPreferences={savePreferences}
               onRenameConversation={conversation =>
                 openSidebarConversationAction("rename", conversation)
@@ -636,7 +685,10 @@ export default function App({
               onDeleteConversation={conversation =>
                 openSidebarConversationAction("delete", conversation)
               }
-              onSearch={() => setGlobalSearchOpen(true)}
+              onProjectDeleted={handleProjectDeleted}
+              onSearch={openGlobalSearch}
+              onOpenNotifications={openNotifications}
+              onOpenEngineStatus={openEngineStatus}
               collapsed={sidebarPresentation.collapsed}
               width={sidebarPresentation.width}
               onCollapsedChange={collapsed =>
@@ -650,6 +702,7 @@ export default function App({
           <Box
             component="main"
             id="main-content"
+            tabIndex={-1}
             sx={{
               minHeight: 0,
               minWidth: 0,
@@ -677,6 +730,12 @@ export default function App({
               >
               <ActiveNotificationViewProvider value={activeNotificationView}>
               <WorkspaceConnectionProvider value={workspaceConnection}>
+              <PrimaryHeaderActionsProvider
+                preferredProvider={defaultUsageProvider}
+                onOpenProviderSettings={() =>
+                  navigateWorkspace({ kind: "settings", section: "providers" })
+                }
+              >
                 <WorkspaceErrorBoundary
                   title="This workspace view could not be displayed."
                   resetKey={JSON.stringify(route)}
@@ -687,6 +746,7 @@ export default function App({
                     projectResolution={projectResolution}
                     onRetryProject={() => void routedProjectQuery.refetch()}
                     projects={projects}
+                    projectsLoaded={projectsQuery.isSuccess}
                     engines={engines}
                     notifications={presentedNotifications}
                     preferences={preferences}
@@ -704,10 +764,10 @@ export default function App({
                     onPreferences={savePreferences}
                     onCreate={openCreationForm}
                     onCancelCreate={cancelCreationWorkspace}
-                    onOpenInbox={() => setNotificationPanelOpen(true)}
+                    onOpenInbox={openNotifications}
                     onProjectDeleted={handleProjectDeleted}
                     onConversationAction={openSidebarConversationAction}
-                    onOpenEngineStatus={() => setEngineStatusOpen(true)}
+                    onOpenEngineStatus={openEngineStatus}
                     onBrowserRequestHandled={requestId =>
                       setProjectBrowserRequest(current =>
                         consumeProjectBrowserRequest(current, requestId),
@@ -717,6 +777,7 @@ export default function App({
                     onToggleColorMode={onToggleColorMode}
                   />
                 </WorkspaceErrorBoundary>
+              </PrimaryHeaderActionsProvider>
               </WorkspaceConnectionProvider>
               </ActiveNotificationViewProvider>
               </Box>
@@ -725,17 +786,22 @@ export default function App({
         </Box>
 
         <MobileWorkspaceDrawer
-          open={mobileNavOpen}
+          open={mobileWorkspace && mobileNavOpen}
           projects={projects}
           preferences={preferences}
           route={route}
           notifications={presentedNotifications}
-          onOpenChange={setMobileNavOpen}
+          notificationCounts={notificationsQuery.data}
+          creating={creationRequest?.resource}
+          onOpenChange={setMobileNavigationOpen}
           onNavigate={navigateWorkspace}
-          onCreate={replaceWorkspaceWithCreationForm}
+          onCreate={openCreationForm}
           onPreferences={savePreferences}
           onConversationAction={openSidebarConversationAction}
-          onSearch={() => setGlobalSearchOpen(true)}
+          onProjectDeleted={handleProjectDeleted}
+          onSearch={openGlobalSearch}
+          onOpenNotifications={openNotifications}
+          onOpenEngineStatus={openEngineStatus}
         />
 
         <SidebarConversationDialogs
@@ -754,7 +820,7 @@ export default function App({
 
         <GlobalChatSearch
           open={globalSearchOpen}
-          onClose={() => setGlobalSearchOpen(false)}
+          onClose={closeGlobalSearch}
           onSelect={selection => {
             saveLastProjectId(selection.projectId);
             if (selection.chat.kind === "conversation") {
@@ -766,13 +832,22 @@ export default function App({
           }}
         />
 
+        <ContextualCreateDialog
+          request={creationRequest}
+          projects={projects}
+          engines={engines}
+          preferences={preferences}
+          onClose={() => setCreationRequest(undefined)}
+          onNavigate={navigateWorkspace}
+        />
+
         <ProjectCreationDialog
           open={projectDialogOpen}
           onboarding={onboardingProjectCreation}
           engines={engines}
           preferences={preferences}
           onClose={closeProjectCreator}
-          onCreated={(project, onboarding) => {
+          onCreated={(projectId, onboarding) => {
             setProjectDialogOpen(false);
             if (onboarding) {
               const completedAt = new Date().toISOString();
@@ -780,22 +855,20 @@ export default function App({
               setOnboardingProjectCreation(false);
               setOnboardingCompleteOpen(true);
             }
-            navigate({ kind: "project", projectId: project.id });
+            navigate({ kind: "project", projectId });
           }}
         />
         <OnboardingCompleteDialog
           open={onboardingCompleteOpen}
           onClose={() => setOnboardingCompleteOpen(false)}
-          onOpenWiki={() => {
-            setOnboardingCompleteOpen(false);
-            navigateWorkspace({ kind: "wiki" });
-          }}
         />
         <NotificationPanel
           open={notificationPanelOpen}
           projects={projects}
           firstPage={notificationsQuery.data}
-          onClose={() => setNotificationPanelOpen(false)}
+          firstPageRevision={notificationsQuery.successfulFetchRevision}
+          getFirstPageRevision={notificationsQuery.getSuccessfulFetchRevision}
+          onClose={closeNotifications}
           onNavigate={navigateWorkspace}
           onOpenSettings={openSettings}
         />
@@ -808,19 +881,14 @@ export default function App({
             readinessQuery.isError ? String(readinessQuery.error) : undefined
           }
           onOpenSettings={() => {
-            setEngineStatusOpen(false);
+            closeEngineStatus();
             openSettings();
           }}
-          onClose={() => setEngineStatusOpen(false)}
+          onClose={closeEngineStatus}
         />
-        <OperatorProfileDialog
-          open={operatorProfileOpen}
-          profile={preferences.profile}
-          onClose={() => setOperatorProfileOpen(false)}
-          onSave={profile => savePreferences({ profile })}
-        />
-      </Box>
-      </MobileWorkspaceActionsProvider>
+        </Box>
+        </MobileWorkspaceActionsProvider>
+      </MobileNavigationProvider>
     </ProjectBrowserContext.Provider>
   );
 }

@@ -144,7 +144,12 @@ path in the systemd environment:
 Environment=PONDEROSA_BROWSER_EXECUTABLE=/opt/google/chrome/chrome
 ```
 
-Restart Ponderosa after changing the unit. Each active browser receives a fresh
-temporary profile below `PONDEROSA_DATA_DIR`; Ponderosa never reuses the
-operator's normal browser profile or stores browser credentials. Keep the
-executable choice in host configuration rather than the repository.
+Restart Ponderosa after changing the unit. By default, each exact-Run execution
+browser receives a fresh disposable profile below
+`PONDEROSA_DATA_DIR/browser-sessions`, removed when the session closes. An
+operator can instead create a Project-owned trusted profile below
+`PONDEROSA_DATA_DIR/browser-profiles` and assign it to an Agent; that profile
+intentionally retains cookies, login state, and site storage until the operator
+deletes it, and only one browser leases it at a time. Neither mode reuses the
+operator's normal browser profile. Keep the executable choice in host
+configuration rather than the repository.

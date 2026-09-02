@@ -153,13 +153,12 @@ export class AgentCommunicationJournalAuthority {
   }
 
   appendCommunicationEvent(input: CommunicationEvent): { event: CommunicationEvent; replayed: boolean } {
-    const event: CommunicationEvent = input.schemaVersion === 2 && input.intent === "collaboration"
+    const event: CommunicationEvent = input.intent === "collaboration"
       ? { ...input, audience: { kind: "agents", agentIds: normalizedAgentIds(input.audience.agentIds) } } as CommunicationEvent
-      : input.schemaVersion === 2 && input.intent === "user_dm" && input.audience.kind === "user_agents"
+      : input.intent === "user_dm" && input.audience.kind === "user_agents"
         ? { ...input, audience: { ...input.audience, agentIds: normalizedAgentIds(input.audience.agentIds) } } as CommunicationEvent
         : input;
     if (!this.getProject(event.projectId)) throw new Error("communication project not found");
-    if (event.schemaVersion !== 1 && event.schemaVersion !== 2) throw new Error("unsupported communication schema version");
     if (!event.eventId || (!event.text.trim() && !event.attachments?.length && !event.artifactIds?.length && !event.document) || !event.createdAt) {
       throw new Error("communication event is incomplete");
     }
@@ -185,9 +184,7 @@ export class AgentCommunicationJournalAuthority {
       }
     }
     if (event.document) {
-      const artifactContent = event.document.artifactId
-        ? managedArtifactContentPath(this.dataDir, event.projectId, event.document.artifactId)
-        : undefined;
+      const artifactContent = managedArtifactContentPath(this.dataDir, event.projectId, event.document.artifactId);
       const validAuthor = event.sender.kind === "agent"
         ? event.document.authorAgentId === event.sender.agentId &&
           event.document.executionId === event.sender.executionId && !event.document.authorUserId
@@ -196,40 +193,48 @@ export class AgentCommunicationJournalAuthority {
           : false;
       if (!validAuthor || event.document.mediaType !== "text/markdown" ||
           !event.document.id || !event.document.title.trim() ||
-          (!event.document.content?.trim() && !event.document.artifactId) ||
-          (event.document.content !== undefined && event.document.byteLength !== Buffer.byteLength(event.document.content, "utf8")) ||
-          (artifactContent && !existsSync(artifactContent))) {
+          !event.document.artifactId || !existsSync(artifactContent)) {
         throw new Error("communication document provenance is invalid");
       }
     }
     if (event.intent === "collaboration" && event.audience.agentIds.length === 0) {
       throw new Error("collaboration requires at least one recipient");
     }
-    if (event.schemaVersion === 2 && event.intent === "user_dm") {
+    if (event.intent === "user_dm") {
       const agentIds = userDmAgentIds(event);
-      if (agentIds.length === 0) throw new Error("user DM requires at least one recipient");
-      if (event.sender.kind === "system" || (event.sender.kind === "agent" && (agentIds.length !== 1 || event.sender.agentId !== agentIds[0]))) {
-        throw new Error("user DM sender must be its local user or target agent");
+      if (event.sender.kind === "system" && event.audience.kind !== "user") {
+        throw new Error("system user notice must address the local user");
       }
-      if (event.sender.kind === "user" && event.sender.userId !== event.audience.userId) throw new Error("user DM user identity mismatch");
+      if (event.sender.kind === "agent" &&
+          (event.audience.kind !== "user_agent" || event.sender.agentId !== event.audience.agentId)) {
+        throw new Error("agent user DM must address its local user relationship");
+      }
+      if (event.sender.kind === "user" &&
+          (event.audience.kind === "user" || event.sender.userId !== event.audience.userId || agentIds.length === 0)) {
+        throw new Error("user DM requires at least one Agent recipient and matching user identity");
+      }
     }
     if (event.intent === "broadcast" && event.audience.organizationId !== event.projectId) {
       throw new Error("broadcast organization must match its project");
     }
-    const audienceIds = event.schemaVersion === 2 && event.intent === "collaboration" ? event.audience.agentIds
+    const audienceIds = event.intent === "collaboration" ? event.audience.agentIds
       : userDmAgentIds(event);
     for (const agentId of audienceIds) {
       const agent = this.getAgent(agentId);
       if (!agent || agent.projectId !== event.projectId || agent.archived) throw new Error("communication recipient must be an active agent in its project");
-      if (event.conversationId && !agent.conversationIds.includes(event.conversationId)) throw new Error("communication recipient must belong to its conversation");
+      if (
+        event.conversationId
+        && agent.conversationId !== event.conversationId
+        && !(event.intent === "user_dm" && event.sender.kind === "user")
+      ) throw new Error("communication recipient must belong to its conversation");
     }
-    if (event.schemaVersion === 2 && event.intent === "collaboration") {
+    if (event.intent === "collaboration") {
       if (event.sender.kind === "agent") {
         const sender = this.getAgent(event.sender.agentId);
         if (!sender || sender.projectId !== event.projectId || sender.archived) {
           throw new Error("collaboration sender must be an active agent in its project");
         }
-        if (event.conversationId && !sender.conversationIds.includes(event.conversationId)) {
+        if (event.conversationId && sender.conversationId !== event.conversationId) {
           throw new Error("collaboration sender must belong to its conversation");
         }
         if (event.audience.agentIds.includes(event.sender.agentId)) {
@@ -398,8 +403,6 @@ export class AgentCommunicationJournalAuthority {
   getCommunicationDocument(projectId: string, documentId: string) {
     const event = this.readCommunicationEvents(projectId).find((candidate) => candidate.document?.id === documentId);
     if (!event?.document) return undefined;
-    if (event.document.content !== undefined) return { event, document: event.document };
-    if (!event.document.artifactId) return undefined;
     const artifact = this.getProjectArtifact(projectId, event.document.artifactId);
     if (!artifact?.size || !artifact.sha256) return undefined;
     const file = readManagedArtifactContent(

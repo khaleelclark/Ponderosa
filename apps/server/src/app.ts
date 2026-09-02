@@ -9,6 +9,7 @@ import Fastify, { type FastifyReply } from "fastify";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { createAgentDeletionAuthority } from "./agent-deletion-authority.js";
+import { AgentWorkingCopyService } from "./agent-working-copy-service.js";
 import {
   type ActiveRun,
   type AgentMessageCapability,
@@ -31,7 +32,6 @@ import { createCommunicationProjectionReconciler } from "./communication-project
 import { ContextCursorStore } from "./context-cursors.js";
 import { createCoordinationScheduler } from "./coordination-scheduler-service.js";
 import { createDeploymentControl } from "./deployment-control.js";
-import { documentationReferences } from "./documentation-reference/index.js";
 import { EngineAuthStatusCache } from "./engine-auth-cache.js";
 import { EngineAvailabilityStore } from "./engine-availability-store.js";
 import {
@@ -237,9 +237,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   for (const decision of workspace.listDecisions({ status: "pending" })) {
     if (!decision.runtimeAction) continue;
     workspace.cancelDecision(decision.id);
-    const notification = workspace.findNotification((item) =>
-      item.dedupeKey === `decision:${decision.id}` && (item.status ?? "open") === "open");
-    if (notification) workspace.setNotificationStatus(notification.id, "resolved");
   }
   const workspaceSubscribers = new Set<(event: WorkspaceEventEnvelope) => void>();
   const liveSseClosures = new Set<() => void>();
@@ -315,7 +312,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       /^\/api\/projects\/[^/]+\/agents$/u.test(pathname) ||
       /^\/api\/projects\/[^/]+\/import-agents$/u.test(pathname) ||
       /^\/api\/projects\/[^/]+\/message-deliveries\/[^/]+\/(?:retry|cancel)$/u.test(pathname) ||
-      /^\/api\/agents\/[^/]+\/triggers$/u.test(pathname) ||
+      /^\/api\/projects\/[^/]+\/triggers$/u.test(pathname) ||
       /^\/api\/triggers\/[^/]+(?:\/(?:rotate-secret|allow-runs))?$/u.test(pathname) ||
       /^\/api\/trigger-webhooks\/[^/]+$/u.test(pathname) ||
       /^\/api\/decisions\/[^/]+\/respond$/u.test(pathname);
@@ -404,6 +401,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const deletingProjectIds = new Set(store.listPendingProjectDeletions().map((entry) => entry.projectId));
   const deletingAgentIds = new Set<string>([...deletingProjectIds].flatMap((projectId) =>
     store.listAgents(projectId).map((agent) => agent.id)));
+  const deletingConversationIds = new Set<string>();
+  const agentCreationConversationLeases = new Map<string, number>();
   const contextCursors = new ContextCursorStore(opts.dataDir);
   const {
     browserScopeForRun,
@@ -469,7 +468,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     reply: FastifyReply,
   ): boolean => {
     if (!deletingProjectIds.has(target.projectId) && !deletingAgentIds.has(target.agentId)) return false;
-    void reply.code(409).send({ error: "Automation owner deletion is in progress" });
+    void reply.code(409).send({ error: "Automation Project or execution Agent deletion is in progress" });
     return true;
   };
   // A crashed daemon may leave scheduler Runs or Activations behind. Reapply
@@ -676,7 +675,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   reconcileContextRolloverFormatNotifications();
   reconcileCoordinationAttentionNotifications();
   const limits = { ...ASSET_LIMITS, maxAttachmentsPerMessage: ASSET_LIMITS.maxAssetsPerMessage };
-  const serverContext: ServerContext = { opts, documentationReferences, limits, agentDetail, store, tokenUsage };
+  const serverContext: ServerContext = { opts, limits, agentDetail, store, tokenUsage };
   const {
     cachedModelOptions,
     closeCapabilityDiscoveryAuthority,
@@ -719,6 +718,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     providerProcessAuthority,
   });
 app.server.on("upgrade", linkPreviewUpgrade);
+  const workingCopies = new AgentWorkingCopyService(opts.dataDir, store);
   const {
     cancelAgentDecisions,
     awaitProjectDeletionBarrier,
@@ -743,15 +743,16 @@ app.server.on("upgrade", linkPreviewUpgrade);
     detachPersistentRuntime,
     teardownPersistentRuntime,
     drainProviderRuntimeAuthority,
+    drainEngineCapabilityDiscoveries,
     draftAttachmentSurfaceDir,
     refreshTriggerSources: () => triggerSources.refresh(),
     notifyScheduler: () => coordinationV3Scheduler.notify(),
-    closeRunBrowser,
     createOperationalNotification,
     resolveOperationalNotification,
     providerProcessAuthority,
     browserProfiles,
     closeAgentBrowsers,
+    workingCopies,
   });
   const coordinationV3Scheduler = createCoordinationScheduler(app, {
     opts,
@@ -770,7 +771,6 @@ app.server.on("upgrade", linkPreviewUpgrade);
     v3DispatchKey,
     appendWorkspace,
     closeLinkPreviewsForAgent,
-    providerEnabled,
     reconcileTriggerOperationalNotifications,
     terminateRuntimeHandle,
     closeRunBrowser,
@@ -814,7 +814,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
       coordinationV3Scheduler.notify();
       if (!triggerId) return;
       const trigger = coordinationV3.getTriggerDefinition(triggerId);
-      if (trigger) appendWorkspace({ type: "trigger_changed", projectId: trigger.projectId, agentId: trigger.agentId, triggerId, action: "occurrence" });
+      if (trigger) appendWorkspace({ type: "trigger_changed", projectId: trigger.projectId, agentId: trigger.targetAgentId, triggerId, action: "occurrence" });
     },
     onSourceFailure: ({ trigger, kind, error }) => {
       createOperationalNotification({
@@ -827,7 +827,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
           : `Filesystem activity remains durably pending when possible, but the latest watcher event could not be persisted: ${error}`,
         projectId: trigger.projectId,
         conversationId: trigger.conversationId,
-        action: { kind: "open_agent", targetId: trigger.agentId },
+        action: { kind: "open_agent", targetId: trigger.targetAgentId },
       });
     },
     onSourceRecovered: (triggerId, kind) => {
@@ -978,7 +978,6 @@ app.server.on("upgrade", linkPreviewUpgrade);
     serverContext,
     store,
     coordinationV3,
-    workspace,
     engines,
     activeRuns,
     launcherNow,
@@ -1069,6 +1068,8 @@ app.server.on("upgrade", linkPreviewUpgrade);
     subscribers,
     deletingProjectIds,
     deletingAgentIds,
+    deletingConversationIds,
+    agentCreationConversationLeases,
     rejectQuarantinedTriggerMutation,
     projectDeletionInFlightIds,
     communicationReconciliation,
@@ -1144,6 +1145,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     isDeploymentDraining: deploymentControl.isDraining,
     notifyScheduler: () => coordinationV3Scheduler.notify(),
     setMaxConcurrentRuns: (value) => coordinationV3Scheduler.setMaxConcurrentRuns(value),
+    workingCopies,
   });
 
   return app;

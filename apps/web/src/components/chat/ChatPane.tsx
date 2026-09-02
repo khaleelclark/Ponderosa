@@ -31,6 +31,7 @@ import {
 } from "./ChatMessages";
 import type { LinkPreviewScope } from "./ChatMessages";
 import { projectAgentChat } from "./agentChatProjection";
+import { ReadAloudControls } from "../speech/ReadAloudControls";
 
 function CommunicationSourceLink({
   message,
@@ -385,6 +386,10 @@ function ChatPaneComponent({
           );
         const receivedInput = fromUser || receivedFromAgent;
         const visibleText = visibleAgentMessageText(message);
+        const readAloudText = resolveMessageMentionText(
+          visibleText,
+          message.agentMentions,
+        );
         const attachedRuns = runPlacement.afterMessage.get(message.id) ?? [];
         return (
           <Fragment key={item.id}>
@@ -516,7 +521,14 @@ function ChatPaneComponent({
                     compactSuccessTooltip={false}
                   />
                 ) : undefined,
-              actions: <CopyMessageButton text={message.text} />,
+              actions: (
+                <>
+                  <CopyMessageButton text={message.text} />
+                  {message.role === "assistant" || message.authorAgentId ? (
+                    <ReadAloudControls text={readAloudText} />
+                  ) : null}
+                </>
+              ),
               }}
             />
           </Fragment>

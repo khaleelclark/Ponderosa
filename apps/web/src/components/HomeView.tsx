@@ -1,20 +1,13 @@
-import AddIcon from "@mui/icons-material/Add";
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
-import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
+import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
-import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import {
   Box,
   Button,
   ButtonBase,
-  Chip,
-  ListItemIcon,
-  ListItemText,
-  Menu,
-  MenuItem,
   Paper,
   Stack,
   Typography,
@@ -23,288 +16,411 @@ import type {
   EngineDto,
   ProjectDto,
   WorkspaceAgentDirectoryItemDto,
-  WorkspaceConversationDirectoryItemDto,
   WorkspaceNotificationDto,
   WorkspacePreferencesDto,
-  WorkspaceProjectDirectoryItemDto,
   WorkspaceTriggerDirectoryItemDto,
 } from "@ponderosa/core";
-import { useQueryClient } from "@tanstack/react-query";
-import { useState, type MouseEvent, type ReactElement } from "react";
+import type { ReactNode } from "react";
+import { agentStatusPresentation } from "../agents";
+import { isOpenAttention } from "../attention";
+import { engineAvailabilityPresentation } from "../conversationEngine";
 import {
-  combineWorkspaceDirectoryRequestStates,
   useWorkspaceDirectory,
   workspaceDirectoryItems,
 } from "../hooks/useWorkspaceDirectory";
-import { engineAvailabilityPresentation } from "../conversationEngine";
 import type { Route } from "../routing";
-import { isOpenAttention } from "../attention";
-import { sortWorkspaceResources, starredWorkspaceResources, toggleWorkspaceResourceStar } from "../resourcePreferences";
-import { CollectionStateFeedback } from "./CollectionPrimitives";
-import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
+import { CompactWorkspaceHeader } from "./WorkspaceFrame";
+import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
 import {
-  markWorkspaceResourceUsed,
-  useWorkspaceResourceRecency,
-  workspaceResourceRecencyTime,
-} from "../workspaceRecency";
+  SemanticStatus,
+  semanticAgentStatus,
+  type SemanticStatusKind,
+} from "./SemanticStatus";
 
-type RecentResource = { id: string; title: string; detail: string; updatedAt: string; route: Route; icon: JSX.Element };
+const ACTIVE_STATUSES = new Set([
+  "running",
+  "waiting",
+  "preparing",
+  "compacting",
+  "blocked",
+  "stalled",
+  "interrupted",
+  "needs_decision",
+]);
 
-function Stat({ label, value, onClick }: { label: string; value: string | number; onClick?(): void }): JSX.Element {
-  const content = <Stack spacing={0.25} sx={{ p: 1.5, minWidth: 0, textAlign: "left" }}><Typography variant="h5" fontWeight={800}>{value}</Typography><Typography variant="body2" color="text.secondary">{label}</Typography></Stack>;
-  return <Paper variant="outlined" sx={{ minWidth: 0, overflow: "hidden" }}>{onClick ? <ButtonBase onClick={onClick} sx={{ display: "block", width: "100%" }}>{content}</ButtonBase> : content}</Paper>;
+function humanizeStatus(status: string): string {
+  return status.replaceAll("_", " ").replace(/\b\w/g, character => character.toUpperCase());
 }
 
-function CreateEntry({
-  icon,
+function Section({
   title,
   description,
-  disabled,
-  onCreate,
+  action,
+  children,
 }: {
-  icon: ReactElement;
   title: string;
   description: string;
-  disabled?: boolean;
-  onCreate(): void;
+  action?: JSX.Element;
+  children: ReactNode;
 }): JSX.Element {
   return (
-    <Paper variant="outlined" sx={{ p: 1.5 }}>
-      <Stack
-        direction="row"
-        spacing={1.5}
-        sx={{ alignItems: "center", minWidth: 0 }}
-      >
-        <Box
-          sx={{
-            width: 44,
-            height: 44,
-            flex: "0 0 auto",
-            borderRadius: 1.5,
-            bgcolor: "action.selected",
-            color: "primary.main",
-            display: "grid",
-            placeItems: "center",
-          }}
-        >
-          {icon}
-        </Box>
+    <Box component="section">
+      <Stack direction="row" spacing={2} sx={{ alignItems: "end", mb: 1.25 }}>
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography fontWeight={800}>{title}</Typography>
-          <Typography variant="body2" color="text.secondary">
-            {description}
-          </Typography>
+          <Typography variant="h6" component="h2" fontWeight={800}>{title}</Typography>
+          <Typography variant="body2" color="text.secondary">{description}</Typography>
         </Box>
-        <Button
-          variant="contained"
-          startIcon={<AddIcon />}
-          disabled={disabled}
-          onClick={onCreate}
+        {action}
+      </Stack>
+      {children}
+    </Box>
+  );
+}
+
+function SummaryCard({
+  label,
+  value,
+  compactLabel,
+  compactValue,
+  onClick,
+}: {
+  label: string;
+  value: string | number;
+  compactLabel?: string;
+  compactValue?: string | number;
+  onClick?(): void;
+}): JSX.Element {
+  const content = (
+    <Stack spacing={0.25} sx={{ p: 1.5, minWidth: 0, textAlign: "left" }}>
+      <Typography variant="h5" fontWeight={800} noWrap>
+        {compactValue === undefined ? value : (
+          <><Box component="span" sx={{ display: { xs: "inline", sm: "none" } }}>{compactValue}</Box><Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>{value}</Box></>
+        )}
+      </Typography>
+      <Typography variant="body2" color="text.secondary" noWrap>
+        {compactLabel === undefined ? label : (
+          <><Box component="span" sx={{ display: { xs: "inline", sm: "none" } }}>{compactLabel}</Box><Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>{label}</Box></>
+        )}
+      </Typography>
+    </Stack>
+  );
+  return (
+    <Paper variant="outlined" sx={{ minWidth: 0, overflow: "hidden" }}>
+      {onClick ? (
+        <ButtonBase
+          onClick={onClick}
           sx={{
-            width: { xs: 176, sm: 200 },
-            minHeight: 48,
-            flexShrink: 0,
+            display: "block",
+            width: "100%",
+            transition: theme => theme.transitions.create("background-color", {
+              duration: theme.transitions.duration.shortest,
+            }),
+            "&:hover": { bgcolor: "action.hover" },
+            "&.Mui-focusVisible": { bgcolor: "action.selected" },
           }}
         >
-          Create {title}
-        </Button>
-      </Stack>
+          {content}
+        </ButtonBase>
+      ) : content}
     </Paper>
   );
 }
 
-export function HomeView({ projects, engines, notifications, preferences, onNavigate, onPreferences, onCreateProject, onCreateChat, onCreateAgent, onCreateTrigger, onOpenInbox }: {
+function ItemCard({
+  icon,
+  title,
+  detail,
+  status,
+  statusLabel,
+  statusAccessibleLabel,
+  statusDetail,
+  multilineDetail = false,
+  onClick,
+}: {
+  icon: JSX.Element;
+  title: string;
+  detail: string;
+  status?: SemanticStatusKind;
+  statusLabel?: string;
+  statusAccessibleLabel?: string;
+  statusDetail?: string;
+  multilineDetail?: boolean;
+  onClick(): void;
+}): JSX.Element {
+  return (
+    <Paper
+      variant="outlined"
+      sx={{ minWidth: 0, height: "100%", overflow: "hidden" }}
+    >
+      <ButtonBase
+        onClick={onClick}
+        sx={{
+          width: "100%",
+          minHeight: multilineDetail ? 78 : undefined,
+          height: "100%",
+          p: 1.35,
+          gap: 1.25,
+          justifyContent: "flex-start",
+          textAlign: "left",
+          overflow: "hidden",
+          transition: theme => theme.transitions.create("background-color", {
+            duration: theme.transitions.duration.shortest,
+          }),
+          "&:hover": { bgcolor: "action.hover" },
+          "&.Mui-focusVisible": { bgcolor: "action.selected" },
+        }}
+      >
+        <Box sx={{ width: 36, height: 36, borderRadius: 1.25, bgcolor: "action.selected", color: "text.secondary", display: "grid", placeItems: "center", flexShrink: 0 }}>
+          {icon}
+        </Box>
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Typography fontWeight={750} noWrap>{title}</Typography>
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            noWrap={!multilineDetail}
+            sx={multilineDetail ? {
+              display: "-webkit-box",
+              minHeight: "2.7em",
+              overflow: "hidden",
+              overflowWrap: "anywhere",
+              WebkitBoxOrient: "vertical",
+              WebkitLineClamp: 2,
+              lineHeight: 1.35,
+            } : undefined}
+          >
+            {detail}
+          </Typography>
+        </Box>
+        {status ? (
+          <Box sx={{ flexShrink: 0 }}>
+            <SemanticStatus
+              status={status}
+              label={statusLabel}
+              detail={statusDetail ?? statusAccessibleLabel}
+            />
+          </Box>
+        ) : null}
+      </ButtonBase>
+    </Paper>
+  );
+}
+
+function notificationRoute(notification: WorkspaceNotificationDto): Route | undefined {
+  if (!notification.projectId) return undefined;
+  if (notification.action?.kind === "open_agent" && notification.action.targetId) {
+    return { kind: "agent", projectId: notification.projectId, agentId: notification.action.targetId };
+  }
+  if (notification.conversationId) {
+    return { kind: "conversation", projectId: notification.projectId, conversationId: notification.conversationId };
+  }
+  if (notification.agentId) {
+    return { kind: "agent", projectId: notification.projectId, agentId: notification.agentId };
+  }
+  return { kind: "project", projectId: notification.projectId };
+}
+
+export function HomeView({
+  projects,
+  projectsLoaded,
+  engines,
+  notifications,
+  preferences,
+  onNavigate,
+  onCreateProject,
+  onOpenInbox,
+}: {
   projects: ProjectDto[];
+  projectsLoaded: boolean;
   engines: EngineDto[];
   notifications: WorkspaceNotificationDto[];
   preferences: WorkspacePreferencesDto;
   onNavigate(route: Route): void;
-  onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onCreateProject(): void;
-  onCreateChat(): void;
-  onCreateAgent(): void;
-  onCreateTrigger(): void;
   onOpenInbox(): void;
 }): JSX.Element {
-  const queryClient = useQueryClient();
-  const recencyQuery = useWorkspaceResourceRecency();
-  const [createAnchor, setCreateAnchor] = useState<HTMLElement>();
-  const [tab, setTab] = useState<"overview" | "work">("overview");
+  const workspaceConnection = useWorkspaceConnection();
   const directoryOptions = { sort: "last_used" as const };
-  const projectDirectoryQuery =
-    useWorkspaceDirectory<WorkspaceProjectDirectoryItemDto>("project", directoryOptions);
-  const conversationDirectoryQuery =
-    useWorkspaceDirectory<WorkspaceConversationDirectoryItemDto>("conversation", directoryOptions);
-  const agentDirectoryQuery =
-    useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", directoryOptions);
-  const triggerDirectoryQuery =
-    useWorkspaceDirectory<WorkspaceTriggerDirectoryItemDto>("trigger", directoryOptions);
-  const projectDirectory = workspaceDirectoryItems(projectDirectoryQuery.data?.pages, preferences);
-  const conversationDirectory = workspaceDirectoryItems(conversationDirectoryQuery.data?.pages, preferences);
-  const agentDirectory = workspaceDirectoryItems(agentDirectoryQuery.data?.pages, preferences);
-  const triggerDirectory = workspaceDirectoryItems(triggerDirectoryQuery.data?.pages, preferences);
-  const projectItems = [...projectDirectory.starredItems, ...projectDirectory.items];
-  const conversationItems = [...conversationDirectory.starredItems, ...conversationDirectory.items];
+  const agentQuery = useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", directoryOptions);
+  const triggerQuery = useWorkspaceDirectory<WorkspaceTriggerDirectoryItemDto>("trigger", directoryOptions);
+  const agentDirectory = workspaceDirectoryItems(agentQuery.data?.pages, preferences);
+  const triggerDirectory = workspaceDirectoryItems(triggerQuery.data?.pages, preferences);
   const agentItems = [...agentDirectory.starredItems, ...agentDirectory.items];
+  const agentNamesById = new Map(
+    agentItems.map(item => [item.agent.id, item.agent.title]),
+  );
   const triggerItems = [...triggerDirectory.starredItems, ...triggerDirectory.items];
-  const homeDirectoryRequest = combineWorkspaceDirectoryRequestStates([
-    projectDirectoryQuery.requestState,
-    conversationDirectoryQuery.requestState,
-    agentDirectoryQuery.requestState,
-    triggerDirectoryQuery.requestState,
-  ]);
-  const recentDirectoryRequest = {
-    ...homeDirectoryRequest,
-    hasNextPage: false,
-    isPaginationError: false,
-  };
-  const activeAgents = agentDirectoryQuery.requestState.hasResolved
-    ? agentDirectoryQuery.data?.pages.at(-1)?.activeCount ?? 0
-    : "—";
-  const needsAttention = notifications.filter(isOpenAttention).length;
-  const unread = notifications.filter((item) => !item.readAt && (item.status ?? "open") === "open").length;
+  const attention = notifications
+    .filter(isOpenAttention)
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const working = agentItems
+    .filter(item => ACTIVE_STATUSES.has(item.health.status))
+    .sort((left, right) => right.health.statusTimestamp.localeCompare(left.health.statusTimestamp));
+  const automations = triggerItems
+    .slice()
+    .sort((left, right) => {
+      if (left.trigger.enabled !== right.trigger.enabled) return left.trigger.enabled ? -1 : 1;
+      return (left.trigger.nextFireAt ?? "~").localeCompare(right.trigger.nextFireAt ?? "~");
+    });
+  const recentOutcomes = agentItems
+    .filter(item => item.health.assignedWorkOutcome)
+    .sort((left, right) =>
+      (right.health.assignedWorkOutcome?.updatedAt ?? "").localeCompare(
+        left.health.assignedWorkOutcome?.updatedAt ?? "",
+      ))
+    .slice(0, 6);
   const provider = engineAvailabilityPresentation(engines);
-  const allResources: RecentResource[] = [
-    ...projectItems.map(({ project }) => ({ id: `project:${project.id}`, title: project.label, detail: "Project", updatedAt: project.lastUsedAt ?? project.createdAt, route: { kind: "project", projectId: project.id } as Route, icon: <FolderOutlinedIcon fontSize="small" /> })),
-    ...conversationItems.map(({ conversation, project }) => ({ id: `conversation:${conversation.id}`, title: conversation.title, detail: `${project.label} · Chat`, updatedAt: conversation.updatedAt, route: { kind: "conversation", projectId: project.id, conversationId: conversation.id } as Route, icon: <ChatBubbleOutlineIcon fontSize="small" /> })),
-    ...agentItems.map(({ agent, project }) => ({ id: `agent:${agent.id}`, title: agent.title, detail: `${project.label} · Agent`, updatedAt: agent.updatedAt, route: { kind: "agent", projectId: project.id, agentId: agent.id } as Route, icon: <SmartToyOutlinedIcon fontSize="small" /> })),
-    ...triggerItems.map(({ trigger, project, agent }) => ({ id: `trigger:${trigger.id}`, title: trigger.name, detail: `${project.label} · Automation`, updatedAt: trigger.updatedAt, route: { kind: "agent", projectId: project.id, agentId: agent.id, view: "triggers" } as Route, icon: <BoltOutlinedIcon fontSize="small" /> })),
-  ];
-  const starredIds = starredWorkspaceResources(preferences);
-  const orderedResources = sortWorkspaceResources(allResources, "last_used", [], (item) => item.id, (item) => item.title, (item) => workspaceResourceRecencyTime(recencyQuery.data, item.id, item.updatedAt));
-  const starred = orderedResources.filter((item) => starredIds.has(item.id));
-  const recent = orderedResources.filter((item) => !starredIds.has(item.id)).slice(0, 10);
-  const unstar = (item: RecentResource) => {
-    const [kind, id] = item.id.split(":", 2) as ["project" | "conversation" | "agent" | "trigger", string];
-    onPreferences(toggleWorkspaceResourceStar(preferences, kind, id));
-  };
-  const openResource = (item: RecentResource) => {
-    if (item.id.startsWith("trigger:")) {
-      markWorkspaceResourceUsed(
-        queryClient,
-        "trigger",
-        item.id.slice("trigger:".length),
-      );
-    }
-    onNavigate(item.route);
-  };
+  const activeCount = agentQuery.requestState.hasResolved
+    ? agentQuery.data?.pages.at(-1)?.activeCount ?? 0
+    : "—";
+  const enabledAutomationCount = triggerQuery.requestState.hasResolved
+    ? triggerItems.filter(item => item.trigger.enabled).length
+    : "—";
 
-  return <Box className="ponderosa-scroll" aria-busy={homeDirectoryRequest.isInitialLoading || homeDirectoryRequest.isRefreshing} sx={{ minHeight: 0, overflowY: "auto" }}>
-    <TabbedWorkspaceFrame<"overview" | "work">
-      icon={<HomeOutlinedIcon />}
-      title="Home"
-      context={<Typography variant="body2" color="text.secondary">A calm overview of your organization and its recent work.</Typography>}
-      tabs={{
-        value: tab,
-        onChange: setTab,
-        label: "Home",
-        items: [
-          { value: "overview", label: "Overview", icon: <HomeOutlinedIcon /> },
-          { value: "work", label: "Recent work", icon: <ChatBubbleOutlineIcon /> },
-        ],
-      }}
-    />
-    <Box sx={{ p: { xs: 2, sm: 3, lg: 4 } }}>
-    <Stack spacing={3} sx={{ width: "100%", maxWidth: 1320, mx: "auto" }}>
-      {tab === "overview" ? <><Box sx={{ display: "grid", gridTemplateColumns: { xs: "repeat(2, minmax(0, 1fr))", md: "repeat(4, minmax(0, 1fr))" }, gap: 1.25 }}>
-        <Stat label="Active Agents" value={activeAgents} />
-        <Stat label="Open Issues" value={needsAttention} onClick={onOpenInbox} />
-        <Stat label="Unread Messages" value={unread} onClick={() => onNavigate({ kind: "allChat" })} />
-        <Stat label="Provider Health" value={provider.label} />
-      </Box>
-
-      <Box component="section" aria-labelledby="home-create-heading">
-        <Box sx={{ mb: 1.5, display: { xs: "flex", sm: "block" }, gap: 1.5, alignItems: "center" }}>
-          <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography id="home-create-heading" variant="h6" fontWeight={800}>
-            Create
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Create a new Project, Chat, Agent, or Automation to get started. You can also open existing Projects from the sidebar.
-          </Typography>
+  return (
+    <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto" }}>
+      <CompactWorkspaceHeader
+        icon={<HomeOutlinedIcon />}
+        title="Home"
+        context="Across every Project"
+      />
+      <Box sx={{ p: { xs: 2, sm: 3, lg: 4 }, containerType: "inline-size" }}>
+        <Stack spacing={3} sx={{ width: "100%", maxWidth: 1320, mx: "auto" }}>
+          <Box sx={{
+            display: "grid",
+            gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+            gap: 1.25,
+            "@container (min-width: 760px)": {
+              gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+            },
+          }}>
+            <SummaryCard label="Active Agents" value={activeCount} onClick={() => onNavigate({ kind: "allAgents" })} />
+            <SummaryCard label="Needs Attention" value={attention.length} onClick={onOpenInbox} />
+            <SummaryCard label="Enabled Automations" compactLabel="Automations" value={enabledAutomationCount} onClick={() => onNavigate({ kind: "allTriggers" })} />
+            <SummaryCard label="Provider Health" value={provider.label} compactValue={provider.label === "Engine ready" ? "Ready" : provider.label} />
           </Box>
-          <Button
-            variant="contained"
-            startIcon={<AddIcon />}
-            aria-haspopup="menu"
-            aria-expanded={Boolean(createAnchor)}
-            onClick={(event: MouseEvent<HTMLElement>) =>
-              setCreateAnchor(event.currentTarget)
-            }
-            sx={{ display: { xs: "inline-flex", sm: "none" }, minHeight: 44, flexShrink: 0 }}
+
+          {projectsLoaded && projects.length === 0 ? (
+            <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}>
+              <FolderOutlinedIcon color="action" sx={{ fontSize: 42, mb: 1 }} />
+              <Typography variant="h6" fontWeight={800}>Create Your First Project</Typography>
+              <Typography color="text.secondary" sx={{ mt: 0.5, mb: 2 }}>
+                Projects organize the Chats, Agents, files, and Automations for a workstream.
+              </Typography>
+              <Button variant="contained" onClick={onCreateProject}>Create Project</Button>
+            </Paper>
+          ) : null}
+
+          <Section
+            title="Needs Attention"
+            description="Decisions, blockers, and failures that still need you."
+            action={attention.length ? <Button onClick={onOpenInbox}>View all</Button> : undefined}
           >
-            Create
-          </Button>
-        </Box>
-        <Menu
-          anchorEl={createAnchor}
-          open={Boolean(createAnchor)}
-          onClose={() => setCreateAnchor(undefined)}
-          slotProps={{ paper: { sx: { width: "min(calc(100vw - 32px), 360px)" } } }}
-        >
-          {[
-            { label: "Project", icon: <FolderOutlinedIcon />, disabled: false, action: onCreateProject },
-            { label: "Chat", icon: <ChatBubbleOutlineIcon />, disabled: !projects.length, action: onCreateChat },
-            { label: "Agent", icon: <SmartToyOutlinedIcon />, disabled: !projects.length, action: onCreateAgent },
-            { label: "Automation", icon: <BoltOutlinedIcon />, disabled: !projects.length, action: onCreateTrigger },
-          ].map(item => (
-            <MenuItem
-              key={item.label}
-              disabled={item.disabled}
-              onClick={() => {
-                setCreateAnchor(undefined);
-                item.action();
-              }}
-              sx={{ minHeight: 48 }}
-            >
-              <ListItemIcon>{item.icon}</ListItemIcon>
-              <ListItemText primary={`Create ${item.label}`} />
-            </MenuItem>
-          ))}
-        </Menu>
-        <Stack spacing={1} sx={{ display: { xs: "none", sm: "flex" } }}>
-          <CreateEntry
-            icon={<FolderOutlinedIcon />}
-            title="Project"
-            description="A workspace with its own folder, runtime defaults, Chats, and Agents."
-            onCreate={onCreateProject}
-          />
-          <CreateEntry
-            icon={<ChatBubbleOutlineIcon />}
-            title="Chat"
-            description="A shared Project conversation for requests, decisions, and coordinated Agent work."
-            disabled={!projects.length}
-            onCreate={onCreateChat}
-          />
-          <CreateEntry
-            icon={<SmartToyOutlinedIcon />}
-            title="Agent"
-            description="A managed worker with its own role, provider session, and Project authority."
-            disabled={!projects.length}
-            onCreate={onCreateAgent}
-          />
-          <CreateEntry
-            icon={<BoltOutlinedIcon />}
-            title="Automation"
-            description="An automation that starts Agent work from schedules or filesystem events."
-            disabled={!projects.length}
-            onCreate={onCreateTrigger}
-          />
+            {attention.length ? (
+              <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
+                {attention.slice(0, 6).map(item => {
+                  const route = notificationRoute(item);
+                  return (
+                    <ItemCard
+                      key={item.id}
+                      icon={<WarningAmberOutlinedIcon color="warning" />}
+                      title={item.title}
+                      detail={item.body}
+                      status="needs_attention"
+                      statusLabel={item.severity === "urgent" ? "Urgent" : "Review"}
+                      multilineDetail
+                      onClick={() => route ? onNavigate(route) : onOpenInbox()}
+                    />
+                  );
+                })}
+              </Box>
+            ) : (
+              <Paper variant="outlined" sx={{ p: 2 }}>
+                <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+                  <CheckCircleOutlineIcon color="success" />
+                  <Typography color="text.secondary">Nothing currently needs your attention.</Typography>
+                </Stack>
+              </Paper>
+            )}
+          </Section>
+
+          <Section
+            title="Working Now"
+            description="Active and waiting Agent work across the organization."
+            action={<Button onClick={() => onNavigate({ kind: "allAgents" })}>View all Agents</Button>}
+          >
+            {working.length ? (
+              <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
+                {working.slice(0, 8).map(item => {
+                  const presentation = agentStatusPresentation(item.health, {
+                    connectionStatus: workspaceConnection.status,
+                    phaseEvidenceFresh: workspaceConnection.phaseEvidenceFresh,
+                    agentNameForId: agentId => agentNamesById.get(agentId),
+                  });
+                  return (
+                    <ItemCard
+                      key={item.agent.id}
+                      icon={<SmartToyOutlinedIcon />}
+                      title={item.agent.title}
+                      detail={item.project.label}
+                      status={semanticAgentStatus(item.health.status)}
+                      statusLabel={presentation.label}
+                      statusAccessibleLabel={presentation.accessibleLabel}
+                      statusDetail={presentation.detail}
+                      onClick={() => onNavigate({ kind: "agent", projectId: item.project.id, agentId: item.agent.id })}
+                    />
+                  );
+                })}
+              </Box>
+            ) : (
+              <Paper variant="outlined" sx={{ p: 2 }}><Typography color="text.secondary">No Agents are active right now.</Typography></Paper>
+            )}
+          </Section>
+
+          <Section
+            title="Automations"
+            description="Enabled schedules and events, ordered by what runs next."
+            action={<Button onClick={() => onNavigate({ kind: "allTriggers" })}>View all Automations</Button>}
+          >
+            {automations.length ? (
+              <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
+                {automations.slice(0, 8).map(item => (
+                  <ItemCard
+                    key={item.trigger.id}
+                    icon={<BoltOutlinedIcon />}
+                    title={item.trigger.name}
+                    detail={`${item.project.label} · ${item.targetAgent?.title ?? "Reassignment required"}`}
+                    status={item.trigger.enabled ? "enabled" : "disabled"}
+                    onClick={() => onNavigate({ kind: "automation", projectId: item.project.id, triggerId: item.trigger.id })}
+                  />
+                ))}
+              </Box>
+            ) : (
+              <Paper variant="outlined" sx={{ p: 2 }}><Typography color="text.secondary">No Automations have been configured yet.</Typography></Paper>
+            )}
+          </Section>
+
+          <Section title="Recent Outcomes" description="The latest finished assigned work across Projects.">
+            {recentOutcomes.length ? (
+              <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
+                {recentOutcomes.map(item => (
+                  <ItemCard
+                    key={item.agent.id}
+                    icon={<CheckCircleOutlineIcon />}
+                    title={item.agent.title}
+                    detail={item.project.label}
+                    status={semanticAgentStatus(item.health.assignedWorkOutcome!.status)}
+                    statusLabel={humanizeStatus(item.health.assignedWorkOutcome!.status)}
+                    onClick={() => onNavigate({ kind: "agent", projectId: item.project.id, agentId: item.agent.id })}
+                  />
+                ))}
+              </Box>
+            ) : (
+              <Paper variant="outlined" sx={{ p: 2 }}><Typography color="text.secondary">Completed Agent work will appear here.</Typography></Paper>
+            )}
+          </Section>
         </Stack>
       </Box>
-
-      {needsAttention > 0 ? <Paper variant="outlined" sx={{ p: 2, borderColor: "warning.main" }}><Stack direction="row" spacing={1.25} sx={{ alignItems: "center" }}><WarningAmberOutlinedIcon color="warning" /><Box sx={{ flex: 1 }}><Typography fontWeight={800}>{needsAttention} open {needsAttention === 1 ? "issue" : "issues"}</Typography><Typography variant="body2" color="text.secondary">Review decisions, blockers, and failures that still need action.</Typography></Box><Button onClick={onOpenInbox}>Open Inbox</Button></Stack></Paper> : null}</> : null}
-
-      {tab === "work" ? <>{starred.length ? <Box component="section"><Typography variant="h6" fontWeight={800} sx={{ mb: 1 }}>Starred</Typography><Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">{starred.map((item) => <Chip key={item.id} clickable icon={item.icon} deleteIcon={<StarRoundedIcon />} label={item.title} onClick={() => openResource(item)} onDelete={() => unstar(item)} sx={{ "& .MuiChip-deleteIcon, & .MuiChip-deleteIcon:hover": { color: "var(--ponderosa-star)" } }} />)}</Stack></Box> : null}
-
-      <Box component="section">
-        <Typography variant="h6" fontWeight={800} sx={{ mb: 1 }}>Recent</Typography>
-        <CollectionStateFeedback request={recentDirectoryRequest} itemCount={recent.length} filtersActive={false} resourceLabel="recent work" emptyTitle="Your Recent Work Will Appear Here" emptyDetail="Create a Project to begin." />
-        <Box sx={{ display: homeDirectoryRequest.hasResolved && recent.length ? "grid" : "none", gridTemplateColumns: { xs: "minmax(0, 1fr)", md: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
-          {recent.map((item) => <Paper key={item.id} variant="outlined"><ButtonBase onClick={() => openResource(item)} sx={{ width: "100%", p: 1.5, gap: 1.25, justifyContent: "flex-start", textAlign: "left" }}><Box sx={{ width: 34, height: 34, borderRadius: 1.5, bgcolor: "action.selected", display: "grid", placeItems: "center", flexShrink: 0 }}>{item.icon}</Box><Box sx={{ minWidth: 0 }}><Typography fontWeight={750} noWrap>{item.title}</Typography><Typography variant="caption" color="text.secondary" noWrap>{item.detail}</Typography></Box></ButtonBase></Paper>)}
-        </Box>
-      </Box></> : null}
-    </Stack>
     </Box>
-  </Box>;
+  );
 }

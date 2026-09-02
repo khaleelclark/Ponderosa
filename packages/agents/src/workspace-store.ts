@@ -9,7 +9,10 @@ import type {
   UpdateWorkspacePreferencesRequest,
   WorkspaceEvent,
   WorkspaceEventEnvelope,
+  WorkspaceNotificationCountProjectionDto,
   WorkspaceNotificationDto,
+  WorkspaceNotificationProjectionDto,
+  WorkspaceProjectNotificationProjectionDto,
   NotificationPreferencesDto,
   WorkspacePreferencesDto,
   WorkspaceResourceKind,
@@ -28,6 +31,7 @@ type CanonicalWorkspaceEvent = WorkspaceEventEnvelope & {
     | { kind: "notification"; notification: WorkspaceNotificationDto; pushTargets?: Array<{ deviceId: string; subscriptionUpdatedAt: string }> }
     | { kind: "notifications_read"; conversationId: string; readAt: string }
     | { kind: "notifications_read_ids"; notificationIds: string[]; readAt: string }
+    | { kind: "notifications_acknowledged_ids"; notificationIds: string[]; acknowledgedAt: string }
     | { kind: "notifications_read_all"; readAt: string }
     | { kind: "notifications_cleared"; notificationIds: string[] }
     | { kind: "notifications_dismissed"; notificationIds: string[]; at: string }
@@ -106,6 +110,57 @@ function notificationLiveKind(item: WorkspaceNotificationDto): NotificationLiveK
   return !item.readAt && isOpenNotificationUpdate(item) ? "update" : undefined;
 }
 
+const IMPORTANT_MESSAGE_NOTIFICATION_KINDS = new Set<WorkspaceNotificationDto["kind"]>([
+  "direct_responses",
+  "everyone",
+]);
+
+const MESSAGE_NOTIFICATION_KINDS = new Set<WorkspaceNotificationDto["kind"]>([
+  ...IMPORTANT_MESSAGE_NOTIFICATION_KINDS,
+  "broadcasts",
+]);
+
+function unreadProjectionKind(
+  item: WorkspaceNotificationDto,
+): "important" | "ordinary" | undefined {
+  if ((item.status ?? "open") !== "open" || item.kind === "collaboration") return undefined;
+  if (isOpenAttentionNotification(item)) return item.acknowledgedAt ? undefined : "important";
+  if (item.readAt || !MESSAGE_NOTIFICATION_KINDS.has(item.kind)) return undefined;
+  return IMPORTANT_MESSAGE_NOTIFICATION_KINDS.has(item.kind) ? "important" : "ordinary";
+}
+
+interface NotificationProjectionAccumulator {
+  importantIds: Set<string>;
+  ordinaryIds: Set<string>;
+}
+
+function emptyNotificationProjectionAccumulator(): NotificationProjectionAccumulator {
+  return { importantIds: new Set<string>(), ordinaryIds: new Set<string>() };
+}
+
+function addNotificationProjection(
+  accumulator: NotificationProjectionAccumulator,
+  item: WorkspaceNotificationDto,
+  kind: "important" | "ordinary",
+): void {
+  if (kind === "important") {
+    accumulator.importantIds.add(item.id);
+    accumulator.ordinaryIds.delete(item.id);
+  } else if (!accumulator.importantIds.has(item.id)) {
+    accumulator.ordinaryIds.add(item.id);
+  }
+}
+
+function notificationProjectionCounts(
+  accumulator: NotificationProjectionAccumulator,
+): WorkspaceNotificationCountProjectionDto {
+  return {
+    importantCount: accumulator.importantIds.size,
+    ordinaryCount: accumulator.ordinaryIds.size,
+    totalCount: accumulator.importantIds.size + accumulator.ordinaryIds.size,
+  };
+}
+
 export interface WorkspaceNotificationPageCursor {
   createdAt: string;
   id: string;
@@ -113,7 +168,8 @@ export interface WorkspaceNotificationPageCursor {
 
 export interface WorkspaceNotificationPage {
   items: WorkspaceNotificationDto[];
-  attentionCount: number;
+  openActionCount: number;
+  unacknowledgedActionCount: number;
   unreadUpdateCount: number;
   nextCursor?: WorkspaceNotificationPageCursor;
 }
@@ -136,7 +192,8 @@ export class WorkspaceStore {
   private readonly notificationsByDedupeKey = new Map<string, WorkspaceNotificationDto>();
   private readonly openOperationalNotificationsByDedupeKey = new Map<string, WorkspaceNotificationDto>();
   private readonly activeNotifications: WorkspaceNotificationDto[] = [];
-  private notificationAttentionCount = 0;
+  private notificationOpenActionCount = 0;
+  private notificationUnacknowledgedActionCount = 0;
   private notificationUnreadUpdateCount = 0;
   private readonly unreadNotificationIdsByCommunication = new Map<string, Set<string>>();
   private readonly unreadNotificationIdsByConversation = new Map<string, Set<string>>();
@@ -182,7 +239,7 @@ export class WorkspaceStore {
   }
 
   private notificationSearchIndexEligible(item: WorkspaceNotificationDto): boolean {
-    return item.kind !== "collaboration" && (item.status ?? "open") !== "dismissed" && !item.readAt;
+    return notificationLiveKind(item) === "update";
   }
 
   private updateNotificationSearchIndex(item: WorkspaceNotificationDto, add: boolean): void {
@@ -246,7 +303,10 @@ export class WorkspaceStore {
     const index = this.activeNotifications.findIndex((candidate) => candidate.id === item.id);
     if (index < 0) return;
     this.activeNotifications.splice(index, 1);
-    if (kind === "attention") this.notificationAttentionCount -= 1;
+    if (kind === "attention") {
+      this.notificationOpenActionCount -= 1;
+      if (!item.acknowledgedAt) this.notificationUnacknowledgedActionCount -= 1;
+    }
     else this.notificationUnreadUpdateCount -= 1;
   }
 
@@ -261,7 +321,10 @@ export class WorkspaceStore {
       else high = middle;
     }
     this.activeNotifications.splice(low, 0, item);
-    if (kind === "attention") this.notificationAttentionCount += 1;
+    if (kind === "attention") {
+      this.notificationOpenActionCount += 1;
+      if (!item.acknowledgedAt) this.notificationUnacknowledgedActionCount += 1;
+    }
     else this.notificationUnreadUpdateCount += 1;
   }
 
@@ -276,13 +339,7 @@ export class WorkspaceStore {
       ].join("\0"));
     }
     if (record.event.type === "preferences_updated") {
-      const persisted = record.event.preferences as WorkspacePreferencesDto & {
-        providerPermissionMode?: unknown;
-      };
-      const {
-        providerPermissionMode: _legacyProviderPermissionMode,
-        ...preferences
-      } = persisted;
+      const preferences = record.event.preferences;
       this.preferences = {
         ...DEFAULT_PREFERENCES,
         ...preferences,
@@ -329,10 +386,21 @@ export class WorkspaceStore {
       for (const key of [...this.draftConflicts.keys()]) if (key.startsWith(prefix)) this.draftConflicts.delete(key);
     }
     if (record.mutation?.kind === "notification") {
-      const notification = this.deletedProjectNotification(
+      let notification = this.deletedProjectNotification(
         record.mutation.notification,
         record.ts,
       );
+      const canonicalDecision = notification.decision
+        ? this.decisions.get(notification.decision.id)
+        : undefined;
+      if (canonicalDecision && canonicalDecision.status !== "pending") {
+        notification = {
+          ...notification,
+          decision: { ...notification.decision!, status: canonicalDecision.status },
+          status: "resolved",
+          resolvedAt: canonicalDecision.updatedAt,
+        };
+      }
       this.setNotification(notification);
       for (const target of record.mutation.pushTargets ?? []) {
         if ((notification.status ?? "open") !== "open") continue;
@@ -358,6 +426,14 @@ export class WorkspaceStore {
       for (const notificationId of record.mutation.notificationIds) {
         const current = this.notifications.get(notificationId);
         if (current && !current.readAt) this.setNotification({ ...current, readAt: record.mutation.readAt });
+      }
+    }
+    if (record.mutation?.kind === "notifications_acknowledged_ids") {
+      for (const notificationId of record.mutation.notificationIds) {
+        const current = this.notifications.get(notificationId);
+        if (current && isOpenAttentionNotification(current) && !current.acknowledgedAt) {
+          this.setNotification({ ...current, acknowledgedAt: record.mutation.acknowledgedAt });
+        }
       }
     }
     if (record.mutation?.kind === "notifications_read_all") {
@@ -388,7 +464,6 @@ export class WorkspaceStore {
         ...current,
         status: record.mutation.status,
         resolvedAt: record.mutation.at,
-        readAt: current.readAt ?? record.mutation.at,
       });
     }
     if (record.mutation?.kind === "decision") {
@@ -408,6 +483,10 @@ export class WorkspaceStore {
         this.setNotification({
           ...notification,
           decision: { ...notification.decision, status: record.mutation.decision.status },
+          ...(record.mutation.decision.status === "pending" ? {} : {
+            status: "resolved" as const,
+            resolvedAt: record.mutation.decision.updatedAt,
+          }),
         });
       }
     }
@@ -949,7 +1028,8 @@ export class WorkspaceStore {
     const last = items.at(-1);
     return {
       items,
-      attentionCount: this.notificationAttentionCount,
+      openActionCount: this.notificationOpenActionCount,
+      unacknowledgedActionCount: this.notificationUnacknowledgedActionCount,
       unreadUpdateCount: this.notificationUnreadUpdateCount,
       ...(last && start + items.length < this.activeNotifications.length
         ? { nextCursor: { createdAt: last.createdAt, id: last.id } }
@@ -981,33 +1061,118 @@ export class WorkspaceStore {
     return { unreadCommunicationEventIds, unreadConversationCounts };
   }
 
-  readConversation(conversationId: string): void {
-    const unread = this.findNotification((item) => item.conversationId === conversationId && !item.readAt);
-    if (!unread) return;
-    const readAt = new Date().toISOString();
-    this.append({ type: "notification_changed", conversationId, action: "read" }, { kind: "notifications_read", conversationId, readAt });
+  /** Produce exact, identity-deduped unread projections without exposing the
+   * underlying notification collection. The caller bounds which resource
+   * scopes are returned; workspace and All Messages remain scalar summaries. */
+  notificationProjection(input: {
+    projectIds: readonly string[];
+    conversationIds: readonly string[];
+  }): WorkspaceNotificationProjectionDto {
+    const requestedProjectIds = new Set(input.projectIds);
+    const requestedConversationIds = new Set(input.conversationIds);
+    const workspace = emptyNotificationProjectionAccumulator();
+    const allMessages = emptyNotificationProjectionAccumulator();
+    const projects = new Map<string, {
+      total: NotificationProjectionAccumulator;
+      chat: NotificationProjectionAccumulator;
+      projectLevel: NotificationProjectionAccumulator;
+      affectedConversationIds: Set<string>;
+    }>();
+    const conversations = new Map<string, NotificationProjectionAccumulator>();
+
+    for (const projectId of requestedProjectIds) {
+      projects.set(projectId, {
+        total: emptyNotificationProjectionAccumulator(),
+        chat: emptyNotificationProjectionAccumulator(),
+        projectLevel: emptyNotificationProjectionAccumulator(),
+        affectedConversationIds: new Set<string>(),
+      });
+    }
+    for (const conversationId of requestedConversationIds) {
+      conversations.set(conversationId, emptyNotificationProjectionAccumulator());
+    }
+
+    for (const item of this.notifications.values()) {
+      const kind = unreadProjectionKind(item);
+      if (!kind) continue;
+      const navigationConversationIds = new Set([
+        ...(item.conversationId ? [item.conversationId] : []),
+        ...(item.conversationIds ?? []),
+      ]);
+      // Communication notifications are Chat-scoped. An action is Chat-scoped
+      // only when it names one canonical conversation; conversationIds on
+      // operational notifications are navigation destinations, not ownership.
+      const conversationIds = MESSAGE_NOTIFICATION_KINDS.has(item.kind)
+        ? navigationConversationIds
+        : new Set(item.conversationId ? [item.conversationId] : []);
+      addNotificationProjection(workspace, item, kind);
+      if (MESSAGE_NOTIFICATION_KINDS.has(item.kind) && conversationIds.size > 0) {
+        addNotificationProjection(allMessages, item, kind);
+      }
+
+      if (item.projectId) {
+        const project = projects.get(item.projectId);
+        if (project) {
+          addNotificationProjection(project.total, item, kind);
+          const scope = conversationIds.size > 0 ? project.chat : project.projectLevel;
+          addNotificationProjection(scope, item, kind);
+          if (conversationIds.size > 0) {
+            for (const conversationId of conversationIds) {
+              project.affectedConversationIds.add(conversationId);
+            }
+          }
+        }
+      }
+
+      for (const conversationId of conversationIds) {
+        const conversation = conversations.get(conversationId);
+        if (conversation) addNotificationProjection(conversation, item, kind);
+      }
+    }
+
+    return {
+      workspace: notificationProjectionCounts(workspace),
+      allMessages: notificationProjectionCounts(allMessages),
+      projects: Object.fromEntries([...projects].map(([projectId, project]) => {
+        const projected: WorkspaceProjectNotificationProjectionDto = {
+          ...notificationProjectionCounts(project.total),
+          chat: {
+            ...notificationProjectionCounts(project.chat),
+            affectedConversationCount: project.affectedConversationIds.size,
+          },
+          projectLevel: notificationProjectionCounts(project.projectLevel),
+        };
+        return [projectId, projected];
+      })),
+      conversations: Object.fromEntries([...conversations].map(([conversationId, projection]) => [
+        conversationId,
+        notificationProjectionCounts(projection),
+      ])),
+    };
   }
 
-  /** Viewing a Chat acknowledges ordinary authored-message notices only. */
-  readConversationMessages(conversationId: string): void {
-    const notificationIds: string[] = [];
-    this.forEachNotification((item) => {
-      if (item.conversationId === conversationId && !item.readAt &&
-        ["direct_responses", "everyone", "broadcasts"].includes(item.kind)) {
-        notificationIds.push(item.id);
+  /** Resolve unread informational notifications by canonical Communication
+   * identity, including notifications older than the bounded live-feed page. */
+  readNotificationsForCommunicationEvents(communicationEventIds: readonly string[]): number {
+    const notificationIds = new Set<string>();
+    for (const communicationEventId of new Set(communicationEventIds)) {
+      for (const notificationId of this.unreadNotificationIdsByCommunication.get(communicationEventId) ?? []) {
+        notificationIds.add(notificationId);
       }
-    });
-    if (!notificationIds.length) return;
+    }
+    if (!notificationIds.size) return 0;
     const readAt = new Date().toISOString();
     this.append(
-      { type: "notification_changed", conversationId, action: "read" },
-      { kind: "notifications_read_ids", notificationIds, readAt },
+      { type: "notification_changed", action: "read" },
+      { kind: "notifications_read_ids", notificationIds: [...notificationIds], readAt },
     );
+    return notificationIds.size;
   }
 
   readNotification(notificationId: string): boolean {
     const current = this.notifications.get(notificationId);
     if (!current) return false;
+    if (isOpenAttentionNotification(current)) return false;
     if (current.readAt) return true;
     const readAt = new Date().toISOString();
     this.append(
@@ -1017,17 +1182,18 @@ export class WorkspaceStore {
     return true;
   }
 
-  readAllNotifications(): number {
-    const unreadIds: string[] = [];
-    this.forEachNotification((item) => {
-      if (!item.readAt && isOpenNotificationUpdate(item)) unreadIds.push(item.id);
+  acknowledgeNotifications(notificationIds: readonly string[]): number {
+    const ids = [...new Set(notificationIds)].filter((notificationId) => {
+      const current = this.notifications.get(notificationId);
+      return Boolean(current && isOpenAttentionNotification(current) && !current.acknowledgedAt);
     });
-    if (unreadIds.length === 0) return 0;
+    if (!ids.length) return 0;
+    const acknowledgedAt = new Date().toISOString();
     this.append(
-      { type: "notification_changed", action: "read" },
-      { kind: "notifications_read_ids", notificationIds: unreadIds, readAt: new Date().toISOString() },
+      { type: "notification_changed", action: "acknowledged" },
+      { kind: "notifications_acknowledged_ids", notificationIds: ids, acknowledgedAt },
     );
-    return unreadIds.length;
+    return ids.length;
   }
 
   putPushSubscription(input: Omit<WebPushSubscriptionDto, "updatedAt">): WebPushSubscriptionDto {
@@ -1066,7 +1232,7 @@ export class WorkspaceStore {
     if (!current || (current.status ?? "open") !== "open") return current;
     const at = new Date().toISOString();
     this.append(
-      { type: "notification_changed", notificationId, conversationId: current.conversationId, action: "read" },
+      { type: "notification_changed", notificationId, conversationId: current.conversationId, action: "resolved" },
       { kind: "notification_status", notificationId, status, at },
     );
     return this.notifications.get(notificationId);
@@ -1192,7 +1358,7 @@ export class WorkspaceStore {
     const next: DecisionDto = { ...current, status: "resolved", response, updatedAt: response.respondedAt };
     const key = [...this.decisionIdempotency.entries()].find(([, decisionId]) => decisionId === id)?.[0] ?? `decision:${id}`;
     this.append(
-      { type: "notification_changed", action: "read", conversationId: current.conversationId },
+      { type: "notification_changed", action: "resolved", conversationId: current.conversationId },
       { kind: "decision", decision: next, idempotencyKey: key },
     );
     return next;
@@ -1204,7 +1370,7 @@ export class WorkspaceStore {
     const next: DecisionDto = { ...current, status: "cancelled", updatedAt: at };
     const key = [...this.decisionIdempotency.entries()].find(([, decisionId]) => decisionId === id)?.[0] ?? `decision:${id}`;
     this.append(
-      { type: "notification_changed", action: "read", conversationId: current.conversationId },
+      { type: "notification_changed", action: "resolved", conversationId: current.conversationId },
       { kind: "decision", decision: next, idempotencyKey: key },
     );
     return next;

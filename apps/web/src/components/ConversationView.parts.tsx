@@ -25,12 +25,14 @@ import type {
   OperatorProfileDto,
   ResponseFileActivityDto,
   TeamOperationalEventDto,
+  WorkspaceNotificationDto,
 } from "@ponderosa/core";
 import {
   memo,
   type Dispatch,
   type SetStateAction,
 } from "react";
+import type { ConversationDetailView } from "../routing";
 import { transcriptFileName } from "../chatTranscript";
 import { CopyMessageButton } from "./CopyMessageButton";
 import { ResponseFileActivity } from "./activity/ResponseFileActivity";
@@ -49,6 +51,8 @@ import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { RequestLifecycleCard } from "./RequestLifecycleCard";
 import { DecisionCard } from "./decisions/DecisionCard";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
+import { NotificationAcknowledgementBoundary } from "./NotificationAcknowledgementBoundary";
+import { useNotificationAcknowledgement } from "../hooks/useNotificationAcknowledgement";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 import {
   AUTO_ALLOWED_DECISION_OPTION_ID,
@@ -59,6 +63,7 @@ import {
   routineTeamLifecycleEvent,
   type PresentedTeamOperationalEvent,
 } from "./teamChatPresentation";
+import { ReadAloudControls } from "./speech/ReadAloudControls";
 
 function ConversationMessageComponent({
   message,
@@ -208,6 +213,14 @@ function ConversationMessageComponent({
         actions: (
           <>
             <CopyMessageButton text={resolvedCopyText} />
+            {message.authorAgentId ? (
+              <ReadAloudControls
+                text={resolveMessageMentionText(
+                  visibleText,
+                  message.agentMentions,
+                )}
+              />
+            ) : null}
             {conversation === "main" && message.authorAgentId && onMentionAgent ? (
                 <Tooltip title={`Mention ${senderName}`}>
                   <IconButton
@@ -264,9 +277,7 @@ function ConversationHeader({
   onNewAgent(master: ConversationDto, managerAgentId?: string): void;
   setImportOpen: Dispatch<SetStateAction<boolean>>;
   setDeleteOpen: Dispatch<SetStateAction<boolean>>;
-  setActiveView: Dispatch<
-    SetStateAction<"main" | "collaboration" | "files" | "agents" | "triggers">
-  >;
+  setActiveView(view: ConversationDetailView): void;
 }): JSX.Element {
   return (
     <TabbedWorkspaceFrame
@@ -379,6 +390,7 @@ function MainConversationTimeline({
   onOpenFileActivity,
   mentionAgent,
   markCommunicationVisible,
+  notifications,
 }: {
   mainTimeline: MainTimelineEntry[];
   operatorProfile?: OperatorProfileDto;
@@ -399,7 +411,9 @@ function MainConversationTimeline({
     communicationEventId: string | undefined,
     visible: boolean,
   ): void;
+  notifications: WorkspaceNotificationDto[];
 }): JSX.Element {
+  const acknowledgeNotifications = useNotificationAcknowledgement();
   return (
     <Stack spacing={0} sx={{ mb: 2 }}>
       {mainTimeline.length === 0 ? (
@@ -409,9 +423,19 @@ function MainConversationTimeline({
         </Typography>
       ) : null}
       {mainTimeline.map(entry => {
-        if (entry.kind === "decision") return <Box key={entry.id} sx={{ py: 1 }}>
+        if (entry.kind === "decision") {
+          const notification = notifications.find((item) =>
+            item.decision?.id === entry.event.decision.id && (item.status ?? "open") === "open");
+          const card = <Box key={entry.id} sx={{ py: 1 }}>
           <DecisionCard decision={entry.event.decision} title={entry.event.decision.question} context={entry.event.decision.context} />
-        </Box>;
+          </Box>;
+          return notification ? <NotificationAcknowledgementBoundary
+            key={entry.id}
+            notificationId={notification.id}
+            acknowledged={Boolean(notification.acknowledgedAt)}
+            onAcknowledge={acknowledgeNotifications}
+          >{card}</NotificationAcknowledgementBoundary> : card;
+        }
         if (entry.kind === "decision-response") {
           const automatic =
             entry.event.decision.response?.optionId ===

@@ -17,7 +17,7 @@ import { openDb, type Db } from "./db.js";
 import { readRepairableJsonl } from "./append-jsonl.js";
 import {
   acquireDataDirectoryOwnership,
-  ensureV1Layout,
+  ensureCurrentDataLayout,
   releaseDataDirectoryOwnership,
   type DataDirectoryOwnership,
 } from "./store-data-directory.js";
@@ -42,6 +42,7 @@ import { AgentManagementAuthority } from "./store-agent-management-authority.js"
 import { AgentProjectDeletionAuthority } from "./store-project-deletion-authority.js";
 import { AgentProjectionRebuilder } from "./store-projection-rebuilder.js";
 import { AgentRunUsageReadModel } from "./store-run-usage-read-model.js";
+import { AgentPhaseReadModel } from "./store-agent-phase-read-model.js";
 import { AgentTelemetryReadModel } from "./store-telemetry-read-model.js";
 import { AgentWorkspaceCatalogAuthority } from "./store-workspace-catalog-authority.js";
 import { setCompactionHistoryConversationVisibility } from "./compaction-history-retrieval.js";
@@ -63,14 +64,7 @@ export interface AgentStoreComponentPorts {
     conversationId: string,
     channel?: ConversationChannel,
   ): ConversationMessageDto[];
-  persistAgentMemberships(
-    agentId: string,
-    conversationIds: string[],
-    primaryConversationId?: string,
-    beforeProjectionChange?: () => void,
-  ): void;
   getAgentPreset(presetId: string): AgentPresetDto | undefined;
-  updateAgentOrganization(agentId: string, input: Parameters<AgentCatalogAuthority["updateAgentOrganization"]>[1]): AgentDto | undefined;
   getProject(projectId: string): ProjectDto | undefined;
   getConversation(conversationId: string): ConversationDto | undefined;
   getAgent(agentId: string): AgentDto | undefined;
@@ -140,6 +134,7 @@ export interface OpenAgentStoreData {
 }
 
 export interface AgentStoreComponents {
+  phaseReadModel: AgentPhaseReadModel;
   telemetry: AgentTelemetryReadModel;
   fileActivity: AgentFileActivityReadModel;
   chatFeed: AgentChatFeedProjection;
@@ -159,11 +154,11 @@ export interface AgentStoreComponents {
 }
 
 export function openAgentStoreData(dataDir: string): OpenAgentStoreData {
-  ensureV1Layout(dataDir);
   mkdirSync(dataDir, { recursive: true });
-  mkdirSync(projectsDir(dataDir), { recursive: true });
   const ownership = acquireDataDirectoryOwnership(dataDir);
   try {
+    ensureCurrentDataLayout(dataDir);
+    mkdirSync(projectsDir(dataDir), { recursive: true });
     const deliverySequenceFile = `${dataDir}/delivery-order.jsonl`;
     const deliverySequence = readRepairableJsonl<{ sequence: number }>(
       deliverySequenceFile,
@@ -190,10 +185,8 @@ export function createAgentStoreComponents(
   const workspaceCatalog = new AgentWorkspaceCatalogAuthority(
     dataDir,
     db,
-    client,
     ports.listAgents,
     ports.getConversationMessages,
-    ports.persistAgentMemberships,
     projectId => chatFeed.refreshAllChatFeedProject(projectId),
     (projectId, conversationId, visible) =>
       setCompactionHistoryConversationVisibility(client, projectId, conversationId, visible),
@@ -203,7 +196,7 @@ export function createAgentStoreComponents(
     db,
     client,
     ports.getAgentPreset,
-    ports.updateAgentOrganization,
+    ports.getProject,
   );
   const communicationJournal = new AgentCommunicationJournalAuthority(
     dataDir,
@@ -279,9 +272,7 @@ export function createAgentStoreComponents(
     ports.getAgent,
     ports.listAgents,
     ports.getProject,
-    ports.getConversation,
     ports.rowToAgentDto,
-    ports.persistAgentMemberships,
     projectId => chatFeed.refreshAllChatFeedProject(projectId),
   );
   const agentDeletion = new AgentDeletionAuthority(
@@ -331,6 +322,7 @@ export function createAgentStoreComponents(
     (agentId, status, executionFilter) =>
       fileActivity.byExecution(agentId, status, executionFilter),
   );
+  const phaseReadModel = new AgentPhaseReadModel(client);
   const runUsage = new AgentRunUsageReadModel(
     db,
     client,
@@ -387,6 +379,7 @@ export function createAgentStoreComponents(
   );
 
   return {
+    phaseReadModel,
     telemetry,
     fileActivity,
     chatFeed,

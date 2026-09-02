@@ -1,7 +1,6 @@
 import {
   canonicalizeProviderText,
   truncateUnicodeCodePoints,
-  type DecisionDto,
 } from "@ponderosa/core";
 import type { AgentStore, CoordinationV3Store, WorkspaceStore } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
@@ -120,7 +119,7 @@ export function registerAgentDecisionRoutes(
     workspace.createNotification({
       projectId: decision.projectId,
       conversationId: decision.conversationId,
-      conversationIds: agent.conversationIds,
+      conversationIds: [agent.conversationId],
       agentId: decision.agentId,
       agentIds: [decision.agentId],
       kind: "decision",

@@ -6,7 +6,7 @@ import {
   type AgentDto,
   type CommunicationEvent,
   type CoordinationRequestState,
-  type ImageAttachmentDto,
+  type AssetDto,
   type ModelOption,
   type RequestLifetime,
 } from "@ponderosa/core";
@@ -16,7 +16,6 @@ import type {
   CoordinationV3Store,
 } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
-import { agentMentionHandle } from "../agent-mentions.js";
 import type {
   ActiveRun,
   AgentMessageCapability,
@@ -42,7 +41,7 @@ interface AgentCoordinationRoutesContext {
     agentId: string,
     event: CommunicationEvent,
     renderedText: string,
-    attachments?: ImageAttachmentDto[],
+    attachments?: AssetDto[],
   ): void;
   publishCoordinationV3Changed(
     agentId: string,
@@ -100,7 +99,7 @@ export function registerAgentCoordinationRoutes(
     if (deletingAgentIds.has(manager.id)) {
       return reply.code(409).send({ error: "Agent deletion is already in progress" });
     }
-    if (!capability.conversationId || !manager.conversationIds.includes(capability.conversationId)) {
+    if (!capability.conversationId || manager.conversationId !== capability.conversationId) {
       return reply.code(409).send({ error: "visible managed Agents require an active Team Chat scope" });
     }
     const idempotencyKey = request.body?.idempotencyKey?.trim();
@@ -131,7 +130,7 @@ export function registerAgentCoordinationRoutes(
     try {
       store.sqlite.transaction(() => {
         child = store.createAgent(manager!.projectId, {
-          title: title!, engine: engineId!, conversationId: capability!.conversationId,
+          title: title!, engine: engineId!, conversationId: capability!.conversationId!,
           model: request.body.model?.trim() || undefined, effort: request.body.effort?.trim() || undefined,
           managerAgentId: manager!.id,
         }, { agentId: manager!.id, executionId: capability!.runId, idempotencyKey: idempotencyKey!, prompt: text! });
@@ -166,7 +165,7 @@ export function registerAgentCoordinationRoutes(
     recordCommunication(openingCommunication);
     store.appendConversationMessage(
       capability.conversationId,
-      { role: "assistant", text: `#${agentMentionHandle(child!.title)} ${text}` },
+      { role: "assistant", text: `#${child!.handle} ${text}` },
       manager.id, "collaboration",
       [{ targetAgentId: child!.id, relayDepth: 0, mentionTrail: [], kind: "tag", audience: "mention" }],
       undefined, openingEventId,
@@ -195,10 +194,8 @@ export function registerAgentCoordinationRoutes(
       delegations?: Array<{ recipientAgentId?: string; text?: string }>;
       completionMode?: "join" | "callback" | "record";
       wakePolicy?: "each_result" | "final_only";
-      awaitResult?: boolean;
       lifetime?: RequestLifetime;
-      deadlineAt?: string;
-      requests?: Array<{ requestId?: string; recipientAgentId?: string; text?: string; lifetime?: RequestLifetime }>;
+      requests?: Array<{ requestId?: string; recoveryOfRequestId?: string; recipientAgentId?: string; text?: string; lifetime?: RequestLifetime }>;
       join?: { id?: string; mode?: "all" | "any" | "quorum"; quorum?: number; deadlineAt?: string; satisfyingOutcomes?: CoordinationRequestState[]; requestIds?: string[]; wakePolicy?: "each_result" | "final_only" };
     };
   }>("/api/agent-coordinate", async (request, reply) => {
@@ -213,7 +210,7 @@ export function registerAgentCoordinationRoutes(
     const steeringInjectionIds = coordinationV3.steeringInjectionIds(capability.runId);
     const body = request.body ?? {};
     const unknownTopLevel = Object.keys(body).filter((key) =>
-      !["idempotencyKey", "recipientAgentId", "text", "delegations", "completionMode", "wakePolicy", "awaitResult", "lifetime", "deadlineAt", "requests", "join"].includes(key));
+      !["idempotencyKey", "recipientAgentId", "text", "delegations", "completionMode", "wakePolicy", "lifetime", "requests", "join"].includes(key));
     if (unknownTopLevel.length) {
       return reply.code(400).send({ error: `unknown coordinate field(s): ${unknownTopLevel.join(", ")}` });
     }
@@ -227,8 +224,8 @@ export function registerAgentCoordinationRoutes(
       return reply.code(400).send({ error: "idempotencyKey must be a string" });
     }
     const shorthand = body.recipientAgentId !== undefined || body.text !== undefined || body.delegations !== undefined ||
-      body.completionMode !== undefined || body.wakePolicy !== undefined || body.awaitResult !== undefined ||
-      body.lifetime !== undefined || body.deadlineAt !== undefined;
+      body.completionMode !== undefined || body.wakePolicy !== undefined ||
+      body.lifetime !== undefined;
     if (shorthand && (body.requests !== undefined || body.join !== undefined)) {
       return reply.code(400).send({ error: "common delegation fields cannot be combined with requests or join" });
     }
@@ -236,10 +233,8 @@ export function registerAgentCoordinationRoutes(
     if (body.delegations !== undefined && hasSingleDelegation) {
       return reply.code(400).send({ error: "delegations cannot be combined with recipientAgentId or text" });
     }
-    if (hasSingleDelegation && (typeof body.recipientAgentId !== "string" || typeof body.text !== "string" ||
-        (body.awaitResult !== undefined && typeof body.awaitResult !== "boolean") ||
-        (body.deadlineAt !== undefined && typeof body.deadlineAt !== "string"))) {
-      return reply.code(400).send({ error: "coordinate shorthand requires string recipientAgentId and text; awaitResult is boolean and deadlineAt is an ISO timestamp" });
+    if (hasSingleDelegation && (typeof body.recipientAgentId !== "string" || typeof body.text !== "string")) {
+      return reply.code(400).send({ error: "coordinate shorthand requires string recipientAgentId and text" });
     }
     if (body.delegations !== undefined) {
       if (body.delegations.length === 0 || body.delegations.length > 100 || body.delegations.some((item) =>
@@ -254,16 +249,6 @@ export function registerAgentCoordinationRoutes(
     }
     if (body.wakePolicy !== undefined && !["each_result", "final_only"].includes(body.wakePolicy)) {
       return reply.code(400).send({ error: "wakePolicy must be each_result or final_only" });
-    }
-    if (body.completionMode !== undefined && body.awaitResult !== undefined) {
-      return reply.code(400).send({ error: "completionMode cannot be combined with legacy awaitResult" });
-    }
-    if (body.lifetime !== undefined && body.deadlineAt !== undefined) {
-      return reply.code(400).send({ error: "lifetime cannot be combined with legacy deadlineAt" });
-    }
-    if ((body.awaitResult !== undefined && typeof body.awaitResult !== "boolean") ||
-        (body.deadlineAt !== undefined && typeof body.deadlineAt !== "string")) {
-      return reply.code(400).send({ error: "awaitResult must be boolean and deadlineAt must be an ISO timestamp" });
     }
     if (body.lifetime !== undefined) {
       if (!body.lifetime || typeof body.lifetime !== "object" || Array.isArray(body.lifetime) ||
@@ -282,13 +267,20 @@ export function registerAgentCoordinationRoutes(
         return reply.code(400).send({ error: "each request must be an object" });
       }
       const unknownRequest = Object.keys(candidate).filter((key) =>
-        !["requestId", "recipientAgentId", "text", "lifetime"].includes(key));
+        !["requestId", "recoveryOfRequestId", "recipientAgentId", "text", "lifetime"].includes(key));
       if (unknownRequest.length) {
         return reply.code(400).send({ error: `unknown request field(s): ${unknownRequest.join(", ")}` });
       }
       if ((candidate.requestId !== undefined && typeof candidate.requestId !== "string") ||
+          (candidate.recoveryOfRequestId !== undefined && typeof candidate.recoveryOfRequestId !== "string") ||
           typeof candidate.recipientAgentId !== "string" || typeof candidate.text !== "string") {
         return reply.code(400).send({ error: "request identifiers and text must be strings" });
+      }
+      if (candidate.recoveryOfRequestId !== undefined && (
+        !candidate.recoveryOfRequestId.trim() ||
+        candidate.recoveryOfRequestId.length > 200
+      )) {
+        return reply.code(400).send({ error: "recoveryOfRequestId must contain 1 to 200 characters" });
       }
       if (!candidate.lifetime || typeof candidate.lifetime !== "object" || Array.isArray(candidate.lifetime)) continue;
       const lifetime = candidate.lifetime as RequestLifetime & Record<string, unknown>;
@@ -332,18 +324,14 @@ export function registerAgentCoordinationRoutes(
         ? canonicalizeProviderText(delegation.text, steeringInjectionIds)
         : delegation.text,
     }));
-    const completionMode = shorthand
-      ? body.completionMode ?? (body.awaitResult === false ? "callback" : "join")
-      : undefined;
+    const completionMode = shorthand ? body.completionMode ?? "join" : undefined;
     if (shorthand && completionMode !== "join" && body.wakePolicy !== undefined) {
       return reply.code(400).send({ error: "wakePolicy is only valid when completionMode is join" });
     }
     const commonLifetime = body.lifetime?.kind === "deadline"
       ? { kind: "deadline" as const, at: body.lifetime.at.trim() }
-      : body.lifetime ?? (body.deadlineAt?.trim()
-        ? { kind: "deadline" as const, at: body.deadlineAt.trim() }
-        : { kind: "indefinite" as const });
-    const requests: Array<{ requestId?: string; recipientAgentId?: string; text?: string; lifetime?: RequestLifetime }> = shorthand ? commonDelegations.map((delegation) => ({
+      : body.lifetime ?? { kind: "indefinite" as const };
+    const requests: Array<{ requestId?: string; recoveryOfRequestId?: string; recipientAgentId?: string; text?: string; lifetime?: RequestLifetime }> = shorthand ? commonDelegations.map((delegation) => ({
       recipientAgentId: delegation.recipientAgentId,
       text: delegation.text,
       lifetime: commonLifetime,
@@ -367,10 +355,10 @@ export function registerAgentCoordinationRoutes(
         (requests.length === 0 && existingJoinRequestIds.length === 0)) {
       return reply.code(400).send({ error: "idempotencyKey and at least one new request or existing join request ID are required" });
     }
-    if (!capability.conversationId || !author.conversationIds.includes(capability.conversationId)) {
+    if (!capability.conversationId || author.conversationId !== capability.conversationId) {
       return reply.code(409).send({ error: "coordination requires an active Team Chat scope" });
     }
-    const normalized: Array<{ requestId: string; recipientAgentId: string; text: string; lifetime: RequestLifetime }> = [];
+    const normalized: Array<{ requestId: string; recoveryOfRequestId?: string; recipientAgentId: string; text: string; lifetime: RequestLifetime }> = [];
     for (let requestIndex = 0; requestIndex < requests.length; requestIndex += 1) {
       const candidate = requests[requestIndex]!;
       const recipientAgentId = candidate.recipientAgentId?.trim();
@@ -382,7 +370,7 @@ export function registerAgentCoordinationRoutes(
       }
       const recipient = store.getAgent(recipientAgentId);
       if (!recipient || recipient.archived || recipient.projectId !== author.projectId ||
-          !recipient.conversationIds.includes(capability.conversationId)) {
+          recipient.conversationId !== capability.conversationId) {
         return reply.code(400).send({ error: "every recipient must be a different active agent in this Team Chat" });
       }
       normalized.push({
@@ -392,6 +380,9 @@ export function registerAgentCoordinationRoutes(
         recipientAgentId,
         text,
         lifetime: candidate.lifetime,
+        ...(candidate.recoveryOfRequestId?.trim()
+          ? { recoveryOfRequestId: candidate.recoveryOfRequestId.trim() }
+          : {}),
       });
     }
     if (join && !(join.mode === "all" || join.mode === "any" || join.mode === "quorum")) {
@@ -430,6 +421,9 @@ export function registerAgentCoordinationRoutes(
             .update(`${author.projectId}\0${candidate.requestId}`)
             .digest("hex")}`,
           payload: { text: candidate.text, requesterRunId: capability.runId, ...(completionMode ? { completionMode } : {}) },
+          ...(candidate.recoveryOfRequestId
+            ? { recoveryOfRequestId: candidate.recoveryOfRequestId }
+            : {}),
           ...(capability.defaultReply ? { replyAuthority: capability.defaultReply } : {}),
         })),
         ...(join ? { join: {

@@ -10,7 +10,6 @@ import type {
   WorkspaceStore,
 } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
-import { agentMentionHandle } from "../agent-mentions.js";
 import { MAX_ATTACHMENTS_PER_MESSAGE, type EngineRegistration } from "../app-contracts.js";
 import { AssetError, type AssetStore } from "../assets.js";
 import type { createCommunicationArtifactAuthority } from "../communication-artifacts.js";
@@ -32,6 +31,8 @@ interface AgentCreationRoutesContext {
   engines: ReadonlyMap<string, EngineRegistration>;
   deletingAgentIds: ReadonlySet<string>;
   deletingProjectIds: ReadonlySet<string>;
+  deletingConversationIds: ReadonlySet<string>;
+  agentCreationConversationLeases: Map<string, number>;
   cachedModelOptions(adapter: EngineRegistration["adapter"], projectId?: string): ModelOption[];
   recordCommunication(event: CommunicationEvent): CommunicationEvent;
   prepareUserCommunicationText: CommunicationArtifactAuthority["prepareUserCommunicationText"];
@@ -56,6 +57,8 @@ export function registerAgentCreationRoutes(
     engines,
     deletingAgentIds,
     deletingProjectIds,
+    deletingConversationIds,
+    agentCreationConversationLeases,
     cachedModelOptions,
     recordCommunication,
     prepareUserCommunicationText,
@@ -69,15 +72,27 @@ export function registerAgentCreationRoutes(
 
   app.post<{
     Params: { id: string };
-    Body: { title: string; engine: string; conversationId?: string; model?: string; effort?: string; speed?: string; initialMessage?: string; draftAttachmentIds?: string[]; draftOwnerId?: string; presetId?: string; managerAgentId?: string; awaitResult?: boolean };
+    Body: { title: string; engine: string; conversationId: string; model?: string; effort?: string; speed?: string; initialMessage?: string; draftAttachmentIds?: string[]; draftOwnerId?: string; presetId?: string; managerAgentId?: string; awaitResult?: boolean; idempotencyKey?: string };
   }>(
     "/api/projects/:id/agents",
     async (request, reply) => {
       const project = store.getProject(request.params.id);
       if (!project) return reply.code(404).send({ error: "project not found" });
       if (deletingProjectIds.has(request.params.id)) return reply.code(409).send({ error: "Project deletion is already in progress" });
-      if (!request.body?.title || !request.body?.engine) {
-        return reply.code(400).send({ error: "title and engine are required" });
+      if (!request.body?.title || !request.body?.engine || !request.body?.conversationId) {
+        return reply.code(400).send({ error: "title, engine, and Chat are required" });
+      }
+      if (deletingConversationIds.has(request.body.conversationId)) {
+        return reply.code(409).send({ error: "Chat deletion is already in progress" });
+      }
+      const creationIdempotencyKey = request.body.idempotencyKey?.trim();
+      if (creationIdempotencyKey && creationIdempotencyKey.length > 200) {
+        return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
+      }
+      if (creationIdempotencyKey) {
+        const existing = store.findAgentCreation(request.params.id, creationIdempotencyKey);
+        if (existing) return { ...existing, replayed: true };
+        request.body.idempotencyKey = creationIdempotencyKey;
       }
       if (request.body.presetId) {
         const preset = store.getAgentPreset(request.body.presetId);
@@ -102,18 +117,15 @@ export function registerAgentCreationRoutes(
         if (deletingAgentIds.has(manager.id)) {
           return reply.code(409).send({ error: "manager deletion is already in progress" });
         }
-        request.body.conversationId ??= manager.conversationId;
-        if (request.body.conversationId && !manager.conversationIds.includes(request.body.conversationId)) {
-          return reply.code(400).send({ error: "manager must belong to the selected conversation" });
+        if (manager.conversationId !== request.body.conversationId) {
+          return reply.code(400).send({ error: "manager must belong to the selected Chat" });
         }
       }
-      if (request.body.conversationId) {
-        const conversation = store.getConversation(request.body.conversationId);
-        if (!conversation || conversation.projectId !== request.params.id) {
-          return reply.code(400).send({ error: "conversation does not belong to project" });
-        }
+      const conversation = store.getConversation(request.body.conversationId);
+      if (!conversation || conversation.projectId !== request.params.id || conversation.archived) {
+        return reply.code(400).send({ error: "Chat does not belong to Project or is archived" });
       }
-      const conversationDefaults = request.body.conversationId ? store.getConversation(request.body.conversationId) : undefined;
+      const conversationDefaults = conversation;
       const resolvedRuntime = concreteRuntimeSelection(requestedAdapter, [
         { model: request.body.model, effort: request.body.effort },
         conversationDefaults?.defaultEngine === request.body.engine ? { model: conversationDefaults.defaultModel, effort: conversationDefaults.defaultEffort } : undefined,
@@ -141,6 +153,12 @@ export function registerAgentCreationRoutes(
       if (draftAttachmentIds.length && !firstTurnDraftOwnerId) {
         return reply.code(400).send({ error: "first-turn draft owner is required" });
       }
+      const leaseConversationId = request.body.conversationId;
+      agentCreationConversationLeases.set(
+        leaseConversationId,
+        (agentCreationConversationLeases.get(leaseConversationId) ?? 0) + 1,
+      );
+      try {
       const draftAttachments = request.body.conversationId && firstTurnDraftOwnerId
         ? await Promise.all(draftAttachmentIds.map((id) =>
             drafts.prepared(
@@ -159,6 +177,27 @@ export function registerAgentCreationRoutes(
       }
       let agent;
       if (deletingProjectIds.has(request.params.id)) return reply.code(409).send({ error: "Project deletion is already in progress" });
+      const creationConversation = store.getConversation(request.body.conversationId);
+      if (deletingConversationIds.has(request.body.conversationId) ||
+          !creationConversation || creationConversation.projectId !== request.params.id ||
+          creationConversation.archived) {
+        return reply.code(409).send({ error: "Chat is unavailable for Agent creation" });
+      }
+      if (request.body.managerAgentId) {
+        const manager = store.getAgent(request.body.managerAgentId);
+        if (!manager || manager.projectId !== request.params.id ||
+            manager.conversationId !== request.body.conversationId ||
+            manager.archived) {
+          return reply.code(409).send({
+            error: "Manager is unavailable for Agent creation",
+          });
+        }
+        if (deletingAgentIds.has(manager.id)) {
+          return reply.code(409).send({
+            error: "Manager deletion is already in progress",
+          });
+        }
+      }
       try {
         agent = store.createAgent(request.params.id, request.body);
       } catch (error) {
@@ -318,7 +357,7 @@ export function registerAgentCreationRoutes(
               // canonical communication/activation instead of mutating the
               // user's visible prose with a stale display-name tag.
               text: managed
-                ? `#${agentMentionHandle(agent.title)} ${openingPrepared!.publishedText}`
+                ? `#${agent.handle} ${openingPrepared!.publishedText}`
                 : openingPrepared!.publishedText,
               attachments: openingAttachments,
             },
@@ -342,6 +381,16 @@ export function registerAgentCreationRoutes(
       }
 
       return { ...agent, ...(managedOpening ? { openingRequestId: managedOpening.requestIds[0], openingJoinId: managedOpening.joinId } : {}) };
+      } finally {
+        const remaining = (agentCreationConversationLeases.get(
+          leaseConversationId,
+        ) ?? 1) - 1;
+        if (remaining > 0) {
+          agentCreationConversationLeases.set(leaseConversationId, remaining);
+        } else {
+          agentCreationConversationLeases.delete(leaseConversationId);
+        }
+      }
     },
   );
 }

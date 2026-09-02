@@ -1,10 +1,8 @@
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
-import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
 import PersonAddAltOutlinedIcon from "@mui/icons-material/PersonAddAltOutlined";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
 import {
   Button,
-  Chip,
   IconButton,
   Stack,
   Tooltip,
@@ -35,55 +33,36 @@ export function ComposerDestinationBar({
   ) : null;
 }
 
-export function ComposerTargetDestinationAction({
-  broadcast,
-  handles,
-  onClear,
-}: {
-  broadcast: boolean;
-  handles: string[];
-  onClear(): void;
-}): JSX.Element | null {
-  const labels = [
-    ...(broadcast ? ["#broadcast"] : []),
-    ...handles.map(handle => `#${handle}`),
-  ];
-  if (labels.length === 0) return null;
-  const destinationLabel = labels.length > 1
-    ? `${labels[0]} +${labels.length - 1}`
-    : labels[0]!;
-  return (
-    <Chip
-      size="small"
-      color={broadcast ? "info" : "primary"}
-      icon={broadcast ? <CampaignOutlinedIcon /> : undefined}
-      label={destinationLabel}
-      title={labels.join(" ")}
-      aria-label={`Destinations: ${labels.join(", ")}`}
-      onDelete={onClear}
-      sx={{
-        maxWidth: { xs: 124, sm: 240 },
-        height: 34,
-        fontWeight: 700,
-        "& .MuiChip-label": {
-          minWidth: 0,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-        },
-      }}
-    />
-  );
-}
-
 interface ComposerProjectDestinationActionProps {
   newAgentSelected: boolean;
   toggleNewAgent(): void;
+  replyDestination?: string;
 }
 
 export function ComposerProjectDestinationAction({
   newAgentSelected,
   toggleNewAgent,
+  replyDestination,
 }: ComposerProjectDestinationActionProps): JSX.Element {
+  if (replyDestination) {
+    return (
+      <Tooltip title="Switch to a new Agent">
+        <Button
+          size="small"
+          variant="text"
+          color="primary"
+          onClick={toggleNewAgent}
+          sx={{
+            whiteSpace: "nowrap",
+            minHeight: { xs: 44, sm: 34 },
+            "@media (pointer: coarse)": { minHeight: 44 },
+          }}
+        >
+          Reply to {replyDestination}
+        </Button>
+      </Tooltip>
+    );
+  }
   return (
     <Button
       size="small"
@@ -92,7 +71,11 @@ export function ComposerProjectDestinationAction({
       startIcon={<PersonAddAltOutlinedIcon />}
       aria-pressed={newAgentSelected}
       onClick={toggleNewAgent}
-      sx={{ whiteSpace: "nowrap", minHeight: 34 }}
+      sx={{
+        whiteSpace: "nowrap",
+        minHeight: { xs: 44, sm: 34 },
+        "@media (pointer: coarse)": { minHeight: 44 },
+      }}
     >
       New Agent
     </Button>

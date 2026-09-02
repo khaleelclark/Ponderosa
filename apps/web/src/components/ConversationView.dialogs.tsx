@@ -1,6 +1,5 @@
 import {
   Alert,
-  Box,
   Button,
   Dialog,
   DialogActions,
@@ -34,7 +33,6 @@ interface ConversationDialogsProps {
   deletePending: boolean;
   deleteError?: string;
   onImportClose(): void;
-  onImported(agentId: string): void;
   onStopCancel(): void;
   onStopConfirm(
     targets: { agentId: string; runId: string }[],
@@ -62,7 +60,6 @@ export function ConversationDialogs({
   deletePending,
   deleteError,
   onImportClose,
-  onImported,
   onStopCancel,
   onStopConfirm,
   onRenameClose,
@@ -80,7 +77,6 @@ export function ConversationDialogs({
         conversations={[conversation]}
         initialConversationId={conversation.id}
         onClose={onImportClose}
-        onImported={onImported}
       />
 
       <ConfirmDialog

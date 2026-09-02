@@ -29,6 +29,7 @@ import { CoordinationV3ActivationLifecycleAuthority } from "./coordination-v3-ac
 import { CoordinationV3StoreSupport } from "./coordination-v3-store-support.js";
 import { CoordinationV3DeletionAuthority } from "./coordination-v3-deletion-authority.js";
 import { CoordinationV3CoordinateAuthority } from "./coordination-v3-coordinate-authority.js";
+import { CoordinationV3RequestRecoveryAuthority } from "./coordination-v3-request-recovery-authority.js";
 import { CoordinationV3QuestionAuthority } from "./coordination-v3-question-authority.js";
 import { CoordinationV3TriggerOccurrenceAuthority } from "./coordination-v3-trigger-occurrence-authority.js";
 import { CoordinationV3SteeringAuthority } from "./coordination-v3-steering-authority.js";
@@ -64,7 +65,6 @@ import type {
   RuntimeCommunicationV3View,
   RuntimeArtifactInputV3,
   RuntimeArtifactV3,
-  RuntimeManagedArtifactAttachmentAuthorizationV3,
   PendingActivationV3View,
   TerminalActivationV3View,
   CommunicationAttentionActivationCursor,
@@ -168,6 +168,7 @@ export class CoordinationV3Store {
   private readonly support: CoordinationV3StoreSupport;
   private readonly deletionAuthority: CoordinationV3DeletionAuthority;
   private readonly coordinateAuthority: CoordinationV3CoordinateAuthority;
+  private readonly requestRecoveryAuthority: CoordinationV3RequestRecoveryAuthority;
   private readonly questionAuthority: CoordinationV3QuestionAuthority;
   private readonly triggerOccurrenceAuthority!: CoordinationV3TriggerOccurrenceAuthority;
   private readonly steeringAuthority: CoordinationV3SteeringAuthority;
@@ -194,6 +195,8 @@ export class CoordinationV3Store {
       input => this.createActivation(input),
     );
     this.support = new CoordinationV3StoreSupport(sqlite);
+    this.requestRecoveryAuthority = new CoordinationV3RequestRecoveryAuthority(sqlite);
+    this.requestRecoveryAuthority.reconcileLegacyPayloadRelations();
     this.communicationV4NextRunDeliveries = new CommunicationV4NextRunDeliveryAuthority(
       sqlite,
       (authorization, expectedScopeKey) =>
@@ -295,15 +298,13 @@ export class CoordinationV3Store {
       sqlite,
       this.support,
       input => this.cancelAgentRun(input),
-      (joinId, ownerAgentId, now) =>
-        this.cancelJoin(joinId, ownerAgentId, now),
       input => this.updateRequest(input),
-      (triggerId, now) => this.deleteTriggerDefinition(triggerId, now),
     );
     this.coordinateAuthority = new CoordinationV3CoordinateAuthority(
       sqlite,
       this.support,
       this.runtimeScopeAuthority,
+      this.requestRecoveryAuthority,
       input => this.createActivation(input),
       (requestIds, ownerAgentId, dependencyKind, dependencyId, now) =>
         this.questionAuthority.insertQuestionSuspensions(
@@ -728,6 +729,16 @@ export class CoordinationV3Store {
     return this.schedulerStatusReadModel.getAgentAvailability(agentId);
   }
 
+  activeWaitDependency(
+    agentId: string,
+    scope: import("@ponderosa/core").AgentHealthProjectionDto["scope"],
+  ): Extract<
+    import("@ponderosa/core").AgentPhaseDto,
+    { kind: "waiting_on_request" | "waiting_on_join" }
+  > | undefined {
+    return this.schedulerStatusReadModel.activeWaitDependency(agentId, scope);
+  }
+
   providerBlockedState(agentId: string): import("@ponderosa/core").ProviderBlockedWorkDto | undefined {
     return this.schedulerStatusReadModel.providerBlockedState(agentId);
   }
@@ -907,18 +918,6 @@ export class CoordinationV3Store {
 
   handleAgentDeletion(agentId: string, now = new Date().toISOString()): void {
     this.deletionAuthority.handleAgentDeletion(agentId, now);
-  }
-
-  /** Revoke one explicit Team Chat capability without affecting the Agent's
-   * memberships or work in its other chats. */
-  handleAgentConversationRemoval(
-    agentId: string,
-    conversationId: string,
-    now = new Date().toISOString(),
-  ): void {
-    this.deletionAuthority.handleAgentConversationRemoval(
-      agentId, conversationId, now,
-    );
   }
 
   /** Fence and settle a whole project before any provider process is stopped.

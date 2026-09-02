@@ -3,19 +3,12 @@ import {
   Box,
   Button,
   CircularProgress,
-  IconButton,
 } from "@mui/material";
 import type {
-  AgentHealthDto,
   EngineCommand,
   EngineDto,
-  ConversationDetailDto,
-  ConversationDto,
   MessageDto,
-  ProjectEngineCapabilitiesDto,
   ResponseFileActivityDto,
-  AgentDto,
-  AgentTelemetryStream,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -24,11 +17,7 @@ import {
   AGENT_HISTORY_PAGE_SIZE,
 } from "../agentHistoryPagination";
 import {
-  agentStatusColor,
-  agentStatusLabel,
   deriveAgentStatus,
-  isProviderBlockedHealth,
-  type AgentStatus,
 } from "../agents";
 import {
   useAgent,
@@ -38,7 +27,7 @@ import {
 } from "../hooks/queries";
 import { useAgentStream } from "../hooks/useAgentStream";
 import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
-import { agentIdForMentionHandle, agentMentionHandle } from "../mentions";
+import { agentIdForMentionHandle } from "../mentions";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import {
   highlightFocusedMessage,
@@ -156,11 +145,8 @@ export function AgentDetail({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
-  const [membershipOpen, setMembershipOpen] = useState(false);
   const [organizationOpen, setOrganizationOpen] = useState(false);
   const [organizationParentId, setOrganizationParentId] = useState("");
-  const [membershipIds, setMembershipIds] = useState<string[]>([]);
-  const [primaryConversationId, setPrimaryConversationId] = useState("");
   const [queuedMessageNotice, setQueuedMessageNotice] = useState<
     string | undefined
   >();
@@ -201,6 +187,12 @@ export function AgentDetail({
       olderTelemetry,
     );
   }, [agentQuery.data, olderMessages, olderTelemetry]);
+  const showSubagents = detail?.hasSubagentHistory === true;
+  useEffect(() => {
+    if (tab !== "subagents" || !detail || showSubagents) return;
+    setTab("chat");
+    onViewChange?.("chat");
+  }, [detail, onViewChange, showSubagents, tab]);
   const {
     copyAgentPackage,
     downloadAgentPackage,
@@ -503,19 +495,15 @@ export function AgentDetail({
   const {
     rename,
     updateManagementPermissions,
-    updateMemberships,
     updateOrganization,
     updateRuntimeSettings,
   } = useAgentDetailAdministration({
     agentId,
-    membershipIds,
-    primaryConversationId,
     organizationParentId,
     settingsEngine,
     settingsModel,
     settingsEffort,
     onRenameClosed: () => setRenameOpen(false),
-    onMembershipClosed: () => setMembershipOpen(false),
     onOrganizationClosed: () => setOrganizationOpen(false),
     onRuntimeSettingsNotice: setRuntimeSettingsNotice,
   });
@@ -852,11 +840,6 @@ export function AgentDetail({
       onSaveRuntimeSettings={() => updateRuntimeSettings.mutate(undefined)}
       onRecheckEngine={() => setRecheckEngineOpen(true)}
       onOpenMaster={onOpenMaster}
-      onManageMemberships={() => {
-        setMembershipIds(detail.agent.conversationIds);
-        setPrimaryConversationId(detail.agent.conversationId ?? "");
-        setMembershipOpen(true);
-      }}
       onOpenAgent={onOpenAgent}
       onUpdateManagementPermissions={value =>
         updateManagementPermissions.mutate(value)
@@ -891,12 +874,14 @@ export function AgentDetail({
         lineageLabel={lineageLabel}
         status={status}
         health={projectedHealth}
-        providerBlocked={isProviderBlockedHealth(projectedHealth)}
         connectionStatus={agentConnectionStatus}
+        phaseEvidenceFresh={workspaceConnection.phaseEvidenceFresh}
         startedAt={runtimeActivity?.startedAt}
+        agentNameForId={agentNameForId}
         running={running}
         stopping={cancelRun.isPending}
         tab={tab}
+        showSubagents={showSubagents}
         transcriptMarkdown={transcriptMarkdown}
         transcriptTitle={transcriptTitle}
         onOpenProject={onOpenProject}
@@ -915,11 +900,6 @@ export function AgentDetail({
           setRenameOpen(true);
         }}
         onCreateAgent={() => onNewSubagent(agentId)}
-        onAssignChats={() => {
-          setMembershipIds(detail.agent.conversationIds);
-          setPrimaryConversationId(detail.agent.conversationId ?? "");
-          setMembershipOpen(true);
-        }}
         onQuickCopy={
           detail.agent.conversationId
             ? () => void quickCopyIntoProjectChat()
@@ -1030,13 +1010,21 @@ export function AgentDetail({
         composer={{
           destinationMode: "fixed",
           defaultDestination: {
-            handle: agentMentionHandle(detail.agent.title),
+            handle: detail.agent.handle,
+            binding: {
+              projectId: detail.agent.projectId,
+              handle: detail.agent.handle,
+              agentId: detail.agent.id,
+              currentHandle: detail.agent.handle,
+              currentTitle: detail.agent.title,
+            },
             selectionKey: `agent:${detail.agent.id}:${detail.agent.title}`,
           },
           commands,
           capabilities: engineIsAvailable(engine)
             ? engineCapability?.composerCapabilities
             : [],
+          enableVoiceDictation: true,
           onCapabilitiesOpen: () =>
             onRefreshCapabilities({ engineId: engine?.id, model, agentId }),
           projectId: detail.agent.projectId,
@@ -1098,16 +1086,6 @@ export function AgentDetail({
           renameValue,
           setRenameValue,
           rename,
-        }}
-        membership={{
-          membershipOpen,
-          setMembershipOpen,
-          membershipIds,
-          setMembershipIds,
-          conversations,
-          primaryConversationId,
-          setPrimaryConversationId,
-          updateMemberships,
         }}
         organization={{
           open: organizationOpen,

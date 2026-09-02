@@ -1,6 +1,6 @@
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
-import { Box, Button, Chip, Stack } from "@mui/material";
+import { Box, Button, Stack } from "@mui/material";
 import { PONDEROSA_MESSAGE_TOOL } from "@ponderosa/core";
 import type {
   AgentRunDto,
@@ -19,6 +19,7 @@ import {
   ThinkingRow,
 } from "../activity/ActivityRows";
 import type { ActivityStreamEntry } from "../activity/activityStream";
+import { SemanticStatus, semanticAgentStatus } from "../SemanticStatus";
 
 function workDuration(run: AgentRunDto): string | undefined {
   if (!run.completedAt) return undefined;
@@ -53,13 +54,13 @@ function receiptTitle(
 
 function receiptStatus(run: AgentRunDto): {
   label: string;
-  color: "error" | "warning";
+  status: ReturnType<typeof semanticAgentStatus>;
 } | undefined {
-  if (run.status === "failed") return { label: "Failed", color: "error" };
-  if (run.status === "cancelled") return { label: "Cancelled", color: "warning" };
-  if (run.status === "interrupted") return { label: "Interrupted", color: "warning" };
+  if (run.status === "failed") return { label: "Failed", status: "failed" };
+  if (run.status === "cancelled") return { label: "Cancelled", status: "failed" };
+  if (run.status === "interrupted") return { label: "Interrupted", status: "blocked" };
   if (run.status === "stalled" || run.status === "blocked") {
-    return { label: "Needs attention", color: "warning" };
+    return { label: "Needs attention", status: semanticAgentStatus(run.status) };
   }
   return undefined;
 }
@@ -235,11 +236,9 @@ export function AgentWorkReceipt({
             </Stack>
           )}
           {status ? (
-            <Chip
-              size="small"
-              color={status.color}
+            <SemanticStatus
+              status={status.status}
               label={status.label}
-              sx={{ height: 20, fontSize: 10.5 }}
             />
           ) : null}
         </Stack>

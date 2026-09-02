@@ -20,7 +20,13 @@ import type { ConversationDto, EngineDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import {
+  engineIsAvailable,
+  engineUnavailableReason,
+  soleAvailableEngineId,
+} from "../conversationEngine";
 import { queryKeys } from "../queryKeys";
+import { useMutationNotification } from "./MutationNotifications";
 
 const MAX_IMPORT_FILE_BYTES = 96 * 1024 * 1024;
 
@@ -42,19 +48,23 @@ export function ImportAgentForm({
   conversations,
   initialConversationId,
   onCancel,
-  onImported,
+  onPendingChange,
+  stickyActions = false,
 }: {
   projectId: string;
   engines: EngineDto[];
   conversations: ConversationDto[];
   initialConversationId?: string;
   onCancel(): void;
-  onImported(agentId: string): void;
+  onPendingChange?(pending: boolean): void;
+  stickyActions?: boolean;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const notify = useMutationNotification();
   const [packageBlob, setPackageBlob] = useState<Blob>();
   const [packagePreview, setPackagePreview] = useState<PortableAgentPreview>();
   const [inspecting, setInspecting] = useState(false);
+  const [inspectionPhase, setInspectionPhase] = useState<string>();
   const [fileName, setFileName] = useState<string>();
   const [jsonText, setJsonText] = useState("");
   const [conversationId, setConversationId] = useState("");
@@ -63,51 +73,37 @@ export function ImportAgentForm({
   const [error, setError] = useState<string>();
   const previewWorker = useRef<Worker>();
   const previewRequestId = useRef(0);
+  const importRequestId = useRef(crypto.randomUUID());
+  const pendingRef = useRef(false);
+
+  const cancelInspection = useCallback(() => {
+    previewWorker.current?.terminate();
+    previewWorker.current = undefined;
+    previewRequestId.current += 1;
+  }, []);
 
   const clearPackageDraft = useCallback(() => {
-    previewRequestId.current += 1;
+    cancelInspection();
     setPackageBlob(undefined);
     setPackagePreview(undefined);
     setInspecting(false);
+    setInspectionPhase(undefined);
     setFileName(undefined);
     setJsonText("");
     setEngineMapping({});
     setAcknowledgeElevatedPermissions(false);
     setError(undefined);
-  }, []);
+    importRequestId.current = crypto.randomUUID();
+  }, [cancelInspection]);
 
   const closeForm = () => {
+    if (pendingRef.current) return;
     clearPackageDraft();
     setConversationId("");
     onCancel();
   };
 
-  useEffect(() => {
-    const worker = new Worker(
-      new URL("./agent-package-preview.worker.ts", import.meta.url),
-      { type: "module" },
-    );
-    previewWorker.current = worker;
-    worker.onmessage = (event: MessageEvent<{
-      id: number;
-      preview?: PortableAgentPreview;
-      error?: string;
-    }>) => {
-      if (event.data.id !== previewRequestId.current) return;
-      setInspecting(false);
-      setPackagePreview(event.data.preview);
-      setError(event.data.error);
-    };
-    worker.onerror = () => {
-      setInspecting(false);
-      setPackagePreview(undefined);
-      setError("Ponderosa could not inspect that package.");
-    };
-    return () => {
-      worker.terminate();
-      previewWorker.current = undefined;
-    };
-  }, []);
+  useEffect(() => () => cancelInspection(), [cancelInspection]);
 
   useEffect(() => {
     setConversationId(current =>
@@ -122,23 +118,50 @@ export function ImportAgentForm({
     ? []
     : packagePreview?.elevatedAgentRefs ?? [];
   const sourceEngines = packagePreview?.sourceEngines ?? [];
+  useEffect(() => {
+    const automatic = soleAvailableEngineId(engines);
+    if (!automatic || sourceEngines.length === 0) return;
+    setEngineMapping(current => Object.fromEntries(sourceEngines.map(source => {
+      const selected = engines.find(engine => engine.id === current[source]);
+      return [source, selected && engineIsAvailable(selected) ? selected.id : automatic];
+    })));
+  }, [engines, sourceEngines.join("\0")]);
   const importAgents = useMutation({
-    mutationFn: () => api.importAgentPackageBlob(projectId, packageBlob!, {
-      conversationId, engineMapping,
-      ...(elevatedAgents.length > 0 ? { acknowledgeElevatedManagementPermissions: acknowledgeElevatedPermissions } : {}),
-    }),
-    onSuccess: (result) => {
+    mutationFn: () => api.startAgentPackageImport(
+      projectId,
+      packageBlob!,
+      {
+        conversationId, engineMapping,
+        ...(elevatedAgents.length > 0 ? { acknowledgeElevatedManagementPermissions: acknowledgeElevatedPermissions } : {}),
+      },
+      importRequestId.current,
+    ),
+    onSuccess: (operation) => {
       clearPackageDraft();
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(projectId) });
-      onImported(result.rootAgentId);
+      notify({
+        key: `agent-import:${operation.id}`,
+        message: "Agent import started and will continue in the background.",
+        severity: "info",
+      });
+      pendingRef.current = false;
+      onPendingChange?.(false);
+      onCancel();
     },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "Import failed"),
+    onSettled: () => {
+      pendingRef.current = false;
+      onPendingChange?.(false);
+    },
   });
   const inspectPackage = useCallback((blob: Blob, sourceName?: string) => {
+    cancelInspection();
+    importRequestId.current = crypto.randomUUID();
     if (blob.size > MAX_IMPORT_FILE_BYTES) {
       setPackageBlob(undefined);
       setPackagePreview(undefined);
       setInspecting(false);
+      setInspectionPhase(undefined);
       setFileName(sourceName);
       setEngineMapping({});
       setAcknowledgeElevatedPermissions(false);
@@ -146,15 +169,48 @@ export function ImportAgentForm({
       return;
     }
     const id = ++previewRequestId.current;
+    const worker = new Worker(
+      new URL("./agent-package-preview.worker.ts", import.meta.url),
+      { type: "module" },
+    );
+    previewWorker.current = worker;
+    worker.onmessage = (event: MessageEvent<{
+      id: number;
+      phase?: string;
+      preview?: PortableAgentPreview;
+      error?: string;
+    }>) => {
+      if (event.data.id !== previewRequestId.current) return;
+      if (event.data.phase) {
+        setInspectionPhase(event.data.phase);
+        return;
+      }
+      setInspecting(false);
+      setInspectionPhase(event.data.preview ? "Ready to import" : undefined);
+      setPackagePreview(event.data.preview);
+      setError(event.data.error);
+      worker.terminate();
+      if (previewWorker.current === worker) previewWorker.current = undefined;
+    };
+    worker.onerror = () => {
+      if (id !== previewRequestId.current) return;
+      setInspecting(false);
+      setInspectionPhase(undefined);
+      setPackagePreview(undefined);
+      setError("Ponderosa could not inspect that package.");
+      worker.terminate();
+      if (previewWorker.current === worker) previewWorker.current = undefined;
+    };
     setPackageBlob(blob);
     setPackagePreview(undefined);
     setInspecting(true);
+    setInspectionPhase("Reading import");
     setFileName(sourceName);
     setEngineMapping({});
     setAcknowledgeElevatedPermissions(false);
     setError(undefined);
-    previewWorker.current?.postMessage({ id, blob });
-  }, []);
+    worker.postMessage({ id, blob });
+  }, [cancelInspection]);
 
   const loadFile = async (file: File) => {
     setJsonText("");
@@ -167,16 +223,17 @@ export function ImportAgentForm({
       inspectPackage(
         new Blob([jsonText], { type: "application/json" }),
       );
-    }, 300);
+    }, 500);
     return () => window.clearTimeout(timer);
   }, [inspectPackage, jsonText]);
 
   const updateJsonText = (value: string) => {
-    previewRequestId.current += 1;
+    cancelInspection();
     setJsonText(value);
     setPackageBlob(undefined);
     setPackagePreview(undefined);
     setInspecting(false);
+    setInspectionPhase(undefined);
     setFileName(undefined);
     setEngineMapping({});
     setAcknowledgeElevatedPermissions(false);
@@ -211,7 +268,7 @@ export function ImportAgentForm({
         maxRows={8}
         fullWidth
       />
-      {inspecting ? <Alert severity="info">Inspecting package off the main thread…</Alert> : null}
+      {inspecting ? <Alert severity="info">{inspectionPhase ?? "Inspecting package off the main thread…"}</Alert> : null}
       {packagePreview ? <Alert severity="success">
         <Typography variant="body2">
           {packagePreview.agentCount} Agent{packagePreview.agentCount === 1 ? "" : "s"} · {packagePreview.mode === "template" ? "template" : "full"} · {packagePreview.artifactCount} artifact{packagePreview.artifactCount === 1 ? "" : "s"} · {packagePreview.historyMessageCount} history message{packagePreview.historyMessageCount === 1 ? "" : "s"}
@@ -233,7 +290,7 @@ export function ImportAgentForm({
         return <FormControl key={source} fullWidth>
           <InputLabel id={`engine-map-${source}`}>{label}</InputLabel>
           <Select labelId={`engine-map-${source}`} label={label} value={engineMapping[source] ?? ""} onChange={(event: SelectChangeEvent) => setEngineMapping((current) => ({ ...current, [source]: event.target.value }))}>
-            {engines.map((engine) => <MenuItem key={engine.id} value={engine.id}>{engine.displayName}{engine.enabled === false ? " — Disabled" : ""}</MenuItem>)}
+            {engines.map((engine) => <MenuItem key={engine.id} value={engine.id} disabled={!engineIsAvailable(engine)}>{engine.displayName}{engineIsAvailable(engine) ? "" : ` — ${engineUnavailableReason(engine)}`}</MenuItem>)}
           </Select>
         </FormControl>;
       })}
@@ -250,9 +307,31 @@ export function ImportAgentForm({
         />
       </Alert> : null}
       {error ? <Alert severity="error">{error}</Alert> : null}
-      <Stack direction="row" spacing={1} sx={{ justifyContent: "flex-end" }}>
-      <Button onClick={closeForm}>Cancel</Button>
-      <Button variant="contained" disabled={!packageBlob || !packagePreview || inspecting || invalidPermissionShape || !conversationId || sourceEngines.some((source) => !engineMapping[source]) || (elevatedAgents.length > 0 && !acknowledgeElevatedPermissions) || importAgents.isPending} onClick={() => importAgents.mutate()}>
+      <Stack direction="row" spacing={1} sx={{
+        justifyContent: "flex-end",
+        ...(stickyActions ? {
+          position: "absolute",
+          zIndex: 2,
+          bottom: 0,
+          left: 0,
+          right: 0,
+          px: { xs: 2, sm: 3 },
+          py: 1.5,
+          bgcolor: "background.paper",
+          borderTop: 1,
+          borderColor: "divider",
+        } : {}),
+      }}>
+      <Button disabled={importAgents.isPending} onClick={closeForm}>Cancel</Button>
+      <Button variant="contained" disabled={!packageBlob || !packagePreview || inspecting || invalidPermissionShape || !conversationId || sourceEngines.some((source) => {
+        const target = engines.find(engine => engine.id === engineMapping[source]);
+        return !engineIsAvailable(target);
+      }) || (elevatedAgents.length > 0 && !acknowledgeElevatedPermissions) || importAgents.isPending} onClick={() => {
+        if (pendingRef.current) return;
+        pendingRef.current = true;
+        onPendingChange?.(true);
+        importAgents.mutate();
+      }}>
         {importAgents.isPending ? "Importing…" : "Import"}
       </Button>
       </Stack>
@@ -266,7 +345,6 @@ export function ImportAgentDialog({
   conversations,
   initialConversationId,
   onClose,
-  onImported,
 }: {
   open: boolean;
   projectId: string;
@@ -274,10 +352,34 @@ export function ImportAgentDialog({
   conversations: ConversationDto[];
   initialConversationId?: string;
   onClose(): void;
-  onImported(agentId: string): void;
 }): JSX.Element {
+  const [pending, setPending] = useState(false);
+  const pendingRef = useRef(false);
+  const generationRef = useRef(0);
+  const openRef = useRef(false);
+  if (open && !openRef.current) generationRef.current += 1;
+  openRef.current = open;
+  const generation = generationRef.current;
+  useEffect(() => () => {
+    generationRef.current += 1;
+    openRef.current = false;
+  }, []);
+  const updatePending = (nextPending: boolean) => {
+    pendingRef.current = nextPending;
+    setPending(nextPending);
+  };
+  const close = () => {
+    if (!pendingRef.current) onClose();
+  };
   return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
+    <Dialog
+      open={open}
+      onClose={close}
+      disableEscapeKeyDown={pending}
+      fullWidth
+      maxWidth="md"
+      slotProps={{ paper: { "aria-busy": pending || undefined } }}
+    >
       <DialogTitle>Import Agent or Organization</DialogTitle>
       <DialogContent sx={{ pt: "12px !important" }}>
         {open ? (
@@ -286,10 +388,12 @@ export function ImportAgentDialog({
             engines={engines}
             conversations={conversations}
             initialConversationId={initialConversationId}
-            onCancel={onClose}
-            onImported={agentId => {
-              onClose();
-              onImported(agentId);
+            onCancel={close}
+            onPendingChange={nextPending => {
+              if (
+                openRef.current &&
+                generationRef.current === generation
+              ) updatePending(nextPending);
             }}
           />
         ) : null}

@@ -1,7 +1,11 @@
 import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import type Database from "better-sqlite3";
 import { eq } from "drizzle-orm";
-import type { AgentOrganizationEvent, AgentPresetDto } from "@ponderosa/core";
+import {
+  allocateAgentMentionHandle,
+  type AgentOrganizationEvent,
+  type AgentPresetDto,
+} from "@ponderosa/core";
 import type { Db } from "./db.js";
 import { EventLog } from "./eventlog.js";
 import { readRepairableJsonl } from "./append-jsonl.js";
@@ -10,9 +14,11 @@ import type { AgentJson, ConversationJson, PresetEvent, ProjectJson } from "./st
 import { AgentArtifactCatalog } from "./store-artifact-catalog.js";
 import { AgentCatalogAuthority } from "./store-agent-catalog-authority.js";
 import { AgentEventProjectionStore } from "./store-event-projection.js";
+import { sharedWorkingCopy } from "./working-copy.js";
 import {
   activityProjection,
   agentConversationMemberships,
+  agentHandleReservations,
   agentPresets,
   agents,
   artifacts,
@@ -158,10 +164,46 @@ export class AgentProjectionRebuilder {
         const tj = agentJsonPath(this.dataDir, projectId, agentId);
         if (!existsSync(tj)) continue;
         const t = readJson<AgentJson>(tj);
-        const membershipIds = [...new Set(t.conversationIds ?? (t.conversationId ? [t.conversationId] : []))];
-        const primaryConversationId = t.conversationId && membershipIds.includes(t.conversationId)
-          ? t.conversationId
-          : membershipIds[0];
+        const latestReservation = this.client.prepare(`
+          SELECT handle FROM agent_handle_reservations
+          WHERE project_id = ? AND agent_id = ?
+          ORDER BY reserved_at DESC, normalized_handle DESC
+          LIMIT 1
+        `).get(projectId, t.id) as { handle: string } | undefined;
+        const handle = t.handle ?? latestReservation?.handle ?? allocateAgentMentionHandle(
+          t.title,
+          this.db.select({ handle: agentHandleReservations.handle })
+            .from(agentHandleReservations)
+            .where(eq(agentHandleReservations.projectId, projectId))
+            .all()
+            .map(reservation => reservation.handle),
+        );
+        this.db.insert(agentHandleReservations).values({
+          projectId,
+          normalizedHandle: handle.toLocaleLowerCase(),
+          handle,
+          agentId: t.id,
+          reservedAt: t.createdAt,
+        }).onConflictDoNothing().run();
+        const workingCopy = t.workingCopy ?? sharedWorkingCopy(p, t.updatedAt);
+        const fallbackConversation = this.client.prepare(`
+          SELECT id FROM conversations WHERE project_id = ? AND archived = 0
+          ORDER BY created_at, id LIMIT 1
+        `).get(projectId) as { id: string } | undefined;
+        const conversationExists = (conversationId: string | undefined): conversationId is string =>
+          Boolean(conversationId && this.client.prepare(`
+            SELECT 1 FROM conversations WHERE id = ? AND project_id = ?
+          `).get(conversationId, projectId));
+        const primaryConversationId = t.deletedAt
+          ? undefined
+          : conversationExists(t.conversationId)
+            ? t.conversationId
+            : conversationExists(p.lastConversationId)
+              ? p.lastConversationId
+              : fallbackConversation?.id;
+        if (!t.deletedAt && !primaryConversationId) {
+          throw new Error(`live Agent ${t.id} has no owner Chat`);
+        }
         this.db
           .insert(agents)
           .values({
@@ -169,6 +211,7 @@ export class AgentProjectionRebuilder {
             projectId: t.projectId,
             conversationId: primaryConversationId ?? null,
             title: t.title,
+            handle,
             activeEngine: t.activeEngine,
             model: t.model ?? null,
             effort: t.effort ?? null,
@@ -184,13 +227,19 @@ export class AgentProjectionRebuilder {
             spawnPrompt: t.spawnPrompt ?? null,
             spawnIdempotencyKey: t.spawnIdempotencyKey ?? null,
             presetSnapshotJson: t.presetSnapshot ? JSON.stringify(t.presetSnapshot) : null,
+            creationIdempotencyKey: t.creationIdempotencyKey ?? null,
+            workingCopyJson: JSON.stringify(workingCopy),
           })
           .run();
-        membershipIds.forEach((conversationId, position) => {
-          this.db.insert(agentConversationMemberships).values({ agentId: t.id, conversationId, position }).run();
-        });
-        if (t.conversationIds === undefined || t.conversationId !== primaryConversationId) {
-          writeJson(tj, { ...t, conversationId: primaryConversationId, conversationIds: membershipIds });
+        if (primaryConversationId) {
+          this.db.insert(agentConversationMemberships).values({
+            agentId: t.id,
+            conversationId: primaryConversationId,
+            position: 0,
+          }).run();
+        }
+        if (t.handle !== handle || t.conversationId !== primaryConversationId || !t.workingCopy) {
+          writeJson(tj, { ...t, handle, conversationId: primaryConversationId, workingCopy });
         }
 
         const importedHistoryFile = importedAgentHistoryPath(this.dataDir, projectId, agentId);

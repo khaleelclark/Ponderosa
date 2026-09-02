@@ -26,6 +26,15 @@ export class CoordinationV3RuntimeScopeAuthority {
         ? root.communication as Record<string, unknown>
         : root;
       if (typeof communication.conversationId === "string" && communication.conversationId) {
+        // Broadcasts may activate any active Agent in the Project. Direct
+        // messages remain inside the addressed Agent's owning Chat.
+        if (
+          communication.intent === "broadcast"
+          && !this.sqlite.prepare(`
+            SELECT 1 FROM agent_conversation_memberships
+            WHERE conversation_id = ? AND agent_id = ?
+          `).get(communication.conversationId, agentId)
+        ) return `agent:${agentId}`;
         return `conversation:${communication.conversationId}`;
       }
     }
@@ -211,7 +220,13 @@ export class CoordinationV3RuntimeScopeAuthority {
           SELECT 1 FROM agent_conversation_memberships
           WHERE conversation_id = ? AND agent_id = ?
         `).get(conversationId, agentId)
-      ) return false;
+      ) {
+        const projectScopedWake = input.intent === "broadcast"
+          && input.activations.some((activation) =>
+            activation.agentId === agentId
+            && activation.scopeKey === `agent:${agentId}`);
+        if (!projectScopedWake) return false;
+      }
     }
     for (const conversationId of conversationIds) {
       if (!this.sqlite.prepare(`
@@ -225,10 +240,21 @@ export class CoordinationV3RuntimeScopeAuthority {
       if (input.intent === "managed_child_failure" && activation.kind !== input.intent) return false;
       if (input.intent === "correction" && activation.kind !== "message_correction") return false;
       if (!audienceIsOrganization && !audienceAgentIds.has(activation.agentId)) return false;
+      const expectedConversationScope = conversationId
+        ? `conversation:${conversationId}`
+        : undefined;
+      const expectedAgentScope = `agent:${activation.agentId}`;
       if (
-        conversationId
-          ? activation.scopeKey !== `conversation:${conversationId}`
-          : activation.scopeKey !== `agent:${activation.agentId}`
+        expectedConversationScope
+          ? activation.scopeKey !== expectedConversationScope
+            && !(
+              (
+                input.intent === "broadcast"
+                || (!requireCurrentAuthorization && input.intent === "user_dm")
+              )
+              && activation.scopeKey === expectedAgentScope
+            )
+          : activation.scopeKey !== expectedAgentScope
       ) return false;
       if (requireCurrentAuthorization) {
         if (!this.recipientAuthorizedForActivationScope(

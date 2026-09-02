@@ -7,6 +7,7 @@ import {
 } from "react";
 import { readChatState, writeChatState } from "../../chatState";
 import { replaceDestination } from "./Composer.helpers";
+import type { ComposerEditorHandle } from "./ComposerEditor";
 import type { ComposerProps } from "./Composer.types";
 
 interface UseComposerInsertTextRequestOptions {
@@ -16,7 +17,7 @@ interface UseComposerInsertTextRequestOptions {
   draftQuery: { isError: boolean };
   draftReady: MutableRefObject<boolean>;
   draftReadyVersion: number;
-  inputRef: RefObject<HTMLTextAreaElement>;
+  inputRef: RefObject<ComposerEditorHandle>;
   insertTextRequest: ComposerProps["insertTextRequest"];
   setCaret: Dispatch<SetStateAction<number>>;
   updateText: Dispatch<SetStateAction<string>>;
@@ -61,8 +62,8 @@ export function useComposerInsertTextRequest({
     });
     const frame = window.requestAnimationFrame(() => {
       inputRef.current?.focus();
-      const end = inputRef.current?.value.length ?? 0;
-      inputRef.current?.setSelectionRange(end, end);
+      const end = inputRef.current?.getCanonicalText().length ?? 0;
+      inputRef.current?.setSelectionOffsets(end, end);
       setCaret(end);
     });
     return () => window.cancelAnimationFrame(frame);

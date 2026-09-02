@@ -1,4 +1,4 @@
-import { Avatar, Box, ButtonBase, IconButton, Stack, Tooltip } from "@mui/material";
+import { Avatar, Box, ButtonBase, Stack, Tooltip } from "@mui/material";
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import type { ChatMessagePresentation } from "./contracts";
 import { MessageSenderLabel } from "../MessageSenderLabel";
@@ -42,18 +42,24 @@ export function ChatMessageFrame({
     let intersecting = false;
     const report = () =>
       message.onVisible?.(
-        intersecting && document.visibilityState !== "hidden",
+        intersecting && document.visibilityState === "visible" && document.hasFocus(),
       );
     const observer = new IntersectionObserver((entries) => {
-      intersecting = Boolean(entries[0]?.isIntersecting);
+      const entry = entries[0];
+      intersecting = Boolean(entry?.isIntersecting && entry.intersectionRatio >= 0.5);
       report();
     }, { threshold: 0.5 });
     const onVisibilityChange = () => report();
     observer.observe(element);
     document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", onVisibilityChange);
+    window.addEventListener("blur", onVisibilityChange);
     return () => {
+      message.onVisible?.(false);
       observer.disconnect();
       document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", onVisibilityChange);
+      window.removeEventListener("blur", onVisibilityChange);
     };
   }, [message.id, message.onVisible]);
   const avatar = (
@@ -120,11 +126,11 @@ export function ChatMessageFrame({
               {openAuthor ? <ButtonBase
                 aria-label={`Open agent ${senderName} from name`}
                 onClick={(event) => { event.stopPropagation(); openAuthor(); }}
-                sx={{ borderRadius: 0.75, textAlign: "left", "& [data-message-sender]": { mb: 0, fontSize: 14 } }}
+                sx={{ minHeight: 28, borderRadius: 0.75, textAlign: "left", "& [data-message-sender]": { mb: 0, fontSize: 14 } }}
               ><MessageSenderLabel name={senderName} /></ButtonBase>
                 : <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: 14 } }}><MessageSenderLabel name={senderName} /></Box>}
               {message.source}
-              <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact align="start" desktopOnly /></Box>
+              <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} align="start" desktopOnly /></Box>
             </Stack>
           ) : author.kind === "operator" ? (
             <Stack
@@ -150,7 +156,6 @@ export function ChatMessageFrame({
               <Box sx={{ color: "text.secondary" }}>
                 <MessageTimestamp
                   value={message.createdAt}
-                  compact
                   align="end"
                   desktopOnly
                 />
@@ -163,6 +168,7 @@ export function ChatMessageFrame({
                     openAuthor();
                   }}
                   sx={{
+                    minHeight: 28,
                     borderRadius: 0.75,
                     textAlign: "right",
                     "& [data-message-sender]": { mb: 0, fontSize: 14 },

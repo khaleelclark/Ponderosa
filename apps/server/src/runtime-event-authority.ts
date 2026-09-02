@@ -1,9 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { realpathSync, statSync, promises as fs } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import path from "node:path";
-import type { AgentEvent } from "@ponderosa/core";
 import {
-  artifactContentPath,
   publishManagedArtifactContentAsync,
   type AgentStore,
   type CoordinationV3Store,
@@ -115,14 +113,11 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
     publish(agentId, stored);
     if (canonicalEvent.type === "file_change" && canonicalEvent.kind !== "delete") {
       const agent = store.getAgent(agentId);
-      const project = agent ? store.getProject(agent.projectId) : undefined;
       const mediaType = generatedArtifactMediaType(canonicalEvent.path, canonicalEvent.kind);
-      if (agent && project && mediaType) {
-        let legacyDestination: string | undefined;
-        let captureCommitted = false;
+      if (agent && mediaType) {
         try {
           const source = await readWorkspaceArtifactFileAsync({
-            rootPath: project.hostPath,
+            rootPath: run.workingCopy.rootPath,
             requestedPath: canonicalEvent.path,
             purpose: "generated_capture",
             maxBytes: 64 * 1024 * 1024,
@@ -133,14 +128,6 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
           const body = source.body;
           const artifactId = randomUUID();
           const managedPath = `generated/${artifactId}${path.extname(source.name).toLowerCase()}`;
-          legacyDestination = artifactContentPath(
-            opts.dataDir,
-            agent.projectId,
-            agent.id,
-            managedPath,
-          );
-          await fs.mkdir(path.dirname(legacyDestination), { recursive: true });
-          await fs.writeFile(legacyDestination, body, { flag: "wx", mode: 0o600 });
           const publishedArtifact = await publishManagedArtifactContentAsync(
             opts.dataDir,
             agent.projectId,
@@ -158,7 +145,6 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
             sourcePath: canonicalEvent.path, name: source.name, mediaType, size: body.length,
             sha256: contentHash, visibility: "project",
           });
-          captureCommitted = true;
           const catalogArtifact = {
             id: artifactId, projectId: agent.projectId, agentId: agent.id, originAgentId: agent.id,
             executionId: run.executionId, kind: "generated_file", path: managedPath,
@@ -172,20 +158,6 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
           store.recordProjectArtifact(catalogArtifact);
           publish(agent.id, captured);
         } catch (error) {
-          if (legacyDestination && !captureCommitted) {
-            try {
-              await fs.rm(legacyDestination, { force: true });
-            } catch (cleanupError) {
-              logWarn(
-                {
-                  err: cleanupError,
-                  agentId,
-                  path: canonicalEvent.path,
-                },
-                "uncatalogued legacy generated artifact cleanup failed",
-              );
-            }
-          }
           logWarn({ err: error, agentId, path: canonicalEvent.path }, "generated artifact capture skipped");
         }
       }
@@ -193,17 +165,25 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
     return stored;
   }
 
-  function normalizeRuntimeFileChange(agentId: string, run: ActiveRun, event: LogEvent): LogEvent {
-    if (event.type !== "file_change" || event.kind === "delete") return event;
-    const agent = store.getAgent(agentId);
-    const project = agent ? store.getProject(agent.projectId) : undefined;
-    if (!project) return event;
+  function normalizeRuntimeFileChange(_agentId: string, run: ActiveRun, event: LogEvent): LogEvent {
+    if (event.type !== "file_change") return event;
     let kind = event.kind;
+    let canonicalPath = event.path;
     try {
-      const root = realpathSync(project.hostPath);
-      const candidate = realpathSync(path.isAbsolute(event.path) ? event.path : path.resolve(root, event.path));
-      const inProject = candidate !== root && candidate.startsWith(`${root}${path.sep}`);
-      if (inProject || path.isAbsolute(event.path)) {
+      const root = realpathSync(run.workingCopy.rootPath);
+      const nominalCandidate = path.isAbsolute(event.path)
+        ? path.resolve(event.path)
+        : path.resolve(root, event.path);
+      const nominalRelative = path.relative(root, nominalCandidate);
+      const nominalInWorkingCopy = nominalRelative && !path.isAbsolute(nominalRelative) &&
+        nominalRelative !== ".." && !nominalRelative.startsWith(`..${path.sep}`);
+      if (nominalInWorkingCopy) canonicalPath = nominalRelative.split(path.sep).join("/");
+      if (kind !== "delete") {
+        const candidate = realpathSync(nominalCandidate);
+        const relative = path.relative(root, candidate);
+        const inWorkingCopy = relative && !path.isAbsolute(relative) && relative !== ".." &&
+          !relative.startsWith(`..${path.sep}`);
+        if (inWorkingCopy) canonicalPath = relative.split(path.sep).join("/");
         const info = statSync(candidate);
         const runStartedAt = Date.parse(run.startedAt);
         if (kind === "edit" && info.birthtimeMs > 0 && Number.isFinite(runStartedAt) && info.birthtimeMs >= runStartedAt - 1_000) {
@@ -215,9 +195,10 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
       // cannot be inspected. Workspace confinement is enforced again during
       // managed-artifact capture.
     }
-    const diff = normalizeProviderFileDiff(event.diff, kind, event.path);
+    const diff = normalizeProviderFileDiff(event.diff, kind, canonicalPath);
     return {
       ...event,
+      path: canonicalPath,
       kind,
       ...(diff ? { diff } : {}),
     };

@@ -13,5 +13,5 @@ export * from "./managed-tools.js";
 export * from "./text-policy.js";
 export * from "./coordination-v3.js";
 export * from "./file-activity.js";
-export * from "./wiki.js";
 export * from "./provider-failure-summary.js";
+export * from "./agent-handles.js";

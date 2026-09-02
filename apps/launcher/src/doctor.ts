@@ -2,6 +2,7 @@ import {
   accessSync,
   constants,
   existsSync,
+  realpathSync,
   statfsSync,
   watch,
   writeFileSync,
@@ -108,7 +109,8 @@ async function portAvailable(port: number): Promise<boolean> {
 }
 
 async function testWatcher(paths: LauncherPaths): Promise<boolean> {
-  const target = path.join(paths.runtimeDir, `doctor-watch-${randomUUID()}.tmp`);
+  const runtimeDir = realpathSync.native(paths.runtimeDir);
+  const target = path.join(runtimeDir, `doctor-watch-${randomUUID()}.tmp`);
   return new Promise((resolve) => {
     let finished = false;
     const finish = (result: boolean): void => {
@@ -118,7 +120,7 @@ async function testWatcher(paths: LauncherPaths): Promise<boolean> {
       rmSync(target, { force: true });
       resolve(result);
     };
-    const watcher = watch(paths.runtimeDir, (_event, filename) => {
+    const watcher = watch(runtimeDir, (_event, filename) => {
       if (filename?.toString() === path.basename(target)) finish(true);
     });
     const timer = setTimeout(() => finish(false), 2_000);

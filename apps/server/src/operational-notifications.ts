@@ -169,13 +169,40 @@ export function createOperationalNotifications(context: OperationalNotifications
           limit: 200,
         });
         const items = new Map(inspector.items.map((item) => [item.id, item]));
+        const candidateRequest = candidate.kind === "request"
+          ? coordinationV3.getRequest(candidate.recordId)
+          : undefined;
+        const pendingDirectRecovery = Boolean(
+          candidateRequest?.recoverySuccessorRequestId &&
+          ["failed", "outcome_unknown"].includes(candidateRequest.state) &&
+          !coordinationV3.requestRetryStatus(candidateRequest.id).completedRequestId,
+        );
         const trace = inspector.traces.find((entry) =>
-          entry.state === "attention" && entry.itemIds.includes(focusId));
+          entry.state === "attention" && entry.itemIds.includes(focusId))
+          ?? (pendingDirectRecovery
+            ? inspector.traces.find((entry) => entry.itemIds.includes(focusId))
+            : undefined);
         if (!trace) continue;
         const related = trace.itemIds.flatMap((id) => items.get(id) ? [items.get(id)!] : []);
         if (related.some((item) => item.kind === "decision" && item.state === "pending")) continue;
-        const failedRequest = [...related].reverse().find((item) => item.kind === "request"
-          && ["blocked", "failed", "outcome_unknown", "expired", "recipient_unavailable"].includes(item.state));
+        const focusedRecoveryRequest = pendingDirectRecovery
+          ? items.get(focusId)
+          : undefined;
+        const failedRequest = focusedRecoveryRequest?.kind === "request"
+          ? focusedRecoveryRequest
+          : [...related].reverse().find((item) => {
+          if (item.kind !== "request" || ![
+            "blocked",
+            "failed",
+            "outcome_unknown",
+            "expired",
+            "recipient_unavailable",
+          ].includes(item.state)) return false;
+          return !(
+            ["failed", "outcome_unknown"].includes(item.state) &&
+            coordinationV3.requestRetryStatus(item.recordId).completedRequestId
+          );
+        });
         const failedJoin = [...related].reverse().find((item) => item.kind === "join"
           && ["impossible", "expired"].includes(item.state));
         const failedTrigger = [...related].reverse().find((item) => item.kind === "trigger"
@@ -190,7 +217,7 @@ export function createOperationalNotifications(context: OperationalNotifications
           const affected = store.getAgent(agentId);
           return affected && !affected.archived ? [affected] : [];
         });
-        const conversationIds = [...new Set(affectedAgents.flatMap((affected) => affected.conversationIds))].sort();
+        const conversationIds = [...new Set(affectedAgents.map((affected) => affected.conversationId))].sort();
         const requestRecord = failedRequest ? coordinationV3.getRequest(failedRequest.recordId) : undefined;
         const requestPayload = requestRecord?.payload && typeof requestRecord.payload === "object" && !Array.isArray(requestRecord.payload)
           ? requestRecord.payload as Record<string, unknown>
@@ -282,7 +309,7 @@ export function createOperationalNotifications(context: OperationalNotifications
           body: `${trigger.budgetState.used} of ${trigger.runBudget!.limit + trigger.budgetState.allowance} ${trigger.runBudget!.period === "lifetime" ? "lifetime automatic Runs" : `automatic Runs per ${trigger.runBudget!.period}`} have been used. New outside events remain queued until the period resets or you allow more Runs.`,
           projectId: trigger.projectId,
           conversationId: trigger.conversationId,
-          action: { kind: "open_agent", targetId: trigger.agentId },
+          action: { kind: "open_agent", targetId: trigger.targetAgentId },
         });
       }
       if (trigger.sourceKind === "filesystem" && !trigger.enabled) retained.add(`trigger:${trigger.id}:watcher-failed`);

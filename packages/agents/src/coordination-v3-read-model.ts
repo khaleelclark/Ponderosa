@@ -700,9 +700,8 @@ export class CoordinationV3ReadModel {
             SELECT 'request', retry.id, 'request', original.id
             FROM coordination_requests retry
             JOIN coordination_requests original
-              ON original.id = CASE WHEN json_valid(retry.payload_json) THEN json_extract(retry.payload_json, '$.retryOfRequestId') END
+              ON original.superseded_by_request_id = retry.id
             WHERE retry.project_id = @projectId AND original.project_id = @projectId
-              AND json_valid(retry.payload_json)
               AND (@conversationId IS NULL OR retry.conversation_id = @conversationId)
             UNION ALL
             SELECT 'activation', source.activation_id,
@@ -816,7 +815,8 @@ export class CoordinationV3ReadModel {
       };
       const requestSelection = selection("request", "id");
       const requestRows = trimUnscopedOverflow(this.sqlite.prepare(`
-        SELECT id, requester_agent_id, recipient_agent_id, state, payload_json, communication_event_id, created_at, updated_at
+        SELECT id, requester_agent_id, recipient_agent_id, state, payload_json,
+          superseded_by_request_id, communication_event_id, created_at, updated_at
         FROM coordination_requests
         WHERE project_id = ?
           AND (? IS NULL OR conversation_id = ?)
@@ -828,7 +828,7 @@ export class CoordinationV3ReadModel {
         ...requestSelection.params, queryLimit,
       ) as Array<{
         id: string; requester_agent_id: string | null; recipient_agent_id: string; state: string;
-        payload_json: string;
+        payload_json: string; superseded_by_request_id: string | null;
         communication_event_id: string | null; created_at: string; updated_at: string;
       }>);
       for (const row of requestRows) {
@@ -848,10 +848,8 @@ export class CoordinationV3ReadModel {
         });
       }
       for (const row of requestRows) {
-        if (!row.payload_json) continue;
-        const payload = JSON.parse(row.payload_json) as { retryOfRequestId?: unknown } | null;
-        if (payload && typeof payload.retryOfRequestId === "string") {
-          relate(`request:${row.id}`, `request:${payload.retryOfRequestId}`);
+        if (row.superseded_by_request_id) {
+          relate(`request:${row.superseded_by_request_id}`, `request:${row.id}`);
         }
       }
 

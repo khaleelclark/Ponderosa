@@ -384,16 +384,29 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       }
     }
   };
-  const drainEngineCapabilityDiscoveries = async (projectId?: string): Promise<void> => {
+  const drainEngineCapabilityDiscoveries = async (
+    projectId?: string,
+    agentIds?: ReadonlySet<string>,
+  ): Promise<void> => {
     for (let pass = 0; pass < 100; pass += 1) {
       const entries = [...engineCapabilityDiscoveryAuthorities]
-        .filter((authority) => !projectId || authority.projectId === projectId);
+        .filter((authority) => (!projectId || authority.projectId === projectId) &&
+          (!agentIds || (authority.agentId !== undefined && agentIds.has(authority.agentId))));
       if (entries.length === 0) return;
       for (const authority of entries) authority.controller.abort();
-      await Promise.allSettled(entries.flatMap((authority) => authority.operation ? [authority.operation] : []));
+      // Close every process before awaiting adapter settlement. A command can
+      // own a working-folder lease until its operation settles; waiting first
+      // would deadlock deletion against the teardown it needs to cause that
+      // settlement.
       const cleanup = await Promise.allSettled(entries.map(closeCapabilityDiscoveryAuthority));
       const failures = cleanup.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
       if (failures.length) throw new AggregateError(failures, "Engine capability-discovery authority did not drain");
+      await Promise.allSettled(entries.flatMap((authority) => authority.operation ? [authority.operation] : []));
+      const finalCleanup = await Promise.allSettled(entries.map(closeCapabilityDiscoveryAuthority));
+      const finalFailures = finalCleanup.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+      if (finalFailures.length) {
+        throw new AggregateError(finalFailures, "Engine capability-discovery authority did not finish draining");
+      }
     }
     throw new Error("Engine capability-discovery authority did not reach a fixed point");
   };

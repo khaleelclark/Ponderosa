@@ -104,20 +104,20 @@ export class CoordinationV3TriggerRegistry {
     const id = input.id ?? randomUUID();
     return this.sqlite.transaction(() => {
       this.requireProject(input.projectId);
-      this.requireAgent(input.projectId, input.agentId);
+      this.requireAgent(input.projectId, input.targetAgentId);
       this.requireConversation(input.projectId, input.conversationId);
-      this.requireConversationMember(input.conversationId, input.agentId);
-      const ownedCount = (this.sqlite.prepare(`
-        SELECT COUNT(*) AS count FROM trigger_definitions WHERE agent_id = ?
-      `).get(input.agentId) as { count: number }).count;
-      if (ownedCount >= 100) throw new Error("an Agent may own at most 100 Automations");
+      this.requireConversationMember(input.conversationId, input.targetAgentId);
+      const projectCount = (this.sqlite.prepare(`
+        SELECT COUNT(*) AS count FROM trigger_definitions WHERE project_id = ?
+      `).get(input.projectId) as { count: number }).count;
+      if (projectCount >= 500) throw new Error("a Project may contain at most 500 Automations");
       if (input.sourceKind === "filesystem") {
         const watcherCount = (this.sqlite.prepare(`
           SELECT COUNT(*) AS count FROM trigger_definitions
-          WHERE agent_id = ? AND source_kind = 'filesystem'
-        `).get(input.agentId) as { count: number }).count;
-        if (watcherCount >= 25) {
-          throw new Error("an Agent may own at most 25 filesystem Automations");
+          WHERE project_id = ? AND source_kind = 'filesystem'
+        `).get(input.projectId) as { count: number }).count;
+        if (watcherCount >= 100) {
+          throw new Error("a Project may contain at most 100 filesystem Automations");
         }
       }
       this.sqlite.prepare(`
@@ -131,7 +131,7 @@ export class CoordinationV3TriggerRegistry {
         id,
         input.projectId,
         input.conversationId,
-        input.agentId,
+        input.targetAgentId,
         name,
         instructions,
         input.sourceKind,
@@ -217,16 +217,23 @@ export class CoordinationV3TriggerRegistry {
       if (input.runBudget !== undefined && input.runBudget !== null) {
         this.validateRunBudget(input.runBudget);
       }
+      const conversationId = input.conversationId ?? row.conversation_id;
+      const targetAgentId = input.targetAgentId ?? row.agent_id;
+      this.requireConversation(row.project_id, conversationId);
+      this.requireAgent(row.project_id, targetAgentId);
+      this.requireConversationMember(conversationId, targetAgentId);
       const nextFireAt = input.nextFireAt === undefined
         ? row.next_fire_at
         : input.nextFireAt;
       this.sqlite.prepare(`
         UPDATE trigger_definitions
-        SET name = ?, instructions = ?, source_config_json = ?, enabled = ?, next_fire_at = ?,
+        SET conversation_id = ?, agent_id = ?, name = ?, instructions = ?, source_config_json = ?, enabled = ?, next_fire_at = ?,
             run_budget_limit = ?, run_budget_period = ?, run_budget_used = ?, run_budget_allowance = ?, run_budget_period_started_at = ?,
             secret_ciphertext = ?, secret_fingerprint = ?, updated_at = ?
         WHERE id = ?
       `).run(
+        conversationId,
+        targetAgentId,
         name,
         instructions,
         input.sourceConfig === undefined
@@ -440,7 +447,7 @@ export class CoordinationV3TriggerRegistry {
       id: row.id,
       projectId: row.project_id,
       conversationId: row.conversation_id,
-      agentId: row.agent_id,
+      targetAgentId: row.agent_id,
       name: row.name,
       instructions: row.instructions,
       sourceKind: row.source_kind,

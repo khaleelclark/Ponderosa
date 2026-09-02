@@ -3,10 +3,9 @@ import { openManagedArtifactContent, type AgentStore, type LogEvent, type Stored
 import {
   BrowserSessionError,
   BrowserSessionManager,
-  chromeBrowserDriverFactory,
-  type BrowserDriverFactory,
   type BrowserScope,
 } from "./browser-session-manager.js";
+import { chromeBrowserDriverFactory, type BrowserDriverFactory } from "./chrome-cdp-driver.js";
 import type { ActiveRun } from "./app-contracts.js";
 import type { ProviderProcessAuthority } from "./provider-process-authority.js";
 import { BrowserProfileAuthority } from "./browser-profile-authority.js";
@@ -243,7 +242,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     ...(grant ? { actorAgentId: grant.agentId, actorRunId: grant.runId } : {}),
   });
 
-  const projectBrowserDto = (projectId: string, session: import("@ponderosa/core").BrowserSessionDto): ProjectBrowserSessionDto => {
+  const projectBrowserDto = (projectId: string, session: BrowserSessionDto): ProjectBrowserSessionDto => {
     const grant = projectBrowserGrants.get(projectId);
     const ready = session.status === "ready";
     return {

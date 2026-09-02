@@ -15,10 +15,15 @@ import type { EngineDto, ProjectDto, WorkspacePreferencesDto } from "@ponderosa/
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import { resolveRuntimeSelection } from "../conversationEngine";
+import {
+  engineIsAvailable,
+  engineUnavailableReason,
+  resolveRuntimeSelection,
+} from "../conversationEngine";
 import { queryKeys } from "../queryKeys";
 import { EngineModelEffortFields } from "./ProjectRuntimeFields";
 import { ProjectDeletionDialog } from "./ProjectDeletionDialog";
+import { useMutationNotification } from "./MutationNotifications";
 
 export function ProjectSettingsPanel({
   project,
@@ -32,6 +37,7 @@ export function ProjectSettingsPanel({
   onDeleted(projectId: string): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const notify = useMutationNotification();
   const [label, setLabel] = useState(project.label);
   const [instructions, setInstructions] = useState(
     project.instructions ?? "",
@@ -40,7 +46,6 @@ export function ProjectSettingsPanel({
   const [runtimeModel, setRuntimeModel] = useState(project.defaultModel ?? "");
   const [runtimeEffort, setRuntimeEffort] = useState(project.defaultEffort ?? "");
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     setLabel(project.label);
@@ -49,7 +54,6 @@ export function ProjectSettingsPanel({
     setRuntimeModel(project.defaultModel ?? "");
     setRuntimeEffort(project.defaultEffort ?? "");
     setDeleteOpen(false);
-    setSaved(false);
   }, [project.id]);
 
   const updateProject = useMutation({
@@ -62,7 +66,7 @@ export function ProjectSettingsPanel({
         defaultEffort: runtimeEffort || null,
       }),
     onSuccess: () => {
-      setSaved(true);
+      notify({ key: `project-settings:${project.id}`, message: "Project settings saved." });
       void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
     },
   });
@@ -102,7 +106,6 @@ export function ProjectSettingsPanel({
             value={label}
             onChange={event => {
               setLabel(event.target.value);
-              setSaved(false);
             }}
             fullWidth
           />
@@ -126,11 +129,12 @@ export function ProjectSettingsPanel({
                     setRuntimeEngineId(event.target.value);
                     setRuntimeModel("");
                     setRuntimeEffort("");
-                    setSaved(false);
                   }}
                 >
                   {engines.map(engine => (
-                    <MenuItem key={engine.id} value={engine.id}>{engine.displayName}</MenuItem>
+                    <MenuItem key={engine.id} value={engine.id} disabled={!engineIsAvailable(engine)}>
+                      {engine.displayName}{engineIsAvailable(engine) ? "" : ` — ${engineUnavailableReason(engine)}`}
+                    </MenuItem>
                   ))}
                 </Select>
               </FormControl>
@@ -141,7 +145,6 @@ export function ProjectSettingsPanel({
                 onChange={selection => {
                   setRuntimeModel(selection.model);
                   setRuntimeEffort(selection.effort);
-                  setSaved(false);
                 }}
                 modelLabel="Model override"
                 effortLabel="Reasoning override"
@@ -160,7 +163,6 @@ export function ProjectSettingsPanel({
             value={instructions}
             onChange={event => {
               setInstructions(event.target.value);
-              setSaved(false);
             }}
             multiline
             minRows={5}
@@ -169,9 +171,6 @@ export function ProjectSettingsPanel({
           />
           {updateProject.isError ? (
             <Alert severity="error">{String(updateProject.error)}</Alert>
-          ) : null}
-          {saved ? (
-            <Alert severity="success">Project settings saved.</Alert>
           ) : null}
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
             <Button

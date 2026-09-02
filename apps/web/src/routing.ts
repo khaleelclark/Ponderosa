@@ -3,7 +3,7 @@
 //
 //   / (Home overview)
 //   /messages (messages to and from the operator)
-//   /chats (legacy Messages route)
+//   /chats (All Chats)
 //   /projects/:projectId/chats/:conversationId
 //   /projects/:projectId/agents
 //   /projects/:projectId/agents/:agentId
@@ -23,11 +23,15 @@ export interface AgentTelemetryFocus {
 }
 
 export type AgentDetailView = "chat" | "activity" | "subagents" | "triggers" | "artifacts" | "settings" | "technical";
+export type ConversationDetailView =
+  | "main"
+  | "collaboration"
+  | "files"
+  | "agents"
+  | "triggers";
 export type ProjectDetailView =
   | "overview"
   | "files"
-  | "agents"
-  | "triggers"
   | "settings";
 export type CreateResourceKind = "project" | "chat" | "agent" | "trigger";
 
@@ -35,10 +39,23 @@ const AGENT_DETAIL_VIEWS: readonly AgentDetailView[] = ["chat", "activity", "sub
 const PROJECT_DETAIL_VIEWS: readonly ProjectDetailView[] = [
   "overview",
   "files",
-  "agents",
-  "triggers",
   "settings",
 ];
+
+const CONVERSATION_DETAIL_VIEWS: readonly ConversationDetailView[] = [
+  "main",
+  "collaboration",
+  "files",
+  "agents",
+  "triggers",
+];
+
+export function isConversationDetailView(
+  value: unknown,
+): value is ConversationDetailView {
+  return typeof value === "string" &&
+    (CONVERSATION_DETAIL_VIEWS as readonly string[]).includes(value);
+}
 
 export function isAgentDetailView(value: unknown): value is AgentDetailView {
   return typeof value === "string" && (AGENT_DETAIL_VIEWS as readonly string[]).includes(value);
@@ -67,14 +84,14 @@ export type Route =
   | { kind: "settings"; section?: "general" | "providers" | "notifications" | "activity" }
   | { kind: "profile" }
   | { kind: "usage"; projectId?: string }
-  | { kind: "wiki"; articleId?: string }
-  | { kind: "project"; projectId: string; view?: ProjectDetailView }
+  | { kind: "project"; projectId: string; view?: ProjectDetailView; focusArtifactId?: string }
   | { kind: "workspaceFile"; projectId: string; path: string }
   | { kind: "projectWork"; projectId: string; conversationId?: string; focusId?: string }
   | { kind: "browser"; projectId: string; agentId?: string; runId?: string; conversationId?: string }
-  | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel; urlDriven?: boolean }
+  | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel; view?: ConversationDetailView; urlDriven?: boolean }
   | { kind: "agents"; projectId: string }
   | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus; technicalFocusId?: string; view?: AgentDetailView; triggerId?: string }
+  | { kind: "automation"; projectId: string; triggerId?: string }
   | { kind: "review"; projectId: string; agentId: string; path?: string };
 
 const LAST_PROJECT_KEY = "ponderosa.lastProjectId";
@@ -90,10 +107,19 @@ export function parseRoute(pathname: string, search = ""): Route {
     : undefined;
   const reviewPath = query.get("path")?.trim() || undefined;
   const technicalFocusId = query.get("focus")?.trim() || undefined;
-  const channel = query.get("view") === "team" ? "collaboration" as const : undefined;
+  const requestedConversationView = query.get("view")?.trim();
+  const conversationView = requestedConversationView === "team"
+    ? "collaboration" as const
+    : requestedConversationView === "automations"
+      ? "triggers" as const
+      : isConversationDetailView(requestedConversationView)
+        ? requestedConversationView
+        : undefined;
+  const channel = conversationView === "collaboration" ? "collaboration" as const : undefined;
   const requestedAgentView = query.get("view")?.trim();
   const agentView = isAgentDetailView(requestedAgentView) ? requestedAgentView : undefined;
   const projectView = isProjectDetailView(requestedAgentView) ? requestedAgentView : undefined;
+  const focusArtifactId = query.get("artifact")?.trim() || undefined;
   const parts = cleanPathname!.split("/").filter(Boolean);
   if (parts.length === 0) return { kind: "home" };
   if (
@@ -131,7 +157,6 @@ export function parseRoute(pathname: string, search = ""): Route {
   }
   if (parts.length === 1 && parts[0] === "profile") return { kind: "profile" };
   if (parts.length === 1 && parts[0] === "usage") return { kind: "usage", ...(query.get("project") ? { projectId: query.get("project")! } : {}) };
-  if (parts[0] === "wiki") return { kind: "wiki", ...(parts[1] ? { articleId: decodeURIComponent(parts[1]) } : {}) };
   if (parts[0] !== "projects" || !parts[1]) {
     return { kind: "home" };
   }
@@ -155,6 +180,13 @@ export function parseRoute(pathname: string, search = ""): Route {
     };
   }
   if (parts[2] === "browser") return { kind: "browser", projectId };
+  if (parts[2] === "automations") {
+    return {
+      kind: "automation",
+      projectId,
+      ...(parts[3] ? { triggerId: decodeURIComponent(parts[3]) } : {}),
+    };
+  }
   if (parts[2] === "chats" && parts[3]) {
     return {
       kind: "conversation", projectId, conversationId: decodeURIComponent(parts[3]),
@@ -164,6 +196,7 @@ export function parseRoute(pathname: string, search = ""): Route {
       urlDriven: true,
       ...(focusMessageId ? { focusMessageId } : {}),
       ...(channel ? { channel } : {}),
+      ...(conversationView ? { view: conversationView } : {}),
     };
   }
   if (parts[2] === "agents" && parts[3]) {
@@ -186,19 +219,12 @@ export function parseRoute(pathname: string, search = ""): Route {
     kind: "project",
     projectId,
     ...(projectView ? { view: projectView } : {}),
+    ...(focusArtifactId ? { focusArtifactId } : {}),
   };
 }
 
 export function routeProjectId(route: Route): string | undefined {
   return "projectId" in route ? route.projectId : undefined;
-}
-
-export function loadLastProjectId(): string | undefined {
-  try {
-    return window.localStorage.getItem(LAST_PROJECT_KEY) ?? undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 export function saveLastProjectId(projectId: string): void {

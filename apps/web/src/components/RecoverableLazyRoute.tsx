@@ -183,7 +183,14 @@ export function RecoverableLazyRoute<Props extends object>({
     >
       <Suspense fallback={<RouteLoading />}>
         <Box
-          sx={{ display: "contents" }}
+          sx={{
+            height: "100%",
+            maxHeight: "100%",
+            minHeight: 0,
+            minWidth: 0,
+            display: "grid",
+            gridTemplateRows: "minmax(0, 1fr)",
+          }}
         >
           {createElement(RenderableComponent, componentProps as Record<string, unknown>)}
         </Box>

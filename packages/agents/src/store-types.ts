@@ -4,7 +4,7 @@ import type {
   ArtifactDto,
   CommunicationAudience,
   ConversationChannel,
-  ImageAttachmentDto,
+  AssetDto,
 } from "@ponderosa/core";
 
 export interface ContextReadBoundary {
@@ -82,9 +82,10 @@ export type ManagedArtifactEvent =
 export interface AgentJson {
   id: string;
   projectId: string;
+  /** Canonical owner Chat. Missing only from immutable deleted-Agent tombstones. */
   conversationId?: string;
-  conversationIds?: string[];
   title: string;
+  handle: string;
   activeEngine: string;
   model?: string;
   effort?: string;
@@ -97,7 +98,10 @@ export interface AgentJson {
   spawnedByExecutionId?: string;
   spawnPrompt?: string;
   spawnIdempotencyKey?: string;
+  creationIdempotencyKey?: string;
   presetSnapshot?: AgentDto["presetSnapshot"];
+  /** Missing only while the launch migration writes the explicit Shared contract. */
+  workingCopy?: AgentDto["workingCopy"];
 }
 
 export interface AgentSpawnOrigin {
@@ -146,7 +150,7 @@ export interface MessageDispatchRecord {
   deliveryIntents?: ConversationDeliveryIntent[];
   messageReceiptKey?: string;
   orderKey: string;
-  attachments?: ImageAttachmentDto[];
+  attachments?: AssetDto[];
   artifactIds?: string[];
 }
 

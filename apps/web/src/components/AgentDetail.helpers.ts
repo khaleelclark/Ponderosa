@@ -384,11 +384,7 @@ function agentRelationshipPresentation(
     master: agent.conversationId
       ? conversations.find(candidate => candidate.id === agent.conversationId)
       : undefined,
-    headerChats: orderedAgentHeaderChats(
-      agent.conversationIds,
-      conversations,
-      agent.conversationId,
-    ),
+    headerChats: orderedAgentHeaderChats([agent.conversationId], conversations, agent.conversationId),
     organizationalParent,
     lineageAgent: spawningAgent ?? organizationalParent,
     lineageAgentId: agent.spawnedByAgentId ?? agent.managerAgentId,

@@ -10,7 +10,6 @@ import {
 import type {
   AgentStore,
   CoordinationV3Store,
-  WorkspaceStore,
 } from "@ponderosa/agents";
 import type {
   ActiveRun,
@@ -25,14 +24,13 @@ import { applyCollectionPageHeaders, sendCollectionPageError, sqliteCollectionPa
 import { projectedProjectCount } from "../readiness.js";
 import { writeLauncherShutdownReceipt } from "../launcher-shutdown-receipt.js";
 import { processBirthMarker } from "@ponderosa/engines";
-import { browserResidueCleanupStatus } from "../browser-session-manager.js";
+import { browserResidueCleanupStatus } from "../browser-session-residue.js";
 
 interface ServerControlRoutesContext {
   opts: CreateServerOptions;
   serverContext: ServerContext;
   store: AgentStore;
   coordinationV3: CoordinationV3Store;
-  workspace: WorkspaceStore;
   engines: ReadonlyMap<string, EngineRegistration>;
   activeRuns: Map<string, ActiveRun>;
   launcherNow(): number;
@@ -132,7 +130,6 @@ export function registerServerControlRoutes(
     serverContext,
     store,
     coordinationV3,
-    workspace,
     engines,
     activeRuns,
     launcherNow,

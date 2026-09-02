@@ -1,4 +1,4 @@
-import MenuBookOutlinedIcon from "@mui/icons-material/MenuBookOutlined";
+import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import {
   Alert,
   Box,
@@ -97,24 +97,20 @@ export function SidebarConversationDialogs({
 export function OnboardingCompleteDialog({
   open,
   onClose,
-  onOpenWiki,
 }: {
   open: boolean;
   onClose(): void;
-  onOpenWiki(): void;
 }): JSX.Element {
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="xs">
       <DialogTitle>You’re Ready to Build</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ alignItems: "center", textAlign: "center", pt: 1 }}>
-          <Box sx={{ width: 56, height: 56, borderRadius: "50%", display: "grid", placeItems: "center", bgcolor: "action.selected", color: "primary.main" }}><MenuBookOutlinedIcon fontSize="large" /></Box>
+          <Box sx={{ width: 56, height: 56, borderRadius: "50%", display: "grid", placeItems: "center", bgcolor: "action.selected", color: "primary.main" }}><CheckCircleOutlineIcon fontSize="large" /></Box>
           <Typography>You’re all set. Have fun prompting, creating Agents, and building organizations.</Typography>
-          <Alert severity="info" icon={<MenuBookOutlinedIcon />}>Need help? Open the Wiki anytime using the book icon in the sidebar.</Alert>
         </Stack>
       </DialogContent>
       <DialogActions>
-        <Button startIcon={<MenuBookOutlinedIcon />} onClick={onOpenWiki}>Open Wiki</Button>
         <Button autoFocus variant="contained" onClick={onClose}>Start Prompting</Button>
       </DialogActions>
     </Dialog>

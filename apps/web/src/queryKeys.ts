@@ -51,6 +51,12 @@ export const queryKeys = {
   },
   notifications: {
     all: ["notifications"] as const,
+    projection: (projectIds: readonly string[], conversationIds: readonly string[]) => [
+      "notifications",
+      "projection",
+      projectIds.join("\0"),
+      conversationIds.join("\0"),
+    ] as const,
   },
   decisions: {
     all: ["decisions"] as const,
@@ -90,13 +96,30 @@ export const queryKeys = {
     healthAll: ["agent-health"] as const,
     health: (projectId: string | undefined) => ["agent-health", projectId] as const,
     presets: (projectId: string | undefined) => ["agent-presets", projectId] as const,
+    organizationAll: ["agent-organization"] as const,
+    organizationProject: (projectId: string) => ["agent-organization", projectId] as const,
+    organizationPage: (
+      projectId: string,
+      scope: "roots" | "children" | "orphaned" | "deleted",
+      parentAgentId: string | undefined,
+      search: string,
+      status: string | undefined,
+    ) => [
+      "agent-organization",
+      projectId,
+      scope,
+      parentAgentId ?? "",
+      search,
+      status ?? "",
+    ] as const,
   },
   triggers: {
     all: ["triggers"] as const,
-    agent: (agentId: string) => ["triggers", agentId] as const,
+    project: (projectId: string) => ["triggers", "project", projectId] as const,
     occurrencesAll: ["trigger-occurrences"] as const,
     occurrence: (triggerId: string | undefined) => ["trigger-occurrences", triggerId] as const,
     agentOccurrences: (agentId: string) => ["agent-trigger-occurrences", agentId] as const,
+    projectOccurrences: (projectId: string) => ["project-trigger-occurrences", projectId] as const,
   },
   queuedMessages: {
     conversation: (conversationId: string) => ["queued-messages", conversationId] as const,
@@ -110,16 +133,16 @@ export const queryKeys = {
   },
   workspaceStatus: {
     all: ["workspace-status"] as const,
-    project: (projectId: string) => ["workspace-status", projectId] as const,
+    agent: (agentId: string) => ["workspace-status", agentId] as const,
   },
   workspaceFile: {
     all: ["workspace-file"] as const,
-    project: (projectId: string) => ["workspace-file", projectId] as const,
-    detail: (projectId: string, path: string | undefined) =>
-      ["workspace-file", projectId, path] as const,
+    agent: (agentId: string) => ["workspace-file", agentId] as const,
+    detail: (agentId: string, path: string | undefined) =>
+      ["workspace-file", agentId, path] as const,
   },
   workspaceChanges: {
-    project: (projectId: string) => ["workspace", projectId] as const,
+    agent: (agentId: string) => ["workspace", agentId] as const,
     file: (
       agentId: string | undefined,
       path: string | undefined,
@@ -127,8 +150,8 @@ export const queryKeys = {
     ) => ["changed-file", agentId, path, lastSeq] as const,
   },
   workspaceFileView: {
-    detail: (projectId: string, path: string) =>
-      ["workspace-file-view", projectId, path] as const,
+    detail: (projectId: string, path: string, agentId?: string) =>
+      ["workspace-file-view", projectId, agentId, path] as const,
   },
   agentWork: {
     all: ["agent-work"] as const,
@@ -200,12 +223,6 @@ export const queryKeys = {
   hostFolderBrowser: {
     all: ["host-folder-browser"] as const,
     path: (path: string | undefined) => ["host-folder-browser", path] as const,
-  },
-  wiki: {
-    index: ["wiki", "index"] as const,
-    article: (articleId: string | undefined) =>
-      ["wiki", "article", articleId] as const,
-    search: (query: string) => ["wiki", "search", query] as const,
   },
   projectArtifacts: {
     all: ["project-artifacts"] as const,

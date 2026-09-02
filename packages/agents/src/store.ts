@@ -44,10 +44,10 @@ import type {
   RunOutputDto,
   ResponseFileActivityDto,
   UpdateProjectRequest,
-  UpdateAgentConversationMembershipsRequest,
   UpdateConversationRequest,
   UpdateAgentRequest,
   UpdateAgentOrganizationRequest,
+  AgentPhaseDto,
 } from "@ponderosa/core";
 import type { GlobalChatSearchInput } from "./store-chat-search-read-model.js";
 import {
@@ -68,6 +68,7 @@ import {
 } from "./compaction-history-retrieval.js";
 import type { AgentChatFeedProjection } from "./store-chat-feed-projection.js";
 import type { AgentTelemetryReadModel } from "./store-telemetry-read-model.js";
+import type { AgentPhaseReadModel } from "./store-agent-phase-read-model.js";
 import type { AgentFileActivityReadModel } from "./store-file-activity-read-model.js";
 import type { AgentRunUsageReadModel } from "./store-run-usage-read-model.js";
 import type { AgentArtifactCatalog } from "./store-artifact-catalog.js";
@@ -118,6 +119,7 @@ export type {
   AgentManagementAuthorization,
 } from "./store-types.js";
 export class AgentStore extends AgentEventSessionFacade {
+  private readonly phaseReadModel!: AgentPhaseReadModel;
   private readonly db: Db;
   private readonly client: Database.Database;
   private readonly telemetry!: AgentTelemetryReadModel;
@@ -154,7 +156,7 @@ export class AgentStore extends AgentEventSessionFacade {
     projectCount: number;
   } = { mode: "recovery", openMs: 0, componentsMs: 0, recoveryMs: 0, totalMs: 0, projectCount: 0 };
 
-  constructor(private readonly dataDir: string) {
+  constructor(dataDir: string) {
     super();
     const startupStartedAt = performance.now();
     this.support = new AgentStoreSupport(dataDir);
@@ -167,10 +169,7 @@ export class AgentStore extends AgentEventSessionFacade {
       const ports: AgentStoreComponentPorts = {
         listAgents: projectId => this.listAgents(projectId),
         getConversationMessages: (conversationId, channel) => this.getConversationMessages(conversationId, channel),
-        persistAgentMemberships: (agentId, conversationIds, primaryConversationId, beforeProjectionChange) =>
-          this.persistAgentMemberships(agentId, conversationIds, primaryConversationId, beforeProjectionChange),
         getAgentPreset: presetId => this.getAgentPreset(presetId),
-        updateAgentOrganization: (agentId, input) => this.updateAgentOrganization(agentId, input),
         getProject: projectId => this.getProject(projectId),
         getConversation: conversationId => this.getConversation(conversationId),
         getAgent: agentId => this.getAgent(agentId),
@@ -811,12 +810,10 @@ export class AgentStore extends AgentEventSessionFacade {
 
   deleteConversation(
     id: string,
-    beforeMembershipDelete?: (agentId: string, conversationId: string) => void,
     beforeProjectionDelete?: (conversationId: string) => void,
   ): boolean {
     return this.workspaceCatalog.deleteConversation(
       id,
-      beforeMembershipDelete,
       beforeProjectionDelete,
     );
   }
@@ -919,6 +916,10 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.agentCatalog.findAgentSpawn(agentId, executionId, idempotencyKey);
   }
 
+  findAgentCreation(projectId: string, idempotencyKey: string): AgentDto | undefined {
+    return this.agentCatalog.findAgentCreation(projectId, idempotencyKey);
+  }
+
   listAgents(projectId: string): AgentDto[] {
     return this.agentCatalog.listAgents(projectId);
   }
@@ -933,6 +934,28 @@ export class AgentStore extends AgentEventSessionFacade {
 
   getAgent(id: string): AgentDto | undefined {
     return this.agentCatalog.getAgent(id);
+  }
+
+  listProjectWorkingCopies(projectId: string): Array<{
+    agentId: string;
+    deleted: boolean;
+    workingCopy: AgentDto["workingCopy"];
+  }> {
+    return this.agentCatalog.listProjectWorkingCopies(projectId);
+  }
+
+  updateAgentWorkingCopy(
+    id: string,
+    workingCopy: AgentDto["workingCopy"],
+  ): AgentDto | undefined {
+    return this.agentCatalog.updateAgentWorkingCopy(id, workingCopy);
+  }
+
+  updateDeletedAgentWorkingCopy(
+    id: string,
+    workingCopy: AgentDto["workingCopy"],
+  ): boolean {
+    return this.agentCatalog.updateDeletedAgentWorkingCopy(id, workingCopy);
   }
 
   setImportedHistory(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[]): void {
@@ -1013,18 +1036,6 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.agentManagement.readAgentOrganizationEvents(projectId);
   }
 
-  updateAgentConversationMemberships(
-    id: string,
-    input: UpdateAgentConversationMembershipsRequest,
-    beforeMembershipProjectionChange?: (agentId: string, removedConversationIds: string[]) => void,
-  ): AgentDto | undefined {
-    return this.agentManagement.updateAgentConversationMemberships(
-      id,
-      input,
-      beforeMembershipProjectionChange,
-    );
-  }
-
   previewAgentDeletion(rootAgentIds: string[]): AgentDeletionPreviewDto {
     return this.agentDeletion.previewAgentDeletion(rootAgentIds);
   }
@@ -1084,6 +1095,14 @@ export class AgentStore extends AgentEventSessionFacade {
     totalUtf8Bytes: number;
   } | undefined {
     return this.telemetry.getRunOutputText(agentId, seq);
+  }
+
+  /** Exact open call evidence is rebuilt from canonical log events. */
+  activeExecutionPhase(
+    agentId: string,
+    executionId: string,
+  ): Extract<AgentPhaseDto, { kind: "running_command" | "using_tool" }> | undefined {
+    return this.phaseReadModel.activeExecutionPhase(agentId, executionId);
   }
 
   /** Execution activity is rebuilt from canonical log events, never from live-only UI state. */
@@ -1307,10 +1326,6 @@ export class AgentStore extends AgentEventSessionFacade {
     );
   }
 
-  getGeneratedPdfPath(agentId: string, artifactIdValue: string): string | undefined {
-    return this.artifactCatalog.getGeneratedPdfPath(agentId, artifactIdValue);
-  }
-
   getGeneratedArtifact(agentId: string, artifactIdValue: string): Extract<LogEvent, { type: "generated_artifact" }> | undefined {
     return this.artifactCatalog.getGeneratedArtifact(agentId, artifactIdValue);
   }
@@ -1366,20 +1381,6 @@ export class AgentStore extends AgentEventSessionFacade {
 
   private rowToAgentDto(id: string): AgentDto | undefined {
     return this.agentCatalog.rowToAgentDto(id);
-  }
-
-  private persistAgentMemberships(
-    id: string,
-    conversationIds: string[],
-    primaryConversationId?: string,
-    beforeProjectionChange?: () => void,
-  ): void {
-    this.agentCatalog.persistAgentMemberships(
-      id,
-      conversationIds,
-      primaryConversationId,
-      beforeProjectionChange,
-    );
   }
 
 }

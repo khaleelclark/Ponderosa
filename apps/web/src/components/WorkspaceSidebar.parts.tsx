@@ -16,38 +16,68 @@ import { Children, type ReactNode } from "react";
 import { useInfiniteScrollSentinel } from "../hooks/useInfiniteScrollSentinel";
 import { IconTitle } from "./IconTitle";
 import { LoadingState } from "./LoadingState";
-import { sidebarSurface } from "./WorkspaceSidebar.helpers";
+import { railSurface, sidebarSurface } from "./WorkspaceSidebar.helpers";
 
 function SidebarSectionHeading({
   children,
+  actionLabel,
+  onAction,
+  titleCase = false,
 }: {
   children: ReactNode;
+  actionLabel?: string;
+  onAction?(): void;
+  titleCase?: boolean;
 }): JSX.Element {
   return (
-    <Typography
-      variant="subtitle2"
-      color="text.secondary"
+    <Stack
+      direction="row"
       sx={{
+        alignItems: "center",
         px: 1,
         mb: 0.5,
-        fontSize: 11,
-        fontWeight: 800,
-        letterSpacing: ".06em",
-        textTransform: "uppercase",
       }}
     >
-      {children}
-    </Typography>
+      <Typography
+        variant="subtitle2"
+        color="text.secondary"
+        noWrap
+        sx={{
+          minWidth: 0,
+          flex: 1,
+          fontSize: titleCase ? 13 : 11,
+          fontWeight: 800,
+          letterSpacing: titleCase ? 0 : ".06em",
+          textTransform: titleCase ? "none" : "uppercase",
+        }}
+      >
+        {children}
+      </Typography>
+      {actionLabel && onAction ? (
+        <Tooltip title={actionLabel}>
+          <IconButton
+            size="small"
+            aria-label={actionLabel}
+            onClick={onAction}
+            sx={{ width: 36, height: 36, flex: "0 0 auto" }}
+          >
+            <AddIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+      ) : null}
+    </Stack>
   );
 }
 
 function SharedSidebarPanel({
   icon,
   title,
+  header,
   total,
   searchLabel,
   searchValue,
   onSearchValueChange,
+  hideSearch = false,
   topContent,
   starredRows,
   allRows,
@@ -66,14 +96,18 @@ function SharedSidebarPanel({
   viewAllIcon,
   onViewAll,
   onViewAllContextMenu,
+  createLabel,
+  onCreate,
   drawer,
 }: {
   icon: ReactNode;
   title: string;
+  header?: ReactNode;
   total?: number;
   searchLabel: string;
   searchValue: string;
   onSearchValueChange(value: string): void;
+  hideSearch?: boolean;
   topContent?: ReactNode;
   starredRows: ReactNode;
   allRows: ReactNode;
@@ -88,10 +122,12 @@ function SharedSidebarPanel({
   onNew?(): void;
   onNewContextMenu?(anchor: HTMLElement): void;
   newDisabled?: boolean;
-  viewAllLabel: string;
-  viewAllIcon: ReactNode;
-  onViewAll(): void;
+  viewAllLabel?: string;
+  viewAllIcon?: ReactNode;
+  onViewAll?(): void;
   onViewAllContextMenu?(anchor: HTMLElement): void;
+  createLabel?: string;
+  onCreate?(): void;
   drawer: boolean;
 }): JSX.Element {
   const hasStarredRows = Children.count(starredRows) > 0;
@@ -101,28 +137,31 @@ function SharedSidebarPanel({
         minHeight: 0,
         minWidth: 0,
         display: "grid",
+        gridTemplateColumns: "minmax(0, 1fr)",
         gridTemplateRows: "auto auto minmax(0, 1fr) auto",
         bgcolor: sidebarSurface,
       }}
     >
-      <Stack
-        direction="row"
-        sx={{
-          alignItems: "baseline",
-          pl: 2.25,
-          pr: drawer ? 7 : 2.25,
-          pt: 2,
-          pb: 1.25,
-        }}
-      >
-        <Box sx={{ flex: 1, minWidth: 0 }}>
-          <IconTitle icon={icon} title={title} />
-        </Box>
-        {total == null ? null : <Typography variant="caption" color="text.secondary">
-          {total} total
-        </Typography>}
-      </Stack>
-      <Box sx={{ px: 1.75, pb: 1.5 }}>
+      {header ?? (
+        <Stack
+          direction="row"
+          sx={{
+            alignItems: "baseline",
+            pl: 2.25,
+            pr: drawer ? 7 : 2.25,
+            pt: 2,
+            pb: 1.25,
+          }}
+        >
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <IconTitle icon={icon} title={title} />
+          </Box>
+          {total == null ? null : <Typography variant="caption" color="text.secondary">
+            {total} total
+          </Typography>}
+        </Stack>
+      )}
+      {hideSearch ? <Box /> : <Box sx={{ px: 1.75, pb: 1.5 }}>
         <TextField
           fullWidth
           size="small"
@@ -138,11 +177,18 @@ function SharedSidebarPanel({
             ),
           }}
         />
-      </Box>
+      </Box>}
       <Box
         aria-busy={busy}
         className="ponderosa-scroll"
-        sx={{ minHeight: 0, overflowY: "auto", px: 1.25, pb: 1.5 }}
+        sx={{
+          minHeight: 0,
+          minWidth: 0,
+          overflowX: "hidden",
+          overflowY: "auto",
+          px: 1.25,
+          pb: 1.5,
+        }}
       >
         {topContent}
         {hasStarredRows ? (
@@ -152,7 +198,11 @@ function SharedSidebarPanel({
           </Box>
         ) : null}
         <Box component="section">
-          <SidebarSectionHeading>
+          <SidebarSectionHeading
+            titleCase={title !== "Home"}
+            actionLabel={createLabel}
+            onAction={onCreate}
+          >
             {title === "Home" ? "Recents" : `All ${title}`}
           </SidebarSectionHeading>
           <List disablePadding>{allRows}</List>
@@ -168,7 +218,7 @@ function SharedSidebarPanel({
           />
         ) : null}
       </Box>
-      <Box
+      {(newLabel && onNew) || (viewAllLabel && onViewAll) ? <Box
         sx={{
           p: 1.75,
           boxShadow: theme => `inset 0 1px 0 ${theme.palette.divider}`,
@@ -194,23 +244,25 @@ function SharedSidebarPanel({
             {newLabel}
           </Button>
         ) : null}
-        <Button
-          fullWidth
-          startIcon={viewAllIcon}
-          onClick={onViewAll}
-          onContextMenu={event => {
-            if (!onViewAllContextMenu) return;
-            event.preventDefault();
-            onViewAllContextMenu(event.currentTarget);
-          }}
-          sx={{
-            justifyContent: "flex-start",
-            color: "text.secondary",
-          }}
-        >
-          {viewAllLabel}
-        </Button>
-      </Box>
+        {viewAllLabel && onViewAll ? (
+          <Button
+            fullWidth
+            startIcon={viewAllIcon}
+            onClick={onViewAll}
+            onContextMenu={event => {
+              if (!onViewAllContextMenu) return;
+              event.preventDefault();
+              onViewAllContextMenu(event.currentTarget);
+            }}
+            sx={{
+              justifyContent: "flex-start",
+              color: "text.secondary",
+            }}
+          >
+            {viewAllLabel}
+          </Button>
+        ) : null}
+      </Box> : null}
     </Box>
   );
 }
@@ -251,23 +303,34 @@ function RailButton({
   label,
   selected = false,
   badge,
+  dot = false,
   badgeColor = "primary",
+  badgeStatus,
+  dotStatus = "unread activity",
   children,
   onClick,
 }: {
   label: string;
   selected?: boolean;
   badge?: number;
-  badgeColor?: "primary" | "info" | "error";
+  dot?: boolean;
+  badgeColor?: "default" | "primary" | "info" | "error";
+  badgeStatus?: string;
+  dotStatus?: string;
   children: ReactNode;
   onClick(): void;
 }): JSX.Element {
   return (
     <Tooltip title={label} placement="right">
       <IconButton
-        aria-label={badge ? label + ", " + badge : label}
+        aria-label={badge
+          ? `${label}, ${badgeStatus ?? badge}`
+          : dot
+            ? `${label}, ${dotStatus}`
+            : label}
         onClick={onClick}
         sx={{
+          position: "relative",
           width: 48,
           height: 48,
           borderRadius: 1,
@@ -286,11 +349,21 @@ function RailButton({
         <Badge
           color={badgeColor}
           badgeContent={badge}
+          variant={dot && !badge ? "dot" : "standard"}
+          invisible={!badge && !dot}
           max={99}
           slotProps={{ badge: { "aria-hidden": true } }}
+          sx={{ "& .MuiBadge-badge": { color: "#fff", fontWeight: 800 } }}
         >
           {children}
         </Badge>
+        {badge && dot ? (
+          <Box
+            component="span"
+            aria-hidden
+            sx={{ position: "absolute", right: 7, bottom: 7, width: 8, height: 8, borderRadius: "50%", bgcolor: "text.secondary", border: `2px solid ${railSurface}` }}
+          />
+        ) : null}
       </IconButton>
     </Tooltip>
   );

@@ -24,8 +24,10 @@ export type TriggerSourceConfig = TriggerScheduleConfig | TriggerWebhookConfig |
 export interface TriggerDefinitionDto {
   id: string;
   projectId: string;
+  /** The Chat whose context receives work created by this Project Automation. */
   conversationId: string;
-  agentId: string;
+  /** The existing Agent that executes each occurrence. The Automation remains Project-owned. */
+  targetAgentId: string;
   name: string;
   /** Operator-authored trusted instructions, kept separate from occurrence payloads. */
   instructions: string;
@@ -47,6 +49,7 @@ export interface TriggerDefinitionDto {
 
 export interface CreateTriggerRequest {
   conversationId: string;
+  targetAgentId: string;
   name: string;
   instructions: string;
   sourceKind: TriggerSourceKind;
@@ -56,6 +59,8 @@ export interface CreateTriggerRequest {
 }
 
 export interface UpdateTriggerRequest {
+  conversationId?: string;
+  targetAgentId?: string;
   name?: string;
   instructions?: string;
   sourceConfig?: TriggerSourceConfig;
@@ -98,7 +103,7 @@ export interface TriggerOccurrenceDto {
   payloadMediaType: string;
   inputHash: string;
   /** Immutable definition snapshot captured when the occurrence was accepted. */
-  triggerSnapshot?: Pick<TriggerDefinitionDto, "id" | "name" | "instructions" | "sourceKind" | "sourceConfig" | "fullAccess">;
+  triggerSnapshot?: Pick<TriggerDefinitionDto, "id" | "conversationId" | "targetAgentId" | "name" | "instructions" | "sourceKind" | "sourceConfig" | "fullAccess">;
   activationId?: string;
   lastError?: string;
   occurredAt: string;

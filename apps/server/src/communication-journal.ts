@@ -55,18 +55,30 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
     communicationReconciliationTimer.unref();
   };
   const withSendTimeIdentity = (event: CommunicationEvent): CommunicationEvent => {
-    const recipientAgentIds = event.intent === "collaboration"
+    const recipientAgentIds: string[] = event.intent === "collaboration"
       ? event.audience.agentIds
-      : event.schemaVersion === 2 && event.intent === "user_dm"
-        ? event.audience.kind === "user_agent" ? [event.audience.agentId] : event.audience.agentIds
+      : event.intent === "user_dm"
+        ? event.audience.kind === "user_agent"
+          ? [event.audience.agentId]
+          : event.audience.kind === "user_agents" ? event.audience.agentIds : []
         : [];
-    const recipientLabels = Object.fromEntries(recipientAgentIds.flatMap((agentId) => {
-      const title = store.getAgent(agentId)?.title;
-      return title ? [[agentId, title]] : [];
+    const recipientAgents = new Map(recipientAgentIds.flatMap(agentId => {
+      const agent = store.getAgent(agentId);
+      return agent ? [[agentId, agent] as const] : [];
     }));
+    const recipientLabels = Object.fromEntries(
+      [...recipientAgents].map(([agentId, agent]) => [agentId, agent.title]),
+    );
+    const recipientHandles = Object.fromEntries(
+      [...recipientAgents].map(([agentId, agent]) => [agentId, agent.handle]),
+    );
     const mergedRecipientLabels = {
       ...recipientLabels,
       ...event.identity?.recipientLabels,
+    };
+    const mergedRecipientHandles = {
+      ...recipientHandles,
+      ...event.identity?.recipientHandles,
     };
     const senderLabel = event.identity?.senderLabel ?? (
       event.sender.kind === "agent"
@@ -85,6 +97,9 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
         ...(Object.keys(mergedRecipientLabels).length
           ? { recipientLabels: mergedRecipientLabels }
           : {}),
+        ...(Object.keys(mergedRecipientHandles).length
+          ? { recipientHandles: mergedRecipientHandles }
+          : {}),
         ...(conversationLabel ? { conversationLabel } : {}),
       },
     };
@@ -102,7 +117,7 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
         workspace.createNotification({
           projectId: stored.event.projectId,
           ...(stored.event.conversationId ? { conversationId: stored.event.conversationId } : {}),
-          ...(stored.event.intent === "direct_to_user"
+          ...(stored.event.intent === "user_dm" && stored.event.sender.kind === "agent"
             ? { agentId: stored.event.sender.agentId }
             : {}),
           communicationEventId: stored.event.eventId,

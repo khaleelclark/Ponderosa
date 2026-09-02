@@ -242,12 +242,24 @@ CREATE TABLE agent_presets (
 );
 CREATE TABLE agents (
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL, conversation_id TEXT,
-  title TEXT NOT NULL, active_engine TEXT NOT NULL, active_session_id TEXT,
+  title TEXT NOT NULL, handle TEXT NOT NULL, active_engine TEXT NOT NULL, active_session_id TEXT,
   state_branch TEXT, state_commit TEXT, created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0,
   manager_agent_id TEXT, spawned_by_agent_id TEXT, spawned_by_execution_id TEXT,
   spawn_prompt TEXT, spawn_idempotency_key TEXT, preset_snapshot_json TEXT
-, model TEXT, effort TEXT, active_session_contract_hash TEXT, active_session_artifact_ids_json TEXT NOT NULL DEFAULT '[]', allow_automatic_descendant_deletion INTEGER NOT NULL DEFAULT 0, allow_automatic_descendant_reorganization INTEGER NOT NULL DEFAULT 0, deleted_at TEXT);
+, model TEXT, effort TEXT, active_session_contract_hash TEXT, active_session_artifact_ids_json TEXT NOT NULL DEFAULT '[]', allow_automatic_descendant_deletion INTEGER NOT NULL DEFAULT 0, allow_automatic_descendant_reorganization INTEGER NOT NULL DEFAULT 0, deleted_at TEXT, creation_idempotency_key TEXT, working_copy_json TEXT NOT NULL);
+CREATE TABLE agent_handle_reservations (
+  project_id TEXT NOT NULL,
+  normalized_handle TEXT NOT NULL,
+  handle TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  reserved_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, normalized_handle)
+);
+CREATE UNIQUE INDEX idx_agents_project_handle ON agents (project_id, lower(handle));
+CREATE UNIQUE INDEX idx_agents_creation_idempotency
+  ON agents (project_id, creation_idempotency_key)
+  WHERE creation_idempotency_key IS NOT NULL;
 CREATE TABLE all_chat_feed_projection (
   project_id TEXT NOT NULL,
   communication_event_id TEXT NOT NULL,
@@ -807,6 +819,11 @@ CREATE INDEX idx_agents_manager ON agents (manager_agent_id);
 CREATE INDEX idx_agents_project ON agents (project_id);
 CREATE INDEX idx_agents_project_directory
   ON agents (project_id, deleted_at, archived, updated_at DESC, title, id);
+CREATE INDEX idx_agents_project_organization
+  ON agents (
+    project_id, manager_agent_id, deleted_at, archived,
+    title COLLATE NOCASE, id
+  );
 CREATE INDEX idx_all_chat_feed_keyset
   ON all_chat_feed_projection (order_key DESC, row_key DESC);
 CREATE INDEX idx_artifact_source_projection

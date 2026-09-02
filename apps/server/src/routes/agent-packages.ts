@@ -1,26 +1,27 @@
 import { randomUUID } from "node:crypto";
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import type {
+  AgentImportOperationDto,
+  AgentImportPhase,
   AgentDto,
   AgentExportMode,
   AgentPortablePackageDto,
   Adapter,
   CopyAgentPackageRequest,
-  CreateTriggerRequest,
   ImportAgentPackageRequest,
   ImportAgentPackageResponse,
   ModelOption,
-  TriggerScheduleConfig,
-  TriggerSourceConfig,
-  TriggerSourceKind,
 } from "@ponderosa/core";
 import {
   openManagedArtifactContent,
   publishManagedArtifactContentsAsync,
+  removeManagedArtifactContent,
   type AgentStore,
   type CoordinationV3Store,
 } from "@ponderosa/agents";
 import type { FastifyInstance, FastifyReply } from "fastify";
+import type { createOperationalNotifications } from "../operational-notifications.js";
 import {
   CANONICAL_ARTIFACT_ID,
   portableAgentTopologyError,
@@ -34,12 +35,7 @@ import {
 } from "../assets.js";
 import { runtimeSelectionError } from "../runtime-selection.js";
 import {
-  normalizeTriggerSourceConfig,
-  type TriggerSourceService,
-} from "../trigger-service.js";
-import {
   exactTriggerFields,
-  parseCreateTrigger,
   triggerObject,
 } from "../trigger-validation.js";
 import {
@@ -56,8 +52,8 @@ interface AgentPackageRoutesContext {
   assets: AssetStore;
   engines: ReadonlyMap<string, { adapter: Adapter }>;
   deletingProjectIds: ReadonlySet<string>;
+  deletingConversationIds: ReadonlySet<string>;
   cachedModelOptions: (adapter: Adapter, projectId?: string) => ModelOption[];
-  triggerSources: Pick<TriggerSourceService, "createWebhookSecret" | "refresh">;
   appendWorkspace: (event: {
     type: "project_changed";
     projectId: string;
@@ -68,6 +64,9 @@ interface AgentPackageRoutesContext {
     text: string;
     createdAt: string;
   }>;
+  createOperationalNotification: ReturnType<
+    typeof createOperationalNotifications
+  >["createOperationalNotification"];
 }
 
 export function registerAgentPackageRoutes(
@@ -80,12 +79,40 @@ export function registerAgentPackageRoutes(
     assets,
     engines,
     deletingProjectIds,
+    deletingConversationIds,
     cachedModelOptions,
-    triggerSources,
     appendWorkspace,
     agentMessages,
+    createOperationalNotification,
   } = context;
   const blobImportContentType = "application/vnd.ponderosa.agent-import";
+  const importOperationDirectory = path.join(context.dataDir, "agent-import-operations");
+  const operationPath = (id: string) => path.join(importOperationDirectory, `${id}.json`);
+  const payloadPath = (id: string) => path.join(importOperationDirectory, `${id}.payload`);
+  const operationByRequest = new Map<string, string>();
+  const operationCache = new Map<string, AgentImportOperationDto>();
+  const requestOperationKey = (projectId: string, requestId: string) =>
+    `${projectId}:${requestId}`;
+  const writeOperation = async (operation: AgentImportOperationDto): Promise<void> => {
+    operationCache.set(operation.id, operation);
+    operationByRequest.set(
+      requestOperationKey(operation.projectId, operation.requestId),
+      operation.id,
+    );
+    await fs.mkdir(importOperationDirectory, { recursive: true });
+    const temporary = `${operationPath(operation.id)}.${randomUUID()}.tmp`;
+    await fs.writeFile(temporary, JSON.stringify(operation), { mode: 0o600 });
+    await fs.rename(temporary, operationPath(operation.id));
+  };
+  const readOperation = async (id: string): Promise<AgentImportOperationDto | undefined> => {
+    if (!/^[0-9a-f-]{36}$/u.test(id)) return undefined;
+    try {
+      return JSON.parse(await fs.readFile(operationPath(id), "utf8")) as AgentImportOperationDto;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+  };
   app.addContentTypeParser(
     blobImportContentType,
     { parseAs: "buffer" },
@@ -121,13 +148,13 @@ export function registerAgentPackageRoutes(
       ];
       for (const event of canonicalUserDocuments) {
         const visible = event.conversationId
-          ? agent.conversationIds.includes(event.conversationId)
+          ? agent.conversationId === event.conversationId
           : event.intent === "collaboration"
             ? event.audience.agentIds.includes(agent.id)
             : event.intent === "user_dm"
               ? (event.audience.kind === "user_agent"
                   ? event.audience.agentId === agent.id
-                  : event.audience.agentIds.includes(agent.id))
+                  : event.audience.kind === "user_agents" && event.audience.agentIds.includes(agent.id))
               : false;
         if (
           visible
@@ -239,16 +266,6 @@ export function registerAgentPackageRoutes(
           dataBase64: await encodePortableArtifact(data),
         };
       }));
-      const triggers = mode === "full"
-        ? coordinationV3.listTriggerDefinitions(agent.id).map((trigger) => ({
-            name: trigger.name,
-            instructions: trigger.instructions,
-            sourceKind: trigger.sourceKind,
-            sourceConfig: trigger.sourceConfig,
-            enabled: false as const,
-            ...(trigger.runBudget ? { runBudget: trigger.runBudget } : {}),
-          }))
-        : undefined;
       return {
         ref: agent.id,
         title: agent.title,
@@ -267,7 +284,6 @@ export function registerAgentPackageRoutes(
           : {}),
         ...(mode !== "template" ? { history } : {}),
         ...(artifacts.length ? { artifacts } : {}),
-        ...(triggers?.length ? { triggers } : {}),
       };
     }));
     return {
@@ -322,7 +338,9 @@ export function registerAgentPackageRoutes(
     projectId: string,
     body: ImportAgentPackageRequest,
     reply: FastifyReply,
+    onPhase?: (phase: AgentImportPhase) => Promise<void>,
   ): Promise<unknown> => {
+      await onPhase?.("creating_records");
       const project = store.getProject(projectId);
       const conversation = body?.conversationId
         ? store.getConversation(body.conversationId)
@@ -333,19 +351,12 @@ export function registerAgentPackageRoutes(
           error: "Project deletion is already in progress",
         });
       }
-      if (!conversation || conversation.projectId !== project.id) {
+      if (!conversation || conversation.projectId !== project.id ||
+          conversation.archived || deletingConversationIds.has(conversation.id)) {
         return reply.code(400).send({
-          error: "destination Project chat is required",
+          error: "an active destination Project Chat is required",
         });
       }
-      type PlannedTrigger = {
-        name: string;
-        instructions: string;
-        sourceKind: TriggerSourceKind;
-        sourceConfig: TriggerSourceConfig;
-        runBudget?: NonNullable<CreateTriggerRequest["runBudget"]>;
-        nextFireAt?: string;
-      };
       type PlannedArtifact =
         NonNullable<AgentPortablePackageDto["agents"][number]["artifacts"]>[number]
         & {
@@ -359,7 +370,7 @@ export function registerAgentPackageRoutes(
         };
       type PlannedNode = Omit<
         AgentPortablePackageDto["agents"][number],
-        "artifacts" | "history" | "triggers"
+        "artifacts" | "history"
       > & {
         targetEngine: string;
         model?: string;
@@ -368,7 +379,6 @@ export function registerAgentPackageRoutes(
           AgentPortablePackageDto["agents"][number]["history"]
         >;
         artifacts: PlannedArtifact[];
-        triggers: PlannedTrigger[];
       };
 
       let portablePackage: AgentPortablePackageDto;
@@ -430,7 +440,7 @@ export function registerAgentPackageRoutes(
             [
               "ref", "title", "engine", "model", "effort",
               "initialInstructions", "managerRef", "managementPermissions",
-              "history", "artifacts", "triggers",
+              "history", "artifacts",
             ],
             "Agent package node",
           );
@@ -481,11 +491,10 @@ export function registerAgentPackageRoutes(
             && (
               node.history !== undefined
               || node.artifacts !== undefined
-              || node.triggers !== undefined
             )
           ) {
             throw new Error(
-              "template packages cannot contain history, artifacts, or Automations",
+              "template packages cannot contain history or artifacts",
             );
           }
           if (node.history !== undefined && !Array.isArray(node.history)) {
@@ -520,9 +529,6 @@ export function registerAgentPackageRoutes(
           }
           if (node.artifacts !== undefined && !Array.isArray(node.artifacts)) {
             throw new Error("Agent artifacts must be an array");
-          }
-          if (node.triggers !== undefined && !Array.isArray(node.triggers)) {
-            throw new Error("Agent Automations must be an array");
           }
         }
         if (
@@ -723,81 +729,6 @@ export function registerAgentPackageRoutes(
               artifactRefMap,
             ).slice(0, 100_000),
           }));
-          const triggers = (node.triggers ?? []).map(
-            (candidate): PlannedTrigger => {
-              const trigger = triggerObject(candidate, "portable Automation");
-              exactTriggerFields(
-                trigger,
-                [
-                  "name", "instructions", "sourceKind", "sourceConfig",
-                  "enabled", "runBudget",
-                ],
-                "portable Automation",
-              );
-              const parsed = parseCreateTrigger({
-                ...trigger,
-                conversationId: conversation.id,
-              });
-              if (candidate.enabled !== false) {
-                throw new Error(
-                  "imported Automations must be explicitly disabled",
-                );
-              }
-              if (
-                !parsed.name.trim()
-                || parsed.name.trim().length > 120
-                || !parsed.instructions.trim()
-                || parsed.instructions.trim().length > 20_000
-              ) {
-                throw new Error(
-                  "imported Automation name or instructions exceed supported limits",
-                );
-              }
-              if (
-                parsed.runBudget
-                && (
-                  !Number.isSafeInteger(parsed.runBudget.limit)
-                  || parsed.runBudget.limit < 1
-                  || parsed.runBudget.limit > 1_000_000
-                )
-              ) {
-                throw new Error(
-                  "Automation Run budget limit must be an integer between 1 and 1000000",
-                );
-              }
-              const schedule = parsed.sourceKind === "schedule"
-                ? parsed.sourceConfig as TriggerScheduleConfig
-                : undefined;
-              const oneTime = schedule?.scheduleKind === "once";
-              const validationTime = oneTime
-                ? new Date(Date.parse(schedule.at) - 1)
-                : new Date();
-              const normalized = normalizeTriggerSourceConfig(
-                parsed.sourceKind,
-                parsed.sourceConfig,
-                validationTime,
-              );
-              return {
-                name: parsed.name.trim(),
-                instructions: parsed.instructions.trim(),
-                sourceKind: parsed.sourceKind,
-                sourceConfig: normalized.config,
-                ...(parsed.runBudget ? { runBudget: parsed.runBudget } : {}),
-                ...(
-                  !oneTime && normalized.nextFireAt
-                    ? { nextFireAt: normalized.nextFireAt }
-                    : {}
-                ),
-              };
-            },
-          );
-          if (
-            triggers.length > 100
-            || triggers.filter((trigger) =>
-              trigger.sourceKind === "filesystem").length > 25
-          ) {
-            throw new Error("imported Agent exceeds supported Automation limits");
-          }
           return {
             ...node,
             title: node.title.trim().slice(0, 80) || "Imported Agent",
@@ -806,7 +737,6 @@ export function registerAgentPackageRoutes(
             ...(effort ? { effort } : {}),
             history,
             artifacts: artifactsByNode.get(node.ref) ?? [],
-            triggers,
           };
         });
       } catch (error) {
@@ -817,11 +747,44 @@ export function registerAgentPackageRoutes(
         });
       }
 
+      const activeDestinationConversation = () => {
+        const current = store.getConversation(conversation.id);
+        return current?.projectId === project.id && !current.archived &&
+          !deletingConversationIds.has(current.id)
+          ? current
+          : undefined;
+      };
+      const removeUncataloguedPublications = (
+        artifacts: readonly PlannedArtifact[],
+      ) => {
+        for (const artifact of artifacts) {
+          if (store.getProjectArtifact(project.id, artifact.destinationId)) continue;
+          try {
+            removeManagedArtifactContent(
+              context.dataDir,
+              project.id,
+              artifact.destinationId,
+              artifact.data.length,
+              artifact.sha256,
+            );
+          } catch {
+            // Startup repair removes any exact, uncatalogued publication that
+            // could not be reclaimed here without obscuring the Chat conflict.
+          }
+        }
+      };
+
       // Every deterministic decision is complete before the first mutation.
       if (deletingProjectIds.has(project.id)) {
         throw new Error("Project deletion is already in progress");
       }
+      if (!activeDestinationConversation()) {
+        return reply.code(409).send({
+          error: "The destination Chat is no longer active",
+        });
+      }
       const plannedArtifacts = importNodes.flatMap((node) => node.artifacts);
+      await onPhase?.("importing_artifacts");
       const publishedArtifacts = await publishManagedArtifactContentsAsync(
         context.dataDir,
         project.id,
@@ -837,11 +800,19 @@ export function registerAgentPackageRoutes(
         ]),
       );
 
+      if (deletingProjectIds.has(project.id) ||
+          !activeDestinationConversation()) {
+        removeUncataloguedPublications(plannedArtifacts);
+        return reply.code(409).send({
+          error: deletingProjectIds.has(project.id)
+            ? "Project deletion is already in progress"
+            : "The destination Chat is no longer active",
+        });
+      }
+
       const created = new Map<string, AgentDto>();
+      await onPhase?.("importing_agents");
       for (const node of importNodes) {
-        if (deletingProjectIds.has(project.id)) {
-          throw new Error("Project deletion is already in progress");
-        }
         const agent = store.createAgent(project.id, {
           title: node.title,
           engine: node.targetEngine,
@@ -888,6 +859,7 @@ export function registerAgentPackageRoutes(
       }
       store.recordProjectArtifacts(catalogArtifacts);
 
+      await onPhase?.("importing_history");
       for (const node of importNodes) {
         const agent = created.get(node.ref)!;
         if (node.history.length) {
@@ -906,29 +878,7 @@ export function registerAgentPackageRoutes(
           );
         }
       }
-      for (const node of importNodes) {
-        for (const importedTrigger of node.triggers) {
-          const agent = created.get(node.ref)!;
-          const webhookSecret = importedTrigger.sourceKind === "webhook"
-            ? triggerSources.createWebhookSecret()
-            : undefined;
-          coordinationV3.createTriggerDefinition({
-            projectId: project.id,
-            conversationId: conversation.id,
-            agentId: agent.id,
-            name: importedTrigger.name,
-            instructions: importedTrigger.instructions,
-            sourceKind: importedTrigger.sourceKind,
-            sourceConfig: importedTrigger.sourceConfig,
-            enabled: false,
-            runBudget: importedTrigger.runBudget,
-            nextFireAt: importedTrigger.nextFireAt,
-            secretCiphertext: webhookSecret?.ciphertext,
-            secretFingerprint: webhookSecret?.fingerprint,
-          });
-        }
-      }
-      await triggerSources.refresh();
+      await onPhase?.("finalizing");
       appendWorkspace({
         type: "project_changed",
         projectId: project.id,
@@ -949,6 +899,190 @@ export function registerAgentPackageRoutes(
     { bodyLimit: 1024 * 1024 },
     (request, reply) => importPackage(request.params.id, request.body, reply),
   );
+
+  const runBackgroundImport = async (operationId: string): Promise<void> => {
+    let operation = await readOperation(operationId);
+    if (!operation || operation.status !== "pending") return;
+    const update = async (patch: Partial<AgentImportOperationDto>) => {
+      operation = { ...operation!, ...patch, updatedAt: new Date().toISOString() };
+      await writeOperation(operation);
+      return operation;
+    };
+    const phase = async (next: AgentImportPhase) => {
+      await update({ phase: next });
+      createOperationalNotification({
+        dedupeKey: `agent-import:${operationId}`,
+        category: "system",
+        severity: "info",
+        title: "Agent import in progress",
+        body: next.replaceAll("_", " "),
+        projectId: operation!.projectId,
+        action: { kind: "open_project", targetId: operation!.projectId },
+      });
+    };
+    try {
+      const raw = await fs.readFile(payloadPath(operationId));
+      const { metadata, portable } = await parsePortablePackageUpload(raw);
+      await update({ sourceLabel: portable.sourceLabel.slice(0, 240) });
+      let statusCode = 200;
+      let responseBody: unknown;
+      const backgroundReply = {
+        code(code: number) {
+          statusCode = code;
+          return this;
+        },
+        send(value: unknown) {
+          responseBody = value;
+          return value;
+        },
+      } as unknown as FastifyReply;
+      await importPackage(
+        operation.projectId,
+        { ...metadata, package: portable },
+        backgroundReply,
+        phase,
+      );
+      if (statusCode >= 400) {
+        const record = responseBody && typeof responseBody === "object"
+          ? responseBody as { error?: unknown }
+          : undefined;
+        throw new Error(typeof record?.error === "string" ? record.error : "Import failed");
+      }
+      const result = responseBody as ImportAgentPackageResponse;
+      await update({ phase: "completed", status: "completed", result });
+      createOperationalNotification({
+        dedupeKey: `agent-import:${operationId}`,
+        category: "system",
+        severity: "info",
+        title: "Agent import completed",
+        body: `${operation.sourceLabel} was imported successfully.`,
+        projectId: operation.projectId,
+        agentId: result.rootAgentId,
+        action: { kind: "open_agent", targetId: result.rootAgentId },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Import failed";
+      await update({ phase: "failed", status: "failed", error: message.slice(0, 1_000) });
+      createOperationalNotification({
+        dedupeKey: `agent-import:${operationId}`,
+        category: "system",
+        severity: "urgent",
+        title: "Agent import failed",
+        body: `${operation.sourceLabel}: ${message}`.slice(0, 1_000),
+        projectId: operation.projectId,
+        action: { kind: "open_project", targetId: operation.projectId },
+      });
+    } finally {
+      await fs.unlink(payloadPath(operationId)).catch(() => undefined);
+    }
+  };
+
+  app.post<{
+    Params: { id: string };
+    Headers: { "idempotency-key"?: string };
+    Body: Buffer;
+  }>(
+    "/api/projects/:id/agent-import-operations",
+    { bodyLimit: 96 * 1024 * 1024 },
+    async (request, reply) => {
+      if (!store.getProject(request.params.id)) {
+        return reply.code(404).send({ error: "project not found" });
+      }
+      if (deletingProjectIds.has(request.params.id)) {
+        return reply.code(409).send({ error: "Project deletion is already in progress" });
+      }
+      const requestId = request.headers["idempotency-key"]?.trim();
+      if (!requestId || !/^[A-Za-z0-9_-]{8,128}$/u.test(requestId)) {
+        return reply.code(400).send({ error: "a valid import idempotency key is required" });
+      }
+      const requestKey = requestOperationKey(request.params.id, requestId);
+      const existingId = operationByRequest.get(requestKey);
+      if (existingId) {
+        const existing = operationCache.get(existingId) ?? await readOperation(existingId);
+        if (existing) {
+          return reply.code(existing.status === "pending" ? 202 : 200).send(existing);
+        }
+        operationByRequest.delete(requestKey);
+      }
+      const id = randomUUID();
+      const now = new Date().toISOString();
+      const operation: AgentImportOperationDto = {
+        id,
+        requestId,
+        projectId: request.params.id,
+        sourceLabel: "Agent import",
+        phase: "queued",
+        status: "pending",
+        createdAt: now,
+        updatedAt: now,
+      };
+      operationByRequest.set(requestKey, id);
+      operationCache.set(id, operation);
+      try {
+        await fs.mkdir(importOperationDirectory, { recursive: true });
+        await fs.writeFile(payloadPath(id), request.body, { mode: 0o600, flag: "wx" });
+        await writeOperation(operation);
+      } catch (error) {
+        operationByRequest.delete(requestKey);
+        operationCache.delete(id);
+        await fs.unlink(payloadPath(id)).catch(() => undefined);
+        throw error;
+      }
+      createOperationalNotification({
+        dedupeKey: `agent-import:${id}`,
+        category: "system",
+        severity: "info",
+        title: "Agent import queued",
+        body: "The import continues in the background.",
+        projectId: operation.projectId,
+        action: { kind: "open_project", targetId: operation.projectId },
+      });
+      setImmediate(() => void runBackgroundImport(id));
+      return reply.code(202).send(operation);
+    },
+  );
+
+  app.get<{ Params: { id: string; operationId: string } }>(
+    "/api/projects/:id/agent-import-operations/:operationId",
+    async (request, reply) => {
+      const operation = operationCache.get(request.params.operationId)
+        ?? await readOperation(request.params.operationId);
+      if (!operation || operation.projectId !== request.params.id) {
+        return reply.code(404).send({ error: "import operation not found" });
+      }
+      return operation;
+    },
+  );
+
+  void fs.mkdir(importOperationDirectory, { recursive: true }).then(async () => {
+    const names = await fs.readdir(importOperationDirectory);
+    for (const name of names.filter(candidate => candidate.endsWith(".json"))) {
+      const operation = await readOperation(name.slice(0, -5));
+      if (!operation) continue;
+      operationByRequest.set(
+        requestOperationKey(operation.projectId, operation.requestId),
+        operation.id,
+      );
+      if (operation.status !== "pending") continue;
+      const failed: AgentImportOperationDto = {
+        ...operation,
+        phase: "failed",
+        status: "failed",
+        error: "The server restarted before final import completion could be confirmed. Inspect the Project before retrying.",
+        updatedAt: new Date().toISOString(),
+      };
+      await writeOperation(failed);
+      createOperationalNotification({
+        dedupeKey: `agent-import:${failed.id}`,
+        category: "system",
+        severity: "urgent",
+        title: "Agent import outcome needs inspection",
+        body: failed.error!,
+        projectId: failed.projectId,
+        action: { kind: "open_project", targetId: failed.projectId },
+      });
+    }
+  }).catch(() => undefined);
 
   app.post<{
     Params: { id: string };

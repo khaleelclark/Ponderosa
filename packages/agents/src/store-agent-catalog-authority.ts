@@ -1,19 +1,23 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import type Database from "better-sqlite3";
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type {
   AgentDto,
+  AgentOrganizationEvent,
   AgentPresetDto,
   AgentState,
   CreateAgentRequest,
   MessageDto,
   PortableAgentHistoryMessageDto,
-  UpdateAgentOrganizationRequest,
+  ProjectDto,
 } from "@ponderosa/core";
+import { allocateAgentMentionHandle } from "@ponderosa/core";
 import type { Db } from "./db.js";
 import { normalizeAgentTitle } from "./agent-identity.js";
+import { sharedWorkingCopy } from "./working-copy.js";
 import { requireManagementPermissions } from "./store-agent-management.js";
+import { appendFsyncedJsonl } from "./append-jsonl.js";
 import { readJson, writeJson } from "./store-filesystem.js";
 import type {
   AgentJson,
@@ -21,10 +25,11 @@ import type {
   ContextReadBoundary,
   ContextSourcePage,
 } from "./store-types.js";
-import { agentConversationMemberships, agents, importedHistoryMessages } from "./schema.js";
+import { agentConversationMemberships, agentHandleReservations, agents, conversations, importedHistoryMessages } from "./schema.js";
 import {
   agentDir,
   agentJsonPath,
+  agentOrganizationEventsPath,
   artifactsDir,
   attachmentsDir,
   importedAgentHistoryPath,
@@ -38,21 +43,35 @@ export class AgentCatalogAuthority {
     private readonly db: Db,
     private readonly client: Database.Database,
     private readonly getAgentPreset: (presetId: string) => AgentPresetDto | undefined,
-    private readonly updateAgentOrganization: (
-      agentId: string,
-      input: UpdateAgentOrganizationRequest,
-    ) => AgentDto | undefined,
+    private readonly getProject: (projectId: string) => ProjectDto | undefined,
   ) {}
 
   createAgent(projectId: string, input: CreateAgentRequest, origin?: AgentSpawnOrigin): AgentDto {
+    const creationIdempotencyKey = input.idempotencyKey?.trim() || undefined;
+    if (creationIdempotencyKey) {
+      const existing = this.findAgentCreation(projectId, creationIdempotencyKey);
+      if (existing) return existing;
+    }
     const id = randomUUID();
     const now = new Date().toISOString();
     const title = normalizeAgentTitle(input.title);
+    const handle = allocateAgentMentionHandle(
+      title,
+      this.db.select({ handle: agentHandleReservations.handle })
+        .from(agentHandleReservations)
+        .where(eq(agentHandleReservations.projectId, projectId))
+        .all()
+        .map(row => row.handle),
+    );
     const preset = input.presetId ? this.getAgentPreset(input.presetId) : undefined;
     if (input.presetId && (!preset || preset.projectId !== projectId || !preset.enabled)) throw new Error("invalid preset");
     const presetSnapshot = preset ? { id: preset.id, name: preset.name, description: preset.description, guidance: preset.guidance, engine: preset.engine, model: preset.model, effort: preset.effort } : undefined;
     const model = preset?.model ?? input.model;
     const effort = preset?.effort ?? input.effort;
+    const project = this.getProject(projectId);
+    if (!project) throw new Error("unknown project");
+    if (!input.conversationId) throw new Error("a Chat is required when creating an Agent");
+    const workingCopy = sharedWorkingCopy(project, now);
     const managementPermissions = input.managementPermissions
       ? requireManagementPermissions(input.managementPermissions)
       : { allowAutomaticDescendantDeletion: false, allowAutomaticDescendantReorganization: false };
@@ -60,8 +79,8 @@ export class AgentCatalogAuthority {
       id,
       projectId,
       conversationId: input.conversationId,
-      conversationIds: input.conversationId ? [input.conversationId] : [],
       title,
+      handle,
       activeEngine: input.engine,
       model,
       effort,
@@ -74,24 +93,78 @@ export class AgentCatalogAuthority {
       spawnPrompt: origin?.prompt,
       spawnIdempotencyKey: origin?.idempotencyKey,
       presetSnapshot,
+      creationIdempotencyKey,
+      workingCopy,
     };
-    mkdirSync(agentDir(this.dataDir, projectId, id), { recursive: true });
-    mkdirSync(artifactsDir(this.dataDir, projectId, id), { recursive: true });
-    mkdirSync(attachmentsDir(this.dataDir, projectId, id), { recursive: true });
-    writeJson(agentJsonPath(this.dataDir, projectId, id), record);
-    this.db
-      .insert(agents)
-      .values({
+    this.client.transaction(() => {
+      const ownerConversation = this.db.select({ id: conversations.id })
+        .from(conversations)
+        .where(and(
+          eq(conversations.id, input.conversationId),
+          eq(conversations.projectId, projectId),
+          eq(conversations.archived, 0),
+        ))
+        .get();
+      if (!ownerConversation) {
+        throw new Error("Agent owner Chat must be active in this Project");
+      }
+      const manager = input.managerAgentId
+        ? this.db.select({
+            id: agents.id,
+            projectId: agents.projectId,
+            conversationId: agents.conversationId,
+            archived: agents.archived,
+            deletedAt: agents.deletedAt,
+          })
+          .from(agents)
+          .where(eq(agents.id, input.managerAgentId))
+          .get()
+        : undefined;
+      if (input.managerAgentId && (
+        !manager || manager.projectId !== projectId ||
+        manager.conversationId !== input.conversationId ||
+        manager.archived === 1 || manager.deletedAt
+      )) {
+        throw new Error("Agent manager must be active in the same Project Chat");
+      }
+      mkdirSync(agentDir(this.dataDir, projectId, id), { recursive: true });
+      mkdirSync(artifactsDir(this.dataDir, projectId, id), { recursive: true });
+      mkdirSync(attachmentsDir(this.dataDir, projectId, id), { recursive: true });
+      writeJson(agentJsonPath(this.dataDir, projectId, id), record);
+      if (manager) {
+        const organizationEvent: AgentOrganizationEvent = {
+          eventId: randomUUID(),
+          type: "manager_changed",
+          projectId,
+          agentId: id,
+          managerAgentId: manager.id,
+          createdAt: now,
+        };
+        appendFsyncedJsonl(
+          agentOrganizationEventsPath(this.dataDir, projectId),
+          [organizationEvent],
+        );
+      }
+      this.db.insert(agentHandleReservations).values({
+        projectId,
+        normalizedHandle: handle.toLocaleLowerCase(),
+        handle,
+        agentId: id,
+        reservedAt: now,
+      }).run();
+      this.db.insert(agents).values({
         id,
         projectId,
-        conversationId: input.conversationId ?? null,
+        conversationId: input.conversationId,
         title,
+        handle,
         activeEngine: input.engine,
         model: model ?? null,
         effort: effort ?? null,
         createdAt: now,
         updatedAt: now,
         archived: 0,
+        managerAgentId: manager?.id ?? null,
         allowAutomaticDescendantDeletion: managementPermissions.allowAutomaticDescendantDeletion ? 1 : 0,
         allowAutomaticDescendantReorganization: managementPermissions.allowAutomaticDescendantReorganization ? 1 : 0,
         spawnedByAgentId: origin?.agentId ?? null,
@@ -99,12 +172,16 @@ export class AgentCatalogAuthority {
         spawnPrompt: origin?.prompt ?? null,
         spawnIdempotencyKey: origin?.idempotencyKey ?? null,
         presetSnapshotJson: presetSnapshot ? JSON.stringify(presetSnapshot) : null,
+        creationIdempotencyKey: creationIdempotencyKey ?? null,
+        workingCopyJson: JSON.stringify(workingCopy),
       })
       .run();
-    if (input.conversationId) {
-      this.db.insert(agentConversationMemberships).values({ agentId: id, conversationId: input.conversationId, position: 0 }).run();
-    }
-    if (input.managerAgentId) this.updateAgentOrganization(id, { managerAgentId: input.managerAgentId });
+      this.db.insert(agentConversationMemberships).values({
+        agentId: id,
+        conversationId: input.conversationId,
+        position: 0,
+      }).run();
+    })();
     return this.rowToAgentDto(id)!;
   }
 
@@ -113,6 +190,15 @@ export class AgentCatalogAuthority {
       eq(agents.spawnedByAgentId, agentId),
       eq(agents.spawnedByExecutionId, executionId),
       eq(agents.spawnIdempotencyKey, idempotencyKey),
+      isNull(agents.deletedAt),
+    )).get();
+    return row ? this.agentRowToDto(row) : undefined;
+  }
+
+  findAgentCreation(projectId: string, idempotencyKey: string): AgentDto | undefined {
+    const row = this.db.select().from(agents).where(and(
+      eq(agents.projectId, projectId),
+      eq(agents.creationIdempotencyKey, idempotencyKey),
       isNull(agents.deletedAt),
     )).get();
     return row ? this.agentRowToDto(row) : undefined;
@@ -162,6 +248,92 @@ export class AgentCatalogAuthority {
   getAgent(id: string): AgentDto | undefined {
     const row = this.db.select().from(agents).where(and(eq(agents.id, id), isNull(agents.deletedAt))).get();
     return row ? this.agentRowToDto(row) : undefined;
+  }
+
+  listProjectWorkingCopies(projectId: string): Array<{
+    agentId: string;
+    deleted: boolean;
+    workingCopy: AgentDto["workingCopy"];
+  }> {
+    const rows = this.client.prepare(`
+      SELECT id, deleted_at, working_copy_json
+      FROM agents
+      WHERE project_id = ?
+      ORDER BY id
+    `).all(projectId) as Array<{
+      id: string;
+      deleted_at: string | null;
+      working_copy_json: string;
+    }>;
+    return rows.map((row) => ({
+      agentId: row.id,
+      deleted: row.deleted_at !== null,
+      workingCopy: JSON.parse(row.working_copy_json) as AgentDto["workingCopy"],
+    }));
+  }
+
+  updateAgentWorkingCopy(
+    id: string,
+    workingCopy: AgentDto["workingCopy"],
+  ): AgentDto | undefined {
+    const row = this.db.select().from(agents).where(and(
+      eq(agents.id, id),
+      isNull(agents.deletedAt),
+    )).get();
+    if (!row) return undefined;
+    const project = this.getProject(row.projectId);
+    if (!project) throw new Error("Agent Project is unavailable");
+    if (workingCopy.mode === "shared" && (
+      workingCopy.id !== `shared:${project.id}` ||
+      workingCopy.rootPath !== project.hostPath ||
+      workingCopy.state !== "ready" ||
+      workingCopy.branch !== undefined ||
+      workingCopy.baseHead !== undefined ||
+      workingCopy.branchOwned !== undefined ||
+      workingCopy.branchCreationIntent !== undefined ||
+      workingCopy.failure !== undefined
+    )) throw new Error("invalid Shared folder identity");
+    if (workingCopy.mode === "separate_git" && (
+      !workingCopy.id.startsWith("copy:") ||
+      !workingCopy.rootPath ||
+      !workingCopy.branch ||
+      (workingCopy.state === "ready" && workingCopy.branchOwned !== true) ||
+      (workingCopy.state === "ready" && workingCopy.branchCreationIntent !== undefined) ||
+      (workingCopy.state === "ready" && workingCopy.failure !== undefined) ||
+      (workingCopy.state === "unavailable" && !workingCopy.failure)
+    )) throw new Error("invalid Separate Git copy identity");
+    const json = readJson<AgentJson>(agentJsonPath(this.dataDir, row.projectId, id));
+    writeJson(agentJsonPath(this.dataDir, row.projectId, id), {
+      ...json,
+      workingCopy,
+      updatedAt: workingCopy.updatedAt,
+    });
+    this.db.update(agents).set({
+      workingCopyJson: JSON.stringify(workingCopy),
+      updatedAt: workingCopy.updatedAt,
+    }).where(eq(agents.id, id)).run();
+    return this.rowToAgentDto(id);
+  }
+
+  updateDeletedAgentWorkingCopy(
+    id: string,
+    workingCopy: AgentDto["workingCopy"],
+  ): boolean {
+    const row = this.db.select().from(agents).where(and(
+      eq(agents.id, id),
+    )).get();
+    if (!row || row.deletedAt === null) return false;
+    const json = readJson<AgentJson>(agentJsonPath(this.dataDir, row.projectId, id));
+    writeJson(agentJsonPath(this.dataDir, row.projectId, id), {
+      ...json,
+      workingCopy,
+      updatedAt: workingCopy.updatedAt,
+    });
+    this.db.update(agents).set({
+      workingCopyJson: JSON.stringify(workingCopy),
+      updatedAt: workingCopy.updatedAt,
+    }).where(eq(agents.id, id)).run();
+    return true;
   }
 
   setImportedHistory(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[]): void {
@@ -271,11 +443,9 @@ export class AgentCatalogAuthority {
     return {
       id: row.id,
       projectId: row.projectId,
-      conversationId: row.conversationId ?? undefined,
-      conversationIds: this.db.select().from(agentConversationMemberships)
-        .where(eq(agentConversationMemberships.agentId, row.id))
-        .orderBy(asc(agentConversationMemberships.position)).all().map((membership) => membership.conversationId),
+      conversationId: row.conversationId ?? (() => { throw new Error(`live Agent ${row.id} has no owner Chat`); })(),
       title: row.title,
+      handle: row.handle,
       activeEngine: row.activeEngine,
       model: row.model ?? undefined,
       effort: row.effort ?? undefined,
@@ -293,37 +463,8 @@ export class AgentCatalogAuthority {
       spawnedByExecutionId: row.spawnedByExecutionId ?? undefined,
       spawnPrompt: row.spawnPrompt ?? undefined,
       presetSnapshot: row.presetSnapshotJson ? JSON.parse(row.presetSnapshotJson) as AgentDto["presetSnapshot"] : undefined,
+      workingCopy: JSON.parse(row.workingCopyJson) as AgentDto["workingCopy"],
       ...(imported ? { importedHistoryCount: imported.messages.length, importedFrom: imported.source } : {}),
     };
   }
-
-
-  persistAgentMemberships(
-    id: string,
-    conversationIds: string[],
-    primaryConversationId?: string,
-    beforeProjectionChange?: () => void,
-  ): void {
-    const row = this.db.select().from(agents).where(eq(agents.id, id)).get();
-    if (!row) throw new Error(`unknown agent: ${id}`);
-    const now = new Date().toISOString();
-    const jsonPath = agentJsonPath(this.dataDir, row.projectId, id);
-    const json = readJson<AgentJson>(jsonPath);
-    // Canonical metadata is committed first; SQLite remains a rebuildable projection.
-    writeJson(jsonPath, { ...json, conversationId: primaryConversationId, conversationIds, updatedAt: now });
-    try {
-      this.db.transaction((tx) => {
-        beforeProjectionChange?.();
-        tx.delete(agentConversationMemberships).where(eq(agentConversationMemberships.agentId, id)).run();
-        conversationIds.forEach((conversationId, position) => {
-          tx.insert(agentConversationMemberships).values({ agentId: id, conversationId, position }).run();
-        });
-        tx.update(agents).set({ conversationId: primaryConversationId ?? null, updatedAt: now }).where(eq(agents.id, id)).run();
-      });
-    } catch (error) {
-      writeJson(jsonPath, json);
-      throw error;
-    }
-  }
-
 }

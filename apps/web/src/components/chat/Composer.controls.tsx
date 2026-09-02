@@ -19,28 +19,25 @@ import {
   Typography,
 } from "@mui/material";
 import type {
+  AgentMentionBindingDto,
   AssetLimitsDto,
   EngineCommand,
   EngineComposerCapability,
-  FileEntryDto,
+  ArtifactDto,
 } from "@ponderosa/core";
-import {
-  LONG_TEXT_MAX_UTF8_BYTES,
-  utf8ByteLength,
-} from "@ponderosa/core";
-import { useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { type RefObject } from "react";
 import { compactPreviewText } from "./Composer.helpers";
 import { ComposerMentionStatus } from "./Composer.parts";
+import {
+  ComposerEditor,
+  type ComposerEditorHandle,
+  type ComposerMentionDescriptor,
+} from "./ComposerEditor";
 import {
   COMPOSER_MAX_FILE_BYTES,
   COMPOSER_MAX_FILES,
   composerCapabilityDisabledReason,
-  composerSubmissionText,
   engineCommandDisabledReason,
-  filesFromClipboard,
-  shouldExtractLongPaste,
-  shouldIgnoreComposerKey,
-  shouldSendComposerKey,
 } from "./composerUtils";
 
 export function ComposerNotices({
@@ -141,6 +138,8 @@ export function ComposerTextInput({
   destinationMode,
   requiredRecipient,
   inlineDestination,
+  mentionTokens,
+  mentionBindings,
   mentionedBusyHandles,
   mentionedHandles,
   canSend,
@@ -148,7 +147,6 @@ export function ComposerTextInput({
   onFiles,
   onPastedText,
   onPasteError,
-  onCaretChange,
   onHighlightChange,
   onSuppressMenu,
   onApplySuggestion,
@@ -156,7 +154,7 @@ export function ComposerTextInput({
   onSend,
 }: {
   text: string;
-  inputRef: RefObject<HTMLTextAreaElement>;
+  inputRef: RefObject<ComposerEditorHandle>;
   disabled: boolean;
   locked: boolean;
   placeholder?: string;
@@ -169,7 +167,14 @@ export function ComposerTextInput({
   menuSuggestions: ComposerMenuSuggestion[];
   destinationMode?: "project-chat" | "fixed" | "target-required";
   requiredRecipient?: { handle: string; title: string; onClear(): void };
-  inlineDestination?: { handle: string; onClear(): void };
+  inlineDestination?: {
+    handle: string;
+    title: string;
+    agentId?: string;
+    onClear(): void;
+  };
+  mentionTokens: ComposerMentionDescriptor[];
+  mentionBindings: AgentMentionBindingDto[];
   mentionedBusyHandles: string[];
   mentionedHandles: string[];
   canSend: boolean;
@@ -177,209 +182,43 @@ export function ComposerTextInput({
   onFiles(files: File[]): void;
   onPastedText(value: string): void;
   onPasteError(message: string): void;
-  onCaretChange(caret: number): void;
   onHighlightChange(index: number): void;
   onSuppressMenu(): void;
   onApplySuggestion(suggestion: ComposerMenuSuggestion): void;
   onClearRequiredRecipient(): void;
   onSend(): void;
 }): JSX.Element {
-  const destinationRef = useRef<HTMLDivElement>(null);
-  const [destinationWidth, setDestinationWidth] = useState(0);
-  useLayoutEffect(() => {
-    const element = destinationRef.current;
-    if (!element || !inlineDestination) {
-      setDestinationWidth(0);
-      return;
-    }
-    const update = () => setDestinationWidth(element.getBoundingClientRect().width);
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [inlineDestination?.handle]);
-
   return (
     <>
-      <Box sx={{ position: "relative", minWidth: 0 }}>
-        {inlineDestination ? (
-          <Chip
-            ref={destinationRef}
-            size="small"
-            label={`#${inlineDestination.handle}`}
-            title={`Send to #${inlineDestination.handle}`}
-            aria-label={`Recipient: ${inlineDestination.handle}`}
-            onDelete={inlineDestination.onClear}
-            sx={{
-              position: "absolute",
-              zIndex: 1,
-              top: 0,
-              left: 2,
-              maxWidth: "min(42%, 240px)",
-              height: 24,
-              bgcolor: "action.selected",
-              color: "primary.main",
-              fontWeight: 700,
-              boxShadow: "inset 0 0 0 1px rgba(127, 196, 142, .18)",
-              "& .MuiChip-label": {
-                minWidth: 0,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-              },
-              "& .MuiChip-deleteIcon": { color: "primary.main" },
-            }}
-          />
-        ) : null}
-        <TextField
-        fullWidth
-        multiline
-        variant="standard"
-        minRows={1}
-        maxRows={5}
-        sx={{
-          "& .MuiInputBase-root": {
-            alignItems: "flex-end",
-            bgcolor: "transparent",
-            px: 0.25,
-            pb: 0.5,
-          },
-          "& textarea": {
-            fontSize: 15,
-            lineHeight: "22px",
-            maxHeight: "110px !important",
-            overflowY: "auto !important",
-            textIndent: destinationWidth ? `${destinationWidth + 8}px` : 0,
-          },
-        }}
-        InputProps={{
-          disableUnderline: true,
-        }}
-        value={text}
-        inputRef={inputRef}
-        disabled={disabled || locked}
-        placeholder={locked ? "Agent is working" : (placeholder ?? "Send a message")}
-        inputProps={{
-          "aria-label": "Message",
-          enterKeyHint: "send",
-          role: comboboxEnabled ? "combobox" : undefined,
-          "aria-autocomplete": comboboxEnabled ? "list" : undefined,
-          "aria-expanded": comboboxEnabled ? menuOpen : undefined,
-          "aria-controls": menuOpen ? listId : undefined,
-          "aria-activedescendant": menuOpen
-            ? `${listId}-option-${highlighted}`
-            : undefined,
-        }}
-        onChange={event =>
-          onTextChange(
-            event.target.value,
-            event.target.selectionStart ?? event.target.value.length,
-          )
-        }
-        onPaste={event => {
-          if (disabled || locked) return;
-          if (attachmentsEnabled) {
-            const files = filesFromClipboard(
-              event.clipboardData.items,
-              event.clipboardData.files,
-            );
-            if (files.length > 0) {
-              event.preventDefault();
-              event.stopPropagation();
-              onFiles(files);
-              return;
-            }
-          }
-          const pasted = event.clipboardData.getData("text/plain");
-          if (!shouldExtractLongPaste(pasted)) return;
-          event.preventDefault();
-          const combined = composerSubmissionText(pastedText ?? "", pasted);
-          if (utf8ByteLength(combined) > LONG_TEXT_MAX_UTF8_BYTES) {
-            onPasteError("Pasted text exceeds the 8 MiB limit.");
-            return;
-          }
-          onPastedText(combined);
-        }}
-        onClick={event =>
-          onCaretChange(
-            (event.target as HTMLTextAreaElement).selectionStart ?? 0,
-          )
-        }
-        onKeyUp={event =>
-          onCaretChange(
-            (event.target as HTMLTextAreaElement).selectionStart ?? 0,
-          )
-        }
-        onKeyDown={event => {
-          const textarea = inputRef.current;
-          if (
-            event.key === "Backspace" &&
-            inlineDestination &&
-            text.length === 0 &&
-            textarea?.selectionStart === 0 &&
-            textarea.selectionEnd === 0
-          ) {
-            event.preventDefault();
-            inlineDestination.onClear();
-            return;
-          }
-          if (
-            shouldIgnoreComposerKey({
-              key: event.key,
-              isComposing: event.nativeEvent.isComposing,
-            })
-          ) return;
-          if (menuOpen && event.key === "ArrowDown") {
-            event.preventDefault();
-            onHighlightChange((highlighted + 1) % menuSuggestions.length);
-            return;
-          }
-          if (menuOpen && event.key === "ArrowUp") {
-            event.preventDefault();
-            onHighlightChange(
-              (highlighted - 1 + menuSuggestions.length) %
-                menuSuggestions.length,
-            );
-            return;
-          }
-          if (
-            menuOpen &&
-            (event.key === "Enter" || event.key === "Tab") &&
-            !event.metaKey &&
-            !event.ctrlKey
-          ) {
-            event.preventDefault();
-            onApplySuggestion(menuSuggestions[highlighted]!);
-            return;
-          }
-          if (menuOpen && event.key === "Escape") {
-            event.preventDefault();
-            onSuppressMenu();
-            return;
-          }
-          if (
-            event.key === "Escape" &&
-            destinationMode === "target-required" &&
-            requiredRecipient
-          ) {
-            event.preventDefault();
-            onClearRequiredRecipient();
-            return;
-          }
-          if (
-            shouldSendComposerKey({
-              key: event.key,
-              shiftKey: event.shiftKey,
-              isComposing: event.nativeEvent.isComposing,
-              repeat: event.repeat,
-            }) &&
-            canSend
-          ) {
-            event.preventDefault();
-            onSend();
-          }
-        }}
-        />
-      </Box>
+      <ComposerEditor
+        ref={inputRef}
+        text={text}
+        disabled={disabled}
+        locked={locked}
+        placeholder={placeholder}
+        comboboxEnabled={comboboxEnabled}
+        menuOpen={menuOpen}
+        listId={listId}
+        highlighted={highlighted}
+        attachmentsEnabled={attachmentsEnabled}
+        pastedText={pastedText}
+        menuSuggestions={menuSuggestions}
+        destinationMode={destinationMode}
+        requiredRecipient={requiredRecipient}
+        inlineDestination={inlineDestination}
+        mentionDescriptors={mentionTokens}
+        mentionBindings={mentionBindings}
+        canSend={canSend}
+        onTextChange={onTextChange}
+        onFiles={onFiles}
+        onPastedText={onPastedText}
+        onPasteError={onPasteError}
+        onHighlightChange={onHighlightChange}
+        onSuppressMenu={onSuppressMenu}
+        onApplySuggestion={onApplySuggestion}
+        onClearRequiredRecipient={onClearRequiredRecipient}
+        onSend={onSend}
+      />
       <ComposerMentionStatus
         destinationMode={destinationMode}
         mentionedBusyHandles={mentionedBusyHandles}
@@ -388,7 +227,6 @@ export function ComposerTextInput({
     </>
   );
 }
-
 export function ComposerCapabilityPicker({
   fileInput,
   disabled,
@@ -618,7 +456,7 @@ export function ComposerCapabilityPicker({
 export type ComposerMenuSuggestion =
   | { kind: "command"; command: EngineCommand }
   | { kind: "mention"; handle: string }
-  | { kind: "file"; entry: FileEntryDto };
+  | { kind: "file"; entry: ArtifactDto };
 
 export function ComposerAutocompleteMenu({
   open,
@@ -664,7 +502,7 @@ export function ComposerAutocompleteMenu({
                 ? "Commands"
                 : hasMentions
                   ? "Agent tags"
-                  : "Project files and folders"
+                  : "Project Files & Results"
             }
             sx={{
               maxHeight: "min(40vh, 360px)",
@@ -683,7 +521,7 @@ export function ComposerAutocompleteMenu({
                     suggestion.kind === "mention"
                       ? suggestion.handle
                       : suggestion.kind === "file"
-                        ? suggestion.entry.path
+                        ? suggestion.entry.id
                         : suggestion.command.name
                   }
                   id={`${listId}-option-${index}`}
@@ -692,8 +530,9 @@ export function ComposerAutocompleteMenu({
                   selected={index === highlighted}
                   disabled={Boolean(commandReason)}
                   sx={{ whiteSpace: "normal", alignItems: "flex-start" }}
-                  onMouseDown={event => {
-                    event.preventDefault();
+                  onMouseDown={event => event.preventDefault()}
+                  onClick={event => {
+                    event.stopPropagation();
                     onSelect(suggestion);
                   }}
                 >
@@ -703,10 +542,9 @@ export function ComposerAutocompleteMenu({
                     <Box>
                       <Typography variant="body2">
                         @{suggestion.entry.path}
-                        {suggestion.entry.kind === "dir" ? "/" : ""}
                       </Typography>
                       <Typography variant="caption" color="text.secondary">
-                        {suggestion.entry.kind === "dir" ? "Folder" : "File"}
+                        Files &amp; Results · {suggestion.entry.kind}
                       </Typography>
                     </Box>
                   ) : (

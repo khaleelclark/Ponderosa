@@ -117,7 +117,6 @@ export function registerAgentCommunicationRoutes(
   const {
     store,
     coordinationV3,
-    workspace,
     agentMessageCapabilities,
     activeRuns,
     capabilityOwnsAuthoritativeRun,
@@ -132,7 +131,6 @@ export function registerAgentCommunicationRoutes(
     runtimeArtifactMetadata,
     stageCommunicationArtifact,
     publishCoordinationV3Changed,
-    publishWorkspaceSince,
     resolveOperationalNotification,
     notifyScheduler,
     reconcileRuntimeCommunicationProjections,
@@ -212,7 +210,7 @@ export function registerAgentCommunicationRoutes(
         return reply.code(409).send({ error: "agent is no longer available" });
       }
       if (!capability.conversationId ||
-          !currentAuthor.conversationIds.includes(capability.conversationId)) {
+          currentAuthor.conversationId !== capability.conversationId) {
         return reply.code(409).send({ error: "next_run requires an active Team Chat scope" });
       }
       const requestedIdempotencyKey = request.body.idempotencyKey?.trim();
@@ -430,8 +428,7 @@ export function registerAgentCommunicationRoutes(
         });
         preparedArtifacts.push(messageArtifact);
       }
-      if (documentTitle && documentContent && !explicitDocumentMatchesMessage &&
-          (shouldBackTextWithArtifact(documentContent) || messageNeedsArtifact)) {
+      if (documentTitle && documentContent && (!explicitDocumentMatchesMessage || !messageArtifact)) {
         explicitDocumentArtifact = await stageCommunicationArtifact({
           projectId: currentAuthor.projectId,
           communicationId: communicationEventId,
@@ -448,7 +445,9 @@ export function registerAgentCommunicationRoutes(
       const status = error instanceof AssetError ? error.statusCode : 409;
       return reply.code(status).send({ error: error instanceof Error ? error.message : "long-text artifact staging failed" });
     }
-    const primaryArtifact = messageArtifact ?? explicitDocumentArtifact;
+    const primaryArtifact = documentTitle
+      ? (explicitDocumentMatchesMessage ? messageArtifact ?? explicitDocumentArtifact : explicitDocumentArtifact)
+      : messageArtifact;
     const document = primaryArtifact ? {
       id: replayCommunication?.document?.id ?? primaryArtifact.id,
       artifactId: primaryArtifact.id,
@@ -458,10 +457,6 @@ export function registerAgentCommunicationRoutes(
       authorAgentId: capability.agentId,
       executionId: capability.runId,
       createdAt,
-    } : documentTitle && documentContent ? {
-      id: replayCommunication?.document?.id ?? randomUUID(), title: documentTitle, mediaType: "text/markdown" as const,
-      content: documentContent, byteLength: Buffer.byteLength(documentContent, "utf8"),
-      authorAgentId: capability.agentId, executionId: capability.runId, createdAt,
     } : undefined;
     // The stable artifact reference remains in structured document metadata and
     // tool results. Do not leak the internal ponderosa:// URI into chat prose.
@@ -567,11 +562,11 @@ export function registerAgentCommunicationRoutes(
     if (!capability.conversationId) {
       return reply.code(409).send({ error: "agent is not linked to a conversation" });
     }
-    if (!currentAuthor.conversationIds.includes(capability.conversationId)) {
+    if (currentAuthor.conversationId !== capability.conversationId) {
       return reply.code(409).send({ error: "agent is no longer an active member of this conversation" });
     }
     let renderedText = publishedText;
-    let routing: { intents: ConversationDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> } = { intents: [], blocked: [] };
+    let routing: { intents: ConversationDeliveryIntent[]; blocked: Array<{ handle: string; reason: string }> } = { intents: [], blocked: [] };
     if (intent === "collaboration") {
       const recipientAgentIds = inferredRecipientAgentIds;
       if (!Array.isArray(recipientAgentIds) || recipientAgentIds.length === 0) {
@@ -762,9 +757,13 @@ export function registerAgentCommunicationRoutes(
       if (idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
       try {
         const requestId = `${original.id}:retry:${createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 16)}`;
-        const payload = original.payload && typeof original.payload === "object"
-          ? { ...original.payload as Record<string, unknown>, retryOfRequestId: original.id, recoveryInstruction: "Audit current state before executing; do not blindly replay prior side effects." }
-          : { text: String(original.payload ?? ""), retryOfRequestId: original.id, recoveryInstruction: "Audit current state before executing; do not blindly replay prior side effects." };
+        const originalPayload = original.payload && typeof original.payload === "object"
+          ? original.payload as Record<string, unknown>
+          : undefined;
+        const { retryOfRequestId: _legacyRetryMarker, ...canonicalPayload } = originalPayload ?? {};
+        const payload = originalPayload
+          ? { ...canonicalPayload, recoveryInstruction: "Audit current state before executing; do not blindly replay prior side effects." }
+          : { text: String(original.payload ?? ""), recoveryInstruction: "Audit current state before executing; do not blindly replay prior side effects." };
         const result = coordinationV3.coordinate({
           projectId: original.projectId,
           ...(original.conversationId ? { conversationId: original.conversationId } : {}),
@@ -772,7 +771,13 @@ export function registerAgentCommunicationRoutes(
           actorScope: "user:local-operator",
           idempotencyKey,
           rolloverRecoveryForRequestId: original.id,
-          requests: [{ requestId, recipientAgentId: recipient.id, lifetime: { kind: "indefinite" }, payload }],
+          requests: [{
+            requestId,
+            recoveryOfRequestId: original.id,
+            recipientAgentId: recipient.id,
+            lifetime: { kind: "indefinite" },
+            payload,
+          }],
           ...(request.body?.createJoin === false ? {} : { join: { id: `${requestId}:join`, mode: "all" as const } }),
         });
         const recoveredRollover = coordinationV3.contextRolloverRecoveryForRequest(
@@ -783,14 +788,6 @@ export function registerAgentCommunicationRoutes(
             `context-rollover:${recoveredRollover.id}:confirmation-missing`,
           );
         }
-        const notificationCursor = workspace.cursor();
-        workspace.forEachNotification((notification) => {
-          if ((notification.status ?? "open") === "open" && notification.resolution?.kind === "coordination_request"
-              && notification.resolution.requestId === original.id) {
-            workspace.setNotificationStatus(notification.id, "resolved");
-          }
-        });
-        publishWorkspaceSince(notificationCursor);
         const conversationIds = original.conversationId
           ? [original.conversationId]
           : [];

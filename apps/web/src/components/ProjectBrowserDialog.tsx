@@ -17,6 +17,7 @@ import { projectBrowserAdapter } from "./browser/browserAdapters";
 import { useBrowserController } from "./browser/useBrowserController";
 import { FeatureErrorBoundary } from "./FeatureErrorBoundary";
 import type { ProjectBrowserRequest } from "./ProjectBrowserContext";
+import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 
 export function ProjectBrowserDialog({
   projectId, open, request, onRequestHandled, onClose, embedded = false, backLabel = "Back to Project",
@@ -58,6 +59,8 @@ export function ProjectBrowserDialog({
   const runningAgents = (agentsQuery.data ?? []).filter((agent) => runningIds.has(agent.id));
   const controllerName = (agentsQuery.data ?? []).find((agent) => agent.id === session?.controllerAgentId)?.title;
   const operator = session?.status === "ready" && session.controlOwner === "operator";
+  const controlOwnerLabel = operator ? "You have control" : `${controllerName ?? "Agent"} has control`;
+  const browserModeLabel = session?.capabilities.hostedHeaded ? "Hosted browser" : "Headless fallback";
 
   useEffect(() => {
     if (!open || !projectId || !request || request.requestId === handledRequest.current) return;
@@ -96,14 +99,67 @@ export function ProjectBrowserDialog({
       : undefined;
 
   const content = <FeatureErrorBoundary feature="Interactive browser">
-    <DialogTitle id="project-browser-title">
+    <DialogTitle id="project-browser-title" sx={{ minWidth: 0, maxWidth: "100%", overflow: "hidden" }}>
       <Stack spacing={.25}>
-        <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
-          {embedded ? <Tooltip title={backLabel}><IconButton aria-label={backLabel} onClick={onClose}><ArrowBackIcon /></IconButton></Tooltip> : null}
-          <Typography variant="h6" noWrap sx={{ flex: 1, minWidth: 0 }}>Interactive Browser</Typography>
-          {session?.status === "ready" ? <Chip size="small" variant="outlined" color={operator ? "success" : "warning"} label={operator ? "You have control" : `${controllerName ?? "Agent"} has control`} /> : null}
-          {session?.status === "ready" ? <Chip size="small" variant="outlined" label={session.capabilities.hostedHeaded ? "Hosted browser" : "Headless fallback"} /> : null}
-          {!embedded ? <Tooltip title="Close Panel"><IconButton aria-label="Close Interactive Browser" onClick={onClose}><CloseIcon /></IconButton></Tooltip> : null}
+        <Stack
+          direction={{ xs: "column", sm: "row" }}
+          spacing={{ xs: 0.75, sm: 1 }}
+          sx={{ alignItems: { xs: "stretch", sm: "center" }, minWidth: 0 }}
+        >
+          <Stack direction="row" spacing={1} sx={{ alignItems: "center", flex: 1, minWidth: 0 }}>
+            {embedded ? <Tooltip title={backLabel}><IconButton aria-label={backLabel} onClick={onClose}><ArrowBackIcon /></IconButton></Tooltip> : null}
+            <Typography variant="h6" noWrap sx={{ flex: 1, minWidth: 0 }}>Interactive Browser</Typography>
+          </Stack>
+          <Stack
+            direction="row"
+            spacing={1}
+            useFlexGap
+            flexWrap="wrap"
+            sx={{
+              alignItems: "center",
+              justifyContent: { xs: "flex-start", sm: "flex-end" },
+              minWidth: 0,
+              width: { xs: "100%", sm: "auto" },
+              maxWidth: "100%",
+              flexShrink: 1,
+            }}
+          >
+            <PrimaryHeaderActionsOutlet />
+            {session?.status === "ready" ? (
+              <Tooltip title={controlOwnerLabel}>
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  color={operator ? "success" : "warning"}
+                  label={controlOwnerLabel}
+                  aria-label={controlOwnerLabel}
+                  sx={{
+                    minWidth: 0,
+                    maxWidth: { xs: "100%", sm: 240 },
+                    flexShrink: 1,
+                    "& .MuiChip-label": { overflow: "hidden", textOverflow: "ellipsis" },
+                  }}
+                />
+              </Tooltip>
+            ) : null}
+            {session?.status === "ready" ? (
+              <Tooltip title={browserModeLabel}>
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  label={browserModeLabel}
+                  aria-label={browserModeLabel}
+                  sx={{
+                    minWidth: 0,
+                    maxWidth: { xs: "100%", sm: 240 },
+                    flexShrink: 1,
+                    "& .MuiChip-label": { overflow: "hidden", textOverflow: "ellipsis" },
+                  }}
+                />
+              </Tooltip>
+            ) : null}
+            {!embedded ? <Tooltip title="Close Panel"><IconButton aria-label="Close Interactive Browser" onClick={onClose}><CloseIcon /></IconButton></Tooltip> : null}
+          </Stack>
         </Stack>
         <Typography variant="caption" color="text.secondary">Project-scoped session · persists across Agent Runs until closed</Typography>
       </Stack>

@@ -12,7 +12,7 @@ import type {
   ProjectDto,
   ProjectedCommunicationMessage,
 } from "@ponderosa/core";
-import { deriveCommunicationBehavior } from "@ponderosa/core";
+import { agentMentionHandleBase, deriveCommunicationBehavior } from "@ponderosa/core";
 import type { Db } from "./db.js";
 import { chatSearchMessages } from "./schema.js";
 import {
@@ -21,6 +21,7 @@ import {
 } from "./store-chat-search-read-model.js";
 import type { ContextReadBoundary, ContextSourcePage } from "./store-types.js";
 import { userDmAgentIds } from "./store-communication.js";
+import { communicationMentionBindings } from "./store-mention-bindings.js";
 
 interface CommunicationIndexView {
   byId: Map<string, CommunicationEvent>;
@@ -316,12 +317,16 @@ export class AgentChatFeedProjection {
       .flatMap((message) => {
         if (message.sequence === undefined || message.role === "system") return [];
         const communication = communicationById.get(message.eventId);
+        const agentMentions = communication
+          ? communicationMentionBindings(message.text, communication, id => this.getAgent(id))
+          : [];
         const directMessageAgents = communication
           ? userDmAgentIds(communication).map((directAgentId) => {
               const directAgent = this.getAgent(directAgentId);
               return {
                 id: directAgentId,
                 title: directAgent?.title ?? communication.identity?.recipientLabels?.[directAgentId] ?? "Deleted Agent",
+                handle: directAgent?.handle ?? communication.identity?.recipientHandles?.[directAgentId] ?? agentMentionHandleBase(communication.identity?.recipientLabels?.[directAgentId] ?? "Deleted Agent"),
               };
             })
           : [];
@@ -332,6 +337,7 @@ export class AgentChatFeedProjection {
             ? { communicationIntent: communication.intent }
             : {}),
           ...(directMessageAgents.length ? { directMessageAgents } : {}),
+          ...(agentMentions.length ? { agentMentions } : {}),
           ...(message.conversationId ? { conversationId: message.conversationId } : {}),
           agentId,
           seq: message.sequence,
@@ -408,7 +414,7 @@ export class AgentChatFeedProjection {
       LEFT JOIN agents author_agent ON author_agent.id = search.author_agent_id
       WHERE 1 = 1
         AND (
-          search.communication_intent IN ('broadcast', 'direct_to_user', 'user_dm')
+          search.communication_intent IN ('broadcast', 'user_dm')
           OR (search.communication_intent = 'collaboration' AND search.sender_kind = 'user')
         )
         ${boundary ? "AND (feed.order_key < ? OR (feed.order_key = ? AND feed.row_key < ?))" : ""}
@@ -437,10 +443,12 @@ export class AgentChatFeedProjection {
         : undefined;
       const event = this.communicationIndex(row.projectId).byId.get(row.eventId);
       if (!message || !event) return [];
-      const exactAudienceAgentId = event.schemaVersion === 2 && event.intent === "user_dm"
+      const exactAudienceAgentId = event.intent === "user_dm"
         ? event.audience.kind === "user_agent"
           ? event.audience.agentId
-          : event.audience.agentIds.length === 1 ? event.audience.agentIds[0] : undefined
+          : event.audience.kind === "user_agents" && event.audience.agentIds.length === 1
+            ? event.audience.agentIds[0]
+            : undefined
         : undefined;
       const targetAgentId = row.chatKind === "agent"
         ? row.chatId
@@ -453,8 +461,14 @@ export class AgentChatFeedProjection {
         return {
           id: agentId,
           title: directAgent?.title ?? event.identity?.recipientLabels?.[agentId] ?? "Deleted Agent",
+          handle: directAgent?.handle ?? event.identity?.recipientHandles?.[agentId] ?? agentMentionHandleBase(event.identity?.recipientLabels?.[agentId] ?? "Deleted Agent"),
         };
       });
+      const agentMentions = communicationMentionBindings(
+        message.text,
+        event,
+        agentId => agentByProject.get(row.projectId)?.get(agentId),
+      );
       const author: GlobalChatSearchAuthorDto = row.authorAgentId
         ? { kind: "agent", label: row.authorTitle ?? "Agent", agentId: row.authorAgentId }
         : row.role === "user"
@@ -472,6 +486,7 @@ export class AgentChatFeedProjection {
         messageId: message.messageId,
         communicationIntent: event.intent,
         ...(directMessageAgents.length ? { directMessageAgents } : {}),
+        ...(agentMentions.length ? { agentMentions } : {}),
         project: { id: row.projectId, label: row.projectLabel },
         source,
         author,
@@ -480,7 +495,7 @@ export class AgentChatFeedProjection {
         ...(message.attachments?.length ? { attachments: message.attachments } : {}),
         ...(message.artifactIds?.length ? { artifactIds: message.artifactIds } : {}),
         ...(directMessageAgent && !directMessageAgent.archived ? {
-          directMessageAgent: { id: directMessageAgent.id, title: directMessageAgent.title },
+          directMessageAgent: { id: directMessageAgent.id, title: directMessageAgent.title, handle: directMessageAgent.handle },
         } : {}),
       }];
     }).reverse();

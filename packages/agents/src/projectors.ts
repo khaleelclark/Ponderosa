@@ -325,7 +325,7 @@ export function projectEvent(
       ops.push({
         kind: "insert_artifact",
         row: {
-          id: event.artifactId ?? artifactId(agentId, seq, 0),
+          id: event.artifactId,
           agentId,
           executionId: event.executionId,
           kind: "screenshot",
@@ -347,14 +347,12 @@ export function projectEvent(
       ops.push({
         kind: "insert_artifact",
         row: {
-          id: event.artifactId ?? artifactId(agentId, seq, 0), agentId, executionId: event.executionId,
+          id: event.artifactId, agentId, executionId: event.executionId,
           kind: "generated_file", path: event.path, summary: event.name, createdAt: ts,
           sourcePath: event.sourcePath, mediaType: event.mediaType,
           visibility: event.visibility ?? null, pinned: event.pinned ? 1 : 0, size: event.size,
         },
-        ...(event.sha256
-          ? { managed: { size: event.size, sha256: event.sha256, mediaType: event.mediaType } }
-          : {}),
+        managed: { size: event.size, sha256: event.sha256, mediaType: event.mediaType },
       });
       ops.push({ kind: "touch_agent", updatedAt: ts });
       break;

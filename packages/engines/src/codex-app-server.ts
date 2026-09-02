@@ -384,10 +384,6 @@ export function formatCodexRateLimits(rateLimits: unknown): string[] {
     const snapshot = object(value);
     return snapshot ? [{ id: id as string | undefined, snapshot }] : [];
   });
-  const legacySnapshot = object(response?.rateLimits);
-  if (snapshots.length === 0 && legacySnapshot) {
-    snapshots.push({ id: undefined, snapshot: legacySnapshot });
-  }
   const qualify = snapshots.length > 1;
   for (const { id, snapshot } of snapshots) {
     const name = typeof snapshot.limitName === "string" && snapshot.limitName.trim()

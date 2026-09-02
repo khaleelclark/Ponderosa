@@ -64,8 +64,9 @@ export function AgentArtifactPreview({
     queryKey: queryKeys.workspaceFileView.detail(
       projectId,
       canViewCurrentFile ? sourcePath ?? "" : "",
+      agentId,
     ),
-    queryFn: () => api.getWorkspaceFileView(projectId, sourcePath!),
+    queryFn: () => api.getWorkspaceFileView(projectId, sourcePath!, agentId),
     enabled: canViewCurrentFile && view === "current",
     retry: false,
   });

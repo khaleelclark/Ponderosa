@@ -32,6 +32,7 @@ import type { RuntimeElicitationBroker } from "../runtime-elicitation-broker.js"
 import { registerAgentAuditRoutes } from "./agent-audit.js";
 import { registerAgentCreationRoutes } from "./agent-creation.js";
 import { registerAgentMaintenanceRoutes } from "./agent-maintenance.js";
+import { registerAgentOrganizationRoutes } from "./agent-organization.js";
 import { registerAgentMessageRunRoute } from "./agent-message-run.js";
 import { registerAgentPackageRoutes } from "./agent-packages.js";
 import { registerAgentPresetRoutes } from "./agent-presets.js";
@@ -47,7 +48,7 @@ import { registerConversationDeliveryRoutes } from "./conversation-deliveries.js
 import { registerConversationRoutes } from "./conversations.js";
 import { registerDraftRoutes } from "./drafts.js";
 import { registerEngineRoutes } from "./engines.js";
-import { registerLegacyFilesRoute, registerLegacyWorkspaceRoutes } from "./legacy-workspace.js";
+import { registerAgentWorkspaceRoutes, registerFilesRoute } from "./workspace-files.js";
 import { registerLimitsRoutes } from "./limits.js";
 import {
   registerNotificationListRoute,
@@ -62,7 +63,6 @@ import { registerQueuedMessageRoutes } from "./queued-messages.js";
 import { registerSearchRoutes } from "./search.js";
 import { registerStreamRoutes } from "./streams.js";
 import { registerTriggerRoutes } from "./triggers.js";
-import { registerWikiRoutes } from "./wiki.js";
 import { registerWorkspaceDirectoryRoutes } from "./workspace-directory.js";
 import { registerWorkspacePreferenceRoutes } from "./workspace-preferences.js";
 
@@ -70,7 +70,7 @@ type ApplicationRoutesContext =
   Parameters<typeof registerProjectRoutes>[1] &
   Omit<Parameters<typeof registerProjectDeletionRoutes>[1], "logError"> &
   Omit<Parameters<typeof registerConversationRoutes>[1],
-    "hasActiveRun" | "handleAgentConversationRemoval" |
+    "hasActiveRun" |
     "purgeCommunicationV4Conversation" | "refreshTriggers"> &
   Omit<Parameters<typeof registerConversationDeliveryRoutes>[1],
     "projectDeletionInProgress" | "assetMetadata"> &
@@ -79,9 +79,9 @@ type ApplicationRoutesContext =
     "projectDeletionInProgress" | "assetMetadata"> &
   Parameters<typeof registerAgentCreationRoutes>[1] &
   Omit<Parameters<typeof registerAgentPackageRoutes>[1], "dataDir" | "coordination"> &
-  Parameters<typeof registerAgentMaintenanceRoutes>[1] &
+  Omit<Parameters<typeof registerAgentMaintenanceRoutes>[1], "workingCopies"> &
   Omit<Parameters<typeof registerAgentMessageRunRoute>[1],
-    "deploymentDraining" | "assetMetadata"> &
+    "deploymentDraining" | "assetMetadata" | "workingCopies"> &
   Parameters<typeof registerWorkspacePreferenceRoutes>[1] &
   Parameters<typeof registerNotificationListRoute>[1] &
   Omit<Parameters<typeof registerPushRoutes>[1], "configuration"> &
@@ -91,7 +91,7 @@ type ApplicationRoutesContext =
     "projectExists" | "agentExists" | "projectDeletionInProgress" | "agentDeletionInProgress" | "operatorBrowserScope" |
     "getProjectBrowserGrant" | "setProjectBrowserGrant" |
     "deleteProjectBrowserGrant" | "activeProjectBrowserController"> &
-  Parameters<typeof registerProviderCommandRoutes>[1] &
+  Omit<Parameters<typeof registerProviderCommandRoutes>[1], "workingCopies"> &
   Omit<Parameters<typeof registerArtifactRoutes>[1],
     "dataDir" | "projectFileAuthority"> &
   Omit<Parameters<typeof registerEngineRoutes>[1],
@@ -101,7 +101,6 @@ type ApplicationRoutesContext =
     serverContext: ServerContext;
     registerLinkPreviewRoutes(app: FastifyInstance): void;
     agentWorkProjection: Parameters<typeof registerAgentWorkRoutes>[1]["projection"];
-    triggerSources: Parameters<typeof registerAgentPackageRoutes>[1]["triggerSources"];
     webhookRawBodies: Parameters<typeof registerTriggerRoutes>[1]["webhookRawBodies"];
     agentMessages: Parameters<typeof registerAgentPackageRoutes>[1]["agentMessages"];
     authoritativeCommunicationDocument: Parameters<typeof registerCommunicationDocumentRoutes>[1];
@@ -205,6 +204,8 @@ export function registerApplicationRoutes(
     subscribers,
     deletingProjectIds,
     deletingAgentIds,
+    deletingConversationIds,
+    agentCreationConversationLeases,
     rejectQuarantinedTriggerMutation,
     projectDeletionInFlightIds,
     communicationReconciliation,
@@ -281,8 +282,8 @@ export function registerApplicationRoutes(
     notifyScheduler,
     setMaxConcurrentRuns,
     drainDeploymentIdleAuthorities,
+    workingCopies,
   } = context;
-
 registerLinkPreviewRoutes(app);
 
 registerProjectRoutes(app, {
@@ -313,6 +314,7 @@ registerProjectDeletionRoutes(app, {
   engineModelCatalogDiscoveryAuthorities,
   deletingProjectIds,
   deletingAgentIds,
+  agentCreationConversationLeases,
   projectDeletionInFlightIds,
   projectBrowserGrants,
   browserSessions,
@@ -339,6 +341,7 @@ registerProjectDeletionRoutes(app, {
   agentHealth,
   logError: (meta, message) => app.log.error(meta, message),
   providerProcessAuthority,
+  workingCopies,
 });
 
 registerAgentWorkRoutes(app, { store, projection: agentWorkProjection });
@@ -357,8 +360,9 @@ registerConversationRoutes(app, {
   agentHealth,
   teamDirectory,
   hasActiveRun: agentId => activeRuns.has(agentId),
-  handleAgentConversationRemoval: (agentId, conversationId) =>
-    coordinationV3.handleAgentConversationRemoval(agentId, conversationId),
+  commitAgentDeletion,
+  deletingConversationIds,
+  agentCreationConversationLeases,
   purgeCommunicationV4Conversation: conversationId =>
     coordinationV3.purgeCommunicationV4Conversation(conversationId),
   refreshTriggers: () => triggerSources.refresh(),
@@ -441,6 +445,8 @@ app.get<{ Params: { id: string }; Querystring: CollectionQuery }>("/api/projects
   }
 });
 
+registerAgentOrganizationRoutes(app, { store, agentHealth });
+
 registerAgentPresetRoutes(app, {
   store,
   validateRuntimeSelection: (input, projectId) => {
@@ -465,6 +471,8 @@ registerAgentCreationRoutes(app, {
   engines,
   deletingAgentIds,
   deletingProjectIds,
+  deletingConversationIds,
+  agentCreationConversationLeases,
   cachedModelOptions,
   recordCommunication,
   prepareUserCommunicationText,
@@ -481,6 +489,7 @@ registerTriggerRoutes(app, {
   coordination: coordinationV3,
   sources: triggerSources,
   webhookRawBodies,
+  deletingConversationIds,
   rejectQuarantinedMutation: rejectQuarantinedTriggerMutation,
   appendWorkspace,
   reconcileOperationalNotifications: reconcileTriggerOperationalNotifications,
@@ -546,18 +555,22 @@ registerAgentPackageRoutes(app, {
   assets,
   engines,
   deletingProjectIds,
+  deletingConversationIds,
   cachedModelOptions,
-  triggerSources,
   appendWorkspace,
   agentMessages,
+  createOperationalNotification,
 });
 
 registerAgentUsageRoute(app, serverContext);
 
 registerAgentMaintenanceRoutes(app, {
-  store, coordinationV3, workspace, engines, triggerSources, deletingAgentIds,
+  store, coordinationV3, engines, triggerSources, deletingAgentIds,
   cachedModelOptions, commitAgentDeletion,
+  activeRuns, workingCopies, clearAgentResumeSession,
+  persistentRuntimeForTermination, teardownPersistentRuntime,
   notifyScheduler: notifyScheduler,
+  appendWorkspace,
 });
 
 const globalChatSearch = (query: {
@@ -581,7 +594,6 @@ const globalChatSearch = (query: {
   });
 };
 
-registerWikiRoutes(app, serverContext);
 
 registerSearchRoutes(app, { ...serverContext, globalChatSearch, workspace });
 
@@ -622,6 +634,7 @@ registerAgentMessageRunRoute(app, {
   retireCompletedContextRolloverSession,
   scheduleRuntimeLivenessHeartbeat,
   providerProcessAuthority,
+  workingCopies,
 });
 
 registerWorkspacePreferenceRoutes(app, {
@@ -716,8 +729,6 @@ app.post<{ Params: { id: string }; Body: { optionId?: string; text?: string; con
   }
   const cursor = workspace.cursor();
   const decision = workspace.resolveDecision(current.id, { ...(optionId ? { optionId } : {}), ...(text ? { text } : {}), respondedAt })!;
-  const notification = workspace.findNotification((item) => item.dedupeKey === `decision:${decision.id}` && (item.status ?? "open") === "open");
-  if (notification) workspace.setNotificationStatus(notification.id, "resolved");
   publishWorkspaceSince(cursor);
   if (current.runtimeAction) {
     if (text) {
@@ -833,10 +844,11 @@ registerProviderCommandRoutes(app, {
   providerUsageState,
   reportRuntimeCapabilitiesChanged,
   providerProcessAuthority,
+  workingCopies,
 });
 
 registerCommunicationDocumentRoutes(app, authoritativeCommunicationDocument);
-const projectFileAuthority = new ProjectFileAuthority(store);
+const projectFileAuthority = new ProjectFileAuthority(store, workingCopies);
 registerArtifactRoutes(app, {
   store,
   assets,
@@ -846,11 +858,11 @@ registerArtifactRoutes(app, {
   managedProjectArtifactAgreesWithRuntime,
 });
 
-registerLegacyFilesRoute(app, serverContext);
+registerFilesRoute(app, serverContext);
 
 registerProjectFileRoutes(app, projectFileAuthority, store);
 
-registerLegacyWorkspaceRoutes(app, serverContext);
+registerAgentWorkspaceRoutes(app, serverContext, workingCopies);
 
 registerEngineRoutes(app, {
   engines,

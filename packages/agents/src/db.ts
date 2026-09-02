@@ -1,8 +1,7 @@
 // Open the SQLite projection DB and establish its launch baseline. New databases
-// are created directly at that schema; only the known pre-baseline schema is
-// adopted, preserving its useful runtime and organizational data.
+// are created directly at that schema; existing databases must already carry
+// the canonical baseline marker.
 
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +9,8 @@ import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import {
+  allocateAgentMentionHandle,
+  RESERVED_AGENT_MENTION_HANDLES,
   normalizeProviderFailureCategory,
   publicProviderFailureSummary,
   type CoordinationRequestUpdateKind,
@@ -42,54 +43,13 @@ const schemaExtensions = [
   "0007_structured_provider_failure_state.sql",
   "0008_public_activation_provider_failures.sql",
 ] as const;
-const legacyMigrationTable = "_migrations";
 const schemaVersionTable = "_schema_version";
 const contextRolloverAtomicityMigration = "0005_context_rollover_atomicity.ts";
 const publicProviderRequestUpdatesMigration = "0009_public_provider_request_updates.ts";
 const providerActivationExecutionPayloadsMigration = "0010_provider_activation_execution_payloads.ts";
 const nestedProviderActivationExecutionPayloadsMigration = "0011_nested_provider_activation_execution_payloads.ts";
 const contextRolloverFailureProvenanceMigration = "0012_context_rollover_failure_provenance.ts";
-const latestLegacyMigration = "0035_coordination_question_suspensions.sql";
-
-// Fingerprint of the complete schema that was current when the launch baseline
-// was introduced. It gates adoption so an arbitrary old or damaged database is
-// never mistaken for the preserved current one.
-const currentLegacySchemaFingerprint =
-  "764f940012bb9ee404368fb8a04f12e77b7b2206bdd81077921934aad8ab317a";
-
-interface SchemaObject {
-  type: string;
-  name: string;
-  tbl_name: string;
-  sql: string;
-}
-
-function tableExists(sqlite: Database.Database, name: string): boolean {
-  return sqlite
-    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
-    .get(name) !== undefined;
-}
-
-function schemaFingerprint(sqlite: Database.Database): string {
-  const rows = sqlite
-    .prepare(
-      `SELECT type, name, tbl_name, sql
-       FROM sqlite_master
-       WHERE sql IS NOT NULL
-         AND name NOT LIKE 'sqlite_%'
-         AND name NOT IN (?, ?)
-       ORDER BY CASE type
-         WHEN 'table' THEN 1
-         WHEN 'view' THEN 2
-         WHEN 'index' THEN 3
-         WHEN 'trigger' THEN 4
-         ELSE 5
-       END, name`,
-    )
-    .all(legacyMigrationTable, schemaVersionTable) as SchemaObject[];
-  const catalog = rows.map((row) => [row.type, row.name, row.tbl_name, row.sql].join("|")).join("\n");
-  return createHash("sha256").update(catalog.length > 0 ? `${catalog}\n` : catalog).digest("hex");
-}
+const workingCopyAuthorityMigration = "0013_working_copy_authority.ts";
 
 function hasApplicationSchema(sqlite: Database.Database): boolean {
   return sqlite
@@ -97,10 +57,10 @@ function hasApplicationSchema(sqlite: Database.Database): boolean {
       `SELECT 1 FROM sqlite_master
        WHERE sql IS NOT NULL
          AND name NOT LIKE 'sqlite_%'
-         AND name NOT IN (?, ?)
+         AND name <> ?
        LIMIT 1`,
     )
-    .get(legacyMigrationTable, schemaVersionTable) !== undefined;
+    .get(schemaVersionTable) !== undefined;
 }
 
 function baselineApplied(sqlite: Database.Database): boolean {
@@ -109,39 +69,16 @@ function baselineApplied(sqlite: Database.Database): boolean {
     .get(baselineName) !== undefined;
 }
 
-/** Adopt the one preserved pre-baseline schema without rewriting its data. */
-function adoptCurrentLegacySchema(sqlite: Database.Database): boolean {
-  if (!tableExists(sqlite, legacyMigrationTable)) return false;
-  const reachedCurrentSchema = sqlite
-    .prepare(`SELECT 1 FROM ${legacyMigrationTable} WHERE name = ?`)
-    .get(latestLegacyMigration) !== undefined;
-  if (!reachedCurrentSchema) return false;
-
-  if (schemaFingerprint(sqlite) !== currentLegacySchemaFingerprint) {
-    throw new Error(
-      "Ponderosa refused to adopt a legacy database whose schema does not match the preserved launch baseline.",
-    );
-  }
-
-  sqlite.transaction(() => {
-    sqlite
-      .prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
-      .run(baselineName, new Date().toISOString());
-  })();
-  return true;
-}
-
-/** Establish the launch baseline or adopt a verified current legacy database. */
+/** Establish the launch baseline or verify an existing canonical database. */
 function establishSchema(sqlite: Database.Database): void {
   sqlite.exec(
     `CREATE TABLE IF NOT EXISTS ${schemaVersionTable} (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL);`,
   );
   if (baselineApplied(sqlite)) return;
-  if (adoptCurrentLegacySchema(sqlite)) return;
 
-  if (hasApplicationSchema(sqlite) || tableExists(sqlite, legacyMigrationTable)) {
+  if (hasApplicationSchema(sqlite)) {
     throw new Error(
-      "Ponderosa found a database outside the supported launch baseline. Restore the last compatible Ponderosa version before adopting it.",
+      "Ponderosa found a database without the required launch baseline.",
     );
   }
 
@@ -172,6 +109,123 @@ function establishSchemaExtensions(sqlite: Database.Database): void {
         .run(extensionName, new Date().toISOString());
     })();
   }
+}
+
+/** Add durable Project-scoped handles to databases created before mentions
+ * became structural. Existing Agents are allocated deterministically by age;
+ * reservations are retained forever across rename and deletion. */
+function establishAgentMentionHandles(sqlite: Database.Database): void {
+  sqlite.transaction(() => {
+    const columns = new Set(
+      (sqlite.pragma("table_info(agents)") as Array<{ name: string }>)
+        .map(column => column.name),
+    );
+    if (!columns.has("handle")) {
+      sqlite.exec("ALTER TABLE agents ADD COLUMN handle TEXT");
+    }
+    if (!columns.has("creation_idempotency_key")) {
+      sqlite.exec("ALTER TABLE agents ADD COLUMN creation_idempotency_key TEXT");
+    }
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS agent_handle_reservations (
+        project_id TEXT NOT NULL,
+        normalized_handle TEXT NOT NULL,
+        handle TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        reserved_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, normalized_handle)
+      )
+    `);
+    const agents = sqlite.prepare(`
+      SELECT id, project_id, title, handle, created_at
+      FROM agents
+      ORDER BY project_id, created_at, id
+    `).all() as Array<{
+      id: string;
+      project_id: string;
+      title: string;
+      handle: string | null;
+      created_at: string;
+    }>;
+    const occupiedByProject = new Map<string, Set<string>>();
+    const reservations = sqlite.prepare(`
+      SELECT project_id, normalized_handle FROM agent_handle_reservations
+    `).all() as Array<{ project_id: string; normalized_handle: string }>;
+    for (const reservation of reservations) {
+      const occupied = occupiedByProject.get(reservation.project_id) ?? new Set<string>();
+      occupied.add(reservation.normalized_handle.toLocaleLowerCase());
+      occupiedByProject.set(reservation.project_id, occupied);
+    }
+    const updateHandle = sqlite.prepare("UPDATE agents SET handle = ? WHERE id = ?");
+    const reserve = sqlite.prepare(`
+      INSERT OR IGNORE INTO agent_handle_reservations
+        (project_id, normalized_handle, handle, agent_id, reserved_at)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    for (const agent of agents) {
+      const occupied = occupiedByProject.get(agent.project_id) ?? new Set<string>();
+      for (const reserved of RESERVED_AGENT_MENTION_HANDLES) occupied.add(reserved);
+      const requested = agent.handle?.trim();
+      const normalizedRequested = requested?.toLocaleLowerCase();
+      const existingReservation = normalizedRequested
+        ? sqlite.prepare(`
+            SELECT agent_id FROM agent_handle_reservations
+            WHERE project_id = ? AND normalized_handle = ?
+          `).get(agent.project_id, normalizedRequested) as { agent_id: string } | undefined
+        : undefined;
+      const handle = requested &&
+          !RESERVED_AGENT_MENTION_HANDLES.has(normalizedRequested!) &&
+          (!occupied.has(normalizedRequested!) || existingReservation?.agent_id === agent.id)
+        ? requested
+        : allocateAgentMentionHandle(agent.title, occupied);
+      const normalized = handle.toLocaleLowerCase();
+      updateHandle.run(handle, agent.id);
+      reserve.run(agent.project_id, normalized, handle, agent.id, agent.created_at);
+      occupied.add(normalized);
+      occupiedByProject.set(agent.project_id, occupied);
+    }
+    sqlite.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_project_handle
+        ON agents (project_id, lower(handle));
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_creation_idempotency
+        ON agents (project_id, creation_idempotency_key)
+        WHERE creation_idempotency_key IS NOT NULL;
+    `);
+  })();
+}
+
+function establishWorkingCopyAuthoritySchema(sqlite: Database.Database): void {
+  const applied = sqlite
+    .prepare(`SELECT 1 FROM ${schemaVersionTable} WHERE name = ?`)
+    .get(workingCopyAuthorityMigration) !== undefined;
+  if (applied) return;
+  sqlite.transaction(() => {
+    const columns = new Set((sqlite.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>)
+      .map((column) => column.name));
+    if (!columns.has("working_copy_json")) {
+      sqlite.exec("ALTER TABLE agents ADD COLUMN working_copy_json TEXT");
+    }
+    const projectsById = new Map((sqlite.prepare(
+      "SELECT id, host_path FROM projects",
+    ).all() as Array<{ id: string; host_path: string }>).map((project) => [project.id, project.host_path]));
+    const update = sqlite.prepare("UPDATE agents SET working_copy_json = ? WHERE id = ?");
+    for (const row of sqlite.prepare(
+      "SELECT id, project_id, updated_at, working_copy_json FROM agents",
+    ).all() as Array<{ id: string; project_id: string; updated_at: string; working_copy_json: string | null }>) {
+      if (row.working_copy_json) continue;
+      const rootPath = projectsById.get(row.project_id);
+      if (!rootPath) throw new Error("Agent working-copy migration found no Project root");
+      update.run(JSON.stringify({
+        id: `shared:${row.project_id}`,
+        mode: "shared",
+        state: "ready",
+        rootPath,
+        updatedAt: row.updated_at,
+      }), row.id);
+    }
+    sqlite.prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
+      .run(workingCopyAuthorityMigration, new Date().toISOString());
+  })();
 }
 
 function repairMaterializedRequestUpdateActivations(
@@ -765,6 +819,11 @@ function establishReadIndexes(sqlite: Database.Database): void {
       ON conversations (project_id, updated_at DESC, title, id);
     CREATE INDEX IF NOT EXISTS idx_agents_project_directory
       ON agents (project_id, deleted_at, archived, updated_at DESC, title, id);
+    CREATE INDEX IF NOT EXISTS idx_agents_project_organization
+      ON agents (
+        project_id, manager_agent_id, deleted_at, archived,
+        title COLLATE NOCASE, id
+      );
     CREATE INDEX IF NOT EXISTS idx_trigger_definitions_project_directory
       ON trigger_definitions (project_id, updated_at DESC, name, id);
     CREATE INDEX IF NOT EXISTS idx_trigger_definitions_agent_directory
@@ -781,9 +840,11 @@ export function openDb(file: string): OpenedDb {
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("foreign_keys = ON");
   establishSchema(sqlite);
+  establishAgentMentionHandles(sqlite);
   establishContextRolloverAtomicitySchema(sqlite);
   establishContextRolloverFailureProvenance(sqlite);
   establishSchemaExtensions(sqlite);
+  establishWorkingCopyAuthoritySchema(sqlite);
   establishPublicProviderRequestUpdates(sqlite);
   establishProviderActivationExecutionPayloads(sqlite);
   establishNestedProviderActivationExecutionPayloads(sqlite);

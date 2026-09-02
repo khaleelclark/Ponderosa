@@ -8,7 +8,6 @@ import {
   type ProviderUsage,
   type ProviderUsageReadOptions,
   type ProviderUsageWindow,
-  type RuntimeProcessHandle,
 } from "@ponderosa/core";
 import { spawnContainedCli } from "./contained-spawn.js";
 import { JsonRpcProcess } from "./json-rpc-process.js";
@@ -297,19 +296,10 @@ export function normalizeCodexProviderUsage(
 ): ProviderUsage {
   const account = record(record(accountResponse)?.account);
   const byId = record(record(limitsResponse)?.rateLimitsByLimitId);
-  const legacy = record(record(limitsResponse)?.rateLimits);
   const snapshots = Object.entries(byId ?? {}).flatMap(([limitId, value]) => {
     const snapshot = record(value);
     return snapshot ? [{ limitId, snapshot }] : [];
   });
-  if (snapshots.length === 0 && legacy) {
-    snapshots.push({
-      limitId: typeof legacy.limitId === "string" && legacy.limitId.trim()
-        ? legacy.limitId.trim()
-        : "codex",
-      snapshot: legacy,
-    });
-  }
   const multipleLimits = snapshots.length > 1;
   const windowCandidates: Array<{
     durationMinutes: number;

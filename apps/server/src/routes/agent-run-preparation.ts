@@ -20,7 +20,6 @@ import {
 } from "@ponderosa/core";
 import { attachmentsDir } from "@ponderosa/agents";
 import type { CommunicationV4NextRunDelivery } from "@ponderosa/agents";
-import type { FastifyInstance } from "fastify";
 import { renderSeedPrompt } from "@ponderosa/engines";
 import { inboundContext } from "../agent-mentions.js";
 import { collectReachableArtifactIds } from "../artifact-refs.js";
@@ -74,7 +73,6 @@ interface PrepareAgentRunInput {
   communication: CommunicationEvent | undefined;
   sharedCommunication: Extract<CommunicationEvent, { intent: "broadcast" }> | undefined;
   sharedTaskTurn: boolean;
-  directUserTaskTurn: boolean;
   sourceMasterMessage: ConversationMessageDto | undefined;
   pendingTurn: PendingTurn;
   requestedSourceChannel: "main" | undefined;
@@ -174,7 +172,6 @@ const runtimeAttachmentName = (item: AssetDto): string => {
 };
 
 export async function prepareAgentRun(
-  app: FastifyInstance,
   runContext: AgentMessageRunContext,
   input: PrepareAgentRunInput,
 ) {
@@ -196,6 +193,7 @@ export async function prepareAgentRun(
     teamDirectory,
     canonicalConversationContext,
     agentCanReadRuntimeArtifact,
+    workingCopies,
   } = runContext;
   const {
     agent,
@@ -216,7 +214,6 @@ export async function prepareAgentRun(
     communication,
     sharedCommunication,
     sharedTaskTurn,
-    directUserTaskTurn,
     sourceMasterMessage,
     pendingTurn,
     requestedSourceChannel,
@@ -225,6 +222,9 @@ export async function prepareAgentRun(
   if (!engine.adapter.trustedSystemPromptChannel) {
     throw new Error(`${engine.adapter.displayName} cannot receive trusted runtime instructions`);
   }
+  workingCopies.assertRunAdmission(agent.id, agent.workingCopy);
+  const workingCopy = await workingCopies.resolve(agent, project);
+  workingCopies.assertRunAdmission(agent.id, workingCopy);
 
   const routingConversationId = sourceConversationId ?? agent.conversationId;
   const sourceChannel: AgentMessageChannel = requestedSourceChannel === "main"
@@ -362,6 +362,7 @@ export async function prepareAgentRun(
   const providerToolHash = providerToolContractHash(availableRuntimeTools, communicationPrompt);
   const runtimeSessionContractHash = providerSessionContractHash(
     runtimeEngineId,
+    workingCopy.id,
     effectiveModel,
     effectiveEffort,
     providerToolHash,
@@ -659,8 +660,7 @@ export async function prepareAgentRun(
         "Current room data (informational; the active capability enforces delivery):",
         `- room: ${cursorConversationId}`,
         `- channel: ${cursorChannel}`,
-        `- primary room: ${agent.conversationId ?? "none"}`,
-        `- room memberships: ${agent.conversationIds.join(", ") || "none"}`,
+        `- owner Chat: ${agent.conversationId}`,
         '- live teammate identities are available from "$PONDEROSA_AGENT_DIRECTORY_URL" only when needed',
       ].join("\n")
     : undefined;
@@ -1107,6 +1107,7 @@ ${freshGuidedPrompt}${attachmentContext}${coalescedActivationContext}`;
     systemPrompt: effectiveSystemPrompt,
     systemPromptHash: createHash("sha256").update(effectiveSystemPrompt).digest("hex"),
     runtimeSessionContractHash: effectiveRuntimeSessionContractHash,
+    workingCopy,
     availableRuntimeTools,
     availableRuntimeToolNames,
     historyRetrievalBoundary,

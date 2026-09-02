@@ -11,6 +11,7 @@ import { LazySyntaxHighlightedCode } from "../LazySyntaxHighlightedCode";
 import { UnifiedDiffViewer } from "../filePreview/FilePreview";
 import { recordedPathDiff } from "../filePreview/artifactDiff";
 import { languageForPath } from "../filePreview/fileTypes";
+import { PrimaryHeaderActionsOutlet } from "../PrimaryHeaderActions";
 
 function resolveWorkspaceReviewPath(
   changes: ReadonlyArray<{ path: string }>,
@@ -37,18 +38,17 @@ export function recordedPreviewLabel(file: Pick<ChangedFileDto, "diffAvailable">
   return file.diffAvailable ? "Text preview recorded" : "Metadata and provenance only";
 }
 
-export function WorkspaceReviewPane({ projectId, projectRoot, agentId, files, running, initialPath, onBack }: {
-  projectId: string;
+export function WorkspaceReviewPane({ projectRoot, agentId, files, running, initialPath, onBack }: {
   projectRoot: string;
-  agentId?: string;
+  agentId: string;
   files: ChangedFileDto[];
   running: boolean;
   initialPath?: string;
   onBack(): void;
 }): JSX.Element {
   const workspace = useQuery({
-    queryKey: queryKeys.workspaceChanges.project(projectId),
-    queryFn: () => api.getWorkspaceStatus(projectId),
+    queryKey: queryKeys.workspaceChanges.agent(agentId),
+    queryFn: () => api.getWorkspaceStatus(agentId),
     refetchInterval: running ? 1_500 : 10_000,
   });
   const provenance = new Map(files.map((file) => [file.path, file]));
@@ -71,8 +71,8 @@ export function WorkspaceReviewPane({ projectId, projectRoot, agentId, files, ru
   }, [initialPath, reviewEntries]);
 
   const review = useQuery({
-    queryKey: queryKeys.workspaceFile.detail(projectId, activePath),
-    queryFn: () => api.getWorkspaceFile(projectId, activePath ?? ""),
+    queryKey: queryKeys.workspaceFile.detail(agentId, activePath),
+    queryFn: () => api.getWorkspaceFile(agentId, activePath ?? ""),
     enabled: Boolean(activePath && !recordedMode),
     refetchInterval: running ? 1_500 : false,
   });
@@ -105,10 +105,16 @@ export function WorkspaceReviewPane({ projectId, projectRoot, agentId, files, ru
     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", px: 1.5, py: 1, borderBottom: 1, borderColor: "divider" }}>
       <Tooltip title="Back to Agent"><IconButton aria-label="Back to Agent" size="small" onClick={onBack}><ArrowBackIcon /></IconButton></Tooltip>
       <Typography variant="overline" color="text.secondary">Review</Typography>
+      {workspace.data ? <Chip
+        size="small"
+        color={workspace.data.workingCopy.mode === "separate_git" ? "primary" : "default"}
+        label={workspace.data.workingCopy.mode === "separate_git" ? "Separate Git copy" : "Shared folder"}
+      /> : null}
       {workspace.data?.branch ? <Chip size="small" label={workspace.data.branch} /> : null}
       {workspace.data?.head ? <Typography variant="caption" color="text.secondary">{workspace.data.head}</Typography> : null}
       <Chip size="small" label={`${displayedChangeCount} change${displayedChangeCount === 1 ? "" : "s"}`} color={displayedChangeCount ? "warning" : "default"} />
       <Box sx={{ flex: 1 }} />
+      <PrimaryHeaderActionsOutlet />
       <Tooltip title="Refresh Workspace Changes"><IconButton aria-label="Refresh workspace changes" size="small" onClick={() => void workspace.refetch()}><RefreshIcon /></IconButton></Tooltip>
     </Stack>
     {workspace.isLoading ? <Box sx={{ p: 2 }}><CircularProgress size={22} /></Box>

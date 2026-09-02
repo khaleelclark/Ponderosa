@@ -1,5 +1,5 @@
 import type { EngineId } from "../adapter.js";
-import type { AgentDto, AgentHealthDto } from "./agents.js";
+import type { AgentDto, AgentHealthDto, AgentWorkingCopyDto } from "./agents.js";
 import type { BrowserControlOwner, BrowserSessionStatus } from "../events.js";
 import type { ConversationDto } from "./conversations.js";
 import type { HistoryWindowDto } from "./common.js";
@@ -99,7 +99,7 @@ export interface WorkspaceAgentDirectoryItemDto {
 export interface WorkspaceTriggerDirectoryItemDto {
   kind: "trigger";
   project: Pick<ProjectDto, "id" | "label" | "hostPath">;
-  agent: Pick<AgentDto, "id" | "title">;
+  targetAgent?: Pick<AgentDto, "id" | "title">;
   trigger: TriggerDefinitionDto;
 }
 
@@ -236,7 +236,11 @@ export interface WorkspaceNotificationDto {
   title: string;
   body: string;
   createdAt: string;
+  /** Durable receipt that the operator reviewed this still-open action. */
+  acknowledgedAt?: string;
+  /** Durable receipt that an informational authored update was seen. */
   readAt?: string;
+  /** Canonical closure/dismissal time for an action that is no longer open. */
   resolvedAt?: string;
   decision?: Pick<DecisionDto, "id" | "mode" | "options" | "allowOther" | "status" | "runtimeAction">;
   /** Human-facing recovery context for one current coordination problem. */
@@ -257,9 +261,43 @@ export interface WorkspaceNotificationDto {
  * this live feed. */
 export interface WorkspaceNotificationPageDto {
   items: WorkspaceNotificationDto[];
-  attentionCount: number;
+  /** All unresolved actions, including actions the operator already reviewed. */
+  openActionCount: number;
+  /** Unresolved actions that have not yet been reviewed. */
+  unacknowledgedActionCount: number;
   unreadUpdateCount: number;
   nextCursor?: string;
+}
+
+/** Exact unread counts for one canonical notification scope. */
+export interface WorkspaceNotificationCountProjectionDto {
+  importantCount: number;
+  ordinaryCount: number;
+  totalCount: number;
+}
+
+/** Exact Project counts split so Project-level attention is never described
+ * as Chat activity. Chat counts dedupe notification IDs even when one
+ * notification projects into several Chats. */
+export interface WorkspaceProjectNotificationProjectionDto
+  extends WorkspaceNotificationCountProjectionDto {
+  chat: WorkspaceNotificationCountProjectionDto & { affectedConversationCount: number };
+  projectLevel: WorkspaceNotificationCountProjectionDto;
+}
+
+/** A bounded request for exact server-side notification projections. Clients
+ * may batch large resource catalogs; notification records never cross this
+ * boundary. */
+export interface WorkspaceNotificationProjectionRequestDto {
+  projectIds: string[];
+  conversationIds: string[];
+}
+
+export interface WorkspaceNotificationProjectionDto {
+  workspace: WorkspaceNotificationCountProjectionDto;
+  allMessages: WorkspaceNotificationCountProjectionDto;
+  projects: Record<string, WorkspaceProjectNotificationProjectionDto>;
+  conversations: Record<string, WorkspaceNotificationCountProjectionDto>;
 }
 
 export interface RetryCoordinationRequestResponse {
@@ -363,9 +401,11 @@ export interface WorkspaceChangeDto {
   untracked: boolean;
 }
 
-/** GET /api/projects/:id/workspace response. */
+/** GET /api/agents/:id/workspace response. */
 export interface WorkspaceStatusDto {
   projectId: string;
+  agentId: string;
+  workingCopy: AgentWorkingCopyDto;
   isGitRepository: boolean;
   branch?: string;
   head?: string;
@@ -373,9 +413,11 @@ export interface WorkspaceStatusDto {
   changes: WorkspaceChangeDto[];
 }
 
-/** GET /api/projects/:id/workspace/file response. */
+/** GET /api/agents/:id/workspace/file response. */
 export interface WorkspaceFileReviewDto {
   projectId: string;
+  agentId: string;
+  workingCopyId: string;
   path: string;
   exists: boolean;
   /** Current UTF-8 file body when it is small enough and safe to display. */

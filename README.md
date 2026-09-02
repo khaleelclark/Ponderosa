@@ -1,17 +1,25 @@
 # Ponderosa
 
-Ponderosa is a self-hosted workbench for running and managing coding agents
-through existing Codex or Claude subscription access.
+Ponderosa is a self-hosted workspace for durable work with AI Agents. It runs
+Codex and Claude through the operator's existing subscription-authenticated
+provider CLIs; Ponderosa does not accept provider API keys.
+
+An Agent is a stable identity with settings, history, files, and a place in an
+organization. A Run is one temporary, scheduler-owned turn for that Agent. The
+local Ponderosa Engine persists the causes and results of work around those
+temporary provider sessions, so a browser tab or provider process is not the
+system of record.
 
 ## Start here
 
-- [Getting started](docs/wiki/getting-started.md)
-- [Project chat](docs/wiki/project-chat.md)
-- [Agents and organizations](docs/wiki/agents-and-organization.md)
-- [Runs, files, and results](docs/wiki/runs-and-results.md)
-- [Runtime settings and authentication](docs/wiki/settings-and-auth.md)
+- [How Ponderosa works](docs/system-model.md)
+- [Private beta installation](docs/private-beta-installation.md)
 - [Deployment](deploy/README.md)
-- [Troubleshooting](docs/wiki/troubleshooting.md)
+- [Interactive Agent browser](docs/interactive-agent-browser.md)
+
+The web application is the primary client and can be installed as a PWA. The
+desktop Engine application and `ponderosa` command manage the local service;
+they are not separate stores or alternate Agent runtimes.
 
 ## Credits
 

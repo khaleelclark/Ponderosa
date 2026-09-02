@@ -16,6 +16,7 @@ interface PortableAgentPreview {
 }
 
 type PreviewResponse =
+  | { id: number; phase: "Reading import" | "Validating" | "Preparing summary" }
   | { id: number; preview: PortableAgentPreview }
   | { id: number; error: string };
 
@@ -27,7 +28,10 @@ const worker = self as unknown as {
 worker.onmessage = async (event: MessageEvent<PreviewRequest>) => {
   const { id, blob } = event.data;
   try {
-    const value = JSON.parse(await blob.text()) as Record<string, unknown>;
+    worker.postMessage({ id, phase: "Reading import" });
+    const source = await blob.text();
+    worker.postMessage({ id, phase: "Validating" });
+    const value = JSON.parse(source) as Record<string, unknown>;
     if (
       value?.schema !== "ponderosa.agent-package.v1"
       || (value.mode !== "template" && value.mode !== "full")
@@ -38,6 +42,7 @@ worker.onmessage = async (event: MessageEvent<PreviewRequest>) => {
     ) {
       throw new Error("Choose or paste a ponderosa.agent-package.v1 document.");
     }
+    worker.postMessage({ id, phase: "Preparing summary" });
     const sourceEngines = new Set<string>();
     const elevatedAgentRefs: string[] = [];
     let invalidPermissionShape = false;

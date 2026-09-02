@@ -42,21 +42,21 @@ export function createCommunicationDocumentAuthority(
   function agentCanReadDocument(event: CommunicationEvent, agentId: string): boolean {
     const agent = store.getAgent(agentId);
     if (!agent || agent.projectId !== event.projectId || agent.archived) return false;
-    if (event.intent === "broadcast") return !event.conversationId || agent.conversationIds.includes(event.conversationId);
-    if (event.schemaVersion === 2 && event.intent === "user_dm") {
+    if (event.intent === "broadcast") return event.conversationId === agent.conversationId;
+    if (event.intent === "user_dm") {
       return (event.audience.kind === "user_agent"
         ? event.audience.agentId === agentId
-        : event.audience.agentIds.includes(agentId)) ||
+        : event.audience.kind === "user_agents" && event.audience.agentIds.includes(agentId)) ||
         (event.sender.kind === "agent" && event.sender.agentId === agentId);
     }
     if (event.intent === "collaboration") {
       return event.audience.agentIds.includes(agentId) || (event.sender.kind === "agent" && event.sender.agentId === agentId);
     }
-    return event.sender.kind === "agent" && event.sender.agentId === agentId;
+    return false;
   }
 
   function agentCanReadRuntimeArtifact(
-    artifact: import("@ponderosa/agents").RuntimeArtifactV3,
+    artifact: RuntimeArtifactV3,
     agentId: string,
   ): boolean {
     if (store.agentCanReadProjectArtifact(artifact.projectId, artifact.id, agentId)) return true;
@@ -77,7 +77,7 @@ export function createCommunicationDocumentAuthority(
 
   function managedProjectArtifactAgreesWithRuntime(
     managed: ArtifactDto,
-    runtime: import("@ponderosa/agents").RuntimeArtifactInputV3,
+    runtime: RuntimeArtifactInputV3,
   ): boolean {
     const provenanceAgrees = runtime.originAgentId
       ? managed.agentId === runtime.originAgentId && managed.originAgentId === runtime.originAgentId &&
@@ -102,11 +102,7 @@ export function createCommunicationDocumentAuthority(
         ? document.authorUserId === event.sender.userId && !document.authorAgentId && !document.executionId
         : false;
     if (!validAuthor) return undefined;
-    if (document.content !== undefined) {
-      if (document.artifactId || document.byteLength !== Buffer.byteLength(document.content, "utf8")) return undefined;
-      return { event, document: { ...document, content: document.content } };
-    }
-    if (!document.artifactId || document.artifactId !== document.id) return undefined;
+    if (document.artifactId !== document.id) return undefined;
     const authoritative = assets.authoritativeRuntimeArtifactById(projectId, document.artifactId);
     if (!authoritative || authoritative.artifact.id !== document.id ||
         authoritative.artifact.title !== document.title ||

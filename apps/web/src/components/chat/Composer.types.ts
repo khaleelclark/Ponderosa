@@ -14,6 +14,8 @@ export interface ComposerProps extends ChatComposerContract {
   onCapabilitiesOpen?(): Promise<unknown> | unknown;
   attachmentsEnabled?: boolean;
   attachmentsUnavailableReason?: string;
+  /** Expose browser dictation on a composer with structurally resolved routing. */
+  enableVoiceDictation?: boolean;
   busyMentionHandles?: string[];
   allowUnmentionedSend?: boolean;
   /** Explains why a valid-looking draft cannot use the ordinary send path. */

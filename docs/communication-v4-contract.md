@@ -2,18 +2,26 @@
 
 ## Provider communication surface
 
-Communication V4 exposes no Board, Wake, `ponderosa_context`, or
-`ponderosa_result` capability. The provider-session contract contains the same
-small communication surface for every Run in that session generation; ordinary
-coordination and result integration never reseed a provider merely to change a
-retrieval schema.
+Communication V4 exposes no Board, Wake, `ponderosa_context`,
+`ponderosa_result`, or `ponderosa_docs` capability. The former bundled product
+wiki and its `ponderosa://docs/...` references are not a provider surface.
+
+The ordinary provider-session contract contains the same small communication
+surface for every Run in that session generation. One later, narrow exception
+is `ponderosa_history`: after a Ponderosa-managed context rollover, a replacement
+session generation receives that tool only when a frozen durable boundary has
+eligible authored Communication before it. The tool contract then remains
+stable for that provider-session generation. Search is bounded lexical
+retrieval over the authorized omitted set, and `read` returns one exact
+canonical message with a small same-conversation neighborhood. It is not general
+audit, current-context, artifact, or product-documentation retrieval.
 
 The canonical event log and SQLite projections continue to retain authored
 history, request updates, artifacts, source manifests, and scheduler provenance.
-Removing provider retrieval tools does not delete or weaken that durable data.
-It deliberately means that history outside the bounded seed/continuation input
-is temporarily unavailable to providers until a separately designed scoped RAG
-replacement exists. This PR does not build or imply that replacement.
+Removing the general retrieval tools did not delete or weaken that durable data.
+Outside the conditional omitted-message set above, material excluded from the
+bounded seed or continuation input remains unavailable to providers. No scoped
+RAG replacement or product-documentation retrieval is implemented or implied.
 
 ## Complete correlated-result delivery
 
@@ -48,9 +56,15 @@ concrete references improve readability but are not validity requirements. An
 empty, effectively empty, or oversized handoff leaves the old context intact
 and receives at most one corrective retry before automatic rollover stops for
 that provider generation. Pending corrective handoff work remains durable
-across server restarts. The runtime retires the old session only after a usable
-handoff commits. This costs one explicit rollover Run in the ordinary case but
-does not depend on a model overriding an arbitrary active task response.
+across server restarts. After a usable handoff commits, Ponderosa tears down the
+old provider runtime process before the replacement Run opens a fresh provider
+process. That teardown does not switch accepted resume authority: the durable
+old-session snapshot remains the fallback until the replacement reports
+occupancy below the required low-water mark. One canonical acceptance event then
+switches the snapshot and consumes the handoff atomically; a failed or
+unverified replacement does neither. This costs one explicit rollover Run in
+the ordinary case but does not depend on a model overriding an arbitrary active
+task response.
 
 An automatic rollover may reach `completed` after its source Run already
 committed the visible reply, because no extra continuation Run is owed for that

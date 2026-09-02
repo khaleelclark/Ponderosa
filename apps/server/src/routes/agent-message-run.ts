@@ -54,6 +54,7 @@ import type { createOperationalNotifications } from "../operational-notification
 import type { createCommunicationDocumentAuthority } from "../communication-document-authority.js";
 import type { ContextCursorStore } from "../context-cursors.js";
 import type { RuntimeElicitationBroker } from "../runtime-elicitation-broker.js";
+import type { AgentWorkingCopyService } from "../agent-working-copy-service.js";
 import type { ProviderProcessAuthority } from "../provider-process-authority.js";
 import {
   concreteRuntimeSelection,
@@ -204,6 +205,7 @@ export type AgentMessageRunContext =
     publishWorkspaceSince(cursor: number): void;
     runtimeElicitations: RuntimeElicitationBroker;
     providerProcessAuthority: ProviderProcessAuthority;
+    workingCopies: AgentWorkingCopyService;
   };
 
 export function registerAgentMessageRunRoute(
@@ -241,6 +243,7 @@ export function registerAgentMessageRunRoute(
     publish,
     publishCoordinationV3Changed,
     publishMessageDeliveryChanged,
+    workingCopies,
   } = runContext;
 
   app.post<{
@@ -451,7 +454,7 @@ export function registerAgentMessageRunRoute(
         return reply.code(413).send({ error: "text exceeds the 8 MiB limit" });
       }
       const sourceConversationId = request.body.sourceConversationId;
-      if (sourceConversationId !== undefined && !agent.conversationIds.includes(sourceConversationId)) {
+      if (sourceConversationId !== undefined && agent.conversationId !== sourceConversationId) {
         return reply.code(400).send({ error: "conversation does not belong to agent" });
       }
       if (request.body.sourceChannel === "main" && sourceConversationId) {
@@ -576,16 +579,15 @@ export function registerAgentMessageRunRoute(
       const sharedCommunication = communication?.intent === "broadcast" ? communication : undefined;
       const sharedTaskTurn = Boolean(sharedCommunication && shareWithOrganization);
       const directUserTaskTurn = Boolean(
-        communication?.schemaVersion === 2 &&
-        communication.intent === "user_dm" &&
+        communication?.intent === "user_dm" &&
         communication.sender.kind === "user" &&
         (communication.audience.kind === "user_agent"
           ? communication.audience.agentId === agent.id
-          : communication.audience.agentIds.includes(agent.id)),
+          : communication.audience.kind === "user_agents" && communication.audience.agentIds.includes(agent.id)),
       );
       let sourceMasterMessage: ConversationMessageDto | undefined;
       if (communicationEventId) {
-        if (communication?.schemaVersion === 2 && communication.intent === "user_dm") {
+        if (communication?.intent === "user_dm") {
           store.appendCommunicationProjection(project.id, {
             eventId: communicationEventId,
             surface: "user_inbox",
@@ -602,7 +604,7 @@ export function registerAgentMessageRunRoute(
         } else {
           sourceMasterMessage = store.appendConversationMessage(directMessageConversationId, {
             role: "user",
-            text: sharedCommunication ? publishedText : renderDirectMessage(agent.title, publishedText),
+            text: sharedCommunication ? publishedText : renderDirectMessage(agent.handle, publishedText),
             attachments: messageAttachments,
           }, undefined, "main", undefined, undefined, communicationEventId);
           if (sharedCommunication) {
@@ -681,7 +683,7 @@ export function registerAgentMessageRunRoute(
       }
 
       const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
-      const preparedRun = await prepareAgentRun(app, runContext, {
+      const preparedRun = await prepareAgentRun(runContext, {
         agent,
         project,
         runtimeEngineId,
@@ -700,7 +702,6 @@ export function registerAgentMessageRunRoute(
         communication,
         sharedCommunication,
         sharedTaskTurn,
-        directUserTaskTurn,
         sourceMasterMessage,
         pendingTurn,
         requestedSourceChannel: request.body.sourceChannel,
@@ -733,6 +734,7 @@ export function registerAgentMessageRunRoute(
         policySnapshotHash,
         systemPrompt,
         runtimeSessionContractHash: effectiveRuntimeSessionContractHash,
+        workingCopy,
         availableRuntimeTools,
         availableRuntimeToolNames,
         historyRetrievalBoundary,
@@ -758,6 +760,23 @@ export function registerAgentMessageRunRoute(
           await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
         }
         return reply.code(404).send({ error: "agent not found" });
+      }
+      try {
+        workingCopies.assertRunAdmission(agent.id, workingCopy);
+      } catch (error) {
+        try {
+          coordinationV3.failRun({
+            runId, fencingToken: v3FencingToken!, workerId: coordinationV3WorkerId,
+            sameRunResumable: false, retryDelayMs: 0,
+          });
+        } catch { /* ownership may already have changed */ }
+        if (runtimeAttachmentCleanupAfterRun) {
+          await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
+        }
+        return reply.code(409).send({
+          error: error instanceof Error ? error.message : "working folder changed; retry safely",
+          retryable: true,
+        });
       }
       let durableClaim: { generation: number };
       try {
@@ -842,6 +861,7 @@ export function registerAgentMessageRunRoute(
       });
       const activeRun: ActiveRun = {
         runId, startedAt, executionId: runId, leaseExpiresAt: leaseExpiry(), controller, messageCapability,
+        workingCopy,
         ...(routingConversationId ? { conversationId: routingConversationId } : {}),
         ...(trackedV3FencingToken !== undefined
           ? { v3SchedulerRunId: runId, v3FencingToken: trackedV3FencingToken }
@@ -950,6 +970,7 @@ export function registerAgentMessageRunRoute(
         runId,
         runtimeEngineId,
         runtimeSessionContractHash: effectiveRuntimeSessionContractHash,
+        workingCopy,
         availableRuntimeTools,
         runtimeAttachmentDirectory,
         runtimeAttachmentCleanupAfterRun,

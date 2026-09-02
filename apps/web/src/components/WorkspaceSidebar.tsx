@@ -1,7 +1,7 @@
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
-import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
-import LanguageIcon from "@mui/icons-material/Language";
+import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
+import KeyboardArrowRightIcon from "@mui/icons-material/KeyboardArrowRight";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
@@ -15,7 +15,6 @@ import {
   ListItemText,
   Stack,
   Tooltip,
-  Typography,
 } from "@mui/material";
 import type {
   ConversationDto,
@@ -23,35 +22,38 @@ import type {
   WorkspaceAgentDirectoryItemDto,
   WorkspaceConversationDirectoryItemDto,
   WorkspaceNotificationDto,
+  WorkspaceNotificationPageDto,
   WorkspacePreferencesDto,
   WorkspaceProjectDirectoryItemDto,
   WorkspaceTriggerDirectoryItemDto,
 } from "@ponderosa/core";
-import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { isOpenAttention, isUnreadNotificationUpdate } from "../attention";
 import {
   useWorkspaceDirectory,
   workspaceDirectoryItems,
 } from "../hooks/useWorkspaceDirectory";
 import { queryKeys } from "../queryKeys";
 import { routeProjectId, type Route } from "../routing";
+import { useAgent, useConversation, useNotificationProjection } from "../hooks/queries";
 import {
   reorderStableIds,
   resourcePreferenceKey,
   sortWorkspaceResources,
   starredWorkspaceResources,
   toggleWorkspaceResourceStar,
-  workspaceResourceSort,
 } from "../resourcePreferences";
 import {
   projectDisambiguator,
+  type UnreadNotificationProjection,
 } from "../workspaceNavigation";
 import { clampWorkspaceSidebarWidth } from "../workspaceSidebarState";
 import { markWorkspaceResourceUsed } from "../workspaceRecency";
 import { AgentStatusIndicator } from "./AgentStatusIndicator";
 import { ResourceContextMenu } from "./ResourceContextMenu";
-import { IconTitle } from "./IconTitle";
+import { TextInputDialog } from "./ConfirmationDialogs";
 import {
   SIDEBAR_PANEL_WIDTH,
   SIDEBAR_RAIL_WIDTH,
@@ -64,31 +66,34 @@ import {
   SharedSidebarPanel,
 } from "./WorkspaceSidebar.parts";
 import {
-  CreateSidebarPanel,
   SettingsSidebarPanel,
-  WikiSidebarPanel,
-  WorkspaceSidebarRail,
 } from "./WorkspaceSidebar.chrome";
-import { HomeSidebarPanel } from "./WorkspaceSidebar.home";
+import { ProjectRail, ProjectSidebarHeader } from "./ProjectNavigation";
+import { ProjectDeletionDialog } from "./ProjectDeletionDialog";
 import {
   useWorkspaceSidebarNavigation,
   useWorkspaceSidebarResize,
 } from "./useWorkspaceSidebarState";
-
-const WIKI_SEARCH_PAGE_SIZE = 15;
+import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
 
 export function WorkspaceSidebar({
   projects,
   preferences,
   route,
   notifications,
+  notificationCounts,
   drawer = false,
   onNavigate,
   onCreate,
   onPreferences,
   onRenameConversation,
   onDeleteConversation,
+  onProjectDeleted,
   onSearch,
+  onOpenNotifications,
+  onOpenEngineStatus,
+  creating,
+  onDismiss,
   collapsed = false,
   width = SIDEBAR_RAIL_WIDTH + SIDEBAR_PANEL_WIDTH,
   onCollapsedChange,
@@ -98,22 +103,39 @@ export function WorkspaceSidebar({
   preferences: WorkspacePreferencesDto;
   route: Route;
   notifications: WorkspaceNotificationDto[];
+  notificationCounts?: Pick<WorkspaceNotificationPageDto, "unacknowledgedActionCount" | "unreadUpdateCount">;
   drawer?: boolean;
   onNavigate(route: Route): void;
-  onCreate(kind: "project" | "chat" | "agent" | "trigger"): void;
+  onCreate(
+    kind: "project" | "chat" | "agent" | "trigger",
+    context?: {
+      projectId?: string;
+      conversationId?: string;
+      managerAgentId?: string;
+      agentId?: string;
+    },
+  ): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onRenameConversation(conversation: ConversationDto): void;
   onDeleteConversation(conversation: ConversationDto): void;
+  onProjectDeleted(projectId: string): void;
   onSearch?(): void;
+  onOpenNotifications?(): void;
+  onOpenEngineStatus?(): void;
+  creating?: "project" | "chat" | "agent" | "trigger";
+  onDismiss?(): void;
   collapsed?: boolean;
   width?: number;
   onCollapsedChange?(collapsed: boolean): void;
   onWidthChange?(width: number): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const workspaceConnection = useWorkspaceConnection();
   const {
     sidebarSection,
     setSidebarSection,
+    projectSection,
+    setProjectSection,
     filter,
     setFilter,
     draggedResource,
@@ -122,55 +144,47 @@ export function WorkspaceSidebar({
     setMenu,
     openResourceMenu,
   } = useWorkspaceSidebarNavigation(route);
+  const [collapsedSidebarAgentIds, setCollapsedSidebarAgentIds] =
+    useState<Set<string>>(() => new Set());
 
-  const normalizedFilter = filter.trim().toLocaleLowerCase();
-  const showingAgents = sidebarSection === "agents";
-  const showingChats = sidebarSection === "chats";
-  const showingProjects = sidebarSection === "projects";
-  const showingTriggers = sidebarSection === "triggers";
-  const showingHome = sidebarSection === "home";
-  const showingCreate = sidebarSection === "create";
-  const showingWiki = sidebarSection === "wiki";
-  const showingSettings = sidebarSection === "settings";
-  const [debouncedWikiFilter, setDebouncedWikiFilter] = useState("");
+  const routedProjectId = routeProjectId(route);
+  const [drawerProjectId, setDrawerProjectId] = useState(routedProjectId);
+  const [drawerProjectPanelOpen, setDrawerProjectPanelOpen] = useState(
+    Boolean(routedProjectId),
+  );
   useEffect(() => {
-    const next = showingWiki ? filter.trim() : "";
-    if (next.length < 2) {
-      setDebouncedWikiFilter("");
-      return;
-    }
-    const timer = globalThis.setTimeout(
-      () => setDebouncedWikiFilter(next),
-      250,
-    );
-    return () => globalThis.clearTimeout(timer);
-  }, [filter, showingWiki]);
-  const directorySearch = showingHome || showingAgents || showingChats ||
-    showingProjects || showingTriggers ? filter : "";
-  const directorySort = showingHome ? "last_used" as const : undefined;
+    if (!routedProjectId) return;
+    setDrawerProjectId(routedProjectId);
+    setDrawerProjectPanelOpen(true);
+  }, [routedProjectId]);
+  const projectContext = Boolean(drawerProjectId);
+  const showingAgents = projectContext && projectSection === "agents";
+  const showingChats = projectContext && projectSection === "chats";
+  const showingTriggers = projectContext && projectSection === "triggers";
+  const showingSettings = !projectContext && sidebarSection === "settings";
+  const directorySearch = projectContext ? filter : "";
   const projectDirectoryQuery =
     useWorkspaceDirectory<WorkspaceProjectDirectoryItemDto>("project", {
-      search: directorySearch,
-      sort: directorySort,
-      enabled: showingHome || showingProjects,
+      search: "",
+      enabled: true,
     });
   const chatDirectoryQuery =
     useWorkspaceDirectory<WorkspaceConversationDirectoryItemDto>("conversation", {
       search: directorySearch,
-      sort: directorySort,
-      enabled: showingHome || showingChats,
+      projectId: drawerProjectId,
+      enabled: projectContext,
     });
   const agentDirectoryQuery =
     useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
-      search: showingAgents || showingHome ? directorySearch : "",
-      sort: directorySort,
-      enabled: true,
+      search: showingAgents ? directorySearch : "",
+      projectId: drawerProjectId,
+      enabled: projectContext,
     });
   const triggerDirectoryQuery =
     useWorkspaceDirectory<WorkspaceTriggerDirectoryItemDto>("trigger", {
       search: directorySearch,
-      sort: directorySort,
-      enabled: showingHome || showingTriggers,
+      projectId: drawerProjectId,
+      enabled: projectContext,
     });
   const projectDirectory = workspaceDirectoryItems(
     projectDirectoryQuery.data?.pages,
@@ -204,6 +218,9 @@ export function WorkspaceSidebar({
     ? [...projectDirectory.starredItems, ...projectDirectory.items]
     : projectFallbackItems;
   const chatItems = [...chatDirectory.starredItems, ...chatDirectory.items];
+  const chatNamesById = new Map(
+    chatItems.map(item => [item.conversation.id, item.conversation.title] as const),
+  );
   const agentItems = [
     ...agentDirectory.starredItems,
     ...agentDirectory.items,
@@ -212,105 +229,148 @@ export function WorkspaceSidebar({
     ...triggerDirectory.starredItems,
     ...triggerDirectory.items,
   ];
-  const homeProjectIds = new Set([
-    ...projects.map(project => project.id),
-    ...projectItems.map(item => item.project.id),
-    ...chatItems.map(item => item.project.id),
-    ...agentItems.map(item => item.project.id),
-    ...triggerItems.map(item => item.project.id),
-  ]);
+  const projectionConversationIds = [
+    ...chatItems.map(item => item.conversation.id),
+    ...(route.kind === "conversation" ? [route.conversationId] : []),
+  ];
+  const notificationProjectionQuery = useNotificationProjection(
+    projects.map(project => project.id),
+    projectionConversationIds,
+  );
+  const emptyUnread: UnreadNotificationProjection = {
+    importantCount: 0,
+    ordinaryCount: 0,
+    totalCount: 0,
+  };
+  const conversationUnread = (conversationId: string): UnreadNotificationProjection =>
+    notificationProjectionQuery.data?.conversations[conversationId] ?? emptyUnread;
   const projectById = new Map(projects.map(project => [project.id, project]));
   for (const item of projectItems) projectById.set(item.project.id, item.project);
-  const snapshots = [...homeProjectIds].flatMap(projectId => {
-    const project = projectById.get(projectId);
-    if (!project) return [];
-    return [{
-      project,
-      conversations: chatItems
-        .filter(item => item.project.id === projectId)
-        .map(item => item.conversation),
-      agents: agentItems
-        .filter(item => item.project.id === projectId)
-        .map(item => item.agent),
-      health: agentItems
-        .filter(item => item.project.id === projectId)
-        .map(item => item.health),
-    }];
+  const activeProjectId = drawerProjectId;
+  const railProjectIds = useRef<string[]>([]);
+  const availableProjectIds = new Set(projects.map(project => project.id));
+  const stableProjectIds = railProjectIds.current.filter(projectId =>
+    availableProjectIds.has(projectId),
+  );
+  for (const project of projects) {
+    if (!stableProjectIds.includes(project.id)) stableProjectIds.push(project.id);
+  }
+  railProjectIds.current = stableProjectIds;
+  const stableRailProjects = stableProjectIds.flatMap(projectId => {
+    const project = projects.find(candidate => candidate.id === projectId);
+    return project ? [project] : [];
   });
-  const activeProjectId = routeProjectId(route);
   const activeProject = activeProjectId
     ? projectById.get(activeProjectId)
     : undefined;
+  const activeConversationQuery = useConversation(
+    route.kind === "conversation" ? route.conversationId : undefined,
+    1,
+  );
+  const activeAgentQuery = useAgent(
+    route.kind === "agent" ? route.agentId : undefined,
+    1,
+  );
   const counts = {
     running:
       agentDirectoryQuery.data?.pages.at(-1)?.activeCount ?? 0,
-    unread: notifications.filter(
-      notification =>
-        !notification.readAt && (notification.status ?? "open") === "open",
-    ).length,
+    attention: notificationCounts?.unacknowledgedActionCount ?? notifications.filter(isOpenAttention).length,
+    updates: notificationCounts?.unreadUpdateCount ?? notifications.filter(isUnreadNotificationUpdate).length,
   };
-  const wikiIndexQuery = useQuery({
-    queryKey: queryKeys.wiki.index,
-    queryFn: () => api.getWikiIndex(),
-    enabled: showingWiki,
-    staleTime: 60_000,
-  });
-  const wikiSearchQuery = useInfiniteQuery({
-    queryKey: queryKeys.wiki.search(debouncedWikiFilter),
-    queryFn: ({ pageParam }) =>
-      api.searchWiki(
-        debouncedWikiFilter,
-        WIKI_SEARCH_PAGE_SIZE,
-        pageParam,
-      ),
-    initialPageParam: undefined as string | undefined,
-    getNextPageParam: lastPage => lastPage.nextCursor,
-    enabled: showingWiki && debouncedWikiFilter.length >= 2,
-    staleTime: 60_000,
-  });
+  const allMessagesUnread = notificationProjectionQuery.data?.allMessages ?? emptyUnread;
+  const projectUnread = new Map(projects.map(project => [
+    project.id,
+    notificationProjectionQuery.data?.projects[project.id] ?? emptyUnread,
+  ]));
   const healthQuery = useQuery({
     queryKey: queryKeys.health.all,
     queryFn: () => api.getHealth(),
     enabled: showingSettings,
     staleTime: 60_000,
   });
-  const showNavigation = (next?: Route) => {
+  const [renamingProject, setRenamingProject] = useState<ProjectDto>();
+  const [deletingProject, setDeletingProject] = useState<ProjectDto>();
+  const projectBrowseState = useRef(
+    new Map<string, { section: typeof projectSection; filter: string }>(),
+  );
+  const setProjectFilter = (value: string) => {
+    setFilter(value);
+    if (activeProjectId) {
+      projectBrowseState.current.set(activeProjectId, {
+        section: projectSection,
+        filter: value,
+      });
+    }
+  };
+  const renameProject = useMutation({
+    mutationFn: ({ project, label }: { project: ProjectDto; label: string }) =>
+      api.updateProject(project.id, { label }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.workspaceDirectory.kind("project"),
+      });
+      setRenamingProject(undefined);
+    },
+  });
+  const showNavigation = (next: Route) => {
+    setDrawerProjectId(undefined);
+    setDrawerProjectPanelOpen(false);
     setSidebarSection("home");
     setFilter("");
-    if (next) onNavigate(next);
+    onNavigate(next);
   };
-  const revealSection = (section: typeof sidebarSection) => {
-    if (!drawer && section === sidebarSection && !collapsed) {
-      onCollapsedChange?.(true);
+  const openProject = (project: ProjectDto) => {
+    if (project.id === activeProjectId) {
+      if (drawer) {
+        setDrawerProjectPanelOpen(open => !open);
+      } else {
+        onCollapsedChange?.(!collapsed);
+      }
       return;
     }
-    setSidebarSection(section);
-    setFilter("");
+    setSidebarSection("home");
+    if (activeProjectId) {
+      projectBrowseState.current.set(activeProjectId, {
+        section: projectSection,
+        filter,
+      });
+    }
+    const remembered = projectBrowseState.current.get(project.id);
+    setDrawerProjectId(project.id);
+    setDrawerProjectPanelOpen(true);
+    setProjectSection(remembered?.section ?? "chats");
+    setFilter(remembered?.filter ?? "");
     if (!drawer && collapsed) onCollapsedChange?.(false);
   };
-  const showAgents = () => revealSection("agents");
-  const showChats = () => revealSection("chats");
-  const showProjects = () => revealSection("projects");
-  const showHome = () => revealSection("home");
-  const showCreate = () => revealSection("create");
-  const openAllProjects = () => {
-    setSidebarSection("projects");
-    onNavigate({ kind: "projects" });
+  const reorderRailProject = (
+    sourceProjectId: string,
+    targetProjectId: string,
+    position: "before" | "after",
+  ) => {
+    const currentOrder = stableRailProjects.map(project => project.id);
+    const projectOrder = reorderStableIds(
+      currentOrder,
+      currentOrder,
+      sourceProjectId,
+      targetProjectId,
+      position,
+    );
+    if (projectOrder.every((projectId, index) => projectId === currentOrder[index])) {
+      return;
+    }
+    railProjectIds.current = projectOrder;
+    onPreferences({ projectSort: "custom", projectOrder });
   };
-  const showTriggers = () => revealSection("triggers");
-  const showWiki = () => revealSection("wiki");
   const openTriggerManager = (
     projectId: string,
-    agentId: string,
+    _agentId: string | undefined,
     triggerId: string,
   ) => {
     markWorkspaceResourceUsed(queryClient, "trigger", triggerId);
-    onNavigate({ kind: "agent", projectId, agentId, view: "triggers" });
+    onNavigate({ kind: "automation", projectId, triggerId });
   };
 
-  const openProject = (snapshot: WorkspaceProjectDirectoryItemDto) => {
-    onNavigate({ kind: "project", projectId: snapshot.project.id });
-  };
   const openChat = (
     project: Pick<ProjectDto, "id" | "label" | "hostPath">,
     conversation: ConversationDto,
@@ -323,172 +383,91 @@ export function WorkspaceSidebar({
     });
   };
 
-    const rail = (
-    <WorkspaceSidebarRail
+  const rail = (
+    <ProjectRail
       drawer={drawer}
-      runningCount={counts.running}
-      showingAgents={showingAgents}
-      showingChats={showingChats}
-      showingHome={showingHome}
-      showingCreate={showingCreate}
-      showingProjects={showingProjects}
-      showingSettings={showingSettings}
-      showingTriggers={showingTriggers}
-      showingWiki={showingWiki}
-      onShowAgents={showAgents}
-      onShowChats={showChats}
-      onShowHome={showHome}
-      onShowCreate={showCreate}
-      onShowProjects={showProjects}
-      onShowSettings={() => revealSection("settings")}
-      onShowTriggers={showTriggers}
-      onShowWiki={showWiki}
+      projects={stableRailProjects}
+      activeProjectId={
+        projectContext && (drawer ? drawerProjectPanelOpen : !collapsed)
+          ? activeProjectId
+          : undefined
+      }
+      currentProjectId={routedProjectId}
+      route={route}
+      profile={preferences.profile}
+      allMessagesUnread={allMessagesUnread}
+      attentionNotifications={counts.attention}
+      unreadNotificationUpdates={counts.updates}
+      projectUnread={projectUnread}
+      onReorderProject={reorderRailProject}
+      onOpenHome={() => showNavigation({ kind: "home" })}
+      onOpenAllMessages={() => showNavigation({ kind: "allChat" })}
+      onOpenProject={openProject}
+      onOpenCreate={() => onCreate("project")}
+      createProjectOpen={creating === "project"}
+      onOpenSearch={() => onSearch?.()}
+      onOpenNotifications={() => onOpenNotifications?.()}
+      onOpenUsage={() => showNavigation({ kind: "usage" })}
+      onOpenEngineStatus={() => onOpenEngineStatus?.()}
+      onOpenSettings={() => showNavigation({ kind: "settings" })}
+      onOpenProfile={() => showNavigation({ kind: "profile" })}
+      onClose={onDismiss}
     />
   );
 
   const starredResourceIds = starredWorkspaceResources(preferences);
-  const projectList = projectItems;
   const toggleStar = (
     kind: "project" | "conversation" | "agent" | "trigger",
     id: string,
   ) => onPreferences(toggleWorkspaceResourceStar(preferences, kind, id));
-  const homePanel = (
-    <HomeSidebarPanel
-      snapshots={snapshots}
-      triggers={triggerItems.map(item => item.trigger)}
-      preferences={preferences}
-      filter={filter}
-      drawer={drawer}
-      onFilterChange={setFilter}
-      onNavigate={onNavigate}
-      onOpenResourceMenu={(anchor, resourceRoute) =>
-        openResourceMenu(anchor, resourceRoute)
+  const projectHeader = activeProject ? (
+    <ProjectSidebarHeader
+      project={activeProject}
+      overviewActive={
+        route.kind === "project" &&
+        route.projectId === activeProject.id &&
+        (!route.view || route.view === "overview")
       }
-      onOpenAllMessages={() => showNavigation({ kind: "allChat" })}
-      onViewHome={() => onNavigate({ kind: "home" })}
-      onToggleStar={toggleStar}
-    />
-  );
-  const projectResourceRows = (items: typeof projectList) =>
-    items.map(snapshot => {
-      const starred = starredResourceIds.has(
-        resourcePreferenceKey("project", snapshot.project.id),
-      );
-      return (
-        <Stack
-          key={snapshot.project.id}
-          direction="row"
-          onContextMenu={event => {
-            event.preventDefault();
-            openResourceMenu(event.currentTarget, {
-              kind: "project",
-              projectId: snapshot.project.id,
-            });
-          }}
-          sx={{ alignItems: "center", mb: 0.25 }}
-        >
-          <ListItemButton
-            aria-label={`Open project ${snapshot.project.label}`}
-            data-resource-id={`sidebar-project:${snapshot.project.id}`}
-            onClick={() => openProject(snapshot)}
-            sx={{ borderRadius: 1.25, px: 1, py: 0.65, minWidth: 0 }}
-          >
-            <ListItemIcon sx={{ minWidth: 38 }}>
-              <FolderOutlinedIcon fontSize="small" />
-            </ListItemIcon>
-            <ListItemText
-              primary={snapshot.project.label}
-              secondary={snapshot.displayPath}
-              primaryTypographyProps={{
-                noWrap: true,
-                fontSize: 13,
-                fontWeight: starred ? 750 : 500,
-              }}
-              secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
-            />
-          </ListItemButton>
-          <Tooltip
-            title={
-              starred
-                ? `Unstar ${snapshot.project.label}`
-                : `Star ${snapshot.project.label}`
-            }
-          >
-            <IconButton
-              size="small"
-              aria-label={`${starred ? "Unstar" : "Star"} ${snapshot.project.label}`}
-              onClick={() => toggleStar("project", snapshot.project.id)}
-            >
-              {starred ? (
-                <StarRoundedIcon sx={{ color: starColor }} fontSize="small" />
-              ) : (
-                <StarBorderRoundedIcon fontSize="small" />
-              )}
-            </IconButton>
-          </Tooltip>
-        </Stack>
-      );
-    });
-  const starredProjects = projectItems.filter(item =>
-    starredResourceIds.has(resourcePreferenceKey("project", item.project.id))
-  );
-  const unstarredProjects = projectItems.filter(item =>
-    !starredResourceIds.has(resourcePreferenceKey("project", item.project.id))
-  );
-  const projectsPanel = (
-    <SharedSidebarPanel
-      icon={<FolderOutlinedIcon />}
-      title="Projects"
-      total={projectDirectoryQuery.requestState.hasResolved ? projectDirectory.total : undefined}
-      busy={projectDirectoryQuery.requestState.isInitialLoading || projectDirectoryQuery.requestState.isRefreshing || projectDirectoryQuery.requestState.isFetchingNextPage}
-      searchLabel="Search projects"
-      searchValue={filter}
-      onSearchValueChange={setFilter}
-      topContent={activeProject ? (
-        <Box component="section" sx={{ mb: 2 }}>
-          <SidebarSectionHeading>Current Project</SidebarSectionHeading>
-          <List disablePadding>
-            <ListItemButton
-              aria-label={`Open Project Browser for ${activeProject.label}`}
-              selected={route.kind === "browser" && !route.agentId}
-              onClick={() => onNavigate({
-                kind: "browser",
-                projectId: activeProject.id,
-              })}
-              sx={{ borderRadius: 1.25, px: 1, py: 0.65 }}
-            >
-              <ListItemIcon sx={{ minWidth: 38 }}>
-                <LanguageIcon fontSize="small" />
-              </ListItemIcon>
-              <ListItemText
-                primary="Project Browser"
-                secondary={activeProject.label}
-                primaryTypographyProps={{ noWrap: true, fontSize: 13 }}
-                secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
-              />
-            </ListItemButton>
-          </List>
-        </Box>
-      ) : undefined}
-      starredRows={projectResourceRows(starredProjects)}
-      allRows={projectResourceRows(unstarredProjects)}
-      collectionFeedback={<CollectionStateFeedback request={projectDirectoryQuery.requestState} itemCount={projectList.length} filtersActive={Boolean(filter.trim())} resourceLabel="Projects" emptyTitle="No Projects Yet" noMatchTitle={"No Projects match “" + filter.trim() + "”."} onClearFilters={() => setFilter("")} compact />}
-      viewAllLabel="View All Projects"
-      viewAllIcon={<FolderOutlinedIcon />}
-      onViewAll={openAllProjects}
-      onViewAllContextMenu={anchor =>
-        openResourceMenu(anchor, { kind: "projects" })
-      }
+      section={projectSection}
+      counts={{
+        chats: chatDirectoryQuery.requestState.hasResolved ? chatDirectory.total : undefined,
+        agents: agentDirectoryQuery.requestState.hasResolved ? agentDirectory.total : undefined,
+        triggers: triggerDirectoryQuery.requestState.hasResolved ? triggerDirectory.total : undefined,
+      }}
+      runningCount={agentDirectoryQuery.requestState.hasResolved ? counts.running : undefined}
+      unreadCount={projectUnread.get(activeProject.id)?.totalCount ?? 0}
       drawer={drawer}
+      onSectionChange={section => {
+        setProjectSection(section);
+        setFilter("");
+        projectBrowseState.current.set(activeProject.id, { section, filter: "" });
+      }}
+      onOpenOverview={() => onNavigate({ kind: "project", projectId: activeProject.id })}
+      onOpenBrowser={() => onNavigate({ kind: "browser", projectId: activeProject.id })}
+      onRename={() => setRenamingProject(activeProject)}
+      onOpenSettings={() => onNavigate({ kind: "project", projectId: activeProject.id, view: "settings" })}
+      onDelete={() => setDeletingProject(activeProject)}
     />
-  );
+  ) : undefined;
   const allChatRows = chatItems;
+  const activeChatRow =
+    route.kind === "conversation" &&
+    activeProject &&
+    activeConversationQuery.data?.conversation.projectId === activeProject.id &&
+    !chatItems.some(item => item.conversation.id === route.conversationId)
+      ? {
+          kind: "conversation" as const,
+          project: activeProject,
+          conversation: activeConversationQuery.data.conversation,
+        }
+      : undefined;
   const chatRows = chatItems;
   const globalChatResourceRows = (items: typeof chatRows) =>
     items.map(({ project: chatProject, conversation }) => {
       const starred = starredResourceIds.has(
         resourcePreferenceKey("conversation", conversation.id),
       );
+      const unread = conversationUnread(conversation.id);
       return (
         <Stack
           key={conversation.id}
@@ -531,6 +510,7 @@ export function WorkspaceSidebar({
         >
           <ListItemButton
             data-resource-id={`sidebar-conversation:${conversation.id}`}
+            aria-label={`Open Chat ${conversation.title}${unread.importantCount ? `, ${unread.importantCount} important unread` : ""}${unread.ordinaryCount ? `, ${unread.ordinaryCount} ordinary unread` : ""}`}
             onClick={() => openChat(chatProject, conversation)}
             sx={{ borderRadius: 1.25, px: 1, py: 0.65, minWidth: 0 }}
           >
@@ -543,10 +523,27 @@ export function WorkspaceSidebar({
               primaryTypographyProps={{
                 noWrap: true,
                 fontSize: 13,
-                fontWeight: starred ? 750 : 500,
+                fontWeight: unread.totalCount ? 800 : starred ? 750 : 500,
               }}
               secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
             />
+            {unread.importantCount ? (
+              <Chip
+                size="small"
+                color="error"
+                label={unread.importantCount}
+                aria-label={`${unread.importantCount} important unread`}
+                sx={{ height: 20, minWidth: 24, fontWeight: 800, color: "#fff" }}
+              />
+            ) : null}
+            {unread.ordinaryCount ? (
+              <Box
+                component="span"
+                role="img"
+                aria-label={`${unread.ordinaryCount} ordinary unread`}
+                sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: "text.secondary", flexShrink: 0 }}
+              />
+            ) : null}
           </ListItemButton>
           <Tooltip
             title={
@@ -572,13 +569,20 @@ export function WorkspaceSidebar({
     });
   const globalChatsPanel = (
     <SharedSidebarPanel
+      header={projectHeader}
       icon={<ChatBubbleOutlineIcon />}
       title="Chats"
       total={chatDirectoryQuery.requestState.hasResolved ? chatDirectory.total : undefined}
       busy={chatDirectoryQuery.requestState.isInitialLoading || chatDirectoryQuery.requestState.isRefreshing || chatDirectoryQuery.requestState.isFetchingNextPage}
       searchLabel="Search chats"
       searchValue={filter}
-      onSearchValueChange={setFilter}
+      onSearchValueChange={setProjectFilter}
+      topContent={activeChatRow ? (
+        <Box component="section" sx={{ mb: 2 }}>
+          <SidebarSectionHeading>Open now</SidebarSectionHeading>
+          <List disablePadding>{globalChatResourceRows([activeChatRow])}</List>
+        </Box>
+      ) : undefined}
       starredRows={globalChatResourceRows(
         chatRows.filter(({ conversation }) =>
           starredResourceIds.has(
@@ -597,22 +601,79 @@ export function WorkspaceSidebar({
       collectionFeedback={<CollectionStateFeedback request={chatDirectoryQuery.requestState} itemCount={chatRows.length} filtersActive={Boolean(filter.trim())} resourceLabel="Chats" emptyTitle="No Project Chats Yet" noMatchTitle={"No Chats match “" + filter.trim() + "”."} onClearFilters={() => setFilter("")} compact />}
       viewAllLabel="View All Chats"
       viewAllIcon={<ChatBubbleOutlineIcon />}
-      onViewAll={() => onNavigate({ kind: "allChats" })}
+      loadMoreLabel={chatDirectoryQuery.hasNextPage ? "Load more" : undefined}
+      onLoadMore={() => void chatDirectoryQuery.fetchNextPage()}
+      loadingMore={chatDirectoryQuery.isFetchingNextPage}
+      onViewAll={() => activeProjectId && onNavigate({ kind: "allChats", filterProjectId: activeProjectId })}
       onViewAllContextMenu={anchor =>
         openResourceMenu(anchor, { kind: "allChats" })
       }
+      createLabel="Create Chat"
+      onCreate={() => activeProjectId && onCreate("chat", { projectId: activeProjectId })}
       drawer={drawer}
     />
   );
 
-  const allAgentRows = agentItems.map(({ agent, project, health }) => ({
+  type AgentSidebarRow = {
+    agent: (typeof agentItems)[number]["agent"];
+    project: (typeof agentItems)[number]["project"];
+    health?: WorkspaceAgentDirectoryItemDto["health"];
+    status?: (typeof agentItems)[number]["health"]["status"];
+  };
+  type AgentSidebarTreeRow = AgentSidebarRow & {
+    depth: number;
+    hasChildren: boolean;
+  };
+  const allAgentRows: AgentSidebarRow[] = agentItems.map(({ agent, project, health }) => ({
     agent,
     project,
+    health,
     status: health.status,
   }));
+  const agentNamesById = new Map(
+    allAgentRows.map(row => [row.agent.id, row.agent.title]),
+  );
+  const activeAgentRow: AgentSidebarRow | undefined =
+    route.kind === "agent" &&
+    activeProject &&
+    activeAgentQuery.data?.agent.projectId === activeProject.id &&
+    !allAgentRows.some(item => item.agent.id === route.agentId)
+      ? { agent: activeAgentQuery.data.agent, project: activeProject }
+      : undefined;
   const agentRows = allAgentRows;
-  const agentResourceRows = (items: typeof agentRows) =>
-    items.map(({ agent, project: agentProject, status }) => {
+  const agentHierarchyRows = (items: AgentSidebarRow[]): AgentSidebarTreeRow[] => {
+    const byId = new Map(items.map(item => [item.agent.id, item]));
+    const childrenByManagerId = new Map<string, AgentSidebarRow[]>();
+    for (const item of items) {
+      const managerId = item.agent.managerAgentId;
+      if (!managerId || !byId.has(managerId)) continue;
+      const children = childrenByManagerId.get(managerId) ?? [];
+      children.push(item);
+      childrenByManagerId.set(managerId, children);
+    }
+    const roots = items.filter(item =>
+      !item.agent.managerAgentId || !byId.has(item.agent.managerAgentId));
+    const visited = new Set<string>();
+    const visible: AgentSidebarTreeRow[] = [];
+    const visit = (item: AgentSidebarRow, depth: number, parentVisible: boolean) => {
+      if (visited.has(item.agent.id)) return;
+      visited.add(item.agent.id);
+      const children = childrenByManagerId.get(item.agent.id) ?? [];
+      if (parentVisible) {
+        visible.push({ ...item, depth, hasChildren: children.length > 0 });
+      }
+      const childrenVisible = parentVisible &&
+        !collapsedSidebarAgentIds.has(item.agent.id);
+      for (const child of children) visit(child, depth + 1, childrenVisible);
+    };
+    for (const root of roots) visit(root, 0, true);
+    // Defensive fallback for malformed cyclic relationships: keep every loaded
+    // Agent reachable without allowing recursion to loop.
+    for (const item of items) if (!visited.has(item.agent.id)) visit(item, 0, true);
+    return visible;
+  };
+  const agentResourceRows = (items: AgentSidebarTreeRow[]) =>
+    items.map(({ agent, project: agentProject, health, status, depth, hasChildren }) => {
       const starred = starredResourceIds.has(
         resourcePreferenceKey("agent", agent.id),
       );
@@ -650,8 +711,38 @@ export function WorkspaceSidebar({
               agentId: agent.id,
             });
           }}
-          sx={{ alignItems: "center", mb: 0.25 }}
+          sx={{
+            alignItems: "center",
+            mb: 0.25,
+            pl: Math.min(depth, 4) * 1.75,
+          }}
         >
+          <Box sx={{ width: 28, flex: "0 0 28px", display: "grid", placeItems: "center" }}>
+            {hasChildren ? (
+              <Tooltip
+                title={`${collapsedSidebarAgentIds.has(agent.id) ? "Expand" : "Collapse"} ${agent.title}`}
+              >
+                <IconButton
+                  size="small"
+                  aria-label={`${collapsedSidebarAgentIds.has(agent.id) ? "Expand" : "Collapse"} ${agent.title}`}
+                  aria-expanded={!collapsedSidebarAgentIds.has(agent.id)}
+                  onClick={() => setCollapsedSidebarAgentIds(current => {
+                    const next = new Set(current);
+                    if (next.has(agent.id)) next.delete(agent.id);
+                    else next.add(agent.id);
+                    return next;
+                  })}
+                  sx={{ width: 28, height: 28 }}
+                >
+                  {collapsedSidebarAgentIds.has(agent.id) ? (
+                    <KeyboardArrowRightIcon fontSize="small" />
+                  ) : (
+                    <KeyboardArrowDownIcon fontSize="small" />
+                  )}
+                </IconButton>
+              </Tooltip>
+            ) : null}
+          </Box>
           <ListItemButton
             data-resource-id={"sidebar-agent:" + agent.id}
             aria-label={`Open agent ${agent.title} in ${projectDisambiguator(agentProject, projects)}`}
@@ -663,14 +754,37 @@ export function WorkspaceSidebar({
                 agentId: agent.id,
               })
             }
-            sx={{ borderRadius: 1.25, px: 1, py: 0.65, minWidth: 0 }}
+            sx={{
+              borderRadius: 1.25,
+              px: 1,
+              py: 0.65,
+              minWidth: 0,
+              ...(depth > 0
+                ? {
+                    bgcolor: "var(--ponderosa-delegated-surface)",
+                    borderLeft: 2,
+                    borderLeftColor: "primary.main",
+                    "&:hover": {
+                      bgcolor: "var(--ponderosa-delegated-hover)",
+                    },
+                    "&.Mui-selected": {
+                      bgcolor: "var(--ponderosa-delegated-hover)",
+                    },
+                    "&.Mui-selected:hover": {
+                      bgcolor: "var(--ponderosa-delegated-hover)",
+                    },
+                  }
+                : undefined),
+            }}
           >
-            <ListItemIcon sx={{ minWidth: 38 }}>
+            <ListItemIcon
+              sx={{ minWidth: 38, color: depth > 0 ? "primary.light" : undefined }}
+            >
               <SmartToyOutlinedIcon fontSize="small" />
             </ListItemIcon>
             <ListItemText
               primary={agent.title}
-              secondary={`${projectDisambiguator(agentProject, projects)} · ${agent.activeEngine}`}
+              secondary={`${chatNamesById.get(agent.conversationId) ?? "Unavailable Chat"} · ${agent.activeEngine}`}
               primaryTypographyProps={{
                 noWrap: true,
                 fontSize: 13,
@@ -678,7 +792,15 @@ export function WorkspaceSidebar({
               }}
               secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
             />
-            <AgentStatusIndicator status={status} />
+            {status ? (
+              <AgentStatusIndicator
+                status={status}
+                health={health}
+                connectionStatus={workspaceConnection.status}
+                phaseEvidenceFresh={workspaceConnection.phaseEvidenceFresh}
+                agentNameForId={agentId => agentNamesById.get(agentId)}
+              />
+            ) : null}
           </ListItemButton>
           <Tooltip title={`${starred ? "Unstar" : "Star"} ${agent.title}`}>
             <IconButton
@@ -698,39 +820,48 @@ export function WorkspaceSidebar({
     });
   const agentsPanel = (
     <SharedSidebarPanel
+      header={projectHeader}
       icon={<SmartToyOutlinedIcon />}
       title="Agents"
       total={agentDirectoryQuery.requestState.hasResolved ? agentDirectory.total : undefined}
       busy={agentDirectoryQuery.requestState.isInitialLoading || agentDirectoryQuery.requestState.isRefreshing || agentDirectoryQuery.requestState.isFetchingNextPage}
       searchLabel="Search agents"
       searchValue={filter}
-      onSearchValueChange={setFilter}
+      onSearchValueChange={setProjectFilter}
+      topContent={activeAgentRow ? (
+        <Box component="section" sx={{ mb: 2 }}>
+          <SidebarSectionHeading>Open now</SidebarSectionHeading>
+          <List disablePadding>{agentResourceRows([{
+            ...activeAgentRow,
+            depth: 0,
+            hasChildren: false,
+          }])}</List>
+        </Box>
+      ) : undefined}
       starredRows={agentResourceRows(
-        agentRows.filter(({ agent }) =>
+        agentHierarchyRows(agentRows.filter(({ agent }) =>
           starredResourceIds.has(resourcePreferenceKey("agent", agent.id)),
-        ),
+        )),
       )}
       allRows={agentResourceRows(
-        agentRows.filter(
+        agentHierarchyRows(agentRows.filter(
           ({ agent }) =>
             !starredResourceIds.has(resourcePreferenceKey("agent", agent.id)),
-        ),
+        )),
       )}
       collectionFeedback={<CollectionStateFeedback request={agentDirectoryQuery.requestState} itemCount={agentRows.length} filtersActive={Boolean(filter.trim())} resourceLabel="Agents" emptyTitle="No Active Agents" noMatchTitle={"No Agents match “" + filter.trim() + "”."} onClearFilters={() => setFilter("")} compact />}
-      viewAllLabel="View All Agents"
-      viewAllIcon={<SmartToyOutlinedIcon />}
-      onViewAll={() => onNavigate({ kind: "allAgents" })}
-      onViewAllContextMenu={anchor =>
-        openResourceMenu(anchor, { kind: "allAgents" })
-      }
+      loadMoreLabel={agentDirectoryQuery.hasNextPage ? "Load more" : undefined}
+      onLoadMore={() => void agentDirectoryQuery.fetchNextPage()}
+      loadingMore={agentDirectoryQuery.isFetchingNextPage}
+      createLabel="Create Agent"
+      onCreate={() => activeProjectId && onCreate("agent", { projectId: activeProjectId })}
       drawer={drawer}
     />
   );
 
   const filteredTriggers = triggerItems;
   const triggerResourceRows = (items: typeof filteredTriggers) =>
-    items.map(({ trigger, agent, project }) => {
-      const destination = { agent, project };
+    items.map(({ trigger, targetAgent, project }) => {
       const starred = starredResourceIds.has(
         resourcePreferenceKey("trigger", trigger.id),
       );
@@ -763,21 +894,20 @@ export function WorkspaceSidebar({
           onContextMenu={event => {
             event.preventDefault();
             openResourceMenu(event.currentTarget, {
-              kind: "agent",
-              projectId: destination.project.id,
-              agentId: destination.agent.id,
-              view: "triggers",
+              kind: "automation",
+              projectId: project.id,
+              triggerId: trigger.id,
             });
           }}
           sx={{ alignItems: "center", mb: 0.25 }}
         >
           <ListItemButton
-            aria-label={`Open Automations for ${destination.agent.title}`}
+            aria-label={`Open ${trigger.name} Automation`}
             data-resource-id={`sidebar-trigger:${trigger.id}`}
             onClick={() =>
               openTriggerManager(
-                destination.project.id,
-                destination.agent.id,
+                project.id,
+                targetAgent?.id,
                 trigger.id,
               )
             }
@@ -788,7 +918,7 @@ export function WorkspaceSidebar({
             </ListItemIcon>
             <ListItemText
               primary={trigger.name}
-              secondary={`${destination.project.label} · ${destination.agent.title}`}
+              secondary={`${project.label} · ${targetAgent?.title ?? "Reassignment required"}`}
               primaryTypographyProps={{
                 noWrap: true,
                 fontSize: 13,
@@ -825,13 +955,14 @@ export function WorkspaceSidebar({
     });
   const triggersPanel = (
     <SharedSidebarPanel
+      header={projectHeader}
       icon={<BoltOutlinedIcon />}
       title="Automations"
       total={triggerDirectoryQuery.requestState.hasResolved ? triggerDirectory.total : undefined}
       busy={triggerDirectoryQuery.requestState.isInitialLoading || triggerDirectoryQuery.requestState.isRefreshing || triggerDirectoryQuery.requestState.isFetchingNextPage}
       searchLabel="Search Automations or Agents"
       searchValue={filter}
-      onSearchValueChange={setFilter}
+      onSearchValueChange={setProjectFilter}
       starredRows={triggerResourceRows(
         filteredTriggers.filter(({ trigger }) =>
           starredResourceIds.has(resourcePreferenceKey("trigger", trigger.id)),
@@ -846,51 +977,12 @@ export function WorkspaceSidebar({
         ),
       )}
       collectionFeedback={<CollectionStateFeedback request={triggerDirectoryQuery.requestState} itemCount={filteredTriggers.length} filtersActive={Boolean(filter.trim())} resourceLabel="Automations" emptyTitle="No Automations Configured Yet" noMatchTitle="No configured Automations match" onClearFilters={() => setFilter("")} compact />}
-      viewAllLabel="View All Automations"
-      viewAllIcon={<BoltOutlinedIcon />}
-      onViewAll={() => onNavigate({ kind: "allTriggers" })}
-      onViewAllContextMenu={anchor =>
-        openResourceMenu(anchor, { kind: "allTriggers" })
-      }
+      loadMoreLabel={triggerDirectoryQuery.hasNextPage ? "Load more" : undefined}
+      onLoadMore={() => void triggerDirectoryQuery.fetchNextPage()}
+      loadingMore={triggerDirectoryQuery.isFetchingNextPage}
+      createLabel="Create Automation"
+      onCreate={() => activeProjectId && onCreate("trigger", { projectId: activeProjectId })}
       drawer={drawer}
-    />
-  );
-
-  const wikiSections = wikiIndexQuery.data?.sections ?? [];
-  const wikiSearchResults = wikiSearchQuery.data?.pages.flatMap(
-    page => page.results,
-  ) ?? [];
-  const wikiSearchTotal = wikiSearchQuery.data?.pages[0]?.total ?? 0;
-  const wikiSearchPending = normalizedFilter.length >= 2 &&
-    (debouncedWikiFilter.toLocaleLowerCase() !== normalizedFilter ||
-      wikiSearchQuery.isLoading);
-  const wikiSearchError = !wikiSearchPending && wikiSearchQuery.isError;
-  const activeWikiArticleId =
-    route.kind === "wiki"
-      ? (route.articleId ?? wikiIndexQuery.data?.sections[0]?.articles[0]?.id)
-      : undefined;
-    const wikiPanel = (
-    <WikiSidebarPanel
-      activeArticleId={activeWikiArticleId}
-      drawer={drawer}
-      filter={filter}
-      isError={wikiIndexQuery.isError}
-      isLoading={wikiIndexQuery.isLoading}
-      sections={wikiSections}
-      searchError={wikiSearchError}
-      searchLoading={wikiSearchPending}
-      searchResults={wikiSearchResults}
-      searchTotal={wikiSearchTotal}
-      hasMoreSearchResults={wikiSearchQuery.hasNextPage}
-      loadingMoreSearchResults={wikiSearchQuery.isFetchingNextPage}
-      onFilterChange={setFilter}
-      onLoadMoreSearchResults={() => void wikiSearchQuery.fetchNextPage()}
-      onNavigateArticle={articleId => {
-        onNavigate({ kind: "wiki", articleId });
-      }}
-      onOpenArticleMenu={(anchor, articleId) => {
-        openResourceMenu(anchor, { kind: "wiki", articleId });
-      }}
     />
   );
 
@@ -901,28 +993,17 @@ export function WorkspaceSidebar({
       onNavigate={onNavigate}
     />
   );
-  const createPanel = (
-    <CreateSidebarPanel
-      selected={route.kind === "create" ? route.resource : undefined}
-      drawer={drawer}
-      onCreate={onCreate}
-    />
-  );
-  const panel = showingCreate
-    ? createPanel
-    : showingAgents
-    ? agentsPanel
-    : showingChats
-      ? globalChatsPanel
-      : showingTriggers
-        ? triggersPanel
-        : showingWiki
-          ? wikiPanel
-          : showingSettings
-            ? settingsPanel
-            : showingProjects
-              ? projectsPanel
-              : homePanel;
+  const panel = showingSettings
+        ? settingsPanel
+        : showingAgents
+          ? agentsPanel
+          : showingChats
+            ? globalChatsPanel
+            : showingTriggers
+              ? triggersPanel
+              : null;
+  const showPanel = Boolean(panel) &&
+    (drawer ? drawerProjectPanelOpen : !collapsed);
   const { resizing, resizeStart } = useWorkspaceSidebarResize(
     width,
     onWidthChange,
@@ -935,19 +1016,20 @@ export function WorkspaceSidebar({
       sx={{
         position: "relative",
         width: drawer
-          ? "min(100vw, 390px)"
-          : collapsed
-            ? SIDEBAR_RAIL_WIDTH
-            : width,
+          ? showPanel ? "min(100vw, 390px)" : 64
+          : showPanel
+            ? width
+            : SIDEBAR_RAIL_WIDTH,
         maxWidth: "100vw",
         height: "100%",
+        alignSelf: "stretch",
         minHeight: 0,
         minWidth: 0,
         borderRight: 1,
-        borderColor: collapsed && !drawer ? "transparent" : "divider",
+        borderColor: showPanel || drawer ? "divider" : "transparent",
         display: "grid",
         gridTemplateColumns:
-          collapsed && !drawer
+          !showPanel
             ? `${SIDEBAR_RAIL_WIDTH}px`
             : `${drawer ? 64 : SIDEBAR_RAIL_WIDTH}px minmax(0, 1fr)`,
         bgcolor: sidebarSurface,
@@ -960,8 +1042,8 @@ export function WorkspaceSidebar({
       }}
     >
       {rail}
-      {collapsed && !drawer ? null : panel}
-      {!drawer && !collapsed && onWidthChange ? (
+      {showPanel ? panel : null}
+      {!drawer && showPanel && onWidthChange ? (
         <Box
           role="separator"
           aria-label="Resize sidebar"
@@ -1022,6 +1104,30 @@ export function WorkspaceSidebar({
             : []
         }
       />
+      <TextInputDialog
+        open={Boolean(renamingProject)}
+        title="Rename Project"
+        label="Project name"
+        initialValue={renamingProject?.label ?? ""}
+        confirmLabel="Rename"
+        pending={renameProject.isPending}
+        error={renameProject.error instanceof Error ? renameProject.error.message : undefined}
+        onCancel={() => setRenamingProject(undefined)}
+        onConfirm={label => {
+          if (renamingProject) renameProject.mutate({ project: renamingProject, label });
+        }}
+      />
+      {deletingProject ? (
+        <ProjectDeletionDialog
+          project={deletingProject}
+          open
+          onClose={() => setDeletingProject(undefined)}
+          onDeleted={projectId => {
+            setDeletingProject(undefined);
+            onProjectDeleted(projectId);
+          }}
+        />
+      ) : null}
     </Box>
   );
 }

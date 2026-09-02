@@ -1,5 +1,4 @@
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
-import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import {
@@ -28,6 +27,8 @@ import {
 } from "@mui/material";
 import type {
   AgentDto,
+  AgentDetailDto,
+  AgentWorkingCopyMode,
   AgentManagementPermissionsDto,
   BrowserProfileDto,
   ConversationDto,
@@ -37,6 +38,99 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
+import { HostPathPresentation } from "./HostPathPresentation";
+import { useMutationNotification } from "./MutationNotifications";
+
+function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.Element {
+  const queryClient = useQueryClient();
+  const notify = useMutationNotification();
+  const changeMode = useMutation({
+    mutationFn: (workingCopyMode: AgentWorkingCopyMode) =>
+      api.updateAgent(agent.id, { workingCopyMode }),
+    onSuccess: updated => {
+      queryClient.setQueryData<AgentDto[]>(
+        queryKeys.agents.project(agent.projectId),
+        current => current?.map(candidate => candidate.id === updated.id ? updated : candidate),
+      );
+      queryClient.setQueriesData<AgentDetailDto>(
+        { queryKey: queryKeys.agents.detailPrefix(agent.id) },
+        current => current ? { ...current, agent: updated } : current,
+      );
+      notify({ key: `agent-working-folder:${agent.id}`, message: "Agent working folder updated." });
+    },
+  });
+  const workingCopy = changeMode.data?.id === agent.id
+    ? changeMode.data.workingCopy
+    : agent.workingCopy;
+  const label = workingCopy.mode === "separate_git" ? "Separate Git copy" : "Shared folder";
+  return (
+    <Paper variant="outlined" sx={{ p: 2 }}>
+      <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", mb: 0.75 }}>
+        <Typography variant="subtitle1" fontWeight={800} sx={{ flex: 1 }}>Working Folder</Typography>
+        <Chip
+          size="small"
+          color={workingCopy.state === "ready" ? "success" : "error"}
+          label={workingCopy.state === "ready" ? `${label} · Ready` : `${label} · Needs attention`}
+        />
+      </Stack>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+        Shared is best when Agents need to see each other's changes immediately. Separate Git gives this Agent its own branch and folder for code work.
+      </Typography>
+      <Box sx={{ mb: 1.5 }}>
+        <Typography variant="caption" color="text.secondary" display="block">
+          {workingCopy.mode === "separate_git" ? "Agent working copy" : "Project Shared folder"}
+        </Typography>
+        <HostPathPresentation
+          path={workingCopy.rootPath}
+          label={workingCopy.mode === "separate_git" ? "Agent working copy" : "Project Shared folder"}
+        />
+      </Box>
+      <FormControl fullWidth size="small" disabled={changeMode.isPending}>
+        <InputLabel id={`working-copy-${agent.id}`}>Working folder</InputLabel>
+        <Select
+          labelId={`working-copy-${agent.id}`}
+          label="Working folder"
+          value={workingCopy.mode}
+          onChange={event => {
+            const nextMode = event.target.value as AgentWorkingCopyMode;
+            if (workingCopy.mode === "separate_git" && nextMode === "shared" &&
+                !window.confirm("Switch to the Shared folder? This permanently removes this Agent's managed Git copy and its branch.")) {
+              return;
+            }
+            changeMode.mutate(nextMode);
+          }}
+        >
+          <MenuItem value="shared">Shared folder</MenuItem>
+          <MenuItem value="separate_git">Separate Git copy</MenuItem>
+        </Select>
+      </FormControl>
+      {workingCopy.mode === "separate_git" && workingCopy.state === "ready" ? (
+        <Alert severity="info" sx={{ mt: 1.5 }}>
+          Changes stay on this Agent's Git branch{workingCopy.branch ? ` (${workingCopy.branch})` : ""}. This separates work; it does not limit what the Agent can access on the host. Switching back to Shared permanently removes this managed copy and branch.
+        </Alert>
+      ) : null}
+      {workingCopy.state === "unavailable" ? (
+        <Alert
+          severity="error"
+          sx={{ mt: 1.5 }}
+          action={workingCopy.mode === "separate_git" ? (
+            <Button
+              color="inherit"
+              size="small"
+              disabled={changeMode.isPending}
+              onClick={() => changeMode.mutate("separate_git")}
+            >
+              Retry
+            </Button>
+          ) : undefined}
+        >
+          {workingCopy.failure ?? "This working folder is unavailable."} Runs stay paused instead of using the Shared folder.
+        </Alert>
+      ) : null}
+      {changeMode.error ? <Alert severity="error" sx={{ mt: 1.5 }}>{String(changeMode.error)}</Alert> : null}
+    </Paper>
+  );
+}
 
 function AgentBrowserProfileSettings({ agent }: { agent: AgentDto }): JSX.Element {
   const queryClient = useQueryClient();
@@ -195,7 +289,6 @@ export function AgentSettingsPane({
   steering,
   onStartFreshSession,
   onOpenMaster,
-  onManageMemberships,
   onOpenAgent,
   onUpdateManagementPermissions,
   onChangeReportingLine,
@@ -230,7 +323,6 @@ export function AgentSettingsPane({
   onRecheckEngine(): void;
   onStartFreshSession(): void;
   onOpenMaster(conversationId: string): void;
-  onManageMemberships(): void;
   onOpenAgent(agentId: string): void;
   onUpdateManagementPermissions(value: AgentManagementPermissionsDto): void;
   onChangeReportingLine(): void;
@@ -265,28 +357,22 @@ export function AgentSettingsPane({
       </Stack>
       <Paper variant="outlined" sx={{ p: 2 }}>
         <Typography variant="subtitle1" fontWeight={800}>
-          Chat Assignments
+          Works In Chat
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
           {master ? (
             <>
-              Home Chat:{" "}
+              This Agent&apos;s context comes from{" "}
               <Link component="button" onClick={() => onOpenMaster(master.id)}>
                 {master.title}
               </Link>
             </>
           ) : (
-            "This Agent is not assigned to a Project Chat."
+            "This Agent's owner Chat is unavailable."
           )}
         </Typography>
-        <Button
-          variant="outlined"
-          startIcon={<ForumOutlinedIcon />}
-          onClick={onManageMemberships}
-        >
-          Manage Chat Assignments
-        </Button>
       </Paper>
+      <AgentWorkingCopySettings agent={agent} />
       <AgentBrowserProfileSettings agent={agent} />
       <Paper variant="outlined" sx={{ p: 2 }}>
         <Typography variant="subtitle1" fontWeight={800}>

@@ -102,10 +102,30 @@ function launcherCall(command, args = [], allowFailure = false) {
     windowsHide: true,
     env: environment,
   });
+  if (result.error) {
+    throw new Error(`Launcher ${command} could not complete: ${result.error.message}`);
+  }
   if (!allowFailure && result.status !== 0) {
     throw new Error(`Launcher ${command} failed: ${result.stderr || result.stdout}`);
   }
   return result;
+}
+
+function parseLauncherJson(command, result) {
+  const output = result.stdout?.trim();
+  const failure = [
+    `exit=${result.status ?? "unknown"}`,
+    result.signal ? `signal=${result.signal}` : undefined,
+    result.stderr?.trim() ? `stderr=${result.stderr.trim()}` : undefined,
+  ].filter(Boolean).join("; ");
+  assert(output, `Launcher ${command} produced no JSON report (${failure}).`);
+  try {
+    return JSON.parse(output);
+  } catch (error) {
+    throw new Error(
+      `Launcher ${command} produced invalid JSON (${failure}): ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 function processAlive(pid) {
@@ -212,7 +232,7 @@ try {
   mkdirSync(path.dirname(dataSentinel), { recursive: true });
   writeFileSync(dataSentinel, "restart must preserve data\n");
   const doctor = launcherCall("doctor", ["--json"], true);
-  const doctorReport = JSON.parse(doctor.stdout);
+  const doctorReport = parseLauncherJson("doctor", doctor);
   const processCheck = doctorReport.checks.find((check) => check.id === "process");
   const filesystemCheck = doctorReport.checks.find((check) => check.id === "secure-filesystem");
   assert(processCheck?.status === "pass", `Doctor process containment failed: ${processCheck?.detail ?? "missing"}`);
@@ -365,6 +385,8 @@ try {
     ).href);
     const workspaceReview = await gitStatus.workspaceFile(
       "qualification",
+      "qualification-agent",
+      "qualification-working-copy",
       authorityRoot,
       "nested/safe.txt",
     );
@@ -372,6 +394,8 @@ try {
       "Installed workspace review failed a safe retained-root read.");
     const linkedReview = await gitStatus.workspaceFile(
       "qualification",
+      "qualification-agent",
+      "qualification-working-copy",
       authorityRoot,
       "directory-link/public.txt",
     );

@@ -183,7 +183,6 @@ interface CoordinationSchedulerContext {
   v3DispatchKey: string;
   appendWorkspace: (event: Parameters<WorkspaceStore["append"]>[0]) => unknown;
   closeLinkPreviewsForAgent(agentId: string, reason: string): void;
-  providerEnabled(engineId: string): boolean;
   reconcileTriggerOperationalNotifications(): void;
   terminateRuntimeHandle(
     agentId: string,
@@ -229,7 +228,6 @@ export function createCoordinationScheduler(
     v3DispatchKey,
     appendWorkspace,
     closeLinkPreviewsForAgent,
-    providerEnabled,
     reconcileTriggerOperationalNotifications,
     terminateRuntimeHandle,
     closeRunBrowser,

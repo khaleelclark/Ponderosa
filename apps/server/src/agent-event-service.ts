@@ -4,7 +4,6 @@ import {
   type AssetDto,
   type CommunicationEvent,
   type ConversationMessageDto,
-  type ImageAttachmentDto,
   type CollaborationViewDto,
 } from "@ponderosa/core";
 import type {
@@ -17,7 +16,6 @@ import type {
 import type { Subscriber } from "./app-contracts.js";
 import {
   advanceMentionTrail,
-  agentMentionHandle,
   hasEveryoneMention,
   mentionedAgents,
   mentionRelayFingerprint,
@@ -70,7 +68,7 @@ export function createAgentEventService(context: AgentEventServiceContext) {
         type: "usage_changed",
         projectId: agent.projectId,
         agentId,
-        conversationIds: agent.conversationIds,
+        conversationIds: [agent.conversationId],
         seq: stored.seq,
         ...(("executionId" in event && typeof event.executionId === "string") ? { executionId: event.executionId } : {}),
       });
@@ -81,7 +79,7 @@ export function createAgentEventService(context: AgentEventServiceContext) {
       type: "agent_event",
       projectId: agent.projectId,
       agentId,
-      conversationIds: agent.conversationIds,
+      conversationIds: [agent.conversationId],
       seq: stored.seq,
       eventType: event.type,
       category,
@@ -133,7 +131,7 @@ export function createAgentEventService(context: AgentEventServiceContext) {
     agentId: string,
     event: CommunicationEvent,
     renderedText: string,
-    attachments?: ImageAttachmentDto[],
+    attachments?: AssetDto[],
   ): void {
     const existing = store.getCommunicationProjection(
       event.projectId,
@@ -179,7 +177,7 @@ export function createAgentEventService(context: AgentEventServiceContext) {
     text: string,
     _relayDepth: number,
     mentionTrail: string[],
-  ): { intents: ConversationDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> } {
+  ): { intents: ConversationDeliveryIntent[]; blocked: Array<{ handle: string; reason: string }> } {
     const detail = collaborationViewDetail(conversationId);
     const eligible = detail?.agents.filter((agent) => !agent.archived && agent.id !== authorAgentId) ?? [];
     const targetsById = new Map(
@@ -190,14 +188,14 @@ export function createAgentEventService(context: AgentEventServiceContext) {
     }
     const targets = [...targetsById.values()];
     const intents: ConversationDeliveryIntent[] = [];
-    const blocked: Array<{ title: string; reason: string }> = [];
+    const blocked: Array<{ handle: string; reason: string }> = [];
     for (const target of targets) {
       const fingerprint = mentionRelayFingerprint(authorAgentId, target.id, text);
       const blockedReason = authorAgentId && mentionTrail.includes(fingerprint)
         ? "the same handoff already occurred in this collaboration chain"
         : undefined;
       if (blockedReason) {
-        blocked.push({ title: target.title, reason: blockedReason });
+        blocked.push({ handle: target.handle, reason: blockedReason });
       } else {
         const nextTrail = authorAgentId ? advanceMentionTrail(mentionTrail, fingerprint) : [];
         intents.push({
@@ -227,7 +225,7 @@ export function createAgentEventService(context: AgentEventServiceContext) {
     if (targets.some((target) => !target || target.archived || target.id === authorAgentId)) {
       return { text, intents: [], error: "every collaboration recipient must be a different active agent in this conversation" };
     }
-    const renderedText = `${targets.map((target) => `#${agentMentionHandle(target!.title)}`).join(" ")} ${text}`;
+    const renderedText = `${targets.map((target) => `#${target!.handle}`).join(" ")} ${text}`;
     const intents: ConversationDeliveryIntent[] = [];
     for (const target of targets) {
       const fingerprint = mentionRelayFingerprint(authorAgentId, target!.id, renderedText);
@@ -248,12 +246,12 @@ export function createAgentEventService(context: AgentEventServiceContext) {
 
   function appendBlockedMentionWarnings(
     conversationId: string,
-    blocked: Array<{ title: string; reason: string }>,
+    blocked: Array<{ handle: string; reason: string }>,
   ): void {
     for (const item of blocked) {
       appendCollaborationSystemNotice(
         conversationId,
-        `⚠️ #${agentMentionHandle(item.title)} was not notified because ${item.reason}. Please ask the manager to continue the conversation.`,
+        `⚠️ #${item.handle} was not notified because ${item.reason}. Please ask the manager to continue the conversation.`,
       );
     }
   }
@@ -266,9 +264,9 @@ export function createAgentEventService(context: AgentEventServiceContext) {
     const master = store.getConversation(conversationId);
     if (!master) return undefined;
     const communication = recordCommunication({
-      eventId: randomUUID(), schemaVersion: 1, projectId: master.projectId, conversationId,
+      eventId: randomUUID(), schemaVersion: 2, projectId: master.projectId, conversationId,
       sender: { kind: "system", component: "collaboration-supervision" },
-      intent: "direct_to_user", audience: { kind: "user", userId: "local-operator" },
+      intent: "user_dm", audience: { kind: "user", userId: "local-operator" },
       text, createdAt: new Date().toISOString(), ...(idempotencyKey ? { idempotencyKey } : {}),
     });
     const existing = communication
@@ -304,7 +302,7 @@ export function createAgentEventService(context: AgentEventServiceContext) {
         "The agent remains in your organization and can be steered or retried.",
       ].join("\n");
     const sharedConversationId = child.conversationId
-      && manager.conversationIds.includes(child.conversationId)
+      && manager.conversationId === child.conversationId
       ? child.conversationId
       : undefined;
     coordinationV3.recordRuntimeCommunication({

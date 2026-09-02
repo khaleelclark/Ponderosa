@@ -5,6 +5,7 @@ import type { BigIntStats } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import path from "node:path";
 import type {
+  AgentWorkingCopyDto,
   WorkspaceChangeDto,
   WorkspaceFileReviewDto,
   WorkspaceStatusDto,
@@ -349,6 +350,8 @@ export function parseGitStatus(output: string): WorkspaceChangeDto[] {
 
 async function workspaceStatus(
   projectId: string,
+  agentId: string,
+  workingCopy: AgentWorkingCopyDto,
   root: string,
   gitRunner: GitRunner = runGit,
 ): Promise<WorkspaceStatusDto> {
@@ -364,7 +367,7 @@ async function workspaceStatus(
       topLevel.exitCode !== 0 ||
       gitDirectory.exitCode !== 0 ||
       commonDirectory.exitCode !== 0
-    ) return { projectId, isGitRepository: false, generatedAt, changes: [] };
+    ) return { projectId, agentId, workingCopy, isGitRepository: false, generatedAt, changes: [] };
     const reportedRoot = await realpath(singleLine(topLevel.stdout));
     const reportedGitDirectory = await realpath(singleLine(gitDirectory.stdout));
     const reportedCommonDirectory = await realpath(singleLine(commonDirectory.stdout));
@@ -372,7 +375,7 @@ async function workspaceStatus(
       !samePath(reportedRoot, identity.root.path) ||
       !samePath(reportedGitDirectory, identity.gitDirectory.path) ||
       !samePath(reportedCommonDirectory, identity.commonDirectory.path)
-    ) return { projectId, isGitRepository: false, generatedAt, changes: [] };
+    ) return { projectId, agentId, workingCopy, isGitRepository: false, generatedAt, changes: [] };
     const [status, branch, head] = await Promise.all([
       gitRunner(identity, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
       gitRunner(identity, ["rev-parse", "--abbrev-ref", "HEAD"]),
@@ -383,9 +386,11 @@ async function workspaceStatus(
       branch.exitCode !== 0 ||
       head.exitCode !== 0 ||
       !await repositoryIdentityStillCurrent(identity)
-    ) return { projectId, isGitRepository: false, generatedAt, changes: [] };
+    ) return { projectId, agentId, workingCopy, isGitRepository: false, generatedAt, changes: [] };
     return {
       projectId,
+      agentId,
+      workingCopy,
       isGitRepository: true,
       branch: singleLine(branch.stdout),
       head: singleLine(head.stdout),
@@ -393,11 +398,17 @@ async function workspaceStatus(
       changes: parseGitStatus(status.stdout),
     };
   } catch {
-    return { projectId, isGitRepository: false, generatedAt, changes: [] };
+    return { projectId, agentId, workingCopy, isGitRepository: false, generatedAt, changes: [] };
   }
 }
 
-async function workspaceFile(projectId: string, root: string, input: string | undefined): Promise<WorkspaceFileReviewDto> {
+async function workspaceFile(
+  projectId: string,
+  agentId: string,
+  workingCopyId: string,
+  root: string,
+  input: string | undefined,
+): Promise<WorkspaceFileReviewDto> {
   const relativePath = safeRelativePath(input);
   if (!relativePath || !isWorkspaceReviewPathAllowed(relativePath)) throw new Error("path is excluded from workspace review");
   let exists = false;
@@ -436,7 +447,7 @@ async function workspaceFile(projectId: string, root: string, input: string | un
       truncated = true;
     }
   }
-  return { projectId, path: relativePath, exists, ...(content !== undefined ? { content } : {}), diff, stagedDiff, unstagedDiff, truncated };
+  return { projectId, agentId, workingCopyId, path: relativePath, exists, ...(content !== undefined ? { content } : {}), diff, stagedDiff, unstagedDiff, truncated };
 }
 
 export {

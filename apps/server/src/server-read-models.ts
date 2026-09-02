@@ -19,6 +19,7 @@ import { projectAgentHealth, type ActiveRunObservation } from "./agent-health.js
 import { sqliteCollectionPage } from "./collection-page.js";
 import { decodeTimelineCursor, encodeTimelineCursor } from "./cursors.js";
 import {
+  agentMentionHandle,
   communicationRecipientAgentIds,
   recipientMentionIdentities,
   resolveAgentMentionBindings,
@@ -27,6 +28,7 @@ import type { ActiveRun, PersistentRuntime, RuntimeOwnershipState } from "./app-
 import {
   isRequestCommunicationHandoffKind,
   requestUpdateCommunicationEventId,
+  requestUpdateCommunicationLink,
 } from "./request-update-communication.js";
 
 interface ReadModelContext {
@@ -101,17 +103,30 @@ export function createServerReadModels(context: ReadModelContext) {
     const projectAgents = store.listAgents(projectId);
     const communicationEventIds = messages.flatMap((message) =>
       message.communicationEventId ? [message.communicationEventId] : []);
+    const communicationsByEvent = new Map(communicationEventIds.flatMap((eventId) => {
+      const communication = store.getCommunicationEvent(projectId, eventId);
+      return communication ? [[eventId, communication] as const] : [];
+    }));
+    const requestUpdateLinksByEvent = new Map(communicationEventIds.flatMap((eventId) => {
+      const link = requestUpdateCommunicationLink(communicationsByEvent.get(eventId));
+      return link ? [[eventId, link] as const] : [];
+    }));
     const deliveryReceiptsByEvent = coordinationV3.deliveryReceiptsForCommunications(
       projectId,
       communicationEventIds,
     );
     const requestsByEvent = coordinationV3.requestSummariesForCommunications(
       projectId,
-      communicationEventIds,
+      [
+        ...communicationEventIds,
+        ...[...requestUpdateLinksByEvent.values()].map(
+          (link) => link.sourceCommunicationEventId,
+        ),
+      ],
     );
     return messages.map((message) => {
       if (!message.communicationEventId) return message;
-      const communication = store.getCommunicationEvent(projectId, message.communicationEventId);
+      const communication = communicationsByEvent.get(message.communicationEventId);
       const recipientAgentIds = communicationRecipientAgentIds(communication);
       const directMessageAgents = communication?.schemaVersion === 2 && communication.intent === "user_dm"
         ? recipientAgentIds.map((agentId) => {
@@ -119,6 +134,7 @@ export function createServerReadModels(context: ReadModelContext) {
             return {
               id: agentId,
               title: agent?.title ?? communication.identity?.recipientLabels?.[agentId] ?? "Deleted Agent",
+              handle: agent?.handle ?? communication.identity?.recipientHandles?.[agentId] ?? agentMentionHandle(communication.identity?.recipientLabels?.[agentId] ?? "Deleted Agent"),
             };
           })
         : [];
@@ -128,10 +144,12 @@ export function createServerReadModels(context: ReadModelContext) {
             return {
               id: agentId,
               title: agent?.title ?? communication.identity?.recipientLabels?.[agentId] ?? "Deleted Agent",
+              handle: agent?.handle ?? communication.identity?.recipientHandles?.[agentId] ?? agentMentionHandle(communication.identity?.recipientLabels?.[agentId] ?? "Deleted Agent"),
             };
           })
         : [];
       const agentMentions = resolveAgentMentionBindings(
+        projectId,
         message.text,
         recipientAgentIds,
         [
@@ -140,11 +158,47 @@ export function createServerReadModels(context: ReadModelContext) {
             recipientAgentIds,
             projectAgents,
             communication?.identity?.recipientLabels,
+            communication?.identity?.recipientHandles,
           ),
         ],
       );
       const deliveryReceipts = deliveryReceiptsByEvent.get(message.communicationEventId) ?? [];
-      const coordinationRequests = requestsByEvent.get(message.communicationEventId) ?? [];
+      const requestUpdateLink = requestUpdateLinksByEvent.get(
+        message.communicationEventId,
+      );
+      const requestForUpdate = requestUpdateLink
+        ? coordinationV3.requestForUpdate(requestUpdateLink.updateId)
+        : undefined;
+      const senderAgentId = communication?.sender.kind === "agent"
+        ? communication.sender.agentId
+        : undefined;
+      let peerAgentId: string | undefined;
+      if (requestForUpdate && senderAgentId) {
+        if (senderAgentId === requestForUpdate.recipientAgentId) {
+          peerAgentId = requestForUpdate.requesterAgentId;
+        } else if (senderAgentId === requestForUpdate.requesterAgentId) {
+          peerAgentId = requestForUpdate.recipientAgentId;
+        }
+      }
+      const linkedRequest = requestUpdateLink
+        && requestForUpdate?.id === requestUpdateLink.requestId
+        && requestForUpdate.projectId === projectId
+        && requestForUpdate.conversationId === communication?.conversationId
+        && peerAgentId
+        && communication?.audience.kind === "agents"
+        && communication.audience.agentIds.length === 1
+        && communication.audience.agentIds[0] === peerAgentId
+        ? requestsByEvent.get(requestUpdateLink.sourceCommunicationEventId)
+          ?.find((candidate) =>
+            candidate.recordId === requestUpdateLink.requestId
+            && candidate.communicationEventId === requestUpdateLink.sourceCommunicationEventId
+            && candidate.conversationId === communication.conversationId)
+        : undefined;
+      const coordinationRequests = [...new Map([
+        ...(message.coordinationRequests ?? []),
+        ...(requestsByEvent.get(message.communicationEventId) ?? []),
+        ...(linkedRequest ? [linkedRequest] : []),
+      ].map((candidate) => [candidate.recordId, candidate] as const)).values()];
       return {
         ...message,
         ...(communication ? { communicationIntent: communication.intent } : {}),
@@ -173,18 +227,15 @@ export function createServerReadModels(context: ReadModelContext) {
     };
     let combined: CombinedCursor | undefined;
     if (input.cursor) {
-      try {
-        const parsed = JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8")) as Partial<CombinedCursor>;
-        if (parsed.v === 1) combined = parsed as CombinedCursor;
-      } catch {
-        // A pre-composite cursor remains a valid message cursor.
-      }
+      const parsed = JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8")) as Partial<CombinedCursor>;
+      if (parsed.v !== 1) throw new Error("invalid conversation cursor");
+      combined = parsed as CombinedCursor;
     }
     const page = combined?.messagesDone
       ? { messages: [], hasMore: false as const }
       : store.getProjectedConversationMessagePage(conversationId, "main", {
         limit,
-        cursor: combined ? combined.messages : input.cursor,
+        cursor: combined?.messages,
         focusId: input.focusId,
       });
     const decisionPage = combined?.decisionsDone
@@ -242,7 +293,7 @@ export function createServerReadModels(context: ReadModelContext) {
     if (!conversation) return undefined;
     return {
       conversation,
-      agents: store.listAgents(conversation.projectId).filter((agent) => agent.conversationIds.includes(conversationId)),
+      agents: store.listAgents(conversation.projectId).filter((agent) => agent.conversationId === conversationId),
       messages: [],
     };
   }
@@ -254,7 +305,7 @@ export function createServerReadModels(context: ReadModelContext) {
     const conversation = store.getConversation(conversationId);
     if (!conversation) return undefined;
     const limit = input.limit ?? 100;
-    const agents = store.listAgents(conversation.projectId).filter((agent) => agent.conversationIds.includes(conversationId));
+    const agents = store.listAgents(conversation.projectId).filter((agent) => agent.conversationId === conversationId);
     const names = new Map(agents.map((agent) => [agent.id, agent.title]));
     const operationBoundary = input.operationCursor
       ? decodeTimelineCursor(input.operationCursor, "team:operations", conversationId)
@@ -416,6 +467,7 @@ export function createServerReadModels(context: ReadModelContext) {
         text: update.text.trim(),
         createdAt: update.createdAt,
         authorAgentId: update.actorId,
+        coordinationRequests: [operation.request],
       }];
     });
     const messages = [...projectedMessages, ...recoveredRequestHandoffs]
@@ -437,15 +489,21 @@ export function createServerReadModels(context: ReadModelContext) {
   function agentDetail(
     agentId: string,
     input: { limit?: number; cursor?: string; focusId?: string } = {},
-  ): import("@ponderosa/core").AgentDetailDto | undefined {
+  ): AgentDetailDto | undefined {
     const limit = input.limit ?? 100;
     // Chat is read through the indexed canonical projection below; do not also
-    // hydrate the legacy Agent message table only to replace it.
+    // hydrate the superseded Agent message table only to replace it.
     const detail = store.getAgentDetail(agentId, limit, false);
     if (!detail) return detail;
     const messagePage = store.getProjectedAgentMessagePage(agentId, { limit, cursor: input.cursor, focusId: input.focusId });
     return {
       ...detail,
+      hasSubagentHistory:
+        store.listAgents(detail.agent.projectId).some(candidate =>
+          candidate.managerAgentId === agentId
+        ) || store.readAgentOrganizationEvents(detail.agent.projectId).some(event =>
+          event.managerAgentId === agentId
+        ),
       messages: withMessagePresentation(detail.agent.projectId, messagePage.messages),
       history: { limit, hasMore: messagePage.hasMore, ...(messagePage.cursor ? { cursor: messagePage.cursor } : {}) },
       coordinationV3: coordinationV3.agentSnapshot(agentId),
@@ -471,7 +529,7 @@ export function createServerReadModels(context: ReadModelContext) {
         type: "coordination_changed",
         projectId: agent.projectId,
         agentId,
-        conversationIds: options.conversationIds ?? agent.conversationIds,
+        conversationIds: options.conversationIds ?? [agent.conversationId],
       });
       reconcileCoordinationAttentionNotifications();
     }
@@ -485,7 +543,7 @@ export function createServerReadModels(context: ReadModelContext) {
       type: "message_delivery_changed",
       projectId: agent.projectId,
       agentId,
-      conversationIds: agent.conversationIds,
+      conversationIds: [agent.conversationId],
     });
     reconcileCommunicationNotifications();
   }
@@ -498,7 +556,7 @@ export function createServerReadModels(context: ReadModelContext) {
     if (decision.conversationId) {
       const conversation = store.getConversation(decision.conversationId);
       if (!conversation || conversation.projectId !== project.id || conversation.archived ||
-          !agent.conversationIds.includes(conversation.id)) return undefined;
+          agent.conversationId !== conversation.id) return undefined;
     }
     return coordinationV3.enqueueMessageActivation({
       projectId: decision.projectId,
@@ -537,7 +595,15 @@ export function createServerReadModels(context: ReadModelContext) {
         pendingDecisionAt.set(decision.agentId, decision.updatedAt);
       }
     }
-    const ownership = new Map<string, ActiveRunObservation>(activeRuns);
+    const ownership = new Map<string, ActiveRunObservation>(
+      [...activeRuns].map(([agentId, run]) => [agentId, {
+        startedAt: run.startedAt,
+        executionId: run.executionId,
+        schedulerRunId: run.v3SchedulerRunId,
+        leaseExpiresAt: run.leaseExpiresAt,
+        ownershipState: run.ownershipState,
+      }]),
+    );
     const preparingRuns = new Map(agents.flatMap((agent) => {
       if (ownership.has(agent.id)) return [];
       const run = coordinationV3.agentSnapshot(agent.id).activeRun;
@@ -563,6 +629,10 @@ export function createServerReadModels(context: ReadModelContext) {
       availability: (agentId) => coordinationV3.getAgentAvailability(agentId),
       pendingDecisionAt: (agentId) => pendingDecisionAt.get(agentId),
       providerBlocked: (agentId) => coordinationV3.providerBlockedState(agentId),
+      executionPhase: (agentId, executionId) =>
+        store.activeExecutionPhase(agentId, executionId),
+      waitingPhase: (agentId) =>
+        coordinationV3.activeWaitDependency(agentId, scope),
       latestEvent: (agentId) => store.latestHealthObservation(agentId),
       runs: (agentId) => store.getRuns(agentId),
     });
@@ -592,7 +662,7 @@ export function createServerReadModels(context: ReadModelContext) {
       : store.listAgents(projectId);
     const agents = selectedAgents.filter((agent) =>
       !agent.archived && (conversationId
-        ? agent.conversationIds.includes(conversationId)
+        ? agent.conversationId === conversationId
         : fallbackAgentId ? agent.id === fallbackAgentId : true));
     const health = agentHealth({ type: "project", id: projectId }, agents);
     const healthById = new Map(health.agents.map((agent) => [agent.agentId, agent]));

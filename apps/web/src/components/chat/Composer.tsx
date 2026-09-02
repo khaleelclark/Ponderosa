@@ -3,14 +3,14 @@ import {
   Paper,
   Stack,
 } from "@mui/material";
-import { utf8ByteLength } from "@ponderosa/core";
+import { messageTagTokens, utf8ByteLength } from "@ponderosa/core";
 import type {
   AgentMentionBindingDto,
+  ArtifactDto,
   ConversationDraftConflictDto,
   DraftAttachmentDto,
   EngineCommand,
   EngineComposerCapability,
-  FileEntryDto,
 } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -33,6 +33,7 @@ import {
   hasComposerDestination,
   NEW_AGENT_DESTINATION_HANDLE,
   prependComposerDestination,
+  selectExclusiveNewAgentDestination,
 } from "./composerDestination";
 import type { ComposerProps } from "./Composer.types";
 import {
@@ -40,7 +41,6 @@ import {
   ComposerDestinationBar,
   ComposerProjectDestinationAction,
   ComposerSendActions,
-  ComposerTargetDestinationAction,
 } from "./Composer.parts";
 import {
   ComposerAutocompleteMenu,
@@ -49,6 +49,11 @@ import {
   ComposerTextInput,
   type ComposerMenuSuggestion,
 } from "./Composer.controls";
+import {
+  projectFileCanonicalText,
+  type ComposerEditorHandle,
+  type ComposerProjectFileDescriptor,
+} from "./ComposerEditor";
 import {
   canSubmitComposerText,
   composerAttachmentReducer,
@@ -68,14 +73,43 @@ import {
   useComposerMentionedHandlesChange,
 } from "./useComposerTextEffects";
 import { composerSurfaceSx } from "./Composer.styles";
+import { DictationControls } from "../speech/DictationControls";
+import { insertSpeechText } from "../speech/speechText";
 
 const DRAFT_OWNER_ID = /^[A-Za-z0-9_-]{1,128}$/u;
+const SPECIAL_MENTION_TITLES = new Map([
+  ["broadcast", "Broadcast"],
+  ["everyone", "Everyone"],
+  [NEW_AGENT_DESTINATION_HANDLE, "New Agent"],
+]);
+type ComposerMentionToken = {
+  start: number;
+  end: number;
+  handle: string;
+  title: string;
+  valid: boolean;
+  kind: "agent" | "special";
+  agentId?: string;
+};
 
 export type { ComposerProps } from "./Composer.types";
 
 type ComposerDefaultDestination = NonNullable<
   ComposerProps["defaultDestination"]
 >;
+
+function removeAllComposerDestinations(
+  value: string,
+  handle: string,
+): string {
+  let next = value;
+  while (hasComposerDestination(next, handle)) {
+    const removed = removeHandle(next, handle);
+    if (removed === next) break;
+    next = removed;
+  }
+  return next;
+}
 
 function providerCommandInput(
   value: string,
@@ -111,6 +145,7 @@ export function Composer({
   onCapabilitiesOpen,
   attachmentsEnabled = true,
   attachmentsUnavailableReason,
+  enableVoiceDictation = false,
   busyMentionHandles,
   allowUnmentionedSend = true,
   sendUnavailableReason,
@@ -181,6 +216,8 @@ export function Composer({
   const [draftReadyVersion, setDraftReadyVersion] = useState(0);
   const sendingRef = useRef(false);
   const [sending, setSending] = useState(false);
+  const dictationSettlingRef = useRef(false);
+  const [dictationSettling, setDictationSettling] = useState(false);
   const [caret, setCaret] = useState(0);
   const [highlighted, setHighlighted] = useState(0);
   const [suppressMenu, setSuppressMenu] = useState(false);
@@ -195,7 +232,10 @@ export function Composer({
   const appliedDefaultDestination = useRef<ComposerDefaultDestination>();
   const [activeDefaultDestination, setActiveDefaultDestination] =
     useState<ComposerDefaultDestination>();
-  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const [knownMentionBindings, setKnownMentionBindings] = useState<
+    AgentMentionBindingDto[]
+  >([]);
+  const inputRef = useRef<ComposerEditorHandle | null>(null);
   const markUserDraftMutation = useCallback(() => {
     userDraftMutationGeneration.current += 1;
   }, []);
@@ -223,6 +263,56 @@ export function Composer({
     },
     [markDraftEdited, replaceText],
   );
+  const insertDictatedText = useCallback(
+    (transcript: string) => {
+      const selection = inputRef.current?.getSelectionOffsets() ?? {
+        start: textRef.current.length,
+        end: textRef.current.length,
+      };
+      const insertion = insertSpeechText(
+        textRef.current,
+        transcript,
+        selection.start,
+        selection.end,
+      );
+      inputRef.current?.replaceCanonicalRange(
+        0,
+        textRef.current.length,
+        insertion.text,
+      );
+      setSendError(undefined);
+      setCaret(insertion.caret);
+      setHighlighted(0);
+      setSuppressMenu(false);
+      requestAnimationFrame(() => {
+        inputRef.current?.focus();
+        inputRef.current?.setSelectionOffsets(insertion.caret, insertion.caret);
+      });
+    },
+    [],
+  );
+  const handleDictationSettlingChange = useCallback((settling: boolean) => {
+    dictationSettlingRef.current = settling;
+    setDictationSettling(settling);
+  }, []);
+  useEffect(() => {
+    const handles = new Set(messageTagTokens(text).map(token => token.handle.toLocaleLowerCase()));
+    const currentById = new Map((mentionBindings ?? []).map(binding => [binding.agentId, binding]));
+    setKnownMentionBindings(previous => {
+      const byId = new Map(previous.map(binding => [binding.agentId, binding]));
+      for (const binding of mentionBindings ?? []) {
+        const matches = handles.has(binding.handle.toLocaleLowerCase()) ||
+          handles.has(binding.currentHandle.toLocaleLowerCase());
+        if (matches || byId.has(binding.agentId)) byId.set(binding.agentId, binding);
+      }
+      return [...byId.values()].filter(binding => {
+        const current = currentById.get(binding.agentId);
+        return handles.has(binding.handle.toLocaleLowerCase()) ||
+          handles.has(binding.currentHandle.toLocaleLowerCase()) ||
+          Boolean(current && handles.has(current.currentHandle.toLocaleLowerCase()));
+      });
+    });
+  }, [mentionBindings, text]);
   const replacePastedText = useCallback(
     (
       next:
@@ -282,17 +372,21 @@ export function Composer({
     retryUpload: retryDraftUpload,
     uploadStates: draftUploadStates,
   } = draftAttachments;
+  const renderedDefaultDestination = destinationMode === "target-required"
+    ? defaultDestination
+    : activeDefaultDestination;
   const composedText = composerSubmissionText(text, pastedText);
   const submissionText =
-    destinationMode === "project-chat" && activeDefaultDestination
+    (destinationMode === "project-chat" || destinationMode === "target-required") &&
+    renderedDefaultDestination
       ? prependComposerDestination(
           composedText,
-          activeDefaultDestination.handle,
+          renderedDefaultDestination.handle,
         )
       : composedText;
   const routingMentionHandles = useMemo(
     () =>
-      destinationMode === "project-chat"
+      destinationMode === "project-chat" || destinationMode === "target-required"
         ? [...new Set([...(mentionHandles ?? []), NEW_AGENT_DESTINATION_HANDLE])]
         : (mentionHandles ?? []),
     [destinationMode, mentionHandles],
@@ -301,9 +395,46 @@ export function Composer({
     () => findMentionedHandles(submissionText, routingMentionHandles),
     [routingMentionHandles, submissionText],
   );
-  const newAgentSelected =
-    destinationMode === "project-chat" &&
-    mentionedHandles.some(
+  const mentionTokens = useMemo<ComposerMentionToken[]>(() => {
+    const currentById = new Map((mentionBindings ?? []).map(binding => [binding.agentId, binding]));
+    const byHandle = new Map<string, AgentMentionBindingDto>();
+    for (const binding of [...knownMentionBindings, ...(mentionBindings ?? [])]) {
+      byHandle.set(binding.handle.toLocaleLowerCase(), binding);
+      byHandle.set(binding.currentHandle.toLocaleLowerCase(), binding);
+    }
+    const tokens: ComposerMentionToken[] = [];
+    for (const token of messageTagTokens(text)) {
+      const specialTitle = SPECIAL_MENTION_TITLES.get(
+        token.handle.toLocaleLowerCase(),
+      );
+      if (specialTitle) {
+        tokens.push({
+          start: token.start,
+          end: token.end,
+          handle: token.handle,
+          title: specialTitle,
+          valid: true,
+          kind: "special",
+        });
+        continue;
+      }
+      const binding = byHandle.get(token.handle.toLocaleLowerCase());
+      if (!binding) continue;
+      const current = currentById.get(binding.agentId);
+      tokens.push({
+        start: token.start,
+        end: token.end,
+        handle: current?.currentHandle ?? token.handle,
+        title: current?.currentTitle ?? binding.currentTitle,
+        valid: Boolean(current),
+        kind: "agent",
+        agentId: binding.agentId,
+      });
+    }
+    return tokens;
+  }, [knownMentionBindings, mentionBindings, text]);
+  const invalidMention = mentionTokens.find(token => !token.valid);
+  const newAgentSelected = mentionedHandles.some(
       handle =>
         handle.toLocaleLowerCase() === NEW_AGENT_DESTINATION_HANDLE,
     );
@@ -336,7 +467,7 @@ export function Composer({
     destinationMode === "target-required"
       ? mentionedHandles.filter(
           handle =>
-            !["broadcast", "everyone"].includes(handle.toLocaleLowerCase()),
+            !["broadcast", "everyone", NEW_AGENT_DESTINATION_HANDLE].includes(handle.toLocaleLowerCase()),
         )
       : [];
   const targetRequiredDestinations = targetRequiredHandles.map(handle => ({
@@ -356,8 +487,6 @@ export function Composer({
   const hasEveryoneDestination =
     destinationMode === "project-chat" &&
     mentionedHandles.some(handle => handle.toLocaleLowerCase() === "everyone");
-  const targetedNextRunDelivery =
-    hasBroadcastDestination && projectDestinations.length > 0;
   const explicitCommandTargetHandle =
     destinationMode === "project-chat" &&
     !hasBroadcastDestination &&
@@ -394,57 +523,40 @@ export function Composer({
     onCommandTargetAgentIdChange?.(commandTargetAgentId);
   }, [commandTargetAgentId, onCommandTargetAgentIdChange]);
   const destinationError =
-    newAgentSelected &&
-    (hasBroadcastDestination ||
-      hasEveryoneDestination ||
-      projectDestinations.length > 0)
-      ? "#new-agent cannot be combined with another destination."
-      : targetedNextRunDelivery && files.length > 0
-      ? "Targeted next-run delivery supports message text only. Remove attachments to send."
+    invalidMention
+      ? `#${invalidMention.handle} no longer identifies an available Agent. Remove it before sending.`
       : destinationMode === "target-required" && hasBroadcastDestination
       ? targetRequiredDestinations.length > 0
         ? "Broadcast is only available in a Project Chat."
         : "#broadcast is not available in Messages Across Ponderosa. Choose an Agent."
-      : destinationMode === "target-required" &&
-          targetRequiredDestinations.length > 1
-        ? "Choose one Agent at a time in Messages Across Ponderosa."
-        : destinationMode === "target-required" && unresolvedAmbiguousTarget
+      : destinationMode === "target-required" && unresolvedAmbiguousTarget
           ? `#${unresolvedAmbiguousTarget} matches more than one Agent. Use a message's # action to choose the exact Agent.`
           : undefined;
   const toggleNewAgentDestination = () => {
-    setActiveDefaultDestination(undefined);
+    const selectingNewAgent = !hasComposerDestination(
+      textRef.current,
+      NEW_AGENT_DESTINATION_HANDLE,
+    );
     update(current => {
-      if (hasComposerDestination(current, NEW_AGENT_DESTINATION_HANDLE)) {
-        return removeHandle(current, NEW_AGENT_DESTINATION_HANDLE);
+      if (!selectingNewAgent) {
+        return removeHandle(
+          current,
+          NEW_AGENT_DESTINATION_HANDLE,
+        );
       }
-      let next = current;
-      for (const handle of [
-        "broadcast",
-        "everyone",
-        ...projectDestinationHandles,
-      ]) {
-        next = removeHandle(next, handle);
-      }
-      return prependComposerDestination(next, NEW_AGENT_DESTINATION_HANDLE);
+      return prependComposerDestination(current, NEW_AGENT_DESTINATION_HANDLE);
     });
+    setActiveDefaultDestination(
+      selectingNewAgent ? undefined : defaultDestination,
+    );
     requestAnimationFrame(() => inputRef.current?.focus());
   };
+  const clearActiveDefaultDestination = useCallback(() => {
+    setActiveDefaultDestination(undefined);
+  }, []);
   const clearRequiredRecipient = () => {
     const handle = targetRequiredHandles[0] ?? requiredRecipient?.handle;
     if (handle) update(current => removeHandle(current, handle));
-    requiredRecipient?.onClear();
-  };
-  const clearTargetDestinations = () => {
-    update(current => {
-      let next = current;
-      if (hasBroadcastDestination) {
-        next = removeHandle(next, "broadcast");
-      }
-      for (const handle of targetRequiredHandles) {
-        next = removeHandle(next, handle);
-      }
-      return next;
-    });
     requiredRecipient?.onClear();
   };
   const composerLocked = running && !allowSendWhileRunning;
@@ -464,17 +576,18 @@ export function Composer({
   });
   const targetRequiredRecipientTagged =
     destinationMode !== "target-required" ||
+    newAgentSelected ||
     Boolean(
       requiredRecipient &&
-      targetRequiredHandles.length === 1 &&
-      requiredRecipient.handle.toLocaleLowerCase() ===
-        targetRequiredHandles[0]!.toLocaleLowerCase(),
+      targetRequiredHandles.some(handle =>
+        requiredRecipient.handle.toLocaleLowerCase() === handle.toLocaleLowerCase()),
     );
   const draftUploadsReady =
     !conversationDraftId ||
     files.every(file => draftAttachmentIds.current.has(file));
   const canSend =
     !sending &&
+    !dictationSettling &&
     !destinationError &&
     targetRequiredRecipientTagged &&
     draftUploadsReady &&
@@ -484,10 +597,8 @@ export function Composer({
         allowUnmentionedSend &&
         files.length > 0));
   const canCancel = running && Boolean(onCancel);
-  const composerAttachmentsEnabled = attachmentsEnabled && !targetedNextRunDelivery;
-  const composerAttachmentsUnavailableReason = targetedNextRunDelivery
-    ? "Targeted next-run delivery supports message text only."
-    : attachmentsUnavailableReason;
+  const composerAttachmentsEnabled = attachmentsEnabled;
+  const composerAttachmentsUnavailableReason = attachmentsUnavailableReason;
 
   const draftQuery = useQuery({
     queryKey: queryKeys.conversationDraft.detail(
@@ -585,8 +696,7 @@ export function Composer({
         ? (readChatState(draftStorageKey) ?? "")
         : "";
       const focusedOrEdited =
-        document.activeElement === inputRef.current ||
-        draftLocallyEdited.current;
+        inputRef.current?.isFocused() || draftLocallyEdited.current;
       if (!focusedOrEdited) {
         const nextText =
           draft.revision === 0 && local && !draft.text ? local : draft.text;
@@ -606,8 +716,7 @@ export function Composer({
           id => !locallyRemovedDraftAttachmentIds.current.has(id),
         );
         const focusedOrEdited =
-          document.activeElement === inputRef.current ||
-          draftLocallyEdited.current;
+          inputRef.current?.isFocused() || draftLocallyEdited.current;
         const local = draftStorageKey
           ? (readChatState(draftStorageKey) ?? "")
           : "";
@@ -639,7 +748,22 @@ export function Composer({
   useEffect(() => {
     if (conversationDraftId && !draftReady.current) return;
     const previous = appliedDefaultDestination.current;
-    if (!defaultDestination || destinationMode !== "project-chat") {
+    if (!defaultDestination) {
+      appliedDefaultDestination.current = undefined;
+      setActiveDefaultDestination(undefined);
+      return;
+    }
+    if (destinationMode === "target-required") {
+      appliedDefaultDestination.current = defaultDestination;
+      setActiveDefaultDestination(undefined);
+      const normalizedText = removeAllComposerDestinations(
+        textRef.current,
+        defaultDestination.handle,
+      );
+      if (normalizedText !== textRef.current) replaceText(normalizedText);
+      return;
+    }
+    if (destinationMode !== "project-chat") {
       appliedDefaultDestination.current = undefined;
       setActiveDefaultDestination(undefined);
       return;
@@ -654,25 +778,28 @@ export function Composer({
       return;
     }
     appliedDefaultDestination.current = defaultDestination;
-    let nextText = textRef.current;
-    if (previous && hasComposerDestination(nextText, previous.handle)) {
-      nextText = removeHandle(nextText, previous.handle);
-    }
-    const containedLegacyDestination = hasComposerDestination(
+    const nextText = textRef.current;
+    const normalizedText = removeAllComposerDestinations(
       nextText,
       defaultDestination.handle,
     );
-    if (containedLegacyDestination) {
-      nextText = removeHandle(nextText, defaultDestination.handle);
+    const previousWasActive = Boolean(
+      previous &&
+      activeDefaultDestination?.selectionKey === previous.selectionKey,
+    );
+    const destinationWasInline = normalizedText !== nextText;
+    const mayActivate = normalizedText.trim().length === 0
+      || previousWasActive
+      || destinationWasInline;
+    if (mayActivate) {
+      setActiveDefaultDestination(defaultDestination);
+    } else {
+      setActiveDefaultDestination(undefined);
     }
-    const mayPopulate =
-      nextText.trim().length === 0 ||
-      Boolean(previous) ||
-      containedLegacyDestination;
-    if (nextText !== textRef.current) replaceText(nextText);
-    setActiveDefaultDestination(mayPopulate ? defaultDestination : undefined);
+    if (destinationWasInline) replaceText(normalizedText);
   }, [
     conversationDraftId,
+    activeDefaultDestination?.selectionKey,
     defaultDestination?.binding?.currentTitle,
     defaultDestination?.handle,
     defaultDestination?.selectionKey,
@@ -787,7 +914,12 @@ export function Composer({
   const mentionMatch = /(?:^|\s)#([\p{L}\p{N}_-]*)$/u.exec(
     text.slice(0, caret),
   );
-  const autocompleteHandles = mentionSuggestionHandles ?? mentionHandles;
+  const autocompleteHandles = [...new Set([
+    ...(mentionSuggestionHandles ?? mentionHandles ?? []),
+    ...((destinationMode === "project-chat" || destinationMode === "target-required")
+      ? [NEW_AGENT_DESTINATION_HANDLE]
+      : []),
+  ])];
   const suggestions =
     mentionMatch && autocompleteHandles && autocompleteHandles.length > 0
       ? autocompleteHandles.filter(handle =>
@@ -795,12 +927,8 @@ export function Composer({
         )
       : [];
   const fileMatch = /(?:^|\s)@([^\s@#]*)$/u.exec(text.slice(0, caret));
-  const fileToken = fileMatch?.[1] ?? "";
-  const fileSlash = fileToken.lastIndexOf("/");
-  const fileDirectory = fileSlash >= 0 ? fileToken.slice(0, fileSlash) : "";
-  const filePrefix =
-    fileSlash >= 0 ? fileToken.slice(fileSlash + 1) : fileToken;
-  const [fileEntries, setFileEntries] = useState<FileEntryDto[]>([]);
+  const filePrefix = fileMatch?.[1] ?? "";
+  const [fileEntries, setFileEntries] = useState<ArtifactDto[]>([]);
   const fileReferenceActive = Boolean(fileMatch);
   useEffect(() => {
     let cancelled = false;
@@ -810,11 +938,22 @@ export function Composer({
         cancelled = true;
       };
     }
-    void api
-      .getFiles(projectId, fileDirectory)
-      .then(response => {
-        if (!cancelled)
-          setFileEntries(response.kind === "dir" ? response.entries : []);
+    void (async () => {
+      const items: ArtifactDto[] = [];
+      let cursor: string | undefined;
+      do {
+        const response = await api.listProjectArtifacts(projectId, 500, cursor);
+        items.push(...response.items);
+        const nextCursor = response.history.hasMore
+          ? response.history.cursor
+          : undefined;
+        if (!nextCursor || nextCursor === cursor) break;
+        cursor = nextCursor;
+      } while (!cancelled);
+      return items;
+    })()
+      .then(items => {
+        if (!cancelled) setFileEntries(items);
       })
       .catch(() => {
         if (!cancelled) setFileEntries([]);
@@ -822,12 +961,12 @@ export function Composer({
     return () => {
       cancelled = true;
     };
-  }, [fileDirectory, fileReferenceActive, projectId]);
+  }, [fileReferenceActive, projectId]);
   const fileSuggestions = fileMatch
     ? fileEntries.filter(entry =>
-        entry.name
+        entry.path
           .toLocaleLowerCase()
-          .startsWith(filePrefix.toLocaleLowerCase()),
+          .includes(filePrefix.toLocaleLowerCase()),
       )
     : [];
   const commandDraft = providerCommandInput(
@@ -855,36 +994,90 @@ export function Composer({
   const applyMention = (handle: string) => {
     const start =
       caret - mentionMatch![0].length + mentionMatch![0].indexOf("#");
-    const next = `${text.slice(0, start)}#${handle} ${text.slice(caret)}`;
-    update(next);
+    const specialTitle = SPECIAL_MENTION_TITLES.get(handle.toLocaleLowerCase());
+    if (
+      destinationMode === "target-required" &&
+      handle.toLocaleLowerCase() === NEW_AGENT_DESTINATION_HANDLE
+    ) {
+      const next = selectExclusiveNewAgentDestination(
+        text,
+        start,
+        caret,
+        [
+          ...targetRequiredHandles,
+          ...(hasBroadcastDestination ? ["broadcast"] : []),
+        ],
+      );
+      requiredRecipient?.onClear();
+      update(next);
+      setHighlighted(0);
+      requestAnimationFrame(() => {
+        inputRef.current?.focus();
+        const nextCaret = inputRef.current?.getCanonicalText().length ?? 0;
+        inputRef.current?.setSelectionOffsets(nextCaret, nextCaret);
+        setCaret(nextCaret);
+      });
+      return;
+    }
+    const binding = (mentionBindings ?? []).find(candidate =>
+      [candidate.handle, candidate.currentHandle].some(
+        candidateHandle =>
+          candidateHandle.toLocaleLowerCase() === handle.toLocaleLowerCase(),
+      ),
+    );
+    const descriptor = specialTitle
+      ? {
+          kind: "special" as const,
+          handle,
+          title: specialTitle,
+          valid: true,
+        }
+      : binding
+        ? {
+            kind: "agent" as const,
+            agentId: binding.agentId,
+            handle: binding.currentHandle,
+            title: binding.currentTitle,
+            valid: true,
+          }
+        : undefined;
+    if (inputRef.current && descriptor) {
+      inputRef.current.setSelectionOffsets(start, caret);
+      inputRef.current.insertMention(descriptor);
+      inputRef.current.insertText(" ");
+    } else {
+      update(`${text.slice(0, start)}#${handle} ${text.slice(caret)}`);
+    }
     setHighlighted(0);
-    // Restore focus and place the caret after the inserted handle.
     const nextCaret = start + handle.length + 2;
     requestAnimationFrame(() => {
-      const el = inputRef.current;
-      if (el) {
-        el.focus();
-        el.setSelectionRange(nextCaret, nextCaret);
-        setCaret(nextCaret);
-      }
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionOffsets(nextCaret, nextCaret);
+      setCaret(nextCaret);
     });
   };
 
-  const applyFileReference = (entry: {
-    path: string;
-    kind: "file" | "dir";
-  }) => {
+  const applyFileReference = (entry: ArtifactDto) => {
     const start = caret - fileMatch![0].length + fileMatch![0].indexOf("@");
-    const suffix = entry.kind === "dir" ? "/" : " ";
-    const next = `${text.slice(0, start)}@${entry.path}${suffix}${text.slice(caret)}`;
-    update(next);
+    const filename = entry.path.split(/[\\/]/u).filter(Boolean).at(-1) ?? entry.path;
+    const descriptor: ComposerProjectFileDescriptor = {
+      projectId: projectId!,
+      artifactId: entry.id,
+      historicalFilename: filename,
+      currentFilename: filename,
+    };
+    inputRef.current?.insertProjectFile(
+      descriptor,
+      { start, end: caret },
+      " ",
+    );
     setHighlighted(0);
-    const nextCaret = start + entry.path.length + 1 + suffix.length;
+    const nextCaret = start + projectFileCanonicalText(descriptor).length + 1;
     requestAnimationFrame(() => {
       const el = inputRef.current;
       if (!el) return;
       el.focus();
-      el.setSelectionRange(nextCaret, nextCaret);
+      el.setSelectionOffsets(nextCaret, nextCaret);
       setCaret(nextCaret);
       setSuppressMenu(false);
     });
@@ -893,15 +1086,18 @@ export function Composer({
   const applyCommand = (command: EngineCommand) => {
     if (engineCommandDisabledReason(command)) return;
     if (!commandDraft) return;
-    const next = `${text.slice(0, commandDraft.start)}${command.insertText}${text.slice(caret)}`;
-    update(next);
+    inputRef.current?.replaceCanonicalRange(
+      commandDraft.start,
+      caret,
+      command.insertText,
+    );
     setHighlighted(0);
     requestAnimationFrame(() => {
       const el = inputRef.current;
       if (!el) return;
       el.focus();
       const nextCaret = commandDraft.start + command.insertText.length;
-      el.setSelectionRange(nextCaret, nextCaret);
+      el.setSelectionOffsets(nextCaret, nextCaret);
       setCaret(nextCaret);
     });
   };
@@ -909,14 +1105,14 @@ export function Composer({
   const applyCapability = (capability: EngineComposerCapability) => {
     const inserted = insertComposerCapability(text, caret, capability);
     if (!inserted) return;
-    update(inserted.text);
+    inputRef.current?.replaceCanonicalRange(0, text.length, inserted.text);
     setCapabilityMenuAnchor(null);
     setCapabilityFilter("");
     requestAnimationFrame(() => {
       const el = inputRef.current;
       if (!el) return;
       el.focus();
-      el.setSelectionRange(inserted.caret, inserted.caret);
+      el.setSelectionOffsets(inserted.caret, inserted.caret);
       setCaret(inserted.caret);
     });
   };
@@ -937,6 +1133,12 @@ export function Composer({
       },
     ) => Promise<unknown> | unknown,
   ) => {
+    if (dictationSettlingRef.current) {
+      setSendError(
+        "Stop voice dictation and wait for final text before sending.",
+      );
+      return;
+    }
     if (sendingRef.current || !canSend) return;
     const commandSubmission = providerCommandInput(
       submissionText,
@@ -977,7 +1179,10 @@ export function Composer({
         activeDefaultDestination.binding,
       );
     }
-    for (const handle of authoredProjectDestinationHandles) {
+    const structurallyAuthoredHandles = destinationMode === "target-required"
+      ? targetRequiredHandles
+      : authoredProjectDestinationHandles;
+    for (const handle of structurallyAuthoredHandles) {
       const matchingBindings = (mentionBindings ?? []).filter((candidate) =>
         candidate.handle.toLocaleLowerCase() === handle.toLocaleLowerCase());
       if (matchingBindings.length === 1) {
@@ -1195,17 +1400,22 @@ export function Composer({
           onFilterChange={setCapabilityFilter}
           onApplyCapability={applyCapability}
         />
-        {destinationMode === "target-required" ? (
-          <ComposerTargetDestinationAction
-            broadcast={hasBroadcastDestination}
-            handles={targetRequiredHandles}
-            onClear={clearTargetDestinations}
+        {enableVoiceDictation ? (
+          <DictationControls
+            disabled={disabled || composerLocked || sending}
+            onFinalTranscript={insertDictatedText}
+            onSettlingChange={handleDictationSettlingChange}
           />
         ) : null}
-        {destinationMode === "project-chat" && !activeDefaultDestination ? (
+        {destinationMode === "project-chat" ? (
           <ComposerProjectDestinationAction
             newAgentSelected={newAgentSelected}
             toggleNewAgent={toggleNewAgentDestination}
+            replyDestination={!newAgentSelected && defaultDestination && mentionedHandles.some(
+              handle => handle.toLocaleLowerCase() === defaultDestination.handle.toLocaleLowerCase(),
+            )
+              ? defaultDestination.binding?.currentTitle ?? defaultDestination.handle
+              : undefined}
           />
         ) : null}
         {leadingControls ? (
@@ -1235,14 +1445,20 @@ export function Composer({
             menuSuggestions={menuSuggestions}
             destinationMode={destinationMode}
             requiredRecipient={requiredRecipient}
-            inlineDestination={
-              destinationMode === "project-chat" && activeDefaultDestination
-                ? {
-                  handle: activeDefaultDestination.handle,
-                  onClear: () => setActiveDefaultDestination(undefined),
+            inlineDestination={renderedDefaultDestination
+              ? {
+                  handle: renderedDefaultDestination.handle,
+                  title:
+                    renderedDefaultDestination.binding?.currentTitle ??
+                    renderedDefaultDestination.handle,
+                  agentId: renderedDefaultDestination.binding?.agentId,
+                  onClear: destinationMode === "target-required"
+                    ? clearRequiredRecipient
+                    : clearActiveDefaultDestination,
                 }
-                : undefined
-            }
+              : undefined}
+            mentionTokens={mentionTokens}
+            mentionBindings={mentionBindings ?? []}
             mentionedBusyHandles={mentionedBusyHandles}
             mentionedHandles={mentionedHandles}
             canSend={canSend}
@@ -1259,7 +1475,6 @@ export function Composer({
               setSendError(undefined);
             }}
             onPasteError={setSendError}
-            onCaretChange={setCaret}
             onHighlightChange={setHighlighted}
             onSuppressMenu={() => setSuppressMenu(true)}
             onApplySuggestion={selected => {
@@ -1295,7 +1510,11 @@ export function Composer({
           onCancel={onCancel}
           queue={queue}
           recipientRequiredMessage={recipientRequiredMessage}
-          sendUnavailableReason={sendUnavailableReason}
+          sendUnavailableReason={
+            dictationSettling
+              ? "Stop voice dictation and wait for final text before sending."
+              : sendUnavailableReason
+          }
           send={send}
           showQueue={showQueue}
           steer={steer}

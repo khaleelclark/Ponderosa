@@ -2,7 +2,7 @@
 // user-facing status vocabulary so the Agents tab, sidebar, and detail view
 // stay consistent. The underlying data model remains AgentDto/AgentDetailDto.
 
-import type { AgentOperationalStatus, AgentDetailDto, AgentDto, AgentHealthDto } from "@ponderosa/core";
+import type { AgentOperationalStatus, AgentDetailDto, AgentDto, AgentHealthDto, AgentOrganizationHealthDto } from "@ponderosa/core";
 
 export interface AgentOrganizationRow {
   agent: AgentDto;
@@ -47,7 +47,7 @@ export function orderedAgentOrganization(agents: AgentDto[]): AgentOrganizationR
 }
 
 export function agentBelongsToConversation(agent: AgentDto, conversationId: string): boolean {
-  return agent.conversationIds.includes(conversationId);
+  return agent.conversationId === conversationId;
 }
 
 export type AgentStatus = AgentOperationalStatus;
@@ -131,6 +131,116 @@ export function agentStatusLabel(status: AgentStatus): string {
     default:
       return "Idle";
   }
+}
+
+export type AgentStatusConnection =
+  | "connecting"
+  | "live"
+  | "reconnecting"
+  | "stale"
+  | "unavailable";
+
+export interface AgentStatusPresentation {
+  /** Compact visible label. */
+  label: string;
+  /** Full non-truncated label for controls and assistive technology. */
+  accessibleLabel: string;
+  /** Evidence detail suitable for a title or tooltip. */
+  detail: string;
+}
+
+export function agentStatusPresentation(
+  health: AgentHealthDto | AgentOrganizationHealthDto | undefined,
+  options: {
+    status?: AgentStatus;
+    connectionStatus?: AgentStatusConnection;
+    phaseEvidenceFresh?: boolean;
+    agentNameForId?: (agentId: string) => string | undefined;
+  } = {},
+): AgentStatusPresentation {
+  const status = options.status ?? health?.status ?? "idle";
+  const coarseLabel = isProviderBlockedHealth(health)
+    ? "Provider blocked"
+    : agentStatusLabel(status);
+  const coarse = {
+    label: coarseLabel,
+    accessibleLabel: `Agent status: ${coarseLabel}`,
+    detail: `Agent status: ${coarseLabel}`,
+  };
+  const phase = health?.phase;
+  if (
+    !phase
+    || options.connectionStatus !== "live"
+    || options.phaseEvidenceFresh !== true
+    || health.status !== status
+  ) {
+    return coarse;
+  }
+
+  if (phase.kind === "running_command" || phase.kind === "using_tool") {
+    if (status !== "running" || health.executionId !== phase.executionId) return coarse;
+    const label = phase.kind === "running_command" ? "Running command" : "Using tool";
+    const identities = [
+      `Execution ${phase.executionId}`,
+      phase.schedulerRunId ? `Run ${phase.schedulerRunId}` : undefined,
+      `Call ${phase.callId}`,
+    ].filter(Boolean).join("; ");
+    return {
+      label,
+      accessibleLabel: `Agent status: ${label}; ${identities}`,
+      detail: `Agent status: ${label}; ${identities}`,
+    };
+  }
+
+  if (phase.kind === "stopping") {
+    if (
+      status !== "running"
+      || health.runtimeOwnership !== "cancelling"
+      || (phase.executionId && health.executionId !== phase.executionId)
+    ) return coarse;
+    const identities = [
+      phase.executionId ? `Execution ${phase.executionId}` : undefined,
+      phase.schedulerRunId ? `Run ${phase.schedulerRunId}` : undefined,
+    ].filter(Boolean).join("; ");
+    return {
+      label: "Stopping",
+      accessibleLabel: `Agent status: Stopping${identities ? `; ${identities}` : ""}`,
+      detail: `Agent status: Stopping${identities ? `; ${identities}` : ""}`,
+    };
+  }
+
+  if (phase.kind !== "waiting_on_request" && phase.kind !== "waiting_on_join") {
+    return coarse;
+  }
+  if (
+    status !== "waiting"
+    || phase.dependencyCount < 1
+    || phase.additionalDependencyCount < 0
+  ) return coarse;
+  const label = phase.dependencyCount > 1
+    ? "Waiting on requests"
+    : phase.counterpartyAgentIds.length
+      ? "Waiting on Agent"
+      : "Waiting on request";
+  const identity = phase.kind === "waiting_on_join"
+    ? [
+        `Join ${phase.joinId}`,
+        phase.requestIds.length ? `Requests ${phase.requestIds.join(", ")}` : undefined,
+      ].filter(Boolean).join("; ")
+    : `Request ${phase.requestId}`;
+  const counterparties = phase.counterpartyAgentIds.length
+    ? `Agents ${phase.counterpartyAgentIds.map((agentId) => {
+        const name = options.agentNameForId?.(agentId);
+        return name ? `${name} (${agentId})` : agentId;
+      }).join(", ")}`
+    : undefined;
+  const detail = [
+    `Agent status: ${label}`,
+    counterparties,
+    identity,
+    `${phase.dependencyCount} unresolved ${phase.dependencyCount === 1 ? "request" : "requests"}`,
+  ].filter(Boolean).join("; ");
+  return { label, accessibleLabel: detail, detail };
 }
 
 /** Provider retry metadata may coexist with a newer active Run. Only the

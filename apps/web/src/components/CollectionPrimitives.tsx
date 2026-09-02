@@ -30,6 +30,8 @@ import { IconTitle } from "./IconTitle";
 import { relativeTime } from "../agents";
 import { useInfiniteScrollSentinel } from "../hooks/useInfiniteScrollSentinel";
 import { LoadingState } from "./LoadingState";
+import { MobileNavigationButton } from "./MobileNavigationContext";
+import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 
 export interface CollectionWorkspaceProps {
   title: string;
@@ -121,33 +123,41 @@ export function CollectionHeader({
 }: Pick<CollectionWorkspaceProps, "title" | "detail" | "icon" | "scope" | "primaryAction">): JSX.Element {
   return <Stack
     component="header"
-    direction={{ xs: "column", sm: "row" }}
-    spacing={1.5}
-    sx={{ px: { xs: 2, md: 3 }, py: 2, alignItems: { xs: "flex-start", sm: "center" }, borderBottom: 1, borderColor: "divider" }}
+    direction="row"
+    spacing={1}
+    sx={{ px: { xs: 1, md: 3 }, py: 2, alignItems: "flex-start", borderBottom: 1, borderColor: "divider" }}
   >
-    <Box sx={{ flex: 1, minWidth: 0 }}>
-      <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
-        {icon ? <IconTitle icon={icon} title={title} component="h1" /> : <Typography variant="h6" component="h1" fontWeight={800}>{title}</Typography>}
-        {scope}
-      </Stack>
-      {detail ? <Typography variant="body2" color="text.secondary" sx={{ mt: 0.15 }}>{detail}</Typography> : null}
-    </Box>
-    {primaryAction ? (
-      <Box
-        sx={{
-          flexShrink: 0,
-          width: { xs: "100%", sm: "auto" },
-          display: "flex",
-          justifyContent: "flex-start",
-          "& .MuiButton-root": {
-            width: "auto",
-            whiteSpace: "nowrap",
-          },
-        }}
-      >
-        {primaryAction}
+    <MobileNavigationButton />
+    <Stack
+      direction={{ xs: "column", sm: "row" }}
+      spacing={1.5}
+      sx={{ flex: 1, minWidth: 0, alignItems: { xs: "flex-start", sm: "center" } }}
+    >
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
+          {icon ? <IconTitle icon={icon} title={title} component="h1" /> : <Typography variant="h6" component="h1" fontWeight={800}>{title}</Typography>}
+          {scope}
+        </Stack>
+        {detail ? <Typography variant="body2" color="text.secondary" sx={{ mt: 0.15 }}>{detail}</Typography> : null}
       </Box>
-    ) : null}
+      {primaryAction ? (
+        <Box
+          sx={{
+            flexShrink: 0,
+            width: { xs: "100%", sm: "auto" },
+            display: "flex",
+            justifyContent: "flex-start",
+            "& .MuiButton-root": {
+              width: "auto",
+              whiteSpace: "nowrap",
+            },
+          }}
+        >
+          {primaryAction}
+        </Box>
+      ) : null}
+    </Stack>
+    <PrimaryHeaderActionsOutlet />
   </Stack>;
 }
 

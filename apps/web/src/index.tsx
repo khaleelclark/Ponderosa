@@ -6,6 +6,7 @@ import { StrictMode, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
+import { MutationNotificationProvider } from "./components/MutationNotifications";
 import "./global.css";
 import { installServiceWorkerReloadGuard } from "./serviceWorkerReload";
 import { COLOR_MODE_STORAGE_KEY, createPonderosaTheme, loadColorMode, type ColorMode } from "./theme";
@@ -34,12 +35,14 @@ function Root(): JSX.Element {
     <QueryClientProvider client={queryClient}>
       <ThemeProvider theme={theme}>
         <CssBaseline />
-        <WorkspaceErrorBoundary title="Ponderosa could not display the workspace.">
-          <App
-            colorMode={colorMode}
-            onToggleColorMode={() => setColorMode((current) => (current === "light" ? "dark" : "light"))}
-          />
-        </WorkspaceErrorBoundary>
+        <MutationNotificationProvider>
+          <WorkspaceErrorBoundary title="Ponderosa could not display the workspace.">
+            <App
+              colorMode={colorMode}
+              onToggleColorMode={() => setColorMode((current) => (current === "light" ? "dark" : "light"))}
+            />
+          </WorkspaceErrorBoundary>
+        </MutationNotificationProvider>
       </ThemeProvider>
     </QueryClientProvider>
   );

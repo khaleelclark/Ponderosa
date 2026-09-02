@@ -9,7 +9,6 @@ import {
 import type {
   AgentHealthDto,
   EngineDto,
-  ConversationChannel,
   ConversationDto,
   ProjectDto,
   ProjectEngineCapabilitiesDto,
@@ -20,10 +19,17 @@ import type {
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { normalizeResetPages } from "../collections";
 import { providerAvailabilityMessage } from "../providerAvailability";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api } from "../api";
-import { agentBelongsToConversation, type AgentStatus } from "../agents";
 import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { api } from "../api";
+import type { AgentStatus } from "../agents";
+import {
+  useAgents,
   useNotifications,
   useProjects,
   useWorkspacePreferences,
@@ -35,8 +41,6 @@ import {
 } from "../conversationEngine";
 import {
   agentIdForMentionHandle,
-  agentMentionHandle,
-  findMentionedAgents,
 } from "../mentions";
 import { Composer } from "./chat/Composer";
 import { QueuedMessageTray } from "./chat/QueuedMessageTray";
@@ -49,7 +53,7 @@ import { TargetedNextRunReceipts } from "./TargetedNextRunReceipts";
 import { queryKeys } from "../queryKeys";
 import { AgentsTab } from "./AgentsTab";
 import { AllTriggersWorkspace } from "./WorkspaceResourceViews";
-import type { Route } from "../routing";
+import type { ConversationDetailView, Route } from "../routing";
 import {
   conversationComposerRuntime,
   reconcileQueuedProjectMessages,
@@ -89,6 +93,7 @@ export function ConversationView({
   conversationId,
   focusMessageId,
   initialView,
+  onViewChange,
   engines,
   engineCapabilities,
   onRefreshCapabilities,
@@ -112,7 +117,8 @@ export function ConversationView({
 }: {
   conversationId: string;
   focusMessageId?: string;
-  initialView?: ConversationChannel;
+  initialView?: ConversationDetailView;
+  onViewChange?(view: ConversationDetailView): void;
   engines: EngineDto[];
   engineCapabilities: ProjectEngineCapabilitiesDto[];
   onRefreshCapabilities(context?: {
@@ -177,7 +183,6 @@ export function ConversationView({
   const [importOpen, setImportOpen] = useState(false);
   const [agentWorkOpen, setAgentWorkOpen] = useState(false);
   const collaborationVisited = useRef(activeView === "collaboration");
-  const [agentWorkFocus, setAgentWorkFocus] = useState<string>();
   const [mentionInsertRequest, setMentionInsertRequest] = useState<{
     id: string;
     text: string;
@@ -199,8 +204,6 @@ export function ConversationView({
     collaborationVisited,
     conversationId,
     focusedMessage,
-    initialView,
-    setActiveView,
     setOlderCollaboration,
     setOlderMain,
   });
@@ -211,6 +214,8 @@ export function ConversationView({
   useConversationActiveViewPersistence(activeView, conversationId);
 
   const conversation = detailQuery.data?.conversation;
+  const projectAgentsQuery = useAgents(conversation?.projectId);
+  const routingAgents = projectAgentsQuery.data ?? agents;
   const activeBrowsers = useQuery({
     queryKey: queryKeys.agentBrowsers.conversation(conversation?.projectId, conversationId),
     queryFn: () => api.listActiveBrowserSessions(conversation!.projectId, conversationId),
@@ -270,7 +275,7 @@ export function ConversationView({
     }
     return [...byId.values()].filter(
       agent =>
-        agentMentionHandle(agent.title).toLocaleLowerCase() ===
+        agent.handle.toLocaleLowerCase() ===
         commandTargetHandle.toLocaleLowerCase(),
     );
   }, [commandTargetHandle, commandTargetMembersQuery.data?.items, conversationAgents]);
@@ -576,8 +581,13 @@ export function ConversationView({
   });
   const agentTitle = useCallback(
     (agentId: string | undefined): string =>
-      agents.find(agent => agent.id === agentId)?.title ?? "Deleted Agent",
-    [agents],
+      routingAgents.find(agent => agent.id === agentId)?.title ?? "Deleted Agent",
+    [routingAgents],
+  );
+  const agentHandle = useCallback(
+    (agentId: string | undefined): string =>
+      routingAgents.find(agent => agent.id === agentId)?.handle ?? "Deleted-Agent",
+    [routingAgents],
   );
   const {
     busy,
@@ -631,10 +641,10 @@ export function ConversationView({
     (agentId: string) => {
       setMentionInsertRequest({
         id: String(Date.now()),
-        text: `#${agentMentionHandle(agentTitle(agentId))} `,
+        text: `#${agentHandle(agentId)} `,
       });
     },
-    [agentTitle],
+    [agentHandle],
   );
   const lastContinuationDestination = useMemo(() => {
     const message = [...messages]
@@ -776,7 +786,7 @@ export function ConversationView({
     "everyone",
     ...agents
       .filter(agent => !agent.archived)
-      .map(agent => agentMentionHandle(agent.title))
+      .map(agent => agent.handle)
       .filter(
         handle =>
           !["broadcast", "user", "everyone"].includes(
@@ -787,18 +797,17 @@ export function ConversationView({
   const mentionBindings = agents
     .filter(agent => !agent.archived)
     .map(agent => ({
-      handle: agentMentionHandle(agent.title),
+      projectId: conversation?.projectId ?? "",
+      handle: agent.handle,
       agentId: agent.id,
+      currentHandle: agent.handle,
       currentTitle: agent.title,
     }))
     .filter(binding => binding.handle &&
       !["broadcast", "user", "everyone"].includes(binding.handle.toLocaleLowerCase()));
-  const findMentioned = (text: string): AgentDto[] =>
-    findMentionedAgents(text, agents);
-
   const busyMentionHandles = agents
     .filter(agent => statusByAgentId.get(agent.id) === "running")
-    .map(agent => agentMentionHandle(agent.title));
+    .map(agent => agent.handle);
 
   const runtimeControls =
     activeView === "main" ? (
@@ -915,7 +924,10 @@ export function ConversationView({
         onNewAgent={onNewAgent}
         setImportOpen={setImportOpen}
         setDeleteOpen={setDeleteOpen}
-        setActiveView={setActiveView}
+        setActiveView={next => {
+          setActiveView(next);
+          onViewChange?.(next);
+        }}
       />
 
       <Box
@@ -962,7 +974,6 @@ export function ConversationView({
                   notifications={(notificationsQuery.data?.items ?? []).filter((item) => item.kind !== "decision")}
                   projectId={conversation.projectId}
                   conversationId={conversationId}
-                  conversationAgentIds={agents.map(agent => agent.id)}
                   onOpen={item => {
                     const focusId = notificationTechnicalFocusId(item);
                     if (item.agentId)
@@ -1015,6 +1026,7 @@ export function ConversationView({
               onOpenFileActivity={onOpenFileActivity}
               mentionAgent={mentionAgent}
               markCommunicationVisible={markCommunicationVisible}
+              notifications={notificationsQuery.data?.items ?? []}
             />
           </ChatSurface>
         </Box>
@@ -1108,7 +1120,6 @@ export function ConversationView({
             open
             projectId={conversation.projectId}
             conversationId={conversationId}
-            focus={agentWorkFocus ? { id: agentWorkFocus } : undefined}
             onClose={() => setAgentWorkOpen(false)}
           />
         ) : activeView === "files" ? (
@@ -1212,7 +1223,18 @@ export function ConversationView({
           </Alert>
         ) : null}
         {activeView === "main" && queuedMessageNotice ? (
-          <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>
+          <Alert
+            severity="info"
+            sx={{
+              mx: 1.5,
+              mt: 1,
+              minWidth: 0,
+              "& .MuiAlert-message": {
+                minWidth: 0,
+                overflowWrap: "anywhere",
+              },
+            }}
+          >
             {queuedMessageNotice}
           </Alert>
         ) : null}
@@ -1259,94 +1281,94 @@ export function ConversationView({
         {activeView === "main" && targetedNextRunReceipts.data ? (
           <TargetedNextRunReceipts receipts={targetedNextRunReceipts.data.receipts} />
         ) : null}
-        {activeView === "main" ? (
-          <Composer
-            draftStorageKey={chatStateKey(
-              "draft",
-              `conversation.${conversationId}.${activeView}`,
-            )}
-            conversationDraftId={conversationId}
-            destinationMode="project-chat"
-            defaultDestination={lastContinuationDestination ? {
-              handle: agentMentionHandle(lastContinuationDestination.agent.title),
-              binding: {
-                handle: agentMentionHandle(lastContinuationDestination.agent.title),
-                agentId: lastContinuationDestination.agent.id,
-                currentTitle: lastContinuationDestination.agent.title,
-              },
-              selectionKey: lastContinuationDestination.selectionKey,
-            } : undefined}
-            insertTextRequest={mentionInsertRequest}
-            controls={runtimeControls}
-            disabled={
-              busy ||
-              persistTargetRuntime.isPending ||
-              persistDefaults.isPending
-            }
-            running={operationRunning}
-            allowSendWhileRunning
-            mentionHandles={mentionHandles}
-            mentionBindings={mentionBindings}
-            commands={composerCommands}
-            onCommandTargetHandleChange={setCommandTargetHandle}
-            onCommandTargetAgentIdChange={setCommandTargetAgentId}
-            capabilities={composerRuntime.capabilities}
-            onCapabilitiesOpen={() =>
-              onRefreshCapabilities({ engineId: activeEngine?.id, model })
-            }
-            onCommand={
-              commandTargetAgent
-                ? (command, argumentsText) => {
-                    const invocation = api.invokeProviderCommand(
-                      commandTargetAgent.id,
-                      {
-                        name: command.name,
-                        ...(argumentsText ? { argumentsText } : {}),
-                      },
-                    );
-                    return invocation.then(result =>
-                      setQueuedMessageNotice(
-                        result.message ??
-                          `/${command.name} invoked for ${commandTargetAgent.title}.`,
-                      ),
-                    );
-                  }
-                : undefined
-            }
-            busyMentionHandles={busyMentionHandles}
-            allowUnmentionedSend={engineReady}
-            sendUnavailableReason={engineUnavailableMessage}
-            placeholder={
-              engineReady
-                ? "Write a message…"
-                : "Choose an available Agent with # or use #broadcast"
-            }
-            onSend={(text, files, stagedIds, draftOwnerId, context) =>
-              submit(
-                text,
-                files,
-                "steer",
-                stagedIds,
-                draftOwnerId,
-                context?.mentionedAgents,
-              )
-            }
-            onQueue={(text, files, stagedIds, draftOwnerId, context) =>
-              submit(
-                text,
-                files,
-                "queue",
-                stagedIds,
-                draftOwnerId,
-                context?.mentionedAgents,
-              )
-            }
-            agentResponding={false}
-            projectId={conversation.projectId}
-            onCancel={stopOperation}
-            cancelPending={cancelOperationPending}
-          />
-        ) : null}
+        <Composer
+          draftStorageKey={chatStateKey(
+            "draft",
+            `conversation.${conversationId}.main`,
+          )}
+          conversationDraftId={conversationId}
+          destinationMode="project-chat"
+          defaultDestination={lastContinuationDestination ? {
+            handle: lastContinuationDestination.agent.handle,
+            binding: {
+              projectId: conversation.projectId,
+              handle: lastContinuationDestination.agent.handle,
+              agentId: lastContinuationDestination.agent.id,
+              currentHandle: lastContinuationDestination.agent.handle,
+              currentTitle: lastContinuationDestination.agent.title,
+            },
+            selectionKey: lastContinuationDestination.selectionKey,
+          } : undefined}
+          insertTextRequest={mentionInsertRequest}
+          controls={runtimeControls}
+          disabled={
+            busy ||
+            persistTargetRuntime.isPending ||
+            persistDefaults.isPending
+          }
+          running={operationRunning}
+          allowSendWhileRunning
+          mentionHandles={mentionHandles}
+          mentionBindings={mentionBindings}
+          commands={composerCommands}
+          onCommandTargetHandleChange={setCommandTargetHandle}
+          onCommandTargetAgentIdChange={setCommandTargetAgentId}
+          capabilities={composerRuntime.capabilities}
+          onCapabilitiesOpen={() =>
+            onRefreshCapabilities({ engineId: activeEngine?.id, model })
+          }
+          onCommand={
+            commandTargetAgent
+              ? (command, argumentsText) => {
+                  const invocation = api.invokeProviderCommand(
+                    commandTargetAgent.id,
+                    {
+                      name: command.name,
+                      ...(argumentsText ? { argumentsText } : {}),
+                    },
+                  );
+                  return invocation.then(result =>
+                    setQueuedMessageNotice(
+                      result.message ??
+                        `/${command.name} invoked for ${commandTargetAgent.title}.`,
+                    ),
+                  );
+                }
+              : undefined
+          }
+          busyMentionHandles={busyMentionHandles}
+          allowUnmentionedSend={engineReady}
+          sendUnavailableReason={engineUnavailableMessage}
+          placeholder={
+            engineReady
+              ? "Write a message…"
+              : "Choose an available Agent with # or use #broadcast"
+          }
+          onSend={(text, files, stagedIds, draftOwnerId, context) =>
+            submit(
+              text,
+              files,
+              "steer",
+              stagedIds,
+              draftOwnerId,
+              context?.mentionedAgents,
+            )
+          }
+          onQueue={(text, files, stagedIds, draftOwnerId, context) =>
+            submit(
+              text,
+              files,
+              "queue",
+              stagedIds,
+              draftOwnerId,
+              context?.mentionedAgents,
+            )
+          }
+          agentResponding={false}
+          projectId={conversation.projectId}
+          onCancel={stopOperation}
+          cancelPending={cancelOperationPending}
+        />
       </ChatComposerDock>
 
       <ConversationDialogs
@@ -1368,7 +1390,6 @@ export function ConversationView({
             : undefined
         }
         onImportClose={() => setImportOpen(false)}
-        onImported={agentId => onOpenAgent(agentId)}
         onStopCancel={() => {
           if (!cancelOperationPending) setStopConfirmation(undefined);
         }}

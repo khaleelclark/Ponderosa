@@ -17,7 +17,7 @@ export type WorkspaceEvent =
   | { type: "conversation_changed"; projectId: string; conversationId: string; action: "created" | "updated" | "deleted" | "used" | "message" }
   | { type: "draft_changed"; conversationId: string; revision: number; cleared: boolean }
   | { type: "draft_conflict"; conversationId: string; revision: number }
-  | { type: "notification_changed"; notificationId?: string; conversationId?: string; action: "created" | "updated" | "read" | "cleared" }
+  | { type: "notification_changed"; notificationId?: string; conversationId?: string; action: "created" | "updated" | "read" | "acknowledged" | "resolved" | "cleared" }
   | { type: "queued_message_changed"; conversationId: string; deliveryId: string; action: "queued" | "edited" | "steered" | "cancelled" | "preparing" | "retrying" | "started" }
   | { type: "message_delivery_changed"; /** Absent on legacy persisted events. */ projectId?: string; agentId: string; conversationIds?: string[] }
   | {
@@ -152,6 +152,8 @@ export interface RunOutputTextDto {
  */
 export interface AgentDetailDto {
   agent: AgentDto;
+  /** Stable current-or-historical evidence that this Agent managed another Agent. */
+  hasSubagentHistory?: boolean;
   messages: MessageDto[];
   runOutput: RunOutputDto[];
   activity: AgentActivityDto[];

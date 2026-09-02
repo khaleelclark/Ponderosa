@@ -16,7 +16,6 @@ import {
 import {
   MAX_FILE_BYTES,
 } from "../project-files.js";
-import { readWorkspaceArtifactFileAsync } from "../project-file-access.js";
 import {
   boundedUtf8Preview,
   contentTypeForArtifact,
@@ -113,6 +112,28 @@ export function registerArtifactRoutes(
   );
 
   app.get<{
+    Params: { projectId: string; aid: string };
+  }>(
+    "/api/projects/:projectId/artifacts/:aid",
+    async (request, reply) => {
+      const artifact = store.getProjectArtifact(
+        request.params.projectId,
+        request.params.aid,
+      );
+      if (
+        !artifact ||
+        !store.projectArtifactIsOrganizationVisible(
+          request.params.projectId,
+          request.params.aid,
+        )
+      ) {
+        return reply.code(404).send({ error: "project file not found" });
+      }
+      return artifact;
+    },
+  );
+
+  app.get<{
     Params: { projectId: string };
     Querystring: { limit?: string; cursor?: string; conversationId?: string };
   }>("/api/projects/:projectId/artifacts", async (request, reply) => {
@@ -176,33 +197,9 @@ export function registerArtifactRoutes(
     signal?: AbortSignal,
   ): Promise<GeneratedFile | undefined> {
     const project = store.getProject(projectId);
-    const generatedPdfSource = async (): Promise<GeneratedFile | undefined> => {
-      const agent = store.getAgentDetail(agentId, 1, false)?.agent;
-      if (!project || !agent || agent.projectId !== project.id) return undefined;
-      const generatedPath = store.getGeneratedPdfPath(agent.id, artifactId);
-      if (!generatedPath) return undefined;
-      const source = await readWorkspaceArtifactFileAsync({
-        rootPath: project.hostPath,
-        requestedPath: generatedPath,
-        purpose: "legacy_pdf",
-        maxBytes: 32 * 1024 * 1024,
-        signal,
-      });
-      return source
-        ? {
-          body: source.body,
-          name: source.name,
-          mediaType: "application/pdf",
-          size: source.body.length,
-        }
-        : undefined;
-    };
     const managed = store.getProjectArtifact(projectId, artifactId);
     if (project && managed) {
       if ((managed.originAgentId ?? managed.agentId) !== agentId) return undefined;
-      if (managed.kind === "diff" && managed.sourcePath?.toLowerCase().endsWith(".pdf")) {
-        return generatedPdfSource();
-      }
       const runtime = assets.authoritativeRuntimeArtifactMetadataById(projectId, artifactId);
       if (runtime && !managedProjectArtifactAgreesWithRuntime(managed, runtime)) return undefined;
       if (managed.size === undefined || !managed.mediaType || !managed.sha256) return undefined;
@@ -227,7 +224,7 @@ export function registerArtifactRoutes(
         }
         : undefined;
     }
-    return generatedPdfSource();
+    return undefined;
   }
 
   async function sendGeneratedPreview(

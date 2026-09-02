@@ -11,6 +11,7 @@ import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runt
 import { isIso } from "./coordination-v3-runtime-validation.js";
 import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
 import type { CoordinationV3StoreSupport } from "./coordination-v3-store-support.js";
+import type { CoordinationV3RequestRecoveryAuthority } from "./coordination-v3-request-recovery-authority.js";
 import type {
   CoordinateV3Input,
   CoordinateV3Result,
@@ -24,6 +25,7 @@ export class CoordinationV3CoordinateAuthority {
     private readonly sqlite: Database.Database,
     private readonly support: CoordinationV3StoreSupport,
     private readonly runtimeScopeAuthority: CoordinationV3RuntimeScopeAuthority,
+    private readonly requestRecoveryAuthority: CoordinationV3RequestRecoveryAuthority,
     private readonly createActivation: (input: CreateActivationV3Input) => string,
     private readonly insertQuestionSuspensions: (
       requestIds: string[],
@@ -105,15 +107,10 @@ export class CoordinationV3CoordinateAuthority {
       }
       if (input.rolloverRecoveryForRequestId) {
         const retry = input.requests[0];
-        const retryOfRequestId = retry?.payload &&
-            typeof retry.payload === "object" &&
-            !Array.isArray(retry.payload)
-          ? (retry.payload as Record<string, unknown>).retryOfRequestId
-          : undefined;
         if (
           input.actorScope !== "user:local-operator" ||
           input.requests.length !== 1 ||
-          retryOfRequestId !== input.rolloverRecoveryForRequestId
+          retry?.recoveryOfRequestId !== input.rolloverRecoveryForRequestId
         ) {
           throw new Error("context rollover recovery requires one matching operator retry");
         }
@@ -202,6 +199,16 @@ export class CoordinationV3CoordinateAuthority {
           now,
           now,
         );
+        if (request.recoveryOfRequestId) {
+          this.requestRecoveryAuthority.bind({
+            predecessorRequestId: request.recoveryOfRequestId,
+            successorRequestId: requestId,
+            actorScope: input.actorScope,
+            ...(input.runAuthorization
+              ? { actorAgentId: input.runAuthorization.agentId }
+              : {}),
+          });
+        }
         requestIds.push(requestId);
         const activationId = this.createActivation({
           projectId: input.projectId,

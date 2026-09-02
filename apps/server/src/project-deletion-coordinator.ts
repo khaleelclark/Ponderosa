@@ -23,6 +23,7 @@ import type {
 } from "./app-contracts.js";
 import type { createOperationalNotifications } from "./operational-notifications.js";
 import type { ProviderProcessAuthority } from "./provider-process-authority.js";
+import type { AgentWorkingCopyService } from "./agent-working-copy-service.js";
 
 type OperationalNotifications = ReturnType<typeof createOperationalNotifications>;
 
@@ -37,6 +38,7 @@ interface ProjectDeletionCoordinatorContext {
   engineModelCatalogDiscoveryAuthorities: ReadonlySet<ModelCatalogDiscoveryAuthority>;
   deletingProjectIds: Set<string>;
   deletingAgentIds: Set<string>;
+  agentCreationConversationLeases: ReadonlyMap<string, number>;
   projectDeletionInFlightIds: Set<string>;
   projectBrowserGrants: Map<string, { agentId: string; runId: string }>;
   browserSessions: BrowserSessionManager;
@@ -55,7 +57,7 @@ interface ProjectDeletionCoordinatorContext {
   clearRunLivenessTimer(run: ActiveRun): void;
   closeLinkPreviewsForAgent(agentId: string, reason: string): void;
   drainProviderRuntimeAuthority(reason: string, agentIds?: ReadonlySet<string>): Promise<void>;
-  drainEngineCapabilityDiscoveries(projectId?: string): Promise<void>;
+  drainEngineCapabilityDiscoveries(projectId?: string, agentIds?: ReadonlySet<string>): Promise<void>;
   drainEngineModelCatalogDiscoveries(projectId?: string): Promise<void>;
   awaitProjectDeletionBarrier(operation: Promise<unknown>, label: string): Promise<void>;
   cancelAgentDecisions(agentIds: Iterable<string>): void;
@@ -69,6 +71,7 @@ interface ProjectDeletionCoordinatorContext {
   ): AgentHealthProjectionDto;
   logError(meta: Record<string, unknown>, message: string): void;
   providerProcessAuthority: ProviderProcessAuthority;
+  workingCopies: AgentWorkingCopyService;
 }
 
 export function registerProjectDeletionRoutes(
@@ -86,6 +89,7 @@ export function registerProjectDeletionRoutes(
     engineModelCatalogDiscoveryAuthorities,
     deletingProjectIds,
     deletingAgentIds,
+    agentCreationConversationLeases,
     projectDeletionInFlightIds,
     projectBrowserGrants,
     browserSessions,
@@ -112,7 +116,32 @@ export function registerProjectDeletionRoutes(
     agentHealth,
     logError,
     providerProcessAuthority,
+    workingCopies,
   } = context;
+
+  app.get<{ Params: { id: string } }>("/api/projects/:id/deletion-preview", async (request, reply) => {
+    const project = store.getProject(request.params.id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    const agents = store.listAgents(project.id);
+    const agentIds = new Set(agents.map(agent => agent.id));
+    const activeAgents = agents
+      .filter(agent => activeRuns.has(agent.id))
+      .map(agent => ({ id: agent.id, title: agent.title }));
+    const chats = store.listConversations(project.id).length;
+    const automations = coordinationV3.listTriggerDefinitions()
+      .filter(trigger => trigger.projectId === project.id).length;
+    const managedFiles = store.getProjectArtifacts(project.id).length;
+    return {
+      projectId: project.id,
+      chats,
+      agents: agentIds.size,
+      automations,
+      managedFiles,
+      activeAgents,
+      projectBrowserActive: projectBrowserGrants.has(project.id),
+      nonempty: chats + agentIds.size + automations + managedFiles > 0,
+    };
+  });
 
   app.delete<{ Params: { id: string } }>("/api/projects/:id", async (request, reply) => {
     const previousReceipt = store.getProjectDeletionReceipt(request.params.id);
@@ -156,6 +185,13 @@ export function registerProjectDeletionRoutes(
     }
     const project = store.getProject(request.params.id);
     if (!project) return reply.code(404).send({ error: "project not found" });
+    if (store.listConversations(project.id).some((conversation) =>
+      (agentCreationConversationLeases.get(conversation.id) ?? 0) > 0
+    )) {
+      return reply.code(409).send({
+        error: "Wait for Agent creation to finish before deleting this Project",
+      });
+    }
     const agents = store.listAgents(project.id);
     const quarantined = deletingProjectIds.has(project.id);
     if (projectDeletionInFlightIds.has(project.id) ||
@@ -214,6 +250,12 @@ export function registerProjectDeletionRoutes(
       const failures = barriers.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
       if (failures.length) throw new AggregateError(failures, "Project deletion is waiting for provider runtime cleanup");
 
+      // Provider and command authorities are actively aborted above before we
+      // wait for their working-folder leases. Quarantine prevents any new
+      // mutation or use from entering while this final quiescence point forms.
+      await workingCopies.awaitModeChanges(agentIds);
+      await workingCopies.awaitUses(agentIds);
+
       // Re-scan browser authority after provider drain. Admission is now
       // quarantined, so reaching this fixed point proves an opening admitted
       // immediately before deletion cannot survive the irreversible commit.
@@ -240,6 +282,11 @@ export function registerProjectDeletionRoutes(
         throw new Error("Project deletion provider authority changed after draining");
       }
       browserProfiles.deleteProject(project.id);
+
+      // Managed Git copies live outside the canonical Project directory. They
+      // must be removed while the Project row and Shared Git root still grant
+      // cleanup authority. A failure leaves deletion quarantined and retryable.
+      await workingCopies.cleanupProject(project);
 
       cancelAgentDecisions(agentIds);
       for (const agentId of agentIds) {

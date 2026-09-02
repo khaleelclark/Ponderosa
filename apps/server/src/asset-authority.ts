@@ -25,7 +25,7 @@ export class AssetAuthority {
       mkdirSyncSafe(dataDir); this.db = new Database(path.join(dataDir, "asset-authority.sqlite"));
       this.db.pragma("journal_mode = WAL"); this.db.pragma("synchronous = FULL"); this.db.pragma("busy_timeout = 500");
       const version = this.db.pragma("user_version", { simple: true }) as number;
-      if (version !== 0 && version !== 6 && version !== 7) throw new AssetError(409, "asset authority schema is incompatible");
+      if (version !== 0 && version !== 7) throw new AssetError(409, "asset authority schema is incompatible");
       this.db.exec(`CREATE TABLE IF NOT EXISTS asset_reservations (
         id TEXT PRIMARY KEY, asset_id TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, agent_id TEXT NOT NULL,
         size INTEGER NOT NULL CHECK(size > 0), created_at INTEGER NOT NULL

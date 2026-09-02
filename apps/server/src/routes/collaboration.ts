@@ -3,11 +3,10 @@ import type { FastifyInstance } from "fastify";
 import {
   LONG_TEXT_MAX_UTF8_BYTES,
   canonicalizeProviderText,
-  type AssetDto,
   type CollaborationViewDto,
   type CommunicationEvent,
   type CreateCollaborationMessageRequest,
-  type ImageAttachmentDto,
+  type AssetDto,
 } from "@ponderosa/core";
 import type {
   AgentStore,
@@ -17,7 +16,7 @@ import type {
   WorkspaceStore,
 } from "@ponderosa/agents";
 import { ASSET_LIMITS, AssetError, type AssetStore } from "../assets.js";
-import { agentMentionHandle, hasEveryoneMention } from "../agent-mentions.js";
+import { hasEveryoneMention } from "../agent-mentions.js";
 import type { PreparedCommunicationArtifact } from "./conversation-deliveries.js";
 
 type RuntimeArtifactInput = NonNullable<
@@ -64,7 +63,7 @@ export interface CollaborationRouteDependencies {
     agentId: string,
     event: CommunicationEvent,
     renderedText: string,
-    attachments?: ImageAttachmentDto[],
+    attachments?: AssetDto[],
   ) => void;
   appendWorkspace: (event: Parameters<WorkspaceStore["append"]>[0]) => unknown;
   publishCoordinationV3Changed: (
@@ -130,7 +129,7 @@ export function registerCollaborationRoutes(
     if (!detail) return reply.code(404).send({ error: "conversation not found" });
 
     let renderedText = text;
-    let routing: { intents: ConversationDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> };
+    let routing: { intents: ConversationDeliveryIntent[]; blocked: Array<{ handle: string; reason: string }> };
     if (request.body.recipientAgentIds !== undefined) {
       const ids = request.body.recipientAgentIds;
       if (!Array.isArray(ids) || ids.length === 0 || ids.length > 100) {
@@ -142,7 +141,7 @@ export function registerCollaborationRoutes(
       if (targets.some((target) => !target || target.archived)) {
         return reply.code(400).send({ error: "every collaboration recipient must be an active agent in this conversation" });
       }
-      const recipientPrefix = targets.map((target) => `#${agentMentionHandle(target!.title)}`).join(" ");
+      const recipientPrefix = targets.map((target) => `#${target!.handle}`).join(" ");
       renderedText = text ? `${recipientPrefix} ${text}` : recipientPrefix;
       routing = {
         intents: targets.map((target) => ({
@@ -169,7 +168,7 @@ export function registerCollaborationRoutes(
       }
       attachmentIdsByAgent.set(recipient.agentId, recipient.attachmentIds);
     }
-    const attachmentsByAgent = new Map<string, ImageAttachmentDto[]>();
+    const attachmentsByAgent = new Map<string, AssetDto[]>();
     for (const intent of routing.intents) {
       const ids = attachmentIdsByAgent.get(intent.targetAgentId) ?? [];
       const attached = await Promise.all(ids.map((id) => assetMetadata(intent.targetAgentId, id)));

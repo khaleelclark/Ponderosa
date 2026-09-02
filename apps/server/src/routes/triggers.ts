@@ -6,9 +6,9 @@ import {
   type AgentStore,
 } from "@ponderosa/agents";
 import type {
+  CreateTriggerRequest,
   CreateTriggerResponse,
   RunTriggerResponse,
-  TriggerDefinitionDto,
 } from "@ponderosa/core";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import {
@@ -30,8 +30,9 @@ interface TriggerChangedEvent {
 }
 
 export interface TriggerRoutesContext {
-  readonly store: Pick<AgentStore, "sqlite" | "getAgent" | "getProject">;
+  readonly store: Pick<AgentStore, "sqlite" | "getAgent" | "getProject" | "getConversation">;
   readonly coordination: CoordinationV3Store;
+  readonly deletingConversationIds: ReadonlySet<string>;
   readonly sources: TriggerSourceService;
   readonly webhookRawBodies: WeakMap<IncomingMessage, Buffer>;
   readonly rejectQuarantinedMutation: (
@@ -51,6 +52,7 @@ export function registerTriggerRoutes(
   const {
     appendWorkspace,
     coordination,
+    deletingConversationIds,
     notifyScheduler,
     reconcileOperationalNotifications,
     rejectQuarantinedMutation,
@@ -60,14 +62,14 @@ export function registerTriggerRoutes(
     webhookRawBodies,
   } = context;
 
-  app.get<{ Querystring: CollectionQuery & { projectId?: string; agentId?: string } }>("/api/triggers", async (request, reply) => {
+  app.get<{ Querystring: CollectionQuery & { projectId?: string; targetAgentId?: string } }>("/api/triggers", async (request, reply) => {
     try {
       const normalizedSearch = request.query.search?.trim().toLocaleLowerCase() ?? "";
       const conditions: string[] = [];
       const params: unknown[] = [];
-      if (request.query.agentId) {
+      if (request.query.targetAgentId) {
         conditions.push("agent_id = ?");
-        params.push(request.query.agentId);
+        params.push(request.query.targetAgentId);
       }
       if (request.query.projectId) {
         conditions.push("project_id = ?");
@@ -85,10 +87,10 @@ export function registerTriggerRoutes(
         `,
         params,
         order: "updated",
-        scope: `triggers:${request.query.projectId ?? "*"}:${request.query.agentId ?? "*"}`,
+        scope: `triggers:${request.query.projectId ?? "*"}:${request.query.targetAgentId ?? "*"}`,
         generationKeys: [
-          request.query.agentId
-            ? collectionGenerationKey("triggers", `agent:${request.query.agentId}`)
+          request.query.targetAgentId
+            ? collectionGenerationKey("triggers", `agent:${request.query.targetAgentId}`)
             : request.query.projectId
               ? collectionGenerationKey("triggers", `project:${request.query.projectId}`)
               : "triggers",
@@ -102,52 +104,40 @@ export function registerTriggerRoutes(
     }
   });
 
-  app.get<{ Params: { id: string }; Querystring: CollectionQuery }>(
-    "/api/agents/:id/triggers",
-    async (request, reply) => {
-      if (!store.getAgent(request.params.id)) {
-        return reply.code(404).send({ error: "agent not found" });
-      }
-      try {
-        const normalizedSearch = request.query.search?.trim().toLocaleLowerCase() ?? "";
-        const page = sqliteCollectionPage(store.sqlite, request.query, {
-          baseSql: `
-            SELECT id, name AS title, updated_at
-            FROM trigger_definitions
-            WHERE agent_id = ?
-              ${normalizedSearch ? "AND lower(name || ' ' || instructions || ' ' || source_kind) LIKE ? ESCAPE '\\\\'" : ""}
-          `,
-          params: normalizedSearch
-            ? [request.params.id, `%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
-            : [request.params.id],
-          order: "updated",
-          scope: `agent-triggers:${request.params.id}`,
-          generationKeys: [collectionGenerationKey("triggers", `agent:${request.params.id}`)],
-          hydrate: id => coordination.getTriggerDefinition(id),
-        });
-        applyCollectionPageHeaders(reply, page);
-        return page.items;
-      } catch (error) {
-        return sendCollectionPageError(reply, error);
-      }
-    },
-  );
-
   app.post<{ Params: { id: string }; Body: unknown }>(
-    "/api/agents/:id/triggers",
+    "/api/projects/:id/triggers",
     async (request, reply) => {
-      const agent = store.getAgent(request.params.id);
-      if (!agent) return reply.code(404).send({ error: "agent not found" });
+      const project = store.getProject(request.params.id);
+      if (!project) return reply.code(404).send({ error: "Project not found" });
+      let body: CreateTriggerRequest;
+      try {
+        body = parseCreateTrigger(request.body);
+      } catch (error) {
+        return reply.code(400).send({
+          error: error instanceof Error ? error.message : "invalid Automation",
+        });
+      }
+      const conversation = store.getConversation(body.conversationId);
+      if (!conversation || conversation.projectId !== project.id || conversation.deletedAt ||
+          conversation.archived || deletingConversationIds.has(conversation.id)) {
+        return reply.code(400).send({ error: "Automation destination must be an active Chat in this Project" });
+      }
+      const targetAgent = store.getAgent(body.targetAgentId);
+      if (!targetAgent || targetAgent.projectId !== project.id) {
+        return reply.code(400).send({ error: "Automation target must be an active Agent in this Project" });
+      }
+      if (targetAgent.conversationId !== conversation.id) {
+        return reply.code(400).send({ error: "Automation target Agent must belong to its destination Chat" });
+      }
       if (
         rejectQuarantinedMutation(
-          { projectId: agent.projectId, agentId: agent.id },
+          { projectId: project.id, agentId: targetAgent.id },
           reply,
         )
       ) {
         return reply;
       }
       try {
-        const body = parseCreateTrigger(request.body);
         const normalized = normalizeTriggerSourceConfig(
           body.sourceKind,
           body.sourceConfig,
@@ -157,9 +147,9 @@ export function registerTriggerRoutes(
             ? sources.createWebhookSecret()
             : undefined;
         const trigger = coordination.createTriggerDefinition({
-          projectId: agent.projectId,
+          projectId: project.id,
           conversationId: body.conversationId,
-          agentId: agent.id,
+          targetAgentId: body.targetAgentId,
           name: body.name,
           instructions: body.instructions,
           sourceKind: body.sourceKind,
@@ -174,7 +164,7 @@ export function registerTriggerRoutes(
         appendWorkspace({
           type: "trigger_changed",
           projectId: trigger.projectId,
-          agentId: trigger.agentId,
+          agentId: trigger.targetAgentId,
           triggerId: trigger.id,
           action: "created",
         });
@@ -197,9 +187,28 @@ export function registerTriggerRoutes(
       if (!current) {
         return reply.code(404).send({ error: "Automation not found" });
       }
-      if (rejectQuarantinedMutation(current, reply)) return reply;
       try {
         const body = parseUpdateTrigger(request.body, current.sourceKind);
+        const proposedConversationId = body.conversationId ?? current.conversationId;
+        if (deletingConversationIds.has(current.conversationId) ||
+            deletingConversationIds.has(proposedConversationId)) {
+          return reply.code(409).send({ error: "Automation Chat deletion is in progress" });
+        }
+        const proposedConversation = store.getConversation(proposedConversationId);
+        if (!proposedConversation || proposedConversation.projectId !== current.projectId ||
+            proposedConversation.deletedAt || proposedConversation.archived) {
+          return reply.code(400).send({ error: "Automation destination must be an active Chat in this Project" });
+        }
+        if (rejectQuarantinedMutation(
+          { projectId: current.projectId, agentId: current.targetAgentId },
+          reply,
+        )) return reply;
+        const proposedTargetAgentId = body.targetAgentId ?? current.targetAgentId;
+        if (proposedTargetAgentId !== current.targetAgentId &&
+            rejectQuarantinedMutation(
+              { projectId: current.projectId, agentId: proposedTargetAgentId },
+              reply,
+            )) return reply;
         const needsReschedule =
           body.sourceConfig !== undefined ||
           (body.enabled === true && !current.enabled);
@@ -232,7 +241,7 @@ export function registerTriggerRoutes(
           appendWorkspace({
             type: "trigger_changed",
             projectId: trigger.projectId,
-            agentId: trigger.agentId,
+            agentId: trigger.targetAgentId,
             triggerId: trigger.id,
             action: "updated",
           });
@@ -253,14 +262,14 @@ export function registerTriggerRoutes(
       if (!current) {
         return reply.code(404).send({ error: "Automation not found" });
       }
-      if (rejectQuarantinedMutation(current, reply)) return reply;
+      if (rejectQuarantinedMutation({ projectId: current.projectId, agentId: current.targetAgentId }, reply)) return reply;
       coordination.deleteTriggerDefinition(current.id);
       await sources.applyDefinitionChange(current, undefined);
       reconcileOperationalNotifications();
       appendWorkspace({
         type: "trigger_changed",
         projectId: current.projectId,
-        agentId: current.agentId,
+        agentId: current.targetAgentId,
         triggerId: current.id,
         action: "deleted",
       });
@@ -275,7 +284,7 @@ export function registerTriggerRoutes(
       if (!current) {
         return reply.code(404).send({ error: "Automation not found" });
       }
-      if (rejectQuarantinedMutation(current, reply)) return reply;
+      if (rejectQuarantinedMutation({ projectId: current.projectId, agentId: current.targetAgentId }, reply)) return reply;
       if (current.sourceKind !== "webhook") {
         return reply
           .code(400)
@@ -289,7 +298,7 @@ export function registerTriggerRoutes(
       appendWorkspace({
         type: "trigger_changed",
         projectId: trigger.projectId,
-        agentId: trigger.agentId,
+        agentId: trigger.targetAgentId,
         triggerId: trigger.id,
         action: "updated",
       });
@@ -310,7 +319,7 @@ export function registerTriggerRoutes(
       if (!current) {
         return reply.code(404).send({ error: "Automation not found" });
       }
-      if (rejectQuarantinedMutation(current, reply)) return reply;
+      if (rejectQuarantinedMutation({ projectId: current.projectId, agentId: current.targetAgentId }, reply)) return reply;
       try {
         const trigger = coordination.allowTriggerRuns(
           request.params.id,
@@ -324,7 +333,7 @@ export function registerTriggerRoutes(
         appendWorkspace({
           type: "trigger_changed",
           projectId: trigger.projectId,
-          agentId: trigger.agentId,
+          agentId: trigger.targetAgentId,
           triggerId: trigger.id,
           action: "updated",
         });
@@ -347,7 +356,7 @@ export function registerTriggerRoutes(
       if (!current) {
         return reply.code(404).send({ error: "Automation not found" });
       }
-      if (rejectQuarantinedMutation(current, reply)) return reply;
+      if (rejectQuarantinedMutation({ projectId: current.projectId, agentId: current.targetAgentId }, reply)) return reply;
       if (!current.enabled && request.body?.confirmDisabled !== true) {
         return reply.code(409).send({
           error: "Confirm this one-time run of the disabled Automation.",
@@ -476,7 +485,8 @@ export function registerTriggerRoutes(
         }
         if (
           message === "webhook Automation not found" ||
-          message === "webhook Automation owner is unavailable"
+          message === "Automation Project is unavailable" ||
+          message === "Automation destination or execution Agent is unavailable"
         ) {
           return reply.code(404).send({ error: message });
         }

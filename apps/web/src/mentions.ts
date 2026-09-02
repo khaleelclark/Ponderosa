@@ -1,13 +1,10 @@
-import type { AgentDto } from "@ponderosa/core";
+import { agentMentionHandleBase, type AgentDto } from "@ponderosa/core";
 
 const RESERVED_SCOPE_HANDLES = new Set(["broadcast", "user", "everyone"]);
 
 /** Stable, typeable handle derived from the agent's current display name. */
 export function agentMentionHandle(title: string): string {
-  return title
-    .trim()
-    .replace(/\s+/g, "-")
-    .replace(/[^\p{L}\p{N}_-]/gu, "");
+  return agentMentionHandleBase(title);
 }
 
 /**
@@ -41,19 +38,19 @@ export function hasEveryoneMention(text: string): boolean {
 
 /** Resolve a displayed agent handle to its stable navigation identity. */
 export function agentIdForMentionHandle(
-  agents: readonly Pick<AgentDto, "id" | "title">[],
+  agents: readonly Pick<AgentDto, "id" | "title" | "handle">[],
   handle: string,
 ): string | undefined {
   const normalized = handle.toLocaleLowerCase();
   if (RESERVED_SCOPE_HANDLES.has(normalized)) return undefined;
-  return agents.find((agent) => agentMentionHandle(agent.title).toLocaleLowerCase() === normalized)?.id;
+  return agents.find((agent) => agent.handle.toLocaleLowerCase() === normalized)?.id;
 }
 
 /** Resolve every distinct #tag against the agents currently in a conversation. */
 export function findMentionedAgents(text: string, agents: AgentDto[]): AgentDto[] {
   const byHandle = new Map(
     agents
-      .map((agent) => [agentMentionHandle(agent.title).toLocaleLowerCase(), agent] as const)
+      .map((agent) => [agent.handle.toLocaleLowerCase(), agent] as const)
       .filter(([handle]) => !RESERVED_SCOPE_HANDLES.has(handle)),
   );
   return findMentionedHandles(text, byHandle.keys())

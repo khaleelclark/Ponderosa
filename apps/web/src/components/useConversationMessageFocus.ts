@@ -1,9 +1,9 @@
 import type {
-  ConversationChannel,
   ConversationDecisionEventDto,
   ConversationMessageDto,
   TeamOperationalEventDto,
 } from "@ponderosa/core";
+import type { ConversationDetailView } from "../routing";
 import {
   useEffect,
   useRef,
@@ -91,7 +91,7 @@ export function useConversationMessageFocusEffect({
     (() => void) | undefined
   >;
   focusMessageId: string | undefined;
-  initialView: ConversationChannel | undefined;
+  initialView: ConversationDetailView | undefined;
   messages: ConversationMessageDto[];
   setActiveView: Dispatch<SetStateAction<ConversationActiveView>>;
   setOlderCollaboration: Dispatch<
@@ -106,7 +106,7 @@ export function useConversationMessageFocusEffect({
       focusedMessage.current === `missing:${focusMessageId}`
     )
       return;
-    const focusView = initialView ?? "main";
+    const focusView = initialView === "collaboration" ? "collaboration" : "main";
     if (activeView !== focusView) {
       setActiveView(focusView);
       return;

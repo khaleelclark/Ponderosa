@@ -20,8 +20,10 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import {
   effortSelectionIsCompatible,
+  engineUnavailableReason,
   engineIsAvailable,
   modelSelectionIsCompatible,
+  soleAvailableEngineId,
 } from "../conversationEngine";
 import { useAgentPresets } from "../hooks/queries";
 import { pickAgentName } from "../parkNames";
@@ -44,6 +46,8 @@ export interface AgentCreateFormProps {
   initialName?: string;
   onCancel(): void;
   onCreated(projectId: string, agent: AgentDto): void;
+  onPendingChange?(pending: boolean): void;
+  stickyActions?: boolean;
 }
 
 export interface AgentCreateSurfaceProps extends AgentCreateFormProps {
@@ -63,6 +67,8 @@ export function AgentCreateForm({
   initialName,
   onCancel,
   onCreated,
+  onPendingChange,
+  stickyActions = false,
 }: AgentCreateFormProps): JSX.Element {
   const queryClient = useQueryClient();
   const [projectId, setProjectId] = useState(
@@ -72,6 +78,9 @@ export function AgentCreateForm({
         : projects[0]?.id ?? ""),
   );
   const project = projects.find(candidate => candidate.id === projectId);
+  const effectiveFixedConversationId = projectId === initialProjectId
+    ? fixedConversationId
+    : undefined;
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.project(projectId),
     queryFn: () => api.listAgents(projectId),
@@ -85,8 +94,8 @@ export function AgentCreateForm({
   const presetsQuery = useAgentPresets(projectId || undefined);
   const agents = agentsQuery.data ?? [];
   const chats = chatsQuery.data ?? [];
-  const fixedConversation = fixedConversationId
-    ? chats.find(chat => chat.id === fixedConversationId)
+  const fixedConversation = effectiveFixedConversationId
+    ? chats.find(chat => chat.id === effectiveFixedConversationId)
     : undefined;
   const presets = presetsQuery.data ?? [];
   const [title, setTitle] = useState(initialName ?? "");
@@ -101,27 +110,65 @@ export function AgentCreateForm({
   const [initialMessage, setInitialMessage] = useState("");
   const titleEditedRef = useRef(Boolean(initialName));
   const managerEditedRef = useRef(false);
+  const pendingRef = useRef(false);
+  const initializedRef = useRef(false);
+  const previousProjectIdRef = useRef(projectId);
 
   useEffect(() => {
+    if (!projects.length) return;
+    setProjectId(current => {
+      if (projects.some(candidate => candidate.id === current)) return current;
+      if (fixedProjectId && projects.some(candidate => candidate.id === fixedProjectId)) {
+        return fixedProjectId;
+      }
+      if (initialProjectId && projects.some(candidate => candidate.id === initialProjectId)) {
+        return initialProjectId;
+      }
+      return projects[0]!.id;
+    });
+  }, [fixedProjectId, initialProjectId, projects]);
+
+  useEffect(() => {
+    if (initializedRef.current) {
+      if (previousProjectIdRef.current === projectId) return;
+      const previousProjectId = previousProjectIdRef.current;
+      previousProjectIdRef.current = projectId;
+      managerEditedRef.current = false;
+      setConversationId(effectiveFixedConversationId ?? UNSET);
+      setPresetId(UNSET);
+      setManagerAgentId(UNSET);
+      if (!previousProjectId) {
+        setEngine(
+          initialEngine ??
+            project?.defaultEngine ??
+            soleAvailableEngineId(engines) ??
+            UNSET,
+        );
+        setModel(initialModel ?? project?.defaultModel ?? UNSET);
+        setEffort(initialEffort ?? project?.defaultEffort ?? UNSET);
+      }
+      return;
+    }
+    initializedRef.current = true;
+    previousProjectIdRef.current = projectId;
     titleEditedRef.current = Boolean(initialName);
     managerEditedRef.current = false;
     setTitle(initialName ?? pickAgentName([]));
     setEngine(
       initialEngine ??
         project?.defaultEngine ??
-        engines.find(engineIsAvailable)?.id ??
-        engines[0]?.id ??
+        soleAvailableEngineId(engines) ??
         UNSET,
     );
     setModel(initialModel ?? project?.defaultModel ?? UNSET);
     setEffort(initialEffort ?? project?.defaultEffort ?? UNSET);
-    setConversationId(fixedConversationId ?? UNSET);
+    setConversationId(effectiveFixedConversationId ?? UNSET);
     setPresetId(UNSET);
     setManagerAgentId(UNSET);
     setInitialMessage("");
   }, [
     engines,
-    fixedConversationId,
+    effectiveFixedConversationId,
     initialEffort,
     initialEngine,
     initialModel,
@@ -147,10 +194,29 @@ export function AgentCreateForm({
     }
   }, [agentsQuery.data, agentsQuery.isSuccess, initialManagerAgentId]);
 
+  useEffect(() => {
+    const available = chats.filter(chat => !chat.archived);
+    setConversationId(current =>
+      available.some(chat => chat.id === current)
+        ? current
+        : effectiveFixedConversationId ?? available[0]?.id ?? UNSET,
+    );
+  }, [chats, effectiveFixedConversationId]);
+
+  useEffect(() => {
+    setManagerAgentId(current =>
+      agents.some(agent =>
+        agent.id === current && !agent.archived &&
+        agent.conversationId === conversationId)
+        ? current
+        : UNSET,
+    );
+  }, [agents, conversationId]);
+
   const activeEngine = engines.find(candidate => candidate.id === engine);
   const create = useMutation({
     mutationFn: () =>
-      api.createAgent(projectId, conversationId || undefined, {
+      api.createAgent(projectId, conversationId, {
         title: title.trim(),
         engine,
         model: modelSelectionIsCompatible(activeEngine, model)
@@ -180,6 +246,10 @@ export function AgentCreateForm({
         });
       }
       onCreated(projectId, agent);
+    },
+    onSettled: () => {
+      pendingRef.current = false;
+      onPendingChange?.(false);
     },
   });
 
@@ -258,11 +328,7 @@ export function AgentCreateForm({
               disabled={!engineIsAvailable(option)}
             >
               {option.displayName}
-              {engineIsAvailable(option)
-                ? ""
-                : option.authentication === "authenticated"
-                  ? " — Unavailable"
-                  : " — Not Signed In"}
+              {engineIsAvailable(option) ? "" : ` — ${engineUnavailableReason(option)}`}
             </MenuItem>
           ))}
         </Select>
@@ -285,20 +351,27 @@ export function AgentCreateForm({
         hideModelWhenEmpty
         hideEffortWhenEmpty
       />
-      {!fixedConversationId ? (
+      {!effectiveFixedConversationId ? (
         <FormControl fullWidth size="small">
           <InputLabel id="create-agent-chat-label">
-            Project chat (optional)
+            Chat
           </InputLabel>
           <Select
             labelId="create-agent-chat-label"
-            label="Project chat (optional)"
+            label="Chat"
             value={conversationId}
-            onChange={(event: SelectChangeEvent) =>
-              setConversationId(event.target.value)
-            }
+            onChange={(event: SelectChangeEvent) => {
+              const nextConversationId = event.target.value;
+              setConversationId(nextConversationId);
+              setManagerAgentId(current =>
+                agents.some(agent =>
+                  agent.id === current && !agent.archived &&
+                  agent.conversationId === nextConversationId)
+                  ? current
+                  : UNSET,
+              );
+            }}
           >
-            <MenuItem value={UNSET}>Unassigned</MenuItem>
             {chats
               .filter(chat => !chat.archived)
               .map(chat => (
@@ -331,7 +404,7 @@ export function AgentCreateForm({
         >
           <MenuItem value={UNSET}>User / Top Level</MenuItem>
           {agents
-            .filter(agent => !agent.archived)
+            .filter(agent => !agent.archived && agent.conversationId === conversationId)
             .map(agent => (
               <MenuItem key={agent.id} value={agent.id}>
                 {agent.title}
@@ -355,16 +428,41 @@ export function AgentCreateForm({
       {create.isError ? (
         <Alert severity="error">{String(create.error)}</Alert>
       ) : null}
-      <Stack direction="row" spacing={1} sx={{ justifyContent: "flex-end" }}>
-        <Button disabled={create.isPending} onClick={onCancel}>
+      <Stack direction="row" spacing={1} sx={{
+        justifyContent: "flex-end",
+        ...(stickyActions ? {
+          position: "absolute",
+          zIndex: 2,
+          bottom: 0,
+          left: 0,
+          right: 0,
+          px: { xs: 2, sm: 3 },
+          py: 1.5,
+          bgcolor: "background.paper",
+          borderTop: 1,
+          borderColor: "divider",
+        } : {}),
+      }}>
+        <Button
+          disabled={create.isPending}
+          onClick={() => {
+            if (!pendingRef.current) onCancel();
+          }}
+        >
           Cancel
         </Button>
         <Button
           variant="contained"
           disabled={
-            !projectId || !title.trim() || !engine || create.isPending
+            !projectId || !conversationId || !title.trim() ||
+            !engineIsAvailable(activeEngine) || create.isPending
           }
-          onClick={() => create.mutate()}
+          onClick={() => {
+            if (pendingRef.current) return;
+            pendingRef.current = true;
+            onPendingChange?.(true);
+            create.mutate();
+          }}
         >
           {create.isPending ? "Creating…" : "Create Agent"}
         </Button>
@@ -400,9 +498,16 @@ export function AgentCreateSurface({
   fixedConversationId,
   onCancel,
   onImported,
+  onPendingChange,
+  stickyActions = false,
   ...createProps
 }: AgentCreateSurfaceProps): JSX.Element {
   const [mode, setMode] = useState<"create" | "import">("create");
+  const [pending, setPending] = useState(false);
+  const updatePending = (nextPending: boolean) => {
+    setPending(nextPending);
+    onPendingChange?.(nextPending);
+  };
   const [importProjectId, setImportProjectId] = useState(
     fixedProjectId ??
       (projects.some(project => project.id === initialProjectId)
@@ -415,12 +520,21 @@ export function AgentCreateSurface({
     enabled: mode === "import" && Boolean(importProjectId),
   });
 
+  const busyStatus = pending ? (
+    <Alert severity="info" role="status" aria-live="polite">
+      {mode === "import"
+        ? "Importing Agent… Keep this window open."
+        : "Creating Agent… Keep this window open."}
+    </Alert>
+  ) : null;
+
   if (mode === "import") {
     const conversations =
       importConversations.data?.filter(conversation => !conversation.archived) ??
       [];
     return (
       <Stack spacing={2}>
+        {busyStatus}
         <Stack
           direction="row"
           spacing={1}
@@ -435,6 +549,7 @@ export function AgentCreateSurface({
           <Button
             color="inherit"
             startIcon={<ArrowBackIcon />}
+            disabled={pending}
             onClick={() => setMode("create")}
           >
             Create New
@@ -472,7 +587,8 @@ export function AgentCreateSurface({
                 : conversations[0]?.id
             }
             onCancel={onCancel}
-            onImported={agentId => onImported(importProjectId, agentId)}
+            onPendingChange={updatePending}
+            stickyActions={stickyActions}
           />
         ) : (
           <Alert severity="info">
@@ -485,6 +601,7 @@ export function AgentCreateSurface({
 
   return (
     <Stack spacing={1.5}>
+      {busyStatus}
       <Stack
         direction="row"
         spacing={1}
@@ -499,6 +616,7 @@ export function AgentCreateSurface({
         <Button
           variant="outlined"
           startIcon={<UploadFileOutlinedIcon />}
+          disabled={pending}
           onClick={() => setMode("import")}
         >
           Import Agent
@@ -511,6 +629,8 @@ export function AgentCreateSurface({
         fixedProjectId={fixedProjectId}
         fixedConversationId={fixedConversationId}
         onCancel={onCancel}
+        onPendingChange={updatePending}
+        stickyActions={stickyActions}
         {...createProps}
       />
     </Stack>

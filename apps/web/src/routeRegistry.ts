@@ -5,13 +5,11 @@ type RouteOfKind<Kind extends RouteKind> = Extract<Route, { kind: Kind }>;
 
 export type ProjectRoute = Extract<Route, { projectId: string }>;
 export type RouteSidebarSection =
-  | "create"
   | "home"
   | "projects"
   | "chats"
   | "agents"
   | "triggers"
-  | "wiki"
   | "settings";
 
 
@@ -43,8 +41,7 @@ const ROUTE_REGISTRY = {
       return `/create/${route.resource}${query.size ? `?${query.toString()}` : ""}`;
     },
     scope: "global",
-    initialSidebarSection: "create",
-    synchronizedSidebarSection: "create",
+    initialSidebarSection: "home",
   },
   projects: {
     toPath: () => "/projects",
@@ -91,16 +88,13 @@ const ROUTE_REGISTRY = {
     initialSidebarSection: "settings",
     synchronizedSidebarSection: "settings",
   },
-  wiki: {
-    toPath: route =>
-      `/wiki${route.articleId ? `/${encodeURIComponent(route.articleId)}` : ""}`,
-    scope: "global",
-    initialSidebarSection: "wiki",
-    synchronizedSidebarSection: "wiki",
-  },
   project: {
-    toPath: route =>
-      `/projects/${encodeURIComponent(route.projectId)}${route.view && route.view !== "overview" ? `?view=${route.view}` : ""}`,
+    toPath: route => {
+      const query = new URLSearchParams();
+      if (route.view && route.view !== "overview") query.set("view", route.view);
+      if (route.focusArtifactId) query.set("artifact", route.focusArtifactId);
+      return `/projects/${encodeURIComponent(route.projectId)}${query.size ? `?${query.toString()}` : ""}`;
+    },
     scope: "project",
     initialSidebarSection: "home",
   },
@@ -136,7 +130,18 @@ const ROUTE_REGISTRY = {
     toPath: route => {
       const query = new URLSearchParams();
       if (route.focusMessageId) query.set("message", route.focusMessageId);
-      if (route.channel === "collaboration") query.set("view", "team");
+      const view = route.view ??
+        (route.channel === "collaboration" ? "collaboration" : undefined);
+      if (view && view !== "main") {
+        query.set(
+          "view",
+          view === "collaboration"
+            ? "team"
+            : view === "triggers"
+              ? "automations"
+              : view,
+        );
+      }
       const suffix = query.size ? `?${query.toString()}` : "";
       return `/projects/${encodeURIComponent(route.projectId)}/chats/${encodeURIComponent(route.conversationId)}${suffix}`;
     },
@@ -165,6 +170,12 @@ const ROUTE_REGISTRY = {
     },
     scope: "project",
     initialSidebarSection: "home",
+  },
+  automation: {
+    toPath: route =>
+      `/projects/${encodeURIComponent(route.projectId)}/automations${route.triggerId ? `/${encodeURIComponent(route.triggerId)}` : ""}`,
+    scope: "project",
+    initialSidebarSection: "triggers",
   },
   review: {
     toPath: route =>
@@ -198,11 +209,6 @@ export function routeSynchronizedSidebarSection(
 
 export function isProjectRoute(route: Route): route is ProjectRoute {
   return entryFor(route).scope === "project";
-}
-
-export function isRouteKind(value: unknown): value is RouteKind {
-  return typeof value === "string" &&
-    Object.prototype.hasOwnProperty.call(ROUTE_REGISTRY, value);
 }
 
 export function assertNeverRoute(route: never): never {

@@ -1,7 +1,7 @@
 import {
   deriveCommunicationBehavior,
   type CommunicationEvent,
-  type ImageAttachmentDto,
+  type AssetDto,
 } from "@ponderosa/core";
 import type {
   AgentStore,
@@ -28,7 +28,7 @@ interface CommunicationProjectionReconcilerContext {
     agentId: string,
     event: CommunicationEvent,
     renderedText: string,
-    attachments?: ImageAttachmentDto[],
+    attachments?: AssetDto[],
   ): void;
 }
 
@@ -60,9 +60,9 @@ function runtimeProjectionTargets(
 }
 
 function mergeAttachments(
-  ...groups: Array<readonly ImageAttachmentDto[] | undefined>
-): ImageAttachmentDto[] {
-  const attachments = new Map<string, ImageAttachmentDto>();
+  ...groups: Array<readonly AssetDto[] | undefined>
+): AssetDto[] {
+  const attachments = new Map<string, AssetDto>();
   for (const group of groups) {
     for (const attachment of group ?? []) attachments.set(attachment.id, attachment);
   }
@@ -251,11 +251,11 @@ export function createCommunicationProjectionReconciler(
         }
       }
 
-      const attachmentsByAgent = new Map<string, ImageAttachmentDto[]>();
+      const attachmentsByAgent = new Map<string, AssetDto[]>();
       for (const { agentId, rawAttachments } of rawRecipientSets) {
         if (attachmentsByAgent.has(agentId) || new Set(rawAttachments.map((raw) =>
           raw && typeof raw === "object" ? (raw as Record<string, unknown>).id : undefined)).size !== rawAttachments.length) continue;
-        const recovered: ImageAttachmentDto[] = [];
+        const recovered: AssetDto[] = [];
         for (const raw of rawAttachments) {
           if (!raw || typeof raw !== "object") continue;
           const expected = raw as Record<string, unknown>;
@@ -314,7 +314,7 @@ export function createCommunicationProjectionReconciler(
         const requestProjectionText = row.sourceKind === "request"
           ? `${recipientAgentIds.flatMap((agentId) => {
               const recipient = store.getAgent(agentId);
-              return recipient ? [`#${agentMentionHandle(recipient.title)}`] : [];
+              return recipient ? [`#${recipient.handle}`] : [];
             }).join(" ")} ${canonical.text}`.trim()
           : undefined;
         const dispatchText = typeof dispatch?.text === "string"
@@ -336,7 +336,8 @@ export function createCommunicationProjectionReconciler(
                   const targetLabel = targetAgentId
                     ? canonical.identity?.recipientLabels?.[targetAgentId] ?? target?.title
                     : undefined;
-                  return targetLabel ? renderDirectMessage(targetLabel, dispatchText) : dispatchText;
+                  const targetHandle = target?.handle ?? (targetLabel ? agentMentionHandle(targetLabel) : undefined);
+                  return targetHandle ? renderDirectMessage(targetHandle, dispatchText) : dispatchText;
                 })()
               : dispatchText;
         const roomTarget = projectionTargets.find((target) =>

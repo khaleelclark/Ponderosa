@@ -3,7 +3,7 @@ import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import DifferenceIcon from "@mui/icons-material/Difference";
 import SearchIcon from "@mui/icons-material/Search";
 import TerminalIcon from "@mui/icons-material/Terminal";
-import { Alert, Box, Chip, InputAdornment, List, ListItemButton, ListItemIcon, ListItemText, Stack, TextField, Typography } from "@mui/material";
+import { Alert, Box, InputAdornment, List, ListItemButton, ListItemIcon, ListItemText, Stack, TextField, Typography } from "@mui/material";
 import type { ArtifactDto } from "@ponderosa/core";
 import { useEffect, useState } from "react";
 import { telemetryElementId } from "../../telemetryFocus";

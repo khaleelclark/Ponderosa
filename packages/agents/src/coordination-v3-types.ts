@@ -4,7 +4,6 @@ import type {
   CommunicationAudience,
   CommunicationIntent,
   CoordinationJoinMode,
-  CoordinationJoinState,
   CoordinationJoinWakePolicy,
   CoordinationReplyAuthority,
   CoordinationRequestState,
@@ -44,6 +43,8 @@ export interface CoordinateV3Input {
     lifetime: RequestLifetime;
     communicationEventId?: string;
     payload?: unknown;
+    /** Exact terminal predecessor this server-authorized Request recovers. */
+    recoveryOfRequestId?: string;
     /** Server-derived canonical reply route inherited by requester continuations. */
     replyAuthority?: CoordinationReplyAuthority;
   }>;
@@ -97,6 +98,7 @@ export interface CoordinationRequestV3View {
   state: CoordinationRequestState;
   version: number;
   payload: unknown;
+  recoverySuccessorRequestId?: string;
 }
 
 export interface CoordinationRequestDeliveryView {
@@ -492,7 +494,7 @@ export interface CreateTriggerDefinitionInput {
   id?: string;
   projectId: string;
   conversationId: string;
-  agentId: string;
+  targetAgentId: string;
   name: string;
   instructions: string;
   sourceKind: TriggerSourceKind;
@@ -506,6 +508,8 @@ export interface CreateTriggerDefinitionInput {
 }
 
 export interface UpdateTriggerDefinitionInput {
+  conversationId?: string;
+  targetAgentId?: string;
   name?: string;
   instructions?: string;
   sourceConfig?: TriggerSourceConfig;

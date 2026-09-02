@@ -3,6 +3,7 @@ import type {
   AgentDto,
   AgentMessageChannel,
 } from "@ponderosa/core";
+import { agentMentionHandleBase } from "@ponderosa/core";
 
 interface InboundMessageContext {
   channel: AgentMessageChannel;
@@ -17,10 +18,7 @@ interface InboundMessageContext {
 const MAX_AGENT_MENTION_REPLAY_WINDOW = 64;
 
 function agentMentionHandle(title: string): string {
-  return title
-    .trim()
-    .replace(/\s+/g, "-")
-    .replace(/[^\p{L}\p{N}_-]/gu, "");
+  return agentMentionHandleBase(title);
 }
 
 function mentionRelayFingerprint(authorAgentId: string, targetAgentId: string, text: string): string {
@@ -39,7 +37,7 @@ function advanceMentionTrail(mentionTrail: string[], messageFingerprint: string)
 
 function mentionedAgents(text: string, agents: AgentDto[], authorAgentId: string): AgentDto[] {
   const byHandle = new Map(
-    agents.map((agent) => [agentMentionHandle(agent.title).toLocaleLowerCase(), agent]),
+    agents.map((agent) => [agent.handle.toLocaleLowerCase(), agent]),
   );
   const mentioned = new Map<string, AgentDto>();
   for (const match of text.matchAll(/(?:^|\s)#([\p{L}\p{N}_-]+)/gu)) {
@@ -63,8 +61,7 @@ function renderScopedMessage(tag: "broadcast" | "user", text: string): string {
   return `#${tag} ${stripLeadingScopeTag(text, tag)}`.trimEnd();
 }
 
-function renderDirectMessage(agentTitle: string, text: string): string {
-  const handle = agentMentionHandle(agentTitle);
+function renderDirectMessage(handle: string, text: string): string {
   const leadingHandle = /^#([\p{L}\p{N}_-]+)(?=$|\s|[.,!?;:])/u.exec(text);
   return leadingHandle?.[1]?.toLocaleLowerCase() === handle.toLocaleLowerCase()
     ? text
@@ -82,7 +79,7 @@ function inboundContext(
   return {
     channel,
     author,
-    mentionedAgents: mentioned.map((agent) => `#${agentMentionHandle(agent.title)}`),
+    mentionedAgents: mentioned.map((agent) => `#${agent.handle}`),
     addressedToCurrentAgent: mentioned.some((agent) => agent.id === currentAgentId),
   };
 }

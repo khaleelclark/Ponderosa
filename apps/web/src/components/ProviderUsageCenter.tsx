@@ -1,5 +1,6 @@
 import RefreshIcon from "@mui/icons-material/Refresh";
 import CloseIcon from "@mui/icons-material/Close";
+import DataUsageOutlinedIcon from "@mui/icons-material/DataUsageOutlined";
 import {
   Alert,
   Box,
@@ -8,10 +9,12 @@ import {
   CircularProgress,
   Collapse,
   Divider,
+  IconButton,
   LinearProgress,
   Paper,
   Popover,
   Stack,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import type {
@@ -23,6 +26,7 @@ import type {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 
@@ -234,7 +238,10 @@ export function ProviderUsageCard({
 
 function constrainedProvider(providers: ProviderUsageStateDto[]): ProviderUsageStateDto | undefined {
   return providers
-    .filter((provider) => provider.authenticated)
+    .filter((provider) =>
+      provider.authenticated &&
+      !(provider.status === "unavailable" && provider.failure.code === "provider_disabled")
+    )
     .sort((left, right) => {
       const leftUsed = Math.max(-1, ...(usageData(left)?.windows.map((window) => window.usedPercent ?? -1) ?? [-1]));
       const rightUsed = Math.max(-1, ...(usageData(right)?.windows.map((window) => window.usedPercent ?? -1) ?? [-1]));
@@ -259,11 +266,13 @@ export function ProviderQuotaIndicator({
   preferredProvider,
   mobile = false,
   renderTrigger,
+  portalTarget,
   onOpenProviderSettings,
 }: {
   preferredProvider?: string;
   mobile?: boolean;
   renderTrigger?: (open: (element: HTMLElement) => void) => ReactNode;
+  portalTarget?: Element | null;
   onOpenProviderSettings?: () => void;
 }): JSX.Element {
   const queryClient = useQueryClient();
@@ -297,8 +306,11 @@ export function ProviderQuotaIndicator({
       ? `${selected.displayName} · ${Math.round(maximum)}%`
       : selected.refreshing
         ? `${selected.displayName} · loading`
-        : "Usage"
-    : query.isLoading ? "Usage" : "Usage unavailable";
+        : "Provider usage"
+    : query.isLoading ? "Provider usage" : "Provider usage unavailable";
+  const accessibleLabel = label === "Provider usage"
+    ? "Open provider usage"
+    : `Open provider usage: ${label}`;
 
   const open = (element: HTMLElement) => {
     setAnchor(element);
@@ -315,33 +327,77 @@ export function ProviderQuotaIndicator({
       );
     });
   };
+  useEffect(() => {
+    if (!anchor) return;
+    if (
+      !anchor.isConnected ||
+      (portalTarget !== undefined && !portalTarget?.contains(anchor))
+    ) {
+      setAnchor(undefined);
+    }
+  }, [anchor, portalTarget]);
+
+  const trigger = renderTrigger ? renderTrigger(open) : mobile ? (
+    <Tooltip title={label}>
+      <IconButton
+        aria-label={accessibleLabel}
+        onClick={(event) => open(event.currentTarget)}
+        sx={{
+          position: "relative",
+          flexShrink: 0,
+          width: 44,
+          height: 44,
+        }}
+      >
+        <DataUsageOutlinedIcon />
+        {query.isLoading || constrained?.refreshing ? (
+          <CircularProgress
+            size={16}
+            aria-hidden
+            sx={{ position: "absolute", right: 3, bottom: 3 }}
+          />
+        ) : null}
+      </IconButton>
+    </Tooltip>
+  ) : (
+    <Chip
+      size="small"
+      variant="outlined"
+      label={label}
+      icon={query.isLoading || constrained?.refreshing ? <CircularProgress size={13} /> : undefined}
+      aria-label={accessibleLabel}
+      onClick={(event) => open(event.currentTarget)}
+      sx={{
+        cursor: "pointer",
+        maxWidth: 170,
+        "& .MuiChip-label": { overflow: "hidden", textOverflow: "ellipsis" },
+      }}
+    />
+  );
 
   return (
     <>
-      {renderTrigger ? renderTrigger(open) : (
-        <Chip
-          size="small"
-          variant="outlined"
-          label={label}
-          icon={constrained?.refreshing ? <CircularProgress size={13} /> : undefined}
-          aria-label={`${label}. Open provider usage`}
-          onClick={(event) => open(event.currentTarget)}
-          sx={{
-            cursor: "pointer",
-            maxWidth: mobile ? 150 : 170,
-            color: mobile ? undefined : "var(--ponderosa-rail-foreground)",
-            borderColor: mobile ? undefined : "var(--ponderosa-rail-border)",
-            "& .MuiChip-label": { overflow: "hidden", textOverflow: "ellipsis" },
-          }}
-        />
-      )}
+      {portalTarget === null
+        ? null
+        : portalTarget
+          ? createPortal(trigger, portalTarget)
+          : trigger}
       <Popover
         open={Boolean(anchor)}
         anchorEl={anchor}
         onClose={() => setAnchor(undefined)}
         anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
         transformOrigin={{ vertical: "top", horizontal: "right" }}
-        slotProps={{ paper: { sx: { width: "min(420px, calc(100vw - 24px))", mt: 1 } } }}
+        slotProps={{
+          paper: {
+            sx: {
+              width: "min(420px, calc(100vw - 24px))",
+              maxHeight: "calc(100dvh - 24px)",
+              overflowY: "auto",
+              mt: 1,
+            },
+          },
+        }}
       >
         <Box sx={{ p: 1.5 }}>
           <Typography variant="overline" color="text.secondary">Provider usage</Typography>

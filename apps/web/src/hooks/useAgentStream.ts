@@ -632,6 +632,12 @@ export function useAgentStream(
             scheduleReconciliation({ detail: true, roster: true, health: true, usage: true });
           } else if (envelope.event.type === "agent_lifecycle" || envelope.event.type === "error") {
             scheduleReconciliation({ roster: true, health: true });
+          } else if (
+            envelope.event.type === "command"
+            || envelope.event.type === "tool_call"
+            || envelope.event.type === "tool_result"
+          ) {
+            scheduleReconciliation({ health: true });
           }
         },
       });

@@ -1,5 +1,6 @@
 import type {
   AgentActivityOutputDto,
+  AgentImportOperationDto,
   AssetLimitsDto,
   AgentDeletionPreviewDto,
   AgentDeletionPreviewRequest,
@@ -7,6 +8,9 @@ import type {
   AgentDto,
   AgentExportMode,
   AgentHealthProjectionDto,
+  AgentOperationalStatus,
+  AgentOrganizationPageDto,
+  AgentOrganizationScope,
   AgentPortablePackageDto,
   AgentPresetDto,
   AgentStreamStatusDto,
@@ -15,6 +19,7 @@ import type {
   AgentWorkInspectorDto,
   AgentWorkItemDetailsDto,
   AgentWorkItemDto,
+  AssetDto,
   ArtifactContentDto,
   ArtifactDto,
   BrowserControlRequest,
@@ -67,7 +72,6 @@ import type {
   HostFolderCreateDto,
   HistoryPageDto,
   HostFolderBrowseDto,
-  ImageAttachmentDto,
   ImportAgentPackageRequest,
   ImportAgentPackageResponse,
   LetCurrentRunFinishRequest,
@@ -82,6 +86,8 @@ import type {
   ProjectBrowserControlRequest,
   ProjectBrowserSessionDto,
   ProjectDto,
+  ProjectDeletionPreviewDto,
+  ProjectDeletionResponseDto,
   ProjectSort,
   ProjectEngineModelCatalogDto,
   ProjectEngineCapabilitiesDto,
@@ -104,7 +110,6 @@ import type {
   UpdateBrowserAgentPreferenceRequest,
   UpdateBrowserProfileRequest,
   TriggerOccurrenceDto,
-  UpdateAgentConversationMembershipsRequest,
   UpdateAgentOrganizationRequest,
   UpdateAgentPresetRequest,
   UpdateAgentRequest,
@@ -120,6 +125,8 @@ import type {
   WorkspaceFileViewDto,
   WorkspaceNotificationDto,
   WorkspaceNotificationPageDto,
+  WorkspaceNotificationProjectionDto,
+  WorkspaceNotificationProjectionRequestDto,
   WorkspaceDirectoryItemDto,
   WorkspaceDirectoryKind,
   WorkspaceDirectoryPageDto,
@@ -128,9 +135,6 @@ import type {
   WorkspaceResourceRecencyListDto,
   WorkspaceStatusDto,
   WorkspaceStreamStatusDto,
-  WikiArticleDto,
-  WikiIndexDto,
-  WikiSearchResponseDto,
 } from "@ponderosa/core";
 import {
   AGENT_DETAIL_PAGE_SIZE,
@@ -268,16 +272,7 @@ function browserPath(projectId: string, agentId: string, runId: string): string 
 }
 
 export const realApi = {
-  getWikiIndex(): Promise<WikiIndexDto> {
-    return requestJson<WikiIndexDto>("/api/wiki");
-  },
   getAssetLimits(): Promise<AssetLimitsDto> { return requestJson<AssetLimitsDto>("/api/asset-limits"); },
-  getWikiArticle(id: string): Promise<WikiArticleDto> {
-    return requestJson<WikiArticleDto>(`/api/wiki/articles/${encodeURIComponent(id)}`);
-  },
-  searchWiki(query: string, limit = 20, cursor?: string): Promise<WikiSearchResponseDto> {
-    return requestJson<WikiSearchResponseDto>(`/api/wiki/search${toQuery({ q: query, limit, cursor })}`);
-  },
   listProjects(): Promise<ProjectDto[]> {
     return collectCollectionPages<ProjectDto>("/api/projects");
   },
@@ -314,8 +309,11 @@ export const realApi = {
       body: JSON.stringify(patch satisfies UpdateProjectRequest),
     });
   },
-  deleteProject(projectId: string): Promise<void> {
-    return requestJson<void>(`/api/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" });
+  deleteProject(projectId: string): Promise<ProjectDeletionResponseDto> {
+    return requestJson<ProjectDeletionResponseDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" });
+  },
+  getProjectDeletionPreview(projectId: string): Promise<ProjectDeletionPreviewDto> {
+    return requestJson<ProjectDeletionPreviewDto>(`/api/projects/${encodeURIComponent(projectId)}/deletion-preview`);
   },
   getAgentHealth(projectId: string): Promise<AgentHealthProjectionDto> {
     return requestJson<AgentHealthProjectionDto>(`/api/projects/${encodeURIComponent(projectId)}/agent-health`);
@@ -476,6 +474,14 @@ export const realApi = {
   listNotifications(cursor?: string, limit = 100): Promise<WorkspaceNotificationPageDto> {
     return requestJson<WorkspaceNotificationPageDto>(`/api/notifications${toQuery({ limit, cursor })}`);
   },
+  getNotificationProjection(
+    request: WorkspaceNotificationProjectionRequestDto,
+  ): Promise<WorkspaceNotificationProjectionDto> {
+    return requestJson<WorkspaceNotificationProjectionDto>("/api/notifications/projection", {
+      method: "POST",
+      body: JSON.stringify(request satisfies WorkspaceNotificationProjectionRequestDto),
+    });
+  },
   async activeNotificationIds(notificationIds: string[]): Promise<string[]> {
     if (!notificationIds.length) return [];
     const response = await requestJson<{ activeNotificationIds: string[] }>("/api/notifications/active", {
@@ -486,8 +492,14 @@ export const realApi = {
   },
   async markNotificationRead(notificationId: string): Promise<void> { await requestJson(`/api/notifications/${encodeURIComponent(notificationId)}/read`, { method: "POST" }); },
   async markNotificationsRead(notificationIds: string[]): Promise<void> { await requestJson("/api/notifications/read-batch", { method: "POST", body: JSON.stringify({ notificationIds }) }); },
-  async clearConversationNotifications(conversationId: string, scope?: "messages"): Promise<void> { await requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/notifications/read`, { method: "POST", ...(scope ? { body: JSON.stringify({ scope }) } : {}) }); },
-  async markAllNotificationsRead(): Promise<void> { await requestJson("/api/notifications/read", { method: "POST" }); },
+  async markNotificationCommunicationsRead(communicationEventIds: string[]): Promise<number> {
+    const response = await requestJson<{ read: number }>("/api/notifications/read-visible", {
+      method: "POST",
+      body: JSON.stringify({ communicationEventIds }),
+    });
+    return response.read;
+  },
+  async acknowledgeNotifications(notificationIds: string[]): Promise<void> { await requestJson("/api/notifications/acknowledge-batch", { method: "POST", body: JSON.stringify({ notificationIds }) }); },
   setNotificationStatus(notificationId: string, status: "resolved" | "dismissed"): Promise<WorkspaceNotificationDto> { return requestJson(`/api/notifications/${encodeURIComponent(notificationId)}/status`, { method: "POST", body: JSON.stringify({ status }) }); },
   retryCoordinationRequest(requestId: string, request: { idempotencyKey?: string; createJoin?: boolean } = {}): Promise<RetryCoordinationRequestResponse> {
     return requestJson(`/api/requests/${encodeURIComponent(requestId)}/retry`, {
@@ -571,13 +583,48 @@ export const realApi = {
   listAgentsPage(projectId: string, options: { limit?: number; cursor?: string; search?: string } = {}): Promise<CollectionPage<AgentDto>> {
     return requestCollectionPage<AgentDto>(`/api/projects/${encodeURIComponent(projectId)}/agents${toQuery({ limit: options.limit, cursor: options.cursor, search: options.search })}`);
   },
+  cleanupDeletedAgentWorkingCopy(projectId: string, agentId: string): Promise<AgentDto["workingCopy"]> {
+    return requestJson<AgentDto["workingCopy"]>(
+      `/api/projects/${encodeURIComponent(projectId)}/deleted-agents/${encodeURIComponent(agentId)}/working-copy`,
+      { method: "DELETE" },
+    );
+  },
+  async getAgentOrganizationPage(
+    projectId: string,
+    options: {
+      scope: AgentOrganizationScope;
+      parentAgentId?: string;
+      limit?: number;
+      cursor?: string;
+      search?: string;
+      status?: AgentOperationalStatus;
+    },
+    signal?: AbortSignal,
+  ): Promise<AgentOrganizationPageDto & { reset?: boolean }> {
+    const path = `/api/projects/${encodeURIComponent(projectId)}/agent-organization${toQuery(options)}`;
+    try {
+      return await requestJson<AgentOrganizationPageDto>(path, { signal });
+    } catch (error) {
+      if (!(error instanceof ApiRequestError) || error.status !== 409 || !options.cursor) throw error;
+      return {
+        ...(await requestJson<AgentOrganizationPageDto>(
+          `/api/projects/${encodeURIComponent(projectId)}/agent-organization${toQuery({
+            ...options,
+            cursor: undefined,
+          })}`,
+          { signal },
+        )),
+        reset: true,
+      };
+    }
+  },
   createAgentRecord(projectId: string, request: CreateAgentRequest): Promise<AgentDto> {
     return requestJson<AgentDto>(`/api/projects/${encodeURIComponent(projectId)}/agents`, {
       method: "POST",
       body: JSON.stringify(request satisfies CreateAgentRequest),
     });
   },
-  createAgent(projectId: string, conversationId: string | undefined, options: CreateAgentOptions): Promise<AgentDto> {
+  createAgent(projectId: string, conversationId: string, options: CreateAgentOptions): Promise<AgentDto> {
     return this.createAgentRecord(projectId, {
       title: options.title,
       engine: options.engine as CreateAgentRequest["engine"],
@@ -590,6 +637,7 @@ export const realApi = {
       draftOwnerId: options.draftOwnerId,
       presetId: options.presetId,
       managerAgentId: options.managerAgentId,
+      idempotencyKey: options.idempotencyKey,
     });
   },
   listAgentPresets(projectId: string): Promise<AgentPresetDto[]> { return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-presets`); },
@@ -600,12 +648,6 @@ export const realApi = {
     return requestJson<AgentDto>(`/api/agents/${encodeURIComponent(agentId)}`, {
       method: "PATCH",
       body: JSON.stringify(patch satisfies UpdateAgentRequest),
-    });
-  },
-  updateAgentConversationMemberships(agentId: string, membership: UpdateAgentConversationMembershipsRequest): Promise<AgentDto> {
-    return requestJson<AgentDto>(`/api/agents/${encodeURIComponent(agentId)}/conversation-memberships`, {
-      method: "PUT",
-      body: JSON.stringify(membership satisfies UpdateAgentConversationMembershipsRequest),
     });
   },
   updateAgentOrganization(agentId: string, organization: UpdateAgentOrganizationRequest): Promise<AgentDto> {
@@ -643,6 +685,9 @@ export const realApi = {
   },
   listProjectArtifacts(projectId: string, limit: number = 100, cursor?: string): Promise<HistoryPageDto<ArtifactDto>> {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/artifacts${toQuery({ limit: String(limit), cursor })}`);
+  },
+  getProjectArtifact(projectId: string, artifactId: string): Promise<ArtifactDto> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}`);
   },
   listConversationArtifacts(projectId: string, conversationId: string, limit: number = 100, cursor?: string): Promise<HistoryPageDto<ArtifactDto>> {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/artifacts${toQuery({ conversationId, limit: String(limit), cursor })}`);
@@ -683,6 +728,33 @@ export const realApi = {
       },
     );
   },
+  startAgentPackageImport(
+    projectId: string,
+    packageBlob: Blob,
+    metadata: Omit<ImportAgentPackageRequest, "package">,
+    requestId: string,
+  ): Promise<AgentImportOperationDto> {
+    const body = new Blob(
+      [`${JSON.stringify(metadata)}\n`, packageBlob],
+      { type: "application/vnd.ponderosa.agent-import" },
+    );
+    return requestJson<AgentImportOperationDto>(
+      `/api/projects/${encodeURIComponent(projectId)}/agent-import-operations`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": body.type,
+          "idempotency-key": requestId,
+        },
+        body,
+      },
+    );
+  },
+  getAgentImportOperation(projectId: string, operationId: string): Promise<AgentImportOperationDto> {
+    return requestJson<AgentImportOperationDto>(
+      `/api/projects/${encodeURIComponent(projectId)}/agent-import-operations/${encodeURIComponent(operationId)}`,
+    );
+  },
   copyAgent(
     projectId: string,
     request: CopyAgentPackageRequest,
@@ -695,17 +767,17 @@ export const realApi = {
       },
     );
   },
-  listTriggers(agentId: string): Promise<TriggerDefinitionDto[]> {
-    return collectCollectionPages<TriggerDefinitionDto>(`/api/agents/${encodeURIComponent(agentId)}/triggers`);
+  listTriggers(projectId: string): Promise<TriggerDefinitionDto[]> {
+    return collectCollectionPages<TriggerDefinitionDto>(`/api/triggers${toQuery({ projectId })}`);
   },
-  listTriggersPage(agentId: string, options: { limit?: number; cursor?: string; search?: string } = {}): Promise<CollectionPage<TriggerDefinitionDto>> {
-    return requestCollectionPage<TriggerDefinitionDto>(`/api/agents/${encodeURIComponent(agentId)}/triggers${toQuery({ limit: options.limit, cursor: options.cursor, search: options.search })}`);
+  listTriggersPage(projectId: string, options: { limit?: number; cursor?: string; search?: string } = {}): Promise<CollectionPage<TriggerDefinitionDto>> {
+    return requestCollectionPage<TriggerDefinitionDto>(`/api/triggers${toQuery({ projectId, limit: options.limit, cursor: options.cursor, search: options.search })}`);
   },
   listAllTriggers(): Promise<TriggerDefinitionDto[]> {
     return collectCollectionPages<TriggerDefinitionDto>("/api/triggers");
   },
-  createTrigger(agentId: string, request: CreateTriggerRequest): Promise<CreateTriggerResponse> {
-    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/triggers`, { method: "POST", body: JSON.stringify(request) });
+  createTrigger(projectId: string, request: CreateTriggerRequest): Promise<CreateTriggerResponse> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/triggers`, { method: "POST", body: JSON.stringify(request) });
   },
   updateTrigger(triggerId: string, request: UpdateTriggerRequest): Promise<TriggerDefinitionDto> {
     return requestJson(`/api/triggers/${encodeURIComponent(triggerId)}`, { method: "PATCH", body: JSON.stringify(request) });
@@ -730,6 +802,9 @@ export const realApi = {
   },
   listAgentTriggerOccurrences(agentId: string, limit: number = 100): Promise<TriggerOccurrenceDto[]> {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/trigger-occurrences?limit=${encodeURIComponent(String(limit))}`);
+  },
+  listProjectTriggerOccurrences(projectId: string, limit: number = 100): Promise<TriggerOccurrenceDto[]> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/trigger-occurrences?limit=${encodeURIComponent(String(limit))}`);
   },
   listEngines(): Promise<EngineDto[]> {
     return requestJson<EngineDto[]>("/api/engines");
@@ -765,17 +840,17 @@ export const realApi = {
   getFiles(projectId: string, path?: string): Promise<FilesResponse> {
     return requestJson<FilesResponse>(`/api/files${toQuery({ projectId, path })}`);
   },
-  getWorkspaceStatus(projectId: string): Promise<WorkspaceStatusDto> {
-    return requestJson<WorkspaceStatusDto>(`/api/projects/${encodeURIComponent(projectId)}/workspace`);
+  getWorkspaceStatus(agentId: string): Promise<WorkspaceStatusDto> {
+    return requestJson<WorkspaceStatusDto>(`/api/agents/${encodeURIComponent(agentId)}/workspace`);
   },
-  getWorkspaceFile(projectId: string, path: string): Promise<WorkspaceFileReviewDto> {
+  getWorkspaceFile(agentId: string, path: string): Promise<WorkspaceFileReviewDto> {
     return requestJson<WorkspaceFileReviewDto>(
-      `/api/projects/${encodeURIComponent(projectId)}/workspace/file${toQuery({ path })}`,
+      `/api/agents/${encodeURIComponent(agentId)}/workspace/file${toQuery({ path })}`,
     );
   },
-  getWorkspaceFileView(projectId: string, path: string): Promise<WorkspaceFileViewDto> {
+  getWorkspaceFileView(projectId: string, path: string, agentId?: string): Promise<WorkspaceFileViewDto> {
     return requestJson<WorkspaceFileViewDto>(
-      `/api/projects/${encodeURIComponent(projectId)}/workspace-files/view-info${toQuery({ path })}`,
+      `/api/projects/${encodeURIComponent(projectId)}/workspace-files/view-info${toQuery({ path, agentId })}`,
     );
   },
   getArtifact(agentId: string, artifactId: string): Promise<ArtifactContentDto> {
@@ -792,8 +867,8 @@ export const realApi = {
       body: JSON.stringify(request satisfies SendMessageRequest),
     });
   },
-  uploadAttachment(agentId: string, file: File): Promise<ImageAttachmentDto> {
-    return requestJson<ImageAttachmentDto>(`/api/agents/${encodeURIComponent(agentId)}/attachments`, {
+  uploadAttachment(agentId: string, file: File): Promise<AssetDto> {
+    return requestJson<AssetDto>(`/api/agents/${encodeURIComponent(agentId)}/attachments`, {
       method: "POST",
       headers: {
         "content-type": "application/octet-stream",

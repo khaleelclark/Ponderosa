@@ -7,6 +7,8 @@ import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import {
+  Box,
+  Chip,
   IconButton,
   ListItemButton,
   ListItemIcon,
@@ -16,10 +18,13 @@ import {
   Typography,
 } from "@mui/material";
 import type {
+  AgentHealthDto,
   TriggerDefinitionDto,
+  WorkspaceNotificationCountProjectionDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useQueryClient } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import type { AgentStatus } from "../agents";
 import {
   sortWorkspaceResources,
@@ -35,11 +40,14 @@ import {
 import { AgentStatusIndicator } from "./AgentStatusIndicator";
 import { starColor } from "./WorkspaceSidebar.helpers";
 import { SharedSidebarPanel } from "./WorkspaceSidebar.parts";
+import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
 
 interface HomeSidebarPanelProps {
   snapshots: WorkspaceProjectSnapshot[];
   triggers: TriggerDefinitionDto[];
   preferences: WorkspacePreferencesDto;
+  unreadByConversation: Readonly<Record<string, WorkspaceNotificationCountProjectionDto>>;
+  allMessagesUnread: WorkspaceNotificationCountProjectionDto;
   filter: string;
   drawer: boolean;
   onFilterChange(value: string): void;
@@ -47,6 +55,13 @@ interface HomeSidebarPanelProps {
   onOpenResourceMenu(anchor: HTMLElement, route: Route): void;
   onOpenAllMessages(): void;
   onViewHome(): void;
+  header?: ReactNode;
+  title?: string;
+  includeProjects?: boolean;
+  showAllMessages?: boolean;
+  hideSearch?: boolean;
+  viewAllLabel?: string;
+  viewAllIcon?: ReactNode;
   onToggleStar(
     kind: "project" | "conversation" | "agent" | "trigger",
     id: string,
@@ -61,12 +76,15 @@ type HomeResource = {
   route: Route;
   icon: JSX.Element;
   status?: AgentStatus;
+  health?: AgentHealthDto;
 };
 
 export function HomeSidebarPanel({
   snapshots,
   triggers,
   preferences,
+  unreadByConversation,
+  allMessagesUnread,
   filter,
   drawer,
   onFilterChange,
@@ -75,14 +93,32 @@ export function HomeSidebarPanel({
   onOpenAllMessages,
   onViewHome,
   onToggleStar,
+  header,
+  title = "Home",
+  includeProjects = true,
+  showAllMessages = true,
+  hideSearch = false,
+  viewAllLabel = "View Home",
+  viewAllIcon = <HomeOutlinedIcon />,
 }: HomeSidebarPanelProps): JSX.Element {
   const queryClient = useQueryClient();
+  const workspaceConnection = useWorkspaceConnection();
   const recencyQuery = useWorkspaceResourceRecency();
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const starredResourceIds = starredWorkspaceResources(preferences);
   const agentStatusById = new Map<string, AgentStatus>(
     snapshots.flatMap(snapshot =>
       snapshot.health.map(entry => [entry.agentId, entry.status] as const),
+    ),
+  );
+  const agentHealthById = new Map(
+    snapshots.flatMap(snapshot =>
+      snapshot.health.map(entry => [entry.agentId, entry] as const),
+    ),
+  );
+  const agentNamesById = new Map(
+    snapshots.flatMap(snapshot =>
+      snapshot.agents.map(agent => [agent.id, agent.title] as const),
     ),
   );
   const agentDestinations = new Map(
@@ -92,15 +128,18 @@ export function HomeSidebarPanel({
       ),
     ),
   );
+  const projectsById = new Map(
+    snapshots.map(snapshot => [snapshot.project.id, snapshot.project] as const),
+  );
   const resourceCatalog: HomeResource[] = [
-    ...snapshots.map(snapshot => ({
+    ...(includeProjects ? snapshots.map(snapshot => ({
       id: `project:${snapshot.project.id}`,
       title: snapshot.project.label,
       detail: "Project",
       updatedAt: snapshot.project.lastUsedAt ?? snapshot.project.createdAt,
       route: { kind: "project", projectId: snapshot.project.id } as Route,
       icon: <FolderOutlinedIcon fontSize="small" />,
-    })),
+    })) : []),
     ...snapshots.flatMap(snapshot =>
       snapshot.conversations
         .filter(conversation => !conversation.archived)
@@ -132,21 +171,22 @@ export function HomeSidebarPanel({
           } as Route,
           icon: <SmartToyOutlinedIcon fontSize="small" />,
           status: agentStatusById.get(agent.id) ?? "idle",
+          health: agentHealthById.get(agent.id),
         })),
     ),
     ...triggers.flatMap(trigger => {
-      const destination = agentDestinations.get(trigger.agentId);
-      return destination
+      const destination = agentDestinations.get(trigger.targetAgentId);
+      const project = projectsById.get(trigger.projectId);
+      return project
         ? [{
             id: `trigger:${trigger.id}`,
             title: trigger.name,
-            detail: `${destination.project.label} · Automation`,
+            detail: `${project.label} · Automation${destination ? ` · ${destination.agent.title}` : " · Reassignment required"}`,
             updatedAt: trigger.updatedAt,
             route: {
-              kind: "agent",
-              projectId: destination.project.id,
-              agentId: destination.agent.id,
-              view: "triggers",
+              kind: "automation",
+              projectId: project.id,
+              triggerId: trigger.id,
             } as Route,
             icon: <BoltOutlinedIcon fontSize="small" />,
           }]
@@ -178,6 +218,9 @@ export function HomeSidebarPanel({
   const rows = (items: typeof resources) =>
     items.map(item => {
       const starred = starredResourceIds.has(item.id);
+      const unread = item.route.kind === "conversation"
+        ? unreadByConversation[item.route.conversationId]
+        : undefined;
       return (
         <Stack
           key={item.id}
@@ -186,9 +229,10 @@ export function HomeSidebarPanel({
             event.preventDefault();
             onOpenResourceMenu(event.currentTarget, item.route);
           }}
-          sx={{ alignItems: "center", mb: 0.25 }}
+          sx={{ alignItems: "center", mb: 0.25, minWidth: 0, width: "100%" }}
         >
           <ListItemButton
+            aria-label={`${item.title}${unread?.importantCount ? `, ${unread.importantCount} important unread` : ""}${unread?.ordinaryCount ? `, ${unread.ordinaryCount} ordinary unread` : ""}`}
             onClick={() => {
               if (item.id.startsWith("trigger:")) {
                 markWorkspaceResourceUsed(
@@ -199,7 +243,7 @@ export function HomeSidebarPanel({
               }
               onNavigate(item.route);
             }}
-            sx={{ borderRadius: 1.25, px: 1, py: 0.65, minWidth: 0 }}
+            sx={{ borderRadius: 1.25, px: 1, py: 0.65, minWidth: 0, flex: 1 }}
           >
             <ListItemIcon sx={{ minWidth: 38 }}>{item.icon}</ListItemIcon>
             <ListItemText
@@ -208,11 +252,36 @@ export function HomeSidebarPanel({
               primaryTypographyProps={{
                 noWrap: true,
                 fontSize: 13,
-                fontWeight: starred ? 750 : 500,
+                fontWeight: unread?.totalCount ? 800 : starred ? 750 : 500,
               }}
               secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
             />
-            {item.status ? <AgentStatusIndicator status={item.status} /> : null}
+            {unread?.importantCount ? (
+              <Chip
+                size="small"
+                color="error"
+                label={unread.importantCount}
+                aria-label={`${unread.importantCount} important unread`}
+                sx={{ height: 20, minWidth: 24, fontWeight: 800, color: "#fff" }}
+              />
+            ) : null}
+            {unread?.ordinaryCount ? (
+              <Box
+                component="span"
+                role="img"
+                aria-label={`${unread.ordinaryCount} ordinary unread`}
+                sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: "text.secondary", flexShrink: 0 }}
+              />
+            ) : null}
+            {item.status ? (
+              <AgentStatusIndicator
+                status={item.status}
+                health={item.health}
+                connectionStatus={workspaceConnection.status}
+                phaseEvidenceFresh={workspaceConnection.phaseEvidenceFresh}
+                agentNameForId={agentId => agentNamesById.get(agentId)}
+              />
+            ) : null}
           </ListItemButton>
           <Tooltip
             title={starred ? `Unstar ${item.title}` : `Star ${item.title}`}
@@ -220,6 +289,7 @@ export function HomeSidebarPanel({
             <IconButton
               size="small"
               aria-label={`${starred ? "Unstar" : "Star"} ${item.title}`}
+              sx={{ flex: "0 0 40px" }}
               onClick={() => {
                 const [kind, id] = item.id.split(":", 2) as [
                   "project" | "conversation" | "agent" | "trigger",
@@ -241,14 +311,17 @@ export function HomeSidebarPanel({
 
   return (
     <SharedSidebarPanel
+      header={header}
       icon={<HomeOutlinedIcon />}
-      title="Home"
+      title={title}
       total={resourceCatalog.length}
-      searchLabel="Search Home"
+      searchLabel={`Search ${title}`}
       searchValue={filter}
       onSearchValueChange={onFilterChange}
-      topContent={
+      hideSearch={hideSearch}
+      topContent={showAllMessages ? (
         <ListItemButton
+          aria-label={`All Messages${allMessagesUnread.importantCount ? `, ${allMessagesUnread.importantCount} important unread` : ""}${allMessagesUnread.ordinaryCount ? `, ${allMessagesUnread.ordinaryCount} ordinary unread` : ""}`}
           onClick={onOpenAllMessages}
           onContextMenu={event => {
             event.preventDefault();
@@ -270,12 +343,29 @@ export function HomeSidebarPanel({
             primaryTypographyProps={{
               noWrap: true,
               fontSize: 13,
-              fontWeight: 700,
+              fontWeight: allMessagesUnread.totalCount ? 800 : 700,
             }}
             secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
           />
+          {allMessagesUnread.importantCount ? (
+            <Chip
+              size="small"
+              color="error"
+              label={allMessagesUnread.importantCount}
+              aria-label={`${allMessagesUnread.importantCount} important unread`}
+              sx={{ height: 20, minWidth: 24, fontWeight: 800, color: "#fff" }}
+            />
+          ) : null}
+          {allMessagesUnread.ordinaryCount ? (
+            <Box
+              component="span"
+              role="img"
+              aria-label={`${allMessagesUnread.ordinaryCount} ordinary unread`}
+              sx={{ width: 8, height: 8, ml: 0.75, borderRadius: "50%", bgcolor: "text.secondary", flexShrink: 0 }}
+            />
+          ) : null}
         </ListItemButton>
-      }
+      ) : undefined}
       starredRows={rows(starredResources)}
       allRows={rows(unstarredResources)}
       empty={
@@ -285,8 +375,8 @@ export function HomeSidebarPanel({
           </Typography>
         ) : undefined
       }
-      viewAllLabel="View Home"
-      viewAllIcon={<HomeOutlinedIcon />}
+      viewAllLabel={viewAllLabel}
+      viewAllIcon={viewAllIcon}
       onViewAll={onViewHome}
       onViewAllContextMenu={anchor =>
         onOpenResourceMenu(anchor, { kind: "home" })

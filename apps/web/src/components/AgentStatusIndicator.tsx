@@ -1,26 +1,49 @@
 import { Box } from "@mui/material";
+import type { AgentHealthDto } from "@ponderosa/core";
 import type { AgentStatus } from "../agents";
-import { agentStatusColor, agentStatusLabel } from "../agents";
+import {
+  agentStatusPresentation,
+  type AgentStatusConnection,
+} from "../agents";
+import {
+  semanticAgentStatus,
+  semanticStatusColorToken,
+} from "./SemanticStatus";
 
 interface AgentStatusIndicatorProps {
   status: AgentStatus;
+  health?: AgentHealthDto;
+  connectionStatus?: AgentStatusConnection;
+  phaseEvidenceFresh?: boolean;
+  agentNameForId?: (agentId: string) => string | undefined;
 }
 
 export function AgentStatusIndicator({
   status,
+  health,
+  connectionStatus,
+  phaseEvidenceFresh,
+  agentNameForId,
 }: AgentStatusIndicatorProps): JSX.Element {
-  const color = agentStatusColor(status);
-  const label = agentStatusLabel(status);
+  const color = semanticStatusColorToken(semanticAgentStatus(status));
+  const presentation = agentStatusPresentation(health, {
+    status,
+    connectionStatus,
+    phaseEvidenceFresh,
+    agentNameForId,
+  });
 
   return (
     <Box
-      title={label}
-      aria-label={label}
+      component="span"
+      role="img"
+      title={presentation.detail}
+      aria-label={presentation.accessibleLabel}
       sx={{
         width: 9,
         height: 9,
         borderRadius: "50%",
-        bgcolor: color === "default" ? "text.disabled" : `${color}.main`,
+        bgcolor: color,
         flex: "0 0 auto",
       }}
     />

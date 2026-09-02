@@ -18,7 +18,6 @@ import {
   Box,
   Button,
   Checkbox,
-  Chip,
   FormControl,
   IconButton,
   InputLabel,
@@ -26,7 +25,6 @@ import {
   MenuItem,
   Select,
   Stack,
-  TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
@@ -41,7 +39,6 @@ import type {
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useState } from "react";
 import { api } from "../api";
-import { createClientId } from "../clientId";
 import { queryKeys } from "../queryKeys";
 import { ImportAgentDialog } from "./ImportAgentDialog";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
@@ -63,12 +60,12 @@ import {
 } from "./CollectionPrimitives";
 import {
   agentBelongsToConversation,
-  agentStatusColor,
-  agentStatusLabel,
-  isProviderBlockedHealth,
+  agentStatusPresentation,
   orderedAgentOrganization,
   type AgentStatus,
 } from "../agents";
+import { SemanticStatus, semanticAgentStatus } from "./SemanticStatus";
+import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
 import {
   agentHasCollapsedAncestor,
   agentHierarchyContextIds,
@@ -78,6 +75,27 @@ import {
   resolveAgentRelationshipParent,
   type StatusFilter,
 } from "./AgentsTab.helpers";
+import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
+
+export interface ActiveAgentRunTarget {
+  agentId: string;
+  runId: string;
+}
+
+export async function stopActiveAgentRuns(
+  targets: readonly ActiveAgentRunTarget[],
+): Promise<{ stopped: number; failed: number }> {
+  const results = await Promise.allSettled(
+    targets.map(({ agentId, runId }) =>
+      api.cancelRun(agentId, {
+        targetRunId: runId,
+        idempotencyKey: `bulk-stop:${agentId}:${runId}`,
+      }),
+    ),
+  );
+  const failed = results.filter(item => item.status === "rejected").length;
+  return { stopped: targets.length - failed, failed };
+}
 
 function AgentRosterShell({
   collection,
@@ -151,6 +169,7 @@ function AgentRosterShell({
             </Typography>
           ) : null}
         </Box>
+        <PrimaryHeaderActionsOutlet />
         {headerActions}
       </Stack>
       {toolbar}
@@ -253,6 +272,7 @@ export function AgentsTab({
   organizationRootAgentId?: string;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const workspaceConnection = useWorkspaceConnection();
   const [statusFilters, setStatusFilters] = useState<StatusFilter[]>([]);
   const [masterFilter, setMasterFilter] = useState<string>("all");
   const effectiveMasterFilter = conversationFilterValue ?? masterFilter;
@@ -398,6 +418,9 @@ export function AgentsTab({
 
   const organizationRows = orderedAgentOrganization(agents);
   const agentsById = new Map(agents.map(agent => [agent.id, agent]));
+  const agentNamesById = new Map(
+    (relationshipAgents ?? agents).map(agent => [agent.id, agent.title]),
+  );
   const childrenByManager = new Map<string, AgentDto[]>();
   for (const agent of agents) {
     if (!agent.managerAgentId || !agentsById.has(agent.managerAgentId))
@@ -552,18 +575,10 @@ export function AgentsTab({
   const stopAll = async () => {
     setStoppingAll(true);
     setBulkError(undefined);
-    const results = await Promise.allSettled(
-      activeRunTargets.map(({ agentId, runId }) =>
-        api.cancelRun(agentId, {
-          targetRunId: runId,
-          idempotencyKey: `bulk-stop:${agentId}:${runId}:${createClientId()}`,
-        }),
-      ),
-    );
-    const failed = results.filter(item => item.status === "rejected").length;
+    const { stopped, failed } = await stopActiveAgentRuns(activeRunTargets);
     if (failed)
       setBulkError(
-        `${activeRunTargets.length - failed} agents stopped; ${failed} could not be stopped. Retry or open those agents for details.`,
+        `${stopped} agents stopped; ${failed} could not be stopped. Retry or open those agents for details.`,
       );
     await queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
     setStoppingAll(false);
@@ -846,7 +861,6 @@ export function AgentsTab({
           conversations={conversations}
           initialConversationId={conversations[0]?.id}
           onClose={() => setImportOpen(false)}
-          onImported={onOpenAgent}
         />
       ) : null}
 
@@ -896,6 +910,13 @@ export function AgentsTab({
           <Stack spacing={0.75} role="tree" aria-label="Agent organization">
             {visibleFiltered.map(({ agent, depth }, index) => {
               const status = statusByAgentId.get(agent.id) ?? "idle";
+              const health = healthByAgentId.get(agent.id);
+              const statusPresentation = agentStatusPresentation(health, {
+                status,
+                connectionStatus: workspaceConnection.status,
+                phaseEvidenceFresh: workspaceConnection.phaseEvidenceFresh,
+                agentNameForId: agentId => agentNamesById.get(agentId),
+              });
               const profile = agentRoleProfile(agent);
               const organizationParent = resolveAgentRelationshipParent(
                 agent,
@@ -1023,12 +1044,10 @@ export function AgentsTab({
                         spacing={1.25}
                         sx={{ alignItems: "center", minWidth: 0 }}
                       >
-                        <Chip
-                          size="small"
-                          label={isProviderBlockedHealth(healthByAgentId.get(agent.id))
-                            ? "Provider blocked"
-                            : agentStatusLabel(status)}
-                          color={agentStatusColor(status)}
+                        <SemanticStatus
+                          status={semanticAgentStatus(status)}
+                          label={statusPresentation.label}
+                          detail={`${statusPresentation.accessibleLabel}. ${statusPresentation.detail}`}
                         />
                         <Typography
                           variant="caption"

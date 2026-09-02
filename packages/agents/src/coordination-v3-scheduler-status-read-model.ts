@@ -2,12 +2,21 @@ import type Database from "better-sqlite3";
 import {
   deriveAgentAvailability,
   type AgentCoordinationV3Dto,
+  type AgentHealthProjectionDto,
+  type AgentPhaseDto,
   type CoordinationJoinMode,
   type CoordinationJoinState,
   type CoordinationJoinWakePolicy,
   type DerivedAgentAvailability,
   type ProviderBlockedWorkDto,
 } from "@ponderosa/core";
+
+type WaitingPhase = Extract<
+  AgentPhaseDto,
+  { kind: "waiting_on_request" | "waiting_on_join" }
+>;
+
+const MAX_PHASE_DEPENDENCY_IDENTITIES = 3;
 
 export class CoordinationV3SchedulerStatusReadModel {
   constructor(private readonly sqlite: Database.Database) {}
@@ -34,6 +43,112 @@ export class CoordinationV3SchedulerStatusReadModel {
       WHERE recipient_agent_id = ? AND state IN ('awaiting_answer', 'waiting_dependency') LIMIT 1
     `).get(agentId));
     return deriveAgentAvailability({ hasActiveRun, hasActionableActivation, ownsOpenJoin, hasSuspendedRecipientRequest });
+  }
+
+  /** Canonical, payload-free dependency currently keeping one Agent waiting. */
+  activeWaitDependency(
+    agentId: string,
+    scope: AgentHealthProjectionDto["scope"],
+  ): WaitingPhase | undefined {
+    const scopeMatches = (table: "join_record" | "request") => `
+      AND ((? = 'project' AND ${table}.project_id = ?)
+        OR (? = 'conversation' AND ${table}.conversation_id = ?))
+    `;
+    const scopeParameters = [scope.type, scope.id, scope.type, scope.id] as const;
+    const latestJoin = this.sqlite.prepare(`
+      SELECT join_record.id, join_record.updated_at
+      FROM coordination_joins join_record
+      WHERE join_record.owner_agent_id = ? AND join_record.state = 'open'
+        ${scopeMatches("join_record")}
+      ORDER BY join_record.updated_at DESC, join_record.id DESC
+      LIMIT 1
+    `).get(agentId, ...scopeParameters) as {
+      id: string;
+      updated_at: string;
+    } | undefined;
+    const latestRequests = this.sqlite.prepare(`
+      SELECT request.id, request.requester_agent_id, request.updated_at
+      FROM coordination_requests request
+      WHERE request.recipient_agent_id = ?
+        AND request.state IN ('awaiting_answer', 'waiting_dependency')
+        ${scopeMatches("request")}
+      ORDER BY request.updated_at DESC, request.id DESC
+      LIMIT ${MAX_PHASE_DEPENDENCY_IDENTITIES}
+    `).all(agentId, ...scopeParameters) as Array<{
+      id: string;
+      requester_agent_id: string | null;
+      updated_at: string;
+    }>;
+    const latestRequest = latestRequests[0];
+    const joinSortKey = latestJoin
+      ? `${latestJoin.updated_at}\u0000${latestJoin.id}`
+      : undefined;
+    const requestSortKey = latestRequest
+      ? `${latestRequest.updated_at}\u0000${latestRequest.id}`
+      : undefined;
+
+    if (latestJoin && (!requestSortKey || joinSortKey! >= requestSortKey)) {
+      const dependencyCount = (this.sqlite.prepare(`
+        SELECT COUNT(DISTINCT request.id) AS count
+        FROM coordination_joins join_record
+        JOIN coordination_join_members member ON member.join_id = join_record.id
+        JOIN coordination_requests request ON request.id = member.request_id
+        WHERE join_record.id = ?
+          AND join_record.owner_agent_id = ? AND join_record.state = 'open'
+          AND request.terminal_at IS NULL
+          ${scopeMatches("join_record")}
+      `).get(latestJoin.id, agentId, ...scopeParameters) as { count: number }).count;
+      if (dependencyCount < 1) return undefined;
+      const requests = this.sqlite.prepare(`
+        SELECT request.id, request.recipient_agent_id,
+          MIN(member.position) AS member_position
+        FROM coordination_joins join_record
+        JOIN coordination_join_members member ON member.join_id = join_record.id
+        JOIN coordination_requests request ON request.id = member.request_id
+        WHERE join_record.id = ?
+          AND join_record.owner_agent_id = ? AND join_record.state = 'open'
+          AND request.terminal_at IS NULL
+          ${scopeMatches("join_record")}
+        GROUP BY request.id, request.recipient_agent_id
+        ORDER BY member_position, request.id
+        LIMIT ${MAX_PHASE_DEPENDENCY_IDENTITIES}
+      `).all(latestJoin.id, agentId, ...scopeParameters) as Array<{
+        id: string;
+        recipient_agent_id: string;
+      }>;
+      return {
+        kind: "waiting_on_join",
+        observedAt: latestJoin.updated_at,
+        joinId: latestJoin.id,
+        requestIds: requests.map((request) => request.id),
+        dependencyCount,
+        additionalDependencyCount: Math.max(0, dependencyCount - requests.length),
+        counterpartyAgentIds: [...new Set(
+          requests.map((request) => request.recipient_agent_id).filter(Boolean),
+        )].slice(0, MAX_PHASE_DEPENDENCY_IDENTITIES),
+      };
+    }
+
+    if (!latestRequest) return undefined;
+    const dependencyCount = (this.sqlite.prepare(`
+      SELECT COUNT(*) AS count
+      FROM coordination_requests request
+      WHERE request.recipient_agent_id = ?
+        AND request.state IN ('awaiting_answer', 'waiting_dependency')
+        ${scopeMatches("request")}
+    `).get(agentId, ...scopeParameters) as { count: number }).count;
+    return {
+      kind: "waiting_on_request",
+      observedAt: latestRequest.updated_at,
+      requestId: latestRequest.id,
+      dependencyCount,
+      additionalDependencyCount: Math.max(0, dependencyCount - 1),
+      counterpartyAgentIds: [...new Set(
+        latestRequests.flatMap((request) => request.requester_agent_id
+          ? [request.requester_agent_id]
+          : []),
+      )].slice(0, MAX_PHASE_DEPENDENCY_IDENTITIES),
+    };
   }
 
   providerBlockedState(agentId: string): ProviderBlockedWorkDto | undefined {

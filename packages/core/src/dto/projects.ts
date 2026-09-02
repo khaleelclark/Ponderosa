@@ -6,7 +6,7 @@ import type { EngineId } from "../adapter.js";
 export interface ProjectDto {
   id: string;
   label: string;
-  /** Absolute host path = the cwd root for agents working in this project. */
+  /** Absolute host path for the Project's explicit Shared folder. */
   hostPath: string;
   createdAt: string;
   lastUsedAt?: string;
@@ -73,6 +73,24 @@ export interface ProjectFolderOptionDto {
 export interface ProjectFolderOptionsDto {
   managedRoot: string;
   folders: ProjectFolderOptionDto[];
+}
+
+export interface ProjectDeletionPreviewDto {
+  projectId: string;
+  chats: number;
+  agents: number;
+  automations: number;
+  managedFiles: number;
+  activeAgents: Array<{ id: string; title: string }>;
+  projectBrowserActive: boolean;
+  nonempty: boolean;
+}
+
+export interface ProjectDeletionResponseDto {
+  deleted: true;
+  deletionReceiptId: string;
+  cleanupPending: boolean;
+  replayed?: boolean;
 }
 
 export interface HostFolderBrowseDto {

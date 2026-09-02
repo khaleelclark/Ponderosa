@@ -4,11 +4,13 @@ import { eq } from "drizzle-orm";
 import type {
   AgentDto,
   AgentOrganizationEvent,
-  ConversationDto,
   ProjectDto,
-  UpdateAgentConversationMembershipsRequest,
   UpdateAgentOrganizationRequest,
   UpdateAgentRequest,
+} from "@ponderosa/core";
+import {
+  agentMentionHandleBase,
+  allocateAgentMentionHandle,
 } from "@ponderosa/core";
 import type { Db } from "./db.js";
 import { normalizeAgentTitle } from "./agent-identity.js";
@@ -16,7 +18,7 @@ import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
 import { requireManagementPermissions } from "./store-agent-management.js";
 import { readJson, writeJson } from "./store-filesystem.js";
 import type { AgentJson, AgentManagementAuthorization } from "./store-types.js";
-import { agents } from "./schema.js";
+import { agentHandleReservations, agents } from "./schema.js";
 import { agentJsonPath, agentOrganizationEventsPath } from "./paths.js";
 
 export class AgentManagementAuthority {
@@ -27,14 +29,7 @@ export class AgentManagementAuthority {
     private readonly getAgent: (agentId: string) => AgentDto | undefined,
     private readonly listAgents: (projectId: string) => AgentDto[],
     private readonly getProject: (projectId: string) => ProjectDto | undefined,
-    private readonly getConversation: (conversationId: string) => ConversationDto | undefined,
     private readonly rowToAgentDto: (agentId: string) => AgentDto | undefined,
-    private readonly persistAgentMemberships: (
-      agentId: string,
-      conversationIds: string[],
-      primaryConversationId?: string,
-      beforeProjectionChange?: () => void,
-    ) => void,
     private readonly refreshAllChatFeedProject: (projectId: string) => void,
   ) {}
 
@@ -104,7 +99,14 @@ export class AgentManagementAuthority {
     if (!owner || owner.projectId !== authorization.projectId || owner.archived) {
       throw new Error("management owner is no longer active in this Project");
     }
-    const descendants = new Set(this.listAgentSubtree(owner.id).slice(1).map((agent) => agent.id));
+    if (owner.conversationId !== authorization.conversationId) {
+      throw new Error("management owner no longer belongs to the authorized Chat");
+    }
+    const subtree = this.listAgentSubtree(owner.id);
+    if (subtree.some((agent) => agent.conversationId !== authorization.conversationId)) {
+      throw new Error("management authority cannot cross Chat ownership boundaries");
+    }
+    const descendants = new Set(subtree.slice(1).map((agent) => agent.id));
     if (targetAgentIds.some((id) => !descendants.has(id))) {
       throw new Error("management authority changed; a target is no longer inside the owner's subtree");
     }
@@ -147,6 +149,18 @@ export class AgentManagementAuthority {
     if (!row || row.deletedAt) return undefined;
     const now = new Date().toISOString();
     const title = patch.title === undefined ? row.title : normalizeAgentTitle(patch.title);
+    const handle = patch.title !== undefined &&
+        agentMentionHandleBase(title).toLocaleLowerCase() !==
+          agentMentionHandleBase(row.title).toLocaleLowerCase()
+      ? allocateAgentMentionHandle(
+          title,
+          this.db.select({ handle: agentHandleReservations.handle })
+            .from(agentHandleReservations)
+            .where(eq(agentHandleReservations.projectId, row.projectId))
+            .all()
+            .map(reservation => reservation.handle),
+        )
+      : row.handle;
     const archived = patch.archived ?? row.archived === 1;
     const activeEngine = patch.activeEngine?.trim() || row.activeEngine;
     const model = patch.model === undefined ? row.model ?? undefined : patch.model?.trim() || undefined;
@@ -170,6 +184,7 @@ export class AgentManagementAuthority {
     writeJson(agentJsonPath(this.dataDir, row.projectId, id), {
       ...json,
       title,
+      handle,
       archived,
       activeEngine,
       model,
@@ -177,10 +192,19 @@ export class AgentManagementAuthority {
       managementPermissions,
       updatedAt: now,
     });
-    this.db
-      .update(agents)
-      .set({
+    this.client.transaction(() => {
+      if (handle.toLocaleLowerCase() !== row.handle.toLocaleLowerCase()) {
+        this.db.insert(agentHandleReservations).values({
+          projectId: row.projectId,
+          normalizedHandle: handle.toLocaleLowerCase(),
+          handle,
+          agentId: id,
+          reservedAt: now,
+        }).run();
+      }
+      this.db.update(agents).set({
         title,
+        handle,
         archived: archived ? 1 : 0,
         activeEngine,
         model: model ?? null,
@@ -191,6 +215,7 @@ export class AgentManagementAuthority {
       })
       .where(eq(agents.id, id))
       .run();
+    })();
     if (archived !== (row.archived === 1)) this.refreshAllChatFeedProject(row.projectId);
     return this.rowToAgentDto(id);
   }
@@ -206,11 +231,17 @@ export class AgentManagementAuthority {
       const parent = this.getAgent(parentId);
       if (!parent || parent.projectId !== agent.projectId) throw new Error("organizational parent must belong to the same project");
       if (parent.archived) throw new Error("organizational parent must be active");
+      if (parent.conversationId !== agent.conversationId) {
+        throw new Error("organizational parent must belong to the same Chat");
+      }
       const visited = new Set<string>([id]);
       let cursor: AgentDto | undefined = parent;
       while (cursor) {
         if (visited.has(cursor.id)) throw new Error("organizational parent would create a cycle");
-        if (cursor.projectId !== agent.projectId || cursor.archived) throw new Error("organizational ancestry must contain active agents from the same project");
+        if (cursor.projectId !== agent.projectId || cursor.archived ||
+            cursor.conversationId !== agent.conversationId) {
+          throw new Error("organizational ancestry must contain active Agents from the same Chat");
+        }
         visited.add(cursor.id);
         cursor = cursor.managerAgentId ? this.getAgent(cursor.managerAgentId) : undefined;
       }
@@ -240,11 +271,23 @@ export class AgentManagementAuthority {
       const projectAgents = this.listAgents(authorization.projectId);
       const byId = new Map(projectAgents.map((agent) => [agent.id, agent]));
       const managerById = new Map(projectAgents.map((agent) => [agent.id, agent.managerAgentId]));
-      const currentDescendants = new Set(this.listAgentSubtree(authorization.ownerAgentId).slice(1).map((agent) => agent.id));
+      const owner = byId.get(authorization.ownerAgentId);
+      if (!owner || owner.conversationId !== authorization.conversationId) {
+        throw new Error("management owner no longer belongs to the authorized Chat");
+      }
+      const currentSubtree = this.listAgentSubtree(authorization.ownerAgentId);
+      if (currentSubtree.some((agent) => agent.conversationId !== authorization.conversationId)) {
+        throw new Error("management authority cannot cross Chat ownership boundaries");
+      }
+      const currentDescendants = new Set(currentSubtree.slice(1).map((agent) => agent.id));
       for (const operation of operations) {
         const target = byId.get(operation.targetAgentId);
         const manager = byId.get(operation.managerAgentId);
         if (!target || !manager || target.archived || manager.archived) throw new Error("reorganization Agents must remain active");
+        if (target.conversationId !== authorization.conversationId ||
+            manager.conversationId !== authorization.conversationId) {
+          throw new Error("reorganization Agents must belong to the authorized Chat");
+        }
         if (manager.id !== authorization.ownerAgentId && !currentDescendants.has(manager.id)) {
           throw new Error("management authority changed; a new manager is no longer inside the owner's subtree");
         }
@@ -254,6 +297,11 @@ export class AgentManagementAuthority {
         let cursor: string | undefined = manager.id;
         while (cursor) {
           if (visited.has(cursor)) throw new Error("organizational parent would create a cycle");
+          const ancestor = byId.get(cursor);
+          if (!ancestor || ancestor.archived ||
+              ancestor.conversationId !== authorization.conversationId) {
+            throw new Error("organizational ancestry must remain inside the authorized Chat");
+          }
           visited.add(cursor);
           cursor = managerById.get(cursor);
         }
@@ -293,30 +341,6 @@ export class AgentManagementAuthority {
     );
   }
 
-  updateAgentConversationMemberships(
-    id: string,
-    input: UpdateAgentConversationMembershipsRequest,
-    beforeMembershipProjectionChange?: (agentId: string, removedConversationIds: string[]) => void,
-  ): AgentDto | undefined {
-    const agent = this.getAgent(id);
-    if (!agent) return undefined;
-    const ids = [...new Set(input.conversationIds)];
-    if (ids.length !== input.conversationIds.length) throw new Error("duplicate conversation membership");
-    if (ids.length > 0 && !input.primaryConversationId) throw new Error("primary conversation is required");
-    if (input.primaryConversationId && !ids.includes(input.primaryConversationId)) {
-      throw new Error("primary conversation must be a member");
-    }
-    for (const conversationId of ids) {
-      const master = this.getConversation(conversationId);
-      if (!master || master.projectId !== agent.projectId) throw new Error("conversation does not belong to project");
-      if (master.archived && !agent.conversationIds.includes(conversationId)) throw new Error("archived conversation cannot accept agents");
-    }
-    const removedConversationIds = agent.conversationIds.filter((conversationId) => !ids.includes(conversationId));
-    this.persistAgentMemberships(id, ids, input.primaryConversationId, () =>
-      beforeMembershipProjectionChange?.(id, removedConversationIds));
-    return this.getAgent(id);
-  }
-
   sanitizeOrganizationProjection(projectId: string): void {
     const projectAgents = this.listAgents(projectId);
     const byId = new Map(projectAgents.map((agent) => [agent.id, agent]));
@@ -327,7 +351,8 @@ export class AgentManagementAuthority {
       let valid = true;
       while (parentId) {
         const parent = byId.get(parentId);
-        if (!parent || parent.archived || seen.has(parentId)) {
+        if (!parent || parent.archived ||
+            parent.conversationId !== agent.conversationId || seen.has(parentId)) {
           valid = false;
           break;
         }

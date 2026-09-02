@@ -28,7 +28,6 @@ const required = [
   path.join(bundle, "app", "web", "dist", "index.html"),
   path.join(bundle, "schema", "0000_current_schema.sql"),
   path.join(bundle, "qualification", "verify-installed-bundle.mjs"),
-  path.join(bundle, "docs", "wiki", "getting-started.md"),
 ];
 for (const pathname of required) {
   if (!existsSync(pathname)) throw new Error(`Bundle is incomplete: ${pathname}`);
@@ -41,8 +40,8 @@ if (manifest.target.platform !== process.platform || manifest.target.arch !== pr
     `this host is ${process.platform}/${process.arch}. Static cross-verification is not release evidence.`,
   );
 }
-if (!/^v22\.\d+\.\d+(?:[-+].*)?$/u.test(manifest.nodeVersion)) {
-  throw new Error(`Manifest does not declare a supported Node 22 runtime: ${manifest.nodeVersion ?? "missing"}`);
+if (!/^v24\.\d+\.\d+(?:[-+].*)?$/u.test(manifest.nodeVersion)) {
+  throw new Error(`Manifest does not declare a supported Node 24 runtime: ${manifest.nodeVersion ?? "missing"}`);
 }
 if (manifest.databaseSchemaVersion !== "0000_current_schema.sql") {
   throw new Error(`Unexpected launch-baseline schema: ${manifest.databaseSchemaVersion ?? "missing"}`);

@@ -103,6 +103,7 @@ export {
   publishManagedArtifactContentAsync,
   publishManagedArtifactContents,
   publishManagedArtifactContentsAsync,
+  removeManagedArtifactContent,
   openManagedArtifactContent,
   readManagedArtifactContent,
   repairManagedArtifactContent,
@@ -111,6 +112,12 @@ export {
   type ManagedArtifactBatchInput,
 } from "./managed-artifact-files.js";
 export type { Db } from "./db.js";
+export {
+  AgentWorkingCopyUnavailableError,
+  resolveAgentWorkingCopy,
+  sharedWorkingCopy,
+  type ResolvedAgentWorkingCopy,
+} from "./working-copy.js";
 
 export {
   projectEvent,

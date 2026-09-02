@@ -9,7 +9,7 @@ import type {
   CoordinationRequestUpdateKind,
 } from "../coordination-v3.js";
 import type { AgentDto } from "./agents.js";
-import type { ArtifactKind, CommunicationAttachmentDto, ImageAttachmentDto } from "./artifacts.js";
+import type { ArtifactKind, AssetDto, CommunicationAttachmentDto } from "./artifacts.js";
 import type { HistoryWindowDto, ProviderBlockedWorkDto } from "./common.js";
 import type { ProjectDto } from "./projects.js";
 import type { DecisionDto } from "./workspace.js";
@@ -68,10 +68,14 @@ export interface ResponseFileActivityDto {
 }
 
 export interface AgentMentionBindingDto {
+  /** Project that owns the recipient; prevents cross-Project identity ambiguity. */
+  projectId: string;
   /** Immutable display handle captured when the message was authored. */
   handle: string;
   /** Immutable recipient identity used for routing and navigation. */
   agentId: string;
+  /** Current server-authoritative handle, or the last authored handle after deletion. */
+  currentHandle: string;
   /** Current authoritative display title, or the last durable label after deletion. */
   currentTitle: string;
 }
@@ -84,9 +88,9 @@ export interface ConversationMessageDto {
   /** Immutable communication scope used only for presentation. */
   communicationIntent?: CommunicationIntent;
   /** Stable Direct-message participants resolved to their current display names. */
-  directMessageAgents?: Array<Pick<AgentDto, "id" | "title">>;
+  directMessageAgents?: Array<Pick<AgentDto, "id" | "title" | "handle">>;
   /** Stable collaboration recipients resolved from the canonical audience. */
-  collaborationRecipients?: Array<Pick<AgentDto, "id" | "title">>;
+  collaborationRecipients?: Array<Pick<AgentDto, "id" | "title" | "handle">>;
   conversationId: string;
   role: "user" | "assistant" | "system";
   text: string;
@@ -408,10 +412,8 @@ export interface ConversationDetailDto {
 export interface CreateConversationMessageRequest {
   role?: "user" | "assistant" | "system";
   text: string;
-  attachments?: ImageAttachmentDto[];
-  /** Stable Agent IDs to activate for this organizational Broadcast. */
-  recipientAgentIds?: string[];
-  /** Immutable #handle-to-Agent bindings for targeted passive next-run delivery. */
+  attachments?: AssetDto[];
+  /** Immutable #handle-to-Agent bindings that select Broadcast wake recipients. */
   recipientAgentMentions?: AgentMentionBindingDto[];
   /** Target-owned asset copies for safe delivery to each activated Agent. */
   recipientAttachments?: Array<{ agentId: string; attachmentIds: string[] }>;
@@ -421,7 +423,7 @@ export interface CreateConversationMessageRequest {
   speed?: string;
   /** Active recipients steer by default; queue preserves an explicit turn boundary. */
   activeRunDelivery?: "steer" | "queue";
-  /** Stable across transport retries; absent is accepted for legacy clients. */
+  /** Stable across transport retries. */
   idempotencyKey?: string;
 }
 
@@ -491,6 +493,8 @@ export interface MultiAgentDirectMessageResponse {
   messageId: string;
   replayed: boolean;
   recipients: Array<{ agentId: string; queued: boolean; deliveryId?: string; state?: "queued" | "preparing" | "retrying" | "steered" | "started" }>;
+  /** Addressed recipients that became unavailable before their delivery could start. */
+  unavailableRecipients?: Array<{ agentId: string; reason: "missing" | "archived" | "wrong_project" }>;
 }
 
 export interface QueuedConversationMessageDto {
@@ -549,7 +553,7 @@ export interface MessageDto {
   /** Canonical scope used to explain where this audit projection originated. */
   communicationIntent?: CommunicationIntent;
   /** Stable Direct-message participants resolved to their current display names. */
-  directMessageAgents?: Array<Pick<AgentDto, "id" | "title">>;
+  directMessageAgents?: Array<Pick<AgentDto, "id" | "title" | "handle">>;
   /** Immutable Project-chat scope of the canonical communication, when present. */
   conversationId?: string;
   agentId: string;
@@ -735,7 +739,7 @@ export interface AllChatItemDto {
   messageId: string;
   communicationIntent: CommunicationIntent;
   /** Stable Direct-message participants resolved to their current display names. */
-  directMessageAgents?: Array<Pick<AgentDto, "id" | "title">>;
+  directMessageAgents?: Array<Pick<AgentDto, "id" | "title" | "handle">>;
   /** Authored routing handles bound to their stable Direct recipients. */
   agentMentions?: AgentMentionBindingDto[];
   project: Pick<ProjectDto, "id" | "label">;
@@ -746,7 +750,7 @@ export interface AllChatItemDto {
   attachments?: CommunicationAttachmentDto[];
   artifactIds?: string[];
   /** Present only when this source item determines one exact active DM target. */
-  directMessageAgent?: Pick<AgentDto, "id" | "title">;
+  directMessageAgent?: Pick<AgentDto, "id" | "title" | "handle">;
 }
 
 /** One canonical Decision event projected into the workspace-wide aggregate timeline. */

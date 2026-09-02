@@ -19,6 +19,7 @@ interface RequestRow {
   open_question_update_id: string | null;
   payload_json: string;
   reply_authority_json: string | null;
+  superseded_by_request_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -46,6 +47,9 @@ export class CoordinationV3RequestReadModel {
       state: row.state,
       version: row.version,
       payload: JSON.parse(row.payload_json) as unknown,
+      ...(row.superseded_by_request_id
+        ? { recoverySuccessorRequestId: row.superseded_by_request_id }
+        : {}),
     };
   }
 
@@ -108,7 +112,10 @@ export class CoordinationV3RequestReadModel {
   } {
     const rows = this.sqlite.prepare(`
       SELECT id, state FROM coordination_requests
-      WHERE CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.retryOfRequestId') END = ?
+      WHERE id = (
+        SELECT superseded_by_request_id FROM coordination_requests
+        WHERE id = ?
+      )
       ORDER BY created_at DESC, id DESC
     `).all(requestId) as Array<{ id: string; state: string }>;
     const active = rows.find((row) => ["open", "in_progress", "waiting_dependency", "awaiting_answer"].includes(row.state));

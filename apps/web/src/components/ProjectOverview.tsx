@@ -1,8 +1,6 @@
-import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import AddIcon from "@mui/icons-material/Add";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
-import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import SearchIcon from "@mui/icons-material/Search";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
@@ -37,15 +35,17 @@ import type {
   EngineDto,
   ProjectDto,
   ProjectSort,
-  WorkspaceNotificationDto,
+  WorkspaceNotificationCountProjectionDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
+import { useNotificationProjection } from "../hooks/queries";
 import { conversationDisplayTitle } from "../conversationLabels";
 import { engineAvailabilityPresentation, engineIsAvailable } from "../conversationEngine";
 import { queryKeys } from "../queryKeys";
+import { semanticStatusColorToken, type SemanticStatusKind } from "./SemanticStatus";
 import {
   reorderStableIds,
   resourcePreferenceKey,
@@ -55,7 +55,6 @@ import {
   workspaceResourceSort,
   workspaceResourceSortPatch,
 } from "../resourcePreferences";
-import { unreadByConversation } from "../workspaceNavigation";
 import { artifactDisplayLabel, artifactDisplayPath } from "./filePreview/artifactPresentation";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 import {
@@ -90,15 +89,23 @@ export function projectHealthPresentation(
 ): {
   label: string;
   color: "success.main" | "info.main" | "warning.main" | "error.main" | "text.disabled";
+  status: SemanticStatusKind;
 } {
   const actionable = actionableProjectHealth(health, agents, engines).health;
-  if (!actionable) return { label: "Checking", color: "text.disabled" };
-  if (actionable.some((agent) => agent.status === "failed" || agent.status === "stalled")) return { label: "Needs attention", color: "error.main" };
-  if (actionable.some((agent) => agent.status === "needs_decision")) return { label: "Needs decision", color: "warning.main" };
-  if (actionable.some((agent) => agent.status === "blocked" || agent.status === "interrupted")) return { label: "Blocked", color: "warning.main" };
-  if (actionable.some((agent) => agent.status === "running" || agent.status === "preparing" || agent.status === "compacting")) return { label: "Active", color: "info.main" };
-  if (actionable.some((agent) => agent.status === "waiting")) return { label: "Waiting", color: "warning.main" };
-  return { label: "Healthy", color: "success.main" };
+  const result: { label: string; status: SemanticStatusKind } = !actionable
+    ? { label: "Checking", status: "idle" }
+    : actionable.some((agent) => agent.status === "failed" || agent.status === "stalled")
+      ? { label: "Needs attention", status: "needs_attention" }
+      : actionable.some((agent) => agent.status === "needs_decision")
+        ? { label: "Needs decision", status: "needs_attention" }
+        : actionable.some((agent) => agent.status === "blocked" || agent.status === "interrupted")
+          ? { label: "Blocked", status: "blocked" }
+          : actionable.some((agent) => agent.status === "running" || agent.status === "preparing" || agent.status === "compacting")
+            ? { label: "Running", status: "running" }
+            : actionable.some((agent) => agent.status === "waiting")
+              ? { label: "Waiting", status: "waiting" }
+              : { label: "Completed", status: "completed" };
+  return { ...result, color: semanticStatusColorToken(result.status) };
 }
 
 export function projectHealthDetail(
@@ -140,15 +147,12 @@ export function ProjectOverview({
   healthByAgentId,
   importantArtifacts,
   conversations,
-  notifications,
   preferences,
   onPreferences,
   onCreateConversation,
   onOpenConversation,
   onRenameConversation,
   onDeleteConversation,
-  onOpenAgentWork,
-  onOpenProjectFiles,
   onOpenImportantArtifact,
 }: {
   project: ProjectDto;
@@ -156,15 +160,12 @@ export function ProjectOverview({
   healthByAgentId: Map<string, AgentHealthDto>;
   importantArtifacts: ArtifactDto[];
   conversations: ConversationDto[];
-  notifications: WorkspaceNotificationDto[];
   preferences: WorkspacePreferencesDto;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onCreateConversation(): void;
   onOpenConversation(conversationId: string): void;
   onRenameConversation(conversation: ConversationDto): void;
   onDeleteConversation(conversation: ConversationDto): void;
-  onOpenAgentWork(): void;
-  onOpenProjectFiles(): void;
   onOpenImportantArtifact(artifact: ArtifactDto): void;
 }): JSX.Element {
   const [chatFilter, setChatFilter] = useState("");
@@ -195,7 +196,21 @@ export function ProjectOverview({
     .filter((artifact) => artifact.pinned || artifact.visibility === "published")
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     .slice(0, 3);
-  const unread = useMemo(() => unreadByConversation(notifications), [notifications]);
+  const notificationProjectionQuery = useNotificationProjection(
+    [project.id],
+    conversations.map(conversation => conversation.id),
+  );
+  const emptyUnread: WorkspaceNotificationCountProjectionDto = {
+    importantCount: 0,
+    ordinaryCount: 0,
+    totalCount: 0,
+  };
+  const unread = notificationProjectionQuery.data?.conversations ?? {};
+  const projectUnread = notificationProjectionQuery.data?.projects[project.id] ?? {
+    ...emptyUnread,
+    chat: { ...emptyUnread, affectedConversationCount: 0 },
+    projectLevel: emptyUnread,
+  };
   const chatSort = workspaceResourceSort(preferences, "chat");
   const activeConversations = useMemo(() => sortWorkspaceResources(
     conversations.filter((conversation) => !conversation.archived),
@@ -205,6 +220,12 @@ export function ProjectOverview({
     (conversation) => conversation.title,
     (conversation) => conversation.updatedAt,
   ), [chatSort, conversations, preferences.chatOrder]);
+  const chatUnreadSummary = projectUnread.chat.totalCount
+    ? `${projectUnread.chat.totalCount} unread in ${projectUnread.chat.affectedConversationCount} ${projectUnread.chat.affectedConversationCount === 1 ? "Chat" : "Chats"}`
+    : undefined;
+  const projectLevelUnreadSummary = projectUnread.projectLevel.totalCount
+    ? `${projectUnread.projectLevel.totalCount} Project-level unread`
+    : undefined;
   const normalizedFilter = chatFilter.trim().toLocaleLowerCase();
   const visibleConversations = activeConversations.filter((conversation) =>
     !normalizedFilter || conversationDisplayTitle(conversation, activeConversations).toLocaleLowerCase().includes(normalizedFilter));
@@ -223,6 +244,17 @@ export function ProjectOverview({
       <AccordionSummary expandIcon={<ExpandMoreIcon />} aria-controls="project-overview-content">
         <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", width: "100%", minWidth: 0 }}>
           <Typography variant="subtitle1" fontWeight={800} sx={{ flex: 1 }}>Project Overview</Typography>
+          {projectUnread.importantCount ? (
+            <Chip
+              size="small"
+              color="error"
+              label={`${projectUnread.importantCount} important`}
+              aria-label={`${projectUnread.importantCount} important unread`}
+              sx={{ color: "#fff", fontWeight: 800 }}
+            />
+          ) : null}
+          {chatUnreadSummary ? <Chip size="small" variant="outlined" label={chatUnreadSummary} /> : null}
+          {projectLevelUnreadSummary ? <Chip size="small" variant="outlined" label={projectLevelUnreadSummary} /> : null}
           <Chip size="small" color={activeAgents.length ? "info" : "default"} label={`${activeAgents.length} active`} />
         </Stack>
       </AccordionSummary>
@@ -290,7 +322,8 @@ export function ProjectOverview({
           <Typography variant="overline" color="text.secondary" sx={{ display: "block", px: 1.5, py: 0.75, bgcolor: "action.hover", borderBottom: 1, borderColor: "divider" }}>{group}</Typography>
           {grouped.map((conversation) => {
             const title = conversationDisplayTitle(conversation, activeConversations);
-            const unreadCount = unread.get(conversation.id) ?? 0;
+            const unreadProjection = unread[conversation.id];
+            const unreadCount = unreadProjection?.totalCount ?? 0;
             const isStarred = starred.has(resourcePreferenceKey("conversation", conversation.id));
             return <Stack
               key={conversation.id}
@@ -310,7 +343,11 @@ export function ProjectOverview({
               onContextMenu={(event) => { event.preventDefault(); setChatMenu({ anchor: event.currentTarget, resource: conversation }); }}
               sx={{ alignItems: "center", borderBottom: 1, borderColor: "divider", "&:last-of-type": { borderBottom: 0 }, opacity: draggedChatId === conversation.id ? 0.55 : 1 }}
             >
-              <ListItemButton aria-label={`Open Chat ${title}`} onClick={() => onOpenConversation(conversation.id)} sx={{ minWidth: 0 }}>
+              <ListItemButton
+                aria-label={`Open Chat ${title}${unreadProjection?.importantCount ? `, ${unreadProjection.importantCount} important unread` : ""}${unreadProjection?.ordinaryCount ? `, ${unreadProjection.ordinaryCount} ordinary unread` : ""}`}
+                onClick={() => onOpenConversation(conversation.id)}
+                sx={{ minWidth: 0 }}
+              >
                 <ListItemIcon sx={{ minWidth: 40 }}><ChatBubbleOutlineIcon fontSize="small" /></ListItemIcon>
                 <ListItemText
                   primary={title}
@@ -318,7 +355,23 @@ export function ProjectOverview({
                   primaryTypographyProps={{ noWrap: true, fontWeight: unreadCount ? 800 : 650 }}
                   secondaryTypographyProps={{ noWrap: true }}
                 />
-                {unreadCount ? <Chip size="small" color="primary" label={unreadCount} sx={{ mr: 0.5 }} /> : null}
+                {unreadProjection?.importantCount ? (
+                  <Chip
+                    size="small"
+                    color="error"
+                    label={unreadProjection.importantCount}
+                    aria-label={`${unreadProjection.importantCount} important unread`}
+                    sx={{ mr: 0.5, color: "#fff", fontWeight: 800 }}
+                  />
+                ) : null}
+                {unreadProjection?.ordinaryCount ? (
+                  <Box
+                    component="span"
+                    role="img"
+                    aria-label={`${unreadProjection.ordinaryCount} ordinary unread`}
+                    sx={{ width: 8, height: 8, mr: 1.25, borderRadius: "50%", bgcolor: "text.secondary", flexShrink: 0 }}
+                  />
+                ) : null}
               </ListItemButton>
               <Tooltip title={`${isStarred ? "Unstar" : "Star"} ${title}`}>
                 <IconButton

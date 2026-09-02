@@ -5,12 +5,13 @@
   "description": "Self-hosted coding-agent workbench",
   "packageManager": "pnpm@11.10.0",
   "engines": {
-    "node": ">=22 <23"
+    "node": ">=24 <25"
   },
   "scripts": {
     "build": "pnpm -r build",
     "typecheck": "pnpm --filter @ponderosa/core build && pnpm --filter @ponderosa/native-host build && pnpm --filter @ponderosa/agents build && pnpm --filter @ponderosa/engines build && pnpm -r typecheck",
-    "verify": "pnpm typecheck && pnpm build",
+    "test": "pnpm typecheck && pnpm -r --if-present test:built",
+    "verify": "pnpm test && pnpm build",
     "clean": "pnpm -r exec rm -rf dist",
     "start:prod": "NODE_ENV=production node apps/server/dist/main.js",
     "beta:version": "node packaging/beta-version.mjs",

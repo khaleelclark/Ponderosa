@@ -1,4 +1,5 @@
 import type {
+  AgentWorkingCopyDto,
   AgentDeletionPreviewRequest,
   CommitAgentDeletionRequest,
   CommitAgentDeletionResponse,
@@ -12,20 +13,29 @@ import {
   type AgentManagementAuthorization,
   type AgentStore,
   type CoordinationV3Store,
-  type WorkspaceStore,
 } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
-import type { EngineRegistration } from "../app-contracts.js";
+import type { ActiveRun, EngineRegistration, PersistentRuntime } from "../app-contracts.js";
 import { runtimeSelectionError } from "../runtime-selection.js";
 import type { TriggerSourceService } from "../trigger-service.js";
+import type { AgentWorkingCopyService } from "../agent-working-copy-service.js";
 
 interface AgentMaintenanceRoutesContext {
   store: AgentStore;
   coordinationV3: CoordinationV3Store;
-  workspace: WorkspaceStore;
   engines: ReadonlyMap<string, EngineRegistration>;
   triggerSources: TriggerSourceService;
   deletingAgentIds: Set<string>;
+  activeRuns: ReadonlyMap<string, ActiveRun>;
+  workingCopies: AgentWorkingCopyService;
+  clearAgentResumeSession(agentId: string, reason: string): void;
+  persistentRuntimeForTermination(agentId: string): PersistentRuntime | undefined;
+  teardownPersistentRuntime(
+    agentId: string,
+    runtime: PersistentRuntime,
+    reason: string,
+    projectId?: string,
+  ): Promise<void>;
   cachedModelOptions(adapter: EngineRegistration["adapter"], projectId?: string): ModelOption[];
   commitAgentDeletion(
     rootAgentIds: string[],
@@ -33,6 +43,11 @@ interface AgentMaintenanceRoutesContext {
     authorization?: AgentManagementAuthorization,
   ): Promise<CommitAgentDeletionResponse>;
   notifyScheduler(): void;
+  appendWorkspace(event: {
+    type: "project_changed";
+    projectId: string;
+    action: "updated";
+  }): unknown;
 }
 
 export function registerAgentMaintenanceRoutes(
@@ -42,14 +57,52 @@ export function registerAgentMaintenanceRoutes(
   const {
     store,
     coordinationV3,
-    workspace,
     engines,
     triggerSources,
     deletingAgentIds,
+    activeRuns,
+    workingCopies,
+    clearAgentResumeSession,
+    persistentRuntimeForTermination,
+    teardownPersistentRuntime,
     cachedModelOptions,
     commitAgentDeletion,
     notifyScheduler,
+    appendWorkspace,
   } = context;
+
+  app.delete<{ Params: { projectId: string; id: string } }>(
+    "/api/projects/:projectId/deleted-agents/:id/working-copy",
+    async (request, reply) => {
+      const project = store.getProject(request.params.projectId);
+      if (!project) return reply.code(404).send({ error: "project not found" });
+      const row = store.sqlite.prepare(`
+        SELECT working_copy_json FROM agents
+        WHERE id = ? AND project_id = ? AND deleted_at IS NOT NULL
+      `).get(request.params.id, project.id) as { working_copy_json: string } | undefined;
+      if (!row) return reply.code(404).send({ error: "deleted Agent not found" });
+      let workingCopy: AgentWorkingCopyDto;
+      try {
+        workingCopy = JSON.parse(row.working_copy_json) as AgentWorkingCopyDto;
+      } catch {
+        return reply.code(409).send({ error: "The retained working-copy record is invalid" });
+      }
+      try {
+        const removed = await workingCopies.cleanupRetained(request.params.id, workingCopy, project, {
+          allowSourceUnavailable: true,
+        });
+        if (!store.updateDeletedAgentWorkingCopy(request.params.id, removed)) {
+          throw new Error("Deleted Agent became unavailable while recording cleanup");
+        }
+        appendWorkspace({ type: "project_changed", projectId: project.id, action: "updated" });
+        return removed;
+      } catch (error) {
+        return reply.code(409).send({
+          error: error instanceof Error ? error.message : "Retained Git copy cleanup failed",
+        });
+      }
+    },
+  );
 
   app.patch<{ Params: { id: string }; Body: UpdateAgentRequest }>(
     "/api/agents/:id",
@@ -60,7 +113,7 @@ export function registerAgentMaintenanceRoutes(
       const current = store.getAgent(request.params.id);
       if (!current) return reply.code(404).send({ error: "agent not found" });
       const body = request.body ?? {};
-      const allowedFields = new Set(["title", "archived", "activeEngine", "model", "effort", "managementPermissions"]);
+      const allowedFields = new Set(["title", "archived", "activeEngine", "model", "effort", "workingCopyMode", "managementPermissions"]);
       if (Object.keys(body).some((key) => !allowedFields.has(key))) {
         return reply.code(400).send({ error: "unknown agent field" });
       }
@@ -91,6 +144,49 @@ export function registerAgentMaintenanceRoutes(
       if (body.effort !== undefined && body.effort !== null && typeof body.effort !== "string") {
         return reply.code(400).send({ error: "effort must be a string or null" });
       }
+      if (body.workingCopyMode !== undefined &&
+          body.workingCopyMode !== "shared" && body.workingCopyMode !== "separate_git") {
+        return reply.code(400).send({ error: "workingCopyMode must be shared or separate_git" });
+      }
+      if (body.workingCopyMode !== undefined && Object.keys(body).some((key) => key !== "workingCopyMode")) {
+        return reply.code(400).send({
+          error: "Change the working folder separately from other Agent settings.",
+        });
+      }
+      if (body.workingCopyMode !== undefined) {
+        let releaseModeChange: (() => void) | undefined;
+        try {
+          releaseModeChange = workingCopies.beginModeChange(current.id);
+          if (activeRuns.has(current.id) || coordinationV3.agentSnapshot(current.id).activeRun) {
+            return reply.code(409).send({
+              error: "Stop this Agent's active Run before changing its working folder.",
+            });
+          }
+          await workingCopies.awaitUses(new Set([current.id]));
+          const project = store.getProject(current.projectId);
+          if (!project) return reply.code(409).send({ error: "Agent Project is unavailable" });
+          const runtime = persistentRuntimeForTermination(current.id);
+          if (runtime) {
+            await teardownPersistentRuntime(
+              current.id,
+              runtime,
+              "working-copy mode changed",
+              project.id,
+            );
+          }
+          clearAgentResumeSession(current.id, "working_copy_changed");
+          const changed = await workingCopies.setMode(current, project, body.workingCopyMode);
+          return changed;
+        } catch (error) {
+          return reply.code(409).send({
+            error: error instanceof Error
+              ? error.message
+              : "The working folder could not be changed safely.",
+          });
+        } finally {
+          releaseModeChange?.();
+        }
+      }
       const runtimeSettingsChanged = body.activeEngine !== undefined || body.model !== undefined || body.effort !== undefined;
       let runtimePatch: Pick<UpdateAgentRequest, "activeEngine" | "model" | "effort"> = {};
       if (runtimeSettingsChanged) {
@@ -111,6 +207,7 @@ export function registerAgentMaintenanceRoutes(
       }
       const agent = store.updateAgent(request.params.id, {
         ...body,
+        workingCopyMode: undefined,
         ...runtimePatch,
         ...(normalizedTitle !== undefined ? { title: normalizedTitle } : {}),
       });
@@ -139,39 +236,22 @@ export function registerAgentMaintenanceRoutes(
         return reply.code(409).send({ error: "Agent deletion is already in progress" });
       }
       try {
+        const previous = store.getAgent(request.params.id);
         const agent = store.updateAgentOrganization(request.params.id, request.body);
-        return agent ?? reply.code(404).send({ error: "agent not found" });
+        if (!agent) return reply.code(404).send({ error: "agent not found" });
+        if ((previous?.managerAgentId ?? null) !== (agent.managerAgentId ?? null)) {
+          appendWorkspace({
+            type: "project_changed",
+            projectId: agent.projectId,
+            action: "updated",
+          });
+        }
+        return agent;
       } catch (error) {
         return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid agent organization" });
       }
     },
   );
-
-  app.put<{
-    Params: { id: string };
-    Body: { conversationIds: string[]; primaryConversationId?: string };
-  }>("/api/agents/:id/conversation-memberships", async (request, reply) => {
-    if (deletingAgentIds.has(request.params.id)) {
-      return reply.code(409).send({ error: "Agent deletion is already in progress" });
-    }
-    if (!Array.isArray(request.body?.conversationIds)) {
-      return reply.code(400).send({ error: "conversationIds is required" });
-    }
-    try {
-      const agent = store.updateAgentConversationMemberships(request.params.id, request.body, (agentId, removedConversationIds) => {
-        for (const conversationId of removedConversationIds) {
-          coordinationV3.handleAgentConversationRemoval(agentId, conversationId);
-        }
-      });
-      if (agent) {
-        await triggerSources.refresh();
-        notifyScheduler();
-      }
-      return agent ?? reply.code(404).send({ error: "agent not found" });
-    } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid membership" });
-    }
-  });
 
   app.post<{ Params: { id: string }; Body: AgentDeletionPreviewRequest }>(
     "/api/projects/:id/agent-deletions/preview",

@@ -696,14 +696,16 @@ export function registerWorkspaceDirectoryRoutes(
         } satisfies WorkspaceAgentDirectoryItemDto;
       }
       const trigger = context.coordination.getTriggerDefinition(row.id);
-      const agent = row.agent_id
+      const targetAgent = row.agent_id
         ? context.store.getAgent(row.agent_id)
         : undefined;
-      if (!trigger || !agent) return undefined;
+      if (!trigger) return undefined;
       return {
         kind: "trigger",
         project: projectSummary(project),
-        agent: { id: agent.id, title: agent.title },
+        ...(targetAgent
+          ? { targetAgent: { id: targetAgent.id, title: targetAgent.title } }
+          : {}),
         trigger,
       } satisfies WorkspaceTriggerDirectoryItemDto;
     };

@@ -6,6 +6,10 @@ export function isOpenAttention(item: WorkspaceNotificationDto): boolean {
   );
 }
 
+export function isUnacknowledgedAction(item: WorkspaceNotificationDto): boolean {
+  return isOpenAttention(item) && !item.acknowledgedAt;
+}
+
 export function visibleNotification(item: WorkspaceNotificationDto): boolean {
   return (item.status ?? "open") === "open";
 }
@@ -15,14 +19,18 @@ export function isUnreadNotificationUpdate(item: WorkspaceNotificationDto): bool
 }
 
 export function notificationSummary(notifications: WorkspaceNotificationDto[]): {
-  attentionCount: number;
+  openActionCount: number;
+  unacknowledgedActionCount: number;
   unreadUpdateCount: number;
 } {
   return notifications.reduce((summary, item) => {
-    if (isOpenAttention(item)) summary.attentionCount += 1;
+    if (isOpenAttention(item)) {
+      summary.openActionCount += 1;
+      if (!item.acknowledgedAt) summary.unacknowledgedActionCount += 1;
+    }
     else if (isUnreadNotificationUpdate(item)) summary.unreadUpdateCount += 1;
     return summary;
-  }, { attentionCount: 0, unreadUpdateCount: 0 });
+  }, { openActionCount: 0, unacknowledgedActionCount: 0, unreadUpdateCount: 0 });
 }
 
 /** A Project-scoped notification has no actionable destination after its
@@ -40,16 +48,12 @@ export function scopedAttention(notifications: WorkspaceNotificationDto[], scope
   projectId?: string;
   conversationId?: string;
   agentId?: string;
-  conversationAgentIds?: string[];
 } = {}): WorkspaceNotificationDto[] {
-  const conversationAgentIds = new Set(scope.conversationAgentIds ?? []);
   return notifications.filter((item) => isOpenAttention(item)
     && (!scope.projectId || item.projectId === scope.projectId)
     && (!scope.conversationId
       || item.conversationId === scope.conversationId
-      || item.conversationIds?.includes(scope.conversationId)
-      || item.agentIds?.some((agentId) => conversationAgentIds.has(agentId))
-      || Boolean(item.agentId && conversationAgentIds.has(item.agentId)))
+      || item.conversationIds?.includes(scope.conversationId))
     && (!scope.agentId
       || item.agentId === scope.agentId
       || item.agentIds?.includes(scope.agentId)

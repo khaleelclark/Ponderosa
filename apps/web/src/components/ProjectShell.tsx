@@ -1,9 +1,6 @@
-import ArrowBackIcon from "@mui/icons-material/ArrowBack";
-import TuneIcon from "@mui/icons-material/Tune";
-import { Alert, Box, Button, IconButton, LinearProgress, Stack, Typography, useMediaQuery } from "@mui/material";
+import { Alert, Box, Button, LinearProgress, useMediaQuery } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
 import type {
-  AgentDto,
   AgentHealthDto,
   ConversationDto,
   EngineDto,
@@ -12,20 +9,18 @@ import type {
   ResponseFileActivityDto,
   WorkspaceNotificationDto,
   WorkspacePreferencesDto,
-  WorkspaceAgentDirectoryItemDto,
 } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { api } from "../api";
 import { mergeAgentStatuses } from "../agents";
 import { useAgent, useAgentHealth, useAgentPresets, useConversations, useAgents } from "../hooks/queries";
 import { queryKeys } from "../queryKeys";
 import { enginesWithModelCatalog } from "../conversationEngine";
-import { useWorkspaceDirectory, workspaceDirectoryItems } from "../hooks/useWorkspaceDirectory";
 import { assertNeverRoute, routeToPath, type ProjectRoute } from "../routeRegistry";
 import type { Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
-import { AgentsTab } from "./AgentsTab";
+import { AgentOrganizationTree } from "./AgentOrganizationTree";
 import { PresetManagerDialog } from "./dialogs";
 import { ConversationView } from "./ConversationView";
 import { ProjectArtifactsView } from "./ProjectArtifactsView";
@@ -36,8 +31,7 @@ import type { ProjectBrowserRequest } from "./ProjectBrowserContext";
 import { WorkspaceReviewPane } from "./files/WorkspaceReviewPane";
 import { WorkspaceFileView } from "./WorkspaceFileView";
 import { WorkspaceErrorBoundary } from "./WorkspaceErrorBoundary";
-import { CollectionPagination } from "./CollectionPrimitives";
-import { LoadingState } from "./LoadingState";
+import { TriggersPane } from "./TriggersPane";
 
 type RemovableWorkspaceResourceRoute = Extract<
   Route,
@@ -91,33 +85,12 @@ export function ProjectShell({
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
   const queryClient = useQueryClient();
 
-  const pagedAgentRoster = route.kind === "agents";
-  const [agentDirectorySearch, setAgentDirectorySearch] = useState("");
-  const agentDirectoryQuery =
-    useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
-      search: agentDirectorySearch,
-      projectId,
-      enabled: pagedAgentRoster,
-    });
-  const agentDirectory = workspaceDirectoryItems(agentDirectoryQuery.data?.pages, preferences);
   const conversationsQuery = useConversations(projectId);
   const agentsQuery = useAgents(projectId);
   const healthQuery = useAgentHealth(projectId);
-  const agentDirectoryRows = [
-    ...agentDirectory.starredItems,
-    ...agentDirectory.items,
-  ];
   const conversations = conversationsQuery.data ?? [];
-  const agents = useMemo(() => {
-    const byId = new Map((agentsQuery.data ?? []).map(agent => [agent.id, agent]));
-    for (const item of agentDirectoryRows) byId.set(item.agent.id, item.agent);
-    return [...byId.values()];
-  }, [agentDirectoryRows, agentsQuery.data]);
-  const projectedHealth = healthQuery.data?.agents ??
-    agentDirectoryRows.map(item => item.health);
-  const visibleAgentIds = new Set(
-    agentDirectoryRows.map(item => item.agent.id),
-  );
+  const agents = agentsQuery.data ?? [];
+  const projectedHealth = healthQuery.data?.agents ?? [];
   const presetsQuery = useAgentPresets(projectId);
   const claudeEngine = engines.find((engine) => engine.id === "claude");
   const modelCatalogQuery = useQuery({
@@ -244,7 +217,15 @@ export function ProjectShell({
         key={route.conversationId}
         conversationId={route.conversationId}
         focusMessageId={route.focusMessageId}
-        initialView={route.urlDriven ? (route.channel ?? "main") : route.channel}
+        initialView={route.urlDriven
+          ? (route.view ?? route.channel ?? "main")
+          : (route.view ?? route.channel)}
+        onViewChange={view => navigate({
+          kind: "conversation",
+          projectId,
+          conversationId: route.conversationId,
+          ...(view === "main" ? {} : { view }),
+        })}
         engines={projectEngines}
         engineCapabilities={engineCapabilities}
         onRefreshCapabilities={refreshCapabilities}
@@ -371,32 +352,28 @@ export function ProjectShell({
       onClose={() => navigate({ kind: "project", projectId })}
     />
   );
+  } else if (route.kind === "automation") {
+    main = <TriggersPane
+      projectId={projectId}
+      agents={agents}
+      settingsTriggerId={route.triggerId}
+      onCloseTriggerSettings={() => navigate({ kind: "automation", projectId })}
+      onOpenAgentWork={occurrenceId => navigate({ kind: "projectWork", projectId, focusId: `trigger:${occurrenceId}` })}
+      onCreateTrigger={() => onCreate("trigger", { projectId })}
+    />;
   } else if (route.kind === "agents") {
-    main = agentDirectoryQuery.isLoading ? (
-      <LoadingState resource="Agents" variant="route" />
-    ) : (
-      <AgentsTab
-        searchValue={agentDirectorySearch}
-        onSearchValueChange={setAgentDirectorySearch}
-        collectionFooter={(
-          <CollectionPagination
-            resourceLabel={preferences.agentSort === "last_used"
-              ? "older Agents"
-              : "Agents"}
-            request={agentDirectoryQuery.requestState}
-          />
-        )}
-        agents={agents}
-        renderedAgentIds={agentDirectoryQuery.data ? visibleAgentIds : undefined}
+    main = (
+      <AgentOrganizationTree
+        key={projectId}
         projectId={projectId}
         engines={projectEngines}
         conversations={conversations}
-        statusByAgentId={statusByAgentId}
-        healthByAgentId={healthByAgentId}
+        projectAgents={agents}
+        projectHealth={projectedHealth}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
         onOpenAgentSettings={(agentId) =>
           navigate({ kind: "agent", projectId, agentId, view: "settings" })}
-        onAgentsDeleted={(_deletedProjectId, agentIds) =>
+        onAgentsDeleted={(agentIds) =>
           agentIds.forEach(agentId =>
             onResourceDeleted?.({ kind: "agent", projectId, agentId }),
           )}
@@ -410,7 +387,6 @@ export function ProjectShell({
     const detail = reviewAgentQuery.data;
     const running = Boolean(detail?.runs?.some((run) => run.status === "running" || run.status === "compacting"));
     main = <WorkspaceReviewPane
-      projectId={projectId}
       projectRoot={project.hostPath}
       agentId={route.agentId}
       files={detail?.changedFiles ?? []}
@@ -436,6 +412,7 @@ export function ProjectShell({
         projectId={projectId}
         project={project}
         initialView={route.view}
+        initialArtifactId={route.focusArtifactId}
         onViewChange={(view) =>
           navigate(
             {
@@ -457,25 +434,11 @@ export function ProjectShell({
         onOpenConversation={openProjectConversation}
         onRenameConversation={onRenameConversation}
         onDeleteConversation={onDeleteConversation}
-        statusByAgentId={statusByAgentId}
-        onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
-        onOpenAgentSettings={(agentId) =>
-          navigate({ kind: "agent", projectId, agentId, view: "settings" })}
-        onAgentsDeleted={(agentIds) =>
-          agentIds.forEach(agentId =>
-            onResourceDeleted?.({ kind: "agent", projectId, agentId }),
-          )}
-        onNewAgent={(managerAgentId) => managerAgentId
-          ? openNewSubagent(managerAgentId)
-          : onCreate("agent", { projectId })}
-        onNavigateTrigger={(triggerRoute) => navigate(triggerRoute)}
-        onCreateTrigger={() => onCreate("trigger", { projectId })}
         onProjectDeleted={() => {
           onProjectDeleted(projectId);
         }}
         onOpenEngineStatus={onOpenEngineStatus}
         onOpenArtifact={openProjectArtifact}
-        onOpenAgentWork={() => navigate({ kind: "projectWork", projectId })}
       />
   } else {
     main = assertNeverRoute(route);
@@ -495,21 +458,21 @@ export function ProjectShell({
   );
 
   // Workspace navigation is owned by App on every viewport. Mobile opens the
-  // same project hierarchy in an AppBar drawer, so the legacy per-project list
+  // same project hierarchy in an AppBar drawer, so the former per-project list
   // and its title/engine chat-creation form must never become a second flow.
   if (isMobile) {
     return (
-      <Box sx={{ width: "100%", maxWidth: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
+      <Box sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
         {loading ? <LinearProgress /> : <Box />}
-        <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}><WorkspaceErrorBoundary resetKey={routeToPath(route)} title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
+        <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "minmax(0, 1fr)" }}><WorkspaceErrorBoundary resetKey={routeToPath(route)} title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
         {dialogs}
       </Box>
     );
   }
 
   return (
-    <Box sx={{ width: "100%", maxWidth: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid" }}>
-      <Box component="section" aria-label="Project workspace" sx={{ minHeight: 0, minWidth: 0, display: "grid", bgcolor: "background.default" }}><WorkspaceErrorBoundary resetKey={routeToPath(route)} title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
+    <Box sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "minmax(0, 1fr)" }}>
+      <Box component="section" aria-label="Project workspace" sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "minmax(0, 1fr)", bgcolor: "background.default" }}><WorkspaceErrorBoundary resetKey={routeToPath(route)} title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
       {dialogs}
     </Box>
   );

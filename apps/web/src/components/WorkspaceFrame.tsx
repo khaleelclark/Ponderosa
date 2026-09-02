@@ -20,6 +20,8 @@ import {
 } from "react";
 import { IconTitle } from "./IconTitle";
 import { workspaceHeaderSurfaceSx } from "../theme";
+import { MobileNavigationButton } from "./MobileNavigationContext";
+import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 
 type WorkspaceTabItem<T extends string> = { value: T; label: string; icon?: ReactElement };
 
@@ -179,6 +181,7 @@ export function CompactWorkspaceHeader({
           minWidth: 0,
         }}
       >
+        <MobileNavigationButton />
         <Box
           sx={{
             display: "flex",
@@ -217,6 +220,7 @@ export function CompactWorkspaceHeader({
             </Typography>
           ) : null}
         </Box>
+        <PrimaryHeaderActionsOutlet />
         {action}
       </Stack>
     </Box>
@@ -294,9 +298,10 @@ export function TabbedWorkspaceFrame<T extends string>({
           direction="row"
           spacing={1}
           useFlexGap
-          flexWrap="nowrap"
+          flexWrap={{ xs: "wrap", sm: "nowrap" }}
           sx={{ alignItems: { xs: "flex-start", sm: "center" }, minWidth: 0 }}
         >
+          <MobileNavigationButton />
           <Box
             sx={{
               minWidth: 0,
@@ -317,10 +322,13 @@ export function TabbedWorkspaceFrame<T extends string>({
             sx={{
               alignItems: "center",
               justifyContent: "flex-end",
-              flexWrap: "nowrap",
-              flexShrink: 0,
+              flexWrap: "wrap",
+              flex: { xs: "1 0 100%", sm: "0 1 auto" },
+              minWidth: 0,
+              maxWidth: "100%",
             }}
           >
+            <PrimaryHeaderActionsOutlet />
             {status}
             {actions}
             <Tooltip title="Collapse workspace header">

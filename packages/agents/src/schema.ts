@@ -48,6 +48,7 @@ export const agents = sqliteTable("agents", {
   projectId: text("project_id").notNull(),
   conversationId: text("conversation_id"),
   title: text("title").notNull(),
+  handle: text("handle").notNull(),
   activeEngine: text("active_engine").notNull(),
   model: text("model"),
   effort: text("effort"),
@@ -70,6 +71,17 @@ export const agents = sqliteTable("agents", {
   spawnPrompt: text("spawn_prompt"),
   spawnIdempotencyKey: text("spawn_idempotency_key"),
   presetSnapshotJson: text("preset_snapshot_json"),
+  creationIdempotencyKey: text("creation_idempotency_key"),
+  workingCopyJson: text("working_copy_json").notNull(),
+});
+
+/** Retains every allocated handle so rename/deletion can never recycle it. */
+export const agentHandleReservations = sqliteTable("agent_handle_reservations", {
+  projectId: text("project_id").notNull(),
+  normalizedHandle: text("normalized_handle").notNull(),
+  handle: text("handle").notNull(),
+  agentId: text("agent_id").notNull(),
+  reservedAt: text("reserved_at").notNull(),
 });
 
 /** Rebuildable projection of the one unconsumed provider-session continuation
@@ -136,7 +148,7 @@ export const conversations = sqliteTable("conversations", {
   archived: integer("archived").notNull().default(0),
 });
 
-/** Rebuildable projection of the canonical membership list in agent.json. */
+/** Rebuildable compatibility index of each live Agent's single owner Chat. */
 export const agentConversationMemberships = sqliteTable("agent_conversation_memberships", {
   agentId: text("agent_id").notNull(),
   conversationId: text("conversation_id").notNull(),

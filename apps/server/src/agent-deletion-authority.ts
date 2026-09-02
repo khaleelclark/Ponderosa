@@ -24,6 +24,7 @@ import { cleanupAgentRuntimeAttachments } from "./runtime-attachments.js";
 import type { RuntimeElicitationBroker } from "./runtime-elicitation-broker.js";
 import type { ProviderProcessAuthority } from "./provider-process-authority.js";
 import type { BrowserProfileAuthority } from "./browser-profile-authority.js";
+import type { AgentWorkingCopyService } from "./agent-working-copy-service.js";
 
 type OperationalNotifications = ReturnType<typeof createOperationalNotifications>;
 
@@ -61,13 +62,14 @@ type AgentDeletionAuthorityContext =
       projectId?: string,
     ): Promise<void>;
     drainProviderRuntimeAuthority(reason: string, agentIds?: ReadonlySet<string>): Promise<void>;
+    drainEngineCapabilityDiscoveries(projectId?: string, agentIds?: ReadonlySet<string>): Promise<void>;
     draftAttachmentSurfaceDir(draftId: string): string;
     refreshTriggerSources(): Promise<void>;
     notifyScheduler(): void;
-    closeRunBrowser(agentId: string, run: ActiveRun, reason: string): Promise<void>;
     closeAgentBrowsers(agentId: string, reason: string): Promise<void>;
     providerProcessAuthority: ProviderProcessAuthority;
     browserProfiles: BrowserProfileAuthority;
+    workingCopies: AgentWorkingCopyService;
   };
 
 export function createAgentDeletionAuthority(
@@ -91,15 +93,16 @@ export function createAgentDeletionAuthority(
     detachPersistentRuntime,
     teardownPersistentRuntime,
     drainProviderRuntimeAuthority,
+    drainEngineCapabilityDiscoveries,
     draftAttachmentSurfaceDir,
     refreshTriggerSources,
     notifyScheduler,
-    closeRunBrowser,
     closeAgentBrowsers,
     createOperationalNotification,
     resolveOperationalNotification,
     providerProcessAuthority,
     browserProfiles,
+    workingCopies,
   } = context;
 
   const cancelAgentDecisions = (agentIds: Iterable<string>): void => {
@@ -107,8 +110,6 @@ export function createAgentDeletionAuthority(
     for (const agentId of agentIds) for (const decision of workspace.cancelDecisionsForAgent(agentId)) {
       runtimeElicitations.cancel(decision.id);
       coordinationV3.releaseDecisionQuestionSuspensions(decision.id);
-      const notification = workspace.findNotification((item) => item.dedupeKey === `decision:${decision.id}` && (item.status ?? "open") === "open");
-      if (notification) workspace.setNotificationStatus(notification.id, "resolved");
     }
     publishWorkspaceSince(cursor);
   };
@@ -191,7 +192,7 @@ export function createAgentDeletionAuthority(
       if (runtimeTerminationAttempts.get(handle) === attempt) runtimeTerminationAttempts.delete(handle);
     }
   };
-  const processAgentDeletionCleanup = async (receipt: import("@ponderosa/agents").AgentDeletionReceipt): Promise<boolean> => {
+  const processAgentDeletionCleanup = async (receipt: AgentDeletionReceipt): Promise<boolean> => {
     if (receipt.serverCleanupCompleted) return true;
     const errors: string[] = [];
     try { cancelAgentDecisions(receipt.deletedAgentIds); }
@@ -279,7 +280,7 @@ export function createAgentDeletionAuthority(
   const commitAgentDeletion = async (
     rootAgentIds: string[],
     previewHash: string,
-    authorization?: import("@ponderosa/agents").AgentManagementAuthorization,
+    authorization?: AgentManagementAuthorization,
   ): Promise<CommitAgentDeletionResponse> => {
     const previous = store.getAgentDeletionReceiptByPreviewHash(previewHash);
     if (previous) {
@@ -309,6 +310,19 @@ export function createAgentDeletionAuthority(
       false,
     ))();
     const expectedAgentIds = current.affectedAgents.map((agent) => agent.id);
+    const enabledAutomation = expectedAgentIds.length
+      ? store.sqlite.prepare(`
+          SELECT name FROM trigger_definitions
+          WHERE enabled = 1
+            AND agent_id IN (${expectedAgentIds.map(() => "?").join(", ")})
+          ORDER BY name LIMIT 1
+        `).get(...expectedAgentIds) as { name: string } | undefined
+      : undefined;
+    if (enabledAutomation) {
+      throw new Error(
+        `Disable or reassign the Automation “${enabledAutomation.name}” before deleting its execution Agent.`,
+      );
+    }
     if (expectedAgentIds.some((agentId) => deletingAgentIds.has(agentId))) {
       throw new AgentDeletionConflictError(store.previewAgentDeletion(current.rootAgentIds));
     }
@@ -318,11 +332,23 @@ export function createAgentDeletionAuthority(
     expectedAgentIds.forEach((agentId) => deletingAgentIds.add(agentId));
     let committed: AgentDeletionPreviewDto;
     try {
+      const deletingSet = new Set(expectedAgentIds);
+      // Quarantine prevents new folder users from entering. Actively stop every
+      // provider-command and reusable-runtime authority that can already own a
+      // folder lease before waiting for that lease; waiting first would
+      // deadlock deletion against the teardown needed to release it.
+      await drainEngineCapabilityDiscoveries(undefined, deletingSet);
+      await drainProviderRuntimeAuthority("Agent deletion working-folder drain", deletingSet);
+      await providerProcessAuthority.terminateAgents(
+        deletingSet,
+        "Agent deletion working-folder drain",
+      );
+      await workingCopies.awaitModeChanges(deletingSet);
+      await workingCopies.awaitUses(deletingSet);
       for (const agentId of expectedAgentIds) {
         closeLinkPreviewsForAgent(agentId, "agent deleted");
         await closeAgentBrowsers(agentId, "agent_deleted");
       }
-      const deletingSet = new Set(expectedAgentIds);
       // Provider teardown is a pre-commit deletion barrier. The durable receipt
       // remains useful for post-commit file/projection cleanup, but an Agent's
       // canonical row must not disappear while any current- or prior-boot

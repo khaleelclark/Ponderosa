@@ -5,16 +5,15 @@ import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import DataObjectOutlinedIcon from "@mui/icons-material/DataObjectOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
-import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
-import { Button, Chip, Link, Stack, Typography } from "@mui/material";
+import { Button, Link, Stack, Typography } from "@mui/material";
 import type { AgentDto, AgentHealthDto } from "@ponderosa/core";
 import {
-  agentStatusColor,
   agentStatusLabel,
+  agentStatusPresentation,
   type AgentStatus,
 } from "../agents";
 import { transcriptFileName } from "../chatTranscript";
@@ -28,6 +27,7 @@ import {
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 import { useAgentRunClock } from "./useAgentRunClock";
 import type { WorkspaceConnectionStatus } from "../hooks/useWorkspaceStream";
+import { SemanticStatus, semanticAgentStatus } from "./SemanticStatus";
 
 export const AGENT_DETAIL_TABS: Array<{
   value: AgentTab;
@@ -48,22 +48,29 @@ export const AGENT_DETAIL_TABS: Array<{
 function AgentRunState({
   status,
   health,
-  providerBlocked,
   connectionStatus,
+  phaseEvidenceFresh,
   startedAt,
+  agentNameForId,
 }: {
   status: AgentStatus;
   health?: AgentHealthDto;
-  providerBlocked?: boolean;
   connectionStatus: WorkspaceConnectionStatus;
+  phaseEvidenceFresh: boolean;
   startedAt?: string;
+  agentNameForId(agentId: string): string | undefined;
 }): JSX.Element {
   const now = useAgentRunClock(startedAt);
-  const runState = providerBlocked
-    ? "Provider blocked"
-    : startedAt
-    ? `${agentStatusLabel(status)} · ${formatExecutionElapsed(startedAt, now)}`
-    : agentStatusLabel(status);
+  const presentation = agentStatusPresentation(health, {
+    status,
+    connectionStatus,
+    phaseEvidenceFresh,
+    agentNameForId,
+  });
+  const elapsed = startedAt ? formatExecutionElapsed(startedAt, now) : undefined;
+  const runState = elapsed
+    ? `${presentation.label} · ${elapsed}`
+    : presentation.label;
   const connectionState = connectionStatus === "live"
     ? "Live"
     : connectionStatus === "stale"
@@ -74,19 +81,16 @@ function AgentRunState({
           ? "Connecting"
           : "Reconnecting";
   const details = [
-    "Current: " + runState,
+    "Current: " + presentation.detail,
     health?.latestRun ? "Latest Run: " + agentStatusLabel(health.latestRun.status) : undefined,
     health?.assignedWorkOutcome ? "Assigned work: " + agentStatusLabel(health.assignedWorkOutcome.status) : undefined,
     health?.attention ? "Needs attention: " + agentStatusLabel(health.attention.status) : undefined,
   ].filter(Boolean).join(" · ");
   return (
-    <Chip
-      size="small"
+    <SemanticStatus
+      status={connectionStatus === "live" ? semanticAgentStatus(status) : "needs_attention"}
       label={`${runState} · ${connectionState}`}
-      color={connectionStatus === "live" ? agentStatusColor(status) : "warning"}
-      variant={connectionStatus === "live" ? "filled" : "outlined"}
-      aria-label={`Agent status: ${runState}; ${connectionState.toLocaleLowerCase()}`}
-      title={details}
+      detail={`${presentation.accessibleLabel}${elapsed ? `; ${elapsed}` : ""}; ${connectionState.toLocaleLowerCase()}. ${details}`}
     />
   );
 }
@@ -100,12 +104,14 @@ interface AgentDetailHeaderProps {
   lineageLabel: string;
   status: AgentStatus;
   health?: AgentHealthDto;
-  providerBlocked?: boolean;
   connectionStatus: WorkspaceConnectionStatus;
+  phaseEvidenceFresh: boolean;
   startedAt?: string;
+  agentNameForId(agentId: string): string | undefined;
   running: boolean;
   stopping: boolean;
   tab: AgentTab;
+  showSubagents: boolean;
   transcriptMarkdown: string;
   transcriptTitle: string;
   onOpenProject(): void;
@@ -117,7 +123,6 @@ interface AgentDetailHeaderProps {
   onOpenTechnical(): void;
   onRename(): void;
   onCreateAgent(): void;
-  onAssignChats(): void;
   onQuickCopy?: () => void;
   onChangeReportingLine(): void;
   onDelete(): void;
@@ -133,12 +138,14 @@ export function AgentDetailHeader({
   lineageLabel,
   health,
   status,
-  providerBlocked,
   connectionStatus,
+  phaseEvidenceFresh,
   startedAt,
+  agentNameForId,
   running,
   stopping,
   tab,
+  showSubagents,
   transcriptMarkdown,
   transcriptTitle,
   onOpenProject,
@@ -150,7 +157,6 @@ export function AgentDetailHeader({
   onOpenTechnical,
   onRename,
   onCreateAgent,
-  onAssignChats,
   onQuickCopy,
   onChangeReportingLine,
   onDelete,
@@ -204,9 +210,10 @@ export function AgentDetailHeader({
         <AgentRunState
           status={status}
           health={health}
-          providerBlocked={providerBlocked}
           connectionStatus={connectionStatus}
+          phaseEvidenceFresh={phaseEvidenceFresh}
           startedAt={startedAt}
+          agentNameForId={agentNameForId}
         />
       }
       actions={
@@ -279,11 +286,6 @@ export function AgentDetailHeader({
                 icon: <PersonAddAlt1Icon fontSize="small" />,
                 onSelect: onCreateAgent,
               },
-              {
-                label: "Assign Chats",
-                icon: <ForumOutlinedIcon fontSize="small" />,
-                onSelect: onAssignChats,
-              },
               ...(onQuickCopy
                 ? [
                     {
@@ -313,7 +315,9 @@ export function AgentDetailHeader({
         label: "Agent details",
         value: tab === "technical" ? false : tab,
         onChange: onTabChange,
-        items: AGENT_DETAIL_TABS,
+        items: AGENT_DETAIL_TABS.filter(item =>
+          item.value !== "subagents" || showSubagents
+        ),
       }}
     />
   );

@@ -1,4 +1,4 @@
-import { useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useQueryClient, type Query, type QueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import type {
   AllChatPageDto,
@@ -12,7 +12,7 @@ import type {
 import { api } from "../api";
 import type { StreamSubscription } from "../api/types";
 import { queryKeys } from "../queryKeys";
-import { isOpenAttention, isUnreadNotificationUpdate } from "../attention";
+import { isOpenAttention, isUnreadNotificationUpdate, isUnacknowledgedAction } from "../attention";
 import {
   browserPageIsVisible,
   invalidateForBrowserPage,
@@ -21,6 +21,11 @@ import {
   changedWorkspaceDirectoryKinds,
   workspaceResourceStarsChanged,
 } from "../resourcePreferences";
+import {
+  capturePhaseQueryBoundaries,
+  reconcilePhaseQueriesAfterBoundary,
+  type PhaseQueryBoundary,
+} from "../phaseEvidenceReconciliation";
 import { hasLiveAgentStream } from "./agentStreamRegistry";
 import { reconcileCursor } from "./streamCursor";
 
@@ -34,6 +39,7 @@ const DIRECTLY_PROJECT_SCOPED_QUERY_ROOTS = new Set([
   "project",
   "conversations",
   "agents",
+  "agent-organization",
   "agent-health",
   "agent-presets",
   "decisions",
@@ -61,6 +67,8 @@ export type WorkspaceConnectionStatus =
 
 export interface WorkspaceConnectionState {
   status: WorkspaceConnectionStatus;
+  /** Canonical phase-bearing queries have reconciled after stream catch-up. */
+  phaseEvidenceFresh: boolean;
   lastSuccessfulSyncAt?: string;
   prolongedDisconnect: boolean;
   announcement?: string;
@@ -86,7 +94,8 @@ export function reconcileDeletedProjectClientState(
     queryKeys.notifications.all,
     current => {
       if (!current) return current;
-      let removedAttention = 0;
+      let removedOpenActions = 0;
+      let removedUnacknowledgedActions = 0;
       let removedUpdates = 0;
       const items = current.items.map(notification => {
         if (notification.projectId !== projectId) return notification;
@@ -94,19 +103,20 @@ export function reconcileDeletedProjectClientState(
           const { projectId: _deletedProjectId, ...workspaceNotification } = notification;
           return workspaceNotification;
         }
-        if (isOpenAttention(notification)) removedAttention += 1;
+        if (isOpenAttention(notification)) removedOpenActions += 1;
+        if (isUnacknowledgedAction(notification)) removedUnacknowledgedActions += 1;
         else if (isUnreadNotificationUpdate(notification)) removedUpdates += 1;
         return {
           ...notification,
           status: "resolved" as const,
-          readAt: notification.readAt ?? at,
           resolvedAt: notification.resolvedAt ?? at,
         };
       });
       return {
         ...current,
         items,
-        attentionCount: Math.max(0, current.attentionCount - removedAttention),
+        openActionCount: Math.max(0, current.openActionCount - removedOpenActions),
+        unacknowledgedActionCount: Math.max(0, current.unacknowledgedActionCount - removedUnacknowledgedActions),
         unreadUpdateCount: Math.max(0, current.unreadUpdateCount - removedUpdates),
       };
     },
@@ -227,6 +237,17 @@ function workspaceEventInvalidatesAllChat(event: WorkspaceEvent): boolean {
   return event.type === "conversation_changed"
     || event.type === "message_delivery_changed"
     || (event.type === "agent_event" && event.category === "message");
+}
+
+function workspaceAgentEventChangesPhase(
+  event: WorkspaceEvent,
+): event is Extract<WorkspaceEvent, { type: "agent_event" }> {
+  return event.type === "agent_event" && (
+    event.category === "lifecycle"
+    || event.eventType === "command"
+    || event.eventType === "tool_call"
+    || event.eventType === "tool_result"
+  );
 }
 
 function workspaceEventChangesResourceRecency(event: WorkspaceEvent): boolean {
@@ -367,7 +388,7 @@ function createAgentDetailInvalidator(
  * Agent detail remains event-driven; this only prevents the shared list from
  * refetching once for every event in a short lifecycle burst. */
 function createAgentStateInvalidator(
-  queryClient: Pick<QueryClient, "invalidateQueries">,
+  queryClient: QueryClient,
   delayMs = 350,
 ): { schedule(projectId: string): void; flush(): void; dispose(): void } {
   const projectIds = new Set<string>();
@@ -378,6 +399,10 @@ function createAgentStateInvalidator(
     for (const projectId of projectIds) {
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(projectId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.health(projectId) });
+      invalidateActiveQueries(
+        queryClient,
+        queryKeys.agents.organizationProject(projectId),
+      );
     }
     projectIds.clear();
   };
@@ -479,6 +504,7 @@ export function useWorkspaceStream(
   const instanceId = useRef(initialInstanceId());
   const [connection, setConnection] = useState<WorkspaceConnectionState>({
     status: "connecting",
+    phaseEvidenceFresh: false,
     prolongedDisconnect: false,
   });
 
@@ -492,6 +518,101 @@ export function useWorkspaceStream(
     const decisionConversationInvalidator =
       createDecisionConversationInvalidator(queryClient);
     let replayReconcileTimer: ReturnType<typeof setTimeout> | undefined;
+    let phaseReconcileTimer: ReturnType<typeof setTimeout> | undefined;
+    let phaseReconcileGeneration = 0;
+    let phaseCatchUpCursor: number | undefined;
+    let phaseQueryBoundaries: ReadonlyMap<Query, PhaseQueryBoundary> = new Map();
+    let stopped = false;
+    let disconnected = false;
+    let connectedOnce = false;
+    const phaseQueries = () => [
+      ...queryClient.getQueryCache().findAll({
+        queryKey: queryKeys.agents.healthAll,
+      }),
+      ...queryClient.getQueryCache().findAll({
+        queryKey: queryKeys.workspaceDirectory.kind("agent"),
+      }),
+      ...queryClient.getQueryCache().findAll({
+        queryKey: queryKeys.agents.organizationAll,
+      }).filter(query => query.queryKey[2] !== "deleted"),
+    ];
+    const activePhaseQueries = () => phaseQueries().filter(query => query.isActive());
+    let observedActivePhaseQueries = new Set(activePhaseQueries());
+    const markPhaseEvidenceStale = () => {
+      phaseReconcileGeneration += 1;
+      phaseQueryBoundaries = capturePhaseQueryBoundaries(activePhaseQueries());
+      if (phaseReconcileTimer) clearTimeout(phaseReconcileTimer);
+      phaseReconcileTimer = undefined;
+      setConnection(current => current.phaseEvidenceFresh
+        ? { ...current, phaseEvidenceFresh: false }
+        : current);
+    };
+    const schedulePhaseReconciliation = (delayMs = 250) => {
+      if (
+        stopped
+        || disconnected
+        || !connectedOnce
+        || (phaseCatchUpCursor !== undefined && cursor.current < phaseCatchUpCursor)
+      ) return;
+      if (phaseReconcileTimer) clearTimeout(phaseReconcileTimer);
+      const generation = phaseReconcileGeneration;
+      const boundaries = phaseQueryBoundaries;
+      phaseReconcileTimer = setTimeout(() => {
+        phaseReconcileTimer = undefined;
+        void reconcilePhaseQueriesAfterBoundary(
+          queryClient,
+          activePhaseQueries(),
+          boundaries,
+          () => !stopped
+            && !disconnected
+            && generation === phaseReconcileGeneration,
+        )
+          .then(reconciled => {
+            if (
+              stopped
+              || disconnected
+              || generation !== phaseReconcileGeneration
+            ) return;
+            if (!reconciled) {
+              schedulePhaseReconciliation(1_000);
+              return;
+            }
+            setConnection(current => ({
+              ...current,
+              phaseEvidenceFresh: true,
+            }));
+          })
+          .catch(() => {
+            if (
+              !stopped
+              && !disconnected
+              && generation === phaseReconcileGeneration
+            ) schedulePhaseReconciliation(1_000);
+          });
+      }, delayMs);
+    };
+    const unsubscribePhaseQueryCache = queryClient.getQueryCache().subscribe(event => {
+      if (
+        event.type !== "observerAdded"
+        && event.type !== "observerRemoved"
+        && event.type !== "observerOptionsUpdated"
+        && event.type !== "removed"
+      ) return;
+      const [root, kind] = event.query.queryKey;
+      if (
+        root !== queryKeys.agents.healthAll[0]
+        && root !== queryKeys.agents.organizationAll[0]
+        && !(root === queryKeys.workspaceDirectory.all[0] && kind === "agent")
+      ) return;
+      const nextActivePhaseQueries = new Set(activePhaseQueries());
+      if (
+        nextActivePhaseQueries.size === observedActivePhaseQueries.size
+        && [...nextActivePhaseQueries].every(query => observedActivePhaseQueries.has(query))
+      ) return;
+      observedActivePhaseQueries = nextActivePhaseQueries;
+      markPhaseEvidenceStale();
+      schedulePhaseReconciliation();
+    });
     const invalidateAll = () => {
       agentWorkInvalidator.dispose();
       agentDetailInvalidator.dispose();
@@ -505,6 +626,7 @@ export function useWorkspaceStream(
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
       invalidateActiveQueries(queryClient, queryKeys.agents.all);
+      invalidateActiveQueries(queryClient, queryKeys.agents.organizationAll);
       invalidateActiveQueries(queryClient, queryKeys.agents.healthAll);
       invalidateActiveQueries(queryClient, queryKeys.agents.detailAll);
       void queryClient.invalidateQueries({ queryKey: queryKeys.collaborationAll });
@@ -530,6 +652,12 @@ export function useWorkspaceStream(
       cursor.current = reconciliation.cursor;
       persistWorkspaceCursor(reconciliation.cursor, instanceId.current ?? undefined);
       const event = envelope.event;
+      const changesPhaseEvidence = workspaceAgentEventChangesPhase(event)
+        || event.type === "coordination_changed"
+        || event.type === "notification_changed";
+      if (reconciliation.gap || envelope.replayed || changesPhaseEvidence) {
+        markPhaseEvidenceStale();
+      }
       const deletedProjectId = reconcileDeletedProjectEvent(
         envelope,
         (projectId, at) => onProjectDeleted.current?.(projectId, at),
@@ -554,6 +682,7 @@ export function useWorkspaceStream(
       }
       if (reconciliation.gap) {
         invalidateAll();
+        schedulePhaseReconciliation();
         return;
       }
       // Replayed workspace events are historical catch-up. The canonical
@@ -565,6 +694,7 @@ export function useWorkspaceStream(
         replayReconcileTimer = setTimeout(() => {
           replayReconcileTimer = undefined;
           invalidateAll();
+          schedulePhaseReconciliation();
         }, 250);
         return;
       }
@@ -586,13 +716,21 @@ export function useWorkspaceStream(
         void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("project") });
       } else if (event.type === "trigger_changed") {
         void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("trigger") });
-      } else if (event.type === "agent_event" && event.category === "lifecycle") {
+      } else if (workspaceAgentEventChangesPhase(event)) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("agent") });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("project") });
+        if (event.category === "lifecycle") {
+          void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("project") });
+        }
       }
       if (event.type === "preferences_updated") return;
       if (event.type === "project_changed") {
         void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
+        // Mark collapsed sibling pages stale as ownership may have changed,
+        // while refetching only pages that are currently visible.
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.agents.organizationProject(event.projectId),
+          refetchType: browserPageIsVisible() ? "active" : "none",
+        });
         if (deletedProjectId) {
           void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
           void queryClient.invalidateQueries({ queryKey: queryKeys.globalSearch.all });
@@ -645,9 +783,10 @@ export function useWorkspaceStream(
         }
       }
       else if (event.type === "trigger_changed") {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.agent(event.agentId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.project(event.projectId) });
         void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.occurrence(event.triggerId) });
         void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.agentOccurrences(event.agentId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.projectOccurrences(event.projectId) });
         agentWorkInvalidator.schedule(event.projectId);
       }
       else if (event.type === "agent_event") {
@@ -657,14 +796,16 @@ export function useWorkspaceStream(
         for (const queryKey of fileActivityConversationQueryKeys(event)) {
           void queryClient.invalidateQueries({ queryKey });
         }
-        if (event.category === "lifecycle") {
+        if (workspaceAgentEventChangesPhase(event)) {
           agentStateInvalidator.schedule(event.projectId);
+        }
+        if (event.category === "lifecycle") {
           collaborationChatInvalidator.schedule(event.conversationIds);
           agentWorkInvalidator.schedule(event.projectId);
         }
         if (event.category === "file" || event.category === "artifact" || event.category === "task") {
-          void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceStatus.project(event.projectId) });
-          void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceFile.project(event.projectId) });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceStatus.all });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceFile.all });
           void queryClient.invalidateQueries({ queryKey: queryKeys.projectArtifacts.project(event.projectId) });
         }
         if (event.category === "usage") void queryClient.invalidateQueries({ queryKey: queryKeys.tokenUsage.all });
@@ -679,20 +820,19 @@ export function useWorkspaceStream(
       else if (event.type === "notification_changed") {
         void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
         invalidateActiveQueries(queryClient, queryKeys.agents.healthAll);
+        invalidateActiveQueries(queryClient, queryKeys.agents.organizationAll);
         void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("agent") });
         if (event.conversationId) {
           decisionConversationInvalidator.schedule(event.conversationId);
         }
         agentWorkInvalidator.schedule();
       }
+      if (changesPhaseEvidence) schedulePhaseReconciliation();
     };
-    let stopped = false;
     let subscription: StreamSubscription | undefined;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let reconnectingNoticeTimer: ReturnType<typeof setTimeout> | undefined;
     let staleNoticeTimer: ReturnType<typeof setTimeout> | undefined;
-    let connectedOnce = false;
-    let disconnected = false;
     let instanceMismatchDelay = INSTANCE_MISMATCH_INITIAL_DELAY_MS;
     const clearConnectionTimers = () => {
       if (reconnectingNoticeTimer) clearTimeout(reconnectingNoticeTimer);
@@ -703,6 +843,7 @@ export function useWorkspaceStream(
     const noteDisconnect = () => {
       if (stopped || disconnected) return;
       disconnected = true;
+      markPhaseEvidenceStale();
       reconnectingNoticeTimer = setTimeout(() => {
         reconnectingNoticeTimer = undefined;
         if (!stopped && disconnected) {
@@ -730,6 +871,7 @@ export function useWorkspaceStream(
       clearConnectionTimers();
       setConnection(current => ({
         status: "live",
+        phaseEvidenceFresh: false,
         lastSuccessfulSyncAt: new Date().toISOString(),
         prolongedDisconnect: false,
         announcement: current.prolongedDisconnect
@@ -748,6 +890,8 @@ export function useWorkspaceStream(
             instanceId.current && instanceId.current !== status.instanceId,
           );
           if (changedInstance) {
+            markPhaseEvidenceStale();
+            phaseCatchUpCursor = undefined;
             cursor.current = 0;
             instanceId.current = status.instanceId;
             persistWorkspaceCursor(0, status.instanceId);
@@ -766,6 +910,8 @@ export function useWorkspaceStream(
             }
             return;
           }
+          markPhaseEvidenceStale();
+          phaseCatchUpCursor = status.cursor;
           noteConnected();
           instanceMismatchDelay = INSTANCE_MISMATCH_INITIAL_DELAY_MS;
           if (status.reset || cursor.current > status.cursor) {
@@ -774,6 +920,7 @@ export function useWorkspaceStream(
           }
           instanceId.current = status.instanceId;
           persistWorkspaceCursor(cursor.current, status.instanceId);
+          schedulePhaseReconciliation();
         },
         onError: noteDisconnect,
       });
@@ -786,6 +933,8 @@ export function useWorkspaceStream(
       if (reconnectTimer) clearTimeout(reconnectTimer);
       clearConnectionTimers();
       if (replayReconcileTimer) clearTimeout(replayReconcileTimer);
+      if (phaseReconcileTimer) clearTimeout(phaseReconcileTimer);
+      unsubscribePhaseQueryCache();
       agentWorkInvalidator.dispose();
       agentDetailInvalidator.dispose();
       agentStateInvalidator.dispose();

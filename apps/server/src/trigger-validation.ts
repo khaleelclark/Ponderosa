@@ -107,6 +107,7 @@ export function parseCreateTrigger(value: unknown): CreateTriggerRequest {
     body,
     [
       "conversationId",
+      "targetAgentId",
       "name",
       "instructions",
       "sourceKind",
@@ -118,10 +119,11 @@ export function parseCreateTrigger(value: unknown): CreateTriggerRequest {
   );
   if (
     typeof body.conversationId !== "string" ||
+    typeof body.targetAgentId !== "string" ||
     typeof body.name !== "string" ||
     typeof body.instructions !== "string"
   ) {
-    throw new Error("conversationId, name, and instructions must be strings");
+    throw new Error("conversationId, targetAgentId, name, and instructions must be strings");
   }
   if (
     body.sourceKind !== "schedule" &&
@@ -150,6 +152,7 @@ export function parseCreateTrigger(value: unknown): CreateTriggerRequest {
   }
   return {
     conversationId: body.conversationId,
+    targetAgentId: body.targetAgentId,
     name: body.name,
     instructions: body.instructions,
     sourceKind: body.sourceKind,
@@ -173,11 +176,17 @@ export function parseUpdateTrigger(
   const body = triggerObject(value, "Automation patch");
   exactTriggerFields(
     body,
-    ["name", "instructions", "sourceConfig", "enabled", "runBudget"],
+    ["conversationId", "targetAgentId", "name", "instructions", "sourceConfig", "enabled", "runBudget"],
     "Automation patch",
   );
   if (body.name !== undefined && typeof body.name !== "string") {
     throw new Error("name must be a string");
+  }
+  if (body.conversationId !== undefined && typeof body.conversationId !== "string") {
+    throw new Error("conversationId must be a string");
+  }
+  if (body.targetAgentId !== undefined && typeof body.targetAgentId !== "string") {
+    throw new Error("targetAgentId must be a string");
   }
   if (
     body.instructions !== undefined &&
@@ -206,6 +215,8 @@ export function parseUpdateTrigger(
       parsed as unknown as NonNullable<UpdateTriggerRequest["runBudget"]>;
   }
   return {
+    ...(body.conversationId === undefined ? {} : { conversationId: body.conversationId }),
+    ...(body.targetAgentId === undefined ? {} : { targetAgentId: body.targetAgentId }),
     ...(body.name === undefined ? {} : { name: body.name }),
     ...(body.instructions === undefined
       ? {}

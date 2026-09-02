@@ -48,10 +48,12 @@ import {
   useOperatorProfileForm,
 } from "./OperatorProfileEditor";
 import { IconTitle } from "./IconTitle";
+import { MobileNavigationButton } from "./MobileNavigationContext";
 import {
   parseAgentRunConcurrencyLimit,
   RuntimeSettings,
 } from "./RuntimeSettings";
+import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 
 const GLOBAL_AGENT_INSTRUCTIONS_LABEL = "Global Agent Instructions";
 const GLOBAL_AGENT_INSTRUCTIONS_HELPER_TEXT =
@@ -74,7 +76,8 @@ function SettingsHeader({
         borderColor: "divider",
       }}
     >
-      <Box sx={{ minWidth: 0 }}>
+      <MobileNavigationButton />
+      <Box sx={{ minWidth: 0, flex: 1 }}>
         <IconTitle
           icon={profile ? <PersonOutlineIcon /> : <SettingsOutlinedIcon />}
           title={profile ? "Operator Profile" : "Settings"}
@@ -86,6 +89,7 @@ function SettingsHeader({
             : "Workspace appearance, notifications, providers, and Agent defaults"}
         </Typography>
       </Box>
+      <PrimaryHeaderActionsOutlet />
     </Stack>
   );
 }
@@ -551,13 +555,15 @@ function ProviderSettingsSection({
   onRecheckEngine(engineId: string): void;
 }): JSX.Element {
   const usageProviders = engines.filter(engine =>
-    engine.authentication === "authenticated" && Boolean(engine.providerUsageCommand)
+    engine.authentication === "authenticated" &&
+    Boolean(engine.providerUsageCommand)
   );
   const defaultUsageProvider = usageProviders.some(
-    engine => engine.id === preferences.defaultUsageProvider,
+    engine =>
+      engine.id === preferences.defaultUsageProvider && engine.enabled !== false,
   )
     ? preferences.defaultUsageProvider
-    : usageProviders[0]?.id;
+    : usageProviders.find(engine => engine.enabled !== false)?.id;
   return (
     <Stack spacing={2}>
       {engines.length === 0 ? (
@@ -588,7 +594,11 @@ function ProviderSettingsSection({
               }
             >
               {usageProviders.map(engine => (
-                <MenuItem key={engine.id} value={engine.id}>
+                <MenuItem
+                  key={engine.id}
+                  value={engine.id}
+                  disabled={engine.enabled === false}
+                >
                   {engine.displayName}
                 </MenuItem>
               ))}

@@ -1,6 +1,6 @@
 /** Canonical communication contracts shared by persistence, routing, and UI. */
 
-import type { CommunicationAttachmentDto, ImageAttachmentDto } from "./dto.js";
+import type { AssetDto, CommunicationAttachmentDto } from "./dto.js";
 
 export interface MessageTagToken {
   /** Authored handle without the leading hash. */
@@ -29,7 +29,7 @@ export function messageTagTokens(text: string): MessageTagToken[] {
   });
 }
 
-export type CommunicationIntent = "broadcast" | "direct_to_user" | "collaboration" | "user_dm";
+export type CommunicationIntent = "broadcast" | "collaboration" | "user_dm";
 
 export type CommunicationActor =
   | { kind: "user"; userId: string }
@@ -41,9 +41,7 @@ export interface CommunicationDocumentRecord {
   id: string;
   title: string;
   mediaType: "text/markdown";
-  /** Legacy/small inline body. Artifact-backed documents omit this copy. */
-  content?: string;
-  artifactId?: string;
+  artifactId: string;
   byteLength: number;
   authorAgentId?: string;
   authorUserId?: string;
@@ -51,7 +49,7 @@ export interface CommunicationDocumentRecord {
   createdAt: string;
 }
 
-export type CommunicationDocumentReference = Omit<CommunicationDocumentRecord, "content"> & {
+export type CommunicationDocumentReference = CommunicationDocumentRecord & {
   previewUrl: string;
   downloadUrl: string;
 };
@@ -65,14 +63,14 @@ export interface VerifiedCitationRecord {
 
 interface CommunicationEventBase {
   eventId: string;
-  schemaVersion: 1;
+  schemaVersion: 2;
   projectId: string;
   /** Workstream of origin; event identity remains project-global. */
   conversationId?: string;
   sender: CommunicationActor;
   text: string;
   /** Immutable, server-validated artifact references authored with this event. */
-  attachments?: ImageAttachmentDto[];
+  attachments?: AssetDto[];
   /** Immutable identities of existing Project-managed artifacts attached by an Agent. */
   artifactIds?: string[];
   document?: CommunicationDocumentRecord;
@@ -89,40 +87,27 @@ interface CommunicationEventBase {
   identity?: {
     senderLabel: string;
     recipientLabels?: Record<string, string>;
+    /** Immutable send-time handles preserve exact mention presentation after rename/deletion. */
+    recipientHandles?: Record<string, string>;
     /** Send-time origin title for durable cross-chat provenance. */
     conversationLabel?: string;
   };
 }
 
-/** Runtime validation must additionally reject empty collaboration audiences. */
-export type CommunicationEventV1 = CommunicationEventBase & (
-  | { intent: "broadcast"; audience: { kind: "organization"; organizationId: string } }
-  | { intent: "direct_to_user"; audience: { kind: "user"; userId: string } }
-  | { intent: "collaboration"; audience: { kind: "agents"; agentIds: [string, ...string[]] } }
-);
-
-/**
- * V2 makes a user DM genuinely bidirectional. A user-authored DM may address
- * one or more explicit stable agents; an agent-authored DM remains between that
- * agent and the local user.
- */
-export type CommunicationEventV2 = Omit<CommunicationEventBase, "schemaVersion"> & {
-  schemaVersion: 2;
-} & (
+/** A user-authored DM may address one or more explicit stable agents; an
+ * agent-authored DM remains between that agent and the local user. */
+export type CommunicationEvent = CommunicationEventBase & (
   | { intent: "broadcast"; audience: { kind: "organization"; organizationId: string } }
   | { intent: "user_dm"; audience:
+      | { kind: "user"; userId: string }
       | { kind: "user_agent"; userId: string; agentId: string }
       | { kind: "user_agents"; userId: string; agentIds: [string, ...string[]] } }
   | { intent: "collaboration"; audience: { kind: "agents"; agentIds: [string, ...string[]] } }
 );
-
-/** V1 is retained for append-only replay; all new communication uses V2. */
-export type CommunicationEvent = CommunicationEventV1 | CommunicationEventV2;
 export type CommunicationAudience = CommunicationEvent["audience"];
 
 const communicationIntentValues: ReadonlySet<string> = new Set<CommunicationIntent>([
   "broadcast",
-  "direct_to_user",
   "collaboration",
   "user_dm",
 ]);
@@ -174,7 +159,7 @@ export function isCommunicationAudience(value: unknown): value is CommunicationA
  */
 export function isCommunicationEvent(value: unknown): value is CommunicationEvent {
   const event = communicationRecord(value);
-  if (!event || (event.schemaVersion !== 1 && event.schemaVersion !== 2) ||
+  if (!event || event.schemaVersion !== 2 ||
       !nonEmptyString(event.eventId) || !nonEmptyString(event.projectId) ||
       (event.conversationId !== undefined && !nonEmptyString(event.conversationId)) ||
       !isCommunicationActor(event.sender) || !nonEmptyString(event.intent) ||
@@ -184,13 +169,8 @@ export function isCommunicationEvent(value: unknown): value is CommunicationEven
         event.artifactIds.length === 0 || !event.artifactIds.every(nonEmptyString)))) return false;
 
   const audience = event.audience;
-  if (event.schemaVersion === 1) {
-    return (event.intent === "broadcast" && audience.kind === "organization") ||
-      (event.intent === "direct_to_user" && audience.kind === "user") ||
-      (event.intent === "collaboration" && audience.kind === "agents");
-  }
   return (event.intent === "broadcast" && audience.kind === "organization") ||
-    (event.intent === "user_dm" && (audience.kind === "user_agent" || audience.kind === "user_agents")) ||
+    (event.intent === "user_dm" && (audience.kind === "user" || audience.kind === "user_agent" || audience.kind === "user_agents")) ||
     (event.intent === "collaboration" && audience.kind === "agents");
 }
 
@@ -248,18 +228,18 @@ function uniqueSorted(values: readonly string[]): string[] {
 
 function eventAgentIds(event: CommunicationEvent): string[] {
   if (event.intent === "collaboration") return uniqueSorted(event.audience.agentIds);
-  if (event.schemaVersion === 2 && event.intent === "user_dm") {
-    return uniqueSorted(event.audience.kind === "user_agent"
-      ? [event.audience.agentId]
-      : event.audience.agentIds);
+  if (event.intent === "user_dm") {
+    return event.audience.kind === "user"
+      ? []
+      : uniqueSorted(event.audience.kind === "user_agent"
+        ? [event.audience.agentId]
+        : event.audience.agentIds);
   }
   return [];
 }
 
 function eventUserId(event: CommunicationEvent): string | undefined {
-  if (event.schemaVersion === 2 && event.intent === "user_dm") return event.audience.userId;
-  if (event.schemaVersion === 1 && event.intent === "direct_to_user") return event.audience.userId;
-  return undefined;
+  return event.intent === "user_dm" ? event.audience.userId : undefined;
 }
 
 /**
@@ -279,7 +259,7 @@ export function deriveCommunicationBehavior(event: CommunicationEvent): Communic
   if (event.intent === "broadcast") {
     addProjection("conversation", event.conversationId);
     if (event.sender.kind === "agent") addProjection("direct_agent_audit", event.sender.agentId);
-  } else if (event.schemaVersion === 2 && event.intent === "user_dm") {
+  } else if (event.intent === "user_dm") {
     addProjection("conversation", event.conversationId);
     for (const agentId of agentIds) {
       addProjection("direct_agent_audit", agentId);
@@ -293,13 +273,6 @@ export function deriveCommunicationBehavior(event: CommunicationEvent): Communic
       addProjection("direct_agent_audit", agentId);
       addProjection("agent_inbox", agentId);
     }
-  } else {
-    // V1 direct_to_user is replay-only. Preserve its historical placements,
-    // while all new bidirectional user communication uses V2 user_dm.
-    addProjection("conversation", event.conversationId);
-    addProjection("collaboration_view", event.conversationId);
-    if (event.sender.kind === "agent") addProjection("direct_agent_audit", event.sender.agentId);
-    addProjection("user_inbox", userId);
   }
 
   const deliveryRecipients: CommunicationRecipient[] = [];
@@ -309,7 +282,7 @@ export function deriveCommunicationBehavior(event: CommunicationEvent): Communic
       deliveryRecipients.push({ kind: "agent", agentId });
       actionableAgentIds.push(agentId);
     }
-  } else if (event.schemaVersion === 2 && event.intent === "user_dm") {
+  } else if (event.intent === "user_dm") {
     if (event.sender.kind === "user") {
       for (const agentId of agentIds) {
         deliveryRecipients.push({ kind: "agent", agentId });
@@ -318,8 +291,6 @@ export function deriveCommunicationBehavior(event: CommunicationEvent): Communic
     } else if (userId) {
       deliveryRecipients.push({ kind: "user", userId });
     }
-  } else if (event.schemaVersion === 1 && event.intent === "direct_to_user" && userId) {
-    deliveryRecipients.push({ kind: "user", userId });
   }
 
   return {

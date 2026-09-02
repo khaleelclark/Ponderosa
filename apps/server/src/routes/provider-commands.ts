@@ -29,6 +29,7 @@ import {
 } from "../runtime-selection.js";
 import type { ServerContext } from "../server-context.js";
 import type { ProviderProcessAuthority } from "../provider-process-authority.js";
+import type { AgentWorkingCopyService } from "../agent-working-copy-service.js";
 import { evaluateContextRolloverPressure } from "../context-rollover-pressure.js";
 import {
   guardedProviderExceptionStringProperty,
@@ -85,13 +86,14 @@ interface ProviderCommandRoutesContext {
   ): Promise<ProviderUsageStateDto>;
   reportRuntimeCapabilitiesChanged(projectId: string, engineId: string): void;
   providerProcessAuthority: ProviderProcessAuthority;
+  workingCopies: AgentWorkingCopyService;
 }
 
 export function authorizedManualRolloverConversationId(
-  agent: { conversationIds: readonly string[] },
+  agent: { conversationId: string },
   sourceConversationId?: string,
 ): string | undefined {
-  return sourceConversationId && agent.conversationIds.includes(sourceConversationId)
+  return sourceConversationId && agent.conversationId === sourceConversationId
     ? sourceConversationId
     : undefined;
 }
@@ -146,6 +148,7 @@ export function registerProviderCommandRoutes(
     providerUsageState,
     reportRuntimeCapabilitiesChanged,
     providerProcessAuthority,
+    workingCopies,
   } = context;
 
 app.post<{ Params: { id: string }; Body?: CancelAgentRunRequest }>("/api/agents/:id/cancel", async (request, reply) => {
@@ -393,63 +396,91 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
       }
       return { catalog, ...(result.message ? { message: result.message } : {}) };
     };
-    if (activeRuns.has(agent.id)) {
-      return reply.code(409).send({ error: "structured provider commands require an idle runtime", retryable: true });
-    }
+    let releaseWorkingCopyUse: () => void;
     try {
+      releaseWorkingCopyUse = workingCopies.beginUse(agent.id);
+    } catch (error) {
+      return reply.code(409).send({
+        error: error instanceof Error ? error.message : "This Agent's working folder is changing.",
+        retryable: true,
+      });
+    }
+    let cleanupOwnsWorkingCopyUse = false;
+    try {
+      // Recheck every deletion authority after registering this use. A delete
+      // that quarantines later must await this use; one that quarantined first
+      // makes this command release immediately without opening a process.
+      if (isClosed() || deletingProjectIds.has(project.id) || deletingAgentIds.has(agent.id)) {
+        return reply.code(409).send({ error: "this Agent is unavailable for provider commands", retryable: true });
+      }
+      if (activeRuns.has(agent.id)) {
+        return reply.code(409).send({ error: "structured provider commands require an idle runtime", retryable: true });
+      }
+      try {
       await retireCompletedContextRolloverSession({
         agentId: agent.id,
         projectId: project.id,
       });
-    } catch (error) {
-      return reply.code(409).send(publicProviderCommandFailure(error));
-    }
-    const liveSession = reusableRuntime(agent.id)?.session;
-    if (liveSession) {
-      try {
-        const result = await invoke(liveSession);
-        reportRuntimeCapabilitiesChanged(agent.projectId, agent.activeEngine);
-        return {
-          invoked: true,
-          name,
-          catalogVersion: result.catalog.catalogVersion,
-          ...(result.message ? { message: result.message } : {}),
-        };
       } catch (error) {
         return reply.code(409).send(publicProviderCommandFailure(error));
       }
-    }
-    if (!engine.adapter.openSession) {
-      return reply.code(409).send({ error: "this provider cannot open a command-only session" });
-    }
+      const liveSession = reusableRuntime(agent.id)?.session;
+      if (liveSession) {
+        try {
+          const result = await invoke(liveSession);
+          reportRuntimeCapabilitiesChanged(agent.projectId, agent.activeEngine);
+          return {
+            invoked: true,
+            name,
+            catalogVersion: result.catalog.catalogVersion,
+            ...(result.message ? { message: result.message } : {}),
+          };
+        } catch (error) {
+          return reply.code(409).send(publicProviderCommandFailure(error));
+        }
+      }
+      if (!engine.adapter.openSession) {
+        return reply.code(409).send({ error: "this provider cannot open a command-only session" });
+      }
 
     // Read-only provider commands such as /status should work before an Agent
     // has a warm runtime. Open a short-lived provider session, invoke exactly
     // one structured command, and close it without creating a chat message,
     // Activation, or provider turn. The authority registry makes Project
     // deletion and daemon shutdown wait for the transient process as well.
-    const latestRun = store.getRuns(agent.id).at(-1);
-    const selection = concreteRuntimeSelection(engine.adapter, [
+      let workingCopy: Awaited<ReturnType<AgentWorkingCopyService["resolve"]>>;
+      try {
+        workingCopy = await workingCopies.resolve(agent, project);
+        workingCopies.assertRunAdmission(agent.id, workingCopy);
+      } catch (error) {
+        return reply.code(409).send({
+          error: error instanceof Error ? error.message : "This Agent's working folder is unavailable.",
+        });
+      }
+      const latestRun = store.getRuns(agent.id).at(-1);
+      const selection = concreteRuntimeSelection(engine.adapter, [
       { model: latestRun?.model ?? agent.model ?? agent.presetSnapshot?.model, effort: latestRun?.effort ?? agent.effort ?? agent.presetSnapshot?.effort },
       project.defaultEngine === agent.activeEngine ? { model: project.defaultModel, effort: project.defaultEffort } : undefined,
       workspace.getPreferences().engineDefaults?.[agent.activeEngine],
     ], cachedModelOptions(engine.adapter, project.id));
-    const persisted = store.resumeSessionState(agent.id);
-    const runtimeSessionContractHash = providerSessionContractHash(
+      const persisted = store.resumeSessionState(agent.id);
+      const runtimeSessionContractHash = providerSessionContractHash(
       agent.activeEngine,
+      workingCopy.id,
       selection.model,
       selection.effort,
     );
-    const resumeSessionId = persisted?.toolContractHash === runtimeSessionContractHash ? persisted.sessionId : undefined;
-    const authority: CapabilityDiscoveryAuthority = {
-      projectId: project.id,
-      engineId: engine.adapter.id,
-      key: `provider-command:${agent.id}:${randomUUID()}`,
-      controller: new AbortController(),
-      processes: new Set(),
-      settled: false,
-    };
-    const registerProcess = (handle: RuntimeProcessHandle): void => {
+      const resumeSessionId = persisted?.toolContractHash === runtimeSessionContractHash ? persisted.sessionId : undefined;
+      const authority: CapabilityDiscoveryAuthority = {
+        projectId: project.id,
+        agentId: agent.id,
+        engineId: engine.adapter.id,
+        key: `provider-command:${agent.id}:${randomUUID()}`,
+        controller: new AbortController(),
+        processes: new Set(),
+        settled: false,
+      };
+      const registerProcess = (handle: RuntimeProcessHandle): void => {
       handle = providerProcessHandleFacade(handle);
       const state: CapabilityDiscoveryProcess = { handle };
       authority.processes.add(state);
@@ -466,12 +497,12 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
           }, "transient provider-command process cleanup remains pending");
         });
       }
-    };
-    let invocation: { catalog: EngineCapabilities; message?: string } | undefined;
-    const operation = Promise.resolve().then(async () => {
+      };
+      let invocation: { catalog: EngineCapabilities; message?: string } | undefined;
+      const operation = Promise.resolve().then(async () => {
       const rawSession = await providerRuntimeOperation("open provider command session", () => engine.adapter.openSession!({
         agentId: agent.id,
-        cwd: project.hostPath,
+        cwd: workingCopy.rootPath,
         ...(resumeSessionId ? { resumeSessionId } : {}),
         history: [],
         model: selection.model,
@@ -484,30 +515,59 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
       const session = providerSessionFacade(rawSession);
       invocation = await invoke(session);
       return invocation.catalog;
-    });
-    authority.operation = operation;
-    engineCapabilityDiscoveryAuthorities.add(authority);
-    try {
-      await operation;
-      reportRuntimeCapabilitiesChanged(agent.projectId, agent.activeEngine);
-      return {
-        invoked: true,
-        name,
-        catalogVersion: invocation?.catalog.catalogVersion,
-        ...(invocation?.message ? { message: invocation.message } : {}),
-      };
-    } catch (error) {
-      return reply.code(409).send(publicProviderCommandFailure(error));
-    } finally {
-      authority.settled = true;
+      });
+      authority.operation = operation;
+      engineCapabilityDiscoveryAuthorities.add(authority);
+      cleanupOwnsWorkingCopyUse = true;
       try {
-        await closeCapabilityDiscoveryAuthority(authority);
+        await operation;
+        reportRuntimeCapabilitiesChanged(agent.projectId, agent.activeEngine);
+        return {
+          invoked: true,
+          name,
+          catalogVersion: invocation?.catalog.catalogVersion,
+          ...(invocation?.message ? { message: invocation.message } : {}),
+        };
       } catch (error) {
-        app.log.error({
-          providerError: restrictedProviderExceptionLogDetail(error),
-          agentId: agent.id,
-        }, "transient provider-command process cleanup remains pending");
+        return reply.code(409).send(publicProviderCommandFailure(error));
+      } finally {
+        authority.settled = true;
+        try {
+          await closeCapabilityDiscoveryAuthority(authority);
+          cleanupOwnsWorkingCopyUse = false;
+          releaseWorkingCopyUse();
+        } catch (error) {
+          app.log.error({
+            providerError: restrictedProviderExceptionLogDetail(error),
+            agentId: agent.id,
+          }, "transient provider-command process cleanup remains pending and blocks working-folder changes");
+          // Keep the use lease until process-group exit is actually confirmed.
+          // Retrying in the background lets a transient teardown failure heal
+          // without ever making destructive folder replacement unsafe.
+          void (async () => {
+            let retryDelayMs = 250;
+            for (;;) {
+              await new Promise<void>((resolve) => {
+                const timer = setTimeout(resolve, retryDelayMs);
+                timer.unref?.();
+              });
+              try {
+                await closeCapabilityDiscoveryAuthority(authority);
+                releaseWorkingCopyUse();
+                return;
+              } catch (retryError) {
+                retryDelayMs = Math.min(retryDelayMs * 2, 5_000);
+                app.log.warn({
+                  providerError: restrictedProviderExceptionLogDetail(retryError),
+                  agentId: agent.id,
+                }, "transient provider-command process cleanup is still pending");
+              }
+            }
+          })();
+        }
       }
+    } finally {
+      if (!cleanupOwnsWorkingCopyUse) releaseWorkingCopyUse();
     }
   },
 );
