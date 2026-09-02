@@ -196,7 +196,7 @@ export function registerConversationDeliveryRoutes(
     const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
     if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must contain 1 to 200 characters" });
     const master = store.getConversation(request.params.id);
-    if (!master) return reply.code(404).send({ error: "conversation not found" });
+    if (!master || master.archived) return reply.code(404).send({ error: "conversation not found" });
     if (projectDeletionInProgress(master.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
     const agentIdsByHandle = new Map<string, string[]>();
     for (const agent of store.listAgents(master.projectId)) {

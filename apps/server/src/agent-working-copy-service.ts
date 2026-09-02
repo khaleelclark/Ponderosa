@@ -396,6 +396,7 @@ export class AgentWorkingCopyService {
         : Boolean(this.store.updateAgentWorkingCopy(record.agentId, removed));
       if (!persisted) throw new Error(`Agent ${record.agentId} became unavailable during working-copy cleanup`);
     }
+    await rm(path.join(this.managedRoot, project.id), { recursive: true, force: true });
   }
 
   private async applyMode(

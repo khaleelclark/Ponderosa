@@ -221,6 +221,10 @@ export function AgentDetailPanels({
       />
     ),
   };
+  const panelLabel = tab === "technical" ? "Technical details"
+    : tab === "triggers" ? "Automations"
+      : tab === "artifacts" ? "Files & Results"
+        : tab[0]!.toUpperCase() + tab.slice(1);
 
   return (
     <Box
@@ -260,7 +264,7 @@ export function AgentDetailPanels({
       {tab !== "chat" ? (
         <Box
           role="tabpanel"
-          aria-label={`${tab === "technical" ? "Technical details" : tab[0]!.toUpperCase() + tab.slice(1)} panel`}
+          aria-label={`${panelLabel} panel`}
           tabIndex={0}
           sx={{
             height: "100%",

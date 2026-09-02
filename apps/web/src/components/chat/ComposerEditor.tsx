@@ -1358,6 +1358,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
           contentEditable={
             <ContentEditable
               className="composer-editor-input"
+              tabIndex={0}
               aria-label="Message"
               role={comboboxEnabled ? "combobox" : "textbox"}
               aria-multiline="true"

@@ -38,3 +38,31 @@ test("broadcasts cannot target an Agent owned by another Chat", async (t) => {
     error: "every targeted #Agent mention must have one canonical binding",
   });
 });
+
+test("archived Chats reject broadcasts before staging long text", async (t) => {
+  let staged = false;
+  const app = Fastify();
+  t.after(() => app.close());
+  registerConversationDeliveryRoutes(app, {
+    store: {
+      getConversation: () => ({ id: "chat-a", projectId: "project-a", archived: true }),
+    },
+    projectDeletionInProgress: () => false,
+    prepareUserCommunicationText: async () => {
+      staged = true;
+      throw new Error("must not stage");
+    },
+  });
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/conversations/chat-a/messages",
+    payload: {
+      text: "x".repeat(100_000),
+      idempotencyKey: "archived-chat-attempt",
+    },
+  });
+
+  assert.equal(response.statusCode, 404);
+  assert.equal(staged, false);
+});
