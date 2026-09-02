@@ -21,13 +21,22 @@ function deferred() {
 
 test("asset cleanup and message delivery cannot lease the same Agent", () => {
   const deliveryLeases = new Map([["agent-a", 1]]);
+  const deletingAgentIds = new Set();
+  let deletingAttachment = false;
   const cleanupLeases = new Set();
-  assert.equal(leaseAgentAssetReconciliation(deliveryLeases, cleanupLeases, "agent-a"), undefined);
+  const deletionInProgress = () => deletingAttachment;
+  assert.equal(leaseAgentAssetReconciliation(deliveryLeases, deletingAgentIds, deletionInProgress, cleanupLeases, "agent-a"), undefined);
   deliveryLeases.clear();
-  const release = leaseAgentAssetReconciliation(deliveryLeases, cleanupLeases, "agent-a");
+  deletingAgentIds.add("agent-a");
+  assert.equal(leaseAgentAssetReconciliation(deliveryLeases, deletingAgentIds, deletionInProgress, cleanupLeases, "agent-a"), undefined);
+  deletingAgentIds.clear();
+  deletingAttachment = true;
+  assert.equal(leaseAgentAssetReconciliation(deliveryLeases, deletingAgentIds, deletionInProgress, cleanupLeases, "agent-a"), undefined);
+  deletingAttachment = false;
+  const release = leaseAgentAssetReconciliation(deliveryLeases, deletingAgentIds, deletionInProgress, cleanupLeases, "agent-a");
   assert.equal(typeof release, "function");
   assert.equal(cleanupLeases.has("agent-a"), true);
-  assert.equal(leaseAgentAssetReconciliation(deliveryLeases, cleanupLeases, "agent-a"), undefined);
+  assert.equal(leaseAgentAssetReconciliation(deliveryLeases, deletingAgentIds, deletionInProgress, cleanupLeases, "agent-a"), undefined);
   release();
   assert.equal(cleanupLeases.has("agent-a"), false);
 });
@@ -431,6 +440,115 @@ test("direct message retries lease the Chat while repairing a missing projection
   assert.equal(agentLeases.has("agent-a"), false);
 });
 
+test("direct message replay repair waits for attachment maintenance", async (t) => {
+  const chat = { id: "chat-a", projectId: "project-a", archived: false };
+  const requestPayload = {
+    text: "hello",
+    recipients: [{ agentId: "agent-a", attachmentIds: ["asset-a"] }],
+    idempotencyKey: "repair-with-attachment",
+  };
+  const requestFingerprint = conversationDeliveryRequestFingerprint({
+    version: 1,
+    kind: "direct",
+    conversationId: chat.id,
+    text: requestPayload.text,
+    recipients: requestPayload.recipients,
+    activeRunDelivery: "steer",
+    runtimeSelection: {},
+  });
+  let repaired = false;
+  const app = Fastify();
+  t.after(() => app.close());
+  registerConversationDeliveryRoutes(app, {
+    store: {
+      getConversation: () => chat,
+      getConversationMessageByReceiptKey: () => undefined,
+    },
+    coordinationV3: {
+      runtimeCommunication: () => ({
+        payload: {
+          requestFingerprint,
+          dispatch: {
+            recipients: [{
+              agentId: "agent-a",
+              attachments: [{ id: "asset-a", name: "note.txt", mediaType: "text/plain", size: 4 }],
+            }],
+          },
+        },
+        activations: [],
+      }),
+    },
+    projectDeletionInProgress: () => false,
+    agentDeletionInProgress: () => false,
+    attachmentDeletionInProgress: () => false,
+    assetReconciliationInProgress: () => true,
+    conversationDeliveryLeases: new Map(),
+    agentDeliveryLeases: new Map(),
+    reconcileRuntimeCommunicationProjections: async () => { repaired = true; return 1; },
+  });
+
+  const response = await app.inject({
+    method: "POST",
+    url: `/api/conversations/${chat.id}/direct-messages`,
+    payload: requestPayload,
+  });
+  assert.equal(response.statusCode, 409);
+  assert.equal(repaired, false);
+});
+
+test("attachment upload leases its Agent and rejects archived Agents", async (t) => {
+  const agent = {
+    id: "agent-a",
+    projectId: "project-a",
+    conversationId: "chat-a",
+    archived: false,
+  };
+  const leases = new Map();
+  const stageStarted = deferred();
+  const finishStage = deferred();
+  let staged = 0;
+  const app = Fastify();
+  t.after(() => app.close());
+  app.addContentTypeParser("application/octet-stream", { parseAs: "buffer" }, (_request, body, done) => done(null, body));
+  registerAttachmentRoutes(app, {
+    store: { getAgent: () => agent },
+    assets: {
+      stage: async () => {
+        staged += 1;
+        stageStarted.resolve();
+        await finishStage.promise;
+        return { id: "asset-a", projectId: agent.projectId, agentId: agent.id };
+      },
+    },
+    agentDeliveryLeases: leases,
+    agentDeletionInProgress: () => false,
+    deletingAttachmentKeys: new Set(),
+    reconcilingAssetAgentIds: new Set(),
+  });
+
+  const upload = app.inject({
+    method: "POST",
+    url: `/api/agents/${agent.id}/attachments`,
+    headers: { "content-type": "application/octet-stream" },
+    payload: Buffer.from("data"),
+  });
+  await stageStarted.promise;
+  assert.equal(leases.get(agent.id), 1);
+  finishStage.resolve();
+  assert.equal((await upload).statusCode, 201);
+  assert.equal(leases.has(agent.id), false);
+
+  agent.archived = true;
+  const rejected = await app.inject({
+    method: "POST",
+    url: `/api/agents/${agent.id}/attachments`,
+    headers: { "content-type": "application/octet-stream" },
+    payload: Buffer.from("data"),
+  });
+  assert.equal(rejected.statusCode, 404);
+  assert.equal(staged, 1);
+});
+
 test("broadcast attachments lease their owning Agent", async (t) => {
   const chat = { id: "chat-a", projectId: "project-a", archived: false };
   const owner = {
@@ -485,6 +603,7 @@ test("broadcast attachments lease their owning Agent", async (t) => {
     store: { getAgent: () => owner },
     assets,
     agentDeliveryLeases: agentLeases,
+    agentDeletionInProgress: () => false,
     deletingAttachmentKeys: new Set(),
     reconcilingAssetAgentIds: new Set(),
   });
@@ -647,6 +766,7 @@ test("an attachment deletion reservation blocks a delivery that starts second", 
     store: { getAgent: () => owner },
     assets,
     agentDeliveryLeases: new Map(),
+    agentDeletionInProgress: () => false,
     deletingAttachmentKeys,
     reconcilingAssetAgentIds: new Set(),
   });

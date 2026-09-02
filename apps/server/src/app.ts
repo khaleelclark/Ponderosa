@@ -741,6 +741,9 @@ app.server.on("upgrade", linkPreviewUpgrade);
     contextRolloverPending,
     deletingAgentIds,
     agentDeliveryLeases,
+    agentAttachmentDeletionInProgress: agentId => [...deletingAttachmentKeys]
+      .some((key) => key.startsWith(`${agentId}\0`)),
+    reconcilingAssetAgentIds,
     contextCursors,
     appendWorkspace,
     publishWorkspaceSince,
@@ -885,6 +888,9 @@ app.server.on("upgrade", linkPreviewUpgrade);
     runtimeAuthorities,
     agentMessageCapabilities,
     agentDeliveryLeases,
+    deletingAgentIds,
+    attachmentDeletionInProgress: agentId => [...deletingAttachmentKeys]
+      .some((key) => key.startsWith(`${agentId}\0`)),
     reconcilingAssetAgentIds,
     projectBrowserGrants,
     browserSessions,
@@ -1081,6 +1087,8 @@ app.server.on("upgrade", linkPreviewUpgrade);
     agentDeliveryLeases,
     deletingAttachmentKeys,
     reconcilingAssetAgentIds,
+    agentAttachmentDeletionInProgress: agentId => [...deletingAttachmentKeys]
+      .some((key) => key.startsWith(`${agentId}\0`)),
     rejectQuarantinedTriggerMutation,
     projectDeletionInFlightIds,
     communicationReconciliation,

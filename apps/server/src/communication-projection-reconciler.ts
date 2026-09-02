@@ -270,8 +270,23 @@ export function createCommunicationProjectionReconciler(
       }
 
       const firstRecoveredAttachments = [...attachmentsByAgent.values()].find((items) => items.length > 0);
-      if (!event.attachments?.length && firstRecoveredAttachments?.length) {
-        event = { ...event, attachments: firstRecoveredAttachments };
+      const conversationAttachmentIds = Array.isArray(dispatch?.conversationAttachmentIds) &&
+          dispatch.conversationAttachmentIds.every((id) => typeof id === "string")
+        ? dispatch.conversationAttachmentIds as string[]
+        : undefined;
+      const recoveredConversationAttachments = conversationAttachmentIds === undefined
+        ? firstRecoveredAttachments
+        : conversationAttachmentIds.flatMap((id) =>
+            [...reservedAttachments!.values()].flatMap((item) =>
+              item.attachment.id === id ? [{ ...item.attachment, state: "associated" as const }] : []));
+      if (conversationAttachmentIds &&
+          (recoveredConversationAttachments?.length ?? 0) !== conversationAttachmentIds.length) {
+        logError({ runtimeCommunicationId: row.id, communicationEventId },
+          "runtime conversation attachment is unavailable; projection remains uncommitted");
+        continue;
+      }
+      if (!event.attachments?.length && recoveredConversationAttachments?.length) {
+        event = { ...event, attachments: recoveredConversationAttachments };
       }
       try {
         let canonical = store.getCommunicationEvent(row.projectId, communicationEventId);
@@ -309,7 +324,7 @@ export function createCommunicationProjectionReconciler(
           ? recipientAgentIds
           : behavior.deliveryRecipients.flatMap((recipient) =>
               recipient.kind === "agent" ? [recipient.agentId] : []);
-        const roomAttachments = canonical.attachments ?? firstRecoveredAttachments;
+        const roomAttachments = canonical.attachments ?? recoveredConversationAttachments;
         const role = canonical.sender.kind === "user" ? "user" : canonical.sender.kind === "system" ? "system" : "assistant";
         const requestProjectionText = row.sourceKind === "request"
           ? `${recipientAgentIds.flatMap((agentId) => {
@@ -320,10 +335,13 @@ export function createCommunicationProjectionReconciler(
         const dispatchText = typeof dispatch?.text === "string"
           ? dispatch.text
           : requestProjectionText ?? canonical.text;
+        const persistedConversationText = typeof dispatch?.conversationText === "string"
+          ? dispatch.conversationText
+          : undefined;
         const conversationText = canonical.intent === "broadcast"
-          ? canonical.sender.kind === "agent"
-            ? dispatchText
-            : renderScopedMessage("broadcast", canonical.text)
+          ? persistedConversationText ?? (canonical.sender.kind === "agent"
+              ? dispatchText
+              : renderScopedMessage("broadcast", canonical.text))
           : canonical.schemaVersion === 2 && canonical.intent === "user_dm" && canonical.sender.kind === "agent"
             ? renderScopedMessage("user", canonical.text)
             : canonical.schemaVersion === 2 && canonical.intent === "user_dm" &&

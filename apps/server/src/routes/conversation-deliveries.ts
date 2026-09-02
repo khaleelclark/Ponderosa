@@ -266,7 +266,7 @@ export function registerConversationDeliveryRoutes(
     const existingPayload = existingRuntime?.payload as {
       requestFingerprint?: string;
       communication?: CommunicationEvent;
-      dispatch?: { recipients?: Array<{ agentId?: string }> };
+      dispatch?: { recipients?: Array<{ agentId?: string; attachments?: Array<{ id?: string }> }> };
     } | undefined;
     if (existingPayload?.requestFingerprint) {
       if (existingPayload.requestFingerprint !== requestFingerprint) {
@@ -281,6 +281,26 @@ export function registerConversationDeliveryRoutes(
           typeof recipient.agentId === "string" && recipient.agentId.trim() ? [recipient.agentId.trim()] : []),
         ...(existingPayload.communication?.attachments ?? []).map((attachment) => attachment.agentId),
       ])];
+      const replayAttachments = [
+        ...(existingPayload.communication?.attachments ?? []).map((attachment) => ({
+          agentId: attachment.agentId,
+          attachmentId: attachment.id,
+        })),
+        ...(existingPayload.dispatch?.recipients ?? []).flatMap((recipient) =>
+          typeof recipient.agentId === "string"
+            ? (recipient.attachments ?? []).flatMap((attachment) =>
+                typeof attachment.id === "string"
+                  ? [{ agentId: recipient.agentId!.trim(), attachmentId: attachment.id }]
+                  : [])
+            : []),
+      ];
+      if (replayAttachments.some(({ agentId, attachmentId }) =>
+        attachmentDeletionInProgress(agentId, attachmentId))) {
+        return reply.code(409).send({ error: "Asset deletion is in progress" });
+      }
+      if (replayAttachments.some(({ agentId }) => assetReconciliationInProgress(agentId))) {
+        return reply.code(409).send({ error: "Asset cleanup is in progress" });
+      }
       if (replayAgentIds.some(agentDeletionInProgress)) {
         return reply.code(409).send({ error: "Agent deletion is in progress" });
       }
@@ -447,6 +467,8 @@ export function registerConversationDeliveryRoutes(
               shareWithOrganization: true,
               communicationEventId: eventId,
               text: prepared.publishedText,
+              conversationText: renderScopedMessage("broadcast", prepared.publishedText),
+              conversationAttachmentIds: validatedAssets.map((attachment) => attachment.id),
               ...(prepared.artifact ? {
                 artifactId: prepared.artifact.id,
                 resultRef: `ponderosa://artifact/${prepared.artifact.id}`,
@@ -648,7 +670,8 @@ export function registerConversationDeliveryRoutes(
       const existingPayload = existingRuntime?.payload as {
         requestFingerprint?: string;
         unavailableRecipients?: MultiAgentDirectMessageResponse["unavailableRecipients"];
-        dispatch?: { recipients?: Array<{ agentId?: string }> };
+        communication?: CommunicationEvent;
+        dispatch?: { recipients?: Array<{ agentId?: string; attachments?: Array<{ id?: string }> }> };
       } | undefined;
       if (existingPayload?.requestFingerprint) {
         if (existingPayload.requestFingerprint !== requestFingerprint) {
@@ -659,6 +682,26 @@ export function registerConversationDeliveryRoutes(
           if (master.archived) return reply.code(404).send({ error: "conversation not found" });
           const replayAgentIds = [...new Set((existingPayload.dispatch?.recipients ?? []).flatMap((recipient) =>
             typeof recipient.agentId === "string" && recipient.agentId.trim() ? [recipient.agentId.trim()] : []))];
+          const replayAttachments = [
+            ...(existingPayload.communication?.attachments ?? []).map((attachment) => ({
+              agentId: attachment.agentId,
+              attachmentId: attachment.id,
+            })),
+            ...(existingPayload.dispatch?.recipients ?? []).flatMap((recipient) =>
+              typeof recipient.agentId === "string"
+                ? (recipient.attachments ?? []).flatMap((attachment) =>
+                    typeof attachment.id === "string"
+                      ? [{ agentId: recipient.agentId!.trim(), attachmentId: attachment.id }]
+                      : [])
+                : []),
+          ];
+          if (replayAttachments.some(({ agentId, attachmentId }) =>
+            attachmentDeletionInProgress(agentId, attachmentId))) {
+            return reply.code(409).send({ error: "Asset deletion is in progress" });
+          }
+          if (replayAttachments.some(({ agentId }) => assetReconciliationInProgress(agentId))) {
+            return reply.code(409).send({ error: "Asset cleanup is in progress" });
+          }
           if (replayAgentIds.some(agentDeletionInProgress)) {
             return reply.code(409).send({ error: "Agent deletion is in progress" });
           }

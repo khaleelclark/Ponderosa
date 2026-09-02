@@ -79,7 +79,7 @@ type ApplicationRoutesContext =
   Omit<Parameters<typeof registerCollaborationRoutes>[1],
     "projectDeletionInProgress" | "agentDeletionInProgress" | "attachmentDeletionInProgress" |
     "assetReconciliationInProgress" | "assetMetadata"> &
-  Parameters<typeof registerAttachmentRoutes>[1] &
+  Omit<Parameters<typeof registerAttachmentRoutes>[1], "agentDeletionInProgress"> &
   Parameters<typeof registerAgentCreationRoutes>[1] &
   Omit<Parameters<typeof registerAgentPackageRoutes>[1], "dataDir" | "coordination"> &
   Omit<Parameters<typeof registerAgentMaintenanceRoutes>[1], "workingCopies"> &
@@ -213,6 +213,7 @@ export function registerApplicationRoutes(
     agentDeliveryLeases,
     deletingAttachmentKeys,
     reconcilingAssetAgentIds,
+    agentAttachmentDeletionInProgress,
     rejectQuarantinedTriggerMutation,
     projectDeletionInFlightIds,
     communicationReconciliation,
@@ -321,8 +322,11 @@ registerProjectDeletionRoutes(app, {
   engineModelCatalogDiscoveryAuthorities,
   deletingProjectIds,
   deletingAgentIds,
+  reconcilingAssetAgentIds,
+  agentAttachmentDeletionInProgress,
   agentCreationConversationLeases,
   conversationDeliveryLeases,
+  agentDeliveryLeases,
   projectDeletionInFlightIds,
   projectBrowserGrants,
   browserSessions,
@@ -630,6 +634,7 @@ registerLimitsRoutes(app, serverContext);
 
 registerAttachmentRoutes(app, {
   agentDeliveryLeases,
+  agentDeletionInProgress: agentId => deletingAgentIds.has(agentId),
   assets,
   deletingAttachmentKeys,
   reconcilingAssetAgentIds,

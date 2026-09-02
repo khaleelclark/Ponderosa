@@ -1323,6 +1323,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
       return;
     }
     if (event.key === "Tab") {
+      if (menuOpen) onSuppressMenu();
       const next = adjacentFocusableElement(event.currentTarget, event.shiftKey);
       if (next) {
         event.preventDefault();

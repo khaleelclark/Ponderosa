@@ -73,6 +73,8 @@ type ServerLifecycleContext =
     runtimeAuthorities: Map<string, AgentRuntimeAuthority>;
     agentMessageCapabilities: Map<string, AgentMessageCapability>;
     agentDeliveryLeases: ReadonlyMap<string, number>;
+    deletingAgentIds: ReadonlySet<string>;
+    attachmentDeletionInProgress(agentId: string): boolean;
     reconcilingAssetAgentIds: Set<string>;
     projectBrowserGrants: Map<string, unknown>;
     browserSessions: BrowserSessionManager;
@@ -98,10 +100,14 @@ type ServerLifecycleContext =
 
 export function leaseAgentAssetReconciliation(
   agentDeliveryLeases: ReadonlyMap<string, number>,
+  deletingAgentIds: ReadonlySet<string>,
+  attachmentDeletionInProgress: (agentId: string) => boolean,
   reconcilingAssetAgentIds: Set<string>,
   agentId: string,
 ): (() => void) | undefined {
-  if ((agentDeliveryLeases.get(agentId) ?? 0) > 0 || reconcilingAssetAgentIds.has(agentId)) return undefined;
+  if (deletingAgentIds.has(agentId) || attachmentDeletionInProgress(agentId) ||
+      (agentDeliveryLeases.get(agentId) ?? 0) > 0 ||
+      reconcilingAssetAgentIds.has(agentId)) return undefined;
   reconcilingAssetAgentIds.add(agentId);
   return () => reconcilingAssetAgentIds.delete(agentId);
 }
@@ -124,6 +130,8 @@ export function registerServerLifecycle(
     runtimeAuthorities,
     agentMessageCapabilities,
     agentDeliveryLeases,
+    deletingAgentIds,
+    attachmentDeletionInProgress,
     reconcilingAssetAgentIds,
     projectBrowserGrants,
     browserSessions,
@@ -513,6 +521,8 @@ export function registerServerLifecycle(
         for (const agent of store.listAgents(project.id)) {
           const releaseAssetReconciliation = leaseAgentAssetReconciliation(
             agentDeliveryLeases,
+            deletingAgentIds,
+            attachmentDeletionInProgress,
             reconcilingAssetAgentIds,
             agent.id,
           );

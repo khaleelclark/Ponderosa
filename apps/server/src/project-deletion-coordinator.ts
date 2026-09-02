@@ -38,8 +38,11 @@ interface ProjectDeletionCoordinatorContext {
   engineModelCatalogDiscoveryAuthorities: ReadonlySet<ModelCatalogDiscoveryAuthority>;
   deletingProjectIds: Set<string>;
   deletingAgentIds: Set<string>;
+  reconcilingAssetAgentIds: ReadonlySet<string>;
+  agentAttachmentDeletionInProgress(agentId: string): boolean;
   agentCreationConversationLeases: ReadonlyMap<string, number>;
   conversationDeliveryLeases: ReadonlyMap<string, number>;
+  agentDeliveryLeases: ReadonlyMap<string, number>;
   projectDeletionInFlightIds: Set<string>;
   projectBrowserGrants: Map<string, { agentId: string; runId: string }>;
   browserSessions: BrowserSessionManager;
@@ -90,8 +93,11 @@ export function registerProjectDeletionRoutes(
     engineModelCatalogDiscoveryAuthorities,
     deletingProjectIds,
     deletingAgentIds,
+    reconcilingAssetAgentIds,
+    agentAttachmentDeletionInProgress,
     agentCreationConversationLeases,
     conversationDeliveryLeases,
+    agentDeliveryLeases,
     projectDeletionInFlightIds,
     projectBrowserGrants,
     browserSessions,
@@ -202,6 +208,13 @@ export function registerProjectDeletionRoutes(
       });
     }
     const agents = store.listAgents(project.id);
+    if (agents.some((agent) => (agentDeliveryLeases.get(agent.id) ?? 0) > 0)) {
+      return reply.code(409).send({ error: "Wait for Agent file activity to finish before deleting this Project" });
+    }
+    if (agents.some((agent) =>
+      reconcilingAssetAgentIds.has(agent.id) || agentAttachmentDeletionInProgress(agent.id))) {
+      return reply.code(409).send({ error: "Wait for asset maintenance to finish before deleting this Project" });
+    }
     const quarantined = deletingProjectIds.has(project.id);
     if (projectDeletionInFlightIds.has(project.id) ||
         (!quarantined && agents.some((agent) => deletingAgentIds.has(agent.id)))) {

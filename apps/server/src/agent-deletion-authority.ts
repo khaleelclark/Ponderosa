@@ -46,6 +46,8 @@ type AgentDeletionAuthorityContext =
     }>;
     deletingAgentIds: Set<string>;
     agentDeliveryLeases: ReadonlyMap<string, number>;
+    agentAttachmentDeletionInProgress(agentId: string): boolean;
+    reconcilingAssetAgentIds: ReadonlySet<string>;
     contextCursors: ContextCursorStore;
     appendWorkspace(event: Parameters<WorkspaceStore["append"]>[0]): WorkspaceEventEnvelope;
     publishWorkspaceSince(cursor: number): void;
@@ -88,6 +90,8 @@ export function createAgentDeletionAuthority(
     contextRolloverPending,
     deletingAgentIds,
     agentDeliveryLeases,
+    agentAttachmentDeletionInProgress,
+    reconcilingAssetAgentIds,
     contextCursors,
     appendWorkspace,
     publishWorkspaceSince,
@@ -312,7 +316,10 @@ export function createAgentDeletionAuthority(
       false,
     ))();
     const expectedAgentIds = current.affectedAgents.map((agent) => agent.id);
-    if (expectedAgentIds.some((agentId) => (agentDeliveryLeases.get(agentId) ?? 0) > 0)) {
+    if (expectedAgentIds.some((agentId) =>
+      (agentDeliveryLeases.get(agentId) ?? 0) > 0 ||
+      agentAttachmentDeletionInProgress(agentId) ||
+      reconcilingAssetAgentIds.has(agentId))) {
       throw new AgentDeletionConflictError(current);
     }
     const enabledAutomation = expectedAgentIds.length

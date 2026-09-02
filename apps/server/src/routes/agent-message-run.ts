@@ -527,6 +527,8 @@ export function registerAgentMessageRunRoute(
               communication: proposedCommunication,
               dispatch: {
                 text: publishedText,
+                ...(shareWithOrganization ? { conversationText: publishedText } : {}),
+                conversationAttachmentIds: messageAttachments.map((attachment) => attachment.id),
                 ...(userTextArtifact ? {
                   artifactId: userTextArtifact.id,
                   resultRef: `ponderosa://artifact/${userTextArtifact.id}`,

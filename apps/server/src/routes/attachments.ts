@@ -5,7 +5,8 @@ import { AssetError, type AssetStore, contentDisposition } from "../assets.js";
 export interface AttachmentRoutesContext {
   readonly store: Pick<AgentStore, "getAgent">;
   readonly assets: Pick<AssetStore, "content" | "read" | "remove" | "stage">;
-  readonly agentDeliveryLeases: ReadonlyMap<string, number>;
+  readonly agentDeliveryLeases: Map<string, number>;
+  readonly agentDeletionInProgress: (agentId: string) => boolean;
   readonly deletingAttachmentKeys: Set<string>;
   readonly reconcilingAssetAgentIds: ReadonlySet<string>;
 }
@@ -16,11 +17,18 @@ export function attachmentDeletionKey(agentId: string, attachmentId: string): st
 
 export function registerAttachmentRoutes(
   app: FastifyInstance,
-  { agentDeliveryLeases, assets, deletingAttachmentKeys, reconcilingAssetAgentIds, store }: AttachmentRoutesContext,
+  { agentDeliveryLeases, agentDeletionInProgress, assets, deletingAttachmentKeys, reconcilingAssetAgentIds, store }: AttachmentRoutesContext,
 ): void {
   app.post<{ Params: { id: string }; Body: Buffer }>("/api/agents/:id/attachments", async (request, reply) => {
     const agent = store.getAgent(request.params.id);
-    if (!agent) return reply.code(404).send({ error: "agent not found" });
+    if (!agent || agent.archived) return reply.code(404).send({ error: "agent not found" });
+    if (agentDeletionInProgress(agent.id)) {
+      return reply.code(409).send({ error: "Agent deletion is in progress" });
+    }
+    if (reconcilingAssetAgentIds.has(agent.id)) {
+      return reply.code(409).send({ error: "Asset cleanup is in progress" });
+    }
+    agentDeliveryLeases.set(agent.id, (agentDeliveryLeases.get(agent.id) ?? 0) + 1);
     try {
       const asset = await assets.stage({
         projectId: agent.projectId,
@@ -39,6 +47,10 @@ export function registerAttachmentRoutes(
         return reply.code(error.statusCode).send({ error: error.message });
       }
       throw error;
+    } finally {
+      const remaining = (agentDeliveryLeases.get(agent.id) ?? 1) - 1;
+      if (remaining > 0) agentDeliveryLeases.set(agent.id, remaining);
+      else agentDeliveryLeases.delete(agent.id);
     }
   });
 
@@ -122,6 +134,9 @@ export function registerAttachmentRoutes(
       const deletionKey = attachmentDeletionKey(agent.id, request.params.attachmentId);
       if ((agentDeliveryLeases.get(agent.id) ?? 0) > 0) {
         return reply.code(409).send({ error: "Agent message delivery is in progress" });
+      }
+      if (agentDeletionInProgress(agent.id)) {
+        return reply.code(409).send({ error: "Agent deletion is in progress" });
       }
       if (reconcilingAssetAgentIds.has(agent.id)) {
         return reply.code(409).send({ error: "Asset cleanup is in progress" });
