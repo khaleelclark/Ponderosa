@@ -11,13 +11,97 @@ import { registerConversationRoutes } from "../dist/routes/conversations.js";
 import { registerAgentMaintenanceRoutes } from "../dist/routes/agent-maintenance.js";
 import { registerCollaborationRoutes } from "../dist/routes/collaboration.js";
 import { registerAttachmentRoutes } from "../dist/routes/attachments.js";
+import { registerAgentCreationRoutes } from "../dist/routes/agent-creation.js";
 import { leaseAgentAssetReconciliation } from "../dist/server-lifecycle.js";
+import { leaseAgentDelivery } from "../dist/delivery-leases.js";
+import { createCommunicationProjectionReconciler } from "../dist/communication-projection-reconciler.js";
 
 function deferred() {
   let resolve;
   const promise = new Promise((done) => { resolve = done; });
   return { promise, resolve };
 }
+
+test("Agent delivery leases deduplicate owners and release idempotently", () => {
+  const leases = new Map();
+  const release = leaseAgentDelivery(leases, ["agent-a", "agent-a", "agent-b"]);
+  assert.deepEqual([...leases], [["agent-a", 1], ["agent-b", 1]]);
+  release();
+  release();
+  assert.equal(leases.size, 0);
+});
+
+test("new Agents remain quarantined while opening assets are staged", async (t) => {
+  const chat = { id: "chat-a", projectId: "project-a", archived: false };
+  const project = { id: chat.projectId, defaultEngine: "codex" };
+  const agent = {
+    id: "agent-a",
+    projectId: project.id,
+    conversationId: chat.id,
+    activeEngine: "codex",
+    archived: false,
+  };
+  const deletingAgentIds = new Set();
+  const agentDeliveryLeases = new Map();
+  const stageStarted = deferred();
+  const finishStage = deferred();
+  const app = Fastify();
+  t.after(() => app.close());
+  registerAgentCreationRoutes(app, {
+    store: {
+      getProject: () => project,
+      getConversation: () => chat,
+      createAgent: () => agent,
+      deleteAgent: () => true,
+    },
+    coordinationV3: { handleAgentDeletion: () => {} },
+    workspace: { getPreferences: () => ({}) },
+    assets: {
+      stage: async () => {
+        stageStarted.resolve();
+        await finishStage.promise;
+        throw new Error("stop after quarantine check");
+      },
+      remove: async () => true,
+    },
+    drafts: {
+      normalizedOwner: () => "owner-a",
+      prepared: async () => ({ body: Buffer.from("x"), prepared: {} }),
+    },
+    engines: new Map([["codex", {
+      adapter: {
+        id: "codex",
+        listModels: () => [],
+        listEfforts: () => [],
+      },
+    }]]),
+    deletingAgentIds,
+    deletingProjectIds: new Set(),
+    deletingConversationIds: new Set(),
+    agentCreationConversationLeases: new Map(),
+    agentDeliveryLeases,
+    cachedModelOptions: () => [],
+  });
+
+  const creation = app.inject({
+    method: "POST",
+    url: `/api/projects/${project.id}/agents`,
+    payload: {
+      title: "Agent A",
+      engine: "codex",
+      conversationId: chat.id,
+      draftAttachmentIds: ["draft-a"],
+      draftOwnerId: "owner-a",
+    },
+  });
+  await stageStarted.promise;
+  assert.equal(deletingAgentIds.has(agent.id), true);
+  assert.equal(agentDeliveryLeases.get(agent.id), 1);
+  finishStage.resolve();
+  assert.equal((await creation).statusCode, 409);
+  assert.equal(deletingAgentIds.has(agent.id), false);
+  assert.equal(agentDeliveryLeases.has(agent.id), false);
+});
 
 test("asset cleanup and message delivery cannot lease the same Agent", () => {
   const deliveryLeases = new Map([["agent-a", 1]]);
@@ -366,6 +450,170 @@ test("direct message retries replay the original success after a recipient is ar
       { agentId: "agent-b", queued: true, deliveryId: "delivery-b", state: "queued" },
     ],
   });
+});
+
+test("multi-recipient direct messages persist the exact room attachment set", async (t) => {
+  const chat = { id: "chat-a", projectId: "project-a", archived: false };
+  const agents = new Map([
+    ["agent-a", { id: "agent-a", projectId: chat.projectId, conversationId: chat.id, archived: false }],
+    ["agent-b", { id: "agent-b", projectId: chat.projectId, conversationId: chat.id, archived: false }],
+  ]);
+  const assetsByAgent = new Map([
+    ["agent-a", { id: "asset-a", projectId: chat.projectId, agentId: "agent-a", name: "a.txt", mediaType: "text/plain", size: 1, state: "staged" }],
+    ["agent-b", { id: "asset-b", projectId: chat.projectId, agentId: "agent-b", name: "b.txt", mediaType: "text/plain", size: 1, state: "staged" }],
+  ]);
+  let runtimeInput;
+  let roomInput;
+  let roomMessage;
+  const app = Fastify();
+  t.after(() => app.close());
+  registerConversationDeliveryRoutes(app, {
+    store: {
+      getConversation: () => chat,
+      getAgent: (id) => agents.get(id),
+      getConversationMessageByReceiptKey: () => roomMessage,
+      appendConversationMessage: (_id, message) => {
+        roomInput = message;
+        roomMessage = { id: "message-a", ...message };
+        return roomMessage;
+      },
+      appendCommunicationProjection: () => ({}),
+    },
+    coordinationV3: {
+      runtimeCommunication: () => undefined,
+      recordRuntimeCommunication: (input) => {
+        runtimeInput = input;
+        return {
+          replayed: false,
+          activations: input.activations.map((activation, index) => ({
+            ...activation,
+            id: `delivery-${index}`,
+          })),
+        };
+      },
+    },
+    assets: { associate: async () => {} },
+    projectDeletionInProgress: () => false,
+    agentDeletionInProgress: () => false,
+    conversationDeliveryLeases: new Map(),
+    agentDeliveryLeases: new Map(),
+    assetMetadata: async (agentId) => assetsByAgent.get(agentId),
+    prepareUserCommunicationText: async () => ({ canonicalText: "hello", publishedText: "hello" }),
+    recordCommunication: (communication) => communication,
+    projectCommunicationToAgentAudit: () => {},
+    publishCoordinationV3Changed: () => {},
+    notifyScheduler: () => {},
+  });
+
+  const response = await app.inject({
+    method: "POST",
+    url: `/api/conversations/${chat.id}/direct-messages`,
+    payload: {
+      text: "hello",
+      recipients: [
+        { agentId: "agent-a", attachmentIds: ["asset-a"] },
+        { agentId: "agent-b", attachmentIds: ["asset-b"] },
+      ],
+      idempotencyKey: "exact-room-assets",
+    },
+  });
+
+  assert.equal(response.statusCode, 200, response.body);
+  assert.deepEqual(runtimeInput.payload.dispatch.conversationAttachmentIds, ["asset-a"]);
+  assert.deepEqual(runtimeInput.payload.communication.attachments.map((asset) => asset.id), ["asset-a", "asset-b"]);
+  assert.deepEqual(roomInput.attachments.map((asset) => asset.id), ["asset-a"]);
+});
+
+test("projection recovery leases exact owners and restores only the persisted room attachments", async () => {
+  const chat = { id: "chat-a", projectId: "project-a", archived: false };
+  const agents = new Map([
+    ["agent-a", { id: "agent-a", projectId: chat.projectId, conversationId: chat.id, archived: false }],
+    ["agent-b", { id: "agent-b", projectId: chat.projectId, conversationId: chat.id, archived: false }],
+  ]);
+  const attachments = [
+    { id: "asset-a", agentId: "agent-a", name: "a.txt", mediaType: "text/plain", size: 1, state: "associated" },
+    { id: "asset-b", agentId: "agent-b", name: "b.txt", mediaType: "text/plain", size: 1, state: "associated" },
+  ];
+  const event = {
+    eventId: "event-a",
+    schemaVersion: 2,
+    projectId: chat.projectId,
+    conversationId: chat.id,
+    sender: { kind: "user", userId: "local-operator" },
+    intent: "user_dm",
+    audience: { kind: "user_agents", userId: "local-operator", agentIds: ["agent-a", "agent-b"] },
+    text: "hello",
+    attachments,
+    createdAt: new Date().toISOString(),
+  };
+  const conversationLeases = new Map();
+  const agentLeases = new Map();
+  let roomInput;
+  const store = {
+    getConversation: () => chat,
+    getAgent: (id) => agents.get(id),
+    getCommunicationEvent: () => event,
+    canProjectCommunication: () => true,
+    getConversationMessages: () => [],
+    appendConversationMessage: (_id, message) => {
+      assert.equal(conversationLeases.get(chat.id), 1);
+      assert.equal(agentLeases.get("agent-a"), 1);
+      assert.equal(agentLeases.get("agent-b"), 1);
+      roomInput = message;
+      return { id: "message-a", createdAt: event.createdAt, ...message };
+    },
+    getCommunicationProjection: () => undefined,
+    appendCommunicationProjection: () => ({}),
+  };
+  const reconciler = createCommunicationProjectionReconciler({
+    store,
+    coordinationV3: {
+      runtimeCommunications: () => [{
+        id: "runtime-a",
+        projectId: chat.projectId,
+        recipientAgentIds: ["agent-a", "agent-b"],
+        payload: {
+          communication: event,
+          dispatch: {
+            conversationAttachmentIds: ["asset-a"],
+            recipients: attachments.map((attachment) => ({
+              agentId: attachment.agentId,
+              attachments: [attachment],
+            })),
+          },
+        },
+      }],
+      requestCommunicationsNeedingProjection: () => [],
+      runtimeArtifacts: () => [],
+    },
+    assets: {
+      authoritativeRuntimeCommunicationAttachments: () => attachments.map((attachment) => ({
+        attachment,
+        contentHash: `hash-${attachment.id}`,
+        localPath: `/tmp/${attachment.id}`,
+      })),
+      associate: async () => {},
+    },
+    projectDeletionInProgress: () => false,
+    agentDeletionInProgress: () => false,
+    conversationDeletionInProgress: () => false,
+    attachmentDeletionInProgress: () => false,
+    assetReconciliationInProgress: () => false,
+    conversationDeliveryLeases: conversationLeases,
+    agentDeliveryLeases: agentLeases,
+    recordCommunication: (communication) => communication,
+    projectCommunicationArtifact: () => {},
+    communicationArtifactAccess: () => ({}),
+    scheduleCommunicationReconciliation: () => {},
+    logError: (_meta, message) => { throw new Error(message); },
+    logInfo: () => {},
+    projectCommunicationToAgentAudit: () => {},
+  });
+
+  await reconciler.reconcileRuntimeCommunicationProjections();
+  assert.deepEqual(roomInput.attachments.map((asset) => asset.id), ["asset-a"]);
+  assert.equal(conversationLeases.size, 0);
+  assert.equal(agentLeases.size, 0);
 });
 
 test("direct message retries lease the Chat while repairing a missing projection", async (t) => {

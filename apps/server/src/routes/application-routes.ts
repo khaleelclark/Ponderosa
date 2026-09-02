@@ -84,7 +84,9 @@ type ApplicationRoutesContext =
   Omit<Parameters<typeof registerAgentPackageRoutes>[1], "dataDir" | "coordination"> &
   Omit<Parameters<typeof registerAgentMaintenanceRoutes>[1], "workingCopies"> &
   Omit<Parameters<typeof registerAgentMessageRunRoute>[1],
-    "deploymentDraining" | "assetMetadata" | "workingCopies"> &
+    "attachmentDeletionInProgress" | "conversationDeletionInProgress" |
+    "deploymentDraining" | "assetMetadata" |
+    "assetReconciliationInProgress" | "workingCopies"> &
   Parameters<typeof registerWorkspacePreferenceRoutes>[1] &
   Parameters<typeof registerNotificationListRoute>[1] &
   Omit<Parameters<typeof registerPushRoutes>[1], "configuration"> &
@@ -498,6 +500,7 @@ registerAgentCreationRoutes(app, {
   deletingProjectIds,
   deletingConversationIds,
   agentCreationConversationLeases,
+  agentDeliveryLeases,
   cachedModelOptions,
   recordCommunication,
   prepareUserCommunicationText,
@@ -646,6 +649,12 @@ registerAgentMessageRunRoute(app, {
   contextCursors, activeRuns, agentMessageCapabilities, runtimeAuthorities,
   organizationEnvelopeStates, scheduledSessionRollovers, contextRolloverPending,
   engineModelCatalogCache, deletingProjectIds, deletingAgentIds,
+  conversationDeletionInProgress: conversationId => deletingConversationIds.has(conversationId),
+  attachmentDeletionInProgress: (agentId, attachmentId) =>
+    deletingAttachmentKeys.has(attachmentDeletionKey(agentId, attachmentId)),
+  conversationDeliveryLeases,
+  agentDeliveryLeases,
+  assetReconciliationInProgress: agentId => reconcilingAssetAgentIds.has(agentId),
   coordinationV3WorkerId, v3DispatchKey, deploymentDraining: isDeploymentDraining,
   isClosed: isClosed, providerEnabled, leaseExpiry, reusableRuntime, openingRuntime,
   closingRuntime, oneShotRuntime, runtimeAuthority, pruneRuntimeAuthority, clearAgentResumeSession,

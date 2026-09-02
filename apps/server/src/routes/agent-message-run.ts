@@ -65,6 +65,7 @@ import {
 import type { DraftService } from "./drafts.js";
 import type { PreparedCommunicationArtifact } from "./conversation-deliveries.js";
 import { cleanupRuntimeAttachments } from "../runtime-attachments.js";
+import { leaseAgentDelivery, leaseConversationDelivery } from "../delivery-leases.js";
 import { prepareAgentRun } from "./agent-run-preparation.js";
 import { startProviderRunExecution } from "./provider-run-executor.js";
 
@@ -170,6 +171,11 @@ export type AgentMessageRunContext =
     engineModelCatalogCache: EngineControlPlane["engineModelCatalogCache"];
     deletingProjectIds: ReadonlySet<string>;
     deletingAgentIds: ReadonlySet<string>;
+    conversationDeletionInProgress(conversationId: string): boolean;
+    attachmentDeletionInProgress(agentId: string, attachmentId: string): boolean;
+    conversationDeliveryLeases: Map<string, number>;
+    agentDeliveryLeases: Map<string, number>;
+    assetReconciliationInProgress(agentId: string): boolean;
     coordinationV3WorkerId: string;
     v3DispatchKey: string;
     deploymentDraining(): boolean;
@@ -222,7 +228,13 @@ export function registerAgentMessageRunRoute(
     engines,
     activeRuns,
     agentMessageCapabilities,
+    deletingProjectIds,
     deletingAgentIds,
+    conversationDeletionInProgress,
+    attachmentDeletionInProgress,
+    conversationDeliveryLeases,
+    agentDeliveryLeases,
+    assetReconciliationInProgress,
     coordinationV3WorkerId,
     v3DispatchKey,
     leaseExpiry,
@@ -280,9 +292,42 @@ export function registerAgentMessageRunRoute(
     async (request, reply) => {
       if (deletingAgentIds.has(request.params.id)) return reply.code(404).send({ error: "agent not found" });
       const agent = store.getAgent(request.params.id);
-      if (!agent) return reply.code(404).send({ error: "agent not found" });
+      if (!agent || agent.archived) return reply.code(404).send({ error: "agent not found" });
       const project = store.getProject(agent.projectId);
       if (!project) return reply.code(404).send({ error: "project not found" });
+      if (deletingProjectIds.has(project.id)) {
+        return reply.code(409).send({ error: "Project deletion is already in progress" });
+      }
+      const agentConversation = agent.conversationId
+        ? store.getConversation(agent.conversationId)
+        : undefined;
+      if (agent.conversationId && (!agentConversation || agentConversation.archived ||
+          conversationDeletionInProgress(agent.conversationId))) {
+        return reply.code(409).send({ error: "Agent Chat is unavailable; retry safely" });
+      }
+      if (assetReconciliationInProgress(agent.id)) {
+        return reply.code(409).send({ error: "Agent asset maintenance is in progress; retry safely" });
+      }
+      const requestedAttachmentIds = request.body?.attachmentIds ?? [];
+      if (!Array.isArray(requestedAttachmentIds) ||
+          requestedAttachmentIds.some((attachmentId) => typeof attachmentId !== "string" || !attachmentId) ||
+          requestedAttachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE ||
+          new Set(requestedAttachmentIds).size !== requestedAttachmentIds.length) {
+        return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique attachments are allowed` });
+      }
+      if (requestedAttachmentIds.some((attachmentId) =>
+        attachmentDeletionInProgress(agent.id, attachmentId))) {
+        return reply.code(409).send({ error: "Asset deletion is in progress; retry safely" });
+      }
+      const releaseAgentDelivery = agent.conversationId
+        ? leaseConversationDelivery(
+            conversationDeliveryLeases,
+            agentDeliveryLeases,
+            agent.conversationId,
+            [agent.id],
+          )
+        : leaseAgentDelivery(agentDeliveryLeases, [agent.id]);
+      try {
       const allowedMessageFields = new Set([
         "text", "idempotencyKey", "model", "effort", "speed", "agentMentionDepth", "agentMentionTrail", "sourceChannel",
               "shareWithOrganization", "activeRunDelivery", "sourceConversationId",
@@ -416,6 +461,9 @@ export function registerAgentMessageRunRoute(
       if (!Array.isArray(stagedDraftIds) || stagedDraftIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(stagedDraftIds).size !== stagedDraftIds.length) {
         return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique draft attachments are allowed` });
       }
+      if (requestedAttachmentIds.length + stagedDraftIds.length > MAX_ATTACHMENTS_PER_MESSAGE) {
+        return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique attachments are allowed` });
+      }
       if (stagedDraftIds.length && (!stagedDraftOwner || !stagedDraftSurface || !drafts.validId(stagedDraftSurface))) {
         return reply.code(400).send({ error: "draft surface and owner are required" });
       }
@@ -440,8 +488,18 @@ export function registerAgentMessageRunRoute(
         if (error instanceof AssetError) return reply.code(error.statusCode).send({ error: error.message });
         throw error;
       }
-      const attachmentIds = [...(request.body?.attachmentIds ?? []), ...promotedDraftAssets.map((item) => item.id)];
-      if (!Array.isArray(attachmentIds) || attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(attachmentIds).size !== attachmentIds.length) return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique attachments are allowed` });
+      const attachmentIds = [...requestedAttachmentIds, ...promotedDraftAssets.map((item) => item.id)];
+      if (new Set(attachmentIds).size !== attachmentIds.length) {
+        await Promise.allSettled(promotedDraftAssets.map((attachment) =>
+          assets.remove(agent.projectId, agent.id, attachment.id)));
+        return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique attachments are allowed` });
+      }
+      if (attachmentIds.some((attachmentId) =>
+        attachmentDeletionInProgress(agent.id, attachmentId))) {
+        await Promise.allSettled(promotedDraftAssets.map((attachment) =>
+          assets.remove(agent.projectId, agent.id, attachment.id)));
+        return reply.code(409).send({ error: "Asset deletion is in progress; retry safely" });
+      }
       const attached = (await Promise.all(attachmentIds.map((id) => assetMetadata(agent.id, id))));
       if (attached.some((item) => !item || item.agentId !== agent.id)) return reply.code(404).send({ error: "asset not found" });
       const messageAttachments = (attached as NonNullable<(typeof attached)[number]>[]).map(({ projectId: _projectId, originalFile: _originalFile, previewFile: _previewFile, associatedAt: _associatedAt, ...item }) => ({ ...item, state: "associated" as const })) as AssetDto[];
@@ -932,6 +990,9 @@ export function registerAgentMessageRunRoute(
           : {}),
       });
 
+      // The active Run is now the lifecycle authority. Release delivery
+      // deletion guards before provider execution continues in background.
+      releaseAgentDelivery();
       startProviderRunExecution(app, runContext, {
         activeRun,
         agent,
@@ -984,6 +1045,9 @@ export function registerAgentMessageRunRoute(
       });
 
       return { queued: false, runId, mode, communicationEventId };
+      } finally {
+        releaseAgentDelivery();
+      }
     },
   );
 }

@@ -11,6 +11,7 @@ import type {
 import type { AssetStore, AuthoritativeRuntimeAttachment } from "./assets.js";
 import { agentMentionHandle, renderDirectMessage, renderScopedMessage } from "./agent-mentions.js";
 import type { createCommunicationArtifactAuthority } from "./communication-artifacts.js";
+import { leaseAgentDelivery, leaseConversationDelivery } from "./delivery-leases.js";
 
 type CommunicationArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>;
 
@@ -18,6 +19,13 @@ interface CommunicationProjectionReconcilerContext {
   store: AgentStore;
   coordinationV3: CoordinationV3Store;
   assets: AssetStore;
+  projectDeletionInProgress(projectId: string): boolean;
+  agentDeletionInProgress(agentId: string): boolean;
+  conversationDeletionInProgress(conversationId: string): boolean;
+  attachmentDeletionInProgress(agentId: string, attachmentId: string): boolean;
+  assetReconciliationInProgress(agentId: string): boolean;
+  conversationDeliveryLeases: Map<string, number>;
+  agentDeliveryLeases: Map<string, number>;
   recordCommunication(event: CommunicationEvent): CommunicationEvent;
   projectCommunicationArtifact: CommunicationArtifactAuthority["projectCommunicationArtifact"];
   communicationArtifactAccess: CommunicationArtifactAuthority["communicationArtifactAccess"];
@@ -76,6 +84,13 @@ export function createCommunicationProjectionReconciler(
     store,
     coordinationV3,
     assets,
+    projectDeletionInProgress,
+    agentDeletionInProgress,
+    conversationDeletionInProgress,
+    attachmentDeletionInProgress,
+    assetReconciliationInProgress,
+    conversationDeliveryLeases,
+    agentDeliveryLeases,
     recordCommunication,
     projectCommunicationArtifact,
     communicationArtifactAccess,
@@ -288,6 +303,31 @@ export function createCommunicationProjectionReconciler(
       if (!event.attachments?.length && recoveredConversationAttachments?.length) {
         event = { ...event, attachments: recoveredConversationAttachments };
       }
+      if (projectDeletionInProgress(row.projectId)) continue;
+      const conversationId = event.conversationId;
+      if (conversationId) {
+        const conversation = store.getConversation(conversationId);
+        if (!conversation || conversation.projectId !== row.projectId || conversation.archived ||
+            conversationDeletionInProgress(conversationId)) continue;
+      }
+      const leasedAgentIds = [...new Set([
+        ...recipientAgentIds,
+        ...expectedAttachmentOwners.values(),
+        ...runtimeArtifacts.flatMap((artifact) => artifact.originAgentId ? [artifact.originAgentId] : []),
+        ...(event.sender?.kind === "agent" ? [event.sender.agentId] : []),
+      ])];
+      if (leasedAgentIds.some((agentId) =>
+        agentDeletionInProgress(agentId) || assetReconciliationInProgress(agentId)) ||
+          [...expectedAttachmentOwners].some(([attachmentId, agentId]) =>
+            attachmentDeletionInProgress(agentId, attachmentId))) continue;
+      const releaseProjectionLease = conversationId
+        ? leaseConversationDelivery(
+            conversationDeliveryLeases,
+            agentDeliveryLeases,
+            conversationId,
+            leasedAgentIds,
+          )
+        : leaseAgentDelivery(agentDeliveryLeases, leasedAgentIds);
       try {
         let canonical = store.getCommunicationEvent(row.projectId, communicationEventId);
         if (!canonical) {
@@ -324,7 +364,9 @@ export function createCommunicationProjectionReconciler(
           ? recipientAgentIds
           : behavior.deliveryRecipients.flatMap((recipient) =>
               recipient.kind === "agent" ? [recipient.agentId] : []);
-        const roomAttachments = canonical.attachments ?? recoveredConversationAttachments;
+        const roomAttachments = conversationAttachmentIds === undefined
+          ? canonical.attachments ?? recoveredConversationAttachments
+          : recoveredConversationAttachments;
         const role = canonical.sender.kind === "user" ? "user" : canonical.sender.kind === "system" ? "system" : "assistant";
         const requestProjectionText = row.sourceKind === "request"
           ? `${recipientAgentIds.flatMap((agentId) => {
@@ -450,6 +492,8 @@ export function createCommunicationProjectionReconciler(
           runtimeCommunicationId: row.id,
           communicationEventId,
         }, "runtime communication projection recovery failed");
+      } finally {
+        releaseProjectionLease();
       }
     }
     if (skippedUnavailableTargets > 0) {

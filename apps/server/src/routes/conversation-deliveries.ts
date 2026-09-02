@@ -20,7 +20,10 @@ import type {
   WorkspaceStore,
 } from "@ponderosa/agents";
 import { ASSET_LIMITS, AssetError, type AssetStore } from "../assets.js";
+import { leaseConversationDelivery } from "../delivery-leases.js";
 import { renderScopedMessage, stripLeadingScopeTag } from "../agent-mentions.js";
+
+export { leaseConversationDelivery } from "../delivery-leases.js";
 
 export interface PreparedCommunicationArtifact {
   id: string;
@@ -95,31 +98,6 @@ export interface ConversationDeliveryRouteDependencies {
 }
 
 const MAX_ATTACHMENTS_PER_MESSAGE = ASSET_LIMITS.maxAssetsPerMessage;
-
-export function leaseConversationDelivery(
-  conversationLeases: Map<string, number>,
-  agentLeases: Map<string, number>,
-  conversationId: string,
-  agentIds: readonly string[],
-): () => void {
-  conversationLeases.set(conversationId, (conversationLeases.get(conversationId) ?? 0) + 1);
-  for (const agentId of agentIds) {
-    agentLeases.set(agentId, (agentLeases.get(agentId) ?? 0) + 1);
-  }
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    const remainingConversationLeases = (conversationLeases.get(conversationId) ?? 1) - 1;
-    if (remainingConversationLeases > 0) conversationLeases.set(conversationId, remainingConversationLeases);
-    else conversationLeases.delete(conversationId);
-    for (const agentId of agentIds) {
-      const remainingAgentLeases = (agentLeases.get(agentId) ?? 1) - 1;
-      if (remainingAgentLeases > 0) agentLeases.set(agentId, remainingAgentLeases);
-      else agentLeases.delete(agentId);
-    }
-  };
-}
 
 export function conversationDeliveryRequestFingerprint(input: unknown): string {
   return createHash("sha256").update(JSON.stringify(input)).digest("hex");
@@ -828,6 +806,7 @@ export function registerConversationDeliveryRoutes(
             dispatch: {
               conversationId: master.id,
               text: prepared.publishedText,
+              conversationAttachmentIds: (attachmentsByAgent[0] ?? []).map((attachment) => attachment.id),
               ...(prepared.artifact ? {
                 artifactId: prepared.artifact.id,
                 resultRef: `ponderosa://artifact/${prepared.artifact.id}`,

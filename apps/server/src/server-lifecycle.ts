@@ -179,6 +179,8 @@ export function registerServerLifecycle(
   let assetSweep: NodeJS.Timeout | undefined;
   let agentDeletionCleanupSweep: NodeJS.Timeout | undefined;
   let agentDeletionCleanupDraining = false;
+  let agentDeletionCleanupOperation: Promise<void> | undefined;
+  let assetReconciliationOperation: Promise<void> | undefined;
   let linkPreviewSweep: NodeJS.Timeout | undefined;
   let startupProjectionRecoveryImmediate: NodeJS.Immediate | undefined;
   let startupProjectionRecovery: Promise<void> | undefined;
@@ -236,6 +238,14 @@ export function registerServerLifecycle(
     } finally {
       agentDeletionCleanupDraining = false;
     }
+  };
+  const runAgentDeletionCleanup = (): Promise<void> => {
+    if (agentDeletionCleanupOperation) return agentDeletionCleanupOperation;
+    const operation = drainAgentDeletionCleanup().finally(() => {
+      if (agentDeletionCleanupOperation === operation) agentDeletionCleanupOperation = undefined;
+    });
+    agentDeletionCleanupOperation = operation;
+    return operation;
   };
   app.addHook("onReady", async () => {
     const lifecycleStartedAt = performance.now();
@@ -510,9 +520,13 @@ export function registerServerLifecycle(
     completeLifecyclePhase("scheduler_and_triggers");
     reconcileTriggerOperationalNotifications();
     reconcileProjectDeletionOperationalNotifications();
-    await drainAgentDeletionCleanup();
+    await runAgentDeletionCleanup();
     completeLifecyclePhase("operational_recovery");
-    agentDeletionCleanupSweep = setInterval(() => { void drainAgentDeletionCleanup(); }, 30_000);
+    agentDeletionCleanupSweep = setInterval(() => {
+      void runAgentDeletionCleanup().catch((error) => {
+        if (!isClosed()) app.log.error({ err: error }, "Agent deletion cleanup retry failed");
+      });
+    }, 30_000);
     agentDeletionCleanupSweep.unref();
     webPushDelivery?.start();
     const reconcileAssets = async () => {
@@ -539,10 +553,23 @@ export function registerServerLifecycle(
         }
       }
     };
+    const runAssetReconciliation = (): Promise<void> => {
+      if (assetReconciliationOperation) return assetReconciliationOperation;
+      const operation = reconcileAssets().finally(() => {
+        if (assetReconciliationOperation === operation) assetReconciliationOperation = undefined;
+      });
+      assetReconciliationOperation = operation;
+      return operation;
+    };
     // Projection recovery above is authoritative. Orphan asset cleanup remains
     // periodic maintenance so it cannot delay startup or monopolize ordinary
     // requests immediately after the server begins accepting traffic.
-    assetSweep = setInterval(() => { if (!isClosed()) void reconcileAssets(); }, 60 * 60 * 1000);
+    assetSweep = setInterval(() => {
+      if (isClosed()) return;
+      void runAssetReconciliation().catch((error) => {
+        if (!isClosed()) app.log.error({ err: error }, "Agent asset reconciliation failed");
+      });
+    }, 60 * 60 * 1000);
     assetSweep.unref();
     linkPreviewSweep = setInterval(() => {
       const now = Date.now();
@@ -688,6 +715,14 @@ export function registerServerLifecycle(
       boundedBackgroundShutdown(
         "runtime communication projection recovery",
         () => startupProjectionRecovery,
+      ),
+      boundedBackgroundShutdown(
+        "Agent deletion maintenance",
+        () => agentDeletionCleanupOperation,
+      ),
+      boundedBackgroundShutdown(
+        "Agent asset maintenance",
+        () => assetReconciliationOperation,
       ),
       ...shutdownRunBrowserClosures.map((close) => Promise.resolve().then(close)),
       Promise.resolve().then(() => browserSessions.closeAll("server_shutdown")),

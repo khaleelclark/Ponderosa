@@ -4,7 +4,11 @@ import {
   eligibleAllChatTargets,
   parseAllChatReplyTarget,
 } from "../src/components/allChatRouting.js";
-import { selectExclusiveNewAgentDestination } from "../src/components/chat/composerDestination.js";
+import {
+  clampComposerMenuIndex,
+  hasComposerDestination,
+  selectExclusiveNewAgentDestination,
+} from "../src/components/chat/composerDestination.js";
 
 const bryce = {
   id: "bryce",
@@ -40,4 +44,21 @@ test("new Agent selection removes existing recipient destinations", () => {
     ),
     "ask now #new-agent ",
   );
+});
+
+test("recognizes an authored new Agent destination", () => {
+  assert.equal(
+    hasComposerDestination("#new-agent take this over", "new-agent"),
+    true,
+  );
+  assert.equal(
+    hasComposerDestination("continue with #new-agent.", "new-agent"),
+    true,
+  );
+});
+
+test("keeps autocomplete selection within a live suggestion list", () => {
+  assert.equal(clampComposerMenuIndex(4, 2), 1);
+  assert.equal(clampComposerMenuIndex(1, 2), 1);
+  assert.equal(clampComposerMenuIndex(4, 0), 0);
 });

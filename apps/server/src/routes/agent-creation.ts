@@ -13,6 +13,7 @@ import type { FastifyInstance } from "fastify";
 import { MAX_ATTACHMENTS_PER_MESSAGE, type EngineRegistration } from "../app-contracts.js";
 import { AssetError, type AssetStore } from "../assets.js";
 import type { createCommunicationArtifactAuthority } from "../communication-artifacts.js";
+import { leaseAgentDelivery } from "../delivery-leases.js";
 import {
   concreteRuntimeSelection,
   runtimeSelectionError,
@@ -29,10 +30,11 @@ interface AgentCreationRoutesContext {
   assets: AssetStore;
   drafts: DraftService;
   engines: ReadonlyMap<string, EngineRegistration>;
-  deletingAgentIds: ReadonlySet<string>;
+  deletingAgentIds: Set<string>;
   deletingProjectIds: ReadonlySet<string>;
   deletingConversationIds: ReadonlySet<string>;
   agentCreationConversationLeases: Map<string, number>;
+  agentDeliveryLeases: Map<string, number>;
   cachedModelOptions(adapter: EngineRegistration["adapter"], projectId?: string): ModelOption[];
   recordCommunication(event: CommunicationEvent): CommunicationEvent;
   prepareUserCommunicationText: CommunicationArtifactAuthority["prepareUserCommunicationText"];
@@ -59,6 +61,7 @@ export function registerAgentCreationRoutes(
     deletingProjectIds,
     deletingConversationIds,
     agentCreationConversationLeases,
+    agentDeliveryLeases,
     cachedModelOptions,
     recordCommunication,
     prepareUserCommunicationText,
@@ -203,6 +206,11 @@ export function registerAgentCreationRoutes(
       } catch (error) {
         return reply.code(400).send({ error: error instanceof Error ? error.message : "agent could not be created" });
       }
+      // Keep the newly visible row unavailable until its opening assets,
+      // communication, and activation are durably committed.
+      deletingAgentIds.add(agent.id);
+      const releaseAgentDelivery = leaseAgentDelivery(agentDeliveryLeases, [agent.id]);
+      try {
       let openingAttachments: AssetDto[] = [];
       try {
         for (const attachment of draftAttachments as NonNullable<(typeof draftAttachments)[number]>[]) {
@@ -381,6 +389,10 @@ export function registerAgentCreationRoutes(
       }
 
       return { ...agent, ...(managedOpening ? { openingRequestId: managedOpening.requestIds[0], openingJoinId: managedOpening.joinId } : {}) };
+      } finally {
+        releaseAgentDelivery();
+        deletingAgentIds.delete(agent.id);
+      }
       } finally {
         const remaining = (agentCreationConversationLeases.get(
           leaseConversationId,

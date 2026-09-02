@@ -18,6 +18,10 @@ export function hasComposerDestination(
   ).test(text);
 }
 
+export function clampComposerMenuIndex(index: number, count: number): number {
+  return Math.max(0, Math.min(index, count - 1));
+}
+
 export function prependComposerDestination(
   text: string,
   handle: string,

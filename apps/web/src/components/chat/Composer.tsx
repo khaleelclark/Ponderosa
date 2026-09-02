@@ -30,6 +30,7 @@ import { findMentionedHandles, hasBroadcastMention } from "../../mentions";
 import { queryKeys } from "../../queryKeys";
 import { removeHandle } from "./Composer.helpers";
 import {
+  clampComposerMenuIndex,
   hasComposerDestination,
   NEW_AGENT_DESTINATION_HANDLE,
   prependComposerDestination,
@@ -372,10 +373,16 @@ export function Composer({
     retryUpload: retryDraftUpload,
     uploadStates: draftUploadStates,
   } = draftAttachments;
-  const renderedDefaultDestination = destinationMode === "target-required"
-    ? defaultDestination
-    : activeDefaultDestination;
   const composedText = composerSubmissionText(text, pastedText);
+  const newAgentSelected = hasComposerDestination(
+    composedText,
+    NEW_AGENT_DESTINATION_HANDLE,
+  );
+  const renderedDefaultDestination = newAgentSelected
+    ? undefined
+    : destinationMode === "target-required"
+      ? defaultDestination
+      : activeDefaultDestination;
   const submissionText =
     (destinationMode === "project-chat" || destinationMode === "target-required") &&
     renderedDefaultDestination
@@ -434,10 +441,6 @@ export function Composer({
     return tokens;
   }, [knownMentionBindings, mentionBindings, text]);
   const invalidMention = mentionTokens.find(token => !token.valid);
-  const newAgentSelected = mentionedHandles.some(
-      handle =>
-        handle.toLocaleLowerCase() === NEW_AGENT_DESTINATION_HANDLE,
-    );
   const authoredProjectDestinationHandles = destinationMode === "project-chat"
     ? findMentionedHandles(composedText, routingMentionHandles).filter(
         handle =>
@@ -452,8 +455,8 @@ export function Composer({
     ? [
         ...new Map(
           [
-            ...(activeDefaultDestination
-              ? [activeDefaultDestination.handle]
+            ...(renderedDefaultDestination
+              ? [renderedDefaultDestination.handle]
               : []),
             ...authoredProjectDestinationHandles,
           ].map(handle => [handle.toLocaleLowerCase(), handle]),
@@ -508,11 +511,11 @@ export function Composer({
     destinationMode === "project-chat" &&
       !hasBroadcastDestination &&
       !hasEveryoneDestination &&
-      activeDefaultDestination?.binding &&
+      renderedDefaultDestination?.binding &&
       projectDestinations.length === 1 &&
       projectDestinations[0]?.handle.toLocaleLowerCase() ===
-        activeDefaultDestination.handle.toLocaleLowerCase()
-      ? activeDefaultDestination.binding.agentId
+        renderedDefaultDestination.handle.toLocaleLowerCase()
+      ? renderedDefaultDestination.binding.agentId
       : destinationMode === "fixed"
         ? defaultDestination?.binding?.agentId
         : undefined;
@@ -990,6 +993,10 @@ export function Composer({
         ? suggestions.map(handle => ({ kind: "mention" as const, handle }))
         : fileSuggestions.map(entry => ({ kind: "file" as const, entry }));
   const menuOpen = menuSuggestions.length > 0 && !suppressMenu;
+  const effectiveHighlighted = clampComposerMenuIndex(
+    highlighted,
+    menuSuggestions.length,
+  );
 
   const applyMention = (handle: string) => {
     const start =
@@ -1173,10 +1180,10 @@ export function Composer({
           !locallyRemovedDraftAttachmentIds.current.has(id),
       );
     const mentionedAgentsById = new Map<string, AgentMentionBindingDto>();
-    if (activeDefaultDestination?.binding) {
+    if (renderedDefaultDestination?.binding) {
       mentionedAgentsById.set(
-        activeDefaultDestination.binding.agentId,
-        activeDefaultDestination.binding,
+        renderedDefaultDestination.binding.agentId,
+        renderedDefaultDestination.binding,
       );
     }
     const structurallyAuthoredHandles = destinationMode === "target-required"
@@ -1439,7 +1446,7 @@ export function Composer({
             comboboxEnabled={Boolean(mentionHandles || commands?.length || projectId)}
             menuOpen={menuOpen}
             listId={mentionListId}
-            highlighted={highlighted}
+            highlighted={effectiveHighlighted}
             attachmentsEnabled={composerAttachmentsEnabled}
             pastedText={pastedText}
             menuSuggestions={menuSuggestions}
@@ -1490,7 +1497,7 @@ export function Composer({
             anchor={anchorRef.current}
             listId={mentionListId}
             suggestions={menuSuggestions}
-            highlighted={highlighted}
+            highlighted={effectiveHighlighted}
             onDismiss={() => setSuppressMenu(true)}
             onSelect={selected => {
               if (selected.kind === "mention") applyMention(selected.handle);
