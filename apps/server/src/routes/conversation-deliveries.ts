@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { FastifyInstance } from "fastify";
 import type {
   AgentDto,
   AgentMentionBindingDto,
@@ -50,7 +50,9 @@ export interface ConversationDeliveryRouteDependencies {
   coordinationV3: CoordinationV3Store;
   assets: AssetStore;
   projectDeletionInProgress: (projectId: string) => boolean;
+  agentDeletionInProgress: (agentId: string) => boolean;
   conversationDeliveryLeases: Map<string, number>;
+  agentDeliveryLeases: Map<string, number>;
   assetMetadata: (agentId: string, id: string) => ReturnType<AssetStore["read"]>;
   prepareUserCommunicationText: (input: {
     projectId: string;
@@ -93,21 +95,28 @@ export interface ConversationDeliveryRouteDependencies {
 const MAX_ATTACHMENTS_PER_MESSAGE = ASSET_LIMITS.maxAssetsPerMessage;
 
 function leaseConversationDelivery(
-  reply: FastifyReply,
-  leases: Map<string, number>,
+  conversationLeases: Map<string, number>,
+  agentLeases: Map<string, number>,
   conversationId: string,
-): void {
-  leases.set(conversationId, (leases.get(conversationId) ?? 0) + 1);
+  agentIds: readonly string[],
+): () => void {
+  conversationLeases.set(conversationId, (conversationLeases.get(conversationId) ?? 0) + 1);
+  for (const agentId of agentIds) {
+    agentLeases.set(agentId, (agentLeases.get(agentId) ?? 0) + 1);
+  }
   let released = false;
-  const release = () => {
+  return () => {
     if (released) return;
     released = true;
-    const remaining = (leases.get(conversationId) ?? 1) - 1;
-    if (remaining > 0) leases.set(conversationId, remaining);
-    else leases.delete(conversationId);
+    const remainingConversationLeases = (conversationLeases.get(conversationId) ?? 1) - 1;
+    if (remainingConversationLeases > 0) conversationLeases.set(conversationId, remainingConversationLeases);
+    else conversationLeases.delete(conversationId);
+    for (const agentId of agentIds) {
+      const remainingAgentLeases = (agentLeases.get(agentId) ?? 1) - 1;
+      if (remainingAgentLeases > 0) agentLeases.set(agentId, remainingAgentLeases);
+      else agentLeases.delete(agentId);
+    }
   };
-  reply.raw.once("finish", release);
-  reply.raw.once("close", release);
 }
 
 function isActiveConversationAgent(
@@ -147,7 +156,9 @@ export function registerConversationDeliveryRoutes(
     coordinationV3,
     assets,
     projectDeletionInProgress,
+    agentDeletionInProgress,
     conversationDeliveryLeases,
+    agentDeliveryLeases,
     assetMetadata,
     prepareUserCommunicationText,
     runtimeArtifactMetadata,
@@ -218,7 +229,6 @@ export function registerConversationDeliveryRoutes(
     const master = store.getConversation(request.params.id);
     if (!master || master.archived) return reply.code(404).send({ error: "conversation not found" });
     if (projectDeletionInProgress(master.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
-    leaseConversationDelivery(reply, conversationDeliveryLeases, master.id);
     const agentIdsByHandle = new Map<string, string[]>();
     for (const agent of store.listAgents(master.projectId)) {
       if (!isActiveConversationAgent(agent, master)) continue;
@@ -245,7 +255,17 @@ export function registerConversationDeliveryRoutes(
     if (recipientAgents.some((agent) => !isActiveConversationAgent(agent, master))) {
       return reply.code(404).send({ error: "broadcast recipient not found" });
     }
+    if (recipientAgentIds.some(agentDeletionInProgress)) {
+      return reply.code(409).send({ error: "Agent deletion is in progress" });
+    }
     if (!Array.isArray(requestedAssets) || requestedAssets.length > MAX_ATTACHMENTS_PER_MESSAGE) return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} assets are allowed` });
+    const releaseDeliveryLease = leaseConversationDelivery(
+      conversationDeliveryLeases,
+      agentDeliveryLeases,
+      master.id,
+      recipientAgentIds,
+    );
+    try {
     const validatedAssets: AssetDto[] = [];
     for (const requested of requestedAssets) {
       const owner = store.getAgent(requested.agentId);
@@ -450,7 +470,10 @@ export function registerConversationDeliveryRoutes(
       replayed: intake.replayed,
       passive: recipientAgentIds.length === 0,
     }, "conversation message persisted");
-    return message ?? reply.code(404).send({ error: "conversation not found" });
+      return message ?? reply.code(404).send({ error: "conversation not found" });
+    } finally {
+      releaseDeliveryLease();
+    }
   });
 
   app.get<{
@@ -505,7 +528,6 @@ export function registerConversationDeliveryRoutes(
       const master = store.getConversation(request.params.id);
       if (!master || master.archived) return reply.code(404).send({ error: "conversation not found" });
       if (projectDeletionInProgress(master.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
-      leaseConversationDelivery(reply, conversationDeliveryLeases, master.id);
       const targets = agentIds.map((agentId) => store.getAgent(agentId));
       if (targets.some((target) =>
         target && target.projectId === master.projectId && target.conversationId !== master.id
@@ -528,6 +550,15 @@ export function registerConversationDeliveryRoutes(
         });
       }
       agentIds = recipients.map(recipient => recipient.agentId);
+      if (agentIds.some(agentDeletionInProgress)) {
+        return reply.code(409).send({ error: "Agent deletion is in progress" });
+      }
+      const releaseDeliveryLease = leaseConversationDelivery(
+        conversationDeliveryLeases,
+        agentDeliveryLeases,
+        master.id,
+        agentIds,
+      );
       try {
         const attachmentsByAgent = await Promise.all(recipients.map(async (recipient) => {
           const attached = await Promise.all((recipient.attachmentIds ?? []).map((id) => assetMetadata(recipient.agentId, id)));
@@ -663,6 +694,8 @@ export function registerConversationDeliveryRoutes(
       } catch (error) {
         if (error instanceof AssetError) return reply.code(error.statusCode).send({ error: error.message });
         return reply.code(409).send({ error: error instanceof Error ? error.message : "direct message conflict" });
+      } finally {
+        releaseDeliveryLease();
       }
     },
   );

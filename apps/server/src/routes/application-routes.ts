@@ -73,7 +73,7 @@ type ApplicationRoutesContext =
     "hasActiveRun" |
     "purgeCommunicationV4Conversation" | "refreshTriggers"> &
   Omit<Parameters<typeof registerConversationDeliveryRoutes>[1],
-    "projectDeletionInProgress" | "assetMetadata"> &
+    "projectDeletionInProgress" | "agentDeletionInProgress" | "assetMetadata"> &
   Parameters<typeof registerQueuedMessageRoutes>[1] &
   Omit<Parameters<typeof registerCollaborationRoutes>[1],
     "projectDeletionInProgress" | "assetMetadata"> &
@@ -207,6 +207,7 @@ export function registerApplicationRoutes(
     deletingConversationIds,
     agentCreationConversationLeases,
     conversationDeliveryLeases,
+    agentDeliveryLeases,
     rejectQuarantinedTriggerMutation,
     projectDeletionInFlightIds,
     communicationReconciliation,
@@ -377,7 +378,9 @@ registerConversationDeliveryRoutes(app, {
   coordinationV3,
   assets,
   projectDeletionInProgress: (projectId) => deletingProjectIds.has(projectId),
+  agentDeletionInProgress: (agentId) => deletingAgentIds.has(agentId),
   conversationDeliveryLeases,
+  agentDeliveryLeases,
   assetMetadata,
   prepareUserCommunicationText,
   runtimeArtifactMetadata,
@@ -570,6 +573,7 @@ registerAgentUsageRoute(app, serverContext);
 
 registerAgentMaintenanceRoutes(app, {
   store, coordinationV3, engines, triggerSources, deletingAgentIds,
+  agentDeliveryLeases,
   cachedModelOptions, commitAgentDeletion,
   activeRuns, workingCopies, clearAgentResumeSession,
   persistentRuntimeForTermination, teardownPersistentRuntime,

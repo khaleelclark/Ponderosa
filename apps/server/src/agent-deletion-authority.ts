@@ -45,6 +45,7 @@ type AgentDeletionAuthorityContext =
       at: string;
     }>;
     deletingAgentIds: Set<string>;
+    agentDeliveryLeases: ReadonlyMap<string, number>;
     contextCursors: ContextCursorStore;
     appendWorkspace(event: Parameters<WorkspaceStore["append"]>[0]): WorkspaceEventEnvelope;
     publishWorkspaceSince(cursor: number): void;
@@ -86,6 +87,7 @@ export function createAgentDeletionAuthority(
     scheduledSessionRollovers,
     contextRolloverPending,
     deletingAgentIds,
+    agentDeliveryLeases,
     contextCursors,
     appendWorkspace,
     publishWorkspaceSince,
@@ -310,6 +312,9 @@ export function createAgentDeletionAuthority(
       false,
     ))();
     const expectedAgentIds = current.affectedAgents.map((agent) => agent.id);
+    if (expectedAgentIds.some((agentId) => (agentDeliveryLeases.get(agentId) ?? 0) > 0)) {
+      throw new AgentDeletionConflictError(current);
+    }
     const enabledAutomation = expectedAgentIds.length
       ? store.sqlite.prepare(`
           SELECT name FROM trigger_definitions

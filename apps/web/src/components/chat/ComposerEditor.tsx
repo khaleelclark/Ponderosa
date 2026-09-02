@@ -79,6 +79,32 @@ export type ComposerProjectFileDescriptor = {
 };
 
 const PROJECT_FILE_REFERENCE_PATTERN = /\[Project file\]\(ponderosa:\/\/project-file\/([^/()\s]+)\/([^?()\s]+)\?historical=([^&()\s]*)&current=([^()\s]*)\)/gu;
+const FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  "[tabindex]:not([tabindex='-1'])",
+  "[contenteditable='true']",
+].join(",");
+
+function adjacentFocusableElement(
+  current: HTMLElement,
+  backwards: boolean,
+): HTMLElement | undefined {
+  const focusable = [...document.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)]
+    .filter(element =>
+      element.tabIndex >= 0 &&
+      element.getAttribute("aria-hidden") !== "true" &&
+      !element.closest("[inert]") &&
+      element.getClientRects().length > 0
+    );
+  const currentIndex = focusable.indexOf(current);
+  if (currentIndex < 0 || focusable.length < 2) return undefined;
+  const nextIndex = (currentIndex + (backwards ? -1 : 1) + focusable.length) % focusable.length;
+  return focusable[nextIndex];
+}
 
 export function projectFileCanonicalText(
   descriptor: ComposerProjectFileDescriptor,
@@ -1294,6 +1320,14 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
     if (menuOpen && event.key === "Escape") {
       event.preventDefault();
       onSuppressMenu();
+      return;
+    }
+    if (event.key === "Tab") {
+      const next = adjacentFocusableElement(event.currentTarget, event.shiftKey);
+      if (next) {
+        event.preventDefault();
+        next.focus();
+      }
       return;
     }
     if (

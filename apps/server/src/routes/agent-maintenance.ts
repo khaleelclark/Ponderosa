@@ -26,6 +26,7 @@ interface AgentMaintenanceRoutesContext {
   engines: ReadonlyMap<string, EngineRegistration>;
   triggerSources: TriggerSourceService;
   deletingAgentIds: Set<string>;
+  agentDeliveryLeases: ReadonlyMap<string, number>;
   activeRuns: ReadonlyMap<string, ActiveRun>;
   workingCopies: AgentWorkingCopyService;
   clearAgentResumeSession(agentId: string, reason: string): void;
@@ -60,6 +61,7 @@ export function registerAgentMaintenanceRoutes(
     engines,
     triggerSources,
     deletingAgentIds,
+    agentDeliveryLeases,
     activeRuns,
     workingCopies,
     clearAgentResumeSession,
@@ -116,6 +118,12 @@ export function registerAgentMaintenanceRoutes(
       const allowedFields = new Set(["title", "archived", "activeEngine", "model", "effort", "workingCopyMode", "managementPermissions"]);
       if (Object.keys(body).some((key) => !allowedFields.has(key))) {
         return reply.code(400).send({ error: "unknown agent field" });
+      }
+      if (body.archived !== undefined && typeof body.archived !== "boolean") {
+        return reply.code(400).send({ error: "archived must be a boolean" });
+      }
+      if (body.archived === true && (agentDeliveryLeases.get(current.id) ?? 0) > 0) {
+        return reply.code(409).send({ error: "Wait for message delivery to finish before archiving this Agent" });
       }
       let normalizedTitle: string | undefined;
       if (body.title !== undefined) {

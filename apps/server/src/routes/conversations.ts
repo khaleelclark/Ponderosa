@@ -220,6 +220,9 @@ export function registerConversationRoutes(
   }>("/api/conversations/:id", async (request, reply) => {
     const current = store.getConversation(request.params.id);
     if (!current) return reply.code(404).send({ error: "conversation not found" });
+    if (request.body?.archived !== undefined && typeof request.body.archived !== "boolean") {
+      return reply.code(400).send({ error: "archived must be a boolean" });
+    }
     if (deletingConversationIds.has(current.id)) {
       return reply.code(409).send({ error: "Chat deletion is already in progress" });
     }
