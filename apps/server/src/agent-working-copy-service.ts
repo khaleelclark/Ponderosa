@@ -399,7 +399,7 @@ export class AgentWorkingCopyService {
     try {
       await rmdir(path.join(this.managedRoot, project.id));
     } catch (error) {
-      if (!missingPath(error)) throw error;
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
     }
   }
 

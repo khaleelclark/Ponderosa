@@ -34,3 +34,18 @@ test("Project cleanup preserves an unrecognized working-copy entry", async (t) =
   await assert.rejects(service.cleanupProject(project));
   await access(sentinel);
 });
+
+test("Project cleanup rejects a non-directory working-copy container", async (t) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "ponderosa-working-copy-cleanup-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const project = { id: "project-a", hostPath: dataDir };
+  const projectContainer = path.join(dataDir, "working-copies", project.id);
+  await mkdir(path.dirname(projectContainer), { recursive: true });
+  await writeFile(projectContainer, "unrecognized content");
+  const service = new AgentWorkingCopyService(dataDir, {
+    listProjectWorkingCopies: () => [],
+  });
+
+  await assert.rejects(service.cleanupProject(project));
+  await access(projectContainer);
+});
