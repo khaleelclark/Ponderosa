@@ -2,9 +2,14 @@ import assert from "node:assert/strict";
 import { request as httpRequest } from "node:http";
 import test from "node:test";
 import Fastify from "fastify";
-import { registerConversationDeliveryRoutes } from "../dist/routes/conversation-deliveries.js";
+import {
+  conversationDeliveryRequestFingerprint,
+  registerConversationDeliveryRoutes,
+} from "../dist/routes/conversation-deliveries.js";
 import { registerConversationRoutes } from "../dist/routes/conversations.js";
 import { registerAgentMaintenanceRoutes } from "../dist/routes/agent-maintenance.js";
+import { registerCollaborationRoutes } from "../dist/routes/collaboration.js";
+import { registerAttachmentRoutes } from "../dist/routes/attachments.js";
 
 function deferred() {
   let resolve;
@@ -82,6 +87,7 @@ test("broadcasts cannot target an Agent owned by another Chat", async (t) => {
       listAgents: () => [otherChatAgent],
       getAgent: (id) => id === otherChatAgent.id ? otherChatAgent : undefined,
     },
+    coordinationV3: { runtimeCommunication: () => undefined },
     projectDeletionInProgress: () => false,
     agentDeletionInProgress: () => false,
     conversationDeliveryLeases: new Map(),
@@ -112,6 +118,7 @@ test("archived Chats reject broadcasts before staging long text", async (t) => {
     store: {
       getConversation: () => ({ id: "chat-a", projectId: "project-a", archived: true }),
     },
+    coordinationV3: { runtimeCommunication: () => undefined },
     projectDeletionInProgress: () => false,
     agentDeletionInProgress: () => false,
     conversationDeliveryLeases: new Map(),
@@ -219,6 +226,7 @@ test("Agent deletion in progress rejects direct delivery before staging text", a
       getConversation: () => chat,
       getAgent: () => agent,
     },
+    coordinationV3: { runtimeCommunication: () => undefined },
     projectDeletionInProgress: () => false,
     agentDeletionInProgress: () => true,
     conversationDeliveryLeases: new Map(),
@@ -269,4 +277,246 @@ test("disconnecting the client does not release a delivery lease before the hand
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   assert.equal(leases.has(chat.id), false);
+});
+
+test("direct message retries replay the original success after a recipient is archived", async (t) => {
+  const chat = { id: "chat-a", projectId: "project-a", archived: false };
+  const requestPayload = {
+    text: "hello",
+    recipients: [{ agentId: "agent-a" }, { agentId: "agent-b" }],
+    idempotencyKey: "stable-retry",
+  };
+  const requestFingerprint = conversationDeliveryRequestFingerprint({
+    version: 1,
+    kind: "direct",
+    conversationId: chat.id,
+    text: requestPayload.text,
+    recipients: requestPayload.recipients.map((recipient) => ({
+      agentId: recipient.agentId,
+      attachmentIds: [],
+    })),
+    activeRunDelivery: "steer",
+    runtimeSelection: {},
+  });
+  const app = Fastify();
+  t.after(() => app.close());
+  registerConversationDeliveryRoutes(app, {
+    store: {
+      getConversation: () => chat,
+      getConversationMessageByReceiptKey: () => ({ id: "message-a" }),
+    },
+    coordinationV3: {
+      runtimeCommunication: () => ({
+        id: "event-a",
+        projectId: chat.projectId,
+        audience: {},
+        createdAt: new Date().toISOString(),
+        payload: {
+          requestFingerprint,
+          dispatch: { recipients: [{ agentId: "agent-a" }, { agentId: "agent-b" }] },
+        },
+        activations: [
+          { id: "delivery-a", agentId: "agent-a" },
+          { id: "delivery-b", agentId: "agent-b" },
+        ],
+      }),
+    },
+    projectDeletionInProgress: () => false,
+    agentDeletionInProgress: () => false,
+    conversationDeliveryLeases: new Map(),
+    agentDeliveryLeases: new Map(),
+    reconcileRuntimeCommunicationProjections: async () => 0,
+  });
+
+  const response = await app.inject({
+    method: "POST",
+    url: `/api/conversations/${chat.id}/direct-messages`,
+    payload: requestPayload,
+  });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), {
+    messageId: "message-a",
+    replayed: true,
+    recipients: [
+      { agentId: "agent-a", queued: true, deliveryId: "delivery-a", state: "queued" },
+      { agentId: "agent-b", queued: true, deliveryId: "delivery-b", state: "queued" },
+    ],
+  });
+});
+
+test("broadcast attachments lease their owning Agent", async (t) => {
+  const chat = { id: "chat-a", projectId: "project-a", archived: false };
+  const owner = {
+    id: "agent-owner",
+    projectId: chat.projectId,
+    conversationId: chat.id,
+    handle: "Owner",
+    title: "Owner",
+    archived: false,
+  };
+  const agentLeases = new Map();
+  const preparationStarted = deferred();
+  const finishPreparation = deferred();
+  const asset = {
+    id: "asset-a",
+    projectId: chat.projectId,
+    agentId: owner.id,
+    name: "note.txt",
+    mediaType: "text/plain",
+    size: 4,
+    state: "staged",
+  };
+  const assets = {
+    read: async () => asset,
+    remove: async () => true,
+  };
+  const app = Fastify();
+  t.after(() => app.close());
+  registerConversationDeliveryRoutes(app, {
+    store: {
+      getConversation: () => chat,
+      listAgents: () => [owner],
+      getAgent: () => owner,
+    },
+    coordinationV3: {
+      runtimeCommunication: () => undefined,
+      recordRuntimeCommunication: () => { throw new Error("stop after preparation"); },
+    },
+    assets,
+    projectDeletionInProgress: () => false,
+    agentDeletionInProgress: () => false,
+    conversationDeliveryLeases: new Map(),
+    agentDeliveryLeases: agentLeases,
+    assetMetadata: async () => asset,
+    prepareUserCommunicationText: async () => {
+      preparationStarted.resolve();
+      await finishPreparation.promise;
+      return { canonicalText: "hello", publishedText: "hello" };
+    },
+  });
+  registerAttachmentRoutes(app, {
+    store: { getAgent: () => owner },
+    assets,
+    agentDeliveryLeases: agentLeases,
+  });
+  const delivery = app.inject({
+    method: "POST",
+    url: `/api/conversations/${chat.id}/messages`,
+    payload: {
+      text: "hello",
+      attachments: [{ id: "asset-a", agentId: owner.id }],
+      idempotencyKey: "attachment-race",
+    },
+  });
+  await preparationStarted.promise;
+  assert.equal(agentLeases.get(owner.id), 1);
+  const deletion = await app.inject({
+    method: "DELETE",
+    url: `/api/agents/${owner.id}/attachments/${asset.id}`,
+  });
+  assert.equal(deletion.statusCode, 409);
+  finishPreparation.resolve();
+  assert.equal((await delivery).statusCode, 409);
+  assert.equal(agentLeases.has(owner.id), false);
+});
+
+test("archived Chats reject collaboration before activating recipients", async (t) => {
+  const chat = { id: "chat-a", projectId: "project-a", archived: true };
+  let viewed = false;
+  const app = Fastify();
+  t.after(() => app.close());
+  registerCollaborationRoutes(app, {
+    store: { getConversation: () => chat },
+    coordinationV3: { runtimeCommunication: () => undefined },
+    projectDeletionInProgress: () => false,
+    agentDeletionInProgress: () => false,
+    conversationDeliveryLeases: new Map(),
+    agentDeliveryLeases: new Map(),
+    collaborationViewDetail: () => {
+      viewed = true;
+      throw new Error("must not inspect archived Chat");
+    },
+  });
+  const response = await app.inject({
+    method: "POST",
+    url: `/api/conversations/${chat.id}/collaboration/messages`,
+    payload: { text: "hello", recipientAgentIds: ["agent-a"], idempotencyKey: "archived" },
+  });
+  assert.equal(response.statusCode, 404);
+  assert.equal(viewed, false);
+});
+
+test("collaboration leases its Chat and recipient Agents while preparing text", async (t) => {
+  const chat = { id: "chat-a", projectId: "project-a", archived: false };
+  const agent = {
+    id: "agent-a",
+    projectId: chat.projectId,
+    conversationId: chat.id,
+    handle: "AgentA",
+    title: "Agent A",
+    archived: false,
+  };
+  const leases = new Map();
+  const agentLeases = new Map();
+  const preparationStarted = deferred();
+  const finishPreparation = deferred();
+  const store = {
+    getConversation: () => chat,
+    updateConversation: (_id, body) => Object.assign(chat, body),
+    getAgent: () => agent,
+  };
+  const app = Fastify();
+  t.after(() => app.close());
+  registerCollaborationRoutes(app, {
+    store,
+    coordinationV3: {
+      runtimeCommunication: () => undefined,
+      recordRuntimeCommunication: () => { throw new Error("stop after preparation"); },
+    },
+    projectDeletionInProgress: () => false,
+    agentDeletionInProgress: () => false,
+    conversationDeliveryLeases: leases,
+    agentDeliveryLeases: agentLeases,
+    collaborationViewDetail: () => ({ agents: [agent], messages: [] }),
+    prepareUserCommunicationText: async () => {
+      preparationStarted.resolve();
+      await finishPreparation.promise;
+      return { canonicalText: "hello", publishedText: "hello" };
+    },
+  });
+  registerConversationRoutes(app, {
+    store,
+    engines: new Map(),
+    cachedModelOptions: () => [],
+    deletingConversationIds: new Set(),
+    agentCreationConversationLeases: new Map(),
+    conversationDeliveryLeases: leases,
+  });
+  registerAgentMaintenanceRoutes(app, {
+    store,
+    deletingAgentIds: new Set(),
+    agentDeliveryLeases: agentLeases,
+  });
+  const delivery = app.inject({
+    method: "POST",
+    url: `/api/conversations/${chat.id}/collaboration/messages`,
+    payload: {
+      text: "hello",
+      recipientAgentIds: [agent.id],
+      idempotencyKey: "collaboration-race",
+    },
+  });
+  await preparationStarted.promise;
+  assert.equal(leases.get(chat.id), 1);
+  assert.equal(agentLeases.get(agent.id), 1);
+  const [archiveChat, archiveAgent] = await Promise.all([
+    app.inject({ method: "PATCH", url: `/api/conversations/${chat.id}`, payload: { archived: true } }),
+    app.inject({ method: "PATCH", url: `/api/agents/${agent.id}`, payload: { archived: true } }),
+  ]);
+  assert.equal(archiveChat.statusCode, 409);
+  assert.equal(archiveAgent.statusCode, 409);
+  finishPreparation.resolve();
+  assert.equal((await delivery).statusCode, 409);
+  assert.equal(leases.has(chat.id), false);
+  assert.equal(agentLeases.has(agent.id), false);
 });

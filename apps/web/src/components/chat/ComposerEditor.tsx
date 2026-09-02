@@ -1309,7 +1309,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
     }
     if (
       menuOpen &&
-      (event.key === "Enter" || event.key === "Tab") &&
+      (event.key === "Enter" || (event.key === "Tab" && !event.shiftKey)) &&
       !event.metaKey &&
       !event.ctrlKey
     ) {

@@ -94,7 +94,7 @@ export interface ConversationDeliveryRouteDependencies {
 
 const MAX_ATTACHMENTS_PER_MESSAGE = ASSET_LIMITS.maxAssetsPerMessage;
 
-function leaseConversationDelivery(
+export function leaseConversationDelivery(
   conversationLeases: Map<string, number>,
   agentLeases: Map<string, number>,
   conversationId: string,
@@ -117,6 +117,10 @@ function leaseConversationDelivery(
       else agentLeases.delete(agentId);
     }
   };
+}
+
+export function conversationDeliveryRequestFingerprint(input: unknown): string {
+  return createHash("sha256").update(JSON.stringify(input)).digest("hex");
 }
 
 function isActiveConversationAgent(
@@ -226,9 +230,48 @@ export function registerConversationDeliveryRoutes(
     }
     const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
     if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must contain 1 to 200 characters" });
+    if (!Array.isArray(requestedAssets) ||
+        requestedAssets.length > MAX_ATTACHMENTS_PER_MESSAGE ||
+        requestedAssets.some((asset) => !asset || typeof asset.id !== "string" || !asset.id ||
+          typeof asset.agentId !== "string" || !asset.agentId)) {
+      return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} valid assets are allowed` });
+    }
     const master = store.getConversation(request.params.id);
-    if (!master || master.archived) return reply.code(404).send({ error: "conversation not found" });
+    if (!master) return reply.code(404).send({ error: "conversation not found" });
     if (projectDeletionInProgress(master.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
+    const eventId = `broadcast-${createHash("sha256").update(`${master.id}\0${idempotencyKey}`).digest("hex")}`;
+    const requestFingerprint = conversationDeliveryRequestFingerprint({
+      version: 1,
+      kind: "broadcast",
+      conversationId: master.id,
+      text: requestedText ?? "",
+      role: request.body?.role,
+      recipients: recipientAgentMentions,
+      attachments: requestedAssets.map((asset) => ({ agentId: asset.agentId, id: asset.id })),
+      recipientAttachments: requestedRecipientAttachments,
+      activeRunDelivery,
+      runtimeSelection,
+    });
+    const existingRuntime = coordinationV3.runtimeCommunication(eventId);
+    const existingPayload = existingRuntime?.payload as {
+      requestFingerprint?: string;
+      communication?: CommunicationEvent;
+    } | undefined;
+    if (existingPayload?.requestFingerprint) {
+      if (existingPayload.requestFingerprint !== requestFingerprint) {
+        return reply.code(409).send({ error: "runtime communication ID collision" });
+      }
+      await reconcileRuntimeCommunicationProjections({
+        projectId: master.projectId,
+        communicationEventId: eventId,
+      });
+      const replayedMessage = store.getConversationMessages(master.id)
+        .find((candidate) => candidate.communicationEventId === eventId);
+      return replayedMessage ?? reply.code(503).send({
+        error: "broadcast projection could not be recorded; retry is safe",
+      });
+    }
+    if (master.archived) return reply.code(404).send({ error: "conversation not found" });
     const agentIdsByHandle = new Map<string, string[]>();
     for (const agent of store.listAgents(master.projectId)) {
       if (!isActiveConversationAgent(agent, master)) continue;
@@ -255,15 +298,20 @@ export function registerConversationDeliveryRoutes(
     if (recipientAgents.some((agent) => !isActiveConversationAgent(agent, master))) {
       return reply.code(404).send({ error: "broadcast recipient not found" });
     }
-    if (recipientAgentIds.some(agentDeletionInProgress)) {
+    const attachmentOwnerIds = requestedAssets.map((asset) => asset.agentId);
+    const attachmentOwners = attachmentOwnerIds.map((agentId) => store.getAgent(agentId));
+    if (attachmentOwners.some((agent) => !isActiveConversationAgent(agent, master))) {
+      return reply.code(404).send({ error: "asset owner not found" });
+    }
+    const leasedAgentIds = [...new Set([...recipientAgentIds, ...attachmentOwnerIds])];
+    if (leasedAgentIds.some(agentDeletionInProgress)) {
       return reply.code(409).send({ error: "Agent deletion is in progress" });
     }
-    if (!Array.isArray(requestedAssets) || requestedAssets.length > MAX_ATTACHMENTS_PER_MESSAGE) return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} assets are allowed` });
     const releaseDeliveryLease = leaseConversationDelivery(
       conversationDeliveryLeases,
       agentDeliveryLeases,
       master.id,
-      recipientAgentIds,
+      leasedAgentIds,
     );
     try {
     const validatedAssets: AssetDto[] = [];
@@ -304,8 +352,6 @@ export function registerConversationDeliveryRoutes(
       }
       recipientAssets.set(agentId, publicAssets);
     }
-    const eventId = `broadcast-${createHash("sha256").update(`${master.id}\0${idempotencyKey}`).digest("hex")}`;
-    const existingRuntime = coordinationV3.runtimeCommunication(eventId);
     const createdAt = existingRuntime?.createdAt ?? new Date().toISOString();
     const validationCompletedAt = performance.now();
     let prepared: Awaited<ReturnType<typeof prepareUserCommunicationText>>;
@@ -346,6 +392,7 @@ export function registerConversationDeliveryRoutes(
         intent: communicationInput.intent,
         audience: communicationInput.audience,
         payload: {
+          requestFingerprint,
           communication: communicationInput,
           ...(recipientAgentIds.length ? {
             dispatch: {
@@ -526,8 +573,60 @@ export function registerConversationDeliveryRoutes(
         }
       }
       const master = store.getConversation(request.params.id);
-      if (!master || master.archived) return reply.code(404).send({ error: "conversation not found" });
+      if (!master) return reply.code(404).send({ error: "conversation not found" });
       if (projectDeletionInProgress(master.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
+      const receiptKey = `multi-direct:${master.id}:${idempotencyKey}`;
+      const eventId = `user-dm-${createHash("sha256").update(receiptKey).digest("hex")}`;
+      const requestFingerprint = conversationDeliveryRequestFingerprint({
+        version: 1,
+        kind: "direct",
+        conversationId: master.id,
+        text: rawText,
+        recipients: recipients.map((recipient, index) => ({
+          agentId: agentIds[index],
+          attachmentIds: recipient.attachmentIds ?? [],
+        })),
+        activeRunDelivery,
+        runtimeSelection,
+      });
+      const existingRuntime = coordinationV3.runtimeCommunication(eventId);
+      const existingPayload = existingRuntime?.payload as {
+        requestFingerprint?: string;
+        unavailableRecipients?: MultiAgentDirectMessageResponse["unavailableRecipients"];
+        dispatch?: { recipients?: Array<{ agentId?: string }> };
+      } | undefined;
+      if (existingPayload?.requestFingerprint) {
+        if (existingPayload.requestFingerprint !== requestFingerprint) {
+          return reply.code(409).send({ error: "runtime communication ID collision" });
+        }
+        await reconcileRuntimeCommunicationProjections({
+          projectId: master.projectId,
+          communicationEventId: eventId,
+        });
+        const message = store.getConversationMessageByReceiptKey(master.id, receiptKey);
+        if (!message) return reply.code(503).send({
+          error: "direct message projection could not be recorded; retry is safe",
+        });
+        const activationByAgentId = new Map(
+          (existingRuntime?.activations ?? []).map((activation) => [activation.agentId, activation.id]),
+        );
+        const originalRecipients = (existingPayload.dispatch?.recipients ?? [])
+          .flatMap((recipient) => recipient.agentId ? [recipient.agentId] : []);
+        return {
+          messageId: message.id,
+          replayed: true,
+          recipients: originalRecipients.map((agentId) => ({
+            agentId,
+            queued: true,
+            deliveryId: activationByAgentId.get(agentId),
+            state: "queued" as const,
+          })),
+          ...(existingPayload.unavailableRecipients?.length ? {
+            unavailableRecipients: existingPayload.unavailableRecipients,
+          } : {}),
+        } satisfies MultiAgentDirectMessageResponse;
+      }
+      if (master.archived) return reply.code(404).send({ error: "conversation not found" });
       const targets = agentIds.map((agentId) => store.getAgent(agentId));
       if (targets.some((target) =>
         target && target.projectId === master.projectId && target.conversationId !== master.id
@@ -574,9 +673,6 @@ export function registerConversationDeliveryRoutes(
             return { ...publicAsset, state: "associated" as const };
           }) as AssetDto[];
         }));
-        const receiptKey = `multi-direct:${master.id}:${idempotencyKey}`;
-        const eventId = `user-dm-${createHash("sha256").update(receiptKey).digest("hex")}`;
-        const existingRuntime = coordinationV3.runtimeCommunication(eventId);
         const createdAt = existingRuntime?.createdAt ?? new Date().toISOString();
         const prepared = await prepareUserCommunicationText({
           projectId: master.projectId, communicationId: eventId, text: rawText, createdAt,
@@ -601,6 +697,8 @@ export function registerConversationDeliveryRoutes(
           intent: communication.intent,
           audience: communication.audience,
           payload: {
+            requestFingerprint,
+            ...(unavailableRecipients.length ? { unavailableRecipients } : {}),
             communication,
             dispatch: {
               conversationId: master.id,

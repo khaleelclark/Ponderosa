@@ -76,7 +76,7 @@ type ApplicationRoutesContext =
     "projectDeletionInProgress" | "agentDeletionInProgress" | "assetMetadata"> &
   Parameters<typeof registerQueuedMessageRoutes>[1] &
   Omit<Parameters<typeof registerCollaborationRoutes>[1],
-    "projectDeletionInProgress" | "assetMetadata"> &
+    "projectDeletionInProgress" | "agentDeletionInProgress" | "assetMetadata"> &
   Parameters<typeof registerAgentCreationRoutes>[1] &
   Omit<Parameters<typeof registerAgentPackageRoutes>[1], "dataDir" | "coordination"> &
   Omit<Parameters<typeof registerAgentMaintenanceRoutes>[1], "workingCopies"> &
@@ -412,6 +412,9 @@ registerCollaborationRoutes(app, {
   coordinationV3,
   assets,
   projectDeletionInProgress: projectId => deletingProjectIds.has(projectId),
+  agentDeletionInProgress: agentId => deletingAgentIds.has(agentId),
+  conversationDeliveryLeases,
+  agentDeliveryLeases,
   collaborationViewDetail,
   assetMetadata,
   prepareUserCommunicationText,
@@ -614,7 +617,7 @@ async function assetMetadata(agentId: string, id: string) {
 
 registerLimitsRoutes(app, serverContext);
 
-registerAttachmentRoutes(app, { assets, store });
+registerAttachmentRoutes(app, { agentDeliveryLeases, assets, store });
 
 registerAgentMessageRunRoute(app, {
   opts, store, workspace, coordinationV3, assets, drafts, engines, engineAvailability,

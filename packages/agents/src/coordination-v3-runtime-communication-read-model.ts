@@ -126,15 +126,26 @@ export class CoordinationV3RuntimeCommunicationReadModel {
       payload_json: string;
       created_at: string;
     } | undefined;
-    return row
-      ? {
+    if (!row) return undefined;
+    const activations = this.sqlite.prepare(`
+      SELECT activation_id, agent_id
+      FROM runtime_communication_activation_intake
+      WHERE communication_id = ?
+      ORDER BY recipient_index
+    `).all(id) as Array<{ activation_id: string; agent_id: string }>;
+    return {
         id: row.id,
         projectId: row.project_id,
         audience: JSON.parse(row.audience_json) as unknown,
         payload: JSON.parse(row.payload_json) as unknown,
         createdAt: row.created_at,
-      }
-      : undefined;
+        ...(activations.length ? {
+          activations: activations.map((activation) => ({
+            id: activation.activation_id,
+            agentId: activation.agent_id,
+          })),
+        } : {}),
+      };
   }
 
   runtimeArtifacts(

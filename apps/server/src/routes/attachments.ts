@@ -5,11 +5,12 @@ import { AssetError, type AssetStore, contentDisposition } from "../assets.js";
 export interface AttachmentRoutesContext {
   readonly store: Pick<AgentStore, "getAgent">;
   readonly assets: Pick<AssetStore, "content" | "read" | "remove" | "stage">;
+  readonly agentDeliveryLeases: ReadonlyMap<string, number>;
 }
 
 export function registerAttachmentRoutes(
   app: FastifyInstance,
-  { assets, store }: AttachmentRoutesContext,
+  { agentDeliveryLeases, assets, store }: AttachmentRoutesContext,
 ): void {
   app.post<{ Params: { id: string }; Body: Buffer }>("/api/agents/:id/attachments", async (request, reply) => {
     const agent = store.getAgent(request.params.id);
@@ -112,6 +113,9 @@ export function registerAttachmentRoutes(
     async (request, reply) => {
       const agent = store.getAgent(request.params.id);
       if (!agent) return reply.code(404).send({ error: "asset not found" });
+      if ((agentDeliveryLeases.get(agent.id) ?? 0) > 0) {
+        return reply.code(409).send({ error: "Agent message delivery is in progress" });
+      }
       const asset = await assets.read(
         agent.projectId,
         agent.id,

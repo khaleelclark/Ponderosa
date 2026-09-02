@@ -17,7 +17,11 @@ import type {
 } from "@ponderosa/agents";
 import { ASSET_LIMITS, AssetError, type AssetStore } from "../assets.js";
 import { hasEveryoneMention } from "../agent-mentions.js";
-import type { PreparedCommunicationArtifact } from "./conversation-deliveries.js";
+import {
+  conversationDeliveryRequestFingerprint,
+  leaseConversationDelivery,
+  type PreparedCommunicationArtifact,
+} from "./conversation-deliveries.js";
 
 type RuntimeArtifactInput = NonNullable<
   Parameters<CoordinationV3Store["recordRuntimeCommunication"]>[0]["artifacts"]
@@ -35,6 +39,9 @@ export interface CollaborationRouteDependencies {
   coordinationV3: CoordinationV3Store;
   assets: AssetStore;
   projectDeletionInProgress: (projectId: string) => boolean;
+  agentDeletionInProgress: (agentId: string) => boolean;
+  conversationDeliveryLeases: Map<string, number>;
+  agentDeliveryLeases: Map<string, number>;
   collaborationViewDetail: (
     conversationId: string,
     input?: { limit?: number; cursor?: string; focusId?: string; operationCursor?: string },
@@ -83,6 +90,9 @@ export function registerCollaborationRoutes(
     coordinationV3,
     assets,
     projectDeletionInProgress,
+    agentDeletionInProgress,
+    conversationDeliveryLeases,
+    agentDeliveryLeases,
     collaborationViewDetail,
     assetMetadata,
     prepareUserCommunicationText,
@@ -114,7 +124,8 @@ export function registerCollaborationRoutes(
     Body: CreateCollaborationMessageRequest;
   }>("/api/conversations/:id/collaboration/messages", async (request, reply) => {
     const conversation = store.getConversation(request.params.id);
-    if (conversation && projectDeletionInProgress(conversation.projectId)) {
+    if (!conversation) return reply.code(404).send({ error: "conversation not found" });
+    if (projectDeletionInProgress(conversation.projectId)) {
       return reply.code(409).send({ error: "Project deletion is in progress" });
     }
     const text = canonicalizeProviderText(request.body?.text ?? "").trim();
@@ -125,6 +136,45 @@ export function registerCollaborationRoutes(
     if (Buffer.byteLength(text, "utf8") > LONG_TEXT_MAX_UTF8_BYTES) return reply.code(413).send({ error: "text exceeds the 8 MiB limit" });
     const idempotencyKey = request.body?.idempotencyKey?.trim();
     if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
+    const eventId = idempotencyKey
+      ? `collaboration-${createHash("sha256").update(`${conversation.id}\0${idempotencyKey}`).digest("hex")}`
+      : randomUUID();
+    const requestFingerprint = conversationDeliveryRequestFingerprint({
+      version: 1,
+      kind: "collaboration",
+      conversationId: conversation.id,
+      text,
+      recipientAgentIds: request.body?.recipientAgentIds,
+      recipientAttachments: requestedRecipientAttachments,
+    });
+    const existingRuntime = idempotencyKey
+      ? coordinationV3.runtimeCommunication(eventId)
+      : undefined;
+    const existingPayload = existingRuntime?.payload as {
+      requestFingerprint?: string;
+      dispatch?: { recipients?: Array<{ agentId?: string }> };
+    } | undefined;
+    if (existingPayload?.requestFingerprint) {
+      if (existingPayload.requestFingerprint !== requestFingerprint) {
+        return reply.code(409).send({ error: "runtime communication ID collision" });
+      }
+      await reconcileRuntimeCommunicationProjections({
+        projectId: conversation.projectId,
+        communicationEventId: eventId,
+      });
+      const message = store.getConversationMessages(conversation.id)
+        .find((candidate) => candidate.communicationEventId === eventId);
+      if (!message) return reply.code(503).send({
+        error: "collaboration projection could not be recorded; retry is safe",
+      });
+      return {
+        message,
+        audience: hasEveryoneMention(text) ? "everyone" : "mention",
+        notifiedAgentIds: (existingPayload.dispatch?.recipients ?? [])
+          .flatMap((recipient) => recipient.agentId ? [recipient.agentId] : []),
+      };
+    }
+    if (conversation.archived) return reply.code(404).send({ error: "conversation not found" });
     const detail = collaborationViewDetail(request.params.id);
     if (!detail) return reply.code(404).send({ error: "conversation not found" });
 
@@ -168,6 +218,17 @@ export function registerCollaborationRoutes(
       }
       attachmentIdsByAgent.set(recipient.agentId, recipient.attachmentIds);
     }
+    const leasedAgentIds = routing.intents.map((intent) => intent.targetAgentId);
+    if (leasedAgentIds.some(agentDeletionInProgress)) {
+      return reply.code(409).send({ error: "Agent deletion is in progress" });
+    }
+    const releaseDeliveryLease = leaseConversationDelivery(
+      conversationDeliveryLeases,
+      agentDeliveryLeases,
+      master.id,
+      leasedAgentIds,
+    );
+    try {
     const attachmentsByAgent = new Map<string, AssetDto[]>();
     for (const intent of routing.intents) {
       const ids = attachmentIdsByAgent.get(intent.targetAgentId) ?? [];
@@ -182,10 +243,6 @@ export function registerCollaborationRoutes(
     const canonicalAttachments = routing.intents
       .map((intent) => attachmentsByAgent.get(intent.targetAgentId) ?? [])
       .find((items) => items.length > 0) ?? [];
-    const eventId = idempotencyKey
-        ? `collaboration-${createHash("sha256").update(`${master.id}\0${idempotencyKey}`).digest("hex")}`
-        : randomUUID();
-    const existingRuntime = coordinationV3.runtimeCommunication(eventId);
     const createdAt = existingRuntime?.createdAt ?? new Date().toISOString();
     let prepared: Awaited<ReturnType<typeof prepareUserCommunicationText>>;
     try {
@@ -220,6 +277,7 @@ export function registerCollaborationRoutes(
         intent: communication.intent,
         audience: communication.audience,
         payload: {
+          requestFingerprint,
           communication,
           dispatch: {
             conversationId: master.id,
@@ -304,6 +362,9 @@ export function registerCollaborationRoutes(
       audience: hasEveryoneMention(text) ? "everyone" : "mention",
       notifiedAgentIds,
     };
+    } finally {
+      releaseDeliveryLease();
+    }
   });
 
 }
