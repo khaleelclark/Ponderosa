@@ -39,6 +39,9 @@ interface AgentSurfaceContext {
   managementPlans: ManagementRoutes["managementPlans"];
   deletingAgentIds: ManagementRoutes["deletingAgentIds"];
   deletingProjectIds: ReadonlySet<string>;
+  deletingConversationIds: ReadonlySet<string>;
+  conversationDeliveryLeases: Map<string, number>;
+  agentDeliveryLeases: Map<string, number>;
   cachedModelOptions: ManagementRoutes["cachedModelOptions"];
   publicManagementOperations: ManagementRoutes["publicManagementOperations"];
   commitAgentDeletion: ManagementRoutes["commitAgentDeletion"];
@@ -84,6 +87,9 @@ export function registerAgentSurface(
     managementPlans,
     deletingAgentIds,
     deletingProjectIds,
+    deletingConversationIds,
+    conversationDeliveryLeases,
+    agentDeliveryLeases,
     cachedModelOptions,
     publicManagementOperations,
     commitAgentDeletion,
@@ -207,6 +213,11 @@ registerAgentRequestCommandRoutes(app, {
   coordinationV3,
   agentMessageCapabilities,
   activeRuns,
+  projectDeletionInProgress: projectId => deletingProjectIds.has(projectId),
+  conversationDeletionInProgress: conversationId => deletingConversationIds.has(conversationId),
+  agentDeletionInProgress: agentId => deletingAgentIds.has(agentId),
+  conversationDeliveryLeases,
+  agentDeliveryLeases,
   capabilityMatchesCleanupRun,
   runAuthorization,
   projectCommunicationArtifact,
@@ -225,6 +236,11 @@ registerAgentCommunicationRoutes(app, {
   workspace,
   agentMessageCapabilities,
   activeRuns,
+  projectDeletionInProgress: projectId => deletingProjectIds.has(projectId),
+  conversationDeletionInProgress: conversationId => deletingConversationIds.has(conversationId),
+  agentDeletionInProgress: agentId => deletingAgentIds.has(agentId),
+  conversationDeliveryLeases,
+  agentDeliveryLeases,
   capabilityOwnsAuthoritativeRun,
   runAuthorization,
   recordCommunication,

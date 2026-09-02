@@ -8,7 +8,13 @@ import {
   clampComposerMenuIndex,
   hasComposerDestination,
   selectExclusiveNewAgentDestination,
+  singleComposerDestination,
 } from "../src/components/chat/composerDestination.js";
+import {
+  findMentionedHandles,
+  hasBroadcastMention,
+  hasEveryoneMention,
+} from "../src/mentions.js";
 
 const bryce = {
   id: "bryce",
@@ -55,6 +61,40 @@ test("recognizes an authored new Agent destination", () => {
     hasComposerDestination("continue with #new-agent.", "new-agent"),
     true,
   );
+  assert.equal(
+    hasComposerDestination("continue with (#new-agent)", "new-agent"),
+    true,
+  );
+});
+
+test("normalizes new Agent into one canonical destination", () => {
+  assert.equal(
+    singleComposerDestination(
+      "#new-agent first, then (#new-agent) again #NEW-AGENT",
+      "new-agent",
+    ),
+    "#new-agent first, then () again ",
+  );
+  const text = "(#Bryce-Canyon) ask #new-agent then #UI-Specialist #";
+  const cursor = text.lastIndexOf("#");
+  assert.equal(
+    selectExclusiveNewAgentDestination(
+      text,
+      cursor,
+      cursor + 1,
+      ["Bryce-Canyon", "UI-Specialist"],
+    ),
+    "() ask then #new-agent ",
+  );
+});
+
+test("recognizes punctuation-wrapped destinations consistently", () => {
+  assert.deepEqual(
+    findMentionedHandles("ask (#Bryce-Canyon), please", ["Bryce-Canyon"]),
+    ["Bryce-Canyon"],
+  );
+  assert.equal(hasBroadcastMention("send (#broadcast)"), true);
+  assert.equal(hasEveryoneMention("ask [#everyone]"), true);
 });
 
 test("keeps autocomplete selection within a live suggestion list", () => {

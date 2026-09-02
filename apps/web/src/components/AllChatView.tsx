@@ -20,7 +20,6 @@ import type {
   WorkspaceAgentDirectoryItemDto,
   WorkspaceNotificationDto,
 } from "@ponderosa/core";
-import { messageTagTokens } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
@@ -533,12 +532,14 @@ export function AllChatView({
       draftAttachmentIds,
       draftOwnerId,
       mentionedAgents,
+      newAgentRequested,
     }: {
       body: string;
       files: File[];
       draftAttachmentIds: string[];
       draftOwnerId?: string;
       mentionedAgents: Array<{ agentId: string; currentTitle: string }>;
+      newAgentRequested: boolean;
     }) => {
       if (!activeProjectId) throw new Error("Select a message to establish a Project first");
       if (!body.trim() && files.length === 0)
@@ -562,9 +563,7 @@ export function AllChatView({
       const creationConversation = creationConversationId
         ? conversationsQuery.data?.find(candidate => candidate.id === creationConversationId)
         : conversationsQuery.data?.find(candidate => !candidate.archived);
-      const newAgentCount = messageTagTokens(body).filter(token =>
-        token.handle.toLocaleLowerCase() === "new-agent").length;
-      if (recipientIds.length === 0 && newAgentCount === 0) {
+      if (recipientIds.length === 0 && !newAgentRequested) {
         throw new Error("Select at least one Agent or add #new-agent");
       }
       const createdNames = [...validAgents.values()].map(agent => agent.title);
@@ -572,10 +571,10 @@ export function AllChatView({
       const createdTitles: string[] = [];
       let deliveredRecipientIds: string[] = [];
       let unavailableCount = 0;
-      if (newAgentCount > 0 && !creationConversation) {
+      if (newAgentRequested && !creationConversation) {
         throw new Error("This Project has no active Chat for the new Agent");
       }
-      for (let index = 0; index < newAgentCount; index += 1) {
+      if (newAgentRequested) {
         const title = pickAgentName(createdNames);
         createdNames.push(title);
         createdTitles.push(title);
@@ -589,7 +588,7 @@ export function AllChatView({
             draftAttachmentIds,
             draftOwnerId,
           } : {}),
-          idempotencyKey: `${requestId}:new-agent:${index}`,
+          idempotencyKey: `${requestId}:new-agent:0`,
         });
         createdAgentIds.push(created.id);
       }
@@ -1199,6 +1198,7 @@ export function AllChatView({
               draftAttachmentIds,
               draftOwnerId,
               mentionedAgents: context?.mentionedAgents ?? [],
+              newAgentRequested: context?.newAgentRequested ?? false,
             })
           }
         />

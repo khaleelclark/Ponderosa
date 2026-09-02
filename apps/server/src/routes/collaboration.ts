@@ -175,7 +175,7 @@ export function registerCollaborationRoutes(
       }
       let message = store.getConversationMessages(conversation.id, "collaboration")
         .find((candidate) => candidate.communicationEventId === eventId);
-      if (!message) {
+      {
         if (conversation.archived) return reply.code(404).send({ error: "conversation not found" });
         const replayAgentIds = [...new Set((existingPayload.dispatch?.recipients ?? []).flatMap((recipient) =>
           typeof recipient.agentId === "string" && recipient.agentId.trim() ? [recipient.agentId.trim()] : []))];

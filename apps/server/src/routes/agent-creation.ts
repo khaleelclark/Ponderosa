@@ -94,7 +94,12 @@ export function registerAgentCreationRoutes(
       }
       if (creationIdempotencyKey) {
         const existing = store.findAgentCreation(request.params.id, creationIdempotencyKey);
-        if (existing) return { ...existing, replayed: true };
+        if (existing) {
+          if (deletingAgentIds.has(existing.id)) {
+            return reply.code(409).send({ error: "Agent creation is still in progress; retry safely" });
+          }
+          return { ...existing, replayed: true };
+        }
         request.body.idempotencyKey = creationIdempotencyKey;
       }
       if (request.body.presetId) {
@@ -210,8 +215,9 @@ export function registerAgentCreationRoutes(
       // communication, and activation are durably committed.
       deletingAgentIds.add(agent.id);
       const releaseAgentDelivery = leaseAgentDelivery(agentDeliveryLeases, [agent.id]);
-      try {
-      let openingAttachments: AssetDto[] = [];
+      const openingAttachments: AssetDto[] = [];
+      let openingCommitted = false;
+      let rollbackCompleted = false;
       try {
         for (const attachment of draftAttachments as NonNullable<(typeof draftAttachments)[number]>[]) {
           const staged = await assets.stage({
@@ -221,56 +227,37 @@ export function registerAgentCreationRoutes(
           });
           openingAttachments.push({ ...staged, state: "associated" as const });
         }
-      } catch (error) {
-        await Promise.allSettled(openingAttachments.map((attachment) => assets.remove(agent.projectId, agent.id, attachment.id)));
-        store.deleteAgent(agent.id, (agentId) => coordinationV3.handleAgentDeletion(agentId));
-        if (error instanceof AssetError) return reply.code(error.statusCode).send({ error: error.message });
-        return reply.code(409).send({ error: error instanceof Error ? error.message : "first-turn attachments could not be committed" });
-      }
       const openingEventId = `agent-opening:${agent.id}`;
       const openingCreatedAt = new Date().toISOString();
       let openingPrepared: Awaited<ReturnType<typeof prepareUserCommunicationText>> | undefined;
       if (hasInitialTurn) {
-        try {
-          openingPrepared = await prepareUserCommunicationText({
-            projectId: agent.projectId,
-            communicationId: openingEventId,
-            text: initialMessage,
-            createdAt: openingCreatedAt,
-          });
-        } catch (error) {
-          await Promise.allSettled(openingAttachments.map((attachment) => assets.remove(agent.projectId, agent.id, attachment.id)));
-          store.deleteAgent(agent.id, (agentId) => coordinationV3.handleAgentDeletion(agentId));
-          const status = error instanceof AssetError ? error.statusCode : 409;
-          return reply.code(status).send({ error: error instanceof Error ? error.message : "first-turn text could not be committed" });
-        }
+        openingPrepared = await prepareUserCommunicationText({
+          projectId: agent.projectId,
+          communicationId: openingEventId,
+          text: initialMessage,
+          createdAt: openingCreatedAt,
+        });
       }
       let managedOpening: { requestIds: string[]; joinId?: string } | undefined;
       if (hasInitialTurn && agent.managerAgentId) {
-        try {
-          managedOpening = coordinationV3.coordinate({
-            projectId: agent.projectId, conversationId: agent.conversationId,
-            requesterAgentId: agent.managerAgentId, actorScope: "user:local-operator",
-            idempotencyKey: `managed-opening:${agent.id}`,
-            requests: [{ requestId: `managed:${agent.id}:opening`, recipientAgentId: agent.id, lifetime: { kind: "indefinite" }, payload: {
-              text: openingPrepared!.publishedText,
-              ...(openingPrepared!.artifact ? {
-                artifactId: openingPrepared!.artifact.id,
-                resultRef: `ponderosa://artifact/${openingPrepared!.artifact.id}`,
-              } : {}),
-              managedAgentOpening: true,
-              ...(request.body.speed ? {
-                runtimeSelection: { speed: request.body.speed },
-              } : {}),
-              ...(openingAttachments.length ? { attachments: openingAttachments } : {}),
-            } }],
-            ...(request.body.awaitResult === false ? {} : { join: { id: `managed:${agent.id}:join`, mode: "all" as const } }),
-          });
-        } catch (error) {
-          await Promise.allSettled(openingAttachments.map((attachment) => assets.remove(agent.projectId, agent.id, attachment.id)));
-          store.deleteAgent(agent.id, (agentId) => coordinationV3.handleAgentDeletion(agentId));
-          return reply.code(409).send({ error: error instanceof Error ? error.message : "managed Agent opening could not be tracked" });
-        }
+        managedOpening = coordinationV3.coordinate({
+          projectId: agent.projectId, conversationId: agent.conversationId,
+          requesterAgentId: agent.managerAgentId, actorScope: "user:local-operator",
+          idempotencyKey: `managed-opening:${agent.id}`,
+          requests: [{ requestId: `managed:${agent.id}:opening`, recipientAgentId: agent.id, lifetime: { kind: "indefinite" }, payload: {
+            text: openingPrepared!.publishedText,
+            ...(openingPrepared!.artifact ? {
+              artifactId: openingPrepared!.artifact.id,
+              resultRef: `ponderosa://artifact/${openingPrepared!.artifact.id}`,
+            } : {}),
+            managedAgentOpening: true,
+            ...(request.body.speed ? {
+              runtimeSelection: { speed: request.body.speed },
+            } : {}),
+            ...(openingAttachments.length ? { attachments: openingAttachments } : {}),
+          } }],
+          ...(request.body.awaitResult === false ? {} : { join: { id: `managed:${agent.id}:join`, mode: "all" as const } }),
+        });
       }
       if (hasInitialTurn) {
         const createdAt = openingCreatedAt;
@@ -388,10 +375,35 @@ export function registerAgentCreationRoutes(
         notifyScheduler();
       }
 
+      openingCommitted = true;
       return { ...agent, ...(managedOpening ? { openingRequestId: managedOpening.requestIds[0], openingJoinId: managedOpening.joinId } : {}) };
+      } catch (error) {
+        await Promise.allSettled(openingAttachments.map((attachment) =>
+          assets.remove(agent.projectId, agent.id, attachment.id)));
+        try {
+          rollbackCompleted = store.deleteAgent(
+            agent.id,
+            (agentId) => coordinationV3.handleAgentDeletion(agentId),
+          );
+        } catch (rollbackError) {
+          throw new AggregateError(
+            [error, rollbackError],
+            "Agent opening failed and its partial Agent could not be rolled back",
+          );
+        }
+        if (!rollbackCompleted) {
+          throw new AggregateError(
+            [error],
+            "Agent opening failed and its partial Agent could not be rolled back",
+          );
+        }
+        const status = error instanceof AssetError ? error.statusCode : 409;
+        return reply.code(status).send({
+          error: error instanceof Error ? error.message : "Agent opening could not be committed",
+        });
       } finally {
         releaseAgentDelivery();
-        deletingAgentIds.delete(agent.id);
+        if (openingCommitted || rollbackCompleted) deletingAgentIds.delete(agent.id);
       }
       } finally {
         const remaining = (agentCreationConversationLeases.get(

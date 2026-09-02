@@ -584,6 +584,8 @@ registerAgentPackageRoutes(app, {
   engines,
   deletingProjectIds,
   deletingConversationIds,
+  deletingAgentIds,
+  agentCreationConversationLeases,
   cachedModelOptions,
   appendWorkspace,
   agentMessages,

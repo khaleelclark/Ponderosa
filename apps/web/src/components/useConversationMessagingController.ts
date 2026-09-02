@@ -5,7 +5,6 @@ import type {
   ConversationDto,
   EngineDto,
 } from "@ponderosa/core";
-import { messageTagTokens } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { hasBroadcastMention, hasEveryoneMention } from "../mentions";
@@ -24,10 +23,6 @@ import {
 import { pickAgentName } from "../parkNames";
 import { queryKeys } from "../queryKeys";
 import type { AgentStatus } from "../agents";
-import {
-  hasComposerDestination,
-  NEW_AGENT_DESTINATION_HANDLE,
-} from "./chat/composerDestination";
 
 interface ConversationMessagingControllerInput {
   conversationId: string;
@@ -473,17 +468,12 @@ export function useConversationMessagingController({
     draftAttachmentIds: string[] = [],
     draftOwnerId?: string,
     mentionedAgents: AgentMentionBindingDto[] = [],
+    newAgentRequested = false,
   ) => {
     setSpawnNotice(undefined);
     const broadcastMentioned = hasBroadcastMention(text);
     const broadcastText = managerBroadcastText(text);
     const everyoneMentioned = hasEveryoneMention(text);
-    const newAgentRequested = hasComposerDestination(
-      text,
-      NEW_AGENT_DESTINATION_HANDLE,
-    );
-    const newAgentCount = messageTagTokens(text).filter(token =>
-      token.handle.toLocaleLowerCase() === NEW_AGENT_DESTINATION_HANDLE).length;
     const explicitlyMentionedAgents = mentionedAgents.flatMap(binding => {
       const agent = agents.find(candidate =>
         candidate.id === binding.agentId && !candidate.archived);
@@ -495,7 +485,7 @@ export function useConversationMessagingController({
     const requestId = createClientId();
     const createdAgentIds: string[] = [];
     const createdTitles = detailAgents.map(agent => agent.title);
-    for (let index = 0; index < newAgentCount; index += 1) {
+    if (newAgentRequested) {
       const title = pickAgentName(createdTitles);
       createdTitles.push(title);
       const created = await spawn.mutateAsync({
@@ -503,7 +493,7 @@ export function useConversationMessagingController({
         draftAttachmentIds,
         draftOwnerId,
         title,
-        idempotencyKey: `${requestId}:new-agent:${index}`,
+        idempotencyKey: `${requestId}:new-agent:0`,
       });
       createdAgentIds.push(created.id);
     }

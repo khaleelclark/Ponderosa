@@ -368,6 +368,59 @@ export function registerAgentMessageRunRoute(
           typeof v3FreshProviderSession !== "boolean" || !v3ActivationPrompt)) {
         return reply.code(400).send({ error: "V3 scheduler run, fencing token, injection ID, and provider-session disposition are required" });
       }
+      const sourceConversationId = request.body.sourceConversationId;
+      if (sourceConversationId !== undefined && agent.conversationId !== sourceConversationId) {
+        return reply.code(400).send({ error: "conversation does not belong to agent" });
+      }
+      if (request.body.sourceChannel === "main" && sourceConversationId) {
+        const sourceMaster = store.getConversation(sourceConversationId);
+        if (!sourceMaster || sourceMaster.archived) {
+          return reply.code(400).send({ error: "archived conversations cannot route new turns" });
+        }
+      }
+      const shareWithOrganization = request.body.shareWithOrganization === true;
+      if (shareWithOrganization && (request.body.sourceChannel !== "main" || !sourceConversationId)) {
+        return reply.code(400).send({ error: "shared turns must originate from a Conversation" });
+      }
+      const mentionDepth = request.body.agentMentionDepth;
+      if (
+        mentionDepth !== undefined &&
+        (!Number.isInteger(mentionDepth) || mentionDepth < 0 || mentionDepth > MAX_AGENT_MENTION_REPLAY_WINDOW)
+      ) {
+        return reply.code(400).send({ error: "agentMentionDepth must be an integer from 0 to 64" });
+      }
+      const mentionTrail = request.body.agentMentionTrail ?? [];
+      if (
+        !Array.isArray(mentionTrail) ||
+        mentionTrail.length > MAX_AGENT_MENTION_REPLAY_WINDOW ||
+        mentionTrail.some((fingerprint) => typeof fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(fingerprint)) ||
+        mentionTrail.length !== (mentionDepth ?? 0)
+      ) {
+        return reply.code(400).send({
+          error: "agentMentionTrail must contain one relay fingerprint for each agentMentionDepth step",
+        });
+      }
+      if (internalV3Dispatch && unicodeCodePointLength(text) > MAX_TEXT_LENGTH) {
+        return reply.code(400).send({ error: "internal dispatch text must be 65536 characters or fewer" });
+      }
+      if (!internalV3Dispatch && Buffer.byteLength(text, "utf8") > LONG_TEXT_MAX_UTF8_BYTES) {
+        return reply.code(413).send({ error: "text exceeds the 8 MiB limit" });
+      }
+      const stagedDraftIds = request.body?.draftAttachmentIds ?? [];
+      const stagedDraftOwner = drafts.normalizedOwner(request.body?.draftOwnerId);
+      const stagedDraftSurface = request.body?.draftId;
+      if (!Array.isArray(stagedDraftIds) || stagedDraftIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(stagedDraftIds).size !== stagedDraftIds.length) {
+        return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique draft attachments are allowed` });
+      }
+      if (requestedAttachmentIds.length + stagedDraftIds.length > MAX_ATTACHMENTS_PER_MESSAGE) {
+        return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique attachments are allowed` });
+      }
+      if (stagedDraftIds.length && (!stagedDraftOwner || !stagedDraftSurface || !drafts.validId(stagedDraftSurface))) {
+        return reply.code(400).send({ error: "draft surface and owner are required" });
+      }
+      if (!text && requestedAttachmentIds.length === 0 && stagedDraftIds.length === 0) {
+        return reply.code(400).send({ error: "text or an attachment is required" });
+      }
       if (internalV3Dispatch) {
         const workspaceIssue = await reconcileProjectWorkspace(project, agent);
         if (workspaceIssue) {
@@ -455,18 +508,6 @@ export function registerAgentMessageRunRoute(
           return reply.code(409).send({ error: `/${command.name} must be invoked through its structured provider action` });
         }
       }
-      const stagedDraftIds = request.body?.draftAttachmentIds ?? [];
-      const stagedDraftOwner = drafts.normalizedOwner(request.body?.draftOwnerId);
-      const stagedDraftSurface = request.body?.draftId;
-      if (!Array.isArray(stagedDraftIds) || stagedDraftIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(stagedDraftIds).size !== stagedDraftIds.length) {
-        return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique draft attachments are allowed` });
-      }
-      if (requestedAttachmentIds.length + stagedDraftIds.length > MAX_ATTACHMENTS_PER_MESSAGE) {
-        return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique attachments are allowed` });
-      }
-      if (stagedDraftIds.length && (!stagedDraftOwner || !stagedDraftSurface || !drafts.validId(stagedDraftSurface))) {
-        return reply.code(400).send({ error: "draft surface and owner are required" });
-      }
       const promotedDraftAssets: AssetDto[] = [];
       try {
         for (const draftAttachmentId of stagedDraftIds) {
@@ -488,16 +529,14 @@ export function registerAgentMessageRunRoute(
         if (error instanceof AssetError) return reply.code(error.statusCode).send({ error: error.message });
         throw error;
       }
+      let promotedDraftAssetsCommitted = false;
+      try {
       const attachmentIds = [...requestedAttachmentIds, ...promotedDraftAssets.map((item) => item.id)];
       if (new Set(attachmentIds).size !== attachmentIds.length) {
-        await Promise.allSettled(promotedDraftAssets.map((attachment) =>
-          assets.remove(agent.projectId, agent.id, attachment.id)));
         return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique attachments are allowed` });
       }
       if (attachmentIds.some((attachmentId) =>
         attachmentDeletionInProgress(agent.id, attachmentId))) {
-        await Promise.allSettled(promotedDraftAssets.map((attachment) =>
-          assets.remove(agent.projectId, agent.id, attachment.id)));
         return reply.code(409).send({ error: "Asset deletion is in progress; retry safely" });
       }
       const attached = (await Promise.all(attachmentIds.map((id) => assetMetadata(agent.id, id))));
@@ -505,26 +544,6 @@ export function registerAgentMessageRunRoute(
       const messageAttachments = (attached as NonNullable<(typeof attached)[number]>[]).map(({ projectId: _projectId, originalFile: _originalFile, previewFile: _previewFile, associatedAt: _associatedAt, ...item }) => ({ ...item, state: "associated" as const })) as AssetDto[];
       if (messageAttachments.reduce((sum, item) => sum + item.size, 0) > ASSET_LIMITS.maxMessageBytes) return reply.code(413).send({ error: "message asset quota exceeded" });
       if (!text && messageAttachments.length === 0) return reply.code(400).send({ error: "text or an attachment is required" });
-      if (internalV3Dispatch && unicodeCodePointLength(text) > MAX_TEXT_LENGTH) {
-        return reply.code(400).send({ error: "internal dispatch text must be 65536 characters or fewer" });
-      }
-      if (!internalV3Dispatch && Buffer.byteLength(text, "utf8") > LONG_TEXT_MAX_UTF8_BYTES) {
-        return reply.code(413).send({ error: "text exceeds the 8 MiB limit" });
-      }
-      const sourceConversationId = request.body.sourceConversationId;
-      if (sourceConversationId !== undefined && agent.conversationId !== sourceConversationId) {
-        return reply.code(400).send({ error: "conversation does not belong to agent" });
-      }
-      if (request.body.sourceChannel === "main" && sourceConversationId) {
-        const sourceMaster = store.getConversation(sourceConversationId);
-        if (!sourceMaster || sourceMaster.archived) {
-          return reply.code(400).send({ error: "archived conversations cannot route new turns" });
-        }
-      }
-      const shareWithOrganization = request.body.shareWithOrganization === true;
-      if (shareWithOrganization && (request.body.sourceChannel !== "main" || !sourceConversationId)) {
-        return reply.code(400).send({ error: "shared turns must originate from a Conversation" });
-      }
       const directMessageConversationId = sourceConversationId ?? agent.conversationId;
       const proposedCommunicationEventId = internalV3Dispatch
         ? undefined
@@ -682,24 +701,6 @@ export function registerAgentMessageRunRoute(
           directMessageConversationId, "main", communication.eventId,
         );
       }
-      const mentionDepth = request.body.agentMentionDepth;
-      if (
-        mentionDepth !== undefined &&
-        (!Number.isInteger(mentionDepth) || mentionDepth < 0 || mentionDepth > MAX_AGENT_MENTION_REPLAY_WINDOW)
-      ) {
-        return reply.code(400).send({ error: "agentMentionDepth must be an integer from 0 to 64" });
-      }
-      const mentionTrail = request.body.agentMentionTrail ?? [];
-      if (
-        !Array.isArray(mentionTrail) ||
-        mentionTrail.length > MAX_AGENT_MENTION_REPLAY_WINDOW ||
-        mentionTrail.some((fingerprint) => !/^[a-f0-9]{64}$/.test(fingerprint)) ||
-        mentionTrail.length !== (mentionDepth ?? 0)
-      ) {
-        return reply.code(400).send({
-          error: "agentMentionTrail must contain one relay fingerprint for each agentMentionDepth step",
-        });
-      }
       const pendingTurn: PendingTurn = {
         text: publishedText,
         communicationEventId,
@@ -717,6 +718,7 @@ export function registerAgentMessageRunRoute(
         }
         if (!v3Intake.replayed) {
           await assets.associate(agent.projectId, agent.id, attachmentIds);
+          promotedDraftAssetsCommitted = true;
           if (!sharedCommunication) {
             const stored = store.appendEvent(agent.id, {
               type: "user_message", text: auditText, communicationEventId, attachments: messageAttachments,
@@ -892,6 +894,7 @@ export function registerAgentMessageRunRoute(
 
       try {
         await assets.associate(agent.projectId, agent.id, attachmentIds);
+        promotedDraftAssetsCommitted = true;
       } catch (error) {
         failUnstartedClaim();
         if (runtimeAttachmentCleanupAfterRun) {
@@ -1045,6 +1048,12 @@ export function registerAgentMessageRunRoute(
       });
 
       return { queued: false, runId, mode, communicationEventId };
+      } finally {
+        if (!promotedDraftAssetsCommitted) {
+          await Promise.all(promotedDraftAssets.map((attachment) =>
+            assets.remove(agent.projectId, agent.id, attachment.id)));
+        }
+      }
       } finally {
         releaseAgentDelivery();
       }

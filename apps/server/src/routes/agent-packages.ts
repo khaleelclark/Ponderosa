@@ -53,6 +53,8 @@ interface AgentPackageRoutesContext {
   engines: ReadonlyMap<string, { adapter: Adapter }>;
   deletingProjectIds: ReadonlySet<string>;
   deletingConversationIds: ReadonlySet<string>;
+  deletingAgentIds: Set<string>;
+  agentCreationConversationLeases: Map<string, number>;
   cachedModelOptions: (adapter: Adapter, projectId?: string) => ModelOption[];
   appendWorkspace: (event: {
     type: "project_changed";
@@ -80,6 +82,8 @@ export function registerAgentPackageRoutes(
     engines,
     deletingProjectIds,
     deletingConversationIds,
+    deletingAgentIds,
+    agentCreationConversationLeases,
     cachedModelOptions,
     appendWorkspace,
     agentMessages,
@@ -340,7 +344,6 @@ export function registerAgentPackageRoutes(
     reply: FastifyReply,
     onPhase?: (phase: AgentImportPhase) => Promise<void>,
   ): Promise<unknown> => {
-      await onPhase?.("creating_records");
       const project = store.getProject(projectId);
       const conversation = body?.conversationId
         ? store.getConversation(body.conversationId)
@@ -357,6 +360,18 @@ export function registerAgentPackageRoutes(
           error: "an active destination Project Chat is required",
         });
       }
+      agentCreationConversationLeases.set(
+        conversation.id,
+        (agentCreationConversationLeases.get(conversation.id) ?? 0) + 1,
+      );
+      let creationLeaseReleased = false;
+      const releaseCreationLease = () => {
+        if (creationLeaseReleased) return;
+        creationLeaseReleased = true;
+        const remaining = (agentCreationConversationLeases.get(conversation.id) ?? 1) - 1;
+        if (remaining > 0) agentCreationConversationLeases.set(conversation.id, remaining);
+        else agentCreationConversationLeases.delete(conversation.id);
+      };
       type PlannedArtifact =
         NonNullable<AgentPortablePackageDto["agents"][number]["artifacts"]>[number]
         & {
@@ -380,6 +395,11 @@ export function registerAgentPackageRoutes(
         >;
         artifacts: PlannedArtifact[];
       };
+
+      const rollbackAgentIds: string[] = [];
+      let rollbackArtifacts: PlannedArtifact[] = [];
+      try {
+      await onPhase?.("creating_records");
 
       let portablePackage: AgentPortablePackageDto;
       let importNodes: PlannedNode[];
@@ -784,6 +804,7 @@ export function registerAgentPackageRoutes(
         });
       }
       const plannedArtifacts = importNodes.flatMap((node) => node.artifacts);
+      rollbackArtifacts = plannedArtifacts;
       await onPhase?.("importing_artifacts");
       const publishedArtifacts = await publishManagedArtifactContentsAsync(
         context.dataDir,
@@ -822,11 +843,15 @@ export function registerAgentPackageRoutes(
           managementPermissions: node.managementPermissions,
         });
         created.set(node.ref, agent);
+        rollbackAgentIds.push(agent.id);
+        deletingAgentIds.add(agent.id);
       }
 
       const catalogArtifacts: Array<{
         artifact: Parameters<AgentStore["recordProjectArtifact"]>[0];
       }> = [];
+      await onPhase?.("importing_history");
+      await onPhase?.("finalizing");
       for (const node of importNodes) {
         const agent = created.get(node.ref)!;
         for (const artifact of node.artifacts) {
@@ -848,18 +873,11 @@ export function registerAgentPackageRoutes(
             size: artifact.data.length,
             sha256: artifact.sha256,
           };
-          if (catalogArtifact.kind === "generated_file") {
-            assets.registerPublishedGeneratedArtifact(
-              catalogArtifact as RegisteredGeneratedArtifact,
-              publicationById.get(artifact.destinationId)!,
-            );
-          }
           catalogArtifacts.push({ artifact: catalogArtifact });
         }
       }
       store.recordProjectArtifacts(catalogArtifacts);
 
-      await onPhase?.("importing_history");
       for (const node of importNodes) {
         const agent = created.get(node.ref)!;
         if (node.history.length) {
@@ -878,17 +896,55 @@ export function registerAgentPackageRoutes(
           );
         }
       }
-      await onPhase?.("finalizing");
-      appendWorkspace({
-        type: "project_changed",
-        projectId: project.id,
-        action: "updated",
-      });
+      for (const { artifact } of catalogArtifacts) {
+        if (artifact.kind !== "generated_file") continue;
+        assets.registerPublishedGeneratedArtifact(
+          artifact as RegisteredGeneratedArtifact,
+          publicationById.get(artifact.id)!,
+        );
+      }
+      try {
+        appendWorkspace({
+          type: "project_changed",
+          projectId: project.id,
+          action: "updated",
+        });
+      } catch {
+        // Clients reconcile the durable import on their next refresh.
+      }
       const response: ImportAgentPackageResponse = {
         rootAgentId: created.get(portablePackage.rootRef)!.id,
         agentIds: [...created.values()].map((agent) => agent.id),
       };
       return reply.code(201).send(response);
+      } catch (error) {
+        for (const agentId of [...rollbackAgentIds].reverse()) {
+          try {
+            store.deleteAgent(agentId, (id) => coordinationV3.handleAgentDeletion(id));
+          } catch {
+            // Preserve the original import failure. Startup deletion recovery
+            // completes any rollback whose durable deletion already committed.
+          }
+        }
+        for (const artifact of rollbackArtifacts) {
+          try {
+            store.deleteProjectArtifact(project.id, artifact.destinationId, "Agent import rolled back");
+            removeManagedArtifactContent(
+              context.dataDir,
+              project.id,
+              artifact.destinationId,
+              artifact.data.length,
+              artifact.sha256,
+            );
+          } catch {
+            // Startup managed-artifact repair handles exact residual bytes.
+          }
+        }
+        throw error;
+      } finally {
+        for (const agentId of rollbackAgentIds) deletingAgentIds.delete(agentId);
+        releaseCreationLease();
+      }
   };
 
   app.post<{

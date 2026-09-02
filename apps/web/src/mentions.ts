@@ -1,4 +1,8 @@
-import { agentMentionHandleBase, type AgentDto } from "@ponderosa/core";
+import {
+  agentMentionHandleBase,
+  messageTagTokens,
+  type AgentDto,
+} from "@ponderosa/core";
 
 const RESERVED_SCOPE_HANDLES = new Set(["broadcast", "user", "everyone"]);
 
@@ -18,8 +22,8 @@ export function findMentionedHandles(text: string, handles: Iterable<string>): s
   );
   const mentioned = new Map<string, string>();
 
-  for (const match of text.matchAll(/(?:^|\s)#([\p{L}\p{N}_-]+)/gu)) {
-    const handle = byHandle.get(match[1]!.toLocaleLowerCase());
+  for (const token of messageTagTokens(text)) {
+    const handle = byHandle.get(token.handle.toLocaleLowerCase());
     if (handle) mentioned.set(handle.toLocaleLowerCase(), handle);
   }
 
@@ -28,12 +32,19 @@ export function findMentionedHandles(text: string, handles: Iterable<string>): s
 
 /** Whether the reserved Project Broadcast scope handle is present. */
 export function hasBroadcastMention(text: string): boolean {
-  return /(?:^|\s)#broadcast(?=$|\s|[.,!?;:])/iu.test(text);
+  return hasMessageTag(text, "broadcast");
 }
 
 /** Whether the reserved collaboration-wide Agent handle is present. */
 export function hasEveryoneMention(text: string): boolean {
-  return /(?:^|\s)#everyone(?=$|\s|[.,!?;:])/iu.test(text);
+  return hasMessageTag(text, "everyone");
+}
+
+function hasMessageTag(text: string, handle: string): boolean {
+  const normalized = handle.toLocaleLowerCase();
+  return messageTagTokens(text).some(
+    token => token.handle.toLocaleLowerCase() === normalized,
+  );
 }
 
 /** Resolve a displayed agent handle to its stable navigation identity. */

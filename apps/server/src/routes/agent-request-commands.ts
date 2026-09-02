@@ -11,6 +11,7 @@ import type { ActiveRun, AgentMessageCapability } from "../app-contracts.js";
 import type { createCommunicationArtifactAuthority } from "../communication-artifacts.js";
 import type { PreparedCommunicationArtifact } from "./conversation-deliveries.js";
 import { derivedRunActionKey } from "../security.js";
+import { leaseAgentDelivery, leaseConversationDelivery } from "../delivery-leases.js";
 import {
   isRequestCommunicationHandoffKind,
   requestUpdateCommunicationEventId,
@@ -23,6 +24,11 @@ interface AgentRequestCommandRoutesContext {
   coordinationV3: CoordinationV3Store;
   agentMessageCapabilities: ReadonlyMap<string, AgentMessageCapability>;
   activeRuns: ReadonlyMap<string, ActiveRun>;
+  projectDeletionInProgress(projectId: string): boolean;
+  conversationDeletionInProgress(conversationId: string): boolean;
+  agentDeletionInProgress(agentId: string): boolean;
+  conversationDeliveryLeases: Map<string, number>;
+  agentDeliveryLeases: Map<string, number>;
   capabilityMatchesCleanupRun(
     capability: AgentMessageCapability,
     run: ActiveRun | undefined,
@@ -58,6 +64,11 @@ export function registerAgentRequestCommandRoutes(
     coordinationV3,
     agentMessageCapabilities,
     activeRuns,
+    projectDeletionInProgress,
+    conversationDeletionInProgress,
+    agentDeletionInProgress,
+    conversationDeliveryLeases,
+    agentDeliveryLeases,
     capabilityMatchesCleanupRun,
     runAuthorization,
     projectCommunicationArtifact,
@@ -123,6 +134,43 @@ export function registerAgentRequestCommandRoutes(
         ? "Retry without requestId to target the current run's attached request"
         : "Retry with one exact currentRequestId",
     });
+    const currentAuthor = store.getAgent(capability.agentId);
+    const currentRequest = coordinationV3.getRequest(requestId);
+    if (!currentAuthor || currentAuthor.archived || !currentRequest ||
+        currentRequest.projectId !== currentAuthor.projectId) {
+      return reply.code(409).send({ error: "request participants are no longer available" });
+    }
+    const conversation = currentRequest.conversationId
+      ? store.getConversation(currentRequest.conversationId)
+      : undefined;
+    if (projectDeletionInProgress(currentAuthor.projectId) ||
+        (currentRequest.conversationId &&
+          (!conversation || conversation.projectId !== currentAuthor.projectId || conversation.archived ||
+            conversationDeletionInProgress(currentRequest.conversationId)))) {
+      return reply.code(409).send({ error: "request Chat is no longer available" });
+    }
+    const leasedAgentIds = [...new Set([
+      capability.agentId,
+      currentRequest.recipientAgentId,
+      ...(currentRequest.requesterAgentId ? [currentRequest.requesterAgentId] : []),
+    ])];
+    const participants = leasedAgentIds.map((agentId) => store.getAgent(agentId));
+    if (participants.some((agent) => !agent || agent.archived ||
+        agent.projectId !== currentAuthor.projectId ||
+        (currentRequest.conversationId && agent.conversationId !== currentRequest.conversationId))) {
+      return reply.code(409).send({ error: "request participants are no longer available" });
+    }
+    if (leasedAgentIds.some(agentDeletionInProgress)) {
+      return reply.code(409).send({ error: "Agent deletion is in progress" });
+    }
+    const releaseDeliveryLease = conversation
+      ? leaseConversationDelivery(
+          conversationDeliveryLeases,
+          agentDeliveryLeases,
+          conversation.id,
+          leasedAgentIds,
+        )
+      : leaseAgentDelivery(agentDeliveryLeases, leasedAgentIds);
     const updateId = request.body?.updateId?.trim() || derivedRunActionKey(capability.runId, "report", {
       requestId,
       kind,
@@ -133,7 +181,7 @@ export function registerAgentRequestCommandRoutes(
     try {
       if (shouldBackTextWithArtifact(handoffText)) {
         artifact = await stageCommunicationArtifact({
-          projectId: store.getAgent(capability.agentId)!.projectId,
+          projectId: currentAuthor.projectId,
           communicationId: updateId,
           role: "long_text",
           title: kind === "question" ? "Blocking question" : "Request result",
@@ -163,12 +211,12 @@ export function registerAgentRequestCommandRoutes(
       });
       const changedRequest = coordinationV3.getRequest(requestId);
       if (artifact && changedRequest) projectCommunicationArtifact(
-        store.getAgent(capability.agentId)!.projectId,
+        currentAuthor.projectId,
         capability.agentId,
         artifact,
         requestArtifactAccess(updateId, changedRequest),
       );
-      const projectId = store.getAgent(capability.agentId)!.projectId;
+      const projectId = currentAuthor.projectId;
       const requestLifecycle = changedRequest?.conversationId
         ? coordinationV3.requestLifecycleDetails({
             projectId,
@@ -260,6 +308,8 @@ export function registerAgentRequestCommandRoutes(
       return { ...result, ...(artifact ? { resultRef: `ponderosa://artifact/${artifact.id}` } : {}) };
     } catch (error) {
       return reply.code(409).send({ error: error instanceof Error ? error.message : "request update failed" });
+    } finally {
+      releaseDeliveryLease();
     }
   });
 }

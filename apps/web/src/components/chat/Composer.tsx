@@ -34,7 +34,9 @@ import {
   hasComposerDestination,
   NEW_AGENT_DESTINATION_HANDLE,
   prependComposerDestination,
+  removeComposerDestinations,
   selectExclusiveNewAgentDestination,
+  singleComposerDestination,
 } from "./composerDestination";
 import type { ComposerProps } from "./Composer.types";
 import {
@@ -103,13 +105,7 @@ function removeAllComposerDestinations(
   value: string,
   handle: string,
 ): string {
-  let next = value;
-  while (hasComposerDestination(next, handle)) {
-    const removed = removeHandle(next, handle);
-    if (removed === next) break;
-    next = removed;
-  }
-  return next;
+  return removeComposerDestinations(value, [handle]);
 }
 
 function providerCommandInput(
@@ -373,11 +369,14 @@ export function Composer({
     retryUpload: retryDraftUpload,
     uploadStates: draftUploadStates,
   } = draftAttachments;
-  const composedText = composerSubmissionText(text, pastedText);
   const newAgentSelected = hasComposerDestination(
-    composedText,
+    text,
     NEW_AGENT_DESTINATION_HANDLE,
   );
+  const visibleSubmissionText = newAgentSelected
+    ? singleComposerDestination(text, NEW_AGENT_DESTINATION_HANDLE)
+    : text;
+  const composedText = composerSubmissionText(visibleSubmissionText, pastedText);
   const renderedDefaultDestination = newAgentSelected
     ? undefined
     : destinationMode === "target-required"
@@ -398,9 +397,15 @@ export function Composer({
         : (mentionHandles ?? []),
     [destinationMode, mentionHandles],
   );
+  const visibleRoutingText = renderedDefaultDestination
+    ? prependComposerDestination(
+        visibleSubmissionText,
+        renderedDefaultDestination.handle,
+      )
+    : visibleSubmissionText;
   const mentionedHandles = useMemo(
-    () => findMentionedHandles(submissionText, routingMentionHandles),
-    [routingMentionHandles, submissionText],
+    () => findMentionedHandles(visibleRoutingText, routingMentionHandles),
+    [routingMentionHandles, visibleRoutingText],
   );
   const mentionTokens = useMemo<ComposerMentionToken[]>(() => {
     const currentById = new Map((mentionBindings ?? []).map(binding => [binding.agentId, binding]));
@@ -442,7 +447,7 @@ export function Composer({
   }, [knownMentionBindings, mentionBindings, text]);
   const invalidMention = mentionTokens.find(token => !token.valid);
   const authoredProjectDestinationHandles = destinationMode === "project-chat"
-    ? findMentionedHandles(composedText, routingMentionHandles).filter(
+    ? findMentionedHandles(visibleSubmissionText, routingMentionHandles).filter(
         handle =>
           ![
             "broadcast",
@@ -478,7 +483,7 @@ export function Composer({
   }));
   const ambiguousTargetRequiredHandles =
     destinationMode === "target-required"
-      ? findMentionedHandles(submissionText, ambiguousMentionHandles ?? [])
+      ? findMentionedHandles(visibleRoutingText, ambiguousMentionHandles ?? [])
       : [];
   const unresolvedAmbiguousTarget = ambiguousTargetRequiredHandles.find(
     handle =>
@@ -486,7 +491,7 @@ export function Composer({
       requiredRecipient.handle.toLocaleLowerCase() !==
         handle.toLocaleLowerCase(),
   );
-  const hasBroadcastDestination = hasBroadcastMention(submissionText);
+  const hasBroadcastDestination = hasBroadcastMention(visibleRoutingText);
   const hasEveryoneDestination =
     destinationMode === "project-chat" &&
     mentionedHandles.some(handle => handle.toLocaleLowerCase() === "everyone");
@@ -536,16 +541,10 @@ export function Composer({
           ? `#${unresolvedAmbiguousTarget} matches more than one Agent. Use a message's # action to choose the exact Agent.`
           : undefined;
   const toggleNewAgentDestination = () => {
-    const selectingNewAgent = !hasComposerDestination(
-      textRef.current,
-      NEW_AGENT_DESTINATION_HANDLE,
-    );
+    const selectingNewAgent = !newAgentSelected;
     update(current => {
       if (!selectingNewAgent) {
-        return removeHandle(
-          current,
-          NEW_AGENT_DESTINATION_HANDLE,
-        );
+        return removeComposerDestinations(current, [NEW_AGENT_DESTINATION_HANDLE]);
       }
       return prependComposerDestination(current, NEW_AGENT_DESTINATION_HANDLE);
     });
@@ -1137,6 +1136,7 @@ export function Composer({
       stagedDraftOwnerId?: string,
       context?: {
         mentionedAgents?: import("@ponderosa/core").AgentMentionBindingDto[];
+        newAgentRequested?: boolean;
       },
     ) => Promise<unknown> | unknown,
   ) => {
@@ -1198,8 +1198,8 @@ export function Composer({
       }
     }
     const mentionedAgents = [...mentionedAgentsById.values()];
-    const submissionContext = mentionedAgents.length > 0
-      ? { mentionedAgents }
+    const submissionContext = mentionedAgents.length > 0 || newAgentSelected
+      ? { mentionedAgents, newAgentRequested: newAgentSelected }
       : undefined;
     const runtimeCommandSubmission =
       slash?.command.invocation === "runtime";

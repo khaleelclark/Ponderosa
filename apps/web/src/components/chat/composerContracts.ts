@@ -15,6 +15,7 @@ export interface ChatComposerContract {
     draftOwnerId?: string,
     context?: {
       mentionedAgents?: AgentMentionBindingDto[];
+      newAgentRequested?: boolean;
     },
   ): Promise<unknown> | unknown;
   onQueue?(
@@ -24,6 +25,7 @@ export interface ChatComposerContract {
     draftOwnerId?: string,
     context?: {
       mentionedAgents?: AgentMentionBindingDto[];
+      newAgentRequested?: boolean;
     },
   ): Promise<unknown> | unknown;
   onCommand?(command: EngineCommand, argumentsText?: string): Promise<unknown> | unknown;

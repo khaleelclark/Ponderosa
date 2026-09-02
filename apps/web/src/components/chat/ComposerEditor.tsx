@@ -51,6 +51,7 @@ import {
 } from "@ponderosa/core";
 import {
   composerSubmissionText,
+  engineCommandDisabledReason,
   filesFromClipboard,
   shouldExtractLongPaste,
   shouldIgnoreComposerKey,
@@ -1307,14 +1308,18 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
       );
       return;
     }
+    const selectedSuggestion = menuSuggestions[highlighted];
+    const selectedSuggestionDisabled = selectedSuggestion?.kind === "command" &&
+      Boolean(engineCommandDisabledReason(selectedSuggestion.command));
     if (
       menuOpen &&
       (event.key === "Enter" || (event.key === "Tab" && !event.shiftKey)) &&
       !event.metaKey &&
-      !event.ctrlKey
+      !event.ctrlKey &&
+      !selectedSuggestionDisabled
     ) {
       event.preventDefault();
-      onApplySuggestion(menuSuggestions[highlighted]!);
+      onApplySuggestion(selectedSuggestion!);
       return;
     }
     if (menuOpen && event.key === "Escape") {

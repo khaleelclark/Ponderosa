@@ -12,6 +12,7 @@ import { registerAgentMaintenanceRoutes } from "../dist/routes/agent-maintenance
 import { registerCollaborationRoutes } from "../dist/routes/collaboration.js";
 import { registerAttachmentRoutes } from "../dist/routes/attachments.js";
 import { registerAgentCreationRoutes } from "../dist/routes/agent-creation.js";
+import { registerAgentMessageRunRoute } from "../dist/routes/agent-message-run.js";
 import { leaseAgentAssetReconciliation } from "../dist/server-lifecycle.js";
 import { leaseAgentDelivery } from "../dist/delivery-leases.js";
 import { createCommunicationProjectionReconciler } from "../dist/communication-projection-reconciler.js";
@@ -101,6 +102,232 @@ test("new Agents remain quarantined while opening assets are staged", async (t) 
   assert.equal((await creation).statusCode, 409);
   assert.equal(deletingAgentIds.has(agent.id), false);
   assert.equal(agentDeliveryLeases.has(agent.id), false);
+});
+
+function agentCreationTransactionApp({
+  stage = async () => { throw new Error("unexpected attachment stage"); },
+  recordRuntimeCommunication = () => { throw new Error("unexpected opening communication"); },
+} = {}) {
+  const chat = { id: "chat-a", projectId: "project-a", archived: false };
+  const project = { id: chat.projectId, defaultEngine: "codex" };
+  const agent = {
+    id: "agent-a",
+    projectId: project.id,
+    conversationId: chat.id,
+    activeEngine: "codex",
+    handle: "AgentA",
+    archived: false,
+  };
+  let created = false;
+  let deleted = false;
+  const removed = [];
+  const deletingAgentIds = new Set();
+  const app = Fastify();
+  registerAgentCreationRoutes(app, {
+    store: {
+      getProject: () => project,
+      getConversation: () => chat,
+      findAgentCreation: () => created ? agent : undefined,
+      createAgent: () => {
+        created = true;
+        return agent;
+      },
+      deleteAgent: () => {
+        created = false;
+        deleted = true;
+        return true;
+      },
+    },
+    coordinationV3: {
+      handleAgentDeletion: () => {},
+      recordRuntimeCommunication,
+    },
+    workspace: { getPreferences: () => ({}) },
+    assets: {
+      stage,
+      remove: async (_projectId, _agentId, id) => {
+        removed.push(id);
+        return true;
+      },
+      associate: async () => [],
+    },
+    drafts: {
+      normalizedOwner: () => "owner-a",
+      prepared: async () => ({ body: Buffer.from("x"), prepared: {} }),
+    },
+    engines: new Map([["codex", {
+      adapter: {
+        id: "codex",
+        listModels: () => [],
+        listEfforts: () => [],
+      },
+    }]]),
+    deletingAgentIds,
+    deletingProjectIds: new Set(),
+    deletingConversationIds: new Set(),
+    agentCreationConversationLeases: new Map(),
+    agentDeliveryLeases: new Map(),
+    cachedModelOptions: () => [],
+    prepareUserCommunicationText: async ({ text }) => ({ publishedText: text }),
+  });
+  return { agent, app, deletingAgentIds, removed, wasDeleted: () => deleted };
+}
+
+test("an idempotent Agent creation retry cannot replay an in-flight opening", async (t) => {
+  const stageStarted = deferred();
+  const finishStage = deferred();
+  const { agent, app, deletingAgentIds } = agentCreationTransactionApp({
+    stage: async () => {
+      stageStarted.resolve();
+      await finishStage.promise;
+      throw new Error("opening failed");
+    },
+  });
+  t.after(() => app.close());
+  const payload = {
+    title: "Agent A",
+    engine: "codex",
+    conversationId: "chat-a",
+    draftAttachmentIds: ["draft-a"],
+    draftOwnerId: "owner-a",
+    idempotencyKey: "create-once",
+  };
+  const first = app.inject({ method: "POST", url: "/api/projects/project-a/agents", payload });
+  await stageStarted.promise;
+  assert.equal(deletingAgentIds.has(agent.id), true);
+  const retry = await app.inject({ method: "POST", url: "/api/projects/project-a/agents", payload });
+  assert.equal(retry.statusCode, 409);
+  assert.match(retry.json().error, /still in progress/);
+  finishStage.resolve();
+  assert.equal((await first).statusCode, 409);
+});
+
+test("a failed post-create opening rolls back the partial Agent", async (t) => {
+  const { agent, app, deletingAgentIds, removed, wasDeleted } = agentCreationTransactionApp({
+    stage: async () => ({
+      id: "opening-asset",
+      name: "opening.txt",
+      mediaType: "text/plain",
+      size: 1,
+      state: "staged",
+    }),
+    recordRuntimeCommunication: () => { throw new Error("runtime intake failed"); },
+  });
+  t.after(() => app.close());
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/projects/project-a/agents",
+    payload: {
+      title: "Agent A",
+      engine: "codex",
+      conversationId: "chat-a",
+      initialMessage: "start work",
+      draftAttachmentIds: ["draft-a"],
+      draftOwnerId: "owner-a",
+    },
+  });
+  assert.equal(response.statusCode, 409);
+  assert.equal(wasDeleted(), true);
+  assert.deepEqual(removed, ["opening-asset"]);
+  assert.equal(deletingAgentIds.has(agent.id), false);
+});
+
+function agentMessageValidationApp({ assetMetadata = async () => undefined } = {}) {
+  const chat = { id: "chat-a", projectId: "project-a", archived: false };
+  const project = { id: chat.projectId, defaultEngine: "codex" };
+  const agent = {
+    id: "agent-a",
+    projectId: project.id,
+    conversationId: chat.id,
+    activeEngine: "codex",
+    archived: false,
+  };
+  const staged = [];
+  const removed = [];
+  const app = Fastify();
+  registerAgentMessageRunRoute(app, {
+    store: {
+      getAgent: () => agent,
+      getProject: () => project,
+      getConversation: (id) => id === chat.id ? chat : undefined,
+      getRuns: () => [],
+    },
+    workspace: { getPreferences: () => ({}) },
+    coordinationV3: {},
+    assets: {
+      stage: async () => {
+        const asset = { id: "asset-a", name: "a.txt", mediaType: "text/plain", size: 1, state: "staged" };
+        staged.push(asset.id);
+        return asset;
+      },
+      remove: async (_projectId, _agentId, id) => {
+        removed.push(id);
+        return true;
+      },
+    },
+    drafts: {
+      normalizedOwner: () => "owner-a",
+      validId: () => true,
+      prepared: async () => ({ body: Buffer.from("x"), prepared: {} }),
+    },
+    engines: new Map([["codex", {
+      adapter: {
+        id: "codex",
+        listModels: () => [],
+        listEfforts: () => [],
+      },
+    }]]),
+    activeRuns: new Map(),
+    agentMessageCapabilities: new Map(),
+    deletingProjectIds: new Set(),
+    deletingAgentIds: new Set(),
+    conversationDeletionInProgress: () => false,
+    attachmentDeletionInProgress: () => false,
+    conversationDeliveryLeases: new Map(),
+    agentDeliveryLeases: new Map(),
+    assetReconciliationInProgress: () => false,
+    v3DispatchKey: "dispatch-key",
+    reusableRuntime: () => undefined,
+    assetMetadata,
+    cachedModelOptions: () => [],
+  });
+  return { app, removed, staged };
+}
+
+test("invalid mention metadata is rejected before draft promotion", async (t) => {
+  const { app, staged } = agentMessageValidationApp();
+  t.after(() => app.close());
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/agents/agent-a/messages",
+    payload: {
+      text: "hello",
+      agentMentionDepth: 65,
+      draftAttachmentIds: ["draft-a"],
+      draftId: "draft-surface",
+      draftOwnerId: "owner-a",
+    },
+  });
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(staged, []);
+});
+
+test("a promoted draft is removed when later attachment validation rejects delivery", async (t) => {
+  const { app, removed, staged } = agentMessageValidationApp();
+  t.after(() => app.close());
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/agents/agent-a/messages",
+    payload: {
+      text: "hello",
+      draftAttachmentIds: ["draft-a"],
+      draftId: "draft-surface",
+      draftOwnerId: "owner-a",
+    },
+  });
+  assert.equal(response.statusCode, 404);
+  assert.deepEqual(staged, ["asset-a"]);
+  assert.deepEqual(removed, ["asset-a"]);
 });
 
 test("asset cleanup and message delivery cannot lease the same Agent", () => {
@@ -406,6 +633,7 @@ test("direct message retries replay the original success after a recipient is ar
     activeRunDelivery: "steer",
     runtimeSelection: {},
   });
+  let reconciliations = 0;
   const app = Fastify();
   t.after(() => app.close());
   registerConversationDeliveryRoutes(app, {
@@ -433,7 +661,7 @@ test("direct message retries replay the original success after a recipient is ar
     agentDeletionInProgress: () => false,
     conversationDeliveryLeases: new Map(),
     agentDeliveryLeases: new Map(),
-    reconcileRuntimeCommunicationProjections: async () => 0,
+    reconcileRuntimeCommunicationProjections: async () => { reconciliations += 1; return 0; },
   });
 
   const response = await app.inject({
@@ -442,6 +670,7 @@ test("direct message retries replay the original success after a recipient is ar
     payload: requestPayload,
   });
   assert.equal(response.statusCode, 200);
+  assert.equal(reconciliations, 1);
   assert.deepEqual(response.json(), {
     messageId: "message-a",
     replayed: true,
@@ -548,6 +777,7 @@ test("projection recovery leases exact owners and restores only the persisted ro
   };
   const conversationLeases = new Map();
   const agentLeases = new Map();
+  const associations = [];
   let roomInput;
   const store = {
     getConversation: () => chat,
@@ -592,7 +822,9 @@ test("projection recovery leases exact owners and restores only the persisted ro
         contentHash: `hash-${attachment.id}`,
         localPath: `/tmp/${attachment.id}`,
       })),
-      associate: async () => {},
+      associate: async (_projectId, agentId, attachmentIds) => {
+        associations.push([agentId, attachmentIds]);
+      },
     },
     projectDeletionInProgress: () => false,
     agentDeletionInProgress: () => false,
@@ -605,15 +837,98 @@ test("projection recovery leases exact owners and restores only the persisted ro
     projectCommunicationArtifact: () => {},
     communicationArtifactAccess: () => ({}),
     scheduleCommunicationReconciliation: () => {},
-    logError: (_meta, message) => { throw new Error(message); },
+    logError: (meta, message) => { throw meta.err ?? new Error(message); },
     logInfo: () => {},
     projectCommunicationToAgentAudit: () => {},
   });
 
   await reconciler.reconcileRuntimeCommunicationProjections();
   assert.deepEqual(roomInput.attachments.map((asset) => asset.id), ["asset-a"]);
+  assert.deepEqual(associations, [
+    ["agent-a", ["asset-a"]],
+    ["agent-b", ["asset-b"]],
+  ]);
   assert.equal(conversationLeases.size, 0);
   assert.equal(agentLeases.size, 0);
+});
+
+test("projection recovery associates canonical attachments for a passive broadcast", async () => {
+  const chat = { id: "chat-a", projectId: "project-a", archived: false };
+  const owner = { id: "agent-a", projectId: chat.projectId, conversationId: chat.id, archived: false };
+  const attachment = {
+    id: "asset-a", agentId: owner.id, name: "a.txt", mediaType: "text/plain", size: 1, state: "associated",
+  };
+  const event = {
+    eventId: "event-a",
+    schemaVersion: 2,
+    projectId: chat.projectId,
+    conversationId: chat.id,
+    sender: { kind: "user", userId: "local-operator" },
+    intent: "broadcast",
+    audience: { kind: "organization", organizationId: chat.projectId },
+    text: "hello",
+    attachments: [attachment],
+    createdAt: new Date().toISOString(),
+  };
+  const associations = [];
+  let associationFailure = false;
+  const reconciler = createCommunicationProjectionReconciler({
+    store: {
+      getConversation: () => chat,
+      getAgent: () => owner,
+      getCommunicationEvent: () => event,
+      canProjectCommunication: () => true,
+      getConversationMessages: () => [{ id: "message-a", communicationEventId: event.eventId }],
+      getCommunicationProjection: () => ({ message: { messageId: "message-a" } }),
+      appendCommunicationProjection: () => ({ replayed: true }),
+    },
+    coordinationV3: {
+      runtimeCommunications: () => [{
+        id: "runtime-a",
+        projectId: chat.projectId,
+        recipientAgentIds: [],
+        payload: { communication: event },
+      }],
+      requestCommunicationsNeedingProjection: () => [],
+      runtimeArtifacts: () => [],
+    },
+    assets: {
+      authoritativeRuntimeCommunicationAttachments: () => [{
+        attachment,
+        contentHash: "hash-a",
+        localPath: "/tmp/asset-a",
+      }],
+      associate: async (_projectId, agentId, attachmentIds) => {
+        if (associationFailure) throw new Error("association failed");
+        associations.push([agentId, attachmentIds]);
+      },
+    },
+    projectDeletionInProgress: () => false,
+    agentDeletionInProgress: () => false,
+    conversationDeletionInProgress: () => false,
+    attachmentDeletionInProgress: () => false,
+    assetReconciliationInProgress: () => false,
+    conversationDeliveryLeases: new Map(),
+    agentDeliveryLeases: new Map(),
+    recordCommunication: (communication) => communication,
+    projectCommunicationArtifact: () => {},
+    communicationArtifactAccess: () => ({}),
+    scheduleCommunicationReconciliation: () => {},
+    logError: () => {},
+    logInfo: () => {},
+    projectCommunicationToAgentAudit: () => {},
+  });
+
+  await reconciler.reconcileRuntimeCommunicationProjections();
+  assert.deepEqual(associations, [[owner.id, [attachment.id]]]);
+  associationFailure = true;
+  await assert.rejects(
+    () => reconciler.reconcileRuntimeCommunicationProjections({
+      projectId: chat.projectId,
+      communicationEventId: event.eventId,
+    }),
+    /exact retry remains safe/,
+  );
 });
 
 test("direct message retries lease the Chat while repairing a missing projection", async (t) => {
@@ -1075,6 +1390,7 @@ test("collaboration retries read the collaboration channel", async (t) => {
   });
   const eventId = `collaboration-${createHash("sha256").update(`${chat.id}\0${payload.idempotencyKey}`).digest("hex")}`;
   let requestedChannel;
+  let reconciliations = 0;
   const app = Fastify();
   t.after(() => app.close());
   registerCollaborationRoutes(app, {
@@ -1101,7 +1417,7 @@ test("collaboration retries read the collaboration channel", async (t) => {
     agentDeletionInProgress: () => false,
     conversationDeliveryLeases: new Map(),
     agentDeliveryLeases: new Map(),
-    reconcileRuntimeCommunicationProjections: async () => 0,
+    reconcileRuntimeCommunicationProjections: async () => { reconciliations += 1; return 0; },
   });
   const response = await app.inject({
     method: "POST",
@@ -1109,6 +1425,7 @@ test("collaboration retries read the collaboration channel", async (t) => {
     payload,
   });
   assert.equal(response.statusCode, 200);
+  assert.equal(reconciliations, 1);
   assert.equal(requestedChannel, "collaboration");
   assert.equal(response.json().audience, "mention");
 });

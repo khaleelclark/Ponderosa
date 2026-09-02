@@ -10,7 +10,7 @@
     "build": "rsbuild build",
     "dev": "rsbuild dev",
     "preview": "rsbuild preview",
-    "test:built": "sh -c 'tmp=$(mktemp -d); trap \"rm -rf \\\"$tmp\\\"\" EXIT; tsc --module NodeNext --moduleResolution NodeNext --target ES2022 --skipLibCheck --outDir \"$tmp\" --rootDir . src/components/allChatRouting.ts src/components/chat/composerDestination.ts && mkdir -p \"$tmp/test\" && cp test/all-chat-routing.test.mjs \"$tmp/test/\" && node --test \"$tmp/test/all-chat-routing.test.mjs\"'",
+    "test:built": "sh -c 'tmp=$(mktemp -d); trap \"rm -rf \\\"$tmp\\\"\" EXIT; tsc --module NodeNext --moduleResolution NodeNext --target ES2022 --skipLibCheck --outDir \"$tmp\" --rootDir . src/components/allChatRouting.ts src/components/chat/composerDestination.ts src/mentions.ts && ln -s \"$PWD/node_modules\" \"$tmp/node_modules\" && mkdir -p \"$tmp/test\" && cp test/all-chat-routing.test.mjs \"$tmp/test/\" && node --test \"$tmp/test/all-chat-routing.test.mjs\"'",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

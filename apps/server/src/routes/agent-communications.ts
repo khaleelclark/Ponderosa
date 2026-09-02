@@ -31,6 +31,7 @@ import type { createCommunicationArtifactAuthority } from "../communication-arti
 import { derivedRunActionKey } from "../security.js";
 import { normalizeExternalCitations } from "../external-content.js";
 import { selectsRequiredReply } from "../required-reply-route.js";
+import { leaseAgentDelivery, leaseConversationDelivery } from "../delivery-leases.js";
 import type { PreparedCommunicationArtifact } from "./conversation-deliveries.js";
 
 type AgentEventService = ReturnType<typeof createAgentEventService>;
@@ -42,6 +43,11 @@ interface AgentCommunicationRoutesContext {
   workspace: WorkspaceStore;
   agentMessageCapabilities: ReadonlyMap<string, AgentMessageCapability>;
   activeRuns: ReadonlyMap<string, ActiveRun>;
+  projectDeletionInProgress(projectId: string): boolean;
+  conversationDeletionInProgress(conversationId: string): boolean;
+  agentDeletionInProgress(agentId: string): boolean;
+  conversationDeliveryLeases: Map<string, number>;
+  agentDeliveryLeases: Map<string, number>;
   capabilityOwnsAuthoritativeRun(
     capability: AgentMessageCapability,
     run: ActiveRun | undefined,
@@ -119,6 +125,11 @@ export function registerAgentCommunicationRoutes(
     coordinationV3,
     agentMessageCapabilities,
     activeRuns,
+    projectDeletionInProgress,
+    conversationDeletionInProgress,
+    agentDeletionInProgress,
+    conversationDeliveryLeases,
+    agentDeliveryLeases,
     capabilityOwnsAuthoritativeRun,
     runAuthorization,
     recordCommunication,
@@ -407,6 +418,42 @@ export function registerAgentCommunicationRoutes(
         return { suppressed: true, reason: "acknowledgement_only", recipientAgentIds: ordinaryCollaborationRecipients };
       }
     }
+    const conversation = capability.conversationId
+      ? store.getConversation(capability.conversationId)
+      : undefined;
+    if (projectDeletionInProgress(currentAuthor.projectId)) {
+      return reply.code(409).send({ error: "Project deletion is in progress" });
+    }
+    if (capability.conversationId &&
+        (!conversation || conversation.projectId !== currentAuthor.projectId || conversation.archived ||
+          conversationDeletionInProgress(capability.conversationId) ||
+          currentAuthor.conversationId !== capability.conversationId)) {
+      return reply.code(409).send({ error: "agent Chat is no longer available" });
+    }
+    if (intent !== "direct_to_user" && !conversation) {
+      return reply.code(409).send({ error: "agent is not linked to a conversation" });
+    }
+    const recipientAgents = intent === "collaboration"
+      ? inferredRecipientAgentIds.map((agentId) => store.getAgent(agentId))
+      : [];
+    if (!replay && intent === "collaboration" && recipientAgents.some((agent) =>
+      !agent || agent.archived || agent.projectId !== currentAuthor.projectId ||
+      agent.conversationId !== capability.conversationId)) {
+      return reply.code(409).send({ error: "collaboration recipient is no longer available in this Chat" });
+    }
+    const leasedAgentIds = [capability.agentId, ...inferredRecipientAgentIds];
+    if (leasedAgentIds.some(agentDeletionInProgress)) {
+      return reply.code(409).send({ error: "Agent deletion is in progress" });
+    }
+    const releaseDeliveryLease = conversation
+      ? leaseConversationDelivery(
+          conversationDeliveryLeases,
+          agentDeliveryLeases,
+          conversation.id,
+          leasedAgentIds,
+        )
+      : leaseAgentDelivery(agentDeliveryLeases, leasedAgentIds);
+    try {
     const createdAt = replay?.createdAt ?? new Date().toISOString();
     const messageContent = intent === "broadcast" ? scopedText : text;
     const messageNeedsArtifact = shouldBackTextWithArtifact(messageContent);
@@ -635,9 +682,13 @@ export function registerAgentCommunicationRoutes(
         sender: proposedCommunication.sender,
         intent: proposedCommunication.intent,
         audience: proposedCommunication.audience,
-        payload: inferredReplyFingerprint
-          ? { communication: proposedCommunication, requiredReplyFingerprint: inferredReplyFingerprint }
-          : proposedCommunication,
+        payload: {
+          communication: proposedCommunication,
+          ...(inferredReplyFingerprint
+            ? { requiredReplyFingerprint: inferredReplyFingerprint }
+            : {}),
+          ...(intent === "collaboration" ? { dispatch: { text: renderedText } } : {}),
+        },
         ...(preparedArtifacts.length ? { artifacts: preparedArtifacts.map(runtimeArtifactMetadata) } : {}),
         scopeKey: capability.conversationId ? `conversation:${capability.conversationId}` : `agent:${capability.agentId}`,
         runAuthorization: runAuthorization(capability),
@@ -731,6 +782,9 @@ export function registerAgentCommunicationRoutes(
       ...(primaryArtifact ? { resultRef: `ponderosa://artifact/${primaryArtifact.id}` } : {}),
       ...(passiveRecipientAgentIds.size ? { passiveRecipientAgentIds: [...passiveRecipientAgentIds].sort() } : {}),
     };
+    } finally {
+      releaseDeliveryLease();
+    }
   });
 
   app.post<{ Params: { id: string }; Body: { idempotencyKey?: string; createJoin?: boolean } }>(

@@ -110,6 +110,17 @@ export function createCommunicationProjectionReconciler(
     const repairedProjectIds = new Set<string>();
     const exactCanonicalEvents = new Map<string, CommunicationEvent>();
     const exactRecipientAgentIds = new Map<string, string[]>();
+    let exactRecoveryError: unknown;
+    const markExactRecoveryIncomplete = (
+      projectId: string,
+      communicationEventId: string,
+      message: string,
+    ): void => {
+      if (filter?.projectId === projectId &&
+          filter.communicationEventId === communicationEventId) {
+        exactRecoveryError ??= new Error(message);
+      }
+    };
     const sources = [
       ...coordinationV3.runtimeCommunications(),
       ...coordinationV3.requestCommunicationsNeedingProjection(),
@@ -148,6 +159,11 @@ export function createCommunicationProjectionReconciler(
         }
       }
       if (!artifactsAvailable) {
+        markExactRecoveryIncomplete(
+          row.projectId,
+          communicationEventId,
+          "runtime Communication artifact is unavailable",
+        );
         logError({ runtimeCommunicationId: row.id, communicationEventId }, "runtime communication artifact is unavailable; projection remains uncommitted");
         continue;
       }
@@ -241,6 +257,11 @@ export function createCommunicationProjectionReconciler(
       };
       let reservedAttachments = validateReservedAttachments();
       if (!reservedAttachments) {
+        markExactRecoveryIncomplete(
+          row.projectId,
+          communicationEventId,
+          "runtime Communication attachment is unavailable",
+        );
         logError({ runtimeCommunicationId: row.id, communicationEventId },
           "runtime communication attachment is unavailable; canonical projection remains uncommitted");
         continue;
@@ -296,6 +317,11 @@ export function createCommunicationProjectionReconciler(
               item.attachment.id === id ? [{ ...item.attachment, state: "associated" as const }] : []));
       if (conversationAttachmentIds &&
           (recoveredConversationAttachments?.length ?? 0) !== conversationAttachmentIds.length) {
+        markExactRecoveryIncomplete(
+          row.projectId,
+          communicationEventId,
+          "runtime conversation attachment is unavailable",
+        );
         logError({ runtimeCommunicationId: row.id, communicationEventId },
           "runtime conversation attachment is unavailable; projection remains uncommitted");
         continue;
@@ -303,12 +329,26 @@ export function createCommunicationProjectionReconciler(
       if (!event.attachments?.length && recoveredConversationAttachments?.length) {
         event = { ...event, attachments: recoveredConversationAttachments };
       }
-      if (projectDeletionInProgress(row.projectId)) continue;
+      if (projectDeletionInProgress(row.projectId)) {
+        markExactRecoveryIncomplete(
+          row.projectId,
+          communicationEventId,
+          "Project deletion is in progress",
+        );
+        continue;
+      }
       const conversationId = event.conversationId;
       if (conversationId) {
         const conversation = store.getConversation(conversationId);
         if (!conversation || conversation.projectId !== row.projectId || conversation.archived ||
-            conversationDeletionInProgress(conversationId)) continue;
+            conversationDeletionInProgress(conversationId)) {
+          markExactRecoveryIncomplete(
+            row.projectId,
+            communicationEventId,
+            "runtime Communication Chat is unavailable",
+          );
+          continue;
+        }
       }
       const leasedAgentIds = [...new Set([
         ...recipientAgentIds,
@@ -319,7 +359,14 @@ export function createCommunicationProjectionReconciler(
       if (leasedAgentIds.some((agentId) =>
         agentDeletionInProgress(agentId) || assetReconciliationInProgress(agentId)) ||
           [...expectedAttachmentOwners].some(([attachmentId, agentId]) =>
-            attachmentDeletionInProgress(agentId, attachmentId))) continue;
+            attachmentDeletionInProgress(agentId, attachmentId))) {
+        markExactRecoveryIncomplete(
+          row.projectId,
+          communicationEventId,
+          "runtime Communication attachment association is busy",
+        );
+        continue;
+      }
       const releaseProjectionLease = conversationId
         ? leaseConversationDelivery(
             conversationDeliveryLeases,
@@ -480,13 +527,25 @@ export function createCommunicationProjectionReconciler(
           }
         }
 
-        for (const [agentId, recipientAttachments] of attachmentsByAgent) {
-          if (!recipientAttachments.length) continue;
+        const associationIdsByAgent = new Map<string, string[]>();
+        for (const [attachmentId, agentId] of expectedAttachmentOwners) {
+          associationIdsByAgent.set(agentId, [
+            ...(associationIdsByAgent.get(agentId) ?? []),
+            attachmentId,
+          ]);
+        }
+        for (const [agentId, attachmentIds] of associationIdsByAgent) {
           const agent = store.getAgent(agentId);
-          if (!agent || agent.projectId !== canonical.projectId || agent.archived) continue;
-          await assets.associate(canonical.projectId, agentId, recipientAttachments.map((item) => item.id));
+          if (!agent || agent.projectId !== canonical.projectId) {
+            throw new Error("runtime Communication attachment owner is unavailable");
+          }
+          await assets.associate(canonical.projectId, agentId, attachmentIds);
         }
       } catch (error) {
+        if (filter?.projectId === row.projectId &&
+            filter.communicationEventId === communicationEventId) {
+          exactRecoveryError = error;
+        }
         logError({
           err: error,
           runtimeCommunicationId: row.id,
@@ -502,6 +561,11 @@ export function createCommunicationProjectionReconciler(
     }
     for (const projectId of repairedProjectIds) scheduleCommunicationReconciliation(projectId);
     if (filter?.projectId && filter.communicationEventId) {
+      if (exactRecoveryError) {
+        throw new Error("runtime communication projection recovery is incomplete; exact retry remains safe", {
+          cause: exactRecoveryError,
+        });
+      }
       const canonical = [...exactCanonicalEvents.values()][0] ??
         store.getCommunicationEvent(filter.projectId, filter.communicationEventId);
       // Legacy audit-first recovery can already own the one stable room
