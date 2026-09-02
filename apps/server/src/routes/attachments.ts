@@ -6,11 +6,16 @@ export interface AttachmentRoutesContext {
   readonly store: Pick<AgentStore, "getAgent">;
   readonly assets: Pick<AssetStore, "content" | "read" | "remove" | "stage">;
   readonly agentDeliveryLeases: ReadonlyMap<string, number>;
+  readonly deletingAttachmentKeys: Set<string>;
+}
+
+export function attachmentDeletionKey(agentId: string, attachmentId: string): string {
+  return `${agentId}\0${attachmentId}`;
 }
 
 export function registerAttachmentRoutes(
   app: FastifyInstance,
-  { agentDeliveryLeases, assets, store }: AttachmentRoutesContext,
+  { agentDeliveryLeases, assets, deletingAttachmentKeys, store }: AttachmentRoutesContext,
 ): void {
   app.post<{ Params: { id: string }; Body: Buffer }>("/api/agents/:id/attachments", async (request, reply) => {
     const agent = store.getAgent(request.params.id);
@@ -113,28 +118,31 @@ export function registerAttachmentRoutes(
     async (request, reply) => {
       const agent = store.getAgent(request.params.id);
       if (!agent) return reply.code(404).send({ error: "asset not found" });
+      const deletionKey = attachmentDeletionKey(agent.id, request.params.attachmentId);
       if ((agentDeliveryLeases.get(agent.id) ?? 0) > 0) {
         return reply.code(409).send({ error: "Agent message delivery is in progress" });
       }
-      const asset = await assets.read(
-        agent.projectId,
-        agent.id,
-        request.params.attachmentId,
-      );
-      if (!asset) return reply.code(404).send({ error: "asset not found" });
-      if (asset.state === "associated") {
-        return reply.code(409).send({ error: "sent assets cannot be deleted" });
+      if (deletingAttachmentKeys.has(deletionKey)) {
+        return reply.code(409).send({ error: "Asset deletion is already in progress" });
       }
-      if (
-        !(await assets.remove(
+      deletingAttachmentKeys.add(deletionKey);
+      try {
+        const asset = await assets.read(
           agent.projectId,
           agent.id,
           request.params.attachmentId,
-        ))
-      ) {
-        return reply.code(404).send({ error: "asset not found" });
+        );
+        if (!asset) return reply.code(404).send({ error: "asset not found" });
+        if (asset.state === "associated") {
+          return reply.code(409).send({ error: "sent assets cannot be deleted" });
+        }
+        if (!(await assets.remove(agent.projectId, agent.id, request.params.attachmentId))) {
+          return reply.code(404).send({ error: "asset not found" });
+        }
+        return reply.code(204).send();
+      } finally {
+        deletingAttachmentKeys.delete(deletionKey);
       }
-      return reply.code(204).send();
     },
   );
 }

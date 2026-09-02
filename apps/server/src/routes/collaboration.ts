@@ -40,6 +40,7 @@ export interface CollaborationRouteDependencies {
   assets: AssetStore;
   projectDeletionInProgress: (projectId: string) => boolean;
   agentDeletionInProgress: (agentId: string) => boolean;
+  attachmentDeletionInProgress: (agentId: string, attachmentId: string) => boolean;
   conversationDeliveryLeases: Map<string, number>;
   agentDeliveryLeases: Map<string, number>;
   collaborationViewDetail: (
@@ -91,6 +92,7 @@ export function registerCollaborationRoutes(
     assets,
     projectDeletionInProgress,
     agentDeletionInProgress,
+    attachmentDeletionInProgress = () => false,
     conversationDeliveryLeases,
     agentDeliveryLeases,
     collaborationViewDetail,
@@ -123,19 +125,30 @@ export function registerCollaborationRoutes(
     Params: { id: string };
     Body: CreateCollaborationMessageRequest;
   }>("/api/conversations/:id/collaboration/messages", async (request, reply) => {
+    if (request.body?.text !== undefined && typeof request.body.text !== "string") {
+      return reply.code(400).send({ error: "text must be a string" });
+    }
+    const text = canonicalizeProviderText(request.body?.text ?? "").trim();
+    const requestedRecipientAttachments = request.body?.recipientAttachments ?? [];
+    if (!Array.isArray(requestedRecipientAttachments) || requestedRecipientAttachments.some((entry) =>
+      !entry || typeof entry.agentId !== "string" || !Array.isArray(entry.attachmentIds) ||
+      entry.attachmentIds.some((id) => typeof id !== "string" || !id))) {
+      return reply.code(400).send({ error: "recipientAttachments must be valid Agent attachment lists" });
+    }
+    if (!text && (!Array.isArray(requestedRecipientAttachments) || requestedRecipientAttachments.every((item) => !item?.attachmentIds?.length))) {
+      return reply.code(400).send({ error: "text or an attachment is required" });
+    }
+    if (Buffer.byteLength(text, "utf8") > LONG_TEXT_MAX_UTF8_BYTES) return reply.code(413).send({ error: "text exceeds the 8 MiB limit" });
+    if (request.body?.idempotencyKey !== undefined && typeof request.body.idempotencyKey !== "string") {
+      return reply.code(400).send({ error: "idempotencyKey must be a string" });
+    }
+    const idempotencyKey = request.body?.idempotencyKey?.trim();
+    if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
     const conversation = store.getConversation(request.params.id);
     if (!conversation) return reply.code(404).send({ error: "conversation not found" });
     if (projectDeletionInProgress(conversation.projectId)) {
       return reply.code(409).send({ error: "Project deletion is in progress" });
     }
-    const text = canonicalizeProviderText(request.body?.text ?? "").trim();
-    const requestedRecipientAttachments = request.body?.recipientAttachments ?? [];
-    if (!text && (!Array.isArray(requestedRecipientAttachments) || requestedRecipientAttachments.every((item) => !item?.attachmentIds?.length))) {
-      return reply.code(400).send({ error: "text or an attachment is required" });
-    }
-    if (Buffer.byteLength(text, "utf8") > LONG_TEXT_MAX_UTF8_BYTES) return reply.code(413).send({ error: "text exceeds the 8 MiB limit" });
-    const idempotencyKey = request.body?.idempotencyKey?.trim();
-    if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
     const eventId = idempotencyKey
       ? `collaboration-${createHash("sha256").update(`${conversation.id}\0${idempotencyKey}`).digest("hex")}`
       : randomUUID();
@@ -162,7 +175,7 @@ export function registerCollaborationRoutes(
         projectId: conversation.projectId,
         communicationEventId: eventId,
       });
-      const message = store.getConversationMessages(conversation.id)
+      const message = store.getConversationMessages(conversation.id, "collaboration")
         .find((candidate) => candidate.communicationEventId === eventId);
       if (!message) return reply.code(503).send({
         error: "collaboration projection could not be recorded; retry is safe",
@@ -182,7 +195,8 @@ export function registerCollaborationRoutes(
     let routing: { intents: ConversationDeliveryIntent[]; blocked: Array<{ handle: string; reason: string }> };
     if (request.body.recipientAgentIds !== undefined) {
       const ids = request.body.recipientAgentIds;
-      if (!Array.isArray(ids) || ids.length === 0 || ids.length > 100) {
+      if (!Array.isArray(ids) || ids.length === 0 || ids.length > 100 ||
+          ids.some((id) => typeof id !== "string" || !id.trim())) {
         return reply.code(400).send({ error: "collaboration requires 1 to 100 recipientAgentIds" });
       }
       const uniqueIds = [...new Set(ids)];
@@ -219,6 +233,10 @@ export function registerCollaborationRoutes(
       attachmentIdsByAgent.set(recipient.agentId, recipient.attachmentIds);
     }
     const leasedAgentIds = routing.intents.map((intent) => intent.targetAgentId);
+    if ([...attachmentIdsByAgent].some(([agentId, attachmentIds]) =>
+      attachmentIds.some((attachmentId) => attachmentDeletionInProgress(agentId, attachmentId)))) {
+      return reply.code(409).send({ error: "Asset deletion is in progress" });
+    }
     if (leasedAgentIds.some(agentDeletionInProgress)) {
       return reply.code(409).send({ error: "Agent deletion is in progress" });
     }

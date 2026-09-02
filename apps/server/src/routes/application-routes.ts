@@ -41,6 +41,7 @@ import { registerAgentUsageRoute, registerUsageRoutes } from "./usage.js";
 import { registerAgentWorkRoutes } from "./agent-work.js";
 import { registerArtifactRoutes } from "./artifacts.js";
 import { registerAttachmentRoutes } from "./attachments.js";
+import { attachmentDeletionKey } from "./attachments.js";
 import { registerBrowserRoutes } from "./browsers.js";
 import { registerCollaborationRoutes } from "./collaboration.js";
 import { registerCommunicationDocumentRoutes } from "./communication-documents.js";
@@ -73,10 +74,11 @@ type ApplicationRoutesContext =
     "hasActiveRun" |
     "purgeCommunicationV4Conversation" | "refreshTriggers"> &
   Omit<Parameters<typeof registerConversationDeliveryRoutes>[1],
-    "projectDeletionInProgress" | "agentDeletionInProgress" | "assetMetadata"> &
+    "projectDeletionInProgress" | "agentDeletionInProgress" | "attachmentDeletionInProgress" | "assetMetadata"> &
   Parameters<typeof registerQueuedMessageRoutes>[1] &
   Omit<Parameters<typeof registerCollaborationRoutes>[1],
-    "projectDeletionInProgress" | "agentDeletionInProgress" | "assetMetadata"> &
+    "projectDeletionInProgress" | "agentDeletionInProgress" | "attachmentDeletionInProgress" | "assetMetadata"> &
+  Parameters<typeof registerAttachmentRoutes>[1] &
   Parameters<typeof registerAgentCreationRoutes>[1] &
   Omit<Parameters<typeof registerAgentPackageRoutes>[1], "dataDir" | "coordination"> &
   Omit<Parameters<typeof registerAgentMaintenanceRoutes>[1], "workingCopies"> &
@@ -208,6 +210,7 @@ export function registerApplicationRoutes(
     agentCreationConversationLeases,
     conversationDeliveryLeases,
     agentDeliveryLeases,
+    deletingAttachmentKeys,
     rejectQuarantinedTriggerMutation,
     projectDeletionInFlightIds,
     communicationReconciliation,
@@ -379,6 +382,8 @@ registerConversationDeliveryRoutes(app, {
   assets,
   projectDeletionInProgress: (projectId) => deletingProjectIds.has(projectId),
   agentDeletionInProgress: (agentId) => deletingAgentIds.has(agentId),
+  attachmentDeletionInProgress: (agentId, attachmentId) =>
+    deletingAttachmentKeys.has(attachmentDeletionKey(agentId, attachmentId)),
   conversationDeliveryLeases,
   agentDeliveryLeases,
   assetMetadata,
@@ -413,6 +418,8 @@ registerCollaborationRoutes(app, {
   assets,
   projectDeletionInProgress: projectId => deletingProjectIds.has(projectId),
   agentDeletionInProgress: agentId => deletingAgentIds.has(agentId),
+  attachmentDeletionInProgress: (agentId, attachmentId) =>
+    deletingAttachmentKeys.has(attachmentDeletionKey(agentId, attachmentId)),
   conversationDeliveryLeases,
   agentDeliveryLeases,
   collaborationViewDetail,
@@ -617,7 +624,7 @@ async function assetMetadata(agentId: string, id: string) {
 
 registerLimitsRoutes(app, serverContext);
 
-registerAttachmentRoutes(app, { agentDeliveryLeases, assets, store });
+registerAttachmentRoutes(app, { agentDeliveryLeases, assets, deletingAttachmentKeys, store });
 
 registerAgentMessageRunRoute(app, {
   opts, store, workspace, coordinationV3, assets, drafts, engines, engineAvailability,

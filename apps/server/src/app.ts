@@ -405,6 +405,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const agentCreationConversationLeases = new Map<string, number>();
   const conversationDeliveryLeases = new Map<string, number>();
   const agentDeliveryLeases = new Map<string, number>();
+  const deletingAttachmentKeys = new Set<string>();
   const contextCursors = new ContextCursorStore(opts.dataDir);
   const {
     browserScopeForRun,
@@ -1075,6 +1076,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     agentCreationConversationLeases,
     conversationDeliveryLeases,
     agentDeliveryLeases,
+    deletingAttachmentKeys,
     rejectQuarantinedTriggerMutation,
     projectDeletionInFlightIds,
     communicationReconciliation,

@@ -51,6 +51,7 @@ export interface ConversationDeliveryRouteDependencies {
   assets: AssetStore;
   projectDeletionInProgress: (projectId: string) => boolean;
   agentDeletionInProgress: (agentId: string) => boolean;
+  attachmentDeletionInProgress: (agentId: string, attachmentId: string) => boolean;
   conversationDeliveryLeases: Map<string, number>;
   agentDeliveryLeases: Map<string, number>;
   assetMetadata: (agentId: string, id: string) => ReturnType<AssetStore["read"]>;
@@ -161,6 +162,7 @@ export function registerConversationDeliveryRoutes(
     assets,
     projectDeletionInProgress,
     agentDeletionInProgress,
+    attachmentDeletionInProgress = () => false,
     conversationDeliveryLeases,
     agentDeliveryLeases,
     assetMetadata,
@@ -219,16 +221,19 @@ export function registerConversationDeliveryRoutes(
     }
     if (!Array.isArray(requestedRecipientAttachments) ||
         requestedRecipientAttachments.length > recipientAgentIds.length ||
-        new Set(requestedRecipientAttachments.map((entry) => entry.agentId)).size !== requestedRecipientAttachments.length ||
         requestedRecipientAttachments.some((entry) =>
-          !entry || !recipientAgentIds.includes(entry.agentId) ||
+          !entry || typeof entry.agentId !== "string" || !recipientAgentIds.includes(entry.agentId) ||
           !Array.isArray(entry.attachmentIds) ||
+          entry.attachmentIds.some((id) => typeof id !== "string" || !id) ||
           entry.attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE ||
-          new Set(entry.attachmentIds).size !== entry.attachmentIds.length
-        )) {
+          new Set(entry.attachmentIds).size !== entry.attachmentIds.length) ||
+        new Set(requestedRecipientAttachments.map((entry) => entry.agentId)).size !== requestedRecipientAttachments.length) {
       return reply.code(400).send({ error: "broadcast recipient attachments must belong to unique explicit recipients" });
     }
-    const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
+    if (typeof request.body?.idempotencyKey !== "string") {
+      return reply.code(400).send({ error: "idempotencyKey must contain 1 to 200 characters" });
+    }
+    const idempotencyKey = request.body.idempotencyKey.trim();
     if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must contain 1 to 200 characters" });
     if (!Array.isArray(requestedAssets) ||
         requestedAssets.length > MAX_ATTACHMENTS_PER_MESSAGE ||
@@ -304,6 +309,11 @@ export function registerConversationDeliveryRoutes(
       return reply.code(404).send({ error: "asset owner not found" });
     }
     const leasedAgentIds = [...new Set([...recipientAgentIds, ...attachmentOwnerIds])];
+    if (requestedAssets.some((asset) => attachmentDeletionInProgress(asset.agentId, asset.id)) ||
+        requestedRecipientAttachments.some((entry) => entry.attachmentIds.some((id) =>
+          attachmentDeletionInProgress(entry.agentId, id)))) {
+      return reply.code(409).send({ error: "Asset deletion is in progress" });
+    }
     if (leasedAgentIds.some(agentDeletionInProgress)) {
       return reply.code(409).send({ error: "Agent deletion is in progress" });
     }
@@ -546,9 +556,13 @@ export function registerConversationDeliveryRoutes(
   app.post<{ Params: { id: string }; Body: CreateMultiAgentDirectMessageRequest }>(
     "/api/conversations/:id/direct-messages",
     async (request, reply) => {
-      const rawText = request.body?.text ?? "";
+      const rawText = request.body?.text;
       let recipients = request.body?.recipients ?? [];
-      const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
+      if (typeof rawText !== "string") return reply.code(400).send({ error: "text is required" });
+      if (typeof request.body?.idempotencyKey !== "string") {
+        return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
+      }
+      const idempotencyKey = request.body.idempotencyKey.trim();
       const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
       const runtimeSelection = requestedRuntimeSelection(request.body ?? {});
       if (!runtimeSelection) {
@@ -559,7 +573,8 @@ export function registerConversationDeliveryRoutes(
       }
       if (!rawText.trim()) return reply.code(400).send({ error: "text is required" });
       if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
-      if (!Array.isArray(recipients) || recipients.length === 0 || recipients.length > 100) {
+      if (!Array.isArray(recipients) || recipients.length === 0 || recipients.length > 100 ||
+          recipients.some((recipient) => !recipient || typeof recipient.agentId !== "string" || !recipient.agentId.trim())) {
         return reply.code(400).send({ error: "1 to 100 recipients are required" });
       }
       let agentIds = recipients.map((recipient) => recipient.agentId?.trim());
@@ -568,7 +583,8 @@ export function registerConversationDeliveryRoutes(
       }
       for (const recipient of recipients) {
         const ids = recipient.attachmentIds ?? [];
-        if (!Array.isArray(ids) || ids.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(ids).size !== ids.length) {
+        if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string" || !id) ||
+            ids.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(ids).size !== ids.length) {
           return reply.code(400).send({ error: `each recipient supports at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique attachments` });
         }
       }
@@ -649,6 +665,10 @@ export function registerConversationDeliveryRoutes(
         });
       }
       agentIds = recipients.map(recipient => recipient.agentId);
+      if (recipients.some((recipient) => (recipient.attachmentIds ?? []).some((id) =>
+        attachmentDeletionInProgress(recipient.agentId, id)))) {
+        return reply.code(409).send({ error: "Asset deletion is in progress" });
+      }
       if (agentIds.some(agentDeletionInProgress)) {
         return reply.code(409).send({ error: "Agent deletion is in progress" });
       }

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import test from "node:test";
 import Fastify from "fastify";
@@ -398,6 +399,7 @@ test("broadcast attachments lease their owning Agent", async (t) => {
     store: { getAgent: () => owner },
     assets,
     agentDeliveryLeases: agentLeases,
+    deletingAttachmentKeys: new Set(),
   });
   const delivery = app.inject({
     method: "POST",
@@ -519,4 +521,170 @@ test("collaboration leases its Chat and recipient Agents while preparing text", 
   assert.equal((await delivery).statusCode, 409);
   assert.equal(leases.has(chat.id), false);
   assert.equal(agentLeases.has(agent.id), false);
+});
+
+test("an attachment deletion reservation blocks a delivery that starts second", async (t) => {
+  const chat = { id: "chat-a", projectId: "project-a", archived: false };
+  const owner = {
+    id: "agent-owner",
+    projectId: chat.projectId,
+    conversationId: chat.id,
+    handle: "Owner",
+    title: "Owner",
+    archived: false,
+  };
+  const deletionReadStarted = deferred();
+  const finishDeletionRead = deferred();
+  const deletingAttachmentKeys = new Set();
+  let prepared = false;
+  const asset = {
+    id: "asset-a",
+    projectId: chat.projectId,
+    agentId: owner.id,
+    name: "note.txt",
+    mediaType: "text/plain",
+    size: 4,
+    state: "staged",
+  };
+  const assets = {
+    read: async () => {
+      deletionReadStarted.resolve();
+      await finishDeletionRead.promise;
+      return asset;
+    },
+    remove: async () => true,
+  };
+  const app = Fastify();
+  t.after(() => app.close());
+  registerAttachmentRoutes(app, {
+    store: { getAgent: () => owner },
+    assets,
+    agentDeliveryLeases: new Map(),
+    deletingAttachmentKeys,
+  });
+  registerConversationDeliveryRoutes(app, {
+    store: {
+      getConversation: () => chat,
+      listAgents: () => [owner],
+      getAgent: () => owner,
+    },
+    coordinationV3: { runtimeCommunication: () => undefined },
+    projectDeletionInProgress: () => false,
+    agentDeletionInProgress: () => false,
+    attachmentDeletionInProgress: (agentId, attachmentId) =>
+      deletingAttachmentKeys.has(`${agentId}\0${attachmentId}`),
+    conversationDeliveryLeases: new Map(),
+    agentDeliveryLeases: new Map(),
+    prepareUserCommunicationText: async () => {
+      prepared = true;
+      throw new Error("must not prepare");
+    },
+  });
+
+  const deletion = app.inject({
+    method: "DELETE",
+    url: `/api/agents/${owner.id}/attachments/${asset.id}`,
+  });
+  await deletionReadStarted.promise;
+  const delivery = await app.inject({
+    method: "POST",
+    url: `/api/conversations/${chat.id}/messages`,
+    payload: {
+      text: "hello",
+      attachments: [{ id: asset.id, agentId: owner.id }],
+      idempotencyKey: "reverse-attachment-race",
+    },
+  });
+  assert.equal(delivery.statusCode, 409);
+  assert.equal(prepared, false);
+  finishDeletionRead.resolve();
+  assert.equal((await deletion).statusCode, 204);
+  assert.equal(deletingAttachmentKeys.size, 0);
+});
+
+test("collaboration retries read the collaboration channel", async (t) => {
+  const chat = { id: "chat-a", projectId: "project-a", archived: false };
+  const payload = {
+    text: "hello",
+    recipientAgentIds: ["agent-a"],
+    idempotencyKey: "collaboration-replay",
+  };
+  const requestFingerprint = conversationDeliveryRequestFingerprint({
+    version: 1,
+    kind: "collaboration",
+    conversationId: chat.id,
+    text: payload.text,
+    recipientAgentIds: payload.recipientAgentIds,
+    recipientAttachments: [],
+  });
+  const eventId = `collaboration-${createHash("sha256").update(`${chat.id}\0${payload.idempotencyKey}`).digest("hex")}`;
+  let requestedChannel;
+  const app = Fastify();
+  t.after(() => app.close());
+  registerCollaborationRoutes(app, {
+    store: {
+      getConversation: () => chat,
+      getConversationMessages: (_id, channel) => {
+        requestedChannel = channel;
+        return [{ id: "message-a", communicationEventId: eventId }];
+      },
+    },
+    coordinationV3: {
+      runtimeCommunication: () => ({
+        id: "event-a",
+        projectId: chat.projectId,
+        audience: {},
+        createdAt: new Date().toISOString(),
+        payload: {
+          requestFingerprint,
+          dispatch: { recipients: [{ agentId: "agent-a" }] },
+        },
+      }),
+    },
+    projectDeletionInProgress: () => false,
+    agentDeletionInProgress: () => false,
+    conversationDeliveryLeases: new Map(),
+    agentDeliveryLeases: new Map(),
+    reconcileRuntimeCommunicationProjections: async () => 0,
+  });
+  const response = await app.inject({
+    method: "POST",
+    url: `/api/conversations/${chat.id}/collaboration/messages`,
+    payload,
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(requestedChannel, "collaboration");
+});
+
+test("delivery routes reject malformed JSON shapes with 400", async (t) => {
+  const app = Fastify();
+  t.after(() => app.close());
+  const common = {
+    store: {},
+    coordinationV3: {},
+    projectDeletionInProgress: () => false,
+    agentDeletionInProgress: () => false,
+    conversationDeliveryLeases: new Map(),
+    agentDeliveryLeases: new Map(),
+  };
+  registerConversationDeliveryRoutes(app, common);
+  registerCollaborationRoutes(app, { ...common, collaborationViewDetail: () => undefined });
+  const cases = [
+    ["/api/conversations/chat-a/messages", { text: "hello", idempotencyKey: 1 }],
+    ["/api/conversations/chat-a/messages", {
+      text: "#AgentA hello",
+      recipientAgentMentions: [{ agentId: "agent-a", handle: "AgentA" }],
+      recipientAttachments: [null],
+      idempotencyKey: "bad-attachment-list",
+    }],
+    ["/api/conversations/chat-a/direct-messages", { text: {}, recipients: [{ agentId: "agent-a" }], idempotencyKey: "bad-text" }],
+    ["/api/conversations/chat-a/direct-messages", { text: "hello", recipients: [null], idempotencyKey: "bad-recipient" }],
+    ["/api/conversations/chat-a/direct-messages", { text: "hello", recipients: [{ agentId: "agent-a" }], idempotencyKey: 1 }],
+    ["/api/conversations/chat-a/collaboration/messages", { text: {}, recipientAgentIds: ["agent-a"] }],
+    ["/api/conversations/chat-a/collaboration/messages", { text: "hello", recipientAgentIds: ["agent-a"], idempotencyKey: 1 }],
+  ];
+  for (const [url, payload] of cases) {
+    const response = await app.inject({ method: "POST", url, payload });
+    assert.equal(response.statusCode, 400, `${url}: ${response.body}`);
+  }
 });
