@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type {
+  AgentDto,
   AgentMentionBindingDto,
   AssetDto,
   CommunicationEvent,
+  ConversationDto,
   CreateConversationMessageRequest,
   CreateMultiAgentDirectMessageRequest,
   MultiAgentDirectMessageResponse,
@@ -88,6 +90,14 @@ export interface ConversationDeliveryRouteDependencies {
 }
 
 const MAX_ATTACHMENTS_PER_MESSAGE = ASSET_LIMITS.maxAssetsPerMessage;
+
+function isActiveConversationAgent(
+  agent: Pick<AgentDto, "projectId" | "conversationId" | "archived"> | undefined,
+  conversation: Pick<ConversationDto, "id" | "projectId">,
+): boolean {
+  return Boolean(agent && !agent.archived &&
+    agent.projectId === conversation.projectId && agent.conversationId === conversation.id);
+}
 
 function requestedRuntimeSelection(body: {
   model?: unknown;
@@ -190,7 +200,7 @@ export function registerConversationDeliveryRoutes(
     if (projectDeletionInProgress(master.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
     const agentIdsByHandle = new Map<string, string[]>();
     for (const agent of store.listAgents(master.projectId)) {
-      if (agent.archived) continue;
+      if (!isActiveConversationAgent(agent, master)) continue;
       const handle = agent.handle.toLocaleLowerCase();
       if (!handle || ["broadcast", "everyone", "user"].includes(handle)) continue;
       agentIdsByHandle.set(handle, [...(agentIdsByHandle.get(handle) ?? []), agent.id]);
@@ -211,9 +221,7 @@ export function registerConversationDeliveryRoutes(
       return reply.code(400).send({ error: "Broadcast Agent mention binding is stale, ambiguous, or invalid" });
     }
     const recipientAgents = recipientAgentIds.map((agentId) => store.getAgent(agentId));
-    if (recipientAgents.some((agent) =>
-      !agent || agent.archived || agent.projectId !== master.projectId
-    )) {
+    if (recipientAgents.some((agent) => !isActiveConversationAgent(agent, master))) {
       return reply.code(404).send({ error: "broadcast recipient not found" });
     }
     if (!Array.isArray(requestedAssets) || requestedAssets.length > MAX_ATTACHMENTS_PER_MESSAGE) return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} assets are allowed` });

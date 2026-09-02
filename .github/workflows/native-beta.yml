@@ -70,7 +70,11 @@ jobs:
       - name: Resolve product version
         shell: bash
         run: |
-          version="$(node packaging/beta-version.mjs --require-tag)"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            version="$(node packaging/beta-version.mjs)"
+          else
+            version="$(node packaging/beta-version.mjs --require-tag)"
+          fi
           test -n "$version"
           echo "PONDEROSA_BUILD_VERSION=$version" >> "$GITHUB_ENV"
 
@@ -102,6 +106,10 @@ jobs:
       - name: Verify native bundle
         shell: bash
         run: node packaging/verify-beta-bundle.mjs
+
+      - name: Restore installer build dependencies
+        shell: bash
+        run: pnpm install --frozen-lockfile
 
       - name: Install Inno Setup when absent
         if: runner.os == 'Windows'
