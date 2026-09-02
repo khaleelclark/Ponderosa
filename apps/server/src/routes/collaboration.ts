@@ -16,7 +16,6 @@ import type {
   WorkspaceStore,
 } from "@ponderosa/agents";
 import { ASSET_LIMITS, AssetError, type AssetStore } from "../assets.js";
-import { hasEveryoneMention } from "../agent-mentions.js";
 import {
   conversationDeliveryRequestFingerprint,
   leaseConversationDelivery,
@@ -41,6 +40,7 @@ export interface CollaborationRouteDependencies {
   projectDeletionInProgress: (projectId: string) => boolean;
   agentDeletionInProgress: (agentId: string) => boolean;
   attachmentDeletionInProgress: (agentId: string, attachmentId: string) => boolean;
+  assetReconciliationInProgress: (agentId: string) => boolean;
   conversationDeliveryLeases: Map<string, number>;
   agentDeliveryLeases: Map<string, number>;
   collaborationViewDetail: (
@@ -93,6 +93,7 @@ export function registerCollaborationRoutes(
     projectDeletionInProgress,
     agentDeletionInProgress,
     attachmentDeletionInProgress = () => false,
+    assetReconciliationInProgress = () => false,
     conversationDeliveryLeases,
     agentDeliveryLeases,
     collaborationViewDetail,
@@ -171,18 +172,38 @@ export function registerCollaborationRoutes(
       if (existingPayload.requestFingerprint !== requestFingerprint) {
         return reply.code(409).send({ error: "runtime communication ID collision" });
       }
-      await reconcileRuntimeCommunicationProjections({
-        projectId: conversation.projectId,
-        communicationEventId: eventId,
-      });
-      const message = store.getConversationMessages(conversation.id, "collaboration")
+      let message = store.getConversationMessages(conversation.id, "collaboration")
         .find((candidate) => candidate.communicationEventId === eventId);
+      if (!message) {
+        if (conversation.archived) return reply.code(404).send({ error: "conversation not found" });
+        const replayAgentIds = [...new Set((existingPayload.dispatch?.recipients ?? []).flatMap((recipient) =>
+          typeof recipient.agentId === "string" && recipient.agentId.trim() ? [recipient.agentId.trim()] : []))];
+        if (replayAgentIds.some(agentDeletionInProgress)) {
+          return reply.code(409).send({ error: "Agent deletion is in progress" });
+        }
+        const releaseReplayLease = leaseConversationDelivery(
+          conversationDeliveryLeases,
+          agentDeliveryLeases,
+          conversation.id,
+          replayAgentIds,
+        );
+        try {
+          await reconcileRuntimeCommunicationProjections({
+            projectId: conversation.projectId,
+            communicationEventId: eventId,
+          });
+          message = store.getConversationMessages(conversation.id, "collaboration")
+            .find((candidate) => candidate.communicationEventId === eventId);
+        } finally {
+          releaseReplayLease();
+        }
+      }
       if (!message) return reply.code(503).send({
         error: "collaboration projection could not be recorded; retry is safe",
       });
       return {
         message,
-        audience: hasEveryoneMention(text) ? "everyone" : "mention",
+        audience: "mention",
         notifiedAgentIds: (existingPayload.dispatch?.recipients ?? [])
           .flatMap((recipient) => recipient.agentId ? [recipient.agentId] : []),
       };
@@ -236,6 +257,10 @@ export function registerCollaborationRoutes(
     if ([...attachmentIdsByAgent].some(([agentId, attachmentIds]) =>
       attachmentIds.some((attachmentId) => attachmentDeletionInProgress(agentId, attachmentId)))) {
       return reply.code(409).send({ error: "Asset deletion is in progress" });
+    }
+    if ([...attachmentIdsByAgent].some(([agentId, attachmentIds]) =>
+      attachmentIds.length > 0 && assetReconciliationInProgress(agentId))) {
+      return reply.code(409).send({ error: "Asset cleanup is in progress" });
     }
     if (leasedAgentIds.some(agentDeletionInProgress)) {
       return reply.code(409).send({ error: "Agent deletion is in progress" });
@@ -342,7 +367,7 @@ export function registerCollaborationRoutes(
     if (replayedMessage && intake.replayed) {
       return {
         message: replayedMessage,
-        audience: hasEveryoneMention(text) ? "everyone" : "mention",
+        audience: "mention",
         notifiedAgentIds: routing.intents.map((intent) => intent.targetAgentId),
       };
     }
@@ -377,7 +402,7 @@ export function registerCollaborationRoutes(
     notifiedAgentIds.push(...routing.intents.map((intent) => intent.targetAgentId));
     return {
       message,
-      audience: hasEveryoneMention(text) ? "everyone" : "mention",
+      audience: "mention",
       notifiedAgentIds,
     };
     } finally {

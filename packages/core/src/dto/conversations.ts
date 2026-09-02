@@ -410,7 +410,6 @@ export interface ConversationDetailDto {
 
 /** POST /api/conversations/:id/messages body. */
 export interface CreateConversationMessageRequest {
-  role?: "user" | "assistant" | "system";
   text: string;
   attachments?: AssetDto[];
   /** Immutable #handle-to-Agent bindings that select Broadcast wake recipients. */

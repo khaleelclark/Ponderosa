@@ -413,7 +413,10 @@ export class AgentCommunicationJournalAuthority {
 
   appendConversationMessage(
     conversationId: string,
-    input: CreateConversationMessageRequest & { artifactIds?: string[] },
+    input: CreateConversationMessageRequest & {
+      role?: "user" | "assistant" | "system";
+      artifactIds?: string[];
+    },
     authorAgentId?: string,
     channel: ConversationChannel = "main",
     deliveryIntents?: ConversationDeliveryIntent[],

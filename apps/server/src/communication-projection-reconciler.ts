@@ -321,7 +321,7 @@ export function createCommunicationProjectionReconciler(
           ? dispatch.text
           : requestProjectionText ?? canonical.text;
         const conversationText = canonical.intent === "broadcast"
-          ? canonical.sender.kind === "agent" || dispatch?.shareWithOrganization === true
+          ? canonical.sender.kind === "agent"
             ? dispatchText
             : renderScopedMessage("broadcast", canonical.text)
           : canonical.schemaVersion === 2 && canonical.intent === "user_dm" && canonical.sender.kind === "agent"

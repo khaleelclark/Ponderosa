@@ -72,6 +72,8 @@ type ServerLifecycleContext =
     activeRuns: Map<string, ActiveRun>;
     runtimeAuthorities: Map<string, AgentRuntimeAuthority>;
     agentMessageCapabilities: Map<string, AgentMessageCapability>;
+    agentDeliveryLeases: ReadonlyMap<string, number>;
+    reconcilingAssetAgentIds: Set<string>;
     projectBrowserGrants: Map<string, unknown>;
     browserSessions: BrowserSessionManager;
     projectBrowserSessions: BrowserSessionManager;
@@ -94,6 +96,16 @@ type ServerLifecycleContext =
     providerProcessAuthority: ProviderProcessAuthority;
   };
 
+export function leaseAgentAssetReconciliation(
+  agentDeliveryLeases: ReadonlyMap<string, number>,
+  reconcilingAssetAgentIds: Set<string>,
+  agentId: string,
+): (() => void) | undefined {
+  if ((agentDeliveryLeases.get(agentId) ?? 0) > 0 || reconcilingAssetAgentIds.has(agentId)) return undefined;
+  reconcilingAssetAgentIds.add(agentId);
+  return () => reconcilingAssetAgentIds.delete(agentId);
+}
+
 export function registerServerLifecycle(
   app: PonderosaServer,
   context: ServerLifecycleContext,
@@ -111,6 +123,8 @@ export function registerServerLifecycle(
     activeRuns,
     runtimeAuthorities,
     agentMessageCapabilities,
+    agentDeliveryLeases,
+    reconcilingAssetAgentIds,
     projectBrowserGrants,
     browserSessions,
     projectBrowserSessions,
@@ -497,8 +511,18 @@ export function registerServerLifecycle(
       let processedAgents = 0;
       for (const project of store.listProjects()) {
         for (const agent of store.listAgents(project.id)) {
-          const associated = new Set(store.getMessages(agent.id).flatMap((message) => message.attachments?.map((item) => item.id) ?? []));
-          await assets.reconcile(project.id, agent.id, associated);
+          const releaseAssetReconciliation = leaseAgentAssetReconciliation(
+            agentDeliveryLeases,
+            reconcilingAssetAgentIds,
+            agent.id,
+          );
+          if (!releaseAssetReconciliation) continue;
+          try {
+            const associated = new Set(store.getMessages(agent.id).flatMap((message) => message.attachments?.map((item) => item.id) ?? []));
+            await assets.reconcile(project.id, agent.id, associated);
+          } finally {
+            releaseAssetReconciliation();
+          }
           processedAgents += 1;
           await new Promise<void>((resolve) => setImmediate(resolve));
           if (isClosed()) return;

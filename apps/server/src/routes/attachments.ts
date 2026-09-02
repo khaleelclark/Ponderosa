@@ -7,6 +7,7 @@ export interface AttachmentRoutesContext {
   readonly assets: Pick<AssetStore, "content" | "read" | "remove" | "stage">;
   readonly agentDeliveryLeases: ReadonlyMap<string, number>;
   readonly deletingAttachmentKeys: Set<string>;
+  readonly reconcilingAssetAgentIds: ReadonlySet<string>;
 }
 
 export function attachmentDeletionKey(agentId: string, attachmentId: string): string {
@@ -15,7 +16,7 @@ export function attachmentDeletionKey(agentId: string, attachmentId: string): st
 
 export function registerAttachmentRoutes(
   app: FastifyInstance,
-  { agentDeliveryLeases, assets, deletingAttachmentKeys, store }: AttachmentRoutesContext,
+  { agentDeliveryLeases, assets, deletingAttachmentKeys, reconcilingAssetAgentIds, store }: AttachmentRoutesContext,
 ): void {
   app.post<{ Params: { id: string }; Body: Buffer }>("/api/agents/:id/attachments", async (request, reply) => {
     const agent = store.getAgent(request.params.id);
@@ -121,6 +122,9 @@ export function registerAttachmentRoutes(
       const deletionKey = attachmentDeletionKey(agent.id, request.params.attachmentId);
       if ((agentDeliveryLeases.get(agent.id) ?? 0) > 0) {
         return reply.code(409).send({ error: "Agent message delivery is in progress" });
+      }
+      if (reconcilingAssetAgentIds.has(agent.id)) {
+        return reply.code(409).send({ error: "Asset cleanup is in progress" });
       }
       if (deletingAttachmentKeys.has(deletionKey)) {
         return reply.code(409).send({ error: "Asset deletion is already in progress" });

@@ -11,12 +11,26 @@ import { registerConversationRoutes } from "../dist/routes/conversations.js";
 import { registerAgentMaintenanceRoutes } from "../dist/routes/agent-maintenance.js";
 import { registerCollaborationRoutes } from "../dist/routes/collaboration.js";
 import { registerAttachmentRoutes } from "../dist/routes/attachments.js";
+import { leaseAgentAssetReconciliation } from "../dist/server-lifecycle.js";
 
 function deferred() {
   let resolve;
   const promise = new Promise((done) => { resolve = done; });
   return { promise, resolve };
 }
+
+test("asset cleanup and message delivery cannot lease the same Agent", () => {
+  const deliveryLeases = new Map([["agent-a", 1]]);
+  const cleanupLeases = new Set();
+  assert.equal(leaseAgentAssetReconciliation(deliveryLeases, cleanupLeases, "agent-a"), undefined);
+  deliveryLeases.clear();
+  const release = leaseAgentAssetReconciliation(deliveryLeases, cleanupLeases, "agent-a");
+  assert.equal(typeof release, "function");
+  assert.equal(cleanupLeases.has("agent-a"), true);
+  assert.equal(leaseAgentAssetReconciliation(deliveryLeases, cleanupLeases, "agent-a"), undefined);
+  release();
+  assert.equal(cleanupLeases.has("agent-a"), false);
+});
 
 function deliveryLeaseApp({ direct = false, targeted = false } = {}) {
   const chat = { id: "chat-a", projectId: "project-a", archived: false };
@@ -159,7 +173,7 @@ for (const { direct, targeted, label } of [
       payload: direct
         ? {
             text: "hello",
-            recipients: [{ agentId: agent.id }],
+            recipients: [{ agentId: ` ${agent.id} ` }],
             idempotencyKey: "delivery-race",
           }
         : {
@@ -345,6 +359,78 @@ test("direct message retries replay the original success after a recipient is ar
   });
 });
 
+test("direct message retries lease the Chat while repairing a missing projection", async (t) => {
+  const chat = { id: "chat-a", projectId: "project-a", archived: false };
+  const requestPayload = {
+    text: "hello",
+    recipients: [{ agentId: "agent-a" }],
+    idempotencyKey: "repair-retry",
+  };
+  const requestFingerprint = conversationDeliveryRequestFingerprint({
+    version: 1,
+    kind: "direct",
+    conversationId: chat.id,
+    text: requestPayload.text,
+    recipients: [{ agentId: "agent-a", attachmentIds: [] }],
+    activeRunDelivery: "steer",
+    runtimeSelection: {},
+  });
+  const repairStarted = deferred();
+  const finishRepair = deferred();
+  const conversationLeases = new Map();
+  const agentLeases = new Map();
+  let repaired = false;
+  const store = {
+    getConversation: () => chat,
+    getConversationMessageByReceiptKey: () => repaired ? { id: "message-a" } : undefined,
+    listAgents: () => [],
+  };
+  const app = Fastify();
+  t.after(() => app.close());
+  registerConversationDeliveryRoutes(app, {
+    store,
+    coordinationV3: {
+      runtimeCommunication: () => ({
+        payload: { requestFingerprint, dispatch: { recipients: [{ agentId: "agent-a" }] } },
+        activations: [{ id: "delivery-a", agentId: "agent-a" }],
+      }),
+    },
+    projectDeletionInProgress: () => false,
+    agentDeletionInProgress: () => false,
+    conversationDeliveryLeases: conversationLeases,
+    agentDeliveryLeases: agentLeases,
+    reconcileRuntimeCommunicationProjections: async () => {
+      repairStarted.resolve();
+      await finishRepair.promise;
+      repaired = true;
+      return 1;
+    },
+  });
+  registerConversationRoutes(app, {
+    store,
+    engines: new Map(),
+    cachedModelOptions: () => [],
+    deletingConversationIds: new Set(),
+    agentCreationConversationLeases: new Map(),
+    conversationDeliveryLeases: conversationLeases,
+  });
+
+  const retry = app.inject({
+    method: "POST",
+    url: `/api/conversations/${chat.id}/direct-messages`,
+    payload: requestPayload,
+  });
+  await repairStarted.promise;
+  assert.equal(conversationLeases.get(chat.id), 1);
+  assert.equal(agentLeases.get("agent-a"), 1);
+  const deletion = await app.inject({ method: "DELETE", url: `/api/conversations/${chat.id}` });
+  assert.equal(deletion.statusCode, 409);
+  finishRepair.resolve();
+  assert.equal((await retry).statusCode, 200);
+  assert.equal(conversationLeases.has(chat.id), false);
+  assert.equal(agentLeases.has("agent-a"), false);
+});
+
 test("broadcast attachments lease their owning Agent", async (t) => {
   const chat = { id: "chat-a", projectId: "project-a", archived: false };
   const owner = {
@@ -400,6 +486,7 @@ test("broadcast attachments lease their owning Agent", async (t) => {
     assets,
     agentDeliveryLeases: agentLeases,
     deletingAttachmentKeys: new Set(),
+    reconcilingAssetAgentIds: new Set(),
   });
   const delivery = app.inject({
     method: "POST",
@@ -561,6 +648,7 @@ test("an attachment deletion reservation blocks a delivery that starts second", 
     assets,
     agentDeliveryLeases: new Map(),
     deletingAttachmentKeys,
+    reconcilingAssetAgentIds: new Set(),
   });
   registerConversationDeliveryRoutes(app, {
     store: {
@@ -605,7 +693,7 @@ test("an attachment deletion reservation blocks a delivery that starts second", 
 test("collaboration retries read the collaboration channel", async (t) => {
   const chat = { id: "chat-a", projectId: "project-a", archived: false };
   const payload = {
-    text: "hello",
+    text: "#everyone hello",
     recipientAgentIds: ["agent-a"],
     idempotencyKey: "collaboration-replay",
   };
@@ -654,6 +742,7 @@ test("collaboration retries read the collaboration channel", async (t) => {
   });
   assert.equal(response.statusCode, 200);
   assert.equal(requestedChannel, "collaboration");
+  assert.equal(response.json().audience, "mention");
 });
 
 test("delivery routes reject malformed JSON shapes with 400", async (t) => {
@@ -671,6 +760,8 @@ test("delivery routes reject malformed JSON shapes with 400", async (t) => {
   registerCollaborationRoutes(app, { ...common, collaborationViewDetail: () => undefined });
   const cases = [
     ["/api/conversations/chat-a/messages", { text: "hello", idempotencyKey: 1 }],
+    ["/api/conversations/chat-a/messages", { text: 1, attachments: [{ id: "asset-a", agentId: "agent-a" }], idempotencyKey: "bad-text" }],
+    ["/api/conversations/chat-a/messages", { text: "hello", role: "assistant", idempotencyKey: "bad-role" }],
     ["/api/conversations/chat-a/messages", {
       text: "#AgentA hello",
       recipientAgentMentions: [{ agentId: "agent-a", handle: "AgentA" }],

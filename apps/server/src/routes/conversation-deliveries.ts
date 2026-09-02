@@ -52,6 +52,7 @@ export interface ConversationDeliveryRouteDependencies {
   projectDeletionInProgress: (projectId: string) => boolean;
   agentDeletionInProgress: (agentId: string) => boolean;
   attachmentDeletionInProgress: (agentId: string, attachmentId: string) => boolean;
+  assetReconciliationInProgress: (agentId: string) => boolean;
   conversationDeliveryLeases: Map<string, number>;
   agentDeliveryLeases: Map<string, number>;
   assetMetadata: (agentId: string, id: string) => ReturnType<AssetStore["read"]>;
@@ -163,6 +164,7 @@ export function registerConversationDeliveryRoutes(
     projectDeletionInProgress,
     agentDeletionInProgress,
     attachmentDeletionInProgress = () => false,
+    assetReconciliationInProgress = () => false,
     conversationDeliveryLeases,
     agentDeliveryLeases,
     assetMetadata,
@@ -183,9 +185,13 @@ export function registerConversationDeliveryRoutes(
     Body: CreateConversationMessageRequest;
   }>("/api/conversations/:id/messages", async (request, reply) => {
     const messageStartedAt = performance.now();
-    const requestedText = typeof request.body?.text === "string"
-      ? normalizeCanonicalText(request.body.text).trim()
-      : undefined;
+    if (typeof request.body?.text !== "string") {
+      return reply.code(400).send({ error: "text must be a string" });
+    }
+    if (Object.prototype.hasOwnProperty.call(request.body, "role")) {
+      return reply.code(400).send({ error: "role is not supported for user messages" });
+    }
+    const requestedText = normalizeCanonicalText(request.body.text).trim();
     const rawText = requestedText ? stripLeadingScopeTag(requestedText, "broadcast") : "";
     const requestedAssets = request.body?.attachments ?? [];
     const requestedRecipientAgentMentions: unknown = request.body?.recipientAgentMentions;
@@ -249,8 +255,7 @@ export function registerConversationDeliveryRoutes(
       version: 1,
       kind: "broadcast",
       conversationId: master.id,
-      text: requestedText ?? "",
-      role: request.body?.role,
+      text: requestedText,
       recipients: recipientAgentMentions,
       attachments: requestedAssets.map((asset) => ({ agentId: asset.agentId, id: asset.id })),
       recipientAttachments: requestedRecipientAttachments,
@@ -261,17 +266,40 @@ export function registerConversationDeliveryRoutes(
     const existingPayload = existingRuntime?.payload as {
       requestFingerprint?: string;
       communication?: CommunicationEvent;
+      dispatch?: { recipients?: Array<{ agentId?: string }> };
     } | undefined;
     if (existingPayload?.requestFingerprint) {
       if (existingPayload.requestFingerprint !== requestFingerprint) {
         return reply.code(409).send({ error: "runtime communication ID collision" });
       }
-      await reconcileRuntimeCommunicationProjections({
-        projectId: master.projectId,
-        communicationEventId: eventId,
-      });
-      const replayedMessage = store.getConversationMessages(master.id)
+      let replayedMessage = store.getConversationMessages(master.id)
         .find((candidate) => candidate.communicationEventId === eventId);
+      if (replayedMessage) return replayedMessage;
+      if (master.archived) return reply.code(404).send({ error: "conversation not found" });
+      const replayAgentIds = [...new Set([
+        ...(existingPayload.dispatch?.recipients ?? []).flatMap((recipient) =>
+          typeof recipient.agentId === "string" && recipient.agentId.trim() ? [recipient.agentId.trim()] : []),
+        ...(existingPayload.communication?.attachments ?? []).map((attachment) => attachment.agentId),
+      ])];
+      if (replayAgentIds.some(agentDeletionInProgress)) {
+        return reply.code(409).send({ error: "Agent deletion is in progress" });
+      }
+      const releaseReplayLease = leaseConversationDelivery(
+        conversationDeliveryLeases,
+        agentDeliveryLeases,
+        master.id,
+        replayAgentIds,
+      );
+      try {
+        await reconcileRuntimeCommunicationProjections({
+          projectId: master.projectId,
+          communicationEventId: eventId,
+        });
+        replayedMessage = store.getConversationMessages(master.id)
+          .find((candidate) => candidate.communicationEventId === eventId);
+      } finally {
+        releaseReplayLease();
+      }
       return replayedMessage ?? reply.code(503).send({
         error: "broadcast projection could not be recorded; retry is safe",
       });
@@ -309,10 +337,17 @@ export function registerConversationDeliveryRoutes(
       return reply.code(404).send({ error: "asset owner not found" });
     }
     const leasedAgentIds = [...new Set([...recipientAgentIds, ...attachmentOwnerIds])];
+    const attachmentUserIds = [...new Set([
+      ...attachmentOwnerIds,
+      ...requestedRecipientAttachments.map((entry) => entry.agentId),
+    ])];
     if (requestedAssets.some((asset) => attachmentDeletionInProgress(asset.agentId, asset.id)) ||
         requestedRecipientAttachments.some((entry) => entry.attachmentIds.some((id) =>
           attachmentDeletionInProgress(entry.agentId, id)))) {
       return reply.code(409).send({ error: "Asset deletion is in progress" });
+    }
+    if (attachmentUserIds.some(assetReconciliationInProgress)) {
+      return reply.code(409).send({ error: "Asset cleanup is in progress" });
     }
     if (leasedAgentIds.some(agentDeletionInProgress)) {
       return reply.code(409).send({ error: "Agent deletion is in progress" });
@@ -463,7 +498,7 @@ export function registerConversationDeliveryRoutes(
       ? store.getConversationMessages(master.id).find((candidate) => candidate.communicationEventId === communication.eventId)
       : undefined;
     const message = replayedMessage ?? store.appendConversationMessage(request.params.id, {
-      role: request.body.role,
+      role: "user",
       text: renderScopedMessage("broadcast", prepared.publishedText),
       attachments: validatedAssets,
     }, undefined, "main", undefined, undefined, communication?.eventId);
@@ -577,7 +612,11 @@ export function registerConversationDeliveryRoutes(
           recipients.some((recipient) => !recipient || typeof recipient.agentId !== "string" || !recipient.agentId.trim())) {
         return reply.code(400).send({ error: "1 to 100 recipients are required" });
       }
-      let agentIds = recipients.map((recipient) => recipient.agentId?.trim());
+      recipients = recipients.map((recipient) => ({
+        ...recipient,
+        agentId: recipient.agentId.trim(),
+      }));
+      let agentIds = recipients.map((recipient) => recipient.agentId);
       if (agentIds.some((id) => !id) || new Set(agentIds).size !== agentIds.length) {
         return reply.code(400).send({ error: "recipient agent IDs must be unique" });
       }
@@ -615,11 +654,30 @@ export function registerConversationDeliveryRoutes(
         if (existingPayload.requestFingerprint !== requestFingerprint) {
           return reply.code(409).send({ error: "runtime communication ID collision" });
         }
-        await reconcileRuntimeCommunicationProjections({
-          projectId: master.projectId,
-          communicationEventId: eventId,
-        });
-        const message = store.getConversationMessageByReceiptKey(master.id, receiptKey);
+        let message = store.getConversationMessageByReceiptKey(master.id, receiptKey);
+        if (!message) {
+          if (master.archived) return reply.code(404).send({ error: "conversation not found" });
+          const replayAgentIds = [...new Set((existingPayload.dispatch?.recipients ?? []).flatMap((recipient) =>
+            typeof recipient.agentId === "string" && recipient.agentId.trim() ? [recipient.agentId.trim()] : []))];
+          if (replayAgentIds.some(agentDeletionInProgress)) {
+            return reply.code(409).send({ error: "Agent deletion is in progress" });
+          }
+          const releaseReplayLease = leaseConversationDelivery(
+            conversationDeliveryLeases,
+            agentDeliveryLeases,
+            master.id,
+            replayAgentIds,
+          );
+          try {
+            await reconcileRuntimeCommunicationProjections({
+              projectId: master.projectId,
+              communicationEventId: eventId,
+            });
+            message = store.getConversationMessageByReceiptKey(master.id, receiptKey);
+          } finally {
+            releaseReplayLease();
+          }
+        }
         if (!message) return reply.code(503).send({
           error: "direct message projection could not be recorded; retry is safe",
         });
@@ -668,6 +726,10 @@ export function registerConversationDeliveryRoutes(
       if (recipients.some((recipient) => (recipient.attachmentIds ?? []).some((id) =>
         attachmentDeletionInProgress(recipient.agentId, id)))) {
         return reply.code(409).send({ error: "Asset deletion is in progress" });
+      }
+      if (recipients.some((recipient) => (recipient.attachmentIds?.length ?? 0) > 0 &&
+          assetReconciliationInProgress(recipient.agentId))) {
+        return reply.code(409).send({ error: "Asset cleanup is in progress" });
       }
       if (agentIds.some(agentDeletionInProgress)) {
         return reply.code(409).send({ error: "Agent deletion is in progress" });
