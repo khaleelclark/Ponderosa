@@ -732,7 +732,11 @@ function descriptorsForCanonicalText(
   const sourceTokens = messageTagTokens(text);
   const exact = descriptors.filter(descriptor =>
     sourceTokens.some(
-      token => token.start === descriptor.start && token.end === descriptor.end,
+      token =>
+        token.start === descriptor.start &&
+        token.end === descriptor.end &&
+        token.handle.toLocaleLowerCase() ===
+          descriptor.handle.toLocaleLowerCase(),
     ),
   );
   if (exact.length > 0 || descriptors.length === 0) return exact;
@@ -1313,13 +1317,29 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
       Boolean(engineCommandDisabledReason(selectedSuggestion.command));
     if (
       menuOpen &&
-      (event.key === "Enter" || (event.key === "Tab" && !event.shiftKey)) &&
+      event.key === "Enter" &&
+      !event.shiftKey &&
       !event.metaKey &&
       !event.ctrlKey &&
+      !event.altKey
+    ) {
+      event.preventDefault();
+      if (selectedSuggestion && !selectedSuggestionDisabled) {
+        onApplySuggestion(selectedSuggestion);
+      }
+      return;
+    }
+    if (
+      menuOpen &&
+      event.key === "Tab" &&
+      !event.shiftKey &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      selectedSuggestion &&
       !selectedSuggestionDisabled
     ) {
       event.preventDefault();
-      onApplySuggestion(selectedSuggestion!);
+      onApplySuggestion(selectedSuggestion);
       return;
     }
     if (menuOpen && event.key === "Escape") {
@@ -1351,11 +1371,10 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
         shiftKey: event.shiftKey,
         isComposing: event.nativeEvent.isComposing,
         repeat: event.repeat,
-      }) &&
-      canSend
+      })
     ) {
       event.preventDefault();
-      onSend();
+      if (canSend) onSend();
     }
   };
 

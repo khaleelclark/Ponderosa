@@ -5,6 +5,7 @@ import {
   parseAllChatReplyTarget,
 } from "../src/components/allChatRouting.js";
 import {
+  activeComposerMention,
   clampComposerMenuIndex,
   hasComposerDestination,
   selectExclusiveNewAgentDestination,
@@ -95,6 +96,18 @@ test("recognizes punctuation-wrapped destinations consistently", () => {
   );
   assert.equal(hasBroadcastMention("send (#broadcast)"), true);
   assert.equal(hasEveryoneMention("ask [#everyone]"), true);
+});
+
+test("opens mention autocomplete at canonical punctuation boundaries", () => {
+  assert.deepEqual(activeComposerMention("ask (#Br"), {
+    handlePrefix: "Br",
+    start: 5,
+  });
+  assert.deepEqual(activeComposerMention("#"), {
+    handlePrefix: "",
+    start: 0,
+  });
+  assert.equal(activeComposerMention("word#Br"), undefined);
 });
 
 test("keeps autocomplete selection within a live suggestion list", () => {

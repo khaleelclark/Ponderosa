@@ -30,6 +30,7 @@ import { findMentionedHandles, hasBroadcastMention } from "../../mentions";
 import { queryKeys } from "../../queryKeys";
 import { removeHandle } from "./Composer.helpers";
 import {
+  activeComposerMention,
   clampComposerMenuIndex,
   hasComposerDestination,
   NEW_AGENT_DESTINATION_HANDLE,
@@ -913,9 +914,7 @@ export function Composer({
   ]);
 
   // Agent routing uses #; @ is reserved for project file/folder references.
-  const mentionMatch = /(?:^|\s)#([\p{L}\p{N}_-]*)$/u.exec(
-    text.slice(0, caret),
-  );
+  const mentionMatch = activeComposerMention(text.slice(0, caret));
   const autocompleteHandles = [...new Set([
     ...(mentionSuggestionHandles ?? mentionHandles ?? []),
     ...((destinationMode === "project-chat" || destinationMode === "target-required")
@@ -925,7 +924,9 @@ export function Composer({
   const suggestions =
     mentionMatch && autocompleteHandles && autocompleteHandles.length > 0
       ? autocompleteHandles.filter(handle =>
-          handle.toLowerCase().startsWith(mentionMatch[1]!.toLowerCase()),
+          handle
+            .toLowerCase()
+            .startsWith(mentionMatch.handlePrefix.toLowerCase()),
         )
       : [];
   const fileMatch = /(?:^|\s)@([^\s@#]*)$/u.exec(text.slice(0, caret));
@@ -998,8 +999,7 @@ export function Composer({
   );
 
   const applyMention = (handle: string) => {
-    const start =
-      caret - mentionMatch![0].length + mentionMatch![0].indexOf("#");
+    const start = mentionMatch!.start;
     const specialTitle = SPECIAL_MENTION_TITLES.get(handle.toLocaleLowerCase());
     if (
       destinationMode === "target-required" &&

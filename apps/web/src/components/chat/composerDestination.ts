@@ -2,6 +2,17 @@ import { messageTagTokens } from "@ponderosa/core";
 
 export const NEW_AGENT_DESTINATION_HANDLE = "new-agent";
 
+export function activeComposerMention(
+  text: string,
+): { handlePrefix: string; start: number } | undefined {
+  const match = /(?:^|[^\p{L}\p{N}_-])#([\p{L}\p{N}_-]*)$/u.exec(text);
+  if (!match) return undefined;
+  return {
+    handlePrefix: match[1]!,
+    start: match.index + match[0].indexOf("#"),
+  };
+}
+
 export function composerDestinationMention(handle: string): string {
   return `#${handle} `;
 }
