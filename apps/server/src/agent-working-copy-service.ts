@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, realpath, rm } from "node:fs/promises";
+import { lstat, mkdir, realpath, rm, rmdir } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import {
@@ -396,7 +396,11 @@ export class AgentWorkingCopyService {
         : Boolean(this.store.updateAgentWorkingCopy(record.agentId, removed));
       if (!persisted) throw new Error(`Agent ${record.agentId} became unavailable during working-copy cleanup`);
     }
-    await rm(path.join(this.managedRoot, project.id), { recursive: true, force: true });
+    try {
+      await rmdir(path.join(this.managedRoot, project.id));
+    } catch (error) {
+      if (!missingPath(error)) throw error;
+    }
   }
 
   private async applyMode(
