@@ -96,7 +96,7 @@ function adjacentFocusableElement(
   const focusable = [...document.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)]
     .filter(element =>
       element.tabIndex >= 0 &&
-      element.getAttribute("aria-hidden") !== "true" &&
+      !element.closest('[aria-hidden="true"]') &&
       !element.closest("[inert]") &&
       element.getClientRects().length > 0
     );
