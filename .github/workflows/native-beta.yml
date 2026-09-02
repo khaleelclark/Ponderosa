@@ -63,7 +63,11 @@ jobs:
         run: |
           expected="${{ github.sha }}"
           test "$(git rev-parse HEAD)" = "$expected"
-          git merge-base --is-ancestor "$expected" origin/master
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            git merge-base --is-ancestor origin/master "$expected"
+          else
+            git merge-base --is-ancestor "$expected" origin/master
+          fi
           test "$(node --version)" = "v24.16.0"
           test "$(pnpm --version)" = "11.10.0"
 
