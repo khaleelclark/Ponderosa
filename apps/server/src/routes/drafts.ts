@@ -283,9 +283,27 @@ export function registerDraftRoutes(
       !ownerId ||
       !request.body?.clientId ||
       !Number.isSafeInteger(request.body.expectedRevision) ||
-      !Array.isArray(request.body.attachmentIds)
+      !Array.isArray(request.body.attachmentIds) ||
+      (request.body.mentionBindings !== undefined &&
+        (!Array.isArray(request.body.mentionBindings) ||
+          request.body.mentionBindings.length > 100 ||
+          request.body.mentionBindings.some(binding =>
+            !binding || typeof binding !== "object" || Array.isArray(binding) ||
+            Object.keys(binding).some(key => ![
+              "agentId", "handle", "projectId", "currentHandle", "currentTitle",
+            ].includes(key)) ||
+            [binding.agentId, binding.handle, binding.projectId, binding.currentHandle,
+              binding.currentTitle].some(value =>
+              typeof value !== "string" || !value.trim() || value.length > 300))))
     ) {
       return reply.code(400).send({ error: "invalid draft update" });
+    }
+    if (request.body.mentionBindings &&
+        (new Set(request.body.mentionBindings.map(binding => binding.agentId)).size !==
+          request.body.mentionBindings.length ||
+        new Set(request.body.mentionBindings.map(binding => binding.handle.toLocaleLowerCase())).size !==
+          request.body.mentionBindings.length)) {
+      return reply.code(400).send({ error: "draft mention bindings must be unique" });
     }
     if (
       request.body.attachmentIds.length > maxAttachmentsPerMessage ||

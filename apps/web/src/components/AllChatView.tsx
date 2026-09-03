@@ -15,6 +15,7 @@ import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import type {
   AllChatDecisionEventDto,
   AllChatItemDto,
+  AssetDto,
   EngineCommand,
   EngineDto,
   WorkspaceAgentDirectoryItemDto,
@@ -50,7 +51,12 @@ import { ChatSurface } from "./chat/ChatSurface";
 import { uniqueBy } from "../collections";
 import TagIcon from "@mui/icons-material/Tag";
 import { createClientId } from "../clientId";
-import { uploadFilesForRecipients } from "../conversationRouting";
+import {
+  discardRecipientUploads,
+  fileSelectionFingerprint,
+  type RecipientUploads,
+  uploadFilesForRecipients,
+} from "../conversationRouting";
 import { pickAgentName } from "../parkNames";
 import { queryKeys } from "../queryKeys";
 import { DecisionCard } from "./decisions/DecisionCard";
@@ -68,6 +74,15 @@ import { NotificationAcknowledgementBoundary } from "./NotificationAcknowledgeme
 import { useNotificationAcknowledgement } from "../hooks/useNotificationAcknowledgement";
 import { ChatComposerDock } from "./chat/ChatComposerDock";
 import { ReadAloudControls } from "./speech/ReadAloudControls";
+import {
+  retainIdempotentAttempt,
+  type IdempotentAttempt,
+} from "./idempotentAttempt";
+
+interface AllChatSubmissionPrepared {
+  title?: string;
+  uploads?: RecipientUploads<AssetDto>;
+}
 import {
   ALL_CHAT_REPLY_TARGET_KEY,
   eligibleAllChatTargets,
@@ -525,6 +540,7 @@ export function AllChatView({
         `/${command.name} completed for ${replyTarget?.title ?? "Agent"}.`,
     );
   };
+  const sendAttempt = useRef<IdempotentAttempt<AllChatSubmissionPrepared>>();
   const send = useMutation({
     mutationFn: async ({
       body,
@@ -544,7 +560,35 @@ export function AllChatView({
       if (!activeProjectId) throw new Error("Select a message to establish a Project first");
       if (!body.trim() && files.length === 0)
         throw new Error("Message text or an attachment is required");
-      const requestId = createClientId();
+      const fingerprint = JSON.stringify({
+        activeProjectId,
+        selectedConversationId: selected && selected.source.kind !== "agent"
+          ? selected.source.conversationId
+          : undefined,
+        body,
+        files: fileSelectionFingerprint(files),
+        draftAttachmentIds,
+        draftOwnerId,
+        mentionedAgents: mentionedAgents.map(binding => binding.agentId),
+        newAgentRequested,
+        selectedEngineId,
+        selectedRuntime,
+      });
+      const previous = sendAttempt.current;
+      const attempt = retainIdempotentAttempt(
+        previous,
+        fingerprint,
+        () => createClientId(),
+        (): AllChatSubmissionPrepared => ({}),
+      );
+      if (previous && previous !== attempt && previous.prepared.uploads) {
+        await discardRecipientUploads(
+          previous.prepared.uploads,
+          (agentId, item) => api.deleteAttachment(agentId, item.id),
+        );
+      }
+      sendAttempt.current = attempt;
+      const requestId = attempt.idempotencyKey;
       const validAgents = new Map((projectAgentsQuery.data ?? []).filter(agent =>
         !agent.archived).map(agent => [agent.id, agent]));
       const recipientIds = [...new Set(mentionedAgents.map(binding => binding.agentId))]
@@ -576,7 +620,8 @@ export function AllChatView({
         throw new Error("This Project has no active Chat for the new Agent");
       }
       if (newAgentRequested) {
-        const title = pickAgentName(createdNames);
+        const title = attempt.prepared.title ?? pickAgentName(createdNames);
+        attempt.prepared.title = title;
         createdNames.push(title);
         createdTitles.push(title);
         const created = await api.createAgent(activeProjectId, creationConversation!.id, {
@@ -601,12 +646,13 @@ export function AllChatView({
         if (!conversationId || !conversation) {
           throw new Error("Every addressed Agent must belong to one active Chat");
         }
-        const uploaded = await uploadFilesForRecipients(
+        const uploaded = attempt.prepared.uploads ?? await uploadFilesForRecipients(
           recipientIds,
           files,
           (agentId, file) => api.uploadAttachment(agentId, file),
           (agentId, attachment) => api.deleteAttachment(agentId, attachment.id),
         );
+        attempt.prepared.uploads = uploaded;
         const uploadedByAgentId = new Map(uploaded.map(item => [item.agentId, item]));
         const response = await api.sendMultiAgentDirectMessage(conversationId, {
           text: body.trim(),
@@ -624,6 +670,7 @@ export function AllChatView({
         deliveredRecipientIds = response.recipients.map(recipient => recipient.agentId);
         unavailableCount = response.unavailableRecipients?.length ?? 0;
       }
+      if (sendAttempt.current === attempt) sendAttempt.current = undefined;
       return {
         recipientIds: [...deliveredRecipientIds, ...createdAgentIds],
         recipientTitles: [

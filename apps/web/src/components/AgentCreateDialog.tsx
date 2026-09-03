@@ -31,7 +31,7 @@ import { pickAgentName } from "../parkNames";
 import { queryKeys } from "../queryKeys";
 import { EngineModelEffortFields } from "./ProjectRuntimeFields";
 import { ImportAgentForm } from "./ImportAgentDialog";
-import { retainAgentCreateAttempt, type AgentCreateAttempt } from "./agentCreateRetry";
+import { retainIdempotentAttempt, type IdempotentAttempt } from "./idempotentAttempt";
 
 const UNSET = "";
 
@@ -113,7 +113,7 @@ export function AgentCreateForm({
   const titleEditedRef = useRef(Boolean(initialName));
   const managerEditedRef = useRef(false);
   const pendingRef = useRef(false);
-  const createAttemptRef = useRef<AgentCreateAttempt | undefined>(undefined);
+  const createAttemptRef = useRef<IdempotentAttempt<undefined> | undefined>(undefined);
   const initializedRef = useRef(false);
   const previousProjectIdRef = useRef(projectId);
 
@@ -232,10 +232,11 @@ export function AgentCreateForm({
         managerAgentId: managerAgentId || undefined,
         initialMessage: initialMessage.trim() || undefined,
       };
-      createAttemptRef.current = retainAgentCreateAttempt(
+      createAttemptRef.current = retainIdempotentAttempt(
         createAttemptRef.current,
         JSON.stringify({ projectId, conversationId, ...options }),
         () => createClientId("agent-create-"),
+        () => undefined,
       );
       return api.createAgent(projectId, conversationId, {
         ...options,
@@ -243,6 +244,7 @@ export function AgentCreateForm({
       });
     },
     onSuccess: agent => {
+      createAttemptRef.current = undefined;
       if ("recovering" in agent) {
         void queryClient.invalidateQueries({
           queryKey: queryKeys.agents.project(projectId),

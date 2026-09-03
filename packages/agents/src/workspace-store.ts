@@ -884,11 +884,14 @@ export class WorkspaceStore {
     return this.drafts.get(this.draftKey(conversationId, ownerId)) ?? { conversationId, ownerId, text: "", attachmentIds: [], revision: 0, updatedAt: new Date(0).toISOString(), clientId: "" };
   }
 
-  putDraft(conversationId: string, input: { text: string; attachmentIds: string[]; expectedRevision: number; clientId: string; ownerId?: string }): ConversationDraftDto {
+  putDraft(conversationId: string, input: { text: string; attachmentIds: string[]; mentionBindings?: ConversationDraftDto["mentionBindings"]; expectedRevision: number; clientId: string; ownerId?: string }): ConversationDraftDto {
     const ownerId = input.ownerId ?? "legacy";
     const current = this.getDraft(conversationId, ownerId);
     const attachmentIds = [...new Set(input.attachmentIds)];
-    if (current.text === input.text && JSON.stringify(current.attachmentIds) === JSON.stringify(attachmentIds)) return current;
+    const mentionBindings = input.mentionBindings ?? [];
+    if (current.text === input.text &&
+        JSON.stringify(current.attachmentIds) === JSON.stringify(attachmentIds) &&
+        JSON.stringify(current.mentionBindings ?? []) === JSON.stringify(mentionBindings)) return current;
     // A page can lose a successful response while its serialized write chain
     // continues. Its next write is safe to fast-forward because page client
     // identities are not shared with duplicated or restored browser pages.
@@ -899,6 +902,7 @@ export class WorkspaceStore {
         conversationId,
         text: input.text,
         attachmentIds,
+        mentionBindings,
         clientId: input.clientId,
         capturedAt: new Date().toISOString(),
       };
@@ -906,7 +910,7 @@ export class WorkspaceStore {
       this.append({ type: "draft_conflict", conversationId, revision: current.revision, }, { kind: "draft_conflict", conflict });
       throw Object.assign(new Error("draft revision conflict"), { code: "DRAFT_CONFLICT", current, displaced });
     }
-    const draft: ConversationDraftDto = { conversationId, ownerId, text: input.text, attachmentIds, revision: current.revision + 1, updatedAt: new Date().toISOString(), clientId: input.clientId };
+    const draft: ConversationDraftDto = { conversationId, ownerId, text: input.text, attachmentIds, mentionBindings, revision: current.revision + 1, updatedAt: new Date().toISOString(), clientId: input.clientId };
     this.append({ type: "draft_changed", conversationId, revision: draft.revision, cleared: !draft.text && draft.attachmentIds.length === 0 }, { kind: "draft", draft });
     return draft;
   }

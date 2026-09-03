@@ -72,6 +72,10 @@ import {
   providerSlashSubmission,
   shouldShowQueueControl,
 } from "./composerUtils";
+import {
+  refreshedMentionBindings,
+  resolvedMentionBinding,
+} from "./composerMentionBindings";
 import { useComposerDraftAttachments } from "./useComposerDraftAttachments";
 import {
   useComposerDraftStorageReset,
@@ -297,22 +301,8 @@ export function Composer({
     setDictationSettling(settling);
   }, []);
   useEffect(() => {
-    const handles = new Set(messageTagTokens(text).map(token => token.handle.toLocaleLowerCase()));
-    const currentById = new Map((mentionBindings ?? []).map(binding => [binding.agentId, binding]));
-    setKnownMentionBindings(previous => {
-      const byId = new Map(previous.map(binding => [binding.agentId, binding]));
-      for (const binding of mentionBindings ?? []) {
-        const matches = handles.has(binding.handle.toLocaleLowerCase()) ||
-          handles.has(binding.currentHandle.toLocaleLowerCase());
-        if (matches || byId.has(binding.agentId)) byId.set(binding.agentId, binding);
-      }
-      return [...byId.values()].filter(binding => {
-        const current = currentById.get(binding.agentId);
-        return handles.has(binding.handle.toLocaleLowerCase()) ||
-          handles.has(binding.currentHandle.toLocaleLowerCase()) ||
-          Boolean(current && handles.has(current.currentHandle.toLocaleLowerCase()));
-      });
-    });
+    setKnownMentionBindings(previous =>
+      refreshedMentionBindings(text, previous, mentionBindings ?? []));
   }, [mentionBindings, text]);
   const replacePastedText = useCallback(
     (
@@ -418,9 +408,15 @@ export function Composer({
   const routingMentionHandles = useMemo(
     () =>
       destinationMode === "project-chat" || destinationMode === "target-required"
-        ? [...new Set([...(mentionHandles ?? []), NEW_AGENT_DESTINATION_HANDLE])]
+        ? [
+            ...new Set([
+              ...(mentionHandles ?? []),
+              ...knownMentionBindings.map(binding => binding.handle),
+              NEW_AGENT_DESTINATION_HANDLE,
+            ]),
+          ]
         : (mentionHandles ?? []),
-    [destinationMode, mentionHandles],
+    [destinationMode, knownMentionBindings, mentionHandles],
   );
   const visibleRoutingText = renderedDefaultDestination
     ? prependComposerDestination(
@@ -435,9 +431,12 @@ export function Composer({
   const mentionTokens = useMemo<ComposerMentionToken[]>(() => {
     const currentById = new Map((mentionBindings ?? []).map(binding => [binding.agentId, binding]));
     const byHandle = new Map<string, AgentMentionBindingDto>();
-    for (const binding of [...knownMentionBindings, ...(mentionBindings ?? [])]) {
+    for (const binding of mentionBindings ?? []) {
       byHandle.set(binding.handle.toLocaleLowerCase(), binding);
       byHandle.set(binding.currentHandle.toLocaleLowerCase(), binding);
+    }
+    for (const binding of knownMentionBindings) {
+      byHandle.set(binding.handle.toLocaleLowerCase(), binding);
     }
     const tokens: ComposerMentionToken[] = [];
     for (const token of messageTagTokens(text)) {
@@ -693,6 +692,7 @@ export function Composer({
       draftAttachmentsLocallyEdited.current = false;
       unrestoredDraftAttachmentIds.current = [];
       draftRevision.current = 0;
+      setKnownMentionBindings([]);
       clearDraftAttachments();
     }
   }, [conversationDraftId]);
@@ -727,6 +727,7 @@ export function Composer({
       } else {
         mergeRestoredDraftAttachments(restored);
       }
+      setKnownMentionBindings(draft.mentionBindings ?? []);
       unrestoredDraftAttachmentIds.current = [];
       draftRevision.current = draft.revision;
       const local = draftStorageKey
@@ -773,6 +774,7 @@ export function Composer({
             error: "Some staged draft attachments could not be restored.",
           });
         }
+        setKnownMentionBindings(draft.mentionBindings ?? []);
         draftReady.current = true;
         setDraftReadyVersion(value => value + 1);
       }
@@ -899,6 +901,7 @@ export function Composer({
           const draft = await api.putConversationDraft(conversationDraftId, {
             text,
             attachmentIds,
+            mentionBindings: knownMentionBindings,
             expectedRevision: draftRevision.current,
             clientId,
             ownerId: draftOwnerId,
@@ -957,6 +960,7 @@ export function Composer({
     draftReadyVersion,
     files,
     queryClient,
+    knownMentionBindings,
     text,
   ]);
 
@@ -1304,10 +1308,12 @@ export function Composer({
           )
         : [];
     for (const handle of structurallyAuthoredHandles) {
-      const matchingBindings = (mentionBindings ?? []).filter((candidate) =>
-        candidate.handle.toLocaleLowerCase() === handle.toLocaleLowerCase());
-      if (matchingBindings.length === 1) {
-        const binding = matchingBindings[0]!;
+      const binding = resolvedMentionBinding(
+        handle,
+        knownMentionBindings,
+        mentionBindings ?? [],
+      );
+      if (binding) {
         mentionedAgentsById.set(binding.agentId, binding);
       }
     }
@@ -1345,6 +1351,7 @@ export function Composer({
           draftAttachmentsLocallyEdited.current = false;
           unrestoredDraftAttachmentIds.current = [];
           replaceText("");
+          setKnownMentionBindings([]);
           setActiveDefaultDestination(undefined);
           if (draftStorageKey) writeChatState(draftStorageKey, "");
           replacePastedText(undefined);
@@ -1363,6 +1370,7 @@ export function Composer({
                 api.putConversationDraft(conversationDraftId, {
                   text: "",
                   attachmentIds: [],
+                  mentionBindings: [],
                   expectedRevision,
                   clientId,
                   ownerId: draftOwnerId,
@@ -1481,6 +1489,7 @@ export function Composer({
         }}
         onRestoreDraft={() => {
           if (!draftConflict) return;
+          setKnownMentionBindings(draftConflict.displaced.mentionBindings ?? []);
           update(draftConflict.displaced.text);
           setDraftConflict(undefined);
           inputRef.current?.focus();

@@ -7,6 +7,28 @@ export function managerBroadcastText(text: string): string | undefined {
 }
 
 const RECIPIENT_UPLOAD_CONCURRENCY = 3;
+const fileInstanceIds = new WeakMap<File, number>();
+let nextFileInstanceId = 0;
+
+export const fileSelectionFingerprint = (files: readonly File[]) =>
+  files.map(file => {
+    let instanceId = fileInstanceIds.get(file);
+    if (instanceId === undefined) {
+      instanceId = ++nextFileInstanceId;
+      fileInstanceIds.set(file, instanceId);
+    }
+    return [file.name, file.type, file.size, file.lastModified, instanceId];
+  });
+
+export type RecipientUploads<T> = Array<{ agentId: string; attachments: T[] }>;
+
+export async function discardRecipientUploads<T>(
+  recipients: RecipientUploads<T>,
+  cleanup: (recipientId: string, item: T) => Promise<unknown>,
+): Promise<void> {
+  await Promise.allSettled(recipients.flatMap(recipient =>
+    recipient.attachments.map(item => cleanup(recipient.agentId, item))));
+}
 
 async function settleWithConcurrency<T>(
   items: File[],
@@ -39,7 +61,7 @@ export async function uploadFilesForRecipients<T extends { id: string }>(
   files: File[],
   upload: (recipientId: string, file: File) => Promise<T>,
   cleanup: (recipientId: string, item: T) => Promise<unknown>,
-): Promise<Array<{ agentId: string; attachments: T[] }>> {
+): Promise<RecipientUploads<T>> {
   const completed: Array<{ agentId: string; item: T }> = [];
   try {
     const recipients = [] as Array<{ agentId: string; attachments: T[] }>;

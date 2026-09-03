@@ -2,6 +2,7 @@ import type {
   AgentDto,
   AgentHealthDto,
   AgentMentionBindingDto,
+  AssetDto,
   ConversationDto,
   EngineDto,
 } from "@ponderosa/core";
@@ -17,13 +18,25 @@ import {
   selectedRunConfig,
 } from "../conversationEngine";
 import {
+  discardRecipientUploads,
+  fileSelectionFingerprint,
   managerBroadcastText,
+  type RecipientUploads,
   uploadFilesForRecipients,
 } from "../conversationRouting";
 import { pickAgentName } from "../parkNames";
 import { queryKeys } from "../queryKeys";
 import type { AgentStatus } from "../agents";
 import { activeDirectDeliveryAgentIds } from "./directDeliveryState";
+import {
+  retainIdempotentAttempt,
+  type IdempotentAttempt,
+} from "./idempotentAttempt";
+
+interface ConversationSubmissionPrepared {
+  uploads: Map<string, RecipientUploads<AssetDto>>;
+  titles: Map<string, string>;
+}
 
 interface ConversationMessagingControllerInput {
   conversationId: string;
@@ -60,6 +73,8 @@ export function useConversationMessagingController({
     queryFn: () => api.listQueuedConversationMessages(conversationId),
   });
   const [queuedMessageNotice, setQueuedMessageNotice] = useState<string>();
+  const submissionAttempt =
+    useRef<IdempotentAttempt<ConversationSubmissionPrepared>>();
   const [spawnNotice, setSpawnNotice] = useState<string>();
   const queuedNoticeDeliveryIds = useRef<Set<string>>(new Set());
   const queuedNoticeBaseline = useRef(0);
@@ -156,25 +171,19 @@ export function useConversationMessagingController({
     mutationFn: async ({
       agentIds,
       text,
-      files,
+      uploadedRecipients,
       requestId,
       activeRunDelivery,
     }: {
       agentIds: string[];
       text: string;
-      files: File[];
+      uploadedRecipients: RecipientUploads<AssetDto>;
       requestId: string;
       activeRunDelivery: "steer" | "queue";
     }) => {
-      const recipients = await uploadFilesForRecipients(
-        agentIds,
-        files,
-        (agentId, file) => api.uploadAttachment(agentId, file),
-        (agentId, item) => api.deleteAttachment(agentId, item.id),
-      );
       return api.sendMultiAgentDirectMessage(conversationId, {
         text,
-        recipients: recipients.map(({ agentId, attachments }) => ({
+        recipients: uploadedRecipients.map(({ agentId, attachments }) => ({
           agentId,
           attachmentIds: attachments.map(item => item.id),
         })),
@@ -234,33 +243,19 @@ export function useConversationMessagingController({
   const broadcast = useMutation({
     mutationFn: async ({
       text,
-      files,
+      uploadedRecipients,
       requestId,
       agentMentions,
       activeRunDelivery,
     }: {
       text: string;
-      files: File[];
+      uploadedRecipients: RecipientUploads<AssetDto>;
       requestId: string;
       agentMentions: AgentMentionBindingDto[];
       activeRunDelivery: "steer" | "queue";
     }) => {
       const agentIds = agentMentions.map(binding => binding.agentId);
       const owner = agents.find(agent => !agent.archived);
-      if (files.length && !owner) {
-        throw new Error(
-          "Create an agent before attaching files to shared project context.",
-        );
-      }
-      const uploadAgentIds = [
-        ...new Set([...(owner ? [owner.id] : []), ...agentIds]),
-      ];
-      const uploadedRecipients = await uploadFilesForRecipients(
-        uploadAgentIds,
-        files,
-        (agentId, file) => api.uploadAttachment(agentId, file),
-        (agentId, item) => api.deleteAttachment(agentId, item.id),
-      );
       const attachmentsByAgent = new Map(
         uploadedRecipients.map(recipient => [
           recipient.agentId,
@@ -270,30 +265,19 @@ export function useConversationMessagingController({
       const attachments = owner
         ? (attachmentsByAgent.get(owner.id) ?? [])
         : [];
-      try {
-        return await api.sendConversationMessage(conversationId, {
-          text,
-          attachments,
-          ...(agentMentions.length ? { recipientAgentMentions: agentMentions } : {}),
-          recipientAttachments: agentIds.map(agentId => ({
-            agentId,
-            attachmentIds: (attachmentsByAgent.get(agentId) ?? []).map(
-              item => item.id,
-            ),
-          })),
-          activeRunDelivery,
-          idempotencyKey: requestId,
-        });
-      } catch (error) {
-        await Promise.allSettled(
-          uploadedRecipients.flatMap(recipient =>
-            recipient.attachments.map(item =>
-              api.deleteAttachment(recipient.agentId, item.id),
-            ),
+      return api.sendConversationMessage(conversationId, {
+        text,
+        attachments,
+        ...(agentMentions.length ? { recipientAgentMentions: agentMentions } : {}),
+        recipientAttachments: agentIds.map(agentId => ({
+          agentId,
+          attachmentIds: (attachmentsByAgent.get(agentId) ?? []).map(
+            item => item.id,
           ),
-        );
-        throw error;
-      }
+        })),
+        activeRunDelivery,
+        idempotencyKey: requestId,
+      });
     },
     onSuccess: invalidate,
   });
@@ -485,11 +469,57 @@ export function useConversationMessagingController({
     const targets = everyoneMentioned
       ? agents.filter(agent => !agent.archived)
       : explicitlyMentionedAgents;
-    const requestId = createClientId();
+    const fingerprint = JSON.stringify({
+      conversationId,
+      text,
+      files: fileSelectionFingerprint(files),
+      draftAttachmentIds,
+      draftOwnerId,
+      mentionedAgents: mentionedAgents.map(binding => [binding.agentId, binding.handle]),
+      newAgentRequested,
+      activeRunDelivery,
+      engine,
+      ...runConfig,
+    });
+    const previous = submissionAttempt.current;
+    const attempt = retainIdempotentAttempt(
+      previous,
+      fingerprint,
+      () => createClientId(),
+      () => ({ uploads: new Map(), titles: new Map() }),
+    );
+    if (previous && previous !== attempt) {
+      await Promise.all(
+        [...previous.prepared.uploads.values()].map(recipients =>
+          discardRecipientUploads(recipients, (agentId, item) =>
+            api.deleteAttachment(agentId, item.id)),
+        ),
+      );
+    }
+    submissionAttempt.current = attempt;
+    const requestId = attempt.idempotencyKey;
+    const preparedUploads = async (key: string, agentIds: string[]) => {
+      const cached = attempt.prepared.uploads.get(key);
+      if (cached) return cached;
+      const uploaded = await uploadFilesForRecipients(
+        agentIds,
+        files,
+        (agentId, file) => api.uploadAttachment(agentId, file),
+        (agentId, item) => api.deleteAttachment(agentId, item.id),
+      );
+      attempt.prepared.uploads.set(key, uploaded);
+      return uploaded;
+    };
+    const finishAttempt = () => {
+      if (submissionAttempt.current === attempt) submissionAttempt.current = undefined;
+    };
     const createdAgentIds: string[] = [];
     const createdTitles = detailAgents.map(agent => agent.title);
     if (newAgentRequested) {
-      const title = pickAgentName(createdTitles);
+      const titleKey = "new-agent:0";
+      const title =
+        attempt.prepared.titles.get(titleKey) ?? pickAgentName(createdTitles);
+      attempt.prepared.titles.set(titleKey, title);
       createdTitles.push(title);
       const created = await spawn.mutateAsync({
         text,
@@ -506,9 +536,21 @@ export function useConversationMessagingController({
           "Add informational context or an attachment after #broadcast.",
         );
       }
+      const owner = agents.find(agent => !agent.archived);
+      if (files.length && !owner) {
+        throw new Error(
+          "Create an agent before attaching files to shared project context.",
+        );
+      }
+      const uploadAgentIds = [
+        ...new Set([
+          ...(owner ? [owner.id] : []),
+          ...mentionedAgents.map(binding => binding.agentId),
+        ]),
+      ];
       await broadcast.mutateAsync({
         text: broadcastText,
-        files,
+        uploadedRecipients: await preparedUploads("broadcast", uploadAgentIds),
         requestId,
         agentMentions: broadcastMentioned ? mentionedAgents : [],
         activeRunDelivery,
@@ -516,6 +558,7 @@ export function useConversationMessagingController({
       if (createdAgentIds.length > 0) {
         setActiveOperation({ agentIds: createdAgentIds, state: "starting" });
       }
+      finishAttempt();
       return;
     }
     if (broadcastMentioned) {
@@ -532,13 +575,20 @@ export function useConversationMessagingController({
       await sendToAgents.mutateAsync({
         agentIds: targets.map(target => target.id),
         text,
-        files,
+        uploadedRecipients: await preparedUploads(
+          "direct",
+          targets.map(target => target.id),
+        ),
         requestId,
         activeRunDelivery,
       });
     } else if (!newAgentRequested) {
       setActiveOperation({ agentIds: [], state: "starting" });
-      const title = pickAgentName(detailAgents.map(agent => agent.title));
+      const titleKey = "default-agent";
+      const title =
+        attempt.prepared.titles.get(titleKey) ??
+        pickAgentName(detailAgents.map(agent => agent.title));
+      attempt.prepared.titles.set(titleKey, title);
       await spawn.mutateAsync({
         text,
         draftAttachmentIds,
@@ -549,6 +599,7 @@ export function useConversationMessagingController({
     } else if (createdAgentIds.length > 0) {
       setActiveOperation({ agentIds: createdAgentIds, state: "starting" });
     }
+    finishAttempt();
   };
 
   return {

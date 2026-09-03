@@ -1,7 +1,7 @@
 import type { EngineId } from "../adapter.js";
 import type { AgentDto, AgentHealthDto, AgentWorkingCopyDto } from "./agents.js";
 import type { BrowserControlOwner, BrowserSessionStatus } from "../events.js";
-import type { ConversationDto } from "./conversations.js";
+import type { AgentMentionBindingDto, ConversationDto } from "./conversations.js";
 import type { HistoryWindowDto } from "./common.js";
 import type { ProjectDto, ProjectSort } from "./projects.js";
 import type { TriggerDefinitionDto } from "./triggers.js";
@@ -185,6 +185,8 @@ export interface ConversationDraftDto {
   attachmentIds: string[];
   /** Metadata for staged files still referenced by this draft. */
   attachments?: DraftAttachmentDto[];
+  /** Stable structural recipients captured before display handles can change. */
+  mentionBindings?: AgentMentionBindingDto[];
   revision: number;
   updatedAt: string;
   clientId: string;
@@ -193,7 +195,7 @@ export interface ConversationDraftDto {
 /** A rejected stale write includes the displaced text as a recoverable copy. */
 export interface ConversationDraftConflictDto {
   current: ConversationDraftDto;
-  displaced: Pick<ConversationDraftDto, "conversationId" | "text" | "attachmentIds" | "clientId"> & { capturedAt: string };
+  displaced: Pick<ConversationDraftDto, "conversationId" | "text" | "attachmentIds" | "mentionBindings" | "clientId"> & { capturedAt: string };
 }
 
 export interface ConversationDraftConflictListDto {
@@ -204,6 +206,7 @@ export interface ConversationDraftConflictListDto {
 export interface PutConversationDraftRequest {
   text: string;
   attachmentIds: string[];
+  mentionBindings?: AgentMentionBindingDto[];
   expectedRevision: number;
   clientId: string;
   ownerId?: string;

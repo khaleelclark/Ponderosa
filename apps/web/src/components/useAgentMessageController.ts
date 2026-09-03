@@ -1,4 +1,4 @@
-import type { EngineDto, SendMessageRequest } from "@ponderosa/core";
+import type { AssetDto, EngineDto, SendMessageRequest } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
@@ -9,8 +9,17 @@ import {
 } from "../conversationEngine";
 import { useSendMessage } from "../hooks/useSendMessage";
 import { queryKeys } from "../queryKeys";
-import { uploadFilesForRecipients } from "../conversationRouting";
+import {
+  discardRecipientUploads,
+  fileSelectionFingerprint,
+  type RecipientUploads,
+  uploadFilesForRecipients,
+} from "../conversationRouting";
 import { directAgentDeliveryNotice } from "./AgentDetail.helpers";
+import {
+  retainIdempotentAttempt,
+  type IdempotentAttempt,
+} from "./idempotentAttempt";
 
 interface AgentMessageControllerInput {
   agentId: string;
@@ -44,6 +53,7 @@ export function useAgentMessageController({
     text: string;
   }>();
   const queueNoticeBaseline = useRef(0);
+  const sendAttempt = useRef<IdempotentAttempt<RecipientUploads<AssetDto>>>();
   useEffect(() => {
     if (
       !queueDeliveryNotice ||
@@ -101,80 +111,105 @@ export function useAgentMessageController({
       draftAttachmentIds: string[] = [],
       draftOwnerId?: string,
     ) => {
-      const sent = (
-        draftAttachmentIds.length
-          ? Promise.resolve([])
-          : uploadFilesForRecipients(
-              [agentId],
-              files,
-              (recipientId, file) => api.uploadAttachment(recipientId, file),
-              (recipientId, attachment) =>
-                api.deleteAttachment(recipientId, attachment.id),
-            ).then(recipients => recipients[0]?.attachments ?? [])
-      ).then(async attachments => {
-        try {
-          return await sendMessage.mutateAsync(
-            {
-              text,
-              idempotencyKey: createClientId(),
-              attachmentIds: attachments.map(item => item.id),
-              ...(draftAttachmentIds.length
-                ? {
-                    draftAttachmentIds,
-                    draftId: `agent:${agentId}`,
-                    draftOwnerId,
-                  }
-                : {}),
-              model,
-              effort: effortSelectionIsCompatible(engine, model, effort)
-                ? effort
-                : "",
-              ...(speed && speedSelectionIsCompatible(engine, model, speed)
-                ? { speed }
-                : {}),
-              activeRunDelivery,
-            },
-            {
-              onSuccess: response => {
-                const notice = directAgentDeliveryNotice(
-                  response,
-                  activeRunDelivery,
-                );
-                if (
-                  response.queued &&
-                  activeRunDelivery === "queue" &&
-                  notice &&
-                  response.deliveryId
-                ) {
-                  queueNoticeBaseline.current =
-                    queuedMessagesQuery.dataUpdatedAt;
-                  setQueueDeliveryNotice({
-                    deliveryId: response.deliveryId,
-                    text: notice,
-                  });
-                  onNotice(undefined);
-                } else {
-                  setQueueDeliveryNotice(undefined);
-                  onNotice(notice);
-                }
-                void queryClient.invalidateQueries({
-                  queryKey: queryKeys.queuedMessages.agent(agentId),
-                });
-                if (projectId) {
-                  void queryClient.invalidateQueries({
-                    queryKey: queryKeys.agents.health(projectId),
-                  });
-                }
-              },
-            },
+      const sent = (async () => {
+        const fingerprint = JSON.stringify({
+          agentId,
+          text,
+          files: fileSelectionFingerprint(files),
+          draftAttachmentIds,
+          draftOwnerId,
+          model,
+          effort,
+          speed,
+          activeRunDelivery,
+        });
+        const previous = sendAttempt.current;
+        const attempt = retainIdempotentAttempt(
+          previous,
+          fingerprint,
+          () => createClientId(),
+          () => [],
+        );
+        if (previous && previous !== attempt) {
+          await discardRecipientUploads(
+            previous.prepared,
+            (recipientId, attachment) =>
+              api.deleteAttachment(recipientId, attachment.id),
           );
-        } catch (error) {
-          await Promise.allSettled(
-            attachments.map(item => api.deleteAttachment(agentId, item.id)),
-          );
-          throw error;
         }
-      });
+        sendAttempt.current = attempt;
+        if (
+          !draftAttachmentIds.length &&
+          attempt.prepared.length === 0 &&
+          files.length > 0
+        ) {
+          attempt.prepared = await uploadFilesForRecipients(
+            [agentId],
+            files,
+            (recipientId, file) => api.uploadAttachment(recipientId, file),
+            (recipientId, attachment) =>
+              api.deleteAttachment(recipientId, attachment.id),
+          );
+        }
+        const attachments = attempt.prepared[0]?.attachments ?? [];
+        const response = await sendMessage.mutateAsync(
+          {
+            text,
+            idempotencyKey: attempt.idempotencyKey,
+            attachmentIds: attachments.map(item => item.id),
+            ...(draftAttachmentIds.length
+              ? {
+                  draftAttachmentIds,
+                  draftId: `agent:${agentId}`,
+                  draftOwnerId,
+                }
+              : {}),
+            model,
+            effort: effortSelectionIsCompatible(engine, model, effort)
+              ? effort
+              : "",
+            ...(speed && speedSelectionIsCompatible(engine, model, speed)
+              ? { speed }
+              : {}),
+            activeRunDelivery,
+          },
+          {
+            onSuccess: response => {
+              const notice = directAgentDeliveryNotice(
+                response,
+                activeRunDelivery,
+              );
+              if (
+                response.queued &&
+                activeRunDelivery === "queue" &&
+                notice &&
+                response.deliveryId
+              ) {
+                queueNoticeBaseline.current =
+                  queuedMessagesQuery.dataUpdatedAt;
+                setQueueDeliveryNotice({
+                  deliveryId: response.deliveryId,
+                  text: notice,
+                });
+                onNotice(undefined);
+              } else {
+                setQueueDeliveryNotice(undefined);
+                onNotice(notice);
+              }
+              void queryClient.invalidateQueries({
+                queryKey: queryKeys.queuedMessages.agent(agentId),
+              });
+              if (projectId) {
+                void queryClient.invalidateQueries({
+                  queryKey: queryKeys.agents.health(projectId),
+                });
+              }
+            },
+          },
+        );
+        if (sendAttempt.current === attempt) sendAttempt.current = undefined;
+        return response;
+      })();
       onChatSelected();
       return sent;
     };

@@ -19,6 +19,7 @@ import {
 } from "../src/components/chat/composerDestination.js";
 import {
   shouldConsumeComposerKey,
+  shouldIgnoreComposerKey,
   shouldSendComposerKey,
 } from "../src/components/chat/composerUtils.js";
 import {
@@ -212,6 +213,14 @@ test("held Enter stays single-line without sending twice", () => {
     shouldConsumeComposerKey({ ...heldEnter, isComposing: true }),
     false,
   );
+});
+
+test("IME composition bypasses every composer keyboard shortcut", () => {
+  for (const key of ["Enter", "ArrowDown", "ArrowUp", "Tab", "Escape"]) {
+    assert.equal(shouldIgnoreComposerKey({ isComposing: true }), true, key);
+  }
+  assert.equal(shouldIgnoreComposerKey({ isComposing: false, keyCode: 229 }), true);
+  assert.equal(shouldIgnoreComposerKey({ isComposing: false, keyCode: 13 }), false);
 });
 
 test("recognizes punctuation-wrapped destinations consistently", () => {

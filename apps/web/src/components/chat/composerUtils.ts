@@ -26,10 +26,10 @@ export function shouldConsumeComposerKey(event: {
 }
 
 export function shouldIgnoreComposerKey(event: {
-  key: string;
   isComposing: boolean;
+  keyCode?: number;
 }): boolean {
-  return event.key === "Enter" && event.isComposing;
+  return event.isComposing || event.keyCode === 229;
 }
 
 export function matchingEngineCommands(

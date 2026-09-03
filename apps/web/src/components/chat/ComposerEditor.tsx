@@ -1287,20 +1287,22 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
 
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (
+      shouldIgnoreComposerKey({
+        isComposing: event.nativeEvent.isComposing,
+        keyCode: event.nativeEvent.keyCode,
+      })
+    ) {
+      event.stopPropagation();
+      return;
+    }
+    if (
       event.key === "Enter" &&
-      event.shiftKey &&
-      !event.nativeEvent.isComposing
+      event.shiftKey
     ) {
       event.preventDefault();
       bridgeRef.current?.insertText("\n");
       return;
     }
-    if (
-      shouldIgnoreComposerKey({
-        key: event.key,
-        isComposing: event.nativeEvent.isComposing,
-      })
-    ) return;
     if (menuOpen && event.key === "ArrowDown") {
       event.preventDefault();
       onHighlightChange((highlighted + 1) % menuSuggestions.length);
