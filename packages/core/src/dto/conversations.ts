@@ -503,7 +503,13 @@ export interface CreateMultiAgentDirectMessageRequest {
 export interface MultiAgentDirectMessageResponse {
   messageId: string;
   replayed: boolean;
-  recipients: Array<{ agentId: string; queued: boolean; deliveryId?: string; state?: "queued" | "preparing" | "retrying" | "steered" | "started" }>;
+  recipients: Array<{
+    agentId: string;
+    queued: boolean;
+    deliveryId?: string;
+    state?: "queued" | "preparing" | "retrying" | "steered" | "started" |
+      "failed" | "outcome_unknown" | "cancelled";
+  }>;
   /** Addressed recipients that became unavailable before their delivery could start. */
   unavailableRecipients?: Array<{ agentId: string; reason: "missing" | "archived" | "wrong_project" }>;
 }
@@ -645,11 +651,24 @@ export interface RecoveringMessageResponse {
   communicationEventId?: string;
 }
 
+/** Exact replay after the delivery has left the queue. */
+export interface SettledMessageResponse {
+  queued: false;
+  settled: true;
+  replayed: true;
+  deliveryId: string;
+  deliveryState: "delivered" | "failed" | "outcome_unknown" | "cancelled";
+  communicationEventId?: string;
+  committed?: true;
+  recovering?: true;
+}
+
 /** A message either starts now or is accepted into the per-agent FIFO queue. */
 export type SendMessageResponse =
   | StartedMessageResponse
   | QueuedMessageResponse
-  | RecoveringMessageResponse;
+  | RecoveringMessageResponse
+  | SettledMessageResponse;
 
 /** Internal source/projection channel after the server has routed an intent. */
 export type AgentMessageChannel = "individual" | "main" | "collaboration";

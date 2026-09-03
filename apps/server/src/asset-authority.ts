@@ -288,7 +288,10 @@ export class AssetAuthority {
       return new Set(rows.map((row) => row.id));
     } catch (error) { throw this.mapped(error); }
   }
-  registerRuntimeArtifact(artifact: RegisteredRuntimeArtifact): RegisteredRuntimeArtifact {
+  registerRuntimeArtifact(artifact: RegisteredRuntimeArtifact): {
+    artifact: RegisteredRuntimeArtifact;
+    reservationCreated: boolean;
+  } {
     try {
       this.db.exec("BEGIN IMMEDIATE");
       const prior = this.db.prepare(`
@@ -318,7 +321,10 @@ export class AssetAuthority {
         artifact.originAgentId ?? null, artifact.executionId ?? null, artifact.createdAt,
       );
       this.db.exec("COMMIT");
-      return this.runtimeArtifact(artifact.projectId, artifact.id)!;
+      return {
+        artifact: this.runtimeArtifact(artifact.projectId, artifact.id)!,
+        reservationCreated: !prior,
+      };
     } catch (error) {
       if (this.db.inTransaction) this.db.exec("ROLLBACK");
       throw this.mapped(error);

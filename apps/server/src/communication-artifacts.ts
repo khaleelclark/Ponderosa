@@ -109,11 +109,15 @@ export function createCommunicationArtifactAuthority(context: CommunicationArtif
       ...(input.originAgentId ? { originAgentId: input.originAgentId } : {}),
       ...(input.executionId ? { executionId: input.executionId } : {}),
     };
-    const registered = assets.registerRuntimeArtifact({
+    const registration = assets.registerRuntimeArtifact({
       ...artifact,
       projectId: input.projectId,
     });
-    return { ...artifact, createdAt: registered.createdAt };
+    return {
+      ...artifact,
+      createdAt: registration.artifact.createdAt,
+      ...(registration.reservationCreated ? { reservationCreated: true } : {}),
+    };
   };
 
   const projectCommunicationArtifact = (

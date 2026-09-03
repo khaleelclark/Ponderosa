@@ -17,6 +17,7 @@ import type {
   SteerQueuedMessageRequest,
   SteerQueuedMessageResponse,
 } from "@ponderosa/core";
+import { canonicalizeProviderText } from "@ponderosa/core";
 import { CoordinationIdempotencyConflictError } from "@ponderosa/agents";
 import type { AgentStore, CoordinationV3Store, WorkspaceStore } from "@ponderosa/agents";
 import { AssetError } from "../assets.js";
@@ -164,18 +165,36 @@ export function registerQueuedMessageRoutes(
     if ("error" in parsed) return reply.code(400).send({ error: parsed.error });
     const idempotencyKey = parsed.value.idempotencyKey?.trim() ?? "";
     if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
-    const conversation = store.getConversation(request.params.id);
-    if (!conversation || conversation.archived) return reply.code(404).send({ error: "conversation not found" });
-    const activation = coordinationV3.activation(request.params.deliveryId, conversation.projectId);
+    const projectId = coordinationV3.activationProjectId(request.params.deliveryId);
+    const activation = projectId
+      ? coordinationV3.activation(request.params.deliveryId, projectId)
+      : undefined;
     const payload = activation?.payload && typeof activation.payload === "object"
       ? activation.payload as { communication?: CommunicationEvent; dispatch?: { conversationId?: string } }
       : undefined;
-    if (!activation || activation.dispatchPolicy !== "next_run" ||
-        payload?.dispatch?.conversationId !== conversation.id) {
+    if (!activation || payload?.dispatch?.conversationId !== request.params.id) {
       return reply.code(404).send({ error: "queued message not found" });
     }
     if (payload.communication?.sender.kind !== "user" || payload.communication.sender.userId !== "local-operator") {
       return reply.code(403).send({ error: "only your own queued messages can be cancelled" });
+    }
+    try {
+      const replay = coordinationV3.replayCancelPendingActivation({
+        activationId: activation.id,
+        projectId: activation.projectId,
+        idempotencyKey,
+      });
+      if (replay) return replay satisfies CancelQueuedMessageResponse;
+    } catch (error) {
+      if (error instanceof CoordinationIdempotencyConflictError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
+    const conversation = store.getConversation(request.params.id);
+    if (!conversation || conversation.archived) return reply.code(404).send({ error: "conversation not found" });
+    if (conversation.projectId !== activation.projectId || activation.dispatchPolicy !== "next_run") {
+      return reply.code(404).send({ error: "queued message not found" });
     }
     let result: ReturnType<CoordinationV3Store["cancelPendingActivation"]>;
     try {
@@ -225,18 +244,37 @@ export function registerQueuedMessageRoutes(
     Params: { id: string; deliveryId: string };
     Body: CancelQueuedMessageRequest;
   }>("/api/agents/:id/queued-messages/:deliveryId/cancel", async (request, reply) => {
-    const agent = store.getAgent(request.params.id);
-    if (!agent || agent.archived) return reply.code(404).send({ error: "agent not found" });
     const parsed = exactStringBody(request.body, ["idempotencyKey"]);
     if ("error" in parsed) return reply.code(400).send({ error: parsed.error });
     const idempotencyKey = parsed.value.idempotencyKey?.trim() ?? "";
     if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
-    const activation = coordinationV3.activation(request.params.deliveryId, agent.projectId);
+    const projectId = coordinationV3.activationProjectId(request.params.deliveryId);
+    const activation = projectId
+      ? coordinationV3.activation(request.params.deliveryId, projectId)
+      : undefined;
     const payload = activation?.payload && typeof activation.payload === "object"
       ? activation.payload as { communication?: CommunicationEvent }
       : undefined;
-    if (!activation || activation.agentId !== agent.id || activation.dispatchPolicy !== "next_run" ||
+    if (!activation || activation.agentId !== request.params.id ||
         payload?.communication?.sender.kind !== "user" || payload.communication.sender.userId !== "local-operator") {
+      return reply.code(404).send({ error: "queued message not found" });
+    }
+    try {
+      const replay = coordinationV3.replayCancelPendingActivation({
+        activationId: activation.id,
+        projectId: activation.projectId,
+        idempotencyKey,
+      });
+      if (replay) return replay satisfies CancelQueuedMessageResponse;
+    } catch (error) {
+      if (error instanceof CoordinationIdempotencyConflictError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
+    const agent = store.getAgent(request.params.id);
+    if (!agent || agent.archived) return reply.code(404).send({ error: "agent not found" });
+    if (agent.projectId !== activation.projectId || activation.dispatchPolicy !== "next_run") {
       return reply.code(404).send({ error: "queued message not found" });
     }
     let result: ReturnType<CoordinationV3Store["cancelPendingActivation"]>;
@@ -259,23 +297,41 @@ export function registerQueuedMessageRoutes(
     Params: { id: string; deliveryId: string };
     Body: EditQueuedMessageRequest;
   }>("/api/agents/:id/queued-messages/:deliveryId", async (request, reply) => {
-    const agent = store.getAgent(request.params.id);
-    if (!agent || agent.archived) return reply.code(404).send({ error: "agent not found" });
     const parsed = exactStringBody(request.body, ["text", "idempotencyKey"]);
     if ("error" in parsed) return reply.code(400).send({ error: parsed.error });
     const rawText = parsed.value.text ?? "";
     const idempotencyKey = parsed.value.idempotencyKey?.trim() ?? "";
     if (!rawText.trim() || rawText.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "queued message text is required" });
     if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
-    const activation = coordinationV3.pendingActivations(agent.projectId)
-      .find((candidate) =>
-        candidate.id === request.params.deliveryId &&
-        candidate.agentId === agent.id &&
-        candidate.dispatchPolicy === "next_run");
+    const projectId = coordinationV3.activationProjectId(request.params.deliveryId);
+    const activation = projectId
+      ? coordinationV3.activation(request.params.deliveryId, projectId)
+      : undefined;
     const payload = activation?.payload && typeof activation.payload === "object"
       ? activation.payload as { communication?: CommunicationEvent }
       : undefined;
-    if (!activation || payload?.communication?.sender.kind !== "user" || payload.communication.sender.userId !== "local-operator") {
+    if (!activation || activation.agentId !== request.params.id ||
+        payload?.communication?.sender.kind !== "user" || payload.communication.sender.userId !== "local-operator") {
+      return reply.code(404).send({ error: "queued message not found" });
+    }
+    try {
+      const replay = coordinationV3.replayEditPendingActivationText({
+        activationId: activation.id,
+        projectId: activation.projectId,
+        requestText: canonicalizeProviderText(rawText).trim(),
+        idempotencyKey,
+      });
+      if (replay) return replay satisfies EditQueuedMessageResponse;
+    } catch (error) {
+      if (error instanceof CoordinationIdempotencyConflictError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
+    const agent = store.getAgent(request.params.id);
+    if (!agent || agent.archived) return reply.code(404).send({ error: "agent not found" });
+    if (agent.projectId !== activation.projectId || activation.dispatchPolicy !== "next_run" ||
+        (activation.state !== "pending" && activation.state !== "retry_pending")) {
       return reply.code(404).send({ error: "queued message not found" });
     }
     const conversationId = payload.communication.conversationId ?? agent.conversationId;
@@ -369,21 +425,38 @@ export function registerQueuedMessageRoutes(
     Params: { id: string; deliveryId: string };
     Body: SteerQueuedMessageRequest;
   }>("/api/agents/:id/queued-messages/:deliveryId/steer", async (request, reply) => {
-    const agent = store.getAgent(request.params.id);
-    if (!agent || agent.archived) return reply.code(404).send({ error: "agent not found" });
     const parsed = exactStringBody(request.body, ["idempotencyKey"]);
     if ("error" in parsed) return reply.code(400).send({ error: parsed.error });
     const idempotencyKey = parsed.value.idempotencyKey?.trim() ?? "";
     if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
-    const activation = coordinationV3.pendingActivations(agent.projectId)
-      .find((candidate) =>
-        candidate.id === request.params.deliveryId &&
-        candidate.agentId === agent.id &&
-        candidate.dispatchPolicy === "next_run");
+    const projectId = coordinationV3.activationProjectId(request.params.deliveryId);
+    const activation = projectId
+      ? coordinationV3.activation(request.params.deliveryId, projectId)
+      : undefined;
     const payload = activation?.payload && typeof activation.payload === "object"
       ? activation.payload as { communication?: CommunicationEvent }
       : undefined;
-    if (!activation || payload?.communication?.sender.kind !== "user" || payload.communication.sender.userId !== "local-operator") {
+    if (!activation || activation.agentId !== request.params.id ||
+        payload?.communication?.sender.kind !== "user" || payload.communication.sender.userId !== "local-operator") {
+      return reply.code(404).send({ error: "queued message not found" });
+    }
+    try {
+      const replay = coordinationV3.replaySteerPendingActivation({
+        activationId: activation.id,
+        projectId: activation.projectId,
+        idempotencyKey,
+      });
+      if (replay) return replay satisfies SteerQueuedMessageResponse;
+    } catch (error) {
+      if (error instanceof CoordinationIdempotencyConflictError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
+    const agent = store.getAgent(request.params.id);
+    if (!agent || agent.archived) return reply.code(404).send({ error: "agent not found" });
+    if (agent.projectId !== activation.projectId || activation.dispatchPolicy !== "next_run" ||
+        (activation.state !== "pending" && activation.state !== "retry_pending")) {
       return reply.code(404).send({ error: "queued message not found" });
     }
     const result = coordinationV3.steerPendingActivation({

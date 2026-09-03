@@ -496,6 +496,10 @@ export class CoordinationV3Store {
     return this.activationReadModel.activation(activationId, projectId);
   }
 
+  activationProjectId(activationId: string): string | undefined {
+    return this.activationReadModel.activationProjectId(activationId);
+  }
+
   terminalActivationDisposition(activationId: string): {
     id: string;
     state: TerminalActivationV3View["state"];
@@ -545,6 +549,12 @@ export class CoordinationV3Store {
     return this.activationCommandAuthority.cancelPendingActivation(input);
   }
 
+  replayCancelPendingActivation(
+    input: Parameters<CoordinationV3ActivationCommandAuthority["replayCancelPendingActivation"]>[0],
+  ): ReturnType<CoordinationV3ActivationCommandAuthority["replayCancelPendingActivation"]> {
+    return this.activationCommandAuthority.replayCancelPendingActivation(input);
+  }
+
   queuedMessageCancellationChange(
     activationId: string,
   ): ReturnType<CoordinationV3ActivationCommandAuthority["queuedMessageCancellationChange"]> {
@@ -568,6 +578,12 @@ export class CoordinationV3Store {
     return this.activationCommandAuthority.editPendingActivationText(input);
   }
 
+  replayEditPendingActivationText(
+    input: Parameters<CoordinationV3ActivationCommandAuthority["replayEditPendingActivationText"]>[0],
+  ): ReturnType<CoordinationV3ActivationCommandAuthority["replayEditPendingActivationText"]> {
+    return this.activationCommandAuthority.replayEditPendingActivationText(input);
+  }
+
   steerPendingActivation(input: {
     activationId: string;
     projectId: string;
@@ -575,6 +591,12 @@ export class CoordinationV3Store {
     now?: string;
   }): { steered: boolean; replayed: boolean; status: "steered" | "delivery_started" } {
     return this.activationCommandAuthority.steerPendingActivation(input);
+  }
+
+  replaySteerPendingActivation(
+    input: Parameters<CoordinationV3ActivationCommandAuthority["replaySteerPendingActivation"]>[0],
+  ): ReturnType<CoordinationV3ActivationCommandAuthority["replaySteerPendingActivation"]> {
+    return this.activationCommandAuthority.replaySteerPendingActivation(input);
   }
 
   activationPayloads(agentId: string, activationIds: string[], runId?: string): Array<{

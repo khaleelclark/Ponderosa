@@ -392,6 +392,25 @@ export function registerAgentMessageRunRoute(
         const activationId = existingUserRuntime.activations
           ?.find((activation) => activation.agentId === agentId)?.id;
         const replayConversationId = existingPayload.communication?.conversationId ?? agent?.conversationId;
+        const canonicalActivation = activationId
+          ? coordinationV3.activation(activationId, project.id)
+          : undefined;
+        const settledReplay = canonicalActivation &&
+          canonicalActivation.state !== "pending" &&
+          canonicalActivation.state !== "retry_pending"
+          ? {
+              queued: false as const,
+              settled: true as const,
+              replayed: true as const,
+              deliveryId: canonicalActivation.id,
+              deliveryState: canonicalActivation.state === "failed" ||
+                canonicalActivation.state === "outcome_unknown" ||
+                canonicalActivation.state === "cancelled"
+                ? canonicalActivation.state
+                : "delivered" as const,
+              communicationEventId: proposedCommunicationEventId,
+            }
+          : undefined;
         const releaseReplayLease = replayConversationId
           ? leaseConversationDelivery(
               conversationDeliveryLeases,
@@ -405,6 +424,7 @@ export function registerAgentMessageRunRoute(
             projectId: project.id,
             communicationEventId: proposedCommunicationEventId,
           });
+          if (settledReplay) return settledReplay;
           let position: number | undefined;
           try {
             const pending = coordinationV3.pendingActivations(project.id)
@@ -422,6 +442,11 @@ export function registerAgentMessageRunRoute(
               : {}),
           });
         } catch {
+          if (settledReplay) return reply.code(202).send({
+            ...settledReplay,
+            committed: true,
+            recovering: true,
+          });
           return reply.code(202).send({
             queued: true,
             ...(activationId ? { deliveryId: activationId } : {}),

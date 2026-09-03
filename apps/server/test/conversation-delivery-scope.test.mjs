@@ -86,6 +86,17 @@ test("Agent delivery leases deduplicate owners and release idempotently", () => 
   assert.equal(leases.size, 0);
 });
 
+test("delivery fingerprints ignore JSON object insertion order", () => {
+  assert.equal(
+    conversationDeliveryRequestFingerprint({
+      recipientAttachments: [{ agentId: "agent-a", attachmentIds: ["asset-a"] }],
+    }),
+    conversationDeliveryRequestFingerprint({
+      recipientAttachments: [{ attachmentIds: ["asset-a"], agentId: "agent-a" }],
+    }),
+  );
+});
+
 test("new Agents remain quarantined while opening assets are staged", async (t) => {
   const chat = { id: "chat-a", projectId: "project-a", archived: false };
   const project = { id: chat.projectId, defaultEngine: "codex" };
@@ -667,6 +678,7 @@ test("an exact direct Agent-message retry replays after the Agent is archived", 
             activations: [{ id: "delivery-a", agentId: "agent-a" }],
           }
         : undefined,
+      activation: () => ({ id: "delivery-a", projectId: "project-a", agentId: "agent-a", state: "pending" }),
       pendingActivations: () => [{ id: "delivery-a", agentId: "agent-a" }],
     },
     reconcileRuntimeCommunicationProjections: async () => { reconciliations += 1; return 1; },
@@ -727,6 +739,7 @@ test("an exact direct Agent-message retry replays after permanent Agent deletion
         payload: { requestFingerprint, communication: { conversationId: "chat-a" } },
         activations: [{ id: "delivery-a", agentId: "agent-a" }],
       }),
+      activation: () => ({ id: "delivery-a", projectId: "project-a", agentId: "agent-a", state: "pending" }),
       pendingActivations: () => [{ id: "delivery-a", agentId: "agent-a" }],
     },
   });
@@ -734,6 +747,54 @@ test("an exact direct Agent-message retry replays after permanent Agent deletion
   const response = await app.inject({ method: "POST", url: "/api/agents/agent-a/messages", payload });
   assert.equal(response.statusCode, 202);
   assert.equal(response.json().communicationEventId, communicationEventId);
+});
+
+test("an exact direct Agent-message retry reports a consumed delivery as settled", async (t) => {
+  const payload = { text: "hello", idempotencyKey: "settled-replay", activeRunDelivery: "queue" };
+  const communicationEventId = `user-message-${createHash("sha256")
+    .update(`project-a\0agent-a\0${payload.idempotencyKey}`)
+    .digest("hex")}`;
+  const requestFingerprint = conversationDeliveryRequestFingerprint({
+    version: 1,
+    agentId: "agent-a",
+    text: payload.text,
+    idempotencyKey: payload.idempotencyKey,
+    model: null,
+    effort: null,
+    speed: null,
+    sourceChannel: null,
+    sourceConversationId: null,
+    shareWithOrganization: false,
+    activeRunDelivery: "queue",
+    attachmentIds: [],
+    draftAttachmentIds: [],
+    draftId: null,
+    draftOwnerId: null,
+    agentMentionDepth: 0,
+    agentMentionTrail: [],
+  });
+  const { app } = agentMessageValidationApp({
+    coordinationV3: {
+      runtimeCommunication: () => ({
+        projectId: "project-a",
+        payload: { requestFingerprint, communication: { conversationId: "chat-a" } },
+        activations: [{ id: "delivery-a", agentId: "agent-a" }],
+      }),
+      activation: () => ({ id: "delivery-a", projectId: "project-a", agentId: "agent-a", state: "consumed" }),
+      pendingActivations: () => [],
+    },
+  });
+  t.after(() => app.close());
+  const response = await app.inject({ method: "POST", url: "/api/agents/agent-a/messages", payload });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), {
+    queued: false,
+    settled: true,
+    replayed: true,
+    deliveryId: "delivery-a",
+    deliveryState: "delivered",
+    communicationEventId,
+  });
 });
 
 test("request-update replay precedes mutable participant checks", async (t) => {
@@ -933,8 +994,70 @@ test("a rejected long request update releases its staged artifact reservation", 
       steeringInjectionIds: () => [],
       requestIdsAttachedToRun: () => ["request-a"],
       getRequest: () => requestRecord,
+      runtimeArtifact: () => undefined,
       replayRequestUpdate: () => undefined,
       updateRequest: () => { throw new Error("answer does not match the open question"); },
+    },
+    agentMessageCapabilities: new Map([["token", { agentId: "agent-a", runId: "run-a", v3SchedulerRunId: "run-a" }]]),
+    activeRuns: new Map([["agent-a", { messageCapability: "token" }]]),
+    projectDeletionInProgress: () => false,
+    conversationDeletionInProgress: () => false,
+    agentDeletionInProgress: () => false,
+    conversationDeliveryLeases: new Map(),
+    agentDeliveryLeases: new Map(),
+    capabilityMatchesCleanupRun: () => true,
+    runAuthorization: () => ({ runId: "run-a", agentId: "agent-a", fencingToken: 1 }),
+    projectCommunicationArtifact: () => {},
+    requestArtifactAccess: () => ({}),
+    runtimeArtifactMetadata: (artifact) => artifact,
+    stageCommunicationArtifact: async () => ({
+      id: "artifact-a",
+      role: "long_text",
+      title: "Result",
+      reservationCreated: true,
+    }),
+    removeRuntimeArtifactReservation: (_projectId, artifactId) => { removed.push(artifactId); },
+    recordCommunication: (event) => event,
+    projectCommunicationToAgentAudit: () => {},
+    publishCoordinationV3Changed: () => {},
+    notifyScheduler: () => {},
+  });
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/agent-request-updates",
+    headers: { authorization: "Bearer token" },
+    payload: {
+      requestId: "request-a",
+      updateId: "update-a",
+      kind: "answer",
+      inReplyToUpdateId: "wrong-question",
+      text: "x".repeat(70_000),
+    },
+  });
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(removed, ["artifact-a"]);
+});
+
+test("a failed long request-update replay preserves an existing artifact reservation", async (t) => {
+  const app = Fastify();
+  t.after(() => app.close());
+  const removed = [];
+  registerAgentRequestCommandRoutes(app, {
+    store: { getAgent: () => undefined },
+    coordinationV3: {
+      steeringInjectionIds: () => [],
+      requestIdsAttachedToRun: () => ["request-a"],
+      getRequest: () => ({
+        id: "request-a",
+        projectId: "project-a",
+        conversationId: "chat-a",
+        recipientAgentId: "agent-a",
+        state: "completed",
+        version: 1,
+        payload: {},
+      }),
+      runtimeArtifact: (id) => ({ id }),
+      replayRequestUpdate: () => { throw new Error("Run authority expired"); },
     },
     agentMessageCapabilities: new Map([["token", { agentId: "agent-a", runId: "run-a", v3SchedulerRunId: "run-a" }]]),
     activeRuns: new Map([["agent-a", { messageCapability: "token" }]]),
@@ -962,13 +1085,12 @@ test("a rejected long request update releases its staged artifact reservation", 
     payload: {
       requestId: "request-a",
       updateId: "update-a",
-      kind: "answer",
-      inReplyToUpdateId: "wrong-question",
+      kind: "completed",
       text: "x".repeat(70_000),
     },
   });
   assert.equal(response.statusCode, 409);
-  assert.deepEqual(removed, ["artifact-a"]);
+  assert.deepEqual(removed, []);
 });
 
 test("asset cleanup and message delivery cannot lease the same Agent", () => {
@@ -1297,6 +1419,12 @@ test("direct message retries replay the original success after a recipient is ar
           { id: "delivery-b", agentId: "agent-b" },
         ],
       }),
+      activation: (id) => ({
+        id,
+        projectId: chat.projectId,
+        agentId: id === "delivery-a" ? "agent-a" : "agent-b",
+        state: "pending",
+      }),
     },
     projectDeletionInProgress: () => false,
     agentDeletionInProgress: () => false,
@@ -1614,9 +1742,11 @@ test("direct message retries lease the Chat while repairing a missing projection
     store,
     coordinationV3: {
       runtimeCommunication: () => ({
+        projectId: chat.projectId,
         payload: { requestFingerprint, dispatch: { recipients: [{ agentId: "agent-a" }] } },
         activations: [{ id: "delivery-a", agentId: "agent-a" }],
       }),
+      activation: () => ({ id: "delivery-a", projectId: chat.projectId, agentId: "agent-a", state: "pending" }),
     },
     projectDeletionInProgress: () => false,
     agentDeletionInProgress: () => false,
@@ -1652,6 +1782,61 @@ test("direct message retries lease the Chat while repairing a missing projection
   assert.equal((await retry).statusCode, 200);
   assert.equal(conversationLeases.has(chat.id), false);
   assert.equal(agentLeases.has("agent-a"), false);
+});
+
+test("multi-Agent direct replay reports terminal recipient delivery state", async (t) => {
+  const chat = { id: "chat-a", projectId: "project-a", archived: false };
+  const requestPayload = {
+    text: "hello",
+    recipients: [{ agentId: "agent-a" }],
+    idempotencyKey: "terminal-direct-replay",
+  };
+  const requestFingerprint = conversationDeliveryRequestFingerprint({
+    version: 1,
+    kind: "direct",
+    conversationId: chat.id,
+    text: requestPayload.text,
+    recipients: [{ agentId: "agent-a", attachmentIds: [] }],
+    activeRunDelivery: "steer",
+    runtimeSelection: {},
+  });
+  const app = Fastify();
+  t.after(() => app.close());
+  registerConversationDeliveryRoutes(app, {
+    store: {
+      getConversationMessageByReceiptKey: () => ({ id: "message-a" }),
+    },
+    coordinationV3: {
+      runtimeCommunication: () => ({
+        projectId: chat.projectId,
+        payload: { requestFingerprint, dispatch: { recipients: [{ agentId: "agent-a" }] } },
+        activations: [{ id: "delivery-a", agentId: "agent-a" }],
+      }),
+      activation: () => ({
+        id: "delivery-a",
+        projectId: chat.projectId,
+        agentId: "agent-a",
+        state: "failed",
+      }),
+    },
+    projectDeletionInProgress: () => false,
+    agentDeletionInProgress: () => false,
+    conversationDeliveryLeases: new Map(),
+    agentDeliveryLeases: new Map(),
+    reconcileRuntimeCommunicationProjections: async () => 0,
+  });
+  const response = await app.inject({
+    method: "POST",
+    url: `/api/conversations/${chat.id}/direct-messages`,
+    payload: requestPayload,
+  });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json().recipients, [{
+    agentId: "agent-a",
+    queued: false,
+    deliveryId: "delivery-a",
+    state: "failed",
+  }]);
 });
 
 test("direct message replay repair waits for attachment maintenance", async (t) => {
@@ -2118,12 +2303,13 @@ test("delivery routes reject malformed JSON shapes with 400", async (t) => {
   }
 });
 
-function queuedMessageApp({ coordinationV3 = {}, notifyScheduler = () => {}, publishMessageDeliveryChanged = () => {} } = {}) {
+function queuedMessageApp({ coordinationV3 = {}, store = {}, notifyScheduler = () => {}, publishMessageDeliveryChanged = () => {} } = {}) {
   const app = Fastify();
   registerQueuedMessageRoutes(app, {
     store: {
       getAgent: () => ({ id: "agent-a", projectId: "project-a", conversationId: "chat-a", archived: false }),
       getConversation: () => ({ id: "chat-a", projectId: "project-a", archived: false }),
+      ...store,
     },
     coordinationV3,
     workspace: {},
@@ -2143,6 +2329,49 @@ function queuedMessageApp({ coordinationV3 = {}, notifyScheduler = () => {}, pub
   });
   return app;
 }
+
+test("queued-message commands replay before mutable queue and participant state", async (t) => {
+  const activation = {
+    id: "delivery-a",
+    projectId: "project-a",
+    agentId: "agent-a",
+    dispatchPolicy: "steer_or_run",
+    state: "attached",
+    payload: {
+      communication: {
+        sender: { kind: "user", userId: "local-operator" },
+        conversationId: "chat-a",
+      },
+      dispatch: { conversationId: "chat-a" },
+    },
+  };
+  const coordinationV3 = {
+    activationProjectId: () => activation.projectId,
+    activation: () => activation,
+    replayCancelPendingActivation: () => ({ cancelled: true, replayed: true, status: "cancelled" }),
+    replayEditPendingActivationText: ({ requestText }) => {
+      assert.equal(requestText, "edited");
+      return { edited: true, replayed: true, status: "edited" };
+    },
+    replaySteerPendingActivation: () => ({ steered: true, replayed: true, status: "steered" }),
+  };
+  const store = {
+    getAgent: () => { throw new Error("mutable Agent state must not be read for replay"); },
+    getConversation: () => { throw new Error("mutable Chat state must not be read for replay"); },
+  };
+  const apps = [
+    ["POST", "/api/conversations/chat-a/queued-messages/delivery-a/cancel", { idempotencyKey: "cancel" }],
+    ["POST", "/api/agents/agent-a/queued-messages/delivery-a/cancel", { idempotencyKey: "cancel" }],
+    ["PATCH", "/api/agents/agent-a/queued-messages/delivery-a", { text: " edited ", idempotencyKey: "edit" }],
+    ["POST", "/api/agents/agent-a/queued-messages/delivery-a/steer", { idempotencyKey: "steer" }],
+  ].map(([method, url, payload]) => ({ app: queuedMessageApp({ coordinationV3, store }), method, url, payload }));
+  t.after(() => Promise.all(apps.map(({ app }) => app.close())));
+  for (const item of apps) {
+    const response = await item.app.inject({ method: item.method, url: item.url, payload: item.payload });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.json().replayed, true);
+  }
+});
 
 test("queued-message mutations reject malformed bodies before coordination", async (t) => {
   const app = queuedMessageApp();

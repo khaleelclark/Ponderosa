@@ -122,3 +122,44 @@ test("request update replay and retry identity survive later mutable state", () 
     context.close();
   }
 });
+
+test("terminal request update replay survives the Run side-effect fence it created", () => {
+  const context = fixture();
+  try {
+    context.coordination.coordinate({
+      projectId: context.project.id,
+      conversationId: context.conversation.id,
+      requesterAgentId: context.requester.id,
+      actorScope: "user:local-operator",
+      idempotencyKey: "terminal-request",
+      requests: [{
+        requestId: "request-terminal",
+        recipientAgentId: context.recipient.id,
+        lifetime: { kind: "indefinite" },
+        payload: { text: "work" },
+      }],
+    });
+    const lease = context.coordination.leaseNextRun({ workerId: "worker-a" });
+    assert.ok(lease);
+    assert.equal(lease.agentId, context.recipient.id);
+    const update = {
+      requestId: "request-terminal",
+      updateId: "terminal-result",
+      kind: "completed",
+      actor: { kind: "agent", id: context.recipient.id },
+      runAuthorization: {
+        runId: lease.runId,
+        agentId: lease.agentId,
+        fencingToken: lease.fencingToken,
+      },
+      payload: { text: "done", executionId: lease.runId },
+    };
+    assert.equal(context.coordination.updateRequest(update).replayed, false);
+    assert.ok(context.store.sqlite.prepare(
+      "SELECT side_effects_fenced_at fencedAt FROM scheduler_runs WHERE id = ?",
+    ).get(lease.runId).fencedAt);
+    assert.equal(context.coordination.replayRequestUpdate(update)?.replayed, true);
+  } finally {
+    context.close();
+  }
+});

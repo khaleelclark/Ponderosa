@@ -340,6 +340,31 @@ export class CoordinationV3ActivationCommandAuthority {
     })();
   }
 
+  replayCancelPendingActivation(input: {
+    activationId: string;
+    projectId: string;
+    idempotencyKey: string;
+    now?: string;
+  }): { cancelled: boolean; replayed: true; status: "cancelled" | "delivery_started" } | undefined {
+    if (!input.idempotencyKey.trim()) throw new Error("cancellation idempotency key is required");
+    return this.sqlite.transaction(() => {
+      const replay = this.idempotentReplay<{ cancelled: boolean; status: "cancelled" | "delivery_started" }>(
+        input.projectId,
+        "user:local-operator",
+        "cancel_activation",
+        input.idempotencyKey,
+        payloadHash({ activationId: input.activationId }),
+      );
+      if (!replay) return undefined;
+      if (replay.cancelled) this.ensureQueuedMessageCancellationOutbox(
+        input.projectId,
+        input.activationId,
+        input.now ?? new Date().toISOString(),
+      );
+      return { ...replay, replayed: true as const };
+    })();
+  }
+
   cancelPendingActivation(input: {
     activationId: string;
     projectId: string;
@@ -490,6 +515,25 @@ export class CoordinationV3ActivationCommandAuthority {
     })();
   }
 
+  replayEditPendingActivationText(input: {
+    activationId: string;
+    projectId: string;
+    requestText: string;
+    idempotencyKey: string;
+  }): { edited: boolean; replayed: true; status: "edited" | "delivery_started" } | undefined {
+    if (!input.idempotencyKey.trim()) throw new Error("edit idempotency key is required");
+    return this.sqlite.transaction(() => {
+      const replay = this.idempotentReplay<{ edited: boolean; status: "edited" | "delivery_started" }>(
+        input.projectId,
+        "user:local-operator",
+        "edit_activation",
+        input.idempotencyKey,
+        payloadHash({ activationId: input.activationId, requestText: input.requestText }),
+      );
+      return replay ? { ...replay, replayed: true as const } : undefined;
+    })();
+  }
+
   steerPendingActivation(input: {
     activationId: string;
     projectId: string;
@@ -517,6 +561,24 @@ export class CoordinationV3ActivationCommandAuthority {
         input.projectId, "user:local-operator", "steer_activation", input.idempotencyKey, hash, result, now,
       );
       return { ...result, replayed: false };
+    })();
+  }
+
+  replaySteerPendingActivation(input: {
+    activationId: string;
+    projectId: string;
+    idempotencyKey: string;
+  }): { steered: boolean; replayed: true; status: "steered" | "delivery_started" } | undefined {
+    if (!input.idempotencyKey.trim()) throw new Error("steering idempotency key is required");
+    return this.sqlite.transaction(() => {
+      const replay = this.idempotentReplay<{ steered: boolean; status: "steered" | "delivery_started" }>(
+        input.projectId,
+        "user:local-operator",
+        "steer_activation",
+        input.idempotencyKey,
+        payloadHash({ activationId: input.activationId }),
+      );
+      return replay ? { ...replay, replayed: true as const } : undefined;
     })();
   }
 

@@ -170,8 +170,12 @@ export function registerAgentRequestCommandRoutes(
     });
     let artifact: PreparedCommunicationArtifact | undefined;
     const cleanupArtifact = () => {
-      if (!artifact) return;
-      try { removeRuntimeArtifactReservation(currentRequest.projectId, artifact.id); } catch { /* best effort */ }
+      if (!artifact?.reservationCreated) return;
+      try {
+        if (!coordinationV3.runtimeArtifact(artifact.id)) {
+          removeRuntimeArtifactReservation(currentRequest.projectId, artifact.id);
+        }
+      } catch { /* preserve uncertain authority for startup reconciliation */ }
     };
     try {
       if (shouldBackTextWithArtifact(handoffText)) {

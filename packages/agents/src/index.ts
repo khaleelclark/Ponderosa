@@ -98,6 +98,7 @@ export type { AgentDeletionReceipt, ProjectDeletionReceipt, AgentManagementAutho
 export { EventLog, readLog, readLogSince, lastSeq } from "./eventlog.js";
 export { appendFsyncedJsonl, readRepairableJsonl, writeAtomicFsyncedJsonl } from "./append-jsonl.js";
 export { openDb } from "./db.js";
+export { stableJson } from "./coordination-v3-canonical-json.js";
 export {
   artifactContentPath, artifactsDir, managedArtifactsDir, managedArtifactsLogPath, managedArtifactContentPath, attachmentPath, attachmentsDir,
   communicationEventsPath,

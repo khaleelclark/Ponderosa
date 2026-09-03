@@ -145,13 +145,15 @@ export class CoordinationV3RequestAuthority {
     const request = this.support.getRequestRow(input.requestId);
     const { hash } = this.resolvedUpdate(input, request.project_id);
     return this.sqlite.transaction(() => {
+      const replay = this.existingUpdate(input, hash, request);
+      if (replay) return replay;
       if (input.runAuthorization) {
         this.support.requireAuthorizedRun(
           input.runAuthorization,
           request.conversation_id ? `conversation:${request.conversation_id}` : undefined,
         );
       }
-      return this.existingUpdate(input, hash, request);
+      return undefined;
     })();
   }
 

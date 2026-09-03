@@ -441,7 +441,10 @@ export class AssetStore {
     }
   }
 
-  registerRuntimeArtifact(artifact: RegisteredRuntimeArtifact): RegisteredRuntimeArtifact {
+  registerRuntimeArtifact(artifact: RegisteredRuntimeArtifact): {
+    artifact: RegisteredRuntimeArtifact;
+    reservationCreated: boolean;
+  } {
     return this.authority.registerRuntimeArtifact(artifact);
   }
 

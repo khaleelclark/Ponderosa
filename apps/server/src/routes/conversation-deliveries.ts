@@ -18,6 +18,7 @@ import type {
   ManagedArtifactAccess,
   WorkspaceStore,
 } from "@ponderosa/agents";
+import { stableJson } from "@ponderosa/agents";
 import { ASSET_LIMITS, AssetError, type AssetStore } from "../assets.js";
 import { leaseConversationDelivery } from "../delivery-leases.js";
 import { renderScopedMessage, stripLeadingScopeTag } from "../agent-mentions.js";
@@ -35,6 +36,8 @@ export interface PreparedCommunicationArtifact {
   originAgentId?: string;
   executionId?: string;
   createdAt: string;
+  /** True only when this staging attempt created the removable authority reservation. */
+  reservationCreated?: true;
 }
 type RuntimeArtifactInput = NonNullable<
   Parameters<CoordinationV3Store["recordRuntimeCommunication"]>[0]["artifacts"]
@@ -99,7 +102,7 @@ export interface ConversationDeliveryRouteDependencies {
 const MAX_ATTACHMENTS_PER_MESSAGE = ASSET_LIMITS.maxAssetsPerMessage;
 
 export function conversationDeliveryRequestFingerprint(input: unknown): string {
-  return createHash("sha256").update(JSON.stringify(input)).digest("hex");
+  return createHash("sha256").update(stableJson(input)).digest("hex");
 }
 
 function isActiveConversationAgent(
@@ -108,6 +111,35 @@ function isActiveConversationAgent(
 ): boolean {
   return Boolean(agent && !agent.archived &&
     agent.projectId === conversation.projectId && agent.conversationId === conversation.id);
+}
+
+function replayedDirectRecipient(
+  coordinationV3: CoordinationV3Store,
+  projectId: string,
+  activationByAgentId: ReadonlyMap<string, string>,
+  agentId: string,
+): MultiAgentDirectMessageResponse["recipients"][number] {
+  const deliveryId = activationByAgentId.get(agentId);
+  if (!deliveryId) return { agentId, queued: true, state: "preparing" };
+  const activation = coordinationV3.activation(deliveryId, projectId);
+  if (!activation) return { agentId, queued: true, deliveryId, state: "preparing" };
+  if (activation.state === "pending" || activation.state === "retry_pending") {
+    return {
+      agentId,
+      queued: true,
+      deliveryId,
+      state: activation.state === "retry_pending" ? "retrying" : "queued",
+    };
+  }
+  return {
+    agentId,
+    queued: false,
+    deliveryId,
+    state: activation.state === "failed" || activation.state === "outcome_unknown" ||
+      activation.state === "cancelled"
+      ? activation.state
+      : "started",
+  };
 }
 
 function requestedRuntimeSelection(body: {
@@ -657,12 +689,12 @@ export function registerConversationDeliveryRoutes(
         const recoveringResponse = (messageId = eventId) => ({
           messageId,
           replayed: true,
-          recipients: originalRecipients.map((agentId) => ({
+          recipients: originalRecipients.map((agentId) => replayedDirectRecipient(
+            coordinationV3,
+            existingRuntime!.projectId,
+            activationByAgentId,
             agentId,
-            queued: true,
-            deliveryId: activationByAgentId.get(agentId),
-            state: "queued" as const,
-          })),
+          )),
           ...(existingPayload.unavailableRecipients?.length ? {
             unavailableRecipients: existingPayload.unavailableRecipients,
           } : {}),
@@ -695,12 +727,12 @@ export function registerConversationDeliveryRoutes(
         return {
           messageId: message.id,
           replayed: true,
-          recipients: originalRecipients.map((agentId) => ({
+          recipients: originalRecipients.map((agentId) => replayedDirectRecipient(
+            coordinationV3,
+            existingRuntime!.projectId,
+            activationByAgentId,
             agentId,
-            queued: true,
-            deliveryId: activationByAgentId.get(agentId),
-            state: "queued" as const,
-          })),
+          )),
           ...(existingPayload.unavailableRecipients?.length ? {
             unavailableRecipients: existingPayload.unavailableRecipients,
           } : {}),

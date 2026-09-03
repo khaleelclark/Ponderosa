@@ -148,7 +148,9 @@ function directAgentDeliveryNotice(
     }
     return `Queued in position ${response.position}; it will start when the current response finishes.`;
   }
-  return response.steered ? "Steered into the active turn." : undefined;
+  return "steered" in response && response.steered
+    ? "Steered into the active turn."
+    : undefined;
 }
 
 function portablePackageFileName(
