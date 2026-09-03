@@ -331,9 +331,11 @@ export function registerAgentMessageRunRoute(
           candidate.activeRunDelivery !== "steer" && candidate.activeRunDelivery !== "queue") {
         return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
       }
-      const agent = store.getAgent(request.params.id);
-      if (!agent) return reply.code(404).send({ error: "agent not found" });
-      const project = store.getProject(agent.projectId);
+      const agentId = request.params.id;
+      const agent = store.getAgent(agentId);
+      const projectId = agent?.projectId ?? store.getAgentProjectId(agentId);
+      if (!projectId) return reply.code(404).send({ error: "agent not found" });
+      const project = store.getProject(projectId);
       if (!project) return reply.code(404).send({ error: "project not found" });
       const text = request.body?.text?.trim() ?? "";
       const userMessageIdempotencyKey = request.body?.idempotencyKey?.trim();
@@ -341,12 +343,12 @@ export function registerAgentMessageRunRoute(
         return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
       }
       const proposedCommunicationEventId = userMessageIdempotencyKey
-        ? `user-message-${createHash("sha256").update(`${project.id}\0${agent.id}\0${userMessageIdempotencyKey}`).digest("hex")}`
+        ? `user-message-${createHash("sha256").update(`${project.id}\0${agentId}\0${userMessageIdempotencyKey}`).digest("hex")}`
         : undefined;
       const requestFingerprint = proposedCommunicationEventId
         ? conversationDeliveryRequestFingerprint({
             version: 1,
-            agentId: agent.id,
+            agentId,
             text,
             idempotencyKey: userMessageIdempotencyKey,
             model: request.body.model?.trim() ?? null,
@@ -365,7 +367,7 @@ export function registerAgentMessageRunRoute(
           })
         : undefined;
       const existingUserRuntime = proposedCommunicationEventId
-        ? coordinationV3.runtimeCommunication(`dispatch:${proposedCommunicationEventId}:${agent.id}`)
+        ? coordinationV3.runtimeCommunication(`dispatch:${proposedCommunicationEventId}:${agentId}`)
         : undefined;
       const existingPayload = existingUserRuntime?.payload &&
         typeof existingUserRuntime.payload === "object" &&
@@ -388,16 +390,16 @@ export function registerAgentMessageRunRoute(
           return reply.code(409).send({ error: "runtime communication ID collision" });
         }
         const activationId = existingUserRuntime.activations
-          ?.find((activation) => activation.agentId === agent.id)?.id;
-        const replayConversationId = existingPayload.communication?.conversationId ?? agent.conversationId;
+          ?.find((activation) => activation.agentId === agentId)?.id;
+        const replayConversationId = existingPayload.communication?.conversationId ?? agent?.conversationId;
         const releaseReplayLease = replayConversationId
           ? leaseConversationDelivery(
               conversationDeliveryLeases,
               agentDeliveryLeases,
               replayConversationId,
-              [agent.id],
+              [agentId],
             )
-          : leaseAgentDelivery(agentDeliveryLeases, [agent.id]);
+          : leaseAgentDelivery(agentDeliveryLeases, [agentId]);
         try {
           await reconcileRuntimeCommunicationProjections({
             projectId: project.id,
@@ -406,7 +408,7 @@ export function registerAgentMessageRunRoute(
           let position: number | undefined;
           try {
             const pending = coordinationV3.pendingActivations(project.id)
-              .filter((activation) => activation.agentId === agent.id);
+              .filter((activation) => activation.agentId === agentId);
             const index = pending.findIndex((activation) => activation.id === activationId);
             if (index >= 0) position = index + 1;
           } catch { /* queue position remains a repairable projection */ }
@@ -431,6 +433,7 @@ export function registerAgentMessageRunRoute(
           releaseReplayLease();
         }
       }
+      if (!agent) return reply.code(404).send({ error: "agent not found" });
       if (deletingAgentIds.has(request.params.id) || agent.archived) {
         return reply.code(404).send({ error: "agent not found" });
       }

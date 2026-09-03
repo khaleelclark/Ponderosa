@@ -20,6 +20,8 @@ import { registerCollaborationRoutes } from "../dist/routes/collaboration.js";
 import { registerAttachmentRoutes } from "../dist/routes/attachments.js";
 import { registerAgentCreationRoutes } from "../dist/routes/agent-creation.js";
 import { registerAgentMessageRunRoute } from "../dist/routes/agent-message-run.js";
+import { registerAgentRequestCommandRoutes } from "../dist/routes/agent-request-commands.js";
+import { registerAgentCoordinationRoutes } from "../dist/routes/agent-coordination.js";
 import { registerQueuedMessageRoutes } from "../dist/routes/queued-messages.js";
 import { leaseAgentAssetReconciliation } from "../dist/server-lifecycle.js";
 import { leaseAgentDelivery } from "../dist/delivery-leases.js";
@@ -366,6 +368,7 @@ function agentMessageValidationApp({
   agentOverrides = {},
   coordinationV3 = {},
   reconcileRuntimeCommunicationProjections = async () => 0,
+  agentPresent = true,
 } = {}) {
   const chat = { id: "chat-a", projectId: "project-a", archived: false };
   const project = { id: chat.projectId, defaultEngine: "codex" };
@@ -382,7 +385,8 @@ function agentMessageValidationApp({
   const app = Fastify();
   registerAgentMessageRunRoute(app, {
     store: {
-      getAgent: () => agent,
+      getAgent: () => agentPresent ? agent : undefined,
+      getAgentProjectId: () => project.id,
       getProject: () => project,
       getConversation: (id) => id === chat.id ? chat : undefined,
       getRuns: () => [],
@@ -539,6 +543,220 @@ test("an exact direct Agent-message retry replays after the Agent is archived", 
     payload: { ...payload, text: "different" },
   });
   assert.equal(collision.statusCode, 409);
+});
+
+test("an exact direct Agent-message retry replays after permanent Agent deletion", async (t) => {
+  const payload = { text: "hello", idempotencyKey: "deleted-replay", activeRunDelivery: "queue" };
+  const communicationEventId = `user-message-${createHash("sha256")
+    .update(`project-a\0agent-a\0${payload.idempotencyKey}`)
+    .digest("hex")}`;
+  const requestFingerprint = conversationDeliveryRequestFingerprint({
+    version: 1,
+    agentId: "agent-a",
+    text: payload.text,
+    idempotencyKey: payload.idempotencyKey,
+    model: null,
+    effort: null,
+    speed: null,
+    sourceChannel: null,
+    sourceConversationId: null,
+    shareWithOrganization: false,
+    activeRunDelivery: "queue",
+    attachmentIds: [],
+    draftAttachmentIds: [],
+    draftId: null,
+    draftOwnerId: null,
+    agentMentionDepth: 0,
+    agentMentionTrail: [],
+  });
+  const { app } = agentMessageValidationApp({
+    agentPresent: false,
+    coordinationV3: {
+      runtimeCommunication: () => ({
+        projectId: "project-a",
+        payload: { requestFingerprint, communication: { conversationId: "chat-a" } },
+        activations: [{ id: "delivery-a", agentId: "agent-a" }],
+      }),
+      pendingActivations: () => [{ id: "delivery-a", agentId: "agent-a" }],
+    },
+  });
+  t.after(() => app.close());
+  const response = await app.inject({ method: "POST", url: "/api/agents/agent-a/messages", payload });
+  assert.equal(response.statusCode, 202);
+  assert.equal(response.json().communicationEventId, communicationEventId);
+});
+
+test("request-update replay precedes mutable participant checks", async (t) => {
+  const app = Fastify();
+  t.after(() => app.close());
+  registerAgentRequestCommandRoutes(app, {
+    store: { getAgent: () => undefined },
+    coordinationV3: {
+      steeringInjectionIds: () => [],
+      requestIdsAttachedToRun: () => ["request-a"],
+      getRequest: () => ({
+        id: "request-a",
+        projectId: "project-a",
+        conversationId: "chat-a",
+        recipientAgentId: "agent-a",
+        state: "completed",
+        version: 1,
+        payload: {},
+      }),
+      requestLifecycleDetails: () => ({ updates: [] }),
+      replayRequestUpdate: () => ({ requestId: "request-a", state: "completed", version: 1, replayed: true }),
+    },
+    agentMessageCapabilities: new Map([["token", { agentId: "agent-a", runId: "run-a", v3SchedulerRunId: "run-a" }]]),
+    activeRuns: new Map([["agent-a", { messageCapability: "token" }]]),
+    projectDeletionInProgress: () => false,
+    conversationDeletionInProgress: () => false,
+    agentDeletionInProgress: () => false,
+    conversationDeliveryLeases: new Map(),
+    agentDeliveryLeases: new Map(),
+    capabilityMatchesCleanupRun: () => true,
+    runAuthorization: () => ({ runId: "run-a", agentId: "agent-a", fencingToken: 1 }),
+    projectCommunicationArtifact: () => {},
+    requestArtifactAccess: () => ({}),
+    runtimeArtifactMetadata: () => ({}),
+    stageCommunicationArtifact: async () => { throw new Error("unexpected staging"); },
+    removeRuntimeArtifactReservation: () => {},
+    recordCommunication: (event) => event,
+    projectCommunicationToAgentAudit: () => {},
+    publishCoordinationV3Changed: () => {},
+    notifyScheduler: () => {},
+  });
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/agent-request-updates",
+    headers: { authorization: "Bearer token" },
+    payload: { requestId: "request-a", updateId: "update-a", kind: "completed", text: "done" },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().replayed, true);
+});
+
+test("coordinate replay precedes mutable recipient checks", async (t) => {
+  const app = Fastify();
+  t.after(() => app.close());
+  const author = { id: "author-a", projectId: "project-a", conversationId: "chat-a", archived: false };
+  let replayed = false;
+  registerAgentCoordinationRoutes(app, {
+    store: {
+      getAgent: (id) => id === author.id ? author : undefined,
+      getConversationMessages: () => [],
+      appendConversationMessage: () => {},
+    },
+    coordinationV3: {
+      steeringInjectionIds: () => [],
+      replayCoordinate: () => { replayed = true; return { requestIds: ["request-a"], replayed: true }; },
+      getRequest: () => ({ conversationId: "chat-a" }),
+      requestDelivery: () => undefined,
+    },
+    engines: new Map(),
+    deletingAgentIds: new Set(),
+    deletingProjectIds: new Set(),
+    deletingConversationIds: new Set(),
+    conversationDeliveryLeases: new Map(),
+    agentDeliveryLeases: new Map(),
+    agentMessageCapabilities: new Map([["token", {
+      agentId: author.id,
+      runId: "run-a",
+      conversationId: "chat-a",
+      mentionDepth: 0,
+      mentionTrail: [],
+    }]]),
+    activeRuns: new Map([[author.id, { messageCapability: "token" }]]),
+    cachedModelOptions: () => [],
+    capabilityOwnsAuthoritativeRun: () => true,
+    recordCommunication: (event) => event,
+    projectCommunicationToAgentAudit: () => {},
+    publishCoordinationV3Changed: () => {},
+    notifyScheduler: () => {},
+    runAuthorization: () => ({ runId: "run-a", agentId: author.id, fencingToken: 1 }),
+    resolveExplicitCollaborationIntents: (_chatId, _authorId, recipientAgentIds, text) => ({
+      text,
+      intents: recipientAgentIds.map((targetAgentId) => ({ targetAgentId })),
+    }),
+    logWarn: () => {},
+    reconcileRuntimeCommunicationProjections: async () => 0,
+  });
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/agent-coordinate",
+    headers: { authorization: "Bearer token" },
+    payload: {
+      idempotencyKey: "coordinate-once",
+      recipientAgentId: "deleted-recipient",
+      text: "work",
+      lifetime: { kind: "indefinite" },
+      completionMode: "record",
+    },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().replayed, true);
+  assert.equal(replayed, true);
+});
+
+test("a rejected long request update releases its staged artifact reservation", async (t) => {
+  const app = Fastify();
+  t.after(() => app.close());
+  const agent = { id: "agent-a", projectId: "project-a", conversationId: "chat-a", archived: false };
+  const requestRecord = {
+    id: "request-a",
+    projectId: "project-a",
+    conversationId: "chat-a",
+    requesterAgentId: "requester-a",
+    recipientAgentId: "agent-a",
+    state: "awaiting_answer",
+    version: 1,
+    payload: {},
+  };
+  const removed = [];
+  registerAgentRequestCommandRoutes(app, {
+    store: {
+      getAgent: (id) => id === "requester-a" ? { ...agent, id } : agent,
+      getConversation: () => ({ id: "chat-a", projectId: "project-a", archived: false }),
+    },
+    coordinationV3: {
+      steeringInjectionIds: () => [],
+      requestIdsAttachedToRun: () => ["request-a"],
+      getRequest: () => requestRecord,
+      replayRequestUpdate: () => undefined,
+      updateRequest: () => { throw new Error("answer does not match the open question"); },
+    },
+    agentMessageCapabilities: new Map([["token", { agentId: "agent-a", runId: "run-a", v3SchedulerRunId: "run-a" }]]),
+    activeRuns: new Map([["agent-a", { messageCapability: "token" }]]),
+    projectDeletionInProgress: () => false,
+    conversationDeletionInProgress: () => false,
+    agentDeletionInProgress: () => false,
+    conversationDeliveryLeases: new Map(),
+    agentDeliveryLeases: new Map(),
+    capabilityMatchesCleanupRun: () => true,
+    runAuthorization: () => ({ runId: "run-a", agentId: "agent-a", fencingToken: 1 }),
+    projectCommunicationArtifact: () => {},
+    requestArtifactAccess: () => ({}),
+    runtimeArtifactMetadata: (artifact) => artifact,
+    stageCommunicationArtifact: async () => ({ id: "artifact-a", role: "long_text", title: "Result" }),
+    removeRuntimeArtifactReservation: (_projectId, artifactId) => { removed.push(artifactId); },
+    recordCommunication: (event) => event,
+    projectCommunicationToAgentAudit: () => {},
+    publishCoordinationV3Changed: () => {},
+    notifyScheduler: () => {},
+  });
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/agent-request-updates",
+    headers: { authorization: "Bearer token" },
+    payload: {
+      requestId: "request-a",
+      updateId: "update-a",
+      kind: "answer",
+      inReplyToUpdateId: "wrong-question",
+      text: "x".repeat(70_000),
+    },
+  });
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(removed, ["artifact-a"]);
 });
 
 test("asset cleanup and message delivery cannot lease the same Agent", () => {

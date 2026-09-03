@@ -957,8 +957,8 @@ export function registerAgentCommunicationRoutes(
           : { join: { id: `${requestId}:join`, mode: "all" as const } }),
       };
       const retryStatus = coordinationV3.requestRetryStatus(original.id);
-      if (retryStatus.completedRequestId) {
-        if (retryStatus.completedRequestId === requestId) {
+      if (retryStatus.successorRequestId) {
+        if (retryStatus.successorRequestId === requestId) {
           try {
             return {
               ...coordinationV3.coordinate(retryInput),
@@ -968,20 +968,7 @@ export function registerAgentCommunicationRoutes(
             return reply.code(409).send({ error: error instanceof Error ? error.message : "request retry replay failed" });
           }
         }
-        return reply.code(409).send({ error: "this assignment was already recovered by a successful retry" });
-      }
-      if (retryStatus.activeRequestId) {
-        if (retryStatus.activeRequestId === requestId) {
-          try {
-            return {
-              ...coordinationV3.coordinate(retryInput),
-              retryOfRequestId: original.id,
-            };
-          } catch (error) {
-            return reply.code(409).send({ error: error instanceof Error ? error.message : "request retry replay failed" });
-          }
-        }
-        return reply.code(409).send({ error: "a retry of this assignment is already queued or running" });
+        return reply.code(409).send({ error: "this assignment already has a different recovery attempt" });
       }
       const requester = original.requesterAgentId ? store.getAgent(original.requesterAgentId) : undefined;
       const recipient = store.getAgent(original.recipientAgentId);

@@ -579,13 +579,6 @@ export function registerAgentCoordinationRoutes(
         (requests.length === 0 && existingJoinRequestIds.length === 0)) {
       return reply.code(400).send({ error: "idempotencyKey and at least one new request or existing join request ID are required" });
     }
-    if (!capability.conversationId || author.conversationId !== capability.conversationId) {
-      return reply.code(409).send({ error: "coordination requires an active Team Chat scope" });
-    }
-    if (deletingProjectIds.has(author.projectId) || deletingConversationIds.has(capability.conversationId) ||
-        deletingAgentIds.has(author.id)) {
-      return reply.code(409).send({ error: "coordination participants are being deleted" });
-    }
     const normalized: Array<{ requestId: string; recoveryOfRequestId?: string; recipientAgentId: string; text: string; lifetime: RequestLifetime }> = [];
     for (let requestIndex = 0; requestIndex < requests.length; requestIndex += 1) {
       const candidate = requests[requestIndex]!;
@@ -595,11 +588,6 @@ export function registerAgentCoordinationRoutes(
         : canonicalizeProviderText(candidate.text, steeringInjectionIds).trim();
       if (!recipientAgentId || recipientAgentId === author.id || !text || !candidate.lifetime) {
         return reply.code(400).send({ error: "each request needs another recipient, text, and explicit lifetime" });
-      }
-      const recipient = store.getAgent(recipientAgentId);
-      if (!recipient || recipient.archived || recipient.projectId !== author.projectId ||
-          recipient.conversationId !== capability.conversationId) {
-        return reply.code(400).send({ error: "every recipient must be a different active agent in this Team Chat" });
       }
       normalized.push({
         requestId: candidate.requestId?.trim() || `v3-request-${createHash("sha256")
@@ -620,71 +608,91 @@ export function registerAgentCoordinationRoutes(
         existingJoinRequestIds.some((requestId) => typeof requestId !== "string" || !requestId.trim())) {
       return reply.code(400).send({ error: "join requestIds must contain 1 to 100 unique request IDs" });
     }
-    const leasedAgentIds = [...new Set([author.id, ...normalized.map((item) => item.recipientAgentId)])];
-    const releaseDeliveryLease = leaseConversationDelivery(
-      conversationDeliveryLeases,
-      agentDeliveryLeases,
-      capability.conversationId,
-      leasedAgentIds,
-    );
+    const coordinateInput = (continuationRequestIds: string[] = []) => ({
+      projectId: author.projectId,
+      ...(capability.conversationId ? { conversationId: capability.conversationId } : {}),
+      requesterAgentId: author.id,
+      actorScope: `agent:${author.id}:run:${capability.runId}`,
+      idempotencyKey,
+      runAuthorization: runAuthorization(capability),
+      requests: normalized.map((candidate) => ({
+        requestId: candidate.requestId,
+        recipientAgentId: candidate.recipientAgentId,
+        lifetime: candidate.lifetime,
+        communicationEventId: `v3-request-${createHash("sha256")
+          .update(`${author.projectId}\0${candidate.requestId}`)
+          .digest("hex")}`,
+        payload: { text: candidate.text, requesterRunId: capability.runId, ...(completionMode ? { completionMode } : {}) },
+        ...(candidate.recoveryOfRequestId
+          ? { recoveryOfRequestId: candidate.recoveryOfRequestId }
+          : {}),
+        ...(capability.defaultReply ? { replyAuthority: capability.defaultReply } : {}),
+      })),
+      ...(join ? { join: {
+        ...(join.id?.trim() ? { id: join.id.trim() } : {}),
+        mode: join.mode!,
+        ...(join.wakePolicy ? { wakePolicy: join.wakePolicy } : {}),
+        ...(join.quorum !== undefined ? { quorum: join.quorum } : {}),
+        ...(join.deadlineAt?.trim() ? { deadlineAt: join.deadlineAt.trim() } : {}),
+        ...(join.satisfyingOutcomes ? { satisfyingOutcomes: join.satisfyingOutcomes } : {}),
+        ...(existingJoinRequestIds.length ? { requestIds: existingJoinRequestIds.map((requestId) => requestId.trim()) } : {}),
+        ...(continuationRequestIds.length ? { continuationRequestIds } : {}),
+      } } : {}),
+    });
     let result;
     try {
-      const currentConversation = store.getConversation(capability.conversationId);
-      const currentParticipants = leasedAgentIds.map((agentId) => store.getAgent(agentId));
-      if (deletingProjectIds.has(author.projectId) || deletingConversationIds.has(capability.conversationId) ||
-          leasedAgentIds.some((agentId) => deletingAgentIds.has(agentId)) ||
-          !currentConversation || currentConversation.archived || currentConversation.projectId !== author.projectId ||
-          currentParticipants.some((agent) => !agent || agent.archived || agent.projectId !== author.projectId ||
-            agent.conversationId !== capability.conversationId)) {
-        return reply.code(409).send({ error: "coordination participants are no longer available" });
-      }
-      const continuationRequestIds = join
-        ? coordinationV3.requestIdsAttachedToRun(capability.runId, author.id).filter((requestId) => {
-            const attached = coordinationV3.getRequest(requestId);
-            return (
-              attached?.recipientAgentId === author.id
-              && !TERMINAL_REQUEST_STATES.has(attached.state)
-            ) || (
-              attached?.requesterAgentId === author.id
-              && attached.state === "awaiting_answer"
-            );
-          })
-        : [];
-      result = coordinationV3.coordinate({
-        projectId: author.projectId,
-        conversationId: capability.conversationId,
-        requesterAgentId: author.id,
-        actorScope: `agent:${author.id}:run:${capability.runId}`,
-        idempotencyKey,
-        runAuthorization: runAuthorization(capability),
-        requests: normalized.map((candidate) => ({
-          requestId: candidate.requestId,
-          recipientAgentId: candidate.recipientAgentId,
-          lifetime: candidate.lifetime,
-          communicationEventId: `v3-request-${createHash("sha256")
-            .update(`${author.projectId}\0${candidate.requestId}`)
-            .digest("hex")}`,
-          payload: { text: candidate.text, requesterRunId: capability.runId, ...(completionMode ? { completionMode } : {}) },
-          ...(candidate.recoveryOfRequestId
-            ? { recoveryOfRequestId: candidate.recoveryOfRequestId }
-            : {}),
-          ...(capability.defaultReply ? { replyAuthority: capability.defaultReply } : {}),
-        })),
-        ...(join ? { join: {
-          ...(join.id?.trim() ? { id: join.id.trim() } : {}),
-          mode: join.mode!,
-          ...(join.wakePolicy ? { wakePolicy: join.wakePolicy } : {}),
-          ...(join.quorum !== undefined ? { quorum: join.quorum } : {}),
-          ...(join.deadlineAt?.trim() ? { deadlineAt: join.deadlineAt.trim() } : {}),
-          ...(join.satisfyingOutcomes ? { satisfyingOutcomes: join.satisfyingOutcomes } : {}),
-          ...(existingJoinRequestIds.length ? { requestIds: existingJoinRequestIds.map((requestId) => requestId.trim()) } : {}),
-          ...(continuationRequestIds.length ? { continuationRequestIds } : {}),
-        } } : {}),
-      });
+      result = coordinationV3.replayCoordinate(coordinateInput());
     } catch (error) {
-      return reply.code(409).send({ error: error instanceof Error ? error.message : "coordination failed" });
-    } finally {
-      releaseDeliveryLease();
+      return reply.code(409).send({ error: error instanceof Error ? error.message : "coordination replay failed" });
+    }
+    if (!result) {
+      if (!capability.conversationId || author.conversationId !== capability.conversationId) {
+        return reply.code(409).send({ error: "coordination requires an active Team Chat scope" });
+      }
+      if (deletingProjectIds.has(author.projectId) || deletingConversationIds.has(capability.conversationId) ||
+          deletingAgentIds.has(author.id)) {
+        return reply.code(409).send({ error: "coordination participants are being deleted" });
+      }
+      const recipients = normalized.map((item) => store.getAgent(item.recipientAgentId));
+      if (recipients.some((recipient) => !recipient || recipient.archived || recipient.projectId !== author.projectId ||
+          recipient.conversationId !== capability.conversationId)) {
+        return reply.code(400).send({ error: "every recipient must be a different active agent in this Team Chat" });
+      }
+      const leasedAgentIds = [...new Set([author.id, ...normalized.map((item) => item.recipientAgentId)])];
+      const releaseDeliveryLease = leaseConversationDelivery(
+        conversationDeliveryLeases,
+        agentDeliveryLeases,
+        capability.conversationId,
+        leasedAgentIds,
+      );
+      try {
+        const currentConversation = store.getConversation(capability.conversationId);
+        const currentParticipants = leasedAgentIds.map((agentId) => store.getAgent(agentId));
+        if (deletingProjectIds.has(author.projectId) || deletingConversationIds.has(capability.conversationId) ||
+            leasedAgentIds.some((agentId) => deletingAgentIds.has(agentId)) ||
+            !currentConversation || currentConversation.archived || currentConversation.projectId !== author.projectId ||
+            currentParticipants.some((agent) => !agent || agent.archived || agent.projectId !== author.projectId ||
+              agent.conversationId !== capability.conversationId)) {
+          return reply.code(409).send({ error: "coordination participants are no longer available" });
+        }
+        const continuationRequestIds = join
+          ? coordinationV3.requestIdsAttachedToRun(capability.runId, author.id).filter((requestId) => {
+              const attached = coordinationV3.getRequest(requestId);
+              return (
+                attached?.recipientAgentId === author.id
+                && !TERMINAL_REQUEST_STATES.has(attached.state)
+              ) || (
+                attached?.requesterAgentId === author.id
+                && attached.state === "awaiting_answer"
+              );
+            })
+          : [];
+        result = coordinationV3.coordinate(coordinateInput(continuationRequestIds));
+      } catch (error) {
+        return reply.code(409).send({ error: error instanceof Error ? error.message : "coordination failed" });
+      } finally {
+        releaseDeliveryLease();
+      }
     }
 
     try {

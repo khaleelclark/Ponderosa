@@ -469,12 +469,24 @@ export interface CreateCollaborationMessageRequest {
   idempotencyKey?: string;
 }
 
-/** POST collaboration message response; recipients are the immutable resolved audience. */
-export interface CreateCollaborationMessageResponse {
+/** POST collaboration message response after its visible projection is available. */
+export interface CompletedCollaborationMessageResponse {
   message: ConversationMessageDto;
   audience: "mention" | "everyone";
   notifiedAgentIds: string[];
 }
+
+/** Durable intake succeeded; the ordinary message projection is still repairing. */
+export interface RecoveringCollaborationMessageResponse {
+  communicationEventId: string;
+  committed: true;
+  recovering: true;
+  notifiedAgentIds: string[];
+}
+
+export type CreateCollaborationMessageResponse =
+  | CompletedCollaborationMessageResponse
+  | RecoveringCollaborationMessageResponse;
 
 export interface CreateMultiAgentDirectMessageRequest {
   text: string;

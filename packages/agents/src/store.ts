@@ -1132,6 +1132,10 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.agentCatalog.getAgent(id);
   }
 
+  getAgentProjectId(id: string): string | undefined {
+    return this.agentCatalog.getAgentProjectId(id);
+  }
+
   listProjectWorkingCopies(projectId: string): Array<{
     agentId: string;
     deleted: boolean;

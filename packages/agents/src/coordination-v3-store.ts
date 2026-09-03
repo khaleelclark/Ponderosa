@@ -634,6 +634,10 @@ export class CoordinationV3Store {
     return this.coordinateAuthority.coordinate(input, now);
   }
 
+  replayCoordinate(input: CoordinateV3Input): CoordinateV3Result | undefined {
+    return this.coordinateAuthority.replayCoordinate(input);
+  }
+
   enqueueMessageActivation(input: EnqueueMessageActivationInput): string {
     return this.coordinateAuthority.enqueueMessageActivation(input);
   }
@@ -884,6 +888,10 @@ export class CoordinationV3Store {
     return this.requestAuthority.updateRequest(input);
   }
 
+  replayRequestUpdate(input: UpdateRequestV3Input): RequestUpdateV3Result | undefined {
+    return this.requestAuthority.replayRequestUpdate(input);
+  }
+
   getRequest(requestId: string): CoordinationRequestV3View | undefined {
     return this.requestReadModel.getRequest(requestId);
   }
@@ -893,8 +901,8 @@ export class CoordinationV3Store {
   }
 
   requestRetryStatus(requestId: string): {
-    activeRequestId?: string;
-    completedRequestId?: string;
+    successorRequestId?: string;
+    successorState?: import("@ponderosa/core").CoordinationRequestState;
   } {
     return this.requestReadModel.requestRetryStatus(requestId);
   }

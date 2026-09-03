@@ -229,6 +229,8 @@ registerAgentRequestCommandRoutes(app, {
   requestArtifactAccess,
   runtimeArtifactMetadata,
   stageCommunicationArtifact,
+  removeRuntimeArtifactReservation: (projectId, artifactId) =>
+    assets.removeRuntimeArtifactReservation(projectId, artifactId),
   recordCommunication,
   projectCommunicationToAgentAudit,
   publishCoordinationV3Changed,

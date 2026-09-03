@@ -107,23 +107,18 @@ export class CoordinationV3RequestReadModel {
   }
 
   requestRetryStatus(requestId: string): {
-    activeRequestId?: string;
-    completedRequestId?: string;
+    successorRequestId?: string;
+    successorState?: CoordinationRequestState;
   } {
-    const rows = this.sqlite.prepare(`
+    const row = this.sqlite.prepare(`
       SELECT id, state FROM coordination_requests
       WHERE id = (
         SELECT superseded_by_request_id FROM coordination_requests
         WHERE id = ?
       )
       ORDER BY created_at DESC, id DESC
-    `).all(requestId) as Array<{ id: string; state: string }>;
-    const active = rows.find((row) => ["open", "in_progress", "waiting_dependency", "awaiting_answer"].includes(row.state));
-    const completed = rows.find((row) => row.state === "completed");
-    return {
-      ...(active ? { activeRequestId: active.id } : {}),
-      ...(completed ? { completedRequestId: completed.id } : {}),
-    };
+    `).get(requestId) as { id: string; state: CoordinationRequestState } | undefined;
+    return row ? { successorRequestId: row.id, successorState: row.state } : {};
   }
 
 }

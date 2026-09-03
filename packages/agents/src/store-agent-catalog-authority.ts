@@ -324,6 +324,11 @@ export class AgentCatalogAuthority {
     return row ? this.agentRowToDto(row) : undefined;
   }
 
+  getAgentProjectId(id: string): string | undefined {
+    return (this.client.prepare("SELECT project_id FROM agents WHERE id = ?")
+      .get(id) as { project_id: string } | undefined)?.project_id;
+  }
+
   listProjectWorkingCopies(projectId: string): Array<{
     agentId: string;
     deleted: boolean;
