@@ -1318,13 +1318,16 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
     if (
       menuOpen &&
       event.key === "Enter" &&
-      !event.shiftKey &&
-      !event.metaKey &&
-      !event.ctrlKey &&
-      !event.altKey
+      !event.shiftKey
     ) {
       event.preventDefault();
-      if (selectedSuggestion && !selectedSuggestionDisabled) {
+      if (
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        selectedSuggestion &&
+        !selectedSuggestionDisabled
+      ) {
         onApplySuggestion(selectedSuggestion);
       }
       return;
