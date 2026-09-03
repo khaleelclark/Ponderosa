@@ -140,12 +140,6 @@ export function registerAgentCoordinationRoutes(
         Object.keys(lifetime).some((key) => !allowedLifetimeFields.includes(key))) {
       return reply.code(400).send({ error: "lifetime must be indefinite or a deadline with an ISO at timestamp" });
     }
-    if (deletingAgentIds.has(manager.id)) {
-      return reply.code(409).send({ error: "Agent deletion is already in progress" });
-    }
-    if (!capability.conversationId || manager.conversationId !== capability.conversationId) {
-      return reply.code(409).send({ error: "visible managed Agents require an active Team Chat scope" });
-    }
     const idempotencyKey = request.body?.idempotencyKey?.trim();
     const steeringInjectionIds = coordinationV3.steeringInjectionIds(capability.runId);
     const title = request.body?.title === undefined
@@ -158,15 +152,6 @@ export function registerAgentCoordinationRoutes(
     if (!idempotencyKey || idempotencyKey.length > 200 || !title || unicodeCodePointLength(title) < 2 || unicodeCodePointLength(title) > 60 || !text || !engineId || !request.body.lifetime) {
       return reply.code(400).send({ error: "idempotencyKey, title, engine, text, and explicit lifetime are required" });
     }
-    const engine = engines.get(engineId);
-    if (!engine) return reply.code(400).send({ error: "unknown engine" });
-    const selectionError = runtimeSelectionError(
-      engine.adapter,
-      request.body.model,
-      request.body.effort,
-      cachedModelOptions(engine.adapter, manager.projectId),
-    );
-    if (selectionError) return reply.code(400).send({ error: selectionError });
     const payloadHash = createHash("sha256").update(JSON.stringify({
       managerAgentId: manager.id,
       runId: capability.runId,
@@ -231,8 +216,37 @@ export function registerAgentCoordinationRoutes(
         agentIds: creationOperation.agentIds,
       });
     }
+    const abandonMutationFreeOperation = (statusCode: 400 | 409, error: string) => {
+      store.updateAgentCreationOperation(creationOperation.id, {
+        status: "rolled_back",
+        lastError: error,
+      });
+      return reply.code(statusCode).send({ error });
+    };
+    if (deletingAgentIds.has(manager.id)) {
+      return abandonMutationFreeOperation(409, "Agent deletion is already in progress");
+    }
+    if (!capability.conversationId || manager.conversationId !== capability.conversationId) {
+      return abandonMutationFreeOperation(409, "visible managed Agents require an active Team Chat scope");
+    }
+    const engine = engines.get(engineId);
+    if (!engine) return abandonMutationFreeOperation(400, "unknown engine");
+    const selectionError = runtimeSelectionError(
+      engine.adapter,
+      request.body.model,
+      request.body.effort,
+      cachedModelOptions(engine.adapter, manager.projectId),
+    );
+    if (selectionError) return abandonMutationFreeOperation(400, selectionError);
     const legacyReplay = store.findAgentSpawn(manager.id, capability.runId, idempotencyKey);
-    if (legacyReplay) return { agent: legacyReplay, replayed: true };
+    if (legacyReplay) {
+      store.updateAgentCreationOperation(creationOperation.id, {
+        status: "completed",
+        result: { agent: legacyReplay },
+        lastError: null,
+      });
+      return { agent: legacyReplay, replayed: true };
+    }
     let child: AgentDto | undefined;
     let coordinated: { requestIds: string[]; joinId?: string; replayed: boolean } | undefined;
     let openingCommunication: CommunicationEvent | undefined;

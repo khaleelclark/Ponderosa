@@ -23,7 +23,10 @@ import { registerAgentMessageRunRoute } from "../dist/routes/agent-message-run.j
 import { registerAgentRequestCommandRoutes } from "../dist/routes/agent-request-commands.js";
 import { registerAgentCoordinationRoutes } from "../dist/routes/agent-coordination.js";
 import { registerQueuedMessageRoutes } from "../dist/routes/queued-messages.js";
-import { leaseAgentAssetReconciliation } from "../dist/server-lifecycle.js";
+import {
+  leaseAgentAssetReconciliation,
+  recoverCanonicalAgentCreations,
+} from "../dist/server-lifecycle.js";
 import { leaseAgentDelivery } from "../dist/delivery-leases.js";
 import { createCommunicationProjectionReconciler } from "../dist/communication-projection-reconciler.js";
 
@@ -46,6 +49,9 @@ function agentCreationJournal() {
   return {
     sqlite: { transaction: (callback) => () => callback() },
     beginAgentCreationOperation: (input) => {
+      if (operation && operation.payloadHash !== input.payloadHash) {
+        throw new Error("Agent creation idempotency key was reused with different input");
+      }
       operation ??= {
         id: "creation-operation-a",
         ...input,
@@ -160,6 +166,7 @@ test("new Agents remain quarantined while opening assets are staged", async (t) 
 function agentCreationTransactionApp({
   dataDir = "/tmp",
   stage = async () => { throw new Error("unexpected attachment stage"); },
+  prepared = async () => ({ body: Buffer.from("x"), prepared: {} }),
   prepareUserCommunicationText = async ({ text }) => ({ publishedText: text }),
   recordRuntimeCommunication = () => { throw new Error("unexpected opening communication"); },
   reconcileRuntimeCommunicationProjections = async () => 1,
@@ -179,10 +186,11 @@ function agentCreationTransactionApp({
   const removed = [];
   const deletingAgentIds = new Set();
   const app = Fastify();
+  const journal = agentCreationJournal();
   registerAgentCreationRoutes(app, {
     dataDir,
     store: {
-      ...agentCreationJournal(),
+      ...journal,
       getProject: () => project,
       getConversation: () => chat,
       findAgentCreation: () => created ? agent : undefined,
@@ -215,7 +223,7 @@ function agentCreationTransactionApp({
     },
     drafts: {
       normalizedOwner: () => "owner-a",
-      prepared: async () => ({ body: Buffer.from("x"), prepared: {} }),
+      prepared,
     },
     engines: new Map([["codex", {
       adapter: {
@@ -235,8 +243,122 @@ function agentCreationTransactionApp({
     publishMessageDeliveryChanged: () => {},
     notifyScheduler: () => {},
   });
-  return { agent, app, deletingAgentIds, removed, wasDeleted: () => deleted };
+  return {
+    agent,
+    app,
+    chat,
+    deletingAgentIds,
+    removed,
+    creationOperation: () => journal.getAgentCreationOperation(),
+    wasDeleted: () => deleted,
+  };
 }
+
+test("completed Agent creation replays before destination Chat validation", async (t) => {
+  const { app, chat } = agentCreationTransactionApp();
+  t.after(() => app.close());
+  const payload = {
+    title: "Agent A",
+    engine: "codex",
+    conversationId: chat.id,
+    idempotencyKey: "stable-create",
+  };
+  const first = await app.inject({
+    method: "POST",
+    url: "/api/projects/project-a/agents",
+    payload,
+  });
+  assert.equal(first.statusCode, 200);
+  chat.archived = true;
+  const replay = await app.inject({
+    method: "POST",
+    url: "/api/projects/project-a/agents",
+    payload,
+  });
+  assert.equal(replay.statusCode, 200);
+  assert.equal(replay.json().replayed, true);
+  assert.equal(replay.json().id, first.json().id);
+});
+
+test("deterministic Agent creation rejection leaves no preparing operation", async (t) => {
+  const { app, creationOperation } = agentCreationTransactionApp();
+  t.after(() => app.close());
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/projects/project-a/agents",
+    payload: {
+      title: "Agent A",
+      engine: "codex",
+      conversationId: "chat-a",
+      idempotencyKey: "invalid-drafts",
+      draftOwnerId: "owner-a",
+      draftAttachmentIds: ["same", "same"],
+    },
+  });
+  assert.equal(response.statusCode, 400);
+  assert.equal(creationOperation(), undefined);
+});
+
+test("mutable Agent creation validation rolls back its mutation-free journal", async (t) => {
+  const { app, creationOperation } = agentCreationTransactionApp();
+  t.after(() => app.close());
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/projects/project-a/agents",
+    payload: {
+      title: "Agent A",
+      engine: "removed-engine",
+      conversationId: "chat-a",
+      idempotencyKey: "invalid-engine",
+    },
+  });
+  assert.equal(response.statusCode, 400);
+  assert.equal(creationOperation().status, "rolled_back");
+});
+
+test("canonical Agent creation recovery retries live and clears quarantine", async () => {
+  const operation = {
+    id: "operation-a",
+    projectId: "project-a",
+    actorScope: "user:local-operator",
+    kind: "human",
+    idempotencyKey: "create-once",
+    payloadHash: "hash-a",
+    status: "canonical_committed",
+    agentIds: ["agent-a"],
+    artifactIds: [],
+    artifactIdentities: [],
+    communicationEventId: "opening-a",
+  };
+  const deletingAgentIds = new Set(operation.agentIds);
+  let attempts = 0;
+  const store = {
+    listRecoverableAgentCreationOperations: () =>
+      operation.status === "completed" ? [] : [operation],
+    updateAgentCreationOperation: (_id, patch) => Object.assign(operation, patch),
+  };
+  const reconcileRuntimeCommunicationProjections = async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("transient projection failure");
+    return 1;
+  };
+  const first = await recoverCanonicalAgentCreations({
+    store,
+    deletingAgentIds,
+    reconcileRuntimeCommunicationProjections,
+  });
+  assert.equal(first.failures.length, 1);
+  assert.equal(operation.status, "canonical_committed");
+  assert.equal(deletingAgentIds.has("agent-a"), true);
+  const second = await recoverCanonicalAgentCreations({
+    store,
+    deletingAgentIds,
+    reconcileRuntimeCommunicationProjections,
+  });
+  assert.equal(second.recovered, 1);
+  assert.equal(operation.status, "completed");
+  assert.equal(deletingAgentIds.has("agent-a"), false);
+});
 
 test("an idempotent Agent creation retry cannot replay an in-flight opening", async (t) => {
   const stageStarted = deferred();
@@ -264,6 +386,34 @@ test("an idempotent Agent creation retry cannot replay an in-flight opening", as
   assert.equal(retry.statusCode, 409);
   assert.equal(retry.json().operationId, "creation-operation-a");
   finishStage.resolve();
+  assert.equal((await first).statusCode, 409);
+});
+
+test("an exact retry cannot race creation before its Agent member is recorded", async (t) => {
+  const preparationStarted = deferred();
+  const finishPreparation = deferred();
+  const { app } = agentCreationTransactionApp({
+    prepared: async () => {
+      preparationStarted.resolve();
+      await finishPreparation.promise;
+      return { body: Buffer.from("x"), prepared: {} };
+    },
+  });
+  t.after(() => app.close());
+  const payload = {
+    title: "Agent A",
+    engine: "codex",
+    conversationId: "chat-a",
+    draftAttachmentIds: ["draft-a"],
+    draftOwnerId: "owner-a",
+    idempotencyKey: "create-once",
+  };
+  const first = app.inject({ method: "POST", url: "/api/projects/project-a/agents", payload });
+  await preparationStarted.promise;
+  const retry = await app.inject({ method: "POST", url: "/api/projects/project-a/agents", payload });
+  assert.equal(retry.statusCode, 409);
+  assert.equal(retry.json().operationId, "creation-operation-a");
+  finishPreparation.resolve();
   assert.equal((await first).statusCode, 409);
 });
 
@@ -695,6 +845,68 @@ test("coordinate replay precedes mutable recipient checks", async (t) => {
   assert.equal(response.statusCode, 200);
   assert.equal(response.json().replayed, true);
   assert.equal(replayed, true);
+});
+
+test("managed Agent spawn replay precedes current engine validation", async (t) => {
+  const app = Fastify();
+  t.after(() => app.close());
+  const manager = {
+    id: "manager-a",
+    projectId: "project-a",
+    conversationId: "chat-a",
+    archived: false,
+  };
+  registerAgentCoordinationRoutes(app, {
+    store: {
+      getAgent: () => manager,
+      beginAgentCreationOperation: () => ({ operation: {
+        id: "spawn-operation-a",
+        projectId: manager.projectId,
+        actorScope: "agent:manager-a:run:run-a",
+        kind: "managed",
+        idempotencyKey: "stable-spawn",
+        payloadHash: "ignored-by-stub",
+        status: "completed",
+        agentIds: ["child-a"],
+        artifactIds: [],
+        artifactIdentities: [],
+        result: { agent: { id: "child-a" }, requestIds: ["request-a"] },
+      } }),
+    },
+    coordinationV3: { steeringInjectionIds: () => [] },
+    engines: new Map(),
+    deletingAgentIds: new Set([manager.id]),
+    deletingProjectIds: new Set(),
+    deletingConversationIds: new Set(),
+    conversationDeliveryLeases: new Map(),
+    agentDeliveryLeases: new Map(),
+    agentMessageCapabilities: new Map([["token", {
+      agentId: manager.id,
+      runId: "run-a",
+      conversationId: manager.conversationId,
+      mentionDepth: 0,
+      mentionTrail: [],
+    }]]),
+    activeRuns: new Map([[manager.id, { messageCapability: "token" }]]),
+    cachedModelOptions: () => [],
+    capabilityOwnsAuthoritativeRun: () => true,
+    reconcileRuntimeCommunicationProjections: async () => 0,
+  });
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/agent-spawn",
+    headers: { authorization: "Bearer token" },
+    payload: {
+      idempotencyKey: "stable-spawn",
+      title: "Child Agent",
+      engine: "removed-engine",
+      text: "Do the work",
+      lifetime: { kind: "indefinite" },
+    },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().replayed, true);
+  assert.equal(response.json().agent.id, "child-a");
 });
 
 test("a rejected long request update releases its staged artifact reservation", async (t) => {

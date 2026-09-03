@@ -43,6 +43,44 @@ type RuntimeAuthority = ReturnType<typeof createRuntimeAuthority>;
 type ReadModels = ReturnType<typeof createServerReadModels>;
 type BrowserAuthority = ReturnType<typeof createBrowserAuthority>;
 
+export async function recoverCanonicalAgentCreations(input: {
+  store: AgentStore;
+  deletingAgentIds: Set<string>;
+  reconcileRuntimeCommunicationProjections(filter: {
+    projectId: string;
+    communicationEventId: string;
+    allowQuarantinedAgentIds: ReadonlySet<string>;
+  }): Promise<number>;
+  limit?: number;
+}): Promise<{ recovered: number; failures: Array<{ operationId: string; error: unknown }> }> {
+  const failures: Array<{ operationId: string; error: unknown }> = [];
+  let recovered = 0;
+  const operations = input.store.listRecoverableAgentCreationOperations()
+    .filter((operation) => operation.status === "canonical_committed" && operation.communicationEventId)
+    .slice(0, input.limit ?? 32);
+  for (const operation of operations) {
+    try {
+      await input.reconcileRuntimeCommunicationProjections({
+        projectId: operation.projectId,
+        communicationEventId: operation.communicationEventId!,
+        allowQuarantinedAgentIds: new Set(operation.agentIds),
+      });
+      input.store.updateAgentCreationOperation(operation.id, {
+        status: "completed",
+        lastError: null,
+      });
+      for (const agentId of operation.agentIds) input.deletingAgentIds.delete(agentId);
+      recovered += 1;
+    } catch (error) {
+      input.store.updateAgentCreationOperation(operation.id, {
+        lastError: error instanceof Error ? error.message : "Agent creation projection recovery failed",
+      });
+      failures.push({ operationId: operation.id, error });
+    }
+  }
+  return { recovered, failures };
+}
+
 type ServerLifecycleContext =
   Pick<ArtifactAuthority, "projectCommunicationArtifact" | "requestArtifactAccess"> &
   Pick<EngineControlPlane,
@@ -183,8 +221,10 @@ export function registerServerLifecycle(
   } = context;
   let assetSweep: NodeJS.Timeout | undefined;
   let agentDeletionCleanupSweep: NodeJS.Timeout | undefined;
+  let agentCreationRecoverySweep: NodeJS.Timeout | undefined;
   let agentDeletionCleanupDraining = false;
   let agentDeletionCleanupOperation: Promise<void> | undefined;
+  let agentCreationRecoveryOperation: Promise<void> | undefined;
   let assetReconciliationOperation: Promise<void> | undefined;
   let linkPreviewSweep: NodeJS.Timeout | undefined;
   let startupProjectionRecoveryImmediate: NodeJS.Immediate | undefined;
@@ -252,6 +292,31 @@ export function registerServerLifecycle(
     agentDeletionCleanupOperation = operation;
     return operation;
   };
+  const runAgentCreationRecovery = (limit = 32): Promise<void> => {
+    if (agentCreationRecoveryOperation) return agentCreationRecoveryOperation;
+    const operation = recoverCanonicalAgentCreations({
+      store,
+      deletingAgentIds,
+      reconcileRuntimeCommunicationProjections,
+      limit,
+    }).then(({ recovered, failures }) => {
+      if (recovered > 0 && !isClosed()) {
+        app.log.info({ recovered }, "Agent creation projection recovery completed");
+      }
+      for (const failure of failures) {
+        if (!isClosed()) {
+          app.log.error(
+            { err: failure.error, operationId: failure.operationId },
+            "Agent creation projection recovery remains pending",
+          );
+        }
+      }
+    }).finally(() => {
+      if (agentCreationRecoveryOperation === operation) agentCreationRecoveryOperation = undefined;
+    });
+    agentCreationRecoveryOperation = operation;
+    return operation;
+  };
   app.addHook("onReady", async () => {
     const lifecycleStartedAt = performance.now();
     let lifecyclePhaseStartedAt = lifecycleStartedAt;
@@ -265,24 +330,9 @@ export function registerServerLifecycle(
     // any crash gap in the workspace log before the listener becomes ready.
     reconcileCommittedProjectDeletions();
     completeLifecyclePhase("project_deletion_workspace_recovery");
+    await runAgentCreationRecovery(Number.POSITIVE_INFINITY);
     for (const operation of store.listRecoverableAgentCreationOperations()) {
-      if (operation.status === "canonical_committed" && operation.communicationEventId) {
-        try {
-          await reconcileRuntimeCommunicationProjections({
-            projectId: operation.projectId,
-            communicationEventId: operation.communicationEventId,
-            allowQuarantinedAgentIds: new Set(operation.agentIds),
-          });
-          store.updateAgentCreationOperation(operation.id, { status: "completed", lastError: null });
-          for (const agentId of operation.agentIds) deletingAgentIds.delete(agentId);
-        } catch (error) {
-          store.updateAgentCreationOperation(operation.id, {
-            lastError: error instanceof Error ? error.message : "Agent creation projection recovery failed",
-          });
-          app.log.error({ err: error, operationId: operation.id }, "Agent creation projection recovery remains pending");
-        }
-        continue;
-      }
+      if (operation.status === "canonical_committed") continue;
       store.updateAgentCreationOperation(operation.id, { status: "rolling_back" });
       let rolledBack = true;
       for (const agentId of [...operation.agentIds].reverse()) {
@@ -638,6 +688,13 @@ export function registerServerLifecycle(
       });
     }, 30_000);
     agentDeletionCleanupSweep.unref();
+    agentCreationRecoverySweep = setInterval(() => {
+      if (isClosed()) return;
+      void runAgentCreationRecovery().catch((error) => {
+        if (!isClosed()) app.log.error({ err: error }, "Agent creation recovery sweep failed");
+      });
+    }, 5_000);
+    agentCreationRecoverySweep.unref();
     webPushDelivery?.start();
     const reconcileAssets = async () => {
       let processedAgents = 0;
@@ -795,6 +852,7 @@ export function registerServerLifecycle(
     if (startupProjectionRecoveryImmediate) clearImmediate(startupProjectionRecoveryImmediate);
     if (assetSweep) clearInterval(assetSweep);
     if (agentDeletionCleanupSweep) clearInterval(agentDeletionCleanupSweep);
+    if (agentCreationRecoverySweep) clearInterval(agentCreationRecoverySweep);
     stopCommunicationReconciliation();
     shutdownRunBrowserClosures = [];
     for (const [agentId, run] of activeRuns) {
@@ -829,6 +887,10 @@ export function registerServerLifecycle(
       boundedBackgroundShutdown(
         "Agent deletion maintenance",
         () => agentDeletionCleanupOperation,
+      ),
+      boundedBackgroundShutdown(
+        "Agent creation recovery",
+        () => agentCreationRecoveryOperation,
       ),
       boundedBackgroundShutdown(
         "Agent asset maintenance",

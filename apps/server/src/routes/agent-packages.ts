@@ -97,6 +97,7 @@ export function registerAgentPackageRoutes(
   const operationByRequest = new Map<string, string>();
   const operationCache = new Map<string, AgentImportOperationDto>();
   const projectImportTails = new Map<string, Promise<void>>();
+  const activeCopyOperations = new Set<string>();
   const withProjectImportLock = async <T>(projectId: string, work: () => Promise<T>): Promise<T> => {
     const previous = projectImportTails.get(projectId) ?? Promise.resolve();
     let release!: () => void;
@@ -463,22 +464,6 @@ export function registerAgentPackageRoutes(
           error: error instanceof Error ? error.message : "invalid Agent import request",
         });
       }
-      const project = store.getProject(projectId);
-      const conversation = body?.conversationId
-        ? store.getConversation(body.conversationId)
-        : undefined;
-      if (!project) return reply.code(404).send({ error: "project not found" });
-      if (deletingProjectIds.has(project.id)) {
-        return reply.code(409).send({
-          error: "Project deletion is already in progress",
-        });
-      }
-      if (!conversation || conversation.projectId !== project.id ||
-          conversation.archived || deletingConversationIds.has(conversation.id)) {
-        return reply.code(400).send({
-          error: "an active destination Project Chat is required",
-        });
-      }
       if (!creationOperationId) {
         if (!creationRequest) throw new Error("Agent import idempotency identity is required");
         try {
@@ -506,6 +491,12 @@ export function registerAgentPackageRoutes(
           operationId: durableOperation.id,
         });
       }
+      if (durableOperation.agentIds.length > 0) {
+        return reply.code(409).send({
+          error: "A prior import attempt is still being recovered; retry after recovery completes",
+          operationId: durableOperation.id,
+        });
+      }
       const abandonMutationFreeOperation = (reason: string) => {
         const current = store.getAgentCreationOperation(durableOperation.id);
         if (!current || current.agentIds.some((agentId) => store.getAgent(agentId))) return;
@@ -515,6 +506,27 @@ export function registerAgentPackageRoutes(
         });
         for (const agentId of current.agentIds) deletingAgentIds.delete(agentId);
       };
+      const project = store.getProject(projectId);
+      const conversation = body?.conversationId
+        ? store.getConversation(body.conversationId)
+        : undefined;
+      if (!project) {
+        abandonMutationFreeOperation("project not found");
+        return reply.code(404).send({ error: "project not found" });
+      }
+      if (deletingProjectIds.has(project.id)) {
+        abandonMutationFreeOperation("Project deletion is already in progress");
+        return reply.code(409).send({
+          error: "Project deletion is already in progress",
+        });
+      }
+      if (!conversation || conversation.projectId !== project.id ||
+          conversation.archived || deletingConversationIds.has(conversation.id)) {
+        abandonMutationFreeOperation("an active destination Project Chat is required");
+        return reply.code(400).send({
+          error: "an active destination Project Chat is required",
+        });
+      }
       agentCreationConversationLeases.set(
         conversation.id,
         (agentCreationConversationLeases.get(conversation.id) ?? 0) + 1,
@@ -1349,12 +1361,6 @@ export function registerAgentPackageRoutes(
     { bodyLimit: 96 * 1024 * 1024 },
     async (request, reply) => withProjectImportLock(request.params.id, async () => {
       await operationHydration;
-      if (!store.getProject(request.params.id)) {
-        return reply.code(404).send({ error: "project not found" });
-      }
-      if (deletingProjectIds.has(request.params.id)) {
-        return reply.code(409).send({ error: "Project deletion is already in progress" });
-      }
       const requestId = validIdempotencyKey(request.headers["idempotency-key"]);
       if (!requestId) {
         return reply.code(400).send({ error: "a valid import idempotency key is required" });
@@ -1373,6 +1379,12 @@ export function registerAgentPackageRoutes(
           return reply.code(existing.status === "pending" ? 202 : 200).send(existing);
         }
         operationByRequest.delete(requestKey);
+      }
+      if (!store.getProject(request.params.id)) {
+        return reply.code(404).send({ error: "project not found" });
+      }
+      if (deletingProjectIds.has(request.params.id)) {
+        return reply.code(409).send({ error: "Project deletion is already in progress" });
       }
       const id = randomUUID();
       const now = new Date().toISOString();
@@ -1522,13 +1534,80 @@ export function registerAgentPackageRoutes(
           error: "copy request fields are invalid",
         });
       }
+      const payloadHash = createHash("sha256")
+        .update(JSON.stringify(request.body))
+        .digest("hex");
+      let creationOperation;
+      try {
+        creationOperation = store.beginAgentCreationOperation({
+          projectId: request.params.id,
+          actorScope: "user:local-operator",
+          kind: "import",
+          idempotencyKey,
+          payloadHash,
+        }).operation;
+      } catch (error) {
+        return reply.code(409).send({
+          error: error instanceof Error ? error.message : "Agent copy replay conflict",
+        });
+      }
+      if (creationOperation.status === "completed" && creationOperation.result) {
+        return reply.code(200).send(creationOperation.result);
+      }
+      if (creationOperation.status === "canonical_committed" ||
+          creationOperation.status === "rolling_back" ||
+          creationOperation.agentIds.length > 0) {
+        return reply.code(409).send({
+          error: "A prior copy attempt is still being recovered; retry after recovery completes",
+          operationId: creationOperation.id,
+        });
+      }
+      if (activeCopyOperations.has(creationOperation.id)) {
+        return reply.code(409).send({
+          error: "Agent copy is still in progress; retry with the same idempotency key",
+          operationId: creationOperation.id,
+        });
+      }
+      activeCopyOperations.add(creationOperation.id);
+      const abandonMutationFreeCopy = (reason: string): boolean => {
+        const current = store.getAgentCreationOperation(creationOperation.id);
+        if (!current || current.agentIds.length > 0) return false;
+        store.updateAgentCreationOperation(current.id, {
+          status: "rolled_back",
+          lastError: reason,
+        });
+        return true;
+      };
       const source = store.getAgent(sourceAgentId);
-      if (!source) return reply.code(404).send({ error: "agent not found" });
-      const portable = await buildPortablePackage(
-        source.id,
-        request.body.mode ?? "full",
-        request.body.organization === true,
-      );
+      if (!source) {
+        activeCopyOperations.delete(creationOperation.id);
+        if (!abandonMutationFreeCopy("agent not found")) {
+          return reply.code(409).send({
+            error: "A prior copy attempt is still being recovered; retry after recovery completes",
+            operationId: creationOperation.id,
+          });
+        }
+        return reply.code(404).send({ error: "agent not found" });
+      }
+      let portable: AgentPortablePackageDto;
+      try {
+        portable = await buildPortablePackage(
+          source.id,
+          request.body.mode ?? "full",
+          request.body.organization === true,
+        );
+      } catch (error) {
+        activeCopyOperations.delete(creationOperation.id);
+        if (!abandonMutationFreeCopy(
+          error instanceof Error ? error.message : "Agent copy could not be prepared",
+        )) {
+          return reply.code(409).send({
+            error: "A prior copy attempt is still being recovered; retry after recovery completes",
+            operationId: creationOperation.id,
+          });
+        }
+        throw error;
+      }
       const engineMapping = Object.fromEntries(
         [...new Set(portable.agents.map((node) => node.engine))]
           .map((engineId) => [engineId, engineId]),
@@ -1545,12 +1624,8 @@ export function registerAgentPackageRoutes(
         },
         reply,
         undefined,
-        undefined,
-        {
-          idempotencyKey,
-          payloadHash: createHash("sha256").update(JSON.stringify(request.body)).digest("hex"),
-        },
-      );
+        creationOperation.id,
+      ).finally(() => activeCopyOperations.delete(creationOperation.id));
     },
   );
 }

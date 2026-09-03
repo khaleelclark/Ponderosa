@@ -80,6 +80,7 @@ export function registerAgentCreationRoutes(
     notifyScheduler,
     reconcileRuntimeCommunicationProjections,
   } = context;
+  const activeCreationOperations = new Set<string>();
 
   app.post<{
     Params: { id: string };
@@ -129,14 +130,8 @@ export function registerAgentCreationRoutes(
             candidate.draftAttachmentIds.some((id) => typeof id !== "string"))) {
         return reply.code(400).send({ error: "draftAttachmentIds must be an array of strings" });
       }
-      const project = store.getProject(request.params.id);
-      if (!project) return reply.code(404).send({ error: "project not found" });
-      if (deletingProjectIds.has(request.params.id)) return reply.code(409).send({ error: "Project deletion is already in progress" });
       if (!request.body?.title || !request.body?.engine || !request.body?.conversationId) {
         return reply.code(400).send({ error: "title, engine, and Chat are required" });
-      }
-      if (deletingConversationIds.has(request.body.conversationId)) {
-        return reply.code(409).send({ error: "Chat deletion is already in progress" });
       }
       const creationIdempotencyKey = request.body.idempotencyKey?.trim();
       if (creationIdempotencyKey && creationIdempotencyKey.length > 200) {
@@ -145,53 +140,16 @@ export function registerAgentCreationRoutes(
       if (creationIdempotencyKey) {
         request.body.idempotencyKey = creationIdempotencyKey;
       }
-      if (request.body.presetId) {
-        const preset = store.getAgentPreset(request.body.presetId);
-        if (!preset || preset.projectId !== request.params.id || !preset.enabled) return reply.code(400).send({ error: "preset is unavailable for this project" });
-        request.body.engine = preset.engine; request.body.model = preset.model; request.body.effort = preset.effort;
+      const draftAttachmentIds = request.body.draftAttachmentIds ?? [];
+      if (draftAttachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE ||
+          new Set(draftAttachmentIds).size !== draftAttachmentIds.length) {
+        return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique draft attachments are allowed` });
       }
-      if (!engines.has(request.body.engine)) return reply.code(400).send({ error: "unknown engine" });
-      const requestedAdapter = engines.get(request.body.engine)!.adapter;
-      const projectModelOptions = cachedModelOptions(requestedAdapter, project.id);
-      const selectionError = runtimeSelectionError(
-        requestedAdapter,
-        request.body.model,
-        request.body.effort,
-        projectModelOptions,
-      );
-      if (selectionError) return reply.code(400).send({ error: selectionError });
-      if (request.body.managerAgentId) {
-        const manager = store.getAgent(request.body.managerAgentId);
-        if (!manager || manager.projectId !== request.params.id || manager.archived) {
-          return reply.code(400).send({ error: "manager must be an active agent in this project" });
-        }
-        if (deletingAgentIds.has(manager.id)) {
-          return reply.code(409).send({ error: "manager deletion is already in progress" });
-        }
-        if (manager.conversationId !== request.body.conversationId) {
-          return reply.code(400).send({ error: "manager must belong to the selected Chat" });
-        }
+      const initialMessage = request.body.initialMessage?.trim() ?? "";
+      const firstTurnDraftOwnerId = drafts.normalizedOwner(request.body.draftOwnerId);
+      if (draftAttachmentIds.length && !firstTurnDraftOwnerId) {
+        return reply.code(400).send({ error: "first-turn draft owner is required" });
       }
-      const conversation = store.getConversation(request.body.conversationId);
-      if (!conversation || conversation.projectId !== request.params.id || conversation.archived) {
-        return reply.code(400).send({ error: "Chat does not belong to Project or is archived" });
-      }
-      const conversationDefaults = conversation;
-      const resolvedRuntime = concreteRuntimeSelection(requestedAdapter, [
-        { model: request.body.model, effort: request.body.effort },
-        conversationDefaults?.defaultEngine === request.body.engine ? { model: conversationDefaults.defaultModel, effort: conversationDefaults.defaultEffort } : undefined,
-        project.defaultEngine === request.body.engine ? { model: project.defaultModel, effort: project.defaultEffort } : undefined,
-        workspace.getPreferences().engineDefaults?.[request.body.engine],
-      ], projectModelOptions);
-      request.body.model = resolvedRuntime.model;
-      request.body.effort = resolvedRuntime.effort;
-      const speedError = runtimeSpeedSelectionError(
-        requestedAdapter,
-        request.body.model,
-        request.body.speed,
-        projectModelOptions,
-      );
-      if (speedError) return reply.code(400).send({ error: speedError });
       const operationIdempotencyKey = creationIdempotencyKey ?? randomUUID();
       const operationPayloadHash = createHash("sha256").update(JSON.stringify({
         projectId: request.params.id,
@@ -262,22 +220,119 @@ export function registerAgentCreationRoutes(
           agentIds: creationOperation.agentIds,
         });
       }
+      const abandonMutationFreeOperation = (statusCode: 400 | 404 | 409, error: string) => {
+        const current = store.getAgentCreationOperation(creationOperation.id);
+        if (!current || current.agentIds.length > 0) {
+          return reply.code(409).send({
+            error: "Agent creation is still being recovered; retry with the same idempotency key",
+            operationId: creationOperation.id,
+            agentIds: current?.agentIds ?? [],
+          });
+        }
+        store.updateAgentCreationOperation(current.id, {
+          status: "rolled_back",
+          lastError: error,
+        });
+        return reply.code(statusCode).send({ error });
+      };
+      type PlannedHumanCreation = {
+        phase: "planned_human_creation";
+        input: typeof request.body;
+      };
+      const savedPlan = creationOperation.status === "preparing" && creationOperation.result &&
+        typeof creationOperation.result === "object" &&
+        (creationOperation.result as { phase?: unknown }).phase === "planned_human_creation"
+        ? creationOperation.result as PlannedHumanCreation
+        : undefined;
+      const project = store.getProject(request.params.id);
+      if (!project) return abandonMutationFreeOperation(404, "project not found");
+      if (deletingProjectIds.has(request.params.id)) {
+        return abandonMutationFreeOperation(409, "Project deletion is already in progress");
+      }
+      if (savedPlan) {
+        request.body = { ...savedPlan.input };
+      } else {
+        if (request.body.presetId) {
+          const preset = store.getAgentPreset(request.body.presetId);
+          if (!preset || preset.projectId !== request.params.id || !preset.enabled) {
+            return abandonMutationFreeOperation(400, "preset is unavailable for this project");
+          }
+          request.body.engine = preset.engine;
+          request.body.model = preset.model;
+          request.body.effort = preset.effort;
+        }
+        if (!engines.has(request.body.engine)) {
+          return abandonMutationFreeOperation(400, "unknown engine");
+        }
+        const requestedAdapter = engines.get(request.body.engine)!.adapter;
+        const projectModelOptions = cachedModelOptions(requestedAdapter, project.id);
+        const selectionError = runtimeSelectionError(
+          requestedAdapter,
+          request.body.model,
+          request.body.effort,
+          projectModelOptions,
+        );
+        if (selectionError) return abandonMutationFreeOperation(400, selectionError);
+        const conversationDefaults = store.getConversation(request.body.conversationId);
+        const resolvedRuntime = concreteRuntimeSelection(requestedAdapter, [
+          { model: request.body.model, effort: request.body.effort },
+          conversationDefaults?.defaultEngine === request.body.engine ? { model: conversationDefaults.defaultModel, effort: conversationDefaults.defaultEffort } : undefined,
+          project.defaultEngine === request.body.engine ? { model: project.defaultModel, effort: project.defaultEffort } : undefined,
+          workspace.getPreferences().engineDefaults?.[request.body.engine],
+        ], projectModelOptions);
+        request.body.model = resolvedRuntime.model;
+        request.body.effort = resolvedRuntime.effort;
+        const speedError = runtimeSpeedSelectionError(
+          requestedAdapter,
+          request.body.model,
+          request.body.speed,
+          projectModelOptions,
+        );
+        if (speedError) return abandonMutationFreeOperation(400, speedError);
+        store.updateAgentCreationOperation(creationOperation.id, {
+          result: { phase: "planned_human_creation", input: request.body } satisfies PlannedHumanCreation,
+        });
+      }
+      if (deletingConversationIds.has(request.body.conversationId)) {
+        return abandonMutationFreeOperation(409, "Chat deletion is already in progress");
+      }
+      if (!engines.has(request.body.engine)) {
+        return abandonMutationFreeOperation(400, "unknown engine");
+      }
+      if (request.body.managerAgentId) {
+        const manager = store.getAgent(request.body.managerAgentId);
+        if (!manager || manager.projectId !== request.params.id || manager.archived) {
+          return abandonMutationFreeOperation(400, "manager must be an active agent in this project");
+        }
+        if (deletingAgentIds.has(manager.id)) {
+          return abandonMutationFreeOperation(409, "manager deletion is already in progress");
+        }
+        if (manager.conversationId !== request.body.conversationId) {
+          return abandonMutationFreeOperation(400, "manager must belong to the selected Chat");
+        }
+      }
+      const conversation = store.getConversation(request.body.conversationId);
+      if (!conversation || conversation.projectId !== request.params.id || conversation.archived) {
+        return abandonMutationFreeOperation(400, "Chat does not belong to Project or is archived");
+      }
       if (creationIdempotencyKey) {
         const legacyExisting = store.findAgentCreation(request.params.id, creationIdempotencyKey);
-        if (legacyExisting) return { ...legacyExisting, replayed: true };
+        if (legacyExisting) {
+          store.updateAgentCreationOperation(creationOperation.id, {
+            status: "completed",
+            result: legacyExisting,
+            lastError: null,
+          });
+          return { ...legacyExisting, replayed: true };
+        }
       }
-      const initialMessage = request.body.initialMessage?.trim() ?? "";
-      const draftAttachmentIds = request.body.draftAttachmentIds ?? [];
-      const firstTurnDraftOwnerId = drafts.normalizedOwner(request.body.draftOwnerId);
-      if (!Array.isArray(draftAttachmentIds) || draftAttachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(draftAttachmentIds).size !== draftAttachmentIds.length) {
-        return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique draft attachments are allowed` });
+      if (activeCreationOperations.has(creationOperation.id)) {
+        return reply.code(409).send({
+          error: "Agent creation is still in progress; retry with the same idempotency key",
+          operationId: creationOperation.id,
+        });
       }
-      if (draftAttachmentIds.length && !request.body.conversationId) {
-        return reply.code(400).send({ error: "first-turn draft attachments require a Project chat" });
-      }
-      if (draftAttachmentIds.length && !firstTurnDraftOwnerId) {
-        return reply.code(400).send({ error: "first-turn draft owner is required" });
-      }
+      activeCreationOperations.add(creationOperation.id);
       const leaseConversationId = request.body.conversationId;
       agentCreationConversationLeases.set(
         leaseConversationId,
@@ -294,33 +349,31 @@ export function registerAgentCreationRoutes(
           ))
         : [];
       if (draftAttachments.some((attachment) => !attachment)) {
-        return reply.code(400).send({ error: "draft attachment is missing or belongs to another conversation" });
+        return abandonMutationFreeOperation(400, "draft attachment is missing or belongs to another conversation");
       }
       const hasInitialTurn = Boolean(initialMessage || draftAttachments.length);
       if (hasInitialTurn && request.body.managerAgentId && !request.body.conversationId) {
-        return reply.code(400).send({ error: "a managed agent opening message requires its manager to belong to a Project chat" });
+        return abandonMutationFreeOperation(400, "a managed agent opening message requires its manager to belong to a Project chat");
       }
       let agent;
-      if (deletingProjectIds.has(request.params.id)) return reply.code(409).send({ error: "Project deletion is already in progress" });
+      if (deletingProjectIds.has(request.params.id)) {
+        return abandonMutationFreeOperation(409, "Project deletion is already in progress");
+      }
       const creationConversation = store.getConversation(request.body.conversationId);
       if (deletingConversationIds.has(request.body.conversationId) ||
           !creationConversation || creationConversation.projectId !== request.params.id ||
           creationConversation.archived) {
-        return reply.code(409).send({ error: "Chat is unavailable for Agent creation" });
+        return abandonMutationFreeOperation(409, "Chat is unavailable for Agent creation");
       }
       if (request.body.managerAgentId) {
         const manager = store.getAgent(request.body.managerAgentId);
         if (!manager || manager.projectId !== request.params.id ||
             manager.conversationId !== request.body.conversationId ||
             manager.archived) {
-          return reply.code(409).send({
-            error: "Manager is unavailable for Agent creation",
-          });
+          return abandonMutationFreeOperation(409, "Manager is unavailable for Agent creation");
         }
         if (deletingAgentIds.has(manager.id)) {
-          return reply.code(409).send({
-            error: "Manager deletion is already in progress",
-          });
+          return abandonMutationFreeOperation(409, "Manager deletion is already in progress");
         }
       }
       const agentId = randomUUID();
@@ -604,6 +657,7 @@ export function registerAgentCreationRoutes(
         } else {
           agentCreationConversationLeases.delete(leaseConversationId);
         }
+        activeCreationOperations.delete(creationOperation.id);
       }
     },
   );
