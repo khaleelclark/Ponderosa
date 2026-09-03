@@ -75,7 +75,9 @@ type ApplicationRoutesContext =
   Omit<Parameters<typeof registerConversationDeliveryRoutes>[1],
     "projectDeletionInProgress" | "agentDeletionInProgress" | "attachmentDeletionInProgress" |
     "assetReconciliationInProgress" | "assetMetadata"> &
-  Parameters<typeof registerQueuedMessageRoutes>[1] &
+  Omit<Parameters<typeof registerQueuedMessageRoutes>[1],
+    "projectDeletionInProgress" | "conversationDeletionInProgress" |
+    "agentDeletionInProgress" | "removeRuntimeArtifactReservation"> &
   Omit<Parameters<typeof registerCollaborationRoutes>[1],
     "projectDeletionInProgress" | "agentDeletionInProgress" | "attachmentDeletionInProgress" |
     "assetReconciliationInProgress" | "assetMetadata"> &
@@ -429,8 +431,15 @@ registerQueuedMessageRoutes(app, {
   store,
   coordinationV3,
   workspace,
+  projectDeletionInProgress: projectId => deletingProjectIds.has(projectId),
+  conversationDeletionInProgress: conversationId => deletingConversationIds.has(conversationId),
+  agentDeletionInProgress: agentId => deletingAgentIds.has(agentId),
+  conversationDeliveryLeases,
+  agentDeliveryLeases,
   prepareUserCommunicationText,
   runtimeArtifactMetadata,
+  removeRuntimeArtifactReservation: (projectId, artifactId) =>
+    assets.removeRuntimeArtifactReservation(projectId, artifactId),
   appendWorkspace,
   publishWorkspaceSince,
   publishCoordinationV3Changed,

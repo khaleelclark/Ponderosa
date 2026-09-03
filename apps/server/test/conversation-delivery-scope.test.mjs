@@ -20,6 +20,7 @@ import { registerCollaborationRoutes } from "../dist/routes/collaboration.js";
 import { registerAttachmentRoutes } from "../dist/routes/attachments.js";
 import { registerAgentCreationRoutes } from "../dist/routes/agent-creation.js";
 import { registerAgentMessageRunRoute } from "../dist/routes/agent-message-run.js";
+import { registerQueuedMessageRoutes } from "../dist/routes/queued-messages.js";
 import { leaseAgentAssetReconciliation } from "../dist/server-lifecycle.js";
 import { leaseAgentDelivery } from "../dist/delivery-leases.js";
 import { createCommunicationProjectionReconciler } from "../dist/communication-projection-reconciler.js";
@@ -360,7 +361,12 @@ test("a committed Agent stays quarantined while projection recovery is pending",
   assert.equal(deletingAgentIds.has(agent.id), true);
 });
 
-function agentMessageValidationApp({ assetMetadata = async () => undefined } = {}) {
+function agentMessageValidationApp({
+  assetMetadata = async () => undefined,
+  agentOverrides = {},
+  coordinationV3 = {},
+  reconcileRuntimeCommunicationProjections = async () => 0,
+} = {}) {
   const chat = { id: "chat-a", projectId: "project-a", archived: false };
   const project = { id: chat.projectId, defaultEngine: "codex" };
   const agent = {
@@ -369,6 +375,7 @@ function agentMessageValidationApp({ assetMetadata = async () => undefined } = {
     conversationId: chat.id,
     activeEngine: "codex",
     archived: false,
+    ...agentOverrides,
   };
   const staged = [];
   const removed = [];
@@ -381,7 +388,7 @@ function agentMessageValidationApp({ assetMetadata = async () => undefined } = {
       getRuns: () => [],
     },
     workspace: { getPreferences: () => ({}) },
-    coordinationV3: {},
+    coordinationV3,
     assets: {
       stage: async () => {
         const asset = { id: "asset-a", name: "a.txt", mediaType: "text/plain", size: 1, state: "staged" };
@@ -417,6 +424,7 @@ function agentMessageValidationApp({ assetMetadata = async () => undefined } = {
     v3DispatchKey: "dispatch-key",
     reusableRuntime: () => undefined,
     assetMetadata,
+    reconcileRuntimeCommunicationProjections,
     cachedModelOptions: () => [],
   });
   return { app, removed, staged };
@@ -456,6 +464,81 @@ test("a promoted draft is removed when later attachment validation rejects deliv
   assert.equal(response.statusCode, 404);
   assert.deepEqual(staged, ["asset-a"]);
   assert.deepEqual(removed, ["asset-a"]);
+});
+
+test("an exact direct Agent-message retry replays after the Agent is archived", async (t) => {
+  const payload = { text: "hello", idempotencyKey: "stable-message", activeRunDelivery: "queue" };
+  const communicationEventId = `user-message-${createHash("sha256")
+    .update(`project-a\0agent-a\0${payload.idempotencyKey}`)
+    .digest("hex")}`;
+  const requestFingerprint = conversationDeliveryRequestFingerprint({
+    version: 1,
+    agentId: "agent-a",
+    text: payload.text,
+    idempotencyKey: payload.idempotencyKey,
+    model: null,
+    effort: null,
+    speed: null,
+    sourceChannel: null,
+    sourceConversationId: null,
+    shareWithOrganization: false,
+    activeRunDelivery: "queue",
+    attachmentIds: [],
+    draftAttachmentIds: [],
+    draftId: null,
+    draftOwnerId: null,
+    agentMentionDepth: 0,
+    agentMentionTrail: [],
+  });
+  let reconciliations = 0;
+  const { app } = agentMessageValidationApp({
+    agentOverrides: { archived: true },
+    coordinationV3: {
+      runtimeCommunication: (id) => id === `dispatch:${communicationEventId}:agent-a`
+        ? {
+            id: communicationEventId,
+            projectId: "project-a",
+            payload: {
+              requestFingerprint,
+              communication: {
+                eventId: communicationEventId,
+                projectId: "project-a",
+                conversationId: "chat-a",
+                sender: { kind: "user", userId: "local-operator" },
+                intent: "user_dm",
+                audience: { kind: "user_agent", userId: "local-operator", agentId: "agent-a" },
+                text: payload.text,
+              },
+            },
+            activations: [{ id: "delivery-a", agentId: "agent-a" }],
+          }
+        : undefined,
+      pendingActivations: () => [{ id: "delivery-a", agentId: "agent-a" }],
+    },
+    reconcileRuntimeCommunicationProjections: async () => { reconciliations += 1; return 1; },
+  });
+  t.after(() => app.close());
+
+  const replay = await app.inject({
+    method: "POST",
+    url: "/api/agents/agent-a/messages",
+    payload,
+  });
+  assert.equal(replay.statusCode, 202);
+  assert.deepEqual(replay.json(), {
+    queued: true,
+    position: 1,
+    deliveryId: "delivery-a",
+    communicationEventId,
+  });
+  assert.equal(reconciliations, 1);
+
+  const collision = await app.inject({
+    method: "POST",
+    url: "/api/agents/agent-a/messages",
+    payload: { ...payload, text: "different" },
+  });
+  assert.equal(collision.statusCode, 409);
 });
 
 test("asset cleanup and message delivery cannot lease the same Agent", () => {
@@ -1603,4 +1686,66 @@ test("delivery routes reject malformed JSON shapes with 400", async (t) => {
     const response = await app.inject({ method: "POST", url, payload });
     assert.equal(response.statusCode, 400, `${url}: ${response.body}`);
   }
+});
+
+function queuedMessageApp({ coordinationV3 = {}, notifyScheduler = () => {}, publishMessageDeliveryChanged = () => {} } = {}) {
+  const app = Fastify();
+  registerQueuedMessageRoutes(app, {
+    store: {
+      getAgent: () => ({ id: "agent-a", projectId: "project-a", conversationId: "chat-a", archived: false }),
+      getConversation: () => ({ id: "chat-a", projectId: "project-a", archived: false }),
+    },
+    coordinationV3,
+    workspace: {},
+    projectDeletionInProgress: () => false,
+    conversationDeletionInProgress: () => false,
+    agentDeletionInProgress: () => false,
+    conversationDeliveryLeases: new Map(),
+    agentDeliveryLeases: new Map(),
+    prepareUserCommunicationText: async () => { throw new Error("unexpected text preparation"); },
+    runtimeArtifactMetadata: () => { throw new Error("unexpected artifact projection"); },
+    removeRuntimeArtifactReservation: () => {},
+    appendWorkspace: () => {},
+    publishWorkspaceSince: () => {},
+    publishCoordinationV3Changed: () => {},
+    publishMessageDeliveryChanged,
+    notifyScheduler,
+  });
+  return app;
+}
+
+test("queued-message mutations reject malformed bodies before coordination", async (t) => {
+  const app = queuedMessageApp();
+  t.after(() => app.close());
+  const cases = [
+    ["POST", "/api/conversations/chat-a/queued-messages/delivery-a/cancel", { idempotencyKey: 1 }],
+    ["POST", "/api/agents/agent-a/queued-messages/delivery-a/cancel", { idempotencyKey: false }],
+    ["PATCH", "/api/agents/agent-a/queued-messages/delivery-a", { text: {}, idempotencyKey: "edit" }],
+    ["POST", "/api/agents/agent-a/queued-messages/delivery-a/steer", { idempotencyKey: "steer", extra: true }],
+    ["POST", "/api/message-deliveries/injection-a/let-current-run-finish", { idempotencyKey: [] }],
+    ["POST", "/api/projects/project-a/message-deliveries/delivery-a/retry", { idempotencyKey: 1 }],
+    ["POST", "/api/projects/project-a/message-deliveries/delivery-a/cancel", null],
+  ];
+  for (const [method, url, payload] of cases) {
+    const response = await app.inject({ method, url, payload });
+    assert.equal(response.statusCode, 400, `${url}: ${response.body}`);
+  }
+});
+
+test("queued-message retry stays successful when post-commit projections fail", async (t) => {
+  const app = queuedMessageApp({
+    coordinationV3: {
+      retryMessageDelivery: () => ({ accepted: true, replayed: false, targetAgentId: "agent-a" }),
+    },
+    notifyScheduler: () => { throw new Error("scheduler unavailable"); },
+    publishMessageDeliveryChanged: () => { throw new Error("stream unavailable"); },
+  });
+  t.after(() => app.close());
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/projects/project-a/message-deliveries/delivery-a/retry",
+    payload: { idempotencyKey: "retry-once" },
+  });
+  assert.equal(response.statusCode, 202);
+  assert.equal(response.json().accepted, true);
 });

@@ -59,7 +59,10 @@ import {
   runtimeSpeedSelectionError,
 } from "../runtime-selection.js";
 import type { DraftService } from "./drafts.js";
-import type { PreparedCommunicationArtifact } from "./conversation-deliveries.js";
+import {
+  conversationDeliveryRequestFingerprint,
+  type PreparedCommunicationArtifact,
+} from "./conversation-deliveries.js";
 import { cleanupRuntimeAttachments } from "../runtime-attachments.js";
 import { leaseAgentDelivery, leaseConversationDelivery } from "../delivery-leases.js";
 import { prepareAgentRun } from "./agent-run-preparation.js";
@@ -328,11 +331,109 @@ export function registerAgentMessageRunRoute(
           candidate.activeRunDelivery !== "steer" && candidate.activeRunDelivery !== "queue") {
         return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
       }
-      if (deletingAgentIds.has(request.params.id)) return reply.code(404).send({ error: "agent not found" });
       const agent = store.getAgent(request.params.id);
-      if (!agent || agent.archived) return reply.code(404).send({ error: "agent not found" });
+      if (!agent) return reply.code(404).send({ error: "agent not found" });
       const project = store.getProject(agent.projectId);
       if (!project) return reply.code(404).send({ error: "project not found" });
+      const text = request.body?.text?.trim() ?? "";
+      const userMessageIdempotencyKey = request.body?.idempotencyKey?.trim();
+      if (userMessageIdempotencyKey && userMessageIdempotencyKey.length > 200) {
+        return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
+      }
+      const proposedCommunicationEventId = userMessageIdempotencyKey
+        ? `user-message-${createHash("sha256").update(`${project.id}\0${agent.id}\0${userMessageIdempotencyKey}`).digest("hex")}`
+        : undefined;
+      const requestFingerprint = proposedCommunicationEventId
+        ? conversationDeliveryRequestFingerprint({
+            version: 1,
+            agentId: agent.id,
+            text,
+            idempotencyKey: userMessageIdempotencyKey,
+            model: request.body.model?.trim() ?? null,
+            effort: request.body.effort?.trim() ?? null,
+            speed: request.body.speed?.trim() ?? null,
+            sourceChannel: request.body.sourceChannel ?? null,
+            sourceConversationId: request.body.sourceConversationId ?? null,
+            shareWithOrganization: request.body.shareWithOrganization === true,
+            activeRunDelivery: request.body.activeRunDelivery ?? "steer",
+            attachmentIds: request.body.attachmentIds ?? [],
+            draftAttachmentIds: request.body.draftAttachmentIds ?? [],
+            draftId: request.body.draftId ?? null,
+            draftOwnerId: request.body.draftOwnerId ?? null,
+            agentMentionDepth: request.body.agentMentionDepth ?? 0,
+            agentMentionTrail: request.body.agentMentionTrail ?? [],
+          })
+        : undefined;
+      const existingUserRuntime = proposedCommunicationEventId
+        ? coordinationV3.runtimeCommunication(`dispatch:${proposedCommunicationEventId}:${agent.id}`)
+        : undefined;
+      const existingPayload = existingUserRuntime?.payload &&
+        typeof existingUserRuntime.payload === "object" &&
+        !Array.isArray(existingUserRuntime.payload)
+        ? existingUserRuntime.payload as {
+            requestFingerprint?: unknown;
+            communication?: CommunicationEvent;
+          }
+        : undefined;
+      const carriesSchedulerIdentity = [
+        candidate.v3SchedulerRunId,
+        candidate.v3FencingToken,
+        candidate.v3InjectionId,
+        candidate.v3FreshProviderSession,
+        candidate.v3ActivationPrompt,
+        candidate.v3CommunicationEventId,
+      ].some((value) => value !== undefined);
+      if (!carriesSchedulerIdentity && existingUserRuntime && existingPayload?.requestFingerprint) {
+        if (existingPayload.requestFingerprint !== requestFingerprint) {
+          return reply.code(409).send({ error: "runtime communication ID collision" });
+        }
+        const activationId = existingUserRuntime.activations
+          ?.find((activation) => activation.agentId === agent.id)?.id;
+        const replayConversationId = existingPayload.communication?.conversationId ?? agent.conversationId;
+        const releaseReplayLease = replayConversationId
+          ? leaseConversationDelivery(
+              conversationDeliveryLeases,
+              agentDeliveryLeases,
+              replayConversationId,
+              [agent.id],
+            )
+          : leaseAgentDelivery(agentDeliveryLeases, [agent.id]);
+        try {
+          await reconcileRuntimeCommunicationProjections({
+            projectId: project.id,
+            communicationEventId: proposedCommunicationEventId,
+          });
+          let position: number | undefined;
+          try {
+            const pending = coordinationV3.pendingActivations(project.id)
+              .filter((activation) => activation.agentId === agent.id);
+            const index = pending.findIndex((activation) => activation.id === activationId);
+            if (index >= 0) position = index + 1;
+          } catch { /* queue position remains a repairable projection */ }
+          return reply.code(202).send({
+            queued: true,
+            ...(position !== undefined ? { position } : {}),
+            ...(activationId ? { deliveryId: activationId } : {}),
+            communicationEventId: proposedCommunicationEventId,
+            ...((position === undefined || !activationId)
+              ? { committed: true, recovering: true }
+              : {}),
+          });
+        } catch {
+          return reply.code(202).send({
+            queued: true,
+            ...(activationId ? { deliveryId: activationId } : {}),
+            communicationEventId: proposedCommunicationEventId,
+            committed: true,
+            recovering: true,
+          });
+        } finally {
+          releaseReplayLease();
+        }
+      }
+      if (deletingAgentIds.has(request.params.id) || agent.archived) {
+        return reply.code(404).send({ error: "agent not found" });
+      }
       if (deletingProjectIds.has(project.id)) {
         return reply.code(409).send({ error: "Project deletion is already in progress" });
       }
@@ -375,11 +476,6 @@ export function registerAgentMessageRunRoute(
       const runtimeEngineId = activeRunSnapshot?.engine ?? agent.activeEngine;
       const engine = engines.get(runtimeEngineId);
       if (!engine) return reply.code(400).send({ error: "unknown engine" });
-      const text = request.body?.text?.trim() ?? "";
-      const userMessageIdempotencyKey = request.body?.idempotencyKey?.trim();
-      if (userMessageIdempotencyKey && userMessageIdempotencyKey.length > 200) {
-        return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
-      }
       const internalV3Dispatch = typeof request.headers["x-ponderosa-v3-dispatch"] === "string" &&
         secretEqual(request.headers["x-ponderosa-v3-dispatch"], v3DispatchKey);
       const v3SchedulerRunId = request.body.v3SchedulerRunId;
@@ -574,22 +670,20 @@ export function registerAgentMessageRunRoute(
       if (messageAttachments.reduce((sum, item) => sum + item.size, 0) > ASSET_LIMITS.maxMessageBytes) return reply.code(413).send({ error: "message asset quota exceeded" });
       if (!text && messageAttachments.length === 0) return reply.code(400).send({ error: "text or an attachment is required" });
       const directMessageConversationId = sourceConversationId ?? agent.conversationId;
-      const proposedCommunicationEventId = internalV3Dispatch
+      const communicationEventIdentity = internalV3Dispatch
         ? undefined
-        : userMessageIdempotencyKey
-          ? `user-message-${createHash("sha256").update(`${project.id}\0${agent.id}\0${userMessageIdempotencyKey}`).digest("hex")}`
-          : randomUUID();
-      const existingUserRuntime = proposedCommunicationEventId
-        ? coordinationV3.runtimeCommunication(`dispatch:${proposedCommunicationEventId}:${agent.id}`)
+        : proposedCommunicationEventId ?? randomUUID();
+      const committedUserRuntime = communicationEventIdentity
+        ? coordinationV3.runtimeCommunication(`dispatch:${communicationEventIdentity}:${agent.id}`)
         : undefined;
-      const communicationCreatedAt = existingUserRuntime?.createdAt ?? new Date().toISOString();
+      const communicationCreatedAt = committedUserRuntime?.createdAt ?? new Date().toISOString();
       let userTextArtifact: PreparedCommunicationArtifact | undefined;
       let publishedText = text;
       let userDocument: CommunicationEvent["document"];
-      if (proposedCommunicationEventId) {
+      if (communicationEventIdentity) {
         try {
           const prepared = await prepareUserCommunicationText({
-            projectId: project.id, communicationId: proposedCommunicationEventId, text, createdAt: communicationCreatedAt,
+            projectId: project.id, communicationId: communicationEventIdentity, text, createdAt: communicationCreatedAt,
           });
           publishedText = prepared.publishedText;
           userTextArtifact = prepared.artifact;
@@ -602,7 +696,7 @@ export function registerAgentMessageRunRoute(
       const proposedCommunication: CommunicationEvent | undefined = internalV3Dispatch
         ? undefined
         : shareWithOrganization ? {
-            eventId: proposedCommunicationEventId!, schemaVersion: 2, projectId: project.id, conversationId: sourceConversationId!,
+            eventId: communicationEventIdentity!, schemaVersion: 2, projectId: project.id, conversationId: sourceConversationId!,
             sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
             audience: { kind: "organization", organizationId: project.id }, text: publishedText,
             ...(messageAttachments.length ? { attachments: messageAttachments } : {}),
@@ -610,7 +704,7 @@ export function registerAgentMessageRunRoute(
             createdAt: communicationCreatedAt,
             ...(userMessageIdempotencyKey ? { idempotencyKey: `user-message:${agent.id}:${userMessageIdempotencyKey}` } : {}),
           } : {
-            eventId: proposedCommunicationEventId!, schemaVersion: 2, projectId: project.id,
+            eventId: communicationEventIdentity!, schemaVersion: 2, projectId: project.id,
             ...((sourceConversationId ?? agent.conversationId) ? { conversationId: sourceConversationId ?? agent.conversationId } : {}),
             sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
             audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id }, text: publishedText,
@@ -631,6 +725,7 @@ export function registerAgentMessageRunRoute(
             audience: proposedCommunication.audience,
             payload: {
               communication: proposedCommunication,
+              ...(requestFingerprint && !committedUserRuntime ? { requestFingerprint } : {}),
               dispatch: {
                 text: publishedText,
                 ...(shareWithOrganization ? { conversationText: publishedText } : {}),
@@ -776,6 +871,7 @@ export function registerAgentMessageRunRoute(
           ...(position !== undefined ? { position } : {}),
           deliveryId: v3Intake.activationId,
           communicationEventId,
+          ...(position === undefined ? { committed: true, recovering: true } : {}),
         });
       }
       const existingRun = activeRuns.get(agent.id);

@@ -48,6 +48,11 @@ export interface PublishNextRunDeliveryResult {
   replayed: boolean;
 }
 
+export type ReplayAgentNextRunDeliveryInput = Omit<
+  PublishAgentNextRunDeliveryInput,
+  "runAuthorization" | "now"
+>;
+
 export interface NextRunDeliveryMaintenanceResult {
   reconciled: number;
   expired: number;
@@ -133,18 +138,9 @@ export class CommunicationV4NextRunDeliveryAuthority {
       throw new Error("an Agent cannot deliver next_run information to itself");
     }
     this.validateExpiry(input.expiresAt, now);
-    const hash = payloadHash({
-      projectId: input.projectId,
-      conversationId: input.conversationId,
-      publisherAgentId: input.publisherAgentId,
-      sourceRunId: input.sourceRunId,
-      text: input.text,
-      recipients,
-      expiresAt: input.expiresAt ?? null,
-    });
+    const hash = this.agentPayloadHash(input, recipients);
     const deliveryId = randomUUID();
     return this.sqlite.transaction(() => {
-      this.requireAuthorizedRun(input.runAuthorization, `conversation:${input.conversationId}`);
       const prior = this.sqlite.prepare(`
         SELECT * FROM communication_v4_next_run_deliveries
         WHERE publisher_kind = 'agent' AND publisher_agent_id = ?
@@ -155,6 +151,7 @@ export class CommunicationV4NextRunDeliveryAuthority {
         if (prior.payload_hash !== hash) throw new Error("next_run idempotency conflict");
         return { delivery: view(prior), replayed: true };
       }
+      this.requireAuthorizedRun(input.runAuthorization, `conversation:${input.conversationId}`);
       const publisher = this.sqlite.prepare(`
         SELECT title FROM agents
         WHERE id = ? AND project_id = ? AND archived = 0 AND deleted_at IS NULL
@@ -194,6 +191,23 @@ export class CommunicationV4NextRunDeliveryAuthority {
       if (!delivery) throw new Error("next-run delivery did not commit");
       return { delivery, replayed: false };
     })();
+  }
+
+  replayAgent(
+    input: ReplayAgentNextRunDeliveryInput,
+  ): PublishNextRunDeliveryResult | undefined {
+    const recipients = [...new Set(input.recipientAgentIds)].sort();
+    const prior = this.sqlite.prepare(`
+      SELECT * FROM communication_v4_next_run_deliveries
+      WHERE publisher_kind = 'agent' AND publisher_agent_id = ?
+        AND source_run_id = ? AND idempotency_key = ?
+    `).get(input.publisherAgentId, input.sourceRunId, input.idempotencyKey) as
+      (DeliveryRow & { payload_hash: string }) | undefined;
+    if (!prior) return undefined;
+    if (prior.payload_hash !== this.agentPayloadHash(input, recipients)) {
+      throw new Error("next_run idempotency conflict");
+    }
+    return { delivery: view(prior), replayed: true };
   }
 
   publishOperator(
@@ -270,6 +284,21 @@ export class CommunicationV4NextRunDeliveryAuthority {
       SELECT * FROM communication_v4_next_run_deliveries WHERE id = ?
     `).get(deliveryId) as DeliveryRow | undefined;
     return row ? view(row) : undefined;
+  }
+
+  private agentPayloadHash(
+    input: ReplayAgentNextRunDeliveryInput,
+    recipients: string[],
+  ): string {
+    return payloadHash({
+      projectId: input.projectId,
+      conversationId: input.conversationId,
+      publisherAgentId: input.publisherAgentId,
+      sourceRunId: input.sourceRunId,
+      text: input.text,
+      recipients,
+      expiresAt: input.expiresAt ?? null,
+    });
   }
 
   listOperatorReceipts(input: {

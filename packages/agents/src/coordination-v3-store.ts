@@ -49,6 +49,7 @@ import {
   type PublishAgentNextRunDeliveryInput,
   type PublishNextRunDeliveryResult,
   type PublishOperatorNextRunDeliveryInput,
+  type ReplayAgentNextRunDeliveryInput,
 } from "./communication-v4-next-run-delivery-authority.js";
 import type {
   CoordinateV3Input,
@@ -94,6 +95,7 @@ export type {
   PublishAgentNextRunDeliveryInput,
   PublishNextRunDeliveryResult,
   PublishOperatorNextRunDeliveryInput,
+  ReplayAgentNextRunDeliveryInput,
 } from "./communication-v4-next-run-delivery-authority.js";
 export type {
   RunAuthorizationV3,
@@ -366,6 +368,12 @@ export class CoordinationV3Store {
     input: PublishAgentNextRunDeliveryInput,
   ): PublishNextRunDeliveryResult {
     return this.communicationV4NextRunDeliveries.publishAgent(input);
+  }
+
+  replayAgentNextRunDelivery(
+    input: ReplayAgentNextRunDeliveryInput,
+  ): PublishNextRunDeliveryResult | undefined {
+    return this.communicationV4NextRunDeliveries.replayAgent(input);
   }
 
   publishOperatorNextRunDelivery(

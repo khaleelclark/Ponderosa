@@ -91,6 +91,7 @@ export type {
   PublishAgentNextRunDeliveryInput,
   PublishNextRunDeliveryResult,
   PublishOperatorNextRunDeliveryInput,
+  ReplayAgentNextRunDeliveryInput,
 } from "./coordination-v3-store.js";
 export type { ConversationDeliveryIntent, ManagedArtifactAccess } from "./store.js";
 export type { AgentDeletionReceipt, ProjectDeletionReceipt, AgentManagementAuthorization } from "./store.js";

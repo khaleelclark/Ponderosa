@@ -28,7 +28,10 @@ import { derivedRunActionKey } from "../security.js";
 import { normalizeExternalCitations } from "../external-content.js";
 import { selectsRequiredReply } from "../required-reply-route.js";
 import { leaseAgentDelivery, leaseConversationDelivery } from "../delivery-leases.js";
-import type { PreparedCommunicationArtifact } from "./conversation-deliveries.js";
+import {
+  conversationDeliveryRequestFingerprint,
+  type PreparedCommunicationArtifact,
+} from "./conversation-deliveries.js";
 
 type AgentEventService = ReturnType<typeof createAgentEventService>;
 type CommunicationArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>;
@@ -206,12 +209,6 @@ export function registerAgentCommunicationRoutes(
     const currentAuthor = store.getAgent(capability.agentId);
     if (request.body?.delivery === "next_run") {
       const suppliedSteeringFence = request.body.steeringInjectionId?.trim();
-      if (requiredSteeringFence && suppliedSteeringFence !== requiredSteeringFence) {
-        return reply.code(409).send({
-          error: "output is fenced behind acknowledged steering; reconsider the newest steering prompt and retry with its exact steeringInjectionId",
-          requiredSteeringInjectionId: requiredSteeringFence,
-        });
-      }
       const recipientAgentIds = request.body.recipientAgentIds;
       if (!Array.isArray(recipientAgentIds) || recipientAgentIds.length < 1 ||
           recipientAgentIds.length > 100) {
@@ -244,13 +241,6 @@ export function registerAgentCommunicationRoutes(
       )) {
         return reply.code(400).send({ error: "expiresAt must be a valid ISO timestamp" });
       }
-      if (!currentAuthor || currentAuthor.archived) {
-        return reply.code(409).send({ error: "agent is no longer available" });
-      }
-      if (!capability.conversationId ||
-          currentAuthor.conversationId !== capability.conversationId) {
-        return reply.code(409).send({ error: "next_run requires an active Team Chat scope" });
-      }
       const requestedIdempotencyKey = request.body.idempotencyKey?.trim();
       if (requestedIdempotencyKey && unicodeCodePointLength(requestedIdempotencyKey) > 200) {
         return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
@@ -260,6 +250,44 @@ export function registerAgentCommunicationRoutes(
         "message-next-run",
         { text, recipientAgentIds: [...normalizedRecipients].sort(), expiresAt: expiresAt ?? null },
       );
+      if (currentAuthor && capability.conversationId) {
+        try {
+          const replay = coordinationV3.replayAgentNextRunDelivery({
+            projectId: currentAuthor.projectId,
+            conversationId: capability.conversationId,
+            publisherAgentId: currentAuthor.id,
+            sourceRunId: capability.runId,
+            idempotencyKey,
+            text,
+            recipientAgentIds: normalizedRecipients,
+            ...(expiresAt ? { expiresAt } : {}),
+          });
+          if (replay) return {
+            delivery: "next_run",
+            deliveryId: replay.delivery.id,
+            recipientAgentIds: replay.delivery.recipientAgentIds,
+            replayed: true,
+            executionDirective: "Information will enter each recipient's next otherwise-authorized Run; no Run or reply was created.",
+          };
+        } catch (error) {
+          return reply.code(409).send({
+            error: error instanceof Error ? error.message : "next-run delivery replay failed",
+          });
+        }
+      }
+      if (requiredSteeringFence && suppliedSteeringFence !== requiredSteeringFence) {
+        return reply.code(409).send({
+          error: "output is fenced behind acknowledged steering; reconsider the newest steering prompt and retry with its exact steeringInjectionId",
+          requiredSteeringInjectionId: requiredSteeringFence,
+        });
+      }
+      if (!currentAuthor || currentAuthor.archived) {
+        return reply.code(409).send({ error: "agent is no longer available" });
+      }
+      if (!capability.conversationId ||
+          currentAuthor.conversationId !== capability.conversationId) {
+        return reply.code(409).send({ error: "next_run requires an active Team Chat scope" });
+      }
       const conversation = store.getConversation(capability.conversationId);
       const leasedAgentIds = [currentAuthor.id, ...normalizedRecipients];
       if (projectDeletionInProgress(currentAuthor.projectId) ||
@@ -390,12 +418,30 @@ export function registerAgentCommunicationRoutes(
       citations,
       steeringInjectionId: requiredSteeringFence ?? null,
     })).digest("hex");
+    const requestFingerprint = conversationDeliveryRequestFingerprint({
+      version: 1,
+      intent,
+      text,
+      recipientAgentIds: [...inferredRecipientAgentIds].sort(),
+      artifactIds: artifactIds ?? [],
+      document: documentTitle && documentContent
+        ? { title: documentTitle, content: documentContent, mediaType: "text/markdown" }
+        : null,
+      citations,
+      urgency: v3Urgency ?? "ordinary",
+    });
     const requestedIdempotencyKey = request.body?.idempotencyKey?.trim();
     if (requestedIdempotencyKey && requestedIdempotencyKey.length > 200) {
       return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
     }
-    const requestedReceiptKey = requestedIdempotencyKey
-      ? `${capability.runId}:${intent}:${requestedIdempotencyKey}`
+    const replayIdempotencyKey = requestedIdempotencyKey ?? (inferredReply
+      ? derivedRunActionKey(capability.runId, "reply", {
+          authority: selectedReplyAuthority,
+          fingerprint: candidateRequiredReplyFingerprint,
+        })
+      : undefined);
+    const requestedReceiptKey = replayIdempotencyKey
+      ? `${capability.runId}:${intent}:${replayIdempotencyKey}`
       : undefined;
     const requestedCommunicationEventId = requestedReceiptKey
       ? `runtime-${createHash("sha256").update(`${currentAuthor?.projectId ?? "unknown"}\0${requestedReceiptKey}`).digest("hex")}`
@@ -406,8 +452,58 @@ export function registerAgentCommunicationRoutes(
     const requestedReplayPayload = requestedReplay?.payload &&
       typeof requestedReplay.payload === "object" &&
       !Array.isArray(requestedReplay.payload)
-      ? requestedReplay.payload as { requiredReplyFingerprint?: unknown }
+      ? requestedReplay.payload as {
+          requestFingerprint?: unknown;
+          requiredReplyFingerprint?: unknown;
+          communication?: CommunicationEvent;
+        }
       : undefined;
+    if (requestedReplay && requestedReplayPayload?.requestFingerprint) {
+      if (requestedReplayPayload.requestFingerprint !== requestFingerprint) {
+        return reply.code(409).send({ error: "runtime communication ID collision" });
+      }
+      const communication = requestedReplayPayload.communication;
+      const replayAgentIds = [...new Set([
+        ...(communication?.sender.kind === "agent" ? [communication.sender.agentId] : []),
+        ...(requestedReplay.activations ?? []).map((activation) => activation.agentId),
+      ])];
+      const releaseReplayLease = communication?.conversationId
+        ? leaseConversationDelivery(
+            conversationDeliveryLeases,
+            agentDeliveryLeases,
+            communication.conversationId,
+            replayAgentIds,
+          )
+        : leaseAgentDelivery(agentDeliveryLeases, replayAgentIds);
+      try {
+        await reconcileRuntimeCommunicationProjections({
+          projectId: requestedReplay.projectId,
+          communicationEventId: requestedReplay.id,
+        });
+      } catch {
+        return reply.code(202).send({
+          intent,
+          eventId: requestedReplay.id,
+          committed: true,
+          recovering: true,
+          replayed: true,
+          ...(communication?.document?.artifactId
+            ? { resultRef: `ponderosa://artifact/${communication.document.artifactId}` }
+            : {}),
+        });
+      } finally {
+        releaseReplayLease();
+      }
+      return {
+        intent,
+        eventId: requestedReplay.id,
+        messageId: requestedReplay.id,
+        replayed: true,
+        ...(communication?.document?.artifactId
+          ? { resultRef: `ponderosa://artifact/${communication.document.artifactId}` }
+          : {}),
+      };
+    }
     const keyedReplayRequiredReplyFingerprint =
       typeof requestedReplayPayload?.requiredReplyFingerprint === "string"
         ? requestedReplayPayload.requiredReplyFingerprint
@@ -586,9 +682,13 @@ export function registerAgentCommunicationRoutes(
           sender: proposedCommunication.sender,
           intent: proposedCommunication.intent,
           audience: proposedCommunication.audience,
-          payload: inferredReplyFingerprint
-            ? { communication: proposedCommunication, requiredReplyFingerprint: inferredReplyFingerprint }
-            : proposedCommunication,
+          payload: {
+            communication: proposedCommunication,
+            ...(!replay ? { requestFingerprint } : {}),
+            ...(inferredReplyFingerprint
+              ? { requiredReplyFingerprint: inferredReplyFingerprint }
+              : {}),
+          },
           ...(preparedArtifacts.length ? { artifacts: preparedArtifacts.map(runtimeArtifactMetadata) } : {}),
           scopeKey: capability.conversationId ? `conversation:${capability.conversationId}` : `agent:${capability.agentId}`,
           runAuthorization: runAuthorization(capability),
@@ -719,6 +819,7 @@ export function registerAgentCommunicationRoutes(
         audience: proposedCommunication.audience,
         payload: {
           communication: proposedCommunication,
+          ...(!replay ? { requestFingerprint } : {}),
           ...(inferredReplyFingerprint
             ? { requiredReplyFingerprint: inferredReplyFingerprint }
             : {}),
@@ -827,11 +928,59 @@ export function registerAgentCommunicationRoutes(
       if (!["blocked", "expired", "outcome_unknown", "failed", "recipient_unavailable"].includes(original.state)) {
         return reply.code(409).send({ error: "only blocked, expired, uncertain, or failed requests can be retried" });
       }
+      const idempotencyKey = request.body?.idempotencyKey?.trim() || `retry:${original.id}`;
+      if (idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
+      const requestId = `${original.id}:retry:${createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 16)}`;
+      const originalPayload = original.payload && typeof original.payload === "object"
+        ? original.payload as Record<string, unknown>
+        : undefined;
+      const { retryOfRequestId: _legacyRetryMarker, ...canonicalPayload } = originalPayload ?? {};
+      const payload = originalPayload
+        ? { ...canonicalPayload, recoveryInstruction: "Audit current state before executing; do not blindly replay prior side effects." }
+        : { text: String(original.payload ?? ""), recoveryInstruction: "Audit current state before executing; do not blindly replay prior side effects." };
+      const retryInput = {
+        projectId: original.projectId,
+        ...(original.conversationId ? { conversationId: original.conversationId } : {}),
+        requesterAgentId: original.requesterAgentId,
+        actorScope: "user:local-operator",
+        idempotencyKey,
+        rolloverRecoveryForRequestId: original.id,
+        requests: [{
+          requestId,
+          recoveryOfRequestId: original.id,
+          recipientAgentId: original.recipientAgentId,
+          lifetime: { kind: "indefinite" as const },
+          payload,
+        }],
+        ...(request.body?.createJoin === false
+          ? {}
+          : { join: { id: `${requestId}:join`, mode: "all" as const } }),
+      };
       const retryStatus = coordinationV3.requestRetryStatus(original.id);
       if (retryStatus.completedRequestId) {
+        if (retryStatus.completedRequestId === requestId) {
+          try {
+            return {
+              ...coordinationV3.coordinate(retryInput),
+              retryOfRequestId: original.id,
+            };
+          } catch (error) {
+            return reply.code(409).send({ error: error instanceof Error ? error.message : "request retry replay failed" });
+          }
+        }
         return reply.code(409).send({ error: "this assignment was already recovered by a successful retry" });
       }
       if (retryStatus.activeRequestId) {
+        if (retryStatus.activeRequestId === requestId) {
+          try {
+            return {
+              ...coordinationV3.coordinate(retryInput),
+              retryOfRequestId: original.id,
+            };
+          } catch (error) {
+            return reply.code(409).send({ error: error instanceof Error ? error.message : "request retry replay failed" });
+          }
+        }
         return reply.code(409).send({ error: "a retry of this assignment is already queued or running" });
       }
       const requester = original.requesterAgentId ? store.getAgent(original.requesterAgentId) : undefined;
@@ -847,8 +996,6 @@ export function registerAgentCommunicationRoutes(
           leasedAgentIds.some(agentDeletionInProgress)) {
         return reply.code(409).send({ error: "request participants are no longer available" });
       }
-      const idempotencyKey = request.body?.idempotencyKey?.trim() || `retry:${original.id}`;
-      if (idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
       const releaseDeliveryLease = conversation
         ? leaseConversationDelivery(conversationDeliveryLeases, agentDeliveryLeases, conversation.id, leasedAgentIds)
         : leaseAgentDelivery(agentDeliveryLeases, leasedAgentIds);
@@ -860,30 +1007,7 @@ export function registerAgentCommunicationRoutes(
               !store.getConversation(original.conversationId)))) {
           return reply.code(409).send({ error: "request participants are no longer available" });
         }
-        const requestId = `${original.id}:retry:${createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 16)}`;
-        const originalPayload = original.payload && typeof original.payload === "object"
-          ? original.payload as Record<string, unknown>
-          : undefined;
-        const { retryOfRequestId: _legacyRetryMarker, ...canonicalPayload } = originalPayload ?? {};
-        const payload = originalPayload
-          ? { ...canonicalPayload, recoveryInstruction: "Audit current state before executing; do not blindly replay prior side effects." }
-          : { text: String(original.payload ?? ""), recoveryInstruction: "Audit current state before executing; do not blindly replay prior side effects." };
-        const result = coordinationV3.coordinate({
-          projectId: original.projectId,
-          ...(original.conversationId ? { conversationId: original.conversationId } : {}),
-          requesterAgentId: requester.id,
-          actorScope: "user:local-operator",
-          idempotencyKey,
-          rolloverRecoveryForRequestId: original.id,
-          requests: [{
-            requestId,
-            recoveryOfRequestId: original.id,
-            recipientAgentId: recipient.id,
-            lifetime: { kind: "indefinite" },
-            payload,
-          }],
-          ...(request.body?.createJoin === false ? {} : { join: { id: `${requestId}:join`, mode: "all" as const } }),
-        });
+        const result = coordinationV3.coordinate(retryInput);
         let recoveredRollover;
         try {
           recoveredRollover = coordinationV3.contextRolloverRecoveryForRequest(requestId);

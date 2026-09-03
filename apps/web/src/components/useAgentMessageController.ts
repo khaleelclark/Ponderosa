@@ -143,7 +143,8 @@ export function useAgentMessageController({
                 if (
                   response.queued &&
                   activeRunDelivery === "queue" &&
-                  notice
+                  notice &&
+                  response.deliveryId
                 ) {
                   queueNoticeBaseline.current =
                     queuedMessagesQuery.dataUpdatedAt;

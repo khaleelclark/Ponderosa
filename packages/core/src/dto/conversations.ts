@@ -623,8 +623,21 @@ export interface QueuedMessageResponse {
   communicationEventId?: string;
 }
 
+/** Canonical intake committed, but queue projections are still being repaired. */
+export interface RecoveringMessageResponse {
+  queued: true;
+  committed: true;
+  recovering: true;
+  position?: number;
+  deliveryId?: string;
+  communicationEventId?: string;
+}
+
 /** A message either starts now or is accepted into the per-agent FIFO queue. */
-export type SendMessageResponse = StartedMessageResponse | QueuedMessageResponse;
+export type SendMessageResponse =
+  | StartedMessageResponse
+  | QueuedMessageResponse
+  | RecoveringMessageResponse;
 
 /** Internal source/projection channel after the server has routed an intent. */
 export type AgentMessageChannel = "individual" | "main" | "collaboration";
