@@ -14,7 +14,15 @@ export function shouldSendComposerKey(event: {
   isComposing: boolean;
   repeat: boolean;
 }): boolean {
-  return event.key === "Enter" && !event.shiftKey && !event.isComposing && !event.repeat;
+  return shouldConsumeComposerKey(event) && !event.repeat;
+}
+
+export function shouldConsumeComposerKey(event: {
+  key: string;
+  shiftKey: boolean;
+  isComposing: boolean;
+}): boolean {
+  return event.key === "Enter" && !event.shiftKey && !event.isComposing;
 }
 
 export function shouldIgnoreComposerKey(event: {

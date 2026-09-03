@@ -54,6 +54,27 @@ export function removeComposerDestinations(
     );
 }
 
+export function removeComposerDestinationsAroundSelection(
+  text: string,
+  start: number,
+  end: number,
+  handles: readonly string[],
+): { text: string; start: number; end: number } {
+  const ranges = destinationRanges(text, handles)
+    .filter(range => range.end <= start || range.start >= end);
+  const removedBeforeSelection = ranges
+    .filter(range => range.end <= start)
+    .reduce((total, range) => total + range.end - range.start, 0);
+  return {
+    text: ranges.reverse().reduce(
+      (current, range) => current.slice(0, range.start) + current.slice(range.end),
+      text,
+    ),
+    start: Math.max(0, start - removedBeforeSelection),
+    end: Math.max(0, end - removedBeforeSelection),
+  };
+}
+
 export function singleComposerDestination(
   text: string,
   handle: string,
@@ -92,22 +113,11 @@ export function selectExclusiveNewAgentDestination(
   end: number,
   existingHandles: readonly string[],
 ): string {
-  const removable = new Set(
-    [NEW_AGENT_DESTINATION_HANDLE, ...existingHandles].map(handle =>
-      handle.toLocaleLowerCase()),
-  );
-  const ranges = destinationRanges(
+  const selection = removeComposerDestinationsAroundSelection(
     text,
-    [...removable],
-  ).filter(range => range.end <= start || range.start >= end);
-  const removedBeforeSelection = ranges
-    .filter(range => range.end <= start)
-    .reduce((total, range) => total + range.end - range.start, 0);
-  const cleaned = ranges.reverse().reduce(
-    (current, range) => current.slice(0, range.start) + current.slice(range.end),
-    text,
+    start,
+    end,
+    [NEW_AGENT_DESTINATION_HANDLE, ...existingHandles],
   );
-  const insertion = Math.max(0, start - removedBeforeSelection);
-  const selectionEnd = Math.max(insertion, end - removedBeforeSelection);
-  return `${cleaned.slice(0, insertion)}#${NEW_AGENT_DESTINATION_HANDLE} ${cleaned.slice(selectionEnd)}`.trimStart();
+  return `${selection.text.slice(0, selection.start)}#${NEW_AGENT_DESTINATION_HANDLE} ${selection.text.slice(selection.end)}`.trimStart();
 }

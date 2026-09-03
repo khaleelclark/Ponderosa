@@ -55,6 +55,7 @@ import {
   filesFromClipboard,
   shouldExtractLongPaste,
   shouldIgnoreComposerKey,
+  shouldConsumeComposerKey,
   shouldSendComposerKey,
 } from "./composerUtils";
 import type { ComposerMenuSuggestion } from "./Composer.controls";
@@ -1368,16 +1369,15 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
       onClearRequiredRecipient();
       return;
     }
-    if (
-      shouldSendComposerKey({
-        key: event.key,
-        shiftKey: event.shiftKey,
-        isComposing: event.nativeEvent.isComposing,
-        repeat: event.repeat,
-      })
-    ) {
+    const sendKey = {
+      key: event.key,
+      shiftKey: event.shiftKey,
+      isComposing: event.nativeEvent.isComposing,
+      repeat: event.repeat,
+    };
+    if (shouldConsumeComposerKey(sendKey)) {
       event.preventDefault();
-      if (canSend) onSend();
+      if (canSend && shouldSendComposerKey(sendKey)) onSend();
     }
   };
 

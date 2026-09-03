@@ -36,6 +36,7 @@ import {
   NEW_AGENT_DESTINATION_HANDLE,
   prependComposerDestination,
   removeComposerDestinations,
+  removeComposerDestinationsAroundSelection,
   selectExclusiveNewAgentDestination,
   singleComposerDestination,
 } from "./composerDestination";
@@ -547,8 +548,18 @@ export function Composer({
       if (!selectingNewAgent) {
         return removeComposerDestinations(current, [NEW_AGENT_DESTINATION_HANDLE]);
       }
-      return prependComposerDestination(current, NEW_AGENT_DESTINATION_HANDLE);
+      return prependComposerDestination(
+        removeComposerDestinations(current, [
+          NEW_AGENT_DESTINATION_HANDLE,
+          ...targetRequiredHandles,
+          ...authoredProjectDestinationHandles,
+          "broadcast",
+          "everyone",
+        ]),
+        NEW_AGENT_DESTINATION_HANDLE,
+      );
     });
+    if (selectingNewAgent) requiredRecipient?.onClear();
     setActiveDefaultDestination(
       selectingNewAgent ? undefined : defaultDestination,
     );
@@ -756,11 +767,17 @@ export function Composer({
       setActiveDefaultDestination(undefined);
       return;
     }
+    const selectingDestination =
+      previous?.selectionKey !== defaultDestination.selectionKey;
     if (destinationMode === "target-required") {
       appliedDefaultDestination.current = defaultDestination;
       setActiveDefaultDestination(undefined);
       const normalizedText = removeAllComposerDestinations(
-        textRef.current,
+        selectingDestination
+          ? removeComposerDestinations(textRef.current, [
+              NEW_AGENT_DESTINATION_HANDLE,
+            ])
+          : textRef.current,
         defaultDestination.handle,
       );
       if (normalizedText !== textRef.current) replaceText(normalizedText);
@@ -781,7 +798,12 @@ export function Composer({
       return;
     }
     appliedDefaultDestination.current = defaultDestination;
-    const nextText = textRef.current;
+    const currentText = textRef.current;
+    const nextText = selectingDestination
+      ? removeComposerDestinations(currentText, [
+          NEW_AGENT_DESTINATION_HANDLE,
+        ])
+      : currentText;
     const normalizedText = removeAllComposerDestinations(
       nextText,
       defaultDestination.handle,
@@ -791,15 +813,17 @@ export function Composer({
       activeDefaultDestination?.selectionKey === previous.selectionKey,
     );
     const destinationWasInline = normalizedText !== nextText;
+    const newAgentWasInline = nextText !== currentText;
     const mayActivate = normalizedText.trim().length === 0
       || previousWasActive
-      || destinationWasInline;
+      || destinationWasInline
+      || newAgentWasInline;
     if (mayActivate) {
       setActiveDefaultDestination(defaultDestination);
     } else {
       setActiveDefaultDestination(undefined);
     }
-    if (destinationWasInline) replaceText(normalizedText);
+    if (normalizedText !== currentText) replaceText(normalizedText);
   }, [
     conversationDraftId,
     activeDefaultDestination?.selectionKey,
@@ -1002,7 +1026,7 @@ export function Composer({
     const start = mentionMatch!.start;
     const specialTitle = SPECIAL_MENTION_TITLES.get(handle.toLocaleLowerCase());
     if (
-      destinationMode === "target-required" &&
+      (destinationMode === "target-required" || destinationMode === "project-chat") &&
       handle.toLocaleLowerCase() === NEW_AGENT_DESTINATION_HANDLE
     ) {
       const next = selectExclusiveNewAgentDestination(
@@ -1011,7 +1035,9 @@ export function Composer({
         caret,
         [
           ...targetRequiredHandles,
-          ...(hasBroadcastDestination ? ["broadcast"] : []),
+          ...authoredProjectDestinationHandles,
+          "broadcast",
+          "everyone",
         ],
       );
       requiredRecipient?.onClear();
@@ -1047,15 +1073,31 @@ export function Composer({
             valid: true,
           }
         : undefined;
+    const selection =
+      descriptor &&
+        handle.toLocaleLowerCase() !== NEW_AGENT_DESTINATION_HANDLE &&
+        (destinationMode === "target-required" || destinationMode === "project-chat")
+        ? removeComposerDestinationsAroundSelection(
+            text,
+            start,
+            caret,
+            [NEW_AGENT_DESTINATION_HANDLE],
+          )
+        : { text, start, end: caret };
     if (inputRef.current && descriptor) {
-      inputRef.current.setSelectionOffsets(start, caret);
+      if (selection.text !== text) {
+        inputRef.current.replaceCanonicalRange(0, text.length, selection.text);
+      }
+      inputRef.current.setSelectionOffsets(selection.start, selection.end);
       inputRef.current.insertMention(descriptor);
       inputRef.current.insertText(" ");
     } else {
-      update(`${text.slice(0, start)}#${handle} ${text.slice(caret)}`);
+      update(
+        `${selection.text.slice(0, selection.start)}#${handle} ${selection.text.slice(selection.end)}`,
+      );
     }
     setHighlighted(0);
-    const nextCaret = start + handle.length + 2;
+    const nextCaret = selection.start + handle.length + 2;
     requestAnimationFrame(() => {
       inputRef.current?.focus();
       inputRef.current?.setSelectionOffsets(nextCaret, nextCaret);

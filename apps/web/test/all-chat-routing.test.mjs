@@ -8,9 +8,16 @@ import {
   activeComposerMention,
   clampComposerMenuIndex,
   hasComposerDestination,
+  prependComposerDestination,
+  removeComposerDestinations,
+  removeComposerDestinationsAroundSelection,
   selectExclusiveNewAgentDestination,
   singleComposerDestination,
 } from "../src/components/chat/composerDestination.js";
+import {
+  shouldConsumeComposerKey,
+  shouldSendComposerKey,
+} from "../src/components/chat/composerUtils.js";
 import {
   findMentionedHandles,
   hasBroadcastMention,
@@ -86,6 +93,54 @@ test("normalizes new Agent into one canonical destination", () => {
       ["Bryce-Canyon", "UI-Specialist"],
     ),
     "() ask then #new-agent ",
+  );
+});
+
+test("ordinary Agent selection removes every new Agent destination", () => {
+  assert.deepEqual(
+    removeComposerDestinationsAroundSelection(
+      "ask #new-agent then (#new-agent) #Br",
+      33,
+      36,
+      ["new-agent"],
+    ),
+    { text: "ask then () #Br", start: 12, end: 15 },
+  );
+  assert.equal(
+    removeComposerDestinations("ask #new-agent then", ["new-agent"]),
+    "ask then",
+  );
+});
+
+test("new Agent toolbar selection replaces every other destination", () => {
+  assert.equal(
+    prependComposerDestination(
+      removeComposerDestinations(
+        "#Bryce-Canyon ask #everyone now",
+        ["Bryce-Canyon", "everyone", "new-agent"],
+      ),
+      "new-agent",
+    ),
+    "#new-agent ask now",
+  );
+});
+
+test("held Enter stays single-line without sending twice", () => {
+  const heldEnter = {
+    key: "Enter",
+    shiftKey: false,
+    isComposing: false,
+    repeat: true,
+  };
+  assert.equal(shouldConsumeComposerKey(heldEnter), true);
+  assert.equal(shouldSendComposerKey(heldEnter), false);
+  assert.equal(
+    shouldConsumeComposerKey({ ...heldEnter, shiftKey: true }),
+    false,
+  );
+  assert.equal(
+    shouldConsumeComposerKey({ ...heldEnter, isComposing: true }),
+    false,
   );
 });
 
