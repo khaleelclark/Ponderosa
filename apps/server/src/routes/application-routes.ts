@@ -80,7 +80,7 @@ type ApplicationRoutesContext =
     "projectDeletionInProgress" | "agentDeletionInProgress" | "attachmentDeletionInProgress" |
     "assetReconciliationInProgress" | "assetMetadata"> &
   Omit<Parameters<typeof registerAttachmentRoutes>[1], "agentDeletionInProgress"> &
-  Parameters<typeof registerAgentCreationRoutes>[1] &
+  Omit<Parameters<typeof registerAgentCreationRoutes>[1], "dataDir"> &
   Omit<Parameters<typeof registerAgentPackageRoutes>[1], "dataDir" | "coordination"> &
   Omit<Parameters<typeof registerAgentMaintenanceRoutes>[1], "workingCopies"> &
   Omit<Parameters<typeof registerAgentMessageRunRoute>[1],
@@ -294,6 +294,22 @@ export function registerApplicationRoutes(
     drainDeploymentIdleAuthorities,
     workingCopies,
   } = context;
+
+const quarantinedAgentPathId = (url: string): string | undefined => {
+  const pathname = url.split("?", 1)[0] ?? "";
+  const match = /^\/api\/agents\/([^/]+)(?:\/|$)/u.exec(pathname)
+    ?? /^\/api\/projects\/[^/]+\/agents\/([^/]+)(?:\/|$)/u.exec(pathname)
+    ?? /^\/api\/agent-directory\/([^/]+)(?:\/|$)/u.exec(pathname);
+  if (!match) return undefined;
+  try { return decodeURIComponent(match[1]!); } catch { return undefined; }
+};
+
+app.addHook("preHandler", async (request, reply) => {
+  const agentId = quarantinedAgentPathId(request.url);
+  if (agentId && store.agentCreationPending(agentId)) {
+    return reply.code(404).send({ error: "agent not found" });
+  }
+});
 registerLinkPreviewRoutes(app);
 
 registerProjectRoutes(app, {
@@ -497,6 +513,7 @@ registerAgentPresetRoutes(app, {
 });
 
 registerAgentCreationRoutes(app, {
+  dataDir: opts.dataDir,
   store,
   coordinationV3,
   workspace,

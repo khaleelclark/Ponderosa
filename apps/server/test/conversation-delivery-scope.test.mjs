@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 import Fastify from "fastify";
+import {
+  publishManagedArtifactContentAsync,
+  readManagedArtifactContent,
+} from "@ponderosa/agents";
 import {
   conversationDeliveryRequestFingerprint,
   registerConversationDeliveryRoutes,
@@ -28,6 +35,8 @@ function agentCreationJournal() {
   const normalizePatch = (patch) => ({
     ...(patch.status !== undefined ? { status: patch.status } : {}),
     ...(patch.communicationEventId !== undefined ? { communicationEventId: patch.communicationEventId } : {}),
+    ...(patch.artifactIds !== undefined ? { artifactIds: patch.artifactIds } : {}),
+    ...(patch.artifactIdentities !== undefined ? { artifactIdentities: patch.artifactIdentities } : {}),
     ...(patch.result !== undefined ? { result: patch.result } : {}),
     ...(patch.lastError !== undefined ? { lastError: patch.lastError } : {}),
   });
@@ -40,6 +49,7 @@ function agentCreationJournal() {
         status: "preparing",
         agentIds: [],
         artifactIds: [],
+        artifactIdentities: [],
         communicationEventId: undefined,
         result: undefined,
         lastError: null,
@@ -145,8 +155,11 @@ test("new Agents remain quarantined while opening assets are staged", async (t) 
 });
 
 function agentCreationTransactionApp({
+  dataDir = "/tmp",
   stage = async () => { throw new Error("unexpected attachment stage"); },
+  prepareUserCommunicationText = async ({ text }) => ({ publishedText: text }),
   recordRuntimeCommunication = () => { throw new Error("unexpected opening communication"); },
+  reconcileRuntimeCommunicationProjections = async () => 1,
 } = {}) {
   const chat = { id: "chat-a", projectId: "project-a", archived: false };
   const project = { id: chat.projectId, defaultEngine: "codex" };
@@ -164,6 +177,7 @@ function agentCreationTransactionApp({
   const deletingAgentIds = new Set();
   const app = Fastify();
   registerAgentCreationRoutes(app, {
+    dataDir,
     store: {
       ...agentCreationJournal(),
       getProject: () => project,
@@ -193,6 +207,8 @@ function agentCreationTransactionApp({
         return true;
       },
       associate: async () => [],
+      authoritativeRuntimeArtifactMetadataById: () => undefined,
+      removeRuntimeArtifactReservation: () => false,
     },
     drafts: {
       normalizedOwner: () => "owner-a",
@@ -211,7 +227,10 @@ function agentCreationTransactionApp({
     agentCreationConversationLeases: new Map(),
     agentDeliveryLeases: new Map(),
     cachedModelOptions: () => [],
-    prepareUserCommunicationText: async ({ text }) => ({ publishedText: text }),
+    prepareUserCommunicationText,
+    reconcileRuntimeCommunicationProjections,
+    publishMessageDeliveryChanged: () => {},
+    notifyScheduler: () => {},
   });
   return { agent, app, deletingAgentIds, removed, wasDeleted: () => deleted };
 }
@@ -273,6 +292,72 @@ test("a failed post-create opening rolls back the partial Agent", async (t) => {
   assert.equal(wasDeleted(), true);
   assert.deepEqual(removed, ["opening-asset"]);
   assert.equal(deletingAgentIds.has(agent.id), false);
+});
+
+test("a failed Agent opening removes its exact pre-canonical managed artifact", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-agent-opening-"));
+  const content = Buffer.from("durable opening text");
+  const identity = {
+    id: "opening-long-text",
+    byteLength: content.length,
+    sha256: createHash("sha256").update(content).digest("hex"),
+  };
+  const { app } = agentCreationTransactionApp({
+    dataDir,
+    prepareUserCommunicationText: async ({ beforeArtifactPublish }) => {
+      beforeArtifactPublish(identity);
+      await publishManagedArtifactContentAsync(dataDir, "project-a", identity.id, content);
+      return { publishedText: "[Opening text]" };
+    },
+    recordRuntimeCommunication: () => { throw new Error("runtime intake failed"); },
+  });
+  t.after(async () => { await app.close(); await rm(dataDir, { recursive: true, force: true }); });
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/projects/project-a/agents",
+    payload: {
+      title: "Agent A",
+      engine: "codex",
+      conversationId: "chat-a",
+      initialMessage: "long opening",
+    },
+  });
+  assert.equal(response.statusCode, 409);
+  assert.equal(readManagedArtifactContent(
+    dataDir,
+    "project-a",
+    identity.id,
+    identity.byteLength,
+    identity.sha256,
+  ), undefined);
+});
+
+test("a committed Agent stays quarantined while projection recovery is pending", async (t) => {
+  const { agent, app, deletingAgentIds } = agentCreationTransactionApp({
+    recordRuntimeCommunication: () => {},
+    reconcileRuntimeCommunicationProjections: async () => {
+      throw new Error("projection unavailable");
+    },
+  });
+  t.after(() => app.close());
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/projects/project-a/agents",
+    payload: {
+      title: "Agent A",
+      engine: "codex",
+      conversationId: "chat-a",
+      initialMessage: "start work",
+    },
+  });
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(response.json(), {
+    committed: true,
+    recovering: true,
+    operationId: "creation-operation-a",
+    agentId: agent.id,
+  });
+  assert.equal(deletingAgentIds.has(agent.id), true);
 });
 
 function agentMessageValidationApp({ assetMetadata = async () => undefined } = {}) {

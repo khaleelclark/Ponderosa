@@ -569,6 +569,7 @@ export function AllChatView({
       const createdNames = [...validAgents.values()].map(agent => agent.title);
       const createdAgentIds: string[] = [];
       const createdTitles: string[] = [];
+      let creationRecovering = false;
       let deliveredRecipientIds: string[] = [];
       let unavailableCount = 0;
       if (newAgentRequested && !creationConversation) {
@@ -590,7 +591,8 @@ export function AllChatView({
           } : {}),
           idempotencyKey: `${requestId}:new-agent:0`,
         });
-        createdAgentIds.push(created.id);
+        if ("recovering" in created) creationRecovering = true;
+        else createdAgentIds.push(created.id);
       }
       if (recipientIds.length > 0) {
         const conversationId = recipientConversationIds[0];
@@ -629,6 +631,7 @@ export function AllChatView({
           ...createdTitles,
         ],
         unavailableCount,
+        creationRecovering,
       };
     },
     onSuccess: result => {
@@ -637,7 +640,9 @@ export function AllChatView({
       directSendConfirmationSequence.current += 1;
       setDirectSendConfirmation({
         id: directSendConfirmationSequence.current,
-        text: `Message sent to ${result.recipientTitles.join(", ")}.${result.unavailableCount
+        text: result.creationRecovering
+          ? "Agent creation is committed and recovery is finishing. It will appear when ready."
+          : `Message sent to ${result.recipientTitles.join(", ")}.${result.unavailableCount
           ? ` ${result.unavailableCount} unavailable recipient${result.unavailableCount === 1 ? " was" : "s were"} skipped.`
           : ""}`,
       });

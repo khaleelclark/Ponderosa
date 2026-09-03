@@ -127,6 +127,12 @@ export type AgentCreationOperationStatus =
   | "rolling_back"
   | "rolled_back";
 
+export interface AgentCreationArtifactIdentity {
+  id: string;
+  byteLength: number;
+  sha256: string;
+}
+
 export interface AgentCreationOperation {
   id: string;
   projectId: string;
@@ -137,6 +143,7 @@ export interface AgentCreationOperation {
   status: AgentCreationOperationStatus;
   agentIds: string[];
   artifactIds: string[];
+  artifactIdentities: AgentCreationArtifactIdentity[];
   communicationEventId?: string;
   result?: unknown;
   lastError?: string;
@@ -743,7 +750,8 @@ export class AgentStore extends AgentEventSessionFacade {
           this.client.prepare(`
             UPDATE agent_creation_operations
             SET status = 'preparing', communication_event_id = NULL, result_json = NULL,
-              artifact_ids_json = '[]', last_error = NULL, updated_at = ? WHERE id = ?
+              artifact_ids_json = '[]', artifact_identities_json = '[]', last_error = NULL,
+              updated_at = ? WHERE id = ?
           `).run(new Date().toISOString(), id);
         })();
         return { operation: this.getAgentCreationOperation(id)!, replayed: false };
@@ -768,12 +776,13 @@ export class AgentStore extends AgentEventSessionFacade {
   getAgentCreationOperation(id: string): AgentCreationOperation | undefined {
     const row = this.client.prepare(`
       SELECT id, project_id, actor_scope, kind, idempotency_key, payload_hash, status,
-        communication_event_id, artifact_ids_json, result_json, last_error
+        communication_event_id, artifact_ids_json, artifact_identities_json, result_json, last_error
       FROM agent_creation_operations WHERE id = ?
     `).get(id) as {
       id: string; project_id: string; actor_scope: string; kind: AgentCreationOperation["kind"];
       idempotency_key: string; payload_hash: string; status: AgentCreationOperationStatus;
-      communication_event_id: string | null; artifact_ids_json: string; result_json: string | null; last_error: string | null;
+      communication_event_id: string | null; artifact_ids_json: string; artifact_identities_json: string;
+      result_json: string | null; last_error: string | null;
     } | undefined;
     if (!row) return undefined;
     const members = this.client.prepare(`
@@ -789,6 +798,7 @@ export class AgentStore extends AgentEventSessionFacade {
       status: row.status,
       agentIds: members.map((member) => member.agent_id),
       artifactIds: JSON.parse(row.artifact_ids_json) as string[],
+      artifactIdentities: JSON.parse(row.artifact_identities_json) as AgentCreationArtifactIdentity[],
       ...(row.communication_event_id ? { communicationEventId: row.communication_event_id } : {}),
       ...(row.result_json ? { result: JSON.parse(row.result_json) as unknown } : {}),
       ...(row.last_error ? { lastError: row.last_error } : {}),
@@ -820,6 +830,7 @@ export class AgentStore extends AgentEventSessionFacade {
       status?: AgentCreationOperationStatus;
       communicationEventId?: string | null;
       artifactIds?: readonly string[];
+      artifactIdentities?: readonly AgentCreationArtifactIdentity[];
       result?: unknown;
       lastError?: string | null;
     },
@@ -829,12 +840,14 @@ export class AgentStore extends AgentEventSessionFacade {
     const nextStatus = patch.status ?? current.status;
     this.client.prepare(`
       UPDATE agent_creation_operations
-      SET status = ?, communication_event_id = ?, artifact_ids_json = ?, result_json = ?, last_error = ?, updated_at = ?
+      SET status = ?, communication_event_id = ?, artifact_ids_json = ?, artifact_identities_json = ?,
+        result_json = ?, last_error = ?, updated_at = ?
       WHERE id = ?
     `).run(
       nextStatus,
       patch.communicationEventId === undefined ? current.communicationEventId ?? null : patch.communicationEventId,
       JSON.stringify(patch.artifactIds ?? current.artifactIds),
+      JSON.stringify(patch.artifactIdentities ?? current.artifactIdentities),
       patch.result === undefined ? current.result === undefined ? null : JSON.stringify(current.result) : JSON.stringify(patch.result),
       patch.lastError === undefined ? current.lastError ?? null : patch.lastError,
       new Date().toISOString(),

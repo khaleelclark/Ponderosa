@@ -153,6 +153,8 @@ export interface AgentImportOperationDto {
   id: string;
   /** Stable client submission identity; exact transport retries reuse one operation. */
   requestId: string;
+  /** SHA-256 of the exact submitted payload bound to requestId. */
+  payloadHash: string;
   projectId: string;
   sourceLabel: string;
   phase: AgentImportPhase;
@@ -162,6 +164,14 @@ export interface AgentImportOperationDto {
   result?: ImportAgentPackageResponse;
   error?: string;
 }
+
+export interface AgentCreationRecoveryDto {
+  committed: true;
+  recovering: true;
+  operationId: string;
+  agentId: string;
+}
+export type CreateAgentResponse = AgentDto | AgentCreationRecoveryDto;
 
 export interface AgentRoleProfile {
   role: string;

@@ -43,6 +43,7 @@ const schemaExtensions = [
   "0007_structured_provider_failure_state.sql",
   "0008_public_activation_provider_failures.sql",
   "0009_agent_creation_operations.sql",
+  "0010_agent_creation_artifact_identities.sql",
 ] as const;
 const schemaVersionTable = "_schema_version";
 const contextRolloverAtomicityMigration = "0005_context_rollover_atomicity.ts";

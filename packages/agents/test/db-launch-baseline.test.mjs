@@ -38,6 +38,7 @@ test("creates the canonical launch baseline for a fresh database", () => {
         "0008_public_activation_provider_failures.sql",
         "0009_agent_creation_operations.sql",
         "0009_public_provider_request_updates.ts",
+        "0010_agent_creation_artifact_identities.sql",
         "0010_provider_activation_execution_payloads.ts",
         "0011_nested_provider_activation_execution_payloads.ts",
         "0012_context_rollover_failure_provenance.ts",

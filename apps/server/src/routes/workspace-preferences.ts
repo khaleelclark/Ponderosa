@@ -97,7 +97,12 @@ export function registerWorkspacePreferenceRoutes(
       if (!Number.isInteger(limit) || limit < 1 || limit > 1_000) {
         return reply.code(400).send({ error: "limit must be an integer between 1 and 1000" });
       }
-      return workspace.listResourceRecency(limit);
+      const recency = workspace.listResourceRecency(limit);
+      return {
+        ...recency,
+        resources: recency.resources.filter((resource) =>
+          resource.kind !== "agent" || !store.agentCreationPending(resource.resourceId)),
+      };
     },
   );
 
@@ -124,7 +129,7 @@ export function registerWorkspacePreferenceRoutes(
         : kind === "conversation"
           ? Boolean(store.getConversation(resourceId))
           : kind === "agent"
-            ? Boolean(store.getAgent(resourceId))
+            ? Boolean(store.getAgent(resourceId)) && !store.agentCreationPending(resourceId)
             : Boolean(coordinationV3.getTriggerDefinition(resourceId));
       if (!exists) {
         return reply.code(404).send({ error: "workspace resource not found" });

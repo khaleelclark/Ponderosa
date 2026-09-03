@@ -303,6 +303,13 @@ export class AgentCatalogAuthority {
       SELECT id, title
       FROM agents
       WHERE deleted_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM agent_creation_operation_members AS members
+          JOIN agent_creation_operations AS operations ON operations.id = members.operation_id
+          WHERE members.agent_id = agents.id
+            AND operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+        )
         AND id IN (${placeholders})
     `).all(...distinctAgentIds) as Array<{ id: string; title: string }>;
     return new Map(rows.map((row) => [row.id, row.title] as const));

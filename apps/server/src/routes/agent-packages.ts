@@ -16,6 +16,7 @@ import type {
 import {
   openManagedArtifactContent,
   publishManagedArtifactContentsAsync,
+  readManagedArtifactContent,
   removeManagedArtifactContent,
   type AgentStore,
   type CoordinationV3Store,
@@ -110,9 +111,19 @@ export function registerAgentPackageRoutes(
   };
   const requestOperationKey = (projectId: string, requestId: string) =>
     `${projectId}:${requestId}`;
+  const validIdempotencyKey = (value: string | undefined): string | undefined => {
+    const key = value?.trim();
+    return key && /^[A-Za-z0-9_-]{8,128}$/u.test(key) ? key : undefined;
+  };
   const writeOperation = async (operation: AgentImportOperationDto): Promise<void> => {
     await fs.mkdir(importOperationDirectory, { recursive: true });
-    const temporary = `${operationPath(operation.id)}.${randomUUID()}.tmp`;
+    const finalPath = operationPath(operation.id);
+    const previous = await fs.readFile(finalPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    const temporary = `${finalPath}.${randomUUID()}.tmp`;
+    let installed = false;
     try {
       const handle = await fs.open(temporary, "wx", 0o600);
       try {
@@ -121,13 +132,46 @@ export function registerAgentPackageRoutes(
       } finally {
         await handle.close();
       }
-      await fs.rename(temporary, operationPath(operation.id));
+      await fs.rename(temporary, finalPath);
+      installed = true;
       if (process.platform !== "win32") {
         const directory = await fs.open(importOperationDirectory, "r");
         try { await directory.sync(); } finally { await directory.close(); }
       }
     } catch (error) {
       await fs.unlink(temporary).catch(() => undefined);
+      if (installed) {
+        try {
+          if (previous) {
+            const rollback = `${finalPath}.${randomUUID()}.tmp`;
+            const handle = await fs.open(rollback, "wx", 0o600);
+            try {
+              await handle.writeFile(previous);
+              await handle.sync();
+            } finally {
+              await handle.close();
+            }
+            await fs.rename(rollback, finalPath);
+          } else {
+            await fs.unlink(finalPath);
+          }
+          if (process.platform !== "win32") {
+            const directory = await fs.open(importOperationDirectory, "r");
+            try { await directory.sync(); } finally { await directory.close(); }
+          }
+        } catch (rollbackError) {
+          const recovered = await readOperation(operation.id).catch(() => undefined);
+          if (recovered && JSON.stringify(recovered) === JSON.stringify(operation)) {
+            operationCache.set(recovered.id, recovered);
+            operationByRequest.set(
+              requestOperationKey(recovered.projectId, recovered.requestId),
+              recovered.id,
+            );
+            return;
+          }
+          throw new AggregateError([error, rollbackError], "Import operation durability and rollback both failed");
+        }
+      }
       throw error;
     }
     operationCache.set(operation.id, operation);
@@ -156,6 +200,22 @@ export function registerAgentPackageRoutes(
           requestOperationKey(operation.projectId, operation.requestId),
           operation.id,
         );
+      }
+      const durableIds = new Set(operationCache.keys());
+      let cleaned = false;
+      for (const name of names) {
+        const payloadMatch = /^([0-9a-f-]{36})\.payload$/u.exec(name);
+        const temporary = name.endsWith(".tmp");
+        if (!temporary && (!payloadMatch ||
+            (durableIds.has(payloadMatch[1]!) &&
+              operationCache.get(payloadMatch[1]!)?.status === "pending"))) continue;
+        await fs.unlink(path.join(importOperationDirectory, name))
+          .then(() => { cleaned = true; })
+          .catch(() => undefined);
+      }
+      if (cleaned && process.platform !== "win32") {
+        const directory = await fs.open(importOperationDirectory, "r");
+        try { await directory.sync(); } finally { await directory.close(); }
       }
     });
   app.addContentTypeParser(
@@ -388,6 +448,7 @@ export function registerAgentPackageRoutes(
     reply: FastifyReply,
     onPhase?: (phase: AgentImportPhase) => Promise<void>,
     creationOperationId?: string,
+    creationRequest?: { idempotencyKey: string; payloadHash: string },
   ): Promise<unknown> => withProjectImportLock(projectId, async () => {
       let importBody: Record<string, unknown>;
       try {
@@ -428,14 +489,20 @@ export function registerAgentPackageRoutes(
         });
       }
       if (!creationOperationId) {
-        const operation = store.beginAgentCreationOperation({
-          projectId,
-          actorScope: "user:local-operator",
-          kind: "import",
-          idempotencyKey: randomUUID(),
-          payloadHash: createHash("sha256").update(JSON.stringify(body)).digest("hex"),
-        }).operation;
-        creationOperationId = operation.id;
+        if (!creationRequest) throw new Error("Agent import idempotency identity is required");
+        try {
+          creationOperationId = store.beginAgentCreationOperation({
+            projectId,
+            actorScope: "user:local-operator",
+            kind: "import",
+            idempotencyKey: creationRequest.idempotencyKey,
+            payloadHash: creationRequest.payloadHash,
+          }).operation.id;
+        } catch (error) {
+          return reply.code(409).send({
+            error: error instanceof Error ? error.message : "Agent import replay conflict",
+          });
+        }
       }
       const durableOperation = store.getAgentCreationOperation(creationOperationId);
       if (!durableOperation) throw new Error("Agent import creation operation is unavailable");
@@ -885,7 +952,8 @@ export function registerAgentPackageRoutes(
       };
       const removeUncataloguedPublications = (
         artifacts: readonly PlannedArtifact[],
-      ) => {
+      ): boolean => {
+        let removed = true;
         for (const artifact of artifacts) {
           if (store.getProjectArtifact(project.id, artifact.destinationId)) continue;
           try {
@@ -896,11 +964,18 @@ export function registerAgentPackageRoutes(
               artifact.data.length,
               artifact.sha256,
             );
+            if (readManagedArtifactContent(
+              context.dataDir,
+              project.id,
+              artifact.destinationId,
+              artifact.data.length,
+              artifact.sha256,
+            )) removed = false;
           } catch {
-            // Startup repair removes any exact, uncatalogued publication that
-            // could not be reclaimed here without obscuring the Chat conflict.
+            removed = false;
           }
         }
+        return removed;
       };
 
       // Every deterministic decision is complete before the first mutation.
@@ -926,6 +1001,11 @@ export function registerAgentPackageRoutes(
           });
           store.updateAgentCreationOperation(creationOperationId!, {
             artifactIds: plannedArtifacts.map((artifact) => artifact.destinationId),
+            artifactIdentities: plannedArtifacts.map((artifact) => ({
+              id: artifact.destinationId,
+              byteLength: artifact.data.length,
+              sha256: artifact.sha256,
+            })),
           });
         } else {
           if (creationOperation.agentIds.length !== importNodes.length) {
@@ -953,14 +1033,17 @@ export function registerAgentPackageRoutes(
 
       if (deletingProjectIds.has(project.id) ||
           !activeDestinationConversation()) {
-        removeUncataloguedPublications(plannedArtifacts);
-        abandonMutationFreeOperation(deletingProjectIds.has(project.id)
+        const rollbackComplete = removeUncataloguedPublications(plannedArtifacts);
+        const reason = deletingProjectIds.has(project.id)
           ? "Project deletion is already in progress"
-          : "The destination Chat is no longer active");
+          : "The destination Chat is no longer active";
+        if (rollbackComplete) abandonMutationFreeOperation(reason);
+        else store.updateAgentCreationOperation(durableOperation.id, {
+          status: "rolling_back",
+          lastError: `${reason}; published artifact cleanup remains pending`,
+        });
         return reply.code(409).send({
-          error: deletingProjectIds.has(project.id)
-            ? "Project deletion is already in progress"
-            : "The destination Chat is no longer active",
+          error: reason,
         });
       }
 
@@ -1080,7 +1163,9 @@ export function registerAgentPackageRoutes(
             if (catalogued) {
               store.deleteProjectArtifact(project.id, artifact.destinationId, "Agent import rolled back");
             }
-            if (!store.getProjectArtifact(project.id, artifact.destinationId)) {
+            if (store.getProjectArtifact(project.id, artifact.destinationId)) {
+              rollbackComplete = false;
+            } else {
               removeManagedArtifactContent(
                 context.dataDir,
                 project.id,
@@ -1088,6 +1173,13 @@ export function registerAgentPackageRoutes(
                 artifact.data.length,
                 artifact.sha256,
               );
+              if (readManagedArtifactContent(
+                context.dataDir,
+                project.id,
+                artifact.destinationId,
+                artifact.data.length,
+                artifact.sha256,
+              )) rollbackComplete = false;
             }
           } catch {
             rollbackComplete = false;
@@ -1113,11 +1205,21 @@ export function registerAgentPackageRoutes(
 
   app.post<{
     Params: { id: string };
+    Headers: { "idempotency-key"?: string };
     Body: ImportAgentPackageRequest;
   }>(
     "/api/projects/:id/import-agents",
     { bodyLimit: 1024 * 1024 },
-    (request, reply) => importPackage(request.params.id, request.body, reply),
+    (request, reply) => {
+      const idempotencyKey = validIdempotencyKey(request.headers["idempotency-key"]);
+      if (!idempotencyKey) {
+        return reply.code(400).send({ error: "a valid import idempotency key is required" });
+      }
+      return importPackage(request.params.id, request.body, reply, undefined, undefined, {
+        idempotencyKey,
+        payloadHash: createHash("sha256").update(JSON.stringify(request.body)).digest("hex"),
+      });
+    },
   );
 
   const runBackgroundImport = async (operationId: string): Promise<void> => {
@@ -1147,6 +1249,9 @@ export function registerAgentPackageRoutes(
     let retainPayloadForRecovery = false;
     try {
       const raw = await fs.readFile(payloadPath(operationId));
+      if (createHash("sha256").update(raw).digest("hex") !== operation.payloadHash) {
+        throw new Error("Import payload no longer matches its durable operation");
+      }
       const { metadata, portable } = await parsePortablePackageUpload(raw);
       await update({ sourceLabel: portable.sourceLabel.slice(0, 240) });
       const creationOperation = store.beginAgentCreationOperation({
@@ -1154,7 +1259,7 @@ export function registerAgentPackageRoutes(
         actorScope: "user:local-operator",
         kind: "import",
         idempotencyKey: operation.requestId,
-        payloadHash: createHash("sha256").update(raw).digest("hex"),
+        payloadHash: operation.payloadHash,
       }).operation;
       if (creationOperation.status === "completed" && creationOperation.result) {
         const result = creationOperation.result as ImportAgentPackageResponse;
@@ -1259,15 +1364,21 @@ export function registerAgentPackageRoutes(
       if (deletingProjectIds.has(request.params.id)) {
         return reply.code(409).send({ error: "Project deletion is already in progress" });
       }
-      const requestId = request.headers["idempotency-key"]?.trim();
-      if (!requestId || !/^[A-Za-z0-9_-]{8,128}$/u.test(requestId)) {
+      const requestId = validIdempotencyKey(request.headers["idempotency-key"]);
+      if (!requestId) {
         return reply.code(400).send({ error: "a valid import idempotency key is required" });
       }
       const requestKey = requestOperationKey(request.params.id, requestId);
+      const requestPayloadHash = createHash("sha256").update(request.body).digest("hex");
       const existingId = operationByRequest.get(requestKey);
       if (existingId) {
         const existing = operationCache.get(existingId) ?? await readOperation(existingId);
         if (existing) {
+          if (existing.payloadHash !== requestPayloadHash) {
+            return reply.code(409).send({
+              error: "Import idempotency key was reused with different input",
+            });
+          }
           return reply.code(existing.status === "pending" ? 202 : 200).send(existing);
         }
         operationByRequest.delete(requestKey);
@@ -1277,6 +1388,7 @@ export function registerAgentPackageRoutes(
       const operation: AgentImportOperationDto = {
         id,
         requestId,
+        payloadHash: requestPayloadHash,
         projectId: request.params.id,
         sourceLabel: "Agent import",
         phase: "queued",
@@ -1339,11 +1451,16 @@ export function registerAgentPackageRoutes(
 
   app.post<{
     Params: { id: string };
+    Headers: { "idempotency-key"?: string };
     Body: Buffer;
   }>(
     "/api/projects/:id/import-agent-package",
     { bodyLimit: 96 * 1024 * 1024 },
     async (request, reply) => {
+      const idempotencyKey = validIdempotencyKey(request.headers["idempotency-key"]);
+      if (!idempotencyKey) {
+        return reply.code(400).send({ error: "a valid import idempotency key is required" });
+      }
       try {
         const { metadata, portable } = await parsePortablePackageUpload(
           request.body,
@@ -1352,6 +1469,12 @@ export function registerAgentPackageRoutes(
           request.params.id,
           { ...metadata, package: portable },
           reply,
+          undefined,
+          undefined,
+          {
+            idempotencyKey,
+            payloadHash: createHash("sha256").update(request.body).digest("hex"),
+          },
         );
       } catch (error) {
         return reply.code(400).send({
@@ -1365,11 +1488,16 @@ export function registerAgentPackageRoutes(
 
   app.post<{
     Params: { id: string };
+    Headers: { "idempotency-key"?: string };
     Body: CopyAgentPackageRequest;
   }>(
     "/api/projects/:id/copy-agent",
     { bodyLimit: 64 * 1024 },
     async (request, reply) => {
+      const idempotencyKey = validIdempotencyKey(request.headers["idempotency-key"]);
+      if (!idempotencyKey) {
+        return reply.code(400).send({ error: "a valid import idempotency key is required" });
+      }
       if (!request.body || typeof request.body !== "object" || Array.isArray(request.body) ||
           Object.keys(request.body).some((key) => ![
             "sourceAgentId", "conversationId", "mode", "organization",
@@ -1425,6 +1553,12 @@ export function registerAgentPackageRoutes(
             : {}),
         },
         reply,
+        undefined,
+        undefined,
+        {
+          idempotencyKey,
+          payloadHash: createHash("sha256").update(JSON.stringify(request.body)).digest("hex"),
+        },
       );
     },
   );

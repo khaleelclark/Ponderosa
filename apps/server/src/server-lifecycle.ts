@@ -5,7 +5,11 @@ import type {
   CoordinationV3Store,
   WorkspaceStore,
 } from "@ponderosa/agents";
-import { repairManagedArtifactContent } from "@ponderosa/agents";
+import {
+  readManagedArtifactContent,
+  removeManagedArtifactContent,
+  repairManagedArtifactContent,
+} from "@ponderosa/agents";
 import type { ReadinessCheckDto } from "@ponderosa/core";
 import type { AssetStore } from "./assets.js";
 import {
@@ -303,11 +307,57 @@ export function registerServerLifecycle(
           const artifact = store.getProjectArtifact(operation.projectId, artifactId);
           if (artifact && artifact.originAgentId && operation.agentIds.includes(artifact.originAgentId)) {
             store.deleteProjectArtifact(operation.projectId, artifactId, "Agent creation recovery rolled back");
+            if (store.getProjectArtifact(operation.projectId, artifactId)) rolledBack = false;
           }
         } catch (error) {
           rolledBack = false;
           store.updateAgentCreationOperation(operation.id, {
             lastError: error instanceof Error ? error.message : "Agent creation artifact rollback failed",
+          });
+        }
+      }
+      for (const identity of operation.artifactIdentities) {
+        try {
+          const catalogued = store.getProjectArtifact(operation.projectId, identity.id);
+          if (catalogued && (!catalogued.originAgentId ||
+              !operation.agentIds.includes(catalogued.originAgentId))) {
+            continue;
+          }
+          if (catalogued) {
+            rolledBack = false;
+            continue;
+          }
+          const runtime = assets.authoritativeRuntimeArtifactMetadataById(
+            operation.projectId,
+            identity.id,
+          );
+          if (runtime && (runtime.byteLength !== identity.byteLength ||
+              runtime.blobHash !== identity.sha256)) {
+            continue;
+          }
+          if (runtime) {
+            assets.removeRuntimeArtifactReservation(operation.projectId, identity.id);
+          }
+          removeManagedArtifactContent(
+            opts.dataDir,
+            operation.projectId,
+            identity.id,
+            identity.byteLength,
+            identity.sha256,
+          );
+          if (readManagedArtifactContent(
+            opts.dataDir,
+            operation.projectId,
+            identity.id,
+            identity.byteLength,
+            identity.sha256,
+          )) {
+            rolledBack = false;
+          }
+        } catch (error) {
+          rolledBack = false;
+          store.updateAgentCreationOperation(operation.id, {
+            lastError: error instanceof Error ? error.message : "Agent creation artifact bytes remain quarantined",
           });
         }
       }

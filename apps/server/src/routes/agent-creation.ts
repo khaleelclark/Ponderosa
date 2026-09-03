@@ -4,11 +4,14 @@ import type {
   CommunicationEvent,
   ModelOption,
 } from "@ponderosa/core";
-import type {
-  AgentStore,
-  CoordinationV3Store,
-  StoredLogEvent,
-  WorkspaceStore,
+import {
+  readManagedArtifactContent,
+  removeManagedArtifactContent,
+  type AgentCreationArtifactIdentity,
+  type AgentStore,
+  type CoordinationV3Store,
+  type StoredLogEvent,
+  type WorkspaceStore,
 } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
 import { MAX_ATTACHMENTS_PER_MESSAGE, type EngineRegistration } from "../app-contracts.js";
@@ -25,6 +28,7 @@ import type { DraftService } from "./drafts.js";
 type CommunicationArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>;
 
 interface AgentCreationRoutesContext {
+  dataDir: string;
   store: AgentStore;
   coordinationV3: CoordinationV3Store;
   workspace: WorkspaceStore;
@@ -69,6 +73,7 @@ export function registerAgentCreationRoutes(
     agentCreationConversationLeases,
     agentDeliveryLeases,
     cachedModelOptions,
+    dataDir,
     prepareUserCommunicationText,
     runtimeArtifactMetadata,
     publishMessageDeliveryChanged,
@@ -246,7 +251,7 @@ export function registerAgentCreationRoutes(
             committed: true,
             recovering: true,
             operationId: creationOperation.id,
-            ...(creationOperation.result as Record<string, unknown>),
+            agentId: creationOperation.agentIds[0],
           });
         }
       }
@@ -350,8 +355,10 @@ export function registerAgentCreationRoutes(
         [agent.id, ...(agent.managerAgentId ? [agent.managerAgentId] : [])],
       );
       const openingAttachments: AssetDto[] = [];
+      let openingArtifactIdentity: AgentCreationArtifactIdentity | undefined;
       let openingCommitted = false;
       let rollbackCompleted = false;
+      let creationSettled = false;
       try {
         for (const attachment of draftAttachments as NonNullable<(typeof draftAttachments)[number]>[]) {
           const staged = await assets.stage({
@@ -370,6 +377,13 @@ export function registerAgentCreationRoutes(
           communicationId: openingEventId,
           text: initialMessage,
           createdAt: openingCreatedAt,
+          beforeArtifactPublish: (identity) => {
+            openingArtifactIdentity = identity;
+            store.updateAgentCreationOperation(creationOperation.id, {
+              artifactIds: [identity.id],
+              artifactIdentities: [identity],
+            });
+          },
         });
       }
       let managedOpening: { requestIds: string[]; joinId?: string } | undefined;
@@ -494,6 +508,7 @@ export function registerAgentCreationRoutes(
         lastError: null,
       });
       openingCommitted = true;
+      creationSettled = true;
       return creationResult;
       } catch (error) {
         if (openingCommitted) {
@@ -504,6 +519,7 @@ export function registerAgentCreationRoutes(
               allowQuarantinedAgentIds: new Set([agent.id]),
             });
             store.updateAgentCreationOperation(creationOperation.id, { status: "completed", lastError: null });
+            creationSettled = true;
             const recovered = store.getAgentCreationOperation(creationOperation.id)?.result;
             return { ...(recovered as Record<string, unknown>), replayed: true };
           } catch (recoveryError) {
@@ -514,12 +530,41 @@ export function registerAgentCreationRoutes(
               committed: true,
               recovering: true,
               operationId: creationOperation.id,
-              ...(store.getAgentCreationOperation(creationOperation.id)?.result as Record<string, unknown>),
+              agentId: agent.id,
             });
           }
         }
         await Promise.allSettled(openingAttachments.map((attachment) =>
           assets.remove(agent.projectId, agent.id, attachment.id)));
+        if (openingArtifactIdentity) {
+          const runtime = assets.authoritativeRuntimeArtifactMetadataById(
+            agent.projectId,
+            openingArtifactIdentity.id,
+          );
+          if (runtime && runtime.byteLength === openingArtifactIdentity.byteLength &&
+              runtime.blobHash === openingArtifactIdentity.sha256) {
+            assets.removeRuntimeArtifactReservation(agent.projectId, openingArtifactIdentity.id);
+          }
+          removeManagedArtifactContent(
+            dataDir,
+            agent.projectId,
+            openingArtifactIdentity.id,
+            openingArtifactIdentity.byteLength,
+            openingArtifactIdentity.sha256,
+          );
+          if (readManagedArtifactContent(
+            dataDir,
+            agent.projectId,
+            openingArtifactIdentity.id,
+            openingArtifactIdentity.byteLength,
+            openingArtifactIdentity.sha256,
+          )) {
+            throw new AggregateError(
+              [error],
+              "Agent opening failed and its managed message artifact remains quarantined",
+            );
+          }
+        }
         try {
           rollbackCompleted = store.deleteAgent(
             agent.id,
@@ -541,13 +586,14 @@ export function registerAgentCreationRoutes(
           status: "rolled_back",
           lastError: error instanceof Error ? error.message : "Agent opening could not be committed",
         });
+        creationSettled = true;
         const status = error instanceof AssetError ? error.statusCode : 409;
         return reply.code(status).send({
           error: error instanceof Error ? error.message : "Agent opening could not be committed",
         });
       } finally {
         releaseAgentDelivery();
-        if (openingCommitted || rollbackCompleted) deletingAgentIds.delete(agent.id);
+        if (creationSettled) deletingAgentIds.delete(agent.id);
       }
       } finally {
         const remaining = (agentCreationConversationLeases.get(

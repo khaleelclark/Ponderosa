@@ -113,6 +113,7 @@ import type {
   UpdateAgentOrganizationRequest,
   UpdateAgentPresetRequest,
   UpdateAgentRequest,
+  CreateAgentResponse,
   UpdateConversationRequest,
   UpdateProjectRequest,
   UpdateTriggerRequest,
@@ -618,13 +619,13 @@ export const realApi = {
       };
     }
   },
-  createAgentRecord(projectId: string, request: CreateAgentRequest): Promise<AgentDto> {
-    return requestJson<AgentDto>(`/api/projects/${encodeURIComponent(projectId)}/agents`, {
+  createAgentRecord(projectId: string, request: CreateAgentRequest): Promise<CreateAgentResponse> {
+    return requestJson<CreateAgentResponse>(`/api/projects/${encodeURIComponent(projectId)}/agents`, {
       method: "POST",
       body: JSON.stringify(request satisfies CreateAgentRequest),
     });
   },
-  createAgent(projectId: string, conversationId: string, options: CreateAgentOptions): Promise<AgentDto> {
+  createAgent(projectId: string, conversationId: string, options: CreateAgentOptions): Promise<CreateAgentResponse> {
     return this.createAgentRecord(projectId, {
       title: options.title,
       engine: options.engine as CreateAgentRequest["engine"],
@@ -707,13 +708,18 @@ export const realApi = {
   agentExportDownloadUrl(agentId: string, mode: AgentExportMode, organization: boolean = false): string {
     return `/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), download: 1 })}`;
   },
-  importAgents(projectId: string, request: ImportAgentPackageRequest): Promise<ImportAgentPackageResponse> {
-    return requestJson<ImportAgentPackageResponse>(`/api/projects/${encodeURIComponent(projectId)}/import-agents`, { method: "POST", body: JSON.stringify(request satisfies ImportAgentPackageRequest) });
+  importAgents(projectId: string, request: ImportAgentPackageRequest, requestId = crypto.randomUUID()): Promise<ImportAgentPackageResponse> {
+    return requestJson<ImportAgentPackageResponse>(`/api/projects/${encodeURIComponent(projectId)}/import-agents`, {
+      method: "POST",
+      headers: { "idempotency-key": requestId },
+      body: JSON.stringify(request satisfies ImportAgentPackageRequest),
+    });
   },
   importAgentPackageBlob(
     projectId: string,
     packageBlob: Blob,
     metadata: Omit<ImportAgentPackageRequest, "package">,
+    requestId = crypto.randomUUID(),
   ): Promise<ImportAgentPackageResponse> {
     const body = new Blob(
       [`${JSON.stringify(metadata)}\n`, packageBlob],
@@ -723,7 +729,7 @@ export const realApi = {
       `/api/projects/${encodeURIComponent(projectId)}/import-agent-package`,
       {
         method: "POST",
-        headers: { "content-type": body.type },
+        headers: { "content-type": body.type, "idempotency-key": requestId },
         body,
       },
     );
@@ -758,11 +764,13 @@ export const realApi = {
   copyAgent(
     projectId: string,
     request: CopyAgentPackageRequest,
+    requestId = crypto.randomUUID(),
   ): Promise<ImportAgentPackageResponse> {
     return requestJson<ImportAgentPackageResponse>(
       `/api/projects/${encodeURIComponent(projectId)}/copy-agent`,
       {
         method: "POST",
+        headers: { "idempotency-key": requestId },
         body: JSON.stringify(request satisfies CopyAgentPackageRequest),
       },
     );

@@ -76,6 +76,7 @@ export function createCommunicationArtifactAuthority(context: CommunicationArtif
     originAgentId?: string;
     executionId?: string;
     createdAt: string;
+    beforePublish?: (identity: { id: string; byteLength: number; sha256: string }) => void;
   }): Promise<PreparedCommunicationArtifact> => {
     const content = Buffer.from(input.content, "utf8");
     if (content.length > LONG_TEXT_MAX_UTF8_BYTES) {
@@ -84,6 +85,11 @@ export function createCommunicationArtifactAuthority(context: CommunicationArtif
     const id = `text-${createHash("sha256")
       .update(`${input.communicationId}\0${input.role}`)
       .digest("hex")}`;
+    input.beforePublish?.({
+      id,
+      byteLength: content.length,
+      sha256: createHash("sha256").update(content).digest("hex"),
+    });
     const published = await publishManagedArtifactContentAsync(
       dataDir,
       input.projectId,
@@ -154,6 +160,7 @@ export function createCommunicationArtifactAuthority(context: CommunicationArtif
     communicationId: string;
     text: string;
     createdAt: string;
+    beforeArtifactPublish?: (identity: { id: string; byteLength: number; sha256: string }) => void;
   }): Promise<{
     canonicalText: string;
     publishedText: string;
@@ -174,6 +181,7 @@ export function createCommunicationArtifactAuthority(context: CommunicationArtif
       title: "Pasted text",
       content: canonicalText,
       createdAt: input.createdAt,
+      beforePublish: input.beforeArtifactPublish,
     });
     const preview = boundedUtf8Preview(
       Buffer.from(canonicalText, "utf8"),

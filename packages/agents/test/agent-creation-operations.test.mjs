@@ -36,6 +36,11 @@ test("creation operations preserve exact members and completed replay across res
     status: "canonical_committed",
     communicationEventId: "communication-1",
     artifactIds: ["artifact-1"],
+    artifactIdentities: [{
+      id: "artifact-1",
+      byteLength: 12,
+      sha256: "a".repeat(64),
+    }],
     result: { agent: { id: "agent-1" }, requestId: "request-1" },
   });
   assert.deepEqual(store.listRecoverableAgentCreationOperations().map((item) => item.agentIds), [["agent-1"]]);
@@ -49,6 +54,11 @@ test("creation operations preserve exact members and completed replay across res
     assert.equal(replay.operation.status, "completed");
     assert.deepEqual(replay.operation.agentIds, ["agent-1"]);
     assert.deepEqual(replay.operation.artifactIds, ["artifact-1"]);
+    assert.deepEqual(replay.operation.artifactIdentities, [{
+      id: "artifact-1",
+      byteLength: 12,
+      sha256: "a".repeat(64),
+    }]);
     assert.deepEqual(replay.operation.result, { agent: { id: "agent-1" }, requestId: "request-1" });
     assert.throws(
       () => reopened.beginAgentCreationOperation({ ...operation, payloadHash: "payload-b" }),
@@ -74,6 +84,7 @@ test("rolled-back operations restart cleanly without survivor members", () => {
     assert.equal(retry.operation.status, "preparing");
     assert.deepEqual(retry.operation.agentIds, []);
     assert.deepEqual(retry.operation.artifactIds, []);
+    assert.deepEqual(retry.operation.artifactIdentities, []);
     assert.equal(retry.operation.lastError, undefined);
   } finally {
     store.close();
@@ -101,12 +112,14 @@ test("preparing creation members are quarantined from ordinary Agent scheduling 
     assert.equal(store.agentCreationPending(agentId), true);
     assert.deepEqual(store.listAgents(project.id), []);
     assert.deepEqual(store.listAgentEngineAssignments().filter((item) => item.id === agentId), []);
+    assert.equal(store.getAgentTitleProjection([agentId]).has(agentId), false);
     assert.deepEqual(store.listAgents(project.id, { includePendingCreation: true }).map((item) => item.id), [agentId]);
 
     store.updateAgentCreationOperation(begun.operation.id, { status: "completed", result: { agentId } });
     assert.equal(store.agentCreationPending(agentId), false);
     assert.deepEqual(store.listAgents(project.id).map((item) => item.id), [agentId]);
     assert.deepEqual(store.listAgentEngineAssignments().filter((item) => item.id === agentId).map((item) => item.id), [agentId]);
+    assert.equal(store.getAgentTitleProjection([agentId]).get(agentId), "Hidden until committed");
   } finally {
     store.close();
   }

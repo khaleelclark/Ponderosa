@@ -137,13 +137,17 @@ export function useConversationMessagingController({
           idempotencyKey,
         },
       );
-      setActiveOperation({ agentIds: [agent.id], state: "starting" });
+      setActiveOperation("recovering" in agent
+        ? undefined
+        : { agentIds: [agent.id], state: "starting" });
       return agent;
     },
     onSuccess: agent => {
       invalidate();
       setQueuedMessageNotice(undefined);
-      setSpawnNotice(`Created ${agent.title} and started its first Run.`);
+      setSpawnNotice("recovering" in agent
+        ? "Agent creation is committed and recovery is finishing. It will appear when ready."
+        : `Created ${agent.title} and started its first Run.`);
     },
   });
 
@@ -495,7 +499,7 @@ export function useConversationMessagingController({
         title,
         idempotencyKey: `${requestId}:new-agent:0`,
       });
-      createdAgentIds.push(created.id);
+      if (!("recovering" in created)) createdAgentIds.push(created.id);
     }
     if (broadcastText !== undefined) {
       if (!broadcastText && files.length === 0) {

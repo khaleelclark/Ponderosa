@@ -230,6 +230,12 @@ export function AgentCreateForm({
         initialMessage: initialMessage.trim() || undefined,
       }),
     onSuccess: agent => {
+      if ("recovering" in agent) {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.agents.project(projectId),
+        });
+        return;
+      }
       queryClient.setQueryData<AgentDto[]>(
         queryKeys.agents.project(projectId),
         (current = []) =>
@@ -427,6 +433,11 @@ export function AgentCreateForm({
       ) : null}
       {create.isError ? (
         <Alert severity="error">{String(create.error)}</Alert>
+      ) : null}
+      {create.data && "recovering" in create.data ? (
+        <Alert severity="info">
+          Agent creation is committed and recovery is finishing. It will appear when ready.
+        </Alert>
       ) : null}
       <Stack direction="row" spacing={1} sx={{
         justifyContent: "flex-end",
