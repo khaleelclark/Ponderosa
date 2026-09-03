@@ -23,10 +23,43 @@ interface CommunicationArtifactContext {
   store: AgentStore;
 }
 
+type CommunicationArtifactIdentity = Omit<
+  PreparedCommunicationArtifact,
+  "createdAt" | "reservationCreated"
+>;
+
+export function communicationArtifactIdentity(input: {
+  communicationId: string;
+  role: PreparedCommunicationArtifact["role"];
+  title: string;
+  content: string;
+  originAgentId?: string;
+  executionId?: string;
+}): CommunicationArtifactIdentity {
+  const content = Buffer.from(input.content, "utf8");
+  if (content.length > LONG_TEXT_MAX_UTF8_BYTES) {
+    throw new AssetError(413, "long text exceeds the 8 MiB limit");
+  }
+  const id = `text-${createHash("sha256")
+    .update(`${input.communicationId}\0${input.role}`)
+    .digest("hex")}`;
+  return {
+    id,
+    role: input.role,
+    title: input.title,
+    mediaType: "text/markdown",
+    blobPath: id,
+    blobHash: createHash("sha256").update(content).digest("hex"),
+    byteLength: content.length,
+    ...(input.originAgentId ? { originAgentId: input.originAgentId } : {}),
+    ...(input.executionId ? { executionId: input.executionId } : {}),
+  };
+}
+
 export function createCommunicationArtifactAuthority(context: CommunicationArtifactContext) {
   const { dataDir, assets, store } = context;
 
-  const runtimeArtifactMetadata = (artifact: PreparedCommunicationArtifact) => ({
+  const runtimeArtifactMetadata = (artifact: CommunicationArtifactIdentity) => ({
     id: artifact.id,
     role: artifact.role,
     title: artifact.title,
@@ -79,35 +112,22 @@ export function createCommunicationArtifactAuthority(context: CommunicationArtif
     beforePublish?: (identity: { id: string; byteLength: number; sha256: string }) => void;
   }): Promise<PreparedCommunicationArtifact> => {
     const content = Buffer.from(input.content, "utf8");
-    if (content.length > LONG_TEXT_MAX_UTF8_BYTES) {
-      throw new AssetError(413, "long text exceeds the 8 MiB limit");
-    }
-    const id = `text-${createHash("sha256")
-      .update(`${input.communicationId}\0${input.role}`)
-      .digest("hex")}`;
+    const identity = communicationArtifactIdentity(input);
     input.beforePublish?.({
-      id,
-      byteLength: content.length,
-      sha256: createHash("sha256").update(content).digest("hex"),
+      id: identity.id,
+      byteLength: identity.byteLength,
+      sha256: identity.blobHash,
     });
     const published = await publishManagedArtifactContentAsync(
       dataDir,
       input.projectId,
-      id,
+      identity.id,
       content,
     );
-    const blobHash = published.sha256;
     const artifact: PreparedCommunicationArtifact = {
-      id,
-      role: input.role,
-      title: input.title,
-      mediaType: "text/markdown",
-      blobPath: id,
-      blobHash,
-      byteLength: content.length,
+      ...identity,
+      blobHash: published.sha256,
       createdAt: input.createdAt,
-      ...(input.originAgentId ? { originAgentId: input.originAgentId } : {}),
-      ...(input.executionId ? { executionId: input.executionId } : {}),
     };
     const registration = assets.registerRuntimeArtifact({
       ...artifact,

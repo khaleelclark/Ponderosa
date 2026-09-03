@@ -8,7 +8,10 @@ import {
 import type { AgentStore, CoordinationV3Store } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
 import type { ActiveRun, AgentMessageCapability } from "../app-contracts.js";
-import type { createCommunicationArtifactAuthority } from "../communication-artifacts.js";
+import {
+  communicationArtifactIdentity,
+  type createCommunicationArtifactAuthority,
+} from "../communication-artifacts.js";
 import type { PreparedCommunicationArtifact } from "./conversation-deliveries.js";
 import { derivedRunActionKey } from "../security.js";
 import { leaseAgentDelivery, leaseConversationDelivery } from "../delivery-leases.js";
@@ -168,6 +171,46 @@ export function registerAgentRequestCommandRoutes(
       text: handoffText,
       inReplyToUpdateId: request.body.inReplyToUpdateId?.trim() || null,
     });
+    const artifactIdentity = shouldBackTextWithArtifact(handoffText)
+      ? communicationArtifactIdentity({
+          communicationId: updateId,
+          role: "long_text",
+          title: kind === "question" ? "Blocking question" : "Request result",
+          content: handoffText,
+          originAgentId: capability.agentId,
+          executionId: capability.runId,
+        })
+      : undefined;
+    const requestUpdateInput = (
+      backingArtifact: ReturnType<typeof communicationArtifactIdentity> | undefined,
+    ) => ({
+      requestId,
+      updateId,
+      kind,
+      actor: { kind: "agent" as const, id: capability.agentId },
+      runAuthorization: runAuthorization(capability),
+      ...(request.body.inReplyToUpdateId?.trim() ? { inReplyToUpdateId: request.body.inReplyToUpdateId.trim() } : {}),
+      payload: {
+        text: backingArtifact
+          ? `Full ${kind === "question" ? "question" : "result"}: ponderosa://artifact/${backingArtifact.id}`
+          : handoffText,
+        ...(backingArtifact ? {
+          artifactId: backingArtifact.id,
+          resultRef: `ponderosa://artifact/${backingArtifact.id}`,
+        } : {}),
+        executionId: capability.runId,
+        canonicalHandoff: (["completed", "blocked", "failed"] as CoordinationRequestUpdateKind[]).includes(kind),
+      },
+      ...(backingArtifact ? { artifacts: [runtimeArtifactMetadata(backingArtifact)] } : {}),
+    });
+    let durableResult: ReturnType<CoordinationV3Store["updateRequest"]> | undefined;
+    try {
+      durableResult = coordinationV3.replayRequestUpdate(
+        requestUpdateInput(artifactIdentity),
+      );
+    } catch (error) {
+      return reply.code(409).send({ error: error instanceof Error ? error.message : "request update replay failed" });
+    }
     let artifact: PreparedCommunicationArtifact | undefined;
     const cleanupArtifact = () => {
       if (!artifact?.reservationCreated) return;
@@ -178,7 +221,7 @@ export function registerAgentRequestCommandRoutes(
       } catch { /* preserve uncertain authority for startup reconciliation */ }
     };
     try {
-      if (shouldBackTextWithArtifact(handoffText)) {
+      if (!durableResult && artifactIdentity) {
         artifact = await stageCommunicationArtifact({
           projectId: currentRequest.projectId,
           communicationId: updateId,
@@ -193,30 +236,15 @@ export function registerAgentRequestCommandRoutes(
     } catch (error) {
       return reply.code(409).send({ error: error instanceof Error ? error.message : "request artifact staging failed" });
     }
-    const persistedText = artifact
-      ? `Full ${kind === "question" ? "question" : "result"}: ponderosa://artifact/${artifact.id}`
-      : handoffText;
-    const updateInput = {
-      requestId,
-      updateId,
-      kind,
-      actor: { kind: "agent" as const, id: capability.agentId },
-      runAuthorization: runAuthorization(capability),
-      ...(request.body.inReplyToUpdateId?.trim() ? { inReplyToUpdateId: request.body.inReplyToUpdateId.trim() } : {}),
-      payload: {
-        text: persistedText,
-        ...(artifact ? { artifactId: artifact.id, resultRef: `ponderosa://artifact/${artifact.id}` } : {}),
-        executionId: capability.runId,
-        canonicalHandoff: (["completed", "blocked", "failed"] as CoordinationRequestUpdateKind[]).includes(kind),
-      },
-      ...(artifact ? { artifacts: [runtimeArtifactMetadata(artifact)] } : {}),
-    };
-    let durableResult: ReturnType<CoordinationV3Store["updateRequest"]> | undefined;
-    try {
-      durableResult = coordinationV3.replayRequestUpdate(updateInput);
-    } catch (error) {
-      cleanupArtifact();
-      return reply.code(409).send({ error: error instanceof Error ? error.message : "request update replay failed" });
+    const updateInput = requestUpdateInput(artifact ?? artifactIdentity);
+    const resultArtifactId = (artifact ?? artifactIdentity)?.id;
+    if (!durableResult && artifact) {
+      try {
+        durableResult = coordinationV3.replayRequestUpdate(updateInput);
+      } catch (error) {
+        cleanupArtifact();
+        return reply.code(409).send({ error: error instanceof Error ? error.message : "request update replay failed" });
+      }
     }
     let releaseDeliveryLease = () => {};
     if (!durableResult) {
@@ -359,14 +387,14 @@ export function registerAgentRequestCommandRoutes(
         publishCoordinationV3Changed(changedRequest.recipientAgentId, { conversationIds });
       }
       notifyScheduler();
-      return { ...result, ...(artifact ? { resultRef: `ponderosa://artifact/${artifact.id}` } : {}) };
+      return { ...result, ...(resultArtifactId ? { resultRef: `ponderosa://artifact/${resultArtifactId}` } : {}) };
     } catch (error) {
       if (durableResult) {
         return reply.code(202).send({
           ...durableResult,
           committed: true,
           recovering: true,
-          ...(artifact ? { resultRef: `ponderosa://artifact/${artifact.id}` } : {}),
+          ...(resultArtifactId ? { resultRef: `ponderosa://artifact/${resultArtifactId}` } : {}),
         });
       }
       return reply.code(409).send({ error: error instanceof Error ? error.message : "request update failed" });

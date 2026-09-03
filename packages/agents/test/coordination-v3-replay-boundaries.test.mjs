@@ -163,3 +163,56 @@ test("terminal request update replay survives the Run side-effect fence it creat
     context.close();
   }
 });
+
+test("coordinate replay survives a later Run side-effect fence", () => {
+  const context = fixture();
+  try {
+    context.coordination.coordinate({
+      projectId: context.project.id,
+      conversationId: context.conversation.id,
+      requesterAgentId: context.requester.id,
+      actorScope: "user:local-operator",
+      idempotencyKey: "parent-request",
+      requests: [{
+        requestId: "request-parent",
+        recipientAgentId: context.recipient.id,
+        lifetime: { kind: "indefinite" },
+        payload: { text: "work" },
+      }],
+    });
+    const lease = context.coordination.leaseNextRun({ workerId: "worker-a" });
+    assert.ok(lease);
+    const authorization = {
+      runId: lease.runId,
+      agentId: lease.agentId,
+      fencingToken: lease.fencingToken,
+    };
+    const input = {
+      projectId: context.project.id,
+      conversationId: context.conversation.id,
+      requesterAgentId: context.recipient.id,
+      actorScope: `agent:${context.recipient.id}:run:${lease.runId}`,
+      idempotencyKey: "child-request",
+      runAuthorization: authorization,
+      requests: [{
+        requestId: "request-child",
+        recipientAgentId: context.requester.id,
+        lifetime: { kind: "indefinite" },
+        payload: { text: "child work" },
+      }],
+    };
+    assert.equal(context.coordination.coordinate(input).replayed, false);
+    context.coordination.updateRequest({
+      requestId: "request-parent",
+      updateId: "parent-result",
+      kind: "completed",
+      actor: { kind: "agent", id: context.recipient.id },
+      runAuthorization: authorization,
+      payload: { text: "done", executionId: lease.runId },
+    });
+    assert.equal(context.coordination.coordinate(input).replayed, true);
+    assert.equal(context.coordination.replayCoordinate(input)?.replayed, true);
+  } finally {
+    context.close();
+  }
+});

@@ -63,13 +63,11 @@ export class CoordinationV3RequestAuthority {
     private readonly createActivation: (input: CreateActivationV3Input) => string,
   ) {}
 
-  private resolvedUpdate(input: UpdateRequestV3Input, projectId: string) {
-    const artifacts = this.runtimeArtifactAuthority.resolveRuntimeArtifacts(
-      projectId,
-      input.artifacts,
-      "request update",
-    );
-    const hash = payloadHash({
+  private updateHash(
+    input: UpdateRequestV3Input,
+    artifacts: RuntimeArtifactInputV3[],
+  ): string {
+    return payloadHash({
       requestId: input.requestId,
       kind: input.kind,
       actor: input.actor,
@@ -80,7 +78,15 @@ export class CoordinationV3RequestAuthority {
         : {}),
       artifacts,
     });
-    return { artifacts, hash };
+  }
+
+  private resolvedUpdate(input: UpdateRequestV3Input, projectId: string) {
+    const artifacts = this.runtimeArtifactAuthority.resolveRuntimeArtifacts(
+      projectId,
+      input.artifacts,
+      "request update",
+    );
+    return { artifacts, hash: this.updateHash(input, artifacts) };
   }
 
   private existingUpdate(
@@ -143,7 +149,7 @@ export class CoordinationV3RequestAuthority {
 
   replayRequestUpdate(input: UpdateRequestV3Input): RequestUpdateV3Result | undefined {
     const request = this.support.getRequestRow(input.requestId);
-    const { hash } = this.resolvedUpdate(input, request.project_id);
+    const hash = this.updateHash(input, input.artifacts ?? []);
     return this.sqlite.transaction(() => {
       const replay = this.existingUpdate(input, hash, request);
       if (replay) return replay;

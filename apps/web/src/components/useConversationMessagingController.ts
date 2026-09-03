@@ -220,7 +220,10 @@ export function useConversationMessagingController({
       );
       queuedNoticeBaseline.current = queuedMessagesQuery.dataUpdatedAt;
       const activeIds = response.recipients
-        .filter(recipient => !recipient.queued)
+        .filter(recipient =>
+          !recipient.queued &&
+          (recipient.state === "started" || recipient.state === "steered"),
+        )
         .map(recipient => recipient.agentId);
       if (activeIds.length === 0) setActiveOperation(undefined);
       else setActiveOperation({ agentIds: activeIds, state: "starting" });

@@ -819,7 +819,7 @@ test("an exact direct Agent-message retry reports a consumed delivery as settled
   });
 });
 
-test("request-update replay precedes mutable participant checks", async (t) => {
+test("request-update replay precedes long-text staging and mutable participant checks", async (t) => {
   const app = Fastify();
   t.after(() => app.close());
   registerAgentRequestCommandRoutes(app, {
@@ -862,7 +862,12 @@ test("request-update replay precedes mutable participant checks", async (t) => {
     method: "POST",
     url: "/api/agent-request-updates",
     headers: { authorization: "Bearer token" },
-    payload: { requestId: "request-a", updateId: "update-a", kind: "completed", text: "done" },
+    payload: {
+      requestId: "request-a",
+      updateId: "update-a",
+      kind: "completed",
+      text: "x".repeat(70_000),
+    },
   });
   assert.equal(response.statusCode, 200);
   assert.equal(response.json().replayed, true);
