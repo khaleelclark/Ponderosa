@@ -428,6 +428,28 @@ test("an exact retry cannot race creation before its Agent member is recorded", 
   assert.equal((await first).statusCode, 409);
 });
 
+test("draft preparation rejection immediately settles a mutation-free Agent creation", async (t) => {
+  const { app, creationOperation } = agentCreationTransactionApp({
+    prepared: async () => { throw new Error("draft storage unavailable"); },
+  });
+  t.after(() => app.close());
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/projects/project-a/agents",
+    payload: {
+      title: "Agent A",
+      engine: "codex",
+      conversationId: "chat-a",
+      draftAttachmentIds: ["draft-a"],
+      draftOwnerId: "owner-a",
+      idempotencyKey: "create-once",
+    },
+  });
+  assert.equal(response.statusCode, 500);
+  assert.equal(creationOperation().status, "rolled_back");
+  assert.deepEqual(creationOperation().agentIds, []);
+});
+
 test("a failed post-create opening rolls back the partial Agent", async (t) => {
   const { agent, app, deletingAgentIds, removed, wasDeleted } = agentCreationTransactionApp({
     stage: async () => ({

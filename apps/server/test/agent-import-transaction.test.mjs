@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import Fastify from "fastify";
+import { AgentStore } from "@ponderosa/agents";
 import { registerAgentPackageRoutes } from "../dist/routes/agent-packages.js";
 
 function registerImportRoutes(app, dataDir, getProject = (id) => ({ id })) {
@@ -100,6 +101,70 @@ test("completed copy replay does not reread its source Agent", async (t) => {
   assert.equal(response.statusCode, 200);
   assert.equal(response.json().rootAgentId, "copied-a");
   assert.equal(sourceReads, 0);
+});
+
+test("unfinished copy retry uses the first durable source snapshot", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-copy-snapshot-"));
+  let store = new AgentStore(dataDir);
+  let app = Fastify();
+  t.after(async () => {
+    await app.close();
+    store.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const project = store.createProject({
+    label: "Project",
+    hostPath: "/tmp/project",
+    defaultEngine: "codex",
+  });
+  const chat = store.createConversation(project.id, { title: "Chat" });
+  const source = store.createAgent(project.id, {
+    title: "Original source",
+    engine: "codex",
+    conversationId: chat.id,
+  });
+  const deletingConversationIds = new Set([chat.id]);
+  const register = () => registerAgentPackageRoutes(app, {
+    dataDir,
+    store,
+    coordination: { runtimeArtifact: () => undefined },
+    assets: {},
+    engines: new Map([["codex", {
+      adapter: {
+        id: "codex",
+        listModels: () => [],
+        listEfforts: () => [],
+      },
+    }]]),
+    deletingProjectIds: new Set(),
+    deletingConversationIds,
+    deletingAgentIds: new Set(),
+    agentCreationConversationLeases: new Map(),
+    cachedModelOptions: () => [],
+    appendWorkspace: () => {},
+    agentMessages: () => [],
+    createOperationalNotification: () => {},
+  });
+  register();
+  const request = {
+    method: "POST",
+    url: `/api/projects/${project.id}/copy-agent`,
+    headers: { "idempotency-key": "stable-copy-snapshot" },
+    payload: { sourceAgentId: source.id, conversationId: chat.id },
+  };
+  const first = await app.inject(request);
+  assert.equal(first.statusCode, 400);
+
+  await app.close();
+  store.close();
+  store = new AgentStore(dataDir);
+  store.updateAgent(source.id, { title: "Changed source" });
+  deletingConversationIds.clear();
+  app = Fastify();
+  register();
+  const retry = await app.inject(request);
+  assert.equal(retry.statusCode, 201);
+  assert.equal(store.getAgent(retry.json().rootAgentId).title, "Original source");
 });
 
 test("completed synchronous import replays before destination validation", async (t) => {

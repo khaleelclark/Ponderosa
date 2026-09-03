@@ -92,6 +92,79 @@ test("rolled-back operations restart cleanly without survivor members", () => {
   }
 });
 
+test("rolled-back operations retain their durable pre-mutation plan", () => {
+  const { directory, store } = temporaryStore();
+  const begun = store.beginAgentCreationOperation(operation);
+  const plan = {
+    phase: "planned_human_creation",
+    input: { title: "Frozen", engine: "codex", conversationId: "chat-1" },
+  };
+  store.updateAgentCreationOperation(begun.operation.id, {
+    status: "rolled_back",
+    result: plan,
+  });
+  store.close();
+
+  const reopened = new AgentStore(directory);
+  try {
+    const retry = reopened.beginAgentCreationOperation(operation);
+    assert.equal(retry.replayed, false);
+    assert.equal(retry.operation.status, "preparing");
+    assert.deepEqual(retry.operation.result, plan);
+  } finally {
+    reopened.close();
+  }
+});
+
+test("a resolved preset snapshot remains authoritative after the preset changes", () => {
+  const { store } = temporaryStore();
+  try {
+    const project = store.createProject({
+      label: "Project",
+      hostPath: "/tmp/project",
+      defaultEngine: "codex",
+    });
+    const conversation = store.createConversation(project.id, { title: "Chat" });
+    const preset = store.createAgentPreset(project.id, {
+      name: "Original preset",
+      description: "Original description",
+      guidance: "Original guidance",
+      engine: "codex",
+      model: "original-model",
+      effort: "high",
+    });
+    const snapshot = {
+      id: preset.id,
+      name: preset.name,
+      description: preset.description,
+      guidance: preset.guidance,
+      engine: preset.engine,
+      model: preset.model,
+      effort: preset.effort,
+    };
+    store.updateAgentPreset(preset.id, {
+      name: "Changed preset",
+      model: "changed-model",
+      effort: "low",
+      enabled: false,
+    });
+
+    const created = store.createAgent(project.id, {
+      title: "Frozen Agent",
+      engine: "codex",
+      conversationId: conversation.id,
+      presetId: preset.id,
+      model: "original-model",
+      effort: "high",
+    }, undefined, undefined, snapshot);
+    assert.equal(created.model, "original-model");
+    assert.equal(created.effort, "high");
+    assert.deepEqual(created.presetSnapshot, snapshot);
+  } finally {
+    store.close();
+  }
+});
+
 test("preparing creation members are quarantined from ordinary Agent scheduling and reads", () => {
   const { store } = temporaryStore();
   try {

@@ -52,6 +52,7 @@ export class AgentCatalogAuthority {
     input: CreateAgentRequest,
     origin?: AgentSpawnOrigin,
     predeterminedId: string = randomUUID(),
+    resolvedPresetSnapshot?: AgentDto["presetSnapshot"] | null,
   ): AgentDto {
     const creationIdempotencyKey = input.idempotencyKey?.trim() || undefined;
     if (creationIdempotencyKey) {
@@ -70,11 +71,18 @@ export class AgentCatalogAuthority {
         .all()
         .map(row => row.handle),
     );
-    const preset = input.presetId ? this.getAgentPreset(input.presetId) : undefined;
-    if (input.presetId && (!preset || preset.projectId !== projectId || !preset.enabled)) throw new Error("invalid preset");
-    const presetSnapshot = preset ? { id: preset.id, name: preset.name, description: preset.description, guidance: preset.guidance, engine: preset.engine, model: preset.model, effort: preset.effort } : undefined;
-    const model = preset?.model ?? input.model;
-    const effort = preset?.effort ?? input.effort;
+    const preset = resolvedPresetSnapshot === undefined && input.presetId
+      ? this.getAgentPreset(input.presetId)
+      : undefined;
+    if (resolvedPresetSnapshot === undefined && input.presetId &&
+        (!preset || preset.projectId !== projectId || !preset.enabled)) {
+      throw new Error("invalid preset");
+    }
+    const presetSnapshot = resolvedPresetSnapshot === undefined
+      ? preset ? { id: preset.id, name: preset.name, description: preset.description, guidance: preset.guidance, engine: preset.engine, model: preset.model, effort: preset.effort } : undefined
+      : resolvedPresetSnapshot ?? undefined;
+    const model = resolvedPresetSnapshot === undefined ? preset?.model ?? input.model : input.model;
+    const effort = resolvedPresetSnapshot === undefined ? preset?.effort ?? input.effort : input.effort;
     const project = this.getProject(projectId);
     if (!project) throw new Error("unknown project");
     if (!input.conversationId) throw new Error("a Chat is required when creating an Agent");

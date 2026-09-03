@@ -749,7 +749,7 @@ export class AgentStore extends AgentEventSessionFacade {
           this.client.prepare("DELETE FROM agent_creation_operation_members WHERE operation_id = ?").run(id);
           this.client.prepare(`
             UPDATE agent_creation_operations
-            SET status = 'preparing', communication_event_id = NULL, result_json = NULL,
+            SET status = 'preparing', communication_event_id = NULL,
               artifact_ids_json = '[]', artifact_identities_json = '[]', last_error = NULL,
               updated_at = ? WHERE id = ?
           `).run(new Date().toISOString(), id);
@@ -1075,8 +1075,15 @@ export class AgentStore extends AgentEventSessionFacade {
     input: CreateAgentRequest,
     origin?: AgentSpawnOrigin,
     predeterminedId?: string,
+    resolvedPresetSnapshot?: AgentDto["presetSnapshot"] | null,
   ): AgentDto {
-    return this.agentCatalog.createAgent(projectId, input, origin, predeterminedId);
+    return this.agentCatalog.createAgent(
+      projectId,
+      input,
+      origin,
+      predeterminedId,
+      resolvedPresetSnapshot,
+    );
   }
 
   findAgentSpawn(agentId: string, executionId: string, idempotencyKey: string): AgentDto | undefined {

@@ -94,6 +94,7 @@ export function registerAgentPackageRoutes(
   const importOperationDirectory = path.join(context.dataDir, "agent-import-operations");
   const operationPath = (id: string) => path.join(importOperationDirectory, `${id}.json`);
   const payloadPath = (id: string) => path.join(importOperationDirectory, `${id}.payload`);
+  const copySnapshotPath = (id: string) => path.join(importOperationDirectory, `${id}.copy.payload`);
   const operationByRequest = new Map<string, string>();
   const operationCache = new Map<string, AgentImportOperationDto>();
   const projectImportTails = new Map<string, Promise<void>>();
@@ -197,10 +198,18 @@ export function registerAgentPackageRoutes(
       let cleaned = false;
       for (const name of names) {
         const payloadMatch = /^([0-9a-f-]{36})\.payload$/u.exec(name);
+        const copyMatch = /^(agent-create-[0-9a-f]{64})\.copy\.payload$/u.exec(name);
         const temporary = name.endsWith(".tmp");
-        if (!temporary && (!payloadMatch ||
-            (durableIds.has(payloadMatch[1]!) &&
-              operationCache.get(payloadMatch[1]!)?.status === "pending"))) continue;
+        const liveCopy = copyMatch
+          ? store.getAgentCreationOperation(copyMatch[1]!)
+          : undefined;
+        if (!temporary && (
+          (payloadMatch && durableIds.has(payloadMatch[1]!) &&
+            operationCache.get(payloadMatch[1]!)?.status === "pending") ||
+          (copyMatch && liveCopy &&
+            (liveCopy.status === "preparing" || liveCopy.status === "rolled_back")) ||
+          (!payloadMatch && !copyMatch)
+        )) continue;
         await fs.unlink(path.join(importOperationDirectory, name))
           .then(() => { cleaned = true; })
           .catch(() => undefined);
@@ -398,6 +407,67 @@ export function registerAgentPackageRoutes(
       rootRef: root.id,
       agents,
     };
+  };
+
+  type PreparedCopySnapshot = {
+    phase: "prepared_copy";
+    snapshotSha256: string;
+  };
+  const preparedCopySnapshot = (result: unknown): PreparedCopySnapshot | undefined =>
+    result && typeof result === "object" &&
+    (result as { phase?: unknown }).phase === "prepared_copy" &&
+    typeof (result as { snapshotSha256?: unknown }).snapshotSha256 === "string"
+      ? result as PreparedCopySnapshot
+      : undefined;
+  const readCopySnapshot = async (
+    operationId: string,
+    expectedSha256?: string,
+  ): Promise<{ portable: AgentPortablePackageDto; sha256: string } | undefined> => {
+    let raw: Buffer;
+    try {
+      raw = await fs.readFile(copySnapshotPath(operationId));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+    const sha256 = createHash("sha256").update(raw).digest("hex");
+    if (expectedSha256 && sha256 !== expectedSha256) {
+      throw new Error("Agent copy snapshot no longer matches its durable operation");
+    }
+    return {
+      portable: JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw)) as AgentPortablePackageDto,
+      sha256,
+    };
+  };
+  const installCopySnapshot = async (
+    operationId: string,
+    portable: AgentPortablePackageDto,
+  ): Promise<{ portable: AgentPortablePackageDto; sha256: string }> => {
+    const existing = await readCopySnapshot(operationId);
+    if (existing) return existing;
+    await fs.mkdir(importOperationDirectory, { recursive: true });
+    const finalPath = copySnapshotPath(operationId);
+    const temporary = `${finalPath}.${randomUUID()}.tmp`;
+    try {
+      const handle = await fs.open(temporary, "wx", 0o600);
+      try {
+        await handle.writeFile(await stringifyPortablePackage(portable));
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await fs.rename(temporary, finalPath);
+      if (process.platform !== "win32") {
+        const directory = await fs.open(importOperationDirectory, "r");
+        try { await directory.sync(); } finally { await directory.close(); }
+      }
+    } catch (error) {
+      await fs.unlink(temporary).catch(() => undefined);
+      throw error;
+    }
+    const installed = await readCopySnapshot(operationId);
+    if (!installed) throw new Error("Agent copy snapshot was not durably installed");
+    return installed;
   };
 
   app.get<{
@@ -1578,24 +1648,46 @@ export function registerAgentPackageRoutes(
         });
         return true;
       };
-      const source = store.getAgent(sourceAgentId);
-      if (!source) {
-        activeCopyOperations.delete(creationOperation.id);
-        if (!abandonMutationFreeCopy("agent not found")) {
-          return reply.code(409).send({
-            error: "A prior copy attempt is still being recovered; retry after recovery completes",
-            operationId: creationOperation.id,
-          });
-        }
-        return reply.code(404).send({ error: "agent not found" });
-      }
       let portable: AgentPortablePackageDto;
       try {
-        portable = await buildPortablePackage(
-          source.id,
-          request.body.mode ?? "full",
-          request.body.organization === true,
+        const savedSnapshot = preparedCopySnapshot(creationOperation.result);
+        let prepared = await readCopySnapshot(
+          creationOperation.id,
+          savedSnapshot?.snapshotSha256,
         );
+        if (!prepared) {
+          if (savedSnapshot) {
+            throw new Error("Agent copy snapshot is unavailable");
+          }
+          const source = store.getAgent(sourceAgentId);
+          if (!source) {
+            activeCopyOperations.delete(creationOperation.id);
+            if (!abandonMutationFreeCopy("agent not found")) {
+              return reply.code(409).send({
+                error: "A prior copy attempt is still being recovered; retry after recovery completes",
+                operationId: creationOperation.id,
+              });
+            }
+            return reply.code(404).send({ error: "agent not found" });
+          }
+          prepared = await installCopySnapshot(
+            creationOperation.id,
+            await buildPortablePackage(
+              source.id,
+              request.body.mode ?? "full",
+              request.body.organization === true,
+            ),
+          );
+        }
+        portable = prepared.portable;
+        if (!savedSnapshot) {
+          store.updateAgentCreationOperation(creationOperation.id, {
+            result: {
+              phase: "prepared_copy",
+              snapshotSha256: prepared.sha256,
+            } satisfies PreparedCopySnapshot,
+          });
+        }
       } catch (error) {
         activeCopyOperations.delete(creationOperation.id);
         if (!abandonMutationFreeCopy(
@@ -1625,7 +1717,12 @@ export function registerAgentPackageRoutes(
         reply,
         undefined,
         creationOperation.id,
-      ).finally(() => activeCopyOperations.delete(creationOperation.id));
+      ).finally(async () => {
+        activeCopyOperations.delete(creationOperation.id);
+        if (store.getAgentCreationOperation(creationOperation.id)?.status === "completed") {
+          await fs.unlink(copySnapshotPath(creationOperation.id)).catch(() => undefined);
+        }
+      });
     },
   );
 }

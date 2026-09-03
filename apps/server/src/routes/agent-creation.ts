@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
+  AgentDto,
   AssetDto,
   CommunicationEvent,
   ModelOption,
@@ -220,7 +221,7 @@ export function registerAgentCreationRoutes(
           agentIds: creationOperation.agentIds,
         });
       }
-      const abandonMutationFreeOperation = (statusCode: 400 | 404 | 409, error: string) => {
+      const abandonMutationFreeOperation = (statusCode: number, error: string) => {
         const current = store.getAgentCreationOperation(creationOperation.id);
         if (!current || current.agentIds.length > 0) {
           return reply.code(409).send({
@@ -238,8 +239,9 @@ export function registerAgentCreationRoutes(
       type PlannedHumanCreation = {
         phase: "planned_human_creation";
         input: typeof request.body;
+        presetSnapshot?: AgentDto["presetSnapshot"];
       };
-      const savedPlan = creationOperation.status === "preparing" && creationOperation.result &&
+      let savedPlan = creationOperation.status === "preparing" && creationOperation.result &&
         typeof creationOperation.result === "object" &&
         (creationOperation.result as { phase?: unknown }).phase === "planned_human_creation"
         ? creationOperation.result as PlannedHumanCreation
@@ -252,6 +254,7 @@ export function registerAgentCreationRoutes(
       if (savedPlan) {
         request.body = { ...savedPlan.input };
       } else {
+        let presetSnapshot: AgentDto["presetSnapshot"];
         if (request.body.presetId) {
           const preset = store.getAgentPreset(request.body.presetId);
           if (!preset || preset.projectId !== request.params.id || !preset.enabled) {
@@ -260,6 +263,15 @@ export function registerAgentCreationRoutes(
           request.body.engine = preset.engine;
           request.body.model = preset.model;
           request.body.effort = preset.effort;
+          presetSnapshot = {
+            id: preset.id,
+            name: preset.name,
+            description: preset.description,
+            guidance: preset.guidance,
+            engine: preset.engine,
+            model: preset.model,
+            effort: preset.effort,
+          };
         }
         if (!engines.has(request.body.engine)) {
           return abandonMutationFreeOperation(400, "unknown engine");
@@ -289,8 +301,13 @@ export function registerAgentCreationRoutes(
           projectModelOptions,
         );
         if (speedError) return abandonMutationFreeOperation(400, speedError);
+        savedPlan = {
+          phase: "planned_human_creation",
+          input: { ...request.body },
+          ...(presetSnapshot ? { presetSnapshot } : {}),
+        };
         store.updateAgentCreationOperation(creationOperation.id, {
-          result: { phase: "planned_human_creation", input: request.body } satisfies PlannedHumanCreation,
+          result: savedPlan,
         });
       }
       if (deletingConversationIds.has(request.body.conversationId)) {
@@ -380,7 +397,13 @@ export function registerAgentCreationRoutes(
       try {
         store.addAgentCreationOperationMember(creationOperation.id, agentId, 0);
         deletingAgentIds.add(agentId);
-        agent = store.createAgent(request.params.id, request.body, undefined, agentId);
+        agent = store.createAgent(
+          request.params.id,
+          request.body,
+          undefined,
+          agentId,
+          savedPlan.presetSnapshot ?? null,
+        );
       } catch (error) {
         let absent = !store.getAgent(agentId);
         if (!absent) {
@@ -648,6 +671,16 @@ export function registerAgentCreationRoutes(
         releaseAgentDelivery();
         if (creationSettled) deletingAgentIds.delete(agent.id);
       }
+      } catch (error) {
+        const current = store.getAgentCreationOperation(creationOperation.id);
+        if (current && current.agentIds.length === 0) {
+          const status = error instanceof AssetError ? error.statusCode : 500;
+          return abandonMutationFreeOperation(
+            status,
+            error instanceof Error ? error.message : "Agent creation preparation failed",
+          );
+        }
+        throw error;
       } finally {
         const remaining = (agentCreationConversationLeases.get(
           leaseConversationId,

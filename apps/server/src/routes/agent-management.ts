@@ -68,6 +68,12 @@ export function registerAgentManagementRoutes(
     notifyScheduler,
     authToken,
   } = context;
+  const publishManagementChange = (projectId: string): void => {
+    try { notifyScheduler(); } catch { /* committed management state remains authoritative */ }
+    try {
+      appendWorkspace({ type: "project_changed", projectId, action: "updated" });
+    } catch { /* clients reconcile committed state on refresh */ }
+  };
 
   app.post<{ Body: unknown }>("/api/agent-management", async (request, reply) => {
     const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
@@ -192,8 +198,7 @@ export function registerAgentManagementRoutes(
           plan.appliedAt = new Date().toISOString();
           plan.result = { changedAgentIds: [...changedAgentIds], refs: {} };
           managementPlans.set(plan.id, plan);
-          notifyScheduler();
-          appendWorkspace({ type: "project_changed", projectId: owner.projectId, action: "updated" });
+          publishManagementChange(owner.projectId);
           return { planId: plan.id, replayed: false, result: plan.result };
         }
         for (const [index, operation] of plan.operations.entries()) {
@@ -309,8 +314,7 @@ export function registerAgentManagementRoutes(
         plan.appliedAt = new Date().toISOString();
         plan.result = { changedAgentIds: [...changedAgentIds], refs: Object.fromEntries(refs) };
         managementPlans.set(plan.id, plan);
-        notifyScheduler();
-        appendWorkspace({ type: "project_changed", projectId: owner.projectId, action: "updated" });
+        publishManagementChange(owner.projectId);
         return { planId: plan.id, replayed: false, result: plan.result };
       } catch (error) {
         return reply.code(409).send({
