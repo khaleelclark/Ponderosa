@@ -167,6 +167,84 @@ test("unfinished copy retry uses the first durable source snapshot", async (t) =
   assert.equal(store.getAgent(retry.json().rootAgentId).title, "Original source");
 });
 
+test("startup preserves a rolling-back copy snapshot for its exact retry", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-copy-rollback-snapshot-"));
+  let store = new AgentStore(dataDir);
+  let app = Fastify();
+  t.after(async () => {
+    await app.close();
+    store.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const project = store.createProject({
+    label: "Project",
+    hostPath: "/tmp/project",
+    defaultEngine: "codex",
+  });
+  const chat = store.createConversation(project.id, { title: "Chat" });
+  const source = store.createAgent(project.id, {
+    title: "Original source",
+    engine: "codex",
+    conversationId: chat.id,
+  });
+  const deletingConversationIds = new Set([chat.id]);
+  const register = () => registerAgentPackageRoutes(app, {
+    dataDir,
+    store,
+    coordination: { runtimeArtifact: () => undefined },
+    assets: {},
+    engines: new Map([["codex", {
+      adapter: {
+        id: "codex",
+        listModels: () => [],
+        listEfforts: () => [],
+      },
+    }]]),
+    deletingProjectIds: new Set(),
+    deletingConversationIds,
+    deletingAgentIds: new Set(),
+    agentCreationConversationLeases: new Map(),
+    cachedModelOptions: () => [],
+    appendWorkspace: () => {},
+    agentMessages: () => [],
+    createOperationalNotification: () => {},
+  });
+  register();
+  const request = {
+    method: "POST",
+    url: `/api/projects/${project.id}/copy-agent`,
+    headers: { "idempotency-key": "rolling-copy-snapshot" },
+    payload: { sourceAgentId: source.id, conversationId: chat.id },
+  };
+  const first = await app.inject(request);
+  assert.equal(first.statusCode, 400);
+  const operation = store.sqlite.prepare(`
+    SELECT id FROM agent_creation_operations WHERE idempotency_key = ?
+  `).get("rolling-copy-snapshot");
+  const snapshot = path.join(dataDir, "agent-import-operations", `${operation.id}.copy.payload`);
+  assert.equal(existsSync(snapshot), true);
+  store.updateAgentCreationOperation(operation.id, { status: "rolling_back" });
+
+  await app.close();
+  store.close();
+  store = new AgentStore(dataDir);
+  app = Fastify();
+  register();
+  await app.inject({
+    method: "GET",
+    url: `/api/projects/${project.id}/agent-import-operations/${randomUUID()}`,
+  });
+  assert.equal(existsSync(snapshot), true);
+  store.updateAgentCreationOperation(operation.id, { status: "rolled_back" });
+  store.updateAgent(source.id, { title: "Changed source" });
+  deletingConversationIds.clear();
+
+  const retry = await app.inject(request);
+  assert.equal(retry.statusCode, 201);
+  assert.equal(store.getAgent(retry.json().rootAgentId).title, "Original source");
+  assert.equal(existsSync(snapshot), false);
+});
+
 test("completed synchronous import replays before destination validation", async (t) => {
   const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-sync-import-replay-"));
   const app = Fastify();

@@ -206,8 +206,7 @@ export function registerAgentPackageRoutes(
         if (!temporary && (
           (payloadMatch && durableIds.has(payloadMatch[1]!) &&
             operationCache.get(payloadMatch[1]!)?.status === "pending") ||
-          (copyMatch && liveCopy &&
-            (liveCopy.status === "preparing" || liveCopy.status === "rolled_back")) ||
+          (copyMatch && liveCopy && liveCopy.status !== "completed") ||
           (!payloadMatch && !copyMatch)
         )) continue;
         await fs.unlink(path.join(importOperationDirectory, name))
