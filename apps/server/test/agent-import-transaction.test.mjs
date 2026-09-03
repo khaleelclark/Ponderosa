@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { promises as fs } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -73,4 +74,47 @@ test("startup hydration removes payloads for terminal import operations", async 
   });
   assert.equal(response.statusCode, 200);
   assert.equal(existsSync(payload), false);
+});
+
+test("a failed operation directory sync is never acknowledged from read-back", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-import-fsync-"));
+  const directory = path.join(dataDir, "agent-import-operations");
+  const app = Fastify();
+  const originalOpen = fs.open;
+  const originalUnlink = fs.unlink;
+  t.after(async () => {
+    fs.open = originalOpen;
+    fs.unlink = originalUnlink;
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  registerImportRoutes(app, dataDir);
+  fs.open = async (target, flags, ...args) => {
+    const handle = await originalOpen(target, flags, ...args);
+    if (String(target) !== directory || flags !== "r") return handle;
+    return new Proxy(handle, {
+      get(object, property) {
+        if (property === "sync") return async () => { throw new Error("injected directory sync failure"); };
+        const value = Reflect.get(object, property, object);
+        return typeof value === "function" ? value.bind(object) : value;
+      },
+    });
+  };
+  fs.unlink = async (target, ...args) => {
+    if (String(target).startsWith(`${directory}${path.sep}`) && String(target).endsWith(".json")) {
+      throw new Error("injected rollback failure");
+    }
+    return originalUnlink(target, ...args);
+  };
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/projects/project-a/agent-import-operations",
+    headers: {
+      "content-type": "application/vnd.ponderosa.agent-import",
+      "idempotency-key": "failed-fsync-request",
+    },
+    payload: Buffer.from("payload"),
+  });
+  assert.equal(response.statusCode, 500);
 });

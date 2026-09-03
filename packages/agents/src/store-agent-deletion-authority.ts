@@ -89,6 +89,9 @@ export class AgentDeletionAuthority {
     const projectId = roots[0]!.projectId;
     if (roots.some((agent) => agent!.projectId !== projectId)) throw new Error("deletion roots must belong to one Project");
     const projectAgents = this.listAgents(projectId);
+    for (const root of roots) {
+      if (!projectAgents.some((agent) => agent.id === root!.id)) projectAgents.push(root!);
+    }
     const byId = new Map(projectAgents.map((agent) => [agent.id, agent]));
     const requestedSet = new Set(requested);
     const normalizedRoots = roots.filter((agent) => {

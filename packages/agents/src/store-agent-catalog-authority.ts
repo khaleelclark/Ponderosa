@@ -194,19 +194,23 @@ export class AgentCatalogAuthority {
       rmSync(agentDir(this.dataDir, projectId, stagingId), { recursive: true, force: true });
       throw error;
     }
+    let published = false;
     try {
       renameSync(
         agentDir(this.dataDir, projectId, stagingId),
         agentDir(this.dataDir, projectId, id),
       );
+      published = true;
       fsyncDirectory(agentsDir(this.dataDir, projectId));
     } catch (error) {
-      this.client.transaction(() => {
-        this.db.delete(agentConversationMemberships).where(eq(agentConversationMemberships.agentId, id)).run();
-        this.db.delete(agents).where(eq(agents.id, id)).run();
-        this.db.delete(agentHandleReservations).where(eq(agentHandleReservations.agentId, id)).run();
-      })();
-      rmSync(agentDir(this.dataDir, projectId, stagingId), { recursive: true, force: true });
+      if (!published) {
+        this.client.transaction(() => {
+          this.db.delete(agentConversationMemberships).where(eq(agentConversationMemberships.agentId, id)).run();
+          this.db.delete(agents).where(eq(agents.id, id)).run();
+          this.db.delete(agentHandleReservations).where(eq(agentHandleReservations.agentId, id)).run();
+        })();
+        rmSync(agentDir(this.dataDir, projectId, stagingId), { recursive: true, force: true });
+      }
       throw error;
     }
     return this.rowToAgentDto(id)!;

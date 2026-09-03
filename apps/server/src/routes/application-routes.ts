@@ -65,6 +65,7 @@ import { registerStreamRoutes } from "./streams.js";
 import { registerTriggerRoutes } from "./triggers.js";
 import { registerWorkspaceDirectoryRoutes } from "./workspace-directory.js";
 import { registerWorkspacePreferenceRoutes } from "./workspace-preferences.js";
+import { pendingAgentQuarantine } from "./pending-agent-quarantine.js";
 
 type ApplicationRoutesContext =
   Parameters<typeof registerProjectRoutes>[1] &
@@ -297,21 +298,7 @@ export function registerApplicationRoutes(
     workingCopies,
   } = context;
 
-const quarantinedAgentPathId = (url: string): string | undefined => {
-  const pathname = url.split("?", 1)[0] ?? "";
-  const match = /^\/api\/agents\/([^/]+)(?:\/|$)/u.exec(pathname)
-    ?? /^\/api\/projects\/[^/]+\/agents\/([^/]+)(?:\/|$)/u.exec(pathname)
-    ?? /^\/api\/agent-directory\/([^/]+)(?:\/|$)/u.exec(pathname);
-  if (!match) return undefined;
-  try { return decodeURIComponent(match[1]!); } catch { return undefined; }
-};
-
-app.addHook("preHandler", async (request, reply) => {
-  const agentId = quarantinedAgentPathId(request.url);
-  if (agentId && store.agentCreationPending(agentId)) {
-    return reply.code(404).send({ error: "agent not found" });
-  }
-});
+app.addHook("preHandler", pendingAgentQuarantine(store));
 registerLinkPreviewRoutes(app);
 
 registerProjectRoutes(app, {

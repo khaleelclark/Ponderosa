@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   canonicalizeProviderText,
   type CommitAgentDeletionResponse,
@@ -211,15 +211,68 @@ export function registerAgentManagementRoutes(
               cachedModelOptions(engine.adapter, owner.projectId),
             );
             if (selectionError) throw new Error(selectionError);
-            const created = store.createAgent(owner.projectId, {
-              title: operation.title?.trim().slice(0, 80) || "Managed Agent",
+            const title = operation.title?.trim().slice(0, 80) || "Managed Agent";
+            const model = operation.model?.trim() || undefined;
+            const effort = operation.effort?.trim() || undefined;
+            const instructions = operation.instructions?.trim() || undefined;
+            const operationKey = `${plan.id}:${index}`;
+            const createInput = {
+              title,
               engine: engineId,
               conversationId: capability.conversationId,
               managerAgentId: parentId,
-              ...(operation.model?.trim() ? { model: operation.model.trim() } : {}),
-              ...(operation.effort?.trim() ? { effort: operation.effort.trim() } : {}),
-            }, { agentId: owner.id, executionId: active.runId, idempotencyKey: `${plan.id}:${index}`, prompt: operation.instructions?.trim() });
-            if (operation.instructions?.trim()) store.setImportedHistory(created.id, `${owner.title} management plan`, [{ role: "system", text: operation.instructions.trim(), createdAt: plan.createdAt }]);
+              ...(model ? { model } : {}),
+              ...(effort ? { effort } : {}),
+            };
+            const creation = store.beginAgentCreationOperation({
+              projectId: owner.projectId,
+              actorScope: `agent:${owner.id}:run:${active.runId}`,
+              kind: "managed",
+              idempotencyKey: operationKey,
+              payloadHash: createHash("sha256").update(JSON.stringify({ createInput, instructions: instructions ?? null })).digest("hex"),
+            }).operation;
+            const replayedAgentId = creation.status === "completed"
+              && creation.result && typeof creation.result === "object"
+              && "agentId" in creation.result && typeof creation.result.agentId === "string"
+              ? creation.result.agentId
+              : undefined;
+            let created = replayedAgentId ? store.getAgent(replayedAgentId) : undefined;
+            if (creation.status === "completed" && !created) throw new Error("managed Agent creation committed without a recoverable Agent");
+            if (!created) {
+              if (creation.agentIds.length > 0) throw new Error("managed Agent creation is still being recovered");
+              const createdId = randomUUID();
+              store.addAgentCreationOperationMember(creation.id, createdId, 0);
+              deletingAgentIds.add(createdId);
+              try {
+                created = store.createAgent(owner.projectId, createInput, {
+                  agentId: owner.id,
+                  executionId: active.runId,
+                  idempotencyKey: operationKey,
+                  prompt: instructions,
+                }, createdId);
+                if (instructions) store.setImportedHistory(created.id, `${owner.title} management plan`, [{ role: "system", text: instructions, createdAt: plan.createdAt }]);
+                store.updateAgentCreationOperation(creation.id, {
+                  status: "completed",
+                  result: { agentId: created.id },
+                  lastError: null,
+                });
+                deletingAgentIds.delete(created.id);
+              } catch (error) {
+                let absent = !store.getAgent(createdId);
+                if (!absent) {
+                  try {
+                    store.deleteAgent(createdId, (agentId) => coordinationV3.handleAgentDeletion(agentId));
+                  } catch { /* startup recovery retains the quarantine */ }
+                  absent = !store.getAgent(createdId);
+                }
+                store.updateAgentCreationOperation(creation.id, {
+                  status: absent ? "rolled_back" : "rolling_back",
+                  lastError: error instanceof Error ? error.message : "managed Agent creation failed",
+                });
+                if (absent) deletingAgentIds.delete(createdId);
+                throw error;
+              }
+            }
             if (operation.ref) refs.set(operation.ref, created.id);
             changedAgentIds.add(created.id);
             continue;

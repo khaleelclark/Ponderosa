@@ -160,15 +160,6 @@ export function registerAgentPackageRoutes(
             try { await directory.sync(); } finally { await directory.close(); }
           }
         } catch (rollbackError) {
-          const recovered = await readOperation(operation.id).catch(() => undefined);
-          if (recovered && JSON.stringify(recovered) === JSON.stringify(operation)) {
-            operationCache.set(recovered.id, recovered);
-            operationByRequest.set(
-              requestOperationKey(recovered.projectId, recovered.requestId),
-              recovered.id,
-            );
-            return;
-          }
           throw new AggregateError([error, rollbackError], "Import operation durability and rollback both failed");
         }
       }

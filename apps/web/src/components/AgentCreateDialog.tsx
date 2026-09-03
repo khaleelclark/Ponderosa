@@ -18,6 +18,7 @@ import type { AgentDto, EngineDto, ProjectDto } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { createClientId } from "../clientId";
 import {
   effortSelectionIsCompatible,
   engineUnavailableReason,
@@ -30,6 +31,7 @@ import { pickAgentName } from "../parkNames";
 import { queryKeys } from "../queryKeys";
 import { EngineModelEffortFields } from "./ProjectRuntimeFields";
 import { ImportAgentForm } from "./ImportAgentDialog";
+import { retainAgentCreateAttempt, type AgentCreateAttempt } from "./agentCreateRetry";
 
 const UNSET = "";
 
@@ -111,6 +113,7 @@ export function AgentCreateForm({
   const titleEditedRef = useRef(Boolean(initialName));
   const managerEditedRef = useRef(false);
   const pendingRef = useRef(false);
+  const createAttemptRef = useRef<AgentCreateAttempt | undefined>(undefined);
   const initializedRef = useRef(false);
   const previousProjectIdRef = useRef(projectId);
 
@@ -215,8 +218,8 @@ export function AgentCreateForm({
 
   const activeEngine = engines.find(candidate => candidate.id === engine);
   const create = useMutation({
-    mutationFn: () =>
-      api.createAgent(projectId, conversationId, {
+    mutationFn: () => {
+      const options = {
         title: title.trim(),
         engine,
         model: modelSelectionIsCompatible(activeEngine, model)
@@ -228,7 +231,17 @@ export function AgentCreateForm({
         presetId: presetId || undefined,
         managerAgentId: managerAgentId || undefined,
         initialMessage: initialMessage.trim() || undefined,
-      }),
+      };
+      createAttemptRef.current = retainAgentCreateAttempt(
+        createAttemptRef.current,
+        JSON.stringify({ projectId, conversationId, ...options }),
+        () => createClientId("agent-create-"),
+      );
+      return api.createAgent(projectId, conversationId, {
+        ...options,
+        idempotencyKey: createAttemptRef.current.idempotencyKey,
+      });
+    },
     onSuccess: agent => {
       if ("recovering" in agent) {
         void queryClient.invalidateQueries({
@@ -258,6 +271,19 @@ export function AgentCreateForm({
       onPendingChange?.(false);
     },
   });
+
+  if (create.data && "recovering" in create.data) {
+    return (
+      <Stack spacing={2.25}>
+        <Alert severity="info">
+          Agent creation is committed and recovery is finishing. It will appear when ready.
+        </Alert>
+        <Stack direction="row" sx={{ justifyContent: "flex-end" }}>
+          <Button onClick={onCancel}>Close</Button>
+        </Stack>
+      </Stack>
+    );
+  }
 
   return (
     <Stack spacing={2.25}>
@@ -433,11 +459,6 @@ export function AgentCreateForm({
       ) : null}
       {create.isError ? (
         <Alert severity="error">{String(create.error)}</Alert>
-      ) : null}
-      {create.data && "recovering" in create.data ? (
-        <Alert severity="info">
-          Agent creation is committed and recovery is finishing. It will appear when ready.
-        </Alert>
       ) : null}
       <Stack direction="row" spacing={1} sx={{
         justifyContent: "flex-end",

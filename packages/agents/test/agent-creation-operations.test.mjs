@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, renameSync, rmSync } from "node:fs";
+import fs, { existsSync, mkdtempSync, renameSync, rmSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -149,6 +150,52 @@ test("startup publishes a row-backed .creating directory before projection rebui
     assert.equal(existsSync(staging), false);
     assert.equal(existsSync(canonical), true);
     assert.equal(reopened.getAgent(agent.id)?.id, agent.id);
+  } finally {
+    reopened.close();
+  }
+});
+
+test("a failed post-rename directory sync retains authority for exact rollback", () => {
+  const { directory, store } = temporaryStore();
+  const project = store.createProject({
+    label: "Project",
+    hostPath: "/tmp/project",
+    defaultEngine: "codex",
+  });
+  const conversation = store.createConversation(project.id, { title: "Chat" });
+  const begun = store.beginAgentCreationOperation({ ...operation, projectId: project.id });
+  const agentId = "00000000-0000-4000-8000-000000000002";
+  store.addAgentCreationOperationMember(begun.operation.id, agentId, 0);
+
+  const originalFsync = fs.fsyncSync;
+  let directorySyncs = 0;
+  fs.fsyncSync = (fd) => {
+    if (fs.fstatSync(fd).isDirectory() && ++directorySyncs === 2) {
+      throw new Error("injected post-rename directory sync failure");
+    }
+    return originalFsync(fd);
+  };
+  syncBuiltinESMExports();
+  try {
+    assert.throws(() => store.createAgent(project.id, {
+      title: "Recoverable Agent",
+      engine: "codex",
+      conversationId: conversation.id,
+    }, undefined, agentId), /injected post-rename/u);
+  } finally {
+    fs.fsyncSync = originalFsync;
+    syncBuiltinESMExports();
+  }
+
+  assert.equal(store.getAgent(agentId)?.id, agentId);
+  assert.equal(store.deleteAgent(agentId), true);
+  store.updateAgentCreationOperation(begun.operation.id, { status: "rolled_back" });
+  store.close();
+
+  const reopened = new AgentStore(directory);
+  try {
+    assert.equal(reopened.getAgent(agentId), undefined);
+    assert.equal(reopened.agentCreationPending(agentId), false);
   } finally {
     reopened.close();
   }
