@@ -207,7 +207,7 @@ export function registerProjectDeletionRoutes(
         error: "Wait for message delivery to finish before deleting this Project",
       });
     }
-    const agents = store.listAgents(project.id);
+    const agents = store.listAgents(project.id, { includePendingCreation: true });
     if (agents.some((agent) => (agentDeliveryLeases.get(agent.id) ?? 0) > 0)) {
       return reply.code(409).send({ error: "Wait for Agent file activity to finish before deleting this Project" });
     }

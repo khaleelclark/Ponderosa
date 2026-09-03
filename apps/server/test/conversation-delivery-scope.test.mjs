@@ -92,6 +92,7 @@ test("new Agents remain quarantined while opening assets are staged", async (t) 
         agent.id = id;
         return agent;
       },
+      getAgent: () => undefined,
       deleteAgent: () => true,
     },
     coordinationV3: { handleAgentDeletion: () => {} },
@@ -173,6 +174,7 @@ function agentCreationTransactionApp({
         agent.id = id;
         return agent;
       },
+      getAgent: (id) => created && id === agent.id ? agent : undefined,
       deleteAgent: () => {
         created = false;
         deleted = true;
@@ -237,8 +239,8 @@ test("an idempotent Agent creation retry cannot replay an in-flight opening", as
   await stageStarted.promise;
   assert.equal(deletingAgentIds.has(agent.id), true);
   const retry = await app.inject({ method: "POST", url: "/api/projects/project-a/agents", payload });
-  assert.equal(retry.statusCode, 202);
-  assert.equal(retry.json().recovering, true);
+  assert.equal(retry.statusCode, 409);
+  assert.equal(retry.json().operationId, "creation-operation-a");
   finishStage.resolve();
   assert.equal((await first).statusCode, 409);
 });
@@ -1106,8 +1108,10 @@ test("direct message replay repair waits for attachment maintenance", async (t) 
     url: `/api/conversations/${chat.id}/direct-messages`,
     payload: requestPayload,
   });
-  assert.equal(response.statusCode, 409);
-  assert.equal(repaired, false);
+  assert.equal(response.statusCode, 202);
+  assert.equal(response.json().committed, true);
+  assert.equal(response.json().recovering, true);
+  assert.equal(repaired, true);
 });
 
 test("attachment upload leases its Agent and rejects archived Agents", async (t) => {

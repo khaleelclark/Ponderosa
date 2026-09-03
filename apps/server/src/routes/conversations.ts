@@ -76,6 +76,13 @@ export function registerConversationRoutes(
           SELECT id, title, updated_at
           FROM agents
           WHERE project_id = ? AND deleted_at IS NULL AND archived = 0
+            AND NOT EXISTS (
+              SELECT 1
+              FROM agent_creation_operation_members members
+              JOIN agent_creation_operations operations ON operations.id = members.operation_id
+              WHERE members.agent_id = agents.id
+                AND operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+            )
             ${normalizedSearch ? "AND lower(title || ' ' || active_engine || ' ' || COALESCE(model, '')) LIKE ? ESCAPE '\\\\'" : ""}
         `,
         params: normalizedSearch
@@ -132,6 +139,13 @@ export function registerConversationRoutes(
             SELECT agent.id, agent.title, agent.updated_at
             FROM agents agent
             WHERE agent.conversation_id = ? AND agent.deleted_at IS NULL
+              AND NOT EXISTS (
+                SELECT 1
+                FROM agent_creation_operation_members creation_members
+                JOIN agent_creation_operations creation_operations ON creation_operations.id = creation_members.operation_id
+                WHERE creation_members.agent_id = agent.id
+                  AND creation_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+              )
               ${normalizedSearch ? "AND lower(agent.title || ' ' || agent.active_engine || ' ' || COALESCE(agent.model, '')) LIKE ? ESCAPE '\\\\'" : ""}
           `,
           params: normalizedSearch

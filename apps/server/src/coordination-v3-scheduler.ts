@@ -333,8 +333,10 @@ export class CoordinationV3Scheduler {
           this.options.onMessageDeliveryChanged?.(steering.agentId);
         }
       }
-      const excludedAgentIds = await this.options.blockedAgentIds?.();
       while (!this.leasingPaused && this.store.activeRunCount() < this.maxConcurrentRuns) {
+        // Dispatching yields to request handlers. Re-read quarantine before
+        // each lease so newly creating/deleting Agents cannot cross this gate.
+        const excludedAgentIds = await this.options.blockedAgentIds?.();
         const lease = this.store.leaseNextRun({
           workerId: this.options.workerId,
           leaseMs: this.options.leaseMs,

@@ -22,6 +22,7 @@ export interface ServerContext {
     | "getActivityOutputPage"
     | "getActivityPage"
     | "getAgent"
+    | "agentCreationPending"
     | "getAgentDetail"
     | "getAllChatPage"
     | "getArtifactPage"

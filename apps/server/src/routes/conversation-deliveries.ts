@@ -156,6 +156,13 @@ export function registerConversationDeliveryRoutes(
     Body: CreateConversationMessageRequest;
   }>("/api/conversations/:id/messages", async (request, reply) => {
     const messageStartedAt = performance.now();
+    if (!request.body || typeof request.body !== "object" || Array.isArray(request.body) ||
+        Object.keys(request.body).some((key) => ![
+          "text", "attachments", "recipientAgentMentions", "recipientAttachments",
+          "model", "effort", "speed", "activeRunDelivery", "idempotencyKey",
+        ].includes(key))) {
+      return reply.code(400).send({ error: "message body contains unknown or invalid fields" });
+    }
     if (typeof request.body?.text !== "string") {
       return reply.code(400).send({ error: "text must be a string" });
     }
@@ -182,6 +189,8 @@ export function registerConversationDeliveryRoutes(
         (!Array.isArray(requestedRecipientAgentMentions) ||
         requestedRecipientAgentMentions.length > 100 ||
         requestedRecipientAgentMentions.some((binding) => !binding ||
+          typeof binding !== "object" || Array.isArray(binding) ||
+          Object.keys(binding).some((key) => !["agentId", "handle"].includes(key)) ||
           typeof binding.agentId !== "string" || !binding.agentId.trim() ||
           typeof binding.handle !== "string" || !binding.handle.trim()))) {
       return reply.code(400).send({ error: "Broadcast Agent mention bindings must be unique and limited to 100" });
@@ -199,7 +208,9 @@ export function registerConversationDeliveryRoutes(
     if (!Array.isArray(requestedRecipientAttachments) ||
         requestedRecipientAttachments.length > recipientAgentIds.length ||
         requestedRecipientAttachments.some((entry) =>
-          !entry || typeof entry.agentId !== "string" || !recipientAgentIds.includes(entry.agentId) ||
+          !entry || typeof entry !== "object" || Array.isArray(entry) ||
+          Object.keys(entry).some((key) => !["agentId", "attachmentIds"].includes(key)) ||
+          typeof entry.agentId !== "string" || !recipientAgentIds.includes(entry.agentId) ||
           !Array.isArray(entry.attachmentIds) ||
           entry.attachmentIds.some((id) => typeof id !== "string" || !id) ||
           entry.attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE ||
@@ -214,18 +225,20 @@ export function registerConversationDeliveryRoutes(
     if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must contain 1 to 200 characters" });
     if (!Array.isArray(requestedAssets) ||
         requestedAssets.length > MAX_ATTACHMENTS_PER_MESSAGE ||
-        requestedAssets.some((asset) => !asset || typeof asset.id !== "string" || !asset.id ||
+        requestedAssets.some((asset) => !asset || typeof asset !== "object" || Array.isArray(asset) ||
+          Object.keys(asset).some((key) => ![
+            "id", "agentId", "name", "mediaType", "size", "width", "height", "sha256",
+            "state", "createdAt", "url", "downloadUrl", "previewUrl", "unavailable",
+          ].includes(key)) ||
+          typeof asset.id !== "string" || !asset.id ||
           typeof asset.agentId !== "string" || !asset.agentId)) {
       return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} valid assets are allowed` });
     }
-    const master = store.getConversation(request.params.id);
-    if (!master) return reply.code(404).send({ error: "conversation not found" });
-    if (projectDeletionInProgress(master.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
-    const eventId = `broadcast-${createHash("sha256").update(`${master.id}\0${idempotencyKey}`).digest("hex")}`;
+    const eventId = `broadcast-${createHash("sha256").update(`${request.params.id}\0${idempotencyKey}`).digest("hex")}`;
     const requestFingerprint = conversationDeliveryRequestFingerprint({
       version: 1,
       kind: "broadcast",
-      conversationId: master.id,
+      conversationId: request.params.id,
       text: requestedText,
       recipients: recipientAgentMentions,
       attachments: requestedAssets.map((asset) => ({ agentId: asset.agentId, id: asset.id })),
@@ -243,49 +256,24 @@ export function registerConversationDeliveryRoutes(
       if (existingPayload.requestFingerprint !== requestFingerprint) {
         return reply.code(409).send({ error: "runtime communication ID collision" });
       }
-      let replayedMessage = store.getConversationMessages(master.id)
-        .find((candidate) => candidate.communicationEventId === eventId);
-      if (master.archived) return reply.code(404).send({ error: "conversation not found" });
+      let replayedMessage;
       const replayAgentIds = [...new Set([
         ...(existingPayload.dispatch?.recipients ?? []).flatMap((recipient) =>
           typeof recipient.agentId === "string" && recipient.agentId.trim() ? [recipient.agentId.trim()] : []),
         ...(existingPayload.communication?.attachments ?? []).map((attachment) => attachment.agentId),
       ])];
-      const replayAttachments = [
-        ...(existingPayload.communication?.attachments ?? []).map((attachment) => ({
-          agentId: attachment.agentId,
-          attachmentId: attachment.id,
-        })),
-        ...(existingPayload.dispatch?.recipients ?? []).flatMap((recipient) =>
-          typeof recipient.agentId === "string"
-            ? (recipient.attachments ?? []).flatMap((attachment) =>
-                typeof attachment.id === "string"
-                  ? [{ agentId: recipient.agentId!.trim(), attachmentId: attachment.id }]
-                  : [])
-            : []),
-      ];
-      if (replayAttachments.some(({ agentId, attachmentId }) =>
-        attachmentDeletionInProgress(agentId, attachmentId))) {
-        return reply.code(409).send({ error: "Asset deletion is in progress" });
-      }
-      if (replayAttachments.some(({ agentId }) => assetReconciliationInProgress(agentId))) {
-        return reply.code(409).send({ error: "Asset cleanup is in progress" });
-      }
-      if (replayAgentIds.some(agentDeletionInProgress)) {
-        return reply.code(409).send({ error: "Agent deletion is in progress" });
-      }
       const releaseReplayLease = leaseConversationDelivery(
         conversationDeliveryLeases,
         agentDeliveryLeases,
-        master.id,
+        request.params.id,
         replayAgentIds,
       );
       try {
         await reconcileRuntimeCommunicationProjections({
-          projectId: master.projectId,
+          projectId: existingRuntime!.projectId,
           communicationEventId: eventId,
         });
-        replayedMessage = store.getConversationMessages(master.id)
+        replayedMessage = store.getConversationMessages(request.params.id)
           .find((candidate) => candidate.communicationEventId === eventId);
       } catch {
         return reply.code(202).send({
@@ -304,7 +292,9 @@ export function registerConversationDeliveryRoutes(
         replayed: true,
       });
     }
-    if (master.archived) return reply.code(404).send({ error: "conversation not found" });
+    const master = store.getConversation(request.params.id);
+    if (!master || master.archived) return reply.code(404).send({ error: "conversation not found" });
+    if (projectDeletionInProgress(master.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
     const agentIdsByHandle = new Map<string, string[]>();
     for (const agent of store.listAgents(master.projectId)) {
       if (!isActiveConversationAgent(agent, master)) continue;
@@ -499,8 +489,19 @@ export function registerConversationDeliveryRoutes(
       });
     }
     const canonicalAppendCompletedAt = performance.now();
-    const message = store.getConversationMessages(master.id)
-      .find((candidate) => candidate.communicationEventId === communicationInput.eventId);
+    let message;
+    try {
+      message = store.getConversationMessages(master.id)
+        .find((candidate) => candidate.communicationEventId === communicationInput.eventId);
+    } catch {
+      try { if (recipientAgentIds.length) notifyScheduler(); } catch { /* recovery is durable */ }
+      return reply.code(202).send({
+        communicationEventId: communicationInput.eventId,
+        committed: true,
+        recovering: true,
+        replayed: intake.replayed,
+      });
+    }
     const projectionCompletedAt = performance.now();
     try {
       if (message) appendWorkspace({ type: "conversation_changed", projectId: master.projectId, conversationId: master.id, action: "message" });
@@ -570,6 +571,12 @@ export function registerConversationDeliveryRoutes(
   app.post<{ Params: { id: string }; Body: CreateMultiAgentDirectMessageRequest }>(
     "/api/conversations/:id/direct-messages",
     async (request, reply) => {
+      if (!request.body || typeof request.body !== "object" || Array.isArray(request.body) ||
+          Object.keys(request.body).some((key) => ![
+            "text", "recipients", "idempotencyKey", "activeRunDelivery", "model", "effort", "speed",
+          ].includes(key))) {
+        return reply.code(400).send({ error: "direct message body contains unknown or invalid fields" });
+      }
       const rawText = request.body?.text;
       let recipients = request.body?.recipients ?? [];
       if (typeof rawText !== "string") return reply.code(400).send({ error: "text is required" });
@@ -588,7 +595,9 @@ export function registerConversationDeliveryRoutes(
       if (!rawText.trim()) return reply.code(400).send({ error: "text is required" });
       if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
       if (!Array.isArray(recipients) || recipients.length === 0 || recipients.length > 100 ||
-          recipients.some((recipient) => !recipient || typeof recipient.agentId !== "string" || !recipient.agentId.trim())) {
+          recipients.some((recipient) => !recipient || typeof recipient !== "object" || Array.isArray(recipient) ||
+            Object.keys(recipient).some((key) => !["agentId", "attachmentIds"].includes(key)) ||
+            typeof recipient.agentId !== "string" || !recipient.agentId.trim())) {
         return reply.code(400).send({ error: "1 to 100 recipients are required" });
       }
       recipients = recipients.map((recipient) => ({
@@ -606,15 +615,12 @@ export function registerConversationDeliveryRoutes(
           return reply.code(400).send({ error: `each recipient supports at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique attachments` });
         }
       }
-      const master = store.getConversation(request.params.id);
-      if (!master) return reply.code(404).send({ error: "conversation not found" });
-      if (projectDeletionInProgress(master.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
-      const receiptKey = `multi-direct:${master.id}:${idempotencyKey}`;
+      const receiptKey = `multi-direct:${request.params.id}:${idempotencyKey}`;
       const eventId = `user-dm-${createHash("sha256").update(receiptKey).digest("hex")}`;
       const requestFingerprint = conversationDeliveryRequestFingerprint({
         version: 1,
         kind: "direct",
-        conversationId: master.id,
+        conversationId: request.params.id,
         text: rawText,
         recipients: recipients.map((recipient, index) => ({
           agentId: agentIds[index],
@@ -634,68 +640,58 @@ export function registerConversationDeliveryRoutes(
         if (existingPayload.requestFingerprint !== requestFingerprint) {
           return reply.code(409).send({ error: "runtime communication ID collision" });
         }
-        let message = store.getConversationMessageByReceiptKey(master.id, receiptKey);
+        let message;
+        const activationByAgentId = new Map(
+          (existingRuntime?.activations ?? []).map((activation) => [activation.agentId, activation.id]),
+        );
+        const dispatchRecipients = (existingPayload.dispatch?.recipients ?? [])
+          .flatMap((recipient) => recipient.agentId ? [recipient.agentId] : []);
+        const audience = existingPayload.communication?.audience;
+        const originalRecipients = dispatchRecipients.length
+          ? dispatchRecipients
+          : audience?.kind === "user_agents"
+            ? [...audience.agentIds]
+            : audience?.kind === "user_agent"
+              ? [audience.agentId]
+              : agentIds;
+        const recoveringResponse = (messageId = eventId) => ({
+          messageId,
+          replayed: true,
+          recipients: originalRecipients.map((agentId) => ({
+            agentId,
+            queued: true,
+            deliveryId: activationByAgentId.get(agentId),
+            state: "queued" as const,
+          })),
+          ...(existingPayload.unavailableRecipients?.length ? {
+            unavailableRecipients: existingPayload.unavailableRecipients,
+          } : {}),
+          communicationEventId: eventId,
+          committed: true,
+          recovering: true,
+        });
         {
-          if (master.archived) return reply.code(404).send({ error: "conversation not found" });
           const replayAgentIds = [...new Set((existingPayload.dispatch?.recipients ?? []).flatMap((recipient) =>
             typeof recipient.agentId === "string" && recipient.agentId.trim() ? [recipient.agentId.trim()] : []))];
-          const replayAttachments = [
-            ...(existingPayload.communication?.attachments ?? []).map((attachment) => ({
-              agentId: attachment.agentId,
-              attachmentId: attachment.id,
-            })),
-            ...(existingPayload.dispatch?.recipients ?? []).flatMap((recipient) =>
-              typeof recipient.agentId === "string"
-                ? (recipient.attachments ?? []).flatMap((attachment) =>
-                    typeof attachment.id === "string"
-                      ? [{ agentId: recipient.agentId!.trim(), attachmentId: attachment.id }]
-                      : [])
-                : []),
-          ];
-          if (replayAttachments.some(({ agentId, attachmentId }) =>
-            attachmentDeletionInProgress(agentId, attachmentId))) {
-            return reply.code(409).send({ error: "Asset deletion is in progress" });
-          }
-          if (replayAttachments.some(({ agentId }) => assetReconciliationInProgress(agentId))) {
-            return reply.code(409).send({ error: "Asset cleanup is in progress" });
-          }
-          if (replayAgentIds.some(agentDeletionInProgress)) {
-            return reply.code(409).send({ error: "Agent deletion is in progress" });
-          }
           const releaseReplayLease = leaseConversationDelivery(
             conversationDeliveryLeases,
             agentDeliveryLeases,
-            master.id,
+            request.params.id,
             replayAgentIds,
           );
           try {
             await reconcileRuntimeCommunicationProjections({
-              projectId: master.projectId,
+              projectId: existingRuntime!.projectId,
               communicationEventId: eventId,
             });
-            message = store.getConversationMessageByReceiptKey(master.id, receiptKey);
+            message = store.getConversationMessageByReceiptKey(request.params.id, receiptKey);
           } catch {
-            return reply.code(202).send({
-              communicationEventId: eventId,
-              committed: true,
-              recovering: true,
-              replayed: true,
-            });
+            return reply.code(202).send(recoveringResponse(message?.id));
           } finally {
             releaseReplayLease();
           }
         }
-        if (!message) return reply.code(202).send({
-          communicationEventId: eventId,
-          committed: true,
-          recovering: true,
-          replayed: true,
-        });
-        const activationByAgentId = new Map(
-          (existingRuntime?.activations ?? []).map((activation) => [activation.agentId, activation.id]),
-        );
-        const originalRecipients = (existingPayload.dispatch?.recipients ?? [])
-          .flatMap((recipient) => recipient.agentId ? [recipient.agentId] : []);
+        if (!message) return reply.code(202).send(recoveringResponse());
         return {
           messageId: message.id,
           replayed: true,
@@ -710,7 +706,9 @@ export function registerConversationDeliveryRoutes(
           } : {}),
         } satisfies MultiAgentDirectMessageResponse;
       }
-      if (master.archived) return reply.code(404).send({ error: "conversation not found" });
+      const master = store.getConversation(request.params.id);
+      if (!master || master.archived) return reply.code(404).send({ error: "conversation not found" });
+      if (projectDeletionInProgress(master.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
       const targets = agentIds.map((agentId) => store.getAgent(agentId));
       if (targets.some((target) =>
         target && target.projectId === master.projectId && target.conversationId !== master.id
@@ -817,6 +815,25 @@ export function registerConversationDeliveryRoutes(
           })),
           now: createdAt,
         });
+        const deliveryIdByAgentId = new Map(
+          (intake.activations ?? []).map((activation) => [activation.agentId, activation.id]),
+        );
+        const recoveringResponse = (): MultiAgentDirectMessageResponse & {
+          communicationEventId: string; committed: true; recovering: true;
+        } => ({
+          messageId: communication.eventId,
+          replayed: intake.replayed,
+          recipients: recipients.map((recipient) => ({
+            agentId: recipient.agentId,
+            queued: true,
+            deliveryId: deliveryIdByAgentId.get(recipient.agentId),
+            state: "queued",
+          })),
+          ...(unavailableRecipients.length ? { unavailableRecipients } : {}),
+          communicationEventId: communication.eventId,
+          committed: true,
+          recovering: true,
+        });
         try {
           await reconcileRuntimeCommunicationProjections({
             projectId: communication.projectId,
@@ -824,20 +841,16 @@ export function registerConversationDeliveryRoutes(
           });
         } catch {
           try { notifyScheduler(); } catch { /* recovery is durable */ }
-          return reply.code(202).send({
-            communicationEventId: communication.eventId,
-            committed: true,
-            recovering: true,
-            replayed: intake.replayed,
-          });
+          return reply.code(202).send(recoveringResponse());
         }
-        const message = store.getConversationMessageByReceiptKey(master.id, receiptKey);
-        if (!message) return reply.code(202).send({
-          communicationEventId: communication.eventId,
-          committed: true,
-          recovering: true,
-          replayed: intake.replayed,
-        });
+        let message;
+        try {
+          message = store.getConversationMessageByReceiptKey(master.id, receiptKey);
+        } catch {
+          try { notifyScheduler(); } catch { /* recovery is durable */ }
+          return reply.code(202).send(recoveringResponse());
+        }
+        if (!message) return reply.code(202).send(recoveringResponse());
         try {
           for (const recipient of recipients) {
             publishCoordinationV3Changed(recipient.agentId, {
@@ -846,17 +859,9 @@ export function registerConversationDeliveryRoutes(
           }
           notifyScheduler();
         } catch { /* durable direct message remains authoritative */ }
-        const deliveryIdByAgentId = new Map(
-          (intake.activations ?? []).map((activation) => [activation.agentId, activation.id]),
-        );
         if (deliveryIdByAgentId.size !== recipients.length ||
             recipients.some((recipient) => !deliveryIdByAgentId.has(recipient.agentId))) {
-          return reply.code(202).send({
-            communicationEventId: communication.eventId,
-            committed: true,
-            recovering: true,
-            replayed: intake.replayed,
-          });
+          return reply.code(202).send(recoveringResponse());
         }
         return {
           messageId: message.id,

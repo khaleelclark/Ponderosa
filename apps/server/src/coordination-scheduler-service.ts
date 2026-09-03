@@ -171,6 +171,7 @@ interface CoordinationSchedulerContext {
   workspace: WorkspaceStore;
   activeRuns: Map<string, ActiveRun>;
   runtimeAuthorities: Map<string, AgentRuntimeAuthority>;
+  deletingAgentIds: ReadonlySet<string>;
   engines: ReadonlyMap<string, EngineRegistration>;
   runtimeStatus(
     id: string,
@@ -219,6 +220,7 @@ export function createCoordinationScheduler(
     workspace,
     activeRuns,
     runtimeAuthorities,
+    deletingAgentIds,
     engines,
     runtimeStatus,
     agentMessageCapabilities,
@@ -552,6 +554,7 @@ return new CoordinationV3Scheduler(
         ...[...runtimeAuthorities].flatMap(([agentId, authority]) =>
           authority.opening || authority.closing || authority.oneShots.size > 0 ? [agentId] : []),
         ...activeRuns.keys(),
+        ...deletingAgentIds,
       ])];
     },
     onRunLeased: () => { reconcileTriggerOperationalNotifications(); },

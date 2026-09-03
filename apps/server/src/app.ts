@@ -311,6 +311,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       /^\/api\/requests\/[^/]+\/retry$/u.test(pathname) ||
       /^\/api\/projects\/[^/]+\/agents$/u.test(pathname) ||
       /^\/api\/projects\/[^/]+\/import-agents$/u.test(pathname) ||
+      /^\/api\/projects\/[^/]+\/(?:import-agent-package|copy-agent|agent-import-operations)$/u.test(pathname) ||
       /^\/api\/projects\/[^/]+\/message-deliveries\/[^/]+\/(?:retry|cancel)$/u.test(pathname) ||
       /^\/api\/projects\/[^/]+\/triggers$/u.test(pathname) ||
       /^\/api\/triggers\/[^/]+(?:\/(?:rotate-secret|allow-runs))?$/u.test(pathname) ||
@@ -400,7 +401,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   }
   const deletingProjectIds = new Set(store.listPendingProjectDeletions().map((entry) => entry.projectId));
   const deletingAgentIds = new Set<string>([...deletingProjectIds].flatMap((projectId) =>
-    store.listAgents(projectId).map((agent) => agent.id)));
+    store.listAgents(projectId, { includePendingCreation: true }).map((agent) => agent.id)));
   for (const operation of store.listRecoverableAgentCreationOperations()) {
     for (const agentId of operation.agentIds) deletingAgentIds.add(agentId);
   }
@@ -773,6 +774,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     workspace,
     activeRuns,
     runtimeAuthorities,
+    deletingAgentIds,
     engines,
     runtimeStatus,
     agentMessageCapabilities,

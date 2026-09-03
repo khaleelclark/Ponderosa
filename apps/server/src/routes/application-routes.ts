@@ -455,6 +455,13 @@ app.get<{ Params: { id: string }; Querystring: CollectionQuery }>("/api/projects
         SELECT id, title, updated_at
         FROM agents
         WHERE project_id = ? AND deleted_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM agent_creation_operation_members members
+            JOIN agent_creation_operations operations ON operations.id = members.operation_id
+            WHERE members.agent_id = agents.id
+              AND operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+          )
           ${normalizedSearch ? "AND lower(title || ' ' || active_engine || ' ' || COALESCE(model, '')) LIKE ? ESCAPE '\\\\'" : ""}
       `,
       params: normalizedSearch

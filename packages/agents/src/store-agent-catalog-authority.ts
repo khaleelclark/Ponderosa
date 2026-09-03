@@ -274,10 +274,17 @@ export class AgentCatalogAuthority {
    * memberships and optional imported-history files for presentation. */
   listAgentEngineAssignments(): Array<{ id: string; activeEngine: string }> {
     return this.client.prepare(`
-      SELECT id, active_engine
+      SELECT agents.id, agents.active_engine
       FROM agents
-      WHERE deleted_at IS NULL
-      ORDER BY id
+      WHERE agents.deleted_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM agent_creation_operation_members AS members
+          JOIN agent_creation_operations AS operations ON operations.id = members.operation_id
+          WHERE members.agent_id = agents.id
+            AND operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+        )
+      ORDER BY agents.id
     `).all().map((row) => {
       const assignment = row as { id: string; active_engine: string };
       return { id: assignment.id, activeEngine: assignment.active_engine };

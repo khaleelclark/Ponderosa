@@ -245,6 +245,13 @@ function baseDirectoryQuery(
             WHERE active_agent.project_id = p.id
               AND active_agent.archived = 0
               AND active_agent.deleted_at IS NULL
+              AND NOT EXISTS (
+                SELECT 1
+                FROM agent_creation_operation_members creation_members
+                JOIN agent_creation_operations creation_operations ON creation_operations.id = creation_members.operation_id
+                WHERE creation_members.agent_id = active_agent.id
+                  AND creation_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+              )
               AND (
                 EXISTS (
                   SELECT 1 FROM scheduler_runs active_run
@@ -302,6 +309,13 @@ function baseDirectoryQuery(
 
   if (kind === "agent") {
     where.push("a.archived = 0", "a.deleted_at IS NULL");
+    where.push(`NOT EXISTS (
+      SELECT 1
+      FROM agent_creation_operation_members creation_members
+      JOIN agent_creation_operations creation_operations ON creation_operations.id = creation_members.operation_id
+      WHERE creation_members.agent_id = a.id
+        AND creation_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+    )`);
     if (query.projectId) {
       where.push("a.project_id = ?");
       params.push(query.projectId);
@@ -344,6 +358,13 @@ function baseDirectoryQuery(
     where.push("t.project_id = ?");
     params.push(query.projectId);
   }
+  where.push(`NOT EXISTS (
+    SELECT 1
+    FROM agent_creation_operation_members creation_members
+    JOIN agent_creation_operations creation_operations ON creation_operations.id = creation_members.operation_id
+    WHERE creation_members.agent_id = a.id
+      AND creation_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+  )`);
   if (filteredAgentIds.length > 0) {
     where.push(`t.agent_id IN (${placeholders(filteredAgentIds.length)})`);
     params.push(...filteredAgentIds);
@@ -458,6 +479,13 @@ function workspaceActiveAgentCount(sqlite: Database.Database): number {
     FROM agents a
     WHERE a.archived = 0
       AND a.deleted_at IS NULL
+      AND NOT EXISTS (
+        SELECT 1
+        FROM agent_creation_operation_members creation_members
+        JOIN agent_creation_operations creation_operations ON creation_operations.id = creation_members.operation_id
+        WHERE creation_members.agent_id = a.id
+          AND creation_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+      )
       AND (
         EXISTS (
           SELECT 1 FROM scheduler_runs r

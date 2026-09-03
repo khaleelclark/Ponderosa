@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   LONG_TEXT_MAX_UTF8_BYTES,
-  TERMINAL_REQUEST_STATES,
   canonicalizeProviderText,
   shouldBackTextWithArtifact,
   unicodeCodePointLength,
@@ -599,13 +598,13 @@ export function registerAgentCommunicationRoutes(
       } catch (error) {
         return reply.code(409).send({ error: error instanceof Error ? error.message : "message authorization failed" });
       }
-      if (inferredReplyFingerprint) {
-        capability.requiredReplyFingerprints ??= {};
-        capability.requiredReplyFingerprints[selectedReplyAuthorityKey] = inferredReplyFingerprint;
-        capability.inferredReplyCommunicationEventId = communicationEventId;
-        coordinationV3.markContextRolloverVisibleResponseCommitted(capability.agentId, capability.runId);
-      }
       try {
+        if (inferredReplyFingerprint) {
+          capability.requiredReplyFingerprints ??= {};
+          capability.requiredReplyFingerprints[selectedReplyAuthorityKey] = inferredReplyFingerprint;
+          capability.inferredReplyCommunicationEventId = communicationEventId;
+          coordinationV3.markContextRolloverVisibleResponseCommitted(capability.agentId, capability.runId);
+        }
         await reconcileRuntimeCommunicationProjections({
           projectId: proposedCommunication.projectId,
           communicationEventId: proposedCommunication.eventId,
@@ -620,8 +619,20 @@ export function registerAgentCommunicationRoutes(
           ...(primaryArtifact ? { resultRef: `ponderosa://artifact/${primaryArtifact.id}` } : {}),
         });
       }
-      const existing = store.readEvents(capability.agentId).find((item) =>
-        item.event.type === "communication_projection" && item.event.communicationEventId === proposedCommunication.eventId);
+      let existing;
+      try {
+        existing = store.readEvents(capability.agentId).find((item) =>
+          item.event.type === "communication_projection" && item.event.communicationEventId === proposedCommunication.eventId);
+      } catch {
+        return reply.code(202).send({
+          intent,
+          eventId: proposedCommunication.eventId,
+          committed: true,
+          recovering: true,
+          replayed: intake.replayed,
+          ...(primaryArtifact ? { resultRef: `ponderosa://artifact/${primaryArtifact.id}` } : {}),
+        });
+      }
       return {
         intent,
         eventId: proposedCommunication.eventId,
@@ -733,13 +744,13 @@ export function registerAgentCommunicationRoutes(
       const message = error instanceof Error ? error.message : "message authorization failed";
       return reply.code(message.includes("scope") ? 409 : 403).send({ error: message });
     }
-    if (inferredReplyFingerprint) {
-      capability.requiredReplyFingerprints ??= {};
-      capability.requiredReplyFingerprints[selectedReplyAuthorityKey] = inferredReplyFingerprint;
-      capability.inferredReplyCommunicationEventId = communicationEventId;
-      coordinationV3.markContextRolloverVisibleResponseCommitted(capability.agentId, capability.runId);
-    }
     try {
+      if (inferredReplyFingerprint) {
+        capability.requiredReplyFingerprints ??= {};
+        capability.requiredReplyFingerprints[selectedReplyAuthorityKey] = inferredReplyFingerprint;
+        capability.inferredReplyCommunicationEventId = communicationEventId;
+        coordinationV3.markContextRolloverVisibleResponseCommitted(capability.agentId, capability.runId);
+      }
       await reconcileRuntimeCommunicationProjections({
         projectId: proposedCommunication.projectId,
         communicationEventId: proposedCommunication.eventId,
@@ -756,8 +767,22 @@ export function registerAgentCommunicationRoutes(
         ...(passiveRecipientAgentIds.size ? { passiveRecipientAgentIds: [...passiveRecipientAgentIds].sort() } : {}),
       });
     }
-    const message = store.getConversationMessages(capability.conversationId, channel)
-      .find((candidate) => candidate.communicationEventId === proposedCommunication.eventId);
+    let message;
+    try {
+      message = store.getConversationMessages(capability.conversationId, channel)
+        .find((candidate) => candidate.communicationEventId === proposedCommunication.eventId);
+    } catch {
+      try { notifyScheduler(); } catch { /* the committed response remains recoverable */ }
+      return reply.code(202).send({
+        intent,
+        eventId: proposedCommunication.eventId,
+        committed: true,
+        recovering: true,
+        replayed: intake.replayed,
+        ...(primaryArtifact ? { resultRef: `ponderosa://artifact/${primaryArtifact.id}` } : {}),
+        ...(passiveRecipientAgentIds.size ? { passiveRecipientAgentIds: [...passiveRecipientAgentIds].sort() } : {}),
+      });
+    }
     if (intent === "collaboration") {
       try {
         for (const delivery of routing.intents) {
@@ -859,13 +884,23 @@ export function registerAgentCommunicationRoutes(
           }],
           ...(request.body?.createJoin === false ? {} : { join: { id: `${requestId}:join`, mode: "all" as const } }),
         });
-        const recoveredRollover = coordinationV3.contextRolloverRecoveryForRequest(
-          requestId,
-        );
+        let recoveredRollover;
+        try {
+          recoveredRollover = coordinationV3.contextRolloverRecoveryForRequest(requestId);
+        } catch {
+          return reply.code(202).send({
+            ...result,
+            retryOfRequestId: original.id,
+            committed: true,
+            recovering: true,
+          });
+        }
         if (recoveredRollover) {
-          resolveOperationalNotification(
-            `context-rollover:${recoveredRollover.id}:confirmation-missing`,
-          );
+          try {
+            resolveOperationalNotification(
+              `context-rollover:${recoveredRollover.id}:confirmation-missing`,
+            );
+          } catch { /* the retry is already canonical */ }
         }
         const conversationIds = original.conversationId
           ? [original.conversationId]
@@ -887,11 +922,20 @@ export function registerAgentCommunicationRoutes(
   app.post<{ Params: { id: string }; Body: { idempotencyKey?: string; reason?: string } }>(
     "/api/requests/:id/cancel",
     async (request, reply) => {
+      if (request.body !== undefined && (!request.body || typeof request.body !== "object" || Array.isArray(request.body))) {
+        return reply.code(400).send({ error: "cancel body must be an object" });
+      }
+      if (request.body && Object.keys(request.body).some((key) => !["idempotencyKey", "reason"].includes(key))) {
+        return reply.code(400).send({ error: "unknown cancel field" });
+      }
+      if (request.body?.idempotencyKey !== undefined && typeof request.body.idempotencyKey !== "string") {
+        return reply.code(400).send({ error: "idempotencyKey must be a string" });
+      }
+      if (request.body?.reason !== undefined && typeof request.body.reason !== "string") {
+        return reply.code(400).send({ error: "reason must be a string" });
+      }
       const current = coordinationV3.getRequest(request.params.id);
       if (!current) return reply.code(404).send({ error: "request not found" });
-      if (TERMINAL_REQUEST_STATES.has(current.state)) {
-        return reply.code(409).send({ error: `request is already terminal (${current.state})` });
-      }
       const key = request.body?.idempotencyKey?.trim() || `operator-cancel:${current.id}`;
       if (key.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
       const reason = request.body?.reason?.trim();
@@ -906,11 +950,13 @@ export function registerAgentCommunicationRoutes(
         const conversationIds = current.conversationId
           ? [current.conversationId]
           : [];
-        if (current.requesterAgentId) {
-          publishCoordinationV3Changed(current.requesterAgentId, { conversationIds });
-        }
-        publishCoordinationV3Changed(current.recipientAgentId, { conversationIds });
-        notifyScheduler();
+        try {
+          if (current.requesterAgentId) {
+            publishCoordinationV3Changed(current.requesterAgentId, { conversationIds });
+          }
+          publishCoordinationV3Changed(current.recipientAgentId, { conversationIds });
+          notifyScheduler();
+        } catch { /* the cancellation is already canonical */ }
         return result;
       } catch (error) {
         return reply.code(409).send({ error: error instanceof Error ? error.message : "request cancellation failed" });

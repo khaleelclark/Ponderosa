@@ -1074,8 +1074,37 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.agentCatalog.findAgentCreation(projectId, idempotencyKey);
   }
 
-  listAgents(projectId: string): AgentDto[] {
-    return this.agentCatalog.listAgents(projectId);
+  listAgents(
+    projectId: string,
+    options: { includePendingCreation?: boolean } = {},
+  ): AgentDto[] {
+    const agents = this.agentCatalog.listAgents(projectId);
+    if (options.includePendingCreation) return agents;
+    const pending = new Set(this.pendingAgentCreationIds(projectId));
+    return pending.size ? agents.filter((agent) => !pending.has(agent.id)) : agents;
+  }
+
+  pendingAgentCreationIds(projectId?: string): string[] {
+    return (this.client.prepare(`
+      SELECT members.agent_id
+      FROM agent_creation_operation_members AS members
+      JOIN agent_creation_operations AS operations ON operations.id = members.operation_id
+      WHERE operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+        AND (? IS NULL OR operations.project_id = ?)
+      ORDER BY members.agent_id
+    `).all(projectId ?? null, projectId ?? null) as Array<{ agent_id: string }>)
+      .map((row) => row.agent_id);
+  }
+
+  agentCreationPending(agentId: string): boolean {
+    return Boolean(this.client.prepare(`
+      SELECT 1
+      FROM agent_creation_operation_members AS members
+      JOIN agent_creation_operations AS operations ON operations.id = members.operation_id
+      WHERE members.agent_id = ?
+        AND operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+      LIMIT 1
+    `).get(agentId));
   }
 
   listAgentEngineAssignments(): Array<{ id: string; activeEngine: string }> {

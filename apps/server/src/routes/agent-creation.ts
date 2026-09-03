@@ -219,7 +219,19 @@ export function registerAgentCreationRoutes(
       if (creationOperation.status === "completed" && creationOperation.result) {
         return { ...(creationOperation.result as Record<string, unknown>), replayed: true };
       }
+      if (creationOperation.status === "completed" && !creationOperation.result) {
+        return reply.code(503).send({
+          error: "Agent creation committed without a recoverable result",
+          operationId: creationOperation.id,
+        });
+      }
       if (creationOperation.status === "canonical_committed" && creationOperation.communicationEventId) {
+        if (!creationOperation.result) {
+          return reply.code(503).send({
+            error: "Agent creation is committed but its result is still being recovered",
+            operationId: creationOperation.id,
+          });
+        }
         try {
           await reconcileRuntimeCommunicationProjections({
             projectId: request.params.id,
@@ -239,9 +251,8 @@ export function registerAgentCreationRoutes(
         }
       }
       if (creationOperation.agentIds.length) {
-        return reply.code(202).send({
-          committed: false,
-          recovering: true,
+        return reply.code(409).send({
+          error: "Agent creation is still being recovered; retry with the same idempotency key",
           operationId: creationOperation.id,
           agentIds: creationOperation.agentIds,
         });
@@ -313,12 +324,24 @@ export function registerAgentCreationRoutes(
         deletingAgentIds.add(agentId);
         agent = store.createAgent(request.params.id, request.body, undefined, agentId);
       } catch (error) {
-        deletingAgentIds.delete(agentId);
+        let absent = !store.getAgent(agentId);
+        if (!absent) {
+          try {
+            store.deleteAgent(agentId, (id) => coordinationV3.handleAgentDeletion(id));
+          } catch { /* startup recovery retains the quarantine */ }
+          absent = !store.getAgent(agentId);
+        }
         store.updateAgentCreationOperation(creationOperation.id, {
-          status: "rolled_back",
+          status: absent ? "rolled_back" : "rolling_back",
           lastError: error instanceof Error ? error.message : "Agent creation failed",
         });
-        return reply.code(400).send({ error: error instanceof Error ? error.message : "agent could not be created" });
+        if (absent) deletingAgentIds.delete(agentId);
+        return reply.code(absent ? 400 : 500).send({
+          error: absent
+            ? error instanceof Error ? error.message : "agent could not be created"
+            : "Agent creation failed and rollback is still pending",
+          operationId: creationOperation.id,
+        });
       }
       // Keep the newly visible row unavailable until its opening assets,
       // communication, and activation are durably committed.
@@ -501,7 +524,7 @@ export function registerAgentCreationRoutes(
           rollbackCompleted = store.deleteAgent(
             agent.id,
             (agentId) => coordinationV3.handleAgentDeletion(agentId),
-          );
+          ) && !store.getAgent(agent.id);
         } catch (rollbackError) {
           throw new AggregateError(
             [error, rollbackError],

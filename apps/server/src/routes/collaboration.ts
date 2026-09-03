@@ -121,13 +121,30 @@ export function registerCollaborationRoutes(
     Params: { id: string };
     Body: CreateCollaborationMessageRequest;
   }>("/api/conversations/:id/collaboration/messages", async (request, reply) => {
+    if (!request.body || typeof request.body !== "object" || Array.isArray(request.body) ||
+        Object.keys(request.body).some((key) => ![
+          "text", "recipientAgentIds", "recipientAttachments", "idempotencyKey",
+        ].includes(key))) {
+      return reply.code(400).send({ error: "collaboration body contains unknown or invalid fields" });
+    }
     if (request.body?.text !== undefined && typeof request.body.text !== "string") {
       return reply.code(400).send({ error: "text must be a string" });
+    }
+    if (!Array.isArray(request.body.recipientAgentIds) ||
+        request.body.recipientAgentIds.length === 0 || request.body.recipientAgentIds.length > 100 ||
+        request.body.recipientAgentIds.some((id) => typeof id !== "string" || !id.trim())) {
+      return reply.code(400).send({ error: "collaboration requires 1 to 100 recipientAgentIds" });
+    }
+    const normalizedRecipientAgentIds = request.body.recipientAgentIds.map((id) => id.trim());
+    if (new Set(normalizedRecipientAgentIds).size !== normalizedRecipientAgentIds.length) {
+      return reply.code(400).send({ error: "collaboration recipientAgentIds must be unique" });
     }
     const text = canonicalizeProviderText(request.body?.text ?? "").trim();
     const requestedRecipientAttachments = request.body?.recipientAttachments ?? [];
     if (!Array.isArray(requestedRecipientAttachments) || requestedRecipientAttachments.some((entry) =>
-      !entry || typeof entry.agentId !== "string" || !Array.isArray(entry.attachmentIds) ||
+      !entry || typeof entry !== "object" || Array.isArray(entry) ||
+      Object.keys(entry).some((key) => !["agentId", "attachmentIds"].includes(key)) ||
+      typeof entry.agentId !== "string" || !Array.isArray(entry.attachmentIds) ||
       entry.attachmentIds.some((id) => typeof id !== "string" || !id))) {
       return reply.code(400).send({ error: "recipientAttachments must be valid Agent attachment lists" });
     }
@@ -140,20 +157,15 @@ export function registerCollaborationRoutes(
     }
     const idempotencyKey = request.body?.idempotencyKey?.trim();
     if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
-    const conversation = store.getConversation(request.params.id);
-    if (!conversation) return reply.code(404).send({ error: "conversation not found" });
-    if (projectDeletionInProgress(conversation.projectId)) {
-      return reply.code(409).send({ error: "Project deletion is in progress" });
-    }
     const eventId = idempotencyKey
-      ? `collaboration-${createHash("sha256").update(`${conversation.id}\0${idempotencyKey}`).digest("hex")}`
+      ? `collaboration-${createHash("sha256").update(`${request.params.id}\0${idempotencyKey}`).digest("hex")}`
       : randomUUID();
     const requestFingerprint = conversationDeliveryRequestFingerprint({
       version: 1,
       kind: "collaboration",
-      conversationId: conversation.id,
+      conversationId: request.params.id,
       text,
-      recipientAgentIds: request.body?.recipientAgentIds,
+      recipientAgentIds: normalizedRecipientAgentIds,
       recipientAttachments: requestedRecipientAttachments,
     });
     const existingRuntime = idempotencyKey
@@ -168,47 +180,22 @@ export function registerCollaborationRoutes(
       if (existingPayload.requestFingerprint !== requestFingerprint) {
         return reply.code(409).send({ error: "runtime communication ID collision" });
       }
-      let message = store.getConversationMessages(conversation.id, "collaboration")
-        .find((candidate) => candidate.communicationEventId === eventId);
+      let message;
       {
-        if (conversation.archived) return reply.code(404).send({ error: "conversation not found" });
         const replayAgentIds = [...new Set((existingPayload.dispatch?.recipients ?? []).flatMap((recipient) =>
           typeof recipient.agentId === "string" && recipient.agentId.trim() ? [recipient.agentId.trim()] : []))];
-        const replayAttachments = [
-          ...(existingPayload.communication?.attachments ?? []).map((attachment) => ({
-            agentId: attachment.agentId,
-            attachmentId: attachment.id,
-          })),
-          ...(existingPayload.dispatch?.recipients ?? []).flatMap((recipient) =>
-            typeof recipient.agentId === "string"
-              ? (recipient.attachments ?? []).flatMap((attachment) =>
-                  typeof attachment.id === "string"
-                    ? [{ agentId: recipient.agentId!.trim(), attachmentId: attachment.id }]
-                    : [])
-              : []),
-        ];
-        if (replayAttachments.some(({ agentId, attachmentId }) =>
-          attachmentDeletionInProgress(agentId, attachmentId))) {
-          return reply.code(409).send({ error: "Asset deletion is in progress" });
-        }
-        if (replayAttachments.some(({ agentId }) => assetReconciliationInProgress(agentId))) {
-          return reply.code(409).send({ error: "Asset cleanup is in progress" });
-        }
-        if (replayAgentIds.some(agentDeletionInProgress)) {
-          return reply.code(409).send({ error: "Agent deletion is in progress" });
-        }
         const releaseReplayLease = leaseConversationDelivery(
           conversationDeliveryLeases,
           agentDeliveryLeases,
-          conversation.id,
+          request.params.id,
           replayAgentIds,
         );
         try {
           await reconcileRuntimeCommunicationProjections({
-            projectId: conversation.projectId,
+            projectId: existingRuntime!.projectId,
             communicationEventId: eventId,
           });
-          message = store.getConversationMessages(conversation.id, "collaboration")
+          message = store.getConversationMessages(request.params.id, "collaboration")
             .find((candidate) => candidate.communicationEventId === eventId);
         } catch {
           return reply.code(202).send({
@@ -234,19 +221,18 @@ export function registerCollaborationRoutes(
           .flatMap((recipient) => recipient.agentId ? [recipient.agentId] : []),
       };
     }
-    if (conversation.archived) return reply.code(404).send({ error: "conversation not found" });
+    const conversation = store.getConversation(request.params.id);
+    if (!conversation || conversation.archived) return reply.code(404).send({ error: "conversation not found" });
+    if (projectDeletionInProgress(conversation.projectId)) {
+      return reply.code(409).send({ error: "Project deletion is in progress" });
+    }
     const detail = collaborationViewDetail(request.params.id);
     if (!detail) return reply.code(404).send({ error: "conversation not found" });
 
     let renderedText = text;
     let routing: { intents: ConversationDeliveryIntent[]; blocked: Array<{ handle: string; reason: string }> };
     if (request.body.recipientAgentIds !== undefined) {
-      const ids = request.body.recipientAgentIds;
-      if (!Array.isArray(ids) || ids.length === 0 || ids.length > 100 ||
-          ids.some((id) => typeof id !== "string" || !id.trim())) {
-        return reply.code(400).send({ error: "collaboration requires 1 to 100 recipientAgentIds" });
-      }
-      const uniqueIds = [...new Set(ids)];
+      const uniqueIds = normalizedRecipientAgentIds;
       const members = new Map(detail.agents.map((agent) => [agent.id, agent]));
       const targets = uniqueIds.map((id) => members.get(id));
       if (targets.some((target) => !target || target.archived)) {
@@ -392,8 +378,19 @@ export function registerCollaborationRoutes(
         notifiedAgentIds: routing.intents.map((intent) => intent.targetAgentId),
       });
     }
-    const message = store.getConversationMessages(master.id, "collaboration")
-      .find((candidate) => candidate.communicationEventId === communication.eventId);
+    let message;
+    try {
+      message = store.getConversationMessages(master.id, "collaboration")
+        .find((candidate) => candidate.communicationEventId === communication.eventId);
+    } catch {
+      try { notifyScheduler(); } catch { /* recovery is durable */ }
+      return reply.code(202).send({
+        communicationEventId: communication.eventId,
+        committed: true,
+        recovering: true,
+        notifiedAgentIds: routing.intents.map((intent) => intent.targetAgentId),
+      });
+    }
     if (!message) return reply.code(202).send({
       communicationEventId: communication.eventId,
       committed: true,

@@ -78,6 +78,9 @@ export function registerAgentMaintenanceRoutes(
     async (request, reply) => {
       const project = store.getProject(request.params.projectId);
       if (!project) return reply.code(404).send({ error: "project not found" });
+      if (store.agentCreationPending(request.params.id)) {
+        return reply.code(404).send({ error: "deleted Agent not found" });
+      }
       const row = store.sqlite.prepare(`
         SELECT working_copy_json FROM agents
         WHERE id = ? AND project_id = ? AND deleted_at IS NOT NULL

@@ -193,7 +193,19 @@ export function registerAgentCoordinationRoutes(
     if (creationOperation.status === "completed" && creationOperation.result) {
       return { ...(creationOperation.result as Record<string, unknown>), replayed: true };
     }
+    if (creationOperation.status === "completed" && !creationOperation.result) {
+      return reply.code(503).send({
+        error: "managed Agent creation committed without a recoverable result",
+        operationId: creationOperation.id,
+      });
+    }
     if (creationOperation.status === "canonical_committed" && creationOperation.communicationEventId) {
+      if (!creationOperation.result) {
+        return reply.code(503).send({
+          error: "managed Agent creation is committed but its result is still being recovered",
+          operationId: creationOperation.id,
+        });
+      }
       try {
         await reconcileRuntimeCommunicationProjections({
           projectId: manager.projectId,
@@ -213,9 +225,8 @@ export function registerAgentCoordinationRoutes(
       }
     }
     if (creationOperation.agentIds.length) {
-      return reply.code(202).send({
-        committed: false,
-        recovering: true,
+      return reply.code(409).send({
+        error: "managed Agent creation is still being recovered; retry with the same idempotency key",
         operationId: creationOperation.id,
         agentIds: creationOperation.agentIds,
       });
@@ -306,11 +317,18 @@ export function registerAgentCoordinationRoutes(
       }
       if (child) {
         try {
-          if (store.deleteAgent(child.id, (agentId) => coordinationV3.handleAgentDeletion(agentId))) {
+          const absent = store.deleteAgent(child.id, (agentId) => coordinationV3.handleAgentDeletion(agentId))
+            && !store.getAgent(child.id);
+          if (absent) {
             deletingAgentIds.delete(child.id);
             store.updateAgentCreationOperation(creationOperation.id, {
               status: "rolled_back",
               lastError: error instanceof Error ? error.message : "managed Agent creation failed",
+            });
+          } else {
+            store.updateAgentCreationOperation(creationOperation.id, {
+              status: "rolling_back",
+              lastError: error instanceof Error ? error.message : "managed Agent rollback failed",
             });
           }
         } catch (rollbackError) {
@@ -320,11 +338,18 @@ export function registerAgentCoordinationRoutes(
           });
         }
       } else {
-        deletingAgentIds.delete(childId);
+        let absent = !store.getAgent(childId);
+        if (!absent) {
+          try {
+            store.deleteAgent(childId, (id) => coordinationV3.handleAgentDeletion(id));
+          } catch { /* startup recovery retains the quarantine */ }
+          absent = !store.getAgent(childId);
+        }
         store.updateAgentCreationOperation(creationOperation.id, {
-          status: "rolled_back",
+          status: absent ? "rolled_back" : "rolling_back",
           lastError: error instanceof Error ? error.message : "managed Agent creation failed",
         });
+        if (absent) deletingAgentIds.delete(childId);
       }
       return reply.code(409).send({ error: error instanceof Error ? error.message : "managed Agent creation failed" });
     }
@@ -347,7 +372,12 @@ export function registerAgentCoordinationRoutes(
         ...(store.getAgentCreationOperation(creationOperation.id)?.result as Record<string, unknown>),
       });
     }
-    const openingRequest = coordinationV3.getRequest(coordinated!.requestIds[0]!);
+    let openingRequest;
+    try {
+      openingRequest = coordinationV3.getRequest(coordinated!.requestIds[0]!);
+    } catch {
+      // Request projection is advisory; the committed result contains its ID.
+    }
     const conversationIds = openingRequest?.conversationId
       ? [openingRequest.conversationId]
       : [];
@@ -657,6 +687,7 @@ export function registerAgentCoordinationRoutes(
       releaseDeliveryLease();
     }
 
+    try {
     if (capability.conversationId) {
       for (let index = 0; index < normalized.length; index += 1) {
         const item = normalized[index]!;
@@ -720,5 +751,13 @@ export function registerAgentCoordinationRoutes(
         executionDirective: `${queueDirective} Durable wake source created. The Request is tracked without a Join; its terminal result will wake you as an individual callback. You may truthfully tell the user that you will resume when that tracked result is ready.`,
       } : {}),
     };
+    } catch {
+      try { notifyScheduler(); } catch { /* the durable coordination remains recoverable */ }
+      return reply.code(202).send({
+        ...result,
+        committed: true,
+        recovering: true,
+      });
+    }
   });
 }

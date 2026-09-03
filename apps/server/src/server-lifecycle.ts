@@ -290,7 +290,6 @@ export function registerServerLifecycle(
             );
             if (!deleted) rolledBack = false;
           }
-          if (!store.getAgent(agentId)) deletingAgentIds.delete(agentId);
         } catch (error) {
           rolledBack = false;
           store.updateAgentCreationOperation(operation.id, {
@@ -301,7 +300,10 @@ export function registerServerLifecycle(
       }
       for (const artifactId of operation.artifactIds) {
         try {
-          store.deleteProjectArtifact(operation.projectId, artifactId, "Agent creation recovery rolled back");
+          const artifact = store.getProjectArtifact(operation.projectId, artifactId);
+          if (artifact && artifact.originAgentId && operation.agentIds.includes(artifact.originAgentId)) {
+            store.deleteProjectArtifact(operation.projectId, artifactId, "Agent creation recovery rolled back");
+          }
         } catch (error) {
           rolledBack = false;
           store.updateAgentCreationOperation(operation.id, {
@@ -309,8 +311,12 @@ export function registerServerLifecycle(
           });
         }
       }
+      if (operation.agentIds.some((agentId) => store.getAgent(agentId))) {
+        rolledBack = false;
+      }
       if (rolledBack) {
         store.updateAgentCreationOperation(operation.id, { status: "rolled_back", lastError: null });
+        for (const agentId of operation.agentIds) deletingAgentIds.delete(agentId);
       }
     }
     completeLifecyclePhase("agent_creation_recovery");

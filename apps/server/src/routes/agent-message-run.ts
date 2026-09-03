@@ -693,9 +693,22 @@ export function registerAgentMessageRunRoute(
           });
         }
       }
-      const communication = communicationEventId
-        ? store.getCommunicationEvent(project.id, communicationEventId)
-        : undefined;
+      let communication;
+      try {
+        communication = communicationEventId
+          ? store.getCommunicationEvent(project.id, communicationEventId)
+          : undefined;
+      } catch {
+        promotedDraftAssetsCommitted = true;
+        try { notifyScheduler(); } catch { /* the committed response remains recoverable */ }
+        return reply.code(202).send({
+          queued: true,
+          deliveryId: v3Intake?.activationId,
+          communicationEventId,
+          committed: true,
+          recovering: true,
+        });
+      }
       const sharedCommunication = communication?.intent === "broadcast" ? communication : undefined;
       const sharedTaskTurn = Boolean(sharedCommunication && shareWithOrganization);
       const directUserTaskTurn = Boolean(
@@ -705,11 +718,24 @@ export function registerAgentMessageRunRoute(
           ? communication.audience.agentId === agent.id
           : communication.audience.kind === "user_agents" && communication.audience.agentIds.includes(agent.id)),
       );
-      const sourceMasterMessage: ConversationMessageDto | undefined = communication && directMessageConversationId
-        ? store.getProjectedConversationMessageById(
-          directMessageConversationId, "main", communication.eventId,
-        )
-        : undefined;
+      let sourceMasterMessage: ConversationMessageDto | undefined;
+      try {
+        sourceMasterMessage = communication && directMessageConversationId
+          ? store.getProjectedConversationMessageById(
+            directMessageConversationId, "main", communication.eventId,
+          )
+          : undefined;
+      } catch {
+        promotedDraftAssetsCommitted = true;
+        try { notifyScheduler(); } catch { /* the committed response remains recoverable */ }
+        return reply.code(202).send({
+          queued: true,
+          deliveryId: v3Intake?.activationId,
+          communicationEventId,
+          committed: true,
+          recovering: true,
+        });
+      }
       const pendingTurn: PendingTurn = {
         text: publishedText,
         communicationEventId,
@@ -732,17 +758,22 @@ export function registerAgentMessageRunRoute(
           });
         }
         promotedDraftAssetsCommitted = true;
-        const pendingForAgent = coordinationV3.pendingActivations(project.id)
-          .filter((activation) => activation.agentId === agent.id);
-        const pendingIndex = pendingForAgent.findIndex((activation) => activation.id === v3Intake.activationId);
-        const position = pendingIndex >= 0 ? pendingIndex + 1 : 1;
+        let position: number | undefined;
+        try {
+          const pendingForAgent = coordinationV3.pendingActivations(project.id)
+            .filter((activation) => activation.agentId === agent.id);
+          const pendingIndex = pendingForAgent.findIndex((activation) => activation.id === v3Intake.activationId);
+          position = pendingIndex >= 0 ? pendingIndex + 1 : 1;
+        } catch {
+          // Queue position is a projection; omit it while repair catches up.
+        }
         try {
           notifyScheduler();
           publishMessageDeliveryChanged(agent.id);
         } catch { /* the committed activation remains authoritative */ }
         return reply.code(202).send({
           queued: true,
-          position,
+          ...(position !== undefined ? { position } : {}),
           deliveryId: v3Intake.activationId,
           communicationEventId,
         });
