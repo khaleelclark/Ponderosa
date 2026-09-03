@@ -23,6 +23,7 @@ import {
 import { pickAgentName } from "../parkNames";
 import { queryKeys } from "../queryKeys";
 import type { AgentStatus } from "../agents";
+import { activeDirectDeliveryAgentIds } from "./directDeliveryState";
 
 interface ConversationMessagingControllerInput {
   conversationId: string;
@@ -219,12 +220,7 @@ export function useConversationMessagingController({
           : [],
       );
       queuedNoticeBaseline.current = queuedMessagesQuery.dataUpdatedAt;
-      const activeIds = response.recipients
-        .filter(recipient =>
-          !recipient.queued &&
-          (recipient.state === "started" || recipient.state === "steered"),
-        )
-        .map(recipient => recipient.agentId);
+      const activeIds = activeDirectDeliveryAgentIds(response);
       if (activeIds.length === 0) setActiveOperation(undefined);
       else setActiveOperation({ agentIds: activeIds, state: "starting" });
       for (const agentId of variables.agentIds) {

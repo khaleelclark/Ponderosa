@@ -10,10 +10,11 @@ import {
   type ModelOption,
   type RequestLifetime,
 } from "@ponderosa/core";
-import type {
-  AgentStore,
-  ConversationDeliveryIntent,
-  CoordinationV3Store,
+import {
+  stableJson,
+  type AgentStore,
+  type ConversationDeliveryIntent,
+  type CoordinationV3Store,
 } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
 import type {
@@ -149,18 +150,23 @@ export function registerAgentCoordinationRoutes(
       ? undefined
       : canonicalizeProviderText(request.body.text, steeringInjectionIds).trim();
     const engineId = request.body?.engine?.trim();
+    const model = request.body?.model?.trim() || undefined;
+    const effort = request.body?.effort?.trim() || undefined;
+    const normalizedLifetime: RequestLifetime = lifetime.kind === "deadline"
+      ? { kind: "deadline", at: (lifetime.at as string).trim() }
+      : { kind: "indefinite" };
     if (!idempotencyKey || idempotencyKey.length > 200 || !title || unicodeCodePointLength(title) < 2 || unicodeCodePointLength(title) > 60 || !text || !engineId || !request.body.lifetime) {
       return reply.code(400).send({ error: "idempotencyKey, title, engine, text, and explicit lifetime are required" });
     }
-    const payloadHash = createHash("sha256").update(JSON.stringify({
+    const payloadHash = createHash("sha256").update(stableJson({
       managerAgentId: manager.id,
       runId: capability.runId,
       title,
       engine: engineId,
-      model: request.body.model ?? null,
-      effort: request.body.effort ?? null,
+      model: model ?? null,
+      effort: effort ?? null,
       text,
-      lifetime: request.body.lifetime,
+      lifetime: normalizedLifetime,
       awaitResult: request.body.awaitResult ?? null,
     })).digest("hex");
     let creationOperation;
@@ -233,8 +239,8 @@ export function registerAgentCoordinationRoutes(
     if (!engine) return abandonMutationFreeOperation(400, "unknown engine");
     const selectionError = runtimeSelectionError(
       engine.adapter,
-      request.body.model,
-      request.body.effort,
+      model,
+      effort,
       cachedModelOptions(engine.adapter, manager.projectId),
     );
     if (selectionError) return abandonMutationFreeOperation(400, selectionError);
@@ -264,7 +270,7 @@ export function registerAgentCoordinationRoutes(
       deletingAgentIds.add(childId);
       child = store.createAgent(manager.projectId, {
         title, engine: engineId, conversationId: capability.conversationId,
-        model: request.body.model?.trim() || undefined, effort: request.body.effort?.trim() || undefined,
+        model, effort,
         managerAgentId: manager.id,
       }, { agentId: manager.id, executionId: capability.runId, idempotencyKey, prompt: text }, childId);
       const createdChild = child;
@@ -276,7 +282,7 @@ export function registerAgentCoordinationRoutes(
           requesterAgentId: manager!.id, actorScope: `agent:${manager!.id}:run:${capability!.runId}`,
           idempotencyKey: `managed-agent:${idempotencyKey}`,
           runAuthorization: runAuthorization(capability!),
-          requests: [{ requestId, recipientAgentId: createdChild.id, lifetime: request.body.lifetime!, communicationEventId: openingEventId, payload: {
+          requests: [{ requestId, recipientAgentId: createdChild.id, lifetime: normalizedLifetime, communicationEventId: openingEventId, payload: {
             text, requesterRunId: capability!.runId, managedAgentOpening: true,
           }, ...(capability!.defaultReply ? { replyAuthority: capability!.defaultReply } : {}) }],
           ...(request.body.awaitResult === false ? {} : { join: {

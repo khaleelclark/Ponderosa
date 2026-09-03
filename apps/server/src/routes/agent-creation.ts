@@ -8,6 +8,7 @@ import type {
 import {
   readManagedArtifactContent,
   removeManagedArtifactContent,
+  stableJson,
   type AgentCreationArtifactIdentity,
   type AgentStore,
   type CoordinationV3Store,
@@ -152,7 +153,7 @@ export function registerAgentCreationRoutes(
         return reply.code(400).send({ error: "first-turn draft owner is required" });
       }
       const operationIdempotencyKey = creationIdempotencyKey ?? randomUUID();
-      const operationPayloadHash = createHash("sha256").update(JSON.stringify({
+      const operationPayloadHash = createHash("sha256").update(stableJson({
         projectId: request.params.id,
         title: request.body.title,
         engine: request.body.engine,

@@ -22,6 +22,7 @@ import { registerAgentCreationRoutes } from "../dist/routes/agent-creation.js";
 import { registerAgentMessageRunRoute } from "../dist/routes/agent-message-run.js";
 import { registerAgentRequestCommandRoutes } from "../dist/routes/agent-request-commands.js";
 import { registerAgentCoordinationRoutes } from "../dist/routes/agent-coordination.js";
+import { registerAgentCommunicationRoutes } from "../dist/routes/agent-communications.js";
 import { registerQueuedMessageRoutes } from "../dist/routes/queued-messages.js";
 import {
   leaseAgentAssetReconciliation,
@@ -273,11 +274,21 @@ test("completed Agent creation replays before destination Chat validation", asyn
     engine: "codex",
     conversationId: chat.id,
     idempotencyKey: "stable-create",
+    managementPermissions: {
+      allowAutomaticDescendantDeletion: true,
+      allowAutomaticDescendantReorganization: false,
+    },
   };
   const first = await app.inject({
     method: "POST",
     url: "/api/projects/project-a/agents",
-    payload,
+    payload: {
+      ...payload,
+      managementPermissions: {
+        allowAutomaticDescendantReorganization: false,
+        allowAutomaticDescendantDeletion: true,
+      },
+    },
   });
   assert.equal(first.statusCode, 200);
   chat.archived = true;
@@ -617,6 +628,132 @@ function agentMessageValidationApp({
   return { app, removed, staged };
 }
 
+function agentCommunicationArtifactApp({
+  stageCommunicationArtifact,
+  recordRuntimeCommunication,
+  runtimeArtifact = () => undefined,
+}) {
+  const chat = { id: "chat-a", projectId: "project-a", archived: false };
+  const agent = {
+    id: "agent-a", projectId: chat.projectId, conversationId: chat.id,
+    title: "Agent A", archived: false,
+  };
+  const removed = [];
+  const app = Fastify();
+  registerAgentCommunicationRoutes(app, {
+    store: {
+      getAgent: () => agent,
+      getConversation: () => chat,
+    },
+    coordinationV3: {
+      steeringInjectionIds: () => [],
+      latestAcknowledgedSteeringInjection: () => undefined,
+      requiredReplyAuthoritiesForRun: () => [],
+      runtimeCommunication: () => undefined,
+      runtimeArtifact,
+      recordRuntimeCommunication,
+    },
+    workspace: {},
+    agentMessageCapabilities: new Map([["token", {
+      agentId: agent.id,
+      runId: "run-a",
+      conversationId: chat.id,
+      mentionDepth: 0,
+      mentionTrail: [],
+    }]]),
+    activeRuns: new Map([[agent.id, { messageCapability: "token" }]]),
+    projectDeletionInProgress: () => false,
+    conversationDeletionInProgress: () => false,
+    agentDeletionInProgress: () => false,
+    conversationDeliveryLeases: new Map(),
+    agentDeliveryLeases: new Map(),
+    capabilityOwnsAuthoritativeRun: () => true,
+    runAuthorization: () => ({ runId: "run-a", agentId: agent.id, fencingToken: 1 }),
+    resolveExplicitCollaborationIntents: () => ({ text: "", intents: [], blocked: [] }),
+    appendBlockedMentionWarnings: () => {},
+    runtimeArtifactMetadata: (artifact) => artifact,
+    stageCommunicationArtifact,
+    removeRuntimeArtifactReservation: (_projectId, artifactId) => { removed.push(artifactId); },
+    publishCoordinationV3Changed: () => {},
+    reconcileRuntimeCommunicationProjections: async () => 0,
+    resolveOperationalNotification: () => {},
+    notifyScheduler: () => {},
+  });
+  return { app, removed };
+}
+
+function preparedArtifact(id, reservationCreated = true) {
+  return {
+    id,
+    role: "long_text",
+    title: "Agent response",
+    mediaType: "text/markdown",
+    blobPath: `communication/${id}.md`,
+    blobHash: "a".repeat(64),
+    byteLength: 70_000,
+    originAgentId: "agent-a",
+    executionId: "run-a",
+    createdAt: new Date().toISOString(),
+    ...(reservationCreated ? { reservationCreated: true } : {}),
+  };
+}
+
+test("Agent communication releases its own artifact after partial staging failure", async (t) => {
+  let calls = 0;
+  const first = preparedArtifact("artifact-first");
+  const { app, removed } = agentCommunicationArtifactApp({
+    stageCommunicationArtifact: async () => {
+      calls += 1;
+      if (calls === 1) return first;
+      throw new Error("second artifact failed");
+    },
+    recordRuntimeCommunication: () => { throw new Error("must not commit"); },
+  });
+  t.after(() => app.close());
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/agent-messages",
+    headers: { authorization: "Bearer token" },
+    payload: {
+      intent: "direct_to_user",
+      text: "x".repeat(70_000),
+      document: { title: "Separate document", content: "different" },
+      idempotencyKey: "partial-stage",
+    },
+  });
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(removed, [first.id]);
+});
+
+test("Agent communication compensates only its own uncatalogued reservation after a Run fence", async (t) => {
+  const cases = [
+    { reservationCreated: true, canonical: false, expectedRemoved: ["artifact-a"] },
+    { reservationCreated: false, canonical: false, expectedRemoved: [] },
+    { reservationCreated: true, canonical: true, expectedRemoved: [] },
+  ];
+  for (const { reservationCreated, canonical, expectedRemoved } of cases) {
+    const artifact = preparedArtifact("artifact-a", reservationCreated);
+    const { app, removed } = agentCommunicationArtifactApp({
+      stageCommunicationArtifact: async () => artifact,
+      recordRuntimeCommunication: () => { throw new Error("Run authorization is fenced"); },
+      runtimeArtifact: () => canonical ? artifact : undefined,
+    });
+    t.after(() => app.close());
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agent-messages",
+      headers: { authorization: "Bearer token" },
+      payload: {
+        intent: "direct_to_user",
+        text: "x".repeat(70_000),
+        idempotencyKey: `fenced-${reservationCreated}`,
+      },
+    });
+    assert.equal(response.statusCode, 409);
+    assert.deepEqual(removed, expectedRemoved);
+  }
+});
+
 test("invalid mention metadata is rejected before draft promotion", async (t) => {
   const { app, staged } = agentMessageValidationApp();
   t.after(() => app.close());
@@ -935,7 +1072,7 @@ test("coordinate replay precedes mutable recipient checks", async (t) => {
   assert.equal(replayed, true);
 });
 
-test("managed Agent spawn replay precedes current engine validation", async (t) => {
+test("managed Agent spawn replay canonicalizes input before current engine validation", async (t) => {
   const app = Fastify();
   t.after(() => app.close());
   const manager = {
@@ -944,22 +1081,28 @@ test("managed Agent spawn replay precedes current engine validation", async (t) 
     conversationId: "chat-a",
     archived: false,
   };
+  const payloadHashes = [];
   registerAgentCoordinationRoutes(app, {
     store: {
       getAgent: () => manager,
-      beginAgentCreationOperation: () => ({ operation: {
-        id: "spawn-operation-a",
-        projectId: manager.projectId,
-        actorScope: "agent:manager-a:run:run-a",
-        kind: "managed",
-        idempotencyKey: "stable-spawn",
-        payloadHash: "ignored-by-stub",
-        status: "completed",
-        agentIds: ["child-a"],
-        artifactIds: [],
-        artifactIdentities: [],
-        result: { agent: { id: "child-a" }, requestIds: ["request-a"] },
-      } }),
+      beginAgentCreationOperation: (input) => {
+        payloadHashes.push(input.payloadHash);
+        return {
+          operation: {
+            id: "spawn-operation-a",
+            projectId: manager.projectId,
+            actorScope: "agent:manager-a:run:run-a",
+            kind: "managed",
+            idempotencyKey: "stable-spawn",
+            payloadHash: "ignored-by-stub",
+            status: "completed",
+            agentIds: ["child-a"],
+            artifactIds: [],
+            artifactIdentities: [],
+            result: { agent: { id: "child-a" }, requestIds: ["request-a"] },
+          },
+        };
+      },
     },
     coordinationV3: { steeringInjectionIds: () => [] },
     engines: new Map(),
@@ -988,13 +1131,32 @@ test("managed Agent spawn replay precedes current engine validation", async (t) 
       idempotencyKey: "stable-spawn",
       title: "Child Agent",
       engine: "removed-engine",
+      model: " model-a ",
+      effort: " high ",
       text: "Do the work",
-      lifetime: { kind: "indefinite" },
+      lifetime: { kind: "deadline", at: "2026-08-30T00:00:00Z" },
     },
   });
   assert.equal(response.statusCode, 200);
   assert.equal(response.json().replayed, true);
   assert.equal(response.json().agent.id, "child-a");
+  const reordered = await app.inject({
+    method: "POST",
+    url: "/api/agent-spawn",
+    headers: { authorization: "Bearer token" },
+    payload: {
+      idempotencyKey: "stable-spawn",
+      title: "Child Agent",
+      engine: "removed-engine",
+      model: "model-a",
+      effort: "high",
+      text: "Do the work",
+      lifetime: { at: "2026-08-30T00:00:00Z", kind: "deadline" },
+    },
+  });
+  assert.equal(reordered.statusCode, 200);
+  assert.equal(reordered.json().replayed, true);
+  assert.deepEqual(payloadHashes, [payloadHashes[0], payloadHashes[0]]);
 });
 
 test("a rejected long request update releases its staged artifact reservation", async (t) => {
@@ -1828,6 +1990,7 @@ test("multi-Agent direct replay reports terminal recipient delivery state", asyn
     runtimeSelection: {},
   });
   const app = Fastify();
+  let activationState = "failed";
   t.after(() => app.close());
   registerConversationDeliveryRoutes(app, {
     store: {
@@ -1843,7 +2006,7 @@ test("multi-Agent direct replay reports terminal recipient delivery state", asyn
         id: "delivery-a",
         projectId: chat.projectId,
         agentId: "agent-a",
-        state: "failed",
+        state: activationState,
       }),
     },
     projectDeletionInProgress: () => false,
@@ -1863,6 +2026,19 @@ test("multi-Agent direct replay reports terminal recipient delivery state", asyn
     queued: false,
     deliveryId: "delivery-a",
     state: "failed",
+  }]);
+  activationState = "consumed";
+  const consumed = await app.inject({
+    method: "POST",
+    url: `/api/conversations/${chat.id}/direct-messages`,
+    payload: requestPayload,
+  });
+  assert.equal(consumed.statusCode, 200);
+  assert.deepEqual(consumed.json().recipients, [{
+    agentId: "agent-a",
+    queued: false,
+    deliveryId: "delivery-a",
+    state: "delivered",
   }]);
 });
 

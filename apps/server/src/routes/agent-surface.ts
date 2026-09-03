@@ -259,6 +259,8 @@ registerAgentCommunicationRoutes(app, {
   projectCommunicationArtifact,
   runtimeArtifactMetadata,
   stageCommunicationArtifact,
+  removeRuntimeArtifactReservation: (projectId, artifactId) =>
+    assets.removeRuntimeArtifactReservation(projectId, artifactId),
   publishCoordinationV3Changed,
   publishWorkspaceSince,
   notifyScheduler: notifyScheduler,

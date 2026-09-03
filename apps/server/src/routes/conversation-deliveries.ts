@@ -138,7 +138,7 @@ function replayedDirectRecipient(
     state: activation.state === "failed" || activation.state === "outcome_unknown" ||
       activation.state === "cancelled"
       ? activation.state
-      : "started",
+      : "delivered",
   };
 }
 

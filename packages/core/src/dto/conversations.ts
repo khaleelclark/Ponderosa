@@ -508,7 +508,7 @@ export interface MultiAgentDirectMessageResponse {
     queued: boolean;
     deliveryId?: string;
     state?: "queued" | "preparing" | "retrying" | "steered" | "started" |
-      "failed" | "outcome_unknown" | "cancelled";
+      "delivered" | "failed" | "outcome_unknown" | "cancelled";
   }>;
   /** Addressed recipients that became unavailable before their delivery could start. */
   unavailableRecipients?: Array<{ agentId: string; reason: "missing" | "archived" | "wrong_project" }>;

@@ -65,6 +65,7 @@ interface AgentCommunicationRoutesContext {
   projectCommunicationArtifact: CommunicationArtifactAuthority["projectCommunicationArtifact"];
   runtimeArtifactMetadata: CommunicationArtifactAuthority["runtimeArtifactMetadata"];
   stageCommunicationArtifact: CommunicationArtifactAuthority["stageCommunicationArtifact"];
+  removeRuntimeArtifactReservation(projectId: string, artifactId: string): void;
   publishCoordinationV3Changed(
     agentId: string,
     options?: { conversationIds?: string[] },
@@ -172,6 +173,7 @@ export function registerAgentCommunicationRoutes(
     appendBlockedMentionWarnings,
     runtimeArtifactMetadata,
     stageCommunicationArtifact,
+    removeRuntimeArtifactReservation,
     publishCoordinationV3Changed,
     resolveOperationalNotification,
     notifyScheduler,
@@ -603,12 +605,13 @@ export function registerAgentCommunicationRoutes(
           leasedAgentIds,
         )
       : leaseAgentDelivery(agentDeliveryLeases, leasedAgentIds);
+    const preparedArtifacts: PreparedCommunicationArtifact[] = [];
+    let artifactsCommitted = false;
     try {
     const createdAt = replay?.createdAt ?? new Date().toISOString();
     const messageContent = intent === "broadcast" ? scopedText : text;
     const messageNeedsArtifact = shouldBackTextWithArtifact(messageContent);
     const explicitDocumentMatchesMessage = Boolean(documentContent && documentContent === messageContent);
-    const preparedArtifacts: PreparedCommunicationArtifact[] = [];
     let messageArtifact: PreparedCommunicationArtifact | undefined;
     let explicitDocumentArtifact: PreparedCommunicationArtifact | undefined;
     try {
@@ -695,6 +698,7 @@ export function registerAgentCommunicationRoutes(
           ...(inferredReplyFingerprint ? { satisfiesRequiredReply: true } : {}),
           now: proposedCommunication.createdAt,
         });
+        artifactsCommitted = true;
       } catch (error) {
         return reply.code(409).send({ error: error instanceof Error ? error.message : "message authorization failed" });
       }
@@ -841,6 +845,7 @@ export function registerAgentCommunicationRoutes(
         } : {}),
         now: proposedCommunication.createdAt,
       });
+      artifactsCommitted = true;
     } catch (error) {
       const message = error instanceof Error ? error.message : "message authorization failed";
       return reply.code(message.includes("scope") ? 409 : 403).send({ error: message });
@@ -904,6 +909,16 @@ export function registerAgentCommunicationRoutes(
       ...(passiveRecipientAgentIds.size ? { passiveRecipientAgentIds: [...passiveRecipientAgentIds].sort() } : {}),
     };
     } finally {
+      if (!artifactsCommitted) {
+        for (const artifact of preparedArtifacts) {
+          if (!artifact.reservationCreated) continue;
+          try {
+            if (!coordinationV3.runtimeArtifact(artifact.id)) {
+              removeRuntimeArtifactReservation(currentAuthor.projectId, artifact.id);
+            }
+          } catch { /* preserve uncertain authority for startup reconciliation */ }
+        }
+      }
       releaseDeliveryLease();
     }
   });
