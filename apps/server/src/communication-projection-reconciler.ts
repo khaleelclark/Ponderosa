@@ -103,6 +103,7 @@ export function createCommunicationProjectionReconciler(
   async function reconcileRuntimeCommunicationProjections(filter?: {
     projectId?: string;
     communicationEventId?: string;
+    allowQuarantinedAgentIds?: ReadonlySet<string>;
   }, options: CommunicationProjectionReconciliationOptions = {}): Promise<number> {
     let repaired = 0;
     let skippedUnavailableTargets = 0;
@@ -357,7 +358,8 @@ export function createCommunicationProjectionReconciler(
         ...(event.sender?.kind === "agent" ? [event.sender.agentId] : []),
       ])];
       if (leasedAgentIds.some((agentId) =>
-        agentDeletionInProgress(agentId) || assetReconciliationInProgress(agentId)) ||
+        (agentDeletionInProgress(agentId) && !filter?.allowQuarantinedAgentIds?.has(agentId)) ||
+          assetReconciliationInProgress(agentId)) ||
           [...expectedAttachmentOwners].some(([attachmentId, agentId]) =>
             attachmentDeletionInProgress(agentId, attachmentId))) {
         markExactRecoveryIncomplete(

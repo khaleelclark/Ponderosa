@@ -507,6 +507,7 @@ registerAgentCreationRoutes(app, {
   runtimeArtifactMetadata,
   projectCommunicationArtifact,
   communicationArtifactAccess,
+  reconcileRuntimeCommunicationProjections,
   publish,
   publishMessageDeliveryChanged,
   notifyScheduler: notifyScheduler,

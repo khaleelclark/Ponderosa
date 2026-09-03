@@ -14,7 +14,6 @@ import type {
 import { messageTagTokens, normalizeCanonicalText } from "@ponderosa/core";
 import type {
   AgentStore,
-  ConversationDeliveryIntent,
   CoordinationV3Store,
   ManagedArtifactAccess,
   WorkspaceStore,
@@ -138,7 +137,6 @@ export function registerConversationDeliveryRoutes(
   const {
     store,
     coordinationV3,
-    assets,
     projectDeletionInProgress,
     agentDeletionInProgress,
     attachmentDeletionInProgress = () => false,
@@ -148,12 +146,7 @@ export function registerConversationDeliveryRoutes(
     assetMetadata,
     prepareUserCommunicationText,
     runtimeArtifactMetadata,
-    recordCommunication,
     reconcileRuntimeCommunicationProjections,
-    projectCommunicationArtifact,
-    communicationArtifactAccess,
-    projectBroadcastToAgentAudits,
-    projectCommunicationToAgentAudit,
     appendWorkspace,
     publishCoordinationV3Changed,
     notifyScheduler,
@@ -294,11 +287,21 @@ export function registerConversationDeliveryRoutes(
         });
         replayedMessage = store.getConversationMessages(master.id)
           .find((candidate) => candidate.communicationEventId === eventId);
+      } catch {
+        return reply.code(202).send({
+          communicationEventId: eventId,
+          committed: true,
+          recovering: true,
+          replayed: true,
+        });
       } finally {
         releaseReplayLease();
       }
-      return replayedMessage ?? reply.code(503).send({
-        error: "broadcast projection could not be recorded; retry is safe",
+      return replayedMessage ?? reply.code(202).send({
+        communicationEventId: eventId,
+        committed: true,
+        recovering: true,
+        replayed: true,
       });
     }
     if (master.archived) return reply.code(404).send({ error: "conversation not found" });
@@ -481,63 +484,35 @@ export function registerConversationDeliveryRoutes(
       return reply.code(409).send({ error: error instanceof Error ? error.message : "broadcast conflict" });
     }
     const sqliteIntakeCompletedAt = performance.now();
-    const communication = recordCommunication(communicationInput);
-    const canonicalAppendCompletedAt = performance.now();
-    if (intake.replayed) await reconcileRuntimeCommunicationProjections({
-      projectId: communicationInput.projectId,
-      communicationEventId: communicationInput.eventId,
-    });
-    if (prepared.artifact) projectCommunicationArtifact(
-      master.projectId,
-      "local-operator",
-      prepared.artifact,
-      communicationArtifactAccess(communication),
-    );
-    const replayedMessage = communication && intake.replayed
-      ? store.getConversationMessages(master.id).find((candidate) => candidate.communicationEventId === communication.eventId)
-      : undefined;
-    const message = replayedMessage ?? store.appendConversationMessage(request.params.id, {
-      role: "user",
-      text: renderScopedMessage("broadcast", prepared.publishedText),
-      attachments: validatedAssets,
-    }, undefined, "main", undefined, undefined, communication?.eventId);
-    const projectionCompletedAt = performance.now();
-    const assetsByAgent = new Map<string, Set<string>>();
-    for (const asset of [
-      ...validatedAssets,
-      ...[...recipientAssets.values()].flat(),
-    ]) {
-      const ids = assetsByAgent.get(asset.agentId) ?? new Set<string>();
-      ids.add(asset.id);
-      assetsByAgent.set(asset.agentId, ids);
-    }
-    await Promise.all([...assetsByAgent].map(([agentId, ids]) =>
-      assets.associate(master.projectId, agentId, [...ids]),
-    ));
-    if (communication?.intent === "broadcast" && message) {
-      projectBroadcastToAgentAudits(communication, [], validatedAssets);
-      for (const agentId of recipientAgentIds) {
-        const attachments = new Map(
-          [
-            ...validatedAssets,
-            ...(recipientAssets.get(agentId) ?? []),
-          ].map((attachment) => [attachment.id, attachment]),
-        );
-        projectCommunicationToAgentAudit(
-          agentId,
-          communication,
-          renderScopedMessage("broadcast", communication.text),
-          [...attachments.values()],
-        );
-      }
-    }
-    if (message) appendWorkspace({ type: "conversation_changed", projectId: master.projectId, conversationId: master.id, action: "message" });
-    for (const agentId of recipientAgentIds) {
-      publishCoordinationV3Changed(agentId, {
-        conversationIds: [master.id],
+    try {
+      await reconcileRuntimeCommunicationProjections({
+        projectId: communicationInput.projectId,
+        communicationEventId: communicationInput.eventId,
+      });
+    } catch {
+      try { if (recipientAgentIds.length) notifyScheduler(); } catch { /* recovery is durable */ }
+      return reply.code(202).send({
+        communicationEventId: communicationInput.eventId,
+        committed: true,
+        recovering: true,
+        replayed: intake.replayed,
       });
     }
-    if (recipientAgentIds.length) notifyScheduler();
+    const canonicalAppendCompletedAt = performance.now();
+    const message = store.getConversationMessages(master.id)
+      .find((candidate) => candidate.communicationEventId === communicationInput.eventId);
+    const projectionCompletedAt = performance.now();
+    try {
+      if (message) appendWorkspace({ type: "conversation_changed", projectId: master.projectId, conversationId: master.id, action: "message" });
+    } catch { /* canonical communication remains durable; clients can refresh */ }
+    try {
+      for (const agentId of recipientAgentIds) {
+        publishCoordinationV3Changed(agentId, {
+          conversationIds: [master.id],
+        });
+      }
+      if (recipientAgentIds.length) notifyScheduler();
+    } catch { /* durable broadcast remains authoritative */ }
     const completedAt = performance.now();
     const phase = (end: number, start: number) => Math.round((end - start) * 10) / 10;
     reply.header("Server-Timing", [
@@ -561,7 +536,12 @@ export function registerConversationDeliveryRoutes(
       replayed: intake.replayed,
       passive: recipientAgentIds.length === 0,
     }, "conversation message persisted");
-      return message ?? reply.code(404).send({ error: "conversation not found" });
+      return message ?? reply.code(202).send({
+        communicationEventId: communicationInput.eventId,
+        committed: true,
+        recovering: true,
+        replayed: intake.replayed,
+      });
     } finally {
       releaseDeliveryLease();
     }
@@ -694,12 +674,22 @@ export function registerConversationDeliveryRoutes(
               communicationEventId: eventId,
             });
             message = store.getConversationMessageByReceiptKey(master.id, receiptKey);
+          } catch {
+            return reply.code(202).send({
+              communicationEventId: eventId,
+              committed: true,
+              recovering: true,
+              replayed: true,
+            });
           } finally {
             releaseReplayLease();
           }
         }
-        if (!message) return reply.code(503).send({
-          error: "direct message projection could not be recorded; retry is safe",
+        if (!message) return reply.code(202).send({
+          communicationEventId: eventId,
+          committed: true,
+          recovering: true,
+          replayed: true,
         });
         const activationByAgentId = new Map(
           (existingRuntime?.activations ?? []).map((activation) => [activation.agentId, activation.id]),
@@ -788,10 +778,6 @@ export function registerConversationDeliveryRoutes(
           ...(prepared.document ? { document: prepared.document } : {}),
           createdAt, idempotencyKey: receiptKey,
         };
-        const intents: ConversationDeliveryIntent[] = recipients.map((recipient) => ({
-          targetAgentId: recipient.agentId, relayDepth: 0, mentionTrail: [], kind: "direct",
-          ...(recipient.attachmentIds?.length ? { attachmentIds: recipient.attachmentIds } : {}),
-        }));
         const intake = coordinationV3.recordRuntimeCommunication({
           id: eventId,
           projectId: master.projectId,
@@ -831,55 +817,46 @@ export function registerConversationDeliveryRoutes(
           })),
           now: createdAt,
         });
-        const canonicalCommunication = recordCommunication(communication);
-        if (intake.replayed) await reconcileRuntimeCommunicationProjections({
-          projectId: communication.projectId,
-          communicationEventId: communication.eventId,
-        });
-        if (prepared.artifact) projectCommunicationArtifact(
-          master.projectId,
-          "local-operator",
-          prepared.artifact,
-          communicationArtifactAccess(canonicalCommunication),
-        );
-        store.appendCommunicationProjection(master.projectId, {
-          eventId, surface: "user_inbox", projectionKey: "local-operator", projectedAt: createdAt,
-        });
-        let message = store.getConversationMessageByReceiptKey(master.id, receiptKey);
-        if (!message) {
-          try {
-            message = store.appendConversationMessage(
-              master.id,
-              { text: prepared.publishedText, attachments: attachmentsByAgent[0] },
-              undefined,
-              "main",
-              intents,
-              receiptKey,
-              eventId,
-            );
-          } catch (error) {
-            return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid direct message" });
-          }
-        }
-        if (!message) return reply.code(503).send({ error: "direct message projection could not be recorded; retry is safe" });
-        if (!intake.replayed) {
-          await Promise.all(recipients.map((recipient) => assets.associate(master.projectId, recipient.agentId, recipient.attachmentIds ?? [])));
-          recipients.forEach((recipient, index) =>
-            projectCommunicationToAgentAudit(recipient.agentId, communication, prepared.publishedText, attachmentsByAgent[index]),
-          );
-        }
-        for (const recipient of recipients) {
-          publishCoordinationV3Changed(recipient.agentId, {
-            conversationIds: [master.id],
+        try {
+          await reconcileRuntimeCommunicationProjections({
+            projectId: communication.projectId,
+            communicationEventId: communication.eventId,
+          });
+        } catch {
+          try { notifyScheduler(); } catch { /* recovery is durable */ }
+          return reply.code(202).send({
+            communicationEventId: communication.eventId,
+            committed: true,
+            recovering: true,
+            replayed: intake.replayed,
           });
         }
-        notifyScheduler();
+        const message = store.getConversationMessageByReceiptKey(master.id, receiptKey);
+        if (!message) return reply.code(202).send({
+          communicationEventId: communication.eventId,
+          committed: true,
+          recovering: true,
+          replayed: intake.replayed,
+        });
+        try {
+          for (const recipient of recipients) {
+            publishCoordinationV3Changed(recipient.agentId, {
+              conversationIds: [master.id],
+            });
+          }
+          notifyScheduler();
+        } catch { /* durable direct message remains authoritative */ }
         const deliveryIdByAgentId = new Map(
           (intake.activations ?? []).map((activation) => [activation.agentId, activation.id]),
         );
         if (deliveryIdByAgentId.size !== recipients.length ||
             recipients.some((recipient) => !deliveryIdByAgentId.has(recipient.agentId))) {
-          throw new Error("direct message activation ownership mismatch");
+          return reply.code(202).send({
+            communicationEventId: communication.eventId,
+            committed: true,
+            recovering: true,
+            replayed: intake.replayed,
+          });
         }
         return {
           messageId: message.id,

@@ -401,6 +401,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const deletingProjectIds = new Set(store.listPendingProjectDeletions().map((entry) => entry.projectId));
   const deletingAgentIds = new Set<string>([...deletingProjectIds].flatMap((projectId) =>
     store.listAgents(projectId).map((agent) => agent.id)));
+  for (const operation of store.listRecoverableAgentCreationOperations()) {
+    for (const agentId of operation.agentIds) deletingAgentIds.add(agentId);
+  }
   const deletingConversationIds = new Set<string>();
   const agentCreationConversationLeases = new Map<string, number>();
   const conversationDeliveryLeases = new Map<string, number>();

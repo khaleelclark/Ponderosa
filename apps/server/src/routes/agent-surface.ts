@@ -195,6 +195,10 @@ registerAgentCoordinationRoutes(app, {
   coordinationV3,
   engines,
   deletingAgentIds,
+  deletingProjectIds,
+  deletingConversationIds,
+  conversationDeliveryLeases,
+  agentDeliveryLeases,
   agentMessageCapabilities,
   activeRuns,
   cachedModelOptions,
@@ -206,6 +210,7 @@ registerAgentCoordinationRoutes(app, {
   runAuthorization,
   resolveExplicitCollaborationIntents,
   logWarn: (meta, message) => app.log.warn(meta, message),
+  reconcileRuntimeCommunicationProjections,
 });
 
 registerAgentRequestCommandRoutes(app, {

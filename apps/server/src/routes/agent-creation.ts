@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import type {
   AssetDto,
   CommunicationEvent,
@@ -44,6 +45,11 @@ interface AgentCreationRoutesContext {
   publish(agentId: string, stored: StoredLogEvent): void;
   publishMessageDeliveryChanged(agentId: string): void;
   notifyScheduler(): void;
+  reconcileRuntimeCommunicationProjections(filter?: {
+    projectId?: string;
+    communicationEventId?: string;
+    allowQuarantinedAgentIds?: ReadonlySet<string>;
+  }): Promise<number>;
 }
 
 export function registerAgentCreationRoutes(
@@ -63,22 +69,61 @@ export function registerAgentCreationRoutes(
     agentCreationConversationLeases,
     agentDeliveryLeases,
     cachedModelOptions,
-    recordCommunication,
     prepareUserCommunicationText,
     runtimeArtifactMetadata,
-    projectCommunicationArtifact,
-    communicationArtifactAccess,
-    publish,
     publishMessageDeliveryChanged,
     notifyScheduler,
+    reconcileRuntimeCommunicationProjections,
   } = context;
 
   app.post<{
     Params: { id: string };
-    Body: { title: string; engine: string; conversationId: string; model?: string; effort?: string; speed?: string; initialMessage?: string; draftAttachmentIds?: string[]; draftOwnerId?: string; presetId?: string; managerAgentId?: string; awaitResult?: boolean; idempotencyKey?: string };
+    Body: { title: string; engine: string; conversationId: string; model?: string; effort?: string; speed?: string; initialMessage?: string; draftAttachmentIds?: string[]; draftOwnerId?: string; presetId?: string; managerAgentId?: string; awaitResult?: boolean; idempotencyKey?: string; managementPermissions?: { allowAutomaticDescendantDeletion: boolean; allowAutomaticDescendantReorganization: boolean } };
   }>(
     "/api/projects/:id/agents",
     async (request, reply) => {
+      const body = request.body as unknown;
+      if (!body || typeof body !== "object" || Array.isArray(body)) {
+        return reply.code(400).send({ error: "Agent body must be an object" });
+      }
+      const candidate = body as Record<string, unknown>;
+      const allowedFields = new Set([
+        "title", "engine", "conversationId", "model", "effort", "speed", "initialMessage",
+        "draftAttachmentIds", "draftOwnerId", "presetId", "managerAgentId", "awaitResult",
+        "idempotencyKey", "managementPermissions",
+      ]);
+      const unknownFields = Object.keys(candidate).filter((key) => !allowedFields.has(key));
+      if (unknownFields.length) {
+        return reply.code(400).send({ error: `unknown Agent field(s): ${unknownFields.join(", ")}` });
+      }
+      for (const key of ["title", "engine", "conversationId", "model", "effort", "speed", "initialMessage", "draftOwnerId", "presetId", "managerAgentId", "idempotencyKey"] as const) {
+        if (candidate[key] !== undefined && typeof candidate[key] !== "string") {
+          return reply.code(400).send({ error: `${key} must be a string` });
+        }
+      }
+      if (candidate.awaitResult !== undefined && typeof candidate.awaitResult !== "boolean") {
+        return reply.code(400).send({ error: "awaitResult must be a boolean" });
+      }
+      if (candidate.managementPermissions !== undefined) {
+        if (!candidate.managementPermissions || typeof candidate.managementPermissions !== "object" ||
+            Array.isArray(candidate.managementPermissions)) {
+          return reply.code(400).send({ error: "managementPermissions requires two boolean settings" });
+        }
+        const permissions = candidate.managementPermissions as Record<string, unknown>;
+        if (Object.keys(permissions).some((key) => ![
+          "allowAutomaticDescendantDeletion",
+          "allowAutomaticDescendantReorganization",
+        ].includes(key)) ||
+            typeof permissions.allowAutomaticDescendantDeletion !== "boolean" ||
+            typeof permissions.allowAutomaticDescendantReorganization !== "boolean") {
+          return reply.code(400).send({ error: "managementPermissions requires two boolean settings" });
+        }
+      }
+      if (candidate.draftAttachmentIds !== undefined &&
+          (!Array.isArray(candidate.draftAttachmentIds) ||
+            candidate.draftAttachmentIds.some((id) => typeof id !== "string"))) {
+        return reply.code(400).send({ error: "draftAttachmentIds must be an array of strings" });
+      }
       const project = store.getProject(request.params.id);
       if (!project) return reply.code(404).send({ error: "project not found" });
       if (deletingProjectIds.has(request.params.id)) return reply.code(409).send({ error: "Project deletion is already in progress" });
@@ -93,13 +138,6 @@ export function registerAgentCreationRoutes(
         return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
       }
       if (creationIdempotencyKey) {
-        const existing = store.findAgentCreation(request.params.id, creationIdempotencyKey);
-        if (existing) {
-          if (deletingAgentIds.has(existing.id)) {
-            return reply.code(409).send({ error: "Agent creation is still in progress; retry safely" });
-          }
-          return { ...existing, replayed: true };
-        }
         request.body.idempotencyKey = creationIdempotencyKey;
       }
       if (request.body.presetId) {
@@ -149,6 +187,69 @@ export function registerAgentCreationRoutes(
         projectModelOptions,
       );
       if (speedError) return reply.code(400).send({ error: speedError });
+      const operationIdempotencyKey = creationIdempotencyKey ?? randomUUID();
+      const operationPayloadHash = createHash("sha256").update(JSON.stringify({
+        projectId: request.params.id,
+        title: request.body.title,
+        engine: request.body.engine,
+        conversationId: request.body.conversationId,
+        model: request.body.model ?? null,
+        effort: request.body.effort ?? null,
+        speed: request.body.speed ?? null,
+        initialMessage: request.body.initialMessage ?? null,
+        draftAttachmentIds: request.body.draftAttachmentIds ?? [],
+        draftOwnerId: request.body.draftOwnerId ?? null,
+        presetId: request.body.presetId ?? null,
+        managerAgentId: request.body.managerAgentId ?? null,
+        awaitResult: request.body.awaitResult ?? null,
+        managementPermissions: request.body.managementPermissions ?? null,
+      })).digest("hex");
+      let creationOperation;
+      try {
+        creationOperation = store.beginAgentCreationOperation({
+          projectId: request.params.id,
+          actorScope: "user:local-operator",
+          kind: "human",
+          idempotencyKey: operationIdempotencyKey,
+          payloadHash: operationPayloadHash,
+        }).operation;
+      } catch (error) {
+        return reply.code(409).send({ error: error instanceof Error ? error.message : "Agent creation replay conflict" });
+      }
+      if (creationOperation.status === "completed" && creationOperation.result) {
+        return { ...(creationOperation.result as Record<string, unknown>), replayed: true };
+      }
+      if (creationOperation.status === "canonical_committed" && creationOperation.communicationEventId) {
+        try {
+          await reconcileRuntimeCommunicationProjections({
+            projectId: request.params.id,
+            communicationEventId: creationOperation.communicationEventId,
+            allowQuarantinedAgentIds: new Set(creationOperation.agentIds),
+          });
+          store.updateAgentCreationOperation(creationOperation.id, { status: "completed", lastError: null });
+          for (const agentId of creationOperation.agentIds) deletingAgentIds.delete(agentId);
+          return { ...(creationOperation.result as Record<string, unknown>), replayed: true };
+        } catch (error) {
+          return reply.code(202).send({
+            committed: true,
+            recovering: true,
+            operationId: creationOperation.id,
+            ...(creationOperation.result as Record<string, unknown>),
+          });
+        }
+      }
+      if (creationOperation.agentIds.length) {
+        return reply.code(202).send({
+          committed: false,
+          recovering: true,
+          operationId: creationOperation.id,
+          agentIds: creationOperation.agentIds,
+        });
+      }
+      if (creationIdempotencyKey) {
+        const legacyExisting = store.findAgentCreation(request.params.id, creationIdempotencyKey);
+        if (legacyExisting) return { ...legacyExisting, replayed: true };
+      }
       const initialMessage = request.body.initialMessage?.trim() ?? "";
       const draftAttachmentIds = request.body.draftAttachmentIds ?? [];
       const firstTurnDraftOwnerId = drafts.normalizedOwner(request.body.draftOwnerId);
@@ -206,15 +307,25 @@ export function registerAgentCreationRoutes(
           });
         }
       }
+      const agentId = randomUUID();
       try {
-        agent = store.createAgent(request.params.id, request.body);
+        store.addAgentCreationOperationMember(creationOperation.id, agentId, 0);
+        deletingAgentIds.add(agentId);
+        agent = store.createAgent(request.params.id, request.body, undefined, agentId);
       } catch (error) {
+        deletingAgentIds.delete(agentId);
+        store.updateAgentCreationOperation(creationOperation.id, {
+          status: "rolled_back",
+          lastError: error instanceof Error ? error.message : "Agent creation failed",
+        });
         return reply.code(400).send({ error: error instanceof Error ? error.message : "agent could not be created" });
       }
       // Keep the newly visible row unavailable until its opening assets,
       // communication, and activation are durably committed.
-      deletingAgentIds.add(agent.id);
-      const releaseAgentDelivery = leaseAgentDelivery(agentDeliveryLeases, [agent.id]);
+      const releaseAgentDelivery = leaseAgentDelivery(
+        agentDeliveryLeases,
+        [agent.id, ...(agent.managerAgentId ? [agent.managerAgentId] : [])],
+      );
       const openingAttachments: AssetDto[] = [];
       let openingCommitted = false;
       let rollbackCompleted = false;
@@ -239,26 +350,6 @@ export function registerAgentCreationRoutes(
         });
       }
       let managedOpening: { requestIds: string[]; joinId?: string } | undefined;
-      if (hasInitialTurn && agent.managerAgentId) {
-        managedOpening = coordinationV3.coordinate({
-          projectId: agent.projectId, conversationId: agent.conversationId,
-          requesterAgentId: agent.managerAgentId, actorScope: "user:local-operator",
-          idempotencyKey: `managed-opening:${agent.id}`,
-          requests: [{ requestId: `managed:${agent.id}:opening`, recipientAgentId: agent.id, lifetime: { kind: "indefinite" }, payload: {
-            text: openingPrepared!.publishedText,
-            ...(openingPrepared!.artifact ? {
-              artifactId: openingPrepared!.artifact.id,
-              resultRef: `ponderosa://artifact/${openingPrepared!.artifact.id}`,
-            } : {}),
-            managedAgentOpening: true,
-            ...(request.body.speed ? {
-              runtimeSelection: { speed: request.body.speed },
-            } : {}),
-            ...(openingAttachments.length ? { attachments: openingAttachments } : {}),
-          } }],
-          ...(request.body.awaitResult === false ? {} : { join: { id: `managed:${agent.id}:join`, mode: "all" as const } }),
-        });
-      }
       if (hasInitialTurn) {
         const createdAt = openingCreatedAt;
         const eventId = openingEventId;
@@ -291,6 +382,27 @@ export function registerAgentCreationRoutes(
           createdAt,
           ...(openingAttachments.length ? { attachments: openingAttachments } : {}),
         };
+        store.sqlite.transaction(() => {
+        if (agent.managerAgentId) {
+          managedOpening = coordinationV3.coordinate({
+            projectId: agent.projectId, conversationId: agent.conversationId,
+            requesterAgentId: agent.managerAgentId, actorScope: "user:local-operator",
+            idempotencyKey: `managed-opening:${agent.id}`,
+            requests: [{ requestId: `managed:${agent.id}:opening`, recipientAgentId: agent.id, lifetime: { kind: "indefinite" }, communicationEventId: openingEventId, payload: {
+              text: openingPrepared!.publishedText,
+              ...(openingPrepared!.artifact ? {
+                artifactId: openingPrepared!.artifact.id,
+                resultRef: `ponderosa://artifact/${openingPrepared!.artifact.id}`,
+              } : {}),
+              managedAgentOpening: true,
+              ...(request.body.speed ? {
+                runtimeSelection: { speed: request.body.speed },
+              } : {}),
+              ...(openingAttachments.length ? { attachments: openingAttachments } : {}),
+            } }],
+            ...(request.body.awaitResult === false ? {} : { join: { id: `managed:${agent.id}:join`, mode: "all" as const } }),
+          });
+        }
         coordinationV3.recordRuntimeCommunication({
           id: eventId,
           projectId: agent.projectId,
@@ -329,55 +441,60 @@ export function registerAgentCreationRoutes(
           } } : {}),
           now: createdAt,
         });
-        const canonicalCommunication = recordCommunication(communication);
-        if (openingPrepared!.artifact) projectCommunicationArtifact(
-          agent.projectId,
-          "local-operator",
-          openingPrepared!.artifact,
-          communicationArtifactAccess(canonicalCommunication),
-        );
-        if (managedOpening) coordinationV3.attachRequestCommunication(managedOpening.requestIds[0]!, eventId, agent.projectId);
-        if (communication.intent === "user_dm") {
-          store.appendCommunicationProjection(agent.projectId, {
-            eventId, surface: "user_inbox", projectionKey: "local-operator", projectedAt: createdAt,
-          });
-        }
-        if (agent.conversationId) {
-          store.appendConversationMessage(
-            agent.conversationId,
-            {
-              role: "user",
-              // A normal Project-chat send is shared conversation text, not a
-              // user-authored DM. Keep the spawned Agent association in the
-              // canonical communication/activation instead of mutating the
-              // user's visible prose with a stale display-name tag.
-              text: managed
-                ? `#${agent.handle} ${openingPrepared!.publishedText}`
-                : openingPrepared!.publishedText,
-              attachments: openingAttachments,
-            },
-            undefined,
-            managed ? "collaboration" : "main",
-            managed ? [{ targetAgentId: agent.id, relayDepth: 0, mentionTrail: [], kind: "tag", audience: "mention" }] : undefined,
-            undefined,
-            eventId,
-          );
-        }
-        // The opening Broadcast remains organizational context, while this
-        // exact Activation recipient owns an audit copy in its Agent chat.
-        const audit = store.appendEvent(agent.id, {
-          type: "user_message", text: openingPrepared!.publishedText, communicationEventId: eventId,
-          ...(openingAttachments.length ? { attachments: openingAttachments } : {}),
+        store.updateAgentCreationOperation(creationOperation.id, {
+          status: "canonical_committed",
+          communicationEventId: eventId,
+          result: {
+            ...agent,
+            ...(managedOpening ? {
+              openingRequestId: managedOpening.requestIds[0],
+              openingJoinId: managedOpening.joinId,
+            } : {}),
+          },
+          lastError: null,
         });
-        if (openingAttachments.length) await assets.associate(agent.projectId, agent.id, openingAttachments.map((item) => item.id));
-        publish(agent.id, audit);
+        })();
+        openingCommitted = true;
+        await reconcileRuntimeCommunicationProjections({
+          projectId: agent.projectId,
+          communicationEventId: eventId,
+          allowQuarantinedAgentIds: new Set([agent.id]),
+        });
         publishMessageDeliveryChanged(agent.id);
         notifyScheduler();
       }
 
+      const creationResult = { ...agent, ...(managedOpening ? { openingRequestId: managedOpening.requestIds[0], openingJoinId: managedOpening.joinId } : {}) };
+      store.updateAgentCreationOperation(creationOperation.id, {
+        status: "completed",
+        result: creationResult,
+        lastError: null,
+      });
       openingCommitted = true;
-      return { ...agent, ...(managedOpening ? { openingRequestId: managedOpening.requestIds[0], openingJoinId: managedOpening.joinId } : {}) };
+      return creationResult;
       } catch (error) {
+        if (openingCommitted) {
+          try {
+            await reconcileRuntimeCommunicationProjections({
+              projectId: agent.projectId,
+              communicationEventId: `agent-opening:${agent.id}`,
+              allowQuarantinedAgentIds: new Set([agent.id]),
+            });
+            store.updateAgentCreationOperation(creationOperation.id, { status: "completed", lastError: null });
+            const recovered = store.getAgentCreationOperation(creationOperation.id)?.result;
+            return { ...(recovered as Record<string, unknown>), replayed: true };
+          } catch (recoveryError) {
+            store.updateAgentCreationOperation(creationOperation.id, {
+              lastError: recoveryError instanceof Error ? recoveryError.message : "Agent opening projection recovery failed",
+            });
+            return reply.code(202).send({
+              committed: true,
+              recovering: true,
+              operationId: creationOperation.id,
+              ...(store.getAgentCreationOperation(creationOperation.id)?.result as Record<string, unknown>),
+            });
+          }
+        }
         await Promise.allSettled(openingAttachments.map((attachment) =>
           assets.remove(agent.projectId, agent.id, attachment.id)));
         try {
@@ -397,6 +514,10 @@ export function registerAgentCreationRoutes(
             "Agent opening failed and its partial Agent could not be rolled back",
           );
         }
+        store.updateAgentCreationOperation(creationOperation.id, {
+          status: "rolled_back",
+          lastError: error instanceof Error ? error.message : "Agent opening could not be committed",
+        });
         const status = error instanceof AssetError ? error.statusCode : 409;
         return reply.code(status).send({
           error: error instanceof Error ? error.message : "Agent opening could not be committed",

@@ -13,11 +13,7 @@ import {
   type WorkspaceStore,
 } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
-import {
-  MAX_AGENT_MENTION_REPLAY_WINDOW,
-  renderDirectMessage,
-  renderScopedMessage,
-} from "../agent-mentions.js";
+import { MAX_AGENT_MENTION_REPLAY_WINDOW } from "../agent-mentions.js";
 import {
   ASSET_LIMITS,
   AssetError,
@@ -240,18 +236,14 @@ export function registerAgentMessageRunRoute(
     leaseExpiry,
     reusableRuntime,
     assetMetadata,
-    recordCommunication,
     reconcileRuntimeCommunicationProjections,
     notifyScheduler,
     reconcileProjectWorkspace,
     cachedModelOptions,
     discoverEngineCapabilities,
     claimActiveRun,
-    communicationArtifactAccess,
     prepareUserCommunicationText,
-    projectCommunicationArtifact,
     runtimeArtifactMetadata,
-    projectCommunicationToAgentAudit,
     publish,
     publishCoordinationV3Changed,
     publishMessageDeliveryChanged,
@@ -290,6 +282,52 @@ export function registerAgentMessageRunRoute(
   }>(
     "/api/agents/:id/messages",
     async (request, reply) => {
+      const rawBody = request.body as unknown;
+      if (!rawBody || typeof rawBody !== "object" || Array.isArray(rawBody)) {
+        return reply.code(400).send({ error: "message body must be an object" });
+      }
+      const candidate = rawBody as Record<string, unknown>;
+      const allowedMessageFields = new Set([
+        "text", "idempotencyKey", "model", "effort", "speed", "agentMentionDepth", "agentMentionTrail", "sourceChannel",
+        "shareWithOrganization", "activeRunDelivery", "sourceConversationId",
+        "attachmentIds", "draftAttachmentIds", "draftId", "draftOwnerId", "v3SchedulerRunId", "v3FencingToken", "v3InjectionId",
+        "v3FreshProviderSession", "v3ActivationPrompt", "v3CommunicationEventId",
+      ]);
+      const unknownMessageFields = Object.keys(candidate).filter((key) => !allowedMessageFields.has(key));
+      if (unknownMessageFields.length) {
+        return reply.code(400).send({ error: `unknown message field(s): ${unknownMessageFields.join(", ")}` });
+      }
+      for (const key of ["text", "idempotencyKey", "model", "effort", "speed", "sourceConversationId", "draftId", "draftOwnerId", "v3SchedulerRunId", "v3InjectionId", "v3ActivationPrompt", "v3CommunicationEventId"] as const) {
+        if (candidate[key] !== undefined && typeof candidate[key] !== "string") {
+          return reply.code(400).send({ error: `${key} must be a string` });
+        }
+      }
+      if (candidate.agentMentionDepth !== undefined &&
+          (!Number.isInteger(candidate.agentMentionDepth) || (candidate.agentMentionDepth as number) < 0)) {
+        return reply.code(400).send({ error: "agentMentionDepth must be a non-negative integer" });
+      }
+      if (candidate.v3FencingToken !== undefined &&
+          (!Number.isInteger(candidate.v3FencingToken) || (candidate.v3FencingToken as number) < 0)) {
+        return reply.code(400).send({ error: "v3FencingToken must be a non-negative integer" });
+      }
+      for (const key of ["shareWithOrganization", "v3FreshProviderSession"] as const) {
+        if (candidate[key] !== undefined && typeof candidate[key] !== "boolean") {
+          return reply.code(400).send({ error: `${key} must be a boolean` });
+        }
+      }
+      for (const key of ["agentMentionTrail", "attachmentIds", "draftAttachmentIds"] as const) {
+        if (candidate[key] !== undefined &&
+            (!Array.isArray(candidate[key]) || candidate[key].some((item) => typeof item !== "string"))) {
+          return reply.code(400).send({ error: `${key} must be an array of strings` });
+        }
+      }
+      if (candidate.sourceChannel !== undefined && candidate.sourceChannel !== "main") {
+        return reply.code(400).send({ error: "sourceChannel must be main" });
+      }
+      if (candidate.activeRunDelivery !== undefined &&
+          candidate.activeRunDelivery !== "steer" && candidate.activeRunDelivery !== "queue") {
+        return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
+      }
       if (deletingAgentIds.has(request.params.id)) return reply.code(404).send({ error: "agent not found" });
       const agent = store.getAgent(request.params.id);
       if (!agent || agent.archived) return reply.code(404).send({ error: "agent not found" });
@@ -328,15 +366,6 @@ export function registerAgentMessageRunRoute(
           )
         : leaseAgentDelivery(agentDeliveryLeases, [agent.id]);
       try {
-      const allowedMessageFields = new Set([
-        "text", "idempotencyKey", "model", "effort", "speed", "agentMentionDepth", "agentMentionTrail", "sourceChannel",
-              "shareWithOrganization", "activeRunDelivery", "sourceConversationId",
-        "attachmentIds", "draftAttachmentIds", "draftId", "draftOwnerId", "v3SchedulerRunId", "v3FencingToken", "v3InjectionId",
-        "v3FreshProviderSession", "v3ActivationPrompt", "v3CommunicationEventId",
-      ]);
-      if (Object.keys(request.body ?? {}).some((key) => !allowedMessageFields.has(key))) {
-        return reply.code(400).send({ error: "unknown message field" });
-      }
       const priorRuns = store.getRuns(agent.id);
       const latestRun = priorRuns.at(-1);
       // Saved Agent runtime settings are next-Run defaults. A message delivered
@@ -639,22 +668,34 @@ export function registerAgentMessageRunRoute(
       }
       const communicationEventId = internalV3Dispatch
         ? v3CommunicationEventId
-        : proposedCommunication ? recordCommunication(proposedCommunication).eventId : undefined;
-      if (!internalV3Dispatch && v3Intake?.replayed && proposedCommunication) {
-        await reconcileRuntimeCommunicationProjections({
-          projectId: proposedCommunication.projectId,
-          communicationEventId: proposedCommunication.eventId,
-        });
+        : proposedCommunication?.eventId;
+      if (!internalV3Dispatch && proposedCommunication) {
+        try {
+          await reconcileRuntimeCommunicationProjections({
+            projectId: proposedCommunication.projectId,
+            communicationEventId: proposedCommunication.eventId,
+          });
+          promotedDraftAssetsCommitted = true;
+        } catch {
+          // SQLite now owns both the promoted assets and their communication.
+          // Projection repair must still be able to read them after this request.
+          promotedDraftAssetsCommitted = true;
+          try {
+            notifyScheduler();
+            publishMessageDeliveryChanged(agent.id);
+          } catch { /* the committed response remains recoverable */ }
+          return reply.code(202).send({
+            queued: true,
+            deliveryId: v3Intake?.activationId,
+            communicationEventId,
+            committed: true,
+            recovering: true,
+          });
+        }
       }
       const communication = communicationEventId
         ? store.getCommunicationEvent(project.id, communicationEventId)
         : undefined;
-      if (userTextArtifact && communication) projectCommunicationArtifact(
-        project.id,
-        agent.id,
-        userTextArtifact,
-        communicationArtifactAccess(communication),
-      );
       const sharedCommunication = communication?.intent === "broadcast" ? communication : undefined;
       const sharedTaskTurn = Boolean(sharedCommunication && shareWithOrganization);
       const directUserTaskTurn = Boolean(
@@ -664,43 +705,11 @@ export function registerAgentMessageRunRoute(
           ? communication.audience.agentId === agent.id
           : communication.audience.kind === "user_agents" && communication.audience.agentIds.includes(agent.id)),
       );
-      let sourceMasterMessage: ConversationMessageDto | undefined;
-      if (communicationEventId) {
-        if (communication?.intent === "user_dm") {
-          store.appendCommunicationProjection(project.id, {
-            eventId: communicationEventId,
-            surface: "user_inbox",
-            projectionKey: communication.audience.userId,
-            projectedAt: communication.createdAt,
-          });
-        }
-      }
-      if (communicationEventId && directMessageConversationId) {
-        if (internalV3Dispatch || v3Intake?.replayed) {
-          sourceMasterMessage = store.getProjectedConversationMessageById(
-            directMessageConversationId, "main", communicationEventId,
-          );
-        } else {
-          sourceMasterMessage = store.appendConversationMessage(directMessageConversationId, {
-            role: "user",
-            text: sharedCommunication ? publishedText : renderDirectMessage(agent.handle, publishedText),
-            attachments: messageAttachments,
-          }, undefined, "main", undefined, undefined, communicationEventId);
-          if (sharedCommunication) {
-            projectCommunicationToAgentAudit(
-              agent.id,
-              sharedCommunication,
-              renderScopedMessage("broadcast", sharedCommunication.text),
-              messageAttachments,
-            );
-          }
-        }
-      }
-      if (!sourceMasterMessage && communication && directMessageConversationId) {
-        sourceMasterMessage = store.getProjectedConversationMessageById(
+      const sourceMasterMessage: ConversationMessageDto | undefined = communication && directMessageConversationId
+        ? store.getProjectedConversationMessageById(
           directMessageConversationId, "main", communication.eventId,
-        );
-      }
+        )
+        : undefined;
       const pendingTurn: PendingTurn = {
         text: publishedText,
         communicationEventId,
@@ -711,27 +720,26 @@ export function registerAgentMessageRunRoute(
         agentMentionTrail: mentionTrail,
         sourceChannel: request.body.sourceChannel === "main" ? "main" : undefined,
       };
-      const auditText = publishedText;
       if (!internalV3Dispatch) {
         if (!v3Intake?.activationId) {
-          return reply.code(500).send({ error: "actionable communication did not create an activation" });
-        }
-        if (!v3Intake.replayed) {
-          await assets.associate(agent.projectId, agent.id, attachmentIds);
           promotedDraftAssetsCommitted = true;
-          if (!sharedCommunication) {
-            const stored = store.appendEvent(agent.id, {
-              type: "user_message", text: auditText, communicationEventId, attachments: messageAttachments,
-            });
-            publish(agent.id, stored);
-          }
+          try { notifyScheduler(); } catch { /* the committed response remains recoverable */ }
+          return reply.code(202).send({
+            queued: true,
+            communicationEventId,
+            committed: true,
+            recovering: true,
+          });
         }
+        promotedDraftAssetsCommitted = true;
         const pendingForAgent = coordinationV3.pendingActivations(project.id)
           .filter((activation) => activation.agentId === agent.id);
         const pendingIndex = pendingForAgent.findIndex((activation) => activation.id === v3Intake.activationId);
         const position = pendingIndex >= 0 ? pendingIndex + 1 : 1;
-        notifyScheduler();
-        publishMessageDeliveryChanged(agent.id);
+        try {
+          notifyScheduler();
+          publishMessageDeliveryChanged(agent.id);
+        } catch { /* the committed activation remains authoritative */ }
         return reply.code(202).send({
           queued: true,
           position,

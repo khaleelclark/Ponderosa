@@ -18,10 +18,7 @@ import type {
 } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
 import { AssetError } from "../assets.js";
-import {
-  renderScopedMessage,
-  stripLeadingScopeTag,
-} from "../agent-mentions.js";
+import { stripLeadingScopeTag } from "../agent-mentions.js";
 import type {
   ActiveRun,
   AgentMessageCapability,
@@ -92,6 +89,43 @@ export function validateAgentMessageBodyShape(body: unknown): string | undefined
   if (unknownKeys.length > 0) {
     return `unknown message field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.join(", ")}; collaboration recipients must use recipientAgentIds as an array`;
   }
+  for (const key of ["intent", "text", "steeringInjectionId", "idempotencyKey", "expiresAt"] as const) {
+    if (candidate[key] !== undefined && typeof candidate[key] !== "string") {
+      return `${key} must be a string`;
+    }
+  }
+  if (candidate.intent !== undefined &&
+      !["broadcast", "direct_to_user", "collaboration"].includes(candidate.intent as string)) {
+    return "intent must be broadcast, direct_to_user, or collaboration";
+  }
+  if (candidate.urgency !== undefined &&
+      candidate.urgency !== "ordinary" && candidate.urgency !== "urgent") {
+    return "urgency must be ordinary or urgent";
+  }
+  if (candidate.recipientAgentIds !== undefined &&
+      (!Array.isArray(candidate.recipientAgentIds) ||
+        candidate.recipientAgentIds.some((id) => typeof id !== "string"))) {
+    return "recipientAgentIds must be an array of strings";
+  }
+  if (candidate.artifactIds !== undefined &&
+      (!Array.isArray(candidate.artifactIds) || candidate.artifactIds.some((id) => typeof id !== "string"))) {
+    return "artifactIds must be an array of strings";
+  }
+  if (candidate.document !== undefined) {
+    if (!candidate.document || typeof candidate.document !== "object" || Array.isArray(candidate.document)) {
+      return "document must be an object";
+    }
+    const document = candidate.document as Record<string, unknown>;
+    const unknownDocumentKeys = Object.keys(document).filter((key) => !["title", "content", "mediaType"].includes(key));
+    if (unknownDocumentKeys.length || typeof document.title !== "string" ||
+        typeof document.content !== "string" ||
+        (document.mediaType !== undefined && typeof document.mediaType !== "string")) {
+      return "document must contain only string title, content, and optional mediaType fields";
+    }
+  }
+  if (candidate.citations !== undefined && !Array.isArray(candidate.citations)) {
+    return "citations must be an array";
+  }
   if (candidate.delivery !== undefined && candidate.delivery !== "next_run") {
     return "delivery must be next_run when supplied";
   }
@@ -132,20 +166,14 @@ export function registerAgentCommunicationRoutes(
     agentDeliveryLeases,
     capabilityOwnsAuthoritativeRun,
     runAuthorization,
-    recordCommunication,
-    projectBroadcastToAgentAudits,
-    projectCommunicationToAgentAudit,
     resolveExplicitCollaborationIntents,
     appendBlockedMentionWarnings,
-    communicationArtifactAccess,
-    projectCommunicationArtifact,
     runtimeArtifactMetadata,
     stageCommunicationArtifact,
     publishCoordinationV3Changed,
     resolveOperationalNotification,
     notifyScheduler,
     reconcileRuntimeCommunicationProjections,
-    publish,
   } = context;
 
   app.post<{
@@ -233,7 +261,30 @@ export function registerAgentCommunicationRoutes(
         "message-next-run",
         { text, recipientAgentIds: [...normalizedRecipients].sort(), expiresAt: expiresAt ?? null },
       );
+      const conversation = store.getConversation(capability.conversationId);
+      const leasedAgentIds = [currentAuthor.id, ...normalizedRecipients];
+      if (projectDeletionInProgress(currentAuthor.projectId) ||
+          conversationDeletionInProgress(capability.conversationId) ||
+          leasedAgentIds.some(agentDeletionInProgress) ||
+          !conversation || conversation.archived || conversation.projectId !== currentAuthor.projectId) {
+        return reply.code(409).send({ error: "next-run delivery participants are no longer available" });
+      }
+      const releaseDeliveryLease = leaseConversationDelivery(
+        conversationDeliveryLeases,
+        agentDeliveryLeases,
+        capability.conversationId,
+        leasedAgentIds,
+      );
       try {
+        const currentParticipants = leasedAgentIds.map((agentId) => store.getAgent(agentId));
+        if (projectDeletionInProgress(currentAuthor.projectId) ||
+            conversationDeletionInProgress(capability.conversationId) ||
+            leasedAgentIds.some(agentDeletionInProgress) ||
+            currentParticipants.some((agent) => !agent || agent.archived ||
+              agent.projectId !== currentAuthor.projectId ||
+              agent.conversationId !== capability.conversationId)) {
+          return reply.code(409).send({ error: "next-run delivery participants are no longer available" });
+        }
         const result = coordinationV3.publishAgentNextRunDelivery({
           projectId: currentAuthor.projectId,
           conversationId: capability.conversationId,
@@ -245,11 +296,13 @@ export function registerAgentCommunicationRoutes(
           recipientAgentIds: normalizedRecipients,
           ...(expiresAt ? { expiresAt } : {}),
         });
-        for (const recipientAgentId of normalizedRecipients) {
-          publishCoordinationV3Changed(recipientAgentId, {
-            conversationIds: [capability.conversationId],
-          });
-        }
+        try {
+          for (const recipientAgentId of normalizedRecipients) {
+            publishCoordinationV3Changed(recipientAgentId, {
+              conversationIds: [capability.conversationId],
+            });
+          }
+        } catch { /* durable next-run delivery remains authoritative */ }
         return {
           delivery: "next_run",
           deliveryId: result.delivery.id,
@@ -261,6 +314,8 @@ export function registerAgentCommunicationRoutes(
         return reply.code(409).send({
           error: error instanceof Error ? error.message : "next-run delivery failed",
         });
+      } finally {
+        releaseDeliveryLease();
       }
     }
     if (!candidateIntent || !(["broadcast", "direct_to_user", "collaboration"] as const).includes(candidateIntent)) {
@@ -550,59 +605,28 @@ export function registerAgentCommunicationRoutes(
         capability.inferredReplyCommunicationEventId = communicationEventId;
         coordinationV3.markContextRolloverVisibleResponseCommitted(capability.agentId, capability.runId);
       }
-      if (intake.replayed) {
-        // The scheduler transaction can commit before the canonical JSONL
-        // append's derived history transaction. Replay the exact canonical
-        // identity first so the bounded index projection is repaired live.
-        recordCommunication(
-          store.getCommunicationEvent(proposedCommunication.projectId, proposedCommunication.eventId)
-            ?? replayCommunication
-            ?? proposedCommunication,
-        );
+      try {
         await reconcileRuntimeCommunicationProjections({
           projectId: proposedCommunication.projectId,
           communicationEventId: proposedCommunication.eventId,
         });
-        const existing = store.readEvents(capability.agentId).find((item) =>
-          item.event.type === "communication_projection" && item.event.communicationEventId === proposedCommunication.eventId);
-        return {
-          intent, eventId: proposedCommunication.eventId,
-          messageId: existing ? `agent-event-${existing.seq}` : proposedCommunication.eventId,
-          replayed: true,
+      } catch {
+        return reply.code(202).send({
+          intent,
+          eventId: proposedCommunication.eventId,
+          committed: true,
+          recovering: true,
+          replayed: intake.replayed,
           ...(primaryArtifact ? { resultRef: `ponderosa://artifact/${primaryArtifact.id}` } : {}),
-        };
+        });
       }
-      const communication = recordCommunication(proposedCommunication);
-      for (const artifact of preparedArtifacts) projectCommunicationArtifact(
-        currentAuthor.projectId,
-        capability.agentId,
-        artifact,
-        communicationArtifactAccess(communication),
-      );
-      store.appendCommunicationProjection(currentAuthor.projectId, {
-        eventId: communication.eventId,
-        surface: "user_inbox",
-        projectionKey: "local-operator",
-        projectedAt: communication.createdAt,
-      });
-      if (capability.conversationId) {
-        store.appendConversationMessage(
-          capability.conversationId,
-          { text: renderScopedMessage("user", publishedText), ...(artifactIds?.length ? { artifactIds } : {}) },
-          capability.agentId,
-          "main",
-          undefined,
-          undefined,
-          communication.eventId,
-        );
-      }
-      const stored = store.appendEvent(capability.agentId, {
-        type: "communication_projection", communicationEventId: communication.eventId, text: publishedText,
-      });
-      publish(capability.agentId, stored);
-      const messageId = `agent-event-${stored.seq}`;
+      const existing = store.readEvents(capability.agentId).find((item) =>
+        item.event.type === "communication_projection" && item.event.communicationEventId === proposedCommunication.eventId);
       return {
-        intent, eventId: communication.eventId, messageId, replayed: false,
+        intent,
+        eventId: proposedCommunication.eventId,
+        messageId: existing ? `agent-event-${existing.seq}` : proposedCommunication.eventId,
+        replayed: intake.replayed,
         ...(primaryArtifact ? { resultRef: `ponderosa://artifact/${primaryArtifact.id}` } : {}),
       };
     }
@@ -715,70 +739,41 @@ export function registerAgentCommunicationRoutes(
       capability.inferredReplyCommunicationEventId = communicationEventId;
       coordinationV3.markContextRolloverVisibleResponseCommitted(capability.agentId, capability.runId);
     }
-    if (intake.replayed) {
-      recordCommunication(
-        store.getCommunicationEvent(proposedCommunication.projectId, proposedCommunication.eventId)
-          ?? replayCommunication
-          ?? proposedCommunication,
-      );
+    try {
       await reconcileRuntimeCommunicationProjections({
         projectId: proposedCommunication.projectId,
         communicationEventId: proposedCommunication.eventId,
       });
-      const existing = store.getConversationMessages(capability.conversationId, channel)
-        .find((candidate) => candidate.communicationEventId === proposedCommunication.eventId);
-      return {
+    } catch {
+      try { notifyScheduler(); } catch { /* the committed response remains recoverable */ }
+      return reply.code(202).send({
         intent,
         eventId: proposedCommunication.eventId,
-        messageId: existing?.id ?? proposedCommunication.eventId,
-        replayed: true,
+        committed: true,
+        recovering: true,
+        replayed: intake.replayed,
+        ...(primaryArtifact ? { resultRef: `ponderosa://artifact/${primaryArtifact.id}` } : {}),
         ...(passiveRecipientAgentIds.size ? { passiveRecipientAgentIds: [...passiveRecipientAgentIds].sort() } : {}),
-      };
-    }
-    const communication = recordCommunication(proposedCommunication);
-    for (const artifact of preparedArtifacts) projectCommunicationArtifact(
-      currentAuthor.projectId,
-      capability.agentId,
-      artifact,
-      communicationArtifactAccess(communication),
-    );
-    const message = store.appendConversationMessage(
-      capability.conversationId,
-      { role: "assistant", text: renderedText, ...(artifactIds?.length ? { artifactIds } : {}) },
-      capability.agentId,
-      channel,
-      routing.intents,
-      receiptKey,
-      communication?.eventId,
-    );
-    if (!message) return reply.code(404).send({ error: "conversation not found" });
-    if (communication?.intent === "broadcast") projectBroadcastToAgentAudits(communication);
-    if (communication?.intent === "collaboration") {
-      const authorAudit = store.appendEvent(capability.agentId, {
-        type: "communication_projection",
-        communicationEventId: communication.eventId,
-        text: renderedText,
-        role: "assistant",
       });
-      publish(capability.agentId, authorAudit);
     }
+    const message = store.getConversationMessages(capability.conversationId, channel)
+      .find((candidate) => candidate.communicationEventId === proposedCommunication.eventId);
     if (intent === "collaboration") {
-      for (const delivery of routing.intents) {
-        if (communication?.intent === "collaboration") {
-          projectCommunicationToAgentAudit(delivery.targetAgentId, communication, renderedText);
+      try {
+        for (const delivery of routing.intents) {
+          publishCoordinationV3Changed(delivery.targetAgentId, {
+            conversationIds: [capability.conversationId],
+          });
         }
-        publishCoordinationV3Changed(delivery.targetAgentId, {
-          conversationIds: [capability.conversationId],
-        });
-      }
-      notifyScheduler();
-      appendBlockedMentionWarnings(capability.conversationId, routing.blocked);
+        notifyScheduler();
+        appendBlockedMentionWarnings(capability.conversationId, routing.blocked);
+      } catch { /* durable communication remains authoritative */ }
     }
     return {
       intent,
-      eventId: communication?.eventId,
-      messageId: message.id,
-      replayed: false,
+      eventId: proposedCommunication.eventId,
+      messageId: message?.id ?? proposedCommunication.eventId,
+      replayed: intake.replayed,
       ...(primaryArtifact ? { resultRef: `ponderosa://artifact/${primaryArtifact.id}` } : {}),
       ...(passiveRecipientAgentIds.size ? { passiveRecipientAgentIds: [...passiveRecipientAgentIds].sort() } : {}),
     };
@@ -790,6 +785,18 @@ export function registerAgentCommunicationRoutes(
   app.post<{ Params: { id: string }; Body: { idempotencyKey?: string; createJoin?: boolean } }>(
     "/api/requests/:id/retry",
     async (request, reply) => {
+      if (request.body !== undefined && (!request.body || typeof request.body !== "object" || Array.isArray(request.body))) {
+        return reply.code(400).send({ error: "retry body must be an object" });
+      }
+      if (request.body && Object.keys(request.body).some((key) => !["idempotencyKey", "createJoin"].includes(key))) {
+        return reply.code(400).send({ error: "unknown retry field" });
+      }
+      if (request.body?.idempotencyKey !== undefined && typeof request.body.idempotencyKey !== "string") {
+        return reply.code(400).send({ error: "idempotencyKey must be a string" });
+      }
+      if (request.body?.createJoin !== undefined && typeof request.body.createJoin !== "boolean") {
+        return reply.code(400).send({ error: "createJoin must be a boolean" });
+      }
       const original = coordinationV3.getRequest(request.params.id);
       if (!original) return reply.code(404).send({ error: "request not found" });
       if (!["blocked", "expired", "outcome_unknown", "failed", "recipient_unavailable"].includes(original.state)) {
@@ -807,9 +814,27 @@ export function registerAgentCommunicationRoutes(
       if (!requester || requester.archived || !recipient || recipient.archived) {
         return reply.code(409).send({ error: "request participants are no longer available" });
       }
+      const conversation = original.conversationId ? store.getConversation(original.conversationId) : undefined;
+      const leasedAgentIds = [requester.id, recipient.id];
+      if (projectDeletionInProgress(original.projectId) ||
+          (original.conversationId && (conversationDeletionInProgress(original.conversationId) ||
+            !conversation || conversation.archived || conversation.projectId !== original.projectId)) ||
+          leasedAgentIds.some(agentDeletionInProgress)) {
+        return reply.code(409).send({ error: "request participants are no longer available" });
+      }
       const idempotencyKey = request.body?.idempotencyKey?.trim() || `retry:${original.id}`;
       if (idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
+      const releaseDeliveryLease = conversation
+        ? leaseConversationDelivery(conversationDeliveryLeases, agentDeliveryLeases, conversation.id, leasedAgentIds)
+        : leaseAgentDelivery(agentDeliveryLeases, leasedAgentIds);
       try {
+        const currentParticipants = leasedAgentIds.map((agentId) => store.getAgent(agentId));
+        if (projectDeletionInProgress(original.projectId) || leasedAgentIds.some(agentDeletionInProgress) ||
+            currentParticipants.some((agent) => !agent || agent.archived || agent.projectId !== original.projectId) ||
+            (original.conversationId && (conversationDeletionInProgress(original.conversationId) ||
+              !store.getConversation(original.conversationId)))) {
+          return reply.code(409).send({ error: "request participants are no longer available" });
+        }
         const requestId = `${original.id}:retry:${createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 16)}`;
         const originalPayload = original.payload && typeof original.payload === "object"
           ? original.payload as Record<string, unknown>
@@ -845,12 +870,16 @@ export function registerAgentCommunicationRoutes(
         const conversationIds = original.conversationId
           ? [original.conversationId]
           : [];
-        publishCoordinationV3Changed(requester.id, { conversationIds });
-        publishCoordinationV3Changed(recipient.id, { conversationIds });
-        notifyScheduler();
+        try {
+          publishCoordinationV3Changed(requester.id, { conversationIds });
+          publishCoordinationV3Changed(recipient.id, { conversationIds });
+          notifyScheduler();
+        } catch { /* durable retry remains authoritative */ }
         return { ...result, retryOfRequestId: original.id };
       } catch (error) {
         return reply.code(409).send({ error: error instanceof Error ? error.message : "request retry failed" });
+      } finally {
+        releaseDeliveryLease();
       }
     },
   );

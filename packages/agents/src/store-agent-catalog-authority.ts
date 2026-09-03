@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
 import type Database from "better-sqlite3";
 import { and, eq, isNull } from "drizzle-orm";
 import type {
@@ -18,7 +18,7 @@ import { normalizeAgentTitle } from "./agent-identity.js";
 import { sharedWorkingCopy } from "./working-copy.js";
 import { requireManagementPermissions } from "./store-agent-management.js";
 import { appendFsyncedJsonl } from "./append-jsonl.js";
-import { readJson, writeJson } from "./store-filesystem.js";
+import { fsyncDirectory, readJson, writeJson } from "./store-filesystem.js";
 import type {
   AgentJson,
   AgentSpawnOrigin,
@@ -28,6 +28,7 @@ import type {
 import { agentConversationMemberships, agentHandleReservations, agents, conversations, importedHistoryMessages } from "./schema.js";
 import {
   agentDir,
+  agentsDir,
   agentJsonPath,
   agentOrganizationEventsPath,
   artifactsDir,
@@ -46,13 +47,19 @@ export class AgentCatalogAuthority {
     private readonly getProject: (projectId: string) => ProjectDto | undefined,
   ) {}
 
-  createAgent(projectId: string, input: CreateAgentRequest, origin?: AgentSpawnOrigin): AgentDto {
+  createAgent(
+    projectId: string,
+    input: CreateAgentRequest,
+    origin?: AgentSpawnOrigin,
+    predeterminedId: string = randomUUID(),
+  ): AgentDto {
     const creationIdempotencyKey = input.idempotencyKey?.trim() || undefined;
     if (creationIdempotencyKey) {
       const existing = this.findAgentCreation(projectId, creationIdempotencyKey);
       if (existing) return existing;
     }
-    const id = randomUUID();
+    const id = predeterminedId;
+    const stagingId = `.${id}.creating`;
     const now = new Date().toISOString();
     const title = normalizeAgentTitle(input.title);
     const handle = allocateAgentMentionHandle(
@@ -96,6 +103,7 @@ export class AgentCatalogAuthority {
       creationIdempotencyKey,
       workingCopy,
     };
+    try {
     this.client.transaction(() => {
       const ownerConversation = this.db.select({ id: conversations.id })
         .from(conversations)
@@ -127,10 +135,10 @@ export class AgentCatalogAuthority {
       )) {
         throw new Error("Agent manager must be active in the same Project Chat");
       }
-      mkdirSync(agentDir(this.dataDir, projectId, id), { recursive: true });
-      mkdirSync(artifactsDir(this.dataDir, projectId, id), { recursive: true });
-      mkdirSync(attachmentsDir(this.dataDir, projectId, id), { recursive: true });
-      writeJson(agentJsonPath(this.dataDir, projectId, id), record);
+      mkdirSync(agentDir(this.dataDir, projectId, stagingId), { recursive: true });
+      mkdirSync(artifactsDir(this.dataDir, projectId, stagingId), { recursive: true });
+      mkdirSync(attachmentsDir(this.dataDir, projectId, stagingId), { recursive: true });
+      writeJson(agentJsonPath(this.dataDir, projectId, stagingId), record);
       if (manager) {
         const organizationEvent: AgentOrganizationEvent = {
           eventId: randomUUID(),
@@ -182,7 +190,55 @@ export class AgentCatalogAuthority {
         position: 0,
       }).run();
     })();
+    } catch (error) {
+      rmSync(agentDir(this.dataDir, projectId, stagingId), { recursive: true, force: true });
+      throw error;
+    }
+    try {
+      renameSync(
+        agentDir(this.dataDir, projectId, stagingId),
+        agentDir(this.dataDir, projectId, id),
+      );
+      fsyncDirectory(agentsDir(this.dataDir, projectId));
+    } catch (error) {
+      this.client.transaction(() => {
+        this.db.delete(agentConversationMemberships).where(eq(agentConversationMemberships.agentId, id)).run();
+        this.db.delete(agents).where(eq(agents.id, id)).run();
+        this.db.delete(agentHandleReservations).where(eq(agentHandleReservations.agentId, id)).run();
+      })();
+      rmSync(agentDir(this.dataDir, projectId, stagingId), { recursive: true, force: true });
+      throw error;
+    }
     return this.rowToAgentDto(id)!;
+  }
+
+  /** Resolve the filesystem side of Agent creation before projection rebuild.
+   * A row means the SQLite transaction committed and its hidden directory must
+   * be published; without a row, the staging directory is safe to discard. */
+  recoverCreationDirectories(): void {
+    for (const project of this.getProjectRows()) {
+      const directory = agentsDir(this.dataDir, project.id);
+      if (!existsSync(directory)) continue;
+      let changed = false;
+      for (const name of readdirSync(directory)) {
+        const match = /^\.(.+)\.creating$/u.exec(name);
+        if (!match) continue;
+        const id = match[1]!;
+        const staging = agentDir(this.dataDir, project.id, name);
+        const canonical = agentDir(this.dataDir, project.id, id);
+        const row = this.client.prepare(
+          "SELECT 1 FROM agents WHERE id = ? AND project_id = ? AND deleted_at IS NULL",
+        ).get(id, project.id);
+        if (row && !existsSync(canonical)) renameSync(staging, canonical);
+        else rmSync(staging, { recursive: true, force: true });
+        changed = true;
+      }
+      if (changed) fsyncDirectory(directory);
+    }
+  }
+
+  private getProjectRows(): Array<{ id: string }> {
+    return this.client.prepare("SELECT id FROM projects ORDER BY id").all() as Array<{ id: string }>;
   }
 
   findAgentSpawn(agentId: string, executionId: string, idempotencyKey: string): AgentDto | undefined {

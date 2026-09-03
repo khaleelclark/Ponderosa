@@ -5,6 +5,7 @@
 // are authoritative SQLite state. Exposes NO HTTP (SPEC §7).
 
 import type Database from "better-sqlite3";
+import { createHash } from "node:crypto";
 import type {
   ArtifactDto,
   AgentActivityDto,
@@ -118,6 +119,29 @@ export type {
   ProjectDeletionReceipt,
   AgentManagementAuthorization,
 } from "./store-types.js";
+
+export type AgentCreationOperationStatus =
+  | "preparing"
+  | "canonical_committed"
+  | "completed"
+  | "rolling_back"
+  | "rolled_back";
+
+export interface AgentCreationOperation {
+  id: string;
+  projectId: string;
+  actorScope: string;
+  kind: "human" | "managed" | "import";
+  idempotencyKey: string;
+  payloadHash: string;
+  status: AgentCreationOperationStatus;
+  agentIds: string[];
+  artifactIds: string[];
+  communicationEventId?: string;
+  result?: unknown;
+  lastError?: string;
+}
+
 export class AgentStore extends AgentEventSessionFacade {
   private readonly phaseReadModel!: AgentPhaseReadModel;
   private readonly db: Db;
@@ -217,6 +241,7 @@ export class AgentStore extends AgentEventSessionFacade {
       const components = createAgentStoreComponents(dataDir, opened, ports);
       Object.assign(this, components);
       const componentsCreatedAt = performance.now();
+      this.agentCatalog.recoverCreationDirectories();
       // Canonical files are written before their SQLite projections. Rebuild
       // transactionally on every startup so a crash or torn append cannot leave
       // a partially repaired projection visible to ordinary requests.
@@ -697,6 +722,127 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.client;
   }
 
+  beginAgentCreationOperation(input: {
+    projectId: string;
+    actorScope: string;
+    kind: AgentCreationOperation["kind"];
+    idempotencyKey: string;
+    payloadHash: string;
+  }): { operation: AgentCreationOperation; replayed: boolean } {
+    const id = `agent-create-${createHash("sha256").update(
+      `${input.projectId}\0${input.actorScope}\0${input.kind}\0${input.idempotencyKey}`,
+    ).digest("hex")}`;
+    const existing = this.getAgentCreationOperation(id);
+    if (existing) {
+      if (existing.payloadHash !== input.payloadHash) {
+        throw new Error("Agent creation idempotency key was reused with different input");
+      }
+      if (existing.status === "rolled_back") {
+        this.client.transaction(() => {
+          this.client.prepare("DELETE FROM agent_creation_operation_members WHERE operation_id = ?").run(id);
+          this.client.prepare(`
+            UPDATE agent_creation_operations
+            SET status = 'preparing', communication_event_id = NULL, result_json = NULL,
+              artifact_ids_json = '[]', last_error = NULL, updated_at = ? WHERE id = ?
+          `).run(new Date().toISOString(), id);
+        })();
+        return { operation: this.getAgentCreationOperation(id)!, replayed: false };
+      }
+      return { operation: existing, replayed: true };
+    }
+    const now = new Date().toISOString();
+    try {
+      this.client.prepare(`
+        INSERT INTO agent_creation_operations
+          (id, project_id, actor_scope, kind, idempotency_key, payload_hash, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'preparing', ?, ?)
+      `).run(id, input.projectId, input.actorScope, input.kind, input.idempotencyKey, input.payloadHash, now, now);
+    } catch (error) {
+      const raced = this.getAgentCreationOperation(id);
+      if (!raced || raced.payloadHash !== input.payloadHash) throw error;
+      return { operation: raced, replayed: true };
+    }
+    return { operation: this.getAgentCreationOperation(id)!, replayed: false };
+  }
+
+  getAgentCreationOperation(id: string): AgentCreationOperation | undefined {
+    const row = this.client.prepare(`
+      SELECT id, project_id, actor_scope, kind, idempotency_key, payload_hash, status,
+        communication_event_id, artifact_ids_json, result_json, last_error
+      FROM agent_creation_operations WHERE id = ?
+    `).get(id) as {
+      id: string; project_id: string; actor_scope: string; kind: AgentCreationOperation["kind"];
+      idempotency_key: string; payload_hash: string; status: AgentCreationOperationStatus;
+      communication_event_id: string | null; artifact_ids_json: string; result_json: string | null; last_error: string | null;
+    } | undefined;
+    if (!row) return undefined;
+    const members = this.client.prepare(`
+      SELECT agent_id FROM agent_creation_operation_members WHERE operation_id = ? ORDER BY position
+    `).all(id) as Array<{ agent_id: string }>;
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      actorScope: row.actor_scope,
+      kind: row.kind,
+      idempotencyKey: row.idempotency_key,
+      payloadHash: row.payload_hash,
+      status: row.status,
+      agentIds: members.map((member) => member.agent_id),
+      artifactIds: JSON.parse(row.artifact_ids_json) as string[],
+      ...(row.communication_event_id ? { communicationEventId: row.communication_event_id } : {}),
+      ...(row.result_json ? { result: JSON.parse(row.result_json) as unknown } : {}),
+      ...(row.last_error ? { lastError: row.last_error } : {}),
+    };
+  }
+
+  listRecoverableAgentCreationOperations(): AgentCreationOperation[] {
+    return (this.client.prepare(`
+      SELECT id FROM agent_creation_operations
+      WHERE status IN ('preparing', 'canonical_committed', 'rolling_back')
+      ORDER BY created_at, id
+    `).all() as Array<{ id: string }>).flatMap(({ id }) => {
+      const operation = this.getAgentCreationOperation(id);
+      return operation ? [operation] : [];
+    });
+  }
+
+  addAgentCreationOperationMember(operationId: string, agentId: string, position: number): void {
+    this.client.prepare(`
+      INSERT INTO agent_creation_operation_members (operation_id, agent_id, position)
+      VALUES (?, ?, ?)
+      ON CONFLICT(operation_id, agent_id) DO UPDATE SET position = excluded.position
+    `).run(operationId, agentId, position);
+  }
+
+  updateAgentCreationOperation(
+    id: string,
+    patch: {
+      status?: AgentCreationOperationStatus;
+      communicationEventId?: string | null;
+      artifactIds?: readonly string[];
+      result?: unknown;
+      lastError?: string | null;
+    },
+  ): AgentCreationOperation {
+    const current = this.getAgentCreationOperation(id);
+    if (!current) throw new Error("Agent creation operation not found");
+    const nextStatus = patch.status ?? current.status;
+    this.client.prepare(`
+      UPDATE agent_creation_operations
+      SET status = ?, communication_event_id = ?, artifact_ids_json = ?, result_json = ?, last_error = ?, updated_at = ?
+      WHERE id = ?
+    `).run(
+      nextStatus,
+      patch.communicationEventId === undefined ? current.communicationEventId ?? null : patch.communicationEventId,
+      JSON.stringify(patch.artifactIds ?? current.artifactIds),
+      patch.result === undefined ? current.result === undefined ? null : JSON.stringify(current.result) : JSON.stringify(patch.result),
+      patch.lastError === undefined ? current.lastError ?? null : patch.lastError,
+      new Date().toISOString(),
+      id,
+    );
+    return this.getAgentCreationOperation(id)!;
+  }
+
   // ─── Projects ──────────────────────────────────────────────────────────────
 
   createProject(input: Omit<CreateProjectRequest, "defaultEngine"> & { hostPath: string; defaultEngine?: CreateProjectRequest["defaultEngine"] }): ProjectDto {
@@ -911,8 +1057,13 @@ export class AgentStore extends AgentEventSessionFacade {
 
   // ─── Agents ───────────────────────────────────────────────────────────────
 
-  createAgent(projectId: string, input: CreateAgentRequest, origin?: AgentSpawnOrigin): AgentDto {
-    return this.agentCatalog.createAgent(projectId, input, origin);
+  createAgent(
+    projectId: string,
+    input: CreateAgentRequest,
+    origin?: AgentSpawnOrigin,
+    predeterminedId?: string,
+  ): AgentDto {
+    return this.agentCatalog.createAgent(projectId, input, origin, predeterminedId);
   }
 
   findAgentSpawn(agentId: string, executionId: string, idempotencyKey: string): AgentDto | undefined {

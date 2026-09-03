@@ -23,6 +23,41 @@ function deferred() {
   return { promise, resolve };
 }
 
+function agentCreationJournal() {
+  let operation;
+  const normalizePatch = (patch) => ({
+    ...(patch.status !== undefined ? { status: patch.status } : {}),
+    ...(patch.communicationEventId !== undefined ? { communicationEventId: patch.communicationEventId } : {}),
+    ...(patch.result !== undefined ? { result: patch.result } : {}),
+    ...(patch.lastError !== undefined ? { lastError: patch.lastError } : {}),
+  });
+  return {
+    sqlite: { transaction: (callback) => () => callback() },
+    beginAgentCreationOperation: (input) => {
+      operation ??= {
+        id: "creation-operation-a",
+        ...input,
+        status: "preparing",
+        agentIds: [],
+        artifactIds: [],
+        communicationEventId: undefined,
+        result: undefined,
+        lastError: null,
+      };
+      return { operation, replayed: Boolean(operation.agentIds.length) };
+    },
+    addAgentCreationOperationMember: (_operationId, agentId) => {
+      operation.agentIds.push(agentId);
+      return operation;
+    },
+    updateAgentCreationOperation: (_operationId, patch) => {
+      Object.assign(operation, normalizePatch(patch));
+      return operation;
+    },
+    getAgentCreationOperation: () => operation,
+  };
+}
+
 test("Agent delivery leases deduplicate owners and release idempotently", () => {
   const leases = new Map();
   const release = leaseAgentDelivery(leases, ["agent-a", "agent-a", "agent-b"]);
@@ -50,9 +85,13 @@ test("new Agents remain quarantined while opening assets are staged", async (t) 
   t.after(() => app.close());
   registerAgentCreationRoutes(app, {
     store: {
+      ...agentCreationJournal(),
       getProject: () => project,
       getConversation: () => chat,
-      createAgent: () => agent,
+      createAgent: (_projectId, _input, _preset, id) => {
+        agent.id = id;
+        return agent;
+      },
       deleteAgent: () => true,
     },
     coordinationV3: { handleAgentDeletion: () => {} },
@@ -125,11 +164,13 @@ function agentCreationTransactionApp({
   const app = Fastify();
   registerAgentCreationRoutes(app, {
     store: {
+      ...agentCreationJournal(),
       getProject: () => project,
       getConversation: () => chat,
       findAgentCreation: () => created ? agent : undefined,
-      createAgent: () => {
+      createAgent: (_projectId, _input, _preset, id) => {
         created = true;
+        agent.id = id;
         return agent;
       },
       deleteAgent: () => {
@@ -196,8 +237,8 @@ test("an idempotent Agent creation retry cannot replay an in-flight opening", as
   await stageStarted.promise;
   assert.equal(deletingAgentIds.has(agent.id), true);
   const retry = await app.inject({ method: "POST", url: "/api/projects/project-a/agents", payload });
-  assert.equal(retry.statusCode, 409);
-  assert.match(retry.json().error, /still in progress/);
+  assert.equal(retry.statusCode, 202);
+  assert.equal(retry.json().recovering, true);
   finishStage.resolve();
   assert.equal((await first).statusCode, 409);
 });
@@ -730,6 +771,16 @@ test("multi-recipient direct messages persist the exact room attachment set", as
     prepareUserCommunicationText: async () => ({ canonicalText: "hello", publishedText: "hello" }),
     recordCommunication: (communication) => communication,
     projectCommunicationToAgentAudit: () => {},
+    reconcileRuntimeCommunicationProjections: async () => {
+      const roomAttachmentIds = new Set(runtimeInput.payload.dispatch.conversationAttachmentIds);
+      roomInput = {
+        communicationEventId: runtimeInput.payload.communication.eventId,
+        attachments: runtimeInput.payload.communication.attachments.filter((attachment) =>
+          roomAttachmentIds.has(attachment.id)),
+      };
+      roomMessage = { id: "message-a", ...roomInput };
+      return 1;
+    },
     publishCoordinationV3Changed: () => {},
     notifyScheduler: () => {},
   });

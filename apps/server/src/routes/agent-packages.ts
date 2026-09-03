@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type {
@@ -343,6 +343,7 @@ export function registerAgentPackageRoutes(
     body: ImportAgentPackageRequest,
     reply: FastifyReply,
     onPhase?: (phase: AgentImportPhase) => Promise<void>,
+    creationOperationId?: string,
   ): Promise<unknown> => {
       const project = store.getProject(projectId);
       const conversation = body?.conversationId
@@ -397,6 +398,7 @@ export function registerAgentPackageRoutes(
       };
 
       const rollbackAgentIds: string[] = [];
+      let operationAgentIds: string[] = [];
       let rollbackArtifacts: PlannedArtifact[] = [];
       try {
       await onPhase?.("creating_records");
@@ -805,6 +807,26 @@ export function registerAgentPackageRoutes(
       }
       const plannedArtifacts = importNodes.flatMap((node) => node.artifacts);
       rollbackArtifacts = plannedArtifacts;
+      if (creationOperationId) {
+        const creationOperation = store.getAgentCreationOperation(creationOperationId);
+        if (!creationOperation) throw new Error("Agent import creation operation is unavailable");
+        if (creationOperation.agentIds.length === 0) {
+          operationAgentIds = importNodes.map(() => randomUUID());
+          operationAgentIds.forEach((agentId, position) => {
+            store.addAgentCreationOperationMember(creationOperationId, agentId, position);
+            deletingAgentIds.add(agentId);
+          });
+          store.updateAgentCreationOperation(creationOperationId, {
+            artifactIds: plannedArtifacts.map((artifact) => artifact.destinationId),
+          });
+        } else {
+          if (creationOperation.agentIds.length !== importNodes.length) {
+            throw new Error("Agent import creation plan does not match the package");
+          }
+          operationAgentIds = creationOperation.agentIds;
+          for (const agentId of operationAgentIds) deletingAgentIds.add(agentId);
+        }
+      }
       await onPhase?.("importing_artifacts");
       const publishedArtifacts = await publishManagedArtifactContentsAsync(
         context.dataDir,
@@ -833,7 +855,7 @@ export function registerAgentPackageRoutes(
 
       const created = new Map<string, AgentDto>();
       await onPhase?.("importing_agents");
-      for (const node of importNodes) {
+      for (const [index, node] of importNodes.entries()) {
         const agent = store.createAgent(project.id, {
           title: node.title,
           engine: node.targetEngine,
@@ -841,7 +863,7 @@ export function registerAgentPackageRoutes(
           ...(node.model ? { model: node.model } : {}),
           ...(node.effort ? { effort: node.effort } : {}),
           managementPermissions: node.managementPermissions,
-        });
+        }, undefined, operationAgentIds[index]);
         created.set(node.ref, agent);
         rollbackAgentIds.push(agent.id);
         deletingAgentIds.add(agent.id);
@@ -916,12 +938,23 @@ export function registerAgentPackageRoutes(
         rootAgentId: created.get(portablePackage.rootRef)!.id,
         agentIds: [...created.values()].map((agent) => agent.id),
       };
+      if (creationOperationId) {
+        store.updateAgentCreationOperation(creationOperationId, {
+          status: "completed",
+          result: response,
+          lastError: null,
+        });
+        for (const agentId of operationAgentIds) deletingAgentIds.delete(agentId);
+      }
       return reply.code(201).send(response);
       } catch (error) {
+        let rollbackComplete = true;
         for (const agentId of [...rollbackAgentIds].reverse()) {
           try {
-            store.deleteAgent(agentId, (id) => coordinationV3.handleAgentDeletion(id));
+            if (!store.deleteAgent(agentId, (id) => coordinationV3.handleAgentDeletion(id)) &&
+                store.getAgent(agentId)) rollbackComplete = false;
           } catch {
+            rollbackComplete = false;
             // Preserve the original import failure. Startup deletion recovery
             // completes any rollback whose durable deletion already committed.
           }
@@ -940,9 +973,17 @@ export function registerAgentPackageRoutes(
             // Startup managed-artifact repair handles exact residual bytes.
           }
         }
+        if (creationOperationId) {
+          store.updateAgentCreationOperation(creationOperationId, {
+            status: rollbackComplete ? "rolled_back" : "rolling_back",
+            lastError: error instanceof Error ? error.message : "Agent import failed",
+          });
+        }
         throw error;
       } finally {
-        for (const agentId of rollbackAgentIds) deletingAgentIds.delete(agentId);
+        for (const agentId of operationAgentIds.length ? operationAgentIds : rollbackAgentIds) {
+          if (!store.getAgent(agentId)) deletingAgentIds.delete(agentId);
+        }
         releaseCreationLease();
       }
   };
@@ -980,6 +1021,22 @@ export function registerAgentPackageRoutes(
       const raw = await fs.readFile(payloadPath(operationId));
       const { metadata, portable } = await parsePortablePackageUpload(raw);
       await update({ sourceLabel: portable.sourceLabel.slice(0, 240) });
+      const creationOperation = store.beginAgentCreationOperation({
+        projectId: operation.projectId,
+        actorScope: "user:local-operator",
+        kind: "import",
+        idempotencyKey: operation.requestId,
+        payloadHash: createHash("sha256").update(raw).digest("hex"),
+      }).operation;
+      if (creationOperation.status === "completed" && creationOperation.result) {
+        const result = creationOperation.result as ImportAgentPackageResponse;
+        await update({ phase: "completed", status: "completed", result });
+        for (const agentId of creationOperation.agentIds) deletingAgentIds.delete(agentId);
+        return;
+      }
+      if (creationOperation.agentIds.length) {
+        throw new Error("A prior import attempt is still being recovered; retry after startup recovery completes");
+      }
       let statusCode = 200;
       let responseBody: unknown;
       const backgroundReply = {
@@ -997,6 +1054,7 @@ export function registerAgentPackageRoutes(
         { ...metadata, package: portable },
         backgroundReply,
         phase,
+        creationOperation.id,
       );
       if (statusCode >= 400) {
         const record = responseBody && typeof responseBody === "object"
@@ -1120,23 +1178,7 @@ export function registerAgentPackageRoutes(
         operation.id,
       );
       if (operation.status !== "pending") continue;
-      const failed: AgentImportOperationDto = {
-        ...operation,
-        phase: "failed",
-        status: "failed",
-        error: "The server restarted before final import completion could be confirmed. Inspect the Project before retrying.",
-        updatedAt: new Date().toISOString(),
-      };
-      await writeOperation(failed);
-      createOperationalNotification({
-        dedupeKey: `agent-import:${failed.id}`,
-        category: "system",
-        severity: "urgent",
-        title: "Agent import outcome needs inspection",
-        body: failed.error!,
-        projectId: failed.projectId,
-        action: { kind: "open_project", targetId: failed.projectId },
-      });
+      setImmediate(() => void app.ready().then(() => runBackgroundImport(operation.id)));
     }
   }).catch(() => undefined);
 

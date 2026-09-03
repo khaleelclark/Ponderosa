@@ -73,7 +73,7 @@ type ServerLifecycleContext =
     runtimeAuthorities: Map<string, AgentRuntimeAuthority>;
     agentMessageCapabilities: Map<string, AgentMessageCapability>;
     agentDeliveryLeases: ReadonlyMap<string, number>;
-    deletingAgentIds: ReadonlySet<string>;
+    deletingAgentIds: Set<string>;
     attachmentDeletionInProgress(agentId: string): boolean;
     reconcilingAssetAgentIds: Set<string>;
     projectBrowserGrants: Map<string, unknown>;
@@ -87,6 +87,7 @@ type ServerLifecycleContext =
     reconcileRuntimeCommunicationProjections(filter?: {
       projectId?: string;
       communicationEventId?: string;
+      allowQuarantinedAgentIds?: ReadonlySet<string>;
     }, options?: {
       yieldEvery?: number;
       shouldContinue?(): boolean;
@@ -260,6 +261,59 @@ export function registerServerLifecycle(
     // any crash gap in the workspace log before the listener becomes ready.
     reconcileCommittedProjectDeletions();
     completeLifecyclePhase("project_deletion_workspace_recovery");
+    for (const operation of store.listRecoverableAgentCreationOperations()) {
+      if (operation.status === "canonical_committed" && operation.communicationEventId) {
+        try {
+          await reconcileRuntimeCommunicationProjections({
+            projectId: operation.projectId,
+            communicationEventId: operation.communicationEventId,
+            allowQuarantinedAgentIds: new Set(operation.agentIds),
+          });
+          store.updateAgentCreationOperation(operation.id, { status: "completed", lastError: null });
+          for (const agentId of operation.agentIds) deletingAgentIds.delete(agentId);
+        } catch (error) {
+          store.updateAgentCreationOperation(operation.id, {
+            lastError: error instanceof Error ? error.message : "Agent creation projection recovery failed",
+          });
+          app.log.error({ err: error, operationId: operation.id }, "Agent creation projection recovery remains pending");
+        }
+        continue;
+      }
+      store.updateAgentCreationOperation(operation.id, { status: "rolling_back" });
+      let rolledBack = true;
+      for (const agentId of [...operation.agentIds].reverse()) {
+        try {
+          if (store.getAgent(agentId)) {
+            const deleted = store.deleteAgent(
+              agentId,
+              (id) => coordinationV3.handleAgentDeletion(id),
+            );
+            if (!deleted) rolledBack = false;
+          }
+          if (!store.getAgent(agentId)) deletingAgentIds.delete(agentId);
+        } catch (error) {
+          rolledBack = false;
+          store.updateAgentCreationOperation(operation.id, {
+            lastError: error instanceof Error ? error.message : "Agent creation rollback failed",
+          });
+          app.log.error({ err: error, operationId: operation.id, agentId }, "Agent creation rollback remains quarantined");
+        }
+      }
+      for (const artifactId of operation.artifactIds) {
+        try {
+          store.deleteProjectArtifact(operation.projectId, artifactId, "Agent creation recovery rolled back");
+        } catch (error) {
+          rolledBack = false;
+          store.updateAgentCreationOperation(operation.id, {
+            lastError: error instanceof Error ? error.message : "Agent creation artifact rollback failed",
+          });
+        }
+      }
+      if (rolledBack) {
+        store.updateAgentCreationOperation(operation.id, { status: "rolled_back", lastError: null });
+      }
+    }
+    completeLifecyclePhase("agent_creation_recovery");
     const orphanGraceBoundary = Date.now() - 60 * 60 * 1_000;
     const recoveredProviderProcesses = await providerProcessAuthority.recoverPreviousWorkers();
     if (recoveredProviderProcesses > 0) {

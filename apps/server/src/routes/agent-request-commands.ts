@@ -91,6 +91,30 @@ export function registerAgentRequestCommandRoutes(
     if (!capability || !capabilityMatchesCleanupRun(capability, active) || active!.messageCapability !== token) {
       return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
     }
+    const body = request.body as unknown;
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return reply.code(400).send({ error: "request update body must be an object" });
+    }
+    const candidate = body as Record<string, unknown>;
+    const unknownFields = Object.keys(candidate).filter((key) =>
+      !["requestId", "updateId", "kind", "text", "question", "inReplyToUpdateId"].includes(key));
+    if (unknownFields.length) {
+      return reply.code(400).send({ error: `unknown request update field(s): ${unknownFields.join(", ")}` });
+    }
+    for (const key of ["requestId", "updateId", "text", "question", "inReplyToUpdateId"] as const) {
+      if (candidate[key] !== undefined && typeof candidate[key] !== "string") {
+        return reply.code(400).send({ error: `${key} must be a string` });
+      }
+    }
+    const allowedKinds: readonly CoordinationRequestUpdateKind[] = [
+      "progress", "waiting_dependency", "dependency_resolved", "question", "answer",
+      "completed", "blocked", "failed", "cancelled", "superseded",
+      "recipient_unavailable", "outcome_unknown", "expired",
+    ];
+    if (candidate.kind !== undefined &&
+        (typeof candidate.kind !== "string" || !allowedKinds.includes(candidate.kind as CoordinationRequestUpdateKind))) {
+      return reply.code(400).send({ error: "kind is not a recognized request update kind" });
+    }
     const steeringInjectionIds = coordinationV3.steeringInjectionIds(capability.runId);
     const suppliedRequestId = request.body?.requestId?.trim();
     const attachedRequestIds = coordinationV3.requestIdsAttachedToRun(
@@ -178,6 +202,7 @@ export function registerAgentRequestCommandRoutes(
       inReplyToUpdateId: request.body.inReplyToUpdateId?.trim() || null,
     });
     let artifact: PreparedCommunicationArtifact | undefined;
+    let durableResult: ReturnType<CoordinationV3Store["updateRequest"]> | undefined;
     try {
       if (shouldBackTextWithArtifact(handoffText)) {
         artifact = await stageCommunicationArtifact({
@@ -209,6 +234,7 @@ export function registerAgentRequestCommandRoutes(
         },
         ...(artifact ? { artifacts: [runtimeArtifactMetadata(artifact)] } : {}),
       });
+      durableResult = result;
       const changedRequest = coordinationV3.getRequest(requestId);
       if (artifact && changedRequest) projectCommunicationArtifact(
         currentAuthor.projectId,
@@ -307,6 +333,14 @@ export function registerAgentRequestCommandRoutes(
       notifyScheduler();
       return { ...result, ...(artifact ? { resultRef: `ponderosa://artifact/${artifact.id}` } : {}) };
     } catch (error) {
+      if (durableResult) {
+        return reply.code(202).send({
+          ...durableResult,
+          committed: true,
+          recovering: true,
+          ...(artifact ? { resultRef: `ponderosa://artifact/${artifact.id}` } : {}),
+        });
+      }
       return reply.code(409).send({ error: error instanceof Error ? error.message : "request update failed" });
     } finally {
       releaseDeliveryLease();

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   TERMINAL_REQUEST_STATES,
   canonicalizeProviderText,
@@ -23,12 +23,17 @@ import type {
 } from "../app-contracts.js";
 import { runtimeSelectionError } from "../runtime-selection.js";
 import { derivedRunActionKey } from "../security.js";
+import { leaseConversationDelivery } from "../delivery-leases.js";
 
 interface AgentCoordinationRoutesContext {
   store: AgentStore;
   coordinationV3: CoordinationV3Store;
   engines: ReadonlyMap<string, EngineRegistration>;
-  deletingAgentIds: ReadonlySet<string>;
+  deletingAgentIds: Set<string>;
+  deletingProjectIds: ReadonlySet<string>;
+  deletingConversationIds: ReadonlySet<string>;
+  conversationDeliveryLeases: Map<string, number>;
+  agentDeliveryLeases: Map<string, number>;
   agentMessageCapabilities: ReadonlyMap<string, AgentMessageCapability>;
   activeRuns: ReadonlyMap<string, ActiveRun>;
   cachedModelOptions(adapter: EngineRegistration["adapter"], projectId?: string): ModelOption[];
@@ -62,6 +67,11 @@ interface AgentCoordinationRoutesContext {
     mentionTrail: string[],
   ): { text: string; intents: ConversationDeliveryIntent[]; error?: string };
   logWarn(meta: Record<string, unknown>, message: string): void;
+  reconcileRuntimeCommunicationProjections(filter?: {
+    projectId?: string;
+    communicationEventId?: string;
+    allowQuarantinedAgentIds?: ReadonlySet<string>;
+  }): Promise<number>;
 }
 
 export function registerAgentCoordinationRoutes(
@@ -73,6 +83,10 @@ export function registerAgentCoordinationRoutes(
     coordinationV3,
     engines,
     deletingAgentIds,
+    deletingProjectIds,
+    deletingConversationIds,
+    conversationDeliveryLeases,
+    agentDeliveryLeases,
     agentMessageCapabilities,
     activeRuns,
     cachedModelOptions,
@@ -84,6 +98,7 @@ export function registerAgentCoordinationRoutes(
     runAuthorization,
     resolveExplicitCollaborationIntents,
     logWarn,
+    reconcileRuntimeCommunicationProjections,
   } = context;
 
   app.post<{
@@ -95,6 +110,35 @@ export function registerAgentCoordinationRoutes(
     const manager = capability ? store.getAgent(capability.agentId) : undefined;
     if (!capability || !capabilityOwnsAuthoritativeRun(capability, active) || active!.messageCapability !== token || !manager) {
       return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
+    }
+    const body = request.body as unknown;
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return reply.code(400).send({ error: "spawn body must be an object" });
+    }
+    const candidate = body as Record<string, unknown>;
+    const unknownFields = Object.keys(candidate).filter((key) =>
+      !["idempotencyKey", "title", "engine", "model", "effort", "text", "lifetime", "awaitResult"].includes(key));
+    if (unknownFields.length) {
+      return reply.code(400).send({ error: `unknown spawn field(s): ${unknownFields.join(", ")}` });
+    }
+    for (const key of ["idempotencyKey", "title", "engine", "model", "effort", "text"] as const) {
+      if (candidate[key] !== undefined && typeof candidate[key] !== "string") {
+        return reply.code(400).send({ error: `${key} must be a string` });
+      }
+    }
+    if (candidate.awaitResult !== undefined && typeof candidate.awaitResult !== "boolean") {
+      return reply.code(400).send({ error: "awaitResult must be a boolean" });
+    }
+    if (!candidate.lifetime || typeof candidate.lifetime !== "object" || Array.isArray(candidate.lifetime)) {
+      return reply.code(400).send({ error: "lifetime must be indefinite or a deadline" });
+    }
+    const lifetime = candidate.lifetime as Record<string, unknown>;
+    const allowedLifetimeFields = lifetime.kind === "deadline" ? ["kind", "at"] : ["kind"];
+    if ((lifetime.kind !== "deadline" && lifetime.kind !== "indefinite") ||
+        (lifetime.kind === "deadline" && (typeof lifetime.at !== "string" || !lifetime.at.trim() ||
+          !Number.isFinite(Date.parse(lifetime.at)))) ||
+        Object.keys(lifetime).some((key) => !allowedLifetimeFields.includes(key))) {
+      return reply.code(400).send({ error: "lifetime must be indefinite or a deadline with an ISO at timestamp" });
     }
     if (deletingAgentIds.has(manager.id)) {
       return reply.code(409).send({ error: "Agent deletion is already in progress" });
@@ -123,67 +167,202 @@ export function registerAgentCoordinationRoutes(
       cachedModelOptions(engine.adapter, manager.projectId),
     );
     if (selectionError) return reply.code(400).send({ error: selectionError });
-    const replay = store.findAgentSpawn(manager.id, capability.runId, idempotencyKey);
-    if (replay) return { agent: replay, replayed: true };
+    const payloadHash = createHash("sha256").update(JSON.stringify({
+      managerAgentId: manager.id,
+      runId: capability.runId,
+      title,
+      engine: engineId,
+      model: request.body.model ?? null,
+      effort: request.body.effort ?? null,
+      text,
+      lifetime: request.body.lifetime,
+      awaitResult: request.body.awaitResult ?? null,
+    })).digest("hex");
+    let creationOperation;
+    try {
+      creationOperation = store.beginAgentCreationOperation({
+        projectId: manager.projectId,
+        actorScope: `agent:${manager.id}:run:${capability.runId}`,
+        kind: "managed",
+        idempotencyKey,
+        payloadHash,
+      }).operation;
+    } catch (error) {
+      return reply.code(409).send({ error: error instanceof Error ? error.message : "managed Agent replay conflict" });
+    }
+    if (creationOperation.status === "completed" && creationOperation.result) {
+      return { ...(creationOperation.result as Record<string, unknown>), replayed: true };
+    }
+    if (creationOperation.status === "canonical_committed" && creationOperation.communicationEventId) {
+      try {
+        await reconcileRuntimeCommunicationProjections({
+          projectId: manager.projectId,
+          communicationEventId: creationOperation.communicationEventId,
+          allowQuarantinedAgentIds: new Set(creationOperation.agentIds),
+        });
+        store.updateAgentCreationOperation(creationOperation.id, { status: "completed", lastError: null });
+        for (const agentId of creationOperation.agentIds) deletingAgentIds.delete(agentId);
+        return { ...(creationOperation.result as Record<string, unknown>), replayed: true };
+      } catch (error) {
+        return reply.code(202).send({
+          committed: true,
+          recovering: true,
+          operationId: creationOperation.id,
+          ...(creationOperation.result as Record<string, unknown>),
+        });
+      }
+    }
+    if (creationOperation.agentIds.length) {
+      return reply.code(202).send({
+        committed: false,
+        recovering: true,
+        operationId: creationOperation.id,
+        agentIds: creationOperation.agentIds,
+      });
+    }
+    const legacyReplay = store.findAgentSpawn(manager.id, capability.runId, idempotencyKey);
+    if (legacyReplay) return { agent: legacyReplay, replayed: true };
     let child: AgentDto | undefined;
     let coordinated: { requestIds: string[]; joinId?: string; replayed: boolean } | undefined;
+    let openingCommunication: CommunicationEvent | undefined;
+    let durableCommitted = false;
+    const childId = randomUUID();
+    const releaseManagedCreationLease = leaseConversationDelivery(
+      conversationDeliveryLeases,
+      agentDeliveryLeases,
+      capability.conversationId,
+      [manager.id, childId],
+    );
     try {
+    try {
+      store.addAgentCreationOperationMember(creationOperation.id, childId, 0);
+      deletingAgentIds.add(childId);
+      child = store.createAgent(manager.projectId, {
+        title, engine: engineId, conversationId: capability.conversationId,
+        model: request.body.model?.trim() || undefined, effort: request.body.effort?.trim() || undefined,
+        managerAgentId: manager.id,
+      }, { agentId: manager.id, executionId: capability.runId, idempotencyKey, prompt: text }, childId);
+      const createdChild = child;
       store.sqlite.transaction(() => {
-        child = store.createAgent(manager!.projectId, {
-          title: title!, engine: engineId!, conversationId: capability!.conversationId!,
-          model: request.body.model?.trim() || undefined, effort: request.body.effort?.trim() || undefined,
-          managerAgentId: manager!.id,
-        }, { agentId: manager!.id, executionId: capability!.runId, idempotencyKey: idempotencyKey!, prompt: text! });
-        const requestId = `managed:${child.id}:opening`;
+        const requestId = `managed:${createdChild.id}:opening`;
+        const openingEventId = `managed-opening:${createdChild.id}`;
         coordinated = coordinationV3.coordinate({
           projectId: manager!.projectId, conversationId: capability!.conversationId,
           requesterAgentId: manager!.id, actorScope: `agent:${manager!.id}:run:${capability!.runId}`,
           idempotencyKey: `managed-agent:${idempotencyKey}`,
           runAuthorization: runAuthorization(capability!),
-          requests: [{ requestId, recipientAgentId: child.id, lifetime: request.body.lifetime!, payload: {
+          requests: [{ requestId, recipientAgentId: createdChild.id, lifetime: request.body.lifetime!, communicationEventId: openingEventId, payload: {
             text, requesterRunId: capability!.runId, managedAgentOpening: true,
           }, ...(capability!.defaultReply ? { replyAuthority: capability!.defaultReply } : {}) }],
           ...(request.body.awaitResult === false ? {} : { join: {
-            id: `managed:${child.id}:join`, mode: "all" as const,
+            id: `managed:${createdChild.id}:join`, mode: "all" as const,
             continuationRequestIds: coordinationV3.requestIdsAttachedToRun(capability!.runId, manager!.id)
               .filter((candidate) => !TERMINAL_REQUEST_STATES.has(coordinationV3.getRequest(candidate)?.state ?? "completed")),
           } }),
         });
+        openingCommunication = {
+          eventId: openingEventId, schemaVersion: 2, projectId: manager!.projectId,
+          conversationId: capability!.conversationId!,
+          sender: { kind: "agent", agentId: manager!.id, executionId: capability!.runId },
+          intent: "collaboration", audience: { kind: "agents", agentIds: [createdChild.id] },
+          text: text!, createdAt: new Date().toISOString(), idempotencyKey: `managed-agent:${idempotencyKey}`,
+        };
+        coordinationV3.recordRuntimeCommunication({
+          id: openingEventId,
+          projectId: manager!.projectId,
+          sender: openingCommunication.sender,
+          intent: openingCommunication.intent,
+          audience: openingCommunication.audience,
+          payload: {
+            communication: openingCommunication,
+            dispatch: {
+              conversationId: capability!.conversationId!,
+              text: text!,
+              attachments: [],
+            },
+          },
+          now: openingCommunication.createdAt,
+        });
+        store.updateAgentCreationOperation(creationOperation.id, {
+          status: "canonical_committed",
+          communicationEventId: openingEventId,
+          result: {
+            agent: createdChild,
+            requestId: coordinated.requestIds[0],
+            joinId: coordinated.joinId,
+          },
+          lastError: null,
+        });
       })();
+      durableCommitted = true;
     } catch (error) {
-      if (child) store.deleteAgent(child.id, (agentId) => coordinationV3.handleAgentDeletion(agentId));
+      if (durableCommitted) {
+        return reply.code(202).send({
+          committed: true,
+          recovering: true,
+          operationId: creationOperation.id,
+          ...(store.getAgentCreationOperation(creationOperation.id)?.result as Record<string, unknown>),
+        });
+      }
+      if (child) {
+        try {
+          if (store.deleteAgent(child.id, (agentId) => coordinationV3.handleAgentDeletion(agentId))) {
+            deletingAgentIds.delete(child.id);
+            store.updateAgentCreationOperation(creationOperation.id, {
+              status: "rolled_back",
+              lastError: error instanceof Error ? error.message : "managed Agent creation failed",
+            });
+          }
+        } catch (rollbackError) {
+          store.updateAgentCreationOperation(creationOperation.id, {
+            status: "rolling_back",
+            lastError: rollbackError instanceof Error ? rollbackError.message : "managed Agent rollback failed",
+          });
+        }
+      } else {
+        deletingAgentIds.delete(childId);
+        store.updateAgentCreationOperation(creationOperation.id, {
+          status: "rolled_back",
+          lastError: error instanceof Error ? error.message : "managed Agent creation failed",
+        });
+      }
       return reply.code(409).send({ error: error instanceof Error ? error.message : "managed Agent creation failed" });
     }
-    const openingEventId = `managed-opening:${child!.id}`;
-    const openingCommunication: CommunicationEvent = {
-      eventId: openingEventId, schemaVersion: 2, projectId: manager.projectId,
-      conversationId: capability.conversationId,
-      sender: { kind: "agent", agentId: manager.id, executionId: capability.runId },
-      intent: "collaboration", audience: { kind: "agents", agentIds: [child!.id] },
-      text, createdAt: new Date().toISOString(), idempotencyKey: `managed-agent:${idempotencyKey}`,
-    };
-    recordCommunication(openingCommunication);
-    store.appendConversationMessage(
-      capability.conversationId,
-      { role: "assistant", text: `#${child!.handle} ${text}` },
-      manager.id, "collaboration",
-      [{ targetAgentId: child!.id, relayDepth: 0, mentionTrail: [], kind: "tag", audience: "mention" }],
-      undefined, openingEventId,
-    );
-    projectCommunicationToAgentAudit(manager.id, openingCommunication, text);
-    projectCommunicationToAgentAudit(child!.id, openingCommunication, text);
-    coordinationV3.attachRequestCommunication(coordinated!.requestIds[0]!, openingEventId, manager.projectId);
+    try {
+      await reconcileRuntimeCommunicationProjections({
+        projectId: manager.projectId,
+        communicationEventId: openingCommunication!.eventId,
+        allowQuarantinedAgentIds: new Set([child!.id]),
+      });
+      store.updateAgentCreationOperation(creationOperation.id, { status: "completed", lastError: null });
+      deletingAgentIds.delete(child!.id);
+    } catch (error) {
+      store.updateAgentCreationOperation(creationOperation.id, {
+        lastError: error instanceof Error ? error.message : "managed Agent projection recovery failed",
+      });
+      return reply.code(202).send({
+        committed: true,
+        recovering: true,
+        operationId: creationOperation.id,
+        ...(store.getAgentCreationOperation(creationOperation.id)?.result as Record<string, unknown>),
+      });
+    }
     const openingRequest = coordinationV3.getRequest(coordinated!.requestIds[0]!);
     const conversationIds = openingRequest?.conversationId
       ? [openingRequest.conversationId]
       : [];
-    publishCoordinationV3Changed(manager.id, { conversationIds });
-    publishCoordinationV3Changed(child!.id, { conversationIds });
-    notifyScheduler();
+    try {
+      publishCoordinationV3Changed(manager.id, { conversationIds });
+      publishCoordinationV3Changed(child!.id, { conversationIds });
+      notifyScheduler();
+    } catch { /* durable managed creation remains authoritative */ }
     return {
       agent: child!, requestId: coordinated!.requestIds[0], joinId: coordinated!.joinId, replayed: false,
       executionDirective: coordinated!.joinId ? "The visible managed Agent and tracked opening assignment now exist. End this turn unless independent work remains; the Join will reactivate you." : undefined,
     };
+    } finally {
+      releaseManagedCreationLease();
+    }
   });
 
   app.post<{
@@ -253,7 +432,8 @@ export function registerAgentCoordinationRoutes(
     if (body.lifetime !== undefined) {
       if (!body.lifetime || typeof body.lifetime !== "object" || Array.isArray(body.lifetime) ||
           (body.lifetime.kind !== "deadline" && body.lifetime.kind !== "indefinite") ||
-          (body.lifetime.kind === "deadline" && (typeof body.lifetime.at !== "string" || !body.lifetime.at.trim()))) {
+          (body.lifetime.kind === "deadline" && (typeof body.lifetime.at !== "string" || !body.lifetime.at.trim() ||
+            !Number.isFinite(Date.parse(body.lifetime.at))))) {
         return reply.code(400).send({ error: "lifetime must be indefinite or a deadline with an ISO at timestamp" });
       }
       const allowedLifetime = body.lifetime.kind === "deadline" ? ["kind", "at"] : ["kind"];
@@ -282,12 +462,15 @@ export function registerAgentCoordinationRoutes(
       )) {
         return reply.code(400).send({ error: "recoveryOfRequestId must contain 1 to 200 characters" });
       }
-      if (!candidate.lifetime || typeof candidate.lifetime !== "object" || Array.isArray(candidate.lifetime)) continue;
+      if (!candidate.lifetime || typeof candidate.lifetime !== "object" || Array.isArray(candidate.lifetime)) {
+        return reply.code(400).send({ error: "each request requires an explicit lifetime object" });
+      }
       const lifetime = candidate.lifetime as RequestLifetime & Record<string, unknown>;
       if (lifetime.kind !== "deadline" && lifetime.kind !== "indefinite") {
         return reply.code(400).send({ error: "request lifetime kind must be deadline or indefinite" });
       }
-      if (lifetime.kind === "deadline" && (typeof lifetime.at !== "string" || !lifetime.at.trim())) {
+      if (lifetime.kind === "deadline" && (typeof lifetime.at !== "string" || !lifetime.at.trim() ||
+          !Number.isFinite(Date.parse(lifetime.at)))) {
         return reply.code(400).send({ error: "deadline request lifetime requires at" });
       }
       const allowedLifetime = lifetime.kind === "deadline" ? ["kind", "at"] : ["kind"];
@@ -307,12 +490,23 @@ export function registerAgentCoordinationRoutes(
         return reply.code(400).send({ error: `unknown join field(s): ${unknownJoin.join(", ")}${hint}` });
       }
       if ((body.join.id !== undefined && typeof body.join.id !== "string") ||
-          (body.join.deadlineAt !== undefined && typeof body.join.deadlineAt !== "string") ||
+          (body.join.deadlineAt !== undefined && (typeof body.join.deadlineAt !== "string" ||
+            !body.join.deadlineAt.trim() || !Number.isFinite(Date.parse(body.join.deadlineAt)))) ||
           (body.join.quorum !== undefined && typeof body.join.quorum !== "number") ||
           (body.join.wakePolicy !== undefined && !["each_result", "final_only"].includes(body.join.wakePolicy)) ||
           (body.join.requestIds !== undefined && !Array.isArray(body.join.requestIds)) ||
           (body.join.satisfyingOutcomes !== undefined && !Array.isArray(body.join.satisfyingOutcomes))) {
         return reply.code(400).send({ error: "join fields do not match the published coordinate schema" });
+      }
+      if (body.join.mode !== undefined && !["all", "any", "quorum"].includes(body.join.mode)) {
+        return reply.code(400).send({ error: "join mode must be all, any, or quorum" });
+      }
+      if (body.join.requestIds?.some((id) => typeof id !== "string") ||
+          body.join.satisfyingOutcomes?.some((state) => typeof state !== "string" || ![
+            "open", "in_progress", "waiting_dependency", "awaiting_answer", "completed", "blocked",
+            "failed", "cancelled", "superseded", "recipient_unavailable", "outcome_unknown", "expired",
+          ].includes(state))) {
+        return reply.code(400).send({ error: "join requestIds and satisfyingOutcomes contain invalid values" });
       }
     }
     const commonDelegations = (body.delegations ?? (hasSingleDelegation ? [{
@@ -358,6 +552,10 @@ export function registerAgentCoordinationRoutes(
     if (!capability.conversationId || author.conversationId !== capability.conversationId) {
       return reply.code(409).send({ error: "coordination requires an active Team Chat scope" });
     }
+    if (deletingProjectIds.has(author.projectId) || deletingConversationIds.has(capability.conversationId) ||
+        deletingAgentIds.has(author.id)) {
+      return reply.code(409).send({ error: "coordination participants are being deleted" });
+    }
     const normalized: Array<{ requestId: string; recoveryOfRequestId?: string; recipientAgentId: string; text: string; lifetime: RequestLifetime }> = [];
     for (let requestIndex = 0; requestIndex < requests.length; requestIndex += 1) {
       const candidate = requests[requestIndex]!;
@@ -392,8 +590,24 @@ export function registerAgentCoordinationRoutes(
         existingJoinRequestIds.some((requestId) => typeof requestId !== "string" || !requestId.trim())) {
       return reply.code(400).send({ error: "join requestIds must contain 1 to 100 unique request IDs" });
     }
+    const leasedAgentIds = [...new Set([author.id, ...normalized.map((item) => item.recipientAgentId)])];
+    const releaseDeliveryLease = leaseConversationDelivery(
+      conversationDeliveryLeases,
+      agentDeliveryLeases,
+      capability.conversationId,
+      leasedAgentIds,
+    );
     let result;
     try {
+      const currentConversation = store.getConversation(capability.conversationId);
+      const currentParticipants = leasedAgentIds.map((agentId) => store.getAgent(agentId));
+      if (deletingProjectIds.has(author.projectId) || deletingConversationIds.has(capability.conversationId) ||
+          leasedAgentIds.some((agentId) => deletingAgentIds.has(agentId)) ||
+          !currentConversation || currentConversation.archived || currentConversation.projectId !== author.projectId ||
+          currentParticipants.some((agent) => !agent || agent.archived || agent.projectId !== author.projectId ||
+            agent.conversationId !== capability.conversationId)) {
+        return reply.code(409).send({ error: "coordination participants are no longer available" });
+      }
       const continuationRequestIds = join
         ? coordinationV3.requestIdsAttachedToRun(capability.runId, author.id).filter((requestId) => {
             const attached = coordinationV3.getRequest(requestId);
@@ -439,6 +653,8 @@ export function registerAgentCoordinationRoutes(
       });
     } catch (error) {
       return reply.code(409).send({ error: error instanceof Error ? error.message : "coordination failed" });
+    } finally {
+      releaseDeliveryLease();
     }
 
     if (capability.conversationId) {
@@ -477,11 +693,13 @@ export function registerAgentCoordinationRoutes(
       const changedRequest = coordinationV3.getRequest(requestId);
       return changedRequest?.conversationId ? [changedRequest.conversationId] : [];
     }))];
-    publishCoordinationV3Changed(author.id, { conversationIds });
-    for (const item of normalized) {
-      publishCoordinationV3Changed(item.recipientAgentId, { conversationIds });
-    }
-    notifyScheduler();
+    try {
+      publishCoordinationV3Changed(author.id, { conversationIds });
+      for (const item of normalized) {
+        publishCoordinationV3Changed(item.recipientAgentId, { conversationIds });
+      }
+      notifyScheduler();
+    } catch { /* durable Requests and Join remain authoritative */ }
     const requestDeliveries = result.requestIds.flatMap((requestId) => {
       const delivery = coordinationV3.requestDelivery(requestId);
       return delivery ? [delivery] : [];
