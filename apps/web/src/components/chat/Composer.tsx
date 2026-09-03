@@ -32,9 +32,10 @@ import { removeHandle } from "./Composer.helpers";
 import {
   activeComposerMention,
   clampComposerMenuIndex,
+  composerSupportsRoutingDestinations,
   hasComposerDestination,
   NEW_AGENT_DESTINATION_HANDLE,
-  normalizeExclusiveNewAgentDestination,
+  normalizeExclusiveNewAgentDestinationForMode,
   prependComposerDestination,
   removeComposerDestinations,
   removeComposerDestinationsAroundSelection,
@@ -376,7 +377,10 @@ export function Composer({
     () => [...new Set([...(mentionHandles ?? []), "broadcast", "everyone"])],
     [mentionHandles],
   );
-  const normalizedDestinationDraft = normalizeExclusiveNewAgentDestination(
+  const routingDestinationsEnabled =
+    composerSupportsRoutingDestinations(destinationMode);
+  const normalizedDestinationDraft = normalizeExclusiveNewAgentDestinationForMode(
+    destinationMode,
     text,
     exclusiveDestinationHandles,
   );
@@ -385,10 +389,12 @@ export function Composer({
       update(normalizedDestinationDraft.text);
     }
   }, [normalizedDestinationDraft.text, text, update]);
-  const newAgentSelected = hasComposerDestination(
-    normalizedDestinationDraft.text,
-    NEW_AGENT_DESTINATION_HANDLE,
-  );
+  const newAgentSelected =
+    routingDestinationsEnabled &&
+    hasComposerDestination(
+      normalizedDestinationDraft.text,
+      NEW_AGENT_DESTINATION_HANDLE,
+    );
   const visibleSubmissionText = newAgentSelected
     ? singleComposerDestination(
         normalizedDestinationDraft.text,
@@ -435,9 +441,9 @@ export function Composer({
     }
     const tokens: ComposerMentionToken[] = [];
     for (const token of messageTagTokens(text)) {
-      const specialTitle = SPECIAL_MENTION_TITLES.get(
-        token.handle.toLocaleLowerCase(),
-      );
+      const specialTitle = routingDestinationsEnabled
+        ? SPECIAL_MENTION_TITLES.get(token.handle.toLocaleLowerCase())
+        : undefined;
       if (specialTitle) {
         tokens.push({
           start: token.start,
@@ -463,7 +469,7 @@ export function Composer({
       });
     }
     return tokens;
-  }, [knownMentionBindings, mentionBindings, text]);
+  }, [knownMentionBindings, mentionBindings, routingDestinationsEnabled, text]);
   const invalidMention = mentionTokens.find(token => !token.valid);
   const authoredProjectDestinationHandles = destinationMode === "project-chat"
     ? findMentionedHandles(visibleSubmissionText, routingMentionHandles).filter(
@@ -1206,14 +1212,17 @@ export function Composer({
       return;
     }
     if (sendingRef.current || !canSend) return;
-    const normalizedDraft = normalizeExclusiveNewAgentDestination(
+    const normalizedDraft = normalizeExclusiveNewAgentDestinationForMode(
+      destinationMode,
       textRef.current,
       exclusiveDestinationHandles,
     ).text;
-    const safeNewAgentSelected = hasComposerDestination(
-      normalizedDraft,
-      NEW_AGENT_DESTINATION_HANDLE,
-    );
+    const safeNewAgentSelected =
+      routingDestinationsEnabled &&
+      hasComposerDestination(
+        normalizedDraft,
+        NEW_AGENT_DESTINATION_HANDLE,
+      );
     const safeVisibleText = safeNewAgentSelected
       ? singleComposerDestination(
           normalizedDraft,
@@ -1575,7 +1584,8 @@ export function Composer({
             mentionedHandles={mentionedHandles}
             canSend={canSend}
             onTextChange={(value, nextCaret) => {
-              const normalized = normalizeExclusiveNewAgentDestination(
+              const normalized = normalizeExclusiveNewAgentDestinationForMode(
+                destinationMode,
                 value,
                 exclusiveDestinationHandles,
                 nextCaret,

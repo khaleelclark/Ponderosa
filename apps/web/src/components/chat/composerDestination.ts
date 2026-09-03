@@ -2,6 +2,19 @@ import { messageTagTokens } from "@ponderosa/core";
 
 export const NEW_AGENT_DESTINATION_HANDLE = "new-agent";
 
+export type ComposerDestinationMode =
+  | "project-chat"
+  | "fixed"
+  | "target-required";
+
+export function composerSupportsRoutingDestinations(
+  destinationMode: ComposerDestinationMode | undefined,
+): boolean {
+  return (
+    destinationMode === "project-chat" || destinationMode === "target-required"
+  );
+}
+
 export function activeComposerMention(
   text: string,
 ): { handlePrefix: string; start: number } | undefined {
@@ -118,6 +131,21 @@ export function normalizeExclusiveNewAgentDestination(
     text: normalized.text.slice(leadingSpace),
     caret: Math.max(0, normalized.start - leadingSpace),
   };
+}
+
+export function normalizeExclusiveNewAgentDestinationForMode(
+  destinationMode: ComposerDestinationMode | undefined,
+  text: string,
+  existingHandles: readonly string[],
+  caret?: number,
+): { text: string; caret: number } {
+  if (!composerSupportsRoutingDestinations(destinationMode)) {
+    return {
+      text,
+      caret: Math.max(0, Math.min(caret ?? text.length, text.length)),
+    };
+  }
+  return normalizeExclusiveNewAgentDestination(text, existingHandles, caret);
 }
 
 export function singleComposerDestination(

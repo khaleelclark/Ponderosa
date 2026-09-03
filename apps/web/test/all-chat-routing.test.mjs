@@ -7,8 +7,10 @@ import {
 import {
   activeComposerMention,
   clampComposerMenuIndex,
+  composerSupportsRoutingDestinations,
   hasComposerDestination,
   normalizeExclusiveNewAgentDestination,
+  normalizeExclusiveNewAgentDestinationForMode,
   prependComposerDestination,
   removeComposerDestinations,
   removeComposerDestinationsAroundSelection,
@@ -142,6 +144,43 @@ test("typed and pasted destinations keep only the last selected routing mode", (
     ),
     { text: "ask #Bryce-Canyon now", caret: 21 },
   );
+});
+
+test("fixed Agent composers preserve routing-looking prose exactly", () => {
+  const examples = [
+    "Compare #new-agent and #broadcast semantics.",
+    "Compare #broadcast and #new-agent semantics.",
+    "#new-agent notes for #everyone",
+  ];
+  for (const text of examples) {
+    assert.deepEqual(
+      normalizeExclusiveNewAgentDestinationForMode(
+        "fixed",
+        text,
+        ["broadcast", "everyone"],
+      ),
+      { text, caret: text.length },
+    );
+  }
+});
+
+test("new Agent routing is enabled only for selectable destination modes", () => {
+  const text = "#broadcast then #new-agent";
+  const handles = ["broadcast", "everyone"];
+  for (const mode of ["project-chat", "target-required"]) {
+    assert.equal(composerSupportsRoutingDestinations(mode), true);
+    assert.equal(
+      normalizeExclusiveNewAgentDestinationForMode(mode, text, handles).text,
+      "then #new-agent",
+    );
+  }
+  for (const mode of ["fixed", undefined]) {
+    assert.equal(composerSupportsRoutingDestinations(mode), false);
+    assert.equal(
+      normalizeExclusiveNewAgentDestinationForMode(mode, text, handles).text,
+      text,
+    );
+  }
 });
 
 test("a destination inserted before later text wins at its caret", () => {
