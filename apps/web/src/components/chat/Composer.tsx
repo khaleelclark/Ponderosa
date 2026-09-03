@@ -34,6 +34,7 @@ import {
   clampComposerMenuIndex,
   hasComposerDestination,
   NEW_AGENT_DESTINATION_HANDLE,
+  normalizeExclusiveNewAgentDestination,
   prependComposerDestination,
   removeComposerDestinations,
   removeComposerDestinationsAroundSelection,
@@ -371,13 +372,29 @@ export function Composer({
     retryUpload: retryDraftUpload,
     uploadStates: draftUploadStates,
   } = draftAttachments;
-  const newAgentSelected = hasComposerDestination(
+  const exclusiveDestinationHandles = useMemo(
+    () => [...new Set([...(mentionHandles ?? []), "broadcast", "everyone"])],
+    [mentionHandles],
+  );
+  const normalizedDestinationDraft = normalizeExclusiveNewAgentDestination(
     text,
+    exclusiveDestinationHandles,
+  );
+  useEffect(() => {
+    if (normalizedDestinationDraft.text !== text) {
+      update(normalizedDestinationDraft.text);
+    }
+  }, [normalizedDestinationDraft.text, text, update]);
+  const newAgentSelected = hasComposerDestination(
+    normalizedDestinationDraft.text,
     NEW_AGENT_DESTINATION_HANDLE,
   );
   const visibleSubmissionText = newAgentSelected
-    ? singleComposerDestination(text, NEW_AGENT_DESTINATION_HANDLE)
-    : text;
+    ? singleComposerDestination(
+        normalizedDestinationDraft.text,
+        NEW_AGENT_DESTINATION_HANDLE,
+      )
+    : normalizedDestinationDraft.text;
   const composedText = composerSubmissionText(visibleSubmissionText, pastedText);
   const renderedDefaultDestination = newAgentSelected
     ? undefined
@@ -1189,8 +1206,50 @@ export function Composer({
       return;
     }
     if (sendingRef.current || !canSend) return;
+    const normalizedDraft = normalizeExclusiveNewAgentDestination(
+      textRef.current,
+      exclusiveDestinationHandles,
+    ).text;
+    const safeNewAgentSelected = hasComposerDestination(
+      normalizedDraft,
+      NEW_AGENT_DESTINATION_HANDLE,
+    );
+    const safeVisibleText = safeNewAgentSelected
+      ? singleComposerDestination(
+          normalizedDraft,
+          NEW_AGENT_DESTINATION_HANDLE,
+        )
+      : normalizedDraft;
+    const safeComposedText = composerSubmissionText(
+      safeVisibleText,
+      pastedTextRef.current,
+    );
+    const safeDefaultDestination = safeNewAgentSelected
+      ? undefined
+      : destinationMode === "target-required"
+        ? defaultDestination
+        : activeDefaultDestination;
+    const safeSubmissionText =
+      (destinationMode === "project-chat" || destinationMode === "target-required") &&
+      safeDefaultDestination
+        ? prependComposerDestination(
+            safeComposedText,
+            safeDefaultDestination.handle,
+          )
+        : safeComposedText;
+    const safeRoutingText = safeDefaultDestination
+      ? prependComposerDestination(
+          safeVisibleText,
+          safeDefaultDestination.handle,
+        )
+      : safeVisibleText;
+    const safeMentionedHandles = findMentionedHandles(
+      safeRoutingText,
+      routingMentionHandles,
+    );
+    if (normalizedDraft !== textRef.current) update(normalizedDraft);
     const commandSubmission = providerCommandInput(
-      submissionText,
+      safeSubmissionText,
       commandTargetHandle,
     );
     const slash =
@@ -1210,8 +1269,8 @@ export function Composer({
     sendingRef.current = true;
     setSending(true);
     setSendError(undefined);
-    const submittedText = text;
-    const submittedPastedText = pastedText;
+    const submittedText = normalizedDraft;
+    const submittedPastedText = pastedTextRef.current;
     const submittedUserMutationGeneration =
       userDraftMutationGeneration.current;
     const stagedIds = files
@@ -1222,15 +1281,19 @@ export function Composer({
           !locallyRemovedDraftAttachmentIds.current.has(id),
       );
     const mentionedAgentsById = new Map<string, AgentMentionBindingDto>();
-    if (renderedDefaultDestination?.binding) {
+    if (safeDefaultDestination?.binding) {
       mentionedAgentsById.set(
-        renderedDefaultDestination.binding.agentId,
-        renderedDefaultDestination.binding,
+        safeDefaultDestination.binding.agentId,
+        safeDefaultDestination.binding,
       );
     }
-    const structurallyAuthoredHandles = destinationMode === "target-required"
-      ? targetRequiredHandles
-      : authoredProjectDestinationHandles;
+    const structurallyAuthoredHandles =
+      destinationMode === "target-required" || destinationMode === "project-chat"
+        ? safeMentionedHandles.filter(
+            handle => !["broadcast", "everyone", NEW_AGENT_DESTINATION_HANDLE]
+              .includes(handle.toLocaleLowerCase()),
+          )
+        : [];
     for (const handle of structurallyAuthoredHandles) {
       const matchingBindings = (mentionBindings ?? []).filter((candidate) =>
         candidate.handle.toLocaleLowerCase() === handle.toLocaleLowerCase());
@@ -1240,8 +1303,8 @@ export function Composer({
       }
     }
     const mentionedAgents = [...mentionedAgentsById.values()];
-    const submissionContext = mentionedAgents.length > 0 || newAgentSelected
-      ? { mentionedAgents, newAgentRequested: newAgentSelected }
+    const submissionContext = mentionedAgents.length > 0 || safeNewAgentSelected
+      ? { mentionedAgents, newAgentRequested: safeNewAgentSelected }
       : undefined;
     const runtimeCommandSubmission =
       slash?.command.invocation === "runtime";
@@ -1249,7 +1312,7 @@ export function Composer({
       runtimeCommandSubmission
         ? onCommand!(slash.command, slash.argumentsText)
         : handler(
-            submissionText,
+            safeSubmissionText,
             files,
             stagedIds,
             conversationDraftId ? draftOwnerId : undefined,
@@ -1512,11 +1575,24 @@ export function Composer({
             mentionedHandles={mentionedHandles}
             canSend={canSend}
             onTextChange={(value, nextCaret) => {
-              update(value);
+              const normalized = normalizeExclusiveNewAgentDestination(
+                value,
+                exclusiveDestinationHandles,
+                nextCaret,
+              );
+              update(normalized.text);
               setSendError(undefined);
-              setCaret(nextCaret);
+              setCaret(normalized.caret);
               setHighlighted(0);
               setSuppressMenu(false);
+              if (normalized.text !== value) {
+                requestAnimationFrame(() => {
+                  inputRef.current?.setSelectionOffsets(
+                    normalized.caret,
+                    normalized.caret,
+                  );
+                });
+              }
             }}
             onFiles={addFiles}
             onPastedText={value => {

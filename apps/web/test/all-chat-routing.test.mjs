@@ -8,6 +8,7 @@ import {
   activeComposerMention,
   clampComposerMenuIndex,
   hasComposerDestination,
+  normalizeExclusiveNewAgentDestination,
   prependComposerDestination,
   removeComposerDestinations,
   removeComposerDestinationsAroundSelection,
@@ -122,6 +123,36 @@ test("new Agent toolbar selection replaces every other destination", () => {
       "new-agent",
     ),
     "#new-agent ask now",
+  );
+});
+
+test("typed and pasted destinations keep only the last selected routing mode", () => {
+  assert.deepEqual(
+    normalizeExclusiveNewAgentDestination(
+      "#Bryce-Canyon ask #broadcast then #new-agent ",
+      ["Bryce-Canyon", "broadcast", "everyone", "new-agent"],
+      46,
+    ),
+    { text: "ask then #new-agent ", caret: 20 },
+  );
+  assert.deepEqual(
+    normalizeExclusiveNewAgentDestination(
+      "#new-agent ask #Bryce-Canyon now",
+      ["Bryce-Canyon", "broadcast", "everyone"],
+    ),
+    { text: "ask #Bryce-Canyon now", caret: 21 },
+  );
+});
+
+test("a destination inserted before later text wins at its caret", () => {
+  const text = "#new-agent ask #Bryce-Canyon later";
+  assert.deepEqual(
+    normalizeExclusiveNewAgentDestination(
+      text,
+      ["Bryce-Canyon"],
+      "#new-agent".length,
+    ),
+    { text: "#new-agent ask later", caret: 10 },
   );
 });
 

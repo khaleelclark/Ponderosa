@@ -75,6 +75,51 @@ export function removeComposerDestinationsAroundSelection(
   };
 }
 
+export function normalizeExclusiveNewAgentDestination(
+  text: string,
+  existingHandles: readonly string[],
+  caret?: number,
+): { text: string; caret: number } {
+  const conflictingHandles = existingHandles.filter(
+    handle =>
+      handle.toLocaleLowerCase() !== NEW_AGENT_DESTINATION_HANDLE,
+  );
+  const normalizedExisting = new Set(
+    conflictingHandles.map(handle => handle.toLocaleLowerCase()),
+  );
+  const destinations = messageTagTokens(text).filter(token => {
+    const handle = token.handle.toLocaleLowerCase();
+    return handle === NEW_AGENT_DESTINATION_HANDLE || normalizedExisting.has(handle);
+  });
+  const hasNewAgent = destinations.some(
+    token => token.handle.toLocaleLowerCase() === NEW_AGENT_DESTINATION_HANDLE,
+  );
+  const hasExisting = destinations.some(
+    token => token.handle.toLocaleLowerCase() !== NEW_AGENT_DESTINATION_HANDLE,
+  );
+  const selection = Math.max(0, Math.min(caret ?? text.length, text.length));
+  if (!hasNewAgent || !hasExisting) return { text, caret: selection };
+
+  const selected = caret === undefined
+    ? destinations.at(-1)
+    : [...destinations].reverse().find(
+        token => token.start <= selection && selection <= token.end + 1,
+      ) ?? destinations.at(-1);
+  const keepNewAgent =
+    selected?.handle.toLocaleLowerCase() === NEW_AGENT_DESTINATION_HANDLE;
+  const normalized = removeComposerDestinationsAroundSelection(
+    text,
+    selection,
+    selection,
+    keepNewAgent ? conflictingHandles : [NEW_AGENT_DESTINATION_HANDLE],
+  );
+  const leadingSpace = /^\s+/u.exec(normalized.text)?.[0].length ?? 0;
+  return {
+    text: normalized.text.slice(leadingSpace),
+    caret: Math.max(0, normalized.start - leadingSpace),
+  };
+}
+
 export function singleComposerDestination(
   text: string,
   handle: string,

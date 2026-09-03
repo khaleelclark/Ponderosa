@@ -5,6 +5,7 @@ import type {
   AgentDto,
   AgentHealthProjectionDto,
   ConversationDetailDto,
+  CreateConversationRequest,
   ModelOption,
   TeamDirectoryDto,
   UpdateConversationRequest,
@@ -16,6 +17,45 @@ import { applyCollectionPageHeaders, collectionGenerationKey, sendCollectionPage
 interface EngineRegistration {
   adapter: Adapter;
 }
+
+const CONVERSATION_CREATE_FIELDS = new Set([
+  "title",
+  "defaultEngine",
+  "defaultModel",
+  "defaultEffort",
+]);
+const CONVERSATION_PATCH_FIELDS = new Set([
+  ...CONVERSATION_CREATE_FIELDS,
+  "archived",
+]);
+
+export function conversationMutationBodyError(
+  body: unknown,
+  mutation: "create" | "patch",
+): string | undefined {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return "request body must be an object";
+  }
+  const entries = Object.entries(body);
+  if (entries.length === 0) return "request body must not be empty";
+  const allowed = mutation === "create"
+    ? CONVERSATION_CREATE_FIELDS
+    : CONVERSATION_PATCH_FIELDS;
+  for (const [key, value] of entries) {
+    if (!allowed.has(key)) return `unknown field: ${key}`;
+    if (key === "archived") {
+      if (typeof value !== "boolean") return "archived must be a boolean";
+      continue;
+    }
+    const nullableRuntimeField =
+      mutation === "patch" && key !== "title" && value === null;
+    if (!nullableRuntimeField && typeof value !== "string") {
+      return `${key} must be a string${mutation === "patch" && key !== "title" ? " or null" : ""}`;
+    }
+  }
+  return undefined;
+}
+
 export interface ConversationRouteDependencies {
   store: AgentStore;
   workspace: WorkspaceStore;
@@ -169,30 +209,33 @@ export function registerConversationRoutes(
 
   app.post<{
     Params: { id: string };
-    Body: { title?: string; defaultEngine?: string; defaultModel?: string; defaultEffort?: string };
+    Body: unknown;
   }>("/api/projects/:id/conversations", async (request, reply) => {
+    const bodyError = conversationMutationBodyError(request.body, "create");
+    if (bodyError) return reply.code(400).send({ error: bodyError });
+    const body = request.body as CreateConversationRequest;
     const project = store.getProject(request.params.id);
     if (!project) return reply.code(404).send({ error: "project not found" });
-    const title = request.body?.title?.trim() || "New Chat";
-    if (request.body.defaultEngine && !engines.has(request.body.defaultEngine)) {
+    const title = body.title?.trim() || "New Chat";
+    if (body.defaultEngine && !engines.has(body.defaultEngine)) {
       return reply.code(400).send({ error: "unknown engine" });
     }
-    if (!request.body.defaultEngine && (request.body.defaultModel || request.body.defaultEffort)) {
+    if (!body.defaultEngine && (body.defaultModel || body.defaultEffort)) {
       return reply.code(400).send({ error: "default engine is required when selecting a model or effort" });
     }
-    const defaultEngine = request.body.defaultEngine ?? project.defaultEngine;
+    const defaultEngine = body.defaultEngine ?? project.defaultEngine;
     const registration = engines.get(defaultEngine);
     if (!registration) return reply.code(400).send({ error: "unknown engine" });
     const projectModelOptions = cachedModelOptions(registration.adapter, project.id);
     const selectionError = runtimeSelectionError(
       registration.adapter,
-      request.body.defaultModel,
-      request.body.defaultEffort,
+      body.defaultModel,
+      body.defaultEffort,
       projectModelOptions,
     );
     if (selectionError) return reply.code(400).send({ error: selectionError });
     const resolved = concreteRuntimeSelection(registration.adapter, [
-      { model: request.body.defaultModel, effort: request.body.defaultEffort },
+      { model: body.defaultModel, effort: body.defaultEffort },
       project.defaultEngine === defaultEngine ? { model: project.defaultModel, effort: project.defaultEffort } : undefined,
       workspace.getPreferences().engineDefaults?.[defaultEngine],
     ], projectModelOptions);
@@ -230,13 +273,13 @@ export function registerConversationRoutes(
 
   app.patch<{
     Params: { id: string };
-    Body: UpdateConversationRequest;
+    Body: unknown;
   }>("/api/conversations/:id", async (request, reply) => {
+    const bodyError = conversationMutationBodyError(request.body, "patch");
+    if (bodyError) return reply.code(400).send({ error: bodyError });
+    const body = request.body as UpdateConversationRequest;
     const current = store.getConversation(request.params.id);
     if (!current) return reply.code(404).send({ error: "conversation not found" });
-    if (request.body?.archived !== undefined && typeof request.body.archived !== "boolean") {
-      return reply.code(400).send({ error: "archived must be a boolean" });
-    }
     if (deletingConversationIds.has(current.id)) {
       return reply.code(409).send({ error: "Chat deletion is already in progress" });
     }
@@ -245,17 +288,17 @@ export function registerConversationRoutes(
         error: "Wait for Agent creation to finish before changing this Chat",
       });
     }
-    if (request.body?.archived === true && (conversationDeliveryLeases.get(current.id) ?? 0) > 0) {
+    if (body.archived === true && (conversationDeliveryLeases.get(current.id) ?? 0) > 0) {
       return reply.code(409).send({
         error: "Wait for message delivery to finish before archiving this Chat",
       });
     }
-    if (request.body?.defaultEngine && !engines.has(request.body.defaultEngine)) {
+    if (body.defaultEngine && !engines.has(body.defaultEngine)) {
       return reply.code(400).send({ error: "unknown engine" });
     }
-    const defaultEngine = request.body.defaultEngine === null ? undefined : request.body.defaultEngine ?? current.defaultEngine;
-    const defaultModel = request.body.defaultModel === null ? undefined : request.body.defaultModel ?? current.defaultModel;
-    const defaultEffort = request.body.defaultEffort === null ? undefined : request.body.defaultEffort ?? current.defaultEffort;
+    const defaultEngine = body.defaultEngine === null ? undefined : body.defaultEngine ?? current.defaultEngine;
+    const defaultModel = body.defaultModel === null ? undefined : body.defaultModel ?? current.defaultModel;
+    const defaultEffort = body.defaultEffort === null ? undefined : body.defaultEffort ?? current.defaultEffort;
     if (!defaultEngine && (defaultModel || defaultEffort)) {
       return reply.code(400).send({ error: "default engine is required when selecting a model or effort" });
     }
@@ -270,9 +313,9 @@ export function registerConversationRoutes(
       );
       if (selectionError) return reply.code(400).send({ error: selectionError });
     }
-    const conversation = store.updateConversation(request.params.id, request.body ?? {});
+    const conversation = store.updateConversation(request.params.id, body);
     if (conversation) {
-      if (request.body?.archived !== undefined) await refreshTriggers();
+      if (body.archived !== undefined) await refreshTriggers();
       appendWorkspace({ type: "conversation_changed", projectId: conversation.projectId, conversationId: conversation.id, action: "updated" });
     }
     return conversation;

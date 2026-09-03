@@ -348,7 +348,7 @@ function ChatCreateForm({
     });
   }, [initialProjectId, projects]);
   const create = useMutation({
-    mutationFn: () => api.createConversation(projectId, {}),
+    mutationFn: () => api.createConversation(projectId, { title: "New Chat" }),
     onSuccess: async conversation => {
       await api.markProjectUsed(projectId, conversation.id);
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.project(projectId) });
