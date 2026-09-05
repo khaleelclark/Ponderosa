@@ -141,7 +141,21 @@ export class AssetAuthority {
       this.db.exec("COMMIT");
     } catch (error) { if (this.db.inTransaction) this.db.exec("ROLLBACK"); throw this.mapped(error); }
   }
-  beginDelete(assetId: string, projectId: string, agentId: string): void { try { this.db.exec("BEGIN IMMEDIATE"); this.db.prepare("INSERT OR REPLACE INTO asset_deletions VALUES (?,?,?)").run(assetId, projectId, agentId); this.db.exec("COMMIT"); } catch (error) { if (this.db.inTransaction) this.db.exec("ROLLBACK"); throw this.mapped(error); } }
+  beginDelete(assetId: string, projectId: string, agentId: string): void {
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      const runtimeOwner = this.db.prepare(`
+        SELECT 1 FROM runtime_attachment_associations
+        WHERE asset_id=? AND project_id=? AND agent_id=?
+      `).get(assetId, projectId, agentId);
+      if (runtimeOwner) throw new AssetError(409, "sent assets cannot be deleted");
+      this.db.prepare("INSERT OR REPLACE INTO asset_deletions VALUES (?,?,?)").run(assetId, projectId, agentId);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      if (this.db.inTransaction) this.db.exec("ROLLBACK");
+      throw this.mapped(error);
+    }
+  }
   finishDelete(assetId: string): void { try { this.db.exec("BEGIN IMMEDIATE"); this.db.prepare("DELETE FROM asset_committed WHERE asset_id=?").run(assetId); this.db.exec("COMMIT"); } catch (error) { if (this.db.inTransaction) this.db.exec("ROLLBACK"); throw this.mapped(error); } }
   removeCommitted(assetId: string): void { this.finishDelete(assetId); }
   recordAudit(file: string, projectId: string, agentId: string, record: Record<string, unknown>): void {

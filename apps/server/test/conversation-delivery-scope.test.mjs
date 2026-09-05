@@ -12,6 +12,7 @@ import {
   readManagedArtifactContent,
 } from "@ponderosa/agents";
 import { AssetStore } from "../dist/assets.js";
+import { AssetAuthority } from "../dist/asset-authority.js";
 import {
   conversationDeliveryRequestFingerprint,
   registerConversationDeliveryRoutes,
@@ -99,6 +100,33 @@ test("delivery fingerprints ignore JSON object insertion order", () => {
       recipientAttachments: [{ attachmentIds: ["asset-a"], agentId: "agent-a" }],
     }),
   );
+});
+
+test("runtime-owned attachments cannot be deleted before projection associates them", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-runtime-attachment-delete-"));
+  const authority = new AssetAuthority(dataDir);
+  t.after(async () => {
+    authority.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const projectId = randomUUID();
+  const agentId = randomUUID();
+  const attachmentId = randomUUID();
+  const communicationId = randomUUID();
+  authority.reserveRuntimeCommunication(communicationId, [{
+    communicationId,
+    projectId,
+    agentId,
+    attachmentId,
+    contentHash: "a".repeat(64),
+    byteLength: 1,
+  }]);
+
+  assert.throws(
+    () => authority.beginDelete(attachmentId, projectId, agentId),
+    /sent assets cannot be deleted/,
+  );
+  assert.deepEqual([...authority.runtimeAssociatedAssetIds(projectId, agentId)], [attachmentId]);
 });
 
 test("new Agents remain quarantined while opening assets are staged", async (t) => {
