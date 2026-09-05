@@ -589,6 +589,7 @@ function CreateFormContent({
   onCancel,
   onNavigate,
   onDirty,
+  onPendingChange,
   anchoredActions = false,
 }: {
   route: Extract<Route, { kind: "create" }>;
@@ -598,6 +599,7 @@ function CreateFormContent({
   onCancel(): void;
   onNavigate(route: Route): void;
   onDirty?(): void;
+  onPendingChange?(pending: boolean): void;
   anchoredActions?: boolean;
 }): JSX.Element {
   const queryClient = useQueryClient();
@@ -636,6 +638,7 @@ function CreateFormContent({
       fixedConversationId={route.conversationId}
       initialManagerAgentId={route.managerAgentId}
       stickyActions={anchoredActions}
+      onPendingChange={onPendingChange}
       onCancel={onCancel}
       onCreated={(projectId, agent) => {
         refresh("agent");
@@ -693,16 +696,19 @@ export function ContextualCreateDialog({
   const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
   const [dirty, setDirty] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [pending, setPending] = useState(false);
   useEffect(() => {
     if (request) {
       setDirty(false);
       setConfirmDiscard(false);
+      setPending(false);
     }
   }, [request?.resource, request?.projectId, request?.conversationId, request?.agentId, request?.managerAgentId]);
   const route = request
     ? { kind: "create" as const, ...request, surface: "workspace" as const }
     : undefined;
   const close = () => {
+    if (pending) return;
     if (dirty) {
       setConfirmDiscard(true);
       return;
@@ -716,6 +722,7 @@ export function ContextualCreateDialog({
       <Dialog
         open={Boolean(route)}
         onClose={close}
+        disableEscapeKeyDown={pending}
         fullScreen={fullScreen}
         fullWidth
         maxWidth={route?.resource === "agent" || route?.resource === "trigger" ? "md" : "sm"}
@@ -742,6 +749,7 @@ export function ContextualCreateDialog({
           </DialogTitle>
           <IconButton
             aria-label={`Close ${title}`}
+            disabled={pending}
             onClick={close}
             sx={{ position: "absolute", right: 12, top: 12 }}
           >
@@ -766,6 +774,7 @@ export function ContextualCreateDialog({
               preferences={preferences}
               onCancel={close}
               onDirty={() => setDirty(true)}
+              onPendingChange={setPending}
               anchoredActions
               onNavigate={next => {
                 setDirty(false);

@@ -32,6 +32,13 @@ export function shouldIgnoreComposerKey(event: {
   return event.isComposing || event.keyCode === 229;
 }
 
+export function shouldAdoptHydratedDraft(
+  editorFocused: boolean,
+  locallyEdited: boolean,
+): boolean {
+  return !editorFocused && !locallyEdited;
+}
+
 export function matchingEngineCommands(
   commands: EngineCommand[],
   prefix: string,

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   eligibleAllChatTargets,
+  allChatSourceConversationId,
   parseAllChatReplyTarget,
 } from "../src/components/allChatRouting.js";
 import {
@@ -19,6 +20,7 @@ import {
 } from "../src/components/chat/composerDestination.js";
 import {
   shouldConsumeComposerKey,
+  shouldAdoptHydratedDraft,
   shouldIgnoreComposerKey,
   shouldSendComposerKey,
 } from "../src/components/chat/composerUtils.js";
@@ -49,6 +51,30 @@ test("locks later recipients to the first Agent's Chat", () => {
   assert.deepEqual(
     eligibleAllChatTargets([bryce, sameChat, otherChat], "chat-a"),
     [bryce, sameChat],
+  );
+});
+
+test("new Agent creation retains an Agent-authored message's source Chat", () => {
+  assert.equal(
+    allChatSourceConversationId(
+      { kind: "agent", agentId: "bryce", title: "Bryce Canyon" },
+      [bryce],
+    ),
+    "chat-a",
+  );
+  assert.equal(
+    allChatSourceConversationId(
+      { kind: "agent", agentId: "missing", title: "Deleted" },
+      [bryce],
+    ),
+    undefined,
+  );
+  assert.equal(
+    allChatSourceConversationId(
+      { kind: "project", conversationId: "chat-b", title: "Backend" },
+      [],
+    ),
+    "chat-b",
   );
 });
 
@@ -221,6 +247,12 @@ test("IME composition bypasses every composer keyboard shortcut", () => {
   }
   assert.equal(shouldIgnoreComposerKey({ isComposing: false, keyCode: 229 }), true);
   assert.equal(shouldIgnoreComposerKey({ isComposing: false, keyCode: 13 }), false);
+});
+
+test("late draft hydration never adopts bindings without their text", () => {
+  assert.equal(shouldAdoptHydratedDraft(false, false), true);
+  assert.equal(shouldAdoptHydratedDraft(true, false), false);
+  assert.equal(shouldAdoptHydratedDraft(false, true), false);
 });
 
 test("recognizes punctuation-wrapped destinations consistently", () => {

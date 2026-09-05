@@ -22,6 +22,21 @@ export const fileSelectionFingerprint = (files: readonly File[]) =>
 
 export type RecipientUploads<T> = Array<{ agentId: string; attachments: T[] }>;
 
+export function recipientActionSnapshot(
+  agentIds: Iterable<string>,
+  broadcastAttachmentOwnerAgentId?: string,
+) {
+  return {
+    targetAgentIds: [...new Set(agentIds)].sort(),
+    broadcastAttachmentOwnerAgentId,
+  };
+}
+
+export const recipientUploadCacheKey = (
+  scope: string,
+  agentIds: readonly string[],
+) => JSON.stringify([scope, agentIds]);
+
 export async function discardRecipientUploads<T>(
   recipients: RecipientUploads<T>,
   cleanup: (recipientId: string, item: T) => Promise<unknown>,

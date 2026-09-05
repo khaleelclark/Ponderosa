@@ -85,6 +85,7 @@ interface AllChatSubmissionPrepared {
 }
 import {
   ALL_CHAT_REPLY_TARGET_KEY,
+  allChatSourceConversationId,
   eligibleAllChatTargets,
   parseAllChatReplyTarget,
   type AllChatReplyTarget,
@@ -560,11 +561,13 @@ export function AllChatView({
       if (!activeProjectId) throw new Error("Select a message to establish a Project first");
       if (!body.trim() && files.length === 0)
         throw new Error("Message text or an attachment is required");
+      const selectedConversationId = allChatSourceConversationId(
+        selected?.source,
+        projectAgentsQuery.data ?? [],
+      );
       const fingerprint = JSON.stringify({
         activeProjectId,
-        selectedConversationId: selected && selected.source.kind !== "agent"
-          ? selected.source.conversationId
-          : undefined,
+        selectedConversationId,
         body,
         files: fileSelectionFingerprint(files),
         draftAttachmentIds,
@@ -600,13 +603,10 @@ export function AllChatView({
       if (recipientConversationIds.length > 1) {
         throw new Error("One message can address Agents from only one Chat");
       }
-      const selectedConversationId = selected && selected.source.kind !== "agent"
-        ? selected.source.conversationId
-        : undefined;
       const creationConversationId = recipientConversationIds[0] ?? selectedConversationId;
       const creationConversation = creationConversationId
         ? conversationsQuery.data?.find(candidate => candidate.id === creationConversationId)
-        : conversationsQuery.data?.find(candidate => !candidate.archived);
+        : undefined;
       if (recipientIds.length === 0 && !newAgentRequested) {
         throw new Error("Select at least one Agent or add #new-agent");
       }

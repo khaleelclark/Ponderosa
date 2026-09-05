@@ -10,7 +10,7 @@
     "build": "rsbuild build",
     "dev": "rsbuild dev",
     "preview": "rsbuild preview",
-    "test:built": "sh -c 'tmp=$(mktemp -d); trap \"rm -rf \\\"$tmp\\\"\" EXIT; tsc --module NodeNext --moduleResolution NodeNext --target ES2022 --skipLibCheck --outDir \"$tmp\" --rootDir . src/components/allChatRouting.ts src/components/idempotentAttempt.ts src/components/directDeliveryState.ts src/components/chat/composerDestination.ts src/components/chat/composerMentionBindings.ts src/components/chat/composerUtils.ts src/mentions.ts && ln -s \"$PWD/node_modules\" \"$tmp/node_modules\" && mkdir -p \"$tmp/test\" && cp test/*.test.mjs \"$tmp/test/\" && node --test \"$tmp\"/test/*.test.mjs'",
+    "test:built": "sh -c 'tmp=$(mktemp -d); trap \"rm -rf \\\"$tmp\\\"\" EXIT; tsc --module NodeNext --moduleResolution NodeNext --target ES2022 --skipLibCheck --outDir \"$tmp\" --rootDir . src/components/allChatRouting.ts src/components/idempotentAttempt.ts src/components/directDeliveryState.ts src/components/chat/composerDestination.ts src/components/chat/composerMentionBindings.ts src/components/chat/composerUtils.ts src/conversationRouting.ts src/mentions.ts && ln -s \"$PWD/node_modules\" \"$tmp/node_modules\" && mkdir -p \"$tmp/test\" && cp test/*.test.mjs \"$tmp/test/\" && node --test \"$tmp\"/test/*.test.mjs'",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

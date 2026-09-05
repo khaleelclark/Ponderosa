@@ -11,20 +11,32 @@ export function refreshedMentionBindings(
     messageTagTokens(text).map(token => token.handle.toLocaleLowerCase()),
   );
   const byId = new Map(known.map(binding => [binding.agentId, binding]));
-  const authoredOwners = new Map(
-    known.map(binding => [binding.handle.toLocaleLowerCase(), binding.agentId]),
-  );
+  const authoredOwners = new Map<string, Set<string>>();
+  for (const binding of known) {
+    for (const handle of [binding.handle, binding.currentHandle]) {
+      const normalized = handle.toLocaleLowerCase();
+      const owners = authoredOwners.get(normalized) ?? new Set<string>();
+      owners.add(binding.agentId);
+      authoredOwners.set(normalized, owners);
+    }
+  }
   for (const binding of current) {
     const existing = byId.get(binding.agentId);
     const matchingHandle = [binding.handle, binding.currentHandle]
       .map(handle => handle.toLocaleLowerCase())
       .find(handle => handles.has(handle));
+    const knownOwners = matchingHandle
+      ? authoredOwners.get(matchingHandle)
+      : undefined;
     if (
       matchingHandle &&
-      (!authoredOwners.has(matchingHandle) ||
-        authoredOwners.get(matchingHandle) === binding.agentId)
+      (!knownOwners ||
+        (knownOwners.size === 1 && knownOwners.has(binding.agentId)))
     ) {
-      byId.set(binding.agentId, binding);
+      byId.set(
+        binding.agentId,
+        existing ? { ...binding, handle: existing.handle } : binding,
+      );
     } else if (existing) {
       byId.set(binding.agentId, {
         ...existing,
@@ -45,9 +57,14 @@ export function resolvedMentionBinding(
   current: readonly AgentMentionBindingDto[],
 ): AgentMentionBindingDto | undefined {
   const normalized = handle.toLocaleLowerCase();
-  const saved = known.find(binding =>
-    binding.handle.toLocaleLowerCase() === normalized);
-  if (saved) return current.find(binding => binding.agentId === saved.agentId);
+  const savedAgentIds = new Set(known.flatMap(binding =>
+    binding.handle.toLocaleLowerCase() === normalized ||
+      binding.currentHandle.toLocaleLowerCase() === normalized
+      ? [binding.agentId]
+      : []));
+  if (savedAgentIds.size > 1) return undefined;
+  const savedAgentId = [...savedAgentIds][0];
+  if (savedAgentId) return current.find(binding => binding.agentId === savedAgentId);
   const matches = current.filter(binding =>
     binding.handle.toLocaleLowerCase() === normalized ||
     binding.currentHandle.toLocaleLowerCase() === normalized);

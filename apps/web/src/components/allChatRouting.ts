@@ -1,3 +1,5 @@
+import type { AgentDto, AllChatSourceDto } from "@ponderosa/core";
+
 export const ALL_CHAT_REPLY_TARGET_KEY = "messages:composer:reply-target";
 
 export type AllChatReplyTarget = {
@@ -35,4 +37,13 @@ export function eligibleAllChatTargets(
   return [...targets].filter(
     target => !conversationId || target.conversationId === conversationId,
   );
+}
+
+export function allChatSourceConversationId(
+  source: AllChatSourceDto | undefined,
+  agents: Iterable<Pick<AgentDto, "id" | "conversationId">>,
+): string | undefined {
+  if (!source) return undefined;
+  if (source.kind !== "agent") return source.conversationId;
+  return [...agents].find(agent => agent.id === source.agentId)?.conversationId;
 }

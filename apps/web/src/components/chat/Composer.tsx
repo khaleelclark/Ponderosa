@@ -70,6 +70,7 @@ import {
   matchingComposerCapabilities,
   matchingEngineCommands,
   providerSlashSubmission,
+  shouldAdoptHydratedDraft,
   shouldShowQueueControl,
 } from "./composerUtils";
 import {
@@ -727,18 +728,22 @@ export function Composer({
       } else {
         mergeRestoredDraftAttachments(restored);
       }
-      setKnownMentionBindings(draft.mentionBindings ?? []);
       unrestoredDraftAttachmentIds.current = [];
       draftRevision.current = draft.revision;
       const local = draftStorageKey
         ? (readChatState(draftStorageKey) ?? "")
         : "";
-      const focusedOrEdited =
-        inputRef.current?.isFocused() || draftLocallyEdited.current;
-      if (!focusedOrEdited) {
-        const nextText =
-          draft.revision === 0 && local && !draft.text ? local : draft.text;
+      const adoptDraft = shouldAdoptHydratedDraft(
+        inputRef.current?.isFocused() ?? false,
+        draftLocallyEdited.current,
+      );
+      if (adoptDraft) {
+        const restoreLocalText = draft.revision === 0 && local && !draft.text;
+        const nextText = restoreLocalText ? local : draft.text;
         replaceText(nextText);
+        setKnownMentionBindings(
+          restoreLocalText ? [] : (draft.mentionBindings ?? []),
+        );
         if (draftStorageKey) writeChatState(draftStorageKey, nextText);
       }
       draftReady.current = true;
@@ -753,13 +758,16 @@ export function Composer({
         unrestoredDraftAttachmentIds.current = draft.attachmentIds.filter(
           id => !locallyRemovedDraftAttachmentIds.current.has(id),
         );
-        const focusedOrEdited =
-          inputRef.current?.isFocused() || draftLocallyEdited.current;
+        const adoptDraft = shouldAdoptHydratedDraft(
+          inputRef.current?.isFocused() ?? false,
+          draftLocallyEdited.current,
+        );
         const local = draftStorageKey
           ? (readChatState(draftStorageKey) ?? "")
           : "";
-        if (!focusedOrEdited && !local) {
+        if (adoptDraft && !local) {
           replaceText(draft.text);
+          setKnownMentionBindings(draft.mentionBindings ?? []);
           if (draftStorageKey) writeChatState(draftStorageKey, draft.text);
         }
         if (!draftAttachmentsLocallyEdited.current) {
@@ -774,7 +782,6 @@ export function Composer({
             error: "Some staged draft attachments could not be restored.",
           });
         }
-        setKnownMentionBindings(draft.mentionBindings ?? []);
         draftReady.current = true;
         setDraftReadyVersion(value => value + 1);
       }

@@ -185,10 +185,18 @@ export function AgentCreateForm({
   useEffect(() => {
     if (!agentsQuery.isSuccess) return;
     const loadedAgents = agentsQuery.data ?? [];
-    if (!titleEditedRef.current) {
+    if (
+      !titleEditedRef.current &&
+      !pendingRef.current &&
+      !createAttemptRef.current
+    ) {
       setTitle(pickAgentName(loadedAgents.map(agent => agent.title)));
     }
-    if (!managerEditedRef.current) {
+    if (
+      !managerEditedRef.current &&
+      !pendingRef.current &&
+      !createAttemptRef.current
+    ) {
       setManagerAgentId(
         loadedAgents.some(agent => agent.id === initialManagerAgentId)
           ? initialManagerAgentId!

@@ -20,6 +20,8 @@ import {
 import {
   discardRecipientUploads,
   fileSelectionFingerprint,
+  recipientActionSnapshot,
+  recipientUploadCacheKey,
   managerBroadcastText,
   type RecipientUploads,
   uploadFilesForRecipients,
@@ -246,24 +248,25 @@ export function useConversationMessagingController({
       uploadedRecipients,
       requestId,
       agentMentions,
+      attachmentOwnerAgentId,
       activeRunDelivery,
     }: {
       text: string;
       uploadedRecipients: RecipientUploads<AssetDto>;
       requestId: string;
       agentMentions: AgentMentionBindingDto[];
+      attachmentOwnerAgentId?: string;
       activeRunDelivery: "steer" | "queue";
     }) => {
       const agentIds = agentMentions.map(binding => binding.agentId);
-      const owner = agents.find(agent => !agent.archived);
       const attachmentsByAgent = new Map(
         uploadedRecipients.map(recipient => [
           recipient.agentId,
           recipient.attachments,
         ]),
       );
-      const attachments = owner
-        ? (attachmentsByAgent.get(owner.id) ?? [])
+      const attachments = attachmentOwnerAgentId
+        ? (attachmentsByAgent.get(attachmentOwnerAgentId) ?? [])
         : [];
       return api.sendConversationMessage(conversationId, {
         text,
@@ -469,6 +472,14 @@ export function useConversationMessagingController({
     const targets = everyoneMentioned
       ? agents.filter(agent => !agent.archived)
       : explicitlyMentionedAgents;
+    const broadcastAttachmentOwner = broadcastText !== undefined
+      ? agents.find(agent => !agent.archived)
+      : undefined;
+    const recipientSnapshot = recipientActionSnapshot(
+      targets.map(target => target.id),
+      broadcastAttachmentOwner?.id,
+    );
+    const { targetAgentIds } = recipientSnapshot;
     const fingerprint = JSON.stringify({
       conversationId,
       text,
@@ -476,6 +487,7 @@ export function useConversationMessagingController({
       draftAttachmentIds,
       draftOwnerId,
       mentionedAgents: mentionedAgents.map(binding => [binding.agentId, binding.handle]),
+      ...recipientSnapshot,
       newAgentRequested,
       activeRunDelivery,
       engine,
@@ -498,7 +510,8 @@ export function useConversationMessagingController({
     }
     submissionAttempt.current = attempt;
     const requestId = attempt.idempotencyKey;
-    const preparedUploads = async (key: string, agentIds: string[]) => {
+    const preparedUploads = async (scope: string, agentIds: string[]) => {
+      const key = recipientUploadCacheKey(scope, agentIds);
       const cached = attempt.prepared.uploads.get(key);
       if (cached) return cached;
       const uploaded = await uploadFilesForRecipients(
@@ -536,15 +549,14 @@ export function useConversationMessagingController({
           "Add informational context or an attachment after #broadcast.",
         );
       }
-      const owner = agents.find(agent => !agent.archived);
-      if (files.length && !owner) {
+      if (files.length && !broadcastAttachmentOwner) {
         throw new Error(
           "Create an agent before attaching files to shared project context.",
         );
       }
       const uploadAgentIds = [
         ...new Set([
-          ...(owner ? [owner.id] : []),
+          ...(broadcastAttachmentOwner ? [broadcastAttachmentOwner.id] : []),
           ...mentionedAgents.map(binding => binding.agentId),
         ]),
       ];
@@ -553,6 +565,7 @@ export function useConversationMessagingController({
         uploadedRecipients: await preparedUploads("broadcast", uploadAgentIds),
         requestId,
         agentMentions: broadcastMentioned ? mentionedAgents : [],
+        attachmentOwnerAgentId: broadcastAttachmentOwner?.id,
         activeRunDelivery,
       });
       if (createdAgentIds.length > 0) {
@@ -569,15 +582,15 @@ export function useConversationMessagingController({
     }
     if (targets.length > 0) {
       setActiveOperation({
-        agentIds: targets.map(target => target.id),
+        agentIds: targetAgentIds,
         state: "starting",
       });
       await sendToAgents.mutateAsync({
-        agentIds: targets.map(target => target.id),
+        agentIds: targetAgentIds,
         text,
         uploadedRecipients: await preparedUploads(
           "direct",
-          targets.map(target => target.id),
+          targetAgentIds,
         ),
         requestId,
         activeRunDelivery,

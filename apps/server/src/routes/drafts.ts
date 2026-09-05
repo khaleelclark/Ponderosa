@@ -7,6 +7,10 @@ import type {
   DraftAttachmentDto,
   PutConversationDraftRequest,
 } from "@ponderosa/core";
+import {
+  INLINE_TEXT_MAX_CODE_POINTS,
+  unicodeCodePointLength,
+} from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
 import {
   ASSET_LIMITS,
@@ -25,6 +29,103 @@ interface StoredDraftAttachment
   width?: number;
   height?: number;
   previewSha256?: string;
+}
+
+const DRAFT_UPDATE_FIELDS = new Set([
+  "text",
+  "attachmentIds",
+  "mentionBindings",
+  "expectedRevision",
+  "clientId",
+  "ownerId",
+]);
+
+export function draftUpdateBodyError(
+  value: unknown,
+  maxAttachmentsPerMessage: number,
+): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return "draft update must be an object";
+  }
+  const body = value as Record<string, unknown>;
+  const unknownKey = Object.keys(body).find(
+    key => !DRAFT_UPDATE_FIELDS.has(key),
+  );
+  if (unknownKey) return `unknown draft field: ${unknownKey}`;
+  if (
+    typeof body.text !== "string" ||
+    unicodeCodePointLength(body.text) > INLINE_TEXT_MAX_CODE_POINTS
+  ) {
+    return `draft text must be a string of at most ${INLINE_TEXT_MAX_CODE_POINTS} characters`;
+  }
+  if (
+    typeof body.clientId !== "string" ||
+    !body.clientId.trim() ||
+    body.clientId.length > 200
+  ) {
+    return "draft clientId must be a non-empty string of at most 200 characters";
+  }
+  if (
+    !Number.isSafeInteger(body.expectedRevision) ||
+    Number(body.expectedRevision) < 0
+  ) {
+    return "draft expectedRevision must be a non-negative safe integer";
+  }
+  if (
+    !Array.isArray(body.attachmentIds) ||
+    body.attachmentIds.length > maxAttachmentsPerMessage ||
+    body.attachmentIds.some(id => typeof id !== "string") ||
+    new Set(body.attachmentIds).size !== body.attachmentIds.length
+  ) {
+    return `at most ${maxAttachmentsPerMessage} unique string draft attachments are allowed`;
+  }
+  if (body.mentionBindings === undefined) return undefined;
+  if (!Array.isArray(body.mentionBindings) || body.mentionBindings.length > 100) {
+    return "at most 100 draft mention bindings are allowed";
+  }
+  const bindings = body.mentionBindings as unknown[];
+  for (const binding of bindings) {
+    if (!binding || typeof binding !== "object" || Array.isArray(binding)) {
+      return "invalid draft mention binding";
+    }
+    const fields = binding as Record<string, unknown>;
+    if (
+      Object.keys(fields).some(
+        key => ![
+          "agentId",
+          "handle",
+          "projectId",
+          "currentHandle",
+          "currentTitle",
+        ].includes(key),
+      ) ||
+      [
+        fields.agentId,
+        fields.handle,
+        fields.projectId,
+        fields.currentHandle,
+        fields.currentTitle,
+      ].some(
+        field =>
+          typeof field !== "string" ||
+          !field.trim() ||
+          field.length > 300,
+      )
+    ) {
+      return "invalid draft mention binding";
+    }
+  }
+  const typed = bindings as unknown as NonNullable<
+    PutConversationDraftRequest["mentionBindings"]
+  >;
+  if (
+    new Set(typed.map(binding => binding.agentId)).size !== typed.length ||
+    new Set(typed.map(binding => binding.handle.toLocaleLowerCase())).size !==
+      typed.length
+  ) {
+    return "draft mention bindings must be unique";
+  }
+  return undefined;
 }
 
 export class DraftService {
@@ -278,44 +379,13 @@ export function registerDraftRoutes(
     if (!service.validId(request.params.id)) {
       return reply.code(404).send({ error: "draft surface not found" });
     }
-    const ownerId = service.normalizedOwner(request.body?.ownerId);
-    if (
-      !ownerId ||
-      !request.body?.clientId ||
-      !Number.isSafeInteger(request.body.expectedRevision) ||
-      !Array.isArray(request.body.attachmentIds) ||
-      (request.body.mentionBindings !== undefined &&
-        (!Array.isArray(request.body.mentionBindings) ||
-          request.body.mentionBindings.length > 100 ||
-          request.body.mentionBindings.some(binding =>
-            !binding || typeof binding !== "object" || Array.isArray(binding) ||
-            Object.keys(binding).some(key => ![
-              "agentId", "handle", "projectId", "currentHandle", "currentTitle",
-            ].includes(key)) ||
-            [binding.agentId, binding.handle, binding.projectId, binding.currentHandle,
-              binding.currentTitle].some(value =>
-              typeof value !== "string" || !value.trim() || value.length > 300))))
-    ) {
-      return reply.code(400).send({ error: "invalid draft update" });
-    }
-    if (request.body.mentionBindings &&
-        (new Set(request.body.mentionBindings.map(binding => binding.agentId)).size !==
-          request.body.mentionBindings.length ||
-        new Set(request.body.mentionBindings.map(binding => binding.handle.toLocaleLowerCase())).size !==
-          request.body.mentionBindings.length)) {
-      return reply.code(400).send({ error: "draft mention bindings must be unique" });
-    }
-    if (
-      request.body.attachmentIds.length > maxAttachmentsPerMessage ||
-      new Set(request.body.attachmentIds).size !==
-        request.body.attachmentIds.length
-    ) {
-      return reply.code(400).send({
-        error: `at most ${maxAttachmentsPerMessage} unique draft attachments are allowed`,
-      });
-    }
+    const body = request.body;
+    const bodyError = draftUpdateBodyError(body, maxAttachmentsPerMessage);
+    if (bodyError) return reply.code(400).send({ error: bodyError });
+    const ownerId = service.normalizedOwner(body?.ownerId);
+    if (!ownerId) return reply.code(400).send({ error: "invalid draft owner" });
     const referenced = await Promise.all(
-      request.body.attachmentIds.map(id =>
+      body.attachmentIds.map(id =>
         service.read(request.params.id, ownerId, id),
       ),
     );
@@ -327,7 +397,7 @@ export function registerDraftRoutes(
     }
     const cursor = workspace.cursor();
     try {
-      workspace.putDraft(request.params.id, { ...request.body, ownerId });
+      workspace.putDraft(request.params.id, { ...body, ownerId });
       publishWorkspaceSince(cursor);
       return service.hydrate(request.params.id, ownerId);
     } catch (error) {
