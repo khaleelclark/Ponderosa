@@ -52,6 +52,7 @@ test("interrupted Agent archive stays archived and durably recovers report detac
   const conversation = store.createConversation(project.id, { title: "Chat" });
   const ownerId = "00000000-0000-4000-8000-000000000101";
   const childId = "00000000-0000-4000-8000-000000000102";
+  const grandchildId = "00000000-0000-4000-8000-000000000103";
   store.createAgent(project.id, {
     title: "Owner",
     engine: "codex",
@@ -63,6 +64,12 @@ test("interrupted Agent archive stays archived and durably recovers report detac
     conversationId: conversation.id,
     managerAgentId: ownerId,
   }, undefined, childId);
+  store.createAgent(project.id, {
+    title: "Grandchild",
+    engine: "codex",
+    conversationId: conversation.id,
+    managerAgentId: childId,
+  }, undefined, grandchildId);
 
   const originalWrite = fs.writeSync;
   let failed = false;
@@ -87,17 +94,20 @@ test("interrupted Agent archive stays archived and durably recovers report detac
   try {
     assert.equal(store.getAgent(ownerId)?.archived, true);
     assert.equal(store.getAgent(childId)?.managerAgentId, ownerId);
+    assert.equal(store.getAgent(grandchildId)?.managerAgentId, childId);
     store.close();
 
     store = new AgentStore(directory);
     assert.equal(store.getAgent(ownerId)?.archived, true);
     assert.equal(store.getAgent(childId)?.managerAgentId, undefined);
+    assert.equal(store.getAgent(grandchildId)?.managerAgentId, childId);
 
     store.updateAgent(ownerId, { archived: false });
     store.close();
     store = new AgentStore(directory);
     assert.equal(store.getAgent(ownerId)?.archived, false);
     assert.equal(store.getAgent(childId)?.managerAgentId, undefined);
+    assert.equal(store.getAgent(grandchildId)?.managerAgentId, childId);
   } finally {
     store.close();
     rmSync(directory, { recursive: true, force: true });

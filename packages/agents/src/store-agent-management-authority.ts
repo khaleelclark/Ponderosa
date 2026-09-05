@@ -560,29 +560,40 @@ export class AgentManagementAuthority {
   sanitizeOrganizationProjection(projectId: string): void {
     const projectAgents = this.listAgents(projectId);
     const byId = new Map(projectAgents.map((agent) => [agent.id, agent]));
-    const invalidAgentIds: string[] = [];
+    const invalidAgentIds = new Set<string>();
     for (const agent of projectAgents) {
       if (!agent.managerAgentId) continue;
-      const seen = new Set<string>([agent.id]);
-      let parentId: string | undefined = agent.managerAgentId;
-      let valid = !agent.archived;
-      while (parentId) {
-        const parent = byId.get(parentId);
-        if (!parent || parent.archived ||
-            parent.conversationId !== agent.conversationId || seen.has(parentId)) {
-          valid = false;
+      const parent = byId.get(agent.managerAgentId);
+      if (agent.archived || !parent || parent.archived ||
+          parent.conversationId !== agent.conversationId) {
+        invalidAgentIds.add(agent.id);
+      }
+    }
+    // Break each remaining cycle at one stable edge. Descendants of that cycle
+    // retain their immediate valid reporting lines, just as they do when an
+    // ordinary archive detaches one parent edge.
+    for (const start of [...projectAgents].sort((left, right) => left.id.localeCompare(right.id))) {
+      if (invalidAgentIds.has(start.id)) continue;
+      const path: string[] = [];
+      const position = new Map<string, number>();
+      let cursor: AgentDto | undefined = start;
+      while (cursor?.managerAgentId && !invalidAgentIds.has(cursor.id)) {
+        const seenAt = position.get(cursor.id);
+        if (seenAt !== undefined) {
+          const cycle = path.slice(seenAt).sort();
+          if (cycle[0]) invalidAgentIds.add(cycle[0]);
           break;
         }
-        seen.add(parentId);
-        parentId = parent.managerAgentId;
+        position.set(cursor.id, path.length);
+        path.push(cursor.id);
+        cursor = byId.get(cursor.managerAgentId);
       }
-      if (!valid) invalidAgentIds.push(agent.id);
     }
     // Invalid reporting lines used to be repaired only in the rebuildable
     // projection. Persist the repair so an archived Agent that is later
     // unarchived cannot resurrect relationships missed by an interrupted
     // archive.
-    this.detachAgentOrganization(projectId, invalidAgentIds);
+    this.detachAgentOrganization(projectId, [...invalidAgentIds].sort());
   }
 
 }

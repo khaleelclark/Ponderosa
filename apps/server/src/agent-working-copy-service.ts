@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, realpath, rm, rmdir } from "node:fs/promises";
+import { lstat, mkdir, realpath, rmdir } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import {
@@ -113,13 +113,13 @@ async function gitWorktreeBranchRoots(
   });
 }
 
-async function gitWorktreeRegistered(
+async function gitWorktreeRegistrationExact(
   projectRoot: string,
   expectedRoot: string,
   branch: string,
 ): Promise<boolean> {
-  return (await gitWorktreeBranchRoots(projectRoot, branch))
-    .some((root) => samePath(root, expectedRoot));
+  const roots = await gitWorktreeBranchRoots(projectRoot, branch);
+  return roots.length === 1 && samePath(roots[0]!, expectedRoot);
 }
 
 export class AgentWorkingCopyService {
@@ -168,7 +168,7 @@ export class AgentWorkingCopyService {
         if (!samePath(projectRoot, projectTopLevel)) {
           throw new Error("the Project Shared folder is not the root of its Git repository");
         }
-        if (!resolved.branch || !await gitWorktreeRegistered(projectRoot, canonical, resolved.branch)) {
+        if (!resolved.branch || !await gitWorktreeRegistrationExact(projectRoot, canonical, resolved.branch)) {
           throw new Error("the configured Separate Git copy is not registered by its Project repository");
         }
         const [topLevel, branch] = await Promise.all([
@@ -312,7 +312,11 @@ export class AgentWorkingCopyService {
     // example when Shared is not a Git repository). That state has no Git
     // authority to clean; removing its empty managed container is sufficient.
     if (!rootExists && !workingCopy.baseHead) {
-      await rm(path.join(this.managedRoot, project.id, agentId), { recursive: true, force: true });
+      try {
+        await rmdir(path.join(this.managedRoot, project.id, agentId));
+      } catch (error) {
+        if (!missingPath(error)) throw error;
+      }
       return {
         ...workingCopy,
         state: "removed",
@@ -325,57 +329,54 @@ export class AgentWorkingCopyService {
       projectRoot = await realpath(project.hostPath);
     } catch (error) {
       if (!options.allowSourceUnavailable || !missingPath(error)) throw error;
-      // The selected source folder may have been moved or deleted. The managed
-      // directory is still safe to remove because its exact containment and
-      // non-symlink identity were proven above. Preserve any source ref whose
-      // ownership or repository cannot be verified rather than blocking the
-      // Project's deletion forever.
-      if (rootExists) await rm(expectedRoot, { recursive: true, force: true });
-      await rm(path.join(this.managedRoot, project.id, agentId), { recursive: true, force: true });
-      return {
-        ...workingCopy,
-        state: "removed",
-        failure: undefined,
-        updatedAt: new Date().toISOString(),
-      };
+      throw new Error("The Project Shared folder is unavailable; the retained Git copy was preserved");
     }
     const topLevel = await realpath(await runGit(projectRoot, ["rev-parse", "--show-toplevel"]));
     if (!samePath(projectRoot, topLevel)) {
       throw new Error("The Project Shared folder is not the root of its Git repository");
     }
+    if (!workingCopy.branch) {
+      throw new Error("The retained Separate Git copy has no durable branch identity");
+    }
     let branchOwned = workingCopy.branchOwned === true;
-    if (rootExists && workingCopy.branchCreationIntent === true && workingCopy.branch) {
-      branchOwned = await gitWorktreeRegistered(projectRoot, expectedRoot, workingCopy.branch);
-      if (!branchOwned) {
-        throw new Error("The interrupted Git copy is not registered by its Project repository");
+    const branchExists = await gitBranchExists(projectRoot, workingCopy.branch);
+    const registeredAtExpectedRoot = branchExists &&
+      await gitWorktreeRegistrationExact(projectRoot, expectedRoot, workingCopy.branch);
+    if (rootExists && registeredAtExpectedRoot) {
+      let currentRootMatches = false;
+      try {
+        const [rootTopLevel, rootBranch] = await Promise.all([
+          runGit(expectedRoot, ["rev-parse", "--show-toplevel"]),
+          runGit(expectedRoot, ["rev-parse", "--abbrev-ref", "HEAD"]),
+        ]);
+        currentRootMatches = samePath(await realpath(rootTopLevel), expectedRoot) &&
+          rootBranch === workingCopy.branch;
+      } catch { /* Preserve an unreadable or replaced working folder. */ }
+      if (!currentRootMatches) {
+        throw new Error("The retained Git working folder was replaced and was preserved");
       }
     }
-    if (!rootExists && workingCopy.branchCreationIntent === true &&
-        workingCopy.branch && workingCopy.baseHead) {
-      if (await gitBranchExists(projectRoot, workingCopy.branch)) {
-        const registeredRoots = await gitWorktreeBranchRoots(projectRoot, workingCopy.branch);
-        const branchHead = await gitBranchHead(projectRoot, workingCopy.branch);
-        branchOwned = branchHead === workingCopy.baseHead &&
-          registeredRoots.every((root) => samePath(root, expectedRoot));
-        if (!branchOwned) {
-          throw new Error("The interrupted Git branch no longer matches its Ponderosa ownership receipt");
-        }
-      }
+    if (!branchOwned && workingCopy.branchCreationIntent === true && branchExists &&
+        workingCopy.baseHead && registeredAtExpectedRoot) {
+      branchOwned = await gitBranchHead(projectRoot, workingCopy.branch) === workingCopy.baseHead;
     }
-    if (rootExists) {
-      await runGit(projectRoot, ["worktree", "remove", "--force", expectedRoot]);
-    } else if (workingCopy.branch && branchOwned &&
-        await gitWorktreeRegistered(projectRoot, expectedRoot, workingCopy.branch)) {
-      await runGit(projectRoot, ["worktree", "remove", "--force", expectedRoot]);
-    } else {
-      await runGit(projectRoot, ["worktree", "prune"]);
+    if ((rootExists || branchExists) && (!branchOwned || !registeredAtExpectedRoot)) {
+      throw new Error("The retained Git copy no longer matches its durable branch and working-folder identity");
     }
-    if (workingCopy.branch && branchOwned) {
+    if (registeredAtExpectedRoot) {
+      await runGit(projectRoot, ["worktree", "remove", "--force", expectedRoot]);
+    }
+    if (branchExists && branchOwned) {
       await runGit(projectRoot, ["check-ref-format", "--branch", workingCopy.branch]);
-      const branchExists = await gitBranchExists(projectRoot, workingCopy.branch);
-      if (branchExists) await runGit(projectRoot, ["branch", "-D", workingCopy.branch]);
+      if (await gitBranchExists(projectRoot, workingCopy.branch)) {
+        await runGit(projectRoot, ["branch", "-D", workingCopy.branch]);
+      }
     }
-    await rm(path.join(this.managedRoot, project.id, agentId), { recursive: true, force: true });
+    try {
+      await rmdir(path.join(this.managedRoot, project.id, agentId));
+    } catch (error) {
+      if (!missingPath(error)) throw error;
+    }
     return {
       ...workingCopy,
       state: "removed",
@@ -463,6 +464,13 @@ export class AgentWorkingCopyService {
             agent.workingCopy.branchCreationIntent !== true) {
           throw new Error("the existing Git branch is not proven to be Ponderosa-owned");
         }
+        if (agent.workingCopy.branchOwned !== true && (
+          !agent.workingCopy.baseHead ||
+          !await gitWorktreeRegistrationExact(projectRoot, rootPath, branch) ||
+          await gitBranchHead(projectRoot, branch) !== agent.workingCopy.baseHead
+        )) {
+          throw new Error("the interrupted Git copy no longer matches its creation receipt");
+        }
         const current = await this.resolve({
           ...agent,
           workingCopy: {
@@ -486,11 +494,17 @@ export class AgentWorkingCopyService {
           if (registeredRoots.some((root) => !samePath(root, rootPath))) {
             throw new Error("the requested Git branch is registered to another working folder");
           }
+          const exactRegistration = registeredRoots.length === 1 &&
+            samePath(registeredRoots[0]!, rootPath);
           if (branchOwned) {
+            if (!exactRegistration) {
+              throw new Error("the owned Git branch is no longer registered to its working folder");
+            }
             await runGit(projectRoot, [
               "worktree", "add", "--force", rootPath, branch,
             ]);
           } else if (branchCreationIntent && agent.workingCopy.baseHead &&
+              exactRegistration &&
               await gitBranchHead(projectRoot, branch) === agent.workingCopy.baseHead) {
             // Git may create the ref before it creates the worktree directory.
             // The durable intent plus exact ref/base identity proves this is
