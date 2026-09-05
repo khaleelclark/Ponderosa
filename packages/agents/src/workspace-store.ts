@@ -89,6 +89,16 @@ const DEFAULT_PREFERENCES: WorkspacePreferencesDto = {
   updatedAt: new Date(0).toISOString(),
 };
 
+export function draftRevisionConflicts(
+  current: Pick<ConversationDraftDto, "revision" | "clientId">,
+  input: { expectedRevision: number; clientId: string },
+): boolean {
+  const provenSameIncarnation =
+    /^page:[^:]+:draft:[^:]+$/u.test(input.clientId)
+    && current.clientId === input.clientId;
+  return current.revision !== input.expectedRevision && !provenSameIncarnation;
+}
+
 function isOpenAttentionNotification(item: WorkspaceNotificationDto): boolean {
   return (item.status ?? "open") === "open" && (
     item.kind === "decision" ||
@@ -894,10 +904,7 @@ export class WorkspaceStore {
     // leaving a surface, so exact equality proves that incarnation. Legacy
     // page IDs remain valid stored data but intentionally get no revision
     // bypass because they identified a whole page rather than one visit.
-    const provenSameIncarnation =
-      /^page:[^:]+:draft:[^:]+$/u.test(input.clientId)
-      && current.clientId === input.clientId;
-    if (current.revision !== input.expectedRevision && !provenSameIncarnation) {
+    if (draftRevisionConflicts(current, input)) {
       const displaced: ConversationDraftConflictDto["displaced"] = {
         conversationId,
         text: input.text,

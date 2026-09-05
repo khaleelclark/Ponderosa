@@ -9,7 +9,7 @@ export type {
   AgentCreationOperationStatus,
 } from "./store.js";
 export { normalizeAgentTitle } from "./agent-identity.js";
-export { WorkspaceStore } from "./workspace-store.js";
+export { WorkspaceStore, draftRevisionConflicts } from "./workspace-store.js";
 export type { PushDeliveryRecord } from "./workspace-store.js";
 export { highlightedSearchSnippet, searchProjectedChatMessages } from "./chat-search.js";
 export type { ProjectedChatSearchCandidate, ProjectedChatSearchOptions } from "./chat-search.js";

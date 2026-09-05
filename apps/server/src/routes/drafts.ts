@@ -1,7 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { AgentStore, WorkspaceStore } from "@ponderosa/agents";
+import {
+  draftRevisionConflicts,
+  type AgentStore,
+  type WorkspaceStore,
+} from "@ponderosa/agents";
 import type {
   AssetDto,
   DraftAttachmentDto,
@@ -386,7 +390,7 @@ export function registerDraftRoutes(
   service: DraftService,
   workspace: Pick<
     WorkspaceStore,
-    "cursor" | "listDraftConflicts" | "putDraft"
+    "cursor" | "getDraft" | "listDraftConflicts" | "putDraft"
   >,
   maxAttachmentsPerMessage: number,
   publishWorkspaceSince: (cursor: number) => unknown,
@@ -432,6 +436,28 @@ export function registerDraftRoutes(
     const ownerId = service.normalizedOwner(body?.ownerId);
     if (!ownerId) return reply.code(400).send({ error: "invalid draft owner" });
     return service.withMutationLock(request.params.id, ownerId, async () => {
+      const persist = async () => {
+        const cursor = workspace.cursor();
+        try {
+          workspace.putDraft(request.params.id, { ...body, ownerId });
+          publishWorkspaceSince(cursor);
+          return service.hydrate(request.params.id, ownerId);
+        } catch (error) {
+          if ((error as { code?: string }).code === "DRAFT_CONFLICT") {
+            return reply.code(409).send({
+              current: await service.hydrate(request.params.id, ownerId),
+              displaced: (error as { displaced: unknown }).displaced,
+            });
+          }
+          throw error;
+        }
+      };
+      if (draftRevisionConflicts(
+        workspace.getDraft(request.params.id, ownerId),
+        body,
+      )) {
+        return persist();
+      }
       const referencedIds = [
         ...body.attachmentIds,
         ...(body.pastedTextAttachmentId ? [body.pastedTextAttachmentId] : []),
@@ -447,20 +473,7 @@ export function registerDraftRoutes(
             "draft attachment is missing or belongs to another conversation",
         });
       }
-      const cursor = workspace.cursor();
-      try {
-        workspace.putDraft(request.params.id, { ...body, ownerId });
-        publishWorkspaceSince(cursor);
-        return service.hydrate(request.params.id, ownerId);
-      } catch (error) {
-        if ((error as { code?: string }).code === "DRAFT_CONFLICT") {
-          return reply.code(409).send({
-            current: await service.hydrate(request.params.id, ownerId),
-            displaced: (error as { displaced: unknown }).displaced,
-          });
-        }
-        throw error;
-      }
+      return persist();
     });
   });
 

@@ -32,6 +32,7 @@ import {
 } from "../src/components/chat/composerDestination.js";
 import {
   shouldConsumeComposerKey,
+  cleanupReleasedDraftAttachmentIds,
   durableDraftContentReady,
   deletableSupersededDraftAttachmentIds,
   shouldAdoptHydratedDraft,
@@ -825,6 +826,43 @@ test("a rejected draft tail cannot suppress the next write continuation", async 
   );
   await tail;
   assert.equal(continued, true);
+});
+
+test("an old-scope write cleans released file and paste IDs and retains failed cleanup", async () => {
+  assert.equal(
+    draftWriteContinuationStillOwned({
+      capturedScope: "chat-a",
+      currentScope: "chat-b",
+      capturedGeneration: 11,
+      currentGeneration: 12,
+    }),
+    false,
+  );
+  const pending = new Set(["released-file", "released-paste", "still-current"]);
+  const removed = [];
+  let failPaste = true;
+  const remove = async id => {
+    removed.push(id);
+    if (id === "released-paste" && failPaste) {
+      failPaste = false;
+      throw new Error("temporary cleanup failure");
+    }
+  };
+  const saved = {
+    attachmentIds: ["still-current"],
+  };
+
+  await cleanupReleasedDraftAttachmentIds(pending, saved, remove);
+  assert.deepEqual(removed, ["released-file", "released-paste"]);
+  assert.deepEqual([...pending], ["released-paste", "still-current"]);
+
+  await cleanupReleasedDraftAttachmentIds(pending, saved, remove);
+  assert.deepEqual(removed, [
+    "released-file",
+    "released-paste",
+    "released-paste",
+  ]);
+  assert.deepEqual([...pending], ["still-current"]);
 });
 
 test("delayed draft continuations lose ownership after switching Chat A to B", () => {

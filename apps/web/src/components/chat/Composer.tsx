@@ -76,6 +76,7 @@ import {
   composerPreparedRetryAction,
   composerRecipientGateSatisfied,
   composerSubmissionText,
+  cleanupReleasedDraftAttachmentIds,
   deletableSupersededDraftAttachmentIds,
   draftContentRetryStillOwned,
   draftWriteContinuationStillOwned,
@@ -137,6 +138,7 @@ type FailedDraftContent = {
 
 type DraftWriteChain = {
   clientId: string;
+  cleanupRetryScheduled: boolean;
   pendingDeletionIds: Set<string>;
   revision: number;
   tail: Promise<void>;
@@ -144,6 +146,7 @@ type DraftWriteChain = {
 
 const createDraftWriteChain = (): DraftWriteChain => ({
   clientId: draftSurfaceClientId(),
+  cleanupRetryScheduled: false,
   pendingDeletionIds: new Set(),
   revision: 0,
   tail: Promise.resolve(),
@@ -1442,21 +1445,36 @@ export function Composer({
             ownerId: draftOwnerId,
           });
           writeChain.revision = draft.revision;
-          if (!stillOwnsWrite()) return;
-          const deletable = deletableSupersededDraftAttachmentIds(
-            writeChain.pendingDeletionIds,
-            draft,
-          );
-          for (const id of deletable) {
-            writeChain.pendingDeletionIds.delete(id);
-            void api.deleteDraftAttachment(
-              scope,
-              draftOwnerId,
-              id,
-            ).catch(() => {
-              writeChain.pendingDeletionIds.add(id);
-            });
-          }
+          const cleanupReleased = async (): Promise<void> => {
+            await cleanupReleasedDraftAttachmentIds(
+              writeChain.pendingDeletionIds,
+              draft,
+              id => api.deleteDraftAttachment(scope, draftOwnerId, id)
+                .catch(error => {
+                  if (
+                    error instanceof ApiRequestError &&
+                    (error.status === 404 || error.status === 409)
+                  ) return;
+                  throw error;
+                }),
+            );
+            if (
+              writeChain.cleanupRetryScheduled ||
+              deletableSupersededDraftAttachmentIds(
+                writeChain.pendingDeletionIds,
+                draft,
+              ).length === 0
+            ) return;
+            writeChain.cleanupRetryScheduled = true;
+            window.setTimeout(() => {
+              writeChain.cleanupRetryScheduled = false;
+              writeChain.tail = settledDraftWriteContinuation(
+                writeChain.tail,
+                cleanupReleased,
+              );
+            }, 5_000);
+          };
+          await cleanupReleased();
           if (!stillOwnsWrite()) return;
           draftRevision.current = draft.revision;
           pastedTextCleanMutationGeneration.current =

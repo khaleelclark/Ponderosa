@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { INLINE_TEXT_MAX_CODE_POINTS } from "@ponderosa/core";
+import { WorkspaceStore } from "@ponderosa/agents";
 import Fastify from "fastify";
 import {
   DraftService,
@@ -218,5 +219,67 @@ test("malformed draft PUTs return 400 before reaching persistence", async () => 
     });
     assert.equal(response.statusCode, 400, response.body);
   }
+  await app.close();
+});
+
+test("stale file and paste references reach conflict recovery before asset validation", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "ponderosa-stale-draft-assets-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const workspace = new WorkspaceStore(directory);
+  workspace.putDraft("chat-a", {
+    text: "newer tab",
+    attachmentIds: [],
+    mentionBindings: [],
+    expectedRevision: 0,
+    clientId: "page:newer",
+    ownerId: "browser-one",
+  });
+  const app = Fastify();
+  registerDraftRoutes(
+    app,
+    new DraftService(
+      directory,
+      { getAgent: () => undefined, getConversation: () => ({ id: "chat-a" }) },
+      workspace,
+    ),
+    workspace,
+    8,
+    () => undefined,
+  );
+  const missingFileId = "00000000-0000-4000-8000-000000000001";
+  const missingPasteId = "00000000-0000-4000-8000-000000000002";
+  for (const references of [
+    { attachmentIds: [missingFileId] },
+    { attachmentIds: [], pastedTextAttachmentId: missingPasteId },
+  ]) {
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/conversations/chat-a/draft",
+      payload: {
+        ...validDraft,
+        ...references,
+        text: "preserve my stale bytes",
+        clientId: "page:stale",
+      },
+    });
+    assert.equal(response.statusCode, 409, response.body);
+    assert.equal(response.json().current.text, "newer tab");
+    assert.deepEqual(response.json().displaced.attachmentIds, references.attachmentIds);
+    assert.equal(
+      response.json().displaced.pastedTextAttachmentId,
+      references.pastedTextAttachmentId,
+    );
+  }
+  const currentMissingAsset = await app.inject({
+    method: "PUT",
+    url: "/api/conversations/chat-a/draft",
+    payload: {
+      ...validDraft,
+      attachmentIds: [missingFileId],
+      expectedRevision: 1,
+      clientId: "page:current",
+    },
+  });
+  assert.equal(currentMissingAsset.statusCode, 400, currentMissingAsset.body);
   await app.close();
 });

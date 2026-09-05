@@ -21,6 +21,24 @@ export function deletableSupersededDraftAttachmentIds(
   return [...pendingIds].filter(id => !referenced.has(id));
 }
 
+export async function cleanupReleasedDraftAttachmentIds(
+  pendingIds: Set<string>,
+  draft: Pick<ConversationDraftDto, "attachmentIds" | "pastedTextAttachmentId">,
+  remove: (id: string) => Promise<unknown>,
+): Promise<void> {
+  await Promise.all(
+    deletableSupersededDraftAttachmentIds(pendingIds, draft).map(async id => {
+      try {
+        await remove(id);
+        pendingIds.delete(id);
+      } catch {
+        // Keep the exact write incarnation's failed cleanup eligible for retry.
+        pendingIds.add(id);
+      }
+    }),
+  );
+}
+
 export function shouldSendComposerKey(event: {
   key: string;
   shiftKey: boolean;
