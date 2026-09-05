@@ -45,6 +45,7 @@ test("creates the canonical launch baseline for a fresh database", () => {
         "0012_context_rollover_failure_provenance.ts",
         "0013_working_copy_authority.ts",
         "0014_project_deletion_ownership.ts",
+        "0015_deletion_recovery_phases.ts",
       ],
     );
   } finally {

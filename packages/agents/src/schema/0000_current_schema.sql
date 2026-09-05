@@ -230,7 +230,17 @@ CREATE TABLE agent_deletion_receipts (
 CREATE TABLE agent_deletion_tombstones (
   agent_id TEXT PRIMARY KEY NOT NULL,
   project_id TEXT NOT NULL,
+  conversation_id TEXT,
   tombstone_name TEXT NOT NULL,
+  ownership_token TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE agent_deletion_pending (
+  agent_id TEXT PRIMARY KEY NOT NULL,
+  project_id TEXT NOT NULL,
+  conversation_id TEXT,
+  tombstone_name TEXT NOT NULL,
+  ownership_token TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
 CREATE TABLE agent_event_head_projection (
@@ -496,6 +506,7 @@ CREATE TABLE project_deletion_receipts (
   project_id TEXT PRIMARY KEY NOT NULL,
   tombstone_name TEXT NOT NULL,
   ownership_token TEXT,
+  removal_started INTEGER NOT NULL DEFAULT 0,
   storage_cleanup_completed INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
   created_at TEXT NOT NULL,

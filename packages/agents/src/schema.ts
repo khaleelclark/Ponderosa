@@ -33,6 +33,8 @@ export const projectDeletionReceipts = sqliteTable("project_deletion_receipts", 
   projectId: text("project_id").primaryKey(),
   tombstoneName: text("tombstone_name").notNull(),
   ownershipToken: text("ownership_token"),
+  /** Durable boundary proving that exact owned storage was authorized for removal. */
+  removalStarted: integer("removal_started").notNull().default(0),
   storageCleanupCompleted: integer("storage_cleanup_completed").notNull().default(0),
   lastError: text("last_error"),
   createdAt: text("created_at").notNull(),
@@ -100,10 +102,22 @@ export const continuationHandoffs = sqliteTable("continuation_handoffs", {
 });
 
 /** Authoritative crash-recovery journal for filesystem-backed Agent deletion. */
+export const agentDeletionPending = sqliteTable("agent_deletion_pending", {
+  agentId: text("agent_id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  conversationId: text("conversation_id"),
+  tombstoneName: text("tombstone_name").notNull(),
+  ownershipToken: text("ownership_token").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+/** Receipt phase for an Agent directory whose canonical rename has committed. */
 export const agentDeletionTombstones = sqliteTable("agent_deletion_tombstones", {
   agentId: text("agent_id").primaryKey(),
   projectId: text("project_id").notNull(),
+  conversationId: text("conversation_id"),
   tombstoneName: text("tombstone_name").notNull(),
+  ownershipToken: text("ownership_token"),
   createdAt: text("created_at").notNull(),
 });
 

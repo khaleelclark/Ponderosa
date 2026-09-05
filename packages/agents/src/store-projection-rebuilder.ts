@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import type Database from "better-sqlite3";
 import { eq } from "drizzle-orm";
 import {
@@ -35,7 +35,6 @@ import {
   workItems,
 } from "./schema.js";
 import {
-  agentDir,
   agentJsonPath,
   agentOrganizationEventsPath,
   agentPresetsPath,
@@ -159,7 +158,8 @@ export class AgentProjectionRebuilder {
       if (!existsSync(tDir)) continue;
       for (const agentId of readdirSync(tDir)) {
         if (agentId.startsWith(".") || agentId.endsWith(".creating")) {
-          rmSync(agentDir(this.dataDir, projectId, agentId), { recursive: true, force: true });
+          // Recovery authorities may claim exact journal-bound staging paths.
+          // Projection rebuild never derives mutation ownership from a name.
           continue;
         }
         const tj = agentJsonPath(this.dataDir, projectId, agentId);

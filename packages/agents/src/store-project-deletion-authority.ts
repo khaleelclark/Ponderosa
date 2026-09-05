@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, realpathSync, renameSync, rmSync } from "node:fs";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { existsSync, renameSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type Database from "better-sqlite3";
 import { eq } from "drizzle-orm";
 import type { AgentDto, ProjectDto } from "@ponderosa/core";
 import type { Db } from "./db.js";
-import { fsyncDirectory, readJson, writeJson } from "./store-filesystem.js";
+import { fsyncDirectory, writeJson } from "./store-filesystem.js";
+import { pathEntryExists, validateDeletionTombstone } from "./deletion-tombstone-ownership.js";
 import type { ProjectDeletionReceipt } from "./store-types.js";
 import { projectDeletionPending, projectDeletionReceipts } from "./schema.js";
 import { projectDir, projectsDir } from "./paths.js";
@@ -19,51 +20,16 @@ interface ProjectDeletionIdentity {
   ownershipToken: string;
 }
 
-function pathEntryExists(path: string): boolean {
-  try { lstatSync(path); return true; }
-  catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
-    throw error;
-  }
-}
-
 function validateProjectDeletionTombstone(
   tombstone: string,
   expected: ProjectDeletionIdentity,
 ): void {
-  const expectedRoot = resolve(tombstone);
-  const canonicalExpectedRoot = join(realpathSync(dirname(expectedRoot)), basename(expectedRoot));
-  const before = lstatSync(expectedRoot);
-  if (!before.isDirectory() || before.isSymbolicLink() ||
-      relative(realpathSync(expectedRoot), canonicalExpectedRoot) !== "") {
-    throw new Error("Project deletion tombstone is not the owned directory");
-  }
-  const markerPath = join(expectedRoot, PROJECT_DELETION_IDENTITY_FILE);
-  let markerStat;
-  try { markerStat = lstatSync(markerPath); }
-  catch (error) {
-    throw new Error("Project deletion tombstone has no readable ownership marker", { cause: error });
-  }
-  if (!markerStat.isFile() || markerStat.isSymbolicLink()) {
-    throw new Error("Project deletion tombstone has no regular ownership marker");
-  }
-  let marker: Partial<ProjectDeletionIdentity>;
-  try { marker = readJson<Partial<ProjectDeletionIdentity>>(markerPath); }
-  catch (error) {
-    throw new Error("Project deletion tombstone ownership marker is invalid", { cause: error });
-  }
-  if (marker.version !== 1 || marker.projectId !== expected.projectId ||
-      marker.tombstoneName !== expected.tombstoneName ||
-      marker.ownershipToken !== expected.ownershipToken) {
-    throw new Error("Project deletion tombstone ownership identity does not match its receipt");
-  }
-  // Recheck the directory after reading its marker so a replaced path never
-  // reaches the recursive remove on the strength of an earlier observation.
-  const current = lstatSync(expectedRoot);
-  if (!current.isDirectory() || current.isSymbolicLink() ||
-      current.dev !== before.dev || current.ino !== before.ino) {
-    throw new Error("Project deletion tombstone changed during ownership validation");
-  }
+  validateDeletionTombstone(
+    tombstone,
+    PROJECT_DELETION_IDENTITY_FILE,
+    expected,
+    "Project deletion tombstone",
+  );
 }
 
 export class AgentProjectDeletionAuthority {
@@ -106,6 +72,7 @@ export class AgentProjectDeletionAuthority {
       projectId: row.projectId,
       tombstoneName: row.tombstoneName,
       ...(row.ownershipToken ? { ownershipToken: row.ownershipToken } : {}),
+      removalStarted: row.removalStarted === 1,
       storageCleanupCompleted: row.storageCleanupCompleted === 1,
       ...(row.lastError ? { lastError: row.lastError } : {}),
       createdAt: row.createdAt,
@@ -119,6 +86,7 @@ export class AgentProjectDeletionAuthority {
       projectId: row.projectId,
       tombstoneName: row.tombstoneName,
       ...(row.ownershipToken ? { ownershipToken: row.ownershipToken } : {}),
+      removalStarted: row.removalStarted === 1,
       storageCleanupCompleted: row.storageCleanupCompleted === 1,
       ...(row.lastError ? { lastError: row.lastError } : {}),
       createdAt: row.createdAt,
@@ -134,6 +102,7 @@ export class AgentProjectDeletionAuthority {
         projectId: row.projectId,
         tombstoneName: row.tombstoneName,
         ...(row.ownershipToken ? { ownershipToken: row.ownershipToken } : {}),
+        removalStarted: row.removalStarted === 1,
         storageCleanupCompleted: false,
         ...(row.lastError ? { lastError: row.lastError } : {}),
         createdAt: row.createdAt,
@@ -168,21 +137,36 @@ export class AgentProjectDeletionAuthority {
     const canonical = projectDir(this.dataDir, current.projectId);
     if (pathEntryExists(canonical)) throw new Error("committed Project deletion storage was resurrected");
     const tombstone = join(root, current.tombstoneName);
-    if (!pathEntryExists(tombstone)) {
-      throw new Error("Project deletion tombstone is missing; cleanup was preserved as pending");
-    }
-    validateProjectDeletionTombstone(tombstone, {
+    const identity = {
       version: 1,
       projectId: current.projectId,
       tombstoneName: current.tombstoneName,
       ownershipToken: current.ownershipToken,
-    });
-    rmSync(tombstone, { recursive: true, force: true });
-    afterTombstoneRemoval?.(current.projectId);
+    } satisfies ProjectDeletionIdentity;
+    if (!current.removalStarted) {
+      if (!pathEntryExists(tombstone)) {
+        throw new Error("Project deletion tombstone is missing before durable removal authority");
+      }
+      validateProjectDeletionTombstone(tombstone, identity);
+      this.db.update(projectDeletionReceipts).set({
+        removalStarted: 1,
+        updatedAt: new Date().toISOString(),
+      }).where(eq(projectDeletionReceipts.projectId, current.projectId)).run();
+    }
+    if (pathEntryExists(tombstone)) {
+      // Revalidate after the removal-started commit. A replacement at the exact
+      // path must never inherit the authority granted to the earlier inode.
+      validateProjectDeletionTombstone(tombstone, identity);
+      rmSync(tombstone, { recursive: true, force: true });
+      afterTombstoneRemoval?.(current.projectId);
+    }
+    // Missing storage is success only after removal_started durably proves that
+    // this exact receipt previously crossed the destructive boundary.
     fsyncDirectory(root);
     const now = new Date().toISOString();
     this.db.update(projectDeletionReceipts).set({
       storageCleanupCompleted: 1,
+      removalStarted: 1,
       lastError: null,
       updatedAt: now,
       completedAt: now,
@@ -239,6 +223,7 @@ export class AgentProjectDeletionAuthority {
         this.client.prepare(`DELETE FROM agent_presets WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM agent_management_approvals WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM agent_management_plans WHERE project_id = ?`).run(id);
+        this.client.prepare(`DELETE FROM agent_deletion_pending WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM project_deletion_pending WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM agent_deletion_tombstones WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM agent_deletion_receipts WHERE project_id = ?`).run(id);

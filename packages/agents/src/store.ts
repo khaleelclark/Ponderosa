@@ -224,8 +224,8 @@ export class AgentStore extends AgentEventSessionFacade {
         readEvents: agentId => this.readEvents(agentId),
         activeEngineOf: agentId => this.activeEngineOf(agentId),
         projectIdOf: agentId => this.projectIdOf(agentId),
-        authorizeAgentManagementPlan: (authorization, targetAgentIds) =>
-          this.authorizeAgentManagementPlan(authorization, targetAgentIds),
+        authorizeAgentManagementPlan: (authorization, targetAgentIds, consumeApproval) =>
+          this.authorizeAgentManagementPlan(authorization, targetAgentIds, consumeApproval),
         communicationIndex: projectId => this.communicationIndex(projectId),
         communicationRevisionIndex: projectId => this.communicationRevisionIndex(projectId),
         messageDispatches: projectId => this.messageDispatches(projectId),
@@ -1325,8 +1325,11 @@ export class AgentStore extends AgentEventSessionFacade {
     );
   }
 
-  finishAgentDeletionStorageCleanup(receipt: AgentDeletionReceipt): void {
-    this.agentDeletion.finishAgentDeletionStorageCleanup(receipt);
+  finishAgentDeletionStorageCleanup(
+    receipt: AgentDeletionReceipt,
+    afterAuditRename?: (agentId: string) => void,
+  ): void {
+    this.agentDeletion.finishAgentDeletionStorageCleanup(receipt, afterAuditRename);
   }
 
   deleteAgent(id: string, beforeProjectionDelete?: (agentId: string) => void): boolean {
