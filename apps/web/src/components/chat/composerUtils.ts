@@ -51,6 +51,30 @@ export function shouldAdoptHydratedDraft(
   return !editorFocused && !locallyEdited;
 }
 
+export function hydratedPastedTextContent<T>(input: {
+  attachmentId?: string;
+  restoredText?: string;
+  failure?: T;
+  mutationGenerationAtStart: number;
+  currentMutationGeneration: number;
+}): {
+  attachmentId?: string;
+  text?: string;
+  failure?: T;
+} | undefined {
+  if (
+    input.mutationGenerationAtStart !== input.currentMutationGeneration
+  ) return undefined;
+  return {
+    ...(input.attachmentId ? { attachmentId: input.attachmentId } : {}),
+    ...(input.failure
+      ? { failure: input.failure }
+      : input.restoredText !== undefined
+        ? { text: input.restoredText }
+        : {}),
+  };
+}
+
 export function hydratedDraftContent<T>(
   revision: number,
   draftText: string,

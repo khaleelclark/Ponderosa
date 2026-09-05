@@ -29,6 +29,7 @@ import {
   deletableSupersededDraftAttachmentIds,
   shouldAdoptHydratedDraft,
   hydratedDraftContent,
+  hydratedPastedTextContent,
   shouldIgnoreComposerKey,
   shouldSendComposerKey,
 } from "../src/components/chat/composerUtils.js";
@@ -434,6 +435,54 @@ test("late draft hydration never adopts bindings without their text", () => {
   assert.equal(shouldAdoptHydratedDraft(false, false), true);
   assert.equal(shouldAdoptHydratedDraft(true, false), false);
   assert.equal(shouldAdoptHydratedDraft(false, true), false);
+});
+
+test("focused reload restores durable pasted text independently of editor text", () => {
+  assert.equal(shouldAdoptHydratedDraft(true, false), false);
+  assert.deepEqual(
+    hydratedPastedTextContent({
+      attachmentId: "paste-a",
+      restoredText: "durable pasted text",
+      mutationGenerationAtStart: 0,
+      currentMutationGeneration: 0,
+    }),
+    { attachmentId: "paste-a", text: "durable pasted text" },
+  );
+});
+
+test("focused reload exposes failed pasted-text restore ownership", () => {
+  const failure = { id: "paste-a", name: "Pasted text" };
+  assert.deepEqual(
+    hydratedPastedTextContent({
+      attachmentId: "paste-a",
+      failure,
+      mutationGenerationAtStart: 0,
+      currentMutationGeneration: 0,
+    }),
+    { attachmentId: "paste-a", failure },
+  );
+});
+
+test("an unrelated edit preserves hydrated pasted-text ownership", () => {
+  assert.equal(shouldAdoptHydratedDraft(false, true), false);
+  assert.equal(
+    hydratedPastedTextContent({
+      attachmentId: "paste-a",
+      restoredText: "durable pasted text",
+      mutationGenerationAtStart: 3,
+      currentMutationGeneration: 3,
+    })?.attachmentId,
+    "paste-a",
+  );
+  assert.equal(
+    hydratedPastedTextContent({
+      attachmentId: "paste-a",
+      restoredText: "stale pasted text",
+      mutationGenerationAtStart: 3,
+      currentMutationGeneration: 4,
+    }),
+    undefined,
+  );
 });
 
 test("attachment failure still hydrates durable text and bindings atomically", () => {
