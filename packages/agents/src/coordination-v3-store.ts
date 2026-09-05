@@ -1200,6 +1200,10 @@ export class CoordinationV3Store {
     return this.runLifecycleAuthority.cancelAgentRun(input);
   }
 
+  cancellationReceipt(agentId: string, idempotencyKey: string): CancellationResult | undefined {
+    return this.runLifecycleAuthority.cancellationReceipt(agentId, idempotencyKey);
+  }
+
   claimProviderOperations(workerId: string, limit = 20, now = new Date().toISOString(), staleMs = 30_000): ProviderOperation[] {
     return this.operationalOutboxAuthority.claimProviderOperations(workerId, limit, now, staleMs);
   }

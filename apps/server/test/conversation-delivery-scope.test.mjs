@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
@@ -7,9 +7,11 @@ import path from "node:path";
 import test from "node:test";
 import Fastify from "fastify";
 import {
+  AgentStore,
   publishManagedArtifactContentAsync,
   readManagedArtifactContent,
 } from "@ponderosa/agents";
+import { AssetStore } from "../dist/assets.js";
 import {
   conversationDeliveryRequestFingerprint,
   registerConversationDeliveryRoutes,
@@ -27,6 +29,7 @@ import { registerQueuedMessageRoutes } from "../dist/routes/queued-messages.js";
 import {
   leaseAgentAssetReconciliation,
   recoverCanonicalAgentCreations,
+  recoverFailedAgentCreations,
 } from "../dist/server-lifecycle.js";
 import { leaseAgentDelivery } from "../dist/delivery-leases.js";
 import { createCommunicationProjectionReconciler } from "../dist/communication-projection-reconciler.js";
@@ -380,6 +383,127 @@ test("canonical Agent creation recovery retries live and clears quarantine", asy
   assert.equal(second.recovered, 1);
   assert.equal(operation.status, "completed");
   assert.equal(deletingAgentIds.has("agent-a"), false);
+});
+
+test("startup rollback removes only its exact generated-file authority", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-generated-startup-rollback-"));
+  const store = new AgentStore(dataDir);
+  const assets = new AssetStore(dataDir);
+  t.after(async () => {
+    assets.close();
+    store.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const project = store.createProject({
+    label: "Project",
+    hostPath: "/tmp/project",
+    defaultEngine: "codex",
+  });
+  const chat = store.createConversation(project.id, { title: "Chat" });
+
+  const prepare = async (key, authorityAgentId) => {
+    const agentId = randomUUID();
+    const artifactId = randomUUID();
+    const body = Buffer.from(`${key}\n`);
+    const sha256 = createHash("sha256").update(body).digest("hex");
+    const pathName = `imported/${artifactId}.txt`;
+    const createdAt = new Date().toISOString();
+    const operation = store.beginAgentCreationOperation({
+      projectId: project.id,
+      actorScope: "user:local-operator",
+      kind: "import",
+      idempotencyKey: key,
+      payloadHash: sha256,
+    }).operation;
+    store.addAgentCreationOperationMember(operation.id, agentId, 0);
+    store.createAgent(project.id, {
+      title: key,
+      engine: "codex",
+      conversationId: chat.id,
+    }, undefined, agentId);
+    const generated = {
+      agentId,
+      originAgentId: agentId,
+      path: pathName,
+      summary: `${artifactId}.txt`,
+      createdAt,
+      mediaType: "text/plain",
+    };
+    store.updateAgentCreationOperation(operation.id, {
+      artifactIds: [artifactId],
+      artifactIdentities: [{
+        id: artifactId,
+        byteLength: body.length,
+        sha256,
+        generated,
+      }],
+    });
+    await publishManagedArtifactContentAsync(dataDir, project.id, artifactId, body);
+    store.recordProjectArtifact({
+      id: artifactId,
+      projectId: project.id,
+      agentId,
+      originAgentId: agentId,
+      kind: "generated_file",
+      path: pathName,
+      summary: generated.summary,
+      createdAt,
+      mediaType: "text/plain",
+      visibility: "project",
+      pinned: false,
+      size: body.length,
+      sha256,
+    });
+    assets.registerPublishedGeneratedArtifact({
+      id: artifactId,
+      projectId: project.id,
+      agentId: authorityAgentId ?? agentId,
+      originAgentId: authorityAgentId ?? agentId,
+      kind: "generated_file",
+      path: pathName,
+      summary: generated.summary,
+      createdAt,
+      mediaType: "text/plain",
+      size: body.length,
+      sha256,
+    }, { size: body.length, sha256 });
+    return { operation, agentId, artifactId, body, sha256 };
+  };
+
+  const exact = await prepare("exact-authority");
+  const deletingAgentIds = new Set([exact.agentId]);
+  const exactRecovery = recoverFailedAgentCreations({
+    store,
+    assets,
+    dataDir,
+    deletingAgentIds,
+    handleAgentDeletion: () => {},
+  });
+  assert.equal(exactRecovery.recovered, 1);
+  assert.equal(store.getAgentCreationOperation(exact.operation.id).status, "rolled_back");
+  assert.equal(assets.authority.generatedArtifact(project.id, exact.artifactId), undefined);
+  assert.equal(readManagedArtifactContent(
+    dataDir, project.id, exact.artifactId, exact.body.length, exact.sha256,
+  ), undefined);
+
+  const unrelatedOwner = randomUUID();
+  const mismatch = await prepare("mismatched-authority", unrelatedOwner);
+  const mismatchRecovery = recoverFailedAgentCreations({
+    store,
+    assets,
+    dataDir,
+    deletingAgentIds: new Set([mismatch.agentId]),
+    handleAgentDeletion: () => {},
+  });
+  assert.equal(mismatchRecovery.recovered, 0);
+  assert.equal(store.getAgentCreationOperation(mismatch.operation.id).status, "rolling_back");
+  assert.equal(
+    assets.authority.generatedArtifact(project.id, mismatch.artifactId).originAgentId,
+    unrelatedOwner,
+  );
+  assert.ok(readManagedArtifactContent(
+    dataDir, project.id, mismatch.artifactId, mismatch.body.length, mismatch.sha256,
+  ));
 });
 
 test("an idempotent Agent creation retry cannot replay an in-flight opening", async (t) => {

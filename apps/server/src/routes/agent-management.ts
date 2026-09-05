@@ -203,6 +203,29 @@ export function registerAgentManagementRoutes(
         }
         for (const [index, operation] of plan.operations.entries()) {
           if (operation.kind === "create_agent") {
+            const operationKey = `${plan.id}:${index}`;
+            const actorScope = `agent:${owner.id}:run:${active.runId}`;
+            const priorCreation = store.findAgentCreationOperation({
+              projectId: owner.projectId,
+              actorScope,
+              kind: "managed",
+              idempotencyKey: operationKey,
+            });
+            if (priorCreation?.status === "completed") {
+              const priorAgentId = priorCreation.result &&
+                typeof priorCreation.result === "object" &&
+                "agentId" in priorCreation.result &&
+                typeof priorCreation.result.agentId === "string"
+                ? priorCreation.result.agentId
+                : undefined;
+              const priorAgent = priorAgentId ? store.getAgent(priorAgentId) : undefined;
+              if (!priorAgent) {
+                throw new Error("managed Agent creation committed without a recoverable Agent");
+              }
+              if (operation.ref) refs.set(operation.ref, priorAgent.id);
+              changedAgentIds.add(priorAgent.id);
+              continue;
+            }
             const parentId = resolveRef(operation.parentRef) ?? owner.id;
             if (parentId !== owner.id && !descendantIds.has(parentId) && ![...refs.values()].includes(parentId)) throw new Error("create parent escaped the managed subtree");
             if (deletingAgentIds.has(parentId)) throw new Error("create parent is being deleted");
@@ -220,7 +243,6 @@ export function registerAgentManagementRoutes(
             const model = operation.model?.trim() || undefined;
             const effort = operation.effort?.trim() || undefined;
             const instructions = operation.instructions?.trim() || undefined;
-            const operationKey = `${plan.id}:${index}`;
             const createInput = {
               title,
               engine: engineId,
@@ -231,7 +253,7 @@ export function registerAgentManagementRoutes(
             };
             const creation = store.beginAgentCreationOperation({
               projectId: owner.projectId,
-              actorScope: `agent:${owner.id}:run:${active.runId}`,
+              actorScope,
               kind: "managed",
               idempotencyKey: operationKey,
               payloadHash: createHash("sha256").update(JSON.stringify({ createInput, instructions: instructions ?? null })).digest("hex"),
@@ -292,13 +314,22 @@ export function registerAgentManagementRoutes(
             changedAgentIds.add(targetId);
           } else if (operation.kind === "stop_agent") {
             const targetRunId = operation.targetRunId;
+            const cancellationKey = `${plan.id}:${index}`;
+            const prior = coordinationV3.cancellationReceipt(targetId, cancellationKey);
+            if (prior) {
+              if (!targetRunId || !prior.cancelled || prior.runId !== targetRunId) {
+                throw new Error("the prior stop_agent receipt does not match this plan");
+              }
+              changedAgentIds.add(targetId);
+              continue;
+            }
             const currentRunId = coordinationV3.agentSnapshot(targetId).activeRun?.id;
             if (!targetRunId || currentRunId !== targetRunId) {
               throw new Error("the exact Run bound to this stop_agent plan is no longer active");
             }
             const response = await app.inject({
               method: "POST", url: `/api/agents/${encodeURIComponent(targetId)}/cancel`, headers: internalHeaders,
-              payload: { targetRunId, idempotencyKey: `${plan.id}:${index}` },
+              payload: { targetRunId, idempotencyKey: cancellationKey },
             });
             if (response.statusCode >= 400) throw new Error(response.json().error ?? "Agent stop failed");
             changedAgentIds.add(targetId);

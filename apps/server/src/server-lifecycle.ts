@@ -81,6 +81,112 @@ export async function recoverCanonicalAgentCreations(input: {
   return { recovered, failures };
 }
 
+export function recoverFailedAgentCreations(input: {
+  store: AgentStore;
+  assets: AssetStore;
+  dataDir: string;
+  deletingAgentIds: Set<string>;
+  handleAgentDeletion(agentId: string): void;
+}): { recovered: number; failures: Array<{ operationId: string; error: unknown }> } {
+  let recovered = 0;
+  const failures: Array<{ operationId: string; error: unknown }> = [];
+  for (const operation of input.store.listRecoverableAgentCreationOperations()) {
+    if (operation.status === "canonical_committed") continue;
+    input.store.updateAgentCreationOperation(operation.id, { status: "rolling_back" });
+    let rolledBack = true;
+    const authorityBlockedArtifactIds = new Set<string>();
+    for (const agentId of [...operation.agentIds].reverse()) {
+      try {
+        if (input.store.getAgent(agentId) &&
+            !input.store.deleteAgent(agentId, input.handleAgentDeletion)) {
+          rolledBack = false;
+        }
+      } catch (error) {
+        rolledBack = false;
+        failures.push({ operationId: operation.id, error });
+      }
+    }
+    const operationAgentsRemain = operation.agentIds.some((agentId) =>
+      input.store.getAgent(agentId));
+    for (const identity of operation.artifactIdentities) {
+      try {
+        if (operationAgentsRemain ||
+            !input.assets.removeCreationGeneratedArtifact(operation.projectId, identity)) {
+          authorityBlockedArtifactIds.add(identity.id);
+          rolledBack = false;
+        }
+      } catch (error) {
+        authorityBlockedArtifactIds.add(identity.id);
+        rolledBack = false;
+        failures.push({ operationId: operation.id, error });
+      }
+    }
+    for (const artifactId of operation.artifactIds) {
+      if (authorityBlockedArtifactIds.has(artifactId)) continue;
+      try {
+        const artifact = input.store.getProjectArtifact(operation.projectId, artifactId);
+        if (artifact?.originAgentId && operation.agentIds.includes(artifact.originAgentId)) {
+          input.store.deleteProjectArtifact(
+            operation.projectId,
+            artifactId,
+            "Agent creation recovery rolled back",
+          );
+          if (input.store.getProjectArtifact(operation.projectId, artifactId)) rolledBack = false;
+        }
+      } catch (error) {
+        rolledBack = false;
+        failures.push({ operationId: operation.id, error });
+      }
+    }
+    for (const identity of operation.artifactIdentities) {
+      if (authorityBlockedArtifactIds.has(identity.id)) continue;
+      try {
+        const catalogued = input.store.getProjectArtifact(operation.projectId, identity.id);
+        if (catalogued && (!catalogued.originAgentId ||
+            !operation.agentIds.includes(catalogued.originAgentId))) continue;
+        if (catalogued) {
+          rolledBack = false;
+          continue;
+        }
+        const runtime = input.assets.authoritativeRuntimeArtifactMetadataById(
+          operation.projectId,
+          identity.id,
+        );
+        if (runtime && (runtime.byteLength !== identity.byteLength ||
+            runtime.blobHash !== identity.sha256)) continue;
+        if (runtime) input.assets.removeRuntimeArtifactReservation(operation.projectId, identity.id);
+        removeManagedArtifactContent(
+          input.dataDir,
+          operation.projectId,
+          identity.id,
+          identity.byteLength,
+          identity.sha256,
+        );
+        if (readManagedArtifactContent(
+          input.dataDir,
+          operation.projectId,
+          identity.id,
+          identity.byteLength,
+          identity.sha256,
+        )) rolledBack = false;
+      } catch (error) {
+        rolledBack = false;
+        failures.push({ operationId: operation.id, error });
+      }
+    }
+    if (operationAgentsRemain) rolledBack = false;
+    if (rolledBack) {
+      input.store.updateAgentCreationOperation(operation.id, {
+        status: "rolled_back",
+        lastError: null,
+      });
+      for (const agentId of operation.agentIds) input.deletingAgentIds.delete(agentId);
+      recovered += 1;
+    }
+  }
+  return { recovered, failures };
+}
+
 type ServerLifecycleContext =
   Pick<ArtifactAuthority, "projectCommunicationArtifact" | "requestArtifactAccess"> &
   Pick<EngineControlPlane,
@@ -331,93 +437,23 @@ export function registerServerLifecycle(
     reconcileCommittedProjectDeletions();
     completeLifecyclePhase("project_deletion_workspace_recovery");
     await runAgentCreationRecovery(Number.POSITIVE_INFINITY);
-    for (const operation of store.listRecoverableAgentCreationOperations()) {
-      if (operation.status === "canonical_committed") continue;
-      store.updateAgentCreationOperation(operation.id, { status: "rolling_back" });
-      let rolledBack = true;
-      for (const agentId of [...operation.agentIds].reverse()) {
-        try {
-          if (store.getAgent(agentId)) {
-            const deleted = store.deleteAgent(
-              agentId,
-              (id) => coordinationV3.handleAgentDeletion(id),
-            );
-            if (!deleted) rolledBack = false;
-          }
-        } catch (error) {
-          rolledBack = false;
-          store.updateAgentCreationOperation(operation.id, {
-            lastError: error instanceof Error ? error.message : "Agent creation rollback failed",
-          });
-          app.log.error({ err: error, operationId: operation.id, agentId }, "Agent creation rollback remains quarantined");
-        }
-      }
-      for (const artifactId of operation.artifactIds) {
-        try {
-          const artifact = store.getProjectArtifact(operation.projectId, artifactId);
-          if (artifact && artifact.originAgentId && operation.agentIds.includes(artifact.originAgentId)) {
-            store.deleteProjectArtifact(operation.projectId, artifactId, "Agent creation recovery rolled back");
-            if (store.getProjectArtifact(operation.projectId, artifactId)) rolledBack = false;
-          }
-        } catch (error) {
-          rolledBack = false;
-          store.updateAgentCreationOperation(operation.id, {
-            lastError: error instanceof Error ? error.message : "Agent creation artifact rollback failed",
-          });
-        }
-      }
-      for (const identity of operation.artifactIdentities) {
-        try {
-          const catalogued = store.getProjectArtifact(operation.projectId, identity.id);
-          if (catalogued && (!catalogued.originAgentId ||
-              !operation.agentIds.includes(catalogued.originAgentId))) {
-            continue;
-          }
-          if (catalogued) {
-            rolledBack = false;
-            continue;
-          }
-          const runtime = assets.authoritativeRuntimeArtifactMetadataById(
-            operation.projectId,
-            identity.id,
-          );
-          if (runtime && (runtime.byteLength !== identity.byteLength ||
-              runtime.blobHash !== identity.sha256)) {
-            continue;
-          }
-          if (runtime) {
-            assets.removeRuntimeArtifactReservation(operation.projectId, identity.id);
-          }
-          removeManagedArtifactContent(
-            opts.dataDir,
-            operation.projectId,
-            identity.id,
-            identity.byteLength,
-            identity.sha256,
-          );
-          if (readManagedArtifactContent(
-            opts.dataDir,
-            operation.projectId,
-            identity.id,
-            identity.byteLength,
-            identity.sha256,
-          )) {
-            rolledBack = false;
-          }
-        } catch (error) {
-          rolledBack = false;
-          store.updateAgentCreationOperation(operation.id, {
-            lastError: error instanceof Error ? error.message : "Agent creation artifact bytes remain quarantined",
-          });
-        }
-      }
-      if (operation.agentIds.some((agentId) => store.getAgent(agentId))) {
-        rolledBack = false;
-      }
-      if (rolledBack) {
-        store.updateAgentCreationOperation(operation.id, { status: "rolled_back", lastError: null });
-        for (const agentId of operation.agentIds) deletingAgentIds.delete(agentId);
-      }
+    const failedCreationRecovery = recoverFailedAgentCreations({
+      store,
+      assets,
+      dataDir: opts.dataDir,
+      deletingAgentIds,
+      handleAgentDeletion: (id) => coordinationV3.handleAgentDeletion(id),
+    });
+    for (const failure of failedCreationRecovery.failures) {
+      store.updateAgentCreationOperation(failure.operationId, {
+        lastError: failure.error instanceof Error
+          ? failure.error.message
+          : "Agent creation rollback remains quarantined",
+      });
+      app.log.error(
+        { err: failure.error, operationId: failure.operationId },
+        "Agent creation rollback remains quarantined",
+      );
     }
     completeLifecyclePhase("agent_creation_recovery");
     const orphanGraceBoundary = Date.now() - 60 * 60 * 1_000;

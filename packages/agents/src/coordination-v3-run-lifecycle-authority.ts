@@ -882,24 +882,9 @@ export class CoordinationV3RunLifecycleAuthority {
     }
     const now = input.now ?? new Date().toISOString();
     return this.sqlite.transaction(() => {
-      const replay = this.sqlite.prepare(`
-        SELECT run_id, accepted, fencing_token
-        FROM scheduler_cancellation_receipts
-        WHERE agent_id = ? AND idempotency_key = ?
-      `).get(input.agentId, input.idempotencyKey) as {
-        run_id: string | null;
-        accepted: number;
-        fencing_token: number | null;
-      } | undefined;
+      const replay = this.cancellationReceipt(input.agentId, input.idempotencyKey);
       if (replay) {
-        return {
-          cancelled: replay.accepted === 1,
-          replayed: true,
-          ...(replay.run_id ? { runId: replay.run_id } : {}),
-          ...(replay.fencing_token !== null
-            ? { fencingToken: replay.fencing_token }
-            : {}),
-        };
+        return { ...replay, replayed: true };
       }
       const run = this.sqlite.prepare(`
         SELECT id, fencing_token FROM scheduler_runs
@@ -1071,6 +1056,30 @@ export class CoordinationV3RunLifecycleAuthority {
         operationId: Number(operation.lastInsertRowid),
       };
     })();
+  }
+
+  cancellationReceipt(
+    agentId: string,
+    idempotencyKey: string,
+  ): CancellationResult | undefined {
+    const receipt = this.sqlite.prepare(`
+      SELECT run_id, accepted, fencing_token
+      FROM scheduler_cancellation_receipts
+      WHERE agent_id = ? AND idempotency_key = ?
+    `).get(agentId, idempotencyKey) as {
+      run_id: string | null;
+      accepted: number;
+      fencing_token: number | null;
+    } | undefined;
+    if (!receipt) return undefined;
+    return {
+      cancelled: receipt.accepted === 1,
+      replayed: true,
+      ...(receipt.run_id ? { runId: receipt.run_id } : {}),
+      ...(receipt.fencing_token !== null
+        ? { fencingToken: receipt.fencing_token }
+        : {}),
+    };
   }
 
   markRelatedRequestsOutcomeUnknown(

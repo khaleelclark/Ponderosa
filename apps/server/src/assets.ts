@@ -12,6 +12,7 @@ import {
   readManagedArtifactContent,
   type RuntimeArtifactInputV3,
   type RuntimeAttachmentReservationReceiptV3,
+  type AgentCreationArtifactIdentity,
 } from "@ponderosa/agents";
 import { AssetAuthority } from "./asset-authority.js";
 import {
@@ -601,6 +602,34 @@ export class AssetStore {
       );
     }
     return this.authority.registerGeneratedArtifact(artifact);
+  }
+  removeCreationGeneratedArtifact(
+    projectId: string,
+    identity: AgentCreationArtifactIdentity,
+  ): boolean {
+    if (!identity.generated) {
+      return !this.authority.generatedArtifact(projectId, identity.id);
+    }
+    const generated: RegisteredGeneratedArtifact = {
+      id: identity.id,
+      projectId,
+      agentId: identity.generated.agentId,
+      originAgentId: identity.generated.originAgentId,
+      ...(identity.generated.executionId
+        ? { executionId: identity.generated.executionId }
+        : {}),
+      kind: "generated_file",
+      path: identity.generated.path,
+      ...(identity.generated.sourcePath
+        ? { sourcePath: identity.generated.sourcePath }
+        : {}),
+      summary: identity.generated.summary,
+      createdAt: identity.generated.createdAt,
+      mediaType: identity.generated.mediaType,
+      size: identity.byteLength,
+      sha256: identity.sha256,
+    };
+    return this.authority.removeGeneratedArtifactIfMatches(generated) !== "mismatch";
   }
   registerPublishedGeneratedArtifactImport(
     artifact: RegisteredGeneratedArtifact,

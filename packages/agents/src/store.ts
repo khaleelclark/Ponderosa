@@ -131,6 +131,16 @@ export interface AgentCreationArtifactIdentity {
   id: string;
   byteLength: number;
   sha256: string;
+  generated?: {
+    agentId: string;
+    originAgentId: string;
+    executionId?: string;
+    path: string;
+    sourcePath?: string;
+    summary: string;
+    createdAt: string;
+    mediaType: string;
+  };
 }
 
 export interface AgentCreationOperation {
@@ -736,9 +746,7 @@ export class AgentStore extends AgentEventSessionFacade {
     idempotencyKey: string;
     payloadHash: string;
   }): { operation: AgentCreationOperation; replayed: boolean } {
-    const id = `agent-create-${createHash("sha256").update(
-      `${input.projectId}\0${input.actorScope}\0${input.kind}\0${input.idempotencyKey}`,
-    ).digest("hex")}`;
+    const id = this.agentCreationOperationId(input);
     const existing = this.getAgentCreationOperation(id);
     if (existing) {
       if (existing.payloadHash !== input.payloadHash) {
@@ -771,6 +779,26 @@ export class AgentStore extends AgentEventSessionFacade {
       return { operation: raced, replayed: true };
     }
     return { operation: this.getAgentCreationOperation(id)!, replayed: false };
+  }
+
+  findAgentCreationOperation(input: {
+    projectId: string;
+    actorScope: string;
+    kind: AgentCreationOperation["kind"];
+    idempotencyKey: string;
+  }): AgentCreationOperation | undefined {
+    return this.getAgentCreationOperation(this.agentCreationOperationId(input));
+  }
+
+  private agentCreationOperationId(input: {
+    projectId: string;
+    actorScope: string;
+    kind: AgentCreationOperation["kind"];
+    idempotencyKey: string;
+  }): string {
+    return `agent-create-${createHash("sha256").update(
+      `${input.projectId}\0${input.actorScope}\0${input.kind}\0${input.idempotencyKey}`,
+    ).digest("hex")}`;
   }
 
   getAgentCreationOperation(id: string): AgentCreationOperation | undefined {

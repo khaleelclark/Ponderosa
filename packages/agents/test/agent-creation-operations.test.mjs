@@ -30,6 +30,19 @@ const operation = {
 
 test("creation operations preserve exact members and completed replay across restart", () => {
   const { directory, store } = temporaryStore();
+  const artifactIdentity = {
+    id: "artifact-1",
+    byteLength: 12,
+    sha256: "a".repeat(64),
+    generated: {
+      agentId: "agent-1",
+      originAgentId: "agent-1",
+      path: "imported/artifact-1.txt",
+      summary: "artifact-1.txt",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      mediaType: "text/plain",
+    },
+  };
   const begun = store.beginAgentCreationOperation(operation);
   assert.equal(begun.replayed, false);
   store.addAgentCreationOperationMember(begun.operation.id, "agent-1", 0);
@@ -37,11 +50,7 @@ test("creation operations preserve exact members and completed replay across res
     status: "canonical_committed",
     communicationEventId: "communication-1",
     artifactIds: ["artifact-1"],
-    artifactIdentities: [{
-      id: "artifact-1",
-      byteLength: 12,
-      sha256: "a".repeat(64),
-    }],
+    artifactIdentities: [artifactIdentity],
     result: { agent: { id: "agent-1" }, requestId: "request-1" },
   });
   assert.deepEqual(store.listRecoverableAgentCreationOperations().map((item) => item.agentIds), [["agent-1"]]);
@@ -55,11 +64,7 @@ test("creation operations preserve exact members and completed replay across res
     assert.equal(replay.operation.status, "completed");
     assert.deepEqual(replay.operation.agentIds, ["agent-1"]);
     assert.deepEqual(replay.operation.artifactIds, ["artifact-1"]);
-    assert.deepEqual(replay.operation.artifactIdentities, [{
-      id: "artifact-1",
-      byteLength: 12,
-      sha256: "a".repeat(64),
-    }]);
+    assert.deepEqual(replay.operation.artifactIdentities, [artifactIdentity]);
     assert.deepEqual(replay.operation.result, { agent: { id: "agent-1" }, requestId: "request-1" });
     assert.throws(
       () => reopened.beginAgentCreationOperation({ ...operation, payloadHash: "payload-b" }),

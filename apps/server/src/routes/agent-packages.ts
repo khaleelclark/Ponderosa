@@ -1073,11 +1073,28 @@ export function registerAgentPackageRoutes(
           });
           store.updateAgentCreationOperation(creationOperationId!, {
             artifactIds: plannedArtifacts.map((artifact) => artifact.destinationId),
-            artifactIdentities: plannedArtifacts.map((artifact) => ({
-              id: artifact.destinationId,
-              byteLength: artifact.data.length,
-              sha256: artifact.sha256,
-            })),
+            artifactIdentities: importNodes.flatMap((node, nodeIndex) =>
+              node.artifacts.map((artifact) => ({
+                id: artifact.destinationId,
+                byteLength: artifact.data.length,
+                sha256: artifact.sha256,
+                ...(artifact.kind === "generated_file"
+                  ? {
+                      generated: {
+                        agentId: operationAgentIds[nodeIndex]!,
+                        originAgentId: operationAgentIds[nodeIndex]!,
+                        path: artifact.managedPath,
+                        ...(artifact.sourcePath
+                          ? { sourcePath: artifact.sourcePath }
+                          : {}),
+                        summary: artifact.summary,
+                        createdAt: artifact.createdAt,
+                        mediaType: artifact.mediaType,
+                      },
+                    }
+                  : {}),
+              })),
+            ),
           });
         } else {
           if (creationOperation.agentIds.length !== importNodes.length) {
@@ -1215,6 +1232,7 @@ export function registerAgentPackageRoutes(
       return reply.code(201).send(response);
       } catch (error) {
         let rollbackComplete = true;
+        const authorityBlockedArtifactIds = new Set<string>();
         for (const agentId of [...rollbackAgentIds].reverse()) {
           try {
             if (!store.deleteAgent(agentId, (id) => coordinationV3.handleAgentDeletion(id)) &&
@@ -1225,7 +1243,24 @@ export function registerAgentPackageRoutes(
             // completes any rollback whose durable deletion already committed.
           }
         }
+        const operationAgentsRemain = operationAgentIds.some((agentId) => store.getAgent(agentId));
+        if (creationOperationId) {
+          for (const identity of store.getAgentCreationOperation(creationOperationId)!
+            .artifactIdentities) {
+            try {
+              if (operationAgentsRemain ||
+                  !assets.removeCreationGeneratedArtifact(project.id, identity)) {
+                authorityBlockedArtifactIds.add(identity.id);
+                rollbackComplete = false;
+              }
+            } catch {
+              authorityBlockedArtifactIds.add(identity.id);
+              rollbackComplete = false;
+            }
+          }
+        }
         for (const artifact of rollbackArtifacts) {
+          if (authorityBlockedArtifactIds.has(artifact.destinationId)) continue;
           try {
             const catalogued = store.getProjectArtifact(project.id, artifact.destinationId);
             if (catalogued && (!catalogued.originAgentId ||
@@ -1257,9 +1292,7 @@ export function registerAgentPackageRoutes(
             rollbackComplete = false;
           }
         }
-        if (operationAgentIds.some((agentId) => store.getAgent(agentId))) {
-          rollbackComplete = false;
-        }
+        if (operationAgentsRemain) rollbackComplete = false;
         if (creationOperationId) {
           store.updateAgentCreationOperation(creationOperationId, {
             status: rollbackComplete ? "rolled_back" : "rolling_back",

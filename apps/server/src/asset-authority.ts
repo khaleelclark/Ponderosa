@@ -376,6 +376,42 @@ export class AssetAuthority {
       throw this.mapped(error);
     }
   }
+  removeGeneratedArtifactIfMatches(
+    expected: RegisteredGeneratedArtifact,
+  ): "absent" | "removed" | "mismatch" {
+    if (!generatedArtifactMetadataIsValid(expected)) {
+      throw new AssetError(409, "generated artifact rollback identity is invalid");
+    }
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      const registered = this.generatedArtifact(expected.projectId, expected.id);
+      if (!registered) {
+        this.db.exec("COMMIT");
+        return "absent";
+      }
+      if (JSON.stringify(generatedArtifactIdentity(registered)) !==
+          JSON.stringify(generatedArtifactIdentity(expected))) {
+        this.db.exec("COMMIT");
+        return "mismatch";
+      }
+      const imported = this.db.prepare(`
+        SELECT 1 FROM generated_artifact_import_receipts
+        WHERE project_id = ? AND artifact_id = ?
+      `).get(expected.projectId, expected.id);
+      if (imported) {
+        this.db.exec("COMMIT");
+        return "mismatch";
+      }
+      const removed = this.db.prepare(`
+        DELETE FROM generated_artifact_authority WHERE project_id = ? AND id = ?
+      `).run(expected.projectId, expected.id).changes === 1;
+      this.db.exec("COMMIT");
+      return removed ? "removed" : "mismatch";
+    } catch (error) {
+      if (this.db.inTransaction) this.db.exec("ROLLBACK");
+      throw this.mapped(error);
+    }
+  }
   registerGeneratedArtifactImport(
     artifact: RegisteredGeneratedArtifact,
     identity: { runId: string; toolCallId: string; requestHash: string },

@@ -8,6 +8,8 @@ import path from "node:path";
 import test from "node:test";
 import Fastify from "fastify";
 import { AgentStore } from "@ponderosa/agents";
+import { AssetStore } from "../dist/assets.js";
+import { encodePortableArtifact } from "../dist/agent-package-codec.js";
 import { registerAgentPackageRoutes } from "../dist/routes/agent-packages.js";
 
 function registerImportRoutes(app, dataDir, getProject = (id) => ({ id })) {
@@ -101,6 +103,97 @@ test("completed copy replay does not reread its source Agent", async (t) => {
   assert.equal(response.statusCode, 200);
   assert.equal(response.json().rootAgentId, "copied-a");
   assert.equal(sourceReads, 0);
+});
+
+test("generated-file import rollback clears its exact authority before retry", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-generated-import-rollback-"));
+  const store = new AgentStore(dataDir);
+  const assets = new AssetStore(dataDir);
+  const app = Fastify();
+  t.after(async () => {
+    await app.close();
+    assets.close();
+    store.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const project = store.createProject({
+    label: "Project",
+    hostPath: "/tmp/project",
+    defaultEngine: "codex",
+  });
+  const chat = store.createConversation(project.id, { title: "Chat" });
+  const artifactId = randomUUID();
+  const bytes = Buffer.from("generated\n");
+  let failAfterRegistration = true;
+  const registerGenerated = assets.registerPublishedGeneratedArtifact.bind(assets);
+  assets.registerPublishedGeneratedArtifact = (artifact, publication) => {
+    const registered = registerGenerated(artifact, publication);
+    if (failAfterRegistration) {
+      failAfterRegistration = false;
+      throw new Error("injected failure after generated authority commit");
+    }
+    return registered;
+  };
+  registerAgentPackageRoutes(app, {
+    dataDir,
+    store,
+    coordination: { runtimeArtifact: () => undefined, handleAgentDeletion: () => {} },
+    assets,
+    engines: new Map([["codex", {
+      adapter: { id: "codex", listModels: () => [], listEfforts: () => [] },
+    }]]),
+    deletingProjectIds: new Set(),
+    deletingConversationIds: new Set(),
+    deletingAgentIds: new Set(),
+    agentCreationConversationLeases: new Map(),
+    cachedModelOptions: () => [],
+    appendWorkspace: () => {},
+    agentMessages: () => [],
+    createOperationalNotification: () => {},
+  });
+  const request = {
+    method: "POST",
+    url: `/api/projects/${project.id}/import-agents`,
+    headers: { "idempotency-key": "generated-rollback" },
+    payload: {
+      conversationId: chat.id,
+      engineMapping: { codex: "codex" },
+      package: {
+        schema: "ponderosa.agent-package.v1",
+        mode: "full",
+        kind: "agent",
+        exportedAt: new Date().toISOString(),
+        sourceLabel: "source",
+        rootRef: "source-agent",
+        agents: [{
+          ref: "source-agent",
+          title: "Imported",
+          engine: "codex",
+          managementPermissions: {
+            allowAutomaticDescendantDeletion: false,
+            allowAutomaticDescendantReorganization: false,
+          },
+          artifacts: [{
+            ref: artifactId,
+            kind: "generated_file",
+            path: `${artifactId}.txt`,
+            summary: `${artifactId}.txt`,
+            createdAt: new Date().toISOString(),
+            mediaType: "text/plain",
+            dataBase64: await encodePortableArtifact(bytes),
+          }],
+        }],
+      },
+    },
+  };
+  const first = await app.inject(request);
+  assert.equal(first.statusCode, 500);
+  assert.equal(assets.authority.generatedArtifact(project.id, artifactId), undefined);
+  assert.equal(store.listAgents(project.id).length, 0);
+
+  const retry = await app.inject(request);
+  assert.equal(retry.statusCode, 201);
+  assert.ok(assets.authority.generatedArtifact(project.id, artifactId));
 });
 
 test("unfinished copy retry uses the first durable source snapshot", async (t) => {
