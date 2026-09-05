@@ -44,6 +44,7 @@ test("creates the canonical launch baseline for a fresh database", () => {
         "0011_nested_provider_activation_execution_payloads.ts",
         "0012_context_rollover_failure_provenance.ts",
         "0013_working_copy_authority.ts",
+        "0014_project_deletion_ownership.ts",
       ],
     );
   } finally {

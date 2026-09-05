@@ -172,6 +172,7 @@ export interface AgentDeletionReceipt {
 export interface ProjectDeletionReceipt {
   projectId: string;
   tombstoneName: string;
+  ownershipToken?: string;
   storageCleanupCompleted: boolean;
   lastError?: string;
   createdAt: string;

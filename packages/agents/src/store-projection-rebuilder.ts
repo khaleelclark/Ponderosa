@@ -45,7 +45,6 @@ import {
   conversationsDir,
   eventsPath,
   importedAgentHistoryPath,
-  projectDir,
   projectJsonPath,
   projectsDir,
 } from "./paths.js";
@@ -99,7 +98,9 @@ export class AgentProjectionRebuilder {
 
     for (const projectId of readdirSync(root)) {
       if (projectId.startsWith(".") || projectId.endsWith(".creating")) {
-        rmSync(projectDir(this.dataDir, projectId), { recursive: true, force: true });
+        // Hidden and creation-shaped entries without a durable ownership
+        // receipt are preserved. Recovery authorities may claim an exact entry;
+        // projection rebuild must never authenticate storage by its name alone.
         continue;
       }
       const pj = projectJsonPath(this.dataDir, projectId);

@@ -53,6 +53,7 @@ const providerActivationExecutionPayloadsMigration = "0010_provider_activation_e
 const nestedProviderActivationExecutionPayloadsMigration = "0011_nested_provider_activation_execution_payloads.ts";
 const contextRolloverFailureProvenanceMigration = "0012_context_rollover_failure_provenance.ts";
 const workingCopyAuthorityMigration = "0013_working_copy_authority.ts";
+const projectDeletionOwnershipMigration = "0014_project_deletion_ownership.ts";
 
 function hasApplicationSchema(sqlite: Database.Database): boolean {
   return sqlite
@@ -228,6 +229,24 @@ function establishWorkingCopyAuthoritySchema(sqlite: Database.Database): void {
     }
     sqlite.prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
       .run(workingCopyAuthorityMigration, new Date().toISOString());
+  })();
+}
+
+function establishProjectDeletionOwnershipSchema(sqlite: Database.Database): void {
+  const applied = sqlite
+    .prepare(`SELECT 1 FROM ${schemaVersionTable} WHERE name = ?`)
+    .get(projectDeletionOwnershipMigration) !== undefined;
+  if (applied) return;
+  sqlite.transaction(() => {
+    for (const table of ["project_deletion_pending", "project_deletion_receipts"] as const) {
+      const columns = new Set((sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
+        .map((column) => column.name));
+      if (!columns.has("ownership_token")) {
+        sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ownership_token TEXT`);
+      }
+    }
+    sqlite.prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
+      .run(projectDeletionOwnershipMigration, new Date().toISOString());
   })();
 }
 
@@ -848,6 +867,7 @@ export function openDb(file: string): OpenedDb {
   establishContextRolloverFailureProvenance(sqlite);
   establishSchemaExtensions(sqlite);
   establishWorkingCopyAuthoritySchema(sqlite);
+  establishProjectDeletionOwnershipSchema(sqlite);
   establishPublicProviderRequestUpdates(sqlite);
   establishProviderActivationExecutionPayloads(sqlite);
   establishNestedProviderActivationExecutionPayloads(sqlite);

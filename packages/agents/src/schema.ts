@@ -23,6 +23,8 @@ export const projectDeletionPending = sqliteTable("project_deletion_pending", {
   lastError: text("last_error"),
   /** Exact hidden directory used across the filesystem/SQLite commit boundary. */
   tombstoneName: text("tombstone_name"),
+  /** Receipt-bound identity mirrored inside the exact tombstone directory. */
+  ownershipToken: text("ownership_token"),
 });
 
 /** Durable receipt for an irreversible Project purge and its retryable
@@ -30,6 +32,7 @@ export const projectDeletionPending = sqliteTable("project_deletion_pending", {
 export const projectDeletionReceipts = sqliteTable("project_deletion_receipts", {
   projectId: text("project_id").primaryKey(),
   tombstoneName: text("tombstone_name").notNull(),
+  ownershipToken: text("ownership_token"),
   storageCleanupCompleted: integer("storage_cleanup_completed").notNull().default(0),
   lastError: text("last_error"),
   createdAt: text("created_at").notNull(),

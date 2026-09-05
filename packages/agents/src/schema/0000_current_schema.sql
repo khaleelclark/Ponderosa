@@ -491,10 +491,11 @@ CREATE TABLE project_deletion_pending (
   project_id TEXT PRIMARY KEY,
   created_at TEXT NOT NULL,
   last_error TEXT
-, tombstone_name TEXT);
+, tombstone_name TEXT, ownership_token TEXT);
 CREATE TABLE project_deletion_receipts (
   project_id TEXT PRIMARY KEY NOT NULL,
   tombstone_name TEXT NOT NULL,
+  ownership_token TEXT,
   storage_cleanup_completed INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
   created_at TEXT NOT NULL,
