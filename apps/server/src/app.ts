@@ -855,7 +855,10 @@ app.server.on("upgrade", linkPreviewUpgrade);
   });
   const webhookRawBodies = registerBodyParsers(app);
 
-  const { reconcileRuntimeCommunicationProjections } = createCommunicationProjectionReconciler({
+  const {
+    reconcileConversationRuntimeCommunicationProjections,
+    reconcileRuntimeCommunicationProjections,
+  } = createCommunicationProjectionReconciler({
     store,
     coordinationV3,
     assets,
@@ -1168,6 +1171,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     validateEngineModel,
     triggerSources,
     webhookRawBodies,
+    reconcileConversationRuntimeCommunicationProjections,
     reconcileRuntimeCommunicationProjections,
     notifyManagerOfChildFailure,
     projectBroadcastToAgentAudits,

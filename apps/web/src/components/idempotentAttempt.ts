@@ -22,3 +22,15 @@ export const preparedIdempotentAttemptForRetry = <T>(
 ): IdempotentAttempt<T> | undefined => retryPrepared && current
   ? current
   : undefined;
+
+/** Resolve an ambiguous retry before evaluating any live request inputs. */
+export const selectIdempotentAttempt = <T>(
+  current: IdempotentAttempt<T> | undefined,
+  retryPrepared: boolean,
+  fingerprint: () => string,
+  createId: () => string,
+  prepare: () => T,
+): IdempotentAttempt<T> => preparedIdempotentAttemptForRetry(
+  current,
+  retryPrepared,
+) ?? retainIdempotentAttempt(current, fingerprint(), createId, prepare);

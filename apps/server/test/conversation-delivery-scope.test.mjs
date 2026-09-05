@@ -924,6 +924,25 @@ test("invalid mention metadata is rejected before draft promotion", async (t) =>
   assert.deepEqual(staged, []);
 });
 
+test("fixed-Agent messages reject draft assets staged for another Chat or Project Agent", async (t) => {
+  for (const draftId of ["chat-other", "agent:agent-in-other-project"]) {
+    const { app, staged } = agentMessageValidationApp();
+    t.after(() => app.close());
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agents/agent-a/messages",
+      payload: {
+        text: "hello",
+        draftAttachmentIds: ["draft-a"],
+        draftId,
+        draftOwnerId: "owner-a",
+      },
+    });
+    assert.equal(response.statusCode, 400);
+    assert.deepEqual(staged, []);
+  }
+});
+
 test("a promoted draft is removed when later attachment validation rejects delivery", async (t) => {
   const { app, removed, staged } = agentMessageValidationApp();
   t.after(() => app.close());
@@ -933,7 +952,7 @@ test("a promoted draft is removed when later attachment validation rejects deliv
     payload: {
       text: "hello",
       draftAttachmentIds: ["draft-a"],
-      draftId: "draft-surface",
+      draftId: "agent:agent-a",
       draftOwnerId: "owner-a",
     },
   });
@@ -1508,6 +1527,123 @@ function deliveryLeaseApp({ direct = false, targeted = false } = {}) {
   });
   return { agentLeases, app, agent, chat, finishPreparation, leases, preparationStarted };
 }
+
+function conversationLifecycleApp({ archived = false, reconcile }) {
+  const chat = { id: "chat-a", projectId: "project-a", title: "Chat A", archived };
+  const leases = new Map();
+  const deletingConversationIds = new Set();
+  const store = {
+    sqlite: { prepare: () => ({ get: () => undefined }) },
+    getConversation: (id) => id === chat.id ? chat : undefined,
+    updateConversation: (_id, body) => Object.assign(chat, body),
+    listAgents: () => [],
+  };
+  const app = Fastify();
+  registerConversationRoutes(app, {
+    store,
+    workspace: {},
+    engines: new Map(),
+    cachedModelOptions: () => [],
+    appendWorkspace: () => {},
+    publishWorkspaceSince: () => {},
+    generateConversationTitle: async () => ({ title: chat.title, generated: false }),
+    conversationDetail: () => undefined,
+    agentHealth: () => ({}),
+    teamDirectory: () => ({}),
+    hasActiveRun: () => false,
+    commitAgentDeletion: async () => ({ deletedAgentIds: [] }),
+    deletingConversationIds,
+    agentCreationConversationLeases: new Map(),
+    conversationDeliveryLeases: leases,
+    reconcileConversationRuntimeCommunicationProjections: reconcile,
+    purgeCommunicationV4Conversation: () => {},
+    refreshTriggers: async () => {},
+    draftAttachmentSurfaceDir: () => "unused",
+  });
+  return { app, chat, deletingConversationIds, leases };
+}
+
+test("Chat archive waits for its durable runtime projection backlog", async (t) => {
+  const recoveryStarted = deferred();
+  const finishRecovery = deferred();
+  const { app, chat } = conversationLifecycleApp({
+    reconcile: async (projectId, conversationId) => {
+      assert.equal(projectId, chat.projectId);
+      assert.equal(conversationId, chat.id);
+      recoveryStarted.resolve();
+      await finishRecovery.promise;
+      return 1;
+    },
+  });
+  t.after(() => app.close());
+  const archive = app.inject({
+    method: "PATCH",
+    url: `/api/conversations/${chat.id}`,
+    payload: { archived: true },
+  });
+  await recoveryStarted.promise;
+  assert.equal(chat.archived, false);
+  finishRecovery.resolve();
+  const response = await archive;
+  assert.equal(response.statusCode, 200);
+  assert.equal(chat.archived, true);
+});
+
+test("Chat archive and delete preserve state when runtime recovery is incomplete", async (t) => {
+  for (const method of ["PATCH", "DELETE"]) {
+    const { app, chat } = conversationLifecycleApp({
+      reconcile: async () => { throw new Error("startup backlog remains"); },
+    });
+    t.after(() => app.close());
+    const response = await app.inject({
+      method,
+      url: `/api/conversations/${chat.id}`,
+      ...(method === "PATCH" ? { payload: { archived: true } } : {}),
+    });
+    assert.equal(response.statusCode, 409);
+    assert.equal(chat.archived, false);
+  }
+});
+
+test("unarchive projects backlog committed while the Chat was archived", async (t) => {
+  let recovered = false;
+  const { app, chat } = conversationLifecycleApp({
+    archived: true,
+    reconcile: async () => {
+      assert.equal(chat.archived, false);
+      recovered = true;
+      return 1;
+    },
+  });
+  t.after(() => app.close());
+  const response = await app.inject({
+    method: "PATCH",
+    url: `/api/conversations/${chat.id}`,
+    payload: { archived: false },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(recovered, true);
+  assert.equal(chat.archived, false);
+});
+
+test("Chat archive rechecks delivery leases after runtime recovery", async (t) => {
+  let leases;
+  const lifecycle = conversationLifecycleApp({
+    reconcile: async () => {
+      leases.set("chat-a", 1);
+      return 0;
+    },
+  });
+  ({ leases } = lifecycle);
+  t.after(() => lifecycle.app.close());
+  const response = await lifecycle.app.inject({
+    method: "PATCH",
+    url: `/api/conversations/${lifecycle.chat.id}`,
+    payload: { archived: true },
+  });
+  assert.equal(response.statusCode, 409);
+  assert.equal(lifecycle.chat.archived, false);
+});
 
 test("broadcasts cannot target an Agent owned by another Chat", async (t) => {
   const chat = { id: "chat-a", projectId: "project-a" };

@@ -3,20 +3,18 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 
-export function useSendMessage(agentId: string | undefined) {
+export interface SendMessageAttempt {
+  agentId: string;
+  request: SendMessageRequest;
+}
+
+export function useSendMessage() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (request: SendMessageRequest) => {
-      if (!agentId) {
-        throw new Error("No agent selected");
-      }
-      return api.sendMessage(agentId, request);
-    },
-    onMutate: async (request) => {
-      if (!agentId) {
-        return undefined;
-      }
+    mutationFn: async ({ agentId, request }: SendMessageAttempt) =>
+      api.sendMessage(agentId, request),
+    onMutate: async ({ agentId, request }) => {
       await queryClient.cancelQueries({ queryKey: queryKeys.agents.detailPrefix(agentId) });
       const previous = queryClient.getQueriesData<AgentDetailDto>({ queryKey: queryKeys.agents.detailPrefix(agentId) });
       const optimistic: MessageDto = {
@@ -32,16 +30,14 @@ export function useSendMessage(agentId: string | undefined) {
       );
       return { previous };
     },
-    onError: (_error, _request, context) => {
-      if (agentId && context?.previous) {
+    onError: (_error, _attempt, context) => {
+      if (context?.previous) {
         for (const [queryKey, value] of context.previous) queryClient.setQueryData(queryKey, value);
       }
     },
-    onSettled: () => {
-      if (agentId) {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(agentId) });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
-      }
+    onSettled: (_data, _error, { agentId }) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(agentId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
     },
   });
 }

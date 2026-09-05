@@ -41,6 +41,7 @@ import {
 import {
   preparedIdempotentAttemptForRetry,
   retainIdempotentAttempt,
+  selectIdempotentAttempt,
 } from "../src/components/idempotentAttempt.js";
 
 const bryce = {
@@ -155,6 +156,41 @@ test("ambiguous retries select the frozen operation before mutable state", () =>
     "recipients:a;runtime:model-x",
     () => "request-two",
     () => ({ recipients: ["a"], runtime: { model: "model-x" } }),
+  );
+  assert.notEqual(edited, first);
+  assert.equal(edited.idempotencyKey, "request-two");
+});
+
+test("fixed-Agent retries do not read changed runtime or message inputs", () => {
+  const first = retainIdempotentAttempt(
+    undefined,
+    "agent-a:old-runtime:old-draft",
+    () => "request-one",
+    () => ({ agentId: "agent-a", model: "old-runtime", draftId: "old-draft" }),
+  );
+  let liveReads = 0;
+  const retry = selectIdempotentAttempt(
+    first,
+    true,
+    () => { liveReads += 1; return "agent-a:new-runtime:new-draft"; },
+    () => "request-two",
+    () => { liveReads += 1; return { agentId: "agent-a", model: "new-runtime", draftId: "new-draft" }; },
+  );
+  assert.equal(retry, first);
+  assert.equal(liveReads, 0);
+  assert.equal(retry.idempotencyKey, "request-one");
+  assert.deepEqual(retry.prepared, {
+    agentId: "agent-a",
+    model: "old-runtime",
+    draftId: "old-draft",
+  });
+
+  const edited = selectIdempotentAttempt(
+    first,
+    false,
+    () => "agent-a:new-runtime:new-draft",
+    () => "request-two",
+    () => ({ agentId: "agent-a", model: "new-runtime", draftId: "new-draft" }),
   );
   assert.notEqual(edited, first);
   assert.equal(edited.idempotencyKey, "request-two");

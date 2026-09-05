@@ -281,6 +281,7 @@ export function registerApplicationRoutes(
     validateEngineModel,
     triggerSources,
     webhookRawBodies,
+    reconcileConversationRuntimeCommunicationProjections,
     reconcileRuntimeCommunicationProjections,
     notifyManagerOfChildFailure,
     projectBroadcastToAgentAudits,
@@ -383,6 +384,7 @@ registerConversationRoutes(app, {
   deletingConversationIds,
   agentCreationConversationLeases,
   conversationDeliveryLeases,
+  reconcileConversationRuntimeCommunicationProjections,
   purgeCommunicationV4Conversation: conversationId =>
     coordinationV3.purgeCommunicationV4Conversation(conversationId),
   refreshTriggers: () => triggerSources.refresh(),

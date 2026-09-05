@@ -78,6 +78,10 @@ export interface ConversationRouteDependencies {
   deletingConversationIds: Set<string>;
   agentCreationConversationLeases: ReadonlyMap<string, number>;
   conversationDeliveryLeases: ReadonlyMap<string, number>;
+  reconcileConversationRuntimeCommunicationProjections: (
+    projectId: string,
+    conversationId: string,
+  ) => Promise<number>;
   purgeCommunicationV4Conversation: (conversationId: string) => void;
   refreshTriggers: () => Promise<unknown>;
   draftAttachmentSurfaceDir: (draftId: string) => string;
@@ -103,6 +107,7 @@ export function registerConversationRoutes(
     deletingConversationIds,
     agentCreationConversationLeases,
     conversationDeliveryLeases,
+    reconcileConversationRuntimeCommunicationProjections,
     purgeCommunicationV4Conversation,
     refreshTriggers,
     draftAttachmentSurfaceDir,
@@ -313,9 +318,54 @@ export function registerConversationRoutes(
       );
       if (selectionError) return reply.code(400).send({ error: selectionError });
     }
+    if (body.archived !== undefined) {
+      deletingConversationIds.add(current.id);
+      let mutationCommitted = false;
+      const provisionallyUnarchived = current.archived;
+      try {
+        // Archived Chats cannot accept a room projection. Temporarily expose
+        // the room only behind the deletion/lifecycle fence, which keeps all
+        // new delivery and Agent creation out until recovery and mutation form
+        // one serialized operation.
+        if (provisionallyUnarchived) {
+          store.updateConversation(current.id, { archived: false });
+        }
+        try {
+          await reconcileConversationRuntimeCommunicationProjections(current.projectId, current.id);
+        } catch {
+          return reply.code(409).send({
+            error: "Wait for committed message recovery to finish before changing this Chat",
+          });
+        }
+        if (!store.getConversation(current.id)) {
+          return reply.code(404).send({ error: "conversation not found" });
+        }
+        if ((agentCreationConversationLeases.get(current.id) ?? 0) > 0) {
+          return reply.code(409).send({
+            error: "Wait for Agent creation to finish before changing this Chat",
+          });
+        }
+        if (body.archived === true && (conversationDeliveryLeases.get(current.id) ?? 0) > 0) {
+          return reply.code(409).send({
+            error: "Wait for message delivery to finish before archiving this Chat",
+          });
+        }
+        const conversation = store.updateConversation(request.params.id, body);
+        mutationCommitted = Boolean(conversation);
+        if (conversation) {
+          await refreshTriggers();
+          appendWorkspace({ type: "conversation_changed", projectId: conversation.projectId, conversationId: conversation.id, action: "updated" });
+        }
+        return conversation;
+      } finally {
+        if (provisionallyUnarchived && !mutationCommitted && store.getConversation(current.id)) {
+          store.updateConversation(current.id, { archived: true });
+        }
+        deletingConversationIds.delete(current.id);
+      }
+    }
     const conversation = store.updateConversation(request.params.id, body);
     if (conversation) {
-      if (body.archived !== undefined) await refreshTriggers();
       appendWorkspace({ type: "conversation_changed", projectId: conversation.projectId, conversationId: conversation.id, action: "updated" });
     }
     return conversation;
@@ -351,12 +401,33 @@ export function registerConversationRoutes(
     const active = linkedAgents.some((agent) => hasActiveRun(agent.id));
     if (active) return reply.code(409).send({ error: "stop active agents before deleting this Project chat" });
 
-    // Reserve synchronously before the first await. Archiving is the durable
-    // restart fence: a crash leaves the Chat unable to accept new Agents, and
-    // retrying deletion can safely finish the same cascade.
+    // Reserve synchronously before recovery. This lifecycle fence keeps new
+    // delivery and Agent creation out until the durable backlog is projected
+    // and the deletion reaches its existing archived restart boundary.
     deletingConversationIds.add(current.id);
-    store.updateConversation(current.id, { archived: true });
     try {
+      if (current.archived) store.updateConversation(current.id, { archived: false });
+      try {
+        await reconcileConversationRuntimeCommunicationProjections(current.projectId, current.id);
+      } catch {
+        store.updateConversation(current.id, { archived: current.archived });
+        return reply.code(409).send({
+          error: "Wait for committed message recovery to finish before deleting this Chat",
+        });
+      }
+      if ((agentCreationConversationLeases.get(current.id) ?? 0) > 0) {
+        store.updateConversation(current.id, { archived: current.archived });
+        return reply.code(409).send({
+          error: "Wait for Agent creation to finish before deleting this Chat",
+        });
+      }
+      if ((conversationDeliveryLeases.get(current.id) ?? 0) > 0) {
+        store.updateConversation(current.id, { archived: current.archived });
+        return reply.code(409).send({
+          error: "Wait for message delivery to finish before deleting this Chat",
+        });
+      }
+      store.updateConversation(current.id, { archived: true });
       if (linkedAgents.length > 0) {
         const preview = store.previewAgentDeletion(linkedAgents.map((agent) => agent.id));
         await commitAgentDeletion(preview.rootAgentIds, preview.previewHash);

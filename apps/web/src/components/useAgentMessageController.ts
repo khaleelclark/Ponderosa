@@ -17,7 +17,7 @@ import {
 } from "../conversationRouting";
 import { directAgentDeliveryNotice } from "./AgentDetail.helpers";
 import {
-  retainIdempotentAttempt,
+  selectIdempotentAttempt,
   type IdempotentAttempt,
 } from "./idempotentAttempt";
 import {
@@ -36,6 +36,17 @@ interface AgentMessageControllerInput {
   onChatSelected(): void;
 }
 
+interface AgentMessageSubmissionPrepared {
+  agentId: string;
+  files: File[];
+  request: SendMessageRequest & {
+    draftAttachmentIds?: string[];
+    draftId?: string;
+    draftOwnerId?: string;
+  };
+  uploads: RecipientUploads<AssetDto>;
+}
+
 export function useAgentMessageController({
   agentId,
   projectId,
@@ -47,7 +58,7 @@ export function useAgentMessageController({
   onChatSelected,
 }: AgentMessageControllerInput) {
   const queryClient = useQueryClient();
-  const sendMessage = useSendMessage(agentId);
+  const sendMessage = useSendMessage();
   const queuedMessagesQuery = useQuery({
     queryKey: queryKeys.queuedMessages.agent(agentId),
     queryFn: () => api.listQueuedAgentMessages(agentId),
@@ -57,7 +68,7 @@ export function useAgentMessageController({
     text: string;
   }>();
   const queueNoticeBaseline = useRef(0);
-  const sendAttempt = useRef<IdempotentAttempt<RecipientUploads<AssetDto>>>();
+  const sendAttempt = useRef<IdempotentAttempt<AgentMessageSubmissionPrepared>>();
   const queuedCommandAttempts = useRef<QueuedMessageCommandAttemptRegistry>(
     new Map(),
   );
@@ -135,78 +146,92 @@ export function useAgentMessageController({
       files: File[],
       draftAttachmentIds: string[] = [],
       draftOwnerId?: string,
+      context?: { retryPreparedAttempt?: boolean },
     ) => {
       const sent = (async () => {
-        const fingerprint = JSON.stringify({
-          agentId,
-          text,
-          files: fileSelectionFingerprint(files),
-          draftAttachmentIds,
-          draftOwnerId,
-          model,
-          effort,
-          speed,
-          activeRunDelivery,
-        });
         const previous = sendAttempt.current;
-        const attempt = retainIdempotentAttempt(
+        const attempt = selectIdempotentAttempt(
           previous,
-          fingerprint,
+          context?.retryPreparedAttempt === true,
+          () => JSON.stringify({
+            agentId,
+            text,
+            files: fileSelectionFingerprint(files),
+            draftAttachmentIds,
+            draftOwnerId,
+            model,
+            effort,
+            speed,
+            activeRunDelivery,
+          }),
           () => createClientId(),
-          () => [],
+          () => ({
+            agentId,
+            files: [...files],
+            request: {
+              text,
+              idempotencyKey: "",
+              attachmentIds: [],
+              ...(draftAttachmentIds.length
+                ? {
+                    draftAttachmentIds: [...draftAttachmentIds],
+                    draftId: `agent:${agentId}`,
+                    draftOwnerId,
+                  }
+                : {}),
+              model,
+              effort: effortSelectionIsCompatible(engine, model, effort)
+                ? effort
+                : "",
+              ...(speed && speedSelectionIsCompatible(engine, model, speed)
+                ? { speed }
+                : {}),
+              activeRunDelivery,
+            },
+            uploads: [],
+          }),
         );
         if (previous && previous !== attempt) {
           await discardRecipientUploads(
-            previous.prepared,
+            previous.prepared.uploads,
             (recipientId, attachment) =>
               api.deleteAttachment(recipientId, attachment.id),
           );
         }
         sendAttempt.current = attempt;
+        const prepared = attempt.prepared;
         if (
-          !draftAttachmentIds.length &&
-          attempt.prepared.length === 0 &&
-          files.length > 0
+          !prepared.request.draftAttachmentIds?.length &&
+          prepared.uploads.length === 0 &&
+          prepared.files.length > 0
         ) {
-          attempt.prepared = await uploadFilesForRecipients(
-            [agentId],
-            files,
+          prepared.uploads = await uploadFilesForRecipients(
+            [prepared.agentId],
+            prepared.files,
             (recipientId, file) => api.uploadAttachment(recipientId, file),
             (recipientId, attachment) =>
               api.deleteAttachment(recipientId, attachment.id),
           );
         }
-        const attachments = attempt.prepared[0]?.attachments ?? [];
+        const attachments = prepared.uploads[0]?.attachments ?? [];
         const response = await sendMessage.mutateAsync(
           {
-            text,
-            idempotencyKey: attempt.idempotencyKey,
-            attachmentIds: attachments.map(item => item.id),
-            ...(draftAttachmentIds.length
-              ? {
-                  draftAttachmentIds,
-                  draftId: `agent:${agentId}`,
-                  draftOwnerId,
-                }
-              : {}),
-            model,
-            effort: effortSelectionIsCompatible(engine, model, effort)
-              ? effort
-              : "",
-            ...(speed && speedSelectionIsCompatible(engine, model, speed)
-              ? { speed }
-              : {}),
-            activeRunDelivery,
+            agentId: prepared.agentId,
+            request: {
+              ...prepared.request,
+              idempotencyKey: attempt.idempotencyKey,
+              attachmentIds: attachments.map(item => item.id),
+            },
           },
           {
             onSuccess: response => {
               const notice = directAgentDeliveryNotice(
                 response,
-                activeRunDelivery,
+                prepared.request.activeRunDelivery ?? "steer",
               );
               if (
                 response.queued &&
-                activeRunDelivery === "queue" &&
+                prepared.request.activeRunDelivery === "queue" &&
                 notice &&
                 response.deliveryId
               ) {
@@ -222,7 +247,7 @@ export function useAgentMessageController({
                 onNotice(notice);
               }
               void queryClient.invalidateQueries({
-                queryKey: queryKeys.queuedMessages.agent(agentId),
+                queryKey: queryKeys.queuedMessages.agent(prepared.agentId),
               });
               if (projectId) {
                 void queryClient.invalidateQueries({

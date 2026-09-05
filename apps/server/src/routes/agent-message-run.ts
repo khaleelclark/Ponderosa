@@ -568,8 +568,14 @@ export function registerAgentMessageRunRoute(
       if (requestedAttachmentIds.length + stagedDraftIds.length > MAX_ATTACHMENTS_PER_MESSAGE) {
         return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique attachments are allowed` });
       }
-      if (stagedDraftIds.length && (!stagedDraftOwner || !stagedDraftSurface || !drafts.validId(stagedDraftSurface))) {
-        return reply.code(400).send({ error: "draft surface and owner are required" });
+      if (stagedDraftIds.length && (
+        !stagedDraftOwner ||
+        stagedDraftSurface !== `agent:${agent.id}` ||
+        !drafts.validId(stagedDraftSurface)
+      )) {
+        return reply.code(400).send({
+          error: "draft attachments must belong to this Agent's draft surface and owner",
+        });
       }
       if (!text && requestedAttachmentIds.length === 0 && stagedDraftIds.length === 0) {
         return reply.code(400).send({ error: "text or an attachment is required" });
