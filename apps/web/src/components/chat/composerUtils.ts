@@ -4,6 +4,7 @@ import {
 } from "@ponderosa/core";
 import type {
   AssetLimitsDto,
+  ConversationDraftConflictDto,
   ConversationDraftDto,
   EngineCommand,
   EngineComposerCapability,
@@ -105,6 +106,56 @@ export function draftContentRetryStillOwned(input: {
     (input.capturedPasteMutationGeneration === undefined ||
       input.capturedPasteMutationGeneration ===
         input.currentPasteMutationGeneration);
+}
+
+export function draftWriteContinuationStillOwned(input: {
+  capturedScope?: string;
+  currentScope?: string;
+  capturedGeneration: number;
+  currentGeneration: number;
+}): boolean {
+  return input.capturedScope === input.currentScope &&
+    input.capturedGeneration === input.currentGeneration;
+}
+
+export interface DraftConflictRecoverySnapshot<TFile, TMention, TFailure> {
+  text: string;
+  attachmentIds: string[];
+  files: Array<{ file: TFile; attachmentId: string }>;
+  pastedText?: string;
+  pastedTextAttachmentId?: string;
+  mentionBindings: TMention[];
+  failedContents: TFailure[];
+}
+
+export interface RecoverableDraftConflict<TFile, TMention, TFailure> {
+  conflict: ConversationDraftConflictDto;
+  snapshot: DraftConflictRecoverySnapshot<TFile, TMention, TFailure>;
+}
+
+export function recoverableDraftConflict<TFile, TMention, TFailure>(
+  conflict: ConversationDraftConflictDto,
+  snapshot: DraftConflictRecoverySnapshot<TFile, TMention, TFailure>,
+): RecoverableDraftConflict<TFile, TMention, TFailure> {
+  return { conflict, snapshot };
+}
+
+export function restoreDraftConflictSnapshot<TFile, TMention, TFailure>(
+  snapshot: DraftConflictRecoverySnapshot<TFile, TMention, TFailure>,
+  currentEditVersion: number,
+): DraftConflictRecoverySnapshot<TFile, TMention, TFailure> & {
+  editVersion: number;
+  locallyEdited: true;
+} {
+  return {
+    ...snapshot,
+    attachmentIds: [...snapshot.attachmentIds],
+    files: [...snapshot.files],
+    mentionBindings: [...snapshot.mentionBindings],
+    failedContents: [...snapshot.failedContents],
+    editVersion: currentEditVersion + 1,
+    locallyEdited: true,
+  };
 }
 
 export function composerRecipientGateSatisfied(input: {

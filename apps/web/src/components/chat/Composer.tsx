@@ -17,7 +17,6 @@ import {
 import type {
   AgentMentionBindingDto,
   ArtifactDto,
-  ConversationDraftConflictDto,
   DraftAttachmentDto,
   EngineCommand,
   EngineComposerCapability,
@@ -79,6 +78,7 @@ import {
   composerSubmissionText,
   deletableSupersededDraftAttachmentIds,
   draftContentRetryStillOwned,
+  draftWriteContinuationStillOwned,
   durableDraftContentReady,
   engineCommandDisabledReason,
   hydratedDraftContent,
@@ -87,6 +87,9 @@ import {
   matchingComposerCapabilities,
   matchingEngineCommands,
   providerSlashSubmission,
+  recoverableDraftConflict,
+  type RecoverableDraftConflict,
+  restoreDraftConflictSnapshot,
   savedPastedTextCleanMutationGeneration,
   shouldAdoptHydratedDraft,
   shouldShowQueueControl,
@@ -244,7 +247,11 @@ export function Composer({
     submissionIntentKey,
   );
   const [draftConflict, setDraftConflict] =
-    useState<ConversationDraftConflictDto>();
+    useState<RecoverableDraftConflict<
+      File,
+      AgentMentionBindingDto,
+      FailedDraftContent
+    >>();
   const fileInput = useRef<HTMLInputElement | null>(null);
   const previousDraftStorageKey = useRef(draftStorageKey);
   const previousConversationDraftId = useRef(conversationDraftId);
@@ -461,6 +468,7 @@ export function Composer({
     mergeRestored: mergeRestoredDraftAttachments,
     removeFile,
     replaceRestored: replaceRestoredDraftAttachments,
+    replaceSnapshot: replaceSnapshotDraftAttachments,
     retryUpload: retryDraftUpload,
     uploadStates: draftUploadStates,
   } = draftAttachments;
@@ -925,6 +933,8 @@ export function Composer({
     const changed = previousConversationDraftId.current !== conversationDraftId;
     previousConversationDraftId.current = conversationDraftId;
     if (changed) {
+      draftGeneration.current += 1;
+      draftWriteChain.current = Promise.resolve();
       pastedTextMutationGeneration.current += 1;
       pastedTextCleanMutationGeneration.current =
         pastedTextMutationGeneration.current;
@@ -933,6 +943,7 @@ export function Composer({
       supersededPastedTextAttachmentIds.current.clear();
       setPastedTextUploading(false);
       updateFailedDraftContents([]);
+      setDraftConflict(undefined);
       replacePastedText(undefined);
       draftReady.current = false;
       draftLocallyEdited.current = false;
@@ -948,6 +959,11 @@ export function Composer({
     replacePastedText,
     updateFailedDraftContents,
   ]);
+
+  useEffect(() => () => {
+    activeDraftScopeRef.current = undefined;
+    draftGeneration.current += 1;
+  }, []);
 
   useEffect(() => {
     const draft = draftQuery.data;
@@ -1349,6 +1365,10 @@ export function Composer({
       if (pastedText && !pastedTextAttachmentId.current) return;
       const generation = draftGeneration.current;
       const editVersion = draftEditVersion.current;
+      const submittedPastedTextAttachmentId =
+        pastedTextAttachmentId.current;
+      const submittedPastedTextMutationGeneration =
+        pastedTextMutationGeneration.current;
       const visibleAttachmentIds = files
         .map(file => draftAttachmentIds.current.get(file))
         .filter(
@@ -1367,14 +1387,33 @@ export function Composer({
       const attachmentsResolved =
         visibleAttachmentIds.length === files.length;
       const clientId = draftClientId.current!;
+      const scope = conversationDraftId;
+      const snapshot = {
+        text,
+        attachmentIds,
+        files: files.flatMap(file => {
+          const attachmentId = draftAttachmentIds.current.get(file);
+          return attachmentId && attachmentIds.includes(attachmentId)
+            ? [{ file, attachmentId }]
+            : [];
+        }),
+        ...(pastedText !== undefined ? { pastedText } : {}),
+        ...(submittedPastedTextAttachmentId
+          ? { pastedTextAttachmentId: submittedPastedTextAttachmentId }
+          : {}),
+        mentionBindings: [...knownMentionBindings],
+        failedContents: [...failedDraftContentsRef.current],
+      };
       draftWriteChain.current = draftWriteChain.current.then(async () => {
-        if (generation !== draftGeneration.current) return;
-        const submittedPastedTextAttachmentId =
-          pastedTextAttachmentId.current;
-        const submittedPastedTextMutationGeneration =
-          pastedTextMutationGeneration.current;
+        const stillOwnsWrite = () => draftWriteContinuationStillOwned({
+          capturedScope: scope,
+          currentScope: activeDraftScopeRef.current,
+          capturedGeneration: generation,
+          currentGeneration: draftGeneration.current,
+        });
+        if (!stillOwnsWrite()) return;
         try {
-          const draft = await api.putConversationDraft(conversationDraftId, {
+          const draft = await api.putConversationDraft(scope, {
             text,
             attachmentIds,
             ...(submittedPastedTextAttachmentId
@@ -1385,6 +1424,7 @@ export function Composer({
             clientId,
             ownerId: draftOwnerId,
           });
+          if (!stillOwnsWrite()) return;
           const deletable = deletableSupersededDraftAttachmentIds(
             supersededPastedTextAttachmentIds.current,
             draft,
@@ -1392,14 +1432,16 @@ export function Composer({
           for (const id of deletable) {
             supersededPastedTextAttachmentIds.current.delete(id);
             void api.deleteDraftAttachment(
-              conversationDraftId,
+              scope,
               draftOwnerId,
               id,
             ).catch(() => {
-              supersededPastedTextAttachmentIds.current.add(id);
+              if (stillOwnsWrite()) {
+                supersededPastedTextAttachmentIds.current.add(id);
+              }
             });
           }
-          if (generation !== draftGeneration.current) return;
+          if (!stillOwnsWrite()) return;
           draftRevision.current = draft.revision;
           pastedTextCleanMutationGeneration.current =
             savedPastedTextCleanMutationGeneration({
@@ -1421,12 +1463,13 @@ export function Composer({
           }
           queryClient.setQueryData(
             queryKeys.conversationDraft.detail(
-              conversationDraftId,
+              scope,
               draftOwnerId,
             ),
             draft,
           );
         } catch (error) {
+          if (!stillOwnsWrite()) return;
           if (!(error instanceof ApiRequestError) || error.status !== 409) {
             setSendError(
               error instanceof Error
@@ -1436,23 +1479,28 @@ export function Composer({
             return;
           }
           const current = await api.getConversationDraft(
-            conversationDraftId,
+            scope,
             draftOwnerId,
           );
-          draftGeneration.current += 1;
+          if (!stillOwnsWrite()) return;
           draftRevision.current = current.revision;
           queryClient.setQueryData(
             queryKeys.conversationDraft.detail(
-              conversationDraftId,
+              scope,
               draftOwnerId,
             ),
             current,
           );
           const conflicts = await api
-            .getConversationDraftConflicts(conversationDraftId, draftOwnerId)
+            .getConversationDraftConflicts(scope, draftOwnerId)
             .catch(() => undefined);
-          const displaced = conflicts?.conflicts.at(-1);
-          if (displaced) setDraftConflict(displaced);
+          if (!stillOwnsWrite()) return;
+          const conflict = conflicts?.conflicts
+            .filter(candidate => candidate.displaced.clientId === clientId)
+            .at(-1);
+          if (conflict) {
+            setDraftConflict(recoverableDraftConflict(conflict, snapshot));
+          }
         }
       });
     }, 500);
@@ -1803,6 +1851,19 @@ export function Composer({
     const submittedText = normalizedDraft;
     const submittedPastedText = pastedTextRef.current;
     const submittedPastedTextAttachmentId = pastedTextAttachmentId.current;
+    const submittedDraftScope = conversationDraftId;
+    const submittedDraftRevision = draftRevision.current;
+    const submittedDraftGeneration = draftGeneration.current;
+    const submittedSupersededPastedTextAttachmentIds = [
+      ...supersededPastedTextAttachmentIds.current,
+    ];
+    const submittedScopeStillActive = () =>
+      draftWriteContinuationStillOwned({
+        capturedScope: submittedDraftScope,
+        currentScope: activeDraftScopeRef.current,
+        capturedGeneration: submittedDraftGeneration,
+        currentGeneration: draftGeneration.current,
+      });
     const submittedUserMutationGeneration =
       userDraftMutationGeneration.current;
     const stagedIds = files
@@ -1859,17 +1920,18 @@ export function Composer({
           );
     void Promise.resolve(operation)
       .then(() => {
-        setPreparedRetry(undefined);
+        if (submittedScopeStillActive()) setPreparedRetry(undefined);
         const draftChangedAfterSubmission =
           userDraftMutationGeneration.current !==
           submittedUserMutationGeneration;
         const preserveNewRuntimeDraft =
           runtimeCommandSubmission && draftChangedAfterSubmission;
+        const scopeStillActive = submittedScopeStillActive();
         // A successful send can settle after this Composer has unmounted. Do
         // not rely on controlled-input effects to clear its durable draft. A
         // runtime command is the exception: it submits no message or files, so
         // preserve anything the user starts composing while it is pending.
-        if (!preserveNewRuntimeDraft) {
+        if (!preserveNewRuntimeDraft && scopeStillActive) {
           draftGeneration.current += 1;
           draftEditVersion.current += 1;
           draftLocallyEdited.current = false;
@@ -1884,15 +1946,25 @@ export function Composer({
         }
         if (
           !preserveNewRuntimeDraft &&
-          conversationDraftId &&
+          submittedDraftScope &&
           draftClientId.current
         ) {
           const clientId = draftClientId.current;
-          draftWriteChain.current = draftWriteChain.current
+          const clearGeneration = draftGeneration.current;
+          const clearOwnsActiveScope = () =>
+            draftWriteContinuationStillOwned({
+              capturedScope: submittedDraftScope,
+              currentScope: activeDraftScopeRef.current,
+              capturedGeneration: clearGeneration,
+              currentGeneration: draftGeneration.current,
+            });
+          const clearChain = (scopeStillActive
+            ? draftWriteChain.current
+            : Promise.resolve())
             .catch(() => undefined)
             .then(async () => {
               const clearSavedDraft = (expectedRevision: number) =>
-                api.putConversationDraft(conversationDraftId, {
+                api.putConversationDraft(submittedDraftScope, {
                   text: "",
                   attachmentIds: [],
                   mentionBindings: [],
@@ -1903,7 +1975,11 @@ export function Composer({
               try {
                 let clearedDraft;
                 try {
-                  clearedDraft = await clearSavedDraft(draftRevision.current);
+                  clearedDraft = await clearSavedDraft(
+                    clearOwnsActiveScope()
+                      ? draftRevision.current
+                      : submittedDraftRevision,
+                  );
                 } catch (error) {
                   if (
                     !(error instanceof ApiRequestError) ||
@@ -1915,7 +1991,7 @@ export function Composer({
                   // against that committed revision. Never loop on a second
                   // conflict: another writer should surface as a warning.
                   const current = await api.getConversationDraft(
-                    conversationDraftId,
+                    submittedDraftScope,
                     draftOwnerId,
                   );
                   // Owner IDs are shared by tabs; only this page's client ID
@@ -1923,49 +1999,54 @@ export function Composer({
                   if (current.clientId !== clientId) throw error;
                   clearedDraft = await clearSavedDraft(current.revision);
                 }
-                if (
-                  previousConversationDraftId.current === conversationDraftId
-                ) {
+                if (clearOwnsActiveScope()) {
                   draftRevision.current = clearedDraft.revision;
                 }
                 queryClient.setQueryData(
                   queryKeys.conversationDraft.detail(
-                    conversationDraftId,
+                    submittedDraftScope,
                     draftOwnerId,
                   ),
                   clearedDraft,
                 );
                 const cleanupIds = new Set([
                   ...stagedIds,
-                  ...supersededPastedTextAttachmentIds.current,
+                  ...submittedSupersededPastedTextAttachmentIds,
                   ...(submittedPastedTextAttachmentId
                     ? [submittedPastedTextAttachmentId]
                     : []),
                 ]);
                 for (const id of cleanupIds) {
-                  supersededPastedTextAttachmentIds.current.delete(id);
+                  if (clearOwnsActiveScope()) {
+                    supersededPastedTextAttachmentIds.current.delete(id);
+                  }
                   void api.deleteDraftAttachment(
-                    conversationDraftId,
+                    submittedDraftScope,
                     draftOwnerId,
                     id,
                   ).catch(() => undefined);
                 }
               } catch {
-                setSendError(
-                  "Message sent, but its saved draft could not be cleared.",
-                );
+                if (clearOwnsActiveScope()) {
+                  setSendError(
+                    "Message sent, but its saved draft could not be cleared.",
+                  );
+                }
               }
             });
+          if (scopeStillActive) draftWriteChain.current = clearChain;
         }
         if (
           submittedPastedTextAttachmentId &&
+          scopeStillActive &&
           pastedTextAttachmentId.current === submittedPastedTextAttachmentId
         ) {
           pastedTextAttachmentId.current = undefined;
         }
-        if (!preserveNewRuntimeDraft) setCaret(0);
+        if (!preserveNewRuntimeDraft && scopeStillActive) setCaret(0);
       })
       .catch((error: unknown) => {
+        if (!submittedScopeStillActive()) return;
         const intentUnchanged =
           userDraftMutationGeneration.current ===
             submittedUserMutationGeneration &&
@@ -2028,7 +2109,7 @@ export function Composer({
         pastedText={pastedText}
         pastedTextBytes={pastedText ? utf8ByteLength(pastedText) : 0}
         error={attachments.error ?? sendError}
-        displacedDraft={draftConflict?.displaced.text}
+        draftConflict={draftConflict?.conflict}
         failedDraftContents={failedDraftContents}
         onShowPastedText={() => {
           setPastedTextEditorValue(pastedText ?? "");
@@ -2039,9 +2120,43 @@ export function Composer({
         }}
         onRestoreDraft={() => {
           if (!draftConflict) return;
-          setKnownMentionBindings(draftConflict.displaced.mentionBindings ?? []);
-          update(draftConflict.displaced.text);
+          const restored = restoreDraftConflictSnapshot(
+            draftConflict.snapshot,
+            draftEditVersion.current,
+          );
+          markUserDraftMutation();
+          draftEditVersion.current = restored.editVersion;
+          draftLocallyEdited.current = restored.locallyEdited;
+          draftAttachmentsLocallyEdited.current = true;
+          replaceText(restored.text);
+          setKnownMentionBindings(restored.mentionBindings);
+          replaceSnapshotDraftAttachments(restored.files);
+          const restoredFileIds = new Set(
+            restored.files.map(item => item.attachmentId),
+          );
+          unrestoredDraftAttachmentIds.current = restored.attachmentIds.filter(
+            id => !restoredFileIds.has(id),
+          );
+          for (const id of restored.attachmentIds) {
+            locallyRemovedDraftAttachmentIds.current.delete(id);
+          }
+          pastedTextMutationGeneration.current += 1;
+          pastedTextUploadGeneration.current += 1;
+          pastedTextAttachmentId.current = restored.pastedTextAttachmentId;
+          pastedTextUploadFailedFor.current = undefined;
+          setPastedTextUploading(false);
+          replacePastedText(restored.pastedText);
+          if (restored.pastedTextAttachmentId) {
+            locallyRemovedDraftAttachmentIds.current.delete(
+              restored.pastedTextAttachmentId,
+            );
+            supersededPastedTextAttachmentIds.current.delete(
+              restored.pastedTextAttachmentId,
+            );
+          }
+          updateFailedDraftContents(restored.failedContents);
           setDraftConflict(undefined);
+          setDraftReadyVersion(value => value + 1);
           inputRef.current?.focus();
         }}
         onRetryDraftContent={id => {

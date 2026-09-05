@@ -34,9 +34,12 @@ import {
   composerRecipientGateSatisfied,
   composerPreparedRetryAction,
   draftContentRetryStillOwned,
+  draftWriteContinuationStillOwned,
   hydratedDraftContent,
   hydratedPastedTextContent,
+  recoverableDraftConflict,
   removeComposerPasteSelection,
+  restoreDraftConflictSnapshot,
   savedPastedTextCleanMutationGeneration,
   shouldIgnoreComposerKey,
   shouldSendComposerKey,
@@ -646,6 +649,129 @@ test("failed draft retry loses ownership on remove, replace, or surface change",
   );
   assert.equal(
     draftContentRetryStillOwned({ ...captured, failurePresent: false }),
+    false,
+  );
+});
+
+test("attachment-only multitab conflict restores the complete snapshot for resave", () => {
+  const file = { name: "evidence.png" };
+  const snapshot = {
+    text: "",
+    attachmentIds: ["attachment-a", "unrestored-b"],
+    files: [{ file, attachmentId: "attachment-a" }],
+    mentionBindings: [{ agentId: "agent-a" }],
+    failedContents: [{ id: "unrestored-b", kind: "attachment" }],
+  };
+  const conflict = recoverableDraftConflict({
+    current: {
+      conversationId: "chat-a",
+      ownerId: "browser-a",
+      text: "remote",
+      attachmentIds: [],
+      revision: 9,
+      updatedAt: "2026-09-05T00:00:00.000Z",
+      clientId: "page:remote",
+    },
+    displaced: {
+      conversationId: "chat-a",
+      text: "",
+      attachmentIds: ["attachment-a", "unrestored-b"],
+      mentionBindings: [{ agentId: "agent-a" }],
+      clientId: "page:local",
+      capturedAt: "2026-09-05T00:00:01.000Z",
+    },
+  }, snapshot);
+  const restored = restoreDraftConflictSnapshot(conflict.snapshot, 8);
+
+  assert.equal(conflict.conflict.displaced.text, "");
+  assert.deepEqual(conflict.conflict.displaced.attachmentIds, [
+    "attachment-a",
+    "unrestored-b",
+  ]);
+  assert.equal(restored.text, "");
+  assert.deepEqual(restored.attachmentIds, ["attachment-a", "unrestored-b"]);
+  assert.deepEqual(restored.files, [{ file, attachmentId: "attachment-a" }]);
+  assert.deepEqual(restored.mentionBindings, [{ agentId: "agent-a" }]);
+  assert.deepEqual(restored.failedContents, [
+    { id: "unrestored-b", kind: "attachment" },
+  ]);
+  assert.equal(restored.editVersion, 9);
+  assert.equal(restored.locallyEdited, true);
+});
+
+test("paste-only multitab conflict restores its staged payload for resave", () => {
+  const snapshot = {
+    text: "",
+    attachmentIds: [],
+    files: [],
+    pastedText: "the extracted long paste",
+    pastedTextAttachmentId: "paste-a",
+    mentionBindings: [],
+    failedContents: [],
+  };
+  const conflict = recoverableDraftConflict({
+    current: {
+      conversationId: "chat-a",
+      ownerId: "browser-a",
+      text: "remote",
+      attachmentIds: [],
+      revision: 4,
+      updatedAt: "2026-09-05T00:00:00.000Z",
+      clientId: "page:remote",
+    },
+    displaced: {
+      conversationId: "chat-a",
+      text: "",
+      attachmentIds: [],
+      pastedTextAttachmentId: "paste-a",
+      mentionBindings: [],
+      clientId: "page:local",
+      capturedAt: "2026-09-05T00:00:01.000Z",
+    },
+  }, snapshot);
+  const restored = restoreDraftConflictSnapshot(conflict.snapshot, 3);
+
+  assert.equal(conflict.conflict.displaced.text, "");
+  assert.equal(
+    conflict.conflict.displaced.pastedTextAttachmentId,
+    "paste-a",
+  );
+  assert.equal(restored.text, "");
+  assert.equal(restored.pastedText, "the extracted long paste");
+  assert.equal(restored.pastedTextAttachmentId, "paste-a");
+  assert.equal(restored.editVersion, 4);
+  assert.equal(restored.locallyEdited, true);
+});
+
+test("delayed draft continuations lose ownership after switching Chat A to B", () => {
+  for (const continuation of ["success", "error", "conflict", "cleanup"]) {
+    assert.equal(
+      draftWriteContinuationStillOwned({
+        capturedScope: "chat-a",
+        currentScope: "chat-b",
+        capturedGeneration: 11,
+        currentGeneration: 12,
+      }),
+      false,
+      continuation,
+    );
+  }
+  assert.equal(
+    draftWriteContinuationStillOwned({
+      capturedScope: "chat-a",
+      currentScope: "chat-a",
+      capturedGeneration: 11,
+      currentGeneration: 11,
+    }),
+    true,
+  );
+  assert.equal(
+    draftWriteContinuationStillOwned({
+      capturedScope: "chat-a",
+      currentScope: "chat-a",
+      capturedGeneration: 11,
+      currentGeneration: 12,
+    }),
     false,
   );
 });

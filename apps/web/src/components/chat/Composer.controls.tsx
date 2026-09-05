@@ -21,6 +21,7 @@ import {
 import type {
   AgentMentionBindingDto,
   AssetLimitsDto,
+  ConversationDraftConflictDto,
   EngineCommand,
   EngineComposerCapability,
   ArtifactDto,
@@ -44,7 +45,7 @@ export function ComposerNotices({
   pastedText,
   pastedTextBytes,
   error,
-  displacedDraft,
+  draftConflict,
   failedDraftContents,
   onShowPastedText,
   onRemovePastedText,
@@ -56,7 +57,7 @@ export function ComposerNotices({
   pastedText?: string;
   pastedTextBytes: number;
   error?: string;
-  displacedDraft?: string;
+  draftConflict?: ConversationDraftConflictDto;
   failedDraftContents: Array<{ id: string; name: string }>;
   onShowPastedText(): void;
   onRemovePastedText(): void;
@@ -129,7 +130,7 @@ export function ComposerNotices({
           {item.name} could not be restored from this draft.
         </Alert>
       ))}
-      {displacedDraft ? (
+      {draftConflict ? (
         <Alert
           severity="warning"
           sx={{ mb: 1 }}
@@ -139,8 +140,21 @@ export function ComposerNotices({
             </Button>
           }
         >
-          This draft changed elsewhere. Your displaced text is preserved: “
-          {compactPreviewText(displacedDraft)}”
+          This draft changed elsewhere. Your version is preserved.
+          {draftConflict.displaced.text
+            ? ` Text: “${compactPreviewText(draftConflict.displaced.text)}”`
+            : ""}
+          {draftConflict.displaced.pastedTextAttachmentId
+            ? " It includes pasted text."
+            : ""}
+          {draftConflict.displaced.attachmentIds.length > 0
+            ? ` It includes ${draftConflict.displaced.attachmentIds.length} attachment${draftConflict.displaced.attachmentIds.length === 1 ? "" : "s"}.`
+            : ""}
+          {!draftConflict.displaced.text &&
+          !draftConflict.displaced.pastedTextAttachmentId &&
+          draftConflict.displaced.attachmentIds.length === 0
+            ? " It is an empty draft."
+            : ""}
         </Alert>
       ) : null}
     </>
