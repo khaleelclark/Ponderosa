@@ -20,6 +20,7 @@ import type {
 } from "@ponderosa/agents";
 import { stableJson } from "@ponderosa/agents";
 import { ASSET_LIMITS, AssetError, type AssetStore } from "../assets.js";
+import { cleanupUncommittedCommunicationArtifact } from "../communication-artifacts.js";
 import { leaseConversationDelivery } from "../delivery-leases.js";
 import { renderScopedMessage, stripLeadingScopeTag } from "../agent-mentions.js";
 
@@ -100,6 +101,26 @@ export interface ConversationDeliveryRouteDependencies {
 }
 
 const MAX_ATTACHMENTS_PER_MESSAGE = ASSET_LIMITS.maxAssetsPerMessage;
+const AGENT_MENTION_BINDING_FIELDS = {
+  projectId: true,
+  handle: true,
+  agentId: true,
+  currentHandle: true,
+  currentTitle: true,
+} as const satisfies Record<keyof AgentMentionBindingDto, true>;
+const AGENT_MENTION_BINDING_KEYS = Object.keys(
+  AGENT_MENTION_BINDING_FIELDS,
+) as (keyof AgentMentionBindingDto)[];
+
+function isAgentMentionBinding(value: unknown): value is AgentMentionBindingDto {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  const keys = Object.keys(candidate);
+  return keys.length === AGENT_MENTION_BINDING_KEYS.length &&
+    AGENT_MENTION_BINDING_KEYS.every((key) =>
+      Object.prototype.hasOwnProperty.call(candidate, key) &&
+      typeof candidate[key] === "string" && Boolean(candidate[key].trim()));
+}
 
 export function conversationDeliveryRequestFingerprint(input: unknown): string {
   return createHash("sha256").update(stableJson(input)).digest("hex");
@@ -169,6 +190,7 @@ export function registerConversationDeliveryRoutes(
   const {
     store,
     coordinationV3,
+    assets,
     projectDeletionInProgress,
     agentDeletionInProgress,
     attachmentDeletionInProgress = () => false,
@@ -220,11 +242,7 @@ export function registerConversationDeliveryRoutes(
     if (requestedRecipientAgentMentions !== undefined &&
         (!Array.isArray(requestedRecipientAgentMentions) ||
         requestedRecipientAgentMentions.length > 100 ||
-        requestedRecipientAgentMentions.some((binding) => !binding ||
-          typeof binding !== "object" || Array.isArray(binding) ||
-          Object.keys(binding).some((key) => !["agentId", "handle"].includes(key)) ||
-          typeof binding.agentId !== "string" || !binding.agentId.trim() ||
-          typeof binding.handle !== "string" || !binding.handle.trim()))) {
+        requestedRecipientAgentMentions.some((binding) => !isAgentMentionBinding(binding)))) {
       return reply.code(400).send({ error: "Broadcast Agent mention bindings must be unique and limited to 100" });
     }
     const recipientAgentMentions =
@@ -272,7 +290,7 @@ export function registerConversationDeliveryRoutes(
       kind: "broadcast",
       conversationId: request.params.id,
       text: requestedText,
-      recipients: recipientAgentMentions,
+      recipients: recipientAgentMentions.map(({ agentId, handle }) => ({ agentId, handle })),
       attachments: requestedAssets.map((asset) => ({ agentId: asset.agentId, id: asset.id })),
       recipientAttachments: requestedRecipientAttachments,
       activeRunDelivery,
@@ -345,7 +363,8 @@ export function registerConversationDeliveryRoutes(
     }
     if (recipientAgentMentions.some((binding) => {
       const matches = agentIdsByHandle.get(binding.handle.toLocaleLowerCase()) ?? [];
-      return matches.length !== 1 || matches[0] !== binding.agentId;
+      return binding.projectId !== master.projectId || matches.length !== 1 ||
+        matches[0] !== binding.agentId;
     })) {
       return reply.code(400).send({ error: "Broadcast Agent mention binding is stale, ambiguous, or invalid" });
     }
@@ -380,6 +399,8 @@ export function registerConversationDeliveryRoutes(
       master.id,
       leasedAgentIds,
     );
+    let prepared: Awaited<ReturnType<typeof prepareUserCommunicationText>> | undefined;
+    let artifactCommitted = false;
     try {
     const validatedAssets: AssetDto[] = [];
     for (const requested of requestedAssets) {
@@ -421,7 +442,6 @@ export function registerConversationDeliveryRoutes(
     }
     const createdAt = existingRuntime?.createdAt ?? new Date().toISOString();
     const validationCompletedAt = performance.now();
-    let prepared: Awaited<ReturnType<typeof prepareUserCommunicationText>>;
     try {
       prepared = await prepareUserCommunicationText({ projectId: master.projectId, communicationId: eventId, text: rawText, createdAt });
     } catch (error) {
@@ -502,6 +522,7 @@ export function registerConversationDeliveryRoutes(
         } : {}),
         now: createdAt,
       });
+      artifactCommitted = true;
     } catch (error) {
       return reply.code(409).send({ error: error instanceof Error ? error.message : "broadcast conflict" });
     }
@@ -576,6 +597,15 @@ export function registerConversationDeliveryRoutes(
         replayed: intake.replayed,
       });
     } finally {
+      if (!artifactCommitted) {
+        cleanupUncommittedCommunicationArtifact({
+          projectId: master.projectId,
+          artifact: prepared?.artifact,
+          runtimeArtifact: (artifactId) => coordinationV3.runtimeArtifact(artifactId),
+          removeRuntimeArtifactReservation: (projectId, artifactId) =>
+            assets.removeRuntimeArtifactReservation(projectId, artifactId),
+        });
+      }
       releaseDeliveryLease();
     }
   });
@@ -780,6 +810,8 @@ export function registerConversationDeliveryRoutes(
         master.id,
         agentIds,
       );
+      let prepared: Awaited<ReturnType<typeof prepareUserCommunicationText>> | undefined;
+      let artifactCommitted = false;
       try {
         const attachmentsByAgent = await Promise.all(recipients.map(async (recipient) => {
           const attached = await Promise.all((recipient.attachmentIds ?? []).map((id) => assetMetadata(recipient.agentId, id)));
@@ -796,7 +828,7 @@ export function registerConversationDeliveryRoutes(
           }) as AssetDto[];
         }));
         const createdAt = existingRuntime?.createdAt ?? new Date().toISOString();
-        const prepared = await prepareUserCommunicationText({
+        prepared = await prepareUserCommunicationText({
           projectId: master.projectId, communicationId: eventId, text: rawText, createdAt,
         });
         const communication: CommunicationEvent = {
@@ -847,6 +879,7 @@ export function registerConversationDeliveryRoutes(
           })),
           now: createdAt,
         });
+        artifactCommitted = true;
         const deliveryIdByAgentId = new Map(
           (intake.activations ?? []).map((activation) => [activation.agentId, activation.id]),
         );
@@ -910,6 +943,15 @@ export function registerConversationDeliveryRoutes(
         if (error instanceof AssetError) return reply.code(error.statusCode).send({ error: error.message });
         return reply.code(409).send({ error: error instanceof Error ? error.message : "direct message conflict" });
       } finally {
+        if (!artifactCommitted) {
+          cleanupUncommittedCommunicationArtifact({
+            projectId: master.projectId,
+            artifact: prepared?.artifact,
+            runtimeArtifact: (artifactId) => coordinationV3.runtimeArtifact(artifactId),
+            removeRuntimeArtifactReservation: (projectId, artifactId) =>
+              assets.removeRuntimeArtifactReservation(projectId, artifactId),
+          });
+        }
         releaseDeliveryLease();
       }
     },

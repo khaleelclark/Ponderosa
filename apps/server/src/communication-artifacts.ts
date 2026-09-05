@@ -23,6 +23,20 @@ interface CommunicationArtifactContext {
   store: AgentStore;
 }
 
+export function cleanupUncommittedCommunicationArtifact(input: {
+  projectId: string;
+  artifact?: PreparedCommunicationArtifact;
+  runtimeArtifact: (artifactId: string) => unknown;
+  removeRuntimeArtifactReservation: (projectId: string, artifactId: string) => void;
+}): void {
+  if (!input.artifact?.reservationCreated) return;
+  try {
+    if (!input.runtimeArtifact(input.artifact.id)) {
+      input.removeRuntimeArtifactReservation(input.projectId, input.artifact.id);
+    }
+  } catch { /* preserve uncertain canonical ownership for startup reconciliation */ }
+}
+
 type CommunicationArtifactIdentity = Omit<
   PreparedCommunicationArtifact,
   "createdAt" | "reservationCreated"

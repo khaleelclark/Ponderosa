@@ -21,6 +21,7 @@ import { canonicalizeProviderText } from "@ponderosa/core";
 import { CoordinationIdempotencyConflictError } from "@ponderosa/agents";
 import type { AgentStore, CoordinationV3Store, WorkspaceStore } from "@ponderosa/agents";
 import { AssetError } from "../assets.js";
+import { cleanupUncommittedCommunicationArtifact } from "../communication-artifacts.js";
 import { leaseConversationDelivery } from "../delivery-leases.js";
 import type { PreparedCommunicationArtifact } from "./conversation-deliveries.js";
 
@@ -415,7 +416,12 @@ export function registerQueuedMessageRoutes(
       return result satisfies EditQueuedMessageResponse;
     } finally {
       if (prepared?.artifact && !artifactCommitted) {
-        bestEffort(() => removeRuntimeArtifactReservation(agent.projectId, prepared!.artifact!.id));
+        cleanupUncommittedCommunicationArtifact({
+          projectId: agent.projectId,
+          artifact: prepared.artifact,
+          runtimeArtifact: (artifactId) => coordinationV3.runtimeArtifact(artifactId),
+          removeRuntimeArtifactReservation,
+        });
       }
       releaseDeliveryLease();
     }

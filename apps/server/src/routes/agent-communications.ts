@@ -23,7 +23,10 @@ import type {
   AgentMessageCapability,
 } from "../app-contracts.js";
 import type { createAgentEventService } from "../agent-event-service.js";
-import type { createCommunicationArtifactAuthority } from "../communication-artifacts.js";
+import {
+  cleanupUncommittedCommunicationArtifact,
+  type createCommunicationArtifactAuthority,
+} from "../communication-artifacts.js";
 import { derivedRunActionKey } from "../security.js";
 import { normalizeExternalCitations } from "../external-content.js";
 import { selectsRequiredReply } from "../required-reply-route.js";
@@ -911,12 +914,12 @@ export function registerAgentCommunicationRoutes(
     } finally {
       if (!artifactsCommitted) {
         for (const artifact of preparedArtifacts) {
-          if (!artifact.reservationCreated) continue;
-          try {
-            if (!coordinationV3.runtimeArtifact(artifact.id)) {
-              removeRuntimeArtifactReservation(currentAuthor.projectId, artifact.id);
-            }
-          } catch { /* preserve uncertain authority for startup reconciliation */ }
+          cleanupUncommittedCommunicationArtifact({
+            projectId: currentAuthor.projectId,
+            artifact,
+            runtimeArtifact: (artifactId) => coordinationV3.runtimeArtifact(artifactId),
+            removeRuntimeArtifactReservation,
+          });
         }
       }
       releaseDeliveryLease();

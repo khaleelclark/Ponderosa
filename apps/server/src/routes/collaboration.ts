@@ -16,6 +16,7 @@ import type {
   WorkspaceStore,
 } from "@ponderosa/agents";
 import { ASSET_LIMITS, AssetError, type AssetStore } from "../assets.js";
+import { cleanupUncommittedCommunicationArtifact } from "../communication-artifacts.js";
 import {
   conversationDeliveryRequestFingerprint,
   leaseConversationDelivery,
@@ -89,6 +90,7 @@ export function registerCollaborationRoutes(
   const {
     store,
     coordinationV3,
+    assets,
     projectDeletionInProgress,
     agentDeletionInProgress,
     attachmentDeletionInProgress = () => false,
@@ -283,6 +285,8 @@ export function registerCollaborationRoutes(
       master.id,
       leasedAgentIds,
     );
+    let prepared: Awaited<ReturnType<typeof prepareUserCommunicationText>> | undefined;
+    let artifactCommitted = false;
     try {
     const attachmentsByAgent = new Map<string, AssetDto[]>();
     for (const intent of routing.intents) {
@@ -299,7 +303,6 @@ export function registerCollaborationRoutes(
       .map((intent) => attachmentsByAgent.get(intent.targetAgentId) ?? [])
       .find((items) => items.length > 0) ?? [];
     const createdAt = existingRuntime?.createdAt ?? new Date().toISOString();
-    let prepared: Awaited<ReturnType<typeof prepareUserCommunicationText>>;
     try {
       prepared = await prepareUserCommunicationText({
         projectId: master.projectId, communicationId: eventId, text, createdAt,
@@ -360,6 +363,7 @@ export function registerCollaborationRoutes(
         })),
         now: communication.createdAt,
       });
+      artifactCommitted = true;
     } catch (error) {
       const status = error instanceof AssetError ? error.statusCode : 409;
       return reply.code(status).send({ error: error instanceof Error ? error.message : "collaboration conflict" });
@@ -414,6 +418,15 @@ export function registerCollaborationRoutes(
       notifiedAgentIds,
     };
     } finally {
+      if (!artifactCommitted) {
+        cleanupUncommittedCommunicationArtifact({
+          projectId: master.projectId,
+          artifact: prepared?.artifact,
+          runtimeArtifact: (artifactId) => coordinationV3.runtimeArtifact(artifactId),
+          removeRuntimeArtifactReservation: (projectId, artifactId) =>
+            assets.removeRuntimeArtifactReservation(projectId, artifactId),
+        });
+      }
       releaseDeliveryLease();
     }
   });

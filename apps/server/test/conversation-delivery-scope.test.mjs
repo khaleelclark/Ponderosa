@@ -1386,7 +1386,13 @@ test("broadcasts cannot target an Agent owned by another Chat", async (t) => {
     url: `/api/conversations/${chat.id}/messages`,
     payload: {
       text: "#OtherChatAgent do this",
-      recipientAgentMentions: [{ agentId: otherChatAgent.id, handle: otherChatAgent.handle }],
+      recipientAgentMentions: [{
+        projectId: chat.projectId,
+        agentId: otherChatAgent.id,
+        handle: otherChatAgent.handle,
+        currentHandle: otherChatAgent.handle,
+        currentTitle: "Other Chat Agent",
+      }],
       idempotencyKey: "cross-chat-attempt",
     },
   });
@@ -1451,7 +1457,13 @@ for (const { direct, targeted, label } of [
         : {
             text: targeted ? "#AgentA hello" : "hello",
             ...(targeted ? {
-              recipientAgentMentions: [{ agentId: agent.id, handle: agent.handle }],
+              recipientAgentMentions: [{
+                projectId: chat.projectId,
+                agentId: agent.id,
+                handle: agent.handle,
+                currentHandle: agent.handle,
+                currentTitle: agent.title,
+              }],
             } : {}),
             idempotencyKey: "delivery-race",
           },
@@ -2471,6 +2483,186 @@ test("collaboration retries read the collaboration channel", async (t) => {
   assert.equal(response.json().audience, "mention");
 });
 
+test("targeted broadcasts accept the complete composer mention-binding shape", async (t) => {
+  const chat = { id: "chat-a", projectId: "project-a", archived: false };
+  const agent = {
+    id: "agent-a",
+    projectId: chat.projectId,
+    conversationId: chat.id,
+    handle: "AgentA",
+    title: "Agent A",
+    archived: false,
+  };
+  let intakeAttempts = 0;
+  let acceptedEventId;
+  const app = Fastify();
+  t.after(() => app.close());
+  registerConversationDeliveryRoutes(app, {
+    store: {
+      getConversation: () => chat,
+      listAgents: () => [agent],
+      getAgent: () => agent,
+      getConversationMessages: () => acceptedEventId
+        ? [{ id: "message-a", communicationEventId: acceptedEventId }]
+        : [],
+    },
+    coordinationV3: {
+      runtimeCommunication: () => undefined,
+      runtimeArtifact: () => undefined,
+      recordRuntimeCommunication: (input) => {
+        intakeAttempts += 1;
+        acceptedEventId = input.id;
+        return { replayed: false, activations: [] };
+      },
+    },
+    assets: { removeRuntimeArtifactReservation: () => false },
+    projectDeletionInProgress: () => false,
+    agentDeletionInProgress: () => false,
+    conversationDeliveryLeases: new Map(),
+    agentDeliveryLeases: new Map(),
+    prepareUserCommunicationText: async ({ text }) => ({
+      canonicalText: text,
+      publishedText: text,
+    }),
+    reconcileRuntimeCommunicationProjections: async () => 1,
+    appendWorkspace: () => {},
+    publishCoordinationV3Changed: () => {},
+    notifyScheduler: () => {},
+  });
+  const binding = {
+    projectId: chat.projectId,
+    handle: agent.handle,
+    agentId: agent.id,
+    currentHandle: agent.handle,
+    currentTitle: agent.title,
+  };
+
+  const accepted = await app.inject({
+    method: "POST",
+    url: `/api/conversations/${chat.id}/messages`,
+    payload: {
+      text: `#broadcast #${agent.handle} hello`,
+      recipientAgentMentions: [binding],
+      idempotencyKey: "composer-shape",
+    },
+  });
+  assert.equal(accepted.statusCode, 200, accepted.body);
+  assert.equal(intakeAttempts, 1);
+
+  for (const [idempotencyKey, malformedBinding] of [
+    ["missing-field", { ...binding, currentTitle: undefined }],
+    ["unknown-field", { ...binding, unexpected: true }],
+  ]) {
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${chat.id}/messages`,
+      payload: {
+        text: `#broadcast #${agent.handle} hello`,
+        recipientAgentMentions: [malformedBinding],
+        idempotencyKey,
+      },
+    });
+    assert.equal(response.statusCode, 400, response.body);
+  }
+  assert.equal(intakeAttempts, 1);
+});
+
+test("failed human communication intake cleans only its owned uncatalogued artifact reservation", async () => {
+  const chat = { id: "chat-a", projectId: "project-a", archived: false };
+  const agent = {
+    id: "agent-a",
+    projectId: chat.projectId,
+    conversationId: chat.id,
+    handle: "AgentA",
+    title: "Agent A",
+    archived: false,
+  };
+  const routes = [
+    ["broadcast", "/api/conversations/chat-a/messages", {
+      text: "hello",
+      idempotencyKey: "artifact-failure",
+    }],
+    ["direct", "/api/conversations/chat-a/direct-messages", {
+      text: "hello",
+      recipients: [{ agentId: agent.id }],
+      idempotencyKey: "artifact-failure",
+    }],
+    ["collaboration", "/api/conversations/chat-a/collaboration/messages", {
+      text: "hello",
+      recipientAgentIds: [agent.id],
+      idempotencyKey: "artifact-failure",
+    }],
+  ];
+  const ownershipCases = [
+    ["owned uncatalogued", true, false, true],
+    ["pre-existing", false, false, false],
+    ["owned but canonically committed", true, true, false],
+  ];
+
+  for (const [route, url, payload] of routes) {
+    for (const [ownership, reservationCreated, canonical, shouldRemove] of ownershipCases) {
+      const artifact = {
+        id: `artifact-${route}`,
+        role: "long_text",
+        title: "Pasted text",
+        mediaType: "text/markdown",
+        blobPath: `artifact-${route}`,
+        blobHash: "a".repeat(64),
+        byteLength: 10,
+        createdAt: new Date().toISOString(),
+        ...(reservationCreated ? { reservationCreated: true } : {}),
+      };
+      const removed = [];
+      const app = Fastify();
+      const coordinationV3 = {
+        runtimeCommunication: () => undefined,
+        runtimeArtifact: () => canonical ? artifact : undefined,
+        recordRuntimeCommunication: () => { throw new Error("canonical intake failed"); },
+      };
+      const common = {
+        store: {
+          getConversation: () => chat,
+          listAgents: () => route === "broadcast" ? [] : [agent],
+          getAgent: () => agent,
+        },
+        coordinationV3,
+        assets: {
+          removeRuntimeArtifactReservation: (_projectId, artifactId) => {
+            removed.push(artifactId);
+            return true;
+          },
+        },
+        projectDeletionInProgress: () => false,
+        agentDeletionInProgress: () => false,
+        conversationDeliveryLeases: new Map(),
+        agentDeliveryLeases: new Map(),
+        prepareUserCommunicationText: async ({ text }) => ({
+          canonicalText: text,
+          publishedText: "preview",
+          artifact,
+        }),
+        runtimeArtifactMetadata: (item) => item,
+      };
+      if (route === "collaboration") {
+        registerCollaborationRoutes(app, {
+          ...common,
+          collaborationViewDetail: () => ({ agents: [agent], messages: [] }),
+        });
+      } else {
+        registerConversationDeliveryRoutes(app, common);
+      }
+      const response = await app.inject({ method: "POST", url, payload });
+      assert.equal(response.statusCode, 409, `${route}/${ownership}: ${response.body}`);
+      assert.deepEqual(
+        removed,
+        shouldRemove ? [artifact.id] : [],
+        `${route}/${ownership}`,
+      );
+      await app.close();
+    }
+  }
+});
+
 test("delivery routes reject malformed JSON shapes with 400", async (t) => {
   const app = Fastify();
   t.after(() => app.close());
@@ -2490,7 +2682,13 @@ test("delivery routes reject malformed JSON shapes with 400", async (t) => {
     ["/api/conversations/chat-a/messages", { text: "hello", role: "assistant", idempotencyKey: "bad-role" }],
     ["/api/conversations/chat-a/messages", {
       text: "#AgentA hello",
-      recipientAgentMentions: [{ agentId: "agent-a", handle: "AgentA" }],
+      recipientAgentMentions: [{
+        projectId: "project-a",
+        agentId: "agent-a",
+        handle: "AgentA",
+        currentHandle: "AgentA",
+        currentTitle: "Agent A",
+      }],
       recipientAttachments: [null],
       idempotencyKey: "bad-attachment-list",
     }],
