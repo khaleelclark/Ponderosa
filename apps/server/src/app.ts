@@ -284,7 +284,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     range: TokenUsageRangeDto = {},
   ): TokenUsageSummaryDto => store.getTokenUsage(scope, range);
   const activeRuns = new Map<string, ActiveRun>();
-  const managementPlans = new Map<string, ManagementPlan>();
+  const managementPlans = new Map<string, ManagementPlan>(
+    store.listAgentManagementPlans().map((plan) => [plan.id, plan]),
+  );
   const isArtifactDependentWorkIntake = (method: string, url: string, body?: unknown): boolean => {
     if (method !== "POST" && method !== "PUT" && method !== "PATCH" && method !== "DELETE") return false;
     const pathname = url.split("?", 1)[0]!;

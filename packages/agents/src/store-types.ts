@@ -1,4 +1,5 @@
 import type {
+  AgentDeletionPreviewDto,
   AgentDto,
   AgentPresetDto,
   ArtifactDto,
@@ -187,4 +188,47 @@ export interface AgentManagementAuthorization {
   scopeHash: string;
   permission: "deletion" | "reorganization";
   approvalDecisionId?: string;
+}
+
+export interface ManagementOperation {
+  kind: "create_agent" | "rename_agent" | "stop_agent" | "delete_agent" | "set_manager";
+  ref?: string;
+  targetAgentId?: string;
+  parentRef?: string;
+  managerAgentId?: string | null;
+  title?: string;
+  engine?: string;
+  model?: string;
+  effort?: string;
+  instructions?: string;
+  /** Server-captured authority for stop_agent. Provider input cannot set it. */
+  targetRunId?: string;
+}
+
+export interface ManagementOperationProgress {
+  index: number;
+  kind: ManagementOperation["kind"];
+  receipt: Record<string, unknown>;
+}
+
+export interface ManagementPlan {
+  id: string;
+  agentId: string;
+  runId: string;
+  conversationId: string;
+  projectId: string;
+  idempotencyKey: string;
+  requestHash: string;
+  operations: ManagementOperation[];
+  deletionPreview?: AgentDeletionPreviewDto;
+  scopeHash: string;
+  approvalRequired: boolean;
+  approvalDecisionId?: string;
+  status: "planned" | "applying" | "completed";
+  operationProgress: ManagementOperationProgress[];
+  refs: Record<string, string>;
+  changedAgentIds: string[];
+  createdAt: string;
+  appliedAt?: string;
+  result?: unknown;
 }

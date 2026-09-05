@@ -160,6 +160,7 @@ export class AgentProjectDeletionAuthority {
           .run(id);
         this.client.prepare(`DELETE FROM agent_presets WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM agent_management_approvals WHERE project_id = ?`).run(id);
+        this.client.prepare(`DELETE FROM agent_management_plans WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM project_deletion_pending WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM agent_deletion_tombstones WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM agent_deletion_receipts WHERE project_id = ?`).run(id);

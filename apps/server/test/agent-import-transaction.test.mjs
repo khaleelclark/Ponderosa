@@ -105,6 +105,48 @@ test("completed copy replay does not reread its source Agent", async (t) => {
   assert.equal(sourceReads, 0);
 });
 
+test("JSON copy and synchronous import fingerprints ignore object key order", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-semantic-fingerprint-"));
+  const app = Fastify();
+  t.after(async () => { await app.close(); await rm(dataDir, { recursive: true, force: true }); });
+  const hashes = [];
+  const completed = (input) => ({ id: `operation-${hashes.length}`, ...input, status: "completed",
+    agentIds: ["agent-a"], artifactIds: [], artifactIdentities: [],
+    result: { rootAgentId: "agent-a", agentIds: ["agent-a"] } });
+  let current;
+  registerAgentPackageRoutes(app, {
+    dataDir,
+    store: {
+      beginAgentCreationOperation: (input) => {
+        hashes.push(input.payloadHash);
+        current = completed(input);
+        return { operation: current };
+      },
+      getAgentCreationOperation: () => current,
+      getAgent: () => undefined,
+    },
+    coordination: {}, assets: {}, engines: new Map(), deletingProjectIds: new Set(),
+    deletingConversationIds: new Set(), deletingAgentIds: new Set(), agentCreationConversationLeases: new Map(),
+    cachedModelOptions: () => [], appendWorkspace: () => {}, agentMessages: () => {},
+    createOperationalNotification: () => {},
+  });
+  const copyA = { sourceAgentId: "source-a", conversationId: "chat-a", organization: false };
+  const copyB = { organization: false, conversationId: "chat-a", sourceAgentId: "source-a" };
+  await app.inject({ method: "POST", url: "/api/projects/project-a/copy-agent",
+    headers: { "idempotency-key": "copy-a" }, payload: copyA });
+  await app.inject({ method: "POST", url: "/api/projects/project-a/copy-agent",
+    headers: { "idempotency-key": "copy-b" }, payload: copyB });
+  assert.equal(hashes[0], hashes[1]);
+
+  const importA = { package: {}, conversationId: "chat-a", engineMapping: { old: "new" } };
+  const importB = { engineMapping: { old: "new" }, conversationId: "chat-a", package: {} };
+  await app.inject({ method: "POST", url: "/api/projects/project-a/import-agents",
+    headers: { "idempotency-key": "import-a" }, payload: importA });
+  await app.inject({ method: "POST", url: "/api/projects/project-a/import-agents",
+    headers: { "idempotency-key": "import-b" }, payload: importB });
+  assert.equal(hashes[2], hashes[3]);
+});
+
 test("generated-file import rollback clears its exact authority before retry", async (t) => {
   const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-generated-import-rollback-"));
   const store = new AgentStore(dataDir);

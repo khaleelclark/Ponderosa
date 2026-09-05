@@ -238,7 +238,9 @@ export function registerAgentMaintenanceRoutes(
   app.put<{ Params: { id: string }; Body: UpdateAgentOrganizationRequest }>(
     "/api/agents/:id/manager",
     async (request, reply) => {
-      if (!request.body || !("managerAgentId" in request.body) ||
+      if (!request.body || typeof request.body !== "object" || Array.isArray(request.body) ||
+        Object.keys(request.body).some((key) => key !== "managerAgentId") ||
+        !("managerAgentId" in request.body) ||
         (request.body.managerAgentId !== null && (typeof request.body.managerAgentId !== "string" || !request.body.managerAgentId.trim()))) {
         return reply.code(400).send({ error: "managerAgentId must be a stable agent ID or null" });
       }

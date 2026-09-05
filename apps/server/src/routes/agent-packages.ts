@@ -18,6 +18,7 @@ import {
   publishManagedArtifactContentsAsync,
   readManagedArtifactContent,
   removeManagedArtifactContent,
+  stableJson,
   type AgentStore,
   type CoordinationV3Store,
 } from "@ponderosa/agents";
@@ -509,7 +510,7 @@ export function registerAgentPackageRoutes(
     reply: FastifyReply,
     onPhase?: (phase: AgentImportPhase) => Promise<void>,
     creationOperationId?: string,
-    creationRequest?: { idempotencyKey: string; payloadHash: string },
+    creationRequest?: { idempotencyKey: string; rawPayloadHash?: string },
   ): Promise<unknown> => withProjectImportLock(projectId, async () => {
       let importBody: Record<string, unknown>;
       try {
@@ -535,13 +536,24 @@ export function registerAgentPackageRoutes(
       }
       if (!creationOperationId) {
         if (!creationRequest) throw new Error("Agent import idempotency identity is required");
+        const normalizedEngineMapping = Object.fromEntries(
+          Object.entries(importBody.engineMapping as Record<string, string>)
+            .map(([source, target]) => [source, target.trim()]),
+        );
+        const payloadHash = creationRequest.rawPayloadHash ?? createHash("sha256").update(stableJson({
+          package: importBody.package,
+          conversationId: importBody.conversationId,
+          engineMapping: normalizedEngineMapping,
+          acknowledgeElevatedManagementPermissions:
+            importBody.acknowledgeElevatedManagementPermissions ?? false,
+        })).digest("hex");
         try {
           creationOperationId = store.beginAgentCreationOperation({
             projectId,
             actorScope: "user:local-operator",
             kind: "import",
             idempotencyKey: creationRequest.idempotencyKey,
-            payloadHash: creationRequest.payloadHash,
+            payloadHash,
           }).operation.id;
         } catch (error) {
           return reply.code(409).send({
@@ -1322,7 +1334,6 @@ export function registerAgentPackageRoutes(
       }
       return importPackage(request.params.id, request.body, reply, undefined, undefined, {
         idempotencyKey,
-        payloadHash: createHash("sha256").update(JSON.stringify(request.body)).digest("hex"),
       });
     },
   );
@@ -1578,7 +1589,7 @@ export function registerAgentPackageRoutes(
           undefined,
           {
             idempotencyKey,
-            payloadHash: createHash("sha256").update(request.body).digest("hex"),
+            rawPayloadHash: createHash("sha256").update(request.body).digest("hex"),
           },
         );
       } catch (error) {
@@ -1636,9 +1647,14 @@ export function registerAgentPackageRoutes(
           error: "copy request fields are invalid",
         });
       }
-      const payloadHash = createHash("sha256")
-        .update(JSON.stringify(request.body))
-        .digest("hex");
+      const payloadHash = createHash("sha256").update(stableJson({
+        sourceAgentId,
+        conversationId,
+        mode: request.body.mode ?? "full",
+        organization: request.body.organization ?? false,
+        acknowledgeElevatedManagementPermissions:
+          request.body.acknowledgeElevatedManagementPermissions ?? false,
+      })).digest("hex");
       let creationOperation;
       try {
         creationOperation = store.beginAgentCreationOperation({

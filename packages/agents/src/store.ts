@@ -108,6 +108,7 @@ import type {
   AgentDeletionReceipt,
   ProjectDeletionReceipt,
   AgentManagementAuthorization,
+  ManagementPlan,
 } from "./store-types.js";
 export type {
   ContextReadBoundary,
@@ -1228,6 +1229,29 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.agentManagement.resolveAgentManagementApproval(decisionId, approved, at);
   }
 
+  createAgentManagementPlan(plan: ManagementPlan): { plan: ManagementPlan; replayed: boolean } {
+    return this.agentManagement.createAgentManagementPlan(plan);
+  }
+
+  getAgentManagementPlan(id: string): ManagementPlan | undefined {
+    return this.agentManagement.getAgentManagementPlan(id);
+  }
+
+  findAgentManagementPlan(ownerAgentId: string, runId: string, idempotencyKey: string): ManagementPlan | undefined {
+    return this.agentManagement.findAgentManagementPlan(ownerAgentId, runId, idempotencyKey);
+  }
+
+  listAgentManagementPlans(): ManagementPlan[] {
+    return this.agentManagement.listAgentManagementPlans();
+  }
+
+  updateAgentManagementPlan(
+    id: string,
+    patch: Parameters<AgentManagementAuthority["updateAgentManagementPlan"]>[1],
+  ): ManagementPlan {
+    return this.agentManagement.updateAgentManagementPlan(id, patch);
+  }
+
   authorizeAgentManagementPlan(
     authorization: AgentManagementAuthorization,
     targetAgentIds: readonly string[],
@@ -1265,6 +1289,18 @@ export class AgentStore extends AgentEventSessionFacade {
     operations: ReadonlyArray<{ targetAgentId: string; managerAgentId: string }>,
   ): string[] {
     return this.agentManagement.applyAuthorizedAgentReorganization(authorization, operations);
+  }
+
+  applyAuthorizedAgentReorganizationAndCompletePlan(
+    authorization: AgentManagementAuthorization,
+    operations: ReadonlyArray<{ targetAgentId: string; managerAgentId: string }>,
+    appliedAt: string,
+  ): { changedAgentIds: string[]; plan: ManagementPlan } {
+    return this.agentManagement.applyAuthorizedAgentReorganizationAndCompletePlan(
+      authorization,
+      operations,
+      appliedAt,
+    );
   }
 
   readAgentOrganizationEvents(projectId: string): AgentOrganizationEvent[] {
