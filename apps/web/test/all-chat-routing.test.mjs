@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   eligibleAllChatTargets,
+  authoritativeAllChatReplyTarget,
   allChatComposerConversationId,
   allChatRuntimePayloadSnapshot,
   allChatRuntimeSelectionReady,
@@ -28,8 +29,12 @@ import {
   durableDraftContentReady,
   deletableSupersededDraftAttachmentIds,
   shouldAdoptHydratedDraft,
+  composerRecipientGateSatisfied,
+  draftContentRetryStillOwned,
   hydratedDraftContent,
   hydratedPastedTextContent,
+  removeComposerPasteSelection,
+  savedPastedTextCleanMutationGeneration,
   shouldIgnoreComposerKey,
   shouldSendComposerKey,
 } from "../src/components/chat/composerUtils.js";
@@ -219,6 +224,42 @@ test("locks later recipients to the first Agent's Chat", () => {
   assert.deepEqual(
     eligibleAllChatTargets([bryce, sameChat, otherChat], "chat-a"),
     [bryce, sameChat],
+  );
+});
+
+test("selected All Messages source Chat authoritatively constrains recipients", () => {
+  const sameChat = { ...bryce, id: "ui", handle: "UI-Specialist" };
+  const otherChat = {
+    ...bryce,
+    id: "saint",
+    handle: "Saint-Croix",
+    conversationId: "chat-b",
+  };
+  const selectedSourceChat = allChatComposerConversationId(
+    "chat-a",
+    otherChat.conversationId,
+    { projectId: "project-a", conversationId: "chat-b" },
+  );
+  assert.equal(selectedSourceChat, "chat-a");
+  assert.deepEqual(
+    eligibleAllChatTargets([bryce, sameChat, otherChat], selectedSourceChat),
+    [bryce, sameChat],
+  );
+  assert.equal(
+    authoritativeAllChatReplyTarget(
+      otherChat,
+      "project-a",
+      selectedSourceChat,
+    ),
+    undefined,
+  );
+  assert.equal(
+    authoritativeAllChatReplyTarget(
+      bryce,
+      "project-a",
+      selectedSourceChat,
+    ),
+    bryce,
   );
 });
 
@@ -479,7 +520,7 @@ test("focused reload restores durable pasted text independently of editor text",
     hydratedPastedTextContent({
       attachmentId: "paste-a",
       restoredText: "durable pasted text",
-      mutationGenerationAtStart: 0,
+      cleanMutationGeneration: 0,
       currentMutationGeneration: 0,
     }),
     { attachmentId: "paste-a", text: "durable pasted text" },
@@ -492,7 +533,7 @@ test("focused reload exposes failed pasted-text restore ownership", () => {
     hydratedPastedTextContent({
       attachmentId: "paste-a",
       failure,
-      mutationGenerationAtStart: 0,
+      cleanMutationGeneration: 0,
       currentMutationGeneration: 0,
     }),
     { attachmentId: "paste-a", failure },
@@ -505,7 +546,7 @@ test("an unrelated edit preserves hydrated pasted-text ownership", () => {
     hydratedPastedTextContent({
       attachmentId: "paste-a",
       restoredText: "durable pasted text",
-      mutationGenerationAtStart: 3,
+      cleanMutationGeneration: 3,
       currentMutationGeneration: 3,
     })?.attachmentId,
     "paste-a",
@@ -514,10 +555,128 @@ test("an unrelated edit preserves hydrated pasted-text ownership", () => {
     hydratedPastedTextContent({
       attachmentId: "paste-a",
       restoredText: "stale pasted text",
-      mutationGenerationAtStart: 3,
+      cleanMutationGeneration: 3,
       currentMutationGeneration: 4,
     }),
     undefined,
+  );
+});
+
+test("a local paste before initial query or refetch wins hydration", () => {
+  for (const restoredText of ["initial query", "remote refetch"]) {
+    assert.equal(
+      hydratedPastedTextContent({
+        attachmentId: "remote-paste",
+        restoredText,
+        cleanMutationGeneration: 6,
+        currentMutationGeneration: 7,
+      }),
+      undefined,
+    );
+  }
+});
+
+test("only the matching pasted-text PUT clears the local hydration guard", () => {
+  assert.equal(
+    savedPastedTextCleanMutationGeneration({
+      cleanMutationGeneration: 6,
+      submittedMutationGeneration: 7,
+      currentMutationGeneration: 7,
+      submittedAttachmentId: "local-paste",
+      savedAttachmentId: "local-paste",
+    }),
+    7,
+  );
+  assert.equal(
+    savedPastedTextCleanMutationGeneration({
+      cleanMutationGeneration: 6,
+      submittedMutationGeneration: 7,
+      currentMutationGeneration: 8,
+      submittedAttachmentId: "local-paste",
+      savedAttachmentId: "local-paste",
+    }),
+    6,
+  );
+  assert.equal(
+    savedPastedTextCleanMutationGeneration({
+      cleanMutationGeneration: 6,
+      submittedMutationGeneration: 7,
+      currentMutationGeneration: 7,
+      submittedAttachmentId: "local-paste",
+      savedAttachmentId: "other-paste",
+    }),
+    6,
+  );
+});
+
+test("failed draft retry loses ownership on remove, replace, or surface change", () => {
+  const captured = {
+    capturedScope: "chat-a",
+    currentScope: "chat-a",
+    capturedHydrationGeneration: 4,
+    currentHydrationGeneration: 4,
+    removed: false,
+    failurePresent: true,
+    capturedPasteMutationGeneration: 7,
+    currentPasteMutationGeneration: 7,
+  };
+  assert.equal(draftContentRetryStillOwned(captured), true);
+  assert.equal(draftContentRetryStillOwned({ ...captured, removed: true }), false);
+  assert.equal(
+    draftContentRetryStillOwned({
+      ...captured,
+      currentPasteMutationGeneration: 8,
+    }),
+    false,
+  );
+  assert.equal(
+    draftContentRetryStillOwned({ ...captured, currentScope: "chat-b" }),
+    false,
+  );
+  assert.equal(
+    draftContentRetryStillOwned({
+      ...captured,
+      currentHydrationGeneration: 5,
+    }),
+    false,
+  );
+  assert.equal(
+    draftContentRetryStillOwned({ ...captured, failurePresent: false }),
+    false,
+  );
+});
+
+test("extracted long paste replaces a range or recipient node selection", () => {
+  const removed = [];
+  removeComposerPasteSelection({
+    kind: "range",
+    removeText: () => removed.push("range"),
+  });
+  removeComposerPasteSelection({
+    kind: "node",
+    removeNodes: () => removed.push("recipient"),
+  });
+  removeComposerPasteSelection({ kind: "other" });
+  assert.deepEqual(removed, ["range", "recipient"]);
+});
+
+test("unchanged frozen retry alone bypasses a disappeared live recipient", () => {
+  const targetRequired = {
+    destinationMode: "target-required",
+    newAgentSelected: false,
+    requiredRecipientTagged: false,
+  };
+  assert.equal(
+    composerRecipientGateSatisfied({ ...targetRequired, retryPrepared: false }),
+    false,
+  );
+  assert.equal(
+    composerRecipientGateSatisfied({ ...targetRequired, retryPrepared: true }),
+    true,
+  );
+  assert.equal(
+    composerRecipientGateSatisfied({ ...targetRequired, retryPrepared: false }),
+    false,
   );
 });
 

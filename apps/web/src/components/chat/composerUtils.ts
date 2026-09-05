@@ -55,7 +55,7 @@ export function hydratedPastedTextContent<T>(input: {
   attachmentId?: string;
   restoredText?: string;
   failure?: T;
-  mutationGenerationAtStart: number;
+  cleanMutationGeneration: number;
   currentMutationGeneration: number;
 }): {
   attachmentId?: string;
@@ -63,7 +63,7 @@ export function hydratedPastedTextContent<T>(input: {
   failure?: T;
 } | undefined {
   if (
-    input.mutationGenerationAtStart !== input.currentMutationGeneration
+    input.cleanMutationGeneration !== input.currentMutationGeneration
   ) return undefined;
   return {
     ...(input.attachmentId ? { attachmentId: input.attachmentId } : {}),
@@ -73,6 +73,60 @@ export function hydratedPastedTextContent<T>(input: {
         ? { text: input.restoredText }
         : {}),
   };
+}
+
+export function savedPastedTextCleanMutationGeneration(input: {
+  cleanMutationGeneration: number;
+  submittedMutationGeneration: number;
+  currentMutationGeneration: number;
+  submittedAttachmentId?: string;
+  savedAttachmentId?: string;
+}): number {
+  return input.currentMutationGeneration === input.submittedMutationGeneration &&
+      input.savedAttachmentId === input.submittedAttachmentId
+    ? input.submittedMutationGeneration
+    : input.cleanMutationGeneration;
+}
+
+export function draftContentRetryStillOwned(input: {
+  capturedScope?: string;
+  currentScope?: string;
+  capturedHydrationGeneration: number;
+  currentHydrationGeneration: number;
+  removed: boolean;
+  failurePresent: boolean;
+  capturedPasteMutationGeneration?: number;
+  currentPasteMutationGeneration?: number;
+}): boolean {
+  return input.capturedScope === input.currentScope &&
+    input.capturedHydrationGeneration === input.currentHydrationGeneration &&
+    !input.removed &&
+    input.failurePresent &&
+    (input.capturedPasteMutationGeneration === undefined ||
+      input.capturedPasteMutationGeneration ===
+        input.currentPasteMutationGeneration);
+}
+
+export function composerRecipientGateSatisfied(input: {
+  destinationMode?: "project-chat" | "fixed" | "target-required";
+  newAgentSelected: boolean;
+  requiredRecipientTagged: boolean;
+  retryPrepared: boolean;
+}): boolean {
+  return input.retryPrepared ||
+    input.destinationMode !== "target-required" ||
+    input.newAgentSelected ||
+    input.requiredRecipientTagged;
+}
+
+export function removeComposerPasteSelection(
+  selection:
+    | { kind: "range"; removeText: () => void }
+    | { kind: "node"; removeNodes: () => void }
+    | { kind: "other" },
+): void {
+  if (selection.kind === "range") selection.removeText();
+  else if (selection.kind === "node") selection.removeNodes();
 }
 
 export function hydratedDraftContent<T>(

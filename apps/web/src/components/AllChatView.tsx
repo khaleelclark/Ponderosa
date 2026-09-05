@@ -101,6 +101,7 @@ import {
   ALL_CHAT_REPLY_TARGET_KEY,
   ALL_CHAT_SOURCE_KEY,
   allChatComposerConversationId,
+  authoritativeAllChatReplyTarget,
   allChatRuntimePayloadSnapshot,
   allChatRuntimeSelectionReady,
   allChatSourceConversationId,
@@ -255,8 +256,22 @@ export function AllChatView({
   }, [availableProjectIds, items]);
   const selected = items.find(item => item.communicationEventId === selectedId);
   const activeProjectId =
-    replyTarget?.projectId ?? selected?.project.id ?? composerSource?.projectId;
+    selected?.project.id ?? replyTarget?.projectId ?? composerSource?.projectId;
   const projectAgentsQuery = useAgents(activeProjectId);
+  const selectedSourceConversationId = allChatSourceConversationId(
+    selected?.source,
+    projectAgentsQuery.data ?? [],
+  );
+  const composerConversationId = allChatComposerConversationId(
+    selectedSourceConversationId,
+    replyTarget?.conversationId,
+    composerSource,
+  );
+  const activeReplyTarget = authoritativeAllChatReplyTarget(
+    replyTarget,
+    selected?.project.id ?? activeProjectId,
+    composerConversationId,
+  );
   const allProjectAgentsQuery = useQuery({
     queryKey: [...queryKeys.agents.all, "all-chat"],
     queryFn: async () => {
@@ -315,7 +330,7 @@ export function AllChatView({
     }
     const eligibleTargets = eligibleAllChatTargets(
       byId.values(),
-      replyTarget?.conversationId,
+      composerConversationId,
     );
     const groups = new Map<string, Array<{ handle: string; target: AllChatReplyTarget }>>();
     for (const target of eligibleTargets) {
@@ -350,9 +365,9 @@ export function AllChatView({
   }, [
     activeProjectId,
     allProjectAgentsQuery.data,
+    composerConversationId,
     items,
     projectAgentsQuery.data,
-    replyTarget?.conversationId,
   ]);
   const decisionEvents = useMemo(
     () => uniqueBy(
@@ -379,7 +394,7 @@ export function AllChatView({
     return entries.sort((left, right) => left.at.localeCompare(right.at) || left.id.localeCompare(right.id));
   }, [decisionEvents, items]);
   const layoutKey = timeline.map((entry) => entry.id).join(":");
-  const selectedAgentId = replyTarget?.id;
+  const selectedAgentId = activeReplyTarget?.id;
   const selectedProjectId = activeProjectId;
   const selectedAgent = useQuery({
     queryKey: queryKeys.agents.detail(selectedAgentId),
@@ -387,15 +402,6 @@ export function AllChatView({
     enabled: Boolean(selectedAgentId),
   });
   const conversationsQuery = useConversations(selectedProjectId);
-  const selectedSourceConversationId = allChatSourceConversationId(
-    selected?.source,
-    projectAgentsQuery.data ?? [],
-  );
-  const composerConversationId = allChatComposerConversationId(
-    selectedSourceConversationId,
-    replyTarget?.conversationId,
-    composerSource,
-  );
   useEffect(() => {
     setReplyTarget(current => {
       if (!current) return current;
@@ -431,13 +437,26 @@ export function AllChatView({
     if (identity) setComposerSource(identity);
   }, [projectAgentsQuery.data, selected]);
   useEffect(() => {
-    if (replyTarget?.conversationId) {
+    if (!selectedSourceConversationId && activeReplyTarget?.conversationId) {
       setComposerSource({
-        projectId: replyTarget.projectId,
-        conversationId: replyTarget.conversationId,
+        projectId: activeReplyTarget.projectId,
+        conversationId: activeReplyTarget.conversationId,
       });
     }
-  }, [replyTarget]);
+  }, [activeReplyTarget, selectedSourceConversationId]);
+  useEffect(() => {
+    if (!replyTarget || activeReplyTarget || !composerConversationId) return;
+    if (
+      !replyTarget.conversationId &&
+      replyTarget.projectId === (selected?.project.id ?? activeProjectId)
+    ) return;
+    pendingMentionTargetId.current = undefined;
+    setMentionRemoveRequest({
+      id: `source-mismatch:${replyTarget.id}:${Date.now()}`,
+      text: `#${replyTarget.handle}`,
+    });
+    setReplyTarget(undefined);
+  }, [activeProjectId, activeReplyTarget, composerConversationId, replyTarget, selected]);
   useEffect(() => {
     writeChatState(
       ALL_CHAT_SOURCE_KEY,
@@ -611,7 +630,7 @@ export function AllChatView({
     });
     setNotice(
       result.message ??
-        `/${command.name} completed for ${replyTarget?.title ?? "Agent"}.`,
+        `/${command.name} completed for ${activeReplyTarget?.title ?? "Agent"}.`,
     );
   };
   const sendAttempt = useRef<IdempotentAttempt<AllChatSubmissionPrepared>>();
@@ -878,8 +897,13 @@ export function AllChatView({
     setReplyTarget({
       ...item.directMessageAgent,
       projectId: item.project.id,
-      conversationId: projectAgentsQuery.data?.find(candidate =>
-        candidate.id === item.directMessageAgent?.id)?.conversationId,
+      conversationId:
+        projectAgentsQuery.data?.find(candidate =>
+          candidate.id === item.directMessageAgent?.id)?.conversationId ??
+        allChatSourceConversationId(
+          item.source,
+          projectAgentsQuery.data ?? [],
+        ),
     });
   };
   const history = older ?? {
@@ -1284,7 +1308,7 @@ export function AllChatView({
       </ChatSurface>
       <ChatComposerDock
         onKeyDown={event => {
-          if (!event.defaultPrevented && event.key === "Escape" && replyTarget) {
+          if (!event.defaultPrevented && event.key === "Escape" && activeReplyTarget) {
             event.preventDefault();
             clearReplyTarget();
           }
@@ -1325,20 +1349,20 @@ export function AllChatView({
         ) : null}
         <Composer
           destinationMode="target-required"
-          defaultDestination={replyTarget ? {
-            handle: replyTarget.handle,
+          defaultDestination={activeReplyTarget ? {
+            handle: activeReplyTarget.handle,
             binding: {
-              projectId: replyTarget.projectId,
-              handle: replyTarget.handle,
-              agentId: replyTarget.id,
-              currentHandle: replyTarget.handle,
-              currentTitle: replyTarget.title,
+              projectId: activeReplyTarget.projectId,
+              handle: activeReplyTarget.handle,
+              agentId: activeReplyTarget.id,
+              currentHandle: activeReplyTarget.handle,
+              currentTitle: activeReplyTarget.title,
             },
-            selectionKey: `agent:${replyTarget.id}:${replyTarget.title}`,
+            selectionKey: `agent:${activeReplyTarget.id}:${activeReplyTarget.title}`,
           } : undefined}
-          requiredRecipient={replyTarget ? {
-            handle: replyTarget.handle,
-            title: replyTarget.title,
+          requiredRecipient={activeReplyTarget ? {
+            handle: activeReplyTarget.handle,
+            title: activeReplyTarget.title,
             onClear: () => setReplyTarget(undefined),
           } : undefined}
           recipientRequiredMessage={
@@ -1351,13 +1375,13 @@ export function AllChatView({
           mentionSuggestionHandles={composerTargets.suggestionHandles}
           ambiguousMentionHandles={composerTargets.ambiguousHandles}
           onMentionedHandlesChange={syncReplyTargetFromMentions}
-          commands={replyTarget ? selectedCommands : undefined}
+          commands={activeReplyTarget ? selectedCommands : undefined}
           capabilities={
             selectedEngineCapabilities?.composerCapabilities ?? []
           }
           enableVoiceDictation
           onCapabilitiesOpen={refreshSelectedCapabilities}
-          onCommand={replyTarget ? invokeCommand : undefined}
+          onCommand={activeReplyTarget ? invokeCommand : undefined}
           controls={runtimeControls}
           disabled={
             send.isPending ||
@@ -1365,7 +1389,7 @@ export function AllChatView({
             Boolean(selectedAgentId && !runtimeSelectionReady)
           }
           running={false}
-          allowUnmentionedSend={Boolean(replyTarget)}
+          allowUnmentionedSend={Boolean(activeReplyTarget)}
           attachmentsEnabled={Boolean(composerConversationId)}
           attachmentsUnavailableReason={
             composerConversationId
@@ -1373,8 +1397,8 @@ export function AllChatView({
               : "Select a source Chat before adding attachments."
           }
           placeholder={
-            replyTarget
-              ? `Message ${replyTarget.title} directly`
+            activeReplyTarget
+              ? `Message ${activeReplyTarget.title} directly`
               : "Select an Agent with # then write a message"
           }
           removeTextRequest={mentionRemoveRequest}

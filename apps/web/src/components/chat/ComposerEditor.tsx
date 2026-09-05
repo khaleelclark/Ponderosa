@@ -53,6 +53,7 @@ import {
   composerSubmissionText,
   engineCommandDisabledReason,
   filesFromClipboard,
+  removeComposerPasteSelection,
   shouldExtractLongPaste,
   shouldIgnoreComposerKey,
   shouldConsumeComposerKey,
@@ -824,6 +825,20 @@ function $insertCanonicalContent(
   selection.insertNodes($appendCanonicalContent(text, descriptors));
 }
 
+function $removeSelectedContent(): void {
+  const selection = $getSelection();
+  removeComposerPasteSelection(
+    $isRangeSelection(selection)
+      ? { kind: "range", removeText: () => selection.removeText() }
+      : $isNodeSelection(selection)
+        ? {
+            kind: "node",
+            removeNodes: () => selection.getNodes().forEach(node => node.remove()),
+          }
+        : { kind: "other" },
+  );
+}
+
 function EditorBridge({
   editorRef,
   text,
@@ -1165,6 +1180,7 @@ function EditorBridge({
         if (utf8ByteLength(combined) > LONG_TEXT_MAX_UTF8_BYTES) {
           onPasteError("Pasted text exceeds the 8 MiB limit.");
         } else {
+          $removeSelectedContent();
           onPastedText(combined);
         }
         return true;

@@ -92,6 +92,17 @@ export function eligibleAllChatTargets(
   );
 }
 
+export function authoritativeAllChatReplyTarget<T extends AllChatReplyTarget>(
+  target: T | undefined,
+  projectId: string | undefined,
+  conversationId: string | undefined,
+): T | undefined {
+  if (!target) return undefined;
+  if (projectId && target.projectId !== projectId) return undefined;
+  if (conversationId && target.conversationId !== conversationId) return undefined;
+  return target;
+}
+
 export function allChatSourceConversationId(
   source: AllChatSourceDto | undefined,
   agents: Iterable<Pick<AgentDto, "id" | "conversationId">>,

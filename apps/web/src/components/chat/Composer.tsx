@@ -74,8 +74,10 @@ import {
 import {
   canSubmitComposerText,
   composerAttachmentReducer,
+  composerRecipientGateSatisfied,
   composerSubmissionText,
   deletableSupersededDraftAttachmentIds,
+  draftContentRetryStillOwned,
   durableDraftContentReady,
   engineCommandDisabledReason,
   hydratedDraftContent,
@@ -84,6 +86,7 @@ import {
   matchingComposerCapabilities,
   matchingEngineCommands,
   providerSlashSubmission,
+  savedPastedTextCleanMutationGeneration,
   shouldAdoptHydratedDraft,
   shouldShowQueueControl,
 } from "./composerUtils";
@@ -250,6 +253,7 @@ export function Composer({
   const unrestoredDraftAttachmentIds = useRef<string[]>([]);
   const pastedTextAttachmentId = useRef<string>();
   const pastedTextMutationGeneration = useRef(0);
+  const pastedTextCleanMutationGeneration = useRef(0);
   const supersededPastedTextAttachmentIds = useRef<Set<string>>(new Set());
   const pastedTextUploadGeneration = useRef(0);
   const pastedTextUploadFailedFor = useRef<string>();
@@ -257,6 +261,7 @@ export function Composer({
   const [failedDraftContents, setFailedDraftContents] = useState<
     FailedDraftContent[]
   >([]);
+  const failedDraftContentsRef = useRef<FailedDraftContent[]>([]);
   const [draftReadyVersion, setDraftReadyVersion] = useState(0);
   const sendingRef = useRef(false);
   const [sending, setSending] = useState(false);
@@ -280,6 +285,22 @@ export function Composer({
     AgentMentionBindingDto[]
   >([]);
   const inputRef = useRef<ComposerEditorHandle | null>(null);
+  const activeDraftScopeRef = useRef(conversationDraftId);
+  activeDraftScopeRef.current = conversationDraftId;
+  const updateFailedDraftContents = useCallback(
+    (
+      next:
+        | FailedDraftContent[]
+        | ((current: FailedDraftContent[]) => FailedDraftContent[]),
+    ) => {
+      const resolved = typeof next === "function"
+        ? next(failedDraftContentsRef.current)
+        : next;
+      failedDraftContentsRef.current = resolved;
+      setFailedDraftContents(resolved);
+    },
+    [],
+  );
   const markUserDraftMutation = useCallback(() => {
     userDraftMutationGeneration.current += 1;
     setPreparedRetryAction(undefined);
@@ -362,6 +383,17 @@ export function Composer({
     (next: string | undefined) => {
       if (next === pastedTextRef.current) return;
       pastedTextMutationGeneration.current += 1;
+      const displacedFailures = failedDraftContentsRef.current.filter(
+        item => item.kind === "pasted-text",
+      );
+      for (const failure of displacedFailures) {
+        supersededPastedTextAttachmentIds.current.add(failure.id);
+      }
+      if (displacedFailures.length > 0) {
+        updateFailedDraftContents(current =>
+          current.filter(item => item.kind !== "pasted-text"),
+        );
+      }
       const previousAttachmentId = pastedTextAttachmentId.current;
       pastedTextAttachmentId.current = undefined;
       pastedTextUploadGeneration.current += 1;
@@ -373,7 +405,13 @@ export function Composer({
         supersededPastedTextAttachmentIds.current.add(previousAttachmentId);
       }
     },
-    [conversationDraftId, draftOwnerId, markDraftEdited, replacePastedText],
+    [
+      conversationDraftId,
+      draftOwnerId,
+      markDraftEdited,
+      replacePastedText,
+      updateFailedDraftContents,
+    ],
   );
   const invalidateDraftHydration = useCallback(() => {
     draftHydrationGeneration.current += 1;
@@ -385,14 +423,14 @@ export function Composer({
           unrestoredDraftAttachmentIds.current.filter(
             id => id !== removedAttachmentId,
           );
-        setFailedDraftContents(current =>
+        updateFailedDraftContents(current =>
           current.filter(item => item.id !== removedAttachmentId),
         );
       }
       draftAttachmentsLocallyEdited.current = true;
       markDraftEdited();
     },
-    [markDraftEdited],
+    [markDraftEdited, updateFailedDraftContents],
   );
   const draftAttachments = useComposerDraftAttachments({
     assetLimits,
@@ -416,7 +454,7 @@ export function Composer({
     uploadStates: draftUploadStates,
   } = draftAttachments;
   const removeFailedDraftContent = useCallback((id: string) => {
-    const failed = failedDraftContents.find(item => item.id === id);
+    const failed = failedDraftContentsRef.current.find(item => item.id === id);
     if (!failed) return;
     if (failed.kind === "pasted-text") {
       pastedTextMutationGeneration.current += 1;
@@ -428,7 +466,7 @@ export function Composer({
         unrestoredDraftAttachmentIds.current.filter(candidate => candidate !== id);
     }
     locallyRemovedDraftAttachmentIds.current.add(id);
-    setFailedDraftContents(current => current.filter(item => item.id !== id));
+    updateFailedDraftContents(current => current.filter(item => item.id !== id));
     dispatchAttachments({ type: "clear_error" });
     markDraftEdited();
     if (conversationDraftId && failed.kind !== "pasted-text") {
@@ -440,37 +478,71 @@ export function Composer({
     conversationDraftId,
     dispatchAttachments,
     draftOwnerId,
-    failedDraftContents,
     locallyRemovedDraftAttachmentIds,
     markDraftEdited,
     replacePastedText,
+    updateFailedDraftContents,
   ]);
   const retryFailedDraftContent = useCallback(async (id: string) => {
-    const failed = failedDraftContents.find(item => item.id === id);
+    const failed = failedDraftContentsRef.current.find(item => item.id === id);
     if (!failed || !conversationDraftId) return;
+    const scope = conversationDraftId;
+    const hydrationGeneration = draftHydrationGeneration.current;
+    const pasteMutationGeneration = pastedTextMutationGeneration.current;
+    const stillOwnsFailure = () =>
+      draftContentRetryStillOwned({
+        capturedScope: scope,
+        currentScope: activeDraftScopeRef.current,
+        capturedHydrationGeneration: hydrationGeneration,
+        currentHydrationGeneration: draftHydrationGeneration.current,
+        removed: locallyRemovedDraftAttachmentIds.current.has(id),
+        failurePresent: failedDraftContentsRef.current.some(item =>
+          item.id === id && item.kind === failed.kind),
+      });
+    const canApplyPaste = () =>
+      stillOwnsFailure() && draftContentRetryStillOwned({
+        capturedScope: scope,
+        currentScope: activeDraftScopeRef.current,
+        capturedHydrationGeneration: hydrationGeneration,
+        currentHydrationGeneration: draftHydrationGeneration.current,
+        removed: locallyRemovedDraftAttachmentIds.current.has(id),
+        failurePresent: true,
+        capturedPasteMutationGeneration: pasteMutationGeneration,
+        currentPasteMutationGeneration: pastedTextMutationGeneration.current,
+      });
     setSendError(undefined);
     try {
       const refreshedDraft = failed.attachment
         ? undefined
-        : await api.getConversationDraft(conversationDraftId, draftOwnerId);
+        : await api.getConversationDraft(scope, draftOwnerId);
+      if (!stillOwnsFailure()) return;
       const attachment = failed.attachment ??
         (failed.kind === "pasted-text"
           ? refreshedDraft?.pastedTextAttachment
           : refreshedDraft?.attachments?.find(item => item.id === id));
       if (!attachment) throw new Error("The staged content is no longer available.");
       const file = await api.downloadDraftAttachment(attachment);
+      if (failed.kind === "pasted-text" ? !canApplyPaste() : !stillOwnsFailure()) {
+        return;
+      }
       if (failed.kind === "pasted-text") {
+        const restoredText = await file.text();
+        if (!canApplyPaste()) return;
         pastedTextMutationGeneration.current += 1;
+        pastedTextCleanMutationGeneration.current =
+          pastedTextMutationGeneration.current;
         pastedTextAttachmentId.current = id;
-        replacePastedText(await file.text());
+        replacePastedText(restoredText);
       } else {
         mergeRestoredDraftAttachments([{ attachment, file }]);
         unrestoredDraftAttachmentIds.current =
           unrestoredDraftAttachmentIds.current.filter(candidate => candidate !== id);
       }
-      setFailedDraftContents(current => current.filter(item => item.id !== id));
+      if (!stillOwnsFailure()) return;
+      updateFailedDraftContents(current => current.filter(item => item.id !== id));
       dispatchAttachments({ type: "clear_error" });
     } catch (error) {
+      if (!stillOwnsFailure()) return;
       setSendError(
         error instanceof Error ? error.message : "Draft content could not be restored.",
       );
@@ -478,10 +550,10 @@ export function Composer({
   }, [
     conversationDraftId,
     draftOwnerId,
-    failedDraftContents,
     dispatchAttachments,
     mergeRestoredDraftAttachments,
     replacePastedText,
+    updateFailedDraftContents,
   ]);
   const exclusiveDestinationHandles = useMemo(
     () => [...new Set([...(mentionHandles ?? []), "broadcast", "everyone"])],
@@ -748,18 +820,22 @@ export function Composer({
     text: submissionText,
     disabled,
     running: composerLocked,
-    allowUnmentionedSend,
+    allowUnmentionedSend:
+      allowUnmentionedSend || Boolean(preparedRetryAction),
     mentionedHandles,
     mentionedBusyHandles,
   });
-  const targetRequiredRecipientTagged =
-    destinationMode !== "target-required" ||
-    newAgentSelected ||
-    Boolean(
-      requiredRecipient &&
-      targetRequiredHandles.some(handle =>
-        requiredRecipient.handle.toLocaleLowerCase() === handle.toLocaleLowerCase()),
-    );
+  const liveRequiredRecipientTagged = Boolean(
+    requiredRecipient &&
+    targetRequiredHandles.some(handle =>
+      requiredRecipient.handle.toLocaleLowerCase() === handle.toLocaleLowerCase()),
+  );
+  const targetRequiredRecipientTagged = composerRecipientGateSatisfied({
+    destinationMode,
+    newAgentSelected,
+    requiredRecipientTagged: liveRequiredRecipientTagged,
+    retryPrepared: Boolean(preparedRetryAction),
+  });
   const draftUploadsReady =
     !conversationDraftId ||
     files.every(file => draftAttachmentIds.current.has(file));
@@ -839,11 +915,13 @@ export function Composer({
     previousConversationDraftId.current = conversationDraftId;
     if (changed) {
       pastedTextMutationGeneration.current += 1;
+      pastedTextCleanMutationGeneration.current =
+        pastedTextMutationGeneration.current;
       pastedTextUploadGeneration.current += 1;
       pastedTextAttachmentId.current = undefined;
       supersededPastedTextAttachmentIds.current.clear();
       setPastedTextUploading(false);
-      setFailedDraftContents([]);
+      updateFailedDraftContents([]);
       replacePastedText(undefined);
       draftReady.current = false;
       draftLocallyEdited.current = false;
@@ -853,7 +931,12 @@ export function Composer({
       setKnownMentionBindings([]);
       clearDraftAttachments();
     }
-  }, [conversationDraftId, clearDraftAttachments, replacePastedText]);
+  }, [
+    conversationDraftId,
+    clearDraftAttachments,
+    replacePastedText,
+    updateFailedDraftContents,
+  ]);
 
   useEffect(() => {
     const draft = draftQuery.data;
@@ -864,8 +947,9 @@ export function Composer({
     )
       return;
     let cancelled = false;
-    const hydrationGeneration = draftHydrationGeneration.current;
-    const pastedTextMutationAtStart = pastedTextMutationGeneration.current;
+    const hydrationGeneration = ++draftHydrationGeneration.current;
+    const pastedTextCleanMutationAtStart =
+      pastedTextCleanMutationGeneration.current;
     const apply = async () => {
       const attachmentById = new Map(
         (draft.attachments ?? []).map(attachment => [attachment.id, attachment]),
@@ -943,7 +1027,7 @@ export function Composer({
         attachmentId: draft.pastedTextAttachmentId,
         restoredText: restoredPastedText,
         failure: failedPastedText,
-        mutationGenerationAtStart: pastedTextMutationAtStart,
+        cleanMutationGeneration: pastedTextCleanMutationAtStart,
         currentMutationGeneration: pastedTextMutationGeneration.current,
       });
       if (
@@ -955,7 +1039,7 @@ export function Composer({
           draft.pastedTextAttachmentId,
         );
       }
-      setFailedDraftContents(current => [
+      updateFailedDraftContents(current => [
         ...failedAttachments,
         ...(hydratedPastedText
           ? hydratedPastedText.failure
@@ -964,10 +1048,21 @@ export function Composer({
           : current.filter(item => item.kind === "pasted-text")),
       ]);
       if (hydratedPastedText) {
+        const previousPastedTextAttachmentId = pastedTextAttachmentId.current;
+        if (
+          previousPastedTextAttachmentId &&
+          previousPastedTextAttachmentId !== hydratedPastedText.attachmentId
+        ) {
+          supersededPastedTextAttachmentIds.current.add(
+            previousPastedTextAttachmentId,
+          );
+        }
         pastedTextAttachmentId.current = hydratedPastedText.attachmentId;
         replacePastedText(
           hydratedPastedText.failure ? undefined : hydratedPastedText.text,
         );
+        pastedTextCleanMutationGeneration.current =
+          pastedTextMutationGeneration.current;
       }
       if (adoptDraft) {
         const hydrated = hydratedDraftContent(
@@ -1019,7 +1114,7 @@ export function Composer({
         const hydratedPastedText = hydratedPastedTextContent({
           attachmentId: draft.pastedTextAttachmentId,
           failure: failedPastedText,
-          mutationGenerationAtStart: pastedTextMutationAtStart,
+          cleanMutationGeneration: pastedTextCleanMutationAtStart,
           currentMutationGeneration: pastedTextMutationGeneration.current,
         });
         if (
@@ -1031,7 +1126,7 @@ export function Composer({
             draft.pastedTextAttachmentId,
           );
         }
-        setFailedDraftContents(current => [
+        updateFailedDraftContents(current => [
           ...draft.attachmentIds
             .filter(id => !locallyRemovedDraftAttachmentIds.current.has(id))
             .map(id => ({ id, name: "Staged attachment", kind: "attachment" as const })),
@@ -1042,8 +1137,19 @@ export function Composer({
             : current.filter(item => item.kind === "pasted-text")),
         ]);
         if (hydratedPastedText) {
+          const previousPastedTextAttachmentId = pastedTextAttachmentId.current;
+          if (
+            previousPastedTextAttachmentId &&
+            previousPastedTextAttachmentId !== hydratedPastedText.attachmentId
+          ) {
+            supersededPastedTextAttachmentIds.current.add(
+              previousPastedTextAttachmentId,
+            );
+          }
           pastedTextAttachmentId.current = hydratedPastedText.attachmentId;
           replacePastedText(undefined);
+          pastedTextCleanMutationGeneration.current =
+            pastedTextMutationGeneration.current;
         }
         const local = draftStorageKey
           ? (readChatState(draftStorageKey) ?? "")
@@ -1078,7 +1184,12 @@ export function Composer({
     return () => {
       cancelled = true;
     };
-  }, [conversationDraftId, draftQuery.data, draftStorageKey]);
+  }, [
+    conversationDraftId,
+    draftQuery.data,
+    draftStorageKey,
+    updateFailedDraftContents,
+  ]);
 
   useEffect(() => {
     if (
@@ -1247,12 +1358,16 @@ export function Composer({
       const clientId = draftClientId.current!;
       draftWriteChain.current = draftWriteChain.current.then(async () => {
         if (generation !== draftGeneration.current) return;
+        const submittedPastedTextAttachmentId =
+          pastedTextAttachmentId.current;
+        const submittedPastedTextMutationGeneration =
+          pastedTextMutationGeneration.current;
         try {
           const draft = await api.putConversationDraft(conversationDraftId, {
             text,
             attachmentIds,
-            ...(pastedTextAttachmentId.current
-              ? { pastedTextAttachmentId: pastedTextAttachmentId.current }
+            ...(submittedPastedTextAttachmentId
+              ? { pastedTextAttachmentId: submittedPastedTextAttachmentId }
               : {}),
             mentionBindings: knownMentionBindings,
             expectedRevision: draftRevision.current,
@@ -1275,6 +1390,17 @@ export function Composer({
           }
           if (generation !== draftGeneration.current) return;
           draftRevision.current = draft.revision;
+          pastedTextCleanMutationGeneration.current =
+            savedPastedTextCleanMutationGeneration({
+              cleanMutationGeneration:
+                pastedTextCleanMutationGeneration.current,
+              submittedMutationGeneration:
+                submittedPastedTextMutationGeneration,
+              currentMutationGeneration:
+                pastedTextMutationGeneration.current,
+              submittedAttachmentId: submittedPastedTextAttachmentId,
+              savedAttachmentId: draft.pastedTextAttachmentId,
+            });
           if (
             draftEditVersion.current === editVersion &&
             attachmentsResolved
