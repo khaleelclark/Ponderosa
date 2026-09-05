@@ -13,6 +13,7 @@ import {
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import type {
+  AgentMentionBindingDto,
   AllChatDecisionEventDto,
   AllChatItemDto,
   AssetDto,
@@ -54,6 +55,7 @@ import { createClientId } from "../clientId";
 import {
   discardRecipientUploads,
   fileSelectionFingerprint,
+  stableMessageActionText,
   type RecipientUploads,
   uploadFilesForRecipients,
 } from "../conversationRouting";
@@ -80,15 +82,22 @@ import {
 } from "./idempotentAttempt";
 
 interface AllChatSubmissionPrepared {
+  body: string;
+  recipientIds: string[];
+  conversationId?: string;
   title?: string;
   uploads?: RecipientUploads<AssetDto>;
 }
 import {
   ALL_CHAT_REPLY_TARGET_KEY,
+  ALL_CHAT_SOURCE_KEY,
+  allChatComposerConversationId,
   allChatSourceConversationId,
   eligibleAllChatTargets,
   parseAllChatReplyTarget,
+  parseAllChatSourceIdentity,
   type AllChatReplyTarget,
+  type AllChatSourceIdentity,
 } from "./allChatRouting";
 
 function allChatSourceRoute(item: AllChatItemDto): Route {
@@ -181,6 +190,9 @@ export function AllChatView({
   const [replyTarget, setReplyTarget] = useState<AllChatReplyTarget | undefined>(
     () => parseAllChatReplyTarget(readChatState(ALL_CHAT_REPLY_TARGET_KEY)),
   );
+  const [composerSource, setComposerSource] = useState<
+    AllChatSourceIdentity | undefined
+  >(() => parseAllChatSourceIdentity(readChatState(ALL_CHAT_SOURCE_KEY)));
   const [runtimeEngine, setRuntimeEngine] = useState("");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
@@ -218,6 +230,9 @@ export function AllChatView({
     setReplyTarget(current =>
       current && !availableProjectIds.has(current.projectId) ? undefined : current,
     );
+    setComposerSource(current =>
+      current && !availableProjectIds.has(current.projectId) ? undefined : current,
+    );
     setSelectedId(current =>
       current && !items.some(item => item.communicationEventId === current)
         ? undefined
@@ -225,7 +240,8 @@ export function AllChatView({
     );
   }, [availableProjectIds, items]);
   const selected = items.find(item => item.communicationEventId === selectedId);
-  const activeProjectId = replyTarget?.projectId ?? selected?.project.id;
+  const activeProjectId =
+    replyTarget?.projectId ?? selected?.project.id ?? composerSource?.projectId;
   const projectAgentsQuery = useAgents(activeProjectId);
   const allProjectAgentsQuery = useQuery({
     queryKey: [...queryKeys.agents.all, "all-chat"],
@@ -382,6 +398,34 @@ export function AllChatView({
       replyTarget ? JSON.stringify(replyTarget) : "",
     );
   }, [replyTarget]);
+  useEffect(() => {
+    const conversationId = selected
+      ? allChatSourceConversationId(
+          selected.source,
+          projectAgentsQuery.data ?? [],
+        )
+      : undefined;
+    if (selected && conversationId) {
+      setComposerSource({
+        projectId: selected.project.id,
+        conversationId,
+      });
+    }
+  }, [projectAgentsQuery.data, selected]);
+  useEffect(() => {
+    if (replyTarget?.conversationId) {
+      setComposerSource({
+        projectId: replyTarget.projectId,
+        conversationId: replyTarget.conversationId,
+      });
+    }
+  }, [replyTarget]);
+  useEffect(() => {
+    writeChatState(
+      ALL_CHAT_SOURCE_KEY,
+      composerSource ? JSON.stringify(composerSource) : "",
+    );
+  }, [composerSource]);
   const engines = enginesQuery.data ?? [];
   const project = projectsQuery.data?.find(
     item => item.id === selectedProjectId,
@@ -555,24 +599,46 @@ export function AllChatView({
       files: File[];
       draftAttachmentIds: string[];
       draftOwnerId?: string;
-      mentionedAgents: Array<{ agentId: string; currentTitle: string }>;
+      mentionedAgents: AgentMentionBindingDto[];
       newAgentRequested: boolean;
     }) => {
       if (!activeProjectId) throw new Error("Select a message to establish a Project first");
       if (!body.trim() && files.length === 0)
         throw new Error("Message text or an attachment is required");
-      const selectedConversationId = allChatSourceConversationId(
-        selected?.source,
-        projectAgentsQuery.data ?? [],
+      const selectedConversationId = allChatComposerConversationId(
+        allChatSourceConversationId(
+          selected?.source,
+          projectAgentsQuery.data ?? [],
+        ),
+        replyTarget?.conversationId,
+        composerSource,
       );
+      const validAgents = new Map((projectAgentsQuery.data ?? []).filter(agent =>
+        !agent.archived).map(agent => [agent.id, agent]));
+      const currentRecipientIds = [...new Set(
+        mentionedAgents.map(binding => binding.agentId),
+      )].filter(agentId => validAgents.has(agentId));
+      const currentRecipientConversationIds = [...new Set(
+        currentRecipientIds.flatMap(agentId => {
+          const conversationId = validAgents.get(agentId)?.conversationId;
+          return conversationId ? [conversationId] : [];
+        }),
+      )];
+      if (currentRecipientConversationIds.length > 1) {
+        throw new Error("One message can address Agents from only one Chat");
+      }
+      const currentConversationId =
+        currentRecipientConversationIds[0] ?? selectedConversationId;
       const fingerprint = JSON.stringify({
         activeProjectId,
         selectedConversationId,
-        body,
+        body: stableMessageActionText(body, mentionedAgents),
         files: fileSelectionFingerprint(files),
         draftAttachmentIds,
         draftOwnerId,
-        mentionedAgents: mentionedAgents.map(binding => binding.agentId),
+        mentionedAgentIds: [...new Set(
+          mentionedAgents.map(binding => binding.agentId),
+        )].sort(),
         newAgentRequested,
         selectedEngineId,
         selectedRuntime,
@@ -582,7 +648,11 @@ export function AllChatView({
         previous,
         fingerprint,
         () => createClientId(),
-        (): AllChatSubmissionPrepared => ({}),
+        (): AllChatSubmissionPrepared => ({
+          body,
+          recipientIds: currentRecipientIds,
+          conversationId: currentConversationId,
+        }),
       );
       if (previous && previous !== attempt && previous.prepared.uploads) {
         await discardRecipientUploads(
@@ -592,18 +662,9 @@ export function AllChatView({
       }
       sendAttempt.current = attempt;
       const requestId = attempt.idempotencyKey;
-      const validAgents = new Map((projectAgentsQuery.data ?? []).filter(agent =>
-        !agent.archived).map(agent => [agent.id, agent]));
-      const recipientIds = [...new Set(mentionedAgents.map(binding => binding.agentId))]
-        .filter(agentId => validAgents.has(agentId));
-      const recipientConversationIds = [...new Set(recipientIds.flatMap(agentId => {
-        const conversationId = validAgents.get(agentId)?.conversationId;
-        return conversationId ? [conversationId] : [];
-      }))];
-      if (recipientConversationIds.length > 1) {
-        throw new Error("One message can address Agents from only one Chat");
-      }
-      const creationConversationId = recipientConversationIds[0] ?? selectedConversationId;
+      const submittedBody = attempt.prepared.body;
+      const recipientIds = attempt.prepared.recipientIds;
+      const creationConversationId = attempt.prepared.conversationId;
       const creationConversation = creationConversationId
         ? conversationsQuery.data?.find(candidate => candidate.id === creationConversationId)
         : undefined;
@@ -629,7 +690,7 @@ export function AllChatView({
           engine: selectedEngineId ?? project?.defaultEngine ?? "codex",
           ...(selectedRuntime.model ? { model: selectedRuntime.model } : {}),
           ...(selectedRuntime.effort ? { effort: selectedRuntime.effort } : {}),
-          initialMessage: body.trim(),
+          initialMessage: submittedBody.trim(),
           ...(draftAttachmentIds.length ? {
             draftAttachmentIds,
             draftOwnerId,
@@ -640,10 +701,8 @@ export function AllChatView({
         else createdAgentIds.push(created.id);
       }
       if (recipientIds.length > 0) {
-        const conversationId = recipientConversationIds[0];
-        const conversation = conversationsQuery.data?.find(candidate =>
-          candidate.id === conversationId && !candidate.archived);
-        if (!conversationId || !conversation) {
+        const conversationId = attempt.prepared.conversationId;
+        if (!conversationId) {
           throw new Error("Every addressed Agent must belong to one active Chat");
         }
         const uploaded = attempt.prepared.uploads ?? await uploadFilesForRecipients(
@@ -655,7 +714,7 @@ export function AllChatView({
         attempt.prepared.uploads = uploaded;
         const uploadedByAgentId = new Map(uploaded.map(item => [item.agentId, item]));
         const response = await api.sendMultiAgentDirectMessage(conversationId, {
-          text: body.trim(),
+          text: submittedBody.trim(),
           recipients: recipientIds.map((agentId) => ({
             agentId,
             attachmentIds: (uploadedByAgentId.get(agentId)?.attachments ?? [])
@@ -704,6 +763,7 @@ export function AllChatView({
   const selectItem = (item: AllChatItemDto) => {
     pendingMentionTargetId.current = undefined;
     setSelectedId(item.communicationEventId);
+    setComposerSource(undefined);
     setNotice(undefined);
     setDirectSendConfirmation(undefined);
     send.reset();

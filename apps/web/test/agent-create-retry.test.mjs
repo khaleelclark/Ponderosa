@@ -4,6 +4,7 @@ import { retainIdempotentAttempt } from "../src/components/idempotentAttempt.js"
 import {
   recipientActionSnapshot,
   recipientUploadCacheKey,
+  stableMessageActionText,
 } from "../src/conversationRouting.js";
 
 test("Agent creation retries retain one identity until the submitted form changes", () => {
@@ -19,41 +20,51 @@ test("Agent creation retries retain one identity until the submitted form change
   assert.equal(changed.idempotencyKey, "request-2");
 });
 
-test("recipient and broadcast-owner changes start a new prepared action", () => {
+test("recipient and broadcast-owner snapshots remain frozen across an ambiguous retry", () => {
   let generated = 0;
   const createId = () => `request-${++generated}`;
-  const fingerprint = (ids, owner) => JSON.stringify({
-    text: "continue",
-    ...recipientActionSnapshot(ids, owner),
+  const authored = {
+    projectId: "project-a",
+    agentId: "agent-a",
+    handle: "old-name",
+    currentHandle: "old-name",
+    currentTitle: "Old Name",
+  };
+  const renamed = {
+    ...authored,
+    handle: "new-name",
+    currentHandle: "new-name",
+    currentTitle: "New Name",
+  };
+  const fingerprint = (text, binding) => JSON.stringify({
+    text: stableMessageActionText(text, [binding]),
+    mentionedAgentIds: [binding.agentId],
   });
   const first = retainIdempotentAttempt(
     undefined,
-    fingerprint(["agent-b", "agent-a"], "agent-a"),
+    fingerprint("#old-name continue", authored),
     createId,
-    () => ({ uploads: "original" }),
+    () => ({
+      text: "#old-name continue",
+      snapshot: recipientActionSnapshot(["agent-b", "agent-a"], "agent-a"),
+    }),
   );
-  const reordered = retainIdempotentAttempt(
+  const retry = retainIdempotentAttempt(
     first,
-    fingerprint(["agent-a", "agent-b"], "agent-a"),
+    fingerprint("#new-name continue", renamed),
     createId,
-    () => ({ uploads: "replacement" }),
+    () => ({
+      text: "#new-name continue",
+      snapshot: recipientActionSnapshot(["agent-a", "agent-c"], "agent-c"),
+    }),
   );
-  const rosterChanged = retainIdempotentAttempt(
-    reordered,
-    fingerprint(["agent-a", "agent-c"], "agent-a"),
-    createId,
-    () => ({ uploads: "new-roster" }),
-  );
-  const ownerChanged = retainIdempotentAttempt(
-    rosterChanged,
-    fingerprint(["agent-a", "agent-c"], "agent-c"),
-    createId,
-    () => ({ uploads: "new-owner" }),
-  );
-
-  assert.equal(reordered, first);
-  assert.equal(rosterChanged.idempotencyKey, "request-2");
-  assert.equal(ownerChanged.idempotencyKey, "request-3");
+  assert.equal(retry, first);
+  assert.equal(retry.idempotencyKey, "request-1");
+  assert.equal(retry.prepared.text, "#old-name continue");
+  assert.deepEqual(retry.prepared.snapshot, {
+    targetAgentIds: ["agent-a", "agent-b"],
+    broadcastAttachmentOwnerAgentId: "agent-a",
+  });
   assert.notEqual(
     recipientUploadCacheKey("direct", ["agent-a"]),
     recipientUploadCacheKey("direct", ["agent-b"]),

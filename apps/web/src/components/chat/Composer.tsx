@@ -66,6 +66,7 @@ import {
   composerAttachmentReducer,
   composerSubmissionText,
   engineCommandDisabledReason,
+  hydratedDraftContent,
   insertComposerCapability,
   matchingComposerCapabilities,
   matchingEngineCommands,
@@ -436,8 +437,19 @@ export function Composer({
       byHandle.set(binding.handle.toLocaleLowerCase(), binding);
       byHandle.set(binding.currentHandle.toLocaleLowerCase(), binding);
     }
+    const knownByHandle = new Map<string, AgentMentionBindingDto[]>();
     for (const binding of knownMentionBindings) {
-      byHandle.set(binding.handle.toLocaleLowerCase(), binding);
+      for (const handle of [binding.handle, binding.currentHandle]) {
+        const normalized = handle.toLocaleLowerCase();
+        const matches = knownByHandle.get(normalized) ?? [];
+        matches.push(binding);
+        knownByHandle.set(normalized, matches);
+      }
+    }
+    for (const [handle, matches] of knownByHandle) {
+      const owners = new Set(matches.map(binding => binding.agentId));
+      if (owners.size === 1) byHandle.set(handle, matches[0]!);
+      else byHandle.delete(handle);
     }
     const tokens: ComposerMentionToken[] = [];
     for (const token of messageTagTokens(text)) {
@@ -461,7 +473,7 @@ export function Composer({
       tokens.push({
         start: token.start,
         end: token.end,
-        handle: current?.currentHandle ?? token.handle,
+        handle: token.handle,
         title: current?.currentTitle ?? binding.currentTitle,
         valid: Boolean(current),
         kind: "agent",
@@ -738,13 +750,15 @@ export function Composer({
         draftLocallyEdited.current,
       );
       if (adoptDraft) {
-        const restoreLocalText = draft.revision === 0 && local && !draft.text;
-        const nextText = restoreLocalText ? local : draft.text;
-        replaceText(nextText);
-        setKnownMentionBindings(
-          restoreLocalText ? [] : (draft.mentionBindings ?? []),
+        const hydrated = hydratedDraftContent(
+          draft.revision,
+          draft.text,
+          local,
+          draft.mentionBindings ?? [],
         );
-        if (draftStorageKey) writeChatState(draftStorageKey, nextText);
+        replaceText(hydrated.text);
+        setKnownMentionBindings([...hydrated.mentionBindings]);
+        if (draftStorageKey) writeChatState(draftStorageKey, hydrated.text);
       }
       draftReady.current = true;
       setDraftReadyVersion(value => value + 1);
@@ -765,10 +779,16 @@ export function Composer({
         const local = draftStorageKey
           ? (readChatState(draftStorageKey) ?? "")
           : "";
-        if (adoptDraft && !local) {
-          replaceText(draft.text);
-          setKnownMentionBindings(draft.mentionBindings ?? []);
-          if (draftStorageKey) writeChatState(draftStorageKey, draft.text);
+        if (adoptDraft) {
+          const hydrated = hydratedDraftContent(
+            draft.revision,
+            draft.text,
+            local,
+            draft.mentionBindings ?? [],
+          );
+          replaceText(hydrated.text);
+          setKnownMentionBindings([...hydrated.mentionBindings]);
+          if (draftStorageKey) writeChatState(draftStorageKey, hydrated.text);
         }
         if (!draftAttachmentsLocallyEdited.current) {
           dispatchAttachments({

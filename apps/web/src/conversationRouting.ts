@@ -1,3 +1,8 @@
+import {
+  messageTagTokens,
+  type AgentMentionBindingDto,
+} from "@ponderosa/core";
+
 /** Remove the explicit #broadcast scope directive without matching longer tags. */
 export function managerBroadcastText(text: string): string | undefined {
   if (!/(?:^|\s)#broadcast(?=$|\s|[.,!?;:])/iu.test(text)) return undefined;
@@ -30,6 +35,32 @@ export function recipientActionSnapshot(
     targetAgentIds: [...new Set(agentIds)].sort(),
     broadcastAttachmentOwnerAgentId,
   };
+}
+
+/** Make retry identity independent of mutable Agent display handles. */
+export function stableMessageActionText(
+  text: string,
+  bindings: readonly AgentMentionBindingDto[],
+): string {
+  const ownersByHandle = new Map<string, Set<string>>();
+  for (const binding of bindings) {
+    for (const handle of [binding.handle, binding.currentHandle]) {
+      const normalized = handle.toLocaleLowerCase();
+      const owners = ownersByHandle.get(normalized) ?? new Set<string>();
+      owners.add(binding.agentId);
+      ownersByHandle.set(normalized, owners);
+    }
+  }
+  let result = "";
+  let offset = 0;
+  for (const token of messageTagTokens(text)) {
+    const owners = ownersByHandle.get(token.handle.toLocaleLowerCase());
+    if (owners?.size !== 1) continue;
+    result += text.slice(offset, token.start);
+    result += `#agent:${[...owners][0]}`;
+    offset = token.end;
+  }
+  return offset ? result + text.slice(offset) : text;
 }
 
 export const recipientUploadCacheKey = (

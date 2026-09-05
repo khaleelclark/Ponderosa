@@ -41,7 +41,7 @@ test("saved draft handles route by stable identity after rename", () => {
   };
   assert.deepEqual(
     resolvedMentionBinding("old-name", [saved], [current]),
-    current,
+    { ...current, handle: "old-name" },
   );
   assert.equal(resolvedMentionBinding("old-name", [saved], []), undefined);
 });
@@ -66,7 +66,7 @@ test("a renamed Agent keeps an authored handle if another Agent later reuses it"
   );
   assert.deepEqual(
     resolvedMentionBinding("old-name", [saved], [renamed, replacement]),
-    renamed,
+    { ...renamed, handle: "old-name" },
   );
 });
 
@@ -116,6 +116,43 @@ test("one stable Agent owns both its authored and renamed handles", () => {
   );
   assert.equal(
     resolvedMentionBinding("new-name", refreshed, [renamed])?.agentId,
+    saved.agentId,
+  );
+});
+
+test("a reloaded intermediate handle retains stable ownership through another rename", () => {
+  const intermediate = {
+    ...saved,
+    currentHandle: "new-name",
+    currentTitle: "New Name",
+  };
+  const renamedAgain = {
+    ...saved,
+    handle: "newest-name",
+    currentHandle: "newest-name",
+    currentTitle: "Newest Name",
+  };
+  const replacement = {
+    projectId: "project-a",
+    agentId: "agent-b",
+    handle: "new-name",
+    currentHandle: "new-name",
+    currentTitle: "Replacement",
+  };
+  const refreshed = refreshedMentionBindings(
+    "#new-name continue",
+    [intermediate],
+    [renamedAgain, replacement],
+  );
+  assert.deepEqual(refreshed, [{
+    ...intermediate,
+    handle: "new-name",
+    currentHandle: "newest-name",
+    currentTitle: "Newest Name",
+  }]);
+  assert.equal(
+    resolvedMentionBinding("new-name", refreshed, [renamedAgain, replacement])
+      ?.agentId,
     saved.agentId,
   );
 });

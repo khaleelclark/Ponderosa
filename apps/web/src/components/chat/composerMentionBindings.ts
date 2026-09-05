@@ -38,9 +38,22 @@ export function refreshedMentionBindings(
         existing ? { ...binding, handle: existing.handle } : binding,
       );
     } else if (existing) {
+      const authoredHandlePresent = handles.has(
+        existing.handle.toLocaleLowerCase(),
+      );
+      const priorCurrentHandlePresent = handles.has(
+        existing.currentHandle.toLocaleLowerCase(),
+      );
       byId.set(binding.agentId, {
         ...existing,
-        currentHandle: binding.currentHandle,
+        handle: !authoredHandlePresent && priorCurrentHandlePresent
+          ? existing.currentHandle
+          : existing.handle,
+        currentHandle:
+          authoredHandlePresent && priorCurrentHandlePresent &&
+            existing.handle !== existing.currentHandle
+            ? existing.currentHandle
+            : binding.currentHandle,
         currentTitle: binding.currentTitle,
       });
     }
@@ -64,7 +77,10 @@ export function resolvedMentionBinding(
       : []));
   if (savedAgentIds.size > 1) return undefined;
   const savedAgentId = [...savedAgentIds][0];
-  if (savedAgentId) return current.find(binding => binding.agentId === savedAgentId);
+  if (savedAgentId) {
+    const live = current.find(binding => binding.agentId === savedAgentId);
+    return live ? { ...live, handle } : undefined;
+  }
   const matches = current.filter(binding =>
     binding.handle.toLocaleLowerCase() === normalized ||
     binding.currentHandle.toLocaleLowerCase() === normalized);

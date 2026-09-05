@@ -39,6 +39,19 @@ export function shouldAdoptHydratedDraft(
   return !editorFocused && !locallyEdited;
 }
 
+export function hydratedDraftContent<T>(
+  revision: number,
+  draftText: string,
+  localText: string,
+  mentionBindings: readonly T[],
+): { text: string; mentionBindings: readonly T[] } {
+  const restoreLocalText = revision === 0 && Boolean(localText) && !draftText;
+  return {
+    text: restoreLocalText ? localText : draftText,
+    mentionBindings: restoreLocalText ? [] : mentionBindings,
+  };
+}
+
 export function matchingEngineCommands(
   commands: EngineCommand[],
   prefix: string,

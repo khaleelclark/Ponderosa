@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   eligibleAllChatTargets,
+  allChatComposerConversationId,
   allChatSourceConversationId,
   parseAllChatReplyTarget,
+  parseAllChatSourceIdentity,
 } from "../src/components/allChatRouting.js";
 import {
   activeComposerMention,
@@ -21,6 +23,7 @@ import {
 import {
   shouldConsumeComposerKey,
   shouldAdoptHydratedDraft,
+  hydratedDraftContent,
   shouldIgnoreComposerKey,
   shouldSendComposerKey,
 } from "../src/components/chat/composerUtils.js";
@@ -43,6 +46,17 @@ test("restores only a complete stable All Messages recipient", () => {
   assert.equal(parseAllChatReplyTarget('{"id":"bryce"}'), undefined);
   assert.equal(parseAllChatReplyTarget(JSON.stringify({ ...bryce, id: "" })), undefined);
   assert.equal(parseAllChatReplyTarget("not json"), undefined);
+});
+
+test("restores only a complete All Messages source Chat identity", () => {
+  const source = { projectId: "project-a", conversationId: "chat-a" };
+  assert.deepEqual(parseAllChatSourceIdentity(JSON.stringify(source)), source);
+  assert.equal(parseAllChatSourceIdentity('{"projectId":"project-a"}'), undefined);
+  assert.equal(parseAllChatSourceIdentity("not json"), undefined);
+  assert.equal(
+    allChatComposerConversationId(undefined, undefined, source),
+    "chat-a",
+  );
 });
 
 test("locks later recipients to the first Agent's Chat", () => {
@@ -253,6 +267,18 @@ test("late draft hydration never adopts bindings without their text", () => {
   assert.equal(shouldAdoptHydratedDraft(false, false), true);
   assert.equal(shouldAdoptHydratedDraft(true, false), false);
   assert.equal(shouldAdoptHydratedDraft(false, true), false);
+});
+
+test("attachment failure still hydrates durable text and bindings atomically", () => {
+  const bindings = [{ agentId: "agent-a" }];
+  assert.deepEqual(
+    hydratedDraftContent(4, "#new-name durable", "local cache", bindings),
+    { text: "#new-name durable", mentionBindings: bindings },
+  );
+  assert.deepEqual(
+    hydratedDraftContent(0, "", "local cache", bindings),
+    { text: "local cache", mentionBindings: [] },
+  );
 });
 
 test("recognizes punctuation-wrapped destinations consistently", () => {

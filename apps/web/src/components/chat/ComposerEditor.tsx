@@ -1057,7 +1057,6 @@ function EditorBridge({
         const reconciled = binding
           ? {
               ...current,
-              handle: binding.currentHandle,
               title: binding.currentTitle,
               valid: true,
             }

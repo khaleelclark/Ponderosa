@@ -23,6 +23,7 @@ import {
   recipientActionSnapshot,
   recipientUploadCacheKey,
   managerBroadcastText,
+  stableMessageActionText,
   type RecipientUploads,
   uploadFilesForRecipients,
 } from "../conversationRouting";
@@ -36,6 +37,11 @@ import {
 } from "./idempotentAttempt";
 
 interface ConversationSubmissionPrepared {
+  text: string;
+  broadcastText?: string;
+  mentionedAgents: AgentMentionBindingDto[];
+  broadcastUploadAgentIds: string[];
+  recipientSnapshot: ReturnType<typeof recipientActionSnapshot>;
   uploads: Map<string, RecipientUploads<AssetDto>>;
   titles: Map<string, string>;
 }
@@ -461,7 +467,6 @@ export function useConversationMessagingController({
     newAgentRequested = false,
   ) => {
     setSpawnNotice(undefined);
-    const broadcastMentioned = hasBroadcastMention(text);
     const broadcastText = managerBroadcastText(text);
     const everyoneMentioned = hasEveryoneMention(text);
     const explicitlyMentionedAgents = mentionedAgents.flatMap(binding => {
@@ -479,15 +484,20 @@ export function useConversationMessagingController({
       targets.map(target => target.id),
       broadcastAttachmentOwner?.id,
     );
-    const { targetAgentIds } = recipientSnapshot;
+    const broadcastUploadAgentIds = [
+      ...new Set([
+        ...(broadcastAttachmentOwner ? [broadcastAttachmentOwner.id] : []),
+        ...mentionedAgents.map(binding => binding.agentId),
+      ]),
+    ];
     const fingerprint = JSON.stringify({
       conversationId,
-      text,
+      text: stableMessageActionText(text, mentionedAgents),
       files: fileSelectionFingerprint(files),
       draftAttachmentIds,
       draftOwnerId,
-      mentionedAgents: mentionedAgents.map(binding => [binding.agentId, binding.handle]),
-      ...recipientSnapshot,
+      mentionedAgentIds: [...new Set(mentionedAgents.map(binding => binding.agentId))]
+        .sort(),
       newAgentRequested,
       activeRunDelivery,
       engine,
@@ -498,7 +508,15 @@ export function useConversationMessagingController({
       previous,
       fingerprint,
       () => createClientId(),
-      () => ({ uploads: new Map(), titles: new Map() }),
+      () => ({
+        text,
+        broadcastText,
+        mentionedAgents,
+        broadcastUploadAgentIds,
+        recipientSnapshot,
+        uploads: new Map(),
+        titles: new Map(),
+      }),
     );
     if (previous && previous !== attempt) {
       await Promise.all(
@@ -510,6 +528,12 @@ export function useConversationMessagingController({
     }
     submissionAttempt.current = attempt;
     const requestId = attempt.idempotencyKey;
+    const submittedText = attempt.prepared.text;
+    const submittedBroadcastText = attempt.prepared.broadcastText;
+    const {
+      targetAgentIds,
+      broadcastAttachmentOwnerAgentId,
+    } = attempt.prepared.recipientSnapshot;
     const preparedUploads = async (scope: string, agentIds: string[]) => {
       const key = recipientUploadCacheKey(scope, agentIds);
       const cached = attempt.prepared.uploads.get(key);
@@ -535,7 +559,7 @@ export function useConversationMessagingController({
       attempt.prepared.titles.set(titleKey, title);
       createdTitles.push(title);
       const created = await spawn.mutateAsync({
-        text,
+        text: submittedText,
         draftAttachmentIds,
         draftOwnerId,
         title,
@@ -543,29 +567,26 @@ export function useConversationMessagingController({
       });
       if (!("recovering" in created)) createdAgentIds.push(created.id);
     }
-    if (broadcastText !== undefined) {
-      if (!broadcastText && files.length === 0) {
+    if (submittedBroadcastText !== undefined) {
+      if (!submittedBroadcastText && files.length === 0) {
         throw new Error(
           "Add informational context or an attachment after #broadcast.",
         );
       }
-      if (files.length && !broadcastAttachmentOwner) {
+      if (files.length && !broadcastAttachmentOwnerAgentId) {
         throw new Error(
           "Create an agent before attaching files to shared project context.",
         );
       }
-      const uploadAgentIds = [
-        ...new Set([
-          ...(broadcastAttachmentOwner ? [broadcastAttachmentOwner.id] : []),
-          ...mentionedAgents.map(binding => binding.agentId),
-        ]),
-      ];
       await broadcast.mutateAsync({
-        text: broadcastText,
-        uploadedRecipients: await preparedUploads("broadcast", uploadAgentIds),
+        text: submittedBroadcastText,
+        uploadedRecipients: await preparedUploads(
+          "broadcast",
+          attempt.prepared.broadcastUploadAgentIds,
+        ),
         requestId,
-        agentMentions: broadcastMentioned ? mentionedAgents : [],
-        attachmentOwnerAgentId: broadcastAttachmentOwner?.id,
+        agentMentions: attempt.prepared.mentionedAgents,
+        attachmentOwnerAgentId: broadcastAttachmentOwnerAgentId,
         activeRunDelivery,
       });
       if (createdAgentIds.length > 0) {
@@ -574,20 +595,20 @@ export function useConversationMessagingController({
       finishAttempt();
       return;
     }
-    if (broadcastMentioned) {
+    if (hasBroadcastMention(submittedText)) {
       throw new Error("Broadcast scope could not be resolved.");
     }
-    if (everyoneMentioned && targets.length === 0) {
+    if (hasEveryoneMention(submittedText) && targetAgentIds.length === 0) {
       throw new Error("There are no active agents to notify.");
     }
-    if (targets.length > 0) {
+    if (targetAgentIds.length > 0) {
       setActiveOperation({
         agentIds: targetAgentIds,
         state: "starting",
       });
       await sendToAgents.mutateAsync({
         agentIds: targetAgentIds,
-        text,
+        text: submittedText,
         uploadedRecipients: await preparedUploads(
           "direct",
           targetAgentIds,
@@ -603,7 +624,7 @@ export function useConversationMessagingController({
         pickAgentName(detailAgents.map(agent => agent.title));
       attempt.prepared.titles.set(titleKey, title);
       await spawn.mutateAsync({
-        text,
+        text: submittedText,
         draftAttachmentIds,
         draftOwnerId,
         title,
