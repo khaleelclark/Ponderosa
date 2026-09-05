@@ -95,10 +95,8 @@ export function registerAgentMaintenanceRoutes(
       try {
         const removed = await workingCopies.cleanupRetained(request.params.id, workingCopy, project, {
           allowSourceUnavailable: true,
+          deleted: true,
         });
-        if (!store.updateDeletedAgentWorkingCopy(request.params.id, removed)) {
-          throw new Error("Deleted Agent became unavailable while recording cleanup");
-        }
         appendWorkspace({ type: "project_changed", projectId: project.id, action: "updated" });
         return removed;
       } catch (error) {

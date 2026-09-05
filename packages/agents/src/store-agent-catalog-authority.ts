@@ -38,6 +38,41 @@ import {
 
 const MAX_AGENT_TITLE_PROJECTION_IDS = 500;
 
+function validateWorkingCopy(
+  project: Pick<ProjectDto, "id" | "hostPath">,
+  workingCopy: AgentDto["workingCopy"],
+): void {
+  if (workingCopy.mode === "shared" && (
+    workingCopy.id !== `shared:${project.id}` ||
+    workingCopy.rootPath !== project.hostPath ||
+    workingCopy.state !== "ready" ||
+    workingCopy.branch !== undefined ||
+    workingCopy.baseHead !== undefined ||
+    workingCopy.branchOwned !== undefined ||
+    workingCopy.branchCreationIntent !== undefined ||
+    workingCopy.cleanupReceipt !== undefined ||
+    workingCopy.failure !== undefined
+  )) throw new Error("invalid Shared folder identity");
+  const cleanupReceipt = workingCopy.cleanupReceipt;
+  const validCleanupReceipt = cleanupReceipt !== undefined &&
+    ["worktree_removal_authorized", "branch_removal_authorized"].includes(cleanupReceipt.phase) &&
+    /^[0-9a-f]{40,64}$/u.test(cleanupReceipt.branchHead);
+  if (workingCopy.mode === "separate_git" && (
+    !workingCopy.id.startsWith("copy:") ||
+    !workingCopy.rootPath ||
+    !workingCopy.branch ||
+    (workingCopy.state === "ready" && workingCopy.branchOwned !== true) ||
+    (workingCopy.state === "ready" && workingCopy.branchCreationIntent !== undefined) ||
+    (workingCopy.state === "ready" && workingCopy.cleanupReceipt !== undefined) ||
+    (workingCopy.state === "ready" && workingCopy.failure !== undefined) ||
+    (workingCopy.state === "unavailable" && !workingCopy.failure) ||
+    (workingCopy.cleanupReceipt !== undefined && (
+      workingCopy.state !== "unavailable" || workingCopy.branchOwned !== true ||
+      workingCopy.branchCreationIntent !== undefined || !validCleanupReceipt
+    ))
+  )) throw new Error("invalid Separate Git copy identity");
+}
+
 export class AgentCatalogAuthority {
   constructor(
     private readonly dataDir: string,
@@ -370,25 +405,7 @@ export class AgentCatalogAuthority {
     if (!row) return undefined;
     const project = this.getProject(row.projectId);
     if (!project) throw new Error("Agent Project is unavailable");
-    if (workingCopy.mode === "shared" && (
-      workingCopy.id !== `shared:${project.id}` ||
-      workingCopy.rootPath !== project.hostPath ||
-      workingCopy.state !== "ready" ||
-      workingCopy.branch !== undefined ||
-      workingCopy.baseHead !== undefined ||
-      workingCopy.branchOwned !== undefined ||
-      workingCopy.branchCreationIntent !== undefined ||
-      workingCopy.failure !== undefined
-    )) throw new Error("invalid Shared folder identity");
-    if (workingCopy.mode === "separate_git" && (
-      !workingCopy.id.startsWith("copy:") ||
-      !workingCopy.rootPath ||
-      !workingCopy.branch ||
-      (workingCopy.state === "ready" && workingCopy.branchOwned !== true) ||
-      (workingCopy.state === "ready" && workingCopy.branchCreationIntent !== undefined) ||
-      (workingCopy.state === "ready" && workingCopy.failure !== undefined) ||
-      (workingCopy.state === "unavailable" && !workingCopy.failure)
-    )) throw new Error("invalid Separate Git copy identity");
+    validateWorkingCopy(project, workingCopy);
     const json = readJson<AgentJson>(agentJsonPath(this.dataDir, row.projectId, id));
     writeJson(agentJsonPath(this.dataDir, row.projectId, id), {
       ...json,
@@ -410,6 +427,9 @@ export class AgentCatalogAuthority {
       eq(agents.id, id),
     )).get();
     if (!row || row.deletedAt === null) return false;
+    const project = this.getProject(row.projectId);
+    if (!project) throw new Error("Agent Project is unavailable");
+    validateWorkingCopy(project, workingCopy);
     const json = readJson<AgentJson>(agentJsonPath(this.dataDir, row.projectId, id));
     writeJson(agentJsonPath(this.dataDir, row.projectId, id), {
       ...json,

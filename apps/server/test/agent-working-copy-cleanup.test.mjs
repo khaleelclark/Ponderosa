@@ -30,6 +30,46 @@ async function gitFixture(t) {
   };
 }
 
+function activeWorkingCopyStore(agent) {
+  let current = structuredClone(agent);
+  return {
+    store: {
+      getAgent: () => current,
+      listProjectWorkingCopies: () => [{
+        agentId: current.id,
+        deleted: false,
+        workingCopy: structuredClone(current.workingCopy),
+      }],
+      updateAgentWorkingCopy: (_agentId, workingCopy) => {
+        current = { ...current, workingCopy: structuredClone(workingCopy) };
+        return current;
+      },
+      updateDeletedAgentWorkingCopy: () => false,
+    },
+    current: () => current,
+  };
+}
+
+function deletedWorkingCopyStore(agentId, workingCopy) {
+  let current = structuredClone(workingCopy);
+  return {
+    store: {
+      getAgent: () => undefined,
+      listProjectWorkingCopies: () => [{
+        agentId,
+        deleted: true,
+        workingCopy: structuredClone(current),
+      }],
+      updateAgentWorkingCopy: () => undefined,
+      updateDeletedAgentWorkingCopy: (_agentId, next) => {
+        current = structuredClone(next);
+        return true;
+      },
+    },
+    current: () => current,
+  };
+}
+
 test("Project cleanup removes an empty working-copy container", async (t) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "ponderosa-working-copy-cleanup-"));
   t.after(() => rm(dataDir, { recursive: true, force: true }));
@@ -160,9 +200,11 @@ test("retained cleanup removes its exact durably owned worktree", async (t) => {
   const root = path.join(dataDir, "working-copies", project.id, agentId, "root");
   await mkdir(path.dirname(root), { recursive: true });
   git(project.hostPath, "worktree", "add", "-b", branch, root, baseHead);
-  const service = new AgentWorkingCopyService(dataDir, { listProjectWorkingCopies: () => [] });
-
-  const removed = await service.cleanupRetained(agentId, {
+  const authority = activeWorkingCopyStore({
+    id: agentId,
+    projectId: project.id,
+    title: "Exact owner",
+    workingCopy: {
     id: "copy:exact-owned",
     mode: "separate_git",
     state: "ready",
@@ -171,11 +213,274 @@ test("retained cleanup removes its exact durably owned worktree", async (t) => {
     baseHead,
     branchOwned: true,
     updatedAt: new Date().toISOString(),
-  }, project);
+    },
+  });
+  const service = new AgentWorkingCopyService(dataDir, authority.store);
+
+  const removed = await service.cleanupRetained(
+    agentId,
+    authority.current().workingCopy,
+    project,
+  );
 
   assert.equal(removed.state, "removed");
+  assert.equal(authority.current().workingCopy.state, "removed");
   await assert.rejects(access(root), { code: "ENOENT" });
   assert.equal(git(project.hostPath, "branch", "--list", branch), "");
+});
+
+test("retained cleanup settles a preparation failure that never created Git authority", async (t) => {
+  const { dataDir, project, baseHead } = await gitFixture(t);
+  const agentId = "00000000-0000-4000-8000-000000000111";
+  const root = path.join(dataDir, "working-copies", project.id, agentId, "root");
+  await mkdir(path.dirname(root), { recursive: true });
+  const authority = activeWorkingCopyStore({
+    id: agentId,
+    projectId: project.id,
+    title: "Failed preparation",
+    workingCopy: {
+      id: "copy:failed-preparation",
+      mode: "separate_git",
+      state: "unavailable",
+      rootPath: root,
+      branch: "ponderosa/never-created",
+      baseHead,
+      failure: "preparation stopped before Git mutation",
+      updatedAt: new Date().toISOString(),
+    },
+  });
+
+  const removed = await new AgentWorkingCopyService(dataDir, authority.store)
+    .cleanupRetained(agentId, authority.current().workingCopy, project);
+
+  assert.equal(removed.state, "removed");
+  assert.equal(git(project.hostPath, "branch", "--list", "ponderosa/never-created"), "");
+});
+
+test("Project cleanup resumes after a crash immediately after owned worktree removal", async (t) => {
+  const { dataDir, project, baseHead } = await gitFixture(t);
+  const agentId = "00000000-0000-4000-8000-000000000106";
+  const branch = "ponderosa/project-crash-owner";
+  const root = path.join(dataDir, "working-copies", project.id, agentId, "root");
+  await mkdir(path.dirname(root), { recursive: true });
+  git(project.hostPath, "worktree", "add", "-b", branch, root, baseHead);
+  const authority = activeWorkingCopyStore({
+    id: agentId,
+    projectId: project.id,
+    title: "Project cleanup owner",
+    workingCopy: {
+      id: "copy:project-crash",
+      mode: "separate_git",
+      state: "ready",
+      rootPath: root,
+      branch,
+      baseHead,
+      branchOwned: true,
+      updatedAt: new Date().toISOString(),
+    },
+  });
+
+  await assert.rejects(
+    new AgentWorkingCopyService(dataDir, authority.store).cleanupRetained(
+      agentId,
+      authority.current().workingCopy,
+      project,
+      { afterWorktreeRemoval: () => { throw new Error("simulated crash after worktree removal"); } },
+    ),
+    /simulated crash after worktree removal/u,
+  );
+  assert.equal(
+    authority.current().workingCopy.cleanupReceipt.phase,
+    "worktree_removal_authorized",
+  );
+  await assert.rejects(access(root), { code: "ENOENT" });
+  assert.notEqual(git(project.hostPath, "branch", "--list", branch), "");
+
+  await new AgentWorkingCopyService(dataDir, authority.store).cleanupProject(project);
+
+  assert.equal(authority.current().workingCopy.state, "removed");
+  assert.equal(git(project.hostPath, "branch", "--list", branch), "");
+});
+
+test("Separate to Shared resumes after a crash immediately after owned branch deletion", async (t) => {
+  const { dataDir, project, baseHead } = await gitFixture(t);
+  const agentId = "00000000-0000-4000-8000-000000000107";
+  const branch = "ponderosa/mode-crash-owner";
+  const root = path.join(dataDir, "working-copies", project.id, agentId, "root");
+  await mkdir(path.dirname(root), { recursive: true });
+  git(project.hostPath, "worktree", "add", "-b", branch, root, baseHead);
+  const authority = activeWorkingCopyStore({
+    id: agentId,
+    projectId: project.id,
+    title: "Mode cleanup owner",
+    workingCopy: {
+      id: "copy:mode-crash",
+      mode: "separate_git",
+      state: "ready",
+      rootPath: root,
+      branch,
+      baseHead,
+      branchOwned: true,
+      updatedAt: new Date().toISOString(),
+    },
+  });
+
+  await assert.rejects(
+    new AgentWorkingCopyService(dataDir, authority.store).cleanupRetained(
+      agentId,
+      authority.current().workingCopy,
+      project,
+      { afterBranchRemoval: () => { throw new Error("simulated crash after branch deletion"); } },
+    ),
+    /simulated crash after branch deletion/u,
+  );
+  assert.equal(
+    authority.current().workingCopy.cleanupReceipt.phase,
+    "branch_removal_authorized",
+  );
+  assert.equal(git(project.hostPath, "branch", "--list", branch), "");
+
+  const restarted = new AgentWorkingCopyService(dataDir, authority.store);
+  const release = restarted.beginModeChange(agentId);
+  const shared = await restarted.setMode(
+    authority.current(),
+    project,
+    "shared",
+  );
+  release();
+
+  assert.equal(shared.workingCopy.mode, "shared");
+  assert.equal(shared.workingCopy.state, "ready");
+  assert.equal(shared.workingCopy.cleanupReceipt, undefined);
+});
+
+test("deleted-Agent cleanup resumes after a crash before final removed state", async (t) => {
+  const { dataDir, project, baseHead } = await gitFixture(t);
+  const agentId = "00000000-0000-4000-8000-000000000108";
+  const branch = "ponderosa/deleted-crash-owner";
+  const root = path.join(dataDir, "working-copies", project.id, agentId, "root");
+  await mkdir(path.dirname(root), { recursive: true });
+  git(project.hostPath, "worktree", "add", "-b", branch, root, baseHead);
+  const authority = deletedWorkingCopyStore(agentId, {
+    id: "copy:deleted-crash",
+    mode: "separate_git",
+    state: "ready",
+    rootPath: root,
+    branch,
+    baseHead,
+    branchOwned: true,
+    updatedAt: new Date().toISOString(),
+  });
+
+  await assert.rejects(
+    new AgentWorkingCopyService(dataDir, authority.store).cleanupRetained(
+      agentId,
+      authority.current(),
+      project,
+      {
+        deleted: true,
+        afterContainerRemoval: () => { throw new Error("simulated crash before final state"); },
+      },
+    ),
+    /simulated crash before final state/u,
+  );
+  assert.equal(authority.current().cleanupReceipt.phase, "branch_removal_authorized");
+  assert.equal(git(project.hostPath, "branch", "--list", branch), "");
+
+  const removed = await new AgentWorkingCopyService(dataDir, authority.store)
+    .cleanupRetained(agentId, authority.current(), project, { deleted: true });
+
+  assert.equal(removed.state, "removed");
+  assert.equal(authority.current().state, "removed");
+  assert.equal(authority.current().cleanupReceipt, undefined);
+});
+
+test("retained cleanup does not infer removal authority from an absent worktree", async (t) => {
+  const { dataDir, project, baseHead } = await gitFixture(t);
+  const agentId = "00000000-0000-4000-8000-000000000109";
+  const branch = "ponderosa/unreceipted-owner";
+  const root = path.join(dataDir, "working-copies", project.id, agentId, "root");
+  await mkdir(path.dirname(root), { recursive: true });
+  git(project.hostPath, "worktree", "add", "-b", branch, root, baseHead);
+  git(project.hostPath, "worktree", "remove", "--force", root);
+  const authority = activeWorkingCopyStore({
+    id: agentId,
+    projectId: project.id,
+    title: "Unreceipted owner",
+    workingCopy: {
+      id: "copy:unreceipted",
+      mode: "separate_git",
+      state: "ready",
+      rootPath: root,
+      branch,
+      baseHead,
+      branchOwned: true,
+      updatedAt: new Date().toISOString(),
+    },
+  });
+
+  await assert.rejects(
+    new AgentWorkingCopyService(dataDir, authority.store).cleanupRetained(
+      agentId,
+      authority.current().workingCopy,
+      project,
+    ),
+    /no longer matches its durable branch and working-folder identity/u,
+  );
+  assert.notEqual(git(project.hostPath, "branch", "--list", branch), "");
+  assert.equal(authority.current().workingCopy.cleanupReceipt, undefined);
+});
+
+test("retained cleanup preserves a branch changed after its durable cleanup receipt", async (t) => {
+  const { dataDir, project, baseHead } = await gitFixture(t);
+  const agentId = "00000000-0000-4000-8000-000000000110";
+  const branch = "ponderosa/changed-after-receipt";
+  const root = path.join(dataDir, "working-copies", project.id, agentId, "root");
+  await mkdir(path.dirname(root), { recursive: true });
+  git(project.hostPath, "worktree", "add", "-b", branch, root, baseHead);
+  const authority = activeWorkingCopyStore({
+    id: agentId,
+    projectId: project.id,
+    title: "Changed branch owner",
+    workingCopy: {
+      id: "copy:changed-after-receipt",
+      mode: "separate_git",
+      state: "ready",
+      rootPath: root,
+      branch,
+      baseHead,
+      branchOwned: true,
+      updatedAt: new Date().toISOString(),
+    },
+  });
+  await assert.rejects(
+    new AgentWorkingCopyService(dataDir, authority.store).cleanupRetained(
+      agentId,
+      authority.current().workingCopy,
+      project,
+      { afterWorktreeRemoval: () => { throw new Error("simulated crash"); } },
+    ),
+    /simulated crash/u,
+  );
+  await writeFile(path.join(project.hostPath, "later.txt"), "later\n");
+  git(project.hostPath, "add", ".");
+  git(project.hostPath, "commit", "-m", "later");
+  const replacementHead = git(project.hostPath, "rev-parse", "HEAD");
+  git(project.hostPath, "update-ref", `refs/heads/${branch}`, replacementHead);
+
+  await assert.rejects(
+    new AgentWorkingCopyService(dataDir, authority.store).cleanupRetained(
+      agentId,
+      authority.current().workingCopy,
+      project,
+    ),
+    /branch changed after cleanup was authorized and was preserved/u,
+  );
+  assert.equal(git(project.hostPath, "rev-parse", branch), replacementHead);
+  assert.equal(
+    authority.current().workingCopy.cleanupReceipt.phase,
+    "worktree_removal_authorized",
+  );
 });
 
 test("retained cleanup validates creation intent against its base commit", async (t) => {

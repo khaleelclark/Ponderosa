@@ -122,6 +122,17 @@ async function gitWorktreeRegistrationExact(
   return roots.length === 1 && samePath(roots[0]!, expectedRoot);
 }
 
+async function gitWorktreeRootRegistered(
+  projectRoot: string,
+  expectedRoot: string,
+): Promise<boolean> {
+  const output = await runGit(projectRoot, ["worktree", "list", "--porcelain", "-z"]);
+  return output.split("\0\0").some((record) =>
+    record.split("\0").some((field) =>
+      field.startsWith("worktree ") &&
+      samePath(path.resolve(field.slice("worktree ".length)), expectedRoot)));
+}
+
 export class AgentWorkingCopyService {
   private readonly managedRoot: string;
   private readonly modeChanges = new Map<string, {
@@ -284,11 +295,18 @@ export class AgentWorkingCopyService {
     agentId: string,
     workingCopy: AgentWorkingCopyDto,
     project: Pick<ProjectDto, "id" | "hostPath">,
-    options: { allowSourceUnavailable?: boolean } = {},
+    options: {
+      allowSourceUnavailable?: boolean;
+      deleted?: boolean;
+      afterWorktreeRemoval?: () => void;
+      afterBranchRemoval?: () => void;
+      afterContainerRemoval?: () => void;
+    } = {},
   ): Promise<AgentWorkingCopyDto> {
-    if (workingCopy.mode !== "separate_git" || workingCopy.state === "removed") {
+    if (workingCopy.mode !== "separate_git") {
       throw new Error("This deleted Agent has no retained Separate Git copy");
     }
+    if (workingCopy.state === "removed") return workingCopy;
     const expectedRoot = path.join(this.managedRoot, project.id, agentId, "root");
     if (!samePath(path.resolve(workingCopy.rootPath), expectedRoot) ||
         !inside(this.managedRoot, expectedRoot)) {
@@ -311,18 +329,20 @@ export class AgentWorkingCopyService {
     // Preparation can fail before Git creates a branch or registration (for
     // example when Shared is not a Git repository). That state has no Git
     // authority to clean; removing its empty managed container is sufficient.
-    if (!rootExists && !workingCopy.baseHead) {
+    if (!rootExists && !workingCopy.baseHead && !workingCopy.branchOwned &&
+        !workingCopy.branchCreationIntent && !workingCopy.cleanupReceipt) {
       try {
         await rmdir(path.join(this.managedRoot, project.id, agentId));
       } catch (error) {
         if (!missingPath(error)) throw error;
       }
-      return {
+      return this.persistCleanupState(agentId, {
         ...workingCopy,
         state: "removed",
+        cleanupReceipt: undefined,
         failure: undefined,
         updatedAt: new Date().toISOString(),
-      };
+      }, options.deleted === true);
     }
     let projectRoot: string;
     try {
@@ -338,9 +358,18 @@ export class AgentWorkingCopyService {
     if (!workingCopy.branch) {
       throw new Error("The retained Separate Git copy has no durable branch identity");
     }
+    const cleanupReceipt = workingCopy.cleanupReceipt;
+    if (cleanupReceipt && (
+      workingCopy.state !== "unavailable" || workingCopy.branchOwned !== true ||
+      workingCopy.branchCreationIntent !== undefined ||
+      !["worktree_removal_authorized", "branch_removal_authorized"].includes(cleanupReceipt.phase) ||
+      !/^[0-9a-f]{40,64}$/u.test(cleanupReceipt.branchHead)
+    )) {
+      throw new Error("The retained Git copy has an invalid cleanup receipt");
+    }
     let branchOwned = workingCopy.branchOwned === true;
-    const branchExists = await gitBranchExists(projectRoot, workingCopy.branch);
-    const registeredAtExpectedRoot = branchExists &&
+    let branchExists = await gitBranchExists(projectRoot, workingCopy.branch);
+    let registeredAtExpectedRoot = branchExists &&
       await gitWorktreeRegistrationExact(projectRoot, expectedRoot, workingCopy.branch);
     if (rootExists && registeredAtExpectedRoot) {
       let currentRootMatches = false;
@@ -360,42 +389,120 @@ export class AgentWorkingCopyService {
         workingCopy.baseHead && registeredAtExpectedRoot) {
       branchOwned = await gitBranchHead(projectRoot, workingCopy.branch) === workingCopy.baseHead;
     }
-    if ((rootExists || branchExists) && (!branchOwned || !registeredAtExpectedRoot)) {
-      throw new Error("The retained Git copy no longer matches its durable branch and working-folder identity");
-    }
-    if (registeredAtExpectedRoot) {
-      await runGit(projectRoot, ["worktree", "remove", "--force", expectedRoot]);
-    }
-    if (branchExists && branchOwned) {
-      await runGit(projectRoot, ["check-ref-format", "--branch", workingCopy.branch]);
-      if (await gitBranchExists(projectRoot, workingCopy.branch)) {
-        await runGit(projectRoot, ["branch", "-D", workingCopy.branch]);
+
+    let durable = workingCopy;
+    let phase = cleanupReceipt?.phase;
+    let expectedBranchHead = cleanupReceipt?.branchHead;
+    // Persist exact identity before removing the registration, then advance
+    // once its absence is proven. A restart may trust only these monotonic
+    // phases, never infer ownership from missing filesystem or Git state.
+    if (!phase) {
+      if (!rootExists && !branchExists && !workingCopy.branchOwned && !cleanupReceipt) {
+        return this.persistCleanupState(agentId, {
+          ...workingCopy,
+          state: "removed",
+          branchCreationIntent: undefined,
+          cleanupReceipt: undefined,
+          failure: undefined,
+          updatedAt: new Date().toISOString(),
+        }, options.deleted === true);
       }
+      if (!rootExists || !branchExists || !branchOwned || !registeredAtExpectedRoot) {
+        throw new Error("The retained Git copy no longer matches its durable branch and working-folder identity");
+      }
+      expectedBranchHead = await gitBranchHead(projectRoot, workingCopy.branch);
+      durable = this.persistCleanupState(agentId, {
+        ...workingCopy,
+        state: "unavailable",
+        branchOwned: true,
+        branchCreationIntent: undefined,
+        cleanupReceipt: {
+          phase: "worktree_removal_authorized",
+          branchHead: expectedBranchHead,
+        },
+        failure: "Separate Git copy removal is in progress. Runs remain paused.",
+        updatedAt: new Date().toISOString(),
+      }, options.deleted === true);
+      phase = "worktree_removal_authorized";
+    }
+
+    if (branchExists && await gitBranchHead(projectRoot, workingCopy.branch) !== expectedBranchHead) {
+      throw new Error("The retained Git branch changed after cleanup was authorized and was preserved");
+    }
+
+    if (phase === "worktree_removal_authorized") {
+      if (rootExists && !registeredAtExpectedRoot) {
+        throw new Error("The retained Git working folder was replaced and was preserved");
+      }
+      if (registeredAtExpectedRoot) {
+        await runGit(projectRoot, ["worktree", "remove", "--force", expectedRoot]);
+        options.afterWorktreeRemoval?.();
+      }
+      if (await gitWorktreeRootRegistered(projectRoot, expectedRoot) ||
+          (await gitWorktreeBranchRoots(projectRoot, workingCopy.branch)).length > 0) {
+        throw new Error("The retained Git worktree registration remains after cleanup");
+      }
+      try {
+        await lstat(expectedRoot);
+        throw new Error("The retained Git working folder was replaced and was preserved");
+      } catch (error) {
+        if (!missingPath(error)) throw error;
+      }
+      durable = this.persistCleanupState(agentId, {
+        ...durable,
+        cleanupReceipt: {
+          phase: "branch_removal_authorized",
+          branchHead: expectedBranchHead!,
+        },
+        updatedAt: new Date().toISOString(),
+      }, options.deleted === true);
+    }
+
+    if (await gitWorktreeRootRegistered(projectRoot, expectedRoot) ||
+        (await gitWorktreeBranchRoots(projectRoot, workingCopy.branch)).length > 0) {
+      throw new Error("The retained Git worktree registration changed after cleanup and was preserved");
+    }
+    try {
+      await lstat(expectedRoot);
+      throw new Error("The retained Git working folder was replaced and was preserved");
+    } catch (error) {
+      if (!missingPath(error)) throw error;
+    }
+    branchExists = await gitBranchExists(projectRoot, workingCopy.branch);
+    if (branchExists) {
+      if (await gitBranchHead(projectRoot, workingCopy.branch) !== expectedBranchHead) {
+        throw new Error("The retained Git branch changed after cleanup was authorized and was preserved");
+      }
+      await runGit(projectRoot, ["check-ref-format", "--branch", workingCopy.branch]);
+      await runGit(projectRoot, [
+        "update-ref", "-d", `refs/heads/${workingCopy.branch}`, expectedBranchHead!,
+      ]);
+      options.afterBranchRemoval?.();
     }
     try {
       await rmdir(path.join(this.managedRoot, project.id, agentId));
     } catch (error) {
       if (!missingPath(error)) throw error;
     }
-    return {
-      ...workingCopy,
+    options.afterContainerRemoval?.();
+    return this.persistCleanupState(agentId, {
+      ...durable,
       state: "removed",
+      branchCreationIntent: undefined,
+      cleanupReceipt: undefined,
       failure: undefined,
       updatedAt: new Date().toISOString(),
-    };
+    }, options.deleted === true);
   }
 
   /** Remove every managed Git copy before Project authority is committed away. */
   async cleanupProject(project: ProjectDto): Promise<void> {
     for (const record of this.store.listProjectWorkingCopies(project.id)) {
       if (record.workingCopy.mode !== "separate_git" || record.workingCopy.state === "removed") continue;
-      const removed = await this.cleanupRetained(record.agentId, record.workingCopy, project, {
+      await this.cleanupRetained(record.agentId, record.workingCopy, project, {
         allowSourceUnavailable: true,
+        deleted: record.deleted,
       });
-      const persisted = record.deleted
-        ? this.store.updateDeletedAgentWorkingCopy(record.agentId, removed)
-        : Boolean(this.store.updateAgentWorkingCopy(record.agentId, removed));
-      if (!persisted) throw new Error(`Agent ${record.agentId} became unavailable during working-copy cleanup`);
     }
     try {
       await rmdir(path.join(this.managedRoot, project.id));
@@ -409,10 +516,13 @@ export class AgentWorkingCopyService {
     project: ProjectDto,
     mode: AgentWorkingCopyMode,
   ): Promise<AgentDto> {
+    if (agent.workingCopy.mode === "separate_git" && agent.workingCopy.cleanupReceipt) {
+      const recovered = await this.cleanupRetained(agent.id, agent.workingCopy, project);
+      agent = { ...agent, workingCopy: recovered };
+    }
     if (mode === "shared") {
       if (agent.workingCopy.mode === "separate_git" && agent.workingCopy.state !== "removed") {
-        const removed = await this.cleanupRetained(agent.id, agent.workingCopy, project);
-        this.requireUpdated(agent.id, removed);
+        await this.cleanupRetained(agent.id, agent.workingCopy, project);
       }
       return this.requireUpdated(agent.id, sharedWorkingCopy(project, new Date().toISOString()));
     }
@@ -554,5 +664,21 @@ export class AgentWorkingCopyService {
     const updated = this.store.updateAgentWorkingCopy(agentId, workingCopy);
     if (!updated) throw new Error("Agent became unavailable while changing its working folder");
     return updated;
+  }
+
+  private persistCleanupState(
+    agentId: string,
+    workingCopy: AgentWorkingCopyDto,
+    deleted: boolean,
+  ): AgentWorkingCopyDto {
+    if (deleted) {
+      if (!this.store.updateDeletedAgentWorkingCopy(agentId, workingCopy)) {
+        throw new Error("Deleted Agent became unavailable while recording working-copy cleanup");
+      }
+      return workingCopy;
+    }
+    const updated = this.store.updateAgentWorkingCopy(agentId, workingCopy);
+    if (!updated) throw new Error("Agent became unavailable while recording working-copy cleanup");
+    return updated.workingCopy;
   }
 }

@@ -28,6 +28,13 @@ export interface AgentManagementPermissionsDto {
 export type AgentWorkingCopyMode = "shared" | "separate_git";
 export type AgentWorkingCopyState = "ready" | "unavailable" | "removed";
 
+export interface AgentWorkingCopyCleanupReceiptDto {
+  /** Monotonic destructive boundary authorized after exact worktree validation. */
+  phase: "worktree_removal_authorized" | "branch_removal_authorized";
+  /** Exact owned ref value captured before worktree removal began. */
+  branchHead: string;
+}
+
 /** Durable filesystem identity used by one Agent across Runs and provider sessions. */
 export interface AgentWorkingCopyDto {
   /** Stable identity; provider sessions and provenance must not cross identities. */
@@ -44,6 +51,8 @@ export interface AgentWorkingCopyDto {
   branchOwned?: true;
   /** Durable pre-mutation receipt used to recover a crash during Git creation. */
   branchCreationIntent?: true;
+  /** Durable receipt used to finish an interrupted owned-copy cleanup. */
+  cleanupReceipt?: AgentWorkingCopyCleanupReceiptDto;
   /** Safe operator-facing reason when the requested mode cannot be used. */
   failure?: string;
   updatedAt: string;
