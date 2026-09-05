@@ -94,7 +94,9 @@ import {
   ALL_CHAT_SOURCE_KEY,
   allChatComposerConversationId,
   allChatRuntimePayloadSnapshot,
+  allChatRuntimeSelectionReady,
   allChatSourceConversationId,
+  allChatSourceIdentity,
   eligibleAllChatTargets,
   parseAllChatReplyTarget,
   parseAllChatSourceIdentity,
@@ -162,7 +164,7 @@ function allChatSourceAccessibleName(item: AllChatItemDto): string {
     normalized.length > 80
       ? `${normalized.slice(0, 79)}…`
       : normalized || "Empty message";
-  return `Message from ${item.author.label} in ${sourceLabel(item)}, sent ${new Date(item.createdAt).toLocaleString()}: ${excerpt}`;
+  return `Use ${sourceLabel(item)} as the source Chat. Message from ${item.author.label}, sent ${new Date(item.createdAt).toLocaleString()}: ${excerpt}`;
 }
 
 export function AllChatView({
@@ -201,6 +203,7 @@ export function AllChatView({
   const [effort, setEffort] = useState("");
   const [speed, setSpeed] = useState("");
   const initializedRuntime = useRef<string>();
+  const [runtimeAgentId, setRuntimeAgentId] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [directSendConfirmation, setDirectSendConfirmation] = useState<{
     id: number;
@@ -376,6 +379,15 @@ export function AllChatView({
     enabled: Boolean(selectedAgentId),
   });
   const conversationsQuery = useConversations(selectedProjectId);
+  const selectedSourceConversationId = allChatSourceConversationId(
+    selected?.source,
+    projectAgentsQuery.data ?? [],
+  );
+  const composerConversationId = allChatComposerConversationId(
+    selectedSourceConversationId,
+    replyTarget?.conversationId,
+    composerSource,
+  );
   useEffect(() => {
     setReplyTarget(current => {
       if (!current) return current;
@@ -402,18 +414,13 @@ export function AllChatView({
     );
   }, [replyTarget]);
   useEffect(() => {
-    const conversationId = selected
-      ? allChatSourceConversationId(
-          selected.source,
-          projectAgentsQuery.data ?? [],
-        )
-      : undefined;
-    if (selected && conversationId) {
-      setComposerSource({
-        projectId: selected.project.id,
-        conversationId,
-      });
-    }
+    if (!selected) return;
+    const identity = allChatSourceIdentity(
+      selected.project.id,
+      selected.source,
+      projectAgentsQuery.data ?? [],
+    );
+    if (identity) setComposerSource(identity);
   }, [projectAgentsQuery.data, selected]);
   useEffect(() => {
     if (replyTarget?.conversationId) {
@@ -433,9 +440,18 @@ export function AllChatView({
   const project = projectsQuery.data?.find(
     item => item.id === selectedProjectId,
   );
-  const selectedEngineId =
-    runtimeEngine || selectedAgent.data?.agent.activeEngine;
-  const selectedModel = model || selectedAgent.data?.agent.model;
+  const runtimeSelectionReady = allChatRuntimeSelectionReady(
+    selectedAgentId,
+    runtimeAgentId,
+  );
+  const selectedEngineId = runtimeSelectionReady
+    ? runtimeEngine || selectedAgent.data?.agent.activeEngine
+    : selectedAgentId
+      ? selectedAgent.data?.agent.activeEngine
+      : undefined;
+  const selectedModel = runtimeSelectionReady
+    ? model || selectedAgent.data?.agent.model
+    : selectedAgent.data?.agent.model;
   const selectedEngine = engines.find(
     item => item.id === selectedEngineId,
   );
@@ -463,6 +479,7 @@ export function AllChatView({
       setModel("");
       setEffort("");
       setSpeed("");
+      setRuntimeAgentId(undefined);
       return;
     }
     const agent = selectedAgent.data?.agent;
@@ -495,6 +512,7 @@ export function AllChatView({
       ),
     });
     initializedRuntime.current = initializationKey;
+    setRuntimeAgentId(agent.id);
     setRuntimeEngine(agent.activeEngine);
     setModel(resolved.model);
     setEffort(resolved.effort);
@@ -608,14 +626,7 @@ export function AllChatView({
       if (!activeProjectId) throw new Error("Select a message to establish a Project first");
       if (!body.trim() && files.length === 0)
         throw new Error("Message text or an attachment is required");
-      const selectedConversationId = allChatComposerConversationId(
-        allChatSourceConversationId(
-          selected?.source,
-          projectAgentsQuery.data ?? [],
-        ),
-        replyTarget?.conversationId,
-        composerSource,
-      );
+      const selectedConversationId = composerConversationId;
       const validAgents = new Map((projectAgentsQuery.data ?? []).filter(agent =>
         !agent.archived).map(agent => [agent.id, agent]));
       const currentRecipientIds = [...new Set(
@@ -637,7 +648,9 @@ export function AllChatView({
         recipientCount: currentRecipientIds.length,
         selectedEngineId,
         defaultEngine: project?.defaultEngine,
-        runtime: selectedRuntime,
+        runtime: runtimeSelectionReady
+          ? selectedRuntime
+          : { model: "", effort: "", speed: "" },
       });
       const fingerprint = JSON.stringify({
         activeProjectId,
@@ -771,10 +784,23 @@ export function AllChatView({
       }
     },
   });
-  const selectItem = (item: AllChatItemDto) => {
+  const selectItem = (item: AllChatItemDto, clearRecipient = false) => {
     pendingMentionTargetId.current = undefined;
     setSelectedId(item.communicationEventId);
-    setComposerSource(undefined);
+    setComposerSource(allChatSourceIdentity(
+      item.project.id,
+      item.source,
+      projectAgentsQuery.data ?? [],
+    ));
+    if (clearRecipient) {
+      if (replyTarget) {
+        setMentionRemoveRequest({
+          id: `source:${replyTarget.id}:${Date.now()}`,
+          text: `#${replyTarget.handle}`,
+        });
+      }
+      setReplyTarget(undefined);
+    }
     setNotice(undefined);
     setDirectSendConfirmation(undefined);
     send.reset();
@@ -857,7 +883,7 @@ export function AllChatView({
     }
   };
   const runtimeControls =
-    replyTarget && selectedAgent.data && selectedEngine ? (
+    replyTarget && runtimeSelectionReady && selectedAgent.data && selectedEngine ? (
       <AgentRuntimeControls
         engine={selectedEngine}
         engines={engines}
@@ -1086,6 +1112,7 @@ export function AllChatView({
                       item.communicationEventId,
                       visible,
                     ),
+                  onSelect: () => selectItem(item, true),
                   ariaLabel: allChatSourceAccessibleName(item),
                   body: (
                     <ChatMessageBody
@@ -1303,17 +1330,32 @@ export function AllChatView({
           onCapabilitiesOpen={refreshSelectedCapabilities}
           onCommand={replyTarget ? invokeCommand : undefined}
           controls={runtimeControls}
-          disabled={send.isPending || updateRuntimeEngine.isPending}
+          disabled={
+            send.isPending ||
+            updateRuntimeEngine.isPending ||
+            Boolean(selectedAgentId && !runtimeSelectionReady)
+          }
           running={false}
           allowUnmentionedSend={Boolean(replyTarget)}
-          attachmentsEnabled
+          attachmentsEnabled={Boolean(composerConversationId)}
+          attachmentsUnavailableReason={
+            composerConversationId
+              ? undefined
+              : "Select a source Chat before adding attachments."
+          }
           placeholder={
             replyTarget
               ? `Message ${replyTarget.title} directly`
               : "Select an Agent with # then write a message"
           }
           removeTextRequest={mentionRemoveRequest}
-          draftStorageKey="messages:composer"
+          draftStorageKey={composerConversationId
+            ? chatStateKey(
+                "draft",
+                `conversation.${composerConversationId}.main`,
+              )
+            : "messages:composer"}
+          conversationDraftId={composerConversationId}
           onSend={(body, files, draftAttachmentIds = [], draftOwnerId, context) =>
             send.mutateAsync({
               body,

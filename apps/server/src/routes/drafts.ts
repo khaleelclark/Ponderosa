@@ -34,6 +34,7 @@ interface StoredDraftAttachment
 const DRAFT_UPDATE_FIELDS = new Set([
   "text",
   "attachmentIds",
+  "pastedTextAttachmentId",
   "mentionBindings",
   "expectedRevision",
   "clientId",
@@ -78,6 +79,19 @@ export function draftUpdateBodyError(
     new Set(body.attachmentIds).size !== body.attachmentIds.length
   ) {
     return `at most ${maxAttachmentsPerMessage} unique string draft attachments are allowed`;
+  }
+  if (
+    body.pastedTextAttachmentId !== undefined &&
+    (typeof body.pastedTextAttachmentId !== "string" ||
+      !body.pastedTextAttachmentId)
+  ) {
+    return "draft pasted-text attachment must be a non-empty string";
+  }
+  if (
+    body.pastedTextAttachmentId !== undefined &&
+    body.attachmentIds.includes(body.pastedTextAttachmentId)
+  ) {
+    return "draft pasted-text attachment must be distinct from file attachments";
   }
   if (body.mentionBindings === undefined) return undefined;
   if (!Array.isArray(body.mentionBindings) || body.mentionBindings.length > 100) {
@@ -316,7 +330,14 @@ export class DraftService {
         draft.attachmentIds.map(id => this.read(draftId, ownerId, id)),
       )
     ).filter((item): item is DraftAttachmentDto => Boolean(item));
-    return { ...draft, attachments };
+    const pastedTextAttachment = draft.pastedTextAttachmentId
+      ? await this.read(draftId, ownerId, draft.pastedTextAttachmentId)
+      : undefined;
+    return {
+      ...draft,
+      attachments,
+      ...(pastedTextAttachment ? { pastedTextAttachment } : {}),
+    };
   }
 
   validId(draftId: string): boolean {
@@ -384,8 +405,12 @@ export function registerDraftRoutes(
     if (bodyError) return reply.code(400).send({ error: bodyError });
     const ownerId = service.normalizedOwner(body?.ownerId);
     if (!ownerId) return reply.code(400).send({ error: "invalid draft owner" });
+    const referencedIds = [
+      ...body.attachmentIds,
+      ...(body.pastedTextAttachmentId ? [body.pastedTextAttachmentId] : []),
+    ];
     const referenced = await Promise.all(
-      body.attachmentIds.map(id =>
+      referencedIds.map(id =>
         service.read(request.params.id, ownerId, id),
       ),
     );

@@ -4,7 +4,9 @@ import {
   eligibleAllChatTargets,
   allChatComposerConversationId,
   allChatRuntimePayloadSnapshot,
+  allChatRuntimeSelectionReady,
   allChatSourceConversationId,
+  allChatSourceIdentity,
   parseAllChatReplyTarget,
   parseAllChatSourceIdentity,
 } from "../src/components/allChatRouting.js";
@@ -23,6 +25,7 @@ import {
 } from "../src/components/chat/composerDestination.js";
 import {
   shouldConsumeComposerKey,
+  durableDraftContentReady,
   shouldAdoptHydratedDraft,
   hydratedDraftContent,
   shouldIgnoreComposerKey,
@@ -152,10 +155,15 @@ test("new Agent creation retains an Agent-authored message's source Chat", () =>
   );
   assert.equal(
     allChatSourceConversationId(
-      { kind: "agent", agentId: "missing", title: "Deleted" },
+      {
+        kind: "agent",
+        agentId: "missing",
+        conversationId: "chat-deleted-agent",
+        title: "Deleted",
+      },
       [bryce],
     ),
-    undefined,
+    "chat-deleted-agent",
   );
   assert.equal(
     allChatSourceConversationId(
@@ -163,6 +171,51 @@ test("new Agent creation retains an Agent-authored message's source Chat", () =>
       [],
     ),
     "chat-b",
+  );
+  assert.deepEqual(
+    allChatSourceIdentity(
+      "project-a",
+      { kind: "agent", agentId: "bryce", conversationId: "chat-a", title: "Bryce" },
+      [],
+    ),
+    { projectId: "project-a", conversationId: "chat-a" },
+  );
+  assert.equal(
+    allChatComposerConversationId("chat-a", "chat-b", {
+      projectId: "project-a",
+      conversationId: "chat-c",
+    }),
+    "chat-a",
+  );
+});
+
+test("All Messages runtime overrides are unavailable until the selected Agent initializes", () => {
+  assert.equal(allChatRuntimeSelectionReady("agent-a", "agent-a"), true);
+  assert.equal(allChatRuntimeSelectionReady("agent-b", "agent-a"), false);
+  assert.equal(allChatRuntimeSelectionReady(undefined, "agent-a"), false);
+});
+
+test("failed or unstaged durable draft content blocks send", () => {
+  const ready = {
+    conversationDraftId: "chat-a",
+    filesReady: true,
+    pastedTextPresent: true,
+    pastedTextAttachmentId: "paste-a",
+    pastedTextUploading: false,
+    failedRestoreCount: 0,
+  };
+  assert.equal(durableDraftContentReady(ready), true);
+  assert.equal(
+    durableDraftContentReady({ ...ready, pastedTextAttachmentId: undefined }),
+    false,
+  );
+  assert.equal(
+    durableDraftContentReady({ ...ready, failedRestoreCount: 1 }),
+    false,
+  );
+  assert.equal(
+    durableDraftContentReady({ ...ready, filesReady: false }),
+    false,
   );
 });
 

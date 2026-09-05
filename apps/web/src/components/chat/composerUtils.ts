@@ -52,6 +52,23 @@ export function hydratedDraftContent<T>(
   };
 }
 
+export function durableDraftContentReady(input: {
+  conversationDraftId?: string;
+  filesReady: boolean;
+  pastedTextPresent: boolean;
+  pastedTextAttachmentId?: string;
+  pastedTextUploading: boolean;
+  failedRestoreCount: number;
+}): boolean {
+  return input.failedRestoreCount === 0 &&
+    (!input.conversationDraftId || input.filesReady) &&
+    (!input.pastedTextPresent || Boolean(
+      input.conversationDraftId &&
+      input.pastedTextAttachmentId &&
+      !input.pastedTextUploading
+    ));
+}
+
 export function matchingEngineCommands(
   commands: EngineCommand[],
   prefix: string,

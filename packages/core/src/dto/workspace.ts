@@ -185,6 +185,9 @@ export interface ConversationDraftDto {
   attachmentIds: string[];
   /** Metadata for staged files still referenced by this draft. */
   attachments?: DraftAttachmentDto[];
+  /** Staged UTF-8 payload for extracted long paste, submitted as message text. */
+  pastedTextAttachmentId?: string;
+  pastedTextAttachment?: DraftAttachmentDto;
   /** Stable structural recipients captured before display handles can change. */
   mentionBindings?: AgentMentionBindingDto[];
   revision: number;
@@ -195,7 +198,7 @@ export interface ConversationDraftDto {
 /** A rejected stale write includes the displaced text as a recoverable copy. */
 export interface ConversationDraftConflictDto {
   current: ConversationDraftDto;
-  displaced: Pick<ConversationDraftDto, "conversationId" | "text" | "attachmentIds" | "mentionBindings" | "clientId"> & { capturedAt: string };
+  displaced: Pick<ConversationDraftDto, "conversationId" | "text" | "attachmentIds" | "pastedTextAttachmentId" | "mentionBindings" | "clientId"> & { capturedAt: string };
 }
 
 export interface ConversationDraftConflictListDto {
@@ -206,6 +209,7 @@ export interface ConversationDraftConflictListDto {
 export interface PutConversationDraftRequest {
   text: string;
   attachmentIds: string[];
+  pastedTextAttachmentId?: string;
   mentionBindings?: AgentMentionBindingDto[];
   expectedRevision: number;
   clientId: string;

@@ -65,6 +65,7 @@ import {
   canSubmitComposerText,
   composerAttachmentReducer,
   composerSubmissionText,
+  durableDraftContentReady,
   engineCommandDisabledReason,
   hydratedDraftContent,
   insertComposerCapability,
@@ -104,6 +105,15 @@ type ComposerMentionToken = {
   kind: "agent" | "special";
   agentId?: string;
 };
+
+type FailedDraftContent = {
+  id: string;
+  name: string;
+  kind: "attachment" | "pasted-text";
+  attachment?: DraftAttachmentDto;
+};
+
+const PASTED_TEXT_DRAFT_NAME = "Pasted text.txt";
 
 export type { ComposerProps } from "./Composer.types";
 
@@ -220,6 +230,13 @@ export function Composer({
   const draftLocallyEdited = useRef(false);
   const draftAttachmentsLocallyEdited = useRef(false);
   const unrestoredDraftAttachmentIds = useRef<string[]>([]);
+  const pastedTextAttachmentId = useRef<string>();
+  const pastedTextUploadGeneration = useRef(0);
+  const pastedTextUploadFailedFor = useRef<string>();
+  const [pastedTextUploading, setPastedTextUploading] = useState(false);
+  const [failedDraftContents, setFailedDraftContents] = useState<
+    FailedDraftContent[]
+  >([]);
   const [draftReadyVersion, setDraftReadyVersion] = useState(0);
   const sendingRef = useRef(false);
   const [sending, setSending] = useState(false);
@@ -323,10 +340,22 @@ export function Composer({
   const updatePastedText = useCallback(
     (next: string | undefined) => {
       if (next === pastedTextRef.current) return;
-      markUserDraftMutation();
+      const previousAttachmentId = pastedTextAttachmentId.current;
+      pastedTextAttachmentId.current = undefined;
+      pastedTextUploadGeneration.current += 1;
+      setPastedTextUploading(false);
+      pastedTextUploadFailedFor.current = undefined;
+      markDraftEdited();
       replacePastedText(next);
+      if (conversationDraftId && previousAttachmentId) {
+        void api.deleteDraftAttachment(
+          conversationDraftId,
+          draftOwnerId,
+          previousAttachmentId,
+        ).catch(() => undefined);
+      }
     },
-    [markUserDraftMutation, replacePastedText],
+    [conversationDraftId, draftOwnerId, markDraftEdited, replacePastedText],
   );
   const invalidateDraftHydration = useCallback(() => {
     draftHydrationGeneration.current += 1;
@@ -338,6 +367,9 @@ export function Composer({
           unrestoredDraftAttachmentIds.current.filter(
             id => id !== removedAttachmentId,
           );
+        setFailedDraftContents(current =>
+          current.filter(item => item.id !== removedAttachmentId),
+        );
       }
       draftAttachmentsLocallyEdited.current = true;
       markDraftEdited();
@@ -365,6 +397,71 @@ export function Composer({
     retryUpload: retryDraftUpload,
     uploadStates: draftUploadStates,
   } = draftAttachments;
+  const removeFailedDraftContent = useCallback((id: string) => {
+    const failed = failedDraftContents.find(item => item.id === id);
+    if (!failed) return;
+    if (failed.kind === "pasted-text") {
+      pastedTextAttachmentId.current = undefined;
+      replacePastedText(undefined);
+    } else {
+      unrestoredDraftAttachmentIds.current =
+        unrestoredDraftAttachmentIds.current.filter(candidate => candidate !== id);
+    }
+    locallyRemovedDraftAttachmentIds.current.add(id);
+    setFailedDraftContents(current => current.filter(item => item.id !== id));
+    dispatchAttachments({ type: "clear_error" });
+    markDraftEdited();
+    if (conversationDraftId) {
+      void api
+        .deleteDraftAttachment(conversationDraftId, draftOwnerId, id)
+        .catch(() => undefined);
+    }
+  }, [
+    conversationDraftId,
+    dispatchAttachments,
+    draftOwnerId,
+    failedDraftContents,
+    locallyRemovedDraftAttachmentIds,
+    markDraftEdited,
+    replacePastedText,
+  ]);
+  const retryFailedDraftContent = useCallback(async (id: string) => {
+    const failed = failedDraftContents.find(item => item.id === id);
+    if (!failed || !conversationDraftId) return;
+    setSendError(undefined);
+    try {
+      const refreshedDraft = failed.attachment
+        ? undefined
+        : await api.getConversationDraft(conversationDraftId, draftOwnerId);
+      const attachment = failed.attachment ??
+        (failed.kind === "pasted-text"
+          ? refreshedDraft?.pastedTextAttachment
+          : refreshedDraft?.attachments?.find(item => item.id === id));
+      if (!attachment) throw new Error("The staged content is no longer available.");
+      const file = await api.downloadDraftAttachment(attachment);
+      if (failed.kind === "pasted-text") {
+        pastedTextAttachmentId.current = id;
+        replacePastedText(await file.text());
+      } else {
+        mergeRestoredDraftAttachments([{ attachment, file }]);
+        unrestoredDraftAttachmentIds.current =
+          unrestoredDraftAttachmentIds.current.filter(candidate => candidate !== id);
+      }
+      setFailedDraftContents(current => current.filter(item => item.id !== id));
+      dispatchAttachments({ type: "clear_error" });
+    } catch (error) {
+      setSendError(
+        error instanceof Error ? error.message : "Draft content could not be restored.",
+      );
+    }
+  }, [
+    conversationDraftId,
+    draftOwnerId,
+    failedDraftContents,
+    dispatchAttachments,
+    mergeRestoredDraftAttachments,
+    replacePastedText,
+  ]);
   const exclusiveDestinationHandles = useMemo(
     () => [...new Set([...(mentionHandles ?? []), "broadcast", "everyone"])],
     [mentionHandles],
@@ -528,6 +625,14 @@ export function Composer({
       requiredRecipient.handle.toLocaleLowerCase() !==
         handle.toLocaleLowerCase(),
   );
+  const unresolvedAuthoredTarget = [
+    ...authoredProjectDestinationHandles,
+    ...targetRequiredHandles,
+  ].find(handle => !resolvedMentionBinding(
+    handle,
+    knownMentionBindings,
+    mentionBindings ?? [],
+  ));
   const hasBroadcastDestination = hasBroadcastMention(visibleRoutingText);
   const hasEveryoneDestination =
     destinationMode === "project-chat" &&
@@ -570,6 +675,8 @@ export function Composer({
   const destinationError =
     invalidMention
       ? `#${invalidMention.handle} no longer identifies an available Agent. Remove it before sending.`
+      : unresolvedAuthoredTarget
+        ? `#${unresolvedAuthoredTarget} does not identify one available Agent. Remove it or choose an Agent again.`
       : destinationMode === "target-required" && hasBroadcastDestination
       ? targetRequiredDestinations.length > 0
         ? "Broadcast is only available in a Project Chat."
@@ -634,12 +741,21 @@ export function Composer({
   const draftUploadsReady =
     !conversationDraftId ||
     files.every(file => draftAttachmentIds.current.has(file));
+  const durableContentReady = durableDraftContentReady({
+    conversationDraftId,
+    filesReady: files.every(file => draftAttachmentIds.current.has(file)),
+    pastedTextPresent: Boolean(pastedText),
+    pastedTextAttachmentId: pastedTextAttachmentId.current,
+    pastedTextUploading,
+    failedRestoreCount: failedDraftContents.length,
+  });
   const canSend =
     !sending &&
     !dictationSettling &&
     !destinationError &&
     targetRequiredRecipientTagged &&
     draftUploadsReady &&
+    durableContentReady &&
     (textCanSend ||
       (!disabled &&
         !composerLocked &&
@@ -700,6 +816,11 @@ export function Composer({
     const changed = previousConversationDraftId.current !== conversationDraftId;
     previousConversationDraftId.current = conversationDraftId;
     if (changed) {
+      pastedTextUploadGeneration.current += 1;
+      pastedTextAttachmentId.current = undefined;
+      setPastedTextUploading(false);
+      setFailedDraftContents([]);
+      replacePastedText(undefined);
       draftReady.current = false;
       draftLocallyEdited.current = false;
       draftAttachmentsLocallyEdited.current = false;
@@ -708,7 +829,7 @@ export function Composer({
       setKnownMentionBindings([]);
       clearDraftAttachments();
     }
-  }, [conversationDraftId]);
+  }, [conversationDraftId, clearDraftAttachments, replacePastedText]);
 
   useEffect(() => {
     const draft = draftQuery.data;
@@ -721,14 +842,58 @@ export function Composer({
     let cancelled = false;
     const hydrationGeneration = draftHydrationGeneration.current;
     const apply = async () => {
-      const restored = await Promise.all(
-        (draft.attachments ?? []).map(
-          async (attachment: DraftAttachmentDto) => ({
+      const attachmentById = new Map(
+        (draft.attachments ?? []).map(attachment => [attachment.id, attachment]),
+      );
+      const restoredResults = await Promise.allSettled(
+        draft.attachmentIds.map(async id => {
+          const attachment = attachmentById.get(id);
+          if (!attachment) throw new Error("Draft attachment metadata is unavailable.");
+          return {
             attachment,
             file: await api.downloadDraftAttachment(attachment),
-          }),
-        ),
+          };
+        }),
       );
+      const restored = restoredResults.flatMap(result =>
+        result.status === "fulfilled" ? [result.value] : [],
+      );
+      const failedAttachments = restoredResults.flatMap((result, index) => {
+        if (result.status === "fulfilled") return [];
+        const id = draft.attachmentIds[index]!;
+        const attachment = attachmentById.get(id);
+        return [{
+          id,
+          name: attachment?.name ?? "Staged attachment",
+          kind: "attachment" as const,
+          ...(attachment ? { attachment } : {}),
+        }];
+      }).filter(item => !locallyRemovedDraftAttachmentIds.current.has(item.id));
+      let restoredPastedText: string | undefined;
+      let failedPastedText: FailedDraftContent | undefined;
+      if (draft.pastedTextAttachmentId) {
+        try {
+          if (!draft.pastedTextAttachment) {
+            throw new Error("Pasted-text metadata is unavailable.");
+          }
+          restoredPastedText = await (
+            await api.downloadDraftAttachment(draft.pastedTextAttachment)
+          ).text();
+        } catch {
+          if (!locallyRemovedDraftAttachmentIds.current.has(
+            draft.pastedTextAttachmentId,
+          )) {
+            failedPastedText = {
+              id: draft.pastedTextAttachmentId,
+              name: "Pasted text",
+              kind: "pasted-text",
+              ...(draft.pastedTextAttachment
+                ? { attachment: draft.pastedTextAttachment }
+                : {}),
+            };
+          }
+        }
+      }
       if (
         cancelled ||
         hydrationGeneration !== draftHydrationGeneration.current ||
@@ -740,7 +905,7 @@ export function Composer({
       } else {
         mergeRestoredDraftAttachments(restored);
       }
-      unrestoredDraftAttachmentIds.current = [];
+      unrestoredDraftAttachmentIds.current = failedAttachments.map(item => item.id);
       draftRevision.current = draft.revision;
       const local = draftStorageKey
         ? (readChatState(draftStorageKey) ?? "")
@@ -749,7 +914,12 @@ export function Composer({
         inputRef.current?.isFocused() ?? false,
         draftLocallyEdited.current,
       );
+      setFailedDraftContents([
+        ...failedAttachments,
+        ...(adoptDraft && failedPastedText ? [failedPastedText] : []),
+      ]);
       if (adoptDraft) {
+        pastedTextAttachmentId.current = draft.pastedTextAttachmentId;
         const hydrated = hydratedDraftContent(
           draft.revision,
           draft.text,
@@ -758,7 +928,14 @@ export function Composer({
         );
         replaceText(hydrated.text);
         setKnownMentionBindings([...hydrated.mentionBindings]);
+        replacePastedText(failedPastedText ? undefined : restoredPastedText);
         if (draftStorageKey) writeChatState(draftStorageKey, hydrated.text);
+      }
+      if (failedAttachments.length || (adoptDraft && failedPastedText)) {
+        dispatchAttachments({
+          type: "set_error",
+          error: "Some staged draft content could not be restored.",
+        });
       }
       draftReady.current = true;
       setDraftReadyVersion(value => value + 1);
@@ -776,10 +953,28 @@ export function Composer({
           inputRef.current?.isFocused() ?? false,
           draftLocallyEdited.current,
         );
+        setFailedDraftContents([
+          ...draft.attachmentIds
+            .filter(id => !locallyRemovedDraftAttachmentIds.current.has(id))
+            .map(id => ({ id, name: "Staged attachment", kind: "attachment" as const })),
+          ...(adoptDraft &&
+              draft.pastedTextAttachmentId &&
+              !locallyRemovedDraftAttachmentIds.current.has(draft.pastedTextAttachmentId)
+            ? [{
+                id: draft.pastedTextAttachmentId,
+                name: "Pasted text",
+                kind: "pasted-text" as const,
+                ...(draft.pastedTextAttachment
+                  ? { attachment: draft.pastedTextAttachment }
+                  : {}),
+              }]
+            : []),
+        ]);
         const local = draftStorageKey
           ? (readChatState(draftStorageKey) ?? "")
           : "";
         if (adoptDraft) {
+          pastedTextAttachmentId.current = draft.pastedTextAttachmentId;
           const hydrated = hydratedDraftContent(
             draft.revision,
             draft.text,
@@ -788,18 +983,19 @@ export function Composer({
           );
           replaceText(hydrated.text);
           setKnownMentionBindings([...hydrated.mentionBindings]);
+          replacePastedText(undefined);
           if (draftStorageKey) writeChatState(draftStorageKey, hydrated.text);
         }
         if (!draftAttachmentsLocallyEdited.current) {
           dispatchAttachments({
             type: "replace",
             files: [],
-            error: "Some staged draft attachments could not be restored.",
+            error: "Some staged draft content could not be restored.",
           });
         } else {
           dispatchAttachments({
             type: "set_error",
-            error: "Some staged draft attachments could not be restored.",
+            error: "Some staged draft content could not be restored.",
           });
         }
         draftReady.current = true;
@@ -810,6 +1006,57 @@ export function Composer({
       cancelled = true;
     };
   }, [conversationDraftId, draftQuery.data, draftStorageKey]);
+
+  useEffect(() => {
+    if (
+      !conversationDraftId ||
+      !draftReady.current ||
+      !pastedText ||
+      pastedTextAttachmentId.current ||
+      pastedTextUploading
+    ) return;
+    const fingerprint = `${conversationDraftId}\u0000${pastedText}`;
+    if (pastedTextUploadFailedFor.current === fingerprint) return;
+    const generation = ++pastedTextUploadGeneration.current;
+    setPastedTextUploading(true);
+    void api.uploadDraftAttachment(
+      conversationDraftId,
+      draftOwnerId,
+      new File([pastedText], PASTED_TEXT_DRAFT_NAME, { type: "text/plain" }),
+    ).then(attachment => {
+      if (
+        generation !== pastedTextUploadGeneration.current ||
+        pastedTextRef.current !== pastedText ||
+        previousConversationDraftId.current !== conversationDraftId
+      ) {
+        void api.deleteDraftAttachment(
+          conversationDraftId,
+          draftOwnerId,
+          attachment.id,
+        ).catch(() => undefined);
+        return;
+      }
+      pastedTextAttachmentId.current = attachment.id;
+      pastedTextUploadFailedFor.current = undefined;
+      setDraftReadyVersion(value => value + 1);
+    }).catch((error: unknown) => {
+      if (generation !== pastedTextUploadGeneration.current) return;
+      pastedTextUploadFailedFor.current = fingerprint;
+      setSendError(
+        error instanceof Error ? error.message : "Pasted text could not be staged.",
+      );
+    }).finally(() => {
+      if (generation === pastedTextUploadGeneration.current) {
+        setPastedTextUploading(false);
+      }
+    });
+  }, [
+    conversationDraftId,
+    draftOwnerId,
+    draftReadyVersion,
+    pastedText,
+    pastedTextUploading,
+  ]);
 
   useEffect(() => {
     if (conversationDraftId && !draftReady.current) return;
@@ -902,6 +1149,9 @@ export function Composer({
     )
       return;
     const timer = window.setTimeout(() => {
+      // Store the extracted paste and its draft reference as one logical draft
+      // update. A partial write must never make a reload silently lose it.
+      if (pastedText && !pastedTextAttachmentId.current) return;
       const generation = draftGeneration.current;
       const editVersion = draftEditVersion.current;
       const visibleAttachmentIds = files
@@ -928,6 +1178,9 @@ export function Composer({
           const draft = await api.putConversationDraft(conversationDraftId, {
             text,
             attachmentIds,
+            ...(pastedTextAttachmentId.current
+              ? { pastedTextAttachmentId: pastedTextAttachmentId.current }
+              : {}),
             mentionBindings: knownMentionBindings,
             expectedRevision: draftRevision.current,
             clientId,
@@ -985,9 +1238,11 @@ export function Composer({
     draftAttachmentVersion,
     draftOwnerId,
     draftReadyVersion,
+    failedDraftContents.length,
     files,
     queryClient,
     knownMentionBindings,
+    pastedText,
     text,
   ]);
 
@@ -1449,6 +1704,13 @@ export function Composer({
             void api
               .deleteDraftAttachment(conversationDraftId, draftOwnerId, id)
               .catch(() => undefined);
+        if (conversationDraftId && pastedTextAttachmentId.current) {
+          const id = pastedTextAttachmentId.current;
+          pastedTextAttachmentId.current = undefined;
+          void api
+            .deleteDraftAttachment(conversationDraftId, draftOwnerId, id)
+            .catch(() => undefined);
+        }
         if (!preserveNewRuntimeDraft) setCaret(0);
       })
       .catch((error: unknown) => {
@@ -1506,9 +1768,10 @@ export function Composer({
         pastedTextBytes={pastedText ? utf8ByteLength(pastedText) : 0}
         error={attachments.error ?? sendError}
         displacedDraft={draftConflict?.displaced.text}
+        failedDraftContents={failedDraftContents}
         onShowPastedText={() => {
           update(composerSubmissionText(text, pastedText ?? ""));
-          replacePastedText(undefined);
+          updatePastedText(undefined);
           requestAnimationFrame(() => inputRef.current?.focus());
         }}
         onRemovePastedText={() => {
@@ -1521,9 +1784,17 @@ export function Composer({
           setDraftConflict(undefined);
           inputRef.current?.focus();
         }}
+        onRetryDraftContent={id => {
+          void retryFailedDraftContent(id);
+        }}
+        onRemoveDraftContent={removeFailedDraftContent}
         onClearError={() => {
           setSendError(undefined);
           dispatchAttachments({ type: "clear_error" });
+          if (pastedText) {
+            pastedTextUploadFailedFor.current = undefined;
+            setDraftReadyVersion(value => value + 1);
+          }
         }}
       />
       <Stack

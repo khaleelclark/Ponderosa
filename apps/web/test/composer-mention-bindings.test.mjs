@@ -156,3 +156,47 @@ test("a reloaded intermediate handle retains stable ownership through another re
     saved.agentId,
   );
 });
+
+test("two authored Agent IDs stay authoritative through same-draft handle reuse", () => {
+  const other = {
+    projectId: "project-a",
+    agentId: "agent-b",
+    handle: "other-name",
+    currentHandle: "other-name",
+    currentTitle: "Other Name",
+  };
+  const renamed = {
+    ...saved,
+    handle: "new-name",
+    currentHandle: "new-name",
+    currentTitle: "New Name",
+  };
+  const reused = {
+    ...other,
+    handle: "old-name",
+    currentHandle: "old-name",
+    currentTitle: "Reused Old Name",
+  };
+  const refreshed = refreshedMentionBindings(
+    "#old-name ask A; #other-name ask B",
+    [saved, other],
+    [renamed, reused],
+  );
+
+  assert.equal(
+    resolvedMentionBinding("old-name", refreshed, [renamed, reused])?.agentId,
+    saved.agentId,
+  );
+  assert.equal(
+    resolvedMentionBinding("other-name", refreshed, [renamed, reused])?.agentId,
+    other.agentId,
+  );
+  assert.deepEqual(
+    refreshedMentionBindings(
+      "#old-name ask A; #other-name ask B",
+      refreshed,
+      [renamed, reused],
+    ),
+    refreshed,
+  );
+});

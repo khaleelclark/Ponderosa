@@ -98,7 +98,24 @@ export function allChatSourceConversationId(
 ): string | undefined {
   if (!source) return undefined;
   if (source.kind !== "agent") return source.conversationId;
+  if (source.conversationId) return source.conversationId;
   return [...agents].find(agent => agent.id === source.agentId)?.conversationId;
+}
+
+export function allChatRuntimeSelectionReady(
+  selectedAgentId: string | undefined,
+  initializedAgentId: string | undefined,
+): boolean {
+  return Boolean(selectedAgentId && selectedAgentId === initializedAgentId);
+}
+
+export function allChatSourceIdentity(
+  projectId: string,
+  source: AllChatSourceDto | undefined,
+  agents: Iterable<Pick<AgentDto, "id" | "conversationId">>,
+): AllChatSourceIdentity | undefined {
+  const conversationId = allChatSourceConversationId(source, agents);
+  return conversationId ? { projectId, conversationId } : undefined;
 }
 
 export function allChatComposerConversationId(

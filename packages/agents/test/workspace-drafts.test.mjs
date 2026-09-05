@@ -20,13 +20,16 @@ test("conversation drafts retain stable mention bindings after restart", (t) => 
     ownerId: "browser-a",
     text: "#old-name continue",
     attachmentIds: [],
+    pastedTextAttachmentId: "paste-a",
     mentionBindings,
     expectedRevision: 0,
     clientId: "page:a",
   });
 
-  assert.deepEqual(
-    new WorkspaceStore(directory).getDraft("chat-a", "browser-a").mentionBindings,
-    mentionBindings,
+  const restored = new WorkspaceStore(directory).getDraft(
+    "chat-a",
+    "browser-a",
   );
+  assert.deepEqual(restored.mentionBindings, mentionBindings);
+  assert.equal(restored.pastedTextAttachmentId, "paste-a");
 });

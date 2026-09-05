@@ -45,18 +45,24 @@ export function ComposerNotices({
   pastedTextBytes,
   error,
   displacedDraft,
+  failedDraftContents,
   onShowPastedText,
   onRemovePastedText,
   onRestoreDraft,
+  onRetryDraftContent,
+  onRemoveDraftContent,
   onClearError,
 }: {
   pastedText?: string;
   pastedTextBytes: number;
   error?: string;
   displacedDraft?: string;
+  failedDraftContents: Array<{ id: string; name: string }>;
   onShowPastedText(): void;
   onRemovePastedText(): void;
   onRestoreDraft(): void;
+  onRetryDraftContent(id: string): void;
+  onRemoveDraftContent(id: string): void;
   onClearError(): void;
 }): JSX.Element {
   return (
@@ -104,6 +110,25 @@ export function ComposerNotices({
           Message not sent. {error}
         </Alert>
       ) : null}
+      {failedDraftContents.map(item => (
+        <Alert
+          key={item.id}
+          severity="warning"
+          sx={{ mb: 1 }}
+          action={
+            <Stack direction="row" spacing={0.5}>
+              <Button size="small" onClick={() => onRetryDraftContent(item.id)}>
+                Retry
+              </Button>
+              <Button size="small" onClick={() => onRemoveDraftContent(item.id)}>
+                Remove
+              </Button>
+            </Stack>
+          }
+        >
+          {item.name} could not be restored from this draft.
+        </Alert>
+      ))}
       {displacedDraft ? (
         <Alert
           severity="warning"

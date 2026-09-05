@@ -774,7 +774,13 @@ export interface GlobalChatSearchResponseDto {
 
 export type AllChatSourceDto =
   | { kind: "project" | "team"; conversationId: string; title: string }
-  | { kind: "agent"; agentId: string; title: string };
+  | {
+      kind: "agent";
+      agentId: string;
+      /** Stable source Chat; optional only for pre-upgrade projections. */
+      conversationId?: string;
+      title: string;
+    };
 
 /** One canonical authored communication in the workspace-wide aggregate view. */
 export interface AllChatItemDto {

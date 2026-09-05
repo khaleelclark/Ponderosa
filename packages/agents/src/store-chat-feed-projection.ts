@@ -480,7 +480,14 @@ export class AgentChatFeedProjection {
         ? { kind: "project", conversationId: row.chatId, title: row.chatTitle }
         : row.chatKind === "collaboration"
           ? { kind: "team", conversationId: row.chatId, title: row.chatTitle }
-          : { kind: "agent", agentId: row.chatId, title: row.chatTitle };
+          : {
+              kind: "agent",
+              agentId: row.chatId,
+              ...(directMessageAgent?.conversationId
+                ? { conversationId: directMessageAgent.conversationId }
+                : {}),
+              title: row.chatTitle,
+            };
       return [{
         communicationEventId: row.eventId,
         messageId: message.messageId,

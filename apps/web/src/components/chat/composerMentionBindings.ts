@@ -44,14 +44,22 @@ export function refreshedMentionBindings(
       const priorCurrentHandlePresent = handles.has(
         existing.currentHandle.toLocaleLowerCase(),
       );
+      const nextCurrentHandle = binding.currentHandle.toLocaleLowerCase();
+      const nextHandleOwners = authoredOwners.get(nextCurrentHandle);
+      const currentHandleCollides = Boolean(
+        nextHandleOwners &&
+        (nextHandleOwners.size > 1 || !nextHandleOwners.has(binding.agentId)),
+      );
       byId.set(binding.agentId, {
         ...existing,
         handle: !authoredHandlePresent && priorCurrentHandlePresent
           ? existing.currentHandle
           : existing.handle,
         currentHandle:
-          authoredHandlePresent && priorCurrentHandlePresent &&
-            existing.handle !== existing.currentHandle
+          currentHandleCollides ||
+          (authoredHandlePresent &&
+            priorCurrentHandlePresent &&
+            existing.handle !== existing.currentHandle)
             ? existing.currentHandle
             : binding.currentHandle,
         currentTitle: binding.currentTitle,
