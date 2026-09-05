@@ -23,6 +23,42 @@ export type AllChatRuntimePayload = {
   speed?: string;
 };
 
+export type AllChatSubmissionIntentState = {
+  epoch: number;
+  sourceKey?: string;
+};
+
+export type AllChatSubmissionIntentEvent =
+  | { kind: "source-selected"; sourceKey: string }
+  | { kind: "recipient-selected" | "recipient-cleared" | "draft-mutated" }
+  | { kind: "recipient-projection-missing" };
+
+export function allChatSourceIntentKey(
+  projectId: string,
+  source: AllChatSourceDto,
+  agents: Iterable<Pick<AgentDto, "id" | "conversationId">>,
+): string {
+  const conversationId = allChatSourceConversationId(source, agents);
+  return JSON.stringify([
+    projectId,
+    conversationId ?? (source.kind === "agent" ? `legacy-agent:${source.agentId}` : "unknown"),
+  ]);
+}
+
+/** Explicit routing changes advance the retry boundary. Projection loss does not. */
+export function reduceAllChatSubmissionIntent(
+  state: AllChatSubmissionIntentState,
+  event: AllChatSubmissionIntentEvent,
+): AllChatSubmissionIntentState {
+  if (event.kind === "recipient-projection-missing") return state;
+  if (event.kind === "source-selected") {
+    return event.sourceKey === state.sourceKey
+      ? state
+      : { epoch: state.epoch + 1, sourceKey: event.sourceKey };
+  }
+  return { ...state, epoch: state.epoch + 1 };
+}
+
 /** Exact runtime scalars that can be emitted by the selected All Messages action. */
 export function allChatRuntimePayloadSnapshot(input: {
   newAgentRequested: boolean;

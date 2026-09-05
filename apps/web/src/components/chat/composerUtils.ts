@@ -119,6 +119,15 @@ export function composerRecipientGateSatisfied(input: {
     input.requiredRecipientTagged;
 }
 
+export function composerPreparedRetryAction<Action>(
+  prepared: { action: Action; submissionIntentKey?: string } | undefined,
+  submissionIntentKey?: string,
+): Action | undefined {
+  return prepared && prepared.submissionIntentKey === submissionIntentKey
+    ? prepared.action
+    : undefined;
+}
+
 export function removeComposerPasteSelection(
   selection:
     | { kind: "range"; removeText: () => void }

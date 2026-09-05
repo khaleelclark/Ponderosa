@@ -23,7 +23,14 @@ import type {
   WorkspaceNotificationDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import { api } from "../api";
 import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
 import {
@@ -77,6 +84,7 @@ import { useNotificationAcknowledgement } from "../hooks/useNotificationAcknowle
 import { ChatComposerDock } from "./chat/ChatComposerDock";
 import { ReadAloudControls } from "./speech/ReadAloudControls";
 import {
+  abandonIdempotentAttempt,
   preparedIdempotentAttemptForRetry,
   retainIdempotentAttempt,
   type IdempotentAttempt,
@@ -101,6 +109,7 @@ import {
   ALL_CHAT_REPLY_TARGET_KEY,
   ALL_CHAT_SOURCE_KEY,
   allChatComposerConversationId,
+  allChatSourceIntentKey,
   authoritativeAllChatReplyTarget,
   allChatRuntimePayloadSnapshot,
   allChatRuntimeSelectionReady,
@@ -109,6 +118,7 @@ import {
   eligibleAllChatTargets,
   parseAllChatReplyTarget,
   parseAllChatSourceIdentity,
+  reduceAllChatSubmissionIntent,
   type AllChatReplyTarget,
   type AllChatRuntimePayload,
   type AllChatSourceIdentity,
@@ -207,6 +217,24 @@ export function AllChatView({
   const [composerSource, setComposerSource] = useState<
     AllChatSourceIdentity | undefined
   >(() => parseAllChatSourceIdentity(readChatState(ALL_CHAT_SOURCE_KEY)));
+  const [submissionIntent, dispatchSubmissionIntent] = useReducer(
+    reduceAllChatSubmissionIntent,
+    {
+      epoch: 0,
+      ...(composerSource
+        ? {
+            sourceKey: JSON.stringify([
+              composerSource.projectId,
+              composerSource.conversationId,
+            ]),
+          }
+        : {}),
+    },
+  );
+  const sendAttempt = useRef<IdempotentAttempt<AllChatSubmissionPrepared>>();
+  const abandonedSendAttempts = useRef<
+    IdempotentAttempt<AllChatSubmissionPrepared>[]
+  >([]);
   const [runtimeEngine, setRuntimeEngine] = useState("");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
@@ -633,7 +661,6 @@ export function AllChatView({
         `/${command.name} completed for ${activeReplyTarget?.title ?? "Agent"}.`,
     );
   };
-  const sendAttempt = useRef<IdempotentAttempt<AllChatSubmissionPrepared>>();
   const send = useMutation({
     mutationFn: async ({
       body,
@@ -832,16 +859,50 @@ export function AllChatView({
       }
     },
   });
+  const previousSubmissionIntentEpoch = useRef(submissionIntent.epoch);
+  useEffect(() => {
+    if (previousSubmissionIntentEpoch.current === submissionIntent.epoch) return;
+    previousSubmissionIntentEpoch.current = submissionIntent.epoch;
+    const abandoned = abandonIdempotentAttempt(sendAttempt.current);
+    sendAttempt.current = abandoned.current;
+    abandonedSendAttempts.current.push(...abandoned.abandoned);
+  }, [submissionIntent.epoch]);
+  useEffect(() => {
+    if (send.isPending || abandonedSendAttempts.current.length === 0) return;
+    const abandoned = abandonedSendAttempts.current.splice(0);
+    void Promise.all(abandoned.flatMap(attempt =>
+      attempt.prepared.uploads
+        ? [discardRecipientUploads(
+            attempt.prepared.uploads,
+            (agentId, item) => api.deleteAttachment(agentId, item.id),
+          )]
+        : [],
+    ));
+  }, [send.isPending, submissionIntent.epoch]);
+  const invalidatePreparedSubmissionIntent = useCallback(() => {
+    if (!sendAttempt.current) return;
+    dispatchSubmissionIntent({ kind: "draft-mutated" });
+  }, []);
   const selectItem = (item: AllChatItemDto, clearRecipient = false) => {
-    pendingMentionTargetId.current = undefined;
-    setSelectedId(item.communicationEventId);
-    setComposerSource(allChatSourceIdentity(
+    const sourceIdentity = allChatSourceIdentity(
       item.project.id,
       item.source,
       projectAgentsQuery.data ?? [],
-    ));
+    );
+    dispatchSubmissionIntent({
+      kind: "source-selected",
+      sourceKey: allChatSourceIntentKey(
+        item.project.id,
+        item.source,
+        projectAgentsQuery.data ?? [],
+      ),
+    });
+    pendingMentionTargetId.current = undefined;
+    setSelectedId(item.communicationEventId);
+    setComposerSource(sourceIdentity);
     if (clearRecipient) {
       if (replyTarget) {
+        dispatchSubmissionIntent({ kind: "recipient-cleared" });
         setMentionRemoveRequest({
           id: `source:${replyTarget.id}:${Date.now()}`,
           text: `#${replyTarget.handle}`,
@@ -853,7 +914,10 @@ export function AllChatView({
     setDirectSendConfirmation(undefined);
     send.reset();
   };
-  const clearReplyTarget = () => {
+  const clearReplyTarget = (advanceIntent = true) => {
+    if (advanceIntent) {
+      dispatchSubmissionIntent({ kind: "recipient-cleared" });
+    }
     pendingMentionTargetId.current = undefined;
     if (replyTarget) {
       setMentionRemoveRequest({
@@ -889,6 +953,7 @@ export function AllChatView({
   const mentionItem = (item: AllChatItemDto) => {
     selectItem(item);
     if (!item.directMessageAgent) return;
+    dispatchSubmissionIntent({ kind: "recipient-selected" });
     const handle = item.directMessageAgent.handle;
     pendingMentionTargetId.current = mentionedHandlesRef.current.some(candidate =>
       candidate.toLocaleLowerCase() === handle.toLocaleLowerCase())
@@ -1363,7 +1428,7 @@ export function AllChatView({
           requiredRecipient={activeReplyTarget ? {
             handle: activeReplyTarget.handle,
             title: activeReplyTarget.title,
-            onClear: () => setReplyTarget(undefined),
+            onClear: () => clearReplyTarget(false),
           } : undefined}
           recipientRequiredMessage={
             selected && !selected.directMessageAgent
@@ -1402,6 +1467,8 @@ export function AllChatView({
               : "Select an Agent with # then write a message"
           }
           removeTextRequest={mentionRemoveRequest}
+          submissionIntentKey={String(submissionIntent.epoch)}
+          onSubmissionIntentChange={invalidatePreparedSubmissionIntent}
           draftStorageKey={composerConversationId
             ? chatStateKey(
                 "draft",

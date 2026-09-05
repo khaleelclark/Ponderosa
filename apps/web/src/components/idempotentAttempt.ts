@@ -4,6 +4,14 @@ export interface IdempotentAttempt<T = undefined> {
   prepared: T;
 }
 
+/** Release a prepared operation when the user changes its submission intent. */
+export const abandonIdempotentAttempt = <T>(
+  current: IdempotentAttempt<T> | undefined,
+): { current: undefined; abandoned: IdempotentAttempt<T>[] } => ({
+  current: undefined,
+  abandoned: current ? [current] : [],
+});
+
 /** Keep one operation identity and its prepared inputs until the action changes. */
 export const retainIdempotentAttempt = <T>(
   current: IdempotentAttempt<T> | undefined,

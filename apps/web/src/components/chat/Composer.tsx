@@ -74,6 +74,7 @@ import {
 import {
   canSubmitComposerText,
   composerAttachmentReducer,
+  composerPreparedRetryAction,
   composerRecipientGateSatisfied,
   composerSubmissionText,
   deletableSupersededDraftAttachmentIds,
@@ -197,6 +198,8 @@ export function Composer({
   requiredRecipient,
   recipientRequiredMessage,
   removeTextRequest,
+  submissionIntentKey,
+  onSubmissionIntentChange,
   onMentionedHandlesChange,
   onCommandTargetHandleChange,
   onCommandTargetAgentIdChange,
@@ -232,9 +235,14 @@ export function Composer({
   });
   const assetLimits = assetLimitsQuery.data;
   const [sendError, setSendError] = useState<string>();
-  const [preparedRetryAction, setPreparedRetryAction] = useState<
-    "send" | "queue"
-  >();
+  const [preparedRetry, setPreparedRetry] = useState<{
+    action: "send" | "queue";
+    submissionIntentKey?: string;
+  }>();
+  const preparedRetryAction = composerPreparedRetryAction(
+    preparedRetry,
+    submissionIntentKey,
+  );
   const [draftConflict, setDraftConflict] =
     useState<ConversationDraftConflictDto>();
   const fileInput = useRef<HTMLInputElement | null>(null);
@@ -285,6 +293,8 @@ export function Composer({
     AgentMentionBindingDto[]
   >([]);
   const inputRef = useRef<ComposerEditorHandle | null>(null);
+  const activeSubmissionIntentKeyRef = useRef(submissionIntentKey);
+  activeSubmissionIntentKeyRef.current = submissionIntentKey;
   const activeDraftScopeRef = useRef(conversationDraftId);
   activeDraftScopeRef.current = conversationDraftId;
   const updateFailedDraftContents = useCallback(
@@ -303,8 +313,9 @@ export function Composer({
   );
   const markUserDraftMutation = useCallback(() => {
     userDraftMutationGeneration.current += 1;
-    setPreparedRetryAction(undefined);
-  }, []);
+    setPreparedRetry(undefined);
+    onSubmissionIntentChange?.();
+  }, [onSubmissionIntentChange]);
   const markDraftEdited = useCallback(() => {
     markUserDraftMutation();
     draftEditVersion.current += 1;
@@ -1718,7 +1729,7 @@ export function Composer({
       preparedRetryAction !== action &&
       destinationError
     ) {
-      setPreparedRetryAction(undefined);
+      setPreparedRetry(undefined);
       setSendError(destinationError);
       return;
     }
@@ -1848,7 +1859,7 @@ export function Composer({
           );
     void Promise.resolve(operation)
       .then(() => {
-        setPreparedRetryAction(undefined);
+        setPreparedRetry(undefined);
         const draftChangedAfterSubmission =
           userDraftMutationGeneration.current !==
           submittedUserMutationGeneration;
@@ -1955,8 +1966,14 @@ export function Composer({
         if (!preserveNewRuntimeDraft) setCaret(0);
       })
       .catch((error: unknown) => {
-        setPreparedRetryAction(
-          error instanceof ApiRequestError ? undefined : action,
+        const intentUnchanged =
+          userDraftMutationGeneration.current ===
+            submittedUserMutationGeneration &&
+          activeSubmissionIntentKeyRef.current === submissionIntentKey;
+        setPreparedRetry(
+          !(error instanceof ApiRequestError) && intentUnchanged
+            ? { action, submissionIntentKey }
+            : undefined,
         );
         if (
           userDraftMutationGeneration.current ===

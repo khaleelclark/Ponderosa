@@ -6,10 +6,12 @@ import {
   allChatComposerConversationId,
   allChatRuntimePayloadSnapshot,
   allChatRuntimeSelectionReady,
+  allChatSourceIntentKey,
   allChatSourceConversationId,
   allChatSourceIdentity,
   parseAllChatReplyTarget,
   parseAllChatSourceIdentity,
+  reduceAllChatSubmissionIntent,
 } from "../src/components/allChatRouting.js";
 import {
   activeComposerMention,
@@ -30,6 +32,7 @@ import {
   deletableSupersededDraftAttachmentIds,
   shouldAdoptHydratedDraft,
   composerRecipientGateSatisfied,
+  composerPreparedRetryAction,
   draftContentRetryStillOwned,
   hydratedDraftContent,
   hydratedPastedTextContent,
@@ -44,6 +47,7 @@ import {
   hasEveryoneMention,
 } from "../src/mentions.js";
 import {
+  abandonIdempotentAttempt,
   preparedIdempotentAttemptForRetry,
   retainIdempotentAttempt,
   selectIdempotentAttempt,
@@ -677,6 +681,104 @@ test("unchanged frozen retry alone bypasses a disappeared live recipient", () =>
   assert.equal(
     composerRecipientGateSatisfied({ ...targetRequired, retryPrepared: false }),
     false,
+  );
+});
+
+test("All Messages recipient selection abandons A before B can send", () => {
+  const attemptA = retainIdempotentAttempt(
+    undefined,
+    "chat-a:agent-a:message",
+    () => "request-a",
+    () => ({ recipientIds: ["agent-a"], uploads: ["upload-a"] }),
+  );
+  const preparedRetry = { action: "send", submissionIntentKey: "0" };
+  const selectedB = reduceAllChatSubmissionIntent(
+    { epoch: 0, sourceKey: "chat-a" },
+    { kind: "recipient-selected" },
+  );
+  const abandoned = abandonIdempotentAttempt(attemptA);
+
+  assert.equal(
+    composerPreparedRetryAction(preparedRetry, String(selectedB.epoch)),
+    undefined,
+  );
+  assert.equal(abandoned.current, undefined);
+  assert.equal(abandoned.abandoned[0], attemptA);
+  const attemptB = selectIdempotentAttempt(
+    abandoned.current,
+    false,
+    () => "chat-a:agent-b:message",
+    () => "request-b",
+    () => ({ recipientIds: ["agent-b"], uploads: [] }),
+  );
+  assert.deepEqual(attemptB.prepared.recipientIds, ["agent-b"]);
+  assert.equal(attemptB.idempotencyKey, "request-b");
+});
+
+test("All Messages explicit recipient clear abandons its prepared retry", () => {
+  const cleared = reduceAllChatSubmissionIntent(
+    { epoch: 4, sourceKey: "chat-a" },
+    { kind: "recipient-cleared" },
+  );
+  assert.equal(cleared.epoch, 5);
+  assert.equal(
+    composerPreparedRetryAction(
+      { action: "send", submissionIntentKey: "4" },
+      String(cleared.epoch),
+    ),
+    undefined,
+  );
+});
+
+test("All Messages source Chat switch abandons its prepared retry", () => {
+  const sourceA = {
+    kind: "project",
+    conversationId: "chat-a",
+    title: "A",
+  };
+  const sourceB = {
+    kind: "project",
+    conversationId: "chat-b",
+    title: "B",
+  };
+  const stateA = {
+    epoch: 7,
+    sourceKey: allChatSourceIntentKey("project-a", sourceA, []),
+  };
+  const stateB = reduceAllChatSubmissionIntent(stateA, {
+    kind: "source-selected",
+    sourceKey: allChatSourceIntentKey("project-a", sourceB, []),
+  });
+  assert.equal(stateB.epoch, 8);
+  assert.equal(
+    composerPreparedRetryAction(
+      { action: "send", submissionIntentKey: "7" },
+      String(stateB.epoch),
+    ),
+    undefined,
+  );
+});
+
+test("projection-only recipient disappearance preserves the frozen retry", () => {
+  const attemptA = retainIdempotentAttempt(
+    undefined,
+    "chat-a:agent-a:message",
+    () => "request-a",
+    () => ({ recipientIds: ["agent-a"] }),
+  );
+  const current = { epoch: 2, sourceKey: "chat-a" };
+  const projectedMissing = reduceAllChatSubmissionIntent(current, {
+    kind: "recipient-projection-missing",
+  });
+  const action = composerPreparedRetryAction(
+    { action: "send", submissionIntentKey: "2" },
+    String(projectedMissing.epoch),
+  );
+  assert.equal(projectedMissing, current);
+  assert.equal(action, "send");
+  assert.equal(
+    preparedIdempotentAttemptForRetry(attemptA, action === "send"),
+    attemptA,
   );
 });
 
