@@ -889,16 +889,15 @@ export class WorkspaceStore {
     const current = this.getDraft(conversationId, ownerId);
     const attachmentIds = [...new Set(input.attachmentIds)];
     const mentionBindings = input.mentionBindings ?? [];
-    if (current.text === input.text &&
-        JSON.stringify(current.attachmentIds) === JSON.stringify(attachmentIds) &&
-        current.pastedTextAttachmentId === input.pastedTextAttachmentId &&
-        JSON.stringify(current.mentionBindings ?? []) === JSON.stringify(mentionBindings)) return current;
-    // A page can lose a successful response while its serialized write chain
-    // continues. Its next write is safe to fast-forward because page client
-    // identities are not shared with duplicated or restored browser pages.
-    const provenSamePage = input.clientId.startsWith("page:")
+    // A draft-surface incarnation can lose a successful response while its
+    // serialized write chain continues. New clients rotate the identity when
+    // leaving a surface, so exact equality proves that incarnation. Legacy
+    // page IDs remain valid stored data but intentionally get no revision
+    // bypass because they identified a whole page rather than one visit.
+    const provenSameIncarnation =
+      /^page:[^:]+:draft:[^:]+$/u.test(input.clientId)
       && current.clientId === input.clientId;
-    if (current.revision !== input.expectedRevision && !provenSamePage) {
+    if (current.revision !== input.expectedRevision && !provenSameIncarnation) {
       const displaced: ConversationDraftConflictDto["displaced"] = {
         conversationId,
         text: input.text,
@@ -912,6 +911,10 @@ export class WorkspaceStore {
       this.append({ type: "draft_conflict", conversationId, revision: current.revision, }, { kind: "draft_conflict", conflict });
       throw Object.assign(new Error("draft revision conflict"), { code: "DRAFT_CONFLICT", current, displaced });
     }
+    if (current.text === input.text &&
+        JSON.stringify(current.attachmentIds) === JSON.stringify(attachmentIds) &&
+        current.pastedTextAttachmentId === input.pastedTextAttachmentId &&
+        JSON.stringify(current.mentionBindings ?? []) === JSON.stringify(mentionBindings)) return current;
     const draft: ConversationDraftDto = { conversationId, ownerId, text: input.text, attachmentIds, ...(input.pastedTextAttachmentId ? { pastedTextAttachmentId: input.pastedTextAttachmentId } : {}), mentionBindings, revision: current.revision + 1, updatedAt: new Date().toISOString(), clientId: input.clientId };
     this.append({ type: "draft_changed", conversationId, revision: draft.revision, cleared: !draft.text && draft.attachmentIds.length === 0 && !draft.pastedTextAttachmentId }, { kind: "draft", draft });
     return draft;

@@ -12,3 +12,12 @@ const PAGE_CLIENT_ID = createClientId("page:");
 export function pageClientId(): string {
   return PAGE_CLIENT_ID;
 }
+
+/**
+ * Identifies one mounted visit to one durable draft surface. The page prefix
+ * keeps the existing server compatibility contract, while the fresh suffix
+ * prevents an abandoned A -> B -> A write chain from claiming the later A.
+ */
+export function draftSurfaceClientId(): string {
+  return `${PAGE_CLIENT_ID}:draft:${createClientId()}`;
+}

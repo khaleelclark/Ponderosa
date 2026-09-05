@@ -34,7 +34,7 @@ import {
 import { api } from "../../api";
 import { ApiRequestError } from "../../api/types";
 import { readChatState, writeChatState } from "../../chatState";
-import { createClientId, pageClientId } from "../../clientId";
+import { createClientId, draftSurfaceClientId } from "../../clientId";
 import { findMentionedHandles, hasBroadcastMention } from "../../mentions";
 import { queryKeys } from "../../queryKeys";
 import { removeHandle } from "./Composer.helpers";
@@ -132,6 +132,18 @@ type FailedDraftContent = {
   kind: "attachment" | "pasted-text";
   attachment?: DraftAttachmentDto;
 };
+
+type DraftWriteChain = {
+  clientId: string;
+  revision: number;
+  tail: Promise<void>;
+};
+
+const createDraftWriteChain = (): DraftWriteChain => ({
+  clientId: draftSurfaceClientId(),
+  revision: 0,
+  tail: Promise.resolve(),
+});
 
 const PASTED_TEXT_DRAFT_NAME = "Pasted text.txt";
 
@@ -257,8 +269,8 @@ export function Composer({
   const previousConversationDraftId = useRef(conversationDraftId);
   const draftRevision = useRef(0);
   const draftReady = useRef(false);
-  const draftClientId = useRef(pageClientId());
-  const draftWriteChain = useRef<Promise<void>>(Promise.resolve());
+  const [initialDraftWriteChain] = useState(createDraftWriteChain);
+  const draftWriteChain = useRef<DraftWriteChain>(initialDraftWriteChain);
   const draftGeneration = useRef(0);
   const draftHydrationGeneration = useRef(0);
   const draftEditVersion = useRef(0);
@@ -934,7 +946,7 @@ export function Composer({
     previousConversationDraftId.current = conversationDraftId;
     if (changed) {
       draftGeneration.current += 1;
-      draftWriteChain.current = Promise.resolve();
+      draftWriteChain.current = createDraftWriteChain();
       pastedTextMutationGeneration.current += 1;
       pastedTextCleanMutationGeneration.current =
         pastedTextMutationGeneration.current;
@@ -1043,6 +1055,7 @@ export function Composer({
       }
       unrestoredDraftAttachmentIds.current = failedAttachments.map(item => item.id);
       draftRevision.current = draft.revision;
+      draftWriteChain.current.revision = draft.revision;
       const local = draftStorageKey
         ? (readChatState(draftStorageKey) ?? "")
         : "";
@@ -1117,6 +1130,7 @@ export function Composer({
         hydrationGeneration === draftHydrationGeneration.current
       ) {
         draftRevision.current = draft.revision;
+        draftWriteChain.current.revision = draft.revision;
         unrestoredDraftAttachmentIds.current = draft.attachmentIds.filter(
           id => !locallyRemovedDraftAttachmentIds.current.has(id),
         );
@@ -1355,7 +1369,6 @@ export function Composer({
     if (
       !conversationDraftId ||
       !draftReady.current ||
-      !draftClientId.current ||
       !draftLocallyEdited.current
     )
       return;
@@ -1386,7 +1399,8 @@ export function Composer({
       );
       const attachmentsResolved =
         visibleAttachmentIds.length === files.length;
-      const clientId = draftClientId.current!;
+      const writeChain = draftWriteChain.current;
+      const clientId = writeChain.clientId;
       const scope = conversationDraftId;
       const snapshot = {
         text,
@@ -1404,7 +1418,7 @@ export function Composer({
         mentionBindings: [...knownMentionBindings],
         failedContents: [...failedDraftContentsRef.current],
       };
-      draftWriteChain.current = draftWriteChain.current.then(async () => {
+      writeChain.tail = writeChain.tail.then(async () => {
         const stillOwnsWrite = () => draftWriteContinuationStillOwned({
           capturedScope: scope,
           currentScope: activeDraftScopeRef.current,
@@ -1424,6 +1438,7 @@ export function Composer({
             clientId,
             ownerId: draftOwnerId,
           });
+          writeChain.revision = draft.revision;
           if (!stillOwnsWrite()) return;
           const deletable = deletableSupersededDraftAttachmentIds(
             supersededPastedTextAttachmentIds.current,
@@ -1484,6 +1499,7 @@ export function Composer({
           );
           if (!stillOwnsWrite()) return;
           draftRevision.current = current.revision;
+          writeChain.revision = current.revision;
           queryClient.setQueryData(
             queryKeys.conversationDraft.detail(
               scope,
@@ -1854,6 +1870,7 @@ export function Composer({
     const submittedDraftScope = conversationDraftId;
     const submittedDraftRevision = draftRevision.current;
     const submittedDraftGeneration = draftGeneration.current;
+    const submittedDraftWriteChain = draftWriteChain.current;
     const submittedSupersededPastedTextAttachmentIds = [
       ...supersededPastedTextAttachmentIds.current,
     ];
@@ -1946,21 +1963,20 @@ export function Composer({
         }
         if (
           !preserveNewRuntimeDraft &&
-          submittedDraftScope &&
-          draftClientId.current
+          submittedDraftScope
         ) {
-          const clientId = draftClientId.current;
+          const clientId = submittedDraftWriteChain.clientId;
           const clearGeneration = draftGeneration.current;
           const clearOwnsActiveScope = () =>
+            scopeStillActive &&
+            draftWriteChain.current === submittedDraftWriteChain &&
             draftWriteContinuationStillOwned({
               capturedScope: submittedDraftScope,
               currentScope: activeDraftScopeRef.current,
               capturedGeneration: clearGeneration,
               currentGeneration: draftGeneration.current,
             });
-          const clearChain = (scopeStillActive
-            ? draftWriteChain.current
-            : Promise.resolve())
+          const clearChain = submittedDraftWriteChain.tail
             .catch(() => undefined)
             .then(async () => {
               const clearSavedDraft = (expectedRevision: number) =>
@@ -1973,32 +1989,13 @@ export function Composer({
                   ownerId: draftOwnerId,
                 });
               try {
-                let clearedDraft;
-                try {
-                  clearedDraft = await clearSavedDraft(
-                    clearOwnsActiveScope()
-                      ? draftRevision.current
-                      : submittedDraftRevision,
-                  );
-                } catch (error) {
-                  if (
-                    !(error instanceof ApiRequestError) ||
-                    error.status !== 409
-                  )
-                    throw error;
-                  // A save that was already in flight can commit after send
-                  // invalidates its local generation. Refresh once and clear
-                  // against that committed revision. Never loop on a second
-                  // conflict: another writer should surface as a warning.
-                  const current = await api.getConversationDraft(
-                    submittedDraftScope,
-                    draftOwnerId,
-                  );
-                  // Owner IDs are shared by tabs; only this page's client ID
-                  // proves the conflicting revision came from our own chain.
-                  if (current.clientId !== clientId) throw error;
-                  clearedDraft = await clearSavedDraft(current.revision);
-                }
+                // Sequence behind every save captured by this surface
+                // incarnation. The server may fast-forward only this exact
+                // incarnation; a 409 from a later incarnation is terminal.
+                const clearedDraft = await clearSavedDraft(
+                  submittedDraftWriteChain.revision || submittedDraftRevision,
+                );
+                submittedDraftWriteChain.revision = clearedDraft.revision;
                 if (clearOwnsActiveScope()) {
                   draftRevision.current = clearedDraft.revision;
                 }
@@ -2034,7 +2031,7 @@ export function Composer({
                 }
               }
             });
-          if (scopeStillActive) draftWriteChain.current = clearChain;
+          submittedDraftWriteChain.tail = clearChain;
         }
         if (
           submittedPastedTextAttachmentId &&

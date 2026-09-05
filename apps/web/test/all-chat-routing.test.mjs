@@ -6,6 +6,7 @@ import {
   allChatComposerConversationId,
   allChatRuntimePayloadSnapshot,
   allChatRuntimeSelectionReady,
+  allChatSubmissionSettlementStillCurrent,
   allChatSourceIntentKey,
   allChatSourceConversationId,
   allChatSourceIdentity,
@@ -905,6 +906,51 @@ test("projection-only recipient disappearance preserves the frozen retry", () =>
   assert.equal(
     preparedIdempotentAttemptForRetry(attemptA, action === "send"),
     attemptA,
+  );
+});
+
+test("explicit clear advances intent after projection-only recipient loss", () => {
+  const current = { epoch: 2, sourceKey: "chat-a" };
+  const projectedMissing = reduceAllChatSubmissionIntent(current, {
+    kind: "recipient-projection-missing",
+  });
+  const explicitlyCleared = reduceAllChatSubmissionIntent(projectedMissing, {
+    kind: "recipient-cleared",
+  });
+
+  assert.equal(projectedMissing, current);
+  assert.deepEqual(explicitlyCleared, { epoch: 3, sourceKey: "chat-a" });
+  assert.equal(
+    composerPreparedRetryAction(
+      { action: "send", submissionIntentKey: "2" },
+      String(explicitlyCleared.epoch),
+    ),
+    undefined,
+  );
+});
+
+test("delayed A success cannot clear a later B recipient selection", () => {
+  assert.equal(
+    allChatSubmissionSettlementStillCurrent({
+      capturedEpoch: 4,
+      currentEpoch: 5,
+      capturedSourceKey: "chat-a",
+      currentSourceKey: "chat-b",
+      capturedTargetId: "agent-a",
+      currentTargetId: "agent-b",
+    }),
+    false,
+  );
+  assert.equal(
+    allChatSubmissionSettlementStillCurrent({
+      capturedEpoch: 4,
+      currentEpoch: 4,
+      capturedSourceKey: "chat-a",
+      currentSourceKey: "chat-a",
+      capturedTargetId: "agent-a",
+      currentTargetId: "agent-a",
+    }),
+    true,
   );
 });
 

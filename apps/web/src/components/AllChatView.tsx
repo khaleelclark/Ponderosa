@@ -109,6 +109,7 @@ import {
   ALL_CHAT_REPLY_TARGET_KEY,
   ALL_CHAT_SOURCE_KEY,
   allChatComposerConversationId,
+  allChatSubmissionSettlementStillCurrent,
   allChatSourceIntentKey,
   authoritativeAllChatReplyTarget,
   allChatRuntimePayloadSnapshot,
@@ -231,6 +232,10 @@ export function AllChatView({
         : {}),
     },
   );
+  const submissionIntentRef = useRef(submissionIntent);
+  submissionIntentRef.current = submissionIntent;
+  const replyTargetRef = useRef(replyTarget);
+  replyTargetRef.current = replyTarget;
   const sendAttempt = useRef<IdempotentAttempt<AllChatSubmissionPrepared>>();
   const abandonedSendAttempts = useRef<
     IdempotentAttempt<AllChatSubmissionPrepared>[]
@@ -670,6 +675,9 @@ export function AllChatView({
       mentionedAgents,
       newAgentRequested,
       retryPreparedAttempt,
+      submissionEpoch,
+      submissionSourceKey,
+      submissionTargetId,
     }: {
       body: string;
       files: File[];
@@ -678,6 +686,9 @@ export function AllChatView({
       mentionedAgents: AgentMentionBindingDto[];
       newAgentRequested: boolean;
       retryPreparedAttempt: boolean;
+      submissionEpoch: number;
+      submissionSourceKey?: string;
+      submissionTargetId?: string;
     }) => {
       const previous = sendAttempt.current;
       let attempt = preparedIdempotentAttemptForRetry(
@@ -837,11 +848,23 @@ export function AllChatView({
         ],
         unavailableCount,
         creationRecovering,
+        submissionEpoch,
+        submissionSourceKey,
+        submissionTargetId,
       };
     },
     onSuccess: result => {
       setNotice(undefined);
-      setReplyTarget(undefined);
+      if (allChatSubmissionSettlementStillCurrent({
+        capturedEpoch: result.submissionEpoch,
+        currentEpoch: submissionIntentRef.current.epoch,
+        capturedSourceKey: result.submissionSourceKey,
+        currentSourceKey: submissionIntentRef.current.sourceKey,
+        capturedTargetId: result.submissionTargetId,
+        currentTargetId: replyTargetRef.current?.id,
+      })) {
+        setReplyTarget(undefined);
+      }
       directSendConfirmationSequence.current += 1;
       setDirectSendConfirmation({
         id: directSendConfirmationSequence.current,
@@ -901,8 +924,8 @@ export function AllChatView({
     setSelectedId(item.communicationEventId);
     setComposerSource(sourceIdentity);
     if (clearRecipient) {
+      dispatchSubmissionIntent({ kind: "recipient-cleared" });
       if (replyTarget) {
-        dispatchSubmissionIntent({ kind: "recipient-cleared" });
         setMentionRemoveRequest({
           id: `source:${replyTarget.id}:${Date.now()}`,
           text: `#${replyTarget.handle}`,
@@ -1485,6 +1508,9 @@ export function AllChatView({
               mentionedAgents: context?.mentionedAgents ?? [],
               newAgentRequested: context?.newAgentRequested ?? false,
               retryPreparedAttempt: context?.retryPreparedAttempt ?? false,
+              submissionEpoch: submissionIntent.epoch,
+              submissionSourceKey: submissionIntent.sourceKey,
+              submissionTargetId: activeReplyTarget?.id,
             })
           }
         />

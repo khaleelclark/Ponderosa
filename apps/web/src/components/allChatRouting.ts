@@ -59,6 +59,19 @@ export function reduceAllChatSubmissionIntent(
   return { ...state, epoch: state.epoch + 1 };
 }
 
+export function allChatSubmissionSettlementStillCurrent(input: {
+  capturedEpoch: number;
+  currentEpoch: number;
+  capturedSourceKey?: string;
+  currentSourceKey?: string;
+  capturedTargetId?: string;
+  currentTargetId?: string;
+}): boolean {
+  return input.capturedEpoch === input.currentEpoch &&
+    input.capturedSourceKey === input.currentSourceKey &&
+    input.capturedTargetId === input.currentTargetId;
+}
+
 /** Exact runtime scalars that can be emitted by the selected All Messages action. */
 export function allChatRuntimePayloadSnapshot(input: {
   newAgentRequested: boolean;
