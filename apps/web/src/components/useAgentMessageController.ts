@@ -20,6 +20,10 @@ import {
   retainIdempotentAttempt,
   type IdempotentAttempt,
 } from "./idempotentAttempt";
+import {
+  runQueuedMessageCommand,
+  type QueuedMessageCommandAttemptRegistry,
+} from "./queuedMessageCommandAttempts";
 
 interface AgentMessageControllerInput {
   agentId: string;
@@ -54,6 +58,9 @@ export function useAgentMessageController({
   }>();
   const queueNoticeBaseline = useRef(0);
   const sendAttempt = useRef<IdempotentAttempt<RecipientUploads<AssetDto>>>();
+  const queuedCommandAttempts = useRef<QueuedMessageCommandAttemptRegistry>(
+    new Map(),
+  );
   useEffect(() => {
     if (
       !queueDeliveryNotice ||
@@ -73,9 +80,15 @@ export function useAgentMessageController({
   ]);
   const cancelQueuedMessage = useMutation({
     mutationFn: (deliveryId: string) =>
-      api.cancelQueuedAgentMessage(agentId, deliveryId, {
-        idempotencyKey: createClientId(),
-      }),
+      runQueuedMessageCommand(
+        queuedCommandAttempts.current,
+        { command: "cancel", deliveryId },
+        () => `cancel:${deliveryId}`,
+        ({ idempotencyKey }) =>
+          api.cancelQueuedAgentMessage(agentId, deliveryId, {
+            idempotencyKey,
+          }),
+      ),
     onSuccess: () =>
       void queryClient.invalidateQueries({
         queryKey: queryKeys.queuedMessages.agent(agentId),
@@ -83,10 +96,16 @@ export function useAgentMessageController({
   });
   const editQueuedMessage = useMutation({
     mutationFn: ({ deliveryId, text }: { deliveryId: string; text: string }) =>
-      api.editQueuedAgentMessage(agentId, deliveryId, {
-        text,
-        idempotencyKey: createClientId(),
-      }),
+      runQueuedMessageCommand(
+        queuedCommandAttempts.current,
+        { command: "edit", deliveryId, text },
+        () => createClientId(),
+        ({ idempotencyKey, canonicalText }) =>
+          api.editQueuedAgentMessage(agentId, deliveryId, {
+            text: canonicalText!,
+            idempotencyKey,
+          }),
+      ),
     onSuccess: () =>
       void queryClient.invalidateQueries({
         queryKey: queryKeys.queuedMessages.agent(agentId),
@@ -94,9 +113,15 @@ export function useAgentMessageController({
   });
   const steerQueuedMessage = useMutation({
     mutationFn: (deliveryId: string) =>
-      api.steerQueuedAgentMessage(agentId, deliveryId, {
-        idempotencyKey: createClientId(),
-      }),
+      runQueuedMessageCommand(
+        queuedCommandAttempts.current,
+        { command: "steer", deliveryId },
+        () => `steer:${deliveryId}`,
+        ({ idempotencyKey }) =>
+          api.steerQueuedAgentMessage(agentId, deliveryId, {
+            idempotencyKey,
+          }),
+      ),
     onSuccess: () =>
       void queryClient.invalidateQueries({
         queryKey: queryKeys.queuedMessages.agent(agentId),

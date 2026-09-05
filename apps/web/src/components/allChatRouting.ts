@@ -16,6 +16,38 @@ export type AllChatSourceIdentity = {
   conversationId: string;
 };
 
+export type AllChatRuntimePayload = {
+  engine?: string;
+  model?: string;
+  effort?: string;
+  speed?: string;
+};
+
+/** Exact runtime scalars that can be emitted by the selected All Messages action. */
+export function allChatRuntimePayloadSnapshot(input: {
+  newAgentRequested: boolean;
+  recipientCount: number;
+  selectedEngineId?: string;
+  defaultEngine?: string;
+  runtime: { model: string; effort: string; speed: string };
+}): AllChatRuntimePayload {
+  const singleRecipient = input.recipientCount === 1;
+  return {
+    ...(input.newAgentRequested ? {
+      engine: input.selectedEngineId ?? input.defaultEngine ?? "codex",
+    } : {}),
+    ...((input.newAgentRequested || singleRecipient) && input.runtime.model
+      ? { model: input.runtime.model }
+      : {}),
+    ...((input.newAgentRequested || singleRecipient) && input.runtime.effort
+      ? { effort: input.runtime.effort }
+      : {}),
+    ...(singleRecipient && input.runtime.speed
+      ? { speed: input.runtime.speed }
+      : {}),
+  };
+}
+
 export function parseAllChatSourceIdentity(
   raw: string | undefined,
 ): AllChatSourceIdentity | undefined {

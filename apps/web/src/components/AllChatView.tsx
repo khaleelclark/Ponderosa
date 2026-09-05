@@ -85,6 +85,7 @@ interface AllChatSubmissionPrepared {
   body: string;
   recipientIds: string[];
   conversationId?: string;
+  runtime: AllChatRuntimePayload;
   title?: string;
   uploads?: RecipientUploads<AssetDto>;
 }
@@ -92,11 +93,13 @@ import {
   ALL_CHAT_REPLY_TARGET_KEY,
   ALL_CHAT_SOURCE_KEY,
   allChatComposerConversationId,
+  allChatRuntimePayloadSnapshot,
   allChatSourceConversationId,
   eligibleAllChatTargets,
   parseAllChatReplyTarget,
   parseAllChatSourceIdentity,
   type AllChatReplyTarget,
+  type AllChatRuntimePayload,
   type AllChatSourceIdentity,
 } from "./allChatRouting";
 
@@ -629,6 +632,13 @@ export function AllChatView({
       }
       const currentConversationId =
         currentRecipientConversationIds[0] ?? selectedConversationId;
+      const currentRuntime = allChatRuntimePayloadSnapshot({
+        newAgentRequested,
+        recipientCount: currentRecipientIds.length,
+        selectedEngineId,
+        defaultEngine: project?.defaultEngine,
+        runtime: selectedRuntime,
+      });
       const fingerprint = JSON.stringify({
         activeProjectId,
         selectedConversationId,
@@ -640,8 +650,7 @@ export function AllChatView({
           mentionedAgents.map(binding => binding.agentId),
         )].sort(),
         newAgentRequested,
-        selectedEngineId,
-        selectedRuntime,
+        runtime: currentRuntime,
       });
       const previous = sendAttempt.current;
       const attempt = retainIdempotentAttempt(
@@ -652,6 +661,7 @@ export function AllChatView({
           body,
           recipientIds: currentRecipientIds,
           conversationId: currentConversationId,
+          runtime: currentRuntime,
         }),
       );
       if (previous && previous !== attempt && previous.prepared.uploads) {
@@ -665,6 +675,7 @@ export function AllChatView({
       const submittedBody = attempt.prepared.body;
       const recipientIds = attempt.prepared.recipientIds;
       const creationConversationId = attempt.prepared.conversationId;
+      const submittedRuntime = attempt.prepared.runtime;
       const creationConversation = creationConversationId
         ? conversationsQuery.data?.find(candidate => candidate.id === creationConversationId)
         : undefined;
@@ -687,9 +698,9 @@ export function AllChatView({
         createdTitles.push(title);
         const created = await api.createAgent(activeProjectId, creationConversation!.id, {
           title,
-          engine: selectedEngineId ?? project?.defaultEngine ?? "codex",
-          ...(selectedRuntime.model ? { model: selectedRuntime.model } : {}),
-          ...(selectedRuntime.effort ? { effort: selectedRuntime.effort } : {}),
+          engine: submittedRuntime.engine ?? "codex",
+          ...(submittedRuntime.model ? { model: submittedRuntime.model } : {}),
+          ...(submittedRuntime.effort ? { effort: submittedRuntime.effort } : {}),
           initialMessage: submittedBody.trim(),
           ...(draftAttachmentIds.length ? {
             draftAttachmentIds,
@@ -722,9 +733,9 @@ export function AllChatView({
           })),
           idempotencyKey: `${requestId}:${conversationId}`,
           activeRunDelivery: "steer",
-          ...(recipientIds.length === 1 && selectedRuntime.model ? { model: selectedRuntime.model } : {}),
-          ...(recipientIds.length === 1 && selectedRuntime.effort ? { effort: selectedRuntime.effort } : {}),
-          ...(recipientIds.length === 1 && selectedRuntime.speed ? { speed: selectedRuntime.speed } : {}),
+          ...(submittedRuntime.model ? { model: submittedRuntime.model } : {}),
+          ...(submittedRuntime.effort ? { effort: submittedRuntime.effort } : {}),
+          ...(submittedRuntime.speed ? { speed: submittedRuntime.speed } : {}),
         });
         deliveredRecipientIds = response.recipients.map(recipient => recipient.agentId);
         unavailableCount = response.unavailableRecipients?.length ?? 0;

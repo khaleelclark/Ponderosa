@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   eligibleAllChatTargets,
   allChatComposerConversationId,
+  allChatRuntimePayloadSnapshot,
   allChatSourceConversationId,
   parseAllChatReplyTarget,
   parseAllChatSourceIdentity,
@@ -32,6 +33,7 @@ import {
   hasBroadcastMention,
   hasEveryoneMention,
 } from "../src/mentions.js";
+import { retainIdempotentAttempt } from "../src/components/idempotentAttempt.js";
 
 const bryce = {
   id: "bryce",
@@ -56,6 +58,78 @@ test("restores only a complete All Messages source Chat identity", () => {
   assert.equal(
     allChatComposerConversationId(undefined, undefined, source),
     "chat-a",
+  );
+});
+
+test("All Messages retry runtime identity excludes presentation state", () => {
+  const available = {
+    model: "gpt-5",
+    effort: "high",
+    speed: "priority",
+    models: [{ id: "gpt-5", label: "GPT-5" }],
+    efforts: [{ id: "high", label: "High" }],
+    speeds: [{ id: "priority", label: "Priority" }],
+    ready: true,
+  };
+  const refreshed = {
+    ...available,
+    models: [{ id: "gpt-5", label: "GPT-5 (refreshed)" }],
+    ready: false,
+  };
+  const availableSnapshot = allChatRuntimePayloadSnapshot({
+    newAgentRequested: false,
+    recipientCount: 1,
+    selectedEngineId: "codex",
+    runtime: available,
+  });
+  const refreshedSnapshot = allChatRuntimePayloadSnapshot({
+    newAgentRequested: false,
+    recipientCount: 1,
+    selectedEngineId: "claude",
+    runtime: refreshed,
+  });
+  assert.deepEqual(availableSnapshot, refreshedSnapshot);
+  assert.notDeepEqual(
+    allChatRuntimePayloadSnapshot({
+      newAgentRequested: false,
+      recipientCount: 1,
+      selectedEngineId: "claude",
+      runtime: { ...refreshed, speed: "standard" },
+    }),
+    availableSnapshot,
+  );
+  let generated = 0;
+  const first = retainIdempotentAttempt(
+    undefined,
+    JSON.stringify({ runtime: availableSnapshot }),
+    () => `request-${++generated}`,
+    () => ({ runtime: availableSnapshot }),
+  );
+  const retry = retainIdempotentAttempt(
+    first,
+    JSON.stringify({ runtime: refreshedSnapshot }),
+    () => `request-${++generated}`,
+    () => ({ runtime: refreshedSnapshot }),
+  );
+  assert.equal(retry, first);
+  assert.equal(retry.prepared.runtime, availableSnapshot);
+  assert.deepEqual(
+    allChatRuntimePayloadSnapshot({
+      newAgentRequested: false,
+      recipientCount: 2,
+      selectedEngineId: "codex",
+      runtime: refreshed,
+    }),
+    {},
+  );
+  assert.deepEqual(
+    allChatRuntimePayloadSnapshot({
+      newAgentRequested: true,
+      recipientCount: 0,
+      defaultEngine: "claude",
+      runtime: refreshed,
+    }),
+    { engine: "claude", model: "gpt-5", effort: "high" },
   );
 });
 

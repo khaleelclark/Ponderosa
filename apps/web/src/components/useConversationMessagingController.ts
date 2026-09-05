@@ -35,6 +35,10 @@ import {
   retainIdempotentAttempt,
   type IdempotentAttempt,
 } from "./idempotentAttempt";
+import {
+  runQueuedMessageCommand,
+  type QueuedMessageCommandAttemptRegistry,
+} from "./queuedMessageCommandAttempts";
 
 interface ConversationSubmissionPrepared {
   text: string;
@@ -86,6 +90,9 @@ export function useConversationMessagingController({
   const [spawnNotice, setSpawnNotice] = useState<string>();
   const queuedNoticeDeliveryIds = useRef<Set<string>>(new Set());
   const queuedNoticeBaseline = useRef(0);
+  const queuedCommandAttempts = useRef<QueuedMessageCommandAttemptRegistry>(
+    new Map(),
+  );
   const [activeOperation, setActiveOperation] = useState<{
     agentIds: string[];
     state: "starting" | "running";
@@ -293,9 +300,15 @@ export function useConversationMessagingController({
 
   const cancelQueued = useMutation({
     mutationFn: (deliveryId: string) =>
-      api.cancelQueuedConversationMessage(conversationId, deliveryId, {
-        idempotencyKey: `cancel:${deliveryId}`,
-      }),
+      runQueuedMessageCommand(
+        queuedCommandAttempts.current,
+        { command: "cancel", deliveryId },
+        () => `cancel:${deliveryId}`,
+        ({ idempotencyKey }) =>
+          api.cancelQueuedConversationMessage(conversationId, deliveryId, {
+            idempotencyKey,
+          }),
+      ),
     onSuccess: () => {
       void queryClient.invalidateQueries({
         queryKey: queryKeys.queuedMessages.conversation(conversationId),
@@ -312,10 +325,16 @@ export function useConversationMessagingController({
       targetAgentId: string;
       text: string;
     }) =>
-      api.editQueuedAgentMessage(targetAgentId, deliveryId, {
-        text,
-        idempotencyKey: createClientId(),
-      }),
+      runQueuedMessageCommand(
+        queuedCommandAttempts.current,
+        { command: "edit", deliveryId, text },
+        () => createClientId(),
+        ({ idempotencyKey, canonicalText }) =>
+          api.editQueuedAgentMessage(targetAgentId, deliveryId, {
+            text: canonicalText!,
+            idempotencyKey,
+          }),
+      ),
     onSuccess: () =>
       void queryClient.invalidateQueries({
         queryKey: queryKeys.queuedMessages.conversation(conversationId),
@@ -329,9 +348,15 @@ export function useConversationMessagingController({
       deliveryId: string;
       targetAgentId: string;
     }) =>
-      api.steerQueuedAgentMessage(targetAgentId, deliveryId, {
-        idempotencyKey: createClientId(),
-      }),
+      runQueuedMessageCommand(
+        queuedCommandAttempts.current,
+        { command: "steer", deliveryId },
+        () => `steer:${deliveryId}`,
+        ({ idempotencyKey }) =>
+          api.steerQueuedAgentMessage(targetAgentId, deliveryId, {
+            idempotencyKey,
+          }),
+      ),
     onSuccess: () =>
       void queryClient.invalidateQueries({
         queryKey: queryKeys.queuedMessages.conversation(conversationId),
