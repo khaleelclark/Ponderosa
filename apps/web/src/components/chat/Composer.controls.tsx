@@ -90,7 +90,7 @@ export function ComposerNotices({
               sx={{ p: 0, minWidth: 0, textTransform: "none" }}
               onClick={onShowPastedText}
             >
-              Show in Text Field
+              View or edit
             </Button>
           </Box>
           <Typography variant="caption" color="text.secondary">

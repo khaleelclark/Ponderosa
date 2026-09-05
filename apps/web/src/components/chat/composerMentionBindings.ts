@@ -94,3 +94,22 @@ export function resolvedMentionBinding(
     binding.currentHandle.toLocaleLowerCase() === normalized);
   return matches.length === 1 ? matches[0] : undefined;
 }
+
+/** Exact retries retain a saved structural recipient even after its live
+ * directory row disappears. Normal new sends still require a live binding. */
+export function submissionMentionBinding(
+  handle: string,
+  known: readonly AgentMentionBindingDto[],
+  current: readonly AgentMentionBindingDto[],
+  retryPrepared: boolean,
+): AgentMentionBindingDto | undefined {
+  const resolved = resolvedMentionBinding(handle, known, current);
+  if (resolved || !retryPrepared) return resolved;
+  const normalized = handle.toLocaleLowerCase();
+  const saved = known.filter(binding =>
+    binding.handle.toLocaleLowerCase() === normalized ||
+    binding.currentHandle.toLocaleLowerCase() === normalized);
+  return new Set(saved.map(binding => binding.agentId)).size === 1
+    ? saved[0]
+    : undefined;
+}

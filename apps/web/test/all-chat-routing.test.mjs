@@ -26,6 +26,7 @@ import {
 import {
   shouldConsumeComposerKey,
   durableDraftContentReady,
+  deletableSupersededDraftAttachmentIds,
   shouldAdoptHydratedDraft,
   hydratedDraftContent,
   shouldIgnoreComposerKey,
@@ -36,7 +37,10 @@ import {
   hasBroadcastMention,
   hasEveryoneMention,
 } from "../src/mentions.js";
-import { retainIdempotentAttempt } from "../src/components/idempotentAttempt.js";
+import {
+  preparedIdempotentAttemptForRetry,
+  retainIdempotentAttempt,
+} from "../src/components/idempotentAttempt.js";
 
 const bryce = {
   id: "bryce",
@@ -133,6 +137,42 @@ test("All Messages retry runtime identity excludes presentation state", () => {
       runtime: refreshed,
     }),
     { engine: "claude", model: "gpt-5", effort: "high" },
+  );
+});
+
+test("ambiguous retries select the frozen operation before mutable state", () => {
+  const first = retainIdempotentAttempt(
+    undefined,
+    "recipients:a,b;runtime:shared",
+    () => "request-one",
+    () => ({ recipients: ["a", "b"], runtime: {} }),
+  );
+  assert.equal(preparedIdempotentAttemptForRetry(first, true), first);
+  assert.equal(preparedIdempotentAttemptForRetry(first, false), undefined);
+  const edited = retainIdempotentAttempt(
+    preparedIdempotentAttemptForRetry(first, false),
+    "recipients:a;runtime:model-x",
+    () => "request-two",
+    () => ({ recipients: ["a"], runtime: { model: "model-x" } }),
+  );
+  assert.notEqual(edited, first);
+  assert.equal(edited.idempotencyKey, "request-two");
+});
+
+test("superseded pasted text is deleted only after a returned draft releases it", () => {
+  assert.deepEqual(
+    deletableSupersededDraftAttachmentIds(["old", "current"], {
+      attachmentIds: [],
+      pastedTextAttachmentId: "old",
+    }),
+    ["current"],
+  );
+  assert.deepEqual(
+    deletableSupersededDraftAttachmentIds(["old"], {
+      attachmentIds: [],
+      pastedTextAttachmentId: "replacement",
+    }),
+    ["old"],
   );
 });
 

@@ -16,6 +16,8 @@ export interface ChatComposerContract {
     context?: {
       mentionedAgents?: AgentMentionBindingDto[];
       newAgentRequested?: boolean;
+      /** Re-dispatch the exact operation retained after an ambiguous response. */
+      retryPreparedAttempt?: boolean;
     },
   ): Promise<unknown> | unknown;
   onQueue?(
@@ -26,6 +28,8 @@ export interface ChatComposerContract {
     context?: {
       mentionedAgents?: AgentMentionBindingDto[];
       newAgentRequested?: boolean;
+      /** Re-dispatch the exact operation retained after an ambiguous response. */
+      retryPreparedAttempt?: boolean;
     },
   ): Promise<unknown> | unknown;
   onCommand?(command: EngineCommand, argumentsText?: string): Promise<unknown> | unknown;

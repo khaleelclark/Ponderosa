@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   refreshedMentionBindings,
   resolvedMentionBinding,
+  submissionMentionBinding,
 } from "../src/components/chat/composerMentionBindings.js";
 
 const saved = {
@@ -29,6 +30,17 @@ test("saved draft mentions retain stable identity through rename and deletion", 
   assert.deepEqual(
     refreshedMentionBindings("#old-name please continue", renamed, []),
     renamed,
+  );
+});
+
+test("only an exact prepared retry may retain a deleted recipient binding", () => {
+  assert.equal(
+    submissionMentionBinding("old-name", [saved], [], false),
+    undefined,
+  );
+  assert.deepEqual(
+    submissionMentionBinding("old-name", [saved], [], true),
+    saved,
   );
 });
 

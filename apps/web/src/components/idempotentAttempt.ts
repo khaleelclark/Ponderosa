@@ -13,3 +13,12 @@ export const retainIdempotentAttempt = <T>(
 ): IdempotentAttempt<T> => current?.fingerprint === fingerprint
   ? current
   : { fingerprint, idempotencyKey: createId(), prepared: prepare() };
+
+/** Select an ambiguous prepared operation before consulting any mutable
+ * recipient, runtime, or projection state. */
+export const preparedIdempotentAttemptForRetry = <T>(
+  current: IdempotentAttempt<T> | undefined,
+  retryPrepared: boolean,
+): IdempotentAttempt<T> | undefined => retryPrepared && current
+  ? current
+  : undefined;

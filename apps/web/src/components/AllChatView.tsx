@@ -77,13 +77,21 @@ import { useNotificationAcknowledgement } from "../hooks/useNotificationAcknowle
 import { ChatComposerDock } from "./chat/ChatComposerDock";
 import { ReadAloudControls } from "./speech/ReadAloudControls";
 import {
+  preparedIdempotentAttemptForRetry,
   retainIdempotentAttempt,
   type IdempotentAttempt,
 } from "./idempotentAttempt";
 
 interface AllChatSubmissionPrepared {
+  projectId: string;
   body: string;
+  files: File[];
+  draftAttachmentIds: string[];
+  draftOwnerId?: string;
+  newAgentRequested: boolean;
   recipientIds: string[];
+  recipientTitles: Map<string, string>;
+  existingAgentTitles: string[];
   conversationId?: string;
   runtime: AllChatRuntimePayload;
   title?: string;
@@ -615,6 +623,7 @@ export function AllChatView({
       draftOwnerId,
       mentionedAgents,
       newAgentRequested,
+      retryPreparedAttempt,
     }: {
       body: string;
       files: File[];
@@ -622,61 +631,89 @@ export function AllChatView({
       draftOwnerId?: string;
       mentionedAgents: AgentMentionBindingDto[];
       newAgentRequested: boolean;
+      retryPreparedAttempt: boolean;
     }) => {
-      if (!activeProjectId) throw new Error("Select a message to establish a Project first");
-      if (!body.trim() && files.length === 0)
-        throw new Error("Message text or an attachment is required");
-      const selectedConversationId = composerConversationId;
-      const validAgents = new Map((projectAgentsQuery.data ?? []).filter(agent =>
-        !agent.archived).map(agent => [agent.id, agent]));
-      const currentRecipientIds = [...new Set(
-        mentionedAgents.map(binding => binding.agentId),
-      )].filter(agentId => validAgents.has(agentId));
-      const currentRecipientConversationIds = [...new Set(
-        currentRecipientIds.flatMap(agentId => {
-          const conversationId = validAgents.get(agentId)?.conversationId;
-          return conversationId ? [conversationId] : [];
-        }),
-      )];
-      if (currentRecipientConversationIds.length > 1) {
-        throw new Error("One message can address Agents from only one Chat");
-      }
-      const currentConversationId =
-        currentRecipientConversationIds[0] ?? selectedConversationId;
-      const currentRuntime = allChatRuntimePayloadSnapshot({
-        newAgentRequested,
-        recipientCount: currentRecipientIds.length,
-        selectedEngineId,
-        defaultEngine: project?.defaultEngine,
-        runtime: runtimeSelectionReady
-          ? selectedRuntime
-          : { model: "", effort: "", speed: "" },
-      });
-      const fingerprint = JSON.stringify({
-        activeProjectId,
-        selectedConversationId,
-        body: stableMessageActionText(body, mentionedAgents),
-        files: fileSelectionFingerprint(files),
-        draftAttachmentIds,
-        draftOwnerId,
-        mentionedAgentIds: [...new Set(
-          mentionedAgents.map(binding => binding.agentId),
-        )].sort(),
-        newAgentRequested,
-        runtime: currentRuntime,
-      });
       const previous = sendAttempt.current;
-      const attempt = retainIdempotentAttempt(
+      let attempt = preparedIdempotentAttemptForRetry(
         previous,
-        fingerprint,
-        () => createClientId(),
-        (): AllChatSubmissionPrepared => ({
-          body,
-          recipientIds: currentRecipientIds,
-          conversationId: currentConversationId,
-          runtime: currentRuntime,
-        }),
+        retryPreparedAttempt,
       );
+      if (!attempt) {
+        if (!activeProjectId) throw new Error("Select a message to establish a Project first");
+        if (!body.trim() && files.length === 0)
+          throw new Error("Message text or an attachment is required");
+        const selectedConversationId = composerConversationId;
+        const validAgents = new Map((projectAgentsQuery.data ?? []).filter(agent =>
+          !agent.archived).map(agent => [agent.id, agent]));
+        const currentRecipientIds = [...new Set(
+          mentionedAgents.map(binding => binding.agentId),
+        )].filter(agentId => validAgents.has(agentId));
+        const currentRecipientConversationIds = [...new Set(
+          currentRecipientIds.flatMap(agentId => {
+            const conversationId = validAgents.get(agentId)?.conversationId;
+            return conversationId ? [conversationId] : [];
+          }),
+        )];
+        if (currentRecipientConversationIds.length > 1) {
+          throw new Error("One message can address Agents from only one Chat");
+        }
+        const currentConversationId =
+          currentRecipientConversationIds[0] ?? selectedConversationId;
+        const currentRuntime = allChatRuntimePayloadSnapshot({
+          newAgentRequested,
+          recipientCount: currentRecipientIds.length,
+          selectedEngineId,
+          defaultEngine: project?.defaultEngine,
+          runtime: runtimeSelectionReady
+            ? selectedRuntime
+            : { model: "", effort: "", speed: "" },
+        });
+        if (currentRecipientIds.length === 0 && !newAgentRequested) {
+          throw new Error("Select at least one Agent or add #new-agent");
+        }
+        if (
+          newAgentRequested &&
+          (!currentConversationId ||
+            !conversationsQuery.data?.some(candidate =>
+              candidate.id === currentConversationId))
+        ) {
+          throw new Error("This Project has no active Chat for the new Agent");
+        }
+        const fingerprint = JSON.stringify({
+          activeProjectId,
+          selectedConversationId,
+          body: stableMessageActionText(body, mentionedAgents),
+          files: fileSelectionFingerprint(files),
+          draftAttachmentIds,
+          draftOwnerId,
+          mentionedAgentIds: [...new Set(
+            mentionedAgents.map(binding => binding.agentId),
+          )].sort(),
+          newAgentRequested,
+          runtime: currentRuntime,
+        });
+        attempt = retainIdempotentAttempt(
+          previous,
+          fingerprint,
+          () => createClientId(),
+          (): AllChatSubmissionPrepared => ({
+            projectId: activeProjectId,
+            body,
+            files,
+            draftAttachmentIds,
+            draftOwnerId,
+            newAgentRequested,
+            recipientIds: currentRecipientIds,
+            recipientTitles: new Map([...validAgents.values()].map(agent => [
+              agent.id,
+              agent.title,
+            ])),
+            existingAgentTitles: [...validAgents.values()].map(agent => agent.title),
+            conversationId: currentConversationId,
+            runtime: currentRuntime,
+          }),
+        );
+      }
       if (previous && previous !== attempt && previous.prepared.uploads) {
         await discardRecipientUploads(
           previous.prepared.uploads,
@@ -685,39 +722,31 @@ export function AllChatView({
       }
       sendAttempt.current = attempt;
       const requestId = attempt.idempotencyKey;
-      const submittedBody = attempt.prepared.body;
-      const recipientIds = attempt.prepared.recipientIds;
-      const creationConversationId = attempt.prepared.conversationId;
-      const submittedRuntime = attempt.prepared.runtime;
-      const creationConversation = creationConversationId
-        ? conversationsQuery.data?.find(candidate => candidate.id === creationConversationId)
-        : undefined;
-      if (recipientIds.length === 0 && !newAgentRequested) {
-        throw new Error("Select at least one Agent or add #new-agent");
-      }
-      const createdNames = [...validAgents.values()].map(agent => agent.title);
+      const prepared = attempt.prepared;
+      const submittedBody = prepared.body;
+      const recipientIds = prepared.recipientIds;
+      const creationConversationId = prepared.conversationId;
+      const submittedRuntime = prepared.runtime;
+      const createdNames = [...prepared.existingAgentTitles];
       const createdAgentIds: string[] = [];
       const createdTitles: string[] = [];
       let creationRecovering = false;
       let deliveredRecipientIds: string[] = [];
       let unavailableCount = 0;
-      if (newAgentRequested && !creationConversation) {
-        throw new Error("This Project has no active Chat for the new Agent");
-      }
-      if (newAgentRequested) {
-        const title = attempt.prepared.title ?? pickAgentName(createdNames);
-        attempt.prepared.title = title;
+      if (prepared.newAgentRequested) {
+        const title = prepared.title ?? pickAgentName(createdNames);
+        prepared.title = title;
         createdNames.push(title);
         createdTitles.push(title);
-        const created = await api.createAgent(activeProjectId, creationConversation!.id, {
+        const created = await api.createAgent(prepared.projectId, creationConversationId!, {
           title,
           engine: submittedRuntime.engine ?? "codex",
           ...(submittedRuntime.model ? { model: submittedRuntime.model } : {}),
           ...(submittedRuntime.effort ? { effort: submittedRuntime.effort } : {}),
           initialMessage: submittedBody.trim(),
-          ...(draftAttachmentIds.length ? {
-            draftAttachmentIds,
-            draftOwnerId,
+          ...(prepared.draftAttachmentIds.length ? {
+            draftAttachmentIds: prepared.draftAttachmentIds,
+            draftOwnerId: prepared.draftOwnerId,
           } : {}),
           idempotencyKey: `${requestId}:new-agent:0`,
         });
@@ -725,17 +754,17 @@ export function AllChatView({
         else createdAgentIds.push(created.id);
       }
       if (recipientIds.length > 0) {
-        const conversationId = attempt.prepared.conversationId;
+        const conversationId = prepared.conversationId;
         if (!conversationId) {
           throw new Error("Every addressed Agent must belong to one active Chat");
         }
-        const uploaded = attempt.prepared.uploads ?? await uploadFilesForRecipients(
+        const uploaded = prepared.uploads ?? await uploadFilesForRecipients(
           recipientIds,
-          files,
+          prepared.files,
           (agentId, file) => api.uploadAttachment(agentId, file),
           (agentId, attachment) => api.deleteAttachment(agentId, attachment.id),
         );
-        attempt.prepared.uploads = uploaded;
+        prepared.uploads = uploaded;
         const uploadedByAgentId = new Map(uploaded.map(item => [item.agentId, item]));
         const response = await api.sendMultiAgentDirectMessage(conversationId, {
           text: submittedBody.trim(),
@@ -757,7 +786,7 @@ export function AllChatView({
       return {
         recipientIds: [...deliveredRecipientIds, ...createdAgentIds],
         recipientTitles: [
-          ...deliveredRecipientIds.map(id => validAgents.get(id)?.title ?? "Agent"),
+          ...deliveredRecipientIds.map(id => prepared.recipientTitles.get(id) ?? "Agent"),
           ...createdTitles,
         ],
         unavailableCount,
@@ -1364,6 +1393,7 @@ export function AllChatView({
               draftOwnerId,
               mentionedAgents: context?.mentionedAgents ?? [],
               newAgentRequested: context?.newAgentRequested ?? false,
+              retryPreparedAttempt: context?.retryPreparedAttempt ?? false,
             })
           }
         />

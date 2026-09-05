@@ -1,9 +1,19 @@
 import {
   Box,
+  Button,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Paper,
   Stack,
+  TextField,
 } from "@mui/material";
-import { messageTagTokens, utf8ByteLength } from "@ponderosa/core";
+import {
+  LONG_TEXT_MAX_UTF8_BYTES,
+  messageTagTokens,
+  utf8ByteLength,
+} from "@ponderosa/core";
 import type {
   AgentMentionBindingDto,
   ArtifactDto,
@@ -65,6 +75,7 @@ import {
   canSubmitComposerText,
   composerAttachmentReducer,
   composerSubmissionText,
+  deletableSupersededDraftAttachmentIds,
   durableDraftContentReady,
   engineCommandDisabledReason,
   hydratedDraftContent,
@@ -78,6 +89,7 @@ import {
 import {
   refreshedMentionBindings,
   resolvedMentionBinding,
+  submissionMentionBinding,
 } from "./composerMentionBindings";
 import { useComposerDraftAttachments } from "./useComposerDraftAttachments";
 import {
@@ -201,6 +213,8 @@ export function Composer({
   });
   const [pastedText, setPastedTextState] = useState<string>();
   const pastedTextRef = useRef<string>();
+  const [pastedTextEditorOpen, setPastedTextEditorOpen] = useState(false);
+  const [pastedTextEditorValue, setPastedTextEditorValue] = useState("");
   const [attachments, dispatchAttachments] = useReducer(
     composerAttachmentReducer,
     { files: [] },
@@ -214,6 +228,9 @@ export function Composer({
   });
   const assetLimits = assetLimitsQuery.data;
   const [sendError, setSendError] = useState<string>();
+  const [preparedRetryAction, setPreparedRetryAction] = useState<
+    "send" | "queue"
+  >();
   const [draftConflict, setDraftConflict] =
     useState<ConversationDraftConflictDto>();
   const fileInput = useRef<HTMLInputElement | null>(null);
@@ -231,6 +248,7 @@ export function Composer({
   const draftAttachmentsLocallyEdited = useRef(false);
   const unrestoredDraftAttachmentIds = useRef<string[]>([]);
   const pastedTextAttachmentId = useRef<string>();
+  const supersededPastedTextAttachmentIds = useRef<Set<string>>(new Set());
   const pastedTextUploadGeneration = useRef(0);
   const pastedTextUploadFailedFor = useRef<string>();
   const [pastedTextUploading, setPastedTextUploading] = useState(false);
@@ -262,6 +280,7 @@ export function Composer({
   const inputRef = useRef<ComposerEditorHandle | null>(null);
   const markUserDraftMutation = useCallback(() => {
     userDraftMutationGeneration.current += 1;
+    setPreparedRetryAction(undefined);
   }, []);
   const markDraftEdited = useCallback(() => {
     markUserDraftMutation();
@@ -348,11 +367,7 @@ export function Composer({
       markDraftEdited();
       replacePastedText(next);
       if (conversationDraftId && previousAttachmentId) {
-        void api.deleteDraftAttachment(
-          conversationDraftId,
-          draftOwnerId,
-          previousAttachmentId,
-        ).catch(() => undefined);
+        supersededPastedTextAttachmentIds.current.add(previousAttachmentId);
       }
     },
     [conversationDraftId, draftOwnerId, markDraftEdited, replacePastedText],
@@ -402,6 +417,7 @@ export function Composer({
     if (!failed) return;
     if (failed.kind === "pasted-text") {
       pastedTextAttachmentId.current = undefined;
+      supersededPastedTextAttachmentIds.current.add(id);
       replacePastedText(undefined);
     } else {
       unrestoredDraftAttachmentIds.current =
@@ -411,7 +427,7 @@ export function Composer({
     setFailedDraftContents(current => current.filter(item => item.id !== id));
     dispatchAttachments({ type: "clear_error" });
     markDraftEdited();
-    if (conversationDraftId) {
+    if (conversationDraftId && failed.kind !== "pasted-text") {
       void api
         .deleteDraftAttachment(conversationDraftId, draftOwnerId, id)
         .catch(() => undefined);
@@ -711,6 +727,7 @@ export function Composer({
     setActiveDefaultDestination(undefined);
   }, []);
   const clearRequiredRecipient = () => {
+    markUserDraftMutation();
     const handle = targetRequiredHandles[0] ?? requiredRecipient?.handle;
     if (handle) update(current => removeHandle(current, handle));
     requiredRecipient?.onClear();
@@ -752,7 +769,7 @@ export function Composer({
   const canSend =
     !sending &&
     !dictationSettling &&
-    !destinationError &&
+    (!destinationError || Boolean(preparedRetryAction)) &&
     targetRequiredRecipientTagged &&
     draftUploadsReady &&
     durableContentReady &&
@@ -818,6 +835,7 @@ export function Composer({
     if (changed) {
       pastedTextUploadGeneration.current += 1;
       pastedTextAttachmentId.current = undefined;
+      supersededPastedTextAttachmentIds.current.clear();
       setPastedTextUploading(false);
       setFailedDraftContents([]);
       replacePastedText(undefined);
@@ -1186,6 +1204,20 @@ export function Composer({
             clientId,
             ownerId: draftOwnerId,
           });
+          const deletable = deletableSupersededDraftAttachmentIds(
+            supersededPastedTextAttachmentIds.current,
+            draft,
+          );
+          for (const id of deletable) {
+            supersededPastedTextAttachmentIds.current.delete(id);
+            void api.deleteDraftAttachment(
+              conversationDraftId,
+              draftOwnerId,
+              id,
+            ).catch(() => {
+              supersededPastedTextAttachmentIds.current.add(id);
+            });
+          }
           if (generation !== draftGeneration.current) return;
           draftRevision.current = draft.revision;
           if (
@@ -1488,8 +1520,10 @@ export function Composer({
       context?: {
         mentionedAgents?: import("@ponderosa/core").AgentMentionBindingDto[];
         newAgentRequested?: boolean;
+        retryPreparedAttempt?: boolean;
       },
     ) => Promise<unknown> | unknown,
+    action: "send" | "queue",
   ) => {
     if (dictationSettlingRef.current) {
       setSendError(
@@ -1498,6 +1532,16 @@ export function Composer({
       return;
     }
     if (sendingRef.current || !canSend) return;
+    if (
+      preparedRetryAction &&
+      preparedRetryAction !== action &&
+      destinationError
+    ) {
+      setPreparedRetryAction(undefined);
+      setSendError(destinationError);
+      return;
+    }
+    const retryPreparedAttempt = preparedRetryAction === action;
     const normalizedDraft = normalizeExclusiveNewAgentDestinationForMode(
       destinationMode,
       textRef.current,
@@ -1566,6 +1610,7 @@ export function Composer({
     setSendError(undefined);
     const submittedText = normalizedDraft;
     const submittedPastedText = pastedTextRef.current;
+    const submittedPastedTextAttachmentId = pastedTextAttachmentId.current;
     const submittedUserMutationGeneration =
       userDraftMutationGeneration.current;
     const stagedIds = files
@@ -1590,18 +1635,23 @@ export function Composer({
           )
         : [];
     for (const handle of structurallyAuthoredHandles) {
-      const binding = resolvedMentionBinding(
+      const binding = submissionMentionBinding(
         handle,
         knownMentionBindings,
         mentionBindings ?? [],
+        retryPreparedAttempt,
       );
       if (binding) {
         mentionedAgentsById.set(binding.agentId, binding);
       }
     }
     const mentionedAgents = [...mentionedAgentsById.values()];
-    const submissionContext = mentionedAgents.length > 0 || safeNewAgentSelected
-      ? { mentionedAgents, newAgentRequested: safeNewAgentSelected }
+    const submissionContext = mentionedAgents.length > 0 || safeNewAgentSelected || retryPreparedAttempt
+      ? {
+          mentionedAgents,
+          newAgentRequested: safeNewAgentSelected,
+          retryPreparedAttempt,
+        }
       : undefined;
     const runtimeCommandSubmission =
       slash?.command.invocation === "runtime";
@@ -1617,6 +1667,7 @@ export function Composer({
           );
     void Promise.resolve(operation)
       .then(() => {
+        setPreparedRetryAction(undefined);
         const draftChangedAfterSubmission =
           userDraftMutationGeneration.current !==
           submittedUserMutationGeneration;
@@ -1692,6 +1743,21 @@ export function Composer({
                   ),
                   clearedDraft,
                 );
+                const cleanupIds = new Set([
+                  ...stagedIds,
+                  ...supersededPastedTextAttachmentIds.current,
+                  ...(submittedPastedTextAttachmentId
+                    ? [submittedPastedTextAttachmentId]
+                    : []),
+                ]);
+                for (const id of cleanupIds) {
+                  supersededPastedTextAttachmentIds.current.delete(id);
+                  void api.deleteDraftAttachment(
+                    conversationDraftId,
+                    draftOwnerId,
+                    id,
+                  ).catch(() => undefined);
+                }
               } catch {
                 setSendError(
                   "Message sent, but its saved draft could not be cleared.",
@@ -1699,21 +1765,18 @@ export function Composer({
               }
             });
         }
-        if (conversationDraftId)
-          for (const id of stagedIds)
-            void api
-              .deleteDraftAttachment(conversationDraftId, draftOwnerId, id)
-              .catch(() => undefined);
-        if (conversationDraftId && pastedTextAttachmentId.current) {
-          const id = pastedTextAttachmentId.current;
+        if (
+          submittedPastedTextAttachmentId &&
+          pastedTextAttachmentId.current === submittedPastedTextAttachmentId
+        ) {
           pastedTextAttachmentId.current = undefined;
-          void api
-            .deleteDraftAttachment(conversationDraftId, draftOwnerId, id)
-            .catch(() => undefined);
         }
         if (!preserveNewRuntimeDraft) setCaret(0);
       })
       .catch((error: unknown) => {
+        setPreparedRetryAction(
+          error instanceof ApiRequestError ? undefined : action,
+        );
         if (
           userDraftMutationGeneration.current ===
           submittedUserMutationGeneration
@@ -1731,10 +1794,10 @@ export function Composer({
         setSending(false);
       });
   };
-  const steer = () => submit(onSend);
+  const steer = () => submit(onSend, "send");
   const queue = () => {
     if (!onQueue) return;
-    submit(onQueue);
+    submit(onQueue, "queue");
   };
   const send = steer;
   const showQueue =
@@ -1770,9 +1833,8 @@ export function Composer({
         displacedDraft={draftConflict?.displaced.text}
         failedDraftContents={failedDraftContents}
         onShowPastedText={() => {
-          update(composerSubmissionText(text, pastedText ?? ""));
-          updatePastedText(undefined);
-          requestAnimationFrame(() => inputRef.current?.focus());
+          setPastedTextEditorValue(pastedText ?? "");
+          setPastedTextEditorOpen(true);
         }}
         onRemovePastedText={() => {
           updatePastedText(undefined);
@@ -1797,6 +1859,40 @@ export function Composer({
           }
         }}
       />
+      <Dialog
+        open={pastedTextEditorOpen}
+        onClose={() => setPastedTextEditorOpen(false)}
+        fullWidth
+        maxWidth="md"
+      >
+        <DialogTitle>View or edit pasted text</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            fullWidth
+            multiline
+            minRows={12}
+            maxRows={24}
+            value={pastedTextEditorValue}
+            onChange={event => setPastedTextEditorValue(event.target.value)}
+            error={utf8ByteLength(pastedTextEditorValue) > LONG_TEXT_MAX_UTF8_BYTES}
+            helperText={`${utf8ByteLength(pastedTextEditorValue).toLocaleString()} of ${LONG_TEXT_MAX_UTF8_BYTES.toLocaleString()} bytes`}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setPastedTextEditorOpen(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            disabled={utf8ByteLength(pastedTextEditorValue) > LONG_TEXT_MAX_UTF8_BYTES}
+            onClick={() => {
+              updatePastedText(pastedTextEditorValue || undefined);
+              setPastedTextEditorOpen(false);
+            }}
+          >
+            Save
+          </Button>
+        </DialogActions>
+      </Dialog>
       <Stack
         direction="row"
         spacing={{ xs: 0.25, sm: 0.5 }}

@@ -4,9 +4,21 @@ import {
 } from "@ponderosa/core";
 import type {
   AssetLimitsDto,
+  ConversationDraftDto,
   EngineCommand,
   EngineComposerCapability,
 } from "@ponderosa/core";
+
+export function deletableSupersededDraftAttachmentIds(
+  pendingIds: Iterable<string>,
+  draft: Pick<ConversationDraftDto, "attachmentIds" | "pastedTextAttachmentId">,
+): string[] {
+  const referenced = new Set([
+    ...draft.attachmentIds,
+    ...(draft.pastedTextAttachmentId ? [draft.pastedTextAttachmentId] : []),
+  ]);
+  return [...pendingIds].filter(id => !referenced.has(id));
+}
 
 export function shouldSendComposerKey(event: {
   key: string;

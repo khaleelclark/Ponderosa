@@ -1353,6 +1353,7 @@ export function ConversationView({
               draftOwnerId,
               context?.mentionedAgents,
               context?.newAgentRequested,
+              context?.retryPreparedAttempt,
             )
           }
           onQueue={(text, files, stagedIds, draftOwnerId, context) =>
@@ -1364,6 +1365,7 @@ export function ConversationView({
               draftOwnerId,
               context?.mentionedAgents,
               context?.newAgentRequested,
+              context?.retryPreparedAttempt,
             )
           }
           agentResponding={false}

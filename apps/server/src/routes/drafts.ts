@@ -146,6 +146,7 @@ export class DraftService {
   private readonly root: string;
   private readonly attachmentId = /^[a-f0-9-]{36}$/i;
   private readonly ownerId = /^[A-Za-z0-9_-]{1,128}$/;
+  private readonly mutationTails = new Map<string, Promise<void>>();
 
   constructor(
     dataDir: string,
@@ -165,6 +166,31 @@ export class DraftService {
     return typeof value === "string" && this.ownerId.test(value)
       ? value
       : undefined;
+  }
+
+  async withMutationLock<T>(
+    draftId: string,
+    ownerId: string,
+    work: () => Promise<T>,
+  ): Promise<T> {
+    const key = `${draftId}\u0000${ownerId}`;
+    const previous = this.mutationTails.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>(resolve => { release = resolve; });
+    const tail = previous.catch(() => undefined).then(() => current);
+    this.mutationTails.set(key, tail);
+    await previous.catch(() => undefined);
+    try {
+      return await work();
+    } finally {
+      release();
+      if (this.mutationTails.get(key) === tail) this.mutationTails.delete(key);
+    }
+  }
+
+  attachmentReferenced(draftId: string, ownerId: string, id: string): boolean {
+    const draft = this.workspace.getDraft(draftId, ownerId);
+    return draft.pastedTextAttachmentId === id || draft.attachmentIds.includes(id);
   }
 
   surfaceDir(draftId: string): string {
@@ -405,35 +431,37 @@ export function registerDraftRoutes(
     if (bodyError) return reply.code(400).send({ error: bodyError });
     const ownerId = service.normalizedOwner(body?.ownerId);
     if (!ownerId) return reply.code(400).send({ error: "invalid draft owner" });
-    const referencedIds = [
-      ...body.attachmentIds,
-      ...(body.pastedTextAttachmentId ? [body.pastedTextAttachmentId] : []),
-    ];
-    const referenced = await Promise.all(
-      referencedIds.map(id =>
-        service.read(request.params.id, ownerId, id),
-      ),
-    );
-    if (referenced.some(item => !item)) {
-      return reply.code(400).send({
-        error:
-          "draft attachment is missing or belongs to another conversation",
-      });
-    }
-    const cursor = workspace.cursor();
-    try {
-      workspace.putDraft(request.params.id, { ...body, ownerId });
-      publishWorkspaceSince(cursor);
-      return service.hydrate(request.params.id, ownerId);
-    } catch (error) {
-      if ((error as { code?: string }).code === "DRAFT_CONFLICT") {
-        return reply.code(409).send({
-          current: await service.hydrate(request.params.id, ownerId),
-          displaced: (error as { displaced: unknown }).displaced,
+    return service.withMutationLock(request.params.id, ownerId, async () => {
+      const referencedIds = [
+        ...body.attachmentIds,
+        ...(body.pastedTextAttachmentId ? [body.pastedTextAttachmentId] : []),
+      ];
+      const referenced = await Promise.all(
+        referencedIds.map(id =>
+          service.read(request.params.id, ownerId, id),
+        ),
+      );
+      if (referenced.some(item => !item)) {
+        return reply.code(400).send({
+          error:
+            "draft attachment is missing or belongs to another conversation",
         });
       }
-      throw error;
-    }
+      const cursor = workspace.cursor();
+      try {
+        workspace.putDraft(request.params.id, { ...body, ownerId });
+        publishWorkspaceSince(cursor);
+        return service.hydrate(request.params.id, ownerId);
+      } catch (error) {
+        if ((error as { code?: string }).code === "DRAFT_CONFLICT") {
+          return reply.code(409).send({
+            current: await service.hydrate(request.params.id, ownerId),
+            displaced: (error as { displaced: unknown }).displaced,
+          });
+        }
+        throw error;
+      }
+    });
   });
 
   app.post<{ Params: { id: string }; Body: Buffer }>(
@@ -588,29 +616,40 @@ export function registerDraftRoutes(
       if (!ownerId) {
         return reply.code(400).send({ error: "draft owner is required" });
       }
-      if (
-        !service.validId(request.params.id) ||
-        !(await service.read(
+      return service.withMutationLock(request.params.id, ownerId, async () => {
+        if (
+          !service.validId(request.params.id) ||
+          !(await service.read(
+            request.params.id,
+            ownerId,
+            request.params.attachmentId,
+          ))
+        ) {
+          return reply
+            .code(404)
+            .send({ error: "draft attachment not found" });
+        }
+        if (service.attachmentReferenced(
           request.params.id,
           ownerId,
           request.params.attachmentId,
-        ))
-      ) {
-        return reply
-          .code(404)
-          .send({ error: "draft attachment not found" });
-      }
-      const files = service.files(
-        request.params.id,
-        ownerId,
-        request.params.attachmentId,
-      );
-      await Promise.all([
-        fs.rm(files.body, { force: true }),
-        fs.rm(files.preview, { force: true }),
-        fs.rm(files.metadata, { force: true }),
-      ]);
-      return reply.code(204).send();
+        )) {
+          return reply.code(409).send({
+            error: "draft attachment is still referenced",
+          });
+        }
+        const files = service.files(
+          request.params.id,
+          ownerId,
+          request.params.attachmentId,
+        );
+        await Promise.all([
+          fs.rm(files.body, { force: true }),
+          fs.rm(files.preview, { force: true }),
+          fs.rm(files.metadata, { force: true }),
+        ]);
+        return reply.code(204).send();
+      });
     },
   );
 }

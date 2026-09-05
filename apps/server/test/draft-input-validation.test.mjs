@@ -141,6 +141,49 @@ test("draft routes hydrate a separate durable pasted-text asset", async (t) => {
   });
   assert.equal(downloaded.statusCode, 200, downloaded.body);
   assert.equal(downloaded.rawPayload.toString("utf8"), "durable long paste");
+  const replacementUpload = await app.inject({
+    method: "POST",
+    url: "/api/conversations/chat-a/draft-attachments",
+    headers: {
+      "content-type": "application/octet-stream",
+      "x-ponderosa-draft-owner": "browser-one",
+      "x-ponderosa-filename": "Pasted text.txt",
+      "x-ponderosa-media-type": "text/plain",
+    },
+    payload: Buffer.from("replacement long paste"),
+  });
+  assert.equal(replacementUpload.statusCode, 201, replacementUpload.body);
+  const replacement = replacementUpload.json();
+  const prematureDelete = await app.inject({
+    method: "DELETE",
+    url: `${attachment.downloadUrl}`,
+  });
+  assert.equal(prematureDelete.statusCode, 409, prematureDelete.body);
+  const replaced = await app.inject({
+    method: "PUT",
+    url: "/api/conversations/chat-a/draft",
+    payload: {
+      ...validDraft,
+      expectedRevision: 1,
+      pastedTextAttachmentId: replacement.id,
+    },
+  });
+  assert.equal(replaced.statusCode, 200, replaced.body);
+  assert.equal(replaced.json().pastedTextAttachmentId, replacement.id);
+  const releasedDelete = await app.inject({
+    method: "DELETE",
+    url: `${attachment.downloadUrl}`,
+  });
+  assert.equal(releasedDelete.statusCode, 204, releasedDelete.body);
+  const replacementStillReferenced = await app.inject({
+    method: "DELETE",
+    url: `${replacement.downloadUrl}`,
+  });
+  assert.equal(
+    replacementStillReferenced.statusCode,
+    409,
+    replacementStillReferenced.body,
+  );
   await app.close();
 });
 
