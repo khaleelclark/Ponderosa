@@ -184,12 +184,7 @@ export function useComposerDraftAttachments({
     dispatch({ type: "remove", index });
     onEdit(id);
     setAttachmentVersion(value => value + 1);
-    if (conversationDraftId && id) {
-      void api
-        .deleteDraftAttachment(conversationDraftId, draftOwnerId, id)
-        .catch(() => undefined);
-    }
-  }, [conversationDraftId, dispatch, draftOwnerId, files, onEdit]);
+  }, [dispatch, files, onEdit]);
 
   const mergeRestored = useCallback((restored: RestoredDraftAttachment[]) => {
     const existingIds = new Set(attachmentIds.current.values());

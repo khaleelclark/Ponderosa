@@ -3,7 +3,10 @@ import test from "node:test";
 import {
   eligibleAllChatTargets,
   authoritativeAllChatReplyTarget,
+  allChatAttentionRoute,
   allChatComposerConversationId,
+  allChatRuntimeMutationIsLatest,
+  allChatRuntimeMutationOwnsSelection,
   allChatRuntimePayloadSnapshot,
   allChatRuntimeSelectionReady,
   allChatSubmissionSettlementStillCurrent,
@@ -40,8 +43,10 @@ import {
   hydratedPastedTextContent,
   recoverableDraftConflict,
   removeComposerPasteSelection,
+  restagedDraftConflictSnapshot,
   restoreDraftConflictSnapshot,
   savedPastedTextCleanMutationGeneration,
+  settledDraftWriteContinuation,
   shouldIgnoreComposerKey,
   shouldSendComposerKey,
 } from "../src/components/chat/composerUtils.js";
@@ -224,6 +229,18 @@ test("superseded pasted text is deleted only after a returned draft releases it"
     }),
     ["old"],
   );
+  assert.deepEqual(
+    deletableSupersededDraftAttachmentIds(["removed-file"], {
+      attachmentIds: [],
+    }),
+    ["removed-file"],
+  );
+  assert.deepEqual(
+    deletableSupersededDraftAttachmentIds(["removed-file"], {
+      attachmentIds: ["removed-file"],
+    }),
+    [],
+  );
 });
 
 test("locks later recipients to the first Agent's Chat", () => {
@@ -319,6 +336,43 @@ test("All Messages runtime overrides are unavailable until the selected Agent in
   assert.equal(allChatRuntimeSelectionReady("agent-a", "agent-a"), true);
   assert.equal(allChatRuntimeSelectionReady("agent-b", "agent-a"), false);
   assert.equal(allChatRuntimeSelectionReady(undefined, "agent-a"), false);
+});
+
+test("stale runtime rollback restores only its Agent's persisted speed", () => {
+  assert.equal(allChatRuntimeMutationIsLatest(4, 4), true);
+  assert.equal(allChatRuntimeMutationIsLatest(4, 5), false);
+  assert.equal(
+    allChatRuntimeMutationOwnsSelection({
+      capturedAgentId: "agent-a",
+      currentAgentId: "agent-b",
+      capturedGeneration: 4,
+      currentGeneration: 4,
+    }),
+    false,
+  );
+  assert.equal(
+    allChatRuntimeMutationOwnsSelection({
+      capturedAgentId: "agent-a",
+      currentAgentId: "agent-a",
+      capturedGeneration: 4,
+      currentGeneration: 4,
+    }),
+    true,
+  );
+});
+
+test("All Messages routes a global provider action before Project validation", () => {
+  assert.deepEqual(
+    allChatAttentionRoute({
+      id: "provider-down",
+      kind: "operational",
+      title: "Provider unavailable",
+      body: "Reconnect it.",
+      createdAt: "2026-09-05T00:00:00.000Z",
+      action: { kind: "open_settings", targetId: "codex" },
+    }),
+    { kind: "settings", section: "providers" },
+  );
 });
 
 test("failed or unstaged durable draft content blocks send", () => {
@@ -682,7 +736,11 @@ test("attachment-only multitab conflict restores the complete snapshot for resav
       capturedAt: "2026-09-05T00:00:01.000Z",
     },
   }, snapshot);
-  const restored = restoreDraftConflictSnapshot(conflict.snapshot, 8);
+  const restaged = restagedDraftConflictSnapshot(
+    conflict.snapshot,
+    [{ file, attachmentId: "fresh-attachment" }],
+  );
+  const restored = restoreDraftConflictSnapshot(restaged, 8);
 
   assert.equal(conflict.conflict.displaced.text, "");
   assert.deepEqual(conflict.conflict.displaced.attachmentIds, [
@@ -690,12 +748,20 @@ test("attachment-only multitab conflict restores the complete snapshot for resav
     "unrestored-b",
   ]);
   assert.equal(restored.text, "");
-  assert.deepEqual(restored.attachmentIds, ["attachment-a", "unrestored-b"]);
-  assert.deepEqual(restored.files, [{ file, attachmentId: "attachment-a" }]);
+  assert.deepEqual(restored.attachmentIds, ["fresh-attachment", "unrestored-b"]);
+  assert.deepEqual(restored.files, [{ file, attachmentId: "fresh-attachment" }]);
+  assert.equal(restored.attachmentIds.includes("attachment-a"), false);
   assert.deepEqual(restored.mentionBindings, [{ agentId: "agent-a" }]);
   assert.deepEqual(restored.failedContents, [
     { id: "unrestored-b", kind: "attachment" },
   ]);
+  assert.deepEqual(
+    deletableSupersededDraftAttachmentIds(
+      new Set(["current-visible", "attachment-a"]),
+      restored,
+    ),
+    ["current-visible", "attachment-a"],
+  );
   assert.equal(restored.editVersion, 9);
   assert.equal(restored.locallyEdited, true);
 });
@@ -730,7 +796,12 @@ test("paste-only multitab conflict restores its staged payload for resave", () =
       capturedAt: "2026-09-05T00:00:01.000Z",
     },
   }, snapshot);
-  const restored = restoreDraftConflictSnapshot(conflict.snapshot, 3);
+  const restaged = restagedDraftConflictSnapshot(
+    conflict.snapshot,
+    [],
+    "fresh-paste",
+  );
+  const restored = restoreDraftConflictSnapshot(restaged, 3);
 
   assert.equal(conflict.conflict.displaced.text, "");
   assert.equal(
@@ -739,9 +810,21 @@ test("paste-only multitab conflict restores its staged payload for resave", () =
   );
   assert.equal(restored.text, "");
   assert.equal(restored.pastedText, "the extracted long paste");
-  assert.equal(restored.pastedTextAttachmentId, "paste-a");
+  assert.equal(restored.pastedTextAttachmentId, "fresh-paste");
   assert.equal(restored.editVersion, 4);
   assert.equal(restored.locallyEdited, true);
+});
+
+test("a rejected draft tail cannot suppress the next write continuation", async () => {
+  let continued = false;
+  const tail = settledDraftWriteContinuation(
+    Promise.reject(new Error("conflict recovery failed")),
+    async () => {
+      continued = true;
+    },
+  );
+  await tail;
+  assert.equal(continued, true);
 });
 
 test("delayed draft continuations lose ownership after switching Chat A to B", () => {

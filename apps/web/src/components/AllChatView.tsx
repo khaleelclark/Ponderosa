@@ -52,7 +52,6 @@ import {
 import { Composer } from "./chat/Composer";
 import { copyText } from "../clipboard";
 import { AttentionSurface } from "./AttentionSurface";
-import { notificationTechnicalFocusId } from "../technicalFocus";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
 import { TimedChatLiveBanner } from "./chat/ChatLiveBanner";
 import { ChatSurface } from "./chat/ChatSurface";
@@ -108,7 +107,10 @@ interface AllChatSubmissionPrepared {
 import {
   ALL_CHAT_REPLY_TARGET_KEY,
   ALL_CHAT_SOURCE_KEY,
+  allChatAttentionRoute,
   allChatComposerConversationId,
+  allChatRuntimeMutationIsLatest,
+  allChatRuntimeMutationOwnsSelection,
   allChatSubmissionSettlementStillCurrent,
   allChatSourceIntentKey,
   authoritativeAllChatReplyTarget,
@@ -244,6 +246,7 @@ export function AllChatView({
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [speed, setSpeed] = useState("");
+  const runtimeMutationGenerationByAgent = useRef(new Map<string, number>());
   const initializedRuntime = useRef<string>();
   const [runtimeAgentId, setRuntimeAgentId] = useState<string>();
   const [notice, setNotice] = useState<string>();
@@ -428,6 +431,8 @@ export function AllChatView({
   }, [decisionEvents, items]);
   const layoutKey = timeline.map((entry) => entry.id).join(":");
   const selectedAgentId = activeReplyTarget?.id;
+  const selectedAgentIdRef = useRef(selectedAgentId);
+  selectedAgentIdRef.current = selectedAgentId;
   const selectedProjectId = activeProjectId;
   const selectedAgent = useQuery({
     queryKey: queryKeys.agents.detail(selectedAgentId),
@@ -1038,6 +1043,12 @@ export function AllChatView({
         onEngineChange={next => {
           const nextEngine = engines.find(item => item.id === next);
           if (!nextEngine || !selectedAgentId) return;
+          const mutationGeneration =
+            (runtimeMutationGenerationByAgent.current.get(selectedAgentId) ?? 0) + 1;
+          runtimeMutationGenerationByAgent.current.set(
+            selectedAgentId,
+            mutationGeneration,
+          );
           const previous = {
             engine: selectedEngineId ?? "",
             model,
@@ -1066,6 +1077,22 @@ export function AllChatView({
             },
             {
               onError: () => {
+                const currentGeneration =
+                  runtimeMutationGenerationByAgent.current.get(selectedAgentId);
+                if (!allChatRuntimeMutationIsLatest(
+                  mutationGeneration,
+                  currentGeneration,
+                )) return;
+                writeChatState(
+                  chatStateKey("runtime", `agent.${selectedAgentId}.speed`),
+                  previous.speed,
+                );
+                if (!allChatRuntimeMutationOwnsSelection({
+                  capturedAgentId: selectedAgentId,
+                  currentAgentId: selectedAgentIdRef.current,
+                  capturedGeneration: mutationGeneration,
+                  currentGeneration,
+                })) return;
                 setRuntimeEngine(previous.engine);
                 setModel(previous.model);
                 setEffort(previous.effort);
@@ -1095,30 +1122,8 @@ export function AllChatView({
           <AttentionSurface
             notifications={notifications.filter((item) => item.kind !== "decision")}
           onOpen={item => {
-            if (!item.projectId) return;
-            const focusId = notificationTechnicalFocusId(item);
-            if (item.action?.kind === "open_agent" && item.action.targetId) {
-              onNavigate({
-                kind: "agent",
-                projectId: item.projectId,
-                agentId: item.action.targetId,
-                view: "technical",
-                ...(focusId ? { technicalFocusId: focusId } : {}),
-              });
-            } else if (item.conversationId) {
-              onNavigate({
-                kind: "projectWork",
-                projectId: item.projectId,
-                conversationId: item.conversationId,
-                ...(focusId ? { focusId } : {}),
-              });
-            } else {
-              onNavigate({
-                kind: "projectWork",
-                projectId: item.projectId,
-                ...(focusId ? { focusId } : {}),
-              });
-            }
+            const route = allChatAttentionRoute(item);
+            if (route) onNavigate(route);
           }}
         />
       </Box>

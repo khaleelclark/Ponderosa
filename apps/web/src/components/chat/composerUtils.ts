@@ -118,6 +118,13 @@ export function draftWriteContinuationStillOwned(input: {
     input.capturedGeneration === input.currentGeneration;
 }
 
+export function settledDraftWriteContinuation(
+  tail: Promise<void>,
+  continuation: () => Promise<void>,
+): Promise<void> {
+  return tail.catch(() => undefined).then(continuation);
+}
+
 export interface DraftConflictRecoverySnapshot<TFile, TMention, TFailure> {
   text: string;
   attachmentIds: string[];
@@ -131,6 +138,33 @@ export interface DraftConflictRecoverySnapshot<TFile, TMention, TFailure> {
 export interface RecoverableDraftConflict<TFile, TMention, TFailure> {
   conflict: ConversationDraftConflictDto;
   snapshot: DraftConflictRecoverySnapshot<TFile, TMention, TFailure>;
+}
+
+export function restagedDraftConflictSnapshot<TFile, TMention, TFailure>(
+  snapshot: DraftConflictRecoverySnapshot<TFile, TMention, TFailure>,
+  files: Array<{ file: TFile; attachmentId: string }>,
+  pastedTextAttachmentId?: string,
+): DraftConflictRecoverySnapshot<TFile, TMention, TFailure> {
+  const replacementByHistoricalId = new Map(
+    snapshot.files.map((item, index) => [
+      item.attachmentId,
+      files[index]?.attachmentId,
+    ]),
+  );
+  return {
+    ...snapshot,
+    attachmentIds: snapshot.attachmentIds.map(
+      id => replacementByHistoricalId.get(id) ?? id,
+    ),
+    files: [...files],
+    ...(snapshot.pastedText !== undefined
+      ? { pastedTextAttachmentId }
+      : snapshot.pastedTextAttachmentId
+        ? { pastedTextAttachmentId: snapshot.pastedTextAttachmentId }
+        : {}),
+    mentionBindings: [...snapshot.mentionBindings],
+    failedContents: [...snapshot.failedContents],
+  };
 }
 
 export function recoverableDraftConflict<TFile, TMention, TFailure>(

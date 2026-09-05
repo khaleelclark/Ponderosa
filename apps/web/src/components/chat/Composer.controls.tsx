@@ -50,6 +50,7 @@ export function ComposerNotices({
   onShowPastedText,
   onRemovePastedText,
   onRestoreDraft,
+  restoringDraft,
   onRetryDraftContent,
   onRemoveDraftContent,
   onClearError,
@@ -62,6 +63,7 @@ export function ComposerNotices({
   onShowPastedText(): void;
   onRemovePastedText(): void;
   onRestoreDraft(): void;
+  restoringDraft: boolean;
   onRetryDraftContent(id: string): void;
   onRemoveDraftContent(id: string): void;
   onClearError(): void;
@@ -135,8 +137,8 @@ export function ComposerNotices({
           severity="warning"
           sx={{ mb: 1 }}
           action={
-            <Button size="small" onClick={onRestoreDraft}>
-              Restore
+            <Button size="small" disabled={restoringDraft} onClick={onRestoreDraft}>
+              {restoringDraft ? "Restoring…" : "Restore"}
             </Button>
           }
         >
