@@ -334,11 +334,17 @@ export class AgentManagementAuthority {
           allowAutomaticDescendantDeletion: row.allowAutomaticDescendantDeletion === 1,
           allowAutomaticDescendantReorganization: row.allowAutomaticDescendantReorganization === 1,
         };
-    if (archived && row.archived !== 1) {
-      for (const child of this.listAgents(row.projectId).filter((agent) => agent.managerAgentId === id)) {
-        this.updateAgentOrganization(child.id, { managerAgentId: null });
-      }
-      if (this.getAgent(id)?.managerAgentId) this.updateAgentOrganization(id, { managerAgentId: null });
+    const organizationDetachIds = archived || row.archived === 1
+      ? this.listAgents(row.projectId)
+          .filter((agent) => agent.managerAgentId === id ||
+            (agent.id === id && Boolean(agent.managerAgentId)))
+          .map((agent) => agent.id)
+      : [];
+    // An interrupted archive may have committed its Agent metadata before the
+    // organization log. Finish that durable intent before allowing unarchive,
+    // so stale reporting lines can never be made live again.
+    if (!archived && row.archived === 1) {
+      this.detachAgentOrganization(row.projectId, organizationDetachIds);
     }
     // Canonical metadata is crash-safe and durable before its rebuildable
     // SQLite projection changes. A crash can therefore never resurrect a
@@ -379,8 +385,37 @@ export class AgentManagementAuthority {
       .where(eq(agents.id, id))
       .run();
     })();
+    // Archive metadata is the point of no return. If this append or its SQLite
+    // projection is interrupted, the Agent remains archived and startup
+    // sanitization durably completes every missing detach.
+    if (archived) {
+      this.detachAgentOrganization(row.projectId, organizationDetachIds);
+    }
     if (archived !== (row.archived === 1)) this.refreshAllChatFeedProject(row.projectId);
     return this.rowToAgentDto(id);
+  }
+
+  private detachAgentOrganization(projectId: string, agentIds: readonly string[]): void {
+    const byId = new Map(this.listAgents(projectId).map((agent) => [agent.id, agent]));
+    const createdAt = new Date().toISOString();
+    const events = [...new Set(agentIds)].flatMap((agentId) => {
+      const agent = byId.get(agentId);
+      return agent?.managerAgentId ? [{
+        eventId: randomUUID(),
+        type: "manager_changed" as const,
+        projectId,
+        agentId,
+        managerAgentId: null,
+        createdAt,
+      }] : [];
+    });
+    if (events.length === 0) return;
+    appendFsyncedJsonl(agentOrganizationEventsPath(this.dataDir, projectId), events);
+    this.client.transaction(() => {
+      for (const event of events) this.client.prepare(`
+        UPDATE agents SET manager_agent_id = NULL, updated_at = ? WHERE id = ?
+      `).run(event.createdAt, event.agentId);
+    })();
   }
 
   /** Change only the mutable organizational reporting line. */
@@ -525,11 +560,12 @@ export class AgentManagementAuthority {
   sanitizeOrganizationProjection(projectId: string): void {
     const projectAgents = this.listAgents(projectId);
     const byId = new Map(projectAgents.map((agent) => [agent.id, agent]));
+    const invalidAgentIds: string[] = [];
     for (const agent of projectAgents) {
       if (!agent.managerAgentId) continue;
       const seen = new Set<string>([agent.id]);
       let parentId: string | undefined = agent.managerAgentId;
-      let valid = true;
+      let valid = !agent.archived;
       while (parentId) {
         const parent = byId.get(parentId);
         if (!parent || parent.archived ||
@@ -540,8 +576,13 @@ export class AgentManagementAuthority {
         seen.add(parentId);
         parentId = parent.managerAgentId;
       }
-      if (!valid) this.db.update(agents).set({ managerAgentId: null }).where(eq(agents.id, agent.id)).run();
+      if (!valid) invalidAgentIds.push(agent.id);
     }
+    // Invalid reporting lines used to be repaired only in the rebuildable
+    // projection. Persist the repair so an archived Agent that is later
+    // unarchived cannot resurrect relationships missed by an interrupted
+    // archive.
+    this.detachAgentOrganization(projectId, invalidAgentIds);
   }
 
 }

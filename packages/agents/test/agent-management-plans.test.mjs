@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import fs, { mkdtempSync, rmSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -36,6 +37,69 @@ test("management plans preserve frozen input and per-operation progress across r
     assert.throws(() => reopened.createAgentManagementPlan({ ...plan, requestHash: "different" }), /reused with different input/u);
   } finally {
     reopened.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("interrupted Agent archive stays archived and durably recovers report detachment", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ponderosa-agent-archive-"));
+  let store = new AgentStore(directory);
+  const project = store.createProject({
+    label: "Project",
+    hostPath: "/tmp/project",
+    defaultEngine: "codex",
+  });
+  const conversation = store.createConversation(project.id, { title: "Chat" });
+  const ownerId = "00000000-0000-4000-8000-000000000101";
+  const childId = "00000000-0000-4000-8000-000000000102";
+  store.createAgent(project.id, {
+    title: "Owner",
+    engine: "codex",
+    conversationId: conversation.id,
+  }, undefined, ownerId);
+  store.createAgent(project.id, {
+    title: "Child",
+    engine: "codex",
+    conversationId: conversation.id,
+    managerAgentId: ownerId,
+  }, undefined, childId);
+
+  const originalWrite = fs.writeSync;
+  let failed = false;
+  fs.writeSync = (...args) => {
+    if (!failed) {
+      failed = true;
+      throw new Error("injected organization append failure");
+    }
+    return originalWrite(...args);
+  };
+  syncBuiltinESMExports();
+  try {
+    assert.throws(
+      () => store.updateAgent(ownerId, { archived: true }),
+      /injected organization append failure/u,
+    );
+  } finally {
+    fs.writeSync = originalWrite;
+    syncBuiltinESMExports();
+  }
+
+  try {
+    assert.equal(store.getAgent(ownerId)?.archived, true);
+    assert.equal(store.getAgent(childId)?.managerAgentId, ownerId);
+    store.close();
+
+    store = new AgentStore(directory);
+    assert.equal(store.getAgent(ownerId)?.archived, true);
+    assert.equal(store.getAgent(childId)?.managerAgentId, undefined);
+
+    store.updateAgent(ownerId, { archived: false });
+    store.close();
+    store = new AgentStore(directory);
+    assert.equal(store.getAgent(ownerId)?.archived, false);
+    assert.equal(store.getAgent(childId)?.managerAgentId, undefined);
+  } finally {
+    store.close();
     rmSync(directory, { recursive: true, force: true });
   }
 });
