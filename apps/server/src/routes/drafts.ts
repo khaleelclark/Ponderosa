@@ -21,6 +21,7 @@ import {
   AssetError,
   contentDisposition,
   prepareAssetUpload,
+  type AssetStore,
   type PreparedAssetUpload,
 } from "../assets.js";
 
@@ -44,6 +45,7 @@ const DRAFT_UPDATE_FIELDS = new Set([
   "clientId",
   "ownerId",
 ]);
+const DRAFT_ORPHAN_GRACE_MS = 5 * 60 * 1000;
 
 export function draftUpdateBodyError(
   value: unknown,
@@ -165,6 +167,11 @@ export class DraftService {
       WorkspaceStore,
       "getDraft" | "listDraftConflicts" | "putDraft" | "cursor"
     >,
+    private readonly cleanupAuthority: Pick<
+      AssetStore,
+      "enqueueDraftAttachmentCleanup" | "finishDraftAttachmentCleanup" |
+      "pendingDraftAttachmentCleanups"
+    >,
   ) {
     this.root = path.resolve(dataDir, "draft-attachments");
   }
@@ -243,7 +250,95 @@ export class DraftService {
 
   attachmentReferenced(draftId: string, ownerId: string, id: string): boolean {
     const draft = this.workspace.getDraft(draftId, ownerId);
-    return draft.pastedTextAttachmentId === id || draft.attachmentIds.includes(id);
+    if (draft.pastedTextAttachmentId === id || draft.attachmentIds.includes(id)) return true;
+    const listed = this.workspace.listDraftConflicts(draftId, ownerId);
+    return listed.conflicts.some(({ current, displaced }) =>
+      current.pastedTextAttachmentId === id || current.attachmentIds.includes(id) ||
+      displaced.pastedTextAttachmentId === id || displaced.attachmentIds.includes(id));
+  }
+
+  enqueueAttachmentCleanup(
+    draftId: string,
+    ownerId: string,
+    assetId: string,
+    eligibleAt = Date.now(),
+  ): void {
+    this.cleanupAuthority.enqueueDraftAttachmentCleanup(
+      draftId,
+      ownerId,
+      assetId,
+      eligibleAt,
+    );
+  }
+
+  enqueueReleasedAttachments(
+    draftId: string,
+    ownerId: string,
+    previous: { attachmentIds: string[]; pastedTextAttachmentId?: string },
+    next: { attachmentIds: string[]; pastedTextAttachmentId?: string },
+  ): void {
+    const retained = new Set([
+      ...next.attachmentIds,
+      ...(next.pastedTextAttachmentId ? [next.pastedTextAttachmentId] : []),
+    ]);
+    for (const id of new Set([
+      ...previous.attachmentIds,
+      ...(previous.pastedTextAttachmentId ? [previous.pastedTextAttachmentId] : []),
+    ])) {
+      if (!retained.has(id)) this.enqueueAttachmentCleanup(draftId, ownerId, id);
+    }
+  }
+
+  private async deleteAttachmentFiles(
+    draftId: string,
+    ownerId: string,
+    assetId: string,
+  ): Promise<void> {
+    const files = this.files(draftId, ownerId, assetId);
+    for (const file of [
+      files.body,
+      files.preview,
+      files.metadata,
+      files.bodyTemp,
+      files.previewTemp,
+    ]) {
+      try { await fs.unlink(file); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    const directory = this.attachmentDir(draftId, ownerId);
+    let handle;
+    try { handle = await fs.open(directory, "r"); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    try { await handle.sync(); }
+    finally { await handle.close(); }
+  }
+
+  async reconcileAttachmentCleanup(now = Date.now()): Promise<number> {
+    let removed = 0;
+    for (const receipt of this.cleanupAuthority.pendingDraftAttachmentCleanups(now)) {
+      const releaseMutation = this.acquireMutationLease(receipt.draftId);
+      if (!releaseMutation) continue;
+      try {
+        await this.withMutationLock(receipt.draftId, receipt.ownerId, async () => {
+          if (this.attachmentReferenced(receipt.draftId, receipt.ownerId, receipt.assetId)) return;
+          await this.deleteAttachmentFiles(receipt.draftId, receipt.ownerId, receipt.assetId);
+          this.cleanupAuthority.finishDraftAttachmentCleanup(
+            receipt.draftId,
+            receipt.ownerId,
+            receipt.assetId,
+          );
+          removed += 1;
+        });
+      } finally {
+        releaseMutation();
+      }
+    }
+    return removed;
   }
 
   surfaceDir(draftId: string): string {
@@ -264,8 +359,10 @@ export class DraftService {
     const directory = this.attachmentDir(draftId, ownerId);
     return {
       body: path.join(directory, `${id}.bin`),
+      bodyTemp: path.join(directory, `${id}.bin.tmp`),
       metadata: path.join(directory, `${id}.json`),
       preview: path.join(directory, `${id}.preview.png`),
+      previewTemp: path.join(directory, `${id}.preview.png.tmp`),
     };
   }
 
@@ -490,6 +587,7 @@ export function registerDraftRoutes(
       const ownerId = service.normalizedOwner(body?.ownerId);
       if (!ownerId) return reply.code(400).send({ error: "invalid draft owner" });
       return await service.withMutationLock(request.params.id, ownerId, async () => {
+        const current = workspace.getDraft(request.params.id, ownerId);
         const persist = async () => {
           const cursor = workspace.cursor();
           try {
@@ -507,7 +605,7 @@ export function registerDraftRoutes(
           }
         };
         if (draftRevisionConflicts(
-          workspace.getDraft(request.params.id, ownerId),
+          current,
           body,
         )) {
           return persist();
@@ -527,7 +625,10 @@ export function registerDraftRoutes(
               "draft attachment is missing or belongs to another conversation",
           });
         }
-        return persist();
+        service.enqueueReleasedAttachments(request.params.id, ownerId, current, body);
+        const saved = await persist();
+        void service.reconcileAttachmentCleanup().catch(() => undefined);
+        return saved;
       });
     } finally {
       releaseMutation();
@@ -592,6 +693,12 @@ export function registerDraftRoutes(
           previewSha256,
         } = prepared;
         const id = randomUUID();
+        service.enqueueAttachmentCleanup(
+          request.params.id,
+          ownerId,
+          id,
+          Date.now() + DRAFT_ORPHAN_GRACE_MS,
+        );
         const directory = service.attachmentDir(request.params.id, ownerId);
         const files = service.files(request.params.id, ownerId, id);
         const createdAt = new Date().toISOString();
@@ -609,8 +716,8 @@ export function registerDraftRoutes(
           ...(previewSha256 ? { previewSha256 } : {}),
         };
         await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-        const temp = `${files.body}.${randomUUID()}.tmp`;
-        const previewTemp = `${files.preview}.${randomUUID()}.tmp`;
+        const temp = files.bodyTemp;
+        const previewTemp = files.previewTemp;
         try {
           await fs.writeFile(temp, request.body, {
             mode: 0o600,
@@ -629,13 +736,8 @@ export function registerDraftRoutes(
             flag: "wx",
           });
         } catch (error) {
-          await Promise.allSettled([
-            fs.rm(temp, { force: true }),
-            fs.rm(previewTemp, { force: true }),
-            fs.rm(files.body, { force: true }),
-            fs.rm(files.preview, { force: true }),
-            fs.rm(files.metadata, { force: true }),
-          ]);
+          service.enqueueAttachmentCleanup(request.params.id, ownerId, id);
+          void service.reconcileAttachmentCleanup().catch(() => undefined);
           throw error;
         }
         return reply
@@ -721,16 +823,12 @@ export function registerDraftRoutes(
               error: "draft attachment is still referenced",
             });
           }
-          const files = service.files(
+          service.enqueueAttachmentCleanup(
             request.params.id,
             ownerId,
             request.params.attachmentId,
           );
-          await Promise.all([
-            fs.rm(files.body, { force: true }),
-            fs.rm(files.preview, { force: true }),
-            fs.rm(files.metadata, { force: true }),
-          ]);
+          await service.reconcileAttachmentCleanup();
           return reply.code(204).send();
         });
       } finally {

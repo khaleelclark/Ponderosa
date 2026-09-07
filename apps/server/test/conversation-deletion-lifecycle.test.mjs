@@ -9,6 +9,12 @@ import { createConversationDeletionAuthority } from "../dist/conversation-deleti
 import { DraftService } from "../dist/routes/drafts.js";
 import { registerConversationRoutes } from "../dist/routes/conversations.js";
 
+const noCleanup = {
+  enqueueDraftAttachmentCleanup: () => {},
+  finishDraftAttachmentCleanup: () => {},
+  pendingDraftAttachmentCleanups: () => [],
+};
+
 function fixture(t) {
   const dataDir = mkdtempSync(join(tmpdir(), "ponderosa-chat-deletion-"));
   const store = new AgentStore(dataDir);
@@ -19,7 +25,7 @@ function fixture(t) {
     defaultEngine: "codex",
   });
   const chat = store.listConversations(project.id)[0];
-  const drafts = new DraftService(dataDir, store, workspace);
+  const drafts = new DraftService(dataDir, store, workspace, noCleanup);
   t.after(() => {
     store.close();
     rmSync(dataDir, { recursive: true, force: true });

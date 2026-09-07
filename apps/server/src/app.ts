@@ -445,7 +445,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     managedWorkspacesRoot,
     allowedBrowseRoots: opts.allowedBrowseRoots,
   });
-  const drafts = new DraftService(opts.dataDir, store, workspace);
+  const drafts = new DraftService(opts.dataDir, store, workspace, assets);
   const agentMessageCapabilities = new Map<string, AgentMessageCapability>();
   // An agent can request rollover while its capability is live. The reset is
   // applied only after the turn ends, so it never destroys an in-flight session.
@@ -912,6 +912,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     opts,
     store,
     assets,
+    drafts,
     coordinationV3,
     workspace,
     reconcileCommittedProjectDeletions,

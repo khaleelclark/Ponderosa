@@ -34,6 +34,7 @@ import type { TriggerSourceService } from "./trigger-service.js";
 import type { WebPushDeliveryManager } from "./web-push-delivery.js";
 import type { createBrowserAuthority } from "./browser-authority.js";
 import type { ProviderProcessAuthority } from "./provider-process-authority.js";
+import type { DraftService } from "./routes/drafts.js";
 
 type ArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>;
 type CommunicationJournal = ReturnType<typeof createCommunicationJournal>;
@@ -212,6 +213,7 @@ type ServerLifecycleContext =
     opts: CreateServerOptions;
     store: AgentStore;
     assets: AssetStore;
+    drafts: DraftService;
     coordinationV3: CoordinationV3Store;
     workspace: WorkspaceStore;
     reconcileCommittedProjectDeletions(): void;
@@ -273,6 +275,7 @@ export function registerServerLifecycle(
     opts,
     store,
     assets,
+    drafts,
     coordinationV3,
     workspace,
     reconcileCommittedProjectDeletions,
@@ -764,6 +767,7 @@ export function registerServerLifecycle(
     agentCreationRecoverySweep.unref();
     webPushDelivery?.start();
     const reconcileAssets = async () => {
+      await drafts.reconcileAttachmentCleanup();
       let processedAgents = 0;
       for (const project of store.listProjects()) {
         for (const agent of store.listAgents(project.id)) {
@@ -795,15 +799,15 @@ export function registerServerLifecycle(
       assetReconciliationOperation = operation;
       return operation;
     };
-    // Projection recovery above is authoritative. Orphan asset cleanup remains
-    // periodic maintenance so it cannot delay startup or monopolize ordinary
-    // requests immediately after the server begins accepting traffic.
+    // Resume exact deletion receipts before accepting traffic, then keep the
+    // short orphan grace bounded with the same serialized maintenance pass.
+    await runAssetReconciliation();
     assetSweep = setInterval(() => {
       if (isClosed()) return;
       void runAssetReconciliation().catch((error) => {
         if (!isClosed()) app.log.error({ err: error }, "Agent asset reconciliation failed");
       });
-    }, 60 * 60 * 1000);
+    }, 60 * 1000);
     assetSweep.unref();
     linkPreviewSweep = setInterval(() => {
       const now = Date.now();

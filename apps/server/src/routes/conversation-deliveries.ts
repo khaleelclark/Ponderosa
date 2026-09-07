@@ -785,6 +785,14 @@ export function registerConversationDeliveryRoutes(
         else if (target.projectId !== master.projectId) unavailableRecipients.push({ agentId: recipient.agentId, reason: "wrong_project" });
       });
       const unavailableIds = new Set(unavailableRecipients.map(recipient => recipient.agentId));
+      for (const [index, recipient] of recipients.entries()) {
+        if (!unavailableIds.has(recipient.agentId)) continue;
+        const target = targets[index];
+        if (!target) continue;
+        for (const attachmentId of recipient.attachmentIds ?? []) {
+          await assets.enqueueRemoval(target.projectId, target.id, attachmentId);
+        }
+      }
       recipients = recipients.filter(recipient => !unavailableIds.has(recipient.agentId));
       if (recipients.length === 0) {
         return reply.code(409).send({

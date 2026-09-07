@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { INLINE_TEXT_MAX_CODE_POINTS } from "@ponderosa/core";
 import { WorkspaceStore } from "@ponderosa/agents";
 import Fastify from "fastify";
+import { AssetStore } from "../dist/assets.js";
 import {
   DraftService,
   draftUpdateBodyError,
@@ -19,6 +20,11 @@ const validDraft = {
   expectedRevision: 0,
   clientId: "page:one",
   ownerId: "browser-one",
+};
+const noCleanup = {
+  enqueueDraftAttachmentCleanup: () => {},
+  finishDraftAttachmentCleanup: () => {},
+  pendingDraftAttachmentCleanups: () => [],
 };
 
 function deferred() {
@@ -71,6 +77,8 @@ test("draft routes hydrate a separate durable pasted-text asset", async (t) => {
   const directory = mkdtempSync(join(tmpdir(), "ponderosa-draft-paste-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const app = Fastify();
+  const assets = new AssetStore(directory);
+  t.after(() => assets.close());
   app.addContentTypeParser(
     "application/octet-stream",
     { parseAs: "buffer" },
@@ -88,7 +96,7 @@ test("draft routes hydrate a separate durable pasted-text asset", async (t) => {
   const workspace = {
     cursor: () => 0,
     getDraft: () => draft,
-    listDraftConflicts: () => [],
+    listDraftConflicts: () => ({ conversationId: "chat-a", conflicts: [] }),
     putDraft: (_id, input) => {
       draft = {
         conversationId: "chat-a",
@@ -112,6 +120,7 @@ test("draft routes hydrate a separate durable pasted-text asset", async (t) => {
       directory,
       { getAgent: () => undefined, getConversation: () => ({ id: "chat-a" }) },
       workspace,
+      assets,
     ),
     workspace,
     8,
@@ -181,7 +190,7 @@ test("draft routes hydrate a separate durable pasted-text asset", async (t) => {
     method: "DELETE",
     url: `${attachment.downloadUrl}`,
   });
-  assert.equal(releasedDelete.statusCode, 204, releasedDelete.body);
+  assert.equal(releasedDelete.statusCode, 404, releasedDelete.body);
   const replacementStillReferenced = await app.inject({
     method: "DELETE",
     url: `${replacement.downloadUrl}`,
@@ -192,6 +201,110 @@ test("draft routes hydrate a separate durable pasted-text asset", async (t) => {
     replacementStillReferenced.body,
   );
   await app.close();
+});
+
+test("draft clear survives partial cleanup and restart without deleting current file or paste references", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "ponderosa-draft-cleanup-restart-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  let draft = {
+    conversationId: "chat-a",
+    ownerId: "browser-one",
+    text: "",
+    attachmentIds: [],
+    revision: 0,
+    updatedAt: new Date(0).toISOString(),
+    clientId: "",
+  };
+  const workspace = {
+    cursor: () => 0,
+    getDraft: () => draft,
+    listDraftConflicts: () => ({ conversationId: "chat-a", conflicts: [] }),
+    putDraft: (_id, input) => {
+      draft = {
+        conversationId: "chat-a",
+        ownerId: input.ownerId,
+        text: input.text,
+        attachmentIds: input.attachmentIds,
+        ...(input.pastedTextAttachmentId
+          ? { pastedTextAttachmentId: input.pastedTextAttachmentId }
+          : {}),
+        mentionBindings: input.mentionBindings,
+        revision: draft.revision + 1,
+        updatedAt: new Date().toISOString(),
+        clientId: input.clientId,
+      };
+      return draft;
+    },
+  };
+  const store = {
+    getAgent: () => undefined,
+    getConversation: () => ({ id: "chat-a" }),
+  };
+  let assets = new AssetStore(directory);
+  let drafts = new DraftService(directory, store, workspace, assets);
+  const app = Fastify();
+  app.addContentTypeParser(
+    "application/octet-stream",
+    { parseAs: "buffer" },
+    (_request, body, done) => done(null, body),
+  );
+  registerDraftRoutes(app, drafts, workspace, 8, () => undefined);
+  const upload = async (name, body) => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/conversations/chat-a/draft-attachments",
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-ponderosa-draft-owner": "browser-one",
+        "x-ponderosa-filename": name,
+        "x-ponderosa-media-type": "text/plain",
+      },
+      payload: Buffer.from(body),
+    });
+    assert.equal(response.statusCode, 201, response.body);
+    return response.json();
+  };
+  const file = await upload("file.txt", "file body");
+  const paste = await upload("Pasted text.txt", "paste body");
+  const saved = await app.inject({
+    method: "PUT",
+    url: "/api/conversations/chat-a/draft",
+    payload: {
+      ...validDraft,
+      attachmentIds: [file.id],
+      pastedTextAttachmentId: paste.id,
+    },
+  });
+  assert.equal(saved.statusCode, 200, saved.body);
+  const late = await upload("late.txt", "late body");
+  assert.equal(await drafts.reconcileAttachmentCleanup(Date.now() + 10 * 60_000), 1);
+  assert.equal((await app.inject({ method: "GET", url: file.downloadUrl })).statusCode, 200);
+  assert.equal((await app.inject({ method: "GET", url: paste.downloadUrl })).statusCode, 200);
+  assert.equal((await app.inject({ method: "GET", url: late.downloadUrl })).statusCode, 404);
+
+  const obstruction = drafts.files("chat-a", "browser-one", file.id).preview;
+  mkdirSync(obstruction);
+  const cleared = await app.inject({
+    method: "PUT",
+    url: "/api/conversations/chat-a/draft",
+    payload: {
+      ...validDraft,
+      expectedRevision: 1,
+      clientId: "page:clear",
+    },
+  });
+  assert.equal(cleared.statusCode, 200, cleared.body);
+  await new Promise(resolve => setImmediate(resolve));
+  await app.close();
+  assets.close();
+
+  rmSync(obstruction, { recursive: true, force: true });
+  assets = new AssetStore(directory);
+  drafts = new DraftService(directory, store, workspace, assets);
+  t.after(() => assets.close());
+  assert.equal(await drafts.reconcileAttachmentCleanup(), 2);
+  assert.equal(existsSync(drafts.files("chat-a", "browser-one", file.id).metadata), false);
+  assert.equal(existsSync(drafts.files("chat-a", "browser-one", paste.id).metadata), false);
 });
 
 test("malformed draft PUTs return 400 before reaching persistence", async () => {
@@ -208,6 +321,7 @@ test("malformed draft PUTs return 400 before reaching persistence", async () => 
       "/unused",
       { getAgent: () => undefined, getConversation: () => ({ id: "chat-a" }) },
       workspace,
+      noCleanup,
     ),
     workspace,
     8,
@@ -247,6 +361,7 @@ test("stale file and paste references reach conflict recovery before asset valid
       directory,
       { getAgent: () => undefined, getConversation: () => ({ id: "chat-a" }) },
       workspace,
+      noCleanup,
     ),
     workspace,
     8,
@@ -302,7 +417,7 @@ for (const draftId of ["chat-a", "agent:agent-a"]) {
       getAgent: id => entityExists && draftId === `agent:${id}` ? { id } : undefined,
     };
     const workspace = new WorkspaceStore(directory);
-    const drafts = new DraftService(directory, store, workspace);
+    const drafts = new DraftService(directory, store, workspace, noCleanup);
     const app = Fastify();
     t.after(() => app.close());
     app.addContentTypeParser(

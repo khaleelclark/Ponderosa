@@ -1860,6 +1860,81 @@ test("Agent deletion in progress rejects direct delivery before staging text", a
   assert.equal(staged, false);
 });
 
+test("partial direct delivery durably owns skipped recipient attachment cleanup", async (t) => {
+  const chat = { id: "chat-a", projectId: "project-a", archived: false };
+  const active = {
+    id: "agent-a", projectId: chat.projectId, conversationId: chat.id,
+    title: "Agent A", archived: false,
+  };
+  const archived = {
+    id: "agent-b", projectId: chat.projectId, conversationId: chat.id,
+    title: "Agent B", archived: true,
+  };
+  const cleanups = [];
+  const app = Fastify();
+  t.after(() => app.close());
+  registerConversationDeliveryRoutes(app, {
+    store: {
+      getConversation: () => chat,
+      getAgent: id => id === active.id ? active : id === archived.id ? archived : undefined,
+      getConversationMessageByReceiptKey: () => ({ id: "message-a" }),
+    },
+    coordinationV3: {
+      runtimeCommunication: () => undefined,
+      recordRuntimeCommunication: () => ({
+        replayed: false,
+        activations: [{ id: "delivery-a", agentId: active.id }],
+      }),
+    },
+    assets: {
+      enqueueRemoval: async (projectId, agentId, assetId) => {
+        cleanups.push({ projectId, agentId, assetId });
+        return true;
+      },
+    },
+    projectDeletionInProgress: () => false,
+    agentDeletionInProgress: () => false,
+    attachmentDeletionInProgress: () => false,
+    assetReconciliationInProgress: () => false,
+    conversationDeliveryLeases: new Map(),
+    agentDeliveryLeases: new Map(),
+    assetMetadata: async (agentId, id) => ({
+      id, agentId, name: "note.txt", mediaType: "text/plain", size: 4,
+      state: "staged", createdAt: new Date().toISOString(),
+    }),
+    prepareUserCommunicationText: async ({ text }) => ({
+      canonicalText: text,
+      publishedText: text,
+    }),
+    reconcileRuntimeCommunicationProjections: async () => 1,
+    publishCoordinationV3Changed: () => {},
+    notifyScheduler: () => {},
+  });
+
+  const response = await app.inject({
+    method: "POST",
+    url: `/api/conversations/${chat.id}/direct-messages`,
+    payload: {
+      text: "hello",
+      recipients: [
+        { agentId: active.id, attachmentIds: ["asset-a"] },
+        { agentId: archived.id, attachmentIds: ["asset-b"] },
+      ],
+      idempotencyKey: "partial-cleanup",
+    },
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.deepEqual(response.json().unavailableRecipients, [{
+    agentId: archived.id,
+    reason: "archived",
+  }]);
+  assert.deepEqual(cleanups, [{
+    projectId: chat.projectId,
+    agentId: archived.id,
+    assetId: "asset-b",
+  }]);
+});
+
 test("disconnecting the client does not release a delivery lease before the handler settles", async (t) => {
   const { app, chat, finishPreparation, leases, preparationStarted } = deliveryLeaseApp();
   t.after(() => app.close());

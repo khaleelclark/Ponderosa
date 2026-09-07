@@ -51,7 +51,7 @@ sharp.cache({ memory: 32, files: 0, items: 20 });
 // Preserve ordinary high-resolution screenshots and phone photos. The encoded
 // body remains capped at 8 MiB, and draft promotion reuses this one decode.
 const MAX_PIXELS = 64_000_000;
-const STAGED_TTL_MS = 24 * 60 * 60 * 1000;
+const STAGED_TTL_MS = 5 * 60 * 1000;
 
 function normalizeName(value: unknown): string {
   const raw = String(value ?? "asset").normalize("NFKC").replace(BIDI_AND_CONTROLS, "");
@@ -317,6 +317,25 @@ async function readNoFollow(file: string, maxBytes: number): Promise<Buffer> {
   } finally { await handle.close(); }
 }
 
+async function unlinkIfPresent(file: string): Promise<void> {
+  try { await unlink(file); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+export async function removeStagedAssetFiles(
+  directory: string,
+  id: string,
+  syncDirectory: () => Promise<void>,
+): Promise<void> {
+  const { originalFile, previewFile } = canonicalFiles(id);
+  await unlinkIfPresent(path.join(directory, originalFile));
+  await unlinkIfPresent(path.join(directory, previewFile));
+  await unlinkIfPresent(path.join(directory, `${id}.json`));
+  await syncDirectory();
+}
+
 function publicDto(asset: StoredAsset): AssetDto {
   const { id, agentId, name, mediaType, size, width, height, url, downloadUrl, previewUrl, sha256, state, createdAt } = asset;
   return { id, agentId, name, mediaType, size, width, height, url, downloadUrl, previewUrl, sha256, state, createdAt };
@@ -328,6 +347,27 @@ export class AssetStore {
 
   constructor(private dataDir: string) { this.authority = new AssetAuthority(dataDir); }
   close(): void { this.authority.close(); }
+
+  enqueueDraftAttachmentCleanup(
+    draftId: string,
+    ownerId: string,
+    assetId: string,
+    eligibleAt: number,
+  ): void {
+    this.authority.enqueueDraftAttachmentCleanup(draftId, ownerId, assetId, eligibleAt);
+  }
+
+  pendingDraftAttachmentCleanups(now?: number): Array<{
+    draftId: string;
+    ownerId: string;
+    assetId: string;
+  }> {
+    return this.authority.pendingDraftAttachmentCleanups(now);
+  }
+
+  finishDraftAttachmentCleanup(draftId: string, ownerId: string, assetId: string): void {
+    this.authority.finishDraftAttachmentCleanup(draftId, ownerId, assetId);
+  }
 
   private validateOwner(projectId: string, agentId: string): void {
     if (!OWNER_ID.test(projectId) || !OWNER_ID.test(agentId)) throw new AssetError(404, "asset storage is unavailable");
@@ -373,7 +413,7 @@ export class AssetStore {
   }
 
   async read(projectId: string, agentId: string, id: string): Promise<StoredAsset | undefined> {
-    if (!ID.test(id)) return undefined;
+    if (!ID.test(id) || this.authority.deletionRequested(id)) return undefined;
     try {
       const directory = await this.safeDirectory(projectId, agentId);
       try { return validateStoredAsset(JSON.parse((await readNoFollow(path.join(directory.path, `${id}.json`), 32 * 1024)).toString("utf8")), projectId, agentId, id); }
@@ -964,15 +1004,52 @@ export class AssetStore {
   async remove(projectId: string, agentId: string, id: string): Promise<boolean> {
     const asset = await this.read(projectId, agentId, id);
     if (!asset || asset.state !== "staged") return false;
-    const openedDirectory = await this.safeDirectory(projectId, agentId);
+    const receipt = this.authority.beginDelete(id, projectId, agentId);
+    await this.completeDeletion(receipt);
+    return true;
+  }
+
+  async enqueueRemoval(projectId: string, agentId: string, id: string): Promise<boolean> {
+    if (this.authority.deletionRequested(id)) return true;
+    const asset = await this.read(projectId, agentId, id);
+    if (!asset || asset.state !== "staged") return false;
+    this.authority.beginDelete(id, projectId, agentId);
+    return true;
+  }
+
+  private async completeDeletion(receipt: {
+    assetId: string;
+    projectId: string;
+    agentId: string;
+    auditEventId: string;
+    requestedAt: number;
+  }): Promise<void> {
+    if (this.authority.runtimeAssociatedAssetIds(receipt.projectId, receipt.agentId).has(receipt.assetId)) {
+      return;
+    }
+    const openedDirectory = await this.safeDirectory(receipt.projectId, receipt.agentId);
     const directory = openedDirectory.path;
     try {
-      this.authority.beginDelete(id, projectId, agentId);
-      await Promise.allSettled([unlink(path.join(directory, asset.originalFile)), asset.previewFile ? unlink(path.join(directory, asset.previewFile)) : Promise.resolve(), unlink(path.join(directory, `${id}.json`))]);
-      this.authority.recordAudit(path.join(directory, "audit.jsonl"), projectId, agentId, { action: "deleted", id, agentId, projectId, at: new Date().toISOString() });
-      this.authority.finishDelete(id);
+      await removeStagedAssetFiles(
+        directory,
+        receipt.assetId,
+        () => this.syncDirectory(openedDirectory.handle),
+      );
+      this.authority.recordAudit(
+        path.join(directory, "audit.jsonl"),
+        receipt.projectId,
+        receipt.agentId,
+        {
+          action: "deleted",
+          id: receipt.assetId,
+          agentId: receipt.agentId,
+          projectId: receipt.projectId,
+          at: new Date(receipt.requestedAt).toISOString(),
+        },
+        receipt.auditEventId,
+      );
+      this.authority.finishDelete(receipt.assetId);
     } finally { await openedDirectory.handle.close(); }
-    return true;
   }
 
   async reconcile(projectId: string, agentId: string, associatedIds: Set<string>, now = Date.now()): Promise<number> {
@@ -981,6 +1058,11 @@ export class AssetStore {
     const directory = openedDirectory.path;
     let removed = 0;
     const reachableIds = new Set([...associatedIds, ...this.authority.runtimeAssociatedAssetIds(projectId, agentId)]);
+    for (const receipt of this.authority.pendingDeletions(projectId, agentId)) {
+      if (reachableIds.has(receipt.assetId)) continue;
+      await this.completeDeletion(receipt);
+      removed += 1;
+    }
     const entries = await readdir(directory).catch(() => []);
     const metadataIds = new Set<string>();
     for (const entry of entries) {
@@ -994,7 +1076,14 @@ export class AssetStore {
       if ((raw && !metadataIds.has(raw[1]!)) || temporary) {
         const target = path.join(directory, entry);
         const old = now - await lstat(target).then((item) => item.mtimeMs).catch(() => now) > STAGED_TTL_MS;
-        if (old) { if (raw?.[1]) this.authority.beginDelete(raw[1], projectId, agentId); await rm(target, { force: true }); if (raw?.[1]) this.authority.finishDelete(raw[1]); removed++; }
+        if (old && raw?.[1] && !reachableIds.has(raw[1])) {
+          const receipt = this.authority.beginDelete(raw[1], projectId, agentId);
+          await this.completeDeletion(receipt);
+          removed++;
+        } else if (old && temporary) {
+          await rm(target, { force: true });
+          removed++;
+        }
         continue;
       }
       if (!entry.endsWith(".json") || entry === "audit.jsonl") continue;
