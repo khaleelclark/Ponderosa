@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { INLINE_TEXT_MAX_CODE_POINTS } from "@ponderosa/core";
@@ -20,6 +20,12 @@ const validDraft = {
   clientId: "page:one",
   ownerId: "browser-one",
 };
+
+function deferred() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+}
 
 test("draft updates reject malformed public-boundary values", () => {
   for (const body of [undefined, null, [], "bad"]) {
@@ -283,3 +289,97 @@ test("stale file and paste references reach conflict recovery before asset valid
   assert.equal(currentMissingAsset.statusCode, 400, currentMissingAsset.body);
   await app.close();
 });
+
+for (const draftId of ["chat-a", "agent:agent-a"]) {
+  test(`${draftId} draft PUT and upload cannot cross its deletion fence`, async (t) => {
+    const directory = mkdtempSync(join(tmpdir(), "ponderosa-draft-deletion-race-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    let entityExists = true;
+    const store = {
+      getConversation: id => entityExists && draftId === "chat-a" && id === draftId
+        ? { id }
+        : undefined,
+      getAgent: id => entityExists && draftId === `agent:${id}` ? { id } : undefined,
+    };
+    const workspace = new WorkspaceStore(directory);
+    const drafts = new DraftService(directory, store, workspace);
+    const app = Fastify();
+    t.after(() => app.close());
+    app.addContentTypeParser(
+      "application/octet-stream",
+      { parseAs: "buffer" },
+      (_request, body, done) => done(null, body),
+    );
+    registerDraftRoutes(app, drafts, workspace, 8, () => undefined);
+    const baseUrl = `/api/conversations/${encodeURIComponent(draftId)}`;
+    const uploaded = await app.inject({
+      method: "POST",
+      url: `${baseUrl}/draft-attachments`,
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-ponderosa-draft-owner": "browser-one",
+        "x-ponderosa-filename": "note.txt",
+        "x-ponderosa-media-type": "text/plain",
+      },
+      payload: Buffer.from("draft bytes"),
+    });
+    assert.equal(uploaded.statusCode, 201, uploaded.body);
+    const attachment = uploaded.json();
+
+    const readStarted = deferred();
+    const finishRead = deferred();
+    const originalRead = drafts.read.bind(drafts);
+    let paused = false;
+    drafts.read = async (...args) => {
+      if (!paused && args[2] === attachment.id) {
+        paused = true;
+        readStarted.resolve();
+        await finishRead.promise;
+      }
+      return originalRead(...args);
+    };
+    const save = app.inject({
+      method: "PUT",
+      url: `${baseUrl}/draft`,
+      payload: { ...validDraft, attachmentIds: [attachment.id] },
+    });
+    await readStarted.promise;
+    let fenceSettled = false;
+    const fence = drafts.fenceMutations([draftId]).then(release => {
+      fenceSettled = true;
+      return release;
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(fenceSettled, false);
+    finishRead.resolve();
+    assert.equal((await save).statusCode, 200);
+    const releaseFence = await fence;
+
+    entityExists = false;
+    workspace.deleteDraft(draftId);
+    await drafts.deleteSurface(draftId);
+    const blockedUpload = await app.inject({
+      method: "POST",
+      url: `${baseUrl}/draft-attachments`,
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-ponderosa-draft-owner": "browser-one",
+        "x-ponderosa-filename": "late.txt",
+        "x-ponderosa-media-type": "text/plain",
+      },
+      payload: Buffer.from("late bytes"),
+    });
+    assert.equal(blockedUpload.statusCode, 404, blockedUpload.body);
+    releaseFence();
+
+    assert.equal(workspace.getDraft(draftId, "browser-one").text, "");
+    assert.equal(existsSync(drafts.surfaceDir(draftId)), false);
+    const lateSave = await app.inject({
+      method: "PUT",
+      url: `${baseUrl}/draft`,
+      payload: validDraft,
+    });
+    assert.equal(lateSave.statusCode, 404, lateSave.body);
+    assert.equal(existsSync(drafts.surfaceDir(draftId)), false);
+  });
+}

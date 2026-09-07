@@ -1,4 +1,3 @@
-import { promises as fs } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import type {
   Adapter,
@@ -10,9 +9,14 @@ import type {
   TeamDirectoryDto,
   UpdateConversationRequest,
 } from "@ponderosa/core";
-import type { AgentStore, WorkspaceStore } from "@ponderosa/agents";
+import type {
+  AgentStore,
+  ConversationDeletionReceipt,
+  WorkspaceStore,
+} from "@ponderosa/agents";
 import { concreteRuntimeSelection, runtimeSelectionError } from "../runtime-selection.js";
 import { applyCollectionPageHeaders, collectionGenerationKey, sendCollectionPageError, sqliteCollectionPage, type CollectionQuery } from "../collection-page.js";
+import type { DraftService } from "./drafts.js";
 
 interface EngineRegistration {
   adapter: Adapter;
@@ -62,7 +66,6 @@ export interface ConversationRouteDependencies {
   engines: ReadonlyMap<string, EngineRegistration>;
   cachedModelOptions: (adapter: Adapter, projectId?: string) => ModelOption[];
   appendWorkspace: (event: Parameters<WorkspaceStore["append"]>[0]) => unknown;
-  publishWorkspaceSince: (cursor: number) => void;
   generateConversationTitle: (conversationId: string) => Promise<{ title: string; generated: boolean }>;
   conversationDetail: (
     conversationId: string,
@@ -84,7 +87,10 @@ export interface ConversationRouteDependencies {
   ) => Promise<number>;
   purgeCommunicationV4Conversation: (conversationId: string) => void;
   refreshTriggers: () => Promise<unknown>;
-  draftAttachmentSurfaceDir: (draftId: string) => string;
+  drafts: Pick<DraftService, "fenceMutations">;
+  processConversationDeletionCleanup(
+    receipt: ConversationDeletionReceipt,
+  ): Promise<boolean>;
 }
 
 export function registerConversationRoutes(
@@ -97,7 +103,6 @@ export function registerConversationRoutes(
     engines,
     cachedModelOptions,
     appendWorkspace,
-    publishWorkspaceSince,
     generateConversationTitle,
     conversationDetail,
     agentHealth,
@@ -110,7 +115,8 @@ export function registerConversationRoutes(
     reconcileConversationRuntimeCommunicationProjections,
     purgeCommunicationV4Conversation,
     refreshTriggers,
-    draftAttachmentSurfaceDir,
+    drafts,
+    processConversationDeletionCleanup,
   } = dependencies;
   app.get<{ Params: { id: string }; Querystring: CollectionQuery }>("/api/projects/:id/team-directory", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
@@ -373,7 +379,18 @@ export function registerConversationRoutes(
 
   app.delete<{ Params: { id: string } }>("/api/conversations/:id", async (request, reply) => {
     const current = store.getConversation(request.params.id);
-    if (!current) return reply.code(404).send({ error: "conversation not found" });
+    if (!current) {
+      const receipt = store.getConversationDeletionReceipt(request.params.id);
+      if (!receipt) return reply.code(404).send({ error: "conversation not found" });
+      await processConversationDeletionCleanup(receipt);
+      const refreshed = store.getConversationDeletionReceipt(receipt.conversationId)!;
+      return {
+        deleted: true,
+        deletionReceiptId: refreshed.conversationId,
+        cleanupPending: !(refreshed.storageCleanupCompleted && refreshed.serverCleanupCompleted),
+        replayed: true,
+      };
+    }
     if (deletingConversationIds.has(current.id)) {
       return reply.code(409).send({ error: "Chat deletion is already in progress" });
     }
@@ -405,7 +422,12 @@ export function registerConversationRoutes(
     // delivery and Agent creation out until the durable backlog is projected
     // and the deletion reaches its existing archived restart boundary.
     deletingConversationIds.add(current.id);
+    let releaseDraftFence: (() => void) | undefined;
     try {
+      releaseDraftFence = await drafts.fenceMutations([
+        current.id,
+        `collaboration:${current.id}`,
+      ]);
       if (current.archived) store.updateConversation(current.id, { archived: false });
       try {
         await reconcileConversationRuntimeCommunicationProjections(current.projectId, current.id);
@@ -437,25 +459,35 @@ export function registerConversationRoutes(
       if (remainingAgents.length > 0) {
         throw new Error("Chat deletion could not reach an Agent-free commit boundary");
       }
-      const deleted = store.deleteConversation(current.id, purgeCommunicationV4Conversation);
-      if (!deleted) return reply.code(404).send({ error: "conversation not found" });
-      await refreshTriggers();
-      const cursor = workspace.cursor();
-      workspace.deleteDraft(current.id);
-      workspace.deleteDraft(`collaboration:${current.id}`);
-      await Promise.allSettled([
-        fs.rm(draftAttachmentSurfaceDir(current.id), { recursive: true, force: true }),
-        fs.rm(draftAttachmentSurfaceDir(`collaboration:${current.id}`), { recursive: true, force: true }),
-      ]);
-      workspace.append({ type: "conversation_changed", projectId: current.projectId, conversationId: current.id, action: "deleted" });
-      publishWorkspaceSince(cursor);
-      return { deleted: true };
+      const receipt = store.commitConversationDeletion(
+        current.id,
+        purgeCommunicationV4Conversation,
+      );
+      if (!receipt) return reply.code(404).send({ error: "conversation not found" });
+      await processConversationDeletionCleanup(receipt);
+      const refreshed = store.getConversationDeletionReceipt(receipt.conversationId)!;
+      return {
+        deleted: true,
+        deletionReceiptId: refreshed.conversationId,
+        cleanupPending: !(refreshed.storageCleanupCompleted && refreshed.serverCleanupCompleted),
+      };
     } catch (error) {
+      const receipt = store.getConversationDeletionReceipt(current.id);
+      if (receipt) {
+        await processConversationDeletionCleanup(receipt);
+        const refreshed = store.getConversationDeletionReceipt(receipt.conversationId)!;
+        return {
+          deleted: true,
+          deletionReceiptId: refreshed.conversationId,
+          cleanupPending: !(refreshed.storageCleanupCompleted && refreshed.serverCleanupCompleted),
+        };
+      }
       if (store.getConversation(current.id)) {
         store.updateConversation(current.id, { archived: current.archived });
       }
       throw error;
     } finally {
+      releaseDraftFence?.();
       deletingConversationIds.delete(current.id);
     }
   });

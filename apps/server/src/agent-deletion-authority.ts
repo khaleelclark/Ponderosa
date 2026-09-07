@@ -1,4 +1,3 @@
-import { promises as fs } from "node:fs";
 import {
   AgentDeletionConflictError,
   type AgentDeletionReceipt,
@@ -25,6 +24,7 @@ import type { RuntimeElicitationBroker } from "./runtime-elicitation-broker.js";
 import type { ProviderProcessAuthority } from "./provider-process-authority.js";
 import type { BrowserProfileAuthority } from "./browser-profile-authority.js";
 import type { AgentWorkingCopyService } from "./agent-working-copy-service.js";
+import type { DraftService } from "./routes/drafts.js";
 
 type OperationalNotifications = ReturnType<typeof createOperationalNotifications>;
 
@@ -66,7 +66,7 @@ type AgentDeletionAuthorityContext =
     ): Promise<void>;
     drainProviderRuntimeAuthority(reason: string, agentIds?: ReadonlySet<string>): Promise<void>;
     drainEngineCapabilityDiscoveries(projectId?: string, agentIds?: ReadonlySet<string>): Promise<void>;
-    draftAttachmentSurfaceDir(draftId: string): string;
+    drafts: Pick<DraftService, "deleteSurface" | "fenceMutations">;
     refreshTriggerSources(): Promise<void>;
     notifyScheduler(): void;
     closeAgentBrowsers(agentId: string, reason: string): Promise<void>;
@@ -100,7 +100,7 @@ export function createAgentDeletionAuthority(
     teardownPersistentRuntime,
     drainProviderRuntimeAuthority,
     drainEngineCapabilityDiscoveries,
-    draftAttachmentSurfaceDir,
+    drafts,
     refreshTriggerSources,
     notifyScheduler,
     closeAgentBrowsers,
@@ -238,7 +238,7 @@ export function createAgentDeletionAuthority(
       }
       try {
         workspace.deleteDraft(`agent:${agentId}`);
-        await fs.rm(draftAttachmentSurfaceDir(`agent:${agentId}`), { recursive: true, force: true });
+        await drafts.deleteSurface(`agent:${agentId}`);
       } catch (error) {
         errors.push(`${agentId}: ${error instanceof Error ? error.message : "draft cleanup failed"}`);
       }
@@ -342,8 +342,12 @@ export function createAgentDeletionAuthority(
     // mutation paths reject a reserved Agent, so cleanup cannot open a gap in
     // which the previewed cascade changes before the atomic store commit.
     expectedAgentIds.forEach((agentId) => deletingAgentIds.add(agentId));
+    let releaseDraftFence: (() => void) | undefined;
     let committed: AgentDeletionPreviewDto;
     try {
+      releaseDraftFence = await drafts.fenceMutations(
+        expectedAgentIds.map(agentId => `agent:${agentId}`),
+      );
       const deletingSet = new Set(expectedAgentIds);
       // Quarantine prevents new folder users from entering. Actively stop every
       // provider-command and reusable-runtime authority that can already own a
@@ -381,6 +385,7 @@ export function createAgentDeletionAuthority(
         authorization,
       );
     } catch (error) {
+      releaseDraftFence?.();
       expectedAgentIds.forEach((agentId) => deletingAgentIds.delete(agentId));
       throw error;
     }
@@ -389,6 +394,7 @@ export function createAgentDeletionAuthority(
       const receipt = store.getAgentDeletionReceiptByPreviewHash(previewHash)!;
       await processAgentDeletionCleanup(receipt);
     } finally {
+      releaseDraftFence?.();
       deletedAgentIds.forEach((agentId) => deletingAgentIds.delete(agentId));
     }
     const receipt = store.getAgentDeletionReceiptByPreviewHash(previewHash)!;

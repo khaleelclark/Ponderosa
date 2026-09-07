@@ -191,6 +191,7 @@ export function registerApplicationRoutes(
     cancelAgentDecisions,
     awaitProjectDeletionBarrier,
     commitAgentDeletion,
+    processConversationDeletionCleanup,
     contextCursors,
     browserScopeForRun,
     browserProfiles,
@@ -203,7 +204,6 @@ export function registerApplicationRoutes(
     managedWorkspacesRoot,
     projectFolderPathBoundary,
     drafts,
-    draftAttachmentSurfaceDir,
     agentMessageCapabilities,
     scheduledSessionRollovers,
     contextRolloverPending,
@@ -374,7 +374,6 @@ registerConversationRoutes(app, {
   engines,
   cachedModelOptions,
   appendWorkspace,
-  publishWorkspaceSince,
   generateConversationTitle,
   conversationDetail,
   agentHealth,
@@ -388,7 +387,8 @@ registerConversationRoutes(app, {
   purgeCommunicationV4Conversation: conversationId =>
     coordinationV3.purgeCommunicationV4Conversation(conversationId),
   refreshTriggers: () => triggerSources.refresh(),
-  draftAttachmentSurfaceDir,
+  drafts,
+  processConversationDeletionCleanup,
 });
 
 registerConversationDeliveryRoutes(app, {

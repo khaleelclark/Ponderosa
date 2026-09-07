@@ -68,6 +68,7 @@ import {
 } from "./runtime-attachments.js";
 import type { ServerContext } from "./server-context.js";
 import { registerServerLifecycle } from "./server-lifecycle.js";
+import { createConversationDeletionAuthority } from "./conversation-deletion-authority.js";
 import {
   publishWorkspaceEvent,
   reconcileCommittedProjectDeletion as reconcileProjectDeletionWorkspace,
@@ -443,7 +444,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     allowedBrowseRoots: opts.allowedBrowseRoots,
   });
   const drafts = new DraftService(opts.dataDir, store, workspace);
-  const draftAttachmentSurfaceDir = (draftId: string) => drafts.surfaceDir(draftId);
   const agentMessageCapabilities = new Map<string, AgentMessageCapability>();
   // An agent can request rollover while its capability is live. The reset is
   // applied only after the turn ends, so it never destroys an in-flight session.
@@ -758,7 +758,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     teardownPersistentRuntime,
     drainProviderRuntimeAuthority,
     drainEngineCapabilityDiscoveries,
-    draftAttachmentSurfaceDir,
+    drafts,
     refreshTriggerSources: () => triggerSources.refresh(),
     notifyScheduler: () => coordinationV3Scheduler.notify(),
     createOperationalNotification,
@@ -767,6 +767,13 @@ app.server.on("upgrade", linkPreviewUpgrade);
     browserProfiles,
     closeAgentBrowsers,
     workingCopies,
+  });
+  const { processConversationDeletionCleanup } = createConversationDeletionAuthority({
+    store,
+    workspace,
+    drafts,
+    refreshTriggerSources: () => triggerSources.refresh(),
+    publishWorkspace,
   });
   const coordinationV3Scheduler = createCoordinationScheduler(app, {
     opts,
@@ -918,6 +925,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     coordinationV3Scheduler,
     triggerSources,
     processAgentDeletionCleanup,
+    processConversationDeletionCleanup,
     reconcileRuntimeCommunicationProjections,
     retireCompletedContextRolloverSession,
     clearRunLeaseTimer,
@@ -1081,6 +1089,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     cancelAgentDecisions,
     awaitProjectDeletionBarrier,
     commitAgentDeletion,
+    processConversationDeletionCleanup,
     contextCursors,
     browserScopeForRun,
     browserProfiles,
@@ -1093,7 +1102,6 @@ app.server.on("upgrade", linkPreviewUpgrade);
     managedWorkspacesRoot,
     projectFolderPathBoundary,
     drafts,
-    draftAttachmentSurfaceDir,
     agentMessageCapabilities,
     scheduledSessionRollovers,
     contextRolloverPending,

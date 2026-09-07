@@ -45,6 +45,7 @@ const schemaExtensions = [
   "0009_agent_creation_operations.sql",
   "0010_agent_creation_artifact_identities.sql",
   "0011_agent_management_plans.sql",
+  "0012_conversation_deletion_receipts.sql",
 ] as const;
 const schemaVersionTable = "_schema_version";
 const contextRolloverAtomicityMigration = "0005_context_rollover_atomicity.ts";

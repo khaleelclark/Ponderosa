@@ -106,6 +106,7 @@ import type {
   ConversationDeliveryIntent,
   MessageDispatchRecord,
   AgentDeletionReceipt,
+  ConversationDeletionReceipt,
   ProjectDeletionReceipt,
   AgentManagementAuthorization,
   ManagementPlan,
@@ -117,6 +118,7 @@ export type {
   AgentSpawnOrigin,
   ConversationDeliveryIntent,
   AgentDeletionReceipt,
+  ConversationDeletionReceipt,
   ProjectDeletionReceipt,
   AgentManagementAuthorization,
 } from "./store-types.js";
@@ -996,11 +998,37 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.workspaceCatalog.updateConversation(id, patch);
   }
 
-  deleteConversation(
+  getConversationDeletionReceipt(id: string): ConversationDeletionReceipt | undefined {
+    return this.workspaceCatalog.getConversationDeletionReceipt(id);
+  }
+
+  listPendingConversationDeletionReceipts(): ConversationDeletionReceipt[] {
+    return this.workspaceCatalog.listPendingConversationDeletionReceipts();
+  }
+
+  recordConversationDeletionCleanupError(id: string, error: string): void {
+    this.workspaceCatalog.recordConversationDeletionCleanupError(id, error);
+  }
+
+  finishConversationDeletionStorageCleanup(
+    receipt: ConversationDeletionReceipt,
+  ): void {
+    this.workspaceCatalog.finishConversationDeletionStorageCleanup(receipt);
+  }
+
+  refreshConversationDeletionProjection(receipt: ConversationDeletionReceipt): void {
+    this.workspaceCatalog.refreshConversationDeletionProjection(receipt);
+  }
+
+  markConversationDeletionServerCleanupComplete(id: string): void {
+    this.workspaceCatalog.markConversationDeletionServerCleanupComplete(id);
+  }
+
+  commitConversationDeletion(
     id: string,
     beforeProjectionDelete?: (conversationId: string) => void,
-  ): boolean {
-    return this.workspaceCatalog.deleteConversation(
+  ): ConversationDeletionReceipt | undefined {
+    return this.workspaceCatalog.commitConversationDeletion(
       id,
       beforeProjectionDelete,
     );

@@ -1558,7 +1558,8 @@ function conversationLifecycleApp({ archived = false, reconcile }) {
     reconcileConversationRuntimeCommunicationProjections: reconcile,
     purgeCommunicationV4Conversation: () => {},
     refreshTriggers: async () => {},
-    draftAttachmentSurfaceDir: () => "unused",
+    drafts: { fenceMutations: async () => () => {} },
+    processConversationDeletionCleanup: async () => true,
   });
   return { app, chat, deletingConversationIds, leases };
 }

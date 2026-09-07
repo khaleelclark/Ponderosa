@@ -181,6 +181,17 @@ export interface ProjectDeletionReceipt {
   completedAt?: string;
 }
 
+export interface ConversationDeletionReceipt {
+  conversationId: string;
+  projectId: string;
+  storageCleanupCompleted: boolean;
+  serverCleanupCompleted: boolean;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
 export interface AgentManagementAuthorization {
   planId: string;
   projectId: string;

@@ -2,6 +2,7 @@ import WebSocket from "ws";
 import type {
   AgentDeletionReceipt,
   AgentStore,
+  ConversationDeletionReceipt,
   CoordinationV3Store,
   WorkspaceStore,
 } from "@ponderosa/agents";
@@ -232,6 +233,9 @@ type ServerLifecycleContext =
     coordinationV3Scheduler: CoordinationV3Scheduler;
     triggerSources: TriggerSourceService;
     processAgentDeletionCleanup(receipt: AgentDeletionReceipt): Promise<boolean>;
+    processConversationDeletionCleanup(
+      receipt: ConversationDeletionReceipt,
+    ): Promise<boolean>;
     reconcileRuntimeCommunicationProjections(filter?: {
       projectId?: string;
       communicationEventId?: string;
@@ -290,6 +294,7 @@ export function registerServerLifecycle(
     coordinationV3Scheduler,
     triggerSources,
     processAgentDeletionCleanup,
+    processConversationDeletionCleanup,
     reconcileRuntimeCommunicationProjections,
     clearRunLeaseTimer,
     clearRunLivenessTimer,
@@ -327,9 +332,11 @@ export function registerServerLifecycle(
   } = context;
   let assetSweep: NodeJS.Timeout | undefined;
   let agentDeletionCleanupSweep: NodeJS.Timeout | undefined;
+  let conversationDeletionCleanupSweep: NodeJS.Timeout | undefined;
   let agentCreationRecoverySweep: NodeJS.Timeout | undefined;
   let agentDeletionCleanupDraining = false;
   let agentDeletionCleanupOperation: Promise<void> | undefined;
+  let conversationDeletionCleanupOperation: Promise<void> | undefined;
   let agentCreationRecoveryOperation: Promise<void> | undefined;
   let assetReconciliationOperation: Promise<void> | undefined;
   let linkPreviewSweep: NodeJS.Timeout | undefined;
@@ -396,6 +403,25 @@ export function registerServerLifecycle(
       if (agentDeletionCleanupOperation === operation) agentDeletionCleanupOperation = undefined;
     });
     agentDeletionCleanupOperation = operation;
+    return operation;
+  };
+  const runConversationDeletionCleanup = (): Promise<void> => {
+    if (conversationDeletionCleanupOperation) {
+      return conversationDeletionCleanupOperation;
+    }
+    const operation = (async () => {
+      for (const receipt of store.listPendingConversationDeletionReceipts()) {
+        if (isClosed()) break;
+        await processConversationDeletionCleanup(receipt);
+      }
+    })().catch((error) => {
+      if (!isClosed()) app.log.error({ err: error }, "Chat deletion cleanup retry failed");
+    }).finally(() => {
+      if (conversationDeletionCleanupOperation === operation) {
+        conversationDeletionCleanupOperation = undefined;
+      }
+    });
+    conversationDeletionCleanupOperation = operation;
     return operation;
   };
   const runAgentCreationRecovery = (limit = 32): Promise<void> => {
@@ -716,6 +742,7 @@ export function registerServerLifecycle(
     completeLifecyclePhase("scheduler_and_triggers");
     reconcileTriggerOperationalNotifications();
     reconcileProjectDeletionOperationalNotifications();
+    await runConversationDeletionCleanup();
     await runAgentDeletionCleanup();
     completeLifecyclePhase("operational_recovery");
     agentDeletionCleanupSweep = setInterval(() => {
@@ -724,6 +751,10 @@ export function registerServerLifecycle(
       });
     }, 30_000);
     agentDeletionCleanupSweep.unref();
+    conversationDeletionCleanupSweep = setInterval(() => {
+      void runConversationDeletionCleanup();
+    }, 30_000);
+    conversationDeletionCleanupSweep.unref();
     agentCreationRecoverySweep = setInterval(() => {
       if (isClosed()) return;
       void runAgentCreationRecovery().catch((error) => {
@@ -888,6 +919,7 @@ export function registerServerLifecycle(
     if (startupProjectionRecoveryImmediate) clearImmediate(startupProjectionRecoveryImmediate);
     if (assetSweep) clearInterval(assetSweep);
     if (agentDeletionCleanupSweep) clearInterval(agentDeletionCleanupSweep);
+    if (conversationDeletionCleanupSweep) clearInterval(conversationDeletionCleanupSweep);
     if (agentCreationRecoverySweep) clearInterval(agentCreationRecoverySweep);
     stopCommunicationReconciliation();
     shutdownRunBrowserClosures = [];
@@ -923,6 +955,10 @@ export function registerServerLifecycle(
       boundedBackgroundShutdown(
         "Agent deletion maintenance",
         () => agentDeletionCleanupOperation,
+      ),
+      boundedBackgroundShutdown(
+        "Chat deletion maintenance",
+        () => conversationDeletionCleanupOperation,
       ),
       boundedBackgroundShutdown(
         "Agent creation recovery",

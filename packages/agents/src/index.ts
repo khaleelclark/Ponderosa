@@ -94,7 +94,12 @@ export type {
   ReplayAgentNextRunDeliveryInput,
 } from "./coordination-v3-store.js";
 export type { ConversationDeliveryIntent, ManagedArtifactAccess } from "./store.js";
-export type { AgentDeletionReceipt, ProjectDeletionReceipt, AgentManagementAuthorization } from "./store.js";
+export type {
+  AgentDeletionReceipt,
+  ConversationDeletionReceipt,
+  ProjectDeletionReceipt,
+  AgentManagementAuthorization,
+} from "./store.js";
 export type { ManagementOperation, ManagementOperationProgress, ManagementPlan } from "./store-types.js";
 export { EventLog, readLog, readLogSince, lastSeq } from "./eventlog.js";
 export { appendFsyncedJsonl, readRepairableJsonl, writeAtomicFsyncedJsonl } from "./append-jsonl.js";

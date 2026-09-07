@@ -221,6 +221,7 @@ export class WorkspaceStore {
   private readonly pushDeliveries = new Map<string, PushDeliveryRecord>();
   private readonly deletedProjectIds = new Set<string>();
   private readonly projectDeletionEvents = new Map<string, WorkspaceEventEnvelope>();
+  private readonly conversationDeletionEvents = new Map<string, WorkspaceEventEnvelope>();
   private readonly queuedMessageChanges = new Set<string>();
   private readonly resourceRecency = new Map<string, WorkspaceResourceRecencyDto>();
   private readonly resourceRecencyLinks = new Map<
@@ -572,6 +573,7 @@ export class WorkspaceStore {
     }
     if (event.type === "conversation_changed") {
       if (event.action === "deleted") {
+        this.conversationDeletionEvents.set(event.conversationId, record);
         this.deleteResourceRecency(`conversation:${event.conversationId}`);
       } else if (
         event.action === "created"
@@ -762,6 +764,22 @@ export class WorkspaceStore {
     const existing = this.projectDeletionEvents.get(projectId);
     if (existing) return existing;
     return this.append({ type: "project_changed", projectId, action: "deleted" });
+  }
+
+  /** Materialize an irreversible Chat receipt in the durable workspace log.
+   * Returning the original envelope makes cleanup and publication retries idempotent. */
+  reconcileConversationDeletion(
+    projectId: string,
+    conversationId: string,
+  ): WorkspaceEventEnvelope {
+    const existing = this.conversationDeletionEvents.get(conversationId);
+    if (existing) return existing;
+    return this.append({
+      type: "conversation_changed",
+      projectId,
+      conversationId,
+      action: "deleted",
+    });
   }
 
   readSince(id: number): WorkspaceEventEnvelope[] {

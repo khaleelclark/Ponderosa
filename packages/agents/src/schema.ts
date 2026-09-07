@@ -165,6 +165,19 @@ export const conversations = sqliteTable("conversations", {
   archived: integer("archived").notNull().default(0),
 });
 
+/** Durable receipt for an irreversible Chat deletion and its retryable
+ * filesystem, draft, Automation, and workspace cleanup. */
+export const conversationDeletionReceipts = sqliteTable("conversation_deletion_receipts", {
+  conversationId: text("conversation_id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  storageCleanupCompleted: integer("storage_cleanup_completed").notNull().default(0),
+  serverCleanupCompleted: integer("server_cleanup_completed").notNull().default(0),
+  lastError: text("last_error"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  completedAt: text("completed_at"),
+});
+
 /** Rebuildable compatibility index of each live Agent's single owner Chat. */
 export const agentConversationMemberships = sqliteTable("agent_conversation_memberships", {
   agentId: text("agent_id").notNull(),

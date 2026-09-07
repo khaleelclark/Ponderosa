@@ -20,8 +20,18 @@ import type {
 import type { Db } from "./db.js";
 import { appendFsyncedJsonl } from "./append-jsonl.js";
 import { readJson, writeJson } from "./store-filesystem.js";
-import type { ConversationJson, PresetEvent, ProjectJson } from "./store-types.js";
-import { agentPresets, conversations, projects } from "./schema.js";
+import type {
+  ConversationDeletionReceipt,
+  ConversationJson,
+  PresetEvent,
+  ProjectJson,
+} from "./store-types.js";
+import {
+  agentPresets,
+  conversationDeletionReceipts,
+  conversations,
+  projects,
+} from "./schema.js";
 import {
   agentPresetsPath,
   agentsDir,
@@ -322,25 +332,108 @@ export class AgentWorkspaceCatalogAuthority {
     return this.getConversation(id);
   }
 
-  /** Permanently remove an empty Chat after its owned Agents have been deleted. */
-  deleteConversation(
+  getConversationDeletionReceipt(id: string): ConversationDeletionReceipt | undefined {
+    const row = this.db.select().from(conversationDeletionReceipts)
+      .where(eq(conversationDeletionReceipts.conversationId, id)).get();
+    return row ? {
+      conversationId: row.conversationId,
+      projectId: row.projectId,
+      storageCleanupCompleted: row.storageCleanupCompleted === 1,
+      serverCleanupCompleted: row.serverCleanupCompleted === 1,
+      ...(row.lastError ? { lastError: row.lastError } : {}),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      ...(row.completedAt ? { completedAt: row.completedAt } : {}),
+    } : undefined;
+  }
+
+  listPendingConversationDeletionReceipts(): ConversationDeletionReceipt[] {
+    return this.db.select().from(conversationDeletionReceipts).all()
+      .filter(row => row.storageCleanupCompleted !== 1 || row.serverCleanupCompleted !== 1)
+      .map(row => ({
+        conversationId: row.conversationId,
+        projectId: row.projectId,
+        storageCleanupCompleted: row.storageCleanupCompleted === 1,
+        serverCleanupCompleted: row.serverCleanupCompleted === 1,
+        ...(row.lastError ? { lastError: row.lastError } : {}),
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        ...(row.completedAt ? { completedAt: row.completedAt } : {}),
+      }));
+  }
+
+  recordConversationDeletionCleanupError(id: string, error: string): void {
+    this.db.update(conversationDeletionReceipts).set({
+      lastError: error.slice(0, 4_000),
+      updatedAt: new Date().toISOString(),
+    }).where(eq(conversationDeletionReceipts.conversationId, id)).run();
+  }
+
+  finishConversationDeletionStorageCleanup(
+    receipt: ConversationDeletionReceipt,
+  ): void {
+    const current = this.getConversationDeletionReceipt(receipt.conversationId);
+    if (!current) throw new Error("Chat deletion receipt not found");
+    if (current.storageCleanupCompleted) return;
+    rmSync(conversationDir(this.dataDir, current.projectId, current.conversationId), {
+      recursive: true,
+      force: true,
+    });
+    this.db.update(conversationDeletionReceipts).set({
+      storageCleanupCompleted: 1,
+      lastError: null,
+      updatedAt: new Date().toISOString(),
+    }).where(eq(conversationDeletionReceipts.conversationId, current.conversationId)).run();
+  }
+
+  refreshConversationDeletionProjection(receipt: ConversationDeletionReceipt): void {
+    this.refreshAllChatFeedProject(receipt.projectId);
+  }
+
+  markConversationDeletionServerCleanupComplete(id: string): void {
+    const current = this.getConversationDeletionReceipt(id);
+    if (!current) throw new Error("Chat deletion receipt not found");
+    if (!current.storageCleanupCompleted) {
+      throw new Error("Chat storage cleanup must finish before server cleanup");
+    }
+    const now = new Date().toISOString();
+    this.db.update(conversationDeletionReceipts).set({
+      serverCleanupCompleted: 1,
+      lastError: null,
+      updatedAt: now,
+      completedAt: now,
+    }).where(eq(conversationDeletionReceipts.conversationId, id)).run();
+  }
+
+  /** Permanently commit removal of an empty Chat after its owned Agents have
+   * been deleted. Fallible storage and server cleanup use the returned receipt. */
+  commitConversationDeletion(
     id: string,
     beforeProjectionDelete?: (conversationId: string) => void,
-  ): boolean {
+  ): ConversationDeletionReceipt | undefined {
+    const prior = this.getConversationDeletionReceipt(id);
+    if (prior) return prior;
     const row = this.db.select().from(conversations).where(eq(conversations.id, id)).get();
-    if (!row) return false;
+    if (!row) return undefined;
     const linkedAgents = this.listAgents(row.projectId).filter((agent) => agent.conversationId === id);
     if (linkedAgents.length > 0) throw new Error("delete the Chat's Agents before deleting the Chat");
+    const now = new Date().toISOString();
     this.db.transaction((tx) => {
       // Communication and Automation cleanup share this SQLite connection, so
       // no new work can target the Chat after its projection disappears.
       beforeProjectionDelete?.(id);
       this.setHistoryConversationVisibility(row.projectId, id, false);
       tx.delete(conversations).where(eq(conversations.id, id)).run();
+      tx.insert(conversationDeletionReceipts).values({
+        conversationId: id,
+        projectId: row.projectId,
+        storageCleanupCompleted: 0,
+        serverCleanupCompleted: 0,
+        createdAt: now,
+        updatedAt: now,
+      }).run();
     });
-    rmSync(conversationDir(this.dataDir, row.projectId, id), { recursive: true, force: true });
-    this.refreshAllChatFeedProject(row.projectId);
-    return true;
+    return this.getConversationDeletionReceipt(id)!;
   }
 
   private conversationRowToDto(row: typeof conversations.$inferSelect): ConversationDto {
