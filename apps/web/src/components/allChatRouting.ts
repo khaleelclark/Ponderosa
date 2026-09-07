@@ -186,8 +186,52 @@ export function allChatRuntimeMutationOwnsSelection(input: {
   currentAgentId?: string;
   capturedGeneration: number;
   currentGeneration?: number;
+  capturedCanonicalKey?: string;
+  currentCanonicalKey?: string;
 }): boolean {
   return input.capturedAgentId === input.currentAgentId &&
+    input.capturedCanonicalKey === input.currentCanonicalKey &&
+    allChatRuntimeMutationIsLatest(
+      input.capturedGeneration,
+      input.currentGeneration,
+    );
+}
+
+export function runtimeCanonicalKey(input: {
+  engine?: string;
+  model?: string | null;
+  effort?: string | null;
+}): string {
+  return JSON.stringify([
+    input.engine ?? "",
+    input.model ?? "",
+    input.effort ?? "",
+  ]);
+}
+
+export function recordRuntimeCanonicalKey(
+  generationByOwner: Map<string, number>,
+  canonicalKeyByOwner: Map<string, string>,
+  owner: string,
+  canonicalKey: string,
+): void {
+  const previousCanonicalKey = canonicalKeyByOwner.get(owner);
+  if (previousCanonicalKey !== undefined && previousCanonicalKey !== canonicalKey) {
+    generationByOwner.set(owner, (generationByOwner.get(owner) ?? 0) + 1);
+  }
+  canonicalKeyByOwner.set(owner, canonicalKey);
+}
+
+export function runtimeMutationOwnsAuthority(input: {
+  capturedOwner: string;
+  currentOwner?: string;
+  capturedGeneration: number;
+  currentGeneration?: number;
+  capturedCanonicalKey: string;
+  currentCanonicalKey?: string;
+}): boolean {
+  return input.capturedOwner === input.currentOwner &&
+    input.capturedCanonicalKey === input.currentCanonicalKey &&
     allChatRuntimeMutationIsLatest(
       input.capturedGeneration,
       input.currentGeneration,

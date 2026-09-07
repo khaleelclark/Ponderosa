@@ -1,6 +1,7 @@
 import { Box } from "@mui/material";
 import type { ReactNode } from "react";
 import { useEffect, useRef } from "react";
+import { observeNotificationVisibility } from "../notificationVisibility";
 
 /** An action is reviewed only after this exact card is at least half visible in
  * a foreground document, or the operator deliberately focuses/activates it. */
@@ -27,17 +28,15 @@ export function NotificationAcknowledgementBoundary({
         onAcknowledgeRef.current([notificationId]);
       }
     };
-    const observer = new IntersectionObserver((entries) => {
-      const entry = entries[0];
-      atLeastHalfVisible = Boolean(entry?.isIntersecting && entry.intersectionRatio >= 0.5);
+    const stopObserving = observeNotificationVisibility(element, visible => {
+      atLeastHalfVisible = visible;
       report();
-    }, { threshold: 0.5 });
-    observer.observe(element);
+    });
     document.addEventListener("visibilitychange", report);
     window.addEventListener("focus", report);
     window.addEventListener("blur", report);
     return () => {
-      observer.disconnect();
+      stopObserving();
       document.removeEventListener("visibilitychange", report);
       window.removeEventListener("focus", report);
       window.removeEventListener("blur", report);

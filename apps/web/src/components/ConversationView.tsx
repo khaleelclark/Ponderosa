@@ -88,6 +88,11 @@ import { CollectionPagination } from "./CollectionPrimitives";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { notificationTechnicalFocusId } from "../technicalFocus";
 import { useRuntimeControls } from "../hooks/useRuntimeControls";
+import {
+  recordRuntimeCanonicalKey,
+  runtimeCanonicalKey,
+  runtimeMutationOwnsAuthority,
+} from "./allChatRouting";
 
 export function ConversationView({
   conversationId,
@@ -197,7 +202,10 @@ export function ConversationView({
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [speed, setSpeed] = useState("");
-  const initializedFor = useRef<string | undefined>(undefined);
+  const runtimeMutationGenerationByOwner = useRef(new Map<string, number>());
+  const runtimeCanonicalKeyByOwner = useRef(new Map<string, string>());
+  const runtimeOwnerRef = useRef<string>();
+  const currentRuntimeCanonicalKeyRef = useRef<string>();
   const { focusedMessage, focusedMessageHighlightDisposer } =
     useConversationMessageFocusRefs();
   useConversationResetEffect({
@@ -318,70 +326,6 @@ export function ConversationView({
     setOlderCollaboration,
     setOlderMain,
   });
-  useEffect(() => {
-    if (!conversation || initializedFor.current === conversation.id) {
-      return;
-    }
-    if (!preferencesQuery.data || !projectsQuery.data) return;
-    const project = projectsQuery.data.find(
-      candidate => candidate.id === conversation.projectId,
-    );
-    const resolvedEngine = resolveConversationEngine(
-      conversation.defaultEngine ?? project?.defaultEngine,
-      engines,
-    );
-    if (!resolvedEngine) return;
-    const selectedEngine = engines.find(
-      candidate => candidate.id === resolvedEngine,
-    );
-    const resolved = resolveRuntimeSelection(
-      selectedEngine,
-      preferencesQuery.data,
-      project,
-      {
-        model: conversation.defaultModel,
-        effort: conversation.defaultEffort,
-        speed: readChatState(
-          chatStateKey("runtime", `conversation.${conversation.id}.speed`),
-        ),
-      },
-    );
-    initializedFor.current = conversation.id;
-    setEngine(resolvedEngine);
-    setModel(resolved.model);
-    setEffort(resolved.effort);
-    setSpeed(resolved.speed ?? "");
-  }, [conversation, engines, preferencesQuery.data, projectsQuery.data]);
-
-  const applyPersistedRuntime = (source: {
-    engine?: EngineDto["id"];
-    model?: string | null;
-    effort?: string | null;
-    speedKey: string;
-  }): void => {
-    if (!conversation || !preferencesQuery.data || !projectsQuery.data) return;
-    const currentProject = projectsQuery.data.find(
-      candidate => candidate.id === conversation.projectId,
-    );
-    const restoredEngine = resolveConversationEngine(source.engine, engines);
-    const restoredAdapter = engines.find(candidate => candidate.id === restoredEngine);
-    if (!restoredEngine || !restoredAdapter) return;
-    const restored = resolveRuntimeSelection(
-      restoredAdapter,
-      preferencesQuery.data,
-      currentProject,
-      {
-        model: source.model ?? undefined,
-        effort: source.effort ?? undefined,
-        speed: readChatState(chatStateKey("runtime", source.speedKey)),
-      },
-    );
-    setEngine(restoredEngine);
-    setModel(restored.model);
-    setEffort(restored.effort);
-    setSpeed(restored.speed ?? "");
-  };
-
   // Persist the selection so "the model selected for this conversation" survives
   // reloads and prefills the New Agent dialog.
   const persistDefaults = useMutation({
@@ -396,18 +340,6 @@ export function ConversationView({
       });
       void queryClient.invalidateQueries({
         queryKey: queryKeys.conversations.all,
-      });
-    },
-    onError: () => {
-      if (!conversation) return;
-      const currentProject = projectsQuery.data?.find(
-        candidate => candidate.id === conversation.projectId,
-      );
-      applyPersistedRuntime({
-        engine: conversation.defaultEngine ?? currentProject?.defaultEngine,
-        model: conversation.defaultModel,
-        effort: conversation.defaultEffort,
-        speedKey: `conversation.${conversation.id}.speed`,
       });
     },
   });
@@ -438,20 +370,28 @@ export function ConversationView({
         queryKey: queryKeys.conversations.members(conversationId),
       });
     },
-    onError: (_error, variables) => {
-      const persisted = agents.find(agent => agent.id === variables.agentId)
-        ?? detailQuery.data?.agents.find(agent => agent.id === variables.agentId);
-      if (!persisted) return;
-      applyPersistedRuntime({
-        engine: persisted.activeEngine,
-        model: persisted.model,
-        effort: persisted.effort,
-        speedKey: `agent.${persisted.id}.speed`,
-      });
-    },
   });
 
   const runtimeTargetAgentId = commandTargetAgent?.id;
+  const runtimeOwner = commandTargetAgent
+    ? `agent:${commandTargetAgent.id}`
+    : `conversation:${conversationId}`;
+  const runtimeProject = conversation
+    ? projectsQuery.data?.find(candidate => candidate.id === conversation.projectId)
+    : undefined;
+  const currentRuntimeCanonicalKey = runtimeCanonicalKey(commandTargetAgent
+    ? {
+        engine: commandTargetAgent.activeEngine,
+        model: commandTargetAgent.model,
+        effort: commandTargetAgent.effort,
+      }
+    : {
+        engine: conversation?.defaultEngine ?? runtimeProject?.defaultEngine,
+        model: conversation?.defaultModel,
+        effort: conversation?.defaultEffort,
+      });
+  runtimeOwnerRef.current = runtimeOwner;
+  currentRuntimeCanonicalKeyRef.current = currentRuntimeCanonicalKey;
   useEffect(() => {
     if (!conversation || !preferencesQuery.data || !projectsQuery.data) return;
     const project = projectsQuery.data.find(
@@ -470,6 +410,13 @@ export function ConversationView({
           effort: conversation.defaultEffort,
           speedKey: `conversation.${conversation.id}.speed`,
         };
+    const canonicalKey = runtimeCanonicalKey(source);
+    recordRuntimeCanonicalKey(
+      runtimeMutationGenerationByOwner.current,
+      runtimeCanonicalKeyByOwner.current,
+      runtimeOwner,
+      canonicalKey,
+    );
     const resolvedEngine = resolveConversationEngine(source.engine, engines);
     const selectedEngine = engines.find(
       candidate => candidate.id === resolvedEngine,
@@ -501,8 +448,56 @@ export function ConversationView({
     engines,
     preferencesQuery.data,
     projectsQuery.data,
+    runtimeOwner,
     runtimeTargetAgentId,
   ]);
+
+  const captureRuntimeMutation = () => {
+    const generation =
+      (runtimeMutationGenerationByOwner.current.get(runtimeOwner) ?? 0) + 1;
+    runtimeMutationGenerationByOwner.current.set(runtimeOwner, generation);
+    return {
+      owner: runtimeOwner,
+      generation,
+      canonicalKey:
+        runtimeCanonicalKeyByOwner.current.get(runtimeOwner) ??
+        currentRuntimeCanonicalKey,
+      previous: { engine, model, effort, speed },
+      speedKey: chatStateKey(
+        "runtime",
+        commandTargetAgent
+          ? `agent.${commandTargetAgent.id}.speed`
+          : `conversation.${conversationId}.speed`,
+      ),
+      persistedSpeed: readChatState(chatStateKey(
+        "runtime",
+        commandTargetAgent
+          ? `agent.${commandTargetAgent.id}.speed`
+          : `conversation.${conversationId}.speed`,
+      )),
+    };
+  };
+
+  const rollbackRuntimeMutation = (
+    captured: ReturnType<typeof captureRuntimeMutation>,
+    optimisticSpeed: string,
+  ) => {
+    if (!runtimeMutationOwnsAuthority({
+      capturedOwner: captured.owner,
+      currentOwner: runtimeOwnerRef.current,
+      capturedGeneration: captured.generation,
+      currentGeneration: runtimeMutationGenerationByOwner.current.get(captured.owner),
+      capturedCanonicalKey: captured.canonicalKey,
+      currentCanonicalKey: currentRuntimeCanonicalKeyRef.current,
+    })) return;
+    if (readChatState(captured.speedKey) === (optimisticSpeed || undefined)) {
+      writeChatState(captured.speedKey, captured.persistedSpeed ?? "");
+    }
+    setEngine(captured.previous.engine);
+    setModel(captured.previous.model);
+    setEffort(captured.previous.effort);
+    setSpeed(captured.previous.speed);
+  };
 
   const rename = useMutation({
     mutationFn: (title: string) =>
@@ -832,6 +827,7 @@ export function ConversationView({
         disabled={persistTargetRuntime.isPending || persistDefaults.isPending}
         onEngineChange={next => {
           const nextEngine = engines.find(candidate => candidate.id === next);
+          const captured = captureRuntimeMutation();
           const resolved = resolveRuntimeSelection(
             nextEngine,
             preferencesQuery.data,
@@ -851,47 +847,67 @@ export function ConversationView({
             resolved.speed ?? "",
           );
           if (commandTargetAgent) {
-            persistTargetRuntime.mutate({
-              agentId: commandTargetAgent.id,
-              activeEngine: next as EngineDto["id"],
-              model: resolved.model || null,
-              effort: resolved.effort || null,
-            });
+            persistTargetRuntime.mutate(
+              {
+                agentId: commandTargetAgent.id,
+                activeEngine: next as EngineDto["id"],
+                model: resolved.model || null,
+                effort: resolved.effort || null,
+              },
+              { onError: () => rollbackRuntimeMutation(captured, resolved.speed ?? "") },
+            );
           } else {
-            persistDefaults.mutate({
-              defaultEngine: next as EngineDto["id"],
-              defaultModel: resolved.model || null,
-              defaultEffort: resolved.effort || null,
-            });
+            persistDefaults.mutate(
+              {
+                defaultEngine: next as EngineDto["id"],
+                defaultModel: resolved.model || null,
+                defaultEffort: resolved.effort || null,
+              },
+              { onError: () => rollbackRuntimeMutation(captured, resolved.speed ?? "") },
+            );
           }
         }}
         onModelChange={next => {
+          const captured = captureRuntimeMutation();
           const resolved = selectedRuntime.selectModel(next);
           if (commandTargetAgent) {
-            persistTargetRuntime.mutate({
-              agentId: commandTargetAgent.id,
-              activeEngine: engine as EngineDto["id"],
-              model: resolved.model || null,
-              effort: resolved.effort || null,
-            });
+            persistTargetRuntime.mutate(
+              {
+                agentId: commandTargetAgent.id,
+                activeEngine: engine as EngineDto["id"],
+                model: resolved.model || null,
+                effort: resolved.effort || null,
+              },
+              { onError: () => rollbackRuntimeMutation(captured, resolved.speed ?? "") },
+            );
           } else {
-            persistDefaults.mutate({
-              defaultModel: resolved.model,
-              defaultEffort: resolved.effort || null,
-            });
+            persistDefaults.mutate(
+              {
+                defaultModel: resolved.model,
+                defaultEffort: resolved.effort || null,
+              },
+              { onError: () => rollbackRuntimeMutation(captured, resolved.speed ?? "") },
+            );
           }
         }}
         onEffortChange={next => {
+          const captured = captureRuntimeMutation();
           const resolved = selectedRuntime.selectEffort(next);
           if (commandTargetAgent) {
-            persistTargetRuntime.mutate({
-              agentId: commandTargetAgent.id,
-              activeEngine: engine as EngineDto["id"],
-              model: resolved.model || null,
-              effort: resolved.effort || null,
-            });
+            persistTargetRuntime.mutate(
+              {
+                agentId: commandTargetAgent.id,
+                activeEngine: engine as EngineDto["id"],
+                model: resolved.model || null,
+                effort: resolved.effort || null,
+              },
+              { onError: () => rollbackRuntimeMutation(captured, resolved.speed ?? "") },
+            );
           } else {
-            persistDefaults.mutate({ defaultEffort: resolved.effort });
+            persistDefaults.mutate(
+              { defaultEffort: resolved.effort },
+              { onError: () => rollbackRuntimeMutation(captured, resolved.speed ?? "") },
+            );
           }
         }}
         onSpeedChange={next => {

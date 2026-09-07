@@ -16,6 +16,9 @@ import {
   parseAllChatReplyTarget,
   parseAllChatSourceIdentity,
   reduceAllChatSubmissionIntent,
+  recordRuntimeCanonicalKey,
+  runtimeCanonicalKey,
+  runtimeMutationOwnsAuthority,
 } from "../src/components/allChatRouting.js";
 import {
   activeComposerMention,
@@ -350,6 +353,8 @@ test("stale runtime rollback restores only its Agent's persisted speed", () => {
       currentAgentId: "agent-b",
       capturedGeneration: 4,
       currentGeneration: 4,
+      capturedCanonicalKey: "old",
+      currentCanonicalKey: "old",
     }),
     false,
   );
@@ -359,9 +364,62 @@ test("stale runtime rollback restores only its Agent's persisted speed", () => {
       currentAgentId: "agent-a",
       capturedGeneration: 4,
       currentGeneration: 4,
+      capturedCanonicalKey: "old",
+      currentCanonicalKey: "old",
     }),
     true,
   );
+  assert.equal(
+    allChatRuntimeMutationOwnsSelection({
+      capturedAgentId: "agent-a",
+      currentAgentId: "agent-a",
+      capturedGeneration: 4,
+      currentGeneration: 4,
+      capturedCanonicalKey: "old",
+      currentCanonicalKey: "new-from-stream",
+    }),
+    false,
+  );
+});
+
+test("Project Chat runtime rollback is fenced by target and canonical tuple", () => {
+  const canonical = runtimeCanonicalKey({ engine: "codex", model: "sol", effort: "high" });
+  assert.equal(
+    runtimeMutationOwnsAuthority({
+      capturedOwner: "agent:a",
+      currentOwner: "agent:b",
+      capturedGeneration: 2,
+      currentGeneration: 2,
+      capturedCanonicalKey: canonical,
+      currentCanonicalKey: canonical,
+    }),
+    false,
+  );
+  assert.equal(
+    runtimeMutationOwnsAuthority({
+      capturedOwner: "conversation:chat-a",
+      currentOwner: "conversation:chat-a",
+      capturedGeneration: 2,
+      currentGeneration: 2,
+      capturedCanonicalKey: canonical,
+      currentCanonicalKey: runtimeCanonicalKey({
+        engine: "claude",
+        model: "opus",
+        effort: "high",
+      }),
+    }),
+    false,
+  );
+});
+
+test("adopting an external canonical runtime invalidates an in-flight rollback", () => {
+  const generations = new Map([["agent:a", 4]]);
+  const canonicalKeys = new Map([["agent:a", "old"]]);
+  recordRuntimeCanonicalKey(generations, canonicalKeys, "agent:a", "new-from-stream");
+  assert.equal(generations.get("agent:a"), 5);
+  assert.equal(canonicalKeys.get("agent:a"), "new-from-stream");
+  recordRuntimeCanonicalKey(generations, canonicalKeys, "agent:a", "new-from-stream");
+  assert.equal(generations.get("agent:a"), 5);
 });
 
 test("interactive message descendants own their action without selecting the source", () => {

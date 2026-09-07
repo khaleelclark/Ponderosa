@@ -3,6 +3,8 @@ import type { QueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
+import { requeueVisibleNotificationReads } from "../notificationVisibility";
+import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
 
 const VISIBLE_COMMUNICATION_BATCH_SIZE = 100;
 
@@ -13,6 +15,7 @@ export function useConversationNotificationVisibility(
   communicationEventId: string | undefined,
   visible: boolean,
 ) => void {
+  const workspaceConnection = useWorkspaceConnection();
   const visibleCommunicationEventIds = useRef(new Set<string>());
   const completedCommunicationEventIds = useRef(new Set<string>());
   const pendingCommunicationEventIds = useRef(new Set<string>());
@@ -66,23 +69,42 @@ export function useConversationNotificationVisibility(
 
   useEffect(() => {
     mounted.current = true;
-    const onVisibilityChange = () => {
+    const requeueVisible = () => {
       if (document.visibilityState === "hidden") return;
-      for (const id of visibleCommunicationEventIds.current) {
-        if (!completedCommunicationEventIds.current.has(id)) {
-          pendingCommunicationEventIds.current.add(id);
-        }
-      }
+      requeueVisibleNotificationReads(
+        visibleCommunicationEventIds.current,
+        completedCommunicationEventIds.current,
+        pendingCommunicationEventIds.current,
+        retryAttempts.current,
+      );
       schedule.current();
     };
+    const onVisibilityChange = () => requeueVisible();
     document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("online", requeueVisible);
     return () => {
       mounted.current = false;
       document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("online", requeueVisible);
       if (flushTimer.current) clearTimeout(flushTimer.current);
       flushTimer.current = undefined;
     };
   }, []);
+
+  const previousWorkspaceStatus = useRef(workspaceConnection.status);
+  useEffect(() => {
+    const reconnected = workspaceConnection.status === "live" &&
+      previousWorkspaceStatus.current !== "live";
+    previousWorkspaceStatus.current = workspaceConnection.status;
+    if (!reconnected || document.visibilityState === "hidden") return;
+    requeueVisibleNotificationReads(
+      visibleCommunicationEventIds.current,
+      completedCommunicationEventIds.current,
+      pendingCommunicationEventIds.current,
+      retryAttempts.current,
+    );
+    schedule.current();
+  }, [workspaceConnection.status]);
 
   return useCallback((communicationEventId: string | undefined, visible: boolean) => {
     if (!communicationEventId) return;

@@ -113,7 +113,6 @@ import {
   ALL_CHAT_SOURCE_KEY,
   allChatAttentionRoute,
   allChatComposerConversationId,
-  allChatRuntimeMutationIsLatest,
   allChatRuntimeMutationOwnsSelection,
   allChatSubmissionSettlementStillCurrent,
   allChatSourceIntentKey,
@@ -126,6 +125,8 @@ import {
   parseAllChatReplyTarget,
   parseAllChatSourceIdentity,
   reduceAllChatSubmissionIntent,
+  recordRuntimeCanonicalKey,
+  runtimeCanonicalKey,
   type AllChatReplyTarget,
   type AllChatRuntimePayload,
   type AllChatSourceIdentity,
@@ -251,6 +252,7 @@ export function AllChatView({
   const [effort, setEffort] = useState("");
   const [speed, setSpeed] = useState("");
   const runtimeMutationGenerationByAgent = useRef(new Map<string, number>());
+  const runtimeCanonicalKeyByAgent = useRef(new Map<string, string>());
   const initializedRuntime = useRef<string>();
   const [runtimeAgentId, setRuntimeAgentId] = useState<string>();
   const [notice, setNotice] = useState<string>();
@@ -444,6 +446,17 @@ export function AllChatView({
     queryFn: () => api.getAgent(selectedAgentId!, AGENT_DETAIL_PAGE_SIZE),
     enabled: Boolean(selectedAgentId),
   });
+  const currentRuntimeCanonical = useRef<{ agentId: string; key: string }>();
+  if (selectedAgent.data?.agent) {
+    currentRuntimeCanonical.current = {
+      agentId: selectedAgent.data.agent.id,
+      key: runtimeCanonicalKey({
+        engine: selectedAgent.data.agent.activeEngine,
+        model: selectedAgent.data.agent.model,
+        effort: selectedAgent.data.agent.effort,
+      }),
+    };
+  }
   const conversationsQuery = useConversations(selectedProjectId);
   useEffect(() => {
     setReplyTarget(current => {
@@ -561,6 +574,17 @@ export function AllChatView({
       agent.effort ?? "",
     ].join(":");
     if (initializedRuntime.current === initializationKey) return;
+    const canonicalKey = runtimeCanonicalKey({
+      engine: agent.activeEngine,
+      model: agent.model,
+      effort: agent.effort,
+    });
+    recordRuntimeCanonicalKey(
+      runtimeMutationGenerationByAgent.current,
+      runtimeCanonicalKeyByAgent.current,
+      agent.id,
+      canonicalKey,
+    );
     const engine = engines.find(item => item.id === agent.activeEngine);
     const resolved = runtimeControlState(engine, {
       model:
@@ -1089,11 +1113,23 @@ export function AllChatView({
             selectedAgentId,
             mutationGeneration,
           );
+          const capturedCanonicalKey = runtimeCanonicalKeyByAgent.current.get(
+            selectedAgentId,
+          ) ?? runtimeCanonicalKey({
+            engine: selectedAgent.data.agent.activeEngine,
+            model: selectedAgent.data.agent.model,
+            effort: selectedAgent.data.agent.effort,
+          });
+          const speedKey = chatStateKey(
+            "runtime",
+            `agent.${selectedAgentId}.speed`,
+          );
           const previous = {
             engine: selectedEngineId ?? "",
             model,
             effort,
             speed,
+            persistedSpeed: readChatState(speedKey),
           };
           const resolved = resolveRuntimeSelection(
             nextEngine,
@@ -1105,7 +1141,7 @@ export function AllChatView({
           setEffort(resolved.effort);
           setSpeed(resolved.speed ?? "");
           writeChatState(
-            chatStateKey("runtime", `agent.${selectedAgentId}.speed`),
+            speedKey,
             resolved.speed ?? "",
           );
           updateRuntimeEngine.mutate(
@@ -1119,20 +1155,20 @@ export function AllChatView({
               onError: () => {
                 const currentGeneration =
                   runtimeMutationGenerationByAgent.current.get(selectedAgentId);
-                if (!allChatRuntimeMutationIsLatest(
-                  mutationGeneration,
-                  currentGeneration,
-                )) return;
-                writeChatState(
-                  chatStateKey("runtime", `agent.${selectedAgentId}.speed`),
-                  previous.speed,
-                );
                 if (!allChatRuntimeMutationOwnsSelection({
                   capturedAgentId: selectedAgentId,
                   currentAgentId: selectedAgentIdRef.current,
                   capturedGeneration: mutationGeneration,
                   currentGeneration,
+                  capturedCanonicalKey,
+                  currentCanonicalKey:
+                    currentRuntimeCanonical.current?.agentId === selectedAgentId
+                      ? currentRuntimeCanonical.current.key
+                      : undefined,
                 })) return;
+                if (readChatState(speedKey) === (resolved.speed || undefined)) {
+                  writeChatState(speedKey, previous.persistedSpeed ?? "");
+                }
                 setRuntimeEngine(previous.engine);
                 setModel(previous.model);
                 setEffort(previous.effort);

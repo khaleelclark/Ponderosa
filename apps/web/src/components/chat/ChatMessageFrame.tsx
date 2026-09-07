@@ -6,6 +6,7 @@ import { MessageActionsAndTimestamp, MessageTimestamp } from "../MessageTimestam
 import { ChatAttachments } from "./ChatAttachments";
 import { ChatOperatorLabel } from "./ChatOperatorLabel";
 import { messageSelectionTargetIsInteractive } from "./messageSelection";
+import { observeNotificationVisibility } from "../../notificationVisibility";
 
 export function ChatMessageFrame({
   message,
@@ -45,19 +46,17 @@ export function ChatMessageFrame({
       message.onVisible?.(
         intersecting && document.visibilityState === "visible" && document.hasFocus(),
       );
-    const observer = new IntersectionObserver((entries) => {
-      const entry = entries[0];
-      intersecting = Boolean(entry?.isIntersecting && entry.intersectionRatio >= 0.5);
+    const stopObserving = observeNotificationVisibility(element, visible => {
+      intersecting = visible;
       report();
-    }, { threshold: 0.5 });
+    });
     const onVisibilityChange = () => report();
-    observer.observe(element);
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", onVisibilityChange);
     window.addEventListener("blur", onVisibilityChange);
     return () => {
       message.onVisible?.(false);
-      observer.disconnect();
+      stopObserving();
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("focus", onVisibilityChange);
       window.removeEventListener("blur", onVisibilityChange);
