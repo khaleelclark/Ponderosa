@@ -30,6 +30,7 @@ import {
   agentPresets,
   conversationDeletionReceipts,
   conversations,
+  projectDeletionReceipts,
   projects,
 } from "./schema.js";
 import {
@@ -445,7 +446,20 @@ export class AgentWorkspaceCatalogAuthority {
     const prior = this.getConversationDeletionReceipt(id);
     if (prior?.canonicalDeletionCompleted) return prior;
     const row = this.db.select().from(conversations).where(eq(conversations.id, id)).get();
-    if (!row) return undefined;
+    if (!row) {
+      if (!prior || this.getProject(prior.projectId) ||
+          !this.db.select({ projectId: projectDeletionReceipts.projectId })
+            .from(projectDeletionReceipts)
+            .where(eq(projectDeletionReceipts.projectId, prior.projectId)).get()) {
+        return undefined;
+      }
+      this.db.update(conversationDeletionReceipts).set({
+        canonicalDeletionCompleted: 1,
+        lastError: null,
+        updatedAt: new Date().toISOString(),
+      }).where(eq(conversationDeletionReceipts.conversationId, id)).run();
+      return this.getConversationDeletionReceipt(id)!;
+    }
     const intent = prior ?? this.markConversationDeletionPending(id);
     if (intent.projectId !== row.projectId) {
       throw new Error("Chat deletion intent belongs to a different Project");

@@ -76,6 +76,7 @@ export interface ConversationRouteDependencies {
   ) => AgentHealthProjectionDto;
   teamDirectory: (projectId: string, conversationId?: string, fallbackAgentId?: string, selectedAgentIds?: readonly string[]) => TeamDirectoryDto;
   hasActiveRun: (agentId: string) => boolean;
+  projectDeletionInProgress: (projectId: string) => boolean;
   deletingConversationIds: Set<string>;
   agentCreationConversationLeases: ReadonlyMap<string, number>;
   conversationDeliveryLeases: ReadonlyMap<string, number>;
@@ -104,6 +105,7 @@ export function registerConversationRoutes(
     agentHealth,
     teamDirectory,
     hasActiveRun,
+    projectDeletionInProgress = () => false,
     deletingConversationIds,
     agentCreationConversationLeases,
     conversationDeliveryLeases,
@@ -373,6 +375,9 @@ export function registerConversationRoutes(
   app.delete<{ Params: { id: string } }>("/api/conversations/:id", async (request, reply) => {
     const current = store.getConversation(request.params.id);
     const pending = store.getConversationDeletionReceipt(request.params.id);
+    if (projectDeletionInProgress(current?.projectId ?? pending?.projectId ?? "")) {
+      return reply.code(409).send({ error: "Project deletion is already in progress" });
+    }
     if (!current) {
       if (!pending) return reply.code(404).send({ error: "conversation not found" });
       await processConversationDeletionCleanup(pending);

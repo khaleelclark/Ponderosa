@@ -5,7 +5,10 @@ import { join } from "node:path";
 import test from "node:test";
 import { AgentStore, WorkspaceStore } from "@ponderosa/agents";
 import Fastify from "fastify";
-import { createConversationDeletionAuthority } from "../dist/conversation-deletion-authority.js";
+import {
+  createConversationDeletionAuthority,
+  drainProjectConversationDeletions,
+} from "../dist/conversation-deletion-authority.js";
 import { DraftService } from "../dist/routes/drafts.js";
 import { registerConversationRoutes } from "../dist/routes/conversations.js";
 
@@ -249,4 +252,135 @@ test("Chat deletion resumes after Agent deletion before canonical Chat commit", 
   assert.equal(await recovered.processConversationDeletionCleanup(receipt), true);
   assert.equal(store.getConversation(chat.id), undefined);
   assert.equal(store.getConversationDeletionReceipt(chat.id)?.canonicalDeletionCompleted, true);
+});
+
+test("Chat DELETE cannot enter after Project deletion quarantine", async (t) => {
+  const { chat, drafts, store, workspace } = fixture(t);
+  const app = Fastify();
+  t.after(() => app.close());
+  const authority = deletionAuthority({ drafts, store, workspace });
+  registerConversationRoutes(app, {
+    store,
+    workspace,
+    engines: new Map(),
+    cachedModelOptions: () => [],
+    appendWorkspace: () => {},
+    generateConversationTitle: async () => ({ title: chat.title, generated: false }),
+    conversationDetail: () => undefined,
+    agentHealth: () => ({}),
+    teamDirectory: () => ({}),
+    hasActiveRun: () => false,
+    projectDeletionInProgress: () => true,
+    deletingConversationIds: new Set(),
+    agentCreationConversationLeases: new Map(),
+    conversationDeliveryLeases: new Map(),
+    reconcileConversationRuntimeCommunicationProjections: async () => 0,
+    refreshTriggers: async () => {},
+    processConversationDeletionCleanup: authority.processConversationDeletionCleanup,
+  });
+
+  const response = await app.inject({
+    method: "DELETE",
+    url: `/api/conversations/${chat.id}`,
+  });
+
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(store.getConversationDeletionReceipt(chat.id), undefined);
+  assert.ok(store.getConversation(chat.id));
+});
+
+test("Project deletion drains a seeded Chat receipt before committing", async (t) => {
+  const { chat, drafts, project, store, workspace } = fixture(t);
+  const receipt = store.markConversationDeletionPending(chat.id);
+  const authority = deletionAuthority({ drafts, store, workspace });
+
+  assert.equal(await drainProjectConversationDeletions(
+    store,
+    project.id,
+    authority.processConversationDeletionCleanup,
+  ), true);
+  assert.equal(store.listPendingConversationDeletionReceipts().length, 0);
+  assert.ok(store.commitProjectDeletion(project.id));
+  assert.equal(store.getProject(project.id), undefined);
+});
+
+test("Project commit refuses a Chat deletion admitted before quarantine", async (t) => {
+  const { chat, project, store, workspace } = fixture(t);
+  const app = Fastify();
+  t.after(() => app.close());
+  let projectDeleting = false;
+  let deletionStarted;
+  const started = new Promise(resolve => { deletionStarted = resolve; });
+  let finishDeletion;
+  const finish = new Promise(resolve => { finishDeletion = resolve; });
+  registerConversationRoutes(app, {
+    store,
+    workspace,
+    engines: new Map(),
+    cachedModelOptions: () => [],
+    appendWorkspace: () => {},
+    generateConversationTitle: async () => ({ title: chat.title, generated: false }),
+    conversationDetail: () => undefined,
+    agentHealth: () => ({}),
+    teamDirectory: () => ({}),
+    hasActiveRun: () => false,
+    projectDeletionInProgress: () => projectDeleting,
+    deletingConversationIds: new Set(),
+    agentCreationConversationLeases: new Map(),
+    conversationDeliveryLeases: new Map(),
+    reconcileConversationRuntimeCommunicationProjections: async () => 0,
+    refreshTriggers: async () => {},
+    processConversationDeletionCleanup: async () => {
+      deletionStarted();
+      await finish;
+      return false;
+    },
+  });
+
+  const chatDeletion = app.inject({
+    method: "DELETE",
+    url: `/api/conversations/${chat.id}`,
+  });
+  await started;
+  projectDeleting = true;
+
+  assert.throws(
+    () => store.commitProjectDeletion(project.id),
+    /cannot commit while Chat deletion cleanup is pending/u,
+  );
+  assert.ok(store.getProject(project.id));
+  assert.ok(store.getConversation(chat.id));
+  assert.equal(store.listPendingConversationDeletionReceipts().length, 1);
+
+  finishDeletion();
+  const response = await chatDeletion;
+  assert.equal(response.statusCode, 202, response.body);
+});
+
+test("startup cleanup converges a legacy Chat receipt superseded by Project deletion", async (t) => {
+  const { chat, drafts, project, store, workspace } = fixture(t);
+  const authority = deletionAuthority({ drafts, store, workspace });
+  const pending = store.markConversationDeletionPending(chat.id);
+  assert.equal(await authority.processConversationDeletionCleanup(pending), true);
+  assert.ok(store.commitProjectDeletion(project.id));
+
+  store.sqlite.prepare(`
+    UPDATE conversation_deletion_receipts
+    SET canonical_deletion_completed=0,
+        storage_cleanup_completed=0,
+        server_cleanup_completed=0,
+        completed_at=NULL
+    WHERE conversation_id=?
+  `).run(chat.id);
+  const legacy = store.getConversationDeletionReceipt(chat.id);
+  assert.ok(legacy);
+  assert.equal(store.getProject(project.id), undefined);
+  assert.equal(store.getConversation(chat.id), undefined);
+
+  assert.equal(await authority.processConversationDeletionCleanup(legacy), true);
+  const recovered = store.getConversationDeletionReceipt(chat.id);
+  assert.equal(recovered.canonicalDeletionCompleted, true);
+  assert.equal(recovered.storageCleanupCompleted, true);
+  assert.equal(recovered.serverCleanupCompleted, true);
+  assert.equal(store.listPendingConversationDeletionReceipts().length, 0);
 });

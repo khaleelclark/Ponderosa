@@ -5,6 +5,7 @@ import type {
 } from "@ponderosa/core";
 import type {
   AgentStore,
+  ConversationDeletionReceipt,
   CoordinationV3Store,
 } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
@@ -24,6 +25,7 @@ import type {
 import type { createOperationalNotifications } from "./operational-notifications.js";
 import type { ProviderProcessAuthority } from "./provider-process-authority.js";
 import type { AgentWorkingCopyService } from "./agent-working-copy-service.js";
+import { drainProjectConversationDeletions } from "./conversation-deletion-authority.js";
 
 type OperationalNotifications = ReturnType<typeof createOperationalNotifications>;
 
@@ -76,6 +78,9 @@ interface ProjectDeletionCoordinatorContext {
   logError(meta: Record<string, unknown>, message: string): void;
   providerProcessAuthority: ProviderProcessAuthority;
   workingCopies: AgentWorkingCopyService;
+  processConversationDeletionCleanup(
+    receipt: ConversationDeletionReceipt,
+  ): Promise<boolean>;
 }
 
 export function registerProjectDeletionRoutes(
@@ -125,6 +130,7 @@ export function registerProjectDeletionRoutes(
     logError,
     providerProcessAuthority,
     workingCopies,
+    processConversationDeletionCleanup,
   } = context;
 
   app.get<{ Params: { id: string } }>("/api/projects/:id/deletion-preview", async (request, reply) => {
@@ -193,6 +199,15 @@ export function registerProjectDeletionRoutes(
     }
     const project = store.getProject(request.params.id);
     if (!project) return reply.code(404).send({ error: "project not found" });
+    if (!await drainProjectConversationDeletions(
+      store,
+      project.id,
+      processConversationDeletionCleanup,
+    )) {
+      return reply.code(409).send({
+        error: "Wait for Chat deletion cleanup to finish before deleting this Project",
+      });
+    }
     if (store.listConversations(project.id).some((conversation) =>
       (agentCreationConversationLeases.get(conversation.id) ?? 0) > 0
     )) {
@@ -316,6 +331,10 @@ export function registerProjectDeletionRoutes(
         scheduledSessionRollovers.delete(agentId);
       }
       contextCursors.deleteAgents(agentIds);
+      if (store.listPendingConversationDeletionReceipts()
+        .some(receipt => receipt.projectId === project.id)) {
+        throw new Error("Project deletion cannot commit while Chat deletion cleanup is pending");
+      }
       const receipt = store.commitProjectDeletion(project.id, (projectId) => coordinationV3.purgeProject(projectId));
       if (!receipt) throw new Error("Project deletion commit did not produce a receipt");
       communicationReconciliation.delete(project.id);

@@ -71,7 +71,7 @@ type ApplicationRoutesContext =
   Parameters<typeof registerProjectRoutes>[1] &
   Omit<Parameters<typeof registerProjectDeletionRoutes>[1], "logError"> &
   Omit<Parameters<typeof registerConversationRoutes>[1],
-    "hasActiveRun" | "refreshTriggers"> &
+    "hasActiveRun" | "projectDeletionInProgress" | "refreshTriggers"> &
   Omit<Parameters<typeof registerConversationDeliveryRoutes>[1],
     "projectDeletionInProgress" | "agentDeletionInProgress" | "attachmentDeletionInProgress" |
     "assetReconciliationInProgress" | "assetMetadata"> &
@@ -361,6 +361,7 @@ registerProjectDeletionRoutes(app, {
   logError: (meta, message) => app.log.error(meta, message),
   providerProcessAuthority,
   workingCopies,
+  processConversationDeletionCleanup,
 });
 
 registerAgentWorkRoutes(app, { store, projection: agentWorkProjection });
@@ -378,6 +379,7 @@ registerConversationRoutes(app, {
   agentHealth,
   teamDirectory,
   hasActiveRun: agentId => activeRuns.has(agentId),
+  projectDeletionInProgress: projectId => deletingProjectIds.has(projectId),
   deletingConversationIds,
   agentCreationConversationLeases,
   conversationDeliveryLeases,

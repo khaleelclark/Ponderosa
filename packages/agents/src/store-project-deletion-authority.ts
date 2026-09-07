@@ -206,6 +206,17 @@ export class AgentProjectDeletionAuthority {
     const now = new Date().toISOString();
     try {
       this.db.transaction(() => {
+        const pendingConversationDeletion = this.client.prepare(`
+          SELECT 1 FROM conversation_deletion_receipts
+          WHERE project_id = ? AND (
+            canonical_deletion_completed != 1 OR
+            storage_cleanup_completed != 1 OR
+            server_cleanup_completed != 1
+          ) LIMIT 1
+        `).get(id);
+        if (pendingConversationDeletion) {
+          throw new Error("Project deletion cannot commit while Chat deletion cleanup is pending");
+        }
         beforeProjectionDelete?.(id);
         this.client.prepare(`DELETE FROM events WHERE agent_id IN (SELECT id FROM agents WHERE project_id = ?)`)
           .run(id);
