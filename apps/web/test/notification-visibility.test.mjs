@@ -3,6 +3,8 @@ import test from "node:test";
 import {
   notificationIsSufficientlyVisible,
   notificationVisibilityThreshold,
+  observeNotificationVisibility,
+  requeueFailedVisibleNotificationRead,
   requeueVisibleNotificationReads,
 } from "../src/notificationVisibility.js";
 
@@ -46,4 +48,146 @@ test("online or workspace reconnect re-arms an exhausted visible read once", () 
   assert.deepEqual([...pending], ["visible"]);
   assert.equal(retries.has("visible"), false);
   assert.equal(retries.get("hidden"), 3);
+});
+
+test("reconnect during a final request defers exactly one fresh retry cycle", () => {
+  const visible = new Set(["visible"]);
+  const completed = new Set();
+  const pending = new Set();
+  const inFlight = new Set(["visible"]);
+  const deferred = new Set();
+  const retries = new Map([["visible", 3]]);
+
+  requeueVisibleNotificationReads(visible, completed, pending, retries, inFlight, deferred);
+  requeueVisibleNotificationReads(visible, completed, pending, retries, inFlight, deferred);
+
+  assert.deepEqual([...deferred], ["visible"]);
+  assert.equal(pending.size, 0);
+  assert.equal(retries.has("visible"), false);
+  assert.equal(requeueFailedVisibleNotificationRead(
+    "visible",
+    true,
+    visible,
+    pending,
+    retries,
+    deferred,
+  ), 250);
+  assert.deepEqual([...pending], ["visible"]);
+  assert.equal(deferred.size, 0);
+});
+
+test("successful and unmounted reads cannot be requeued", () => {
+  const visible = new Set(["read"]);
+  const completed = new Set(["read"]);
+  const pending = new Set();
+  const inFlight = new Set();
+  const deferred = new Set(["failed"]);
+  const retries = new Map();
+
+  requeueVisibleNotificationReads(visible, completed, pending, retries, inFlight, deferred);
+  assert.equal(pending.size, 0);
+  assert.equal(requeueFailedVisibleNotificationRead(
+    "failed",
+    false,
+    new Set(["failed"]),
+    pending,
+    retries,
+    deferred,
+  ), undefined);
+  assert.equal(pending.size, 0);
+  assert.equal(deferred.size, 0);
+});
+
+test("visibility observer uses and resizes the nested Chat scroll root", (t) => {
+  const originals = new Map([
+    ["document", Object.getOwnPropertyDescriptor(globalThis, "document")],
+    ["window", Object.getOwnPropertyDescriptor(globalThis, "window")],
+    ["IntersectionObserver", Object.getOwnPropertyDescriptor(globalThis, "IntersectionObserver")],
+    ["ResizeObserver", Object.getOwnPropertyDescriptor(globalThis, "ResizeObserver")],
+  ]);
+  t.after(() => {
+    for (const [key, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    }
+  });
+
+  let rootHeight = 300;
+  const root = { getBoundingClientRect: () => ({ height: rootHeight }) };
+  const element = {
+    closest: (selector) => selector === ".chat-scroll-region" ? root : null,
+    getBoundingClientRect: () => ({ height: 2_000 }),
+  };
+  const intersectionObservers = [];
+  const resizeObservers = [];
+  class FakeIntersectionObserver {
+    constructor(callback, options) {
+      this.callback = callback;
+      this.options = options;
+      this.disconnected = false;
+      intersectionObservers.push(this);
+    }
+    observe() {}
+    disconnect() { this.disconnected = true; }
+  }
+  class FakeResizeObserver {
+    constructor(callback) {
+      this.callback = callback;
+      this.targets = [];
+      this.disconnected = false;
+      resizeObservers.push(this);
+    }
+    observe(target) { this.targets.push(target); }
+    disconnect() { this.disconnected = true; }
+  }
+  Object.defineProperties(globalThis, {
+    document: { configurable: true, value: { documentElement: { clientHeight: 900 } } },
+    window: { configurable: true, value: {
+      innerHeight: 900,
+      addEventListener() {},
+      removeEventListener() {},
+    } },
+    IntersectionObserver: { configurable: true, value: FakeIntersectionObserver },
+    ResizeObserver: { configurable: true, value: FakeResizeObserver },
+  });
+
+  const visibility = [];
+  const stop = observeNotificationVisibility(element, value => visibility.push(value));
+  assert.equal(intersectionObservers[0].options.root, root);
+  assert.equal(intersectionObservers[0].options.threshold, 0.075);
+  assert.deepEqual(resizeObservers[0].targets, [element, root]);
+  intersectionObservers[0].callback([entry({
+    elementHeight: 2_000,
+    visibleHeight: 149,
+    rootHeight: 300,
+  })]);
+  intersectionObservers[0].callback([entry({
+    elementHeight: 2_000,
+    visibleHeight: 150,
+    rootHeight: 300,
+  })]);
+  assert.deepEqual(visibility, [false, true]);
+
+  rootHeight = 600;
+  resizeObservers[0].callback();
+  assert.equal(intersectionObservers[0].disconnected, true);
+  assert.equal(intersectionObservers[1].options.root, root);
+  assert.equal(intersectionObservers[1].options.threshold, 0.15);
+  stop();
+  assert.equal(intersectionObservers[1].disconnected, true);
+  assert.equal(resizeObservers[0].disconnected, true);
+});
+
+test("ordinary items still require half their own height", () => {
+  assert.equal(notificationVisibilityThreshold(200, 300), 0.5);
+  assert.equal(notificationIsSufficientlyVisible(entry({
+    elementHeight: 200,
+    visibleHeight: 99,
+    rootHeight: 300,
+  })), false);
+  assert.equal(notificationIsSufficientlyVisible(entry({
+    elementHeight: 200,
+    visibleHeight: 100,
+    rootHeight: 300,
+  })), true);
 });
