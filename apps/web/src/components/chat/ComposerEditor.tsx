@@ -192,6 +192,7 @@ type SerializedProjectFileNode = Spread<
 const StructuralDestinationRemovalContext = createContext<
   (() => void) | undefined
 >(undefined);
+const ComposerMutationLockedContext = createContext(false);
 
 class ComposerMentionNode extends DecoratorNode<ReactNode> {
   __kind: "agent" | "special";
@@ -427,7 +428,9 @@ function ComposerProjectFileToken({
   filename: string;
 }): JSX.Element {
   const [editor] = useLexicalComposerContext();
+  const mutationLocked = useContext(ComposerMutationLockedContext);
   const remove = useCallback(() => {
+    if (mutationLocked) return;
     editor.update(() => {
       const node = $getNodeByKey(nodeKey);
       if (!$isComposerProjectFileNode(node)) return;
@@ -442,7 +445,7 @@ function ComposerProjectFileToken({
       }
     });
     requestAnimationFrame(() => editor.focus());
-  }, [editor, nodeKey]);
+  }, [editor, mutationLocked, nodeKey]);
 
   return (
     <Box
@@ -477,6 +480,7 @@ function ComposerProjectFileToken({
       <Box
         component="button"
         type="button"
+        disabled={mutationLocked}
         tabIndex={-1}
         aria-label={`Remove @${filename}`}
         onMouseDown={event => event.preventDefault()}
@@ -540,10 +544,12 @@ function ComposerMentionToken({
   structural: boolean;
 }): JSX.Element {
   const [editor] = useLexicalComposerContext();
+  const mutationLocked = useContext(ComposerMutationLockedContext);
   const removeStructuralDestination = useContext(
     StructuralDestinationRemovalContext,
   );
   const remove = useCallback(() => {
+    if (mutationLocked) return;
     if (structural) {
       removeStructuralDestination?.();
       return;
@@ -562,7 +568,7 @@ function ComposerMentionToken({
       }
     });
     requestAnimationFrame(() => editor.focus());
-  }, [editor, nodeKey, removeStructuralDestination, structural]);
+  }, [editor, mutationLocked, nodeKey, removeStructuralDestination, structural]);
 
   return (
     <Box
@@ -602,6 +608,7 @@ function ComposerMentionToken({
       <Box
         component="button"
         type="button"
+        disabled={mutationLocked}
         tabIndex={-1}
         aria-label={`Remove #${handle}`}
         onMouseDown={event => event.preventDefault()}
@@ -1399,6 +1406,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
   };
 
   return (
+    <ComposerMutationLockedContext.Provider value={disabled || locked}>
     <StructuralDestinationRemovalContext.Provider
       value={inlineDestination?.onClear}
     >
@@ -1487,5 +1495,6 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
       </Box>
     </LexicalComposer>
     </StructuralDestinationRemovalContext.Provider>
+    </ComposerMutationLockedContext.Provider>
   );
 });

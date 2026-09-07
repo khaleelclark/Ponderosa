@@ -52,6 +52,7 @@ export function ComposerNotices({
   onRestoreDraft,
   onDiscardDraft,
   restoringDraft,
+  mutationLocked,
   onRetryDraftContent,
   onRemoveDraftContent,
   onClearError,
@@ -66,6 +67,7 @@ export function ComposerNotices({
   onRestoreDraft(): void;
   onDiscardDraft(): void;
   restoringDraft: boolean;
+  mutationLocked: boolean;
   onRetryDraftContent(id: string): void;
   onRemoveDraftContent(id: string): void;
   onClearError(): void;
@@ -91,6 +93,7 @@ export function ComposerNotices({
               Pasted text
             </Typography>
             <Button
+              disabled={mutationLocked}
               size="small"
               sx={{ p: 0, minWidth: 0, textTransform: "none" }}
               onClick={onShowPastedText}
@@ -102,6 +105,7 @@ export function ComposerNotices({
             {pastedTextBytes.toLocaleString()} bytes
           </Typography>
           <IconButton
+            disabled={mutationLocked}
             size="small"
             aria-label="Remove pasted text"
             onClick={onRemovePastedText}
@@ -122,10 +126,10 @@ export function ComposerNotices({
           sx={{ mb: 1 }}
           action={
             <Stack direction="row" spacing={0.5}>
-              <Button size="small" onClick={() => onRetryDraftContent(item.id)}>
+              <Button size="small" disabled={mutationLocked} onClick={() => onRetryDraftContent(item.id)}>
                 Retry
               </Button>
-              <Button size="small" onClick={() => onRemoveDraftContent(item.id)}>
+              <Button size="small" disabled={mutationLocked} onClick={() => onRemoveDraftContent(item.id)}>
                 Remove
               </Button>
             </Stack>
@@ -140,10 +144,10 @@ export function ComposerNotices({
           sx={{ mb: 1 }}
           action={
             <Stack direction="row" spacing={0.5}>
-              <Button size="small" disabled={restoringDraft} onClick={onDiscardDraft}>
+              <Button size="small" disabled={restoringDraft || mutationLocked} onClick={onDiscardDraft}>
                 Discard
               </Button>
-              <Button size="small" disabled={restoringDraft} onClick={onRestoreDraft}>
+              <Button size="small" disabled={restoringDraft || mutationLocked} onClick={onRestoreDraft}>
                 {restoringDraft ? "Working…" : "Restore"}
               </Button>
             </Stack>

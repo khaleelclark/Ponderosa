@@ -41,12 +41,14 @@ import {
   shouldAdoptHydratedDraft,
   composerRecipientGateSatisfied,
   composerPreparedRetryAction,
+  composerSubmissionMayClearDraft,
   draftContentRetryStillOwned,
   draftWriteContinuationStillOwned,
   hydratedDraftContent,
   hydratedPastedTextContent,
   ownedDraftRevisionAfterObservation,
   recoverableDraftConflict,
+  refreshRecoverableDraftConflict,
   removeComposerPasteSelection,
   restagedDraftConflictSnapshot,
   restoreDraftConflictSnapshot,
@@ -759,6 +761,29 @@ test("observing a foreign draft revision does not grant clear authority", () => 
   assert.equal(ownedDraftRevisionAfterObservation(3, 7, true), 7);
 });
 
+test("a settled send clears only its exact unchanged draft identity", () => {
+  const owned = {
+    submittedMutationGeneration: 7,
+    currentMutationGeneration: 7,
+    stillOwnsDraft: true,
+  };
+  assert.equal(composerSubmissionMayClearDraft(owned), true);
+  for (const mutation of ["text", "file", "paste", "mention", "destination", "hydration"]) {
+    assert.equal(
+      composerSubmissionMayClearDraft({
+        ...owned,
+        currentMutationGeneration: 8,
+      }),
+      false,
+      mutation,
+    );
+  }
+  assert.equal(
+    composerSubmissionMayClearDraft({ ...owned, stillOwnsDraft: false }),
+    false,
+  );
+});
+
 test("failed draft retry loses ownership on remove, replace, or surface change", () => {
   const captured = {
     capturedScope: "chat-a",
@@ -901,6 +926,45 @@ test("paste-only multitab conflict restores its staged payload for resave", () =
   assert.equal(restored.pastedTextAttachmentId, "fresh-paste");
   assert.equal(restored.editVersion, 4);
   assert.equal(restored.locallyEdited, true);
+});
+
+test("conflict refresh keeps the stable displaced snapshot and adopts the latest revision", () => {
+  const current = {
+    conversationId: "chat-a",
+    ownerId: "browser-a",
+    text: "latest canonical",
+    attachmentIds: [],
+    revision: 11,
+    updatedAt: "2026-09-05T00:00:02.000Z",
+    clientId: "page:remote",
+  };
+  const conflict = {
+    id: "stable-conflict",
+    current: { ...current, revision: 10 },
+    displaced: {
+      conversationId: "chat-a",
+      text: "preserve me",
+      attachmentIds: [],
+      clientId: "page:local",
+      capturedAt: "2026-09-05T00:00:01.000Z",
+    },
+  };
+  const recovery = recoverableDraftConflict(conflict, {
+    text: "preserve me",
+    attachmentIds: [],
+    files: [],
+    mentionBindings: [],
+    failedContents: [],
+  });
+  const refreshed = refreshRecoverableDraftConflict(
+    recovery,
+    current,
+    [{ ...conflict, current }],
+  );
+  assert.equal(refreshed?.conflict.id, "stable-conflict");
+  assert.equal(refreshed?.conflict.current.revision, 11);
+  assert.equal(refreshed?.snapshot, recovery.snapshot);
+  assert.equal(refreshRecoverableDraftConflict(recovery, current, []), undefined);
 });
 
 test("a rejected draft tail cannot suppress the next write continuation", async () => {

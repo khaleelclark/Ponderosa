@@ -19,12 +19,14 @@ export function ComposerAttachment({
   file,
   status,
   error,
+  disabled = false,
   onRetry,
   onRemove,
 }: {
   file: File;
   status?: DraftUploadStatus;
   error?: string;
+  disabled?: boolean;
   onRetry?(): void;
   onRemove(): void;
 }): JSX.Element {
@@ -69,6 +71,7 @@ export function ComposerAttachment({
         </Typography>
       )}
       <IconButton
+        disabled={disabled}
         size="small"
         aria-label={`Remove ${file.name}`}
         onClick={onRemove}
@@ -107,6 +110,7 @@ export function ComposerAttachment({
           </Typography>
           {status === "failed" && onRetry ? (
             <Button
+              disabled={disabled}
               size="small"
               onClick={onRetry}
               sx={{ minWidth: 0, p: 0.25 }}

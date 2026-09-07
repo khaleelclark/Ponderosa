@@ -136,6 +136,15 @@ export function draftWriteContinuationStillOwned(input: {
     input.capturedGeneration === input.currentGeneration;
 }
 
+export function composerSubmissionMayClearDraft(input: {
+  submittedMutationGeneration: number;
+  currentMutationGeneration: number;
+  stillOwnsDraft: boolean;
+}): boolean {
+  return input.stillOwnsDraft &&
+    input.submittedMutationGeneration === input.currentMutationGeneration;
+}
+
 export function settledDraftWriteContinuation(
   tail: Promise<void>,
   continuation: () => Promise<void>,
@@ -199,6 +208,17 @@ export function recoverableDraftConflict<TFile, TMention, TFailure>(
   snapshot: DraftConflictRecoverySnapshot<TFile, TMention, TFailure>,
 ): RecoverableDraftConflict<TFile, TMention, TFailure> {
   return { conflict, snapshot };
+}
+
+export function refreshRecoverableDraftConflict<TFile, TMention, TFailure>(
+  recovery: RecoverableDraftConflict<TFile, TMention, TFailure>,
+  current: ConversationDraftDto,
+  conflicts: ConversationDraftConflictDto[],
+): RecoverableDraftConflict<TFile, TMention, TFailure> | undefined {
+  const conflict = conflicts.find(candidate => candidate.id === recovery.conflict.id);
+  return conflict
+    ? { conflict: { ...conflict, current }, snapshot: recovery.snapshot }
+    : undefined;
 }
 
 export function restoreDraftConflictSnapshot<TFile, TMention, TFailure>(

@@ -77,6 +77,7 @@ import {
   composerRecipientGateSatisfied,
   composerSubmissionText,
   cleanupReleasedDraftAttachmentIds,
+  composerSubmissionMayClearDraft,
   deletableSupersededDraftAttachmentIds,
   draftContentRetryStillOwned,
   draftWriteContinuationStillOwned,
@@ -90,6 +91,7 @@ import {
   ownedDraftRevisionAfterObservation,
   providerSlashSubmission,
   recoverableDraftConflict,
+  refreshRecoverableDraftConflict,
   type RecoverableDraftConflict,
   restoreDraftConflictSnapshot,
   savedPastedTextCleanMutationGeneration,
@@ -300,6 +302,9 @@ export function Composer({
   const [draftReadyVersion, setDraftReadyVersion] = useState(0);
   const sendingRef = useRef(false);
   const [sending, setSending] = useState(false);
+  const draftMutationLockedRef = useRef(false);
+  const [draftMutationLocked, setDraftMutationLocked] = useState(false);
+  const draftContentGeneration = useRef(0);
   const dictationSettlingRef = useRef(false);
   const [dictationSettling, setDictationSettling] = useState(false);
   const [caret, setCaret] = useState(0);
@@ -355,6 +360,8 @@ export function Composer({
     (next: string | ((current: string) => string)) => {
       const resolved =
         typeof next === "function" ? next(textRef.current) : next;
+      if (resolved === textRef.current) return;
+      draftContentGeneration.current += 1;
       textRef.current = resolved;
       setTextState(resolved);
     },
@@ -362,6 +369,7 @@ export function Composer({
   );
   const update = useCallback(
     (next: string | ((current: string) => string)) => {
+      if (draftMutationLockedRef.current) return;
       const resolved =
         typeof next === "function" ? next(textRef.current) : next;
       if (resolved === textRef.current) return;
@@ -372,6 +380,7 @@ export function Composer({
   );
   const insertDictatedText = useCallback(
     (transcript: string) => {
+      if (draftMutationLockedRef.current) return;
       const selection = inputRef.current?.getSelectionOffsets() ?? {
         start: textRef.current.length,
         end: textRef.current.length,
@@ -415,6 +424,8 @@ export function Composer({
     ) => {
       const resolved =
         typeof next === "function" ? next(pastedTextRef.current) : next;
+      if (resolved === pastedTextRef.current) return;
+      draftContentGeneration.current += 1;
       pastedTextRef.current = resolved;
       setPastedTextState(resolved);
     },
@@ -422,6 +433,7 @@ export function Composer({
   );
   const updatePastedText = useCallback(
     (next: string | undefined) => {
+      if (draftMutationLockedRef.current) return;
       if (next === pastedTextRef.current) return;
       pastedTextMutationGeneration.current += 1;
       const displacedFailures = failedDraftContentsRef.current.filter(
@@ -459,6 +471,8 @@ export function Composer({
   }, []);
   const markDraftAttachmentsEdited = useCallback(
     (removedAttachmentId?: string) => {
+      if (draftMutationLockedRef.current) return;
+      draftContentGeneration.current += 1;
       if (removedAttachmentId) {
         draftWriteChain.current.pendingDeletionIds.add(removedAttachmentId);
         unrestoredDraftAttachmentIds.current =
@@ -484,19 +498,29 @@ export function Composer({
     onBeforeClear: invalidateDraftHydration,
   });
   const {
-    addFiles,
+    addFiles: addDraftFiles,
     attachmentIds: draftAttachmentIds,
     attachmentVersion: draftAttachmentVersion,
     clear: clearDraftAttachments,
     locallyRemovedIds: locallyRemovedDraftAttachmentIds,
     mergeRestored: mergeRestoredDraftAttachments,
-    removeFile,
+    removeFile: removeDraftFile,
     replaceRestored: replaceRestoredDraftAttachments,
     replaceSnapshot: replaceSnapshotDraftAttachments,
-    retryUpload: retryDraftUpload,
+    retryUpload: retryDraftUploadBase,
     uploadStates: draftUploadStates,
   } = draftAttachments;
+  const addFiles = useCallback((candidates: File[]) => {
+    if (!draftMutationLockedRef.current) addDraftFiles(candidates);
+  }, [addDraftFiles]);
+  const removeFile = useCallback((index: number) => {
+    if (!draftMutationLockedRef.current) removeDraftFile(index);
+  }, [removeDraftFile]);
+  const retryDraftUpload = useCallback((file: File) => {
+    if (!draftMutationLockedRef.current) retryDraftUploadBase(file);
+  }, [retryDraftUploadBase]);
   const removeFailedDraftContent = useCallback((id: string) => {
+    if (draftMutationLockedRef.current) return;
     const failed = failedDraftContentsRef.current.find(item => item.id === id);
     if (!failed) return;
     if (failed.kind === "pasted-text") {
@@ -520,6 +544,7 @@ export function Composer({
     updateFailedDraftContents,
   ]);
   const retryFailedDraftContent = useCallback(async (id: string) => {
+    if (draftMutationLockedRef.current) return;
     const failed = failedDraftContentsRef.current.find(item => item.id === id);
     if (!failed || !conversationDraftId) return;
     const scope = conversationDraftId;
@@ -625,6 +650,8 @@ export function Composer({
     : destinationMode === "target-required"
       ? defaultDestination
       : activeDefaultDestination;
+  const renderedDestinationIdentityRef = useRef<string>();
+  renderedDestinationIdentityRef.current = renderedDefaultDestination?.selectionKey;
   const submissionText =
     (destinationMode === "project-chat" || destinationMode === "target-required") &&
     renderedDefaultDestination
@@ -814,6 +841,7 @@ export function Composer({
           ? `#${unresolvedAmbiguousTarget} matches more than one Agent. Use a message's # action to choose the exact Agent.`
           : undefined;
   const toggleNewAgentDestination = () => {
+    if (draftMutationLockedRef.current) return;
     const selectingNewAgent = !newAgentSelected;
     update(current => {
       if (!selectingNewAgent) {
@@ -837,9 +865,11 @@ export function Composer({
     requestAnimationFrame(() => inputRef.current?.focus());
   };
   const clearActiveDefaultDestination = useCallback(() => {
+    if (draftMutationLockedRef.current) return;
     setActiveDefaultDestination(undefined);
   }, []);
   const clearRequiredRecipient = () => {
+    if (draftMutationLockedRef.current) return;
     markUserDraftMutation();
     const handle = targetRequiredHandles[0] ?? requiredRecipient?.handle;
     if (handle) update(current => removeHandle(current, handle));
@@ -1072,6 +1102,7 @@ export function Composer({
         setDraftReadyVersion(value => value + 1);
         return;
       }
+      draftContentGeneration.current += 1;
       if (!draftAttachmentsLocallyEdited.current) {
         replaceRestoredDraftAttachments(restored);
       } else {
@@ -1157,6 +1188,7 @@ export function Composer({
           setDraftReadyVersion(value => value + 1);
           return;
         }
+        draftContentGeneration.current += 1;
         unrestoredDraftAttachmentIds.current = draft.attachmentIds.filter(
           id => !locallyRemovedDraftAttachmentIds.current.has(id),
         );
@@ -1679,6 +1711,7 @@ export function Composer({
   );
 
   const applyMention = (handle: string) => {
+    if (draftMutationLockedRef.current) return;
     const start = mentionMatch!.start;
     const specialTitle = SPECIAL_MENTION_TITLES.get(handle.toLocaleLowerCase());
     if (
@@ -1762,6 +1795,7 @@ export function Composer({
   };
 
   const applyFileReference = (entry: ArtifactDto) => {
+    if (draftMutationLockedRef.current) return;
     const start = caret - fileMatch![0].length + fileMatch![0].indexOf("@");
     const filename = entry.path.split(/[\\/]/u).filter(Boolean).at(-1) ?? entry.path;
     const descriptor: ComposerProjectFileDescriptor = {
@@ -1788,6 +1822,7 @@ export function Composer({
   };
 
   const applyCommand = (command: EngineCommand) => {
+    if (draftMutationLockedRef.current) return;
     if (engineCommandDisabledReason(command)) return;
     if (!commandDraft) return;
     inputRef.current?.replaceCanonicalRange(
@@ -1807,6 +1842,7 @@ export function Composer({
   };
 
   const applyCapability = (capability: EngineComposerCapability) => {
+    if (draftMutationLockedRef.current) return;
     const inserted = insertComposerCapability(text, caret, capability);
     if (!inserted) return;
     inputRef.current?.replaceCanonicalRange(0, text.length, inserted.text);
@@ -1942,6 +1978,8 @@ export function Composer({
       });
     const submittedUserMutationGeneration =
       userDraftMutationGeneration.current;
+    const submittedContentGeneration = draftContentGeneration.current;
+    const submittedDestinationIdentity = safeDefaultDestination?.selectionKey;
     const stagedIds = files
       .map(file => draftAttachmentIds.current.get(file))
       .filter(
@@ -1984,7 +2022,13 @@ export function Composer({
       : undefined;
     const runtimeCommandSubmission =
       slash?.command.invocation === "runtime";
-    const operation =
+    if (!runtimeCommandSubmission) {
+      draftMutationLockedRef.current = true;
+      setDraftMutationLocked(true);
+      setCapabilityMenuAnchor(null);
+      setSuppressMenu(true);
+    }
+    const operation = Promise.resolve().then(() =>
       runtimeCommandSubmission
         ? onCommand!(slash.command, slash.argumentsText)
         : handler(
@@ -1993,21 +2037,23 @@ export function Composer({
             stagedIds,
             conversationDraftId ? draftOwnerId : undefined,
             submissionContext,
-          );
-    void Promise.resolve(operation)
+          ));
+    void operation
       .then(() => {
         if (submittedScopeStillActive()) setPreparedRetry(undefined);
-        const draftChangedAfterSubmission =
-          userDraftMutationGeneration.current !==
-          submittedUserMutationGeneration;
-        const preserveNewRuntimeDraft =
-          runtimeCommandSubmission && draftChangedAfterSubmission;
         const scopeStillActive = submittedScopeStillActive();
-        // A successful send can settle after this Composer has unmounted. Do
-        // not rely on controlled-input effects to clear its durable draft. A
-        // runtime command is the exception: it submits no message or files, so
-        // preserve anything the user starts composing while it is pending.
-        if (!preserveNewRuntimeDraft && scopeStillActive) {
+        const submissionMayClearDraft = composerSubmissionMayClearDraft({
+          submittedMutationGeneration: submittedContentGeneration,
+          currentMutationGeneration: draftContentGeneration.current,
+          stillOwnsDraft:
+            scopeStillActive &&
+            draftWriteChain.current === submittedDraftWriteChain &&
+            activeSubmissionIntentKeyRef.current === submissionIntentKey &&
+            renderedDestinationIdentityRef.current === submittedDestinationIdentity,
+        });
+        // Clear only the exact draft incarnation that produced this submission.
+        // This also preserves edits made while a runtime command is pending.
+        if (submissionMayClearDraft && scopeStillActive) {
           draftGeneration.current += 1;
           draftEditVersion.current += 1;
           draftLocallyEdited.current = false;
@@ -2021,7 +2067,7 @@ export function Composer({
           clearDraftAttachments();
         }
         if (
-          !preserveNewRuntimeDraft &&
+          submissionMayClearDraft &&
           submittedDraftScope
         ) {
           const clientId = submittedDraftWriteChain.clientId;
@@ -2092,13 +2138,14 @@ export function Composer({
           submittedDraftWriteChain.tail = clearChain;
         }
         if (
+          submissionMayClearDraft &&
           submittedPastedTextAttachmentId &&
           scopeStillActive &&
           pastedTextAttachmentId.current === submittedPastedTextAttachmentId
         ) {
           pastedTextAttachmentId.current = undefined;
         }
-        if (!preserveNewRuntimeDraft && scopeStillActive) setCaret(0);
+        if (submissionMayClearDraft && scopeStillActive) setCaret(0);
       })
       .catch((error: unknown) => {
         if (!submittedScopeStillActive()) return;
@@ -2111,10 +2158,7 @@ export function Composer({
             ? { action, submissionIntentKey }
             : undefined,
         );
-        if (
-          userDraftMutationGeneration.current ===
-          submittedUserMutationGeneration
-        ) {
+        if (draftContentGeneration.current === submittedContentGeneration) {
           replaceText(submittedText);
           replacePastedText(submittedPastedText);
           if (draftStorageKey) writeChatState(draftStorageKey, submittedText);
@@ -2124,6 +2168,8 @@ export function Composer({
         );
       })
       .finally(() => {
+        draftMutationLockedRef.current = false;
+        setDraftMutationLocked(false);
         sendingRef.current = false;
         setSending(false);
       });
@@ -2155,6 +2201,7 @@ export function Composer({
         destinationMode={destinationMode}
       />
       <ComposerAttachmentList
+        disabled={draftMutationLocked}
         draftUploadStates={draftUploadStates}
         files={files}
         removeFile={removeFile}
@@ -2167,6 +2214,7 @@ export function Composer({
         draftConflict={draftConflict?.conflict}
         failedDraftContents={failedDraftContents}
         restoringDraft={restoringDraftConflict}
+        mutationLocked={draftMutationLocked}
         onShowPastedText={() => {
           setPastedTextEditorValue(pastedText ?? "");
           setPastedTextEditorOpen(true);
@@ -2175,7 +2223,7 @@ export function Composer({
           updatePastedText(undefined);
         }}
         onRestoreDraft={() => {
-          if (!draftConflict || restoringDraftConflict || !conversationDraftId) return;
+          if (draftMutationLockedRef.current || !draftConflict || restoringDraftConflict || !conversationDraftId) return;
           const recovery = draftConflict;
           const scope = conversationDraftId;
           const recoveryWriteChain = draftWriteChain.current;
@@ -2257,23 +2305,70 @@ export function Composer({
               setDraftReadyVersion(value => value + 1);
               inputRef.current?.focus();
             } catch (error) {
-              if (
+              const stillOwnsRecovery = () =>
                 recoveryGeneration === draftConflictGeneration.current &&
                 scope === activeDraftScopeRef.current &&
-                scopeGeneration === draftGeneration.current
-              ) {
-                setRestoringDraftConflict(false);
-                setSendError(
-                  error instanceof Error
-                    ? `Your preserved draft could not be restored: ${error.message}`
-                    : "Your preserved draft could not be restored.",
-                );
+                scopeGeneration === draftGeneration.current &&
+                recoveryWriteChain === draftWriteChain.current;
+              if (!stillOwnsRecovery()) return;
+              if (error instanceof ApiRequestError &&
+                  (error.status === 409 || error.status === 404)) {
+                try {
+                  const [current, conflicts] = await Promise.all([
+                    api.getConversationDraft(scope, draftOwnerId),
+                    api.getConversationDraftConflicts(scope, draftOwnerId),
+                  ]);
+                  if (!stillOwnsRecovery()) return;
+                  const refreshed = refreshRecoverableDraftConflict(
+                    recovery,
+                    current,
+                    conflicts.conflicts,
+                  );
+                  queryClient.setQueryData(
+                    queryKeys.conversationDraft.detail(scope, draftOwnerId),
+                    current,
+                  );
+                  setRestoringDraftConflict(false);
+                  if (refreshed) {
+                    setDraftConflict(refreshed);
+                    setSendError(
+                      "The saved draft changed again. Review your preserved version, then choose Restore again.",
+                    );
+                    return;
+                  }
+                  recoveryWriteChain.ownedRevision = current.revision;
+                  draftRevision.current = current.revision;
+                  draftReady.current = false;
+                  draftLocallyEdited.current = false;
+                  draftAttachmentsLocallyEdited.current = false;
+                  setDraftConflict(undefined);
+                  setSendError(
+                    "This preserved draft was already resolved elsewhere. The current saved draft is being loaded.",
+                  );
+                  void draftQuery.refetch();
+                  return;
+                } catch (refreshError) {
+                  if (!stillOwnsRecovery()) return;
+                  setRestoringDraftConflict(false);
+                  setSendError(
+                    refreshError instanceof Error
+                      ? `The draft changed again, but its current version could not be loaded: ${refreshError.message}`
+                      : "The draft changed again, but its current version could not be loaded.",
+                  );
+                  return;
+                }
               }
+              setRestoringDraftConflict(false);
+              setSendError(
+                error instanceof Error
+                  ? `Your preserved draft could not be restored: ${error.message}`
+                  : "Your preserved draft could not be restored.",
+              );
             }
           })();
         }}
         onDiscardDraft={() => {
-          if (!draftConflict || restoringDraftConflict || !conversationDraftId) return;
+          if (draftMutationLockedRef.current || !draftConflict || restoringDraftConflict || !conversationDraftId) return;
           const conflictId = draftConflict.conflict.id;
           const scope = conversationDraftId;
           const generation = ++draftConflictGeneration.current;
@@ -2322,6 +2417,7 @@ export function Composer({
         <DialogTitle>View or edit pasted text</DialogTitle>
         <DialogContent>
           <TextField
+            disabled={draftMutationLocked}
             autoFocus
             fullWidth
             multiline
@@ -2337,7 +2433,7 @@ export function Composer({
           <Button onClick={() => setPastedTextEditorOpen(false)}>Cancel</Button>
           <Button
             variant="contained"
-            disabled={utf8ByteLength(pastedTextEditorValue) > LONG_TEXT_MAX_UTF8_BYTES}
+            disabled={draftMutationLocked || utf8ByteLength(pastedTextEditorValue) > LONG_TEXT_MAX_UTF8_BYTES}
             onClick={() => {
               updatePastedText(pastedTextEditorValue || undefined);
               setPastedTextEditorOpen(false);
@@ -2355,7 +2451,7 @@ export function Composer({
       >
         <ComposerCapabilityPicker
           fileInput={fileInput}
-          disabled={disabled || composerLocked}
+          disabled={disabled || composerLocked || draftMutationLocked}
           menuAnchor={capabilityMenuAnchor}
           listId={capabilityListId}
           filter={capabilityFilter}
@@ -2387,6 +2483,7 @@ export function Composer({
         ) : null}
         {destinationMode === "project-chat" ? (
           <ComposerProjectDestinationAction
+            disabled={draftMutationLocked}
             newAgentSelected={newAgentSelected}
             toggleNewAgent={toggleNewAgentDestination}
             replyDestination={!newAgentSelected && defaultDestination && mentionedHandles.some(
@@ -2411,7 +2508,7 @@ export function Composer({
           <ComposerTextInput
             text={text}
             inputRef={inputRef}
-            disabled={disabled}
+            disabled={disabled || draftMutationLocked}
             locked={composerLocked}
             placeholder={placeholder}
             comboboxEnabled={Boolean(mentionHandles || commands?.length || projectId)}
@@ -2478,7 +2575,7 @@ export function Composer({
             onSend={send}
           />
           <ComposerAutocompleteMenu
-            open={menuOpen}
+            open={menuOpen && !draftMutationLocked}
             anchor={anchorRef.current}
             listId={mentionListId}
             suggestions={menuSuggestions}

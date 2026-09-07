@@ -34,12 +34,14 @@ export function ComposerDestinationBar({
 }
 
 interface ComposerProjectDestinationActionProps {
+  disabled: boolean;
   newAgentSelected: boolean;
   toggleNewAgent(): void;
   replyDestination?: string;
 }
 
 export function ComposerProjectDestinationAction({
+  disabled,
   newAgentSelected,
   toggleNewAgent,
   replyDestination,
@@ -48,6 +50,7 @@ export function ComposerProjectDestinationAction({
     return (
       <Tooltip title="Switch to a new Agent">
         <Button
+          disabled={disabled}
           size="small"
           variant="text"
           color="primary"
@@ -65,6 +68,7 @@ export function ComposerProjectDestinationAction({
   }
   return (
     <Button
+      disabled={disabled}
       size="small"
       variant={newAgentSelected ? "contained" : "text"}
       color={newAgentSelected ? "primary" : "inherit"}
@@ -83,6 +87,7 @@ export function ComposerProjectDestinationAction({
 }
 
 interface ComposerAttachmentListProps {
+  disabled: boolean;
   draftUploadStates: Map<
     File,
     { status: DraftUploadStatus; error?: string }
@@ -105,6 +110,7 @@ function composerAttachmentKey(file: File): string {
 }
 
 function ComposerAttachmentListView({
+  disabled,
   draftUploadStates,
   files,
   removeFile,
@@ -128,6 +134,7 @@ function ComposerAttachmentListView({
             error={upload?.error}
             onRetry={() => retryDraftUpload(file)}
             onRemove={() => removeFile(index)}
+            disabled={disabled}
           />
         );
       })}
