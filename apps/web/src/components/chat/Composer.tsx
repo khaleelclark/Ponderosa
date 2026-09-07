@@ -91,7 +91,6 @@ import {
   providerSlashSubmission,
   recoverableDraftConflict,
   type RecoverableDraftConflict,
-  restagedDraftConflictSnapshot,
   restoreDraftConflictSnapshot,
   savedPastedTextCleanMutationGeneration,
   settledDraftWriteContinuation,
@@ -1558,20 +1557,13 @@ export function Composer({
           if (!stillOwnsWrite()) return;
           const conflict = conflicts?.conflicts
             .filter(candidate => candidate.displaced.clientId === clientId)
-            .at(-1) ?? {
-              current,
-              displaced: {
-                conversationId: scope,
-                text: snapshot.text,
-                attachmentIds: snapshot.attachmentIds,
-                ...(snapshot.pastedTextAttachmentId
-                  ? { pastedTextAttachmentId: snapshot.pastedTextAttachmentId }
-                  : {}),
-                mentionBindings: snapshot.mentionBindings,
-                clientId,
-                capturedAt: new Date().toISOString(),
-              },
-            };
+            .at(-1);
+          if (!conflict) {
+            setSendError(
+              "This draft changed elsewhere. Your text remains in the composer, but its recovery record could not be loaded.",
+            );
+            return;
+          }
           draftConflictGeneration.current += 1;
           setDraftConflict(recoverableDraftConflict(conflict, snapshot));
         }
@@ -2192,85 +2184,46 @@ export function Composer({
           setRestoringDraftConflict(true);
           setSendError(undefined);
           void (async () => {
-            const uploadedIds: string[] = [];
-            const discardUploads = async () => {
-              await Promise.all(uploadedIds.map(id =>
-                api.deleteDraftAttachment(scope, draftOwnerId, id)
-                  .catch(() => undefined)
-              ));
-            };
             try {
-              const fileResults = await Promise.allSettled(
-                recovery.snapshot.files.map(async ({ file }) => {
-                  const uploaded = await api.uploadDraftAttachment(
-                    scope,
-                    draftOwnerId,
-                    file,
-                  );
-                  uploadedIds.push(uploaded.id);
-                  return { file, attachmentId: uploaded.id };
-                }),
+              const resolution = await api.restoreConversationDraftConflict(
+                scope,
+                recovery.conflict.id,
+                {
+                  ownerId: draftOwnerId,
+                  expectedRevision: recovery.conflict.current.revision,
+                  clientId: recoveryWriteChain.clientId,
+                },
               );
-              const failedFile = fileResults.find(
-                result => result.status === "rejected",
-              );
-              if (failedFile?.status === "rejected") throw failedFile.reason;
-              const restoredFiles = fileResults.flatMap(result =>
-                result.status === "fulfilled" ? [result.value] : [],
-              );
-              let restoredPastedTextAttachmentId: string | undefined;
-              if (recovery.snapshot.pastedText !== undefined) {
-                const uploaded = await api.uploadDraftAttachment(
-                  scope,
-                  draftOwnerId,
-                  new File(
-                    [recovery.snapshot.pastedText],
-                    PASTED_TEXT_DRAFT_NAME,
-                    { type: "text/plain" },
-                  ),
-                );
-                uploadedIds.push(uploaded.id);
-                restoredPastedTextAttachmentId = uploaded.id;
-              }
+              const canonical = resolution.draft;
+              if (!canonical) throw new Error("Restored draft state is unavailable.");
               if (
                 recoveryGeneration !== draftConflictGeneration.current ||
                 scope !== activeDraftScopeRef.current ||
                 scopeGeneration !== draftGeneration.current ||
                 recoveryWriteChain !== draftWriteChain.current
               ) {
-                await discardUploads();
                 return;
               }
-              const restaged = restagedDraftConflictSnapshot(
-                recovery.snapshot,
-                restoredFiles,
-                restoredPastedTextAttachmentId,
-              );
               const restored = restoreDraftConflictSnapshot(
-                restaged,
+                {
+                  ...recovery.snapshot,
+                  text: canonical.text,
+                  attachmentIds: [...canonical.attachmentIds],
+                  files: recovery.snapshot.files.filter(item =>
+                    canonical.attachmentIds.includes(item.attachmentId)),
+                  ...(canonical.pastedTextAttachmentId
+                    ? { pastedTextAttachmentId: canonical.pastedTextAttachmentId }
+                    : { pastedTextAttachmentId: undefined }),
+                  mentionBindings: [...(canonical.mentionBindings ?? [])],
+                },
                 draftEditVersion.current,
               );
-              recoveryWriteChain.ownedRevision = recovery.conflict.current.revision;
-              for (const id of draftAttachmentIds.current.values()) {
-                recoveryWriteChain.pendingDeletionIds.add(id);
-              }
-              if (pastedTextAttachmentId.current) {
-                recoveryWriteChain.pendingDeletionIds.add(
-                  pastedTextAttachmentId.current,
-                );
-              }
-              for (const item of recovery.snapshot.files) {
-                recoveryWriteChain.pendingDeletionIds.add(item.attachmentId);
-              }
-              if (recovery.snapshot.pastedTextAttachmentId) {
-                recoveryWriteChain.pendingDeletionIds.add(
-                  recovery.snapshot.pastedTextAttachmentId,
-                );
-              }
+              recoveryWriteChain.ownedRevision = canonical.revision;
+              draftRevision.current = canonical.revision;
               markUserDraftMutation();
               draftEditVersion.current = restored.editVersion;
-              draftLocallyEdited.current = restored.locallyEdited;
-              draftAttachmentsLocallyEdited.current = true;
+              draftLocallyEdited.current = false;
+              draftAttachmentsLocallyEdited.current = false;
               replaceText(restored.text);
               setKnownMentionBindings(restored.mentionBindings);
               replaceSnapshotDraftAttachments(restored.files);
@@ -2295,10 +2248,15 @@ export function Composer({
                 );
               }
               updateFailedDraftContents(restored.failedContents);
+              queryClient.setQueryData(
+                queryKeys.conversationDraft.detail(scope, draftOwnerId),
+                canonical,
+              );
+              setDraftConflict(undefined);
+              setRestoringDraftConflict(false);
               setDraftReadyVersion(value => value + 1);
               inputRef.current?.focus();
             } catch (error) {
-              await discardUploads();
               if (
                 recoveryGeneration === draftConflictGeneration.current &&
                 scope === activeDraftScopeRef.current &&
@@ -2313,6 +2271,34 @@ export function Composer({
               }
             }
           })();
+        }}
+        onDiscardDraft={() => {
+          if (!draftConflict || restoringDraftConflict || !conversationDraftId) return;
+          const conflictId = draftConflict.conflict.id;
+          const scope = conversationDraftId;
+          const generation = ++draftConflictGeneration.current;
+          const scopeGeneration = draftGeneration.current;
+          setRestoringDraftConflict(true);
+          setSendError(undefined);
+          void api.discardConversationDraftConflict(scope, draftOwnerId, conflictId)
+            .then(() => {
+              if (generation !== draftConflictGeneration.current ||
+                  scope !== activeDraftScopeRef.current ||
+                  scopeGeneration !== draftGeneration.current) return;
+              setDraftConflict(undefined);
+              setRestoringDraftConflict(false);
+            })
+            .catch(error => {
+              if (generation !== draftConflictGeneration.current ||
+                  scope !== activeDraftScopeRef.current ||
+                  scopeGeneration !== draftGeneration.current) return;
+              setRestoringDraftConflict(false);
+              setSendError(
+                error instanceof Error
+                  ? `Your preserved draft could not be discarded: ${error.message}`
+                  : "Your preserved draft could not be discarded.",
+              );
+            });
         }}
         onRetryDraftContent={id => {
           void retryFailedDraftContent(id);

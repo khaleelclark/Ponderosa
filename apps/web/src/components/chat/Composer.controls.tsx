@@ -50,6 +50,7 @@ export function ComposerNotices({
   onShowPastedText,
   onRemovePastedText,
   onRestoreDraft,
+  onDiscardDraft,
   restoringDraft,
   onRetryDraftContent,
   onRemoveDraftContent,
@@ -63,6 +64,7 @@ export function ComposerNotices({
   onShowPastedText(): void;
   onRemovePastedText(): void;
   onRestoreDraft(): void;
+  onDiscardDraft(): void;
   restoringDraft: boolean;
   onRetryDraftContent(id: string): void;
   onRemoveDraftContent(id: string): void;
@@ -137,9 +139,14 @@ export function ComposerNotices({
           severity="warning"
           sx={{ mb: 1 }}
           action={
-            <Button size="small" disabled={restoringDraft} onClick={onRestoreDraft}>
-              {restoringDraft ? "Restoring…" : "Restore"}
-            </Button>
+            <Stack direction="row" spacing={0.5}>
+              <Button size="small" disabled={restoringDraft} onClick={onDiscardDraft}>
+                Discard
+              </Button>
+              <Button size="small" disabled={restoringDraft} onClick={onRestoreDraft}>
+                {restoringDraft ? "Working…" : "Restore"}
+              </Button>
+            </Stack>
           }
         >
           This draft changed elsewhere. Your version is preserved.

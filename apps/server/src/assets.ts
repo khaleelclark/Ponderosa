@@ -35,6 +35,7 @@ import {
 } from "./asset-contracts.js";
 
 export { AssetAuthority } from "./asset-authority.js";
+export { DRAFT_ASSET_LIMITS } from "./asset-contracts.js";
 export { ASSET_LIMITS, AssetError, generatedArtifactMetadataIsValid } from "./asset-contracts.js";
 export type {
   AuthoritativeGeneratedArtifact,
@@ -355,6 +356,32 @@ export class AssetStore {
     eligibleAt: number,
   ): void {
     this.authority.enqueueDraftAttachmentCleanup(draftId, ownerId, assetId, eligibleAt);
+  }
+
+  reserveDraftAttachment(
+    draftId: string,
+    ownerId: string,
+    assetId: string,
+    size: number,
+  ): string {
+    return this.authority.reserveDraftAttachment(draftId, ownerId, assetId, size);
+  }
+
+  settleDraftAttachment(reservationId: string): void {
+    this.authority.settleDraftAttachment(reservationId);
+  }
+
+  releaseDraftAttachment(reservationId: string): boolean {
+    return this.authority.releaseDraftAttachment(reservationId);
+  }
+
+  syncDraftAttachment(
+    draftId: string,
+    ownerId: string,
+    assetId: string,
+    size: number,
+  ): void {
+    this.authority.syncDraftAttachment(draftId, ownerId, assetId, size);
   }
 
   pendingDraftAttachmentCleanups(now?: number): Array<{

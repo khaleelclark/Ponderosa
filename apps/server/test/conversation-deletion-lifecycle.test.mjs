@@ -16,6 +16,10 @@ const noCleanup = {
   enqueueDraftAttachmentCleanup: () => {},
   finishDraftAttachmentCleanup: () => {},
   pendingDraftAttachmentCleanups: () => [],
+  reserveDraftAttachment: () => "draft-reservation",
+  settleDraftAttachment: () => {},
+  releaseDraftAttachment: () => true,
+  syncDraftAttachment: () => {},
 };
 
 function fixture(t) {

@@ -96,6 +96,8 @@ import type {
   ReadinessDto,
   ProjectFolderOptionsDto,
   PutConversationDraftRequest,
+  ResolveConversationDraftConflictResponse,
+  RestoreConversationDraftConflictRequest,
   QueuedConversationMessageDto,
   ResolveDecisionRequest,
   SendMessageRequest,
@@ -409,6 +411,26 @@ export const realApi = {
   },
   putConversationDraft(conversationId: string, request: PutConversationDraftRequest): Promise<ConversationDraftDto> {
     return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft`, { method: "PUT", body: JSON.stringify(request satisfies PutConversationDraftRequest) });
+  },
+  restoreConversationDraftConflict(
+    conversationId: string,
+    conflictId: string,
+    request: RestoreConversationDraftConflictRequest,
+  ): Promise<ResolveConversationDraftConflictResponse> {
+    return requestJson<ResolveConversationDraftConflictResponse>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/draft-conflicts/${encodeURIComponent(conflictId)}/restore`,
+      { method: "POST", body: JSON.stringify(request) },
+    );
+  },
+  discardConversationDraftConflict(
+    conversationId: string,
+    ownerId: string,
+    conflictId: string,
+  ): Promise<ResolveConversationDraftConflictResponse> {
+    return requestJson<ResolveConversationDraftConflictResponse>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/draft-conflicts/${encodeURIComponent(conflictId)}?ownerId=${encodeURIComponent(ownerId)}`,
+      { method: "DELETE" },
+    );
   },
   uploadDraftAttachment(conversationId: string, ownerId: string, file: File): Promise<DraftAttachmentDto> {
     return requestJson<DraftAttachmentDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft-attachments`, {

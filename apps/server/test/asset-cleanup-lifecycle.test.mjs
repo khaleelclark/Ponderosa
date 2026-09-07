@@ -7,6 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   ASSET_LIMITS,
+  DRAFT_ASSET_LIMITS,
   removeStagedAssetFiles,
 } from "../dist/assets.js";
 import { AssetAuthority } from "../dist/asset-authority.js";
@@ -73,4 +74,112 @@ test("partial asset deletion keeps its receipt and quota until restart completes
   assert.equal(readFileSync(audit, "utf8").trim().split("\n").length, 1);
   assert.doesNotThrow(() =>
     authority.reserve(projectId, agentId, randomUUID(), ASSET_LIMITS.maxAgentBytes));
+});
+
+test("draft quota is stable across owner rotation, failed writes, and restart cleanup", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-draft-quota-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  let authority = new AssetAuthority(dataDir);
+  const draftId = "chat-a";
+
+  const active = Array.from(
+    { length: DRAFT_ASSET_LIMITS.maxConcurrentUploadsPerSurface },
+    (_, index) => authority.reserveDraftAttachment(
+      draftId,
+      `rotated-owner-${index}`,
+      randomUUID(),
+      1,
+    ),
+  );
+  assert.throws(
+    () => authority.reserveDraftAttachment(draftId, "another-owner", randomUUID(), 1),
+    /too many concurrent draft uploads/u,
+  );
+  authority.releaseDraftAttachment(active.pop());
+  assert.doesNotThrow(() => active.push(
+    authority.reserveDraftAttachment(draftId, "another-owner", randomUUID(), 1),
+  ));
+  for (const reservation of active) authority.releaseDraftAttachment(reservation);
+
+  let firstAsset;
+  for (let index = 0; index < 64; index += 1) {
+    const assetId = randomUUID();
+    firstAsset ??= assetId;
+    if (index === 0) {
+      authority.syncDraftAttachment(
+        draftId,
+        `rotated-owner-${index}`,
+        assetId,
+        ASSET_LIMITS.maxFileBytes,
+      );
+    } else {
+      const reservation = authority.reserveDraftAttachment(
+        draftId,
+        `rotated-owner-${index}`,
+        assetId,
+        ASSET_LIMITS.maxFileBytes,
+      );
+      authority.settleDraftAttachment(reservation);
+    }
+  }
+  assert.throws(
+    () => authority.reserveDraftAttachment(draftId, "fresh-owner", randomUUID(), 1),
+    /draft asset quota exceeded/u,
+  );
+  authority.enqueueDraftAttachmentCleanup(draftId, "rotated-owner-0", firstAsset, 0);
+  authority.close();
+
+  authority = new AssetAuthority(dataDir);
+  t.after(() => authority.close());
+  assert.throws(
+    () => authority.reserveDraftAttachment(draftId, "fresh-owner", randomUUID(), 1),
+    /draft asset quota exceeded/u,
+  );
+  authority.finishDraftAttachmentCleanup(draftId, "rotated-owner-0", firstAsset);
+  assert.doesNotThrow(() =>
+    authority.reserveDraftAttachment(draftId, "fresh-owner", randomUUID(), 1));
+});
+
+test("draft upload rate is keyed to its stable surface instead of caller owner IDs", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-draft-rate-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const authority = new AssetAuthority(dataDir);
+  t.after(() => authority.close());
+  for (let index = 0; index < DRAFT_ASSET_LIMITS.maxUploadsPerMinutePerSurface; index += 1) {
+    const reservation = authority.reserveDraftAttachment(
+      "chat-a",
+      `rotated-owner-${index}`,
+      randomUUID(),
+      1,
+    );
+    authority.releaseDraftAttachment(reservation);
+  }
+  assert.throws(
+    () => authority.reserveDraftAttachment("chat-a", "new-owner", randomUUID(), 1),
+    /draft upload rate limit exceeded/u,
+  );
+});
+
+test("draft quota enforces the workspace aggregate across independent surfaces", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-draft-workspace-quota-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const authority = new AssetAuthority(dataDir);
+  t.after(() => authority.close());
+  const surfaceCount = DRAFT_ASSET_LIMITS.maxWorkspaceBytes /
+    DRAFT_ASSET_LIMITS.maxSurfaceBytes;
+  for (let surface = 0; surface < surfaceCount; surface += 1) {
+    for (let file = 0; file < 64; file += 1) {
+      const reservation = authority.reserveDraftAttachment(
+        `chat-${surface}`,
+        `owner-${file}`,
+        randomUUID(),
+        ASSET_LIMITS.maxFileBytes,
+      );
+      authority.settleDraftAttachment(reservation);
+    }
+  }
+  assert.throws(
+    () => authority.reserveDraftAttachment("chat-next", "owner-next", randomUUID(), 1),
+    /draft asset quota exceeded/u,
+  );
 });

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type {
@@ -27,6 +27,10 @@ type CanonicalWorkspaceEvent = WorkspaceEventEnvelope & {
   mutation?:
     | { kind: "draft"; draft: ConversationDraftDto }
     | { kind: "draft_conflict"; conflict: ConversationDraftConflictDto }
+    | {
+        kind: "draft_conflict_resolved";
+        resolution: DraftConflictResolution;
+      }
     | { kind: "draft_deleted"; draftId: string }
     | { kind: "notification"; notification: WorkspaceNotificationDto; pushTargets?: Array<{ deviceId: string; subscriptionUpdatedAt: string }> }
     | { kind: "notifications_read"; conversationId: string; readAt: string }
@@ -40,6 +44,14 @@ type CanonicalWorkspaceEvent = WorkspaceEventEnvelope & {
     | { kind: "push_subscription"; subscription?: WebPushSubscriptionDto; deviceId: string; replacedDeviceIds?: string[] }
     | { kind: "push_delivery"; delivery: PushDeliveryRecord };
 };
+
+interface DraftConflictResolution {
+  conflictId: string;
+  conversationId: string;
+  ownerId: string;
+  action: "restored" | "discarded";
+  draft?: ConversationDraftDto;
+}
 
 export interface DecisionEventProjection {
   kind: "decision" | "decision_response";
@@ -198,6 +210,7 @@ export class WorkspaceStore {
   private readonly events: CanonicalWorkspaceEvent[];
   private readonly drafts = new Map<string, ConversationDraftDto>();
   private readonly draftConflicts = new Map<string, ConversationDraftConflictDto[]>();
+  private readonly draftConflictResolutions = new Map<string, DraftConflictResolution>();
   private readonly notifications = new Map<string, WorkspaceNotificationDto>();
   private readonly notificationsByDedupeKey = new Map<string, WorkspaceNotificationDto>();
   private readonly openOperationalNotificationsByDedupeKey = new Map<string, WorkspaceNotificationDto>();
@@ -384,12 +397,29 @@ export class WorkspaceStore {
     }
     if (record.mutation?.kind === "draft") this.drafts.set(this.draftKey(record.mutation.draft.conversationId, record.mutation.draft.ownerId), record.mutation.draft);
     if (record.mutation?.kind === "draft_conflict") {
-      const conversationId = record.mutation.conflict.current.conversationId;
+      const raw = record.mutation.conflict as ConversationDraftConflictDto & { id?: string };
+      const conflict: ConversationDraftConflictDto = {
+        ...raw,
+        id: raw.id ?? `draft-conflict-event-${record.id}`,
+      };
+      const conversationId = conflict.current.conversationId;
       const key = this.draftKey(conversationId, record.mutation.conflict.current.ownerId);
       const conflicts = this.draftConflicts.get(key) ?? [];
-      conflicts.push(record.mutation.conflict);
+      if (!conflicts.some(candidate => candidate.id === conflict.id)) conflicts.push(conflict);
       // Keep the canonical log complete, but bound the projection used by the UI.
       this.draftConflicts.set(key, conflicts.slice(-20));
+    }
+    if (record.mutation?.kind === "draft_conflict_resolved") {
+      const resolution = record.mutation.resolution;
+      this.draftConflictResolutions.set(resolution.conflictId, resolution);
+      const key = this.draftKey(resolution.conversationId, resolution.ownerId);
+      this.draftConflicts.set(
+        key,
+        (this.draftConflicts.get(key) ?? []).filter(
+          conflict => conflict.id !== resolution.conflictId,
+        ),
+      );
+      if (resolution.draft) this.drafts.set(key, resolution.draft);
     }
     if (record.mutation?.kind === "draft_deleted") {
       const prefix = `${record.mutation.draftId}\u0000`;
@@ -932,9 +962,32 @@ export class WorkspaceStore {
         clientId: input.clientId,
         capturedAt: new Date().toISOString(),
       };
-      const conflict: ConversationDraftConflictDto = { current, displaced };
-      this.append({ type: "draft_conflict", conversationId, revision: current.revision, }, { kind: "draft_conflict", conflict });
-      throw Object.assign(new Error("draft revision conflict"), { code: "DRAFT_CONFLICT", current, displaced });
+      const id = `draft-conflict-${createHash("sha256").update(JSON.stringify({
+        conversationId,
+        ownerId,
+        currentRevision: current.revision,
+        expectedRevision: input.expectedRevision,
+        text: displaced.text,
+        attachmentIds: displaced.attachmentIds,
+        pastedTextAttachmentId: displaced.pastedTextAttachmentId ?? null,
+        mentionBindings: displaced.mentionBindings ?? [],
+        clientId: displaced.clientId,
+      })).digest("hex")}`;
+      const existing = (this.draftConflicts.get(this.draftKey(conversationId, ownerId)) ?? [])
+        .find(candidate => candidate.id === id);
+      const conflict: ConversationDraftConflictDto = existing ?? { id, current, displaced };
+      if (!existing) {
+        this.append(
+          { type: "draft_conflict", conversationId, revision: current.revision },
+          { kind: "draft_conflict", conflict },
+        );
+      }
+      throw Object.assign(new Error("draft revision conflict"), {
+        code: "DRAFT_CONFLICT",
+        conflict,
+        current,
+        displaced: conflict.displaced,
+      });
     }
     if (current.text === input.text &&
         JSON.stringify(current.attachmentIds) === JSON.stringify(attachmentIds) &&
@@ -947,6 +1000,115 @@ export class WorkspaceStore {
 
   listDraftConflicts(conversationId: string, ownerId = "legacy"): ConversationDraftConflictListDto {
     return { conversationId, conflicts: [...(this.draftConflicts.get(this.draftKey(conversationId, ownerId)) ?? [])] };
+  }
+
+  draftConflictResolution(conflictId: string): DraftConflictResolution | undefined {
+    return this.draftConflictResolutions.get(conflictId);
+  }
+
+  restoreDraftConflict(input: {
+    conversationId: string;
+    ownerId: string;
+    conflictId: string;
+    expectedRevision: number;
+    clientId: string;
+  }): { draft: ConversationDraftDto; replayed: boolean } {
+    const prior = this.draftConflictResolutions.get(input.conflictId);
+    if (prior) {
+      if (prior.conversationId !== input.conversationId || prior.ownerId !== input.ownerId ||
+          prior.action !== "restored" || !prior.draft) {
+        throw Object.assign(new Error("draft conflict resolution conflicts"), {
+          code: "DRAFT_CONFLICT_RESOLUTION_CONFLICT",
+        });
+      }
+      return { draft: prior.draft, replayed: true };
+    }
+    const key = this.draftKey(input.conversationId, input.ownerId);
+    const conflict = (this.draftConflicts.get(key) ?? [])
+      .find(candidate => candidate.id === input.conflictId);
+    if (!conflict) {
+      throw Object.assign(new Error("draft conflict not found"), {
+        code: "DRAFT_CONFLICT_NOT_FOUND",
+      });
+    }
+    const current = this.getDraft(input.conversationId, input.ownerId);
+    if (current.revision !== input.expectedRevision) {
+      throw Object.assign(new Error("draft changed before conflict restoration"), {
+        code: "DRAFT_REVISION_CHANGED",
+        current,
+      });
+    }
+    const draft: ConversationDraftDto = {
+      conversationId: input.conversationId,
+      ownerId: input.ownerId,
+      text: conflict.displaced.text,
+      attachmentIds: [...conflict.displaced.attachmentIds],
+      ...(conflict.displaced.pastedTextAttachmentId
+        ? { pastedTextAttachmentId: conflict.displaced.pastedTextAttachmentId }
+        : {}),
+      mentionBindings: [...(conflict.displaced.mentionBindings ?? [])],
+      revision: current.revision + 1,
+      updatedAt: new Date().toISOString(),
+      clientId: input.clientId,
+    };
+    const resolution: DraftConflictResolution = {
+      conflictId: input.conflictId,
+      conversationId: input.conversationId,
+      ownerId: input.ownerId,
+      action: "restored",
+      draft,
+    };
+    this.append(
+      {
+        type: "draft_changed",
+        conversationId: input.conversationId,
+        revision: draft.revision,
+        cleared: !draft.text && draft.attachmentIds.length === 0 &&
+          !draft.pastedTextAttachmentId,
+      },
+      { kind: "draft_conflict_resolved", resolution },
+    );
+    return { draft, replayed: false };
+  }
+
+  discardDraftConflict(input: {
+    conversationId: string;
+    ownerId: string;
+    conflictId: string;
+  }): { replayed: boolean } {
+    const prior = this.draftConflictResolutions.get(input.conflictId);
+    if (prior) {
+      if (prior.conversationId !== input.conversationId || prior.ownerId !== input.ownerId ||
+          prior.action !== "discarded") {
+        throw Object.assign(new Error("draft conflict resolution conflicts"), {
+          code: "DRAFT_CONFLICT_RESOLUTION_CONFLICT",
+        });
+      }
+      return { replayed: true };
+    }
+    const key = this.draftKey(input.conversationId, input.ownerId);
+    const conflict = (this.draftConflicts.get(key) ?? [])
+      .find(candidate => candidate.id === input.conflictId);
+    if (!conflict) {
+      throw Object.assign(new Error("draft conflict not found"), {
+        code: "DRAFT_CONFLICT_NOT_FOUND",
+      });
+    }
+    const resolution: DraftConflictResolution = {
+      conflictId: input.conflictId,
+      conversationId: input.conversationId,
+      ownerId: input.ownerId,
+      action: "discarded",
+    };
+    this.append(
+      {
+        type: "draft_conflict",
+        conversationId: input.conversationId,
+        revision: this.getDraft(input.conversationId, input.ownerId).revision,
+      },
+      { kind: "draft_conflict_resolved", resolution },
+    );
+    return { replayed: false };
   }
 
   deleteDraft(draftId: string): void {

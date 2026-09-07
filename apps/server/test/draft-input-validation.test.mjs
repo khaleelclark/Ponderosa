@@ -25,6 +25,10 @@ const noCleanup = {
   enqueueDraftAttachmentCleanup: () => {},
   finishDraftAttachmentCleanup: () => {},
   pendingDraftAttachmentCleanups: () => [],
+  reserveDraftAttachment: () => "draft-reservation",
+  settleDraftAttachment: () => {},
+  releaseDraftAttachment: () => true,
+  syncDraftAttachment: () => {},
 };
 
 function deferred() {
@@ -201,6 +205,128 @@ test("draft routes hydrate a separate durable pasted-text asset", async (t) => {
     replacementStillReferenced.body,
   );
   await app.close();
+});
+
+test("draft conflict routes restore or discard exactly one durable asset snapshot", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "ponderosa-draft-conflict-assets-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const workspace = new WorkspaceStore(directory);
+  const assets = new AssetStore(directory);
+  t.after(() => assets.close());
+  const drafts = new DraftService(
+    directory,
+    { getAgent: () => undefined, getConversation: () => ({ id: "chat-a" }) },
+    workspace,
+    assets,
+  );
+  const app = Fastify();
+  t.after(() => app.close());
+  app.addContentTypeParser(
+    "application/octet-stream",
+    { parseAs: "buffer" },
+    (_request, body, done) => done(null, body),
+  );
+  registerDraftRoutes(app, drafts, workspace, 8, () => undefined);
+  const upload = async (name, body) => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/conversations/chat-a/draft-attachments",
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-ponderosa-draft-owner": "browser-one",
+        "x-ponderosa-filename": name,
+        "x-ponderosa-media-type": "text/plain",
+      },
+      payload: Buffer.from(body),
+    });
+    assert.equal(response.statusCode, 201, response.body);
+    return response.json();
+  };
+  const current = await upload("current.txt", "current bytes");
+  const restoreFile = await upload("restore.txt", "restore bytes");
+  const restorePaste = await upload("Pasted text.txt", "restore paste");
+  const discardFile = await upload("discard.txt", "discard bytes");
+  assert.equal((await app.inject({
+    method: "PUT",
+    url: "/api/conversations/chat-a/draft",
+    payload: { ...validDraft, attachmentIds: [current.id] },
+  })).statusCode, 200);
+  const conflictFor = async (text, attachmentIds, pastedTextAttachmentId) => {
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/conversations/chat-a/draft",
+      payload: {
+        ...validDraft,
+        text,
+        attachmentIds,
+        ...(pastedTextAttachmentId ? { pastedTextAttachmentId } : {}),
+        clientId: `page:${text}`,
+      },
+    });
+    assert.equal(response.statusCode, 409, response.body);
+    return response.json();
+  };
+  const restoreConflict = await conflictFor(
+    "restore snapshot",
+    [restoreFile.id],
+    restorePaste.id,
+  );
+  const discardConflict = await conflictFor("discard snapshot", [discardFile.id]);
+  const discarded = await app.inject({
+    method: "DELETE",
+    url: `/api/conversations/chat-a/draft-conflicts/${discardConflict.id}?ownerId=browser-one`,
+  });
+  assert.equal(discarded.statusCode, 200, discarded.body);
+  assert.equal(discarded.json().replayed, false);
+  const discardReplay = await app.inject({
+    method: "DELETE",
+    url: `/api/conversations/chat-a/draft-conflicts/${discardConflict.id}?ownerId=browser-one`,
+  });
+  assert.equal(discardReplay.statusCode, 200, discardReplay.body);
+  assert.equal(discardReplay.json().replayed, true);
+
+  const restored = await app.inject({
+    method: "POST",
+    url: `/api/conversations/chat-a/draft-conflicts/${restoreConflict.id}/restore`,
+    payload: {
+      ownerId: "browser-one",
+      expectedRevision: 1,
+      clientId: "page:restored",
+    },
+  });
+  assert.equal(restored.statusCode, 200, restored.body);
+  assert.equal(restored.json().draft.text, "restore snapshot");
+  assert.deepEqual(restored.json().draft.attachmentIds, [restoreFile.id]);
+  assert.equal(restored.json().draft.pastedTextAttachmentId, restorePaste.id);
+  const restoreReplay = await app.inject({
+    method: "POST",
+    url: `/api/conversations/chat-a/draft-conflicts/${restoreConflict.id}/restore`,
+    payload: {
+      ownerId: "browser-one",
+      expectedRevision: 0,
+      clientId: "ignored-on-replay",
+    },
+  });
+  assert.equal(restoreReplay.statusCode, 200, restoreReplay.body);
+  assert.equal(restoreReplay.json().replayed, true);
+  await drafts.reconcileAttachmentCleanup(Date.now() + 10 * 60_000);
+  assert.equal((await app.inject({ method: "GET", url: current.downloadUrl })).statusCode, 404);
+  assert.equal((await app.inject({ method: "GET", url: discardFile.downloadUrl })).statusCode, 404);
+  assert.equal((await app.inject({ method: "GET", url: restoreFile.downloadUrl })).statusCode, 200);
+  assert.equal((await app.inject({ method: "GET", url: restorePaste.downloadUrl })).statusCode, 200);
+
+  const bounded = [];
+  for (let index = 0; index < 21; index += 1) {
+    const attachment = await upload(`bounded-${index}.txt`, `bounded ${index}`);
+    const conflict = await conflictFor(`bounded ${index}`, [attachment.id]);
+    bounded.push({ attachment, conflict });
+  }
+  const listed = workspace.listDraftConflicts("chat-a", "browser-one").conflicts;
+  assert.equal(listed.length, 20);
+  assert.equal(listed.some(({ id }) => id === bounded[0].conflict.id), false);
+  await drafts.reconcileAttachmentCleanup(Date.now() + 10 * 60_000);
+  assert.equal((await app.inject({ method: "GET", url: bounded[0].attachment.downloadUrl })).statusCode, 404);
+  assert.equal((await app.inject({ method: "GET", url: bounded.at(-1).attachment.downloadUrl })).statusCode, 200);
 });
 
 test("draft clear survives partial cleanup and restart without deleting current file or paste references", async (t) => {

@@ -120,3 +120,113 @@ test("only incarnation-shaped IDs receive same-chain revision recovery", (t) => 
     "legacy current data",
   );
 });
+
+test("draft conflicts keep stable IDs and resolve one snapshot idempotently across restart", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "ponderosa-draft-conflict-resolution-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  let store = new WorkspaceStore(directory);
+  const current = store.putDraft("chat-a", {
+    ownerId: "browser-a",
+    text: "current",
+    attachmentIds: ["current-file"],
+    expectedRevision: 0,
+    clientId: "page:browser-a:draft:current",
+  });
+  const stale = {
+    ownerId: "browser-a",
+    text: "restore me",
+    attachmentIds: ["stale-file"],
+    pastedTextAttachmentId: "stale-paste",
+    mentionBindings: [{
+      projectId: "project-a",
+      agentId: "agent-a",
+      handle: "agent-a",
+      currentHandle: "agent-a",
+      currentTitle: "Agent A",
+    }],
+    expectedRevision: 0,
+    clientId: "page:browser-a:draft:stale",
+  };
+  let firstConflict;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    assert.throws(
+      () => store.putDraft("chat-a", stale),
+      error => {
+        assert.equal(error?.code, "DRAFT_CONFLICT");
+        firstConflict ??= error.conflict;
+        assert.equal(error.conflict.id, firstConflict.id);
+        return true;
+      },
+    );
+  }
+  assert.equal(store.listDraftConflicts("chat-a", "browser-a").conflicts.length, 1);
+
+  const newer = store.putDraft("chat-a", {
+    ownerId: "browser-a",
+    text: "newer current",
+    attachmentIds: [],
+    expectedRevision: current.revision,
+    clientId: "page:browser-a:draft:newer",
+  });
+  let secondConflict;
+  assert.throws(
+    () => store.putDraft("chat-a", { ...stale, text: "discard me" }),
+    error => {
+      secondConflict = error.conflict;
+      return error?.code === "DRAFT_CONFLICT";
+    },
+  );
+  assert.notEqual(secondConflict.id, firstConflict.id);
+  assert.deepEqual(
+    store.discardDraftConflict({
+      conversationId: "chat-a",
+      ownerId: "browser-a",
+      conflictId: secondConflict.id,
+    }),
+    { replayed: false },
+  );
+  assert.deepEqual(
+    store.discardDraftConflict({
+      conversationId: "chat-a",
+      ownerId: "browser-a",
+      conflictId: secondConflict.id,
+    }),
+    { replayed: true },
+  );
+  assert.deepEqual(
+    store.listDraftConflicts("chat-a", "browser-a").conflicts.map(({ id }) => id),
+    [firstConflict.id],
+  );
+
+  const restored = store.restoreDraftConflict({
+    conversationId: "chat-a",
+    ownerId: "browser-a",
+    conflictId: firstConflict.id,
+    expectedRevision: newer.revision,
+    clientId: "page:browser-a:draft:restored",
+  });
+  assert.equal(restored.replayed, false);
+  assert.equal(restored.draft.text, stale.text);
+  assert.deepEqual(restored.draft.attachmentIds, stale.attachmentIds);
+  assert.equal(restored.draft.pastedTextAttachmentId, stale.pastedTextAttachmentId);
+  assert.deepEqual(restored.draft.mentionBindings, stale.mentionBindings);
+  assert.equal(store.listDraftConflicts("chat-a", "browser-a").conflicts.length, 0);
+
+  store = new WorkspaceStore(directory);
+  assert.deepEqual(store.getDraft("chat-a", "browser-a"), restored.draft);
+  assert.deepEqual(store.restoreDraftConflict({
+    conversationId: "chat-a",
+    ownerId: "browser-a",
+    conflictId: firstConflict.id,
+    expectedRevision: 0,
+    clientId: "ignored-on-replay",
+  }), { draft: restored.draft, replayed: true });
+  assert.throws(
+    () => store.discardDraftConflict({
+      conversationId: "chat-a",
+      ownerId: "browser-a",
+      conflictId: firstConflict.id,
+    }),
+    error => error?.code === "DRAFT_CONFLICT_RESOLUTION_CONFLICT",
+  );
+});

@@ -10,6 +10,8 @@ import type {
   AssetDto,
   DraftAttachmentDto,
   PutConversationDraftRequest,
+  ResolveConversationDraftConflictResponse,
+  RestoreConversationDraftConflictRequest,
 } from "@ponderosa/core";
 import {
   INLINE_TEXT_MAX_CODE_POINTS,
@@ -170,7 +172,9 @@ export class DraftService {
     private readonly cleanupAuthority: Pick<
       AssetStore,
       "enqueueDraftAttachmentCleanup" | "finishDraftAttachmentCleanup" |
-      "pendingDraftAttachmentCleanups"
+      "pendingDraftAttachmentCleanups" | "releaseDraftAttachment" |
+      "reserveDraftAttachment" | "settleDraftAttachment" |
+      "syncDraftAttachment"
     >,
   ) {
     this.root = path.resolve(dataDir, "draft-attachments");
@@ -271,6 +275,28 @@ export class DraftService {
     );
   }
 
+  reserveAttachment(
+    draftId: string,
+    ownerId: string,
+    assetId: string,
+    size: number,
+  ): string {
+    return this.cleanupAuthority.reserveDraftAttachment(
+      draftId,
+      ownerId,
+      assetId,
+      size,
+    );
+  }
+
+  settleAttachment(reservationId: string): void {
+    this.cleanupAuthority.settleDraftAttachment(reservationId);
+  }
+
+  releaseAttachment(reservationId: string): boolean {
+    return this.cleanupAuthority.releaseDraftAttachment(reservationId);
+  }
+
   enqueueReleasedAttachments(
     draftId: string,
     ownerId: string,
@@ -325,6 +351,19 @@ export class DraftService {
       if (!releaseMutation) continue;
       try {
         await this.withMutationLock(receipt.draftId, receipt.ownerId, async () => {
+          const stored = await this.readStored(
+            receipt.draftId,
+            receipt.ownerId,
+            receipt.assetId,
+          );
+          if (stored) {
+            this.cleanupAuthority.syncDraftAttachment(
+              receipt.draftId,
+              receipt.ownerId,
+              receipt.assetId,
+              stored.size,
+            );
+          }
           if (this.attachmentReferenced(receipt.draftId, receipt.ownerId, receipt.assetId)) return;
           await this.deleteAttachmentFiles(receipt.draftId, receipt.ownerId, receipt.assetId);
           this.cleanupAuthority.finishDraftAttachmentCleanup(
@@ -536,7 +575,9 @@ export function registerDraftRoutes(
   service: DraftService,
   workspace: Pick<
     WorkspaceStore,
-    "cursor" | "getDraft" | "listDraftConflicts" | "putDraft"
+    "cursor" | "discardDraftConflict" | "draftConflictResolution" |
+    "getDraft" | "listDraftConflicts" | "putDraft" |
+    "restoreDraftConflict"
   >,
   maxAttachmentsPerMessage: number,
   publishWorkspaceSince: (cursor: number) => unknown,
@@ -596,7 +637,9 @@ export function registerDraftRoutes(
             return service.hydrate(request.params.id, ownerId);
           } catch (error) {
             if ((error as { code?: string }).code === "DRAFT_CONFLICT") {
+              const conflict = (error as { conflict?: { id?: string } }).conflict;
               return reply.code(409).send({
+                ...(conflict?.id ? { id: conflict.id } : {}),
                 current: await service.hydrate(request.params.id, ownerId),
                 displaced: (error as { displaced: unknown }).displaced,
               });
@@ -629,6 +672,128 @@ export function registerDraftRoutes(
         const saved = await persist();
         void service.reconcileAttachmentCleanup().catch(() => undefined);
         return saved;
+      });
+    } finally {
+      releaseMutation();
+    }
+  });
+
+  app.post<{
+    Params: { id: string; conflictId: string };
+    Body: RestoreConversationDraftConflictRequest;
+  }>("/api/conversations/:id/draft-conflicts/:conflictId/restore", async (request, reply) => {
+    const releaseMutation = service.acquireMutationLease(request.params.id);
+    if (!releaseMutation) return reply.code(404).send({ error: "draft surface not found" });
+    try {
+      if (!service.validId(request.params.id)) {
+        return reply.code(404).send({ error: "draft surface not found" });
+      }
+      if (!request.body || typeof request.body !== "object" || Array.isArray(request.body) ||
+          Object.keys(request.body).some(key => !["ownerId", "expectedRevision", "clientId"].includes(key)) ||
+          !Number.isSafeInteger(request.body.expectedRevision) || request.body.expectedRevision < 0 ||
+          typeof request.body.clientId !== "string" || !request.body.clientId.trim() ||
+          request.body.clientId.length > 200) {
+        return reply.code(400).send({ error: "invalid draft conflict restore request" });
+      }
+      const ownerId = service.normalizedOwner(request.body.ownerId);
+      if (!ownerId) return reply.code(400).send({ error: "invalid draft owner" });
+      return await service.withMutationLock(request.params.id, ownerId, async () => {
+        const prior = workspace.draftConflictResolution(request.params.conflictId);
+        const conflict = workspace.listDraftConflicts(request.params.id, ownerId).conflicts
+          .find(candidate => candidate.id === request.params.conflictId);
+        if (!prior) {
+          if (!conflict) return reply.code(404).send({ error: "draft conflict not found" });
+          const referencedIds = [
+            ...conflict.displaced.attachmentIds,
+            ...(conflict.displaced.pastedTextAttachmentId
+              ? [conflict.displaced.pastedTextAttachmentId]
+              : []),
+          ];
+          const referenced = await Promise.all(referencedIds.map(id =>
+            service.read(request.params.id, ownerId, id)));
+          if (referenced.some(item => !item)) {
+            return reply.code(409).send({ error: "draft conflict attachment is unavailable" });
+          }
+          service.enqueueReleasedAttachments(
+            request.params.id,
+            ownerId,
+            workspace.getDraft(request.params.id, ownerId),
+            conflict.displaced,
+          );
+        }
+        try {
+          const cursor = workspace.cursor();
+          const restored = workspace.restoreDraftConflict({
+            conversationId: request.params.id,
+            ownerId,
+            conflictId: request.params.conflictId,
+            expectedRevision: request.body.expectedRevision,
+            clientId: request.body.clientId,
+          });
+          const response: ResolveConversationDraftConflictResponse = {
+            conflictId: request.params.conflictId,
+            action: "restored",
+            replayed: restored.replayed,
+            draft: await service.hydrate(request.params.id, ownerId),
+          };
+          publishWorkspaceSince(cursor);
+          void service.reconcileAttachmentCleanup().catch(() => undefined);
+          return response;
+        } catch (error) {
+          const code = (error as { code?: string }).code;
+          if (code === "DRAFT_REVISION_CHANGED" ||
+              code === "DRAFT_CONFLICT_RESOLUTION_CONFLICT") {
+            return reply.code(409).send({ error: (error as Error).message });
+          }
+          if (code === "DRAFT_CONFLICT_NOT_FOUND") {
+            return reply.code(404).send({ error: (error as Error).message });
+          }
+          throw error;
+        }
+      });
+    } finally {
+      releaseMutation();
+    }
+  });
+
+  app.delete<{
+    Params: { id: string; conflictId: string };
+    Querystring: { ownerId?: string };
+  }>("/api/conversations/:id/draft-conflicts/:conflictId", async (request, reply) => {
+    const releaseMutation = service.acquireMutationLease(request.params.id);
+    if (!releaseMutation) return reply.code(404).send({ error: "draft surface not found" });
+    try {
+      if (!service.validId(request.params.id)) {
+        return reply.code(404).send({ error: "draft surface not found" });
+      }
+      const ownerId = service.normalizedOwner(request.query.ownerId);
+      if (!ownerId) return reply.code(400).send({ error: "draft owner is required" });
+      return await service.withMutationLock(request.params.id, ownerId, async () => {
+        try {
+          const cursor = workspace.cursor();
+          const discarded = workspace.discardDraftConflict({
+            conversationId: request.params.id,
+            ownerId,
+            conflictId: request.params.conflictId,
+          });
+          const response: ResolveConversationDraftConflictResponse = {
+            conflictId: request.params.conflictId,
+            action: "discarded",
+            replayed: discarded.replayed,
+          };
+          publishWorkspaceSince(cursor);
+          void service.reconcileAttachmentCleanup().catch(() => undefined);
+          return response;
+        } catch (error) {
+          const code = (error as { code?: string }).code;
+          if (code === "DRAFT_CONFLICT_RESOLUTION_CONFLICT") {
+            return reply.code(409).send({ error: (error as Error).message });
+          }
+          if (code === "DRAFT_CONFLICT_NOT_FOUND") {
+            return reply.code(404).send({ error: (error as Error).message });
+          }
+          throw error;
+        }
       });
     } finally {
       releaseMutation();
@@ -692,57 +857,79 @@ export function registerDraftRoutes(
           preview,
           previewSha256,
         } = prepared;
-        const id = randomUUID();
-        service.enqueueAttachmentCleanup(
-          request.params.id,
-          ownerId,
-          id,
-          Date.now() + DRAFT_ORPHAN_GRACE_MS,
-        );
-        const directory = service.attachmentDir(request.params.id, ownerId);
-        const files = service.files(request.params.id, ownerId, id);
-        const createdAt = new Date().toISOString();
-        const metadata: StoredDraftAttachment = {
-          id,
-          conversationId: request.params.id,
-          ownerId,
-          name,
-          mediaType,
-          size: request.body.length,
-          createdAt,
-          sha256,
-          ...(width !== undefined ? { width } : {}),
-          ...(height !== undefined ? { height } : {}),
-          ...(previewSha256 ? { previewSha256 } : {}),
-        };
-        await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-        const temp = files.bodyTemp;
-        const previewTemp = files.previewTemp;
-        try {
-          await fs.writeFile(temp, request.body, {
-            mode: 0o600,
-            flag: "wx",
-          });
-          if (preview) {
-            await fs.writeFile(previewTemp, preview, {
+        return await service.withMutationLock(request.params.id, ownerId, async () => {
+          const id = randomUUID();
+          let reservationId: string;
+          try {
+            reservationId = service.reserveAttachment(
+              request.params.id,
+              ownerId,
+              id,
+              request.body.length,
+            );
+          } catch (error) {
+            if (error instanceof AssetError) {
+              return reply.code(error.statusCode).send({ error: error.message });
+            }
+            throw error;
+          }
+          service.enqueueAttachmentCleanup(
+            request.params.id,
+            ownerId,
+            id,
+            Date.now() + DRAFT_ORPHAN_GRACE_MS,
+          );
+          const directory = service.attachmentDir(request.params.id, ownerId);
+          const files = service.files(request.params.id, ownerId, id);
+          const createdAt = new Date().toISOString();
+          const metadata: StoredDraftAttachment = {
+            id,
+            conversationId: request.params.id,
+            ownerId,
+            name,
+            mediaType,
+            size: request.body.length,
+            createdAt,
+            sha256,
+            ...(width !== undefined ? { width } : {}),
+            ...(height !== undefined ? { height } : {}),
+            ...(previewSha256 ? { previewSha256 } : {}),
+          };
+          const temp = files.bodyTemp;
+          const previewTemp = files.previewTemp;
+          try {
+            await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+            await fs.writeFile(temp, request.body, {
               mode: 0o600,
               flag: "wx",
             });
+            if (preview) {
+              await fs.writeFile(previewTemp, preview, {
+                mode: 0o600,
+                flag: "wx",
+              });
+            }
+            await fs.rename(temp, files.body);
+            if (preview) await fs.rename(previewTemp, files.preview);
+            await fs.writeFile(files.metadata, JSON.stringify(metadata), {
+              mode: 0o600,
+              flag: "wx",
+            });
+            service.settleAttachment(reservationId);
+          } catch (error) {
+            service.releaseAttachment(reservationId);
+            service.enqueueAttachmentCleanup(request.params.id, ownerId, id);
+            void service.reconcileAttachmentCleanup().catch(() => undefined);
+            if (error instanceof AssetError) {
+              return reply.code(error.statusCode).send({ error: error.message });
+            }
+            throw error;
           }
-          await fs.rename(temp, files.body);
-          if (preview) await fs.rename(previewTemp, files.preview);
-          await fs.writeFile(files.metadata, JSON.stringify(metadata), {
-            mode: 0o600,
-            flag: "wx",
-          });
-        } catch (error) {
-          service.enqueueAttachmentCleanup(request.params.id, ownerId, id);
-          void service.reconcileAttachmentCleanup().catch(() => undefined);
-          throw error;
-        }
-        return reply
-          .code(201)
-          .send(service.publicAttachment(request.params.id, ownerId, metadata));
+          service.releaseAttachment(reservationId);
+          return reply
+            .code(201)
+            .send(service.publicAttachment(request.params.id, ownerId, metadata));
+        });
       } finally {
         releaseMutation();
       }

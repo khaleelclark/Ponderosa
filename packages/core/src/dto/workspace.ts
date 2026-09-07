@@ -197,8 +197,23 @@ export interface ConversationDraftDto {
 
 /** A rejected stale write includes the displaced text as a recoverable copy. */
 export interface ConversationDraftConflictDto {
+  /** Stable identity used to restore or discard exactly this displaced write. */
+  id: string;
   current: ConversationDraftDto;
   displaced: Pick<ConversationDraftDto, "conversationId" | "text" | "attachmentIds" | "pastedTextAttachmentId" | "mentionBindings" | "clientId"> & { capturedAt: string };
+}
+
+export interface RestoreConversationDraftConflictRequest {
+  ownerId: string;
+  expectedRevision: number;
+  clientId: string;
+}
+
+export interface ResolveConversationDraftConflictResponse {
+  conflictId: string;
+  action: "restored" | "discarded";
+  replayed: boolean;
+  draft?: ConversationDraftDto;
 }
 
 export interface ConversationDraftConflictListDto {
