@@ -488,6 +488,8 @@ export function registerServerLifecycle(
     // any crash gap in the workspace log before the listener becomes ready.
     reconcileCommittedProjectDeletions();
     completeLifecyclePhase("project_deletion_workspace_recovery");
+    await drafts.synchronizeAttachmentQuota();
+    completeLifecyclePhase("draft_attachment_quota_recovery");
     await runAgentCreationRecovery(Number.POSITIVE_INFINITY);
     const failedCreationRecovery = recoverFailedAgentCreations({
       store,

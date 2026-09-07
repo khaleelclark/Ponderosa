@@ -262,7 +262,7 @@ function validatePreparedAssetUpload(
   return prepared;
 }
 
-async function writeAtomic(file: string, body: Buffer | string): Promise<void> {
+export async function writeAtomic(file: string, body: Buffer | string): Promise<void> {
   const temporary = `${file}.${randomUUID()}.tmp`;
   const handle = await open(temporary, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
   try { await handle.writeFile(body); await handle.sync(); } finally { await handle.close(); }

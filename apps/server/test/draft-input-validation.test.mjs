@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { INLINE_TEXT_MAX_CODE_POINTS } from "@ponderosa/core";
 import { WorkspaceStore } from "@ponderosa/agents";
+import Database from "better-sqlite3";
 import Fastify from "fastify";
 import { AssetStore } from "../dist/assets.js";
 import {
@@ -21,6 +22,7 @@ const validDraft = {
   clientId: "page:one",
   ownerId: "browser-one",
 };
+const validAssetId = "00000000-0000-4000-8000-000000000001";
 const noCleanup = {
   enqueueDraftAttachmentCleanup: () => {},
   finishDraftAttachmentCleanup: () => {},
@@ -57,12 +59,12 @@ test("draft updates accept only exact typed bounded state", () => {
   assert.equal(draftUpdateBodyError(validDraft, 8), undefined);
   assert.equal(draftUpdateBodyError({
     ...validDraft,
-    pastedTextAttachmentId: "paste-a",
+    pastedTextAttachmentId: validAssetId,
   }, 8), undefined);
   assert.ok(draftUpdateBodyError({
     ...validDraft,
-    attachmentIds: ["paste-a"],
-    pastedTextAttachmentId: "paste-a",
+    attachmentIds: [validAssetId],
+    pastedTextAttachmentId: validAssetId,
   }, 8));
   assert.ok(draftUpdateBodyError({
     ...validDraft,
@@ -75,6 +77,228 @@ test("draft updates accept only exact typed bounded state", () => {
       extra: true,
     }],
   }, 8));
+});
+
+test("draft asset identifiers are bounded UUIDs before stale conflict persistence", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "ponderosa-draft-id-boundary-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const workspace = new WorkspaceStore(directory);
+  workspace.putDraft("chat-a", {
+    ...validDraft,
+    text: "newer",
+    ownerId: "browser-one",
+  });
+  const app = Fastify();
+  t.after(() => app.close());
+  registerDraftRoutes(
+    app,
+    new DraftService(
+      directory,
+      { getAgent: () => undefined, getConversation: () => ({ id: "chat-a" }) },
+      workspace,
+      noCleanup,
+    ),
+    workspace,
+    8,
+    () => undefined,
+  );
+  for (const references of [
+    { attachmentIds: ["A".repeat(1_000_000)] },
+    { attachmentIds: [], pastedTextAttachmentId: "B".repeat(1_000_000) },
+  ]) {
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/conversations/chat-a/draft",
+      payload: { ...validDraft, ...references, text: "stale" },
+    });
+    assert.equal(response.statusCode, 400, response.body);
+  }
+  assert.equal(workspace.listDraftConflicts("chat-a", "browser-one").conflicts.length, 0);
+
+  const wellFormedMissing = await app.inject({
+    method: "PUT",
+    url: "/api/conversations/chat-a/draft",
+    payload: {
+      ...validDraft,
+      text: "recover me",
+      attachmentIds: [validAssetId],
+    },
+  });
+  assert.equal(wellFormedMissing.statusCode, 409, wellFormedMissing.body);
+});
+
+test("draft upload syncs its directory before settlement and releases a failed barrier", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "ponderosa-draft-durable-write-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const events = [];
+  let failSync = true;
+  const authority = {
+    ...noCleanup,
+    enqueueDraftAttachmentCleanup: () => { events.push("cleanup"); },
+    reserveDraftAttachment: () => { events.push("reserve"); return "reservation"; },
+    settleDraftAttachment: () => { events.push("settle"); },
+    releaseDraftAttachment: () => { events.push("release"); return true; },
+  };
+  const drafts = new DraftService(
+    directory,
+    { getAgent: () => undefined, getConversation: () => ({ id: "chat-a" }) },
+    {
+      cursor: () => 0,
+      getDraft: () => ({ ...validDraft, conversationId: "chat-a", revision: 0, updatedAt: new Date(0).toISOString() }),
+      listDraftConflicts: () => ({ conversationId: "chat-a", conflicts: [] }),
+      putDraft: () => assert.fail("upload must not mutate the draft"),
+    },
+    authority,
+  );
+  drafts.syncAttachmentDirectory = async () => {
+    events.push("sync-directory");
+    if (failSync) throw new Error("injected directory fsync failure");
+  };
+  const app = Fastify();
+  t.after(() => app.close());
+  app.addContentTypeParser(
+    "application/octet-stream",
+    { parseAs: "buffer" },
+    (_request, body, done) => done(null, body),
+  );
+  registerDraftRoutes(app, drafts, authority, 8, () => undefined);
+  const upload = () => app.inject({
+    method: "POST",
+    url: "/api/conversations/chat-a/draft-attachments",
+    headers: {
+      "content-type": "application/octet-stream",
+      "x-ponderosa-draft-owner": "browser-one",
+      "x-ponderosa-filename": "note.txt",
+      "x-ponderosa-media-type": "text/plain",
+    },
+    payload: Buffer.from("durable body"),
+  });
+  const failed = await upload();
+  assert.equal(failed.statusCode, 500, failed.body);
+  assert.equal(events.includes("settle"), false);
+  assert.equal(events.at(-1), "release");
+  failSync = false;
+  events.length = 0;
+  const succeeded = await upload();
+  assert.equal(succeeded.statusCode, 201, succeeded.body);
+  assert.ok(events.indexOf("sync-directory") < events.indexOf("settle"));
+  assert.equal(events.at(-1), "release");
+});
+
+test("draft upload concurrency is admitted before content preparation across owners", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "ponderosa-draft-preparation-admission-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const assets = new AssetStore(directory);
+  t.after(() => assets.close());
+  const drafts = new DraftService(
+    directory,
+    { getAgent: () => undefined, getConversation: () => ({ id: "chat-a" }) },
+    new WorkspaceStore(directory),
+    assets,
+  );
+  const syncs = [];
+  drafts.syncAttachmentDirectory = () => new Promise(resolve => syncs.push(resolve));
+  const app = Fastify();
+  t.after(() => app.close());
+  app.addContentTypeParser(
+    "application/octet-stream",
+    { parseAs: "buffer" },
+    (_request, body, done) => done(null, body),
+  );
+  registerDraftRoutes(app, drafts, new WorkspaceStore(directory), 8, () => undefined);
+  const request = (ownerId, payload = Buffer.from("valid text"), filename = "note.txt") => app.inject({
+    method: "POST",
+    url: "/api/conversations/chat-a/draft-attachments",
+    headers: {
+      "content-type": "application/octet-stream",
+      "x-ponderosa-draft-owner": ownerId,
+      "x-ponderosa-filename": filename,
+      "x-ponderosa-media-type": "text/plain",
+    },
+    payload,
+  });
+  const active = Array.from({ length: 4 }, (_, index) => request(`owner-${index}`));
+  while (syncs.length < 4) await new Promise(resolve => setImmediate(resolve));
+  const rejectedBeforePreparation = await request(
+    "rotated-owner",
+    Buffer.from([0, 1, 2, 3]),
+    "invalid.txt",
+  );
+  assert.equal(rejectedBeforePreparation.statusCode, 429, rejectedBeforePreparation.body);
+  for (const resolve of syncs.splice(0)) resolve();
+  const settled = await Promise.all(active);
+  assert.ok(settled.every(response => response.statusCode === 201));
+});
+
+test("v9 startup quota synchronization includes future-grace receipts and is idempotent", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "ponderosa-draft-v9-backfill-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const workspace = new WorkspaceStore(directory);
+  let assets = new AssetStore(directory);
+  let drafts = new DraftService(
+    directory,
+    { getAgent: () => undefined, getConversation: () => ({ id: "chat-a" }) },
+    workspace,
+    assets,
+  );
+  const app = Fastify();
+  app.addContentTypeParser(
+    "application/octet-stream",
+    { parseAs: "buffer" },
+    (_request, body, done) => done(null, body),
+  );
+  registerDraftRoutes(app, drafts, workspace, 8, () => undefined);
+  const uploaded = await app.inject({
+    method: "POST",
+    url: "/api/conversations/chat-a/draft-attachments",
+    headers: {
+      "content-type": "application/octet-stream",
+      "x-ponderosa-draft-owner": "browser-one",
+      "x-ponderosa-filename": "note.txt",
+      "x-ponderosa-media-type": "text/plain",
+    },
+    payload: Buffer.from("pre-v9 body"),
+  });
+  assert.equal(uploaded.statusCode, 201, uploaded.body);
+  await app.close();
+  assets.close();
+
+  const databaseFile = join(directory, "asset-authority.sqlite");
+  let db = new Database(databaseFile);
+  const eligibleAt = db.prepare(
+    "SELECT eligible_at eligibleAt FROM draft_attachment_cleanups WHERE asset_id=?",
+  ).get(uploaded.json().id).eligibleAt;
+  assert.ok(eligibleAt > Date.now());
+  db.exec(`
+    DROP TABLE draft_asset_settlements;
+    DROP TABLE draft_asset_reservations;
+    DROP TABLE draft_asset_committed;
+    DROP TABLE draft_asset_rate_events;
+    PRAGMA user_version=8;
+  `);
+  db.prepare(`
+    INSERT INTO draft_attachment_cleanups(draft_id,owner_id,asset_id,eligible_at)
+    VALUES (?,?,?,?)
+  `).run("chat-a", "browser-one", "00000000-0000-4000-8000-000000000099", eligibleAt);
+  db.close();
+
+  assets = new AssetStore(directory);
+  t.after(() => assets.close());
+  drafts = new DraftService(
+    directory,
+    { getAgent: () => undefined, getConversation: () => ({ id: "chat-a" }) },
+    workspace,
+    assets,
+  );
+  assert.equal(await drafts.synchronizeAttachmentQuota(), 1);
+  assert.equal(await drafts.synchronizeAttachmentQuota(), 1);
+  db = new Database(databaseFile, { readonly: true });
+  t.after(() => db.close());
+  assert.equal(db.prepare("SELECT count(*) count FROM draft_asset_committed").get().count, 1);
+  assert.equal(db.prepare(
+    "SELECT eligible_at eligibleAt FROM draft_attachment_cleanups WHERE asset_id=?",
+  ).get(uploaded.json().id).eligibleAt, eligibleAt);
+  assert.equal(db.prepare("SELECT count(*) count FROM draft_attachment_cleanups").get().count, 2);
 });
 
 test("draft routes hydrate a separate durable pasted-text asset", async (t) => {

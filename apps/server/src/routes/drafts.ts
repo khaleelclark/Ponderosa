@@ -23,9 +23,11 @@ import {
   AssetError,
   contentDisposition,
   prepareAssetUpload,
+  writeAtomic,
   type AssetStore,
   type PreparedAssetUpload,
 } from "../assets.js";
+import { RUNTIME_UUID } from "../asset-contracts.js";
 
 interface StoredDraftAttachment
   extends Omit<DraftAttachmentDto, "downloadUrl" | "mediaType" | "ownerId"> {
@@ -83,17 +85,18 @@ export function draftUpdateBodyError(
   if (
     !Array.isArray(body.attachmentIds) ||
     body.attachmentIds.length > maxAttachmentsPerMessage ||
-    body.attachmentIds.some(id => typeof id !== "string") ||
+    body.attachmentIds.some(id =>
+      typeof id !== "string" || !RUNTIME_UUID.test(id)) ||
     new Set(body.attachmentIds).size !== body.attachmentIds.length
   ) {
-    return `at most ${maxAttachmentsPerMessage} unique string draft attachments are allowed`;
+    return `at most ${maxAttachmentsPerMessage} unique draft attachment UUIDs are allowed`;
   }
   if (
     body.pastedTextAttachmentId !== undefined &&
     (typeof body.pastedTextAttachmentId !== "string" ||
-      !body.pastedTextAttachmentId)
+      !RUNTIME_UUID.test(body.pastedTextAttachmentId))
   ) {
-    return "draft pasted-text attachment must be a non-empty string";
+    return "draft pasted-text attachment must be a UUID";
   }
   if (
     body.pastedTextAttachmentId !== undefined &&
@@ -374,6 +377,12 @@ export class DraftService {
       }
     }
     const directory = this.attachmentDir(draftId, ownerId);
+    for (const entry of await fs.readdir(directory).catch(() => [])) {
+      if (!entry.startsWith(`${assetId}.`) || !entry.endsWith(".tmp")) continue;
+      await fs.unlink(path.join(directory, entry)).catch(error => {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      });
+    }
     let handle;
     try { handle = await fs.open(directory, "r"); }
     catch (error) {
@@ -418,6 +427,31 @@ export class DraftService {
       }
     }
     return removed;
+  }
+
+  /** Backfill quota authority for pre-v9 files before uploads can be admitted.
+   * Cleanup eligibility remains unchanged; future-grace receipts are scanned
+   * here only to account for their already durable bytes. */
+  async synchronizeAttachmentQuota(): Promise<number> {
+    let synchronized = 0;
+    for (const receipt of this.cleanupAuthority.pendingDraftAttachmentCleanups(
+      Number.MAX_SAFE_INTEGER,
+    )) {
+      const stored = await this.readStored(
+        receipt.draftId,
+        receipt.ownerId,
+        receipt.assetId,
+      );
+      if (!stored) continue;
+      this.cleanupAuthority.syncDraftAttachment(
+        receipt.draftId,
+        receipt.ownerId,
+        receipt.assetId,
+        stored.size,
+      );
+      synchronized += 1;
+    }
+    return synchronized;
   }
 
   surfaceDir(draftId: string): string {
@@ -607,6 +641,12 @@ export class DraftService {
     }
     if (kind === "agent") return Boolean(this.store.getAgent(id));
     return false;
+  }
+
+  async syncAttachmentDirectory(directory: string): Promise<void> {
+    const handle = await fs.open(directory, "r");
+    try { await handle.sync(); }
+    finally { await handle.close(); }
   }
 }
 
@@ -873,6 +913,21 @@ export function registerDraftRoutes(
         ).replace(/[\u0000-\u001f\u007f]/g, "");
         const requestedName =
           path.basename(suppliedName).slice(0, 240) || "attachment";
+        const id = randomUUID();
+        let reservationId: string;
+        try {
+          reservationId = service.reserveAttachment(
+            request.params.id,
+            ownerId,
+            id,
+            request.body.length,
+          );
+        } catch (error) {
+          if (error instanceof AssetError) {
+            return reply.code(error.statusCode).send({ error: error.message });
+          }
+          throw error;
+        }
         let prepared;
         try {
           prepared = await prepareAssetUpload({
@@ -881,6 +936,7 @@ export function registerDraftRoutes(
             declaredType: declaredMediaType,
           });
         } catch (error) {
+          service.releaseAttachment(reservationId);
           if (error instanceof AssetError) {
             return reply.code(error.statusCode).send({
               error: `${requestedName}: ${error.message}`,
@@ -897,79 +953,54 @@ export function registerDraftRoutes(
           preview,
           previewSha256,
         } = prepared;
-        return await service.withMutationLock(request.params.id, ownerId, async () => {
-          const id = randomUUID();
-          let reservationId: string;
-          try {
-            reservationId = service.reserveAttachment(
+        try {
+          return await service.withMutationLock(request.params.id, ownerId, async () => {
+            service.enqueueAttachmentCleanup(
               request.params.id,
               ownerId,
               id,
-              request.body.length,
+              Date.now() + DRAFT_ORPHAN_GRACE_MS,
             );
-          } catch (error) {
-            if (error instanceof AssetError) {
-              return reply.code(error.statusCode).send({ error: error.message });
+            const directory = service.attachmentDir(request.params.id, ownerId);
+            const files = service.files(request.params.id, ownerId, id);
+            const createdAt = new Date().toISOString();
+            const metadata: StoredDraftAttachment = {
+              id,
+              conversationId: request.params.id,
+              ownerId,
+              name,
+              mediaType,
+              size: request.body.length,
+              createdAt,
+              sha256,
+              ...(width !== undefined ? { width } : {}),
+              ...(height !== undefined ? { height } : {}),
+              ...(previewSha256 ? { previewSha256 } : {}),
+            };
+            try {
+              await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+              await writeAtomic(files.body, request.body);
+              if (preview) {
+                await writeAtomic(files.preview, preview);
+              }
+              await writeAtomic(files.metadata, JSON.stringify(metadata));
+              await service.syncAttachmentDirectory(directory);
+              service.settleAttachment(reservationId);
+            } catch (error) {
+              service.enqueueAttachmentCleanup(request.params.id, ownerId, id);
+              void service.reconcileAttachmentCleanup().catch(() => undefined);
+              if (error instanceof AssetError) {
+                return reply.code(error.statusCode).send({ error: error.message });
+              }
+              throw error;
             }
-            throw error;
-          }
-          service.enqueueAttachmentCleanup(
-            request.params.id,
-            ownerId,
-            id,
-            Date.now() + DRAFT_ORPHAN_GRACE_MS,
-          );
-          const directory = service.attachmentDir(request.params.id, ownerId);
-          const files = service.files(request.params.id, ownerId, id);
-          const createdAt = new Date().toISOString();
-          const metadata: StoredDraftAttachment = {
-            id,
-            conversationId: request.params.id,
-            ownerId,
-            name,
-            mediaType,
-            size: request.body.length,
-            createdAt,
-            sha256,
-            ...(width !== undefined ? { width } : {}),
-            ...(height !== undefined ? { height } : {}),
-            ...(previewSha256 ? { previewSha256 } : {}),
-          };
-          const temp = files.bodyTemp;
-          const previewTemp = files.previewTemp;
-          try {
-            await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-            await fs.writeFile(temp, request.body, {
-              mode: 0o600,
-              flag: "wx",
-            });
-            if (preview) {
-              await fs.writeFile(previewTemp, preview, {
-                mode: 0o600,
-                flag: "wx",
-              });
-            }
-            await fs.rename(temp, files.body);
-            if (preview) await fs.rename(previewTemp, files.preview);
-            await fs.writeFile(files.metadata, JSON.stringify(metadata), {
-              mode: 0o600,
-              flag: "wx",
-            });
-            service.settleAttachment(reservationId);
-          } catch (error) {
-            service.releaseAttachment(reservationId);
-            service.enqueueAttachmentCleanup(request.params.id, ownerId, id);
-            void service.reconcileAttachmentCleanup().catch(() => undefined);
-            if (error instanceof AssetError) {
-              return reply.code(error.statusCode).send({ error: error.message });
-            }
-            throw error;
-          }
+            return reply
+              .code(201)
+              .send(service.publicAttachment(request.params.id, ownerId, metadata));
+          });
+        } finally {
           service.releaseAttachment(reservationId);
-          return reply
-            .code(201)
-            .send(service.publicAttachment(request.params.id, ownerId, metadata));
-        });
+        }
       } finally {
         releaseMutation();
       }
