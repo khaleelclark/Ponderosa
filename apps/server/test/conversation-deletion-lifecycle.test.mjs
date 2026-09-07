@@ -24,7 +24,30 @@ function fixture(t) {
     store.close();
     rmSync(dataDir, { recursive: true, force: true });
   });
-  return { chat, dataDir, drafts, store, workspace };
+  return { chat, dataDir, drafts, project, store, workspace };
+}
+
+function deletionAuthority({
+  commitAgentDeletion = async () => {},
+  drafts,
+  reconcile = async () => 0,
+  refresh = async () => {},
+  store,
+  workspace,
+}) {
+  return createConversationDeletionAuthority({
+    store,
+    workspace,
+    drafts,
+    deletingConversationIds: new Set(),
+    agentCreationConversationLeases: new Map(),
+    conversationDeliveryLeases: new Map(),
+    reconcileConversationRuntimeCommunicationProjections: reconcile,
+    commitAgentDeletion,
+    purgeCommunicationV4Conversation: () => {},
+    refreshTriggerSources: refresh,
+    publishWorkspace: () => {},
+  });
 }
 
 test("committed Chat cleanup retains refresh and draft rm failures for exact retry", async (t) => {
@@ -60,6 +83,12 @@ test("committed Chat cleanup retains refresh and draft rm failures for exact ret
         await drafts.deleteSurface(draftId);
       },
     },
+    deletingConversationIds: new Set(),
+    agentCreationConversationLeases: new Map(),
+    conversationDeliveryLeases: new Map(),
+    reconcileConversationRuntimeCommunicationProjections: async () => 0,
+    commitAgentDeletion: async () => {},
+    purgeCommunicationV4Conversation: () => {},
     refreshTriggerSources: async () => {
       if (failRefresh) {
         failRefresh = false;
@@ -101,6 +130,12 @@ test("Chat DELETE reports committed cleanup pending and replays its receipt", as
   const { chat, drafts, store, workspace } = fixture(t);
   const app = Fastify();
   t.after(() => app.close());
+  const { processConversationDeletionCleanup } = deletionAuthority({
+    drafts,
+    store,
+    workspace,
+    refresh: async () => { throw new Error("injected refresh failure"); },
+  });
   registerConversationRoutes(app, {
     store,
     workspace,
@@ -112,15 +147,12 @@ test("Chat DELETE reports committed cleanup pending and replays its receipt", as
     agentHealth: () => ({}),
     teamDirectory: () => ({}),
     hasActiveRun: () => false,
-    commitAgentDeletion: async () => ({ deletedAgentIds: [] }),
     deletingConversationIds: new Set(),
     agentCreationConversationLeases: new Map(),
     conversationDeliveryLeases: new Map(),
     reconcileConversationRuntimeCommunicationProjections: async () => 0,
-    purgeCommunicationV4Conversation: () => {},
     refreshTriggers: async () => {},
-    drafts,
-    processConversationDeletionCleanup: async () => false,
+    processConversationDeletionCleanup,
   });
 
   const first = await app.inject({ method: "DELETE", url: `/api/conversations/${chat.id}` });
@@ -135,4 +167,80 @@ test("Chat DELETE reports committed cleanup pending and replays its receipt", as
   assert.equal(replay.json().cleanupPending, true);
   assert.equal(replay.json().replayed, true);
   assert.equal(replay.json().deletionReceiptId, first.json().deletionReceiptId);
+});
+
+test("Chat deletion resumes after failure immediately after archive", async (t) => {
+  const { chat, drafts, project, store, workspace } = fixture(t);
+  const agent = store.createAgent(project.id, {
+    title: "Agent",
+    engine: "codex",
+    conversationId: chat.id,
+  });
+  const pending = store.markConversationDeletionPending(chat.id);
+  let observedArchived = false;
+  const first = deletionAuthority({
+    drafts,
+    store,
+    workspace,
+    commitAgentDeletion: async () => {
+      observedArchived = store.getConversation(chat.id)?.archived === true;
+      throw new Error("injected failure after archive");
+    },
+  });
+
+  assert.equal(await first.processConversationDeletionCleanup(pending), false);
+  assert.equal(observedArchived, true);
+  assert.equal(store.getConversation(chat.id)?.archived, true);
+  assert.equal(store.getAgent(agent.id)?.id, agent.id);
+  assert.equal(store.getConversationDeletionReceipt(chat.id)?.canonicalDeletionCompleted, false);
+
+  let deletes = 0;
+  const recovered = deletionAuthority({
+    drafts,
+    store,
+    workspace,
+    commitAgentDeletion: async (rootAgentIds) => {
+      deletes += 1;
+      for (const agentId of rootAgentIds) store.deleteAgent(agentId);
+    },
+  });
+  const receipt = store.getConversationDeletionReceipt(chat.id);
+  assert.ok(receipt);
+  assert.equal(await recovered.processConversationDeletionCleanup(receipt), true);
+  assert.equal(await recovered.processConversationDeletionCleanup(receipt), true);
+  assert.equal(deletes, 1);
+  assert.equal(store.getConversation(chat.id), undefined);
+  assert.equal(store.getAgent(agent.id), undefined);
+  assert.equal(store.getConversationDeletionReceipt(chat.id)?.canonicalDeletionCompleted, true);
+});
+
+test("Chat deletion resumes after Agent deletion before canonical Chat commit", async (t) => {
+  const { chat, drafts, project, store, workspace } = fixture(t);
+  const agent = store.createAgent(project.id, {
+    title: "Agent",
+    engine: "codex",
+    conversationId: chat.id,
+  });
+  const pending = store.markConversationDeletionPending(chat.id);
+  const first = deletionAuthority({
+    drafts,
+    store,
+    workspace,
+    commitAgentDeletion: async (rootAgentIds) => {
+      for (const agentId of rootAgentIds) store.deleteAgent(agentId);
+      throw new Error("injected failure after Agent deletion");
+    },
+  });
+
+  assert.equal(await first.processConversationDeletionCleanup(pending), false);
+  assert.equal(store.getConversation(chat.id)?.archived, true);
+  assert.equal(store.getAgent(agent.id), undefined);
+  assert.equal(store.getConversationDeletionReceipt(chat.id)?.canonicalDeletionCompleted, false);
+
+  const recovered = deletionAuthority({ drafts, store, workspace });
+  const receipt = store.getConversationDeletionReceipt(chat.id);
+  assert.ok(receipt);
+  assert.equal(await recovered.processConversationDeletionCleanup(receipt), true);
+  assert.equal(store.getConversation(chat.id), undefined);
+  assert.equal(store.getConversationDeletionReceipt(chat.id)?.canonicalDeletionCompleted, true);
 });

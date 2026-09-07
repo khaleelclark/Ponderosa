@@ -184,6 +184,7 @@ export interface ProjectDeletionReceipt {
 export interface ConversationDeletionReceipt {
   conversationId: string;
   projectId: string;
+  canonicalDeletionCompleted: boolean;
   storageCleanupCompleted: boolean;
   serverCleanupCompleted: boolean;
   lastError?: string;

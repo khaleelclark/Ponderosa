@@ -338,6 +338,7 @@ export class AgentWorkspaceCatalogAuthority {
     return row ? {
       conversationId: row.conversationId,
       projectId: row.projectId,
+      canonicalDeletionCompleted: row.canonicalDeletionCompleted === 1,
       storageCleanupCompleted: row.storageCleanupCompleted === 1,
       serverCleanupCompleted: row.serverCleanupCompleted === 1,
       ...(row.lastError ? { lastError: row.lastError } : {}),
@@ -349,10 +350,12 @@ export class AgentWorkspaceCatalogAuthority {
 
   listPendingConversationDeletionReceipts(): ConversationDeletionReceipt[] {
     return this.db.select().from(conversationDeletionReceipts).all()
-      .filter(row => row.storageCleanupCompleted !== 1 || row.serverCleanupCompleted !== 1)
+      .filter(row => row.canonicalDeletionCompleted !== 1 ||
+        row.storageCleanupCompleted !== 1 || row.serverCleanupCompleted !== 1)
       .map(row => ({
         conversationId: row.conversationId,
         projectId: row.projectId,
+        canonicalDeletionCompleted: row.canonicalDeletionCompleted === 1,
         storageCleanupCompleted: row.storageCleanupCompleted === 1,
         serverCleanupCompleted: row.serverCleanupCompleted === 1,
         ...(row.lastError ? { lastError: row.lastError } : {}),
@@ -360,6 +363,28 @@ export class AgentWorkspaceCatalogAuthority {
         updatedAt: row.updatedAt,
         ...(row.completedAt ? { completedAt: row.completedAt } : {}),
       }));
+  }
+
+  markConversationDeletionPending(id: string): ConversationDeletionReceipt {
+    const prior = this.getConversationDeletionReceipt(id);
+    if (prior) return prior;
+    const row = this.db.select().from(conversations).where(eq(conversations.id, id)).get();
+    if (!row) throw new Error("conversation not found");
+    const now = new Date().toISOString();
+    this.db.insert(conversationDeletionReceipts).values({
+      conversationId: id,
+      projectId: row.projectId,
+      canonicalDeletionCompleted: 0,
+      storageCleanupCompleted: 0,
+      serverCleanupCompleted: 0,
+      createdAt: now,
+      updatedAt: now,
+    }).onConflictDoNothing({ target: conversationDeletionReceipts.conversationId }).run();
+    const receipt = this.getConversationDeletionReceipt(id);
+    if (!receipt || receipt.projectId !== row.projectId) {
+      throw new Error("Chat deletion intent could not be persisted");
+    }
+    return receipt;
   }
 
   recordConversationDeletionCleanupError(id: string, error: string): void {
@@ -374,6 +399,9 @@ export class AgentWorkspaceCatalogAuthority {
   ): void {
     const current = this.getConversationDeletionReceipt(receipt.conversationId);
     if (!current) throw new Error("Chat deletion receipt not found");
+    if (!current.canonicalDeletionCompleted) {
+      throw new Error("Chat canonical deletion must finish before storage cleanup");
+    }
     if (current.storageCleanupCompleted) return;
     rmSync(conversationDir(this.dataDir, current.projectId, current.conversationId), {
       recursive: true,
@@ -396,6 +424,9 @@ export class AgentWorkspaceCatalogAuthority {
     if (!current.storageCleanupCompleted) {
       throw new Error("Chat storage cleanup must finish before server cleanup");
     }
+    if (!current.canonicalDeletionCompleted) {
+      throw new Error("Chat canonical deletion must finish before server cleanup");
+    }
     const now = new Date().toISOString();
     this.db.update(conversationDeletionReceipts).set({
       serverCleanupCompleted: 1,
@@ -412,9 +443,13 @@ export class AgentWorkspaceCatalogAuthority {
     beforeProjectionDelete?: (conversationId: string) => void,
   ): ConversationDeletionReceipt | undefined {
     const prior = this.getConversationDeletionReceipt(id);
-    if (prior) return prior;
+    if (prior?.canonicalDeletionCompleted) return prior;
     const row = this.db.select().from(conversations).where(eq(conversations.id, id)).get();
     if (!row) return undefined;
+    const intent = prior ?? this.markConversationDeletionPending(id);
+    if (intent.projectId !== row.projectId) {
+      throw new Error("Chat deletion intent belongs to a different Project");
+    }
     const linkedAgents = this.listAgents(row.projectId).filter((agent) => agent.conversationId === id);
     if (linkedAgents.length > 0) throw new Error("delete the Chat's Agents before deleting the Chat");
     const now = new Date().toISOString();
@@ -424,14 +459,11 @@ export class AgentWorkspaceCatalogAuthority {
       beforeProjectionDelete?.(id);
       this.setHistoryConversationVisibility(row.projectId, id, false);
       tx.delete(conversations).where(eq(conversations.id, id)).run();
-      tx.insert(conversationDeletionReceipts).values({
-        conversationId: id,
-        projectId: row.projectId,
-        storageCleanupCompleted: 0,
-        serverCleanupCompleted: 0,
-        createdAt: now,
+      tx.update(conversationDeletionReceipts).set({
+        canonicalDeletionCompleted: 1,
+        lastError: null,
         updatedAt: now,
-      }).run();
+      }).where(eq(conversationDeletionReceipts.conversationId, id)).run();
     });
     return this.getConversationDeletionReceipt(id)!;
   }

@@ -408,7 +408,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   for (const operation of store.listRecoverableAgentCreationOperations()) {
     for (const agentId of operation.agentIds) deletingAgentIds.add(agentId);
   }
-  const deletingConversationIds = new Set<string>();
+  const deletingConversationIds = new Set(
+    store.listPendingConversationDeletionReceipts().map((receipt) => receipt.conversationId),
+  );
   const agentCreationConversationLeases = new Map<string, number>();
   const conversationDeliveryLeases = new Map<string, number>();
   const agentDeliveryLeases = new Map<string, number>();
@@ -768,13 +770,6 @@ app.server.on("upgrade", linkPreviewUpgrade);
     closeAgentBrowsers,
     workingCopies,
   });
-  const { processConversationDeletionCleanup } = createConversationDeletionAuthority({
-    store,
-    workspace,
-    drafts,
-    refreshTriggerSources: () => triggerSources.refresh(),
-    publishWorkspace,
-  });
   const coordinationV3Scheduler = createCoordinationScheduler(app, {
     opts,
     store,
@@ -885,6 +880,20 @@ app.server.on("upgrade", linkPreviewUpgrade);
     logInfo: (meta, message) => app.log.info(meta, message),
     projectCommunicationToAgentAudit: (agentId, event, renderedText, attachments) =>
       projectCommunicationToAgentAudit(agentId, event, renderedText, attachments),
+  });
+  const { processConversationDeletionCleanup } = createConversationDeletionAuthority({
+    store,
+    workspace,
+    drafts,
+    deletingConversationIds,
+    agentCreationConversationLeases,
+    conversationDeliveryLeases,
+    reconcileConversationRuntimeCommunicationProjections,
+    commitAgentDeletion,
+    purgeCommunicationV4Conversation: conversationId =>
+      coordinationV3.purgeCommunicationV4Conversation(conversationId),
+    refreshTriggerSources: () => triggerSources.refresh(),
+    publishWorkspace,
   });
 
   registerRequestSecurityHooks(app, {

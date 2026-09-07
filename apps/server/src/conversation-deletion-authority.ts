@@ -9,17 +9,89 @@ import type { DraftService } from "./routes/drafts.js";
 export function createConversationDeletionAuthority(context: {
   store: AgentStore;
   workspace: WorkspaceStore;
-  drafts: Pick<DraftService, "deleteSurface">;
+  drafts: Pick<DraftService, "deleteSurface" | "fenceMutations">;
+  deletingConversationIds: Set<string>;
+  agentCreationConversationLeases: ReadonlyMap<string, number>;
+  conversationDeliveryLeases: ReadonlyMap<string, number>;
+  reconcileConversationRuntimeCommunicationProjections(
+    projectId: string,
+    conversationId: string,
+  ): Promise<number>;
+  commitAgentDeletion(
+    rootAgentIds: string[],
+    previewHash: string,
+  ): Promise<unknown>;
+  purgeCommunicationV4Conversation(conversationId: string): void;
   refreshTriggerSources(): Promise<unknown>;
   publishWorkspace(event: WorkspaceEventEnvelope): void;
 }) {
-  const processConversationDeletionCleanup = async (
+  const operations = new Map<string, Promise<boolean>>();
+  const processConversationDeletion = async (
     initial: ConversationDeletionReceipt,
   ): Promise<boolean> => {
     let receipt = context.store.getConversationDeletionReceipt(
       initial.conversationId,
     ) ?? initial;
+    context.deletingConversationIds.add(receipt.conversationId);
+    let releaseDraftFence: (() => void) | undefined;
+    if (!receipt.canonicalDeletionCompleted) {
+      try {
+        const conversation = context.store.getConversation(receipt.conversationId);
+        if (!conversation || conversation.projectId !== receipt.projectId) {
+          throw new Error("Chat deletion intent lost its canonical Chat");
+        }
+        releaseDraftFence = await context.drafts.fenceMutations([
+          conversation.id,
+          `collaboration:${conversation.id}`,
+        ]);
+        await context.reconcileConversationRuntimeCommunicationProjections(
+          conversation.projectId,
+          conversation.id,
+        );
+        if ((context.agentCreationConversationLeases.get(conversation.id) ?? 0) > 0) {
+          throw new Error("Agent creation is still using this Chat");
+        }
+        if ((context.conversationDeliveryLeases.get(conversation.id) ?? 0) > 0) {
+          throw new Error("Message delivery is still using this Chat");
+        }
+        context.store.updateConversation(conversation.id, { archived: true });
+        const linkedAgents = context.store.listAgents(conversation.projectId)
+          .filter((agent) => agent.conversationId === conversation.id);
+        if (linkedAgents.length > 0) {
+          const preview = context.store.previewAgentDeletion(
+            linkedAgents.map((agent) => agent.id),
+          );
+          await context.commitAgentDeletion(preview.rootAgentIds, preview.previewHash);
+        }
+        if (context.store.listAgents(conversation.projectId)
+          .some((agent) => agent.conversationId === conversation.id)) {
+          throw new Error("Chat deletion could not reach an Agent-free commit boundary");
+        }
+        const committed = context.store.commitConversationDeletion(
+          conversation.id,
+          context.purgeCommunicationV4Conversation,
+        );
+        if (!committed?.canonicalDeletionCompleted) {
+          throw new Error("Chat deletion could not commit its canonical receipt");
+        }
+        receipt = committed;
+      } catch (error) {
+        try {
+          if (context.store.getConversation(receipt.conversationId)) {
+            context.store.updateConversation(receipt.conversationId, { archived: true });
+          }
+          context.store.recordConversationDeletionCleanupError(
+            receipt.conversationId,
+            error instanceof Error ? error.message : "Chat canonical deletion remains pending",
+          );
+        } catch { /* the durable precommit intent remains retry authority */ }
+        return false;
+      } finally {
+        releaseDraftFence?.();
+      }
+    }
     if (receipt.storageCleanupCompleted && receipt.serverCleanupCompleted) {
+      context.deletingConversationIds.delete(receipt.conversationId);
       return true;
     }
     const errors: string[] = [];
@@ -73,6 +145,7 @@ export function createConversationDeletionAuthority(context: {
       context.store.markConversationDeletionServerCleanupComplete(
         receipt.conversationId,
       );
+      context.deletingConversationIds.delete(receipt.conversationId);
       return true;
     } catch (error) {
       try {
@@ -83,6 +156,20 @@ export function createConversationDeletionAuthority(context: {
       } catch { /* startup reconciliation will retry the durable receipt */ }
       return false;
     }
+  };
+
+  const processConversationDeletionCleanup = (
+    receipt: ConversationDeletionReceipt,
+  ): Promise<boolean> => {
+    const existing = operations.get(receipt.conversationId);
+    if (existing) return existing;
+    const operation = processConversationDeletion(receipt).finally(() => {
+      if (operations.get(receipt.conversationId) === operation) {
+        operations.delete(receipt.conversationId);
+      }
+    });
+    operations.set(receipt.conversationId, operation);
+    return operation;
   };
 
   return { processConversationDeletionCleanup };

@@ -71,8 +71,7 @@ type ApplicationRoutesContext =
   Parameters<typeof registerProjectRoutes>[1] &
   Omit<Parameters<typeof registerProjectDeletionRoutes>[1], "logError"> &
   Omit<Parameters<typeof registerConversationRoutes>[1],
-    "hasActiveRun" |
-    "purgeCommunicationV4Conversation" | "refreshTriggers"> &
+    "hasActiveRun" | "refreshTriggers"> &
   Omit<Parameters<typeof registerConversationDeliveryRoutes>[1],
     "projectDeletionInProgress" | "agentDeletionInProgress" | "attachmentDeletionInProgress" |
     "assetReconciliationInProgress" | "assetMetadata"> &
@@ -379,15 +378,11 @@ registerConversationRoutes(app, {
   agentHealth,
   teamDirectory,
   hasActiveRun: agentId => activeRuns.has(agentId),
-  commitAgentDeletion,
   deletingConversationIds,
   agentCreationConversationLeases,
   conversationDeliveryLeases,
   reconcileConversationRuntimeCommunicationProjections,
-  purgeCommunicationV4Conversation: conversationId =>
-    coordinationV3.purgeCommunicationV4Conversation(conversationId),
   refreshTriggers: () => triggerSources.refresh(),
-  drafts,
   processConversationDeletionCleanup,
 });
 

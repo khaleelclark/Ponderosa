@@ -1006,6 +1006,10 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.workspaceCatalog.listPendingConversationDeletionReceipts();
   }
 
+  markConversationDeletionPending(id: string): ConversationDeletionReceipt {
+    return this.workspaceCatalog.markConversationDeletionPending(id);
+  }
+
   recordConversationDeletionCleanupError(id: string, error: string): void {
     this.workspaceCatalog.recordConversationDeletionCleanupError(id, error);
   }

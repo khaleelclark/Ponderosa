@@ -456,6 +456,14 @@ export class AgentWorkingCopyService {
       }
     }
     if (creationReceipt && !branchExists && !rootExists && registeredRoots.length === 0) {
+      if (await gitWorktreeRootRegistered(projectRoot, expectedRoot)) {
+        throw new Error("The retained Separate Git copy still has a working-folder registration and was preserved");
+      }
+      try {
+        await rmdir(path.join(this.managedRoot, project.id, agentId));
+      } catch (error) {
+        if (!missingPath(error)) throw error;
+      }
       const ownershipHead = await gitReferenceHead(projectRoot, creationReceipt.ownershipRef);
       if (ownershipHead === creationReceipt.branchHead) {
         await runGit(projectRoot, [

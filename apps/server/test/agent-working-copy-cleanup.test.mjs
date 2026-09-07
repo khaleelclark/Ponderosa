@@ -442,6 +442,119 @@ test("Project deletion cleanup removes an atomically owned branch created before
   await assert.rejects(access(path.join(dataDir, "working-copies", project.id)), { code: "ENOENT" });
 });
 
+test("Project cleanup removes an exact empty container after interrupted branch removal", async (t) => {
+  const { dataDir, project, baseHead } = await gitFixture(t);
+  const agentId = "00000000-0000-4000-8000-000000000126";
+  const branch = "ponderosa/post-ref-missing-branch";
+  const ownershipRef = "refs/ponderosa/working-copy-creation/00000000000040008000000000000126";
+  const root = path.join(dataDir, "working-copies", project.id, agentId, "root");
+  createAtomicCreationRefs(project.hostPath, branch, ownershipRef, baseHead);
+  git(project.hostPath, "update-ref", "-d", `refs/heads/${branch}`, baseHead);
+  await mkdir(path.dirname(root), { recursive: true });
+  const authority = activeWorkingCopyStore({
+    id: agentId,
+    projectId: project.id,
+    title: "Missing branch cleanup",
+    workingCopy: {
+      id: "copy:missing-branch-cleanup",
+      mode: "separate_git",
+      state: "unavailable",
+      rootPath: root,
+      branch,
+      baseHead,
+      branchCreationIntent: true,
+      branchCreationReceipt: { ownershipRef, branchHead: baseHead },
+      failure: "creation interrupted",
+      updatedAt: new Date().toISOString(),
+    },
+  });
+
+  await new AgentWorkingCopyService(dataDir, authority.store).cleanupProject(project);
+
+  assert.equal(authority.current().workingCopy.state, "removed");
+  assert.equal(git(project.hostPath, "for-each-ref", "--format=%(refname)", ownershipRef), "");
+  await assert.rejects(access(path.join(dataDir, "working-copies", project.id)), { code: "ENOENT" });
+});
+
+test("interrupted creation cleanup preserves a missing root with a Git registration", async (t) => {
+  const { dataDir, project, baseHead } = await gitFixture(t);
+  const agentId = "00000000-0000-4000-8000-000000000127";
+  const branch = "ponderosa/post-ref-stale-registration";
+  const ownershipRef = "refs/ponderosa/working-copy-creation/00000000000040008000000000000127";
+  const root = path.join(dataDir, "working-copies", project.id, agentId, "root");
+  createAtomicCreationRefs(project.hostPath, branch, ownershipRef, baseHead);
+  await mkdir(path.dirname(root), { recursive: true });
+  git(project.hostPath, "worktree", "add", root, branch);
+  git(project.hostPath, "update-ref", "-d", `refs/heads/${branch}`, baseHead);
+  await rm(root, { recursive: true, force: true });
+  const authority = activeWorkingCopyStore({
+    id: agentId,
+    projectId: project.id,
+    title: "Registered missing root",
+    workingCopy: {
+      id: "copy:registered-missing-root",
+      mode: "separate_git",
+      state: "unavailable",
+      rootPath: root,
+      branch,
+      baseHead,
+      branchCreationIntent: true,
+      branchCreationReceipt: { ownershipRef, branchHead: baseHead },
+      failure: "creation interrupted",
+      updatedAt: new Date().toISOString(),
+    },
+  });
+
+  await assert.rejects(
+    new AgentWorkingCopyService(dataDir, authority.store)
+      .cleanupRetained(agentId, authority.current().workingCopy, project),
+    /still has a working-folder registration and was preserved/u,
+  );
+
+  assert.equal(authority.current().workingCopy.state, "unavailable");
+  assert.equal(git(project.hostPath, "rev-parse", ownershipRef), baseHead);
+});
+
+test("interrupted creation cleanup preserves a nonempty managed Agent container", async (t) => {
+  const { dataDir, project, baseHead } = await gitFixture(t);
+  const agentId = "00000000-0000-4000-8000-000000000128";
+  const branch = "ponderosa/post-ref-foreign-container";
+  const ownershipRef = "refs/ponderosa/working-copy-creation/00000000000040008000000000000128";
+  const root = path.join(dataDir, "working-copies", project.id, agentId, "root");
+  createAtomicCreationRefs(project.hostPath, branch, ownershipRef, baseHead);
+  git(project.hostPath, "update-ref", "-d", `refs/heads/${branch}`, baseHead);
+  await mkdir(path.dirname(root), { recursive: true });
+  const sentinel = path.join(path.dirname(root), "foreign.txt");
+  await writeFile(sentinel, "preserve\n");
+  const authority = activeWorkingCopyStore({
+    id: agentId,
+    projectId: project.id,
+    title: "Foreign container",
+    workingCopy: {
+      id: "copy:foreign-container",
+      mode: "separate_git",
+      state: "unavailable",
+      rootPath: root,
+      branch,
+      baseHead,
+      branchCreationIntent: true,
+      branchCreationReceipt: { ownershipRef, branchHead: baseHead },
+      failure: "creation interrupted",
+      updatedAt: new Date().toISOString(),
+    },
+  });
+
+  await assert.rejects(
+    new AgentWorkingCopyService(dataDir, authority.store)
+      .cleanupRetained(agentId, authority.current().workingCopy, project),
+    { code: "ENOTEMPTY" },
+  );
+
+  assert.equal(await realpath(sentinel), sentinel);
+  assert.equal(authority.current().workingCopy.state, "unavailable");
+  assert.equal(git(project.hostPath, "rev-parse", ownershipRef), baseHead);
+});
+
 test("creation cleanup preserves a branch changed after its atomic ownership receipt", async (t) => {
   const { dataDir, project, baseHead } = await gitFixture(t);
   const agentId = "00000000-0000-4000-8000-000000000125";

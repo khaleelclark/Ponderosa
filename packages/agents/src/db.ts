@@ -56,6 +56,7 @@ const contextRolloverFailureProvenanceMigration = "0012_context_rollover_failure
 const workingCopyAuthorityMigration = "0013_working_copy_authority.ts";
 const projectDeletionOwnershipMigration = "0014_project_deletion_ownership.ts";
 const deletionRecoveryPhasesMigration = "0015_deletion_recovery_phases.ts";
+const conversationDeletionPrecommitMigration = "0016_conversation_deletion_precommit.ts";
 
 function hasApplicationSchema(sqlite: Database.Database): boolean {
   return sqlite
@@ -287,6 +288,38 @@ function establishDeletionRecoveryPhasesSchema(sqlite: Database.Database): void 
     }
     sqlite.prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
       .run(deletionRecoveryPhasesMigration, new Date().toISOString());
+  })();
+}
+
+function establishConversationDeletionPrecommitSchema(sqlite: Database.Database): void {
+  const applied = sqlite
+    .prepare(`SELECT 1 FROM ${schemaVersionTable} WHERE name = ?`)
+    .get(conversationDeletionPrecommitMigration) !== undefined;
+  if (applied) return;
+  sqlite.transaction(() => {
+    const columns = new Set(
+      (sqlite.prepare("PRAGMA table_info(conversation_deletion_receipts)").all() as Array<{ name: string }>)
+        .map((column) => column.name),
+    );
+    if (!columns.has("canonical_deletion_completed")) {
+      // Existing receipts were written only after canonical Chat deletion.
+      sqlite.exec(`
+        ALTER TABLE conversation_deletion_receipts
+        ADD COLUMN canonical_deletion_completed INTEGER NOT NULL DEFAULT 1
+      `);
+    }
+    sqlite.exec(`
+      DROP INDEX IF EXISTS idx_conversation_deletion_receipts_pending;
+      CREATE INDEX idx_conversation_deletion_receipts_pending
+        ON conversation_deletion_receipts(
+          canonical_deletion_completed,
+          storage_cleanup_completed,
+          server_cleanup_completed,
+          created_at
+        );
+    `);
+    sqlite.prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
+      .run(conversationDeletionPrecommitMigration, new Date().toISOString());
   })();
 }
 
@@ -909,6 +942,7 @@ export function openDb(file: string): OpenedDb {
   establishWorkingCopyAuthoritySchema(sqlite);
   establishProjectDeletionOwnershipSchema(sqlite);
   establishDeletionRecoveryPhasesSchema(sqlite);
+  establishConversationDeletionPrecommitSchema(sqlite);
   establishPublicProviderRequestUpdates(sqlite);
   establishProviderActivationExecutionPayloads(sqlite);
   establishNestedProviderActivationExecutionPayloads(sqlite);

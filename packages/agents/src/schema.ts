@@ -165,11 +165,12 @@ export const conversations = sqliteTable("conversations", {
   archived: integer("archived").notNull().default(0),
 });
 
-/** Durable receipt for an irreversible Chat deletion and its retryable
- * filesystem, draft, Automation, and workspace cleanup. */
+/** Durable intent and phase receipt for canonical Chat deletion and its
+ * retryable filesystem, draft, Automation, and workspace cleanup. */
 export const conversationDeletionReceipts = sqliteTable("conversation_deletion_receipts", {
   conversationId: text("conversation_id").primaryKey(),
   projectId: text("project_id").notNull(),
+  canonicalDeletionCompleted: integer("canonical_deletion_completed").notNull().default(0),
   storageCleanupCompleted: integer("storage_cleanup_completed").notNull().default(0),
   serverCleanupCompleted: integer("server_cleanup_completed").notNull().default(0),
   lastError: text("last_error"),

@@ -1532,9 +1532,21 @@ function conversationLifecycleApp({ archived = false, reconcile }) {
   const chat = { id: "chat-a", projectId: "project-a", title: "Chat A", archived };
   const leases = new Map();
   const deletingConversationIds = new Set();
+  let deletionReceipt;
   const store = {
     sqlite: { prepare: () => ({ get: () => undefined }) },
     getConversation: (id) => id === chat.id ? chat : undefined,
+    getConversationDeletionReceipt: () => deletionReceipt,
+    markConversationDeletionPending: () => {
+      deletionReceipt ??= {
+        conversationId: chat.id,
+        projectId: chat.projectId,
+        canonicalDeletionCompleted: false,
+        storageCleanupCompleted: false,
+        serverCleanupCompleted: false,
+      };
+      return deletionReceipt;
+    },
     updateConversation: (_id, body) => Object.assign(chat, body),
     listAgents: () => [],
   };
@@ -1559,7 +1571,17 @@ function conversationLifecycleApp({ archived = false, reconcile }) {
     purgeCommunicationV4Conversation: () => {},
     refreshTriggers: async () => {},
     drafts: { fenceMutations: async () => () => {} },
-    processConversationDeletionCleanup: async () => true,
+    processConversationDeletionCleanup: async () => {
+      try {
+        await reconcile(chat.projectId, chat.id);
+      } catch {
+        chat.archived = true;
+        return false;
+      }
+      chat.archived = true;
+      deletionReceipt.canonicalDeletionCompleted = true;
+      return true;
+    },
   });
   return { app, chat, deletingConversationIds, leases };
 }
@@ -1590,7 +1612,7 @@ test("Chat archive waits for its durable runtime projection backlog", async (t) 
   assert.equal(chat.archived, true);
 });
 
-test("Chat archive and delete preserve state when runtime recovery is incomplete", async (t) => {
+test("Chat archive rejects incomplete recovery while delete remains durably pending", async (t) => {
   for (const method of ["PATCH", "DELETE"]) {
     const { app, chat } = conversationLifecycleApp({
       reconcile: async () => { throw new Error("startup backlog remains"); },
@@ -1601,8 +1623,8 @@ test("Chat archive and delete preserve state when runtime recovery is incomplete
       url: `/api/conversations/${chat.id}`,
       ...(method === "PATCH" ? { payload: { archived: true } } : {}),
     });
-    assert.equal(response.statusCode, 409);
-    assert.equal(chat.archived, false);
+    assert.equal(response.statusCode, method === "PATCH" ? 409 : 202);
+    assert.equal(chat.archived, method === "DELETE");
   }
 });
 
@@ -2223,6 +2245,7 @@ test("direct message retries lease the Chat while repairing a missing projection
   let repaired = false;
   const store = {
     getConversation: () => chat,
+    getConversationDeletionReceipt: () => undefined,
     getConversationMessageByReceiptKey: () => repaired ? { id: "message-a" } : undefined,
     listAgents: () => [],
   };
