@@ -84,6 +84,40 @@ export function recipientUploadsForAgentIds<T>(
   return recipients.filter(recipient => selected.has(recipient.agentId));
 }
 
+export async function failedRecipientUploadCleanup<T>(
+  recipients: RecipientUploads<T>,
+  cleanup: (recipientId: string, item: T) => Promise<unknown>,
+): Promise<RecipientUploads<T>> {
+  return (await Promise.all(recipients.map(async recipient => {
+    const settled = await Promise.allSettled(
+      recipient.attachments.map(item => cleanup(recipient.agentId, item)),
+    );
+    const attachments = recipient.attachments.filter(
+      (_, index) => settled[index]?.status === "rejected",
+    );
+    return attachments.length ? [{ ...recipient, attachments }] : [];
+  }))).flat();
+}
+
+/** Retain exact cleanup authority after delivery commits, without retrying delivery. */
+export async function retryRecipientUploadCleanup<T>(
+  recipients: RecipientUploads<T>,
+  cleanup: (recipientId: string, item: T) => Promise<unknown>,
+  onPendingChange?: (pending: number) => void,
+  retryDelayMs = 5_000,
+): Promise<void> {
+  let pending = recipients;
+  while (pending.length) {
+    pending = await failedRecipientUploadCleanup(pending, cleanup);
+    onPendingChange?.(
+      pending.reduce((count, recipient) => count + recipient.attachments.length, 0),
+    );
+    if (pending.length) {
+      await new Promise(resolve => globalThis.setTimeout(resolve, retryDelayMs));
+    }
+  }
+}
+
 async function settleWithConcurrency<T>(
   items: File[],
   task: (file: File) => Promise<T>,

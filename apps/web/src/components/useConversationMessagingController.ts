@@ -20,8 +20,10 @@ import {
 import {
   discardRecipientUploads,
   fileSelectionFingerprint,
+  recipientUploadsForAgentIds,
   recipientActionSnapshot,
   recipientUploadCacheKey,
+  retryRecipientUploadCleanup,
   managerBroadcastText,
   stableMessageActionText,
   type RecipientUploads,
@@ -93,6 +95,7 @@ export function useConversationMessagingController({
     queryFn: () => api.listQueuedConversationMessages(conversationId),
   });
   const [queuedMessageNotice, setQueuedMessageNotice] = useState<string>();
+  const [pendingUploadCleanups, setPendingUploadCleanups] = useState(0);
   const submissionAttempt =
     useRef<IdempotentAttempt<ConversationSubmissionPrepared>>();
   const [spawnNotice, setSpawnNotice] = useState<string>();
@@ -662,17 +665,46 @@ export function useConversationMessagingController({
         agentIds: targetAgentIds,
         state: "starting",
       });
-      await sendToAgents.mutateAsync({
+      const uploadKey = recipientUploadCacheKey("direct", targetAgentIds);
+      const uploadedRecipients = await preparedUploads("direct", targetAgentIds);
+      const response = await sendToAgents.mutateAsync({
         agentIds: targetAgentIds,
         text: submittedText,
-        uploadedRecipients: await preparedUploads(
-          "direct",
-          targetAgentIds,
-        ),
+        uploadedRecipients,
         requestId,
         activeRunDelivery: prepared.activeRunDelivery,
         runtimeConfig: prepared.runConfig,
       });
+      const deliveredRecipientIds = response.recipients.map(
+        recipient => recipient.agentId,
+      );
+      const unavailableRecipientIds = (response.unavailableRecipients ?? []).map(
+        recipient => recipient.agentId,
+      );
+      prepared.uploads.set(
+        uploadKey,
+        recipientUploadsForAgentIds(uploadedRecipients, deliveredRecipientIds),
+      );
+      let cleanupReported = false;
+      void retryRecipientUploadCleanup(
+        recipientUploadsForAgentIds(uploadedRecipients, unavailableRecipientIds),
+        async (agentId, attachment) => {
+          try {
+            await api.deleteAttachment(agentId, attachment.id);
+          } catch (error) {
+            if (!(error instanceof ApiRequestError) || error.status !== 404) throw error;
+          }
+        },
+        pending => {
+          if (pending && !cleanupReported) {
+            cleanupReported = true;
+            setPendingUploadCleanups(count => count + 1);
+          } else if (!pending && cleanupReported) {
+            cleanupReported = false;
+            setPendingUploadCleanups(count => Math.max(0, count - 1));
+          }
+        },
+      );
     } else if (!prepared.newAgentRequested) {
       setActiveOperation({ agentIds: [], state: "starting" });
       const titleKey = "default-agent";
@@ -704,7 +736,14 @@ export function useConversationMessagingController({
     editQueued,
     invalidate,
     operationRunning,
-    queuedMessageNotice: queuedMessageNotice ?? spawnNotice,
+    queuedMessageNotice: [
+      queuedMessageNotice ?? spawnNotice,
+      pendingUploadCleanups
+        ? "Message sent. Temporary uploads for skipped recipients are still being cleaned up automatically."
+        : undefined,
+    ]
+      .filter(Boolean)
+      .join(" ") || undefined,
     queuedMessagesQuery,
     sendError: spawn.error ?? sendToAgents.error,
     setQueuedMessageNotice,

@@ -1055,12 +1055,6 @@ export function Composer({
         draft.revision < draftRevision.current
       )
         return;
-      if (!draftAttachmentsLocallyEdited.current) {
-        replaceRestoredDraftAttachments(restored);
-      } else {
-        mergeRestoredDraftAttachments(restored);
-      }
-      unrestoredDraftAttachmentIds.current = failedAttachments.map(item => item.id);
       draftRevision.current = draft.revision;
       const local = draftStorageKey
         ? (readChatState(draftStorageKey) ?? "")
@@ -1074,6 +1068,17 @@ export function Composer({
         draft.revision,
         adoptDraft,
       );
+      if (!adoptDraft) {
+        draftReady.current = true;
+        setDraftReadyVersion(value => value + 1);
+        return;
+      }
+      if (!draftAttachmentsLocallyEdited.current) {
+        replaceRestoredDraftAttachments(restored);
+      } else {
+        mergeRestoredDraftAttachments(restored);
+      }
+      unrestoredDraftAttachmentIds.current = failedAttachments.map(item => item.id);
       const hydratedPastedText = hydratedPastedTextContent({
         attachmentId: draft.pastedTextAttachmentId,
         restoredText: restoredPastedText,
@@ -1115,17 +1120,15 @@ export function Composer({
         pastedTextCleanMutationGeneration.current =
           pastedTextMutationGeneration.current;
       }
-      if (adoptDraft) {
-        const hydrated = hydratedDraftContent(
-          draft.revision,
-          draft.text,
-          local,
-          draft.mentionBindings ?? [],
-        );
-        replaceText(hydrated.text);
-        setKnownMentionBindings([...hydrated.mentionBindings]);
-        if (draftStorageKey) writeChatState(draftStorageKey, hydrated.text);
-      }
+      const hydrated = hydratedDraftContent(
+        draft.revision,
+        draft.text,
+        local,
+        draft.mentionBindings ?? [],
+      );
+      replaceText(hydrated.text);
+      setKnownMentionBindings([...hydrated.mentionBindings]);
+      if (draftStorageKey) writeChatState(draftStorageKey, hydrated.text);
       if (failedAttachments.length || hydratedPastedText?.failure) {
         dispatchAttachments({
           type: "set_error",
@@ -1141,9 +1144,6 @@ export function Composer({
         hydrationGeneration === draftHydrationGeneration.current
       ) {
         draftRevision.current = draft.revision;
-        unrestoredDraftAttachmentIds.current = draft.attachmentIds.filter(
-          id => !locallyRemovedDraftAttachmentIds.current.has(id),
-        );
         const adoptDraft = shouldAdoptHydratedDraft(
           inputRef.current?.isFocused() ?? false,
           draftLocallyEdited.current,
@@ -1152,6 +1152,14 @@ export function Composer({
           draftWriteChain.current.ownedRevision,
           draft.revision,
           adoptDraft,
+        );
+        if (!adoptDraft) {
+          draftReady.current = true;
+          setDraftReadyVersion(value => value + 1);
+          return;
+        }
+        unrestoredDraftAttachmentIds.current = draft.attachmentIds.filter(
+          id => !locallyRemovedDraftAttachmentIds.current.has(id),
         );
         const failedPastedText =
           draft.pastedTextAttachmentId &&
@@ -1210,17 +1218,15 @@ export function Composer({
         const local = draftStorageKey
           ? (readChatState(draftStorageKey) ?? "")
           : "";
-        if (adoptDraft) {
-          const hydrated = hydratedDraftContent(
-            draft.revision,
-            draft.text,
-            local,
-            draft.mentionBindings ?? [],
-          );
-          replaceText(hydrated.text);
-          setKnownMentionBindings([...hydrated.mentionBindings]);
-          if (draftStorageKey) writeChatState(draftStorageKey, hydrated.text);
-        }
+        const hydrated = hydratedDraftContent(
+          draft.revision,
+          draft.text,
+          local,
+          draft.mentionBindings ?? [],
+        );
+        replaceText(hydrated.text);
+        setKnownMentionBindings([...hydrated.mentionBindings]);
+        if (draftStorageKey) writeChatState(draftStorageKey, hydrated.text);
         if (!draftAttachmentsLocallyEdited.current) {
           dispatchAttachments({
             type: "replace",

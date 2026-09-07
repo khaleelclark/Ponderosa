@@ -595,14 +595,15 @@ test("IME composition bypasses every composer keyboard shortcut", () => {
   assert.equal(shouldIgnoreComposerKey({ isComposing: false, keyCode: 13 }), false);
 });
 
-test("late draft hydration never adopts bindings without their text", () => {
+test("late draft hydration uses one edit-owned adoption decision", () => {
   assert.equal(shouldAdoptHydratedDraft(false, false), true);
-  assert.equal(shouldAdoptHydratedDraft(true, false), false);
+  assert.equal(shouldAdoptHydratedDraft(true, false), true);
   assert.equal(shouldAdoptHydratedDraft(false, true), false);
+  assert.equal(shouldAdoptHydratedDraft(true, true), false);
 });
 
-test("focused reload restores durable pasted text independently of editor text", () => {
-  assert.equal(shouldAdoptHydratedDraft(true, false), false);
+test("focused reload safely adopts its whole durable draft", () => {
+  assert.equal(shouldAdoptHydratedDraft(true, false), true);
   assert.deepEqual(
     hydratedPastedTextContent({
       attachmentId: "paste-a",
@@ -627,17 +628,16 @@ test("focused reload exposes failed pasted-text restore ownership", () => {
   );
 });
 
-test("an unrelated edit preserves hydrated pasted-text ownership", () => {
-  assert.equal(shouldAdoptHydratedDraft(false, true), false);
-  assert.equal(
-    hydratedPastedTextContent({
+test("a local edit rejects the whole foreign hydrated snapshot", () => {
+  const hydratedSnapshot = shouldAdoptHydratedDraft(false, true)
+    ? hydratedPastedTextContent({
       attachmentId: "paste-a",
       restoredText: "durable pasted text",
       cleanMutationGeneration: 3,
       currentMutationGeneration: 3,
-    })?.attachmentId,
-    "paste-a",
-  );
+    })
+    : undefined;
+  assert.equal(hydratedSnapshot, undefined);
   assert.equal(
     hydratedPastedTextContent({
       attachmentId: "paste-a",

@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { retainIdempotentAttempt } from "../src/components/idempotentAttempt.js";
 import {
+  failedRecipientUploadCleanup,
   recipientActionSnapshot,
   recipientUploadCacheKey,
   recipientUploadsForAgentIds,
+  retryRecipientUploadCleanup,
   stableMessageActionText,
 } from "../src/conversationRouting.js";
 
@@ -89,4 +91,36 @@ test("partial delivery cleanup selects only this attempt's unavailable-recipient
     recipientUploadsForAgentIds(uploads, ["another-attempt"]),
     [],
   );
+});
+
+test("committed partial delivery retries only exact cleanup failures", async () => {
+  const unavailable = [{
+    agentId: "archived",
+    attachments: [{ id: "file-archived" }, { id: "paste-archived" }],
+  }];
+  const firstPass = await failedRecipientUploadCleanup(
+    unavailable,
+    async (_agentId, item) => {
+      if (item.id === "paste-archived") throw new Error("transient cleanup failure");
+    },
+  );
+  assert.deepEqual(firstPass, [{
+    agentId: "archived",
+    attachments: [{ id: "paste-archived" }],
+  }]);
+
+  const attempts = new Map();
+  const pendingCounts = [];
+  await retryRecipientUploadCleanup(
+    firstPass,
+    async (_agentId, item) => {
+      const attempt = (attempts.get(item.id) ?? 0) + 1;
+      attempts.set(item.id, attempt);
+      if (attempt === 1) throw new Error("still transient");
+    },
+    count => pendingCounts.push(count),
+    0,
+  );
+  assert.deepEqual([...attempts], [["paste-archived", 2]]);
+  assert.deepEqual(pendingCounts, [1, 0]);
 });

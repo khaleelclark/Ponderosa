@@ -74,6 +74,10 @@ import { useAgentPackageActions } from "./useAgentPackageActions";
 import { useAgentRunCancellation } from "./useAgentRunCancellation";
 import { useAgentProviderCommands } from "./useAgentProviderCommands";
 import { AgentDetailSettingsController } from "./AgentDetailSettingsController";
+import {
+  allChatRuntimeMutationIsLatest,
+  allChatRuntimeMutationOwnsSelection,
+} from "./allChatRouting";
 
 export function AgentDetail({
   agentId,
@@ -138,6 +142,9 @@ export function AgentDetail({
   const [effort, setEffort] = useState("");
   const [speed, setSpeed] = useState("");
   const [runtimeEngine, setRuntimeEngine] = useState("");
+  const runtimeMutationGenerationByAgent = useRef(new Map<string, number>());
+  const runtimeAgentIdRef = useRef(agentId);
+  runtimeAgentIdRef.current = agentId;
   const [settingsEngine, setSettingsEngine] = useState("");
   const [settingsModel, setSettingsModel] = useState("");
   const [settingsEffort, setSettingsEffort] = useState("");
@@ -713,9 +720,28 @@ export function AgentDetail({
     speed={selectedRuntime.speed}
     speeds={speeds}
     selectedRuntime={selectedRuntime}
+    disabled={updateRuntimeSettings.isPending}
     onEngineChange={next => {
       const nextEngine = engines.find(candidate => candidate.id === next);
       if (!nextEngine || !detail) return;
+      const capturedAgentId = agentId;
+      const mutationGeneration =
+        (runtimeMutationGenerationByAgent.current.get(capturedAgentId) ?? 0) + 1;
+      runtimeMutationGenerationByAgent.current.set(
+        capturedAgentId,
+        mutationGeneration,
+      );
+      const speedKey = chatStateKey("runtime", `agent.${capturedAgentId}.speed`);
+      const previous = {
+        engine: runtimeEngine,
+        model,
+        effort,
+        speed,
+        persistedSpeed: readChatState(speedKey),
+        settingsEngine,
+        settingsModel,
+        settingsEffort,
+      };
       const resolved = resolveRuntimeSelection(
         nextEngine,
         preferencesQuery.data,
@@ -725,10 +751,7 @@ export function AgentDetail({
       setModel(resolved.model);
       setEffort(resolved.effort);
       setSpeed(resolved.speed ?? "");
-      writeChatState(
-        chatStateKey("runtime", `agent.${agentId}.speed`),
-        resolved.speed ?? "",
-      );
+      writeChatState(speedKey, resolved.speed ?? "");
       setSettingsEngine(next);
       setSettingsModel(resolved.model);
       setSettingsEffort(resolved.effort);
@@ -740,22 +763,51 @@ export function AgentDetail({
         },
         {
           onError: () => {
-            setRuntimeEngine(detail.agent.activeEngine);
-            setModel(persistedModel);
-            setEffort(persistedEffort);
-            setSpeed(
-              runtimeControlState(engine, {
-                model: persistedModel,
-                effort: persistedEffort,
-                speed,
-              }).speed,
-            );
+            const currentGeneration =
+              runtimeMutationGenerationByAgent.current.get(capturedAgentId);
+            if (!allChatRuntimeMutationIsLatest(
+              mutationGeneration,
+              currentGeneration,
+            )) return;
+            if (readChatState(speedKey) === (resolved.speed || undefined)) {
+              writeChatState(speedKey, previous.persistedSpeed ?? "");
+            }
+            if (!allChatRuntimeMutationOwnsSelection({
+              capturedAgentId,
+              currentAgentId: runtimeAgentIdRef.current,
+              capturedGeneration: mutationGeneration,
+              currentGeneration,
+            })) return;
+            setRuntimeEngine(previous.engine);
+            setModel(previous.model);
+            setEffort(previous.effort);
+            setSpeed(previous.speed);
+            setSettingsEngine(previous.settingsEngine);
+            setSettingsModel(previous.settingsModel);
+            setSettingsEffort(previous.settingsEffort);
           },
         },
       );
     }}
     onModelChange={next => {
       if (!engine || !detail) return;
+      const capturedAgentId = agentId;
+      const mutationGeneration =
+        (runtimeMutationGenerationByAgent.current.get(capturedAgentId) ?? 0) + 1;
+      runtimeMutationGenerationByAgent.current.set(
+        capturedAgentId,
+        mutationGeneration,
+      );
+      const speedKey = chatStateKey("runtime", `agent.${capturedAgentId}.speed`);
+      const previous = {
+        model,
+        effort,
+        speed,
+        persistedSpeed: readChatState(speedKey),
+        settingsEngine,
+        settingsModel,
+        settingsEffort,
+      };
       const resolved = selectedRuntime.selectModel(next);
       setSettingsEngine(engine.id);
       setSettingsModel(resolved.model);
@@ -768,14 +820,50 @@ export function AgentDetail({
         },
         {
           onError: () => {
-            setModel(persistedModel);
-            setEffort(persistedEffort);
+            const currentGeneration =
+              runtimeMutationGenerationByAgent.current.get(capturedAgentId);
+            if (!allChatRuntimeMutationIsLatest(
+              mutationGeneration,
+              currentGeneration,
+            )) return;
+            if (readChatState(speedKey) === (resolved.speed || undefined)) {
+              writeChatState(speedKey, previous.persistedSpeed ?? "");
+            }
+            if (!allChatRuntimeMutationOwnsSelection({
+              capturedAgentId,
+              currentAgentId: runtimeAgentIdRef.current,
+              capturedGeneration: mutationGeneration,
+              currentGeneration,
+            })) return;
+            setModel(previous.model);
+            setEffort(previous.effort);
+            setSpeed(previous.speed);
+            setSettingsEngine(previous.settingsEngine);
+            setSettingsModel(previous.settingsModel);
+            setSettingsEffort(previous.settingsEffort);
           },
         },
       );
     }}
     onEffortChange={next => {
       if (!engine || !detail) return;
+      const capturedAgentId = agentId;
+      const mutationGeneration =
+        (runtimeMutationGenerationByAgent.current.get(capturedAgentId) ?? 0) + 1;
+      runtimeMutationGenerationByAgent.current.set(
+        capturedAgentId,
+        mutationGeneration,
+      );
+      const speedKey = chatStateKey("runtime", `agent.${capturedAgentId}.speed`);
+      const previous = {
+        model,
+        effort,
+        speed,
+        persistedSpeed: readChatState(speedKey),
+        settingsEngine,
+        settingsModel,
+        settingsEffort,
+      };
       const resolved = selectedRuntime.selectEffort(next);
       setSettingsEngine(engine.id);
       setSettingsModel(resolved.model);
@@ -788,8 +876,27 @@ export function AgentDetail({
         },
         {
           onError: () => {
-            setModel(persistedModel);
-            setEffort(persistedEffort);
+            const currentGeneration =
+              runtimeMutationGenerationByAgent.current.get(capturedAgentId);
+            if (!allChatRuntimeMutationIsLatest(
+              mutationGeneration,
+              currentGeneration,
+            )) return;
+            if (readChatState(speedKey) === (resolved.speed || undefined)) {
+              writeChatState(speedKey, previous.persistedSpeed ?? "");
+            }
+            if (!allChatRuntimeMutationOwnsSelection({
+              capturedAgentId,
+              currentAgentId: runtimeAgentIdRef.current,
+              capturedGeneration: mutationGeneration,
+              currentGeneration,
+            })) return;
+            setModel(previous.model);
+            setEffort(previous.effort);
+            setSpeed(previous.speed);
+            setSettingsEngine(previous.settingsEngine);
+            setSettingsModel(previous.settingsModel);
+            setSettingsEffort(previous.settingsEffort);
           },
         },
       );

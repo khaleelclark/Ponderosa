@@ -64,6 +64,7 @@ import {
   discardRecipientUploads,
   fileSelectionFingerprint,
   recipientUploadsForAgentIds,
+  retryRecipientUploadCleanup,
   stableMessageActionText,
   type RecipientUploads,
   uploadFilesForRecipients,
@@ -253,6 +254,7 @@ export function AllChatView({
   const initializedRuntime = useRef<string>();
   const [runtimeAgentId, setRuntimeAgentId] = useState<string>();
   const [notice, setNotice] = useState<string>();
+  const [pendingUploadCleanups, setPendingUploadCleanups] = useState(0);
   const [directSendConfirmation, setDirectSendConfirmation] = useState<{
     id: number;
     text: string;
@@ -856,17 +858,29 @@ export function AllChatView({
           uploaded,
           unavailableRecipientIds,
         );
-        await Promise.all(unavailableUploads.flatMap(recipient =>
-          recipient.attachments.map(async attachment => {
-            try {
-              await api.deleteAttachment(recipient.agentId, attachment.id);
-            } catch (error) {
-              if (!(error instanceof ApiRequestError) || error.status !== 404) throw error;
-            }
-          })));
         prepared.uploads = recipientUploadsForAgentIds(
           uploaded,
           deliveredRecipientIds,
+        );
+        let cleanupReported = false;
+        void retryRecipientUploadCleanup(
+          unavailableUploads,
+          async (agentId, attachment) => {
+            try {
+              await api.deleteAttachment(agentId, attachment.id);
+            } catch (error) {
+              if (!(error instanceof ApiRequestError) || error.status !== 404) throw error;
+            }
+          },
+          pending => {
+            if (pending && !cleanupReported) {
+              cleanupReported = true;
+              setPendingUploadCleanups(count => count + 1);
+            } else if (!pending && cleanupReported) {
+              cleanupReported = false;
+              setPendingUploadCleanups(count => Math.max(0, count - 1));
+            }
+          },
         );
       }
       if (sendAttempt.current === attempt) sendAttempt.current = undefined;
@@ -1457,6 +1471,12 @@ export function AllChatView({
         {notice ? (
           <Alert severity="success" sx={{ mx: 1.5, mt: 1 }}>
             {notice}
+          </Alert>
+        ) : null}
+        {pendingUploadCleanups ? (
+          <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>
+            Message sent. Temporary uploads for skipped recipients are still
+            being cleaned up automatically.
           </Alert>
         ) : null}
         {send.isError ? (

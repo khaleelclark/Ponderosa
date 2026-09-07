@@ -64,10 +64,10 @@ export function shouldIgnoreComposerKey(event: {
 }
 
 export function shouldAdoptHydratedDraft(
-  editorFocused: boolean,
+  _editorFocused: boolean,
   locallyEdited: boolean,
 ): boolean {
-  return !editorFocused && !locallyEdited;
+  return !locallyEdited;
 }
 
 export function hydratedPastedTextContent<T>(input: {
