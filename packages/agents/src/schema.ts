@@ -25,6 +25,8 @@ export const projectDeletionPending = sqliteTable("project_deletion_pending", {
   tombstoneName: text("tombstone_name"),
   /** Receipt-bound identity mirrored inside the exact tombstone directory. */
   ownershipToken: text("ownership_token"),
+  /** Immutable Chat/Agent draft surface inventory captured at quarantine. */
+  draftSurfacesJson: text("draft_surfaces_json"),
 });
 
 /** Durable receipt for an irreversible Project purge and its retryable
@@ -36,6 +38,8 @@ export const projectDeletionReceipts = sqliteTable("project_deletion_receipts", 
   /** Durable boundary proving that exact owned storage was authorized for removal. */
   removalStarted: integer("removal_started").notNull().default(0),
   storageCleanupCompleted: integer("storage_cleanup_completed").notNull().default(0),
+  draftSurfacesJson: text("draft_surfaces_json").notNull().default("[]"),
+  draftCleanupCompleted: integer("draft_cleanup_completed").notNull().default(1),
   lastError: text("last_error"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),

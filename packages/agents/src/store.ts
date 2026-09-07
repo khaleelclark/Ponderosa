@@ -897,15 +897,15 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.workspaceCatalog.updateProject(id, input);
   }
 
-  markProjectDeletionPending(projectId: string, now = new Date().toISOString()): void {
-    this.projectDeletion.markProjectDeletionPending(projectId, now);
+  markProjectDeletionPending(projectId: string, now = new Date().toISOString()): string[] {
+    return this.projectDeletion.markProjectDeletionPending(projectId, now);
   }
 
   recordProjectDeletionCleanupError(projectId: string, error: string): void {
     this.projectDeletion.recordProjectDeletionCleanupError(projectId, error);
   }
 
-  listPendingProjectDeletions(): Array<{ projectId: string; createdAt: string; lastError?: string }> {
+  listPendingProjectDeletions(): Array<{ projectId: string; draftSurfaceIds: string[]; createdAt: string; lastError?: string }> {
     return this.projectDeletion.listPendingProjectDeletions();
   }
 
@@ -923,6 +923,10 @@ export class AgentStore extends AgentEventSessionFacade {
 
   recordProjectDeletionReceiptCleanupError(projectId: string, error: string): void {
     this.projectDeletion.recordProjectDeletionReceiptCleanupError(projectId, error);
+  }
+
+  markProjectDeletionDraftCleanupComplete(projectId: string): void {
+    this.projectDeletion.markProjectDeletionDraftCleanupComplete(projectId);
   }
 
   finishProjectDeletionStorageCleanup(

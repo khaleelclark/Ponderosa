@@ -20,6 +20,7 @@ import type {
 const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 30_000;
 const CREATION_OWNERSHIP_REF = /^refs\/ponderosa\/working-copy-creation\/[0-9a-f]{32}$/u;
+const CLEANUP_OWNERSHIP_REF = /^refs\/ponderosa\/working-copy-cleanup\/[0-9a-f]{32}$/u;
 
 function gitEnvironment(): NodeJS.ProcessEnv {
   const environment = { ...process.env };
@@ -67,6 +68,33 @@ function separateBranch(agent: Pick<AgentDto, "id" | "title">): string {
 
 function creationOwnershipRef(): string {
   return `refs/ponderosa/working-copy-creation/${randomUUID().replaceAll("-", "")}`;
+}
+
+function cleanupOwnershipRef(): string {
+  return `refs/ponderosa/working-copy-cleanup/${randomUUID().replaceAll("-", "")}`;
+}
+
+function deleteOwnedBranchReferences(
+  projectRoot: string,
+  branch: string,
+  ownershipRef: string,
+  branchHead: string,
+): void {
+  execFileSync("git", ["--no-optional-locks", "update-ref", "--stdin"], {
+    cwd: projectRoot,
+    encoding: "utf8",
+    env: gitEnvironment(),
+    timeout: GIT_TIMEOUT_MS,
+    maxBuffer: 1024 * 1024,
+    input: [
+      "start",
+      `delete refs/heads/${branch} ${branchHead}`,
+      `delete ${ownershipRef} ${branchHead}`,
+      "prepare",
+      "commit",
+      "",
+    ].join("\n"),
+  });
 }
 
 function safeFailure(error: unknown): string {
@@ -336,6 +364,7 @@ export class AgentWorkingCopyService {
       allowSourceUnavailable?: boolean;
       deleted?: boolean;
       afterWorktreeRemoval?: () => void;
+      beforeBranchRemoval?: () => void;
       afterBranchRemoval?: () => void;
       afterContainerRemoval?: () => void;
     } = {},
@@ -401,10 +430,13 @@ export class AgentWorkingCopyService {
       workingCopy.state !== "unavailable" || workingCopy.branchOwned !== true ||
       workingCopy.branchCreationIntent !== undefined ||
       workingCopy.branchCreationReceipt !== undefined ||
-      !["worktree_removal_authorized", "branch_removal_authorized"].includes(cleanupReceipt.phase) ||
+      !["worktree_removal_authorized", "branch_marker_authorized", "branch_removal_authorized"].includes(cleanupReceipt.phase) ||
       !/^[0-9a-f]{40,64}$/u.test(cleanupReceipt.branchHead) ||
       (cleanupReceipt.creationOwnershipRef !== undefined &&
-        !CREATION_OWNERSHIP_REF.test(cleanupReceipt.creationOwnershipRef))
+        !CREATION_OWNERSHIP_REF.test(cleanupReceipt.creationOwnershipRef)) ||
+      (cleanupReceipt.cleanupOwnershipRef === undefined
+        ? cleanupReceipt.phase === "branch_marker_authorized"
+        : !CLEANUP_OWNERSHIP_REF.test(cleanupReceipt.cleanupOwnershipRef))
     )) {
       throw new Error("The retained Git copy has an invalid cleanup receipt");
     }
@@ -546,8 +578,9 @@ export class AgentWorkingCopyService {
       durable = this.persistCleanupState(agentId, {
         ...durable,
         cleanupReceipt: {
-          phase: "branch_removal_authorized",
+          phase: "branch_marker_authorized",
           branchHead: expectedBranchHead!,
+          cleanupOwnershipRef: cleanupOwnershipRef(),
           ...(durable.cleanupReceipt?.creationOwnershipRef
             ? { creationOwnershipRef: durable.cleanupReceipt.creationOwnershipRef }
             : {}),
@@ -566,16 +599,43 @@ export class AgentWorkingCopyService {
     } catch (error) {
       if (!missingPath(error)) throw error;
     }
-    branchExists = await gitBranchExists(projectRoot, workingCopy.branch);
-    if (branchExists) {
-      if (await gitBranchHead(projectRoot, workingCopy.branch) !== expectedBranchHead) {
-        throw new Error("The retained Git branch changed after cleanup was authorized and was preserved");
+    const cleanupRef = durable.cleanupReceipt?.cleanupOwnershipRef;
+    if (!cleanupRef) {
+      if (await gitBranchExists(projectRoot, workingCopy.branch)) {
+        throw new Error("The retained Git branch has no cleanup ownership marker and was preserved");
       }
-      await runGit(projectRoot, ["check-ref-format", "--branch", workingCopy.branch]);
-      await runGit(projectRoot, [
-        "update-ref", "-d", `refs/heads/${workingCopy.branch}`, expectedBranchHead!,
-      ]);
-      options.afterBranchRemoval?.();
+    } else {
+      branchExists = await gitBranchExists(projectRoot, workingCopy.branch);
+      let cleanupHead = await gitReferenceHead(projectRoot, cleanupRef);
+      if (durable.cleanupReceipt?.phase === "branch_marker_authorized") {
+        if (!branchExists || await gitBranchHead(projectRoot, workingCopy.branch) !== expectedBranchHead) {
+          throw new Error("The retained Git branch changed before cleanup ownership was recorded and was preserved");
+        }
+        if (cleanupHead === undefined) {
+          await runGit(projectRoot, ["update-ref", cleanupRef, expectedBranchHead!, "0000000000000000000000000000000000000000"]);
+        } else if (cleanupHead !== expectedBranchHead) {
+          throw new Error("The retained Git cleanup ownership marker changed and was preserved");
+        }
+        durable = this.persistCleanupState(agentId, {
+          ...durable,
+          cleanupReceipt: { ...durable.cleanupReceipt, phase: "branch_removal_authorized" },
+          updatedAt: new Date().toISOString(),
+        }, options.deleted === true);
+        cleanupHead = expectedBranchHead;
+      }
+      branchExists = await gitBranchExists(projectRoot, workingCopy.branch);
+      cleanupHead = await gitReferenceHead(projectRoot, cleanupRef);
+      if (branchExists && cleanupHead === expectedBranchHead) {
+        if (await gitBranchHead(projectRoot, workingCopy.branch) !== expectedBranchHead) {
+          throw new Error("The retained Git branch changed after cleanup was authorized and was preserved");
+        }
+        await runGit(projectRoot, ["check-ref-format", "--branch", workingCopy.branch]);
+        options.beforeBranchRemoval?.();
+        deleteOwnedBranchReferences(projectRoot, workingCopy.branch, cleanupRef, expectedBranchHead!);
+        options.afterBranchRemoval?.();
+      } else if (branchExists || cleanupHead !== undefined) {
+        throw new Error("The retained Git cleanup ownership proof changed and the branch was preserved");
+      }
     }
     if (durable.cleanupReceipt?.creationOwnershipRef &&
         await gitReferenceHead(projectRoot, durable.cleanupReceipt.creationOwnershipRef) === expectedBranchHead) {

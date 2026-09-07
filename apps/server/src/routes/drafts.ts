@@ -158,6 +158,11 @@ export class DraftService {
   private readonly mutationLeases = new Map<string, number>();
   private readonly mutationDrainWaiters = new Map<string, Set<() => void>>();
   private readonly deletionFences = new Set<string>();
+  private readonly deletionFenceGroups = new Map<string, {
+    ids: string[];
+    ready: Promise<void>;
+    release?: () => void;
+  }>();
 
   constructor(
     dataDir: string,
@@ -174,7 +179,7 @@ export class DraftService {
       "enqueueDraftAttachmentCleanup" | "finishDraftAttachmentCleanup" |
       "pendingDraftAttachmentCleanups" | "releaseDraftAttachment" |
       "reserveDraftAttachment" | "settleDraftAttachment" |
-      "syncDraftAttachment"
+      "syncDraftAttachment" | "finishDraftSurfaceCleanup"
     >,
   ) {
     this.root = path.resolve(dataDir, "draft-attachments");
@@ -248,8 +253,43 @@ export class DraftService {
     };
   }
 
+  async fenceMutationGroup(key: string, draftIds: Iterable<string>): Promise<void> {
+    const ids = [...new Set(draftIds)].sort();
+    const existing = this.deletionFenceGroups.get(key);
+    if (existing) {
+      if (JSON.stringify(existing.ids) !== JSON.stringify(ids)) {
+        throw new Error("draft deletion fence inventory changed");
+      }
+      await existing.ready;
+      return;
+    }
+    const group: { ids: string[]; ready: Promise<void>; release?: () => void } = {
+      ids,
+      ready: Promise.resolve(),
+    };
+    group.ready = this.fenceMutations(ids).then(release => { group.release = release; });
+    this.deletionFenceGroups.set(key, group);
+    try { await group.ready; }
+    catch (error) {
+      if (this.deletionFenceGroups.get(key) === group) this.deletionFenceGroups.delete(key);
+      throw error;
+    }
+  }
+
+  releaseMutationGroup(key: string): void {
+    const group = this.deletionFenceGroups.get(key);
+    if (!group?.release) return;
+    group.release();
+    this.deletionFenceGroups.delete(key);
+  }
+
   async deleteSurface(draftId: string): Promise<void> {
     await fs.rm(this.surfaceDir(draftId), { recursive: true, force: true });
+  }
+
+  async deleteProjectSurface(draftId: string): Promise<void> {
+    await this.deleteSurface(draftId);
+    this.cleanupAuthority.finishDraftSurfaceCleanup(draftId);
   }
 
   attachmentReferenced(draftId: string, ownerId: string, id: string): boolean {

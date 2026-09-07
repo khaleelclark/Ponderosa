@@ -361,6 +361,8 @@ registerProjectDeletionRoutes(app, {
   logError: (meta, message) => app.log.error(meta, message),
   providerProcessAuthority,
   workingCopies,
+  drafts,
+  workspace,
   processConversationDeletionCleanup,
 });
 

@@ -693,6 +693,99 @@ test("Separate to Shared resumes after a crash immediately after owned branch de
   assert.equal(shared.workingCopy.cleanupReceipt, undefined);
 });
 
+test("cleanup preserves a same-head branch recreated after its atomic ownership transaction", async (t) => {
+  const { dataDir, project, baseHead } = await gitFixture(t);
+  const agentId = "00000000-0000-4000-8000-000000000207";
+  const branch = "ponderosa/recreated-same-head";
+  const root = path.join(dataDir, "working-copies", project.id, agentId, "root");
+  await mkdir(path.dirname(root), { recursive: true });
+  git(project.hostPath, "worktree", "add", "-b", branch, root, baseHead);
+  const authority = activeWorkingCopyStore({
+    id: agentId,
+    projectId: project.id,
+    title: "Recreated branch owner",
+    workingCopy: {
+      id: "copy:recreated-same-head",
+      mode: "separate_git",
+      state: "ready",
+      rootPath: root,
+      branch,
+      baseHead,
+      branchOwned: true,
+      updatedAt: new Date().toISOString(),
+    },
+  });
+
+  await assert.rejects(
+    new AgentWorkingCopyService(dataDir, authority.store).cleanupRetained(
+      agentId,
+      authority.current().workingCopy,
+      project,
+      { afterBranchRemoval: () => { throw new Error("simulated crash after atomic ref deletion"); } },
+    ),
+    /simulated crash after atomic ref deletion/u,
+  );
+  const receipt = authority.current().workingCopy.cleanupReceipt;
+  assert.equal(receipt.phase, "branch_removal_authorized");
+  assert.ok(receipt.cleanupOwnershipRef);
+  assert.throws(() => git(project.hostPath, "show-ref", receipt.cleanupOwnershipRef));
+  git(project.hostPath, "branch", branch, baseHead);
+
+  await assert.rejects(
+    new AgentWorkingCopyService(dataDir, authority.store).cleanupRetained(
+      agentId,
+      authority.current().workingCopy,
+      project,
+    ),
+    /cleanup ownership proof changed and the branch was preserved/u,
+  );
+  assert.equal(git(project.hostPath, "rev-parse", branch), baseHead);
+});
+
+test("cleanup resumes after a crash before its atomic branch transaction", async (t) => {
+  const { dataDir, project, baseHead } = await gitFixture(t);
+  const agentId = "00000000-0000-4000-8000-000000000208";
+  const branch = "ponderosa/pre-atomic-crash";
+  const root = path.join(dataDir, "working-copies", project.id, agentId, "root");
+  await mkdir(path.dirname(root), { recursive: true });
+  git(project.hostPath, "worktree", "add", "-b", branch, root, baseHead);
+  const authority = activeWorkingCopyStore({
+    id: agentId,
+    projectId: project.id,
+    title: "Pre atomic owner",
+    workingCopy: {
+      id: "copy:pre-atomic-crash",
+      mode: "separate_git",
+      state: "ready",
+      rootPath: root,
+      branch,
+      baseHead,
+      branchOwned: true,
+      updatedAt: new Date().toISOString(),
+    },
+  });
+
+  await assert.rejects(
+    new AgentWorkingCopyService(dataDir, authority.store).cleanupRetained(
+      agentId,
+      authority.current().workingCopy,
+      project,
+      { beforeBranchRemoval: () => { throw new Error("simulated crash before atomic ref deletion"); } },
+    ),
+    /simulated crash before atomic ref deletion/u,
+  );
+  const receipt = authority.current().workingCopy.cleanupReceipt;
+  assert.equal(receipt.phase, "branch_removal_authorized");
+  assert.equal(git(project.hostPath, "rev-parse", receipt.cleanupOwnershipRef), baseHead);
+  assert.equal(git(project.hostPath, "rev-parse", branch), baseHead);
+
+  const removed = await new AgentWorkingCopyService(dataDir, authority.store)
+    .cleanupRetained(agentId, authority.current().workingCopy, project);
+  assert.equal(removed.state, "removed");
+  assert.equal(git(project.hostPath, "branch", "--list", branch), "");
+  assert.throws(() => git(project.hostPath, "show-ref", receipt.cleanupOwnershipRef));
+});
+
 test("deleted-Agent cleanup resumes after a crash before final removed state", async (t) => {
   const { dataDir, project, baseHead } = await gitFixture(t);
   const agentId = "00000000-0000-4000-8000-000000000108";

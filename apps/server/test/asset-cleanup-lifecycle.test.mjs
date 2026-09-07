@@ -160,6 +160,39 @@ test("draft upload rate is keyed to its stable surface instead of caller owner I
   );
 });
 
+test("draft surface cleanup atomically settles reservations, committed quota, cleanup, and rate", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-draft-surface-cleanup-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  let authority = new AssetAuthority(dataDir);
+  const draftId = "chat-delete";
+  let committedId;
+  for (let index = 0; index < 63; index += 1) {
+    const assetId = randomUUID();
+    committedId ??= assetId;
+    const committed = authority.reserveDraftAttachment(
+      draftId,
+      `owner-${index}`,
+      assetId,
+      ASSET_LIMITS.maxFileBytes,
+    );
+    authority.settleDraftAttachment(committed);
+  }
+  authority.reserveDraftAttachment(draftId, "owner-b", randomUUID(), 1);
+  authority.enqueueDraftAttachmentCleanup(draftId, "owner-a", committedId, 0);
+
+  authority.finishDraftSurfaceCleanup(draftId);
+  authority.close();
+  authority = new AssetAuthority(dataDir);
+  t.after(() => authority.close());
+  assert.deepEqual(authority.pendingDraftAttachmentCleanups(), []);
+  assert.doesNotThrow(() => authority.reserveDraftAttachment(
+    draftId,
+    "owner-c",
+    randomUUID(),
+    ASSET_LIMITS.maxFileBytes,
+  ));
+});
+
 test("draft quota enforces the workspace aggregate across independent surfaces", async (t) => {
   const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-draft-workspace-quota-"));
   t.after(() => rm(dataDir, { recursive: true, force: true }));

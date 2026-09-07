@@ -148,3 +148,31 @@ test("Project cleanup removes its exact receipt-bound tombstone", (t) => {
   assert.equal(store.getProjectDeletionReceipt(project.id)?.removalStarted, true);
   assert.equal(store.getProjectDeletionReceipt(project.id)?.storageCleanupCompleted, true);
 });
+
+test("Project deletion receipt durably inventories Chat and Agent draft surfaces", (t) => {
+  const { store, project } = fixture(t);
+  const chat = store.createConversation(project.id, { title: "Chat" });
+  const agent = store.createAgent(project.id, {
+    title: "Agent",
+    engine: "codex",
+    conversationId: chat.id,
+  });
+  const expected = [
+    ...store.listConversations(project.id)
+      .map(({ id }) => id)
+      .sort()
+      .flatMap(id => [id, `collaboration:${id}`]),
+    `agent:${agent.id}`,
+  ];
+
+  assert.deepEqual(store.markProjectDeletionPending(project.id), expected);
+  assert.deepEqual(store.markProjectDeletionPending(project.id), expected);
+  const receipt = store.commitProjectDeletion(project.id);
+  assert.deepEqual(receipt?.draftSurfaceIds, expected);
+  assert.equal(receipt?.draftCleanupCompleted, false);
+
+  store.finishProjectDeletionStorageCleanup(receipt);
+  assert.equal(store.listPendingProjectDeletionReceipts().length, 1);
+  store.markProjectDeletionDraftCleanupComplete(project.id);
+  assert.equal(store.listPendingProjectDeletionReceipts().length, 0);
+});

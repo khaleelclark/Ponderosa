@@ -508,6 +508,21 @@ export class AssetAuthority {
       throw this.mapped(error);
     }
   }
+
+  finishDraftSurfaceCleanup(draftId: string): void {
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      this.db.prepare("DELETE FROM draft_asset_settlements WHERE draft_id=?").run(draftId);
+      this.db.prepare("DELETE FROM draft_asset_reservations WHERE draft_id=?").run(draftId);
+      this.db.prepare("DELETE FROM draft_asset_committed WHERE draft_id=?").run(draftId);
+      this.db.prepare("DELETE FROM draft_attachment_cleanups WHERE draft_id=?").run(draftId);
+      this.db.prepare("DELETE FROM draft_asset_rate_events WHERE draft_id=?").run(draftId);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      if (this.db.inTransaction) this.db.exec("ROLLBACK");
+      throw this.mapped(error);
+    }
+  }
   recordAudit(file: string, projectId: string, agentId: string, record: Record<string, unknown>, eventId: string = randomUUID()): void {
     let fd: number | undefined;
     try {

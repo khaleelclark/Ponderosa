@@ -37,11 +37,13 @@ export interface AgentWorkingCopyBranchCreationReceiptDto {
 
 export interface AgentWorkingCopyCleanupReceiptDto {
   /** Monotonic destructive boundary authorized after exact worktree validation. */
-  phase: "worktree_removal_authorized" | "branch_removal_authorized";
+  phase: "worktree_removal_authorized" | "branch_marker_authorized" | "branch_removal_authorized";
   /** Exact owned ref value captured before worktree removal began. */
   branchHead: string;
   /** Exact creation marker to remove if cleanup began before registration. */
   creationOwnershipRef?: string;
+  /** Unique Git-side proof consumed atomically with the owned branch. */
+  cleanupOwnershipRef?: string;
 }
 
 /** Durable filesystem identity used by one Agent across Runs and provider sessions. */

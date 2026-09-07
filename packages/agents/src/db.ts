@@ -57,6 +57,7 @@ const workingCopyAuthorityMigration = "0013_working_copy_authority.ts";
 const projectDeletionOwnershipMigration = "0014_project_deletion_ownership.ts";
 const deletionRecoveryPhasesMigration = "0015_deletion_recovery_phases.ts";
 const conversationDeletionPrecommitMigration = "0016_conversation_deletion_precommit.ts";
+const projectDeletionDraftCleanupMigration = "0017_project_deletion_draft_cleanup.ts";
 
 function hasApplicationSchema(sqlite: Database.Database): boolean {
   return sqlite
@@ -320,6 +321,53 @@ function establishConversationDeletionPrecommitSchema(sqlite: Database.Database)
     `);
     sqlite.prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
       .run(conversationDeletionPrecommitMigration, new Date().toISOString());
+  })();
+}
+
+function establishProjectDeletionDraftCleanupSchema(sqlite: Database.Database): void {
+  const applied = sqlite
+    .prepare(`SELECT 1 FROM ${schemaVersionTable} WHERE name = ?`)
+    .get(projectDeletionDraftCleanupMigration) !== undefined;
+  if (applied) return;
+  sqlite.transaction(() => {
+    const pendingColumns = new Set(
+      (sqlite.prepare("PRAGMA table_info(project_deletion_pending)").all() as Array<{ name: string }>)
+        .map(column => column.name),
+    );
+    if (!pendingColumns.has("draft_surfaces_json")) {
+      sqlite.exec("ALTER TABLE project_deletion_pending ADD COLUMN draft_surfaces_json TEXT");
+    }
+    const receiptColumns = new Set(
+      (sqlite.prepare("PRAGMA table_info(project_deletion_receipts)").all() as Array<{ name: string }>)
+        .map(column => column.name),
+    );
+    if (!receiptColumns.has("draft_surfaces_json")) {
+      sqlite.exec("ALTER TABLE project_deletion_receipts ADD COLUMN draft_surfaces_json TEXT NOT NULL DEFAULT '[]'");
+    }
+    if (!receiptColumns.has("draft_cleanup_completed")) {
+      // Pre-migration receipts predate durable draft cleanup authority. Do not
+      // invent authority over surfaces that can no longer be attributed.
+      sqlite.exec("ALTER TABLE project_deletion_receipts ADD COLUMN draft_cleanup_completed INTEGER NOT NULL DEFAULT 1");
+    }
+    const pending = sqlite.prepare(`
+      SELECT project_id projectId FROM project_deletion_pending
+      WHERE draft_surfaces_json IS NULL
+    `).all() as Array<{ projectId: string }>;
+    const conversations = sqlite.prepare("SELECT id FROM conversations WHERE project_id = ? ORDER BY id");
+    const agents = sqlite.prepare("SELECT id FROM agents WHERE project_id = ? ORDER BY id");
+    const update = sqlite.prepare(`
+      UPDATE project_deletion_pending SET draft_surfaces_json = ? WHERE project_id = ?
+    `);
+    for (const row of pending) {
+      const chatIds = (conversations.all(row.projectId) as Array<{ id: string }>).map(item => item.id);
+      const agentIds = (agents.all(row.projectId) as Array<{ id: string }>).map(item => item.id);
+      update.run(JSON.stringify([
+        ...chatIds.flatMap(id => [id, `collaboration:${id}`]),
+        ...agentIds.map(id => `agent:${id}`),
+      ]), row.projectId);
+    }
+    sqlite.prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
+      .run(projectDeletionDraftCleanupMigration, new Date().toISOString());
   })();
 }
 
@@ -943,6 +991,7 @@ export function openDb(file: string): OpenedDb {
   establishProjectDeletionOwnershipSchema(sqlite);
   establishDeletionRecoveryPhasesSchema(sqlite);
   establishConversationDeletionPrecommitSchema(sqlite);
+  establishProjectDeletionDraftCleanupSchema(sqlite);
   establishPublicProviderRequestUpdates(sqlite);
   establishProviderActivationExecutionPayloads(sqlite);
   establishNestedProviderActivationExecutionPayloads(sqlite);

@@ -396,6 +396,10 @@ export class AssetStore {
     this.authority.finishDraftAttachmentCleanup(draftId, ownerId, assetId);
   }
 
+  finishDraftSurfaceCleanup(draftId: string): void {
+    this.authority.finishDraftSurfaceCleanup(draftId);
+  }
+
   private validateOwner(projectId: string, agentId: string): void {
     if (!OWNER_ID.test(projectId) || !OWNER_ID.test(agentId)) throw new AssetError(404, "asset storage is unavailable");
   }

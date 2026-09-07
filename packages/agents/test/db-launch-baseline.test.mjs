@@ -48,6 +48,7 @@ test("creates the canonical launch baseline for a fresh database", () => {
         "0014_project_deletion_ownership.ts",
         "0015_deletion_recovery_phases.ts",
         "0016_conversation_deletion_precommit.ts",
+        "0017_project_deletion_draft_cleanup.ts",
       ],
     );
   } finally {

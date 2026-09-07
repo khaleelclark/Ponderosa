@@ -175,6 +175,8 @@ export interface ProjectDeletionReceipt {
   ownershipToken?: string;
   removalStarted?: boolean;
   storageCleanupCompleted: boolean;
+  draftSurfaceIds: string[];
+  draftCleanupCompleted: boolean;
   lastError?: string;
   createdAt: string;
   updatedAt: string;

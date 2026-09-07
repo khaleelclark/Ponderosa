@@ -56,10 +56,13 @@ function validateWorkingCopy(
   )) throw new Error("invalid Shared folder identity");
   const cleanupReceipt = workingCopy.cleanupReceipt;
   const validCleanupReceipt = cleanupReceipt !== undefined &&
-    ["worktree_removal_authorized", "branch_removal_authorized"].includes(cleanupReceipt.phase) &&
+    ["worktree_removal_authorized", "branch_marker_authorized", "branch_removal_authorized"].includes(cleanupReceipt.phase) &&
     /^[0-9a-f]{40,64}$/u.test(cleanupReceipt.branchHead) &&
     (cleanupReceipt.creationOwnershipRef === undefined ||
-      /^refs\/ponderosa\/working-copy-creation\/[0-9a-f]{32}$/u.test(cleanupReceipt.creationOwnershipRef));
+      /^refs\/ponderosa\/working-copy-creation\/[0-9a-f]{32}$/u.test(cleanupReceipt.creationOwnershipRef)) &&
+    (cleanupReceipt.cleanupOwnershipRef === undefined
+      ? cleanupReceipt.phase !== "branch_marker_authorized"
+      : /^refs\/ponderosa\/working-copy-cleanup\/[0-9a-f]{32}$/u.test(cleanupReceipt.cleanupOwnershipRef));
   const branchCreationReceipt = workingCopy.branchCreationReceipt;
   const validBranchCreationReceipt = branchCreationReceipt !== undefined &&
     /^refs\/ponderosa\/working-copy-creation\/[0-9a-f]{32}$/u.test(branchCreationReceipt.ownershipRef) &&

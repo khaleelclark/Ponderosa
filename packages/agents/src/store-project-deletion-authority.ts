@@ -32,6 +32,15 @@ function validateProjectDeletionTombstone(
   );
 }
 
+function parseDraftSurfaceIds(value: string | null | undefined): string[] {
+  const parsed = JSON.parse(value ?? "[]") as unknown;
+  if (!Array.isArray(parsed) || parsed.some(id => typeof id !== "string" || !id) ||
+      new Set(parsed).size !== parsed.length) {
+    throw new Error("invalid Project deletion draft surface inventory");
+  }
+  return parsed;
+}
+
 export class AgentProjectDeletionAuthority {
   constructor(
     private readonly dataDir: string,
@@ -42,14 +51,30 @@ export class AgentProjectDeletionAuthority {
     private readonly clearProjectCaches: (projectId: string, agentIds: string[]) => void,
   ) {}
 
-  markProjectDeletionPending(projectId: string, now = new Date().toISOString()): void {
+  private draftSurfaceIds(projectId: string): string[] {
+    const chats = this.client.prepare("SELECT id FROM conversations WHERE project_id = ? ORDER BY id")
+      .all(projectId) as Array<{ id: string }>;
+    const agentIds = this.client.prepare("SELECT id FROM agents WHERE project_id = ? ORDER BY id")
+      .all(projectId) as Array<{ id: string }>;
+    return [
+      ...chats.flatMap(({ id }) => [id, `collaboration:${id}`]),
+      ...agentIds.map(({ id }) => `agent:${id}`),
+    ];
+  }
+
+  markProjectDeletionPending(projectId: string, now = new Date().toISOString()): string[] {
     if (!this.getProject(projectId)) throw new Error("project not found");
+    const draftSurfaceIds = this.draftSurfaceIds(projectId);
     this.db.insert(projectDeletionPending).values({
       projectId,
       createdAt: now,
       ownershipToken: randomUUID(),
+      draftSurfacesJson: JSON.stringify(draftSurfaceIds),
     })
       .onConflictDoNothing({ target: projectDeletionPending.projectId }).run();
+    const pending = this.db.select().from(projectDeletionPending)
+      .where(eq(projectDeletionPending.projectId, projectId)).get();
+    return parseDraftSurfaceIds(pending?.draftSurfacesJson);
   }
 
   recordProjectDeletionCleanupError(projectId: string, error: string): void {
@@ -57,9 +82,10 @@ export class AgentProjectDeletionAuthority {
       .where(eq(projectDeletionPending.projectId, projectId)).run();
   }
 
-  listPendingProjectDeletions(): Array<{ projectId: string; createdAt: string; lastError?: string }> {
+  listPendingProjectDeletions(): Array<{ projectId: string; draftSurfaceIds: string[]; createdAt: string; lastError?: string }> {
     return this.db.select().from(projectDeletionPending).all().map((row) => ({
       projectId: row.projectId,
+      draftSurfaceIds: parseDraftSurfaceIds(row.draftSurfacesJson),
       createdAt: row.createdAt,
       ...(row.lastError ? { lastError: row.lastError } : {}),
     }));
@@ -74,6 +100,8 @@ export class AgentProjectDeletionAuthority {
       ...(row.ownershipToken ? { ownershipToken: row.ownershipToken } : {}),
       removalStarted: row.removalStarted === 1,
       storageCleanupCompleted: row.storageCleanupCompleted === 1,
+      draftSurfaceIds: parseDraftSurfaceIds(row.draftSurfacesJson),
+      draftCleanupCompleted: row.draftCleanupCompleted === 1,
       ...(row.lastError ? { lastError: row.lastError } : {}),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -88,6 +116,8 @@ export class AgentProjectDeletionAuthority {
       ...(row.ownershipToken ? { ownershipToken: row.ownershipToken } : {}),
       removalStarted: row.removalStarted === 1,
       storageCleanupCompleted: row.storageCleanupCompleted === 1,
+      draftSurfaceIds: parseDraftSurfaceIds(row.draftSurfacesJson),
+      draftCleanupCompleted: row.draftCleanupCompleted === 1,
       ...(row.lastError ? { lastError: row.lastError } : {}),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -96,14 +126,16 @@ export class AgentProjectDeletionAuthority {
   }
 
   listPendingProjectDeletionReceipts(): ProjectDeletionReceipt[] {
-    return this.db.select().from(projectDeletionReceipts)
-      .where(eq(projectDeletionReceipts.storageCleanupCompleted, 0)).all()
+    return this.db.select().from(projectDeletionReceipts).all()
+      .filter(row => row.storageCleanupCompleted === 0 || row.draftCleanupCompleted === 0)
       .map((row) => ({
         projectId: row.projectId,
         tombstoneName: row.tombstoneName,
         ...(row.ownershipToken ? { ownershipToken: row.ownershipToken } : {}),
         removalStarted: row.removalStarted === 1,
-        storageCleanupCompleted: false,
+        storageCleanupCompleted: row.storageCleanupCompleted === 1,
+        draftSurfaceIds: parseDraftSurfaceIds(row.draftSurfacesJson),
+        draftCleanupCompleted: row.draftCleanupCompleted === 1,
         ...(row.lastError ? { lastError: row.lastError } : {}),
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
@@ -115,6 +147,19 @@ export class AgentProjectDeletionAuthority {
     this.db.update(projectDeletionReceipts).set({
       lastError: error.slice(0, 4_000),
       updatedAt: new Date().toISOString(),
+    }).where(eq(projectDeletionReceipts.projectId, projectId)).run();
+  }
+
+  markProjectDeletionDraftCleanupComplete(projectId: string): void {
+    const current = this.getProjectDeletionReceipt(projectId);
+    if (!current) throw new Error("Project deletion receipt not found");
+    if (current.draftCleanupCompleted) return;
+    const now = new Date().toISOString();
+    this.db.update(projectDeletionReceipts).set({
+      draftCleanupCompleted: 1,
+      lastError: null,
+      updatedAt: now,
+      ...(current.storageCleanupCompleted ? { completedAt: now } : {}),
     }).where(eq(projectDeletionReceipts.projectId, projectId)).run();
   }
 
@@ -169,7 +214,7 @@ export class AgentProjectDeletionAuthority {
       removalStarted: 1,
       lastError: null,
       updatedAt: now,
-      completedAt: now,
+      ...(current.draftCleanupCompleted ? { completedAt: now } : {}),
     }).where(eq(projectDeletionReceipts.projectId, current.projectId)).run();
   }
 
@@ -187,6 +232,7 @@ export class AgentProjectDeletionAuthority {
       .where(eq(projectDeletionPending.projectId, id)).get();
     const tombstoneName = pending?.tombstoneName ?? `.${id}.deleting-${randomUUID()}`;
     const ownershipToken = pending?.ownershipToken ?? randomUUID();
+    const draftSurfaceIds = parseDraftSurfaceIds(pending?.draftSurfacesJson);
     if (tombstoneName.includes("/") || tombstoneName.includes("\\") ||
         !tombstoneName.startsWith(`.${id}.deleting-`)) {
       throw new Error("invalid Project deletion recovery journal");
@@ -253,6 +299,8 @@ export class AgentProjectDeletionAuthority {
           tombstoneName,
           ownershipToken,
           storageCleanupCompleted: 0,
+          draftSurfacesJson: JSON.stringify(draftSurfaceIds),
+          draftCleanupCompleted: 0,
           createdAt: now,
           updatedAt: now,
         }).run();

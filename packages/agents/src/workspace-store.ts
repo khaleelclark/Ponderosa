@@ -425,6 +425,11 @@ export class WorkspaceStore {
       const prefix = `${record.mutation.draftId}\u0000`;
       for (const key of [...this.drafts.keys()]) if (key.startsWith(prefix)) this.drafts.delete(key);
       for (const key of [...this.draftConflicts.keys()]) if (key.startsWith(prefix)) this.draftConflicts.delete(key);
+      for (const [id, resolution] of this.draftConflictResolutions) {
+        if (resolution.conversationId === record.mutation.draftId) {
+          this.draftConflictResolutions.delete(id);
+        }
+      }
     }
     if (record.mutation?.kind === "notification") {
       let notification = this.deletedProjectNotification(
@@ -1114,8 +1119,18 @@ export class WorkspaceStore {
   deleteDraft(draftId: string): void {
     const prefix = `${draftId}\u0000`;
     const current = [...this.drafts.entries()].find(([key]) => key.startsWith(prefix))?.[1];
-    if (!current) return;
-    this.append({ type: "draft_changed", conversationId: draftId, revision: current.revision + 1, cleared: true }, { kind: "draft_deleted", draftId });
+    const retainedProjection = current ||
+      [...this.draftConflicts.keys()].some(key => key.startsWith(prefix)) ||
+      [...this.draftConflictResolutions.values()].some(
+        resolution => resolution.conversationId === draftId,
+      );
+    if (!retainedProjection) return;
+    this.append({
+      type: "draft_changed",
+      conversationId: draftId,
+      revision: (current?.revision ?? 0) + 1,
+      cleared: true,
+    }, { kind: "draft_deleted", draftId });
   }
 
   createNotification(input: Omit<WorkspaceNotificationDto, "id" | "createdAt">, queueWebPush = false): WorkspaceNotificationDto {

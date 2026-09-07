@@ -337,7 +337,9 @@ export function createOperationalNotifications(context: OperationalNotifications
       if (!key) return;
       const projectId = key.slice("project-deletion:".length);
       const receipt = store.getProjectDeletionReceipt(projectId);
-      if (receipt?.storageCleanupCompleted) resolveOperationalNotification(key);
+      if (receipt?.storageCleanupCompleted && receipt.draftCleanupCompleted) {
+        resolveOperationalNotification(key);
+      }
     });
   };
 

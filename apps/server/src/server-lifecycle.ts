@@ -461,6 +461,29 @@ export function registerServerLifecycle(
       lifecyclePhases[name] = Math.round((now - lifecyclePhaseStartedAt) * 10) / 10;
       lifecyclePhaseStartedAt = now;
     };
+    // Re-establish durable draft fences before accepting traffic. Committed
+    // receipts additionally finish their idempotent projection/file/quota phase.
+    for (const pending of store.listPendingProjectDeletions()) {
+      await drafts.fenceMutationGroup(`project:${pending.projectId}`, pending.draftSurfaceIds);
+    }
+    for (const initial of store.listPendingProjectDeletionReceipts()) {
+      if (initial.draftCleanupCompleted) continue;
+      await drafts.fenceMutationGroup(`project:${initial.projectId}`, initial.draftSurfaceIds);
+      try {
+        for (const draftId of initial.draftSurfaceIds) {
+          workspace.deleteDraft(draftId);
+          await drafts.deleteProjectSurface(draftId);
+        }
+        store.markProjectDeletionDraftCleanupComplete(initial.projectId);
+        drafts.releaseMutationGroup(`project:${initial.projectId}`);
+      } catch (error) {
+        store.recordProjectDeletionReceiptCleanupError(
+          initial.projectId,
+          error instanceof Error ? error.message : "Project draft cleanup failed",
+        );
+      }
+    }
+    completeLifecyclePhase("project_deletion_draft_recovery");
     // Completed deletion receipts are irreversible canonical authority. Repair
     // any crash gap in the workspace log before the listener becomes ready.
     reconcileCommittedProjectDeletions();
