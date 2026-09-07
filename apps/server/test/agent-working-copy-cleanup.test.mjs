@@ -10,6 +10,21 @@ function git(cwd, ...args) {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 }
 
+function createAtomicCreationRefs(cwd, branch, ownershipRef, head) {
+  execFileSync("git", ["update-ref", "--stdin"], {
+    cwd,
+    encoding: "utf8",
+    input: [
+      "start",
+      `create refs/heads/${branch} ${head}`,
+      `create ${ownershipRef} ${head}`,
+      "prepare",
+      "commit",
+      "",
+    ].join("\n"),
+  });
+}
+
 async function gitFixture(t) {
   const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), "ponderosa-working-copy-git-")));
   t.after(() => rm(temporary, { recursive: true, force: true }));
@@ -255,6 +270,217 @@ test("retained cleanup settles a preparation failure that never created Git auth
 
   assert.equal(removed.state, "removed");
   assert.equal(git(project.hostPath, "branch", "--list", "ponderosa/never-created"), "");
+});
+
+test("new Separate Git creation retires its atomic ownership marker", async (t) => {
+  const { dataDir, project } = await gitFixture(t);
+  const agentId = "00000000-0000-4000-8000-000000000120";
+  const authority = activeWorkingCopyStore({
+    id: agentId,
+    projectId: project.id,
+    title: "New owner",
+    workingCopy: {
+      id: `shared:${project.id}`,
+      mode: "shared",
+      state: "ready",
+      rootPath: project.hostPath,
+      updatedAt: new Date().toISOString(),
+    },
+  });
+  const service = new AgentWorkingCopyService(dataDir, authority.store);
+  const release = service.beginModeChange(agentId);
+  const created = await service.setMode(authority.current(), project, "separate_git");
+  release();
+
+  assert.equal(created.workingCopy.state, "ready");
+  assert.equal(created.workingCopy.branchOwned, true);
+  assert.equal(created.workingCopy.branchCreationReceipt, undefined);
+  assert.equal(
+    git(project.hostPath, "for-each-ref", "--format=%(refname)", "refs/ponderosa/working-copy-creation"),
+    "",
+  );
+  await writeFile(path.join(created.workingCopy.rootPath, "agent-change.txt"), "changed\n");
+  git(created.workingCopy.rootPath, "add", ".");
+  git(created.workingCopy.rootPath, "commit", "-m", "agent change");
+  const changedHead = git(created.workingCopy.rootPath, "rev-parse", "HEAD");
+  const releaseRetry = service.beginModeChange(agentId);
+  const retried = await service.setMode(authority.current(), project, "separate_git");
+  releaseRetry();
+  assert.equal(retried.workingCopy.state, "ready");
+  assert.equal(git(retried.workingCopy.rootPath, "rev-parse", "HEAD"), changedHead);
+});
+
+test("Separate Git retry recovers an atomically owned branch created before registration", async (t) => {
+  const { dataDir, project, baseHead } = await gitFixture(t);
+  const agentId = "00000000-0000-4000-8000-000000000121";
+  const branch = "ponderosa/post-ref-crash-retry";
+  const ownershipRef = "refs/ponderosa/working-copy-creation/00000000000040008000000000000121";
+  const root = path.join(dataDir, "working-copies", project.id, agentId, "root");
+  createAtomicCreationRefs(project.hostPath, branch, ownershipRef, baseHead);
+  const authority = activeWorkingCopyStore({
+    id: agentId,
+    projectId: project.id,
+    title: "Creation retry",
+    workingCopy: {
+      id: "copy:post-ref-retry",
+      mode: "separate_git",
+      state: "unavailable",
+      rootPath: root,
+      branch,
+      baseHead,
+      branchCreationIntent: true,
+      branchCreationReceipt: { ownershipRef, branchHead: baseHead },
+      failure: "creation interrupted",
+      updatedAt: new Date().toISOString(),
+    },
+  });
+  const service = new AgentWorkingCopyService(dataDir, authority.store);
+  const release = service.beginModeChange(agentId);
+  const recovered = await service.setMode(authority.current(), project, "separate_git");
+  release();
+
+  assert.equal(recovered.workingCopy.state, "ready");
+  assert.equal(recovered.workingCopy.branchOwned, true);
+  assert.equal(recovered.workingCopy.branchCreationIntent, undefined);
+  assert.equal(recovered.workingCopy.branchCreationReceipt, undefined);
+  assert.match(git(project.hostPath, "worktree", "list", "--porcelain"), new RegExp(root, "u"));
+  assert.equal(git(project.hostPath, "for-each-ref", "--format=%(refname)", ownershipRef), "");
+});
+
+test("retained cleanup removes an atomically owned branch created before registration", async (t) => {
+  const { dataDir, project, baseHead } = await gitFixture(t);
+  const agentId = "00000000-0000-4000-8000-000000000122";
+  const branch = "ponderosa/post-ref-crash-cleanup";
+  const ownershipRef = "refs/ponderosa/working-copy-creation/00000000000040008000000000000122";
+  const root = path.join(dataDir, "working-copies", project.id, agentId, "root");
+  createAtomicCreationRefs(project.hostPath, branch, ownershipRef, baseHead);
+  const authority = activeWorkingCopyStore({
+    id: agentId,
+    projectId: project.id,
+    title: "Creation cleanup",
+    workingCopy: {
+      id: "copy:post-ref-cleanup",
+      mode: "separate_git",
+      state: "unavailable",
+      rootPath: root,
+      branch,
+      baseHead,
+      branchCreationIntent: true,
+      branchCreationReceipt: { ownershipRef, branchHead: baseHead },
+      failure: "creation interrupted",
+      updatedAt: new Date().toISOString(),
+    },
+  });
+
+  const removed = await new AgentWorkingCopyService(dataDir, authority.store)
+    .cleanupRetained(agentId, authority.current().workingCopy, project);
+
+  assert.equal(removed.state, "removed");
+  assert.equal(git(project.hostPath, "branch", "--list", branch), "");
+  assert.equal(git(project.hostPath, "for-each-ref", "--format=%(refname)", ownershipRef), "");
+});
+
+test("deleted-Agent cleanup removes an atomically owned branch created before registration", async (t) => {
+  const { dataDir, project, baseHead } = await gitFixture(t);
+  const agentId = "00000000-0000-4000-8000-000000000123";
+  const branch = "ponderosa/post-ref-crash-deleted";
+  const ownershipRef = "refs/ponderosa/working-copy-creation/00000000000040008000000000000123";
+  const root = path.join(dataDir, "working-copies", project.id, agentId, "root");
+  createAtomicCreationRefs(project.hostPath, branch, ownershipRef, baseHead);
+  const authority = deletedWorkingCopyStore(agentId, {
+    id: "copy:post-ref-deleted",
+    mode: "separate_git",
+    state: "unavailable",
+    rootPath: root,
+    branch,
+    baseHead,
+    branchCreationIntent: true,
+    branchCreationReceipt: { ownershipRef, branchHead: baseHead },
+    failure: "creation interrupted",
+    updatedAt: new Date().toISOString(),
+  });
+
+  const removed = await new AgentWorkingCopyService(dataDir, authority.store)
+    .cleanupRetained(agentId, authority.current(), project, { deleted: true });
+
+  assert.equal(removed.state, "removed");
+  assert.equal(authority.current().state, "removed");
+  assert.equal(git(project.hostPath, "branch", "--list", branch), "");
+  assert.equal(git(project.hostPath, "for-each-ref", "--format=%(refname)", ownershipRef), "");
+});
+
+test("Project deletion cleanup removes an atomically owned branch created before registration", async (t) => {
+  const { dataDir, project, baseHead } = await gitFixture(t);
+  const agentId = "00000000-0000-4000-8000-000000000124";
+  const branch = "ponderosa/post-ref-crash-project";
+  const ownershipRef = "refs/ponderosa/working-copy-creation/00000000000040008000000000000124";
+  const root = path.join(dataDir, "working-copies", project.id, agentId, "root");
+  createAtomicCreationRefs(project.hostPath, branch, ownershipRef, baseHead);
+  const authority = activeWorkingCopyStore({
+    id: agentId,
+    projectId: project.id,
+    title: "Project cleanup",
+    workingCopy: {
+      id: "copy:post-ref-project",
+      mode: "separate_git",
+      state: "unavailable",
+      rootPath: root,
+      branch,
+      baseHead,
+      branchCreationIntent: true,
+      branchCreationReceipt: { ownershipRef, branchHead: baseHead },
+      failure: "creation interrupted",
+      updatedAt: new Date().toISOString(),
+    },
+  });
+
+  await new AgentWorkingCopyService(dataDir, authority.store).cleanupProject(project);
+
+  assert.equal(authority.current().workingCopy.state, "removed");
+  assert.equal(git(project.hostPath, "branch", "--list", branch), "");
+  assert.equal(git(project.hostPath, "for-each-ref", "--format=%(refname)", ownershipRef), "");
+  await assert.rejects(access(path.join(dataDir, "working-copies", project.id)), { code: "ENOENT" });
+});
+
+test("creation cleanup preserves a branch changed after its atomic ownership receipt", async (t) => {
+  const { dataDir, project, baseHead } = await gitFixture(t);
+  const agentId = "00000000-0000-4000-8000-000000000125";
+  const branch = "ponderosa/post-ref-crash-changed";
+  const ownershipRef = "refs/ponderosa/working-copy-creation/00000000000040008000000000000125";
+  const root = path.join(dataDir, "working-copies", project.id, agentId, "root");
+  createAtomicCreationRefs(project.hostPath, branch, ownershipRef, baseHead);
+  await writeFile(path.join(project.hostPath, "later.txt"), "later\n");
+  git(project.hostPath, "add", ".");
+  git(project.hostPath, "commit", "-m", "later");
+  const changedHead = git(project.hostPath, "rev-parse", "HEAD");
+  git(project.hostPath, "update-ref", `refs/heads/${branch}`, changedHead, baseHead);
+  const authority = activeWorkingCopyStore({
+    id: agentId,
+    projectId: project.id,
+    title: "Changed creation",
+    workingCopy: {
+      id: "copy:post-ref-changed",
+      mode: "separate_git",
+      state: "unavailable",
+      rootPath: root,
+      branch,
+      baseHead,
+      branchCreationIntent: true,
+      branchCreationReceipt: { ownershipRef, branchHead: baseHead },
+      failure: "creation interrupted",
+      updatedAt: new Date().toISOString(),
+    },
+  });
+
+  await assert.rejects(
+    new AgentWorkingCopyService(dataDir, authority.store)
+      .cleanupRetained(agentId, authority.current().workingCopy, project),
+    /no longer matches its durable branch and working-folder identity/u,
+  );
+
+  assert.equal(git(project.hostPath, "rev-parse", branch), changedHead);
+  assert.equal(git(project.hostPath, "rev-parse", ownershipRef), baseHead);
+  assert.equal(authority.current().workingCopy.state, "unavailable");
 });
 
 test("Project cleanup resumes after a crash immediately after owned worktree removal", async (t) => {

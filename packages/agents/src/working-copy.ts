@@ -61,6 +61,7 @@ export function resolveAgentWorkingCopy(
       workingCopy.baseHead !== undefined ||
       workingCopy.branchOwned !== undefined ||
       workingCopy.branchCreationIntent !== undefined ||
+      workingCopy.branchCreationReceipt !== undefined ||
       workingCopy.cleanupReceipt !== undefined
     ) {
       throw new AgentWorkingCopyUnavailableError(
@@ -76,6 +77,7 @@ export function resolveAgentWorkingCopy(
   }
   if (!workingCopy.id.startsWith("copy:") || !workingCopy.rootPath || !workingCopy.branch ||
       workingCopy.branchOwned !== true || workingCopy.branchCreationIntent !== undefined ||
+      workingCopy.branchCreationReceipt !== undefined ||
       workingCopy.cleanupReceipt !== undefined) {
     throw new AgentWorkingCopyUnavailableError(
       workingCopy,

@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, realpath, rmdir } from "node:fs/promises";
 import path from "node:path";
@@ -19,6 +19,7 @@ import type {
 
 const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 30_000;
+const CREATION_OWNERSHIP_REF = /^refs\/ponderosa\/working-copy-creation\/[0-9a-f]{32}$/u;
 
 function gitEnvironment(): NodeJS.ProcessEnv {
   const environment = { ...process.env };
@@ -64,6 +65,10 @@ function separateBranch(agent: Pick<AgentDto, "id" | "title">): string {
   return `ponderosa/${label}-${agent.id.replaceAll("-", "").slice(0, 10)}`;
 }
 
+function creationOwnershipRef(): string {
+  return `refs/ponderosa/working-copy-creation/${randomUUID().replaceAll("-", "")}`;
+}
+
 function safeFailure(error: unknown): string {
   const detail = error instanceof Error ? error.message : "Git could not prepare the folder.";
   const firstLine = detail.split(/[\r\n]/u, 1)[0]?.trim();
@@ -92,6 +97,38 @@ async function gitBranchExists(projectRoot: string, branch: string): Promise<boo
 
 async function gitBranchHead(projectRoot: string, branch: string): Promise<string> {
   return runGit(projectRoot, ["rev-parse", "--verify", `refs/heads/${branch}^{commit}`]);
+}
+
+async function gitReferenceHead(projectRoot: string, reference: string): Promise<string | undefined> {
+  try {
+    return await runGit(projectRoot, ["rev-parse", "--verify", `${reference}^{commit}`]);
+  } catch (error) {
+    if (exitedWithStatus(error, 128)) return undefined;
+    throw error;
+  }
+}
+
+function createOwnedBranchReferences(
+  projectRoot: string,
+  branch: string,
+  ownershipRef: string,
+  branchHead: string,
+): void {
+  execFileSync("git", ["--no-optional-locks", "update-ref", "--stdin"], {
+    cwd: projectRoot,
+    encoding: "utf8",
+    env: gitEnvironment(),
+    timeout: GIT_TIMEOUT_MS,
+    maxBuffer: 1024 * 1024,
+    input: [
+      "start",
+      `create refs/heads/${branch} ${branchHead}`,
+      `create ${ownershipRef} ${branchHead}`,
+      "prepare",
+      "commit",
+      "",
+    ].join("\n"),
+  });
 }
 
 async function gitWorktreeBranchRoots(
@@ -330,7 +367,8 @@ export class AgentWorkingCopyService {
     // example when Shared is not a Git repository). That state has no Git
     // authority to clean; removing its empty managed container is sufficient.
     if (!rootExists && !workingCopy.baseHead && !workingCopy.branchOwned &&
-        !workingCopy.branchCreationIntent && !workingCopy.cleanupReceipt) {
+        !workingCopy.branchCreationIntent && !workingCopy.branchCreationReceipt &&
+        !workingCopy.cleanupReceipt) {
       try {
         await rmdir(path.join(this.managedRoot, project.id, agentId));
       } catch (error) {
@@ -362,15 +400,31 @@ export class AgentWorkingCopyService {
     if (cleanupReceipt && (
       workingCopy.state !== "unavailable" || workingCopy.branchOwned !== true ||
       workingCopy.branchCreationIntent !== undefined ||
+      workingCopy.branchCreationReceipt !== undefined ||
       !["worktree_removal_authorized", "branch_removal_authorized"].includes(cleanupReceipt.phase) ||
-      !/^[0-9a-f]{40,64}$/u.test(cleanupReceipt.branchHead)
+      !/^[0-9a-f]{40,64}$/u.test(cleanupReceipt.branchHead) ||
+      (cleanupReceipt.creationOwnershipRef !== undefined &&
+        !CREATION_OWNERSHIP_REF.test(cleanupReceipt.creationOwnershipRef))
     )) {
       throw new Error("The retained Git copy has an invalid cleanup receipt");
     }
+    const creationReceipt = workingCopy.branchCreationReceipt;
+    if (creationReceipt && (
+      workingCopy.state !== "unavailable" || workingCopy.branchOwned !== undefined ||
+      workingCopy.branchCreationIntent !== true || !workingCopy.baseHead ||
+      creationReceipt.branchHead !== workingCopy.baseHead ||
+      !/^[0-9a-f]{40,64}$/u.test(creationReceipt.branchHead) ||
+      !CREATION_OWNERSHIP_REF.test(creationReceipt.ownershipRef)
+    )) {
+      throw new Error("The retained Git copy has an invalid branch-creation receipt");
+    }
     let branchOwned = workingCopy.branchOwned === true;
     let branchExists = await gitBranchExists(projectRoot, workingCopy.branch);
-    let registeredAtExpectedRoot = branchExists &&
-      await gitWorktreeRegistrationExact(projectRoot, expectedRoot, workingCopy.branch);
+    const registeredRoots = branchExists
+      ? await gitWorktreeBranchRoots(projectRoot, workingCopy.branch)
+      : [];
+    let registeredAtExpectedRoot = branchExists && registeredRoots.length === 1 &&
+      samePath(registeredRoots[0]!, expectedRoot);
     if (rootExists && registeredAtExpectedRoot) {
       let currentRootMatches = false;
       try {
@@ -385,9 +439,38 @@ export class AgentWorkingCopyService {
         throw new Error("The retained Git working folder was replaced and was preserved");
       }
     }
+    let creationOwnershipRef: string | undefined;
     if (!branchOwned && workingCopy.branchCreationIntent === true && branchExists &&
-        workingCopy.baseHead && registeredAtExpectedRoot) {
-      branchOwned = await gitBranchHead(projectRoot, workingCopy.branch) === workingCopy.baseHead;
+        workingCopy.baseHead) {
+      const branchHead = await gitBranchHead(projectRoot, workingCopy.branch);
+      if (creationReceipt) {
+        const ownershipHead = await gitReferenceHead(projectRoot, creationReceipt.ownershipRef);
+        if (branchHead === creationReceipt.branchHead &&
+            ownershipHead === creationReceipt.branchHead &&
+            registeredRoots.every((root) => samePath(root, expectedRoot))) {
+          branchOwned = true;
+          creationOwnershipRef = creationReceipt.ownershipRef;
+        }
+      } else if (registeredAtExpectedRoot && branchHead === workingCopy.baseHead) {
+        branchOwned = true;
+      }
+    }
+    if (creationReceipt && !branchExists && !rootExists && registeredRoots.length === 0) {
+      const ownershipHead = await gitReferenceHead(projectRoot, creationReceipt.ownershipRef);
+      if (ownershipHead === creationReceipt.branchHead) {
+        await runGit(projectRoot, [
+          "update-ref", "-d", creationReceipt.ownershipRef, creationReceipt.branchHead,
+        ]);
+      }
+      return this.persistCleanupState(agentId, {
+        ...workingCopy,
+        state: "removed",
+        branchCreationIntent: undefined,
+        branchCreationReceipt: undefined,
+        cleanupReceipt: undefined,
+        failure: undefined,
+        updatedAt: new Date().toISOString(),
+      }, options.deleted === true);
     }
 
     let durable = workingCopy;
@@ -402,12 +485,14 @@ export class AgentWorkingCopyService {
           ...workingCopy,
           state: "removed",
           branchCreationIntent: undefined,
+          branchCreationReceipt: undefined,
           cleanupReceipt: undefined,
           failure: undefined,
           updatedAt: new Date().toISOString(),
         }, options.deleted === true);
       }
-      if (!rootExists || !branchExists || !branchOwned || !registeredAtExpectedRoot) {
+      if (!branchExists || !branchOwned ||
+          (rootExists ? !registeredAtExpectedRoot : registeredRoots.length > 0 || !creationOwnershipRef)) {
         throw new Error("The retained Git copy no longer matches its durable branch and working-folder identity");
       }
       expectedBranchHead = await gitBranchHead(projectRoot, workingCopy.branch);
@@ -416,9 +501,11 @@ export class AgentWorkingCopyService {
         state: "unavailable",
         branchOwned: true,
         branchCreationIntent: undefined,
+        branchCreationReceipt: undefined,
         cleanupReceipt: {
           phase: "worktree_removal_authorized",
           branchHead: expectedBranchHead,
+          ...(creationOwnershipRef ? { creationOwnershipRef } : {}),
         },
         failure: "Separate Git copy removal is in progress. Runs remain paused.",
         updatedAt: new Date().toISOString(),
@@ -453,6 +540,9 @@ export class AgentWorkingCopyService {
         cleanupReceipt: {
           phase: "branch_removal_authorized",
           branchHead: expectedBranchHead!,
+          ...(durable.cleanupReceipt?.creationOwnershipRef
+            ? { creationOwnershipRef: durable.cleanupReceipt.creationOwnershipRef }
+            : {}),
         },
         updatedAt: new Date().toISOString(),
       }, options.deleted === true);
@@ -479,6 +569,12 @@ export class AgentWorkingCopyService {
       ]);
       options.afterBranchRemoval?.();
     }
+    if (durable.cleanupReceipt?.creationOwnershipRef &&
+        await gitReferenceHead(projectRoot, durable.cleanupReceipt.creationOwnershipRef) === expectedBranchHead) {
+      await runGit(projectRoot, [
+        "update-ref", "-d", durable.cleanupReceipt.creationOwnershipRef, expectedBranchHead!,
+      ]);
+    }
     try {
       await rmdir(path.join(this.managedRoot, project.id, agentId));
     } catch (error) {
@@ -489,6 +585,7 @@ export class AgentWorkingCopyService {
       ...durable,
       state: "removed",
       branchCreationIntent: undefined,
+      branchCreationReceipt: undefined,
       cleanupReceipt: undefined,
       failure: undefined,
       updatedAt: new Date().toISOString(),
@@ -537,6 +634,9 @@ export class AgentWorkingCopyService {
       agent.workingCopy.branchOwned === true;
     let branchCreationIntent = agent.workingCopy.mode === "separate_git" &&
       agent.workingCopy.branchCreationIntent === true;
+    let branchCreationReceipt = agent.workingCopy.mode === "separate_git"
+      ? agent.workingCopy.branchCreationReceipt
+      : undefined;
     const unavailable = (failure: string, baseHead?: string) => this.requireUpdated(agent.id, {
       id: identity,
       mode: "separate_git",
@@ -546,6 +646,7 @@ export class AgentWorkingCopyService {
       ...(baseHead ? { baseHead } : {}),
       ...(branchOwned ? { branchOwned: true as const } : {}),
       ...(branchCreationIntent ? { branchCreationIntent: true as const } : {}),
+      ...(branchCreationReceipt ? { branchCreationReceipt } : {}),
       failure,
       updatedAt: new Date().toISOString(),
     });
@@ -559,7 +660,8 @@ export class AgentWorkingCopyService {
       }
       await runGit(projectRoot, ["check-ref-format", "--branch", branch]);
       const currentHead = await runGit(projectRoot, ["rev-parse", "HEAD"]);
-      const baseHead = (branchCreationIntent || branchOwned) && agent.workingCopy.baseHead
+      const baseHead = (branchCreationIntent || branchCreationReceipt || branchOwned) &&
+        agent.workingCopy.baseHead
         ? agent.workingCopy.baseHead
         : currentHead;
       preparedBaseHead = baseHead;
@@ -570,35 +672,45 @@ export class AgentWorkingCopyService {
         targetExists = target.isDirectory() && !target.isSymbolicLink();
       } catch { /* Git creates the target. */ }
       if (targetExists) {
-        if (agent.workingCopy.branchOwned !== true &&
-            agent.workingCopy.branchCreationIntent !== true) {
+        const exactRegistration = await gitWorktreeRegistrationExact(projectRoot, rootPath, branch);
+        const branchHead = await gitBranchHead(projectRoot, branch);
+        const ownershipHead = branchCreationReceipt
+          ? await gitReferenceHead(projectRoot, branchCreationReceipt.ownershipRef)
+          : undefined;
+        if (!branchOwned && !branchCreationIntent && !branchCreationReceipt) {
           throw new Error("the existing Git branch is not proven to be Ponderosa-owned");
         }
-        if (agent.workingCopy.branchOwned !== true && (
-          !agent.workingCopy.baseHead ||
-          !await gitWorktreeRegistrationExact(projectRoot, rootPath, branch) ||
-          await gitBranchHead(projectRoot, branch) !== agent.workingCopy.baseHead
-        )) {
+        if (!exactRegistration || (!branchOwned && branchHead !== baseHead) ||
+            (branchCreationReceipt && ownershipHead !== undefined &&
+              ownershipHead !== branchCreationReceipt.branchHead)) {
           throw new Error("the interrupted Git copy no longer matches its creation receipt");
         }
-        const current = await this.resolve({
-          ...agent,
-          workingCopy: {
-            id: identity,
-            mode: "separate_git",
-            state: "ready",
-            rootPath,
-            branch,
-            baseHead,
-            branchOwned: true,
-            updatedAt: new Date().toISOString(),
-          },
-        }, project);
-        if (!samePath(current.rootPath, rootPath)) throw new Error("existing Separate Git copy has a different root");
-        branchOwned = true;
-        branchCreationIntent = false;
       } else {
-        const branchExists = await gitBranchExists(projectRoot, branch);
+        let branchExists = await gitBranchExists(projectRoot, branch);
+        if (!branchExists && !branchOwned) {
+          if (!branchCreationReceipt) {
+            branchCreationIntent = true;
+            branchCreationReceipt = {
+              ownershipRef: creationOwnershipRef(),
+              branchHead: baseHead,
+            };
+            unavailable("Separate Git copy creation is in progress. Runs remain paused.", baseHead);
+          }
+          const ownershipHead = await gitReferenceHead(
+            projectRoot,
+            branchCreationReceipt.ownershipRef,
+          );
+          if (ownershipHead !== undefined) {
+            throw new Error("the branch-creation ownership ref exists without its atomic branch");
+          }
+          createOwnedBranchReferences(
+            projectRoot,
+            branch,
+            branchCreationReceipt.ownershipRef,
+            branchCreationReceipt.branchHead,
+          );
+          branchExists = true;
+        }
         if (branchExists) {
           const registeredRoots = await gitWorktreeBranchRoots(projectRoot, branch);
           if (registeredRoots.some((root) => !samePath(root, rootPath))) {
@@ -606,7 +718,18 @@ export class AgentWorkingCopyService {
           }
           const exactRegistration = registeredRoots.length === 1 &&
             samePath(registeredRoots[0]!, rootPath);
-          if (branchOwned) {
+          const branchHead = await gitBranchHead(projectRoot, branch);
+          const ownershipHead = branchCreationReceipt
+            ? await gitReferenceHead(projectRoot, branchCreationReceipt.ownershipRef)
+            : undefined;
+          if (branchCreationReceipt) {
+            if (branchHead !== branchCreationReceipt.branchHead ||
+                (ownershipHead !== branchCreationReceipt.branchHead &&
+                  !(ownershipHead === undefined && exactRegistration))) {
+              throw new Error("the requested Git branch does not match its atomic creation receipt");
+            }
+            await runGit(projectRoot, ["worktree", "add", "--force", rootPath, branch]);
+          } else if (branchOwned) {
             if (!exactRegistration) {
               throw new Error("the owned Git branch is no longer registered to its working folder");
             }
@@ -626,23 +749,38 @@ export class AgentWorkingCopyService {
           } else {
             throw new Error("the requested Git branch already exists and is not Ponderosa-owned");
           }
-          branchOwned = true;
-          branchCreationIntent = false;
-        } else {
-          // Persist intent before Git creates either the branch or worktree. If
-          // the process stops after Git succeeds, restart can recover ownership
-          // by matching this exact ref/base receipt and managed root.
-          branchCreationIntent = true;
-          unavailable("Separate Git copy creation is in progress. Runs remain paused.", baseHead);
-          await runGit(projectRoot, [
-            "worktree", "add", "--no-track", "-b", branch,
-            rootPath,
-            baseHead,
-          ]);
-          branchOwned = true;
-          branchCreationIntent = false;
         }
       }
+      const resolved = await this.resolve({
+        ...agent,
+        workingCopy: {
+          id: identity,
+          mode: "separate_git",
+          state: "ready",
+          rootPath,
+          branch,
+          baseHead,
+          branchOwned: true,
+          updatedAt: new Date().toISOString(),
+        },
+      }, project);
+      if (!samePath(resolved.rootPath, rootPath)) {
+        throw new Error("the prepared Separate Git copy has a different root");
+      }
+      if (branchCreationReceipt) {
+        const ownershipHead = await gitReferenceHead(projectRoot, branchCreationReceipt.ownershipRef);
+        if (ownershipHead !== undefined) {
+          if (ownershipHead !== branchCreationReceipt.branchHead) {
+            throw new Error("the branch-creation ownership ref changed and was preserved");
+          }
+          await runGit(projectRoot, [
+            "update-ref", "-d", branchCreationReceipt.ownershipRef, branchCreationReceipt.branchHead,
+          ]);
+        }
+      }
+      branchOwned = true;
+      branchCreationIntent = false;
+      branchCreationReceipt = undefined;
       const ready = this.requireUpdated(agent.id, {
         id: identity,
         mode: "separate_git",

@@ -50,25 +50,39 @@ function validateWorkingCopy(
     workingCopy.baseHead !== undefined ||
     workingCopy.branchOwned !== undefined ||
     workingCopy.branchCreationIntent !== undefined ||
+    workingCopy.branchCreationReceipt !== undefined ||
     workingCopy.cleanupReceipt !== undefined ||
     workingCopy.failure !== undefined
   )) throw new Error("invalid Shared folder identity");
   const cleanupReceipt = workingCopy.cleanupReceipt;
   const validCleanupReceipt = cleanupReceipt !== undefined &&
     ["worktree_removal_authorized", "branch_removal_authorized"].includes(cleanupReceipt.phase) &&
-    /^[0-9a-f]{40,64}$/u.test(cleanupReceipt.branchHead);
+    /^[0-9a-f]{40,64}$/u.test(cleanupReceipt.branchHead) &&
+    (cleanupReceipt.creationOwnershipRef === undefined ||
+      /^refs\/ponderosa\/working-copy-creation\/[0-9a-f]{32}$/u.test(cleanupReceipt.creationOwnershipRef));
+  const branchCreationReceipt = workingCopy.branchCreationReceipt;
+  const validBranchCreationReceipt = branchCreationReceipt !== undefined &&
+    /^refs\/ponderosa\/working-copy-creation\/[0-9a-f]{32}$/u.test(branchCreationReceipt.ownershipRef) &&
+    /^[0-9a-f]{40,64}$/u.test(branchCreationReceipt.branchHead) &&
+    branchCreationReceipt.branchHead === workingCopy.baseHead;
   if (workingCopy.mode === "separate_git" && (
     !workingCopy.id.startsWith("copy:") ||
     !workingCopy.rootPath ||
     !workingCopy.branch ||
     (workingCopy.state === "ready" && workingCopy.branchOwned !== true) ||
     (workingCopy.state === "ready" && workingCopy.branchCreationIntent !== undefined) ||
+    (workingCopy.state === "ready" && workingCopy.branchCreationReceipt !== undefined) ||
     (workingCopy.state === "ready" && workingCopy.cleanupReceipt !== undefined) ||
     (workingCopy.state === "ready" && workingCopy.failure !== undefined) ||
     (workingCopy.state === "unavailable" && !workingCopy.failure) ||
+    (workingCopy.branchCreationReceipt !== undefined && (
+      workingCopy.state !== "unavailable" || workingCopy.branchOwned !== undefined ||
+      workingCopy.branchCreationIntent !== true || !validBranchCreationReceipt
+    )) ||
     (workingCopy.cleanupReceipt !== undefined && (
       workingCopy.state !== "unavailable" || workingCopy.branchOwned !== true ||
-      workingCopy.branchCreationIntent !== undefined || !validCleanupReceipt
+      workingCopy.branchCreationIntent !== undefined ||
+      workingCopy.branchCreationReceipt !== undefined || !validCleanupReceipt
     ))
   )) throw new Error("invalid Separate Git copy identity");
 }
