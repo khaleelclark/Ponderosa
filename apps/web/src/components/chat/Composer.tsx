@@ -87,6 +87,7 @@ import {
   insertComposerCapability,
   matchingComposerCapabilities,
   matchingEngineCommands,
+  ownedDraftRevisionAfterObservation,
   providerSlashSubmission,
   recoverableDraftConflict,
   type RecoverableDraftConflict,
@@ -139,16 +140,16 @@ type FailedDraftContent = {
 type DraftWriteChain = {
   clientId: string;
   cleanupRetryScheduled: boolean;
+  ownedRevision: number;
   pendingDeletionIds: Set<string>;
-  revision: number;
   tail: Promise<void>;
 };
 
 const createDraftWriteChain = (): DraftWriteChain => ({
   clientId: draftSurfaceClientId(),
   cleanupRetryScheduled: false,
+  ownedRevision: 0,
   pendingDeletionIds: new Set(),
-  revision: 0,
   tail: Promise.resolve(),
 });
 
@@ -1061,13 +1062,17 @@ export function Composer({
       }
       unrestoredDraftAttachmentIds.current = failedAttachments.map(item => item.id);
       draftRevision.current = draft.revision;
-      draftWriteChain.current.revision = draft.revision;
       const local = draftStorageKey
         ? (readChatState(draftStorageKey) ?? "")
         : "";
       const adoptDraft = shouldAdoptHydratedDraft(
         inputRef.current?.isFocused() ?? false,
         draftLocallyEdited.current,
+      );
+      draftWriteChain.current.ownedRevision = ownedDraftRevisionAfterObservation(
+        draftWriteChain.current.ownedRevision,
+        draft.revision,
+        adoptDraft,
       );
       const hydratedPastedText = hydratedPastedTextContent({
         attachmentId: draft.pastedTextAttachmentId,
@@ -1136,13 +1141,17 @@ export function Composer({
         hydrationGeneration === draftHydrationGeneration.current
       ) {
         draftRevision.current = draft.revision;
-        draftWriteChain.current.revision = draft.revision;
         unrestoredDraftAttachmentIds.current = draft.attachmentIds.filter(
           id => !locallyRemovedDraftAttachmentIds.current.has(id),
         );
         const adoptDraft = shouldAdoptHydratedDraft(
           inputRef.current?.isFocused() ?? false,
           draftLocallyEdited.current,
+        );
+        draftWriteChain.current.ownedRevision = ownedDraftRevisionAfterObservation(
+          draftWriteChain.current.ownedRevision,
+          draft.revision,
+          adoptDraft,
         );
         const failedPastedText =
           draft.pastedTextAttachmentId &&
@@ -1440,11 +1449,11 @@ export function Composer({
               ? { pastedTextAttachmentId: submittedPastedTextAttachmentId }
               : {}),
             mentionBindings: knownMentionBindings,
-            expectedRevision: draftRevision.current,
+            expectedRevision: writeChain.ownedRevision,
             clientId,
             ownerId: draftOwnerId,
           });
-          writeChain.revision = draft.revision;
+          writeChain.ownedRevision = draft.revision;
           const cleanupReleased = async (): Promise<void> => {
             await cleanupReleasedDraftAttachmentIds(
               writeChain.pendingDeletionIds,
@@ -1530,7 +1539,6 @@ export function Composer({
           }
           if (!stillOwnsWrite()) return;
           draftRevision.current = current.revision;
-          writeChain.revision = current.revision;
           queryClient.setQueryData(
             queryKeys.conversationDraft.detail(
               scope,
@@ -1921,7 +1929,7 @@ export function Composer({
     const submittedPastedText = pastedTextRef.current;
     const submittedPastedTextAttachmentId = pastedTextAttachmentId.current;
     const submittedDraftScope = conversationDraftId;
-    const submittedDraftRevision = draftRevision.current;
+    const submittedOwnedDraftRevision = draftWriteChain.current.ownedRevision;
     const submittedDraftGeneration = draftGeneration.current;
     const submittedDraftWriteChain = draftWriteChain.current;
     const submittedSupersededPastedTextAttachmentIds = [
@@ -2046,9 +2054,10 @@ export function Composer({
                 // incarnation. The server may fast-forward only this exact
                 // incarnation; a 409 from a later incarnation is terminal.
                 const clearedDraft = await clearSavedDraft(
-                  submittedDraftWriteChain.revision || submittedDraftRevision,
+                  submittedDraftWriteChain.ownedRevision ||
+                    submittedOwnedDraftRevision,
                 );
-                submittedDraftWriteChain.revision = clearedDraft.revision;
+                submittedDraftWriteChain.ownedRevision = clearedDraft.revision;
                 if (clearOwnsActiveScope()) {
                   draftRevision.current = clearedDraft.revision;
                 }
@@ -2235,6 +2244,7 @@ export function Composer({
                 restaged,
                 draftEditVersion.current,
               );
+              recoveryWriteChain.ownedRevision = recovery.conflict.current.revision;
               for (const id of draftAttachmentIds.current.values()) {
                 recoveryWriteChain.pendingDeletionIds.add(id);
               }

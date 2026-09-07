@@ -14,6 +14,7 @@ import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import type {
   AgentMentionBindingDto,
+  AgentDetailDto,
   AllChatDecisionEventDto,
   AllChatItemDto,
   AssetDto,
@@ -32,6 +33,7 @@ import {
   useState,
 } from "react";
 import { api } from "../api";
+import { ApiRequestError } from "../api/types";
 import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
 import {
   useAllChat,
@@ -61,6 +63,7 @@ import { createClientId } from "../clientId";
 import {
   discardRecipientUploads,
   fileSelectionFingerprint,
+  recipientUploadsForAgentIds,
   stableMessageActionText,
   type RecipientUploads,
   uploadFilesForRecipients,
@@ -607,6 +610,10 @@ export function AllChatView({
         effort: nextEffort,
       }),
     onSuccess: updated => {
+      queryClient.setQueryData<AgentDetailDto>(
+        queryKeys.agents.detail(updated.id),
+        current => current ? { ...current, agent: updated } : current,
+      );
       void queryClient.invalidateQueries({
         queryKey: queryKeys.agents.detailPrefix(updated.id),
       });
@@ -842,7 +849,25 @@ export function AllChatView({
           ...(submittedRuntime.speed ? { speed: submittedRuntime.speed } : {}),
         });
         deliveredRecipientIds = response.recipients.map(recipient => recipient.agentId);
-        unavailableCount = response.unavailableRecipients?.length ?? 0;
+        const unavailableRecipientIds = (response.unavailableRecipients ?? [])
+          .map(recipient => recipient.agentId);
+        unavailableCount = unavailableRecipientIds.length;
+        const unavailableUploads = recipientUploadsForAgentIds(
+          uploaded,
+          unavailableRecipientIds,
+        );
+        await Promise.all(unavailableUploads.flatMap(recipient =>
+          recipient.attachments.map(async attachment => {
+            try {
+              await api.deleteAttachment(recipient.agentId, attachment.id);
+            } catch (error) {
+              if (!(error instanceof ApiRequestError) || error.status !== 404) throw error;
+            }
+          })));
+        prepared.uploads = recipientUploadsForAgentIds(
+          uploaded,
+          deliveredRecipientIds,
+        );
       }
       if (sendAttempt.current === attempt) sendAttempt.current = undefined;
       return {
@@ -1040,6 +1065,7 @@ export function AllChatView({
         speed={selectedRuntime.speed}
         speeds={selectedRuntime.speeds}
         selectedRuntime={selectedRuntime}
+        disabled={updateRuntimeEngine.isPending}
         onEngineChange={next => {
           const nextEngine = engines.find(item => item.id === next);
           if (!nextEngine || !selectedAgentId) return;

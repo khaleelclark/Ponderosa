@@ -4,6 +4,7 @@ import { retainIdempotentAttempt } from "../src/components/idempotentAttempt.js"
 import {
   recipientActionSnapshot,
   recipientUploadCacheKey,
+  recipientUploadsForAgentIds,
   stableMessageActionText,
 } from "../src/conversationRouting.js";
 
@@ -68,5 +69,24 @@ test("recipient and broadcast-owner snapshots remain frozen across an ambiguous 
   assert.notEqual(
     recipientUploadCacheKey("direct", ["agent-a"]),
     recipientUploadCacheKey("direct", ["agent-b"]),
+  );
+});
+
+test("partial delivery cleanup selects only this attempt's unavailable-recipient uploads", () => {
+  const uploads = [
+    { agentId: "delivered", attachments: [{ id: "file-delivered" }, { id: "paste-delivered" }] },
+    { agentId: "archived", attachments: [{ id: "file-archived" }, { id: "paste-archived" }] },
+  ];
+  assert.deepEqual(
+    recipientUploadsForAgentIds(uploads, ["archived"]),
+    [uploads[1]],
+  );
+  assert.deepEqual(
+    recipientUploadsForAgentIds(uploads, ["delivered"]),
+    [uploads[0]],
+  );
+  assert.deepEqual(
+    recipientUploadsForAgentIds(uploads, ["another-attempt"]),
+    [],
   );
 });

@@ -5,6 +5,7 @@ import { MessageSenderLabel } from "../MessageSenderLabel";
 import { MessageActionsAndTimestamp, MessageTimestamp } from "../MessageTimestamp";
 import { ChatAttachments } from "./ChatAttachments";
 import { ChatOperatorLabel } from "./ChatOperatorLabel";
+import { messageSelectionTargetIsInteractive } from "./messageSelection";
 
 export function ChatMessageFrame({
   message,
@@ -33,7 +34,7 @@ export function ChatMessageFrame({
   const toggleTimestamp = (event: ReactMouseEvent<HTMLElement>) => {
     // Interactive descendants own their clicks; tapping message content on a
     // phone is the timestamp affordance.
-    if ((event.target as HTMLElement).closest("button,a,input,textarea,[role='button']")) return;
+    if (messageSelectionTargetIsInteractive(event.target, event.currentTarget)) return;
     setMobileTimestampRevealed((current) => !current);
   };
   useEffect(() => {
@@ -85,9 +86,14 @@ export function ChatMessageFrame({
       component="article"
       className="chat-message"
       aria-label={message.ariaLabel ?? `${senderName} message`}
-      role={selectable ? "button" : undefined}
       tabIndex={selectable ? 0 : -1}
-      onClick={selectable ? selectMessage : toggleTimestamp}
+      onClick={selectable
+        ? event => {
+            if (!messageSelectionTargetIsInteractive(event.target, event.currentTarget)) {
+              selectMessage();
+            }
+          }
+        : toggleTimestamp}
       onKeyDown={(event) => {
         if (!selectable || event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
         event.preventDefault();

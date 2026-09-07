@@ -42,6 +42,7 @@ import {
   draftWriteContinuationStillOwned,
   hydratedDraftContent,
   hydratedPastedTextContent,
+  ownedDraftRevisionAfterObservation,
   recoverableDraftConflict,
   removeComposerPasteSelection,
   restagedDraftConflictSnapshot,
@@ -51,6 +52,7 @@ import {
   shouldIgnoreComposerKey,
   shouldSendComposerKey,
 } from "../src/components/chat/composerUtils.js";
+import { messageSelectionTargetIsInteractive } from "../src/components/chat/messageSelection.js";
 import {
   findMentionedHandles,
   hasBroadcastMention,
@@ -362,6 +364,28 @@ test("stale runtime rollback restores only its Agent's persisted speed", () => {
   );
 });
 
+test("interactive message descendants own their action without selecting the source", () => {
+  const currentTarget = {};
+  assert.equal(
+    messageSelectionTargetIsInteractive(currentTarget, currentTarget),
+    false,
+  );
+  assert.equal(
+    messageSelectionTargetIsInteractive(
+      { closest: selector => selector.includes("button") ? {} : null },
+      currentTarget,
+    ),
+    true,
+  );
+  assert.equal(
+    messageSelectionTargetIsInteractive(
+      { closest: () => null },
+      currentTarget,
+    ),
+    false,
+  );
+});
+
 test("All Messages routes a global provider action before Project validation", () => {
   assert.deepEqual(
     allChatAttentionRoute({
@@ -670,6 +694,11 @@ test("only the matching pasted-text PUT clears the local hydration guard", () =>
     }),
     6,
   );
+});
+
+test("observing a foreign draft revision does not grant clear authority", () => {
+  assert.equal(ownedDraftRevisionAfterObservation(3, 7, false), 3);
+  assert.equal(ownedDraftRevisionAfterObservation(3, 7, true), 7);
 });
 
 test("failed draft retry loses ownership on remove, replace, or surface change", () => {

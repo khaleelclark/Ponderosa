@@ -143,6 +143,15 @@ export function settledDraftWriteContinuation(
   return tail.catch(() => undefined).then(continuation);
 }
 
+/** Observing another surface's revision is not authority to overwrite or clear it. */
+export function ownedDraftRevisionAfterObservation(
+  ownedRevision: number,
+  observedRevision: number,
+  adopted: boolean,
+): number {
+  return adopted ? observedRevision : ownedRevision;
+}
+
 export interface DraftConflictRecoverySnapshot<TFile, TMention, TFailure> {
   text: string;
   attachmentIds: string[];

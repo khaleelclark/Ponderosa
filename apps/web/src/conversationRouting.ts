@@ -76,6 +76,14 @@ export async function discardRecipientUploads<T>(
     recipient.attachments.map(item => cleanup(recipient.agentId, item))));
 }
 
+export function recipientUploadsForAgentIds<T>(
+  recipients: RecipientUploads<T>,
+  agentIds: Iterable<string>,
+): RecipientUploads<T> {
+  const selected = new Set(agentIds);
+  return recipients.filter(recipient => selected.has(recipient.agentId));
+}
+
 async function settleWithConcurrency<T>(
   items: File[],
   task: (file: File) => Promise<T>,
