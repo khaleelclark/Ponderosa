@@ -217,5 +217,25 @@ test("Project deletion receipt durably inventories Chat and Agent draft surfaces
   store.finishProjectDeletionStorageCleanup(receipt);
   assert.equal(store.listPendingProjectDeletionReceipts().length, 1);
   store.markProjectDeletionDraftCleanupComplete(project.id);
+  assert.equal(store.listPendingProjectDeletionReceipts().length, 1);
+  store.markProjectDeletionAssetAuthorityCleanupComplete(project.id);
   assert.equal(store.listPendingProjectDeletionReceipts().length, 0);
+});
+
+test("Project asset authority cleanup cannot complete before physical cleanup", (t) => {
+  const { store, project } = fixture(t);
+  const receipt = store.commitProjectDeletion(project.id);
+  assert.ok(receipt);
+
+  assert.throws(
+    () => store.markProjectDeletionAssetAuthorityCleanupComplete(project.id),
+    /storage and draft cleanup must finish/u,
+  );
+  store.finishProjectDeletionStorageCleanup(receipt);
+  store.markProjectDeletionDraftCleanupComplete(project.id);
+  store.markProjectDeletionAssetAuthorityCleanupComplete(project.id);
+
+  const completed = store.getProjectDeletionReceipt(project.id);
+  assert.equal(completed?.assetAuthorityCleanupCompleted, true);
+  assert.ok(completed?.completedAt);
 });

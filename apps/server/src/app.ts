@@ -769,6 +769,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     browserProfiles,
     closeAgentBrowsers,
     workingCopies,
+    assets,
   });
   const coordinationV3Scheduler = createCoordinationScheduler(app, {
     opts,

@@ -364,6 +364,7 @@ registerProjectDeletionRoutes(app, {
   drafts,
   workspace,
   processConversationDeletionCleanup,
+  assets,
 });
 
 registerAgentWorkRoutes(app, { store, projection: agentWorkProjection });

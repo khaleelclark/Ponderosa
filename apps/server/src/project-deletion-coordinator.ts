@@ -29,6 +29,7 @@ import type { ProviderProcessAuthority } from "./provider-process-authority.js";
 import type { AgentWorkingCopyService } from "./agent-working-copy-service.js";
 import { drainProjectConversationDeletions } from "./conversation-deletion-authority.js";
 import type { DraftService } from "./routes/drafts.js";
+import type { AssetStore } from "./assets.js";
 
 type OperationalNotifications = ReturnType<typeof createOperationalNotifications>;
 
@@ -86,6 +87,21 @@ interface ProjectDeletionCoordinatorContext {
   processConversationDeletionCleanup(
     receipt: ConversationDeletionReceipt,
   ): Promise<boolean>;
+  assets: Pick<AssetStore, "purgeProject">;
+}
+
+export function finishProjectAssetAuthorityCleanup(
+  store: Pick<AgentStore,
+    "getProjectDeletionReceipt" | "markProjectDeletionAssetAuthorityCleanupComplete">,
+  assets: Pick<AssetStore, "purgeProject">,
+  projectId: string,
+): void {
+  const receipt = store.getProjectDeletionReceipt(projectId);
+  if (!receipt) throw new Error("Project deletion receipt not found");
+  if (receipt.assetAuthorityCleanupCompleted ||
+      !receipt.storageCleanupCompleted || !receipt.draftCleanupCompleted) return;
+  assets.purgeProject(projectId, receipt.draftSurfaceIds);
+  store.markProjectDeletionAssetAuthorityCleanupComplete(projectId);
 }
 
 export function registerProjectDeletionRoutes(
@@ -138,6 +154,7 @@ export function registerProjectDeletionRoutes(
     drafts,
     workspace,
     processConversationDeletionCleanup,
+    assets,
   } = context;
 
   const ensureProjectDraftFence = async (projectId: string, draftSurfaceIds: string[]) => {
@@ -208,9 +225,20 @@ export function registerProjectDeletionRoutes(
           } catch { /* the durable committed receipt remains authoritative */ }
         }
       }
+      try {
+        finishProjectAssetAuthorityCleanup(store, assets, previousReceipt.projectId);
+      } catch (error) {
+        try {
+          store.recordProjectDeletionReceiptCleanupError(
+            previousReceipt.projectId,
+            error instanceof Error ? error.message : String(error),
+          );
+        } catch { /* the durable committed receipt remains authoritative */ }
+      }
       const refreshed = store.getProjectDeletionReceipt(previousReceipt.projectId)!;
       try {
-        if (refreshed.storageCleanupCompleted && refreshed.draftCleanupCompleted) {
+        if (refreshed.storageCleanupCompleted && refreshed.draftCleanupCompleted &&
+            refreshed.assetAuthorityCleanupCompleted) {
           resolveOperationalNotification(`project-deletion:${refreshed.projectId}`);
         } else {
           createOperationalNotification({
@@ -225,7 +253,8 @@ export function registerProjectDeletionRoutes(
       return {
         deleted: true,
         deletionReceiptId: refreshed.projectId,
-        cleanupPending: !refreshed.storageCleanupCompleted || !refreshed.draftCleanupCompleted,
+        cleanupPending: !refreshed.storageCleanupCompleted || !refreshed.draftCleanupCompleted ||
+          !refreshed.assetAuthorityCleanupCompleted,
         replayed: true,
       };
     }
@@ -394,6 +423,16 @@ export function registerProjectDeletionRoutes(
           );
         } catch { /* the durable committed receipt remains authoritative */ }
       }
+      try {
+        finishProjectAssetAuthorityCleanup(store, assets, receipt.projectId);
+      } catch (error) {
+        try {
+          store.recordProjectDeletionReceiptCleanupError(
+            receipt.projectId,
+            error instanceof Error ? error.message : String(error),
+          );
+        } catch { /* the durable committed receipt remains authoritative */ }
+      }
       // Publication is retryable from the durable receipt. A failed append is
       // also repaired before readiness on the next boot.
       try { reconcileCommittedProjectDeletion(project.id); }
@@ -406,7 +445,8 @@ export function registerProjectDeletionRoutes(
       }
       const refreshed = store.getProjectDeletionReceipt(project.id)!;
       try {
-        if (refreshed.storageCleanupCompleted && refreshed.draftCleanupCompleted) {
+        if (refreshed.storageCleanupCompleted && refreshed.draftCleanupCompleted &&
+            refreshed.assetAuthorityCleanupCompleted) {
           resolveOperationalNotification(`project-deletion:${project.id}`);
         } else {
           createOperationalNotification({
@@ -421,7 +461,8 @@ export function registerProjectDeletionRoutes(
       return {
         deleted: true,
         deletionReceiptId: refreshed.projectId,
-        cleanupPending: !refreshed.storageCleanupCompleted || !refreshed.draftCleanupCompleted,
+        cleanupPending: !refreshed.storageCleanupCompleted || !refreshed.draftCleanupCompleted ||
+          !refreshed.assetAuthorityCleanupCompleted,
       };
     } catch (error) {
       try { store.recordProjectDeletionCleanupError(project.id, error instanceof Error ? error.message : String(error)); }

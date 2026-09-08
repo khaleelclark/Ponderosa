@@ -400,6 +400,14 @@ export class AssetStore {
     this.authority.finishDraftSurfaceCleanup(draftId);
   }
 
+  purgeAgents(agentIds: readonly string[]): void {
+    this.authority.purgeAgents(agentIds);
+  }
+
+  purgeProject(projectId: string, draftSurfaceIds: readonly string[]): void {
+    this.authority.purgeProject(projectId, draftSurfaceIds);
+  }
+
   private validateOwner(projectId: string, agentId: string): void {
     if (!OWNER_ID.test(projectId) || !OWNER_ID.test(agentId)) throw new AssetError(404, "asset storage is unavailable");
   }

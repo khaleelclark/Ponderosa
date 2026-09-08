@@ -25,6 +25,7 @@ import type { ProviderProcessAuthority } from "./provider-process-authority.js";
 import type { BrowserProfileAuthority } from "./browser-profile-authority.js";
 import type { AgentWorkingCopyService } from "./agent-working-copy-service.js";
 import type { DraftService } from "./routes/drafts.js";
+import type { AssetStore } from "./assets.js";
 
 type OperationalNotifications = ReturnType<typeof createOperationalNotifications>;
 
@@ -73,6 +74,7 @@ type AgentDeletionAuthorityContext =
     providerProcessAuthority: ProviderProcessAuthority;
     browserProfiles: BrowserProfileAuthority;
     workingCopies: AgentWorkingCopyService;
+    assets: Pick<AssetStore, "purgeAgents">;
   };
 
 export function createAgentDeletionAuthority(
@@ -109,6 +111,7 @@ export function createAgentDeletionAuthority(
     providerProcessAuthority,
     browserProfiles,
     workingCopies,
+    assets,
   } = context;
 
   const cancelAgentDecisions = (agentIds: Iterable<string>): void => {
@@ -200,6 +203,7 @@ export function createAgentDeletionAuthority(
   };
   const processAgentDeletionCleanup = async (receipt: AgentDeletionReceipt): Promise<boolean> => {
     if (receipt.serverCleanupCompleted) return true;
+    if (!receipt.storageCleanupCompleted) return false;
     const errors: string[] = [];
     try { cancelAgentDecisions(receipt.deletedAgentIds); }
     catch (error) { errors.push(error instanceof Error ? error.message : "Decision cleanup failed"); }
@@ -252,6 +256,12 @@ export function createAgentDeletionAuthority(
     catch (error) { errors.push(error instanceof Error ? error.message : "context cleanup failed"); }
     try { await refreshTriggerSources(); }
     catch (error) { errors.push(error instanceof Error ? error.message : "Automation refresh failed"); }
+    if (errors.length === 0) {
+      try { assets.purgeAgents(receipt.deletedAgentIds); }
+      catch (error) {
+        errors.push(error instanceof Error ? error.message : "asset authority cleanup failed");
+      }
+    }
     if (errors.length > 0) {
       try { store.recordAgentDeletionCleanupError(receipt.id, errors.join("; ")); }
       catch { /* the durable receipt remains pending for startup reconciliation */ }

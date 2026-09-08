@@ -929,6 +929,10 @@ export class AgentStore extends AgentEventSessionFacade {
     this.projectDeletion.markProjectDeletionDraftCleanupComplete(projectId);
   }
 
+  markProjectDeletionAssetAuthorityCleanupComplete(projectId: string): void {
+    this.projectDeletion.markProjectDeletionAssetAuthorityCleanupComplete(projectId);
+  }
+
   finishProjectDeletionStorageCleanup(
     receipt: ProjectDeletionReceipt,
     afterTombstoneRemoval?: (projectId: string) => void,

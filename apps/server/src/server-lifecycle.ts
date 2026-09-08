@@ -35,6 +35,7 @@ import type { WebPushDeliveryManager } from "./web-push-delivery.js";
 import type { createBrowserAuthority } from "./browser-authority.js";
 import type { ProviderProcessAuthority } from "./provider-process-authority.js";
 import type { DraftService } from "./routes/drafts.js";
+import { finishProjectAssetAuthorityCleanup } from "./project-deletion-coordinator.js";
 
 type ArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>;
 type CommunicationJournal = ReturnType<typeof createCommunicationJournal>;
@@ -480,6 +481,16 @@ export function registerServerLifecycle(
         store.recordProjectDeletionReceiptCleanupError(
           initial.projectId,
           error instanceof Error ? error.message : "Project draft cleanup failed",
+        );
+      }
+    }
+    for (const receipt of store.listPendingProjectDeletionReceipts()) {
+      try {
+        finishProjectAssetAuthorityCleanup(store, assets, receipt.projectId);
+      } catch (error) {
+        store.recordProjectDeletionReceiptCleanupError(
+          receipt.projectId,
+          error instanceof Error ? error.message : "Project asset authority cleanup failed",
         );
       }
     }

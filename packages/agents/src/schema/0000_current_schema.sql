@@ -510,6 +510,7 @@ CREATE TABLE project_deletion_receipts (
   storage_cleanup_completed INTEGER NOT NULL DEFAULT 0,
   draft_surfaces_json TEXT NOT NULL DEFAULT '[]',
   draft_cleanup_completed INTEGER NOT NULL DEFAULT 1,
+  asset_authority_cleanup_completed INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,

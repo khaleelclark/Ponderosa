@@ -58,6 +58,7 @@ const projectDeletionOwnershipMigration = "0014_project_deletion_ownership.ts";
 const deletionRecoveryPhasesMigration = "0015_deletion_recovery_phases.ts";
 const conversationDeletionPrecommitMigration = "0016_conversation_deletion_precommit.ts";
 const projectDeletionDraftCleanupMigration = "0017_project_deletion_draft_cleanup.ts";
+const projectDeletionAssetAuthorityCleanupMigration = "0018_project_deletion_asset_authority_cleanup.ts";
 
 function hasApplicationSchema(sqlite: Database.Database): boolean {
   return sqlite
@@ -368,6 +369,32 @@ function establishProjectDeletionDraftCleanupSchema(sqlite: Database.Database): 
     }
     sqlite.prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
       .run(projectDeletionDraftCleanupMigration, new Date().toISOString());
+  })();
+}
+
+function establishProjectDeletionAssetAuthorityCleanupSchema(sqlite: Database.Database): void {
+  const applied = sqlite
+    .prepare(`SELECT 1 FROM ${schemaVersionTable} WHERE name = ?`)
+    .get(projectDeletionAssetAuthorityCleanupMigration) !== undefined;
+  if (applied) return;
+  sqlite.transaction(() => {
+    const columns = new Set(
+      (sqlite.prepare("PRAGMA table_info(project_deletion_receipts)").all() as Array<{ name: string }>)
+        .map(column => column.name),
+    );
+    if (!columns.has("asset_authority_cleanup_completed")) {
+      sqlite.exec(`
+        ALTER TABLE project_deletion_receipts
+        ADD COLUMN asset_authority_cleanup_completed INTEGER NOT NULL DEFAULT 0
+      `);
+    }
+    sqlite.exec(`
+      UPDATE project_deletion_receipts
+      SET completed_at = NULL
+      WHERE asset_authority_cleanup_completed = 0
+    `);
+    sqlite.prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
+      .run(projectDeletionAssetAuthorityCleanupMigration, new Date().toISOString());
   })();
 }
 
@@ -992,6 +1019,7 @@ export function openDb(file: string): OpenedDb {
   establishDeletionRecoveryPhasesSchema(sqlite);
   establishConversationDeletionPrecommitSchema(sqlite);
   establishProjectDeletionDraftCleanupSchema(sqlite);
+  establishProjectDeletionAssetAuthorityCleanupSchema(sqlite);
   establishPublicProviderRequestUpdates(sqlite);
   establishProviderActivationExecutionPayloads(sqlite);
   establishNestedProviderActivationExecutionPayloads(sqlite);

@@ -8,11 +8,166 @@ import test from "node:test";
 import Database from "better-sqlite3";
 import {
   ASSET_LIMITS,
+  AssetStore,
   DRAFT_ASSET_LIMITS,
   removeStagedAssetFiles,
 } from "../dist/assets.js";
 import { AssetAuthority } from "../dist/asset-authority.js";
 import { DraftService } from "../dist/routes/drafts.js";
+import { AgentStore } from "@ponderosa/agents";
+import { finishProjectAssetAuthorityCleanup } from "../dist/project-deletion-coordinator.js";
+
+function seedAuthorityRows(sqlite, projectId, agentId, draftId) {
+  const reservationId = randomUUID();
+  const reservedAssetId = randomUUID();
+  const committedAssetId = randomUUID();
+  const deletionAssetId = randomUUID();
+  const draftReservationId = randomUUID();
+  const draftReservedAssetId = randomUUID();
+  const draftCommittedAssetId = randomUUID();
+  const runtimeArtifactId = `text-${randomUUID().replaceAll("-", "").padEnd(64, "0")}`;
+  const generatedArtifactId = randomUUID();
+  sqlite.prepare("INSERT INTO asset_reservations VALUES (?,?,?,?,?,?)")
+    .run(reservationId, reservedAssetId, projectId, agentId, 1, Date.now());
+  sqlite.prepare("INSERT INTO asset_committed VALUES (?,?,?,?)")
+    .run(committedAssetId, projectId, agentId, 1);
+  sqlite.prepare("INSERT INTO asset_settlements VALUES (?,?,?,?)")
+    .run(randomUUID(), committedAssetId, projectId, agentId);
+  sqlite.prepare(`INSERT INTO asset_deletions(
+    asset_id,project_id,agent_id,requested_at,audit_event_id
+  ) VALUES (?,?,?,?,?)`).run(deletionAssetId, projectId, agentId, Date.now(), randomUUID());
+  sqlite.prepare("INSERT INTO asset_rate_events VALUES (?,?,?,?)")
+    .run(randomUUID(), projectId, agentId, Date.now());
+  sqlite.prepare(`INSERT INTO asset_audit(event_id,project_id,agent_id,record_json)
+    VALUES (?,?,?,?)`).run(randomUUID(), projectId, agentId, "{}");
+  sqlite.prepare(`INSERT INTO runtime_attachment_associations(
+    communication_id,asset_id,project_id,agent_id,content_hash,byte_length,reservation_attempt_id,created_at
+  ) VALUES (?,?,?,?,?,?,?,?)`).run(
+    randomUUID(), committedAssetId, projectId, agentId, "a".repeat(64), 1, randomUUID(), Date.now(),
+  );
+  sqlite.prepare(`INSERT INTO runtime_artifact_authority(
+    id,project_id,role,title,media_type,blob_path,blob_hash,byte_length,origin_agent_id,execution_id,created_at
+  ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
+    runtimeArtifactId, projectId, "document", "Runtime", "text/markdown", runtimeArtifactId,
+    "b".repeat(64), 1, agentId, randomUUID(), new Date().toISOString(),
+  );
+  sqlite.prepare(`INSERT INTO generated_artifact_authority(
+    id,project_id,agent_id,origin_agent_id,execution_id,kind,artifact_path,source_path,
+    summary,created_at,media_type,byte_length,blob_hash
+  ) VALUES (?,?,?,?,?,'generated_file',?,?,?,?,?,?,?)`).run(
+    generatedArtifactId, projectId, agentId, agentId, randomUUID(), "result.txt", null,
+    "Generated", new Date().toISOString(), "text/plain", 1, "c".repeat(64),
+  );
+  sqlite.prepare(`INSERT INTO generated_artifact_import_receipts(
+    project_id,run_id,tool_call_id,request_hash,artifact_id,projected,created_at
+  ) VALUES (?,?,?,?,?,0,?)`).run(
+    projectId, randomUUID(), randomUUID(), "d".repeat(64), generatedArtifactId, new Date().toISOString(),
+  );
+  sqlite.prepare("INSERT INTO draft_asset_reservations VALUES (?,?,?,?,?,?)")
+    .run(draftReservationId, draftReservedAssetId, draftId, "owner", 1, Date.now());
+  sqlite.prepare("INSERT INTO draft_asset_committed VALUES (?,?,?,?)")
+    .run(draftCommittedAssetId, draftId, "owner", 1);
+  sqlite.prepare("INSERT INTO draft_asset_settlements VALUES (?,?,?,?)")
+    .run(randomUUID(), draftCommittedAssetId, draftId, "owner");
+  sqlite.prepare("INSERT INTO draft_asset_rate_events VALUES (?,?,?)")
+    .run(randomUUID(), draftId, Date.now());
+  sqlite.prepare("INSERT INTO draft_attachment_cleanups VALUES (?,?,?,?)")
+    .run(draftId, "owner", draftCommittedAssetId, Date.now());
+}
+
+const agentAuthorityTables = [
+  "asset_reservations", "asset_committed", "asset_settlements", "asset_deletions",
+  "asset_rate_events", "asset_audit", "runtime_attachment_associations",
+];
+const projectAuthorityTables = [
+  ...agentAuthorityTables, "runtime_artifact_authority", "generated_artifact_import_receipts",
+  "generated_artifact_authority",
+];
+const draftAuthorityTables = [
+  "draft_asset_reservations", "draft_asset_committed", "draft_asset_settlements",
+  "draft_asset_rate_events", "draft_attachment_cleanups",
+];
+
+test("Agent authority purge is exact, idempotent, and preserves Project artifacts", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-agent-authority-purge-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const authority = new AssetAuthority(dataDir);
+  t.after(() => authority.close());
+  const projectId = randomUUID();
+  const removedAgentId = randomUUID();
+  const keptAgentId = randomUUID();
+  const sqlite = new Database(path.join(dataDir, "asset-authority.sqlite"));
+  t.after(() => sqlite.close());
+  seedAuthorityRows(sqlite, projectId, removedAgentId, `agent:${removedAgentId}`);
+  seedAuthorityRows(sqlite, projectId, keptAgentId, `agent:${keptAgentId}`);
+
+  authority.purgeAgents([removedAgentId, removedAgentId]);
+  authority.purgeAgents([removedAgentId]);
+
+  for (const table of agentAuthorityTables) {
+    assert.equal(sqlite.prepare(`SELECT count(*) count FROM ${table} WHERE agent_id=?`).get(removedAgentId).count, 0, table);
+    assert.equal(sqlite.prepare(`SELECT count(*) count FROM ${table} WHERE agent_id=?`).get(keptAgentId).count, 1, table);
+  }
+  for (const table of draftAuthorityTables) {
+    assert.equal(sqlite.prepare(`SELECT count(*) count FROM ${table} WHERE draft_id=?`).get(`agent:${removedAgentId}`).count, 0, table);
+    assert.equal(sqlite.prepare(`SELECT count(*) count FROM ${table} WHERE draft_id=?`).get(`agent:${keptAgentId}`).count, 1, table);
+  }
+  assert.equal(sqlite.prepare("SELECT count(*) count FROM runtime_artifact_authority WHERE project_id=?").get(projectId).count, 2);
+  assert.equal(sqlite.prepare("SELECT count(*) count FROM generated_artifact_authority WHERE project_id=?").get(projectId).count, 2);
+});
+
+test("Project authority purge removes every owned row and preserves another Project", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-project-authority-purge-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const authority = new AssetAuthority(dataDir);
+  t.after(() => authority.close());
+  const removedProjectId = randomUUID();
+  const keptProjectId = randomUUID();
+  const removedDraftId = randomUUID();
+  const keptDraftId = randomUUID();
+  const sqlite = new Database(path.join(dataDir, "asset-authority.sqlite"));
+  t.after(() => sqlite.close());
+  seedAuthorityRows(sqlite, removedProjectId, randomUUID(), removedDraftId);
+  seedAuthorityRows(sqlite, keptProjectId, randomUUID(), keptDraftId);
+
+  authority.purgeProject(removedProjectId, [removedDraftId, removedDraftId]);
+  authority.purgeProject(removedProjectId, [removedDraftId]);
+
+  for (const table of projectAuthorityTables) {
+    assert.equal(sqlite.prepare(`SELECT count(*) count FROM ${table} WHERE project_id=?`).get(removedProjectId).count, 0, table);
+    assert.equal(sqlite.prepare(`SELECT count(*) count FROM ${table} WHERE project_id=?`).get(keptProjectId).count, 1, table);
+  }
+  for (const table of draftAuthorityTables) {
+    assert.equal(sqlite.prepare(`SELECT count(*) count FROM ${table} WHERE draft_id=?`).get(removedDraftId).count, 0, table);
+    assert.equal(sqlite.prepare(`SELECT count(*) count FROM ${table} WHERE draft_id=?`).get(keptDraftId).count, 1, table);
+  }
+});
+
+test("Project receipt retries an authority-purge crash gap after restart", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-project-authority-retry-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  let store = new AgentStore(dataDir);
+  let assets = new AssetStore(dataDir);
+  const project = store.createProject({ label: "Project", hostPath: "/tmp/project", defaultEngine: "codex" });
+  const receipt = store.commitProjectDeletion(project.id);
+  store.finishProjectDeletionStorageCleanup(receipt);
+  store.markProjectDeletionDraftCleanupComplete(project.id);
+
+  assert.throws(() => finishProjectAssetAuthorityCleanup(store, {
+    purgeProject: () => { throw new Error("injected asset authority failure"); },
+  }, project.id), /injected asset authority failure/u);
+  assert.equal(store.getProjectDeletionReceipt(project.id).assetAuthorityCleanupCompleted, false);
+  assets.purgeProject(project.id, receipt.draftSurfaceIds);
+  assets.close();
+  store.close();
+
+  store = new AgentStore(dataDir);
+  assets = new AssetStore(dataDir);
+  t.after(() => { assets.close(); store.close(); });
+  finishProjectAssetAuthorityCleanup(store, assets, project.id);
+  assert.equal(store.getProjectDeletionReceipt(project.id).assetAuthorityCleanupCompleted, true);
+  assert.equal(store.listPendingProjectDeletionReceipts().length, 0);
+});
 
 test("partial asset deletion keeps its receipt and quota until restart completes every file", async (t) => {
   const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-asset-cleanup-"));

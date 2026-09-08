@@ -523,6 +523,66 @@ export class AssetAuthority {
       throw this.mapped(error);
     }
   }
+
+  purgeAgents(agentIds: readonly string[]): void {
+    const ids = [...new Set(agentIds)];
+    if (ids.some((id) => !RUNTIME_UUID.test(id))) {
+      throw new AssetError(409, "Agent asset cleanup identity is invalid");
+    }
+    if (ids.length === 0) return;
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      for (const agentId of ids) {
+        this.db.prepare("DELETE FROM runtime_attachment_associations WHERE agent_id=?").run(agentId);
+        this.db.prepare("DELETE FROM asset_settlements WHERE agent_id=?").run(agentId);
+        this.db.prepare("DELETE FROM asset_deletions WHERE agent_id=?").run(agentId);
+        this.db.prepare("DELETE FROM asset_reservations WHERE agent_id=?").run(agentId);
+        this.db.prepare("DELETE FROM asset_committed WHERE agent_id=?").run(agentId);
+        this.db.prepare("DELETE FROM asset_rate_events WHERE agent_id=?").run(agentId);
+        this.db.prepare("DELETE FROM asset_audit WHERE agent_id=?").run(agentId);
+        const draftId = `agent:${agentId}`;
+        this.db.prepare("DELETE FROM draft_asset_settlements WHERE draft_id=?").run(draftId);
+        this.db.prepare("DELETE FROM draft_asset_reservations WHERE draft_id=?").run(draftId);
+        this.db.prepare("DELETE FROM draft_asset_committed WHERE draft_id=?").run(draftId);
+        this.db.prepare("DELETE FROM draft_attachment_cleanups WHERE draft_id=?").run(draftId);
+        this.db.prepare("DELETE FROM draft_asset_rate_events WHERE draft_id=?").run(draftId);
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      if (this.db.inTransaction) this.db.exec("ROLLBACK");
+      throw this.mapped(error);
+    }
+  }
+
+  purgeProject(projectId: string, draftSurfaceIds: readonly string[] = []): void {
+    if (!OWNER_ID.test(projectId) || draftSurfaceIds.some((id) => !id || id.length > 256)) {
+      throw new AssetError(409, "Project asset cleanup identity is invalid");
+    }
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      this.db.prepare("DELETE FROM generated_artifact_import_receipts WHERE project_id=?").run(projectId);
+      this.db.prepare("DELETE FROM generated_artifact_authority WHERE project_id=?").run(projectId);
+      this.db.prepare("DELETE FROM runtime_artifact_authority WHERE project_id=?").run(projectId);
+      this.db.prepare("DELETE FROM runtime_attachment_associations WHERE project_id=?").run(projectId);
+      this.db.prepare("DELETE FROM asset_settlements WHERE project_id=?").run(projectId);
+      this.db.prepare("DELETE FROM asset_deletions WHERE project_id=?").run(projectId);
+      this.db.prepare("DELETE FROM asset_reservations WHERE project_id=?").run(projectId);
+      this.db.prepare("DELETE FROM asset_committed WHERE project_id=?").run(projectId);
+      this.db.prepare("DELETE FROM asset_rate_events WHERE project_id=?").run(projectId);
+      this.db.prepare("DELETE FROM asset_audit WHERE project_id=?").run(projectId);
+      for (const draftId of new Set(draftSurfaceIds)) {
+        this.db.prepare("DELETE FROM draft_asset_settlements WHERE draft_id=?").run(draftId);
+        this.db.prepare("DELETE FROM draft_asset_reservations WHERE draft_id=?").run(draftId);
+        this.db.prepare("DELETE FROM draft_asset_committed WHERE draft_id=?").run(draftId);
+        this.db.prepare("DELETE FROM draft_attachment_cleanups WHERE draft_id=?").run(draftId);
+        this.db.prepare("DELETE FROM draft_asset_rate_events WHERE draft_id=?").run(draftId);
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      if (this.db.inTransaction) this.db.exec("ROLLBACK");
+      throw this.mapped(error);
+    }
+  }
   recordAudit(file: string, projectId: string, agentId: string, record: Record<string, unknown>, eventId: string = randomUUID()): void {
     let fd: number | undefined;
     try {

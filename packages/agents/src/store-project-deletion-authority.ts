@@ -102,6 +102,7 @@ export class AgentProjectDeletionAuthority {
       storageCleanupCompleted: row.storageCleanupCompleted === 1,
       draftSurfaceIds: parseDraftSurfaceIds(row.draftSurfacesJson),
       draftCleanupCompleted: row.draftCleanupCompleted === 1,
+      assetAuthorityCleanupCompleted: row.assetAuthorityCleanupCompleted === 1,
       ...(row.lastError ? { lastError: row.lastError } : {}),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -118,6 +119,7 @@ export class AgentProjectDeletionAuthority {
       storageCleanupCompleted: row.storageCleanupCompleted === 1,
       draftSurfaceIds: parseDraftSurfaceIds(row.draftSurfacesJson),
       draftCleanupCompleted: row.draftCleanupCompleted === 1,
+      assetAuthorityCleanupCompleted: row.assetAuthorityCleanupCompleted === 1,
       ...(row.lastError ? { lastError: row.lastError } : {}),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -127,7 +129,8 @@ export class AgentProjectDeletionAuthority {
 
   listPendingProjectDeletionReceipts(): ProjectDeletionReceipt[] {
     return this.db.select().from(projectDeletionReceipts).all()
-      .filter(row => row.storageCleanupCompleted === 0 || row.draftCleanupCompleted === 0)
+      .filter(row => row.storageCleanupCompleted === 0 || row.draftCleanupCompleted === 0 ||
+        row.assetAuthorityCleanupCompleted === 0)
       .map((row) => ({
         projectId: row.projectId,
         tombstoneName: row.tombstoneName,
@@ -136,6 +139,7 @@ export class AgentProjectDeletionAuthority {
         storageCleanupCompleted: row.storageCleanupCompleted === 1,
         draftSurfaceIds: parseDraftSurfaceIds(row.draftSurfacesJson),
         draftCleanupCompleted: row.draftCleanupCompleted === 1,
+        assetAuthorityCleanupCompleted: row.assetAuthorityCleanupCompleted === 1,
         ...(row.lastError ? { lastError: row.lastError } : {}),
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
@@ -159,7 +163,9 @@ export class AgentProjectDeletionAuthority {
       draftCleanupCompleted: 1,
       lastError: null,
       updatedAt: now,
-      ...(current.storageCleanupCompleted ? { completedAt: now } : {}),
+      ...(current.storageCleanupCompleted && current.assetAuthorityCleanupCompleted
+        ? { completedAt: now }
+        : {}),
     }).where(eq(projectDeletionReceipts.projectId, projectId)).run();
   }
 
@@ -214,8 +220,26 @@ export class AgentProjectDeletionAuthority {
       removalStarted: 1,
       lastError: null,
       updatedAt: now,
-      ...(current.draftCleanupCompleted ? { completedAt: now } : {}),
+      ...(current.draftCleanupCompleted && current.assetAuthorityCleanupCompleted
+        ? { completedAt: now }
+        : {}),
     }).where(eq(projectDeletionReceipts.projectId, current.projectId)).run();
+  }
+
+  markProjectDeletionAssetAuthorityCleanupComplete(projectId: string): void {
+    const current = this.getProjectDeletionReceipt(projectId);
+    if (!current) throw new Error("Project deletion receipt not found");
+    if (current.assetAuthorityCleanupCompleted) return;
+    if (!current.storageCleanupCompleted || !current.draftCleanupCompleted) {
+      throw new Error("Project storage and draft cleanup must finish before asset authority cleanup");
+    }
+    const now = new Date().toISOString();
+    this.db.update(projectDeletionReceipts).set({
+      assetAuthorityCleanupCompleted: 1,
+      lastError: null,
+      updatedAt: now,
+      completedAt: now,
+    }).where(eq(projectDeletionReceipts.projectId, projectId)).run();
   }
 
   /** Commit the irreversible SQLite purge and its durable receipt. Fallible
@@ -301,6 +325,7 @@ export class AgentProjectDeletionAuthority {
           storageCleanupCompleted: 0,
           draftSurfacesJson: JSON.stringify(draftSurfaceIds),
           draftCleanupCompleted: 0,
+          assetAuthorityCleanupCompleted: 0,
           createdAt: now,
           updatedAt: now,
         }).run();
