@@ -85,7 +85,6 @@ export function ChatMessageFrame({
       component="article"
       className="chat-message"
       aria-label={message.ariaLabel ?? `${senderName} message`}
-      tabIndex={selectable ? 0 : -1}
       onClick={selectable
         ? event => {
             if (!messageSelectionTargetIsInteractive(event.target, event.currentTarget)) {
@@ -93,11 +92,6 @@ export function ChatMessageFrame({
             }
           }
         : toggleTimestamp}
-      onKeyDown={(event) => {
-        if (!selectable || event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
-        event.preventDefault();
-        selectMessage();
-      }}
       sx={{
         alignSelf: "center",
         width: "min(1120px, 100%)",
@@ -240,6 +234,22 @@ export function ChatMessageFrame({
             status={message.status}
             footer={message.footer}
             actions={<>
+              {selectable ? <ButtonBase
+                aria-label={message.selectLabel ?? `Use source for ${senderName} message`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  selectMessage();
+                }}
+                sx={{
+                  minHeight: 28,
+                  px: 0.75,
+                  borderRadius: 0.75,
+                  color: "text.secondary",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main", outlineOffset: 2 },
+                }}
+              >Use as source</ButtonBase> : null}
               {message.actions}
             </>}
           />

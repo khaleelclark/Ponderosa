@@ -1335,7 +1335,7 @@ export function AllChatView({
                       visible,
                     ),
                   onSelect: () => selectItem(item, true),
-                  ariaLabel: allChatSourceAccessibleName(item),
+                  selectLabel: allChatSourceAccessibleName(item),
                   body: (
                     <ChatMessageBody
                       text={communicationVisibleText({

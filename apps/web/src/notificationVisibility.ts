@@ -1,9 +1,13 @@
 export function notificationVisibilityThreshold(
   elementHeight: number,
   availableHeight: number,
+  elementWidth: number,
+  availableWidth: number,
 ): number {
-  if (elementHeight <= 0 || availableHeight <= 0) return 0.5;
-  return Math.min(0.5, (Math.min(elementHeight, availableHeight) * 0.5) / elementHeight);
+  if (elementHeight <= 0 || availableHeight <= 0 || elementWidth <= 0 || availableWidth <= 0) return 0.25;
+  const vertical = Math.min(0.5, (Math.min(elementHeight, availableHeight) * 0.5) / elementHeight);
+  const horizontal = Math.min(0.5, (Math.min(elementWidth, availableWidth) * 0.5) / elementWidth);
+  return vertical * horizontal;
 }
 
 export function notificationIsSufficientlyVisible(
@@ -14,9 +18,13 @@ export function notificationIsSufficientlyVisible(
 ): boolean {
   if (!entry.isIntersecting) return false;
   const availableHeight = entry.rootBounds?.height ?? window.innerHeight;
-  if (entry.boundingClientRect.height <= 0 || availableHeight <= 0) return false;
+  const availableWidth = entry.rootBounds?.width ?? window.innerWidth;
+  if (entry.boundingClientRect.height <= 0 || availableHeight <= 0 ||
+      entry.boundingClientRect.width <= 0 || availableWidth <= 0) return false;
   return entry.intersectionRect.height >=
-    Math.min(entry.boundingClientRect.height, availableHeight) * 0.5;
+      Math.min(entry.boundingClientRect.height, availableHeight) * 0.5 &&
+    entry.intersectionRect.width >=
+      Math.min(entry.boundingClientRect.width, availableWidth) * 0.5;
 }
 
 export function observeNotificationVisibility(
@@ -27,10 +35,15 @@ export function observeNotificationVisibility(
   let observer: IntersectionObserver | undefined;
   let threshold: number | undefined;
   const observe = () => {
+    const elementRect = element.getBoundingClientRect();
+    const rootRect = scrollRoot?.getBoundingClientRect();
     const nextThreshold = notificationVisibilityThreshold(
-      element.getBoundingClientRect().height,
-      scrollRoot?.getBoundingClientRect().height ??
+      elementRect.height,
+      rootRect?.height ??
         document.documentElement.clientHeight ?? window.innerHeight,
+      elementRect.width,
+      rootRect?.width ??
+        document.documentElement.clientWidth ?? window.innerWidth,
     );
     if (observer && threshold === nextThreshold) return;
     observer?.disconnect();

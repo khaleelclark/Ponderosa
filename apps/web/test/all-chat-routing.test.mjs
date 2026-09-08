@@ -425,15 +425,16 @@ test("adopting an external canonical runtime invalidates an in-flight rollback",
   assert.equal(generations.get("agent:a"), 5);
 });
 
-test("interactive message descendants own their action without selecting the source", () => {
+test("interactive message descendants, including the source control, do not bubble selection", () => {
   const currentTarget = {};
+  const sourceControl = {};
   assert.equal(
     messageSelectionTargetIsInteractive(currentTarget, currentTarget),
     false,
   );
   assert.equal(
     messageSelectionTargetIsInteractive(
-      { closest: selector => selector.includes("button") ? {} : null },
+      { closest: selector => selector.includes("button") ? sourceControl : null },
       currentTarget,
     ),
     true,
