@@ -301,7 +301,7 @@ export function registerApplicationRoutes(
 app.addHook("preHandler", pendingAgentQuarantine(store));
 registerLinkPreviewRoutes(app);
 
-registerProjectRoutes(app, {
+const managedProjectFolders = registerProjectRoutes(app, {
   store,
   workspace,
   engines,
@@ -320,6 +320,7 @@ registerProjectRoutes(app, {
 
 registerProjectDeletionRoutes(app, {
   store,
+  reconcileManagedProjectFolders: managedProjectFolders.reconcileManagedProjectFolders,
   coordinationV3,
   engines,
   triggerSources,

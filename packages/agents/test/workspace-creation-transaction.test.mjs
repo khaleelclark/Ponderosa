@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -239,5 +239,82 @@ test("startup preserves and isolates non-tail organization corruption", async (t
     detail: "agent organization log contains non-tail corruption",
   }]);
   assert.equal(await readFile(organizationFile, "utf8"), corrupted);
+  store.close();
+});
+
+test("startup quarantines relationally invalid Project records without mutating siblings", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-project-owner-quarantine-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  let store = new AgentStore(dataDir);
+  const affected = store.createProject({ label: "Affected", hostPath: "/tmp/a", defaultEngine: "codex" });
+  const healthy = store.createProject({ label: "Healthy", hostPath: "/tmp/b", defaultEngine: "codex" });
+  store.close();
+
+  const presetFile = path.join(dataDir, "projects", affected.id, "agent-presets.jsonl");
+  const now = new Date().toISOString();
+  const crossProjectPreset = {
+    id: "11111111-1111-4111-8111-111111111111",
+    projectId: healthy.id,
+    name: "Wrong owner",
+    description: "Must remain quarantined",
+    guidance: "This valid JSON record belongs to a different Project.",
+    engine: "codex",
+    enabled: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await appendFile(presetFile, `${JSON.stringify({ type: "upsert", preset: crossProjectPreset })}\n`);
+  const preserved = await readFile(presetFile, "utf8");
+
+  store = new AgentStore(dataDir);
+  assert.deepEqual(store.listProjects().map((project) => project.id), [healthy.id]);
+  assert.equal(store.listAgentPresets(healthy.id).some((preset) => preset.id === crossProjectPreset.id), false);
+  assert.deepEqual(store.startupProfile().recoveryIssues, [{
+    projectId: affected.id,
+    detail: `Agent preset record does not belong to Project ${affected.id}`,
+  }]);
+  assert.equal(await readFile(presetFile, "utf8"), preserved);
+  store.close();
+});
+
+test("startup rejects Project, Chat, and Agent records outside their containing paths", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-contained-records-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  let store = new AgentStore(dataDir);
+  const healthy = store.createProject({ label: "Healthy", hostPath: "/tmp/healthy", defaultEngine: "codex" });
+  const wrongProject = store.createProject({ label: "Wrong Project", hostPath: "/tmp/p", defaultEngine: "codex" });
+  const wrongChat = store.createProject({ label: "Wrong Chat", hostPath: "/tmp/c", defaultEngine: "codex" });
+  const wrongAgent = store.createProject({ label: "Wrong Agent", hostPath: "/tmp/a", defaultEngine: "codex" });
+  const agent = store.createAgent(wrongAgent.id, {
+    title: "Agent",
+    engine: "codex",
+    conversationId: wrongAgent.lastConversationId,
+  });
+  store.close();
+
+  const projectFile = path.join(dataDir, "projects", wrongProject.id, "project.json");
+  await writeFile(projectFile, JSON.stringify({
+    ...JSON.parse(await readFile(projectFile, "utf8")),
+    id: "33333333-3333-4333-8333-333333333333",
+  }));
+  const chatFile = path.join(
+    dataDir, "projects", wrongChat.id, "conversations", wrongChat.lastConversationId, "conversation.json",
+  );
+  await writeFile(chatFile, JSON.stringify({
+    ...JSON.parse(await readFile(chatFile, "utf8")),
+    id: "44444444-4444-4444-8444-444444444444",
+  }));
+  const agentFile = path.join(dataDir, "projects", wrongAgent.id, "agents", agent.id, "agent.json");
+  await writeFile(agentFile, JSON.stringify({
+    ...JSON.parse(await readFile(agentFile, "utf8")),
+    projectId: healthy.id,
+  }));
+
+  store = new AgentStore(dataDir);
+  assert.deepEqual(store.listProjects().map((project) => project.id), [healthy.id]);
+  assert.deepEqual(
+    new Set(store.startupProfile().recoveryIssues.map((issue) => issue.projectId)),
+    new Set([wrongProject.id, wrongChat.id, wrongAgent.id]),
+  );
   store.close();
 });

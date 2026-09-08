@@ -48,6 +48,10 @@ import {
   projectsDir,
 } from "./paths.js";
 
+function isBoundedRecordId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 200;
+}
+
 export class AgentProjectionRebuilder {
   private recoveryIssues: Array<{ projectId: string; detail: string }> = [];
   constructor(
@@ -112,6 +116,9 @@ export class AgentProjectionRebuilder {
       const pj = projectJsonPath(this.dataDir, projectId);
       if (!existsSync(pj)) continue;
       const p = readJson<ProjectJson>(pj);
+      if (!isBoundedRecordId(projectId) || p.id !== projectId) {
+        throw new Error(`Project record ${p.id} does not match containing directory ${projectId}`);
+      }
       this.db
         .insert(projects)
         .values({
@@ -127,15 +134,34 @@ export class AgentProjectionRebuilder {
         })
         .run();
       const resolved = new Map<string, AgentPresetDto>();
-      for (const event of readRepairableJsonl<PresetEvent>(agentPresetsPath(this.dataDir, projectId), "agent preset journal", true)) event.type === "upsert" ? resolved.set(event.preset.id, event.preset) : resolved.delete(event.id);
+      for (const event of readRepairableJsonl<PresetEvent>(
+        agentPresetsPath(this.dataDir, projectId), "agent preset journal", true,
+      )) {
+        if (event.type === "upsert") {
+          if (event.preset.projectId !== projectId || !isBoundedRecordId(event.preset.id)) {
+            throw new Error(`Agent preset record does not belong to Project ${projectId}`);
+          }
+          resolved.set(event.preset.id, event.preset);
+        } else if (event.type === "delete") {
+          if (!isBoundedRecordId(event.id)) {
+            throw new Error(`Agent preset deletion record is invalid for Project ${projectId}`);
+          }
+          resolved.delete(event.id);
+        } else {
+          throw new Error(`Agent preset journal contains an unknown event for Project ${projectId}`);
+        }
+      }
       for (const preset of resolved.values()) this.db.insert(agentPresets).values({ ...preset, enabled: preset.enabled ? 1 : 0 }).run();
       const organizationalParents = new Map<string, string | null>();
       for (const event of readRepairableJsonl<AgentOrganizationEvent>(
         agentOrganizationEventsPath(this.dataDir, projectId), "agent organization log", true,
       )) {
-        if (event.projectId === projectId && event.type === "manager_changed") {
-          organizationalParents.set(event.agentId, event.managerAgentId);
+        if (event.projectId !== projectId || event.type !== "manager_changed" ||
+            !isBoundedRecordId(event.eventId) || !isBoundedRecordId(event.agentId) ||
+            (event.managerAgentId !== null && !isBoundedRecordId(event.managerAgentId))) {
+          throw new Error(`Agent organization record does not belong to Project ${projectId}`);
         }
+        organizationalParents.set(event.agentId, event.managerAgentId);
       }
 
       const mDir = conversationsDir(this.dataDir, projectId);
@@ -145,6 +171,9 @@ export class AgentProjectionRebuilder {
           const mj = conversationJsonPath(this.dataDir, projectId, conversationId);
           if (!existsSync(mj)) continue;
           const m = readJson<ConversationJson>(mj);
+          if (!isBoundedRecordId(conversationId) || m.id !== conversationId || m.projectId !== projectId) {
+            throw new Error(`Chat record ${m.id} does not match its containing Project and directory`);
+          }
           this.db
             .insert(conversations)
             .values({
@@ -175,6 +204,9 @@ export class AgentProjectionRebuilder {
         const tj = agentJsonPath(this.dataDir, projectId, agentId);
         if (!existsSync(tj)) continue;
         const t = readJson<AgentJson>(tj);
+        if (!isBoundedRecordId(agentId) || t.id !== agentId || t.projectId !== projectId) {
+          throw new Error(`Agent record ${t.id} does not match its containing Project and directory`);
+        }
         const latestReservation = this.client.prepare(`
           SELECT handle FROM agent_handle_reservations
           WHERE project_id = ? AND agent_id = ?

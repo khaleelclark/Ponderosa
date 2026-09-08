@@ -35,6 +35,7 @@ type OperationalNotifications = ReturnType<typeof createOperationalNotifications
 
 interface ProjectDeletionCoordinatorContext {
   store: AgentStore;
+  reconcileManagedProjectFolders?(): Promise<void>;
   coordinationV3: CoordinationV3Store;
   engines: ReadonlyMap<string, EngineRegistration>;
   triggerSources: TriggerSourceService;
@@ -110,6 +111,7 @@ export function registerProjectDeletionRoutes(
 ): void {
   const {
     store,
+    reconcileManagedProjectFolders = async () => {},
     coordinationV3,
     engines,
     triggerSources,
@@ -438,6 +440,10 @@ export function registerProjectDeletionRoutes(
       try { reconcileCommittedProjectDeletion(project.id); }
       catch (error) {
         logError({ err: error, projectId: project.id }, "Project deletion workspace reconciliation failed");
+      }
+      try { await reconcileManagedProjectFolders(); }
+      catch (error) {
+        logError({ err: error, projectId: project.id }, "Managed Project folder reconciliation failed");
       }
       for (const { adapter } of engines.values()) {
         try { invalidateEngineCapabilities(project.id, adapter.id); }
