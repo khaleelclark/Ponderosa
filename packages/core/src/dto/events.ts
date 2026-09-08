@@ -3,7 +3,7 @@ import type { AgentEvent } from "../events.js";
 import type { AgentDto, AgentState } from "./agents.js";
 import type { ArtifactDto, ChangedFileDto } from "./artifacts.js";
 import type { HistoryPageDto, HistoryWindowDto } from "./common.js";
-import type { MessageDto, ResponseFileActivityDto } from "./conversations.js";
+import type { ConversationDto, MessageDto, ResponseFileActivityDto } from "./conversations.js";
 import type { AgentCoordinationV3Dto, AgentRunDto, WorkItemDto } from "./runs.js";
 import type {
   WorkspacePreferencesDto,
@@ -152,6 +152,8 @@ export interface RunOutputTextDto {
  */
 export interface AgentDetailDto {
   agent: AgentDto;
+  /** Canonical owning Chat, absent only after that Chat no longer exists. */
+  ownerConversation?: Pick<ConversationDto, "id" | "title">;
   /** Stable current-or-historical evidence that this Agent managed another Agent. */
   hasSubagentHistory?: boolean;
   messages: MessageDto[];

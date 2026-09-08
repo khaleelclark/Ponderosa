@@ -8,13 +8,17 @@ import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, 
 import { messageTagTokens, unicodeCodePointLength } from "@ponderosa/core";
 import type { AgentMentionBindingDto, CommunicationDocumentReference, CommunicationIntent, MessageDto, VerifiedCitationDto } from "@ponderosa/core";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
+import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { copyText } from "../../clipboard";
 import { MESSAGE_TAG_PREFIX, messageTagHandle } from "../../mentions";
 import { LazySyntaxHighlightedCode } from "../LazySyntaxHighlightedCode";
 import { useProjectBrowser } from "../ProjectBrowserContext";
 import { ChatDocumentCard } from "./ChatDocumentCard";
+import {
+  chatMarkdownUrlTransform,
+  renderableChatLinkHref,
+} from "./chatMarkdownLink";
 
 function isLoopbackLink(url: URL): boolean {
   return url.protocol === "http:" && Boolean(url.port) && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname.toLowerCase());
@@ -497,11 +501,7 @@ function ChatMarkdown({
     >
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMessageTags]}
-        urlTransform={url =>
-          url.startsWith("ponderosa://project-file/")
-            ? url
-            : defaultUrlTransform(url)
-        }
+        urlTransform={chatMarkdownUrlTransform}
         components={{
           pre: ({ children: code }) => <CopyableCodeBlock>{code}</CopyableCodeBlock>,
           img: ({ src, alt }) => {
@@ -554,7 +554,12 @@ function ChatMarkdown({
                 </Box>
               );
             }
-            if (!href?.startsWith(MESSAGE_TAG_PREFIX)) return <ChatLink href={href ?? ""} previewScope={previewScope} projectId={projectId}>{label}</ChatLink>;
+            if (!href?.startsWith(MESSAGE_TAG_PREFIX)) {
+              const safeHref = renderableChatLinkHref(href);
+              return safeHref
+                ? <ChatLink href={safeHref} previewScope={previewScope} projectId={projectId}>{label}</ChatLink>
+                : <Box component="span">{label}</Box>;
+            }
             const handle = messageTagHandle(href);
             if (!handle) return <Box component="span">{label}</Box>;
             if (handle.toLocaleLowerCase() === "broadcast" && onOpenBroadcast) {

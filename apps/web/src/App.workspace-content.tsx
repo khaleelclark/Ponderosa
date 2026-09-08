@@ -4,6 +4,7 @@ import type {
   EngineDto,
   ProjectDto,
   WorkspaceNotificationDto,
+  WorkspaceNotificationPageDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { HomeView } from "./components/HomeView";
@@ -39,6 +40,7 @@ interface WorkspaceRouteOutletProps {
   projectsLoaded: boolean;
   engines: EngineDto[];
   notifications: WorkspaceNotificationDto[];
+  notificationCounts?: Pick<WorkspaceNotificationPageDto, "openActionCount">;
   preferences: WorkspacePreferencesDto;
   colorMode: ColorMode;
   projectBrowserRequest?: ProjectBrowserRequest;
@@ -77,6 +79,7 @@ export function WorkspaceRouteOutlet({
   projectsLoaded,
   engines,
   notifications,
+  notificationCounts,
   preferences,
   colorMode,
   projectBrowserRequest,
@@ -141,6 +144,7 @@ export function WorkspaceRouteOutlet({
             projectsLoaded={projectsLoaded}
             engines={engines}
             notifications={notifications}
+            notificationCounts={notificationCounts}
             preferences={preferences}
             onNavigate={onNavigate}
             onCreateProject={() => onCreate("project")}

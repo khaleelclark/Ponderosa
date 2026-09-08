@@ -33,6 +33,7 @@ export const queryKeys = {
       agentIds: string | undefined,
       conversationId: string | undefined,
       sort: "alphabetical" | "last_used" | "custom" | undefined,
+      active: boolean | undefined,
     ) => [
       "workspace-directory",
       kind,
@@ -41,6 +42,7 @@ export const queryKeys = {
       agentIds ?? "",
       conversationId ?? "",
       sort ?? "",
+      active ? "active" : "",
     ] as const,
   },
   workspacePreferences: {

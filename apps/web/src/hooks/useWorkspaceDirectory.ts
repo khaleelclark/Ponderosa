@@ -55,6 +55,7 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     agentIds?: readonly string[];
     conversationId?: string;
     sort?: ProjectSort;
+    active?: boolean;
     enabled?: boolean;
     retainPreviousData?: boolean;
   },
@@ -76,6 +77,7 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     options.agentIds?.join(","),
     options.conversationId,
     options.sort,
+    options.active,
   );
   const query = useInfiniteQuery({
     queryKey,
@@ -88,6 +90,7 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
         agentIds: options.agentIds?.join(","),
         conversationId: options.conversationId,
         sort: options.sort,
+        active: options.active,
       }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (

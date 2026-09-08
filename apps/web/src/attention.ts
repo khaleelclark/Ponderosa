@@ -33,6 +33,13 @@ export function notificationSummary(notifications: WorkspaceNotificationDto[]): 
   }, { openActionCount: 0, unacknowledgedActionCount: 0, unreadUpdateCount: 0 });
 }
 
+export function notificationOpenActionCount(
+  notifications: WorkspaceNotificationDto[],
+  summary?: { openActionCount: number },
+): number {
+  return summary?.openActionCount ?? notificationSummary(notifications).openActionCount;
+}
+
 /** A Project-scoped notification has no actionable destination after its
  * Project leaves the canonical Project collection. */
 export function notificationsForAvailableProjects(

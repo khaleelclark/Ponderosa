@@ -1444,6 +1444,30 @@ test("edited durable content starts a new send identity after restart", async ()
   assert.equal(second.idempotencyKey, "operation-b");
 });
 
+test("durable send fingerprints survive reload without SubtleCrypto", async () => {
+  const intent = {
+    text: "unchanged 🌲".repeat(20),
+    surface: "chat:a",
+    recipients: ["agent-a"],
+  };
+  const native = await durableSubmissionFingerprint(intent);
+  const cryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  try {
+    Object.defineProperty(globalThis, "crypto", {
+      configurable: true,
+      value: { randomUUID: () => "fallback-id" },
+    });
+    assert.equal(await durableSubmissionFingerprint(intent), native);
+    assert.notEqual(
+      await durableSubmissionFingerprint({ ...intent, text: `${intent.text}!` }),
+      native,
+    );
+  } finally {
+    if (cryptoDescriptor) Object.defineProperty(globalThis, "crypto", cryptoDescriptor);
+    else delete globalThis.crypto;
+  }
+});
+
 test("generated Agent title is finalized once and restored with its send identity", async () => {
   const intent = await durableSubmissionFingerprint({
     text: "start work",

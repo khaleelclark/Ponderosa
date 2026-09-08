@@ -6,7 +6,7 @@ import {
 } from "../src/workspaceDirectoryScope.js";
 import { queryKeys } from "../src/queryKeys.js";
 
-const key = (kind, search, projectId, sort = "last_used") =>
+const key = (kind, search, projectId, sort = "last_used", active) =>
   queryKeys.workspaceDirectory.list(
     kind,
     search,
@@ -14,6 +14,7 @@ const key = (kind, search, projectId, sort = "last_used") =>
     undefined,
     undefined,
     sort,
+    active,
   );
 
 test("directory placeholders never cross Project ownership", () => {
@@ -40,6 +41,16 @@ test("same-Project directory transitions retain their existing pages", () => {
       key("conversation", "new search", "project-a", "alphabetical"),
     ),
     true,
+  );
+});
+
+test("active-only Agent pages never retain unfiltered placeholders", () => {
+  assert.equal(
+    sameWorkspaceDirectoryScope(
+      key("agent", "", undefined),
+      key("agent", "", undefined, "last_used", true),
+    ),
+    false,
   );
 });
 

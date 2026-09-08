@@ -749,6 +749,7 @@ export default function App({
                     projectsLoaded={projectsQuery.isSuccess}
                     engines={engines}
                     notifications={presentedNotifications}
+                    notificationCounts={notificationsQuery.data}
                     preferences={preferences}
                     colorMode={colorMode}
                     projectBrowserRequest={projectBrowserRequest}

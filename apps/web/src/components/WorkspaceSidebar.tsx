@@ -648,7 +648,11 @@ export function WorkspaceSidebar({
     activeProject &&
     activeAgentQuery.data?.agent.projectId === activeProject.id &&
     !allAgentRows.some(item => item.agent.id === route.agentId)
-      ? { agent: activeAgentQuery.data.agent, project: activeProject }
+      ? {
+          agent: activeAgentQuery.data.agent,
+          project: activeProject,
+          ownerConversation: activeAgentQuery.data.ownerConversation,
+        }
       : undefined;
   const agentRows = allAgentRows;
   const agentHierarchyRows = (items: AgentSidebarRow[]): AgentSidebarTreeRow[] => {

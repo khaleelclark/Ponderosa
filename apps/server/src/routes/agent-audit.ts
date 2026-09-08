@@ -18,7 +18,14 @@ export function registerAgentAuditRoutes(
     const limit = Math.min(1_000, Math.max(1, Number(request.query.limit ?? 100) || 100));
     try {
       const detail = agentDetail(request.params.id, { limit, cursor: request.query.cursor, focusId: request.query.focusId });
-      return detail ?? reply.code(404).send({ error: "agent not found" });
+      if (!detail) return reply.code(404).send({ error: "agent not found" });
+      const ownerConversation = store.getConversation(detail.agent.conversationId);
+      return {
+        ...detail,
+        ...(ownerConversation ? {
+          ownerConversation: { id: ownerConversation.id, title: ownerConversation.title },
+        } : {}),
+      };
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid history cursor" });
     }

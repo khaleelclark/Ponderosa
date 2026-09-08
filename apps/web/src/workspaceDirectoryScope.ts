@@ -7,7 +7,8 @@ export function sameWorkspaceDirectoryScope(
     previous[1] === current[1] &&
     previous[3] === current[3] &&
     previous[4] === current[4] &&
-    previous[5] === current[5];
+    previous[5] === current[5] &&
+    previous[7] === current[7];
 }
 
 export function projectScopedWorkspaceDirectoryItems<

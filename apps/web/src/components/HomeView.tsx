@@ -5,6 +5,7 @@ import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import {
+  Alert,
   Box,
   Button,
   ButtonBase,
@@ -17,12 +18,13 @@ import type {
   ProjectDto,
   WorkspaceAgentDirectoryItemDto,
   WorkspaceNotificationDto,
+  WorkspaceNotificationPageDto,
   WorkspacePreferencesDto,
   WorkspaceTriggerDirectoryItemDto,
 } from "@ponderosa/core";
 import type { ReactNode } from "react";
 import { agentStatusPresentation } from "../agents";
-import { isOpenAttention } from "../attention";
+import { isOpenAttention, notificationOpenActionCount } from "../attention";
 import { engineAvailabilityPresentation } from "../conversationEngine";
 import {
   useWorkspaceDirectory,
@@ -225,6 +227,7 @@ export function HomeView({
   projectsLoaded,
   engines,
   notifications,
+  notificationCounts,
   preferences,
   onNavigate,
   onCreateProject,
@@ -234,6 +237,7 @@ export function HomeView({
   projectsLoaded: boolean;
   engines: EngineDto[];
   notifications: WorkspaceNotificationDto[];
+  notificationCounts?: Pick<WorkspaceNotificationPageDto, "openActionCount">;
   preferences: WorkspacePreferencesDto;
   onNavigate(route: Route): void;
   onCreateProject(): void;
@@ -242,8 +246,13 @@ export function HomeView({
   const workspaceConnection = useWorkspaceConnection();
   const directoryOptions = { sort: "last_used" as const };
   const agentQuery = useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", directoryOptions);
+  const activeAgentQuery = useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
+    ...directoryOptions,
+    active: true,
+  });
   const triggerQuery = useWorkspaceDirectory<WorkspaceTriggerDirectoryItemDto>("trigger", directoryOptions);
   const agentDirectory = workspaceDirectoryItems(agentQuery.data?.pages, preferences);
+  const activeAgentDirectory = workspaceDirectoryItems(activeAgentQuery.data?.pages, preferences);
   const triggerDirectory = workspaceDirectoryItems(triggerQuery.data?.pages, preferences);
   const agentItems = [...agentDirectory.starredItems, ...agentDirectory.items];
   const agentNamesById = new Map(
@@ -253,7 +262,7 @@ export function HomeView({
   const attention = notifications
     .filter(isOpenAttention)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
-  const working = agentItems
+  const working = [...activeAgentDirectory.starredItems, ...activeAgentDirectory.items]
     .filter(item => ACTIVE_STATUSES.has(item.health.status))
     .sort((left, right) => right.health.statusTimestamp.localeCompare(left.health.statusTimestamp));
   const automations = triggerItems
@@ -270,12 +279,13 @@ export function HomeView({
       ))
     .slice(0, 6);
   const provider = engineAvailabilityPresentation(engines);
-  const activeCount = agentQuery.requestState.hasResolved
-    ? agentQuery.data?.pages.at(-1)?.activeCount ?? 0
+  const activeCount = activeAgentQuery.requestState.hasResolved
+    ? activeAgentQuery.data?.pages.at(-1)?.activeCount ?? 0
     : "—";
   const enabledAutomationCount = triggerQuery.requestState.hasResolved
-    ? triggerItems.filter(item => item.trigger.enabled).length
+    ? triggerQuery.data?.pages.at(-1)?.enabledCount ?? 0
     : "—";
+  const attentionCount = notificationOpenActionCount(notifications, notificationCounts);
 
   return (
     <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto" }}>
@@ -295,7 +305,7 @@ export function HomeView({
             },
           }}>
             <SummaryCard label="Active Agents" value={activeCount} onClick={() => onNavigate({ kind: "allAgents" })} />
-            <SummaryCard label="Needs Attention" value={attention.length} onClick={onOpenInbox} />
+            <SummaryCard label="Needs Attention" value={attentionCount} onClick={onOpenInbox} />
             <SummaryCard label="Enabled Automations" compactLabel="Automations" value={enabledAutomationCount} onClick={() => onNavigate({ kind: "allTriggers" })} />
             <SummaryCard label="Provider Health" value={provider.label} compactValue={provider.label === "Engine ready" ? "Ready" : provider.label} />
           </Box>
@@ -314,7 +324,7 @@ export function HomeView({
           <Section
             title="Needs Attention"
             description="Decisions, blockers, and failures that still need you."
-            action={attention.length ? <Button onClick={onOpenInbox}>View all</Button> : undefined}
+            action={attentionCount ? <Button onClick={onOpenInbox}>View all</Button> : undefined}
           >
             {attention.length ? (
               <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
@@ -334,6 +344,16 @@ export function HomeView({
                   );
                 })}
               </Box>
+            ) : attentionCount ? (
+              <Paper variant="outlined" sx={{ p: 2 }}>
+                <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+                  <WarningAmberOutlinedIcon color="warning" />
+                  <Typography color="text.secondary" sx={{ flex: 1 }}>
+                    {`${attentionCount} item${attentionCount === 1 ? "" : "s"} need your attention.`}
+                  </Typography>
+                  <Button onClick={onOpenInbox}>Review</Button>
+                </Stack>
+              </Paper>
             ) : (
               <Paper variant="outlined" sx={{ p: 2 }}>
                 <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
@@ -372,6 +392,12 @@ export function HomeView({
                   );
                 })}
               </Box>
+            ) : activeAgentQuery.requestState.isInitialError ? (
+              <Alert severity="error" action={<Button onClick={() => void activeAgentQuery.requestState.retry()}>Retry</Button>}>
+                Could not load active Agents.
+              </Alert>
+            ) : activeAgentQuery.requestState.isInitialLoading ? (
+              <Paper variant="outlined" sx={{ p: 2 }}><Typography color="text.secondary">Loading active Agents…</Typography></Paper>
             ) : (
               <Paper variant="outlined" sx={{ p: 2 }}><Typography color="text.secondary">No Agents are active right now.</Typography></Paper>
             )}

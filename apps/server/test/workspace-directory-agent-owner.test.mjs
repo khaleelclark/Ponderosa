@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { AgentStore, WorkspaceStore } from "@ponderosa/agents";
+import { AgentStore, CoordinationV3Store, WorkspaceStore } from "@ponderosa/agents";
 import Fastify from "fastify";
 import { registerWorkspaceDirectoryRoutes } from "../dist/routes/workspace-directory.js";
 
@@ -11,6 +11,7 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
   const dataDir = mkdtempSync(join(tmpdir(), "ponderosa-agent-directory-owner-"));
   const store = new AgentStore(dataDir);
   const workspace = new WorkspaceStore(dataDir);
+  const coordination = new CoordinationV3Store(store.sqlite);
   const app = Fastify();
   t.after(async () => {
     await app.close();
@@ -32,9 +33,37 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
     engine: "codex",
     conversationId: owner.id,
   });
+  for (let index = 0; index < 30; index += 1) {
+    store.createAgent(project.id, {
+      title: `Later Agent ${String(index).padStart(2, "0")}`,
+      engine: "codex",
+      conversationId: owner.id,
+    });
+  }
+  const now = new Date().toISOString();
+  store.sqlite.prepare(`
+    INSERT INTO scheduler_runs (
+      id, project_id, agent_id, status, lease_owner, lease_expires_at,
+      fencing_token, prompt_injection_state, heartbeat_at, created_at, updated_at
+    ) VALUES (?, ?, ?, 'running', 'test', ?, 1, 'not_injected', ?, ?, ?)
+  `).run("run-a", project.id, agent.id, now, now, now, now);
+  for (let index = 0; index < 31; index += 1) {
+    coordination.createTriggerDefinition({
+      id: `trigger-${index}`,
+      projectId: project.id,
+      conversationId: owner.id,
+      targetAgentId: agent.id,
+      name: `Automation ${String(index).padStart(2, "0")}`,
+      instructions: "Run the task",
+      sourceKind: "schedule",
+      sourceConfig: { scheduleKind: "once", at: "2099-01-01T00:00:00.000Z" },
+      enabled: index < 30,
+      now,
+    });
+  }
   registerWorkspaceDirectoryRoutes(app, {
     store,
-    coordination: { getTriggerDefinition: () => undefined },
+    coordination,
     workspace,
     agentHealth: (scope, agents) => ({
       scope,
@@ -42,7 +71,7 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
       agents: agents.map(({ id }) => ({
         agentId: id,
         childAgentIds: [],
-        status: "idle",
+        status: id === agent.id ? "running" : "idle",
         statusTimestamp: new Date(0).toISOString(),
         reason: { kind: "idle" },
       })),
@@ -74,4 +103,21 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
     id: owner.id,
     title: "Zulu Backend",
   });
+
+  const activeAgents = await app.inject({
+    method: "GET",
+    url: "/api/workspace/directory/agent?active=true&limit=6&sort=last_used",
+  });
+  assert.equal(activeAgents.statusCode, 200, activeAgents.body);
+  assert.equal(activeAgents.json().activeCount, 1);
+  assert.deepEqual(activeAgents.json().items.map(item => item.agent.id), [agent.id]);
+
+  const automations = await app.inject({
+    method: "GET",
+    url: "/api/workspace/directory/trigger?limit=25&sort=last_used",
+  });
+  assert.equal(automations.statusCode, 200, automations.body);
+  assert.equal(automations.json().items.length, 25);
+  assert.equal(automations.json().history.hasMore, true);
+  assert.equal(automations.json().enabledCount, 30);
 });

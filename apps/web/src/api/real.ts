@@ -471,6 +471,7 @@ export const realApi = {
       agentIds?: string;
       conversationId?: string;
       sort?: ProjectSort;
+      active?: boolean;
     } = {},
   ): Promise<WorkspaceDirectoryPageDto<T>> {
     const path = `/api/workspace/directory/${encodeURIComponent(kind)}${toQuery({
@@ -481,6 +482,7 @@ export const realApi = {
         agentIds: options.agentIds,
         conversationId: options.conversationId,
         sort: options.sort,
+        active: options.active ? "true" : undefined,
       })}`;
     return requestJson<WorkspaceDirectoryPageDto<T>>(path).catch(async (error) => {
       if (!(error instanceof ApiRequestError) || error.status !== 409 || !options.cursor) throw error;

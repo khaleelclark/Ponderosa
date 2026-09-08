@@ -123,6 +123,8 @@ export interface WorkspaceDirectoryPageDto<
   total: number;
   /** Workspace-wide active count, present for the Agent directory. */
   activeCount?: number;
+  /** Workspace-wide enabled count, present for the Automation directory. */
+  enabledCount?: number;
   history: HistoryWindowDto;
 }
 

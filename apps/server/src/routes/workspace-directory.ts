@@ -34,6 +34,7 @@ type DirectoryQuery = {
   agentIds?: string;
   conversationId?: string;
   sort?: string;
+  active?: string;
 };
 
 type CursorPosition =
@@ -184,6 +185,24 @@ function placeholders(count: number): string {
   return Array.from({ length: count }, () => "?").join(", ");
 }
 
+function activeAgentSql(alias: string): string {
+  return `(
+    EXISTS (
+      SELECT 1 FROM scheduler_runs active_run
+      WHERE active_run.agent_id = ${alias}.id
+        AND active_run.status IN ('leased', 'running')
+    )
+    OR EXISTS (
+      SELECT 1 FROM context_rollovers active_rollover
+      WHERE active_rollover.agent_id = ${alias}.id
+        AND active_rollover.state IN (
+          'requested', 'handoff_committed',
+          'session_retiring', 'continuation_ready'
+        )
+    )
+  )`;
+}
+
 function baseDirectoryQuery(
   kind: WorkspaceDirectoryKind,
   query: DirectoryQuery,
@@ -332,6 +351,7 @@ function baseDirectoryQuery(
       )`);
       params.push(query.conversationId);
     }
+    if (query.active === "true") where.push(activeAgentSql("a"));
     if (normalizedSearch) {
       where.push(
         "lower(a.title || ' ' || a.active_engine || ' ' || p.label || ' ' || p.host_path) LIKE ? ESCAPE '\\'",
@@ -486,19 +506,24 @@ function workspaceActiveAgentCount(sqlite: Database.Database): number {
         WHERE creation_members.agent_id = a.id
           AND creation_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
       )
-      AND (
-        EXISTS (
-          SELECT 1 FROM scheduler_runs r
-          WHERE r.agent_id = a.id AND r.status IN ('leased', 'running')
-        )
-        OR EXISTS (
-          SELECT 1 FROM context_rollovers c
-          WHERE c.agent_id = a.id
-            AND c.state IN (
-              'requested', 'handoff_committed',
-              'session_retiring', 'continuation_ready'
-            )
-        )
+      AND ${activeAgentSql("a")}
+  `).get() as { count: number };
+  return row.count;
+}
+
+function workspaceEnabledTriggerCount(sqlite: Database.Database): number {
+  const row = sqlite.prepare(`
+    SELECT COUNT(*) AS count
+    FROM trigger_definitions t
+    JOIN agents a ON a.id = t.agent_id
+      AND a.archived = 0 AND a.deleted_at IS NULL
+    WHERE t.enabled = 1
+      AND NOT EXISTS (
+        SELECT 1
+        FROM agent_creation_operation_members creation_members
+        JOIN agent_creation_operations creation_operations ON creation_operations.id = creation_members.operation_id
+        WHERE creation_members.agent_id = a.id
+          AND creation_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
       )
   `).get() as { count: number };
   return row.count;
@@ -520,6 +545,10 @@ export function registerWorkspaceDirectoryRoutes(
       kind !== "trigger"
     ) {
       return reply.code(404).send({ error: "unknown workspace directory" });
+    }
+    if (request.query.active !== undefined &&
+        (kind !== "agent" || request.query.active !== "true")) {
+      return reply.code(400).send({ error: "active=true is supported only for the Agent directory" });
     }
 
     let limit: number;
@@ -566,6 +595,7 @@ export function registerWorkspaceDirectoryRoutes(
       agentIds: [...filteredAgentIds].sort(),
       conversationId: request.query.conversationId ?? "",
       sort,
+      active: request.query.active ?? "",
       directorySettingsHash,
     });
 
@@ -590,6 +620,8 @@ export function registerWorkspaceDirectoryRoutes(
           ? [
               scoped("agents"),
               projectKey,
+              "scheduler_runs",
+              "context_rollovers",
               ...(request.query.conversationId
                 ? [collectionGenerationKey("memberships", `conversation:${request.query.conversationId}`)]
                 : []),
@@ -764,6 +796,9 @@ export function registerWorkspaceDirectoryRoutes(
       total,
       ...(kind === "agent"
         ? { activeCount: workspaceActiveAgentCount(sqlite) }
+        : {}),
+      ...(kind === "trigger"
+        ? { enabledCount: workspaceEnabledTriggerCount(sqlite) }
         : {}),
       history: {
         limit,
