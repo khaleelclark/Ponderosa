@@ -218,6 +218,15 @@ export interface ResolveConversationDraftConflictResponse {
   action: "restored" | "discarded";
   replayed: boolean;
   draft?: ConversationDraftDto;
+  /** Durable historical-to-canonical asset mapping, stable across restore replay. */
+  attachmentReplacements?: Array<{ fromId: string; toId: string }>;
+  unavailableAttachmentIds?: string[];
+}
+
+export interface RestoreConversationDraftConflictUnavailableResponse {
+  error: "draft conflict attachment is unavailable";
+  /** Historical displaced IDs requiring replacement or explicit removal. */
+  unavailableAttachmentIds: string[];
 }
 
 export interface ConversationDraftConflictListDto {

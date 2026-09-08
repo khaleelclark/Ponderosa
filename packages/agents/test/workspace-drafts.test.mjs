@@ -208,11 +208,18 @@ test("draft conflicts keep stable IDs and resolve one snapshot idempotently acro
     conflictId: firstConflict.id,
     expectedRevision: newer.revision,
     clientId: "page:browser-a:draft:restored",
+    attachmentIds: ["fresh-file"],
+    pastedTextAttachmentId: "fresh-paste",
+    attachmentReplacements: [
+      { fromId: "stale-file", toId: "fresh-file" },
+      { fromId: "stale-paste", toId: "fresh-paste" },
+    ],
+    unavailableAttachmentIds: [],
   });
   assert.equal(restored.replayed, false);
   assert.equal(restored.draft.text, stale.text);
-  assert.deepEqual(restored.draft.attachmentIds, stale.attachmentIds);
-  assert.equal(restored.draft.pastedTextAttachmentId, stale.pastedTextAttachmentId);
+  assert.deepEqual(restored.draft.attachmentIds, ["fresh-file"]);
+  assert.equal(restored.draft.pastedTextAttachmentId, "fresh-paste");
   assert.deepEqual(restored.draft.mentionBindings, stale.mentionBindings);
   assert.equal(store.listDraftConflicts("chat-a", "browser-a").conflicts.length, 0);
 
@@ -224,7 +231,15 @@ test("draft conflicts keep stable IDs and resolve one snapshot idempotently acro
     conflictId: firstConflict.id,
     expectedRevision: 0,
     clientId: "ignored-on-replay",
-  }), { draft: restored.draft, replayed: true });
+  }), {
+    draft: restored.draft,
+    replayed: true,
+    attachmentReplacements: [
+      { fromId: "stale-file", toId: "fresh-file" },
+      { fromId: "stale-paste", toId: "fresh-paste" },
+    ],
+    unavailableAttachmentIds: [],
+  });
   assert.throws(
     () => store.discardDraftConflict({
       conversationId: "chat-a",

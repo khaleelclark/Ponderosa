@@ -56,6 +56,8 @@ interface DraftConflictResolution {
   action: "restored" | "discarded";
   draft?: ConversationDraftDto;
   displaced?: ConversationDraftConflictDto["displaced"];
+  attachmentReplacements?: Array<{ fromId: string; toId: string }>;
+  unavailableAttachmentIds?: string[];
 }
 
 export interface DecisionEventProjection {
@@ -1056,7 +1058,14 @@ export class WorkspaceStore {
     clientId: string;
     attachmentIds?: string[];
     pastedTextAttachmentId?: string | null;
-  }): { draft: ConversationDraftDto; replayed: boolean } {
+    attachmentReplacements?: Array<{ fromId: string; toId: string }>;
+    unavailableAttachmentIds?: string[];
+  }): {
+    draft: ConversationDraftDto;
+    replayed: boolean;
+    attachmentReplacements: Array<{ fromId: string; toId: string }>;
+    unavailableAttachmentIds: string[];
+  } {
     const prior = this.draftConflictResolutions.get(input.conflictId);
     if (prior) {
       if (prior.conversationId !== input.conversationId || prior.ownerId !== input.ownerId ||
@@ -1065,7 +1074,12 @@ export class WorkspaceStore {
           code: "DRAFT_CONFLICT_RESOLUTION_CONFLICT",
         });
       }
-      return { draft: prior.draft, replayed: true };
+      return {
+        draft: prior.draft,
+        replayed: true,
+        attachmentReplacements: [...(prior.attachmentReplacements ?? [])],
+        unavailableAttachmentIds: [...(prior.unavailableAttachmentIds ?? [])],
+      };
     }
     const key = this.draftKey(input.conversationId, input.ownerId);
     const conflict = (this.draftConflicts.get(key) ?? [])
@@ -1103,6 +1117,8 @@ export class WorkspaceStore {
       action: "restored",
       draft,
       displaced: conflict.displaced,
+      attachmentReplacements: [...(input.attachmentReplacements ?? [])],
+      unavailableAttachmentIds: [...(input.unavailableAttachmentIds ?? [])],
     };
     this.append(
       {
@@ -1114,7 +1130,12 @@ export class WorkspaceStore {
       },
       { kind: "draft_conflict_resolved", resolution },
     );
-    return { draft, replayed: false };
+    return {
+      draft,
+      replayed: false,
+      attachmentReplacements: [...(input.attachmentReplacements ?? [])],
+      unavailableAttachmentIds: [...(input.unavailableAttachmentIds ?? [])],
+    };
   }
 
   discardDraftConflict(input: {

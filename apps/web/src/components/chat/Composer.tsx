@@ -20,6 +20,8 @@ import type {
   DraftAttachmentDto,
   EngineCommand,
   EngineComposerCapability,
+  ResolveConversationDraftConflictResponse,
+  RestoreConversationDraftConflictUnavailableResponse,
 } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -72,6 +74,7 @@ import {
 } from "./ComposerEditor";
 import {
   canSubmitComposerText,
+  canonicalDraftConflictFiles,
   composerAttachmentReducer,
   composerPreparedRetryAction,
   composerRecipientGateSatisfied,
@@ -91,6 +94,7 @@ import {
   ownedDraftRevisionAfterObservation,
   providerSlashSubmission,
   recoverableDraftConflict,
+  redundantDraftConflictUploadIds,
   refreshRecoverableDraftConflict,
   type RecoverableDraftConflict,
   restagedDraftConflictSnapshot,
@@ -132,6 +136,17 @@ type ComposerMentionToken = {
   kind: "agent" | "special";
   agentId?: string;
 };
+
+function unavailableDraftConflictAttachmentIds(error: unknown): string[] | undefined {
+  if (!(error instanceof ApiRequestError) || error.status !== 409 ||
+      !error.body || typeof error.body !== "object" || Array.isArray(error.body)) return undefined;
+  const body = error.body as Partial<RestoreConversationDraftConflictUnavailableResponse>;
+  return body.error === "draft conflict attachment is unavailable" &&
+    Array.isArray(body.unavailableAttachmentIds) &&
+    body.unavailableAttachmentIds.every(id => typeof id === "string")
+    ? body.unavailableAttachmentIds
+    : undefined;
+}
 
 type FailedDraftContent = {
   id: string;
@@ -2241,45 +2256,53 @@ export function Composer({
             const discardUploads = () => Promise.all(uploadedIds.map(id =>
               api.deleteDraftAttachment(scope, draftOwnerId, id).catch(() => undefined)));
             try {
-              const restoredFiles: Array<{ file: File; attachmentId: string; fromId: string }> = [];
-              for (const { file, attachmentId } of recovery.snapshot.files) {
-                const uploaded = await api.uploadDraftAttachment(scope, draftOwnerId, file);
-                uploadedIds.push(uploaded.id);
-                restoredFiles.push({ file, attachmentId: uploaded.id, fromId: attachmentId });
-              }
+              const restoredFiles: Array<{
+                file: File;
+                attachmentId: string;
+                fromId: string;
+              }> = [];
+              const unavailableAttachmentIds = new Set<string>();
               let restoredPasteId: string | undefined;
-              if (recovery.snapshot.pastedText !== undefined) {
-                const uploaded = await api.uploadDraftAttachment(
-                  scope,
-                  draftOwnerId,
-                  new File([recovery.snapshot.pastedText], PASTED_TEXT_DRAFT_NAME, {
-                    type: "text/plain",
-                  }),
+              let resolution: ResolveConversationDraftConflictResponse;
+              if (recovery.resolutionUnavailable) {
+                for (const { file, attachmentId } of recovery.snapshot.files) {
+                  const uploaded = await api.uploadDraftAttachment(scope, draftOwnerId, file);
+                  uploadedIds.push(uploaded.id);
+                  restoredFiles.push({ file, attachmentId: uploaded.id, fromId: attachmentId });
+                }
+                if (recovery.snapshot.pastedText !== undefined) {
+                  const uploaded = await api.uploadDraftAttachment(
+                    scope,
+                    draftOwnerId,
+                    new File([recovery.snapshot.pastedText], PASTED_TEXT_DRAFT_NAME, {
+                      type: "text/plain",
+                    }),
+                  );
+                  uploadedIds.push(uploaded.id);
+                  restoredPasteId = uploaded.id;
+                }
+                const recoverableIds = new Set([
+                  ...recovery.snapshot.files.map(item => item.attachmentId),
+                  ...(recovery.snapshot.pastedText !== undefined &&
+                      recovery.snapshot.pastedTextAttachmentId
+                    ? [recovery.snapshot.pastedTextAttachmentId]
+                    : []),
+                ]);
+                for (const id of [
+                  ...recovery.conflict.displaced.attachmentIds,
+                  ...(recovery.conflict.displaced.pastedTextAttachmentId
+                    ? [recovery.conflict.displaced.pastedTextAttachmentId]
+                    : []),
+                ]) {
+                  if (!recoverableIds.has(id)) unavailableAttachmentIds.add(id);
+                }
+                attemptedSnapshot = restagedDraftConflictSnapshot(
+                  recovery.snapshot,
+                  restoredFiles,
+                  restoredPasteId,
+                  unavailableAttachmentIds,
                 );
-                uploadedIds.push(uploaded.id);
-                restoredPasteId = uploaded.id;
-              }
-              const recoverableIds = new Set([
-                ...recovery.snapshot.files.map(item => item.attachmentId),
-                ...(recovery.snapshot.pastedText !== undefined &&
-                    recovery.snapshot.pastedTextAttachmentId
-                  ? [recovery.snapshot.pastedTextAttachmentId]
-                  : []),
-              ]);
-              const unavailableAttachmentIds = new Set([
-                ...recovery.conflict.displaced.attachmentIds,
-                ...(recovery.conflict.displaced.pastedTextAttachmentId
-                  ? [recovery.conflict.displaced.pastedTextAttachmentId]
-                  : []),
-              ].filter(id => !recoverableIds.has(id)));
-              attemptedSnapshot = restagedDraftConflictSnapshot(
-                recovery.snapshot,
-                restoredFiles.map(({ file, attachmentId }) => ({ file, attachmentId })),
-                restoredPasteId,
-                unavailableAttachmentIds,
-              );
-              const canonical = recovery.resolutionUnavailable
-                ? await api.putConversationDraft(scope, {
+                const draft = await api.putConversationDraft(scope, {
                     text: attemptedSnapshot.text,
                     attachmentIds: attemptedSnapshot.attachmentIds,
                     ...(attemptedSnapshot.pastedTextAttachmentId
@@ -2289,8 +2312,82 @@ export function Composer({
                     expectedRevision: recovery.conflict.current.revision,
                     clientId: recoveryWriteChain.clientId,
                     ownerId: draftOwnerId,
-                  })
-                : (await api.restoreConversationDraftConflict(
+                  });
+                resolution = {
+                  conflictId: recovery.conflict.id,
+                  action: "restored",
+                  replayed: false,
+                  draft,
+                  attachmentReplacements: [
+                    ...restoredFiles.map(({ fromId, attachmentId }) => ({
+                      fromId,
+                      toId: attachmentId,
+                    })),
+                    ...(recovery.snapshot.pastedTextAttachmentId && restoredPasteId
+                      ? [{
+                          fromId: recovery.snapshot.pastedTextAttachmentId,
+                          toId: restoredPasteId,
+                        }]
+                      : []),
+                  ],
+                  unavailableAttachmentIds: [...unavailableAttachmentIds],
+                };
+              } else {
+                try {
+                  resolution = await api.restoreConversationDraftConflict(
+                    scope,
+                    recovery.conflict.id,
+                    {
+                      ownerId: draftOwnerId,
+                      expectedRevision: recovery.conflict.current.revision,
+                      clientId: recoveryWriteChain.clientId,
+                    },
+                  );
+                } catch (error) {
+                  const missingIds = unavailableDraftConflictAttachmentIds(error);
+                  if (!missingIds) throw error;
+                  for (const fromId of missingIds) {
+                    const retained = recovery.snapshot.files.find(
+                      item => item.attachmentId === fromId,
+                    );
+                    if (retained) {
+                      const uploaded = await api.uploadDraftAttachment(
+                        scope,
+                        draftOwnerId,
+                        retained.file,
+                      );
+                      uploadedIds.push(uploaded.id);
+                      restoredFiles.push({
+                        file: retained.file,
+                        attachmentId: uploaded.id,
+                        fromId,
+                      });
+                    } else if (
+                      recovery.snapshot.pastedTextAttachmentId === fromId &&
+                      recovery.snapshot.pastedText !== undefined
+                    ) {
+                      const uploaded = await api.uploadDraftAttachment(
+                        scope,
+                        draftOwnerId,
+                        new File(
+                          [recovery.snapshot.pastedText],
+                          PASTED_TEXT_DRAFT_NAME,
+                          { type: "text/plain" },
+                        ),
+                      );
+                      uploadedIds.push(uploaded.id);
+                      restoredPasteId = uploaded.id;
+                    } else {
+                      unavailableAttachmentIds.add(fromId);
+                    }
+                  }
+                  attemptedSnapshot = restagedDraftConflictSnapshot(
+                    recovery.snapshot,
+                    restoredFiles,
+                    restoredPasteId,
+                    unavailableAttachmentIds,
+                  );
+                  resolution = await api.restoreConversationDraftConflict(
                     scope,
                     recovery.conflict.id,
                     {
@@ -2311,8 +2408,106 @@ export function Composer({
                       ],
                       unavailableAttachmentIds: [...unavailableAttachmentIds],
                     },
-                  )).draft;
+                  );
+                }
+              }
+              const canonical = resolution.draft;
               if (!canonical) throw new Error("Restored draft state is unavailable.");
+              const canonicalIds = new Set([
+                ...canonical.attachmentIds,
+                ...(canonical.pastedTextAttachmentId
+                  ? [canonical.pastedTextAttachmentId]
+                  : []),
+              ]);
+              await Promise.all(redundantDraftConflictUploadIds(uploadedIds, canonicalIds)
+                .map(id => api.deleteDraftAttachment(scope, draftOwnerId, id)
+                  .catch(() => undefined)));
+              const historicalByCanonicalId = new Map(
+                (resolution.attachmentReplacements ?? []).map(item => [
+                  item.toId,
+                  item.fromId,
+                ]),
+              );
+              const attachmentById = new Map(
+                (canonical.attachments ?? []).map(attachment => [
+                  attachment.id,
+                  attachment,
+                ]),
+              );
+              const locallyRestored = canonicalDraftConflictFiles(
+                recovery.snapshot.files,
+                canonical.attachmentIds,
+                resolution.attachmentReplacements,
+              );
+              const locallyRestoredById = new Map(
+                locallyRestored.files.map(item => [item.attachmentId, item.file]),
+              );
+              const restoredResults = await Promise.allSettled(
+                canonical.attachmentIds.map(async attachmentId => {
+                  const historicalId = historicalByCanonicalId.get(attachmentId) ??
+                    attachmentId;
+                  const retained = locallyRestoredById.get(attachmentId);
+                  if (retained) {
+                    return { file: retained, attachmentId, historicalId };
+                  }
+                  const attachment = attachmentById.get(attachmentId);
+                  if (!attachment) {
+                    throw Object.assign(
+                      new Error("Draft attachment metadata is unavailable."),
+                      { attachmentId, historicalId },
+                    );
+                  }
+                  return {
+                    file: await api.downloadDraftAttachment(attachment),
+                    attachmentId,
+                    historicalId,
+                  };
+                }),
+              );
+              const hydratedFiles = restoredResults.flatMap(result =>
+                result.status === "fulfilled" ? [result.value] : []);
+              const failedHydrations = restoredResults.flatMap((result, index) => {
+                if (result.status === "fulfilled") return [];
+                const id = canonical.attachmentIds[index]!;
+                const attachment = attachmentById.get(id);
+                return [{
+                  id,
+                  name: attachment?.name ?? "Staged attachment",
+                  kind: "attachment" as const,
+                  ...(attachment ? { attachment } : {}),
+                }];
+              });
+              let restoredPastedText: string | undefined;
+              let failedPaste: FailedDraftContent | undefined;
+              if (canonical.pastedTextAttachmentId) {
+                const historicalId = historicalByCanonicalId.get(
+                  canonical.pastedTextAttachmentId,
+                ) ?? canonical.pastedTextAttachmentId;
+                if (
+                  recovery.snapshot.pastedTextAttachmentId === historicalId &&
+                  recovery.snapshot.pastedText !== undefined
+                ) {
+                  restoredPastedText = recovery.snapshot.pastedText;
+                } else {
+                  try {
+                    if (!canonical.pastedTextAttachment) {
+                      throw new Error("Pasted-text metadata is unavailable.");
+                    }
+                    restoredPastedText = await (
+                      await api.downloadDraftAttachment(canonical.pastedTextAttachment)
+                    ).text();
+                  } catch {
+                    failedPaste = {
+                      id: canonical.pastedTextAttachmentId,
+                      name: "Pasted text",
+                      kind: "pasted-text",
+                      ...(canonical.pastedTextAttachment
+                        ? { attachment: canonical.pastedTextAttachment }
+                        : {}),
+                    };
+                  }
+                }
+              }
               if (
                 recoveryGeneration !== draftConflictGeneration.current ||
                 scope !== activeDraftScopeRef.current ||
@@ -2321,17 +2516,45 @@ export function Composer({
               ) {
                 return;
               }
+              const explicitUnavailableFailures = (
+                resolution.unavailableAttachmentIds ?? []
+              ).flatMap(id => attemptedSnapshot.failedContents.some(item => item.id === id)
+                ? []
+                : [{
+                    id,
+                    name: recovery.snapshot.pastedTextAttachmentId === id
+                      ? "Pasted text"
+                      : "Staged attachment",
+                    kind: recovery.snapshot.pastedTextAttachmentId === id
+                      ? "pasted-text" as const
+                      : "attachment" as const,
+                  }]);
               const restored = restoreDraftConflictSnapshot(
                 {
                   ...attemptedSnapshot,
                   text: canonical.text,
                   attachmentIds: [...canonical.attachmentIds],
-                  files: attemptedSnapshot.files.filter(item =>
-                    canonical.attachmentIds.includes(item.attachmentId)),
+                  files: hydratedFiles.map(({ file, attachmentId }) => ({
+                    file,
+                    attachmentId,
+                  })),
+                  ...(restoredPastedText !== undefined
+                    ? { pastedText: restoredPastedText }
+                    : { pastedText: undefined }),
                   ...(canonical.pastedTextAttachmentId
                     ? { pastedTextAttachmentId: canonical.pastedTextAttachmentId }
                     : { pastedTextAttachmentId: undefined }),
                   mentionBindings: [...(canonical.mentionBindings ?? [])],
+                  failedContents: [
+                    ...attemptedSnapshot.failedContents.filter(item => {
+                      const canonicalId = (resolution.attachmentReplacements ?? [])
+                        .find(replacement => replacement.fromId === item.id)?.toId ?? item.id;
+                      return !canonicalIds.has(canonicalId);
+                    }),
+                    ...explicitUnavailableFailures,
+                    ...failedHydrations,
+                    ...(failedPaste ? [failedPaste] : []),
+                  ],
                 },
                 draftEditVersion.current,
               );

@@ -590,19 +590,50 @@ test("draft conflict restore adopts fresh bytes and leaves unavailable content e
   })).statusCode, 200);
   const retained = await upload("retained.txt", "retained bytes");
   const unavailable = await upload("unavailable.txt", "unavailable bytes");
+  const lost = await upload("lost.txt", "lost bytes");
   const paste = await upload("Pasted text.txt", "paste bytes");
   const conflictResponse = await app.inject({
     method: "PUT", url: "/api/conversations/chat-a/draft",
     payload: {
-      ...validDraft, text: "preserved", attachmentIds: [retained.id, unavailable.id],
+      ...validDraft, text: "preserved", attachmentIds: [retained.id, unavailable.id, lost.id],
       pastedTextAttachmentId: paste.id, clientId: "page:stale",
     },
   });
   assert.equal(conflictResponse.statusCode, 409, conflictResponse.body);
-  for (const id of [retained.id, unavailable.id, paste.id]) {
+  for (const id of [unavailable.id, lost.id, paste.id]) {
     rmSync(drafts.files("chat-a", "browser-one", id).body, { force: true });
   }
-  const freshFile = await upload("retained.txt", "retained bytes");
+  const probe = await app.inject({
+    method: "POST",
+    url: `/api/conversations/chat-a/draft-conflicts/${conflictResponse.json().id}/restore`,
+    payload: {
+      ownerId: "browser-one", expectedRevision: 1, clientId: "page:restore",
+    },
+  });
+  assert.equal(probe.statusCode, 409, probe.body);
+  assert.deepEqual(probe.json().unavailableAttachmentIds, [
+    unavailable.id,
+    lost.id,
+    paste.id,
+  ]);
+  const freshFile = await upload("unavailable.txt", "unavailable bytes");
+  const partial = await app.inject({
+    method: "POST",
+    url: `/api/conversations/chat-a/draft-conflicts/${conflictResponse.json().id}/restore`,
+    payload: {
+      ownerId: "browser-one", expectedRevision: 1, clientId: "page:restore",
+      attachmentReplacements: [
+        { fromId: unavailable.id, toId: freshFile.id },
+      ],
+      unavailableAttachmentIds: [lost.id],
+    },
+  });
+  assert.equal(partial.statusCode, 409, partial.body);
+  assert.deepEqual(partial.json().unavailableAttachmentIds, [paste.id]);
+  assert.equal(
+    workspace.listDraftConflicts("chat-a", "browser-one").conflicts.length,
+    1,
+  );
   const freshPaste = await upload("Pasted text.txt", "paste bytes");
   const restored = await app.inject({
     method: "POST",
@@ -610,15 +641,113 @@ test("draft conflict restore adopts fresh bytes and leaves unavailable content e
     payload: {
       ownerId: "browser-one", expectedRevision: 1, clientId: "page:restore",
       attachmentReplacements: [
-        { fromId: retained.id, toId: freshFile.id },
+        { fromId: unavailable.id, toId: freshFile.id },
         { fromId: paste.id, toId: freshPaste.id },
       ],
-      unavailableAttachmentIds: [unavailable.id],
+      unavailableAttachmentIds: [lost.id],
     },
   });
   assert.equal(restored.statusCode, 200, restored.body);
-  assert.deepEqual(restored.json().draft.attachmentIds, [freshFile.id]);
+  assert.deepEqual(restored.json().draft.attachmentIds, [retained.id, freshFile.id]);
   assert.equal(restored.json().draft.pastedTextAttachmentId, freshPaste.id);
+  assert.deepEqual(restored.json().attachmentReplacements, [
+    { fromId: unavailable.id, toId: freshFile.id },
+    { fromId: paste.id, toId: freshPaste.id },
+  ]);
+  const later = await app.inject({
+    method: "PUT",
+    url: "/api/conversations/chat-a/draft",
+    payload: {
+      ...validDraft,
+      text: "later edit",
+      attachmentIds: restored.json().draft.attachmentIds,
+      pastedTextAttachmentId: restored.json().draft.pastedTextAttachmentId,
+      expectedRevision: restored.json().draft.revision,
+      clientId: "page:later",
+    },
+  });
+  assert.equal(later.statusCode, 200, later.body);
+  const replay = await app.inject({
+    method: "POST",
+    url: `/api/conversations/chat-a/draft-conflicts/${conflictResponse.json().id}/restore`,
+    payload: {
+      ownerId: "browser-one", expectedRevision: 0, clientId: "lost-response-retry",
+    },
+  });
+  assert.equal(replay.statusCode, 200, replay.body);
+  assert.equal(replay.json().replayed, true);
+  assert.equal(replay.json().draft.text, "preserved");
+  assert.deepEqual(replay.json().attachmentReplacements, restored.json().attachmentReplacements);
+  assert.deepEqual(replay.json().draft.attachmentIds, restored.json().draft.attachmentIds);
+  assert.equal(
+    replay.json().draft.pastedTextAttachmentId,
+    restored.json().draft.pastedTextAttachmentId,
+  );
+});
+
+test("durable conflict restore needs no upload capacity", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "ponderosa-draft-conflict-no-upload-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const workspace = new WorkspaceStore(directory);
+  const assets = new AssetStore(directory);
+  t.after(() => assets.close());
+  const drafts = new DraftService(
+    directory,
+    { getAgent: () => undefined, getConversation: () => ({ id: "chat-a" }) },
+    workspace,
+    assets,
+  );
+  const app = Fastify();
+  t.after(() => app.close());
+  app.addContentTypeParser("application/octet-stream", { parseAs: "buffer" },
+    (_request, body, done) => done(null, body));
+  registerDraftRoutes(app, drafts, workspace, 8, () => undefined);
+  const upload = (index) => app.inject({
+    method: "POST",
+    url: "/api/conversations/chat-a/draft-attachments",
+    headers: {
+      "content-type": "application/octet-stream",
+      "x-ponderosa-draft-owner": "browser-one",
+      "x-ponderosa-filename": `quota-${index}.txt`,
+      "x-ponderosa-media-type": "text/plain",
+    },
+    payload: Buffer.from(`quota ${index}`),
+  });
+  const retainedResponse = await upload(0);
+  assert.equal(retainedResponse.statusCode, 201, retainedResponse.body);
+  const retained = retainedResponse.json();
+  assert.equal((await app.inject({
+    method: "PUT", url: "/api/conversations/chat-a/draft", payload: validDraft,
+  })).statusCode, 200);
+  const conflict = await app.inject({
+    method: "PUT",
+    url: "/api/conversations/chat-a/draft",
+    payload: {
+      ...validDraft,
+      text: "restore without upload",
+      attachmentIds: [retained.id],
+      clientId: "page:stale",
+    },
+  });
+  assert.equal(conflict.statusCode, 409, conflict.body);
+  for (let index = 1; index < 100; index += 1) {
+    const response = await upload(index);
+    assert.equal(response.statusCode, 201, response.body);
+  }
+  const exhausted = await upload(100);
+  assert.equal(exhausted.statusCode, 429, exhausted.body);
+  const restored = await app.inject({
+    method: "POST",
+    url: `/api/conversations/chat-a/draft-conflicts/${conflict.json().id}/restore`,
+    payload: {
+      ownerId: "browser-one",
+      expectedRevision: 1,
+      clientId: "page:restore",
+    },
+  });
+  assert.equal(restored.statusCode, 200, restored.body);
+  assert.deepEqual(restored.json().draft.attachmentIds, [retained.id]);
+  assert.deepEqual(restored.json().attachmentReplacements, []);
 });
 
 test("draft clear survives partial cleanup and restart without deleting current file or paste references", async (t) => {

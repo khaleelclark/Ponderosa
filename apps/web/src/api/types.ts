@@ -40,7 +40,7 @@ export interface WorkspaceStreamHandlers {
 }
 
 export class ApiRequestError extends Error {
-  constructor(readonly status: number, message: string) {
+  constructor(readonly status: number, message: string, readonly body?: unknown) {
     super(message);
   }
 }

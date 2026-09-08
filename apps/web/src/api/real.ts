@@ -167,15 +167,17 @@ async function requestJson<T>(path: string, init?: RequestInit, acceptedErrorSta
 
   if (!response.ok && !acceptedErrorStatuses.includes(response.status)) {
     let message = `${response.status} ${response.statusText}`;
+    let errorBody: unknown;
     if (response.headers.get("content-type")?.includes("application/json")) {
       try {
         const body = await response.json() as { error?: unknown };
+        errorBody = body;
         if (typeof body.error === "string" && body.error.trim()) message = body.error.trim();
       } catch {
         // Preserve the stable HTTP fallback when an upstream JSON error is malformed.
       }
     }
-    throw new ApiRequestError(response.status, message);
+    throw new ApiRequestError(response.status, message, errorBody);
   }
 
   if (response.status === 204 || response.headers.get("content-length") === "0") {

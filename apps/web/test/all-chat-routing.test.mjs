@@ -35,6 +35,7 @@ import {
 } from "../src/components/chat/composerDestination.js";
 import {
   shouldConsumeComposerKey,
+  canonicalDraftConflictFiles,
   cleanupReleasedDraftAttachmentIds,
   durableDraftContentReady,
   deletableSupersededDraftAttachmentIds,
@@ -48,6 +49,7 @@ import {
   hydratedPastedTextContent,
   ownedDraftRevisionAfterObservation,
   recoverableDraftConflict,
+  redundantDraftConflictUploadIds,
   refreshRecoverableDraftConflict,
   removeComposerPasteSelection,
   restagedDraftConflictSnapshot,
@@ -853,7 +855,7 @@ test("attachment-only multitab conflict restores the complete snapshot for resav
   }, snapshot);
   const restaged = restagedDraftConflictSnapshot(
     conflict.snapshot,
-    [{ file, attachmentId: "fresh-attachment" }],
+    [{ file, attachmentId: "fresh-attachment", fromId: "attachment-a" }],
   );
   const restored = restoreDraftConflictSnapshot(restaged, 8);
 
@@ -988,13 +990,50 @@ test("conflict restaging omits unavailable bytes without hiding their recovery f
   };
   const restaged = restagedDraftConflictSnapshot(
     snapshot,
-    [{ file: snapshot.files[0].file, attachmentId: "fresh" }],
+    [{ file: snapshot.files[0].file, attachmentId: "fresh", fromId: "available" }],
     undefined,
     new Set(["missing", "missing-paste"]),
   );
   assert.deepEqual(restaged.attachmentIds, ["fresh"]);
   assert.equal(restaged.pastedTextAttachmentId, undefined);
   assert.deepEqual(restaged.failedContents, snapshot.failedContents);
+});
+
+test("lost conflict-restore response replays the first canonical mapping without hiding files", () => {
+  const file = { name: "brief.pdf" };
+  const canonical = canonicalDraftConflictFiles(
+    [{ file, attachmentId: "historical" }],
+    ["first-upload"],
+    [{ fromId: "historical", toId: "first-upload" }],
+  );
+  assert.deepEqual(canonical, {
+    files: [{ file, attachmentId: "first-upload" }],
+    missingAttachmentIds: [],
+  });
+  assert.deepEqual(
+    redundantDraftConflictUploadIds(
+      ["retry-upload"],
+      new Set(["first-upload"]),
+    ),
+    ["retry-upload"],
+  );
+  assert.equal(durableDraftContentReady({
+    conversationDraftId: "chat-a",
+    filesReady: canonical.files.length === 1,
+    pastedTextPresent: false,
+    pastedTextUploading: false,
+    failedRestoreCount: canonical.missingAttachmentIds.length,
+  }), true);
+  const partial = restagedDraftConflictSnapshot({
+    text: "",
+    attachmentIds: ["historical"],
+    files: [{ file, attachmentId: "historical" }],
+    pastedText: "retained paste",
+    pastedTextAttachmentId: "durable-paste",
+    mentionBindings: [],
+    failedContents: [],
+  }, [{ file, attachmentId: "fresh-file", fromId: "historical" }]);
+  assert.equal(partial.pastedTextAttachmentId, "durable-paste");
 });
 
 test("a rejected draft tail cannot suppress the next write continuation", async () => {

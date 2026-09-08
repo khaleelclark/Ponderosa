@@ -180,24 +180,32 @@ export interface RecoverableDraftConflict<TFile, TMention, TFailure> {
 
 export function restagedDraftConflictSnapshot<TFile, TMention, TFailure>(
   snapshot: DraftConflictRecoverySnapshot<TFile, TMention, TFailure>,
-  files: Array<{ file: TFile; attachmentId: string }>,
+  files: Array<{ file: TFile; attachmentId: string; fromId: string }>,
   pastedTextAttachmentId?: string,
   unavailableAttachmentIds: ReadonlySet<string> = new Set(),
 ): DraftConflictRecoverySnapshot<TFile, TMention, TFailure> {
   const replacementByHistoricalId = new Map(
-    snapshot.files.map((item, index) => [
-      item.attachmentId,
-      files[index]?.attachmentId,
-    ]),
+    files.map(item => [item.fromId, item.attachmentId]),
   );
   return {
     ...snapshot,
     attachmentIds: snapshot.attachmentIds
       .filter(id => !unavailableAttachmentIds.has(id))
       .map(id => replacementByHistoricalId.get(id) ?? id),
-    files: [...files],
+    files: snapshot.files
+      .filter(item => !unavailableAttachmentIds.has(item.attachmentId))
+      .map(item => ({
+        file: item.file,
+        attachmentId: replacementByHistoricalId.get(item.attachmentId) ?? item.attachmentId,
+      })),
     ...(snapshot.pastedText !== undefined
-      ? { pastedTextAttachmentId }
+      ? {
+          pastedTextAttachmentId: pastedTextAttachmentId ??
+            (snapshot.pastedTextAttachmentId &&
+              !unavailableAttachmentIds.has(snapshot.pastedTextAttachmentId)
+              ? snapshot.pastedTextAttachmentId
+              : undefined),
+        }
       : snapshot.pastedTextAttachmentId &&
           !unavailableAttachmentIds.has(snapshot.pastedTextAttachmentId)
         ? { pastedTextAttachmentId: snapshot.pastedTextAttachmentId }
@@ -205,6 +213,40 @@ export function restagedDraftConflictSnapshot<TFile, TMention, TFailure>(
     mentionBindings: [...snapshot.mentionBindings],
     failedContents: [...snapshot.failedContents],
   };
+}
+
+export function canonicalDraftConflictFiles<TFile>(
+  files: Array<{ file: TFile; attachmentId: string }>,
+  canonicalAttachmentIds: string[],
+  replacements: Array<{ fromId: string; toId: string }> = [],
+): {
+  files: Array<{ file: TFile; attachmentId: string }>;
+  missingAttachmentIds: string[];
+} {
+  const historicalByCanonicalId = new Map(
+    replacements.map(item => [item.toId, item.fromId]),
+  );
+  const fileByHistoricalId = new Map(files.map(item => [item.attachmentId, item.file]));
+  const resolved = canonicalAttachmentIds.map(attachmentId => ({
+    attachmentId,
+    file: fileByHistoricalId.get(
+      historicalByCanonicalId.get(attachmentId) ?? attachmentId,
+    ),
+  }));
+  return {
+    files: resolved.flatMap(item => item.file
+      ? [{ file: item.file, attachmentId: item.attachmentId }]
+      : []),
+    missingAttachmentIds: resolved.flatMap(item =>
+      item.file ? [] : [item.attachmentId]),
+  };
+}
+
+export function redundantDraftConflictUploadIds(
+  uploadedIds: string[],
+  canonicalAttachmentIds: ReadonlySet<string>,
+): string[] {
+  return uploadedIds.filter(id => !canonicalAttachmentIds.has(id));
 }
 
 export function recoverableDraftConflict<TFile, TMention, TFailure>(
