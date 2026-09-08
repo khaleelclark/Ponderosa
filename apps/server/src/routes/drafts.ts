@@ -111,10 +111,16 @@ export function draftUpdateBodyError(
     if (!body.pendingSubmission || typeof body.pendingSubmission !== "object" ||
         Array.isArray(body.pendingSubmission)) return "invalid pending draft submission";
     const pending = body.pendingSubmission as Record<string, unknown>;
-    if (Object.keys(pending).some(key => !["fingerprint", "idempotencyKey", "uploads"].includes(key)) ||
+    if (Object.keys(pending).some(key => !["fingerprint", "intentFingerprint", "idempotencyKey", "agentTitle", "uploads"].includes(key)) ||
         typeof pending.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(pending.fingerprint) ||
+        (pending.intentFingerprint !== undefined &&
+          (typeof pending.intentFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(pending.intentFingerprint))) ||
         typeof pending.idempotencyKey !== "string" || !pending.idempotencyKey.trim() ||
-        pending.idempotencyKey.length > 200) return "invalid pending draft submission";
+        pending.idempotencyKey.length > 200 ||
+        (pending.agentTitle !== undefined &&
+          (pending.intentFingerprint === undefined ||
+            typeof pending.agentTitle !== "string" || !pending.agentTitle.trim() ||
+            unicodeCodePointLength(pending.agentTitle) > 200))) return "invalid pending draft submission";
     if (pending.uploads !== undefined &&
         (!Array.isArray(pending.uploads) || pending.uploads.length > 4 ||
           pending.uploads.some(value => {

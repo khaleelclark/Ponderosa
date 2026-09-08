@@ -209,7 +209,11 @@ export interface ConversationDraftConflictDto {
 export interface DraftPendingSubmissionDto {
   /** SHA-256 of the exact durable content, routing, runtime, and action. */
   fingerprint: string;
+  /** Pre-preparation fingerprint used to recognize the same intent on reload. */
+  intentFingerprint?: string;
   idempotencyKey: string;
+  /** Generated title bound to an Agent-creation submission before dispatch. */
+  agentTitle?: string;
   /** Server asset IDs prepared before dispatch, grouped by request scope. */
   uploads?: Array<{
     scope: string;

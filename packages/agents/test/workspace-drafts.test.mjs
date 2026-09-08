@@ -39,7 +39,9 @@ test("pending send authority survives restart, conflict restore, and authoritati
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const pendingSubmission = {
     fingerprint: "a".repeat(64),
+    intentFingerprint: "b".repeat(64),
     idempotencyKey: "send-a",
+    agentTitle: "Bryce Canyon",
     uploads: [{
       scope: "direct",
       recipients: [{ agentId: "agent-a", attachmentIds: ["asset-a"] }],
@@ -59,18 +61,35 @@ test("pending send authority survives restart, conflict restore, and authoritati
     store.getDraft("chat-a", "browser-a").pendingSubmission,
     pendingSubmission,
   );
+  assert.deepEqual(store.draftRecoveryInventory()[0].pendingUploads, [{
+    agentId: "agent-a",
+    attachmentIds: ["asset-a"],
+  }]);
+  const displacedSubmission = {
+    fingerprint: "c".repeat(64),
+    intentFingerprint: "d".repeat(64),
+    idempotencyKey: "send-b",
+    uploads: [{
+      scope: "broadcast",
+      recipients: [{ agentId: "agent-b", attachmentIds: ["asset-b"] }],
+    }],
+  };
   let conflict;
   assert.throws(() => store.putDraft("chat-a", {
     ownerId: "browser-a",
     text: "send once",
     attachmentIds: ["draft-a"],
-    pendingSubmission,
+    pendingSubmission: displacedSubmission,
     expectedRevision: 0,
     clientId: "page:browser-a:draft:stale",
   }), error => {
     conflict = error.conflict;
     return error?.code === "DRAFT_CONFLICT";
   });
+  assert.deepEqual(store.draftRecoveryInventory()[0].pendingUploads, [
+    { agentId: "agent-a", attachmentIds: ["asset-a"] },
+    { agentId: "agent-b", attachmentIds: ["asset-b"] },
+  ]);
   const restored = store.restoreDraftConflict({
     conversationId: "chat-a",
     ownerId: "browser-a",
@@ -78,7 +97,7 @@ test("pending send authority survives restart, conflict restore, and authoritati
     expectedRevision: pending.revision,
     clientId: "page:browser-a:draft:restored",
   }).draft;
-  assert.deepEqual(restored.pendingSubmission, pendingSubmission);
+  assert.deepEqual(restored.pendingSubmission, displacedSubmission);
   const cleared = store.putDraft("chat-a", {
     ownerId: "browser-a",
     text: "",

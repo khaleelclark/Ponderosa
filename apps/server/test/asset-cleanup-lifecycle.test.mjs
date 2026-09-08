@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -36,6 +36,21 @@ async function writeLegacyDraftAttachment(
     size: Buffer.byteLength(body),
     createdAt: new Date().toISOString(),
   }));
+}
+
+function usePortableAssetDirectory(assets, dataDir) {
+  assets.safeDirectory = async (projectId, agentId, create = false) => {
+    const directory = path.join(
+      dataDir,
+      "projects",
+      projectId,
+      "agents",
+      agentId,
+      "attachments",
+    );
+    if (create) await mkdir(directory, { recursive: true });
+    return { path: directory, handle: await open(directory, "r") };
+  };
 }
 
 function seedAuthorityRows(sqlite, projectId, agentId, draftId) {
@@ -372,6 +387,61 @@ test("quota recovery preserves and rejects missing or corrupt live references un
   assert.deepEqual(workspace.getDraft(chat.id, "browser").attachmentIds, [assetId]);
   await writeLegacyDraftAttachment(drafts, chat.id, "browser", assetId);
   assert.equal(await drafts.synchronizeAttachmentQuota(), 1);
+});
+
+test("pending draft uploads survive stale sweeps and are reclaimed after authority clears", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-pending-send-assets-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const projectId = randomUUID();
+  const agentId = randomUUID();
+  let assets = new AssetStore(dataDir);
+  usePortableAssetDirectory(assets, dataDir);
+  const file = await assets.stage({
+    projectId,
+    agentId,
+    body: Buffer.from("file"),
+    name: "file.txt",
+    declaredType: "text/plain",
+  });
+  const paste = await assets.stage({
+    projectId,
+    agentId,
+    body: Buffer.from("paste"),
+    name: "Pasted text.txt",
+    declaredType: "text/plain",
+  });
+  const unrelated = await assets.stage({
+    projectId,
+    agentId,
+    body: Buffer.from("stale"),
+    name: "stale.txt",
+    declaredType: "text/plain",
+  });
+  assets.close();
+
+  assets = new AssetStore(dataDir);
+  usePortableAssetDirectory(assets, dataDir);
+  t.after(() => assets.close());
+  const afterTtl = Date.now() + 6 * 60 * 1000;
+  assert.equal(await assets.reconcile(
+    projectId,
+    agentId,
+    new Set(),
+    afterTtl,
+    new Set([file.id, paste.id]),
+  ), 1);
+  assert.ok(await assets.read(projectId, agentId, file.id));
+  assert.ok(await assets.read(projectId, agentId, paste.id));
+  assert.equal(await assets.read(projectId, agentId, unrelated.id), undefined);
+
+  assert.equal(await assets.reconcile(
+    projectId,
+    agentId,
+    new Set(),
+    afterTtl,
+  ), 2);
+  assert.equal(await assets.read(projectId, agentId, file.id), undefined);
+  assert.equal(await assets.read(projectId, agentId, paste.id), undefined);
 });
 
 test("partial asset deletion keeps its receipt and quota until restart completes every file", async (t) => {

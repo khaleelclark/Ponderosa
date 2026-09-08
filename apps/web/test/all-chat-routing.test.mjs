@@ -79,6 +79,7 @@ import {
   retainIdempotentAttempt,
   selectIdempotentAttempt,
   selectDurableSubmission,
+  withPendingAgentTitle,
 } from "../src/components/idempotentAttempt.js";
 import {
   pendingRecipientUploads,
@@ -1441,6 +1442,30 @@ test("edited durable content starts a new send identity after restart", async ()
   const second = selectDurableSubmission(first, edited, () => "operation-b");
   assert.notEqual(initial, edited);
   assert.equal(second.idempotencyKey, "operation-b");
+});
+
+test("generated Agent title is finalized once and restored with its send identity", async () => {
+  const intent = await durableSubmissionFingerprint({
+    text: "start work",
+    newAgentRequested: true,
+  });
+  const selected = selectDurableSubmission(undefined, intent, () => "operation-a");
+  const finalized = await withPendingAgentTitle(selected, "Bryce Canyon");
+  const afterReload = selectDurableSubmission(finalized, intent, () => "operation-b");
+
+  assert.equal(finalized.intentFingerprint, intent);
+  assert.notEqual(finalized.fingerprint, intent);
+  assert.equal(afterReload.idempotencyKey, "operation-a");
+  assert.equal(afterReload.agentTitle, "Bryce Canyon");
+  assert.equal(afterReload.fingerprint, finalized.fingerprint);
+
+  const changedIntent = await durableSubmissionFingerprint({
+    text: "different work",
+    newAgentRequested: true,
+  });
+  const changed = selectDurableSubmission(finalized, changedIntent, () => "operation-b");
+  assert.equal(changed.idempotencyKey, "operation-b");
+  assert.equal(changed.agentTitle, undefined);
 });
 
 test("prepared recipient assets remain exact across reload", () => {

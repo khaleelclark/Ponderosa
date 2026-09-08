@@ -804,6 +804,14 @@ export function registerServerLifecycle(
     webPushDelivery?.start();
     const reconcileAssets = async () => {
       await drafts.reconcileAttachmentCleanup();
+      const pendingDraftUploads = new Map<string, Set<string>>();
+      for (const item of workspace.draftRecoveryInventory()) {
+        for (const upload of item.pendingUploads) {
+          const ids = pendingDraftUploads.get(upload.agentId) ?? new Set<string>();
+          for (const id of upload.attachmentIds) ids.add(id);
+          pendingDraftUploads.set(upload.agentId, ids);
+        }
+      }
       let processedAgents = 0;
       for (const project of store.listProjects()) {
         for (const agent of store.listAgents(project.id)) {
@@ -817,7 +825,13 @@ export function registerServerLifecycle(
           if (!releaseAssetReconciliation) continue;
           try {
             const associated = new Set(store.getMessages(agent.id).flatMap((message) => message.attachments?.map((item) => item.id) ?? []));
-            await assets.reconcile(project.id, agent.id, associated);
+            await assets.reconcile(
+              project.id,
+              agent.id,
+              associated,
+              Date.now(),
+              pendingDraftUploads.get(agent.id),
+            );
           } finally {
             releaseAssetReconciliation();
           }

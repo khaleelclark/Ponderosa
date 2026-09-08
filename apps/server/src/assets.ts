@@ -1095,12 +1095,22 @@ export class AssetStore {
     } finally { await openedDirectory.handle.close(); }
   }
 
-  async reconcile(projectId: string, agentId: string, associatedIds: Set<string>, now = Date.now()): Promise<number> {
+  async reconcile(
+    projectId: string,
+    agentId: string,
+    associatedIds: Set<string>,
+    now = Date.now(),
+    retainedStagedIds: ReadonlySet<string> = new Set(),
+  ): Promise<number> {
     const openedDirectory = await this.safeDirectory(projectId, agentId).catch(() => undefined);
     if (!openedDirectory) return 0;
     const directory = openedDirectory.path;
     let removed = 0;
-    const reachableIds = new Set([...associatedIds, ...this.authority.runtimeAssociatedAssetIds(projectId, agentId)]);
+    const reachableIds = new Set([
+      ...associatedIds,
+      ...retainedStagedIds,
+      ...this.authority.runtimeAssociatedAssetIds(projectId, agentId),
+    ]);
     for (const receipt of this.authority.pendingDeletions(projectId, agentId)) {
       if (reachableIds.has(receipt.assetId)) continue;
       await this.completeDeletion(receipt);

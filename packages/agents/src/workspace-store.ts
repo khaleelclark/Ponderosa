@@ -981,18 +981,35 @@ export class WorkspaceStore {
     draftId: string;
     ownerId: string;
     attachmentIds: string[];
+    pendingUploads: Array<{ agentId: string; attachmentIds: string[] }>;
   }> {
-    const inventory = new Map<string, Set<string>>();
+    const inventory = new Map<string, {
+      attachmentIds: Set<string>;
+      pendingUploads: Map<string, Set<string>>;
+    }>();
     const add = (
       draftId: string,
       ownerId: string,
-      value?: Pick<ConversationDraftDto, "attachmentIds" | "pastedTextAttachmentId">,
+      value?: Pick<ConversationDraftDto,
+        "attachmentIds" | "pastedTextAttachmentId" | "pendingSubmission">,
     ) => {
       const key = this.draftKey(draftId, ownerId);
-      const attachmentIds = inventory.get(key) ?? new Set<string>();
-      for (const id of value?.attachmentIds ?? []) attachmentIds.add(id);
-      if (value?.pastedTextAttachmentId) attachmentIds.add(value.pastedTextAttachmentId);
-      inventory.set(key, attachmentIds);
+      const item = inventory.get(key) ?? {
+        attachmentIds: new Set<string>(),
+        pendingUploads: new Map<string, Set<string>>(),
+      };
+      for (const id of value?.attachmentIds ?? []) item.attachmentIds.add(id);
+      if (value?.pastedTextAttachmentId) {
+        item.attachmentIds.add(value.pastedTextAttachmentId);
+      }
+      for (const upload of value?.pendingSubmission?.uploads ?? []) {
+        for (const recipient of upload.recipients) {
+          const ids = item.pendingUploads.get(recipient.agentId) ?? new Set<string>();
+          for (const id of recipient.attachmentIds) ids.add(id);
+          item.pendingUploads.set(recipient.agentId, ids);
+        }
+      }
+      inventory.set(key, item);
     };
     for (const draft of this.drafts.values()) {
       add(draft.conversationId, draft.ownerId, draft);
@@ -1007,12 +1024,18 @@ export class WorkspaceStore {
       add(resolution.conversationId, resolution.ownerId);
     }
     return [...inventory.entries()]
-      .map(([key, attachmentIds]) => {
+      .map(([key, item]) => {
         const separator = key.indexOf("\u0000");
         return {
           draftId: key.slice(0, separator),
           ownerId: key.slice(separator + 1),
-          attachmentIds: [...attachmentIds].sort(),
+          attachmentIds: [...item.attachmentIds].sort(),
+          pendingUploads: [...item.pendingUploads.entries()]
+            .map(([agentId, attachmentIds]) => ({
+              agentId,
+              attachmentIds: [...attachmentIds].sort(),
+            }))
+            .sort((left, right) => left.agentId.localeCompare(right.agentId)),
         };
       })
       .sort((left, right) => left.draftId.localeCompare(right.draftId) ||

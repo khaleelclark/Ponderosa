@@ -21,9 +21,24 @@ export function selectDurableSubmission(
   fingerprint: string,
   createId: () => string,
 ): DraftPendingSubmissionDto {
-  return current?.fingerprint === fingerprint
+  return current &&
+    (current.intentFingerprint ?? current.fingerprint) === fingerprint
     ? current
-    : { fingerprint, idempotencyKey: createId() };
+    : { fingerprint, intentFingerprint: fingerprint, idempotencyKey: createId() };
+}
+
+export async function withPendingAgentTitle(
+  pending: DraftPendingSubmissionDto,
+  agentTitle: string,
+): Promise<DraftPendingSubmissionDto> {
+  if (pending.agentTitle === agentTitle) return pending;
+  const intentFingerprint = pending.intentFingerprint ?? pending.fingerprint;
+  return {
+    ...pending,
+    intentFingerprint,
+    fingerprint: await durableSubmissionFingerprint({ intentFingerprint, agentTitle }),
+    agentTitle,
+  };
 }
 
 export const definitiveSubmissionStatus = (status: number): boolean =>

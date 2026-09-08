@@ -38,6 +38,7 @@ import { activeDirectDeliveryAgentIds } from "./directDeliveryState";
 import {
   preparedIdempotentAttemptForRetry,
   retainIdempotentAttempt,
+  withPendingAgentTitle,
   type IdempotentAttempt,
 } from "./idempotentAttempt";
 import {
@@ -630,11 +631,25 @@ export function useConversationMessagingController({
     };
     const createdAgentIds: string[] = [];
     const createdTitles = detailAgents.map(agent => agent.title);
-    if (prepared.newAgentRequested) {
-      const titleKey = "new-agent:0";
-      const title =
+    const durableAgentTitle = async (
+      titleKey: "new-agent:0" | "default-agent",
+    ): Promise<string> => {
+      const title = pendingSubmission?.agentTitle ??
         prepared.titles.get(titleKey) ?? pickAgentName(createdTitles);
       prepared.titles.set(titleKey, title);
+      if (pendingSubmission && !pendingSubmission.agentTitle &&
+          persistPendingSubmission) {
+        pendingSubmission = await withPendingAgentTitle(
+          pendingSubmission,
+          title,
+        );
+        await persistPendingSubmission(pendingSubmission);
+      }
+      return title;
+    };
+    if (prepared.newAgentRequested) {
+      const titleKey = "new-agent:0";
+      const title = await durableAgentTitle(titleKey);
       createdTitles.push(title);
       const created = await spawn.mutateAsync({
         text: submittedText,
@@ -729,10 +744,7 @@ export function useConversationMessagingController({
     } else if (!prepared.newAgentRequested) {
       setActiveOperation({ agentIds: [], state: "starting" });
       const titleKey = "default-agent";
-      const title =
-        prepared.titles.get(titleKey) ??
-        pickAgentName(detailAgents.map(agent => agent.title));
-      prepared.titles.set(titleKey, title);
+      const title = await durableAgentTitle(titleKey);
       await spawn.mutateAsync({
         text: submittedText,
         draftAttachmentIds: prepared.draftAttachmentIds,

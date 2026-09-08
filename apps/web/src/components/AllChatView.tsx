@@ -92,6 +92,7 @@ import {
   abandonIdempotentAttempt,
   preparedIdempotentAttemptForRetry,
   retainIdempotentAttempt,
+  withPendingAgentTitle,
   type IdempotentAttempt,
 } from "./idempotentAttempt";
 
@@ -835,8 +836,17 @@ export function AllChatView({
       let deliveredRecipientIds: string[] = [];
       let unavailableCount = 0;
       if (prepared.newAgentRequested) {
-        const title = prepared.title ?? pickAgentName(createdNames);
+        const title = pendingSubmission?.agentTitle ?? prepared.title ??
+          pickAgentName(createdNames);
         prepared.title = title;
+        if (pendingSubmission && !pendingSubmission.agentTitle &&
+            persistPendingSubmission) {
+          pendingSubmission = await withPendingAgentTitle(
+            pendingSubmission,
+            title,
+          );
+          await persistPendingSubmission(pendingSubmission);
+        }
         createdNames.push(title);
         createdTitles.push(title);
         const created = await api.createAgent(prepared.projectId, creationConversationId!, {

@@ -80,7 +80,9 @@ test("draft updates accept only exact typed bounded state", () => {
   }, 8));
   const pendingSubmission = {
     fingerprint: "a".repeat(64),
+    intentFingerprint: "b".repeat(64),
     idempotencyKey: "send-a",
+    agentTitle: "Bryce Canyon",
     uploads: [{
       scope: "direct",
       recipients: [{ agentId: "agent-a", attachmentIds: [validAssetId] }],
@@ -92,7 +94,11 @@ test("draft updates accept only exact typed bounded state", () => {
   }, 8), undefined);
   for (const invalid of [
     { ...pendingSubmission, fingerprint: "not-a-hash" },
+    { ...pendingSubmission, intentFingerprint: "not-a-hash" },
     { ...pendingSubmission, idempotencyKey: "" },
+    { ...pendingSubmission, agentTitle: "" },
+    { ...pendingSubmission, agentTitle: "x".repeat(201) },
+    { ...pendingSubmission, intentFingerprint: undefined },
     { ...pendingSubmission, extra: true },
     { ...pendingSubmission, uploads: [{ scope: "direct", recipients: [{
       agentId: "agent-a",
