@@ -34,8 +34,9 @@ import type {
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState, type ReactElement, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { api } from "../api";
+import { createClientId } from "../clientId";
 import {
   engineUnavailableReason,
   engineIsAvailable,
@@ -169,18 +170,29 @@ function ProjectCreateForm({
   const [defaultEffort, setDefaultEffort] = useState("");
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const [engineToTest, setEngineToTest] = useState<EngineDto>();
+  const creationAttempt = useRef<{ fingerprint: string; idempotencyKey: string }>();
   useEffect(() => {
     setDefaultEngine(current => current || soleAvailableEngineId(engines) || "");
   }, [engines]);
   const createProject = useMutation({
-    mutationFn: () => api.createProject(createProjectRequest({
-      label,
-      mode: folderMode,
-      existingPath: path,
-      defaultEngine: defaultEngine as ProjectDto["defaultEngine"],
-      defaultModel,
-      defaultEffort,
-    })),
+    mutationFn: () => {
+      const request = createProjectRequest({
+        label,
+        mode: folderMode,
+        existingPath: path,
+        defaultEngine: defaultEngine as ProjectDto["defaultEngine"],
+        defaultModel,
+        defaultEffort,
+      });
+      const fingerprint = JSON.stringify(request);
+      if (creationAttempt.current?.fingerprint !== fingerprint) {
+        creationAttempt.current = {
+          fingerprint,
+          idempotencyKey: createClientId("project-create-"),
+        };
+      }
+      return api.createProject(request, creationAttempt.current.idempotencyKey);
+    },
     onSuccess: project => {
       queryClient.setQueryData<ProjectDto[]>(queryKeys.projects.all, (current = []) =>
         current.some(item => item.id === project.id) ? current : [...current, project]);
@@ -337,6 +349,7 @@ function ChatCreateForm({
       ? initialProjectId!
       : projects[0]?.id ?? "",
   );
+  const creationAttempt = useRef<{ projectId: string; idempotencyKey: string }>();
   useEffect(() => {
     if (!projects.length) return;
     setProjectId(current => {
@@ -348,9 +361,20 @@ function ChatCreateForm({
     });
   }, [initialProjectId, projects]);
   const create = useMutation({
-    mutationFn: () => api.createConversation(projectId, { title: "New Chat" }),
+    mutationFn: () => {
+      if (creationAttempt.current?.projectId !== projectId) {
+        creationAttempt.current = {
+          projectId,
+          idempotencyKey: createClientId("chat-create-"),
+        };
+      }
+      return api.createConversation(
+        projectId,
+        { title: "New Chat" },
+        creationAttempt.current.idempotencyKey,
+      );
+    },
     onSuccess: async conversation => {
-      await api.markProjectUsed(projectId, conversation.id);
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.project(projectId) });
       onCreated(projectId, conversation.id);
     },

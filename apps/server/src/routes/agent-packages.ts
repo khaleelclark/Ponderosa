@@ -98,6 +98,7 @@ export function registerAgentPackageRoutes(
   const copySnapshotPath = (id: string) => path.join(importOperationDirectory, `${id}.copy.payload`);
   const operationByRequest = new Map<string, string>();
   const operationCache = new Map<string, AgentImportOperationDto>();
+  const quarantinedOperationIds = new Set<string>();
   const projectImportTails = new Map<string, Promise<void>>();
   const activeCopyOperations = new Set<string>();
   const withProjectImportLock = async <T>(projectId: string, work: () => Promise<T>): Promise<T> => {
@@ -117,6 +118,69 @@ export function registerAgentPackageRoutes(
   const validIdempotencyKey = (value: string | undefined): string | undefined => {
     const key = value?.trim();
     return key && /^[A-Za-z0-9_-]{8,128}$/u.test(key) ? key : undefined;
+  };
+  const operationIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+  const importPhases = new Set<AgentImportPhase>([
+    "queued", "creating_records", "importing_agents", "importing_history",
+    "importing_artifacts", "finalizing", "completed", "failed",
+  ]);
+  const validatedOperation = (value: unknown, expectedId: string): AgentImportOperationDto => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("operation record must be an object");
+    }
+    const operation = value as Partial<AgentImportOperationDto>;
+    if (operation.id !== expectedId || !operationIdPattern.test(operation.id) ||
+        typeof operation.requestId !== "string" || !validIdempotencyKey(operation.requestId) ||
+        typeof operation.payloadHash !== "string" || !/^[0-9a-f]{64}$/u.test(operation.payloadHash) ||
+        typeof operation.projectId !== "string" || !operation.projectId || operation.projectId.length > 200 ||
+        typeof operation.sourceLabel !== "string" || operation.sourceLabel.length > 240 ||
+        typeof operation.phase !== "string" || !importPhases.has(operation.phase as AgentImportPhase) ||
+        !["pending", "completed", "failed"].includes(operation.status ?? "") ||
+        typeof operation.createdAt !== "string" || operation.createdAt.length > 100 ||
+        typeof operation.updatedAt !== "string" || operation.updatedAt.length > 100 ||
+        (operation.error !== undefined && (typeof operation.error !== "string" || operation.error.length > 1_000)) ||
+        (operation.result !== undefined && (
+          !operation.result || typeof operation.result !== "object" ||
+          typeof operation.result.rootAgentId !== "string" || !operation.result.rootAgentId ||
+          operation.result.rootAgentId.length > 200 ||
+          !Array.isArray(operation.result.agentIds) ||
+          operation.result.agentIds.length > 10_000 ||
+          operation.result.agentIds.some((id) => typeof id !== "string" || !id || id.length > 200)
+        ))) {
+      throw new Error("operation record fields are invalid or do not match its filename");
+    }
+    return operation as AgentImportOperationDto;
+  };
+  const quarantineOperation = async (id: string, error: unknown): Promise<void> => {
+    quarantinedOperationIds.add(id);
+    const source = operationPath(id);
+    let destination = `${source}.corrupt`;
+    try {
+      await fs.access(destination);
+      destination = `${source}.corrupt.${randomUUID()}`;
+    } catch { /* the stable quarantine name is available */ }
+    try {
+      await fs.rename(source, destination);
+      if (process.platform !== "win32") {
+        const directory = await fs.open(importOperationDirectory, "r");
+        try { await directory.sync(); } finally { await directory.close(); }
+      }
+    } catch (renameError) {
+      if ((renameError as NodeJS.ErrnoException).code !== "ENOENT") {
+        error = new AggregateError([error, renameError], "Import journal quarantine failed");
+      }
+    }
+    try {
+      createOperationalNotification({
+        dedupeKey: `agent-import-corrupt:${id}`,
+        category: "system",
+        severity: "urgent",
+        title: "Agent import recovery needs attention",
+        body: `Import operation ${id} was quarantined; its payload was preserved. ${
+          error instanceof Error ? error.message : String(error)
+        }`.slice(0, 1_000),
+      });
+    } catch { /* quarantine and payload preservation remain authoritative */ }
   };
   const writeOperation = async (operation: AgentImportOperationDto): Promise<void> => {
     await fs.mkdir(importOperationDirectory, { recursive: true });
@@ -175,17 +239,22 @@ export function registerAgentPackageRoutes(
     );
   };
   const readOperation = async (id: string): Promise<AgentImportOperationDto | undefined> => {
-    if (!/^[0-9a-f-]{36}$/u.test(id)) return undefined;
+    if (!operationIdPattern.test(id)) return undefined;
     try {
-      return JSON.parse(await fs.readFile(operationPath(id), "utf8")) as AgentImportOperationDto;
+      return validatedOperation(JSON.parse(await fs.readFile(operationPath(id), "utf8")), id);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-      throw error;
+      await quarantineOperation(id, error);
+      return undefined;
     }
   };
   const operationHydration = fs.mkdir(importOperationDirectory, { recursive: true })
     .then(async () => {
       const names = await fs.readdir(importOperationDirectory);
+      for (const name of names) {
+        const match = /^([0-9a-f-]{36})\.json\.corrupt(?:\..+)?$/u.exec(name);
+        if (match && operationIdPattern.test(match[1]!)) quarantinedOperationIds.add(match[1]!);
+      }
       for (const name of names.filter((candidate) => candidate.endsWith(".json"))) {
         const operation = await readOperation(name.slice(0, -5));
         if (!operation) continue;
@@ -205,8 +274,11 @@ export function registerAgentPackageRoutes(
           ? store.getAgentCreationOperation(copyMatch[1]!)
           : undefined;
         if (!temporary && (
-          (payloadMatch && durableIds.has(payloadMatch[1]!) &&
-            operationCache.get(payloadMatch[1]!)?.status === "pending") ||
+          (payloadMatch && (
+            quarantinedOperationIds.has(payloadMatch[1]!) ||
+            (durableIds.has(payloadMatch[1]!) &&
+              operationCache.get(payloadMatch[1]!)?.status === "pending")
+          )) ||
           (copyMatch && liveCopy && liveCopy.status !== "completed") ||
           (!payloadMatch && !copyMatch)
         )) continue;

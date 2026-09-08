@@ -76,7 +76,10 @@ import type { AgentArtifactCatalog } from "./store-artifact-catalog.js";
 import type { AgentEventSessionAuthority } from "./store-event-session-authority.js";
 import type { AgentConversationProjectionReadModel } from "./store-conversation-projection-read-model.js";
 import type { AgentCommunicationProjectionLedger } from "./store-communication-projection-ledger.js";
-import type { AgentWorkspaceCatalogAuthority } from "./store-workspace-catalog-authority.js";
+import type {
+  AgentWorkspaceCatalogAuthority,
+  WorkspaceCreationIdentity,
+} from "./store-workspace-catalog-authority.js";
 import type { AgentCatalogAuthority } from "./store-agent-catalog-authority.js";
 import type { AgentCommunicationJournalAuthority } from "./store-communication-journal-authority.js";
 import type { AgentManagementAuthority } from "./store-agent-management-authority.js";
@@ -261,6 +264,7 @@ export class AgentStore extends AgentEventSessionFacade {
       const components = createAgentStoreComponents(dataDir, opened, ports);
       Object.assign(this, components);
       const componentsCreatedAt = performance.now();
+      this.workspaceCatalog.recoverCreationDirectories();
       this.agentCatalog.recoverCreationDirectories();
       // Canonical files are written before their SQLite projections. Rebuild
       // transactionally on every startup so a crash or torn append cannot leave
@@ -889,8 +893,18 @@ export class AgentStore extends AgentEventSessionFacade {
 
   // ─── Projects ──────────────────────────────────────────────────────────────
 
-  createProject(input: Omit<CreateProjectRequest, "defaultEngine"> & { hostPath: string; defaultEngine?: CreateProjectRequest["defaultEngine"] }): ProjectDto {
-    return this.workspaceCatalog.createProject(input);
+  createProject(
+    input: Omit<CreateProjectRequest, "defaultEngine"> & {
+      hostPath: string;
+      defaultEngine?: CreateProjectRequest["defaultEngine"];
+    },
+    identity?: WorkspaceCreationIdentity,
+  ): ProjectDto {
+    return this.workspaceCatalog.createProject(input, identity);
+  }
+
+  getProjectCreation(identity: WorkspaceCreationIdentity): ProjectDto | undefined {
+    return this.workspaceCatalog.getProjectCreation(identity);
   }
 
   updateProject(id: string, input: UpdateProjectRequest): ProjectDto | undefined {
@@ -982,8 +996,19 @@ export class AgentStore extends AgentEventSessionFacade {
 
   // ─── Conversations ─────────────────────────────────────────────────────────
 
-  createConversation(projectId: string, input: CreateConversationRequest): ConversationDto {
-    return this.workspaceCatalog.createConversation(projectId, input);
+  createConversation(
+    projectId: string,
+    input: CreateConversationRequest,
+    identity?: WorkspaceCreationIdentity,
+  ): ConversationDto {
+    return this.workspaceCatalog.createConversation(projectId, input, identity);
+  }
+
+  getConversationCreation(
+    projectId: string,
+    identity: WorkspaceCreationIdentity,
+  ): ConversationDto | undefined {
+    return this.workspaceCatalog.getConversationCreation(projectId, identity);
   }
 
   listConversations(projectId: string): ConversationDto[] {

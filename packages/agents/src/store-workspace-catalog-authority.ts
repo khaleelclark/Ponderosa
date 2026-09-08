@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { mkdirSync, renameSync, rmSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { asc, eq } from "drizzle-orm";
 import type {
   AgentDto,
@@ -18,8 +18,8 @@ import type {
   UpdateProjectRequest,
 } from "@ponderosa/core";
 import type { Db } from "./db.js";
-import { appendFsyncedJsonl } from "./append-jsonl.js";
-import { readJson, writeJson } from "./store-filesystem.js";
+import { appendFsyncedJsonl, readRepairableJsonl, writeAtomicFsyncedJsonl } from "./append-jsonl.js";
+import { fsyncDirectory, readJson, writeJson } from "./store-filesystem.js";
 import type {
   ConversationDeletionReceipt,
   ConversationJson,
@@ -37,10 +37,36 @@ import {
   agentPresetsPath,
   agentsDir,
   conversationDir,
+  conversationsDir,
   conversationJsonPath,
   projectDir,
   projectJsonPath,
+  projectsDir,
 } from "./paths.js";
+
+export interface WorkspaceCreationIdentity {
+  idempotencyKey: string;
+  payloadHash: string;
+}
+
+const workspaceIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+
+function creationId(kind: "project" | "conversation", scope: string, key: string): string {
+  const hash = createHash("sha256").update(`${kind}\0${scope}\0${key}`).digest("hex");
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-5${hash.slice(13, 16)}-${
+    ((Number.parseInt(hash[16]!, 16) & 3) | 8).toString(16)
+  }${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+}
+
+function assertCreationIdentity(
+  record: Pick<ProjectJson | ConversationJson, "creationIdempotencyKey" | "creationPayloadHash">,
+  identity: WorkspaceCreationIdentity,
+): void {
+  if (record.creationIdempotencyKey !== identity.idempotencyKey ||
+      record.creationPayloadHash !== identity.payloadHash) {
+    throw new Error("Creation idempotency key was reused with different input");
+  }
+}
 
 const BUILTIN_PRESETS: Array<Omit<CreateAgentPresetRequest, "engine"> & { engine: "codex" }> = [
   { name: "Frontend", description: "Accessible, polished product UI", guidance: "Act as a product-minded frontend engineer. Prioritize responsive UX, accessibility, and coherent user flows.", engine: "codex" },
@@ -66,9 +92,135 @@ export class AgentWorkspaceCatalogAuthority {
     ) => void,
   ) {}
 
-  createProject(input: Omit<CreateProjectRequest, "defaultEngine"> & { hostPath: string; defaultEngine?: CreateProjectRequest["defaultEngine"] }): ProjectDto {
-    const id = randomUUID();
-    const conversationId = randomUUID();
+  recoverCreationDirectories(): void {
+    const projectsRoot = projectsDir(this.dataDir);
+    if (!existsSync(projectsRoot)) return;
+    for (const entry of readdirSync(projectsRoot)) {
+      const projectMatch = /^\.(.+)\.creating$/u.exec(entry);
+      if (projectMatch && workspaceIdPattern.test(projectMatch[1]!)) {
+        this.recoverProjectCreation(entry, projectMatch[1]!);
+      }
+    }
+    for (const projectId of readdirSync(projectsRoot)) {
+      if (projectId.startsWith(".")) continue;
+      const root = conversationsDir(this.dataDir, projectId);
+      if (!existsSync(root)) continue;
+      for (const entry of readdirSync(root)) {
+        const conversationMatch = /^\.(.+)\.creating$/u.exec(entry);
+        if (conversationMatch && workspaceIdPattern.test(conversationMatch[1]!)) {
+          this.recoverConversationCreation(projectId, entry, conversationMatch[1]!);
+        }
+      }
+      this.recoverConversationRecency(projectId);
+    }
+  }
+
+  private recoverConversationRecency(projectId: string): void {
+    try {
+      const projectPath = projectJsonPath(this.dataDir, projectId);
+      const project = readJson<ProjectJson>(projectPath);
+      const unfinished = readdirSync(conversationsDir(this.dataDir, projectId))
+        .filter((id) => !id.startsWith(".") && !this.db.select({ id: conversations.id })
+          .from(conversations).where(eq(conversations.id, id)).get())
+        .map((id) => readJson<ConversationJson>(conversationJsonPath(this.dataDir, projectId, id)))
+        .filter((record) => record.id && record.projectId === projectId &&
+          record.creationIdempotencyKey && record.creationPayloadHash &&
+          record.updatedAt >= (project.lastUsedAt ?? project.createdAt))
+        .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt) ||
+          left.id.localeCompare(right.id))
+        .at(-1);
+      if (!unfinished) return;
+      writeJson(projectPath, {
+        ...project,
+        lastUsedAt: unfinished.updatedAt,
+        lastConversationId: unfinished.id,
+      });
+    } catch {
+      // Incomplete or foreign current storage is left untouched for projection validation.
+    }
+  }
+
+  private recoverProjectCreation(stagingId: string, id: string): void {
+    try {
+      const record = readJson<ProjectJson>(projectJsonPath(this.dataDir, stagingId));
+      const defaultConversation = record.lastConversationId
+        ? readJson<ConversationJson>(
+          conversationJsonPath(this.dataDir, stagingId, record.lastConversationId),
+        )
+        : undefined;
+      if (record.id !== id || !record.creationIdempotencyKey || !record.creationPayloadHash ||
+          !record.lastConversationId ||
+          defaultConversation?.id !== record.lastConversationId ||
+          defaultConversation.projectId !== id) return;
+      const presets = readRepairableJsonl<PresetEvent>(
+        agentPresetsPath(this.dataDir, stagingId),
+        "staged Agent preset journal",
+      );
+      if (BUILTIN_PRESETS.some((preset) => !presets.some((event) =>
+        event.type === "upsert" && event.preset.name === preset.name))) return;
+      const finalRoot = projectDir(this.dataDir, id);
+      if (existsSync(finalRoot)) {
+        const current = readJson<ProjectJson>(projectJsonPath(this.dataDir, id));
+        assertCreationIdentity(current, {
+          idempotencyKey: record.creationIdempotencyKey,
+          payloadHash: record.creationPayloadHash,
+        });
+        rmSync(projectDir(this.dataDir, stagingId), { recursive: true });
+      } else {
+        renameSync(projectDir(this.dataDir, stagingId), finalRoot);
+      }
+      fsyncDirectory(projectsDir(this.dataDir));
+    } catch {
+      // Unauthenticated or incomplete staging is preserved for forensic recovery.
+    }
+  }
+
+  private recoverConversationCreation(projectId: string, stagingId: string, id: string): void {
+    try {
+      const record = readJson<ConversationJson>(conversationJsonPath(this.dataDir, projectId, stagingId));
+      if (record.id !== id || record.projectId !== projectId ||
+          !record.creationIdempotencyKey || !record.creationPayloadHash) return;
+      const finalRoot = conversationDir(this.dataDir, projectId, id);
+      if (existsSync(finalRoot)) {
+        const current = readJson<ConversationJson>(conversationJsonPath(this.dataDir, projectId, id));
+        assertCreationIdentity(current, {
+          idempotencyKey: record.creationIdempotencyKey,
+          payloadHash: record.creationPayloadHash,
+        });
+        rmSync(conversationDir(this.dataDir, projectId, stagingId), { recursive: true });
+      } else {
+        renameSync(conversationDir(this.dataDir, projectId, stagingId), finalRoot);
+      }
+      fsyncDirectory(conversationsDir(this.dataDir, projectId));
+    } catch {
+      // Unauthenticated or incomplete staging is preserved for forensic recovery.
+    }
+  }
+
+  getProjectCreation(identity: WorkspaceCreationIdentity): ProjectDto | undefined {
+    const id = creationId("project", "workspace", identity.idempotencyKey);
+    if (this.db.select({ projectId: projectDeletionReceipts.projectId })
+      .from(projectDeletionReceipts).where(eq(projectDeletionReceipts.projectId, id)).get()) {
+      throw new Error("This Project creation was already deleted");
+    }
+    if (!existsSync(projectJsonPath(this.dataDir, id))) return undefined;
+    assertCreationIdentity(readJson<ProjectJson>(projectJsonPath(this.dataDir, id)), identity);
+    return this.getProject(id);
+  }
+
+  createProject(
+    input: Omit<CreateProjectRequest, "defaultEngine"> & {
+      hostPath: string;
+      defaultEngine?: CreateProjectRequest["defaultEngine"];
+    },
+    identity?: WorkspaceCreationIdentity,
+  ): ProjectDto {
+    const replay = identity ? this.getProjectCreation(identity) : undefined;
+    if (replay) return replay;
+    const id = identity ? creationId("project", "workspace", identity.idempotencyKey) : randomUUID();
+    const conversationId = identity
+      ? creationId("conversation", id, `${identity.idempotencyKey}:default`)
+      : randomUUID();
     const now = new Date().toISOString();
     const defaultEngine = input.defaultEngine ?? "codex";
     const record: ProjectJson = {
@@ -81,6 +233,10 @@ export class AgentWorkspaceCatalogAuthority {
       ...(input.defaultModel ? { defaultModel: input.defaultModel } : {}),
       ...(input.defaultEffort ? { defaultEffort: input.defaultEffort } : {}),
       lastConversationId: conversationId,
+      ...(identity ? {
+        creationIdempotencyKey: identity.idempotencyKey,
+        creationPayloadHash: identity.payloadHash,
+      } : {}),
     };
     const conversation: ConversationJson = {
       id: conversationId, projectId: id, title: "New Chat", defaultEngine,
@@ -91,21 +247,43 @@ export class AgentWorkspaceCatalogAuthority {
     const stagingId = `.${id}.creating`;
     const stagingRoot = projectDir(this.dataDir, stagingId);
     try {
+      if (existsSync(stagingRoot)) {
+        const staged = readJson<ProjectJson>(projectJsonPath(this.dataDir, stagingId));
+        if (!identity) throw new Error("Project creation staging is already present");
+        assertCreationIdentity(staged, identity);
+        rmSync(stagingRoot, { recursive: true });
+      }
       writeJson(projectJsonPath(this.dataDir, stagingId), record);
       mkdirSync(conversationDir(this.dataDir, stagingId, conversationId), { recursive: true });
       writeJson(conversationJsonPath(this.dataDir, stagingId, conversationId), conversation);
       mkdirSync(agentsDir(this.dataDir, stagingId), { recursive: true });
+      const presets = BUILTIN_PRESETS.map((preset) => ({
+        type: "upsert" as const,
+        preset: {
+          id: creationId("project", `${id}:preset`, preset.name),
+          projectId: id,
+          ...preset,
+          enabled: true,
+          createdAt: now,
+          updatedAt: now,
+        } satisfies AgentPresetDto,
+      } satisfies PresetEvent));
+      writeAtomicFsyncedJsonl(agentPresetsPath(this.dataDir, stagingId), presets);
       renameSync(stagingRoot, projectDir(this.dataDir, id));
+      fsyncDirectory(projectsDir(this.dataDir));
       this.db.transaction((tx) => {
         tx.insert(projects).values({ id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, lastConversationId: conversationId }).run();
         tx.insert(conversations).values({ id: conversationId, projectId: id, title: "New Chat", defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, createdAt: now, updatedAt: now, archived: 0 }).run();
+        for (const event of presets) {
+          tx.insert(agentPresets).values({ ...event.preset, enabled: 1 }).run();
+        }
       });
     } catch (error) {
       rmSync(stagingRoot, { recursive: true, force: true });
       rmSync(projectDir(this.dataDir, id), { recursive: true, force: true });
+      fsyncDirectory(projectsDir(this.dataDir));
       throw error;
     }
-    for (const preset of BUILTIN_PRESETS) this.createAgentPreset(id, preset);
     return { id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, ...(input.defaultModel ? { defaultModel: input.defaultModel } : {}), ...(input.defaultEffort ? { defaultEffort: input.defaultEffort } : {}), lastConversationId: conversationId };
   }
 
@@ -119,7 +297,9 @@ export class AgentWorkspaceCatalogAuthority {
     const defaultModel = input.defaultModel === null ? undefined : input.defaultModel ?? current.defaultModel;
     const defaultEffort = input.defaultEffort === null ? undefined : input.defaultEffort ?? current.defaultEffort;
     const { instructions: _previousInstructions, ...projectWithoutInstructions } = current;
+    const canonical = readJson<ProjectJson>(projectJsonPath(this.dataDir, id));
     const record: ProjectJson = {
+      ...canonical,
       ...projectWithoutInstructions,
       label,
       defaultEngine,
@@ -212,17 +392,44 @@ export class AgentWorkspaceCatalogAuthority {
     }
     const lastUsedAt = new Date().toISOString();
     const next = { ...project, lastUsedAt, lastConversationId: conversationId ?? project.lastConversationId };
-    writeJson(projectJsonPath(this.dataDir, projectId), next);
+    writeJson(projectJsonPath(this.dataDir, projectId), {
+      ...readJson<ProjectJson>(projectJsonPath(this.dataDir, projectId)),
+      ...next,
+    });
     this.db.update(projects).set({ lastUsedAt, ...(conversationId ? { lastConversationId: conversationId } : {}) }).where(eq(projects.id, projectId)).run();
     return next;
   }
 
   // ─── Conversations ─────────────────────────────────────────────────────────
 
-  createConversation(projectId: string, input: CreateConversationRequest): ConversationDto {
+  getConversationCreation(
+    projectId: string,
+    identity: WorkspaceCreationIdentity,
+  ): ConversationDto | undefined {
+    const id = creationId("conversation", projectId, identity.idempotencyKey);
+    if (this.db.select({ conversationId: conversationDeletionReceipts.conversationId })
+      .from(conversationDeletionReceipts)
+      .where(eq(conversationDeletionReceipts.conversationId, id)).get()) {
+      throw new Error("This Chat creation was already deleted");
+    }
+    if (!existsSync(conversationJsonPath(this.dataDir, projectId, id))) return undefined;
+    assertCreationIdentity(
+      readJson<ConversationJson>(conversationJsonPath(this.dataDir, projectId, id)),
+      identity,
+    );
+    return this.getConversation(id);
+  }
+
+  createConversation(
+    projectId: string,
+    input: CreateConversationRequest,
+    identity?: WorkspaceCreationIdentity,
+  ): ConversationDto {
     const project = this.getProject(projectId);
     if (!project) throw new Error(`unknown project: ${projectId}`);
-    const id = randomUUID();
+    const replay = identity ? this.getConversationCreation(projectId, identity) : undefined;
+    if (replay) return replay;
+    const id = identity ? creationId("conversation", projectId, identity.idempotencyKey) : randomUUID();
     const now = new Date().toISOString();
     const record: ConversationJson = {
       id,
@@ -234,24 +441,59 @@ export class AgentWorkspaceCatalogAuthority {
       createdAt: now,
       updatedAt: now,
       archived: false,
+      ...(identity ? {
+        creationIdempotencyKey: identity.idempotencyKey,
+        creationPayloadHash: identity.payloadHash,
+      } : {}),
     };
-    mkdirSync(conversationDir(this.dataDir, projectId, id), { recursive: true });
-    writeJson(conversationJsonPath(this.dataDir, projectId, id), record);
-    this.db
-      .insert(conversations)
-      .values({
-        id,
-        projectId,
-      title: input.title || "New Chat",
-        defaultEngine: input.defaultEngine ?? project.defaultEngine,
-        defaultModel: input.defaultModel ?? null,
-        defaultEffort: input.defaultEffort ?? null,
-        createdAt: now,
-        updatedAt: now,
-        archived: 0,
-      })
-      .run();
-    this.markProjectUsed(projectId, id);
+    const stagingId = `.${id}.creating`;
+    const stagingRoot = conversationDir(this.dataDir, projectId, stagingId);
+    const canonicalRoot = conversationDir(this.dataDir, projectId, id);
+    const previousProjectRecord = readJson<ProjectJson>(projectJsonPath(this.dataDir, projectId));
+    try {
+      if (existsSync(stagingRoot)) {
+        const staged = readJson<ConversationJson>(
+          conversationJsonPath(this.dataDir, projectId, stagingId),
+        );
+        if (!identity) throw new Error("Chat creation staging is already present");
+        assertCreationIdentity(staged, identity);
+        rmSync(stagingRoot, { recursive: true });
+      }
+      mkdirSync(stagingRoot, { recursive: true });
+      writeJson(conversationJsonPath(this.dataDir, projectId, stagingId), record);
+      renameSync(stagingRoot, canonicalRoot);
+      fsyncDirectory(conversationsDir(this.dataDir, projectId));
+      writeJson(projectJsonPath(this.dataDir, projectId), {
+        ...previousProjectRecord,
+        lastUsedAt: now,
+        lastConversationId: id,
+      });
+      this.db.transaction((tx) => {
+        tx.insert(conversations).values({
+          id,
+          projectId,
+          title: record.title,
+          defaultEngine: record.defaultEngine ?? null,
+          defaultModel: record.defaultModel ?? null,
+          defaultEffort: record.defaultEffort ?? null,
+          createdAt: now,
+          updatedAt: now,
+          archived: 0,
+        }).run();
+        tx.update(projects).set({ lastUsedAt: now, lastConversationId: id })
+          .where(eq(projects.id, projectId)).run();
+      });
+    } catch (error) {
+      try {
+        rmSync(stagingRoot, { recursive: true, force: true });
+        rmSync(canonicalRoot, { recursive: true, force: true });
+        fsyncDirectory(conversationsDir(this.dataDir, projectId));
+        writeJson(projectJsonPath(this.dataDir, projectId), previousProjectRecord);
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], "Chat creation and rollback both failed");
+      }
+      throw error;
+    }
     return this.conversationRowToDto(
       this.db.select().from(conversations).where(eq(conversations.id, id)).get()!,
     );

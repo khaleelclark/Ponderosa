@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type {
@@ -6,7 +6,7 @@ import type {
   ModelOption,
   UpdateProjectRequest,
 } from "@ponderosa/core";
-import type { AgentStore, WorkspaceStore } from "@ponderosa/agents";
+import { stableJson, type AgentStore, type WorkspaceStore } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
 import type { ActiveRun, EngineRegistration, PersistentRuntime } from "../app-contracts.js";
 import {
@@ -67,11 +67,45 @@ export function registerProjectRoutes(
     store,
   });
 
-  app.post<{ Body: CreateProjectRequest }>("/api/projects", async (request, reply) => {
+  app.post<{ Body: CreateProjectRequest; Headers: { "idempotency-key"?: string } }>("/api/projects", async (request, reply) => {
+    const idempotencyKey = request.headers["idempotency-key"]?.trim();
+    if (!idempotencyKey || !/^[A-Za-z0-9_-]{8,128}$/u.test(idempotencyKey)) {
+      return reply.code(400).send({ error: "a valid Project creation idempotency key is required" });
+    }
     const label = request.body?.label?.trim();
     if (!label) return reply.code(400).send({ error: "label is required" });
     const defaultEngine = request.body?.defaultEngine;
-    if (!defaultEngine || !engines.has(defaultEngine)) return reply.code(400).send({ error: "a configured default engine is required" });
+    if (!defaultEngine) return reply.code(400).send({ error: "a configured default engine is required" });
+    if (request.body.hostPath && request.body.createFolderName) return reply.code(400).send({ error: "choose an existing folder or create a new one, not both" });
+    const requestedName = request.body.createFolderName?.trim() ||
+      `project-${createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 12)}`;
+    if (!request.body.hostPath &&
+        (!/^[\p{L}\p{N}][\p{L}\p{N}._ -]{0,79}$/u.test(requestedName) ||
+          requestedName === "." || requestedName === "..")) {
+      return reply.code(400).send({ error: "folder name must be a single safe name" });
+    }
+    let hostPath = request.body.hostPath
+      ? path.resolve(request.body.hostPath)
+      : path.join(managedWorkspacesRoot, requestedName);
+    const creationIdentity = {
+      idempotencyKey,
+      payloadHash: createHash("sha256").update(stableJson({
+        label,
+        hostPath,
+        defaultEngine,
+        defaultModel: request.body.defaultModel ?? null,
+        defaultEffort: request.body.defaultEffort ?? null,
+      })).digest("hex"),
+    };
+    try {
+      const replay = store.getProjectCreation(creationIdentity);
+      if (replay) return replay;
+    } catch (error) {
+      return reply.code(409).send({
+        error: error instanceof Error ? error.message : "Project creation replay conflict",
+      });
+    }
+    if (!engines.has(defaultEngine)) return reply.code(400).send({ error: "a configured default engine is required" });
     const creationAdapter = engines.get(defaultEngine)!.adapter;
     const creationModelOptions = cachedModelOptions(creationAdapter);
     const selectionError = runtimeSelectionError(
@@ -81,26 +115,19 @@ export function registerProjectRoutes(
       creationModelOptions,
     );
     if (selectionError) return reply.code(400).send({ error: selectionError });
-    if (request.body.hostPath && request.body.createFolderName) return reply.code(400).send({ error: "choose an existing folder or create a new one, not both" });
     await fs.mkdir(managedWorkspacesRoot, { recursive: true });
-    let hostPath: string;
     let createdManagedFolder = false;
     if (request.body.hostPath) {
-      const candidate = path.resolve(request.body.hostPath);
       try {
-        const stat = await fs.stat(candidate);
+        const stat = await fs.stat(hostPath);
         if (!stat.isDirectory()) return reply.code(400).send({ error: "hostPath must be a directory" });
-        const validated = await projectFolderPathBoundary.validatedBrowsePath(candidate);
+        const validated = await projectFolderPathBoundary.validatedBrowsePath(hostPath);
         hostPath = validated.candidate;
       } catch {
         return reply.code(400).send({ error: "hostPath does not exist" });
       }
-    } else {
-      const requestedName = request.body.createFolderName?.trim() || `project-${randomUUID()}`;
-      if (!/^[\p{L}\p{N}][\p{L}\p{N}._ -]{0,79}$/u.test(requestedName) || requestedName === "." || requestedName === "..") {
-        return reply.code(400).send({ error: "folder name must be a single safe name" });
-      }
-      hostPath = path.join(managedWorkspacesRoot, requestedName);
+    }
+    if (!request.body.hostPath) {
       try {
         await fs.mkdir(hostPath, { recursive: false });
         createdManagedFolder = true;
@@ -117,7 +144,7 @@ export function registerProjectRoutes(
         defaultEngine,
         ...(request.body.defaultModel ? { defaultModel: request.body.defaultModel } : {}),
         ...(request.body.defaultEffort ? { defaultEffort: request.body.defaultEffort } : {}),
-      });
+      }, creationIdentity);
       if (project.lastConversationId) {
         const resolved = concreteRuntimeSelection(creationAdapter, [
           { model: project.defaultModel, effort: project.defaultEffort },
@@ -130,8 +157,12 @@ export function registerProjectRoutes(
         });
       }
     } catch (error) {
-      if (createdManagedFolder) await fs.rm(hostPath, { recursive: true, force: true });
-      throw error;
+      const committed = store.getProjectCreation(creationIdentity);
+      if (committed) project = committed;
+      else {
+        if (createdManagedFolder) await fs.rm(hostPath, { recursive: true, force: true });
+        throw error;
+      }
     }
     appendWorkspace({ type: "project_changed", projectId: project.id, action: "created" });
     refreshCommunicationReconciliation(project.id);

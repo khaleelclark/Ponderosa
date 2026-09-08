@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type {
   Adapter,
@@ -9,10 +10,11 @@ import type {
   TeamDirectoryDto,
   UpdateConversationRequest,
 } from "@ponderosa/core";
-import type {
-  AgentStore,
-  ConversationDeletionReceipt,
-  WorkspaceStore,
+import {
+  stableJson,
+  type AgentStore,
+  type ConversationDeletionReceipt,
+  type WorkspaceStore,
 } from "@ponderosa/agents";
 import { concreteRuntimeSelection, runtimeSelectionError } from "../runtime-selection.js";
 import { applyCollectionPageHeaders, collectionGenerationKey, sendCollectionPageError, sqliteCollectionPage, type CollectionQuery } from "../collection-page.js";
@@ -215,14 +217,36 @@ export function registerConversationRoutes(
 
   app.post<{
     Params: { id: string };
+    Headers: { "idempotency-key"?: string };
     Body: unknown;
   }>("/api/projects/:id/conversations", async (request, reply) => {
+    const idempotencyKey = request.headers["idempotency-key"]?.trim();
+    if (!idempotencyKey || !/^[A-Za-z0-9_-]{8,128}$/u.test(idempotencyKey)) {
+      return reply.code(400).send({ error: "a valid Chat creation idempotency key is required" });
+    }
     const bodyError = conversationMutationBodyError(request.body, "create");
     if (bodyError) return reply.code(400).send({ error: bodyError });
     const body = request.body as CreateConversationRequest;
+    const title = body.title?.trim() || "New Chat";
+    const creationIdentity = {
+      idempotencyKey,
+      payloadHash: createHash("sha256").update(stableJson({
+        title,
+        defaultEngine: body.defaultEngine ?? null,
+        defaultModel: body.defaultModel ?? null,
+        defaultEffort: body.defaultEffort ?? null,
+      })).digest("hex"),
+    };
+    try {
+      const replay = store.getConversationCreation(request.params.id, creationIdentity);
+      if (replay) return replay;
+    } catch (error) {
+      return reply.code(409).send({
+        error: error instanceof Error ? error.message : "Chat creation replay conflict",
+      });
+    }
     const project = store.getProject(request.params.id);
     if (!project) return reply.code(404).send({ error: "project not found" });
-    const title = body.title?.trim() || "New Chat";
     if (body.defaultEngine && !engines.has(body.defaultEngine)) {
       return reply.code(400).send({ error: "unknown engine" });
     }
@@ -249,7 +273,7 @@ export function registerConversationRoutes(
       title,
       defaultEngine,
       ...resolved,
-    });
+    }, creationIdentity);
     appendWorkspace({ type: "conversation_changed", projectId: request.params.id, conversationId: conversation.id, action: "created" });
     appendWorkspace({ type: "project_changed", projectId: request.params.id, action: "used" });
     return conversation;

@@ -477,6 +477,72 @@ test("startup hydration removes payloads for terminal import operations", async 
   assert.equal(existsSync(payload), false);
 });
 
+test("startup quarantines one malformed import journal without poisoning valid operations", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-import-corrupt-journal-"));
+  const apps = [];
+  t.after(async () => {
+    await Promise.all(apps.map((app) => app.close()));
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const directory = path.join(dataDir, "agent-import-operations");
+  await mkdir(directory, { recursive: true });
+  const corruptId = randomUUID();
+  const validId = randomUUID();
+  const corruptPayload = path.join(directory, `${corruptId}.payload`);
+  const now = new Date().toISOString();
+  await writeFile(path.join(directory, `${corruptId}.json`), "{not-json");
+  await writeFile(corruptPayload, "preserve me");
+  await writeFile(path.join(directory, `${validId}.json`), JSON.stringify({
+    id: validId,
+    requestId: "valid-operation",
+    payloadHash: createHash("sha256").update("already consumed").digest("hex"),
+    projectId: "project-a",
+    sourceLabel: "Valid import",
+    phase: "completed",
+    status: "completed",
+    createdAt: now,
+    updatedAt: now,
+    result: { rootAgentId: "agent-a", agentIds: ["agent-a"] },
+  }));
+  const notifications = [];
+  const register = (app) => registerAgentPackageRoutes(app, {
+    dataDir,
+    store: { getProject: (id) => ({ id }) },
+    coordination: {}, assets: {}, engines: new Map(), deletingProjectIds: new Set(),
+    deletingConversationIds: new Set(), deletingAgentIds: new Set(),
+    agentCreationConversationLeases: new Map(), cachedModelOptions: () => [],
+    appendWorkspace: () => {}, agentMessages: () => {},
+    createOperationalNotification: (notification) => notifications.push(notification),
+  });
+
+  const first = Fastify();
+  apps.push(first);
+  register(first);
+  const response = await first.inject({
+    method: "GET",
+    url: `/api/projects/project-a/agent-import-operations/${validId}`,
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().id, validId);
+  assert.equal(existsSync(corruptPayload), true);
+  assert.equal(existsSync(path.join(directory, `${corruptId}.json.corrupt`)), true);
+  assert.equal(notifications.length, 1);
+  assert.match(notifications[0].body, /payload was preserved/u);
+  await first.close();
+  apps.splice(apps.indexOf(first), 1);
+
+  const restarted = Fastify();
+  apps.push(restarted);
+  register(restarted);
+  const replay = await restarted.inject({
+    method: "GET",
+    url: `/api/projects/project-a/agent-import-operations/${validId}`,
+  });
+  assert.equal(replay.statusCode, 200);
+  assert.equal(existsSync(corruptPayload), true);
+  assert.equal(notifications.length, 1);
+});
+
 test("a failed operation directory sync is never acknowledged from read-back", async (t) => {
   const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-import-fsync-"));
   const directory = path.join(dataDir, "agent-import-operations");

@@ -287,9 +287,10 @@ export const realApi = {
   getProject(projectId: string): Promise<ProjectDto> {
     return requestJson<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`);
   },
-  createProject(request: CreateProjectRequest): Promise<ProjectDto> {
+  createProject(request: CreateProjectRequest, idempotencyKey: string): Promise<ProjectDto> {
     return requestJson<ProjectDto>("/api/projects", {
       method: "POST",
+      headers: { "idempotency-key": idempotencyKey },
       body: JSON.stringify(request satisfies CreateProjectRequest),
     });
   },
@@ -371,9 +372,10 @@ export const realApi = {
   listConversationMembersPage(conversationId: string, options: { limit?: number; cursor?: string; search?: string } = {}): Promise<CollectionPage<AgentDto>> {
     return requestCollectionPage<AgentDto>(`/api/conversations/${encodeURIComponent(conversationId)}/members${toQuery({ limit: options.limit, cursor: options.cursor, search: options.search })}`);
   },
-  createConversation(projectId: string, request: CreateConversationRequest): Promise<ConversationDto> {
+  createConversation(projectId: string, request: CreateConversationRequest, idempotencyKey: string): Promise<ConversationDto> {
     return requestJson<ConversationDto>("/api/projects/" + encodeURIComponent(projectId) + "/conversations", {
       method: "POST",
+      headers: { "idempotency-key": idempotencyKey },
       body: JSON.stringify(request satisfies CreateConversationRequest),
     });
   },

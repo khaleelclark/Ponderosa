@@ -135,6 +135,7 @@ export class AgentProjectionRebuilder {
       const mDir = conversationsDir(this.dataDir, projectId);
       if (existsSync(mDir)) {
         for (const conversationId of readdirSync(mDir)) {
+          if (conversationId.startsWith(".") || conversationId.endsWith(".creating")) continue;
           const mj = conversationJsonPath(this.dataDir, projectId, conversationId);
           if (!existsSync(mj)) continue;
           const m = readJson<ConversationJson>(mj);

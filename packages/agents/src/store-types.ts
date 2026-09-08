@@ -66,6 +66,9 @@ export interface ProjectJson {
   defaultEffort?: string;
   lastConversationId?: string;
   instructions?: string;
+  /** Durable identity for an HTTP create retry. Missing on pre-idempotency Projects. */
+  creationIdempotencyKey?: string;
+  creationPayloadHash?: string;
 }
 
 export interface ManagedArtifactAccess {
@@ -124,6 +127,9 @@ export interface ConversationJson {
   createdAt: string;
   updatedAt: string;
   archived: boolean;
+  /** Durable identity for an HTTP create retry. Missing on pre-idempotency Chats. */
+  creationIdempotencyKey?: string;
+  creationPayloadHash?: string;
 }
 
 export interface ConversationDeliveryIntent {
