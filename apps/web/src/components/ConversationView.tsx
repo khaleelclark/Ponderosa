@@ -202,6 +202,7 @@ export function ConversationView({
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [speed, setSpeed] = useState("");
+  const [submissionRuntimeIntent, setSubmissionRuntimeIntent] = useState(0);
   const runtimeMutationGenerationByOwner = useRef(new Map<string, number>());
   const runtimeCanonicalKeyByOwner = useRef(new Map<string, string>());
   const runtimeOwnerRef = useRef<string>();
@@ -826,6 +827,7 @@ export function ConversationView({
         speeds={speeds}
         disabled={persistTargetRuntime.isPending || persistDefaults.isPending}
         onEngineChange={next => {
+          setSubmissionRuntimeIntent(value => value + 1);
           const nextEngine = engines.find(candidate => candidate.id === next);
           const captured = captureRuntimeMutation();
           const resolved = resolveRuntimeSelection(
@@ -868,6 +870,7 @@ export function ConversationView({
           }
         }}
         onModelChange={next => {
+          setSubmissionRuntimeIntent(value => value + 1);
           const captured = captureRuntimeMutation();
           const resolved = selectedRuntime.selectModel(next);
           if (commandTargetAgent) {
@@ -891,6 +894,7 @@ export function ConversationView({
           }
         }}
         onEffortChange={next => {
+          setSubmissionRuntimeIntent(value => value + 1);
           const captured = captureRuntimeMutation();
           const resolved = selectedRuntime.selectEffort(next);
           if (commandTargetAgent) {
@@ -911,6 +915,7 @@ export function ConversationView({
           }
         }}
         onSpeedChange={next => {
+          setSubmissionRuntimeIntent(value => value + 1);
           selectedRuntime.selectSpeed(next);
         }}
       />
@@ -1325,6 +1330,7 @@ export function ConversationView({
           running={operationRunning}
           allowSendWhileRunning
           submissionRuntimeKey={JSON.stringify([engine, model, effort, speed])}
+          submissionRuntimeIntentKey={String(submissionRuntimeIntent)}
           mentionHandles={mentionHandles}
           mentionBindings={mentionBindings}
           commands={composerCommands}

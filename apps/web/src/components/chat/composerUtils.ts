@@ -12,6 +12,13 @@ import type {
   ResolveConversationDraftConflictResponse,
 } from "@ponderosa/core";
 
+/** Observed runtime refreshes cannot replace an already-dispatched exact retry. */
+export function pendingSubmissionAfterRuntimeObservation(
+  pending: DraftPendingSubmissionDto | undefined,
+): DraftPendingSubmissionDto | undefined {
+  return pending?.request ? pending : undefined;
+}
+
 export function resolvedDraftConflictDraft(
   resolution: ResolveConversationDraftConflictResponse,
   observed?: ConversationDraftDto,

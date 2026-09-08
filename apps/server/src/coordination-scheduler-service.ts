@@ -329,6 +329,7 @@ return new CoordinationV3Scheduler(
       },
       payload: {
         text: dispatchText,
+        ...(typeof dispatch?.engine === "string" ? { engine: dispatch.engine } : {}),
         ...(typeof dispatch?.model === "string" ? { model: dispatch.model } : {}),
         ...(typeof dispatch?.effort === "string" ? { effort: dispatch.effort } : {}),
         ...(typeof dispatch?.speed === "string"

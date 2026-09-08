@@ -962,7 +962,12 @@ test("a promoted draft is removed when later attachment validation rejects deliv
 });
 
 test("an exact direct Agent-message retry replays after the Agent is archived", async (t) => {
-  const payload = { text: "hello", idempotencyKey: "stable-message", activeRunDelivery: "queue" };
+  const payload = {
+    text: "hello",
+    idempotencyKey: "stable-message",
+    activeRunDelivery: "queue",
+    engine: "removed-engine",
+  };
   const communicationEventId = `user-message-${createHash("sha256")
     .update(`project-a\0agent-a\0${payload.idempotencyKey}`)
     .digest("hex")}`;
@@ -971,6 +976,7 @@ test("an exact direct Agent-message retry replays after the Agent is archived", 
     agentId: "agent-a",
     text: payload.text,
     idempotencyKey: payload.idempotencyKey,
+    engine: payload.engine,
     model: null,
     effort: null,
     speed: null,
@@ -1710,7 +1716,7 @@ test("broadcasts cannot target an Agent owned by another Chat", async (t) => {
 
   assert.equal(response.statusCode, 400);
   assert.deepEqual(response.json(), {
-    error: "every targeted #Agent mention must have one canonical binding",
+    error: "Broadcast Agent mention binding is stale, ambiguous, or invalid",
   });
 });
 
@@ -3028,6 +3034,101 @@ test("targeted broadcasts accept the complete composer mention-binding shape", a
     assert.equal(response.statusCode, 400, response.body);
   }
   assert.equal(intakeAttempts, 1);
+});
+
+test("targeted broadcasts keep a stable Agent binding through rename and old-handle reuse", async (t) => {
+  const chat = { id: "chat-a", projectId: "project-a", archived: false };
+  const renamedAgent = {
+    id: "agent-a",
+    projectId: chat.projectId,
+    conversationId: chat.id,
+    handle: "NewName",
+    title: "New Name",
+    archived: false,
+  };
+  const reusedHandleAgent = {
+    ...renamedAgent,
+    id: "agent-b",
+    handle: "OldName",
+    title: "Different Agent",
+  };
+  let dispatch;
+  let eventId;
+  const app = Fastify();
+  t.after(() => app.close());
+  registerConversationDeliveryRoutes(app, {
+    store: {
+      getConversation: () => chat,
+      listAgents: () => [renamedAgent, reusedHandleAgent],
+      getAgent: id => id === renamedAgent.id ? renamedAgent : reusedHandleAgent,
+      getConversationMessages: () => eventId
+        ? [{ id: "message-a", communicationEventId: eventId }]
+        : [],
+    },
+    coordinationV3: {
+      runtimeCommunication: () => undefined,
+      runtimeArtifact: () => undefined,
+      recordRuntimeCommunication: input => {
+        eventId = input.id;
+        dispatch = input.payload.dispatch;
+        return { replayed: false, activations: [] };
+      },
+    },
+    assets: { removeRuntimeArtifactReservation: () => false },
+    projectDeletionInProgress: () => false,
+    agentDeletionInProgress: () => false,
+    conversationDeliveryLeases: new Map(),
+    agentDeliveryLeases: new Map(),
+    prepareUserCommunicationText: async ({ text }) => ({
+      canonicalText: text,
+      publishedText: text,
+    }),
+    reconcileRuntimeCommunicationProjections: async () => 1,
+    appendWorkspace: () => {},
+    publishCoordinationV3Changed: () => {},
+    notifyScheduler: () => {},
+  });
+
+  const response = await app.inject({
+    method: "POST",
+    url: `/api/conversations/${chat.id}/messages`,
+    payload: {
+      text: "#broadcast #OldName continue",
+      recipientAgentMentions: [{
+        projectId: chat.projectId,
+        agentId: renamedAgent.id,
+        handle: "OldName",
+        currentHandle: "OldName",
+        currentTitle: "Old Name",
+      }],
+      engine: "claude",
+      idempotencyKey: "renamed-binding",
+    },
+  });
+
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(dispatch.engine, "claude");
+  assert.deepEqual(dispatch.recipients.map(recipient => recipient.agentId), [renamedAgent.id]);
+});
+
+test("an uncommitted direct Agent message rejects a removed frozen engine", async (t) => {
+  const { app } = agentMessageValidationApp();
+  t.after(() => app.close());
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/agents/agent-a/messages",
+    payload: { text: "hello", engine: "removed-engine" },
+  });
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(response.json(), { error: "unknown engine" });
+
+  const oversized = await app.inject({
+    method: "POST",
+    url: "/api/agents/agent-a/messages",
+    payload: { text: "hello", engine: "e".repeat(201) },
+  });
+  assert.equal(oversized.statusCode, 400);
+  assert.deepEqual(oversized.json(), { error: "engine must be 200 characters or fewer" });
 });
 
 test("failed human communication intake cleans only its owned uncatalogued artifact reservation", async () => {

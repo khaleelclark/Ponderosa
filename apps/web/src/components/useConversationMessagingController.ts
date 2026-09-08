@@ -38,6 +38,7 @@ import { queryKeys } from "../queryKeys";
 import type { AgentStatus } from "../agents";
 import { activeDirectDeliveryAgentIds } from "./directDeliveryState";
 import {
+  compoundCreationSettlesUnavailable,
   preparedIdempotentAttemptForRetry,
   retainIdempotentAttempt,
   withPendingAgentTitle,
@@ -209,6 +210,7 @@ export function useConversationMessagingController({
       uploadedRecipients,
       requestId,
       activeRunDelivery,
+      engine,
       runtimeConfig,
     }: {
       agentIds: string[];
@@ -216,6 +218,7 @@ export function useConversationMessagingController({
       uploadedRecipients: RecipientUploads<Pick<AssetDto, "id">>;
       requestId: string;
       activeRunDelivery: "steer" | "queue";
+      engine: string;
       runtimeConfig: ReturnType<typeof selectedRunConfig>;
     }) => {
       return api.sendMultiAgentDirectMessage(conversationId, {
@@ -230,7 +233,7 @@ export function useConversationMessagingController({
         // with different engines or durable models. Single-target sends keep
         // the explicit composer selection; multi-target sends let each Agent
         // use its own persisted runtime.
-        ...(agentIds.length === 1 ? runtimeConfig : {}),
+        ...(agentIds.length === 1 ? { engine, ...runtimeConfig } : {}),
       });
     },
     onSuccess: (response, variables) => {
@@ -285,6 +288,8 @@ export function useConversationMessagingController({
       agentMentions,
       attachmentOwnerAgentId,
       activeRunDelivery,
+      engine,
+      runtimeConfig,
     }: {
       text: string;
       uploadedRecipients: RecipientUploads<Pick<AssetDto, "id">>;
@@ -292,6 +297,8 @@ export function useConversationMessagingController({
       agentMentions: AgentMentionBindingDto[];
       attachmentOwnerAgentId?: string;
       activeRunDelivery: "steer" | "queue";
+      engine: string;
+      runtimeConfig: ReturnType<typeof selectedRunConfig>;
     }) => {
       const agentIds = agentMentions.map(binding => binding.agentId);
       const attachmentsByAgent = new Map(
@@ -317,6 +324,8 @@ export function useConversationMessagingController({
           ),
         })),
         activeRunDelivery,
+        ...(engine ? { engine } : {}),
+        ...runtimeConfig,
         idempotencyKey: requestId,
       });
     },
@@ -657,6 +666,7 @@ export function useConversationMessagingController({
         prepared.files,
         (agentId, file) => api.uploadAttachment(agentId, file),
         (agentId, item) => api.deleteAttachment(agentId, item.id),
+        error => error instanceof ApiRequestError && error.status === 404,
       );
       prepared.uploads.set(key, uploaded);
       if (pendingSubmission && persistPendingSubmission) {
@@ -674,6 +684,7 @@ export function useConversationMessagingController({
     };
     const createdAgentIds: string[] = [];
     const createdTitles = detailAgents.map(agent => agent.title);
+    let agentCreationCommitted = false;
     const durableAgentTitle = async (
       titleKey: "new-agent:0" | "default-agent",
     ): Promise<string> => {
@@ -703,6 +714,7 @@ export function useConversationMessagingController({
         selectedEngine: prepared.engine,
         runtimeConfig: prepared.runConfig,
       });
+      agentCreationCommitted = true;
       if (!("recovering" in created)) createdAgentIds.push(created.id);
     }
     if (submittedBroadcastText !== undefined) {
@@ -726,6 +738,8 @@ export function useConversationMessagingController({
         agentMentions: prepared.mentionedAgents,
         attachmentOwnerAgentId: broadcastAttachmentOwnerAgentId,
         activeRunDelivery: prepared.activeRunDelivery,
+        engine: prepared.engine,
+        runtimeConfig: prepared.runConfig,
       });
       if (createdAgentIds.length > 0) {
         setActiveOperation({ agentIds: createdAgentIds, state: "starting" });
@@ -746,14 +760,36 @@ export function useConversationMessagingController({
       });
       const uploadKey = recipientUploadCacheKey("direct", targetAgentIds);
       const uploadedRecipients = await preparedUploads("direct", targetAgentIds);
-      const response = await sendToAgents.mutateAsync({
-        agentIds: targetAgentIds,
-        text: submittedText,
-        uploadedRecipients,
-        requestId,
-        activeRunDelivery: prepared.activeRunDelivery,
-        runtimeConfig: prepared.runConfig,
-      });
+      let response;
+      try {
+        response = await sendToAgents.mutateAsync({
+          agentIds: targetAgentIds,
+          text: submittedText,
+          uploadedRecipients,
+          requestId,
+          activeRunDelivery: prepared.activeRunDelivery,
+          engine: prepared.engine,
+          runtimeConfig: prepared.runConfig,
+        });
+      } catch (error) {
+        if (!(error instanceof ApiRequestError &&
+            compoundCreationSettlesUnavailable(
+              agentCreationCommitted,
+              error.status,
+              error.message,
+            ))) {
+          throw error;
+        }
+        sendToAgents.reset();
+        setActiveOperation(createdAgentIds.length
+          ? { agentIds: createdAgentIds, state: "starting" }
+          : undefined);
+        setQueuedMessageNotice(
+          `Created ${prepared.titles.get("new-agent:0") ?? "the new Agent"}; every other addressed Agent became unavailable.`,
+        );
+        finishAttempt();
+        return;
+      }
       const deliveredRecipientIds = response.recipients.map(
         recipient => recipient.agentId,
       );

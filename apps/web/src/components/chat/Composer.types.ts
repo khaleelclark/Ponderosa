@@ -35,6 +35,8 @@ export interface ComposerProps extends ChatComposerContract {
   submissionIntentKey?: string;
   /** Stable provider/runtime identity included in durable send authority. */
   submissionRuntimeKey?: string;
+  /** Parent-owned epoch advanced only by an explicit runtime control edit. */
+  submissionRuntimeIntentKey?: string;
   /** Abandons any parent-owned prepared operation after a local draft mutation. */
   onSubmissionIntentChange?(): void;
   onMentionedHandlesChange?(handles: string[]): void;

@@ -258,6 +258,7 @@ export function registerAgentMessageRunRoute(
     Body: {
       text: string;
       idempotencyKey?: string;
+      engine?: string;
       model?: string;
       effort?: string;
       speed?: string;
@@ -291,7 +292,7 @@ export function registerAgentMessageRunRoute(
       }
       const candidate = rawBody as Record<string, unknown>;
       const allowedMessageFields = new Set([
-        "text", "idempotencyKey", "model", "effort", "speed", "agentMentionDepth", "agentMentionTrail", "sourceChannel",
+        "text", "idempotencyKey", "engine", "model", "effort", "speed", "agentMentionDepth", "agentMentionTrail", "sourceChannel",
         "shareWithOrganization", "activeRunDelivery", "sourceConversationId",
         "attachmentIds", "draftAttachmentIds", "draftId", "draftOwnerId", "v3SchedulerRunId", "v3FencingToken", "v3InjectionId",
         "v3FreshProviderSession", "v3ActivationPrompt", "v3CommunicationEventId",
@@ -300,7 +301,7 @@ export function registerAgentMessageRunRoute(
       if (unknownMessageFields.length) {
         return reply.code(400).send({ error: `unknown message field(s): ${unknownMessageFields.join(", ")}` });
       }
-      for (const key of ["text", "idempotencyKey", "model", "effort", "speed", "sourceConversationId", "draftId", "draftOwnerId", "v3SchedulerRunId", "v3InjectionId", "v3ActivationPrompt", "v3CommunicationEventId"] as const) {
+      for (const key of ["text", "idempotencyKey", "engine", "model", "effort", "speed", "sourceConversationId", "draftId", "draftOwnerId", "v3SchedulerRunId", "v3InjectionId", "v3ActivationPrompt", "v3CommunicationEventId"] as const) {
         if (candidate[key] !== undefined && typeof candidate[key] !== "string") {
           return reply.code(400).send({ error: `${key} must be a string` });
         }
@@ -342,6 +343,9 @@ export function registerAgentMessageRunRoute(
       if (userMessageIdempotencyKey && userMessageIdempotencyKey.length > 200) {
         return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
       }
+      if ((request.body.engine?.trim().length ?? 0) > 200) {
+        return reply.code(400).send({ error: "engine must be 200 characters or fewer" });
+      }
       const proposedCommunicationEventId = userMessageIdempotencyKey
         ? `user-message-${createHash("sha256").update(`${project.id}\0${agentId}\0${userMessageIdempotencyKey}`).digest("hex")}`
         : undefined;
@@ -351,6 +355,9 @@ export function registerAgentMessageRunRoute(
             agentId,
             text,
             idempotencyKey: userMessageIdempotencyKey,
+            ...(request.body.engine?.trim()
+              ? { engine: request.body.engine.trim() }
+              : {}),
             model: request.body.model?.trim() ?? null,
             effort: request.body.effort?.trim() ?? null,
             speed: request.body.speed?.trim() ?? null,
@@ -501,7 +508,8 @@ export function registerAgentMessageRunRoute(
       // into an already-running Run must keep that Run's captured provider and
       // runtime selection, even if Settings changed while it was working.
       const activeRunSnapshot = latestRun?.status === "running" ? latestRun : undefined;
-      const runtimeEngineId = activeRunSnapshot?.engine ?? agent.activeEngine;
+      const requestedEngineId = request.body.engine?.trim();
+      const runtimeEngineId = activeRunSnapshot?.engine ?? requestedEngineId ?? agent.activeEngine;
       const engine = engines.get(runtimeEngineId);
       if (!engine) return reply.code(400).send({ error: "unknown engine" });
       const internalV3Dispatch = typeof request.headers["x-ponderosa-v3-dispatch"] === "string" &&
@@ -776,6 +784,7 @@ export function registerAgentMessageRunRoute(
                 attachments: messageAttachments.map((item) => ({
                   id: item.id, name: item.name, mediaType: item.mediaType, size: item.size,
                 })),
+                engine: request.body.engine ?? null,
                 model: request.body.model ?? null,
                 effort: request.body.effort ?? null,
                 speed: request.body.speed ?? null,

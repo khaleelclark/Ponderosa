@@ -104,6 +104,7 @@ import {
   matchingComposerCapabilities,
   matchingEngineCommands,
   ownedDraftRevisionAfterObservation,
+  pendingSubmissionAfterRuntimeObservation,
   providerSlashSubmission,
   recoverableDraftConflict,
   redundantDraftConflictUploadIds,
@@ -255,6 +256,7 @@ export function Composer({
   removeTextRequest,
   submissionIntentKey,
   submissionRuntimeKey,
+  submissionRuntimeIntentKey,
   onSubmissionIntentChange,
   onMentionedHandlesChange,
   onCommandTargetHandleChange,
@@ -361,6 +363,7 @@ export function Composer({
   const activeSubmissionIntentKeyRef = useRef(submissionIntentKey);
   activeSubmissionIntentKeyRef.current = submissionIntentKey;
   const previousSubmissionRuntimeKey = useRef(submissionRuntimeKey);
+  const previousSubmissionRuntimeIntentKey = useRef(submissionRuntimeIntentKey);
   const activeDraftScopeRef = useRef(conversationDraftId);
   activeDraftScopeRef.current = conversationDraftId;
   const updateFailedDraftContents = useCallback(
@@ -453,10 +456,24 @@ export function Composer({
   useEffect(() => {
     if (previousSubmissionRuntimeKey.current === submissionRuntimeKey) return;
     previousSubmissionRuntimeKey.current = submissionRuntimeKey;
-    pendingSubmissionRef.current = undefined;
+    pendingSubmissionRef.current = pendingSubmissionAfterRuntimeObservation(
+      pendingSubmissionRef.current,
+    );
+    if (pendingSubmissionRef.current) return;
     setPreparedRetry(undefined);
     onSubmissionIntentChange?.();
   }, [onSubmissionIntentChange, submissionRuntimeKey]);
+  useEffect(() => {
+    if (previousSubmissionRuntimeIntentKey.current === submissionRuntimeIntentKey) return;
+    previousSubmissionRuntimeIntentKey.current = submissionRuntimeIntentKey;
+    if (!pendingSubmissionRef.current) return;
+    pendingSubmissionRef.current = undefined;
+    setPreparedRetry(undefined);
+    draftEditVersion.current += 1;
+    draftLocallyEdited.current = true;
+    setDraftReadyVersion(value => value + 1);
+    onSubmissionIntentChange?.();
+  }, [onSubmissionIntentChange, submissionRuntimeIntentKey]);
   const replacePastedText = useCallback(
     (
       next:
@@ -2160,17 +2177,20 @@ export function Composer({
           pendingSubmissionRef.current,
           submittedPastedTextAttachmentId,
         );
-        const fingerprint = await durableSubmissionFingerprint({
-          version: 1,
-          action,
-          surface: submittedDraftScope,
-          text: stableMessageActionText(exactSubmissionText, mentionedAgents),
-          attachmentIds: exactDraftAttachmentIds,
-          pastedTextAttachmentId: exactPastedTextAttachmentId ?? null,
-          recipientAgentIds: mentionedAgents.map(item => item.agentId).sort(),
-          newAgentRequested: safeNewAgentSelected,
-          runtime: submissionRuntimeKey ?? null,
-        });
+        const fingerprint = pendingSubmissionRef.current?.request
+          ? pendingSubmissionRef.current.intentFingerprint ??
+            pendingSubmissionRef.current.fingerprint
+          : await durableSubmissionFingerprint({
+              version: 1,
+              action,
+              surface: submittedDraftScope,
+              text: stableMessageActionText(exactSubmissionText, mentionedAgents),
+              attachmentIds: exactDraftAttachmentIds,
+              pastedTextAttachmentId: exactPastedTextAttachmentId ?? null,
+              recipientAgentIds: mentionedAgents.map(item => item.agentId).sort(),
+              newAgentRequested: safeNewAgentSelected,
+              runtime: submissionRuntimeKey ?? null,
+            });
         pendingSubmission = selectDurableSubmission(
           pendingSubmissionRef.current,
           fingerprint,

@@ -92,6 +92,7 @@ import { ChatComposerDock } from "./chat/ChatComposerDock";
 import { ReadAloudControls } from "./speech/ReadAloudControls";
 import {
   abandonIdempotentAttempt,
+  compoundCreationSettlesUnavailable,
   preparedIdempotentAttemptForRetry,
   retainIdempotentAttempt,
   withPendingAgentTitle,
@@ -256,6 +257,7 @@ export function AllChatView({
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [speed, setSpeed] = useState("");
+  const [submissionRuntimeIntent, setSubmissionRuntimeIntent] = useState(0);
   const runtimeMutationGenerationByAgent = useRef(new Map<string, number>());
   const runtimeCanonicalKeyByAgent = useRef(new Map<string, string>());
   const initializedRuntime = useRef<string>();
@@ -908,6 +910,7 @@ export function AllChatView({
           prepared.files,
           (agentId, file) => api.uploadAttachment(agentId, file),
           (agentId, attachment) => api.deleteAttachment(agentId, attachment.id),
+          error => error instanceof ApiRequestError && error.status === 404,
         ));
         prepared.uploads = uploaded;
         if (!durableUploadsMatch && pendingSubmission && persistPendingSubmission) {
@@ -919,19 +922,43 @@ export function AllChatView({
           await persistPendingSubmission(pendingSubmission);
         }
         const uploadedByAgentId = new Map(uploaded.map(item => [item.agentId, item]));
-        const response = await api.sendMultiAgentDirectMessage(conversationId, {
-          text: submittedBody.trim(),
-          recipients: recipientIds.map((agentId) => ({
-            agentId,
-            attachmentIds: (uploadedByAgentId.get(agentId)?.attachments ?? [])
-              .map(attachment => attachment.id),
-          })),
-          idempotencyKey: `${requestId}:${conversationId}`,
-          activeRunDelivery: "steer",
-          ...(submittedRuntime.model ? { model: submittedRuntime.model } : {}),
-          ...(submittedRuntime.effort ? { effort: submittedRuntime.effort } : {}),
-          ...(submittedRuntime.speed ? { speed: submittedRuntime.speed } : {}),
-        });
+        let response;
+        try {
+          response = await api.sendMultiAgentDirectMessage(conversationId, {
+            text: submittedBody.trim(),
+            recipients: recipientIds.map((agentId) => ({
+              agentId,
+              attachmentIds: (uploadedByAgentId.get(agentId)?.attachments ?? [])
+                .map(attachment => attachment.id),
+            })),
+            idempotencyKey: `${requestId}:${conversationId}`,
+            activeRunDelivery: "steer",
+            ...(submittedRuntime.engine ? { engine: submittedRuntime.engine } : {}),
+            ...(submittedRuntime.model ? { model: submittedRuntime.model } : {}),
+            ...(submittedRuntime.effort ? { effort: submittedRuntime.effort } : {}),
+            ...(submittedRuntime.speed ? { speed: submittedRuntime.speed } : {}),
+          });
+        } catch (error) {
+          if (!(error instanceof ApiRequestError &&
+              compoundCreationSettlesUnavailable(
+                createdTitles.length > 0,
+                error.status,
+                error.message,
+              ))) {
+            throw error;
+          }
+          unavailableCount = recipientIds.length;
+          if (sendAttempt.current === attempt) sendAttempt.current = undefined;
+          return {
+            recipientIds: createdAgentIds,
+            recipientTitles: createdTitles,
+            unavailableCount,
+            creationRecovering,
+            submissionEpoch,
+            submissionSourceKey,
+            submissionTargetId,
+          };
+        }
         deliveredRecipientIds = response.recipients.map(recipient => recipient.agentId);
         const unavailableRecipientIds = (response.unavailableRecipients ?? [])
           .map(recipient => recipient.agentId);
@@ -1165,6 +1192,7 @@ export function AllChatView({
         onEngineChange={next => {
           const nextEngine = engines.find(item => item.id === next);
           if (!nextEngine || !selectedAgentId) return;
+          setSubmissionRuntimeIntent(value => value + 1);
           const mutationGeneration =
             (runtimeMutationGenerationByAgent.current.get(selectedAgentId) ?? 0) + 1;
           runtimeMutationGenerationByAgent.current.set(
@@ -1234,6 +1262,18 @@ export function AllChatView({
               },
             },
           );
+        }}
+        onModelChange={next => {
+          setSubmissionRuntimeIntent(value => value + 1);
+          selectedRuntime.selectModel(next);
+        }}
+        onEffortChange={next => {
+          setSubmissionRuntimeIntent(value => value + 1);
+          selectedRuntime.selectEffort(next);
+        }}
+        onSpeedChange={next => {
+          setSubmissionRuntimeIntent(value => value + 1);
+          selectedRuntime.selectSpeed(next);
         }}
       />
     ) : null;
@@ -1620,6 +1660,7 @@ export function AllChatView({
             selectedRuntime.effort ?? "",
             selectedRuntime.speed ?? "",
           ])}
+          submissionRuntimeIntentKey={String(submissionRuntimeIntent)}
           onCommand={activeReplyTarget ? invokeCommand : undefined}
           controls={runtimeControls}
           disabled={

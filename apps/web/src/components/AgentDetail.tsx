@@ -143,6 +143,7 @@ export function AgentDetail({
   const [effort, setEffort] = useState("");
   const [speed, setSpeed] = useState("");
   const [runtimeEngine, setRuntimeEngine] = useState("");
+  const [submissionRuntimeIntent, setSubmissionRuntimeIntent] = useState(0);
   const runtimeMutationGenerationByAgent = useRef(new Map<string, number>());
   const runtimeCanonicalKeyByAgent = useRef(new Map<string, string>());
   const currentRuntimeCanonical = useRef<{ agentId: string; key: string }>();
@@ -748,6 +749,7 @@ export function AgentDetail({
     onEngineChange={next => {
       const nextEngine = engines.find(candidate => candidate.id === next);
       if (!nextEngine || !detail) return;
+      setSubmissionRuntimeIntent(value => value + 1);
       const capturedAgentId = agentId;
       const mutationGeneration =
         (runtimeMutationGenerationByAgent.current.get(capturedAgentId) ?? 0) + 1;
@@ -823,6 +825,7 @@ export function AgentDetail({
     }}
     onModelChange={next => {
       if (!engine || !detail) return;
+      setSubmissionRuntimeIntent(value => value + 1);
       const capturedAgentId = agentId;
       const mutationGeneration =
         (runtimeMutationGenerationByAgent.current.get(capturedAgentId) ?? 0) + 1;
@@ -887,6 +890,7 @@ export function AgentDetail({
     }}
     onEffortChange={next => {
       if (!engine || !detail) return;
+      setSubmissionRuntimeIntent(value => value + 1);
       const capturedAgentId = agentId;
       const mutationGeneration =
         (runtimeMutationGenerationByAgent.current.get(capturedAgentId) ?? 0) + 1;
@@ -948,6 +952,10 @@ export function AgentDetail({
           },
         },
       );
+    }}
+    onSpeedChange={next => {
+      setSubmissionRuntimeIntent(value => value + 1);
+      selectedRuntime.selectSpeed(next);
     }}
   />;
 
@@ -1191,6 +1199,7 @@ export function AgentDetail({
             effort,
             speed,
           ]),
+          submissionRuntimeIntentKey: String(submissionRuntimeIntent),
           controls: agentRuntimeControls,
           disabled: sendMessage.isPending || updateRuntimeSettings.isPending,
           running: false,

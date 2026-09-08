@@ -417,6 +417,7 @@ export interface CreateConversationMessageRequest {
   /** Target-owned asset copies for safe delivery to each activated Agent. */
   recipientAttachments?: Array<{ agentId: string; attachmentIds: string[] }>;
   /** Per-turn runtime selection for every Agent activated by this message. */
+  engine?: string;
   model?: string;
   effort?: string;
   speed?: string;
@@ -495,6 +496,7 @@ export interface CreateMultiAgentDirectMessageRequest {
   idempotencyKey: string;
   activeRunDelivery?: "steer" | "queue";
   /** Per-turn runtime selection for every Agent receiving this message. */
+  engine?: string;
   model?: string;
   effort?: string;
   speed?: string;
@@ -603,6 +605,8 @@ export interface SendMessageRequest {
   /** Stable across an exact transport retry so long-text artifact publication is idempotent. */
   idempotencyKey?: string;
   attachmentIds?: string[];
+  /** Provider engine selected for this exact user turn. */
+  engine?: string;
   model?: string;
   effort?: string;
   /** Per-turn processing tier. "standard" clears provider acceleration. */

@@ -8,6 +8,7 @@ import {
   recipientUploadsForAgentIds,
   retryRecipientUploadCleanup,
   stableMessageActionText,
+  uploadFilesForRecipients,
 } from "../src/conversationRouting.js";
 
 test("Agent creation retries retain one identity until the submitted form changes", () => {
@@ -123,4 +124,52 @@ test("committed partial delivery retries only exact cleanup failures", async () 
   );
   assert.deepEqual([...attempts], [["paste-archived", 2]]);
   assert.deepEqual(pendingCounts, [1, 0]);
+});
+
+test("recipient-gone uploads keep live recipient copies and report an empty unavailable copy", async () => {
+  const files = [
+    new File(["file"], "file.txt"),
+    new File(["paste"], "paste.txt"),
+  ];
+  const deleted = [];
+  const result = await uploadFilesForRecipients(
+    ["live", "gone"],
+    files,
+    async (agentId, file) => {
+      if (agentId === "gone" && file.name === "paste.txt") {
+        throw Object.assign(new Error("recipient gone"), { status: 404 });
+      }
+      return { id: `${agentId}:${file.name}` };
+    },
+    async (agentId, item) => { deleted.push(`${agentId}:${item.id}`); },
+    error => error?.status === 404,
+  );
+
+  assert.deepEqual(result, [
+    {
+      agentId: "live",
+      attachments: [{ id: "live:file.txt" }, { id: "live:paste.txt" }],
+    },
+    { agentId: "gone", attachments: [] },
+  ]);
+  assert.deepEqual(deleted, ["gone:gone:file.txt"]);
+});
+
+test("non-recipient upload failures still clean every successful copy", async () => {
+  const files = [new File(["file"], "file.txt")];
+  const deleted = [];
+  await assert.rejects(
+    uploadFilesForRecipients(
+      ["live", "broken"],
+      files,
+      async (agentId, file) => {
+        if (agentId === "broken") throw Object.assign(new Error("quota"), { status: 413 });
+        return { id: `${agentId}:${file.name}` };
+      },
+      async (agentId, item) => { deleted.push(`${agentId}:${item.id}`); },
+      error => error?.status === 404,
+    ),
+    /quota/,
+  );
+  assert.deepEqual(deleted, ["live:live:file.txt"]);
 });

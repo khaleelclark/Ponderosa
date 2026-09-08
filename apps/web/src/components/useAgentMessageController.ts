@@ -186,6 +186,7 @@ export function useAgentMessageController({
             files: fileSelectionFingerprint(files),
             draftAttachmentIds,
             draftOwnerId,
+            engine: engine?.id,
             model,
             effort,
             speed,
@@ -209,6 +210,7 @@ export function useAgentMessageController({
                     draftOwnerId,
                   }
                 : {}),
+              engine: exactRuntime?.engine ?? engine?.id,
               model: exactRuntime?.model ?? model,
               effort: exactRuntime
                 ? exactRuntime.effort ?? ""

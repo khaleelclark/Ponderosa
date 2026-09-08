@@ -207,6 +207,7 @@ export async function uploadFilesForRecipients<T extends { id: string }>(
   files: File[],
   upload: (recipientId: string, file: File) => Promise<T>,
   cleanup: (recipientId: string, item: T) => Promise<unknown>,
+  recipientUnavailable?: (error: unknown) => boolean,
 ): Promise<RecipientUploads<T>> {
   const completed: Array<{ agentId: string; item: T }> = [];
   try {
@@ -220,6 +221,10 @@ export async function uploadFilesForRecipients<T extends { id: string }>(
       const failed = settled.find((result) => result.status === "rejected");
       if (failed?.status === "rejected") {
         await Promise.allSettled(attachments.map((item) => cleanup(agentId, item)));
+        if (recipientUnavailable?.(failed.reason)) {
+          recipients.push({ agentId, attachments: [] });
+          continue;
+        }
         throw failed.reason;
       }
       completed.push(...attachments.map((item) => ({ agentId, item })));

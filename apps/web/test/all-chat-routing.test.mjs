@@ -48,6 +48,7 @@ import {
   hydratedDraftContent,
   hydratedPastedTextContent,
   ownedDraftRevisionAfterObservation,
+  pendingSubmissionAfterRuntimeObservation,
   recoverableDraftConflict,
   redundantDraftConflictUploadIds,
   resolvedDraftConflictDraft,
@@ -73,6 +74,7 @@ import {
 } from "../src/mentions.js";
 import {
   abandonIdempotentAttempt,
+  compoundCreationSettlesUnavailable,
   definitiveSubmissionStatus,
   durableSubmissionFingerprint,
   preparedIdempotentAttemptForRetry,
@@ -1558,4 +1560,43 @@ test("only definitive client failures release durable send identity", () => {
   assert.equal(definitiveSubmissionStatus(409, "runtime communication ID collision"), false);
   assert.equal(definitiveSubmissionStatus(500), false);
   assert.equal(definitiveSubmissionStatus(503), false);
+});
+
+test("observed runtime refreshes preserve an exact hydrated submission request", () => {
+  const hydrated = withPendingRequest({
+    fingerprint: "a".repeat(64),
+    idempotencyKey: "operation-a",
+  }, {
+    recipientAgentIds: ["agent-a"],
+    runtime: { activeRunDelivery: "steer", engine: "codex", model: "old-model" },
+  });
+  assert.equal(pendingSubmissionAfterRuntimeObservation(hydrated), hydrated);
+  assert.equal(pendingSubmissionAfterRuntimeObservation({
+    fingerprint: "b".repeat(64),
+    idempotencyKey: "not-dispatched",
+  }), undefined);
+});
+
+test("a committed Agent creation settles a later all-unavailable recipient result", () => {
+  assert.equal(
+    compoundCreationSettlesUnavailable(
+      true,
+      409,
+      "No addressed Agent remains available",
+    ),
+    true,
+  );
+  assert.equal(
+    compoundCreationSettlesUnavailable(
+      false,
+      409,
+      "No addressed Agent remains available",
+    ),
+    false,
+  );
+  assert.equal(
+    compoundCreationSettlesUnavailable(true, 409, "runtime communication ID collision"),
+    false,
+  );
+  assert.equal(compoundCreationSettlesUnavailable(true, 503, "unavailable"), false);
 });

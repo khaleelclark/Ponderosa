@@ -109,6 +109,13 @@ export const definitiveSubmissionStatus = (
   status >= 400 && status < 500 &&
   !(status === 409 && message.toLocaleLowerCase().includes("collision"));
 
+export const compoundCreationSettlesUnavailable = (
+  creationCommitted: boolean,
+  status: number,
+  message: string,
+): boolean => creationCommitted && status === 409 &&
+  message === "No addressed Agent remains available";
+
 /** Release a prepared operation when the user changes its submission intent. */
 export const abandonIdempotentAttempt = <T>(
   current: IdempotentAttempt<T> | undefined,

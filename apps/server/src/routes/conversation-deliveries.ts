@@ -164,19 +164,22 @@ function replayedDirectRecipient(
 }
 
 function requestedRuntimeSelection(body: {
+  engine?: unknown;
   model?: unknown;
   effort?: unknown;
   speed?: unknown;
-}): { model?: string; effort?: string; speed?: string } | undefined {
-  const values = [body.model, body.effort, body.speed];
+}): { engine?: string; model?: string; effort?: string; speed?: string } | undefined {
+  const values = [body.engine, body.model, body.effort, body.speed];
   if (values.some(value =>
     value !== undefined &&
     (typeof value !== "string" || value.trim().length > 200)
   )) return undefined;
+  const engine = typeof body.engine === "string" ? body.engine.trim() : "";
   const model = typeof body.model === "string" ? body.model.trim() : "";
   const effort = typeof body.effort === "string" ? body.effort.trim() : "";
   const speed = typeof body.speed === "string" ? body.speed.trim() : "";
   return {
+    ...(engine ? { engine } : {}),
     ...(model ? { model } : {}),
     ...(effort ? { effort } : {}),
     ...(speed ? { speed } : {}),
@@ -213,7 +216,7 @@ export function registerConversationDeliveryRoutes(
     if (!request.body || typeof request.body !== "object" || Array.isArray(request.body) ||
         Object.keys(request.body).some((key) => ![
           "text", "attachments", "recipientAgentMentions", "recipientAttachments",
-          "model", "effort", "speed", "activeRunDelivery", "idempotencyKey",
+          "engine", "model", "effort", "speed", "activeRunDelivery", "idempotencyKey",
         ].includes(key))) {
       return reply.code(400).send({ error: "message body contains unknown or invalid fields" });
     }
@@ -231,7 +234,7 @@ export function registerConversationDeliveryRoutes(
     const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
     const runtimeSelection = requestedRuntimeSelection(request.body ?? {});
     if (!runtimeSelection) {
-      return reply.code(400).send({ error: "model, effort, and speed must be strings of at most 200 characters" });
+      return reply.code(400).send({ error: "engine, model, effort, and speed must be strings of at most 200 characters" });
     }
     if (!rawText && (!Array.isArray(requestedAssets) || requestedAssets.length === 0)) {
       return reply.code(400).send({ error: "broadcast text or an attachment is required" });
@@ -352,19 +355,20 @@ export function registerConversationDeliveryRoutes(
       if (!handle || ["broadcast", "everyone", "user"].includes(handle)) continue;
       agentIdsByHandle.set(handle, [...(agentIdsByHandle.get(handle) ?? []), agent.id]);
     }
-    const authoredAgentHandles = [...new Set(messageTagTokens(requestedText ?? "")
-      .map((token) => token.handle.toLocaleLowerCase())
-      .filter((handle) => agentIdsByHandle.has(handle)))].sort();
     const boundHandles = recipientAgentMentions
       .map((binding) => binding.handle.toLocaleLowerCase())
       .sort();
+    const boundHandleSet = new Set(boundHandles);
+    const authoredAgentHandles = [...new Set(messageTagTokens(requestedText ?? "")
+      .map((token) => token.handle.toLocaleLowerCase())
+      .filter((handle) => boundHandleSet.has(handle) || agentIdsByHandle.has(handle)))].sort();
     if (authoredAgentHandles.join("\0") !== boundHandles.join("\0")) {
       return reply.code(400).send({ error: "every targeted #Agent mention must have one canonical binding" });
     }
     if (recipientAgentMentions.some((binding) => {
-      const matches = agentIdsByHandle.get(binding.handle.toLocaleLowerCase()) ?? [];
-      return binding.projectId !== master.projectId || matches.length !== 1 ||
-        matches[0] !== binding.agentId;
+      const agent = store.getAgent(binding.agentId);
+      return binding.projectId !== master.projectId ||
+        !isActiveConversationAgent(agent, master);
     })) {
       return reply.code(400).send({ error: "Broadcast Agent mention binding is stale, ambiguous, or invalid" });
     }
@@ -635,7 +639,7 @@ export function registerConversationDeliveryRoutes(
     async (request, reply) => {
       if (!request.body || typeof request.body !== "object" || Array.isArray(request.body) ||
           Object.keys(request.body).some((key) => ![
-            "text", "recipients", "idempotencyKey", "activeRunDelivery", "model", "effort", "speed",
+            "text", "recipients", "idempotencyKey", "activeRunDelivery", "engine", "model", "effort", "speed",
           ].includes(key))) {
         return reply.code(400).send({ error: "direct message body contains unknown or invalid fields" });
       }
@@ -649,7 +653,7 @@ export function registerConversationDeliveryRoutes(
       const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
       const runtimeSelection = requestedRuntimeSelection(request.body ?? {});
       if (!runtimeSelection) {
-        return reply.code(400).send({ error: "model, effort, and speed must be strings of at most 200 characters" });
+        return reply.code(400).send({ error: "engine, model, effort, and speed must be strings of at most 200 characters" });
       }
       if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
         return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
