@@ -92,9 +92,10 @@ import { ChatComposerDock } from "./chat/ChatComposerDock";
 import { ReadAloudControls } from "./speech/ReadAloudControls";
 import {
   abandonIdempotentAttempt,
-  compoundCreationSettlesUnavailable,
+  compoundCreationUnavailableUploads,
   preparedIdempotentAttemptForRetry,
   retainIdempotentAttempt,
+  withCommittedAgentCreation,
   withPendingAgentTitle,
   type IdempotentAttempt,
 } from "./idempotentAttempt";
@@ -737,7 +738,10 @@ export function AllChatView({
       submissionSourceKey?: string;
       submissionTargetId?: string;
       pendingSubmission?: import("@ponderosa/core").DraftPendingSubmissionDto;
-      persistPendingSubmission?: (value: import("@ponderosa/core").DraftPendingSubmissionDto) => Promise<void>;
+      persistPendingSubmission?: (
+        value: import("@ponderosa/core").DraftPendingSubmissionDto,
+        retainOnFailure?: boolean,
+      ) => Promise<void>;
     }) => {
       const previous = sendAttempt.current;
       let attempt = preparedIdempotentAttemptForRetry(
@@ -769,6 +773,8 @@ export function AllChatView({
           currentRecipientConversationIds[0] ?? selectedConversationId;
         const currentRuntime = pendingSubmission?.request?.runtime
           ? {
+              activeRunDelivery:
+                pendingSubmission.request.runtime.activeRunDelivery,
               ...(pendingSubmission.request.runtime.engine
                 ? { engine: pendingSubmission.request.runtime.engine }
                 : {}),
@@ -894,6 +900,10 @@ export function AllChatView({
         });
         if ("recovering" in created) creationRecovering = true;
         else createdAgentIds.push(created.id);
+        if (pendingSubmission && persistPendingSubmission) {
+          pendingSubmission = withCommittedAgentCreation(pendingSubmission);
+          await persistPendingSubmission(pendingSubmission, true);
+        }
       }
       if (recipientIds.length > 0) {
         const conversationId = prepared.conversationId;
@@ -932,22 +942,47 @@ export function AllChatView({
                 .map(attachment => attachment.id),
             })),
             idempotencyKey: `${requestId}:${conversationId}`,
-            activeRunDelivery: "steer",
+            activeRunDelivery: submittedRuntime.activeRunDelivery ?? "steer",
             ...(submittedRuntime.engine ? { engine: submittedRuntime.engine } : {}),
             ...(submittedRuntime.model ? { model: submittedRuntime.model } : {}),
             ...(submittedRuntime.effort ? { effort: submittedRuntime.effort } : {}),
             ...(submittedRuntime.speed ? { speed: submittedRuntime.speed } : {}),
           });
         } catch (error) {
-          if (!(error instanceof ApiRequestError &&
-              compoundCreationSettlesUnavailable(
+          const cleanupUploads = error instanceof ApiRequestError
+            ? compoundCreationUnavailableUploads(
                 createdTitles.length > 0,
                 error.status,
                 error.message,
-              ))) {
+                uploaded,
+              )
+            : undefined;
+          if (!cleanupUploads) {
             throw error;
           }
           unavailableCount = recipientIds.length;
+          let cleanupReported = false;
+          await retryRecipientUploadCleanup(
+            cleanupUploads,
+            async (agentId, attachment) => {
+              try {
+                await api.deleteAttachment(agentId, attachment.id);
+              } catch (cleanupError) {
+                if (!(cleanupError instanceof ApiRequestError) || cleanupError.status !== 404) {
+                  throw cleanupError;
+                }
+              }
+            },
+            pending => {
+              if (pending && !cleanupReported) {
+                cleanupReported = true;
+                setPendingUploadCleanups(count => count + 1);
+              } else if (!pending && cleanupReported) {
+                cleanupReported = false;
+                setPendingUploadCleanups(count => Math.max(0, count - 1));
+              }
+            },
+          );
           if (sendAttempt.current === attempt) sendAttempt.current = undefined;
           return {
             recipientIds: createdAgentIds,

@@ -124,7 +124,7 @@ export function draftUpdateBodyError(
     if (Object.keys(pending).some(key => ![
       "fingerprint", "intentFingerprint", "idempotencyKey", "request", "draftAttachmentIds",
       "editableDraftAttachmentIds", "pastedTextAttachmentId", "editablePastedTextAttachmentId",
-      "agentTitle", "uploads",
+      "agentTitle", "agentCreationCommitted", "uploads",
     ].includes(key)) ||
         typeof pending.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(pending.fingerprint) ||
         (pending.intentFingerprint !== undefined &&
@@ -166,7 +166,9 @@ export function draftUpdateBodyError(
         (pending.agentTitle !== undefined &&
           (pending.intentFingerprint === undefined ||
             typeof pending.agentTitle !== "string" || !pending.agentTitle.trim() ||
-            unicodeCodePointLength(pending.agentTitle) > 200))) return "invalid pending draft submission";
+            unicodeCodePointLength(pending.agentTitle) > 200)) ||
+        (pending.agentCreationCommitted !== undefined &&
+          pending.agentCreationCommitted !== true)) return "invalid pending draft submission";
     if (pending.uploads !== undefined &&
         (!Array.isArray(pending.uploads) || pending.uploads.length > 4 ||
           pending.uploads.some(value => {

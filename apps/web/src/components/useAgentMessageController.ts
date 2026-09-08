@@ -153,7 +153,10 @@ export function useAgentMessageController({
       context?: {
         retryPreparedAttempt?: boolean;
         pendingSubmission?: DraftPendingSubmissionDto;
-        persistPendingSubmission?(value: DraftPendingSubmissionDto): Promise<void>;
+        persistPendingSubmission?(
+          value: DraftPendingSubmissionDto,
+          retainOnFailure?: boolean,
+        ): Promise<void>;
       },
     ) => {
       const sent = (async () => {

@@ -95,6 +95,7 @@ test("draft updates accept only exact typed bounded state", () => {
     draftAttachmentIds: [validAssetId],
     editableDraftAttachmentIds: [validAssetId],
     agentTitle: "Bryce Canyon",
+    agentCreationCommitted: true,
     uploads: [{
       scope: "direct",
       recipients: [{ agentId: "agent-a", attachmentIds: [validAssetId] }],
@@ -111,6 +112,7 @@ test("draft updates accept only exact typed bounded state", () => {
     { ...pendingSubmission, agentTitle: "" },
     { ...pendingSubmission, agentTitle: "x".repeat(201) },
     { ...pendingSubmission, intentFingerprint: undefined },
+    { ...pendingSubmission, agentCreationCommitted: false },
     { ...pendingSubmission, extra: true },
     { ...pendingSubmission, request: { ...pendingSubmission.request, recipientAgentIds: ["agent-a", "agent-a"] } },
     { ...pendingSubmission, request: { ...pendingSubmission.request, mentionBindings: [{ bad: true }] } },

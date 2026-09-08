@@ -38,9 +38,10 @@ import { queryKeys } from "../queryKeys";
 import type { AgentStatus } from "../agents";
 import { activeDirectDeliveryAgentIds } from "./directDeliveryState";
 import {
-  compoundCreationSettlesUnavailable,
+  compoundCreationUnavailableUploads,
   preparedIdempotentAttemptForRetry,
   retainIdempotentAttempt,
+  withCommittedAgentCreation,
   withPendingAgentTitle,
   type IdempotentAttempt,
 } from "./idempotentAttempt";
@@ -526,7 +527,10 @@ export function useConversationMessagingController({
     newAgentRequested = false,
     retryPreparedAttempt = false,
     pendingSubmission?: import("@ponderosa/core").DraftPendingSubmissionDto,
-    persistPendingSubmission?: (value: import("@ponderosa/core").DraftPendingSubmissionDto) => Promise<void>,
+    persistPendingSubmission?: (
+      value: import("@ponderosa/core").DraftPendingSubmissionDto,
+      retainOnFailure?: boolean,
+    ) => Promise<void>,
   ) => {
     setSpawnNotice(undefined);
     const previous = submissionAttempt.current;
@@ -715,6 +719,10 @@ export function useConversationMessagingController({
         runtimeConfig: prepared.runConfig,
       });
       agentCreationCommitted = true;
+      if (pendingSubmission && persistPendingSubmission) {
+        pendingSubmission = withCommittedAgentCreation(pendingSubmission);
+        await persistPendingSubmission(pendingSubmission, true);
+      }
       if (!("recovering" in created)) createdAgentIds.push(created.id);
     }
     if (submittedBroadcastText !== undefined) {
@@ -772,15 +780,40 @@ export function useConversationMessagingController({
           runtimeConfig: prepared.runConfig,
         });
       } catch (error) {
-        if (!(error instanceof ApiRequestError &&
-            compoundCreationSettlesUnavailable(
+        const cleanupUploads = error instanceof ApiRequestError
+          ? compoundCreationUnavailableUploads(
               agentCreationCommitted,
               error.status,
               error.message,
-            ))) {
+              uploadedRecipients,
+            )
+          : undefined;
+        if (!cleanupUploads) {
           throw error;
         }
         sendToAgents.reset();
+        let cleanupReported = false;
+        await retryRecipientUploadCleanup(
+          cleanupUploads,
+          async (agentId, attachment) => {
+            try {
+              await api.deleteAttachment(agentId, attachment.id);
+            } catch (cleanupError) {
+              if (!(cleanupError instanceof ApiRequestError) || cleanupError.status !== 404) {
+                throw cleanupError;
+              }
+            }
+          },
+          pending => {
+            if (pending && !cleanupReported) {
+              cleanupReported = true;
+              setPendingUploadCleanups(count => count + 1);
+            } else if (!pending && cleanupReported) {
+              cleanupReported = false;
+              setPendingUploadCleanups(count => Math.max(0, count - 1));
+            }
+          },
+        );
         setActiveOperation(createdAgentIds.length
           ? { agentIds: createdAgentIds, state: "starting" }
           : undefined);

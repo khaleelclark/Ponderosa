@@ -372,6 +372,17 @@ export function composerPreparedRetryAction<Action>(
     : undefined;
 }
 
+export function composerDurableRetryAction(
+  prepared: "send" | "queue" | undefined,
+  activeRunDelivery: "steer" | "queue" | undefined,
+): "send" | "queue" | undefined {
+  return activeRunDelivery === "queue"
+    ? "queue"
+    : activeRunDelivery === "steer"
+      ? "send"
+      : prepared;
+}
+
 export function removeComposerPasteSelection(
   selection:
     | { kind: "range"; removeText: () => void }

@@ -42,6 +42,7 @@ import {
   shouldAdoptHydratedDraft,
   composerRecipientGateSatisfied,
   composerPreparedRetryAction,
+  composerDurableRetryAction,
   composerSubmissionMayClearDraft,
   draftContentRetryStillOwned,
   draftWriteContinuationStillOwned,
@@ -75,13 +76,16 @@ import {
 import {
   abandonIdempotentAttempt,
   compoundCreationSettlesUnavailable,
+  compoundCreationUnavailableUploads,
   definitiveSubmissionStatus,
+  durableSubmissionMayBeReleased,
   durableSubmissionFingerprint,
   preparedIdempotentAttemptForRetry,
   retainIdempotentAttempt,
   selectIdempotentAttempt,
   selectDurableSubmission,
   withPendingAgentTitle,
+  withCommittedAgentCreation,
 } from "../src/components/idempotentAttempt.js";
 import {
   pendingDraftAttachmentIds,
@@ -89,6 +93,7 @@ import {
   pendingRecipientUploads,
   withPendingRecipientUploads,
   withPendingRequest,
+  retryRecipientUploadCleanup,
 } from "../src/conversationRouting.js";
 
 const bryce = {
@@ -1560,6 +1565,81 @@ test("only definitive client failures release durable send identity", () => {
   assert.equal(definitiveSubmissionStatus(409, "runtime communication ID collision"), false);
   assert.equal(definitiveSubmissionStatus(500), false);
   assert.equal(definitiveSubmissionStatus(503), false);
+});
+
+test("a committed compound Agent creation retains its identity after a later 4xx", () => {
+  const pending = withCommittedAgentCreation({
+    fingerprint: "a".repeat(64),
+    intentFingerprint: "b".repeat(64),
+    idempotencyKey: "compound-reload",
+    agentTitle: "Bryce Canyon",
+    request: {
+      conversationId: "chat-a",
+      recipientAgentIds: ["agent-a"],
+      runtime: { activeRunDelivery: "steer" },
+    },
+  });
+  assert.equal(withCommittedAgentCreation(pending), pending);
+  assert.equal(durableSubmissionMayBeReleased(pending, 409, "Project deletion is in progress"), false);
+  assert.equal(durableSubmissionMayBeReleased(pending, 400, "later delivery rejected"), false);
+  assert.equal(durableSubmissionMayBeReleased({ ...pending, agentCreationCommitted: undefined }, 400), true);
+});
+
+test("a durable send pins Steer or Queue and retains its prepared assets", () => {
+  assert.equal(composerDurableRetryAction(undefined, "steer"), "send");
+  assert.equal(composerDurableRetryAction(undefined, "queue"), "queue");
+  assert.equal(composerDurableRetryAction("queue", "steer"), "send");
+  const prepared = {
+    fingerprint: "steer",
+    idempotencyKey: "message-a",
+    prepared: { uploads: [{ agentId: "agent-a", attachments: [{ id: "asset-a" }] }] },
+  };
+  const selected = selectIdempotentAttempt(
+    prepared,
+    composerDurableRetryAction("send", "steer") === "send",
+    () => "queue",
+    () => "message-b",
+    () => ({ uploads: [] }),
+  );
+  assert.equal(selected, prepared);
+  assert.equal(selected.prepared.uploads[0].attachments[0].id, "asset-a");
+});
+
+test("committed all-unavailable compound sends retry cleanup before settlement", async () => {
+  const uploads = [{
+    agentId: "agent-a",
+    attachments: [{ id: "asset-a" }, { id: "asset-b" }],
+  }];
+  assert.equal(
+    compoundCreationUnavailableUploads(
+      true,
+      409,
+      "No addressed Agent remains available",
+      uploads,
+    ),
+    uploads,
+  );
+  assert.equal(
+    compoundCreationUnavailableUploads(
+      false,
+      409,
+      "No addressed Agent remains available",
+      uploads,
+    ),
+    undefined,
+  );
+  const attempts = new Map();
+  await retryRecipientUploadCleanup(
+    uploads,
+    async (_agentId, attachment) => {
+      const count = (attempts.get(attachment.id) ?? 0) + 1;
+      attempts.set(attachment.id, count);
+      if (attachment.id === "asset-a" && count === 1) throw new Error("offline");
+    },
+    undefined,
+    0,
+  );
+  assert.deepEqual([...attempts], [["asset-a", 2], ["asset-b", 1]]);
 });
 
 test("observed runtime refreshes preserve an exact hydrated submission request", () => {

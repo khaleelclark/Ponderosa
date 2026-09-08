@@ -62,7 +62,7 @@ import {
 } from "./composerDestination";
 import type { ComposerProps } from "./Composer.types";
 import {
-  definitiveSubmissionStatus,
+  durableSubmissionMayBeReleased,
   durableSubmissionFingerprint,
   selectDurableSubmission,
 } from "../idempotentAttempt";
@@ -89,6 +89,7 @@ import {
   canonicalDraftConflictFiles,
   composerAttachmentReducer,
   composerPreparedRetryAction,
+  composerDurableRetryAction,
   composerRecipientGateSatisfied,
   composerSubmissionText,
   cleanupReleasedDraftAttachmentIds,
@@ -710,6 +711,10 @@ export function Composer({
       ? defaultDestination
       : activeDefaultDestination;
   const durableRequest = pendingSubmissionRef.current?.request;
+  const durableRetryAction = composerDurableRetryAction(
+    preparedRetryAction,
+    durableRequest?.runtime.activeRunDelivery,
+  );
   const renderedDestinationIdentityRef = useRef<string>();
   renderedDestinationIdentityRef.current = renderedDefaultDestination?.selectionKey;
   const submissionText =
@@ -962,7 +967,7 @@ export function Composer({
     disabled,
     running: composerLocked,
     allowUnmentionedSend:
-      allowUnmentionedSend || Boolean(preparedRetryAction),
+      allowUnmentionedSend || Boolean(durableRetryAction),
     mentionedHandles,
     mentionedBusyHandles,
   });
@@ -975,7 +980,7 @@ export function Composer({
     destinationMode,
     newAgentSelected,
     requiredRecipientTagged: liveRequiredRecipientTagged,
-    retryPrepared: Boolean(preparedRetryAction || durableRequest),
+    retryPrepared: Boolean(durableRetryAction || durableRequest),
   });
   const draftUploadsReady =
     !conversationDraftId ||
@@ -991,7 +996,7 @@ export function Composer({
   const canSend =
     !sending &&
     !dictationSettling &&
-    (!destinationError || Boolean(preparedRetryAction) || Boolean(pendingSubmissionRef.current?.request)) &&
+    (!destinationError || Boolean(durableRetryAction) || Boolean(pendingSubmissionRef.current?.request)) &&
     targetRequiredRecipientTagged &&
     draftUploadsReady &&
     durableContentReady &&
@@ -1957,7 +1962,10 @@ export function Composer({
         newAgentRequested?: boolean;
         retryPreparedAttempt?: boolean;
         pendingSubmission?: DraftPendingSubmissionDto;
-        persistPendingSubmission?(value: DraftPendingSubmissionDto): Promise<void>;
+        persistPendingSubmission?(
+          value: DraftPendingSubmissionDto,
+          retainOnFailure?: boolean,
+        ): Promise<void>;
       },
     ) => Promise<unknown> | unknown,
     action: "send" | "queue",
@@ -1970,15 +1978,15 @@ export function Composer({
     }
     if (sendingRef.current || !canSend) return;
     if (
-      preparedRetryAction &&
-      preparedRetryAction !== action &&
-      destinationError
+      durableRetryAction && durableRetryAction !== action
     ) {
-      setPreparedRetry(undefined);
-      setSendError(destinationError);
+      const retryHandler = durableRetryAction === "queue"
+        ? onQueue ?? onSend
+        : onSend;
+      if (retryHandler) submit(retryHandler, durableRetryAction);
       return;
     }
-    const retryPreparedAttempt = preparedRetryAction === action;
+    const retryPreparedAttempt = durableRetryAction === action;
     const normalizedDraft = normalizeExclusiveNewAgentDestinationForMode(
       destinationMode,
       textRef.current,
@@ -2122,11 +2130,13 @@ export function Composer({
     }
     const persistPendingSubmission = async (
       value: DraftPendingSubmissionDto | undefined,
+      retainOnFailure = false,
     ): Promise<void> => {
       if (!submittedDraftScope) return;
       if (!submittedScopeStillActive()) {
         throw new Error("The draft destination changed before it could be sent.");
       }
+      if (retainOnFailure) pendingSubmissionRef.current = value;
       let saved: ConversationDraftDto | undefined;
       const write = settledDraftWriteContinuation(
         submittedDraftWriteChain.tail,
@@ -2221,8 +2231,7 @@ export function Composer({
               retryPreparedAttempt: retryPreparedAttempt || durableRetry,
               ...(pendingSubmission ? {
                 pendingSubmission,
-                persistPendingSubmission: (value: DraftPendingSubmissionDto) =>
-                  persistPendingSubmission(value),
+                persistPendingSubmission,
               } : {}),
             }
           : undefined;
@@ -2346,8 +2355,12 @@ export function Composer({
       })
       .catch(async (error: unknown) => {
         if (!submittedScopeStillActive()) return;
-        if (error instanceof ApiRequestError && definitiveSubmissionStatus(error.status, error.message) &&
-            pendingSubmissionRef.current) {
+        if (error instanceof ApiRequestError && pendingSubmissionRef.current &&
+            durableSubmissionMayBeReleased(
+              pendingSubmissionRef.current,
+              error.status,
+              error.message,
+            )) {
           await persistPendingSubmission(undefined).catch(() => undefined);
         }
         const intentUnchanged =

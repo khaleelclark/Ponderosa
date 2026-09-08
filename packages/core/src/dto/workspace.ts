@@ -236,6 +236,8 @@ export interface DraftPendingSubmissionDto {
   editablePastedTextAttachmentId?: string;
   /** Generated title bound to an Agent-creation submission before dispatch. */
   agentTitle?: string;
+  /** The compound Agent-creation step committed; later work must retain this identity. */
+  agentCreationCommitted?: boolean;
   /** Server asset IDs prepared before dispatch, grouped by request scope. */
   uploads?: Array<{
     scope: string;

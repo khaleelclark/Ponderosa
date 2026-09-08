@@ -20,7 +20,10 @@ export interface ChatComposerContract {
       /** Re-dispatch the exact operation retained after an ambiguous response. */
       retryPreparedAttempt?: boolean;
       pendingSubmission?: DraftPendingSubmissionDto;
-      persistPendingSubmission?(value: DraftPendingSubmissionDto): Promise<void>;
+      persistPendingSubmission?(
+        value: DraftPendingSubmissionDto,
+        retainOnFailure?: boolean,
+      ): Promise<void>;
     },
   ): Promise<unknown> | unknown;
   onQueue?(
@@ -34,7 +37,10 @@ export interface ChatComposerContract {
       /** Re-dispatch the exact operation retained after an ambiguous response. */
       retryPreparedAttempt?: boolean;
       pendingSubmission?: DraftPendingSubmissionDto;
-      persistPendingSubmission?(value: DraftPendingSubmissionDto): Promise<void>;
+      persistPendingSubmission?(
+        value: DraftPendingSubmissionDto,
+        retainOnFailure?: boolean,
+      ): Promise<void>;
     },
   ): Promise<unknown> | unknown;
   onCommand?(command: EngineCommand, argumentsText?: string): Promise<unknown> | unknown;

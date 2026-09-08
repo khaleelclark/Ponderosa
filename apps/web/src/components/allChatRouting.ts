@@ -22,6 +22,7 @@ export type AllChatSourceIdentity = {
 };
 
 export type AllChatRuntimePayload = {
+  activeRunDelivery?: "steer" | "queue";
   engine?: string;
   model?: string;
   effort?: string;

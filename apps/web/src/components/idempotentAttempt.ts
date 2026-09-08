@@ -102,6 +102,12 @@ export async function withPendingAgentTitle(
   };
 }
 
+export const withCommittedAgentCreation = (
+  pending: DraftPendingSubmissionDto,
+): DraftPendingSubmissionDto => pending.agentCreationCommitted
+  ? pending
+  : { ...pending, agentCreationCommitted: true };
+
 export const definitiveSubmissionStatus = (
   status: number,
   message = "",
@@ -109,12 +115,30 @@ export const definitiveSubmissionStatus = (
   status >= 400 && status < 500 &&
   !(status === 409 && message.toLocaleLowerCase().includes("collision"));
 
+export const durableSubmissionMayBeReleased = (
+  pending: DraftPendingSubmissionDto,
+  status: number,
+  message = "",
+): boolean => !pending.agentCreationCommitted &&
+  definitiveSubmissionStatus(status, message);
+
 export const compoundCreationSettlesUnavailable = (
   creationCommitted: boolean,
   status: number,
   message: string,
 ): boolean => creationCommitted && status === 409 &&
   message === "No addressed Agent remains available";
+
+export const compoundCreationUnavailableUploads = <T>(
+  creationCommitted: boolean,
+  status: number,
+  message: string,
+  uploads: T,
+): T | undefined => compoundCreationSettlesUnavailable(
+  creationCommitted,
+  status,
+  message,
+) ? uploads : undefined;
 
 /** Release a prepared operation when the user changes its submission intent. */
 export const abandonIdempotentAttempt = <T>(
