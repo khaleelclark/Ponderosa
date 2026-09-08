@@ -96,6 +96,14 @@ export type Route =
 
 const LAST_PROJECT_KEY = "ponderosa.lastProjectId";
 
+function decodeRouteSegment(value: string): string | undefined {
+  try {
+    return decodeURIComponent(value) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function parseRoute(pathname: string, search = ""): Route {
   const [cleanPathname, inlineSearch = ""] = pathname.split("?", 2);
   const query = new URLSearchParams(search || (inlineSearch ? `?${inlineSearch}` : ""));
@@ -160,7 +168,8 @@ export function parseRoute(pathname: string, search = ""): Route {
   if (parts[0] !== "projects" || !parts[1]) {
     return { kind: "home" };
   }
-  const projectId = decodeURIComponent(parts[1]);
+  const projectId = decodeRouteSegment(parts[1]);
+  if (!projectId) return { kind: "home" };
   if (parts[2] === "files" && parts[3] === "view" && query.get("path")) {
     return { kind: "workspaceFile", projectId, path: query.get("path")! };
   }
@@ -171,25 +180,34 @@ export function parseRoute(pathname: string, search = ""): Route {
   }
   if (parts[2] === "agents" && parts[3] && parts[4] === "runs" && parts[5] && parts[6] === "browser") {
     const conversationId = query.get("chat")?.trim() || undefined;
+    const agentId = decodeRouteSegment(parts[3]);
+    const runId = decodeRouteSegment(parts[5]);
+    if (!agentId || !runId) return { kind: "home" };
     return {
       kind: "browser",
       projectId,
-      agentId: decodeURIComponent(parts[3]),
-      runId: decodeURIComponent(parts[5]),
+      agentId,
+      runId,
       ...(conversationId ? { conversationId } : {}),
     };
   }
   if (parts[2] === "browser") return { kind: "browser", projectId };
   if (parts[2] === "automations") {
+    const triggerId = parts[3]
+      ? decodeRouteSegment(parts[3])
+      : undefined;
+    if (parts[3] && !triggerId) return { kind: "home" };
     return {
       kind: "automation",
       projectId,
-      ...(parts[3] ? { triggerId: decodeURIComponent(parts[3]) } : {}),
+      ...(triggerId ? { triggerId } : {}),
     };
   }
   if (parts[2] === "chats" && parts[3]) {
+    const conversationId = decodeRouteSegment(parts[3]);
+    if (!conversationId) return { kind: "home" };
     return {
-      kind: "conversation", projectId, conversationId: decodeURIComponent(parts[3]),
+      kind: "conversation", projectId, conversationId,
       // A URL is an explicit request to open this conversation. Keep this
       // transient marker out of route serialization so ordinary in-app
       // navigation can continue to restore the user's remembered subtab.
@@ -200,8 +218,10 @@ export function parseRoute(pathname: string, search = ""): Route {
     };
   }
   if (parts[2] === "agents" && parts[3]) {
+    const agentId = decodeRouteSegment(parts[3]);
+    if (!agentId) return { kind: "home" };
     return {
-      kind: "agent", projectId, agentId: decodeURIComponent(parts[3]),
+      kind: "agent", projectId, agentId,
       ...(focusMessageId ? { focusMessageId } : {}),
       ...(!focusMessageId && focusTelemetry ? { focusTelemetry } : {}),
       ...(!focusMessageId && !focusTelemetry && agentView ? { view: agentView } : {}),
@@ -210,7 +230,10 @@ export function parseRoute(pathname: string, search = ""): Route {
     };
   }
   if (parts[2] === "reviews" && parts[3]) {
-    return { kind: "review", projectId, agentId: decodeURIComponent(parts[3]), ...(reviewPath ? { path: reviewPath } : {}) };
+    const agentId = decodeRouteSegment(parts[3]);
+    return agentId
+      ? { kind: "review", projectId, agentId, ...(reviewPath ? { path: reviewPath } : {}) }
+      : { kind: "home" };
   }
   if (parts[2] === "agents") {
     return { kind: "agents", projectId };
@@ -221,6 +244,17 @@ export function parseRoute(pathname: string, search = ""): Route {
     ...(projectView ? { view: projectView } : {}),
     ...(focusArtifactId ? { focusArtifactId } : {}),
   };
+}
+
+export function parseRouteLocation(
+  pathname: string,
+  search = "",
+): { route: Route; replacement?: "/" } {
+  const route = parseRoute(pathname, search);
+  const cleanPathname = pathname.split("?", 1)[0] ?? pathname;
+  return decodeRouteSegment(cleanPathname)
+    ? { route }
+    : { route, replacement: "/" };
 }
 
 export function routeProjectId(route: Route): string | undefined {
@@ -239,10 +273,21 @@ export function useRoute(): {
   route: Route;
   navigate(route: Route, options?: { replace?: boolean }): void;
 } {
-  const [route, setRoute] = useState<Route>(() => parseRoute(window.location.pathname, window.location.search));
+  const [route, setRoute] = useState<Route>(() =>
+    parseRoute(window.location.pathname, window.location.search));
 
   useEffect(() => {
-    const onPop = () => setRoute(parseRoute(window.location.pathname, window.location.search));
+    const onPop = () => {
+      const next = parseRouteLocation(
+        window.location.pathname,
+        window.location.search,
+      );
+      if (next.replacement) {
+        window.history.replaceState(null, "", next.replacement);
+      }
+      setRoute(next.route);
+    };
+    onPop();
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);

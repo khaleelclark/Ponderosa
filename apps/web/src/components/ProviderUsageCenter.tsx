@@ -18,7 +18,6 @@ import {
   Typography,
 } from "@mui/material";
 import type {
-  ProviderUsageCenterDto,
   ProviderUsageFailureCode,
   ProviderUsageStateDto,
   ProviderUsageWindow,
@@ -28,6 +27,12 @@ import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../api";
+import {
+  loadLatestProviderUsage,
+  providerUsageRefreshInterval,
+  refreshLatestAgentProviderUsage,
+  refreshLatestProviderUsage,
+} from "../providerUsageQuery";
 import { queryKeys } from "../queryKeys";
 import { providerUsageCollectionPresentation } from "./providerUsagePresentation";
 
@@ -252,19 +257,6 @@ function constrainedProvider(providers: ProviderUsageStateDto[]): ProviderUsageS
     })[0];
 }
 
-function mergeProvider(
-  center: ProviderUsageCenterDto | undefined,
-  state: ProviderUsageStateDto,
-): ProviderUsageCenterDto {
-  const providers = center?.providers ?? [];
-  const index = providers.findIndex((candidate) => candidate.provider === state.provider);
-  return {
-    providers: index < 0
-      ? [...providers, state]
-      : providers.map((candidate, candidateIndex) => candidateIndex === index ? state : candidate),
-  };
-}
-
 export function ProviderQuotaIndicator({
   preferredProvider,
   mobile = false,
@@ -284,24 +276,21 @@ export function ProviderQuotaIndicator({
   const query = useQuery({
     queryKey: queryKeys.providerUsage.all,
     queryFn: () => api.getProviderUsage(),
-    refetchInterval: (current) =>
-      current.state.data?.providers.some((provider) => provider.refreshing) ? 1_000 : false,
+    refetchInterval: current =>
+      providerUsageRefreshInterval(current.state.data),
     staleTime: 30_000,
   });
   const load = useMutation({
-    mutationFn: () => api.getProviderUsage(true),
-    onSuccess: value => {
-      queryClient.setQueryData(queryKeys.providerUsage.all, value);
-    },
+    mutationFn: () => loadLatestProviderUsage(
+      queryClient,
+      () => api.getProviderUsage(true),
+    ),
   });
   const refreshRequest = useMutation({
-    mutationFn: (providerId: string) => api.refreshProviderUsage(providerId),
-    onSuccess: state => {
-      queryClient.setQueryData<ProviderUsageCenterDto>(
-        queryKeys.providerUsage.all,
-        current => mergeProvider(current, state),
-      );
-    },
+    mutationFn: (providerId: string) => refreshLatestProviderUsage(
+      queryClient,
+      () => api.refreshProviderUsage(providerId),
+    ),
   });
   const providers = useMemo(
     () => query.data?.providers ?? [],
@@ -511,26 +500,17 @@ export function AgentProviderUsageCard({
   });
   const state = query.data ?? initialState;
   const refreshRequest = useMutation({
-    mutationFn: () => api.refreshProviderUsage(state.provider),
-    onSuccess: next => {
-      queryClient.setQueryData(queryKeys.providerUsage.agent(agentId), next);
-      queryClient.setQueryData<ProviderUsageCenterDto>(
-        queryKeys.providerUsage.all,
-        current => mergeProvider(current, next),
-      );
-    },
+    mutationFn: () => refreshLatestAgentProviderUsage(
+      queryClient,
+      agentId,
+      () => api.refreshProviderUsage(state.provider),
+    ),
   });
   const presentation = providerUsageCollectionPresentation(
     1,
     query.isPending,
     refreshRequest.error ?? query.error,
   );
-  useEffect(() => {
-    queryClient.setQueryData<ProviderUsageCenterDto>(
-      queryKeys.providerUsage.all,
-      (current) => mergeProvider(current, state),
-    );
-  }, [queryClient, state]);
   return (
     <Box sx={{ mx: 1.5, mt: 1 }}>
       <ProviderUsageCard

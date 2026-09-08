@@ -11,6 +11,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { copyText } from "../../clipboard";
+import { MESSAGE_TAG_PREFIX, messageTagHandle } from "../../mentions";
 import { LazySyntaxHighlightedCode } from "../LazySyntaxHighlightedCode";
 import { useProjectBrowser } from "../ProjectBrowserContext";
 import { ChatDocumentCard } from "./ChatDocumentCard";
@@ -368,8 +369,6 @@ interface MarkdownAstNode {
   children?: MarkdownAstNode[];
 }
 
-const MESSAGE_TAG_PREFIX = "#ponderosa-tag:";
-
 function projectFileReference(href: string | undefined): {
   projectId: string;
   artifactId: string;
@@ -556,7 +555,8 @@ function ChatMarkdown({
               );
             }
             if (!href?.startsWith(MESSAGE_TAG_PREFIX)) return <ChatLink href={href ?? ""} previewScope={previewScope} projectId={projectId}>{label}</ChatLink>;
-            const handle = decodeURIComponent(href.slice(MESSAGE_TAG_PREFIX.length));
+            const handle = messageTagHandle(href);
+            if (!handle) return <Box component="span">{label}</Box>;
             if (handle.toLocaleLowerCase() === "broadcast" && onOpenBroadcast) {
               return <Box className="chat-text-navigation" component="button" type="button" aria-label="Open originating broadcast in Project chat" onClick={onOpenBroadcast} sx={{ display: "inline", p: 0, border: 0, bgcolor: "transparent", color: "inherit", font: "inherit", fontWeight: 600, textDecoration: "none", cursor: "pointer" }}>{label}</Box>;
             }

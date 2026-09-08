@@ -6,6 +6,19 @@ import {
 
 const RESERVED_SCOPE_HANDLES = new Set(["broadcast", "user", "everyone"]);
 
+export const MESSAGE_TAG_PREFIX = "#ponderosa-tag:";
+
+/** Decode only Ponderosa's internal mention links; malformed authored Markdown
+ * remains ordinary inert text instead of taking down the transcript. */
+export function messageTagHandle(href: string | undefined): string | undefined {
+  if (!href?.startsWith(MESSAGE_TAG_PREFIX)) return undefined;
+  try {
+    return decodeURIComponent(href.slice(MESSAGE_TAG_PREFIX.length)) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Stable, typeable handle derived from the agent's current display name. */
 export function agentMentionHandle(title: string): string {
   return agentMentionHandleBase(title);

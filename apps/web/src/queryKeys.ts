@@ -5,7 +5,7 @@
  * refreshes every Project roster, while `queryKeys.agents.project(id)` only
  * refreshes one Project. Components should not spell these arrays themselves.
  */
-import { AGENT_DETAIL_PAGE_SIZE } from "./agentHistoryPagination";
+import { AGENT_DETAIL_PAGE_SIZE } from "./agentHistoryPagination.js";
 
 export const queryKeys = {
   health: {

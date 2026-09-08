@@ -38,6 +38,7 @@ import {
 import { queryKeys } from "../queryKeys";
 import { routeClearsProjectSidebarContext } from "../routeRegistry";
 import { routeProjectId, type Route } from "../routing";
+import { projectScopedWorkspaceDirectoryItems } from "../workspaceDirectoryScope";
 import { useAgent, useConversation, useNotificationProjection } from "../hooks/queries";
 import {
   reorderStableIds,
@@ -222,15 +223,18 @@ export function WorkspaceSidebar({
   const projectItems = projectDirectoryQuery.requestState.hasResolved
     ? [...projectDirectory.starredItems, ...projectDirectory.items]
     : projectFallbackItems;
-  const chatItems = [...chatDirectory.starredItems, ...chatDirectory.items];
-  const agentItems = [
-    ...agentDirectory.starredItems,
-    ...agentDirectory.items,
-  ];
-  const triggerItems = [
-    ...triggerDirectory.starredItems,
-    ...triggerDirectory.items,
-  ];
+  const chatItems = projectScopedWorkspaceDirectoryItems(
+    [...chatDirectory.starredItems, ...chatDirectory.items],
+    drawerProjectId,
+  );
+  const agentItems = projectScopedWorkspaceDirectoryItems(
+    [...agentDirectory.starredItems, ...agentDirectory.items],
+    drawerProjectId,
+  );
+  const triggerItems = projectScopedWorkspaceDirectoryItems(
+    [...triggerDirectory.starredItems, ...triggerDirectory.items],
+    drawerProjectId,
+  );
   const projectionConversationIds = [
     ...chatItems.map(item => item.conversation.id),
     ...(route.kind === "conversation" ? [route.conversationId] : []),
