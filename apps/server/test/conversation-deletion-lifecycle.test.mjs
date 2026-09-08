@@ -20,6 +20,7 @@ const noCleanup = {
   settleDraftAttachment: () => {},
   releaseDraftAttachment: () => true,
   syncDraftAttachment: () => {},
+  finishDraftSurfaceCleanup: () => {},
 };
 
 function fixture(t) {
@@ -68,14 +69,27 @@ test("committed Chat cleanup retains refresh and draft rm failures for exact ret
   for (const draftId of [chat.id, `collaboration:${chat.id}`]) {
     workspace.putDraft(draftId, {
       text: "recover me",
-      attachmentIds: [],
+      attachmentIds: ["current-file"],
+      pastedTextAttachmentId: "current-paste",
       mentionBindings: [],
       expectedRevision: 0,
       clientId: "page:one",
       ownerId: "browser-one",
     });
+    assert.throws(() => workspace.putDraft(draftId, {
+      text: "displaced conflict",
+      attachmentIds: ["conflict-file"],
+      pastedTextAttachmentId: "conflict-paste",
+      mentionBindings: [],
+      expectedRevision: 0,
+      clientId: "page:two",
+      ownerId: "browser-one",
+    }), error => error?.code === "DRAFT_CONFLICT");
+    assert.equal(workspace.listDraftConflicts(draftId, "browser-one").conflicts.length, 1);
     mkdirSync(drafts.surfaceDir(draftId), { recursive: true });
-    writeFileSync(join(drafts.surfaceDir(draftId), "sentinel"), "draft");
+    for (const name of ["current-file", "current-paste", "conflict-file", "conflict-paste"]) {
+      writeFileSync(join(drafts.surfaceDir(draftId), name), "draft");
+    }
   }
   const receipt = store.commitConversationDeletion(chat.id);
   assert.ok(receipt);
@@ -128,6 +142,8 @@ test("committed Chat cleanup retains refresh and draft rm failures for exact ret
   assert.equal(existsSync(drafts.surfaceDir(`collaboration:${chat.id}`)), false);
   assert.equal(workspace.getDraft(chat.id, "browser-one").text, "");
   assert.equal(workspace.getDraft(`collaboration:${chat.id}`, "browser-one").text, "");
+  assert.equal(workspace.listDraftConflicts(chat.id, "browser-one").conflicts.length, 0);
+  assert.equal(workspace.listDraftConflicts(`collaboration:${chat.id}`, "browser-one").conflicts.length, 0);
   assert.equal(
     workspace.readSince(0).filter(event =>
       event.event.type === "conversation_changed" &&

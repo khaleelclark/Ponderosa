@@ -81,7 +81,7 @@ interface ProjectDeletionCoordinatorContext {
   logError(meta: Record<string, unknown>, message: string): void;
   providerProcessAuthority: ProviderProcessAuthority;
   workingCopies: AgentWorkingCopyService;
-  drafts: Pick<DraftService, "deleteProjectSurface" | "fenceMutationGroup" | "releaseMutationGroup">;
+  drafts: Pick<DraftService, "deleteSurface" | "fenceMutationGroup" | "releaseMutationGroup">;
   workspace: Pick<WorkspaceStore, "deleteDraft">;
   processConversationDeletionCleanup(
     receipt: ConversationDeletionReceipt,
@@ -148,7 +148,7 @@ export function registerProjectDeletionRoutes(
     await ensureProjectDraftFence(receipt.projectId, receipt.draftSurfaceIds);
     for (const draftId of receipt.draftSurfaceIds) {
       workspace.deleteDraft(draftId);
-      await drafts.deleteProjectSurface(draftId);
+      await drafts.deleteSurface(draftId);
     }
     store.markProjectDeletionDraftCleanupComplete(receipt.projectId);
     drafts.releaseMutationGroup(`project:${receipt.projectId}`);

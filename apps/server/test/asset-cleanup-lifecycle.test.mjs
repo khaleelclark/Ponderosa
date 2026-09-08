@@ -5,12 +5,14 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import Database from "better-sqlite3";
 import {
   ASSET_LIMITS,
   DRAFT_ASSET_LIMITS,
   removeStagedAssetFiles,
 } from "../dist/assets.js";
 import { AssetAuthority } from "../dist/asset-authority.js";
+import { DraftService } from "../dist/routes/drafts.js";
 
 test("partial asset deletion keeps its receipt and quota until restart completes every file", async (t) => {
   const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-asset-cleanup-"));
@@ -191,6 +193,99 @@ test("draft surface cleanup atomically settles reservations, committed quota, cl
     randomUUID(),
     ASSET_LIMITS.maxFileBytes,
   ));
+});
+
+for (const deletedSurface of ["chat-delete", "collaboration:chat-delete", "agent:agent-delete"]) {
+  test(`${deletedSurface} canonical deletion removes files and immediately releases workspace quota`, async (t) => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-entity-draft-cleanup-"));
+    t.after(() => rm(dataDir, { recursive: true, force: true }));
+    let authority = new AssetAuthority(dataDir);
+    t.after(() => authority.close());
+    let drafts = new DraftService(dataDir, {}, {}, authority);
+    const surfaces = [deletedSurface, "filler-a", "filler-b", "filler-c"];
+    for (const draftId of surfaces) {
+      for (let index = 0; index < 64; index += 1) {
+        const assetId = randomUUID();
+        const reservation = authority.reserveDraftAttachment(
+          draftId,
+          `owner-${index}`,
+          assetId,
+          ASSET_LIMITS.maxFileBytes,
+        );
+        if (index === 63) continue;
+        authority.settleDraftAttachment(reservation);
+        if (index === 0) {
+          authority.enqueueDraftAttachmentCleanup(draftId, `owner-${index}`, assetId, 0);
+        }
+      }
+    }
+    const surfaceDirectory = drafts.surfaceDir(deletedSurface);
+    await mkdir(path.join(surfaceDirectory, "current"), { recursive: true });
+    for (const name of ["file.bin", "paste.bin", "conflict-file.bin", "conflict-paste.bin"]) {
+      await writeFile(path.join(surfaceDirectory, "current", name), name);
+    }
+    assert.throws(
+      () => authority.reserveDraftAttachment("blocked", "owner", randomUUID(), 1),
+      /draft asset quota exceeded/u,
+    );
+
+    await drafts.deleteSurface(deletedSurface);
+    assert.equal(existsSync(surfaceDirectory), false);
+    assert.doesNotThrow(() => authority.reserveDraftAttachment(
+      "available-immediately",
+      "owner",
+      randomUUID(),
+      ASSET_LIMITS.maxFileBytes,
+    ));
+    const sqlite = new Database(path.join(dataDir, "asset-authority.sqlite"), { readonly: true });
+    for (const table of [
+      "draft_asset_settlements",
+      "draft_asset_reservations",
+      "draft_asset_committed",
+      "draft_attachment_cleanups",
+      "draft_asset_rate_events",
+    ]) {
+      assert.equal(sqlite.prepare(`SELECT COUNT(*) count FROM ${table} WHERE draft_id=?`)
+        .get(deletedSurface).count, 0, table);
+    }
+    sqlite.close();
+
+    authority.close();
+    authority = new AssetAuthority(dataDir);
+    drafts = new DraftService(dataDir, {}, {}, authority);
+    await drafts.deleteSurface(deletedSurface);
+    assert.doesNotThrow(() => authority.reserveDraftAttachment(
+      "available-after-restart",
+      "owner",
+      randomUUID(),
+      ASSET_LIMITS.maxFileBytes,
+    ));
+  });
+}
+
+test("entity draft cleanup retries after files were removed but ledger settlement failed", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-entity-draft-cleanup-retry-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  let authority = new AssetAuthority(dataDir);
+  t.after(() => authority.close());
+  const draftId = "agent:retry";
+  const assetId = randomUUID();
+  const reservation = authority.reserveDraftAttachment(draftId, "owner", assetId, 1);
+  authority.settleDraftAttachment(reservation);
+  const originalFinish = authority.finishDraftSurfaceCleanup.bind(authority);
+  authority.finishDraftSurfaceCleanup = () => { throw new Error("injected ledger cleanup failure"); };
+  let drafts = new DraftService(dataDir, {}, {}, authority);
+  await mkdir(drafts.surfaceDir(draftId), { recursive: true });
+  await writeFile(path.join(drafts.surfaceDir(draftId), "file.bin"), "draft");
+
+  await assert.rejects(() => drafts.deleteSurface(draftId), /injected ledger cleanup failure/u);
+  assert.equal(existsSync(drafts.surfaceDir(draftId)), false);
+  authority.finishDraftSurfaceCleanup = originalFinish;
+  authority.close();
+  authority = new AssetAuthority(dataDir);
+  drafts = new DraftService(dataDir, {}, {}, authority);
+  await drafts.deleteSurface(draftId);
+  assert.doesNotThrow(() => authority.reserveDraftAttachment(draftId, "owner", randomUUID(), 1));
 });
 
 test("draft quota enforces the workspace aggregate across independent surfaces", async (t) => {

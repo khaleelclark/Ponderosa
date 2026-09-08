@@ -31,6 +31,7 @@ const noCleanup = {
   settleDraftAttachment: () => {},
   releaseDraftAttachment: () => true,
   syncDraftAttachment: () => {},
+  finishDraftSurfaceCleanup: () => {},
 };
 
 function deferred() {

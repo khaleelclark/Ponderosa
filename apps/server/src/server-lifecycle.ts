@@ -472,7 +472,7 @@ export function registerServerLifecycle(
       try {
         for (const draftId of initial.draftSurfaceIds) {
           workspace.deleteDraft(draftId);
-          await drafts.deleteProjectSurface(draftId);
+          await drafts.deleteSurface(draftId);
         }
         store.markProjectDeletionDraftCleanupComplete(initial.projectId);
         drafts.releaseMutationGroup(`project:${initial.projectId}`);

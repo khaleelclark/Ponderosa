@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import Database from "better-sqlite3";
 import { AgentStore } from "../dist/index.js";
 
 function fixture(t) {
@@ -104,6 +105,48 @@ test("Project cleanup retry converges after a crash immediately following remova
   store.finishProjectDeletionStorageCleanup(receipt);
 
   assert.equal(store.getProjectDeletionReceipt(project.id)?.storageCleanupCompleted, true);
+});
+
+test("late projection failure cannot roll back completed Project storage recovery", (t) => {
+  const { dataDir, store, project } = fixture(t);
+  const unrelated = store.createProject({
+    label: "Unrelated",
+    hostPath: "/tmp/unrelated",
+    defaultEngine: "codex",
+  });
+  const unrelatedJson = join(dataDir, "projects", unrelated.id, "project.json");
+  const originalUnrelatedJson = readFileSync(unrelatedJson, "utf8");
+  const receipt = store.commitProjectDeletion(project.id);
+  const tombstone = join(dataDir, "projects", receipt.tombstoneName);
+  assert.throws(
+    () => store.finishProjectDeletionStorageCleanup(receipt, () => {
+      throw new Error("injected crash after tombstone removal");
+    }),
+    /injected crash/u,
+  );
+  store.close();
+  writeFileSync(unrelatedJson, "{corrupt unrelated projection");
+
+  assert.throws(() => new AgentStore(dataDir), /JSON/u);
+  const sqlite = new Database(join(dataDir, "ponderosa.db"), { readonly: true });
+  const recoveredReceipt = sqlite.prepare(`
+    SELECT removal_started removalStarted,
+           storage_cleanup_completed storageCleanupCompleted
+    FROM project_deletion_receipts WHERE project_id = ?
+  `).get(project.id);
+  sqlite.close();
+  assert.deepEqual(recoveredReceipt, {
+    removalStarted: 1,
+    storageCleanupCompleted: 1,
+  });
+  assert.equal(existsSync(tombstone), false);
+
+  writeFileSync(unrelatedJson, originalUnrelatedJson);
+  const reopened = new AgentStore(dataDir);
+  assert.equal(reopened.getProjectDeletionReceipt(project.id)?.storageCleanupCompleted, true);
+  assert.equal(reopened.getProject(project.id), undefined);
+  assert.equal(reopened.getProject(unrelated.id)?.id, unrelated.id);
+  reopened.close();
 });
 
 test("Project cleanup preserves an ABA replacement after removal started", (t) => {

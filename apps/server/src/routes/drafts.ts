@@ -288,10 +288,6 @@ export class DraftService {
 
   async deleteSurface(draftId: string): Promise<void> {
     await fs.rm(this.surfaceDir(draftId), { recursive: true, force: true });
-  }
-
-  async deleteProjectSurface(draftId: string): Promise<void> {
-    await this.deleteSurface(draftId);
     this.cleanupAuthority.finishDraftSurfaceCleanup(draftId);
   }
 

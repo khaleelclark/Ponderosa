@@ -63,11 +63,14 @@ export class AgentProjectionRebuilder {
   ) {}
 
   rebuildProjections(): void {
+    // Project recovery crosses an irreversible filesystem boundary. Its receipt
+    // commits must not be rolled back when a later, unrelated projection replay
+    // fails and the broad rebuild transaction is reverted.
+    this.recoverProjectDeletionDirectories();
     this.client.transaction(() => this.rebuildProjectionsInTransaction())();
   }
 
   private rebuildProjectionsInTransaction(): void {
-    this.recoverProjectDeletionDirectories();
     this.recoverAgentDeletionDirectories();
     this.client.prepare(`DELETE FROM all_chat_feed_projection`).run();
     this.client.prepare(`DELETE FROM agent_health_projection`).run();
