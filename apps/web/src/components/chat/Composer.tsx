@@ -39,7 +39,11 @@ import { api } from "../../api";
 import { ApiRequestError } from "../../api/types";
 import { readChatState, writeChatState } from "../../chatState";
 import { createClientId, draftSurfaceClientId } from "../../clientId";
-import { stableMessageActionText } from "../../conversationRouting";
+import {
+  pendingDraftAttachmentIds,
+  pendingPastedTextAttachmentId,
+  stableMessageActionText,
+} from "../../conversationRouting";
 import { findMentionedHandles, hasBroadcastMention } from "../../mentions";
 import { queryKeys } from "../../queryKeys";
 import { removeHandle } from "./Composer.helpers";
@@ -688,6 +692,7 @@ export function Composer({
     : destinationMode === "target-required"
       ? defaultDestination
       : activeDefaultDestination;
+  const durableRequest = pendingSubmissionRef.current?.request;
   const renderedDestinationIdentityRef = useRef<string>();
   renderedDestinationIdentityRef.current = renderedDefaultDestination?.selectionKey;
   const submissionText =
@@ -705,11 +710,15 @@ export function Composer({
             ...new Set([
               ...(mentionHandles ?? []),
               ...knownMentionBindings.map(binding => binding.handle),
+              ...(durableRequest?.mentionBindings ?? []).flatMap(binding => [
+                binding.handle,
+                binding.currentHandle,
+              ]),
               NEW_AGENT_DESTINATION_HANDLE,
             ]),
           ]
         : (mentionHandles ?? []),
-    [destinationMode, knownMentionBindings, mentionHandles],
+    [destinationMode, durableRequest, knownMentionBindings, mentionHandles],
   );
   const visibleRoutingText = renderedDefaultDestination
     ? prependComposerDestination(
@@ -717,9 +726,17 @@ export function Composer({
         renderedDefaultDestination.handle,
       )
     : visibleSubmissionText;
+  const durableRoutingText = (durableRequest?.mentionBindings ?? []).reduce(
+    (current, binding) =>
+      hasComposerDestination(current, binding.handle) ||
+        hasComposerDestination(current, binding.currentHandle)
+        ? current
+        : prependComposerDestination(current, binding.handle),
+    visibleRoutingText,
+  );
   const mentionedHandles = useMemo(
-    () => findMentionedHandles(visibleRoutingText, routingMentionHandles),
-    [routingMentionHandles, visibleRoutingText],
+    () => findMentionedHandles(durableRoutingText, routingMentionHandles),
+    [durableRoutingText, routingMentionHandles],
   );
   const mentionTokens = useMemo<ComposerMentionToken[]>(() => {
     const currentById = new Map((mentionBindings ?? []).map(binding => [binding.agentId, binding]));
@@ -773,7 +790,8 @@ export function Composer({
     }
     return tokens;
   }, [knownMentionBindings, mentionBindings, routingDestinationsEnabled, text]);
-  const invalidMention = mentionTokens.find(token => !token.valid);
+  const invalidMention = mentionTokens.find(token =>
+    !token.valid && (!token.agentId || !durableRequest?.recipientAgentIds.includes(token.agentId)));
   const authoredProjectDestinationHandles = destinationMode === "project-chat"
     ? findMentionedHandles(visibleSubmissionText, routingMentionHandles).filter(
         handle =>
@@ -826,7 +844,9 @@ export function Composer({
     handle,
     knownMentionBindings,
     mentionBindings ?? [],
-  ));
+  ) && !pendingSubmissionRef.current?.request?.mentionBindings?.some(binding =>
+    binding.handle.toLocaleLowerCase() === handle.toLocaleLowerCase() ||
+    binding.currentHandle.toLocaleLowerCase() === handle.toLocaleLowerCase()));
   const hasBroadcastDestination = hasBroadcastMention(visibleRoutingText);
   const hasEveryoneDestination =
     destinationMode === "project-chat" &&
@@ -938,7 +958,7 @@ export function Composer({
     destinationMode,
     newAgentSelected,
     requiredRecipientTagged: liveRequiredRecipientTagged,
-    retryPrepared: Boolean(preparedRetryAction),
+    retryPrepared: Boolean(preparedRetryAction || durableRequest),
   });
   const draftUploadsReady =
     !conversationDraftId ||
@@ -954,7 +974,7 @@ export function Composer({
   const canSend =
     !sending &&
     !dictationSettling &&
-    (!destinationError || Boolean(preparedRetryAction)) &&
+    (!destinationError || Boolean(preparedRetryAction) || Boolean(pendingSubmissionRef.current?.request)) &&
     targetRequiredRecipientTagged &&
     draftUploadsReady &&
     durableContentReady &&
@@ -2037,6 +2057,7 @@ export function Composer({
           id !== undefined &&
           !locallyRemovedDraftAttachmentIds.current.has(id),
       );
+    const durableRetry = Boolean(pendingSubmissionRef.current?.request);
     const mentionedAgentsById = new Map<string, AgentMentionBindingDto>();
     if (safeDefaultDestination?.binding) {
       mentionedAgentsById.set(
@@ -2056,13 +2077,24 @@ export function Composer({
         handle,
         knownMentionBindings,
         mentionBindings ?? [],
-        retryPreparedAttempt,
+        retryPreparedAttempt || durableRetry,
       );
       if (binding) {
         mentionedAgentsById.set(binding.agentId, binding);
       }
     }
+    for (const binding of pendingSubmissionRef.current?.request?.mentionBindings ?? []) {
+      mentionedAgentsById.set(binding.agentId, binding);
+    }
     const mentionedAgents = [...mentionedAgentsById.values()];
+    const exactSubmissionText = mentionedAgents.reduce(
+      (current, binding) =>
+        hasComposerDestination(current, binding.handle) ||
+          hasComposerDestination(current, binding.currentHandle)
+          ? current
+          : prependComposerDestination(current, binding.handle),
+      safeSubmissionText,
+    );
     const runtimeCommandSubmission =
       slash?.command.invocation === "runtime";
     if (!runtimeCommandSubmission) {
@@ -2120,13 +2152,21 @@ export function Composer({
       }
       let pendingSubmission: DraftPendingSubmissionDto | undefined;
       if (submittedDraftScope) {
+        const exactDraftAttachmentIds = pendingDraftAttachmentIds(
+          pendingSubmissionRef.current,
+          stagedIds,
+        );
+        const exactPastedTextAttachmentId = pendingPastedTextAttachmentId(
+          pendingSubmissionRef.current,
+          submittedPastedTextAttachmentId,
+        );
         const fingerprint = await durableSubmissionFingerprint({
           version: 1,
           action,
           surface: submittedDraftScope,
-          text: stableMessageActionText(safeSubmissionText, mentionedAgents),
-          attachmentIds: stagedIds,
-          pastedTextAttachmentId: submittedPastedTextAttachmentId ?? null,
+          text: stableMessageActionText(exactSubmissionText, mentionedAgents),
+          attachmentIds: exactDraftAttachmentIds,
+          pastedTextAttachmentId: exactPastedTextAttachmentId ?? null,
           recipientAgentIds: mentionedAgents.map(item => item.agentId).sort(),
           newAgentRequested: safeNewAgentSelected,
           runtime: submissionRuntimeKey ?? null,
@@ -2136,6 +2176,17 @@ export function Composer({
           fingerprint,
           () => createClientId("send-"),
         );
+        if (!pendingSubmission.draftAttachmentIds) {
+          pendingSubmission = {
+            ...pendingSubmission,
+            draftAttachmentIds: [...stagedIds],
+            editableDraftAttachmentIds: [...stagedIds],
+            ...(submittedPastedTextAttachmentId ? {
+              pastedTextAttachmentId: submittedPastedTextAttachmentId,
+              editablePastedTextAttachmentId: submittedPastedTextAttachmentId,
+            } : {}),
+          };
+        }
         await persistPendingSubmission(pendingSubmission);
         if (!submittedScopeStillActive()) {
           throw new Error("The draft destination changed before it could be sent.");
@@ -2147,7 +2198,7 @@ export function Composer({
           ? {
               mentionedAgents,
               newAgentRequested: safeNewAgentSelected,
-              retryPreparedAttempt,
+              retryPreparedAttempt: retryPreparedAttempt || durableRetry,
               ...(pendingSubmission ? {
                 pendingSubmission,
                 persistPendingSubmission: (value: DraftPendingSubmissionDto) =>
@@ -2156,7 +2207,7 @@ export function Composer({
             }
           : undefined;
       return handler(
-        safeSubmissionText,
+        exactSubmissionText,
         files,
         stagedIds,
         conversationDraftId ? draftOwnerId : undefined,
@@ -2275,7 +2326,7 @@ export function Composer({
       })
       .catch(async (error: unknown) => {
         if (!submittedScopeStillActive()) return;
-        if (error instanceof ApiRequestError && definitiveSubmissionStatus(error.status) &&
+        if (error instanceof ApiRequestError && definitiveSubmissionStatus(error.status, error.message) &&
             pendingSubmissionRef.current) {
           await persistPendingSubmission(undefined).catch(() => undefined);
         }

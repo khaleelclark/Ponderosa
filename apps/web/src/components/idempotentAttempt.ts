@@ -102,8 +102,12 @@ export async function withPendingAgentTitle(
   };
 }
 
-export const definitiveSubmissionStatus = (status: number): boolean =>
-  status >= 400 && status < 500;
+export const definitiveSubmissionStatus = (
+  status: number,
+  message = "",
+): boolean =>
+  status >= 400 && status < 500 &&
+  !(status === 409 && message.toLocaleLowerCase().includes("collision"));
 
 /** Release a prepared operation when the user changes its submission intent. */
 export const abandonIdempotentAttempt = <T>(

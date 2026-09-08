@@ -981,10 +981,12 @@ export class WorkspaceStore {
     draftId: string;
     ownerId: string;
     attachmentIds: string[];
+    pendingAttachmentIds: string[];
     pendingUploads: Array<{ agentId: string; attachmentIds: string[] }>;
   }> {
     const inventory = new Map<string, {
       attachmentIds: Set<string>;
+      pendingAttachmentIds: Set<string>;
       pendingUploads: Map<string, Set<string>>;
     }>();
     const add = (
@@ -996,11 +998,18 @@ export class WorkspaceStore {
       const key = this.draftKey(draftId, ownerId);
       const item = inventory.get(key) ?? {
         attachmentIds: new Set<string>(),
+        pendingAttachmentIds: new Set<string>(),
         pendingUploads: new Map<string, Set<string>>(),
       };
       for (const id of value?.attachmentIds ?? []) item.attachmentIds.add(id);
       if (value?.pastedTextAttachmentId) {
         item.attachmentIds.add(value.pastedTextAttachmentId);
+      }
+      for (const id of value?.pendingSubmission?.draftAttachmentIds ?? []) {
+        item.pendingAttachmentIds.add(id);
+      }
+      if (value?.pendingSubmission?.pastedTextAttachmentId) {
+        item.pendingAttachmentIds.add(value.pendingSubmission.pastedTextAttachmentId);
       }
       for (const upload of value?.pendingSubmission?.uploads ?? []) {
         for (const recipient of upload.recipients) {
@@ -1030,6 +1039,7 @@ export class WorkspaceStore {
           draftId: key.slice(0, separator),
           ownerId: key.slice(separator + 1),
           attachmentIds: [...item.attachmentIds].sort(),
+          pendingAttachmentIds: [...item.pendingAttachmentIds].sort(),
           pendingUploads: [...item.pendingUploads.entries()]
             .map(([agentId, attachmentIds]) => ({
               agentId,
@@ -1167,6 +1177,28 @@ export class WorkspaceStore {
     const pastedTextAttachmentId = input.pastedTextAttachmentId === null
       ? undefined
       : input.pastedTextAttachmentId ?? conflict.displaced.pastedTextAttachmentId;
+    const replacementById = new Map(
+      (input.attachmentReplacements ?? []).map(item => [item.fromId, item.toId]),
+    );
+    const unavailableIds = new Set(input.unavailableAttachmentIds ?? []);
+    const pendingSubmission = conflict.displaced.pendingSubmission;
+    const restoredPendingSubmission = pendingSubmission ? {
+      ...pendingSubmission,
+      ...(pendingSubmission.editableDraftAttachmentIds ? {
+        editableDraftAttachmentIds: pendingSubmission.editableDraftAttachmentIds
+          .filter(id => !unavailableIds.has(id))
+          .map(id => replacementById.get(id) ?? id),
+      } : {}),
+      ...(pendingSubmission.editablePastedTextAttachmentId
+        ? unavailableIds.has(pendingSubmission.editablePastedTextAttachmentId)
+          ? { editablePastedTextAttachmentId: undefined }
+          : {
+              editablePastedTextAttachmentId:
+                replacementById.get(pendingSubmission.editablePastedTextAttachmentId) ??
+                pendingSubmission.editablePastedTextAttachmentId,
+            }
+        : {}),
+    } : undefined;
     const draft: ConversationDraftDto = {
       conversationId: input.conversationId,
       ownerId: input.ownerId,
@@ -1174,8 +1206,8 @@ export class WorkspaceStore {
       attachmentIds: [...(input.attachmentIds ?? conflict.displaced.attachmentIds)],
       ...(pastedTextAttachmentId ? { pastedTextAttachmentId } : {}),
       mentionBindings: [...(conflict.displaced.mentionBindings ?? [])],
-      ...(conflict.displaced.pendingSubmission
-        ? { pendingSubmission: conflict.displaced.pendingSubmission }
+      ...(restoredPendingSubmission
+        ? { pendingSubmission: restoredPendingSubmission }
         : {}),
       revision: current.revision + 1,
       updatedAt: new Date().toISOString(),

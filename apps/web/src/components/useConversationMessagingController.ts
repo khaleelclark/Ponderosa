@@ -23,11 +23,13 @@ import {
   recipientUploadsForAgentIds,
   recipientActionSnapshot,
   pendingRecipientUploads,
+  pendingDraftAttachmentIds,
   recipientUploadCacheKey,
   retryRecipientUploadCleanup,
   managerBroadcastText,
   stableMessageActionText,
   withPendingRecipientUploads,
+  withPendingRequest,
   type RecipientUploads,
   uploadFilesForRecipients,
 } from "../conversationRouting";
@@ -537,14 +539,35 @@ export function useConversationMessagingController({
       const broadcastAttachmentOwner = broadcastText !== undefined
         ? agents.find(agent => !agent.archived)
         : undefined;
-      const recipientSnapshot = recipientActionSnapshot(
+      const liveRecipientSnapshot = recipientActionSnapshot(
         targets.map(target => target.id),
         broadcastAttachmentOwner?.id,
       );
+      const durableRequest = pendingSubmission?.request;
+      const exactDelivery = durableRequest?.runtime.activeRunDelivery ?? activeRunDelivery;
+      const exactEngine = durableRequest
+        ? durableRequest.runtime.engine ?? ""
+        : engine;
+      const exactRunConfig = durableRequest
+        ? selectedRunConfig(
+            durableRequest.runtime.model ?? "",
+            durableRequest.runtime.effort ?? "",
+            durableRequest.runtime.speed ?? "",
+          )
+        : runConfig;
+      const recipientSnapshot = durableRequest
+        ? recipientActionSnapshot(
+            durableRequest.recipientAgentIds,
+            durableRequest.broadcastAttachmentOwnerAgentId,
+          )
+        : liveRecipientSnapshot;
+      const exactMentionedAgents = durableRequest?.mentionBindings ?? mentionedAgents;
       const broadcastUploadAgentIds = [
         ...new Set([
-          ...(broadcastAttachmentOwner ? [broadcastAttachmentOwner.id] : []),
-          ...mentionedAgents.map(binding => binding.agentId),
+          ...(recipientSnapshot.broadcastAttachmentOwnerAgentId
+            ? [recipientSnapshot.broadcastAttachmentOwnerAgentId]
+            : []),
+          ...exactMentionedAgents.map(binding => binding.agentId),
         ]),
       ];
       const fingerprint = JSON.stringify({
@@ -567,20 +590,40 @@ export function useConversationMessagingController({
         () => ({
           text,
           files,
-          draftAttachmentIds,
+          draftAttachmentIds: pendingDraftAttachmentIds(
+            pendingSubmission,
+            draftAttachmentIds,
+          ),
           draftOwnerId,
           newAgentRequested,
-          activeRunDelivery,
-          engine,
-          runConfig,
+          activeRunDelivery: exactDelivery,
+          engine: exactEngine,
+          runConfig: exactRunConfig,
           broadcastText,
-          mentionedAgents,
+          mentionedAgents: exactMentionedAgents,
           broadcastUploadAgentIds,
           recipientSnapshot,
           uploads: new Map(),
           titles: new Map(),
         }),
       );
+      if (pendingSubmission && !pendingSubmission.request && persistPendingSubmission) {
+        pendingSubmission = withPendingRequest(pendingSubmission, {
+          conversationId,
+          recipientAgentIds: recipientSnapshot.targetAgentIds,
+          ...(exactMentionedAgents.length ? { mentionBindings: exactMentionedAgents } : {}),
+          ...(recipientSnapshot.broadcastAttachmentOwnerAgentId ? {
+            broadcastAttachmentOwnerAgentId:
+              recipientSnapshot.broadcastAttachmentOwnerAgentId,
+          } : {}),
+          runtime: {
+            activeRunDelivery,
+            engine,
+            ...runConfig,
+          },
+        });
+        await persistPendingSubmission(pendingSubmission);
+      }
     }
     if (previous && previous !== attempt) {
       await Promise.all(

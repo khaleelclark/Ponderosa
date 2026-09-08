@@ -59,6 +59,32 @@ export function withPendingRecipientUploads<T extends { id: string }>(
   };
 }
 
+export function withPendingRequest(
+  pending: DraftPendingSubmissionDto,
+  request: NonNullable<DraftPendingSubmissionDto["request"]>,
+): DraftPendingSubmissionDto {
+  return pending.request ? pending : { ...pending, request };
+}
+
+export function pendingDraftAttachmentIds(
+  pending: DraftPendingSubmissionDto | undefined,
+  editableIds: readonly string[],
+): string[] {
+  return pending?.editableDraftAttachmentIds &&
+      JSON.stringify(pending.editableDraftAttachmentIds) === JSON.stringify(editableIds)
+    ? [...(pending.draftAttachmentIds ?? editableIds)]
+    : [...editableIds];
+}
+
+export function pendingPastedTextAttachmentId(
+  pending: DraftPendingSubmissionDto | undefined,
+  editableId: string | undefined,
+): string | undefined {
+  return pending && pending.editablePastedTextAttachmentId === editableId
+    ? pending.pastedTextAttachmentId ?? editableId
+    : editableId;
+}
+
 export function recipientActionSnapshot(
   agentIds: Iterable<string>,
   broadcastAttachmentOwnerAgentId?: string,

@@ -54,6 +54,16 @@ const DRAFT_UPDATE_FIELDS = new Set([
 ]);
 const DRAFT_ORPHAN_GRACE_MS = 5 * 60 * 1000;
 
+const validPendingMentionBinding = (value: unknown): boolean => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const binding = value as Record<string, unknown>;
+  return !Object.keys(binding).some(key => ![
+    "agentId", "handle", "projectId", "currentHandle", "currentTitle",
+  ].includes(key)) && [
+    binding.agentId, binding.handle, binding.projectId, binding.currentHandle, binding.currentTitle,
+  ].every(field => typeof field === "string" && field.trim() && field.length <= 300);
+};
+
 export function draftUpdateBodyError(
   value: unknown,
   maxAttachmentsPerMessage: number,
@@ -111,12 +121,48 @@ export function draftUpdateBodyError(
     if (!body.pendingSubmission || typeof body.pendingSubmission !== "object" ||
         Array.isArray(body.pendingSubmission)) return "invalid pending draft submission";
     const pending = body.pendingSubmission as Record<string, unknown>;
-    if (Object.keys(pending).some(key => !["fingerprint", "intentFingerprint", "idempotencyKey", "agentTitle", "uploads"].includes(key)) ||
+    if (Object.keys(pending).some(key => ![
+      "fingerprint", "intentFingerprint", "idempotencyKey", "request", "draftAttachmentIds",
+      "editableDraftAttachmentIds", "pastedTextAttachmentId", "editablePastedTextAttachmentId",
+      "agentTitle", "uploads",
+    ].includes(key)) ||
         typeof pending.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(pending.fingerprint) ||
         (pending.intentFingerprint !== undefined &&
           (typeof pending.intentFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(pending.intentFingerprint))) ||
         typeof pending.idempotencyKey !== "string" || !pending.idempotencyKey.trim() ||
         pending.idempotencyKey.length > 200 ||
+        [pending.draftAttachmentIds, pending.editableDraftAttachmentIds].some(ids =>
+          ids !== undefined && (!Array.isArray(ids) || ids.length > maxAttachmentsPerMessage ||
+            ids.some(id => typeof id !== "string" || !RUNTIME_UUID.test(id)) ||
+            new Set(ids).size !== ids.length)) ||
+        [pending.pastedTextAttachmentId, pending.editablePastedTextAttachmentId].some(id =>
+          id !== undefined && (typeof id !== "string" || !RUNTIME_UUID.test(id))) ||
+        (pending.request !== undefined && (() => {
+          if (!pending.request || typeof pending.request !== "object" || Array.isArray(pending.request)) return true;
+          const route = pending.request as Record<string, unknown>;
+          if (Object.keys(route).some(key => ![
+            "conversationId", "recipientAgentIds", "mentionBindings", "broadcastAttachmentOwnerAgentId", "runtime",
+          ].includes(key)) ||
+              (route.conversationId !== undefined &&
+                (typeof route.conversationId !== "string" || !route.conversationId || route.conversationId.length > 200)) ||
+              (route.broadcastAttachmentOwnerAgentId !== undefined &&
+                (typeof route.broadcastAttachmentOwnerAgentId !== "string" || !route.broadcastAttachmentOwnerAgentId ||
+                  route.broadcastAttachmentOwnerAgentId.length > 200)) ||
+              !Array.isArray(route.recipientAgentIds) || route.recipientAgentIds.length > 100 ||
+              route.recipientAgentIds.some(id => typeof id !== "string" || !id || id.length > 200) ||
+              new Set(route.recipientAgentIds).size !== route.recipientAgentIds.length ||
+              !route.runtime || typeof route.runtime !== "object" || Array.isArray(route.runtime)) return true;
+          const runtime = route.runtime as Record<string, unknown>;
+          if (Object.keys(runtime).some(key => ![
+            "activeRunDelivery", "engine", "model", "effort", "speed",
+          ].includes(key)) ||
+              (runtime.activeRunDelivery !== "steer" && runtime.activeRunDelivery !== "queue") ||
+              [runtime.engine, runtime.model, runtime.effort, runtime.speed].some(value =>
+                value !== undefined && (typeof value !== "string" || value.length > 200))) return true;
+          if (route.mentionBindings === undefined) return false;
+          if (!Array.isArray(route.mentionBindings) || route.mentionBindings.length > 100) return true;
+          return route.mentionBindings.some(binding => !validPendingMentionBinding(binding));
+        })()) ||
         (pending.agentTitle !== undefined &&
           (pending.intentFingerprint === undefined ||
             typeof pending.agentTitle !== "string" || !pending.agentTitle.trim() ||
@@ -336,12 +382,17 @@ export class DraftService {
   }
 
   attachmentReferenced(draftId: string, ownerId: string, id: string): boolean {
+    const references = (draft: Pick<
+      ConversationDraftDto,
+      "attachmentIds" | "pastedTextAttachmentId" | "pendingSubmission"
+    >) => draft.pastedTextAttachmentId === id || draft.attachmentIds.includes(id) ||
+      draft.pendingSubmission?.pastedTextAttachmentId === id ||
+      draft.pendingSubmission?.draftAttachmentIds?.includes(id);
     const draft = this.workspace.getDraft(draftId, ownerId);
-    if (draft.pastedTextAttachmentId === id || draft.attachmentIds.includes(id)) return true;
+    if (references(draft)) return true;
     const listed = this.workspace.listDraftConflicts(draftId, ownerId);
     return listed.conflicts.some(({ current, displaced }) =>
-      current.pastedTextAttachmentId === id || current.attachmentIds.includes(id) ||
-      displaced.pastedTextAttachmentId === id || displaced.attachmentIds.includes(id));
+      references(current) || references(displaced));
   }
 
   enqueueAttachmentCleanup(
@@ -383,16 +434,24 @@ export class DraftService {
   enqueueReleasedAttachments(
     draftId: string,
     ownerId: string,
-    previous: { attachmentIds: string[]; pastedTextAttachmentId?: string },
-    next: { attachmentIds: string[]; pastedTextAttachmentId?: string },
+    previous: { attachmentIds: string[]; pastedTextAttachmentId?: string; pendingSubmission?: ConversationDraftDto["pendingSubmission"] },
+    next: { attachmentIds: string[]; pastedTextAttachmentId?: string; pendingSubmission?: ConversationDraftDto["pendingSubmission"] },
   ): void {
     const retained = new Set([
       ...next.attachmentIds,
       ...(next.pastedTextAttachmentId ? [next.pastedTextAttachmentId] : []),
+      ...(next.pendingSubmission?.draftAttachmentIds ?? []),
+      ...(next.pendingSubmission?.pastedTextAttachmentId
+        ? [next.pendingSubmission.pastedTextAttachmentId]
+        : []),
     ]);
     for (const id of new Set([
       ...previous.attachmentIds,
       ...(previous.pastedTextAttachmentId ? [previous.pastedTextAttachmentId] : []),
+      ...(previous.pendingSubmission?.draftAttachmentIds ?? []),
+      ...(previous.pendingSubmission?.pastedTextAttachmentId
+        ? [previous.pendingSubmission.pastedTextAttachmentId]
+        : []),
     ])) {
       if (!retained.has(id)) this.enqueueAttachmentCleanup(draftId, ownerId, id);
     }
@@ -499,6 +558,18 @@ export class DraftService {
             `referenced draft attachment ${assetId} is missing or invalid`,
           );
         }
+        this.cleanupAuthority.syncDraftAttachment(
+          item.draftId,
+          item.ownerId,
+          assetId,
+          stored.size,
+        );
+        synchronized += 1;
+      }
+      for (const assetId of item.pendingAttachmentIds) {
+        if (item.attachmentIds.includes(assetId)) continue;
+        const stored = await this.readStored(item.draftId, item.ownerId, assetId);
+        if (!stored) continue;
         this.cleanupAuthority.syncDraftAttachment(
           item.draftId,
           item.ownerId,

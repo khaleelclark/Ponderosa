@@ -82,6 +82,18 @@ test("draft updates accept only exact typed bounded state", () => {
     fingerprint: "a".repeat(64),
     intentFingerprint: "b".repeat(64),
     idempotencyKey: "send-a",
+    request: {
+      conversationId: "chat-a",
+      recipientAgentIds: ["agent-a"],
+      mentionBindings: [{
+        projectId: "project-a", agentId: "agent-a", handle: "agent-a",
+        currentHandle: "agent-a", currentTitle: "Agent A",
+      }],
+      broadcastAttachmentOwnerAgentId: "agent-a",
+      runtime: { activeRunDelivery: "steer", model: "gpt" },
+    },
+    draftAttachmentIds: [validAssetId],
+    editableDraftAttachmentIds: [validAssetId],
     agentTitle: "Bryce Canyon",
     uploads: [{
       scope: "direct",
@@ -100,6 +112,9 @@ test("draft updates accept only exact typed bounded state", () => {
     { ...pendingSubmission, agentTitle: "x".repeat(201) },
     { ...pendingSubmission, intentFingerprint: undefined },
     { ...pendingSubmission, extra: true },
+    { ...pendingSubmission, request: { ...pendingSubmission.request, recipientAgentIds: ["agent-a", "agent-a"] } },
+    { ...pendingSubmission, request: { ...pendingSubmission.request, mentionBindings: [{ bad: true }] } },
+    { ...pendingSubmission, editableDraftAttachmentIds: ["not-a-uuid"] },
     { ...pendingSubmission, uploads: [{ scope: "direct", recipients: [{
       agentId: "agent-a",
       attachmentIds: ["not-a-uuid"],
@@ -828,6 +843,9 @@ test("draft clear survives partial cleanup and restart without deleting current 
           ? { pastedTextAttachmentId: input.pastedTextAttachmentId }
           : {}),
         mentionBindings: input.mentionBindings,
+        ...(input.pendingSubmission
+          ? { pendingSubmission: input.pendingSubmission }
+          : {}),
         revision: draft.revision + 1,
         updatedAt: new Date().toISOString(),
         clientId: input.clientId,
@@ -865,6 +883,7 @@ test("draft clear survives partial cleanup and restart without deleting current 
   };
   const file = await upload("file.txt", "file body");
   const paste = await upload("Pasted text.txt", "paste body");
+  const pending = await upload("pending.txt", "original pending body");
   const saved = await app.inject({
     method: "PUT",
     url: "/api/conversations/chat-a/draft",
@@ -872,10 +891,17 @@ test("draft clear survives partial cleanup and restart without deleting current 
       ...validDraft,
       attachmentIds: [file.id],
       pastedTextAttachmentId: paste.id,
+      pendingSubmission: {
+        fingerprint: "a".repeat(64),
+        idempotencyKey: "send-a",
+        draftAttachmentIds: [pending.id],
+        editableDraftAttachmentIds: [file.id],
+      },
     },
   });
   assert.equal(saved.statusCode, 200, saved.body);
   const late = await upload("late.txt", "late body");
+  assert.equal(drafts.attachmentReferenced("chat-a", "browser-one", pending.id), true);
   assert.equal(await drafts.reconcileAttachmentCleanup(Date.now() + 10 * 60_000), 1);
   assert.equal((await app.inject({ method: "GET", url: file.downloadUrl })).statusCode, 200);
   assert.equal((await app.inject({ method: "GET", url: paste.downloadUrl })).statusCode, 200);
@@ -901,9 +927,10 @@ test("draft clear survives partial cleanup and restart without deleting current 
   assets = new AssetStore(directory);
   drafts = new DraftService(directory, store, workspace, assets);
   t.after(() => assets.close());
-  assert.equal(await drafts.reconcileAttachmentCleanup(), 2);
+  assert.equal(await drafts.reconcileAttachmentCleanup(), 3);
   assert.equal(existsSync(drafts.files("chat-a", "browser-one", file.id).metadata), false);
   assert.equal(existsSync(drafts.files("chat-a", "browser-one", paste.id).metadata), false);
+  assert.equal(existsSync(drafts.files("chat-a", "browser-one", pending.id).metadata), false);
 });
 
 test("malformed draft PUTs return 400 before reaching persistence", async () => {

@@ -330,13 +330,19 @@ test("quota recovery accounts live current, conflict, file, and paste references
   const assets = new AssetStore(dataDir);
   const drafts = new DraftService(dataDir, store, workspace, assets);
   t.after(() => { assets.close(); store.close(); });
-  const [currentFile, currentPaste, conflictFile, conflictPaste] =
-    Array.from({ length: 4 }, () => randomUUID());
+  const [currentFile, currentPaste, conflictFile, conflictPaste, pendingFile, pendingPaste] =
+    Array.from({ length: 6 }, () => randomUUID());
   workspace.putDraft(chat.id, {
     ownerId: "browser",
     text: "current",
     attachmentIds: [currentFile],
     pastedTextAttachmentId: currentPaste,
+    pendingSubmission: {
+      fingerprint: "a".repeat(64),
+      idempotencyKey: "send-a",
+      draftAttachmentIds: [currentFile, pendingFile],
+      pastedTextAttachmentId: pendingPaste,
+    },
     expectedRevision: 0,
     clientId: "page:current:draft:one",
   });
@@ -348,14 +354,16 @@ test("quota recovery accounts live current, conflict, file, and paste references
     expectedRevision: 0,
     clientId: "page:conflict:draft:one",
   }), error => error?.code === "DRAFT_CONFLICT");
-  for (const assetId of [currentFile, currentPaste, conflictFile, conflictPaste]) {
+  for (const assetId of [
+    currentFile, currentPaste, conflictFile, conflictPaste, pendingFile, pendingPaste,
+  ]) {
     await writeLegacyDraftAttachment(drafts, chat.id, "browser", assetId);
   }
 
-  assert.equal(await drafts.synchronizeAttachmentQuota(), 4);
-  assert.equal(await drafts.synchronizeAttachmentQuota(), 4);
+  assert.equal(await drafts.synchronizeAttachmentQuota(), 6);
+  assert.equal(await drafts.synchronizeAttachmentQuota(), 6);
   const authority = new Database(path.join(dataDir, "asset-authority.sqlite"), { readonly: true });
-  assert.equal(authority.prepare("SELECT count(*) count FROM draft_asset_committed").get().count, 4);
+  assert.equal(authority.prepare("SELECT count(*) count FROM draft_asset_committed").get().count, 6);
   assert.equal(authority.prepare("SELECT count(*) count FROM draft_attachment_cleanups").get().count, 0);
   authority.close();
 });

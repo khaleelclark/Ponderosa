@@ -217,6 +217,22 @@ export function restagedDraftConflictSnapshot<TFile, TMention, TFailure>(
   const replacementByHistoricalId = new Map(
     files.map(item => [item.fromId, item.attachmentId]),
   );
+  const pendingSubmission = snapshot.pendingSubmission ? {
+    ...snapshot.pendingSubmission,
+    ...(snapshot.pendingSubmission.editableDraftAttachmentIds ? {
+      editableDraftAttachmentIds: snapshot.pendingSubmission.editableDraftAttachmentIds
+        .filter(id => !unavailableAttachmentIds.has(id))
+        .map(id => replacementByHistoricalId.get(id) ?? id),
+    } : {}),
+    ...(snapshot.pendingSubmission.editablePastedTextAttachmentId
+      ? unavailableAttachmentIds.has(snapshot.pendingSubmission.editablePastedTextAttachmentId)
+        ? { editablePastedTextAttachmentId: undefined }
+        : {
+            editablePastedTextAttachmentId: pastedTextAttachmentId ??
+              snapshot.pendingSubmission.editablePastedTextAttachmentId,
+          }
+      : {}),
+  } : undefined;
   return {
     ...snapshot,
     attachmentIds: snapshot.attachmentIds
@@ -241,6 +257,7 @@ export function restagedDraftConflictSnapshot<TFile, TMention, TFailure>(
         ? { pastedTextAttachmentId: snapshot.pastedTextAttachmentId }
         : { pastedTextAttachmentId: undefined }),
     mentionBindings: [...snapshot.mentionBindings],
+    ...(pendingSubmission ? { pendingSubmission } : {}),
     failedContents: [...snapshot.failedContents],
   };
 }

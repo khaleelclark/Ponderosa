@@ -63,11 +63,13 @@ import { createClientId } from "../clientId";
 import {
   discardRecipientUploads,
   fileSelectionFingerprint,
+  pendingDraftAttachmentIds,
   pendingRecipientUploads,
   recipientUploadsForAgentIds,
   retryRecipientUploadCleanup,
   stableMessageActionText,
   withPendingRecipientUploads,
+  withPendingRequest,
   type RecipientUploads,
   uploadFilesForRecipients,
 } from "../conversationRouting";
@@ -747,11 +749,13 @@ export function AllChatView({
         const selectedConversationId = composerConversationId;
         const validAgents = new Map((projectAgentsQuery.data ?? []).filter(agent =>
           !agent.archived).map(agent => [agent.id, agent]));
-        const currentRecipientIds = [...new Set(
+        const liveRecipientIds = [...new Set(
           mentionedAgents.map(binding => binding.agentId),
         )].filter(agentId => validAgents.has(agentId));
+        const currentRecipientIds = pendingSubmission?.request?.recipientAgentIds ??
+          liveRecipientIds;
         const currentRecipientConversationIds = [...new Set(
-          currentRecipientIds.flatMap(agentId => {
+          liveRecipientIds.flatMap(agentId => {
             const conversationId = validAgents.get(agentId)?.conversationId;
             return conversationId ? [conversationId] : [];
           }),
@@ -759,9 +763,18 @@ export function AllChatView({
         if (currentRecipientConversationIds.length > 1) {
           throw new Error("One message can address Agents from only one Chat");
         }
-        const currentConversationId =
+        const currentConversationId = pendingSubmission?.request?.conversationId ??
           currentRecipientConversationIds[0] ?? selectedConversationId;
-        const currentRuntime = allChatRuntimePayloadSnapshot({
+        const currentRuntime = pendingSubmission?.request?.runtime
+          ? {
+              ...(pendingSubmission.request.runtime.engine
+                ? { engine: pendingSubmission.request.runtime.engine }
+                : {}),
+              model: pendingSubmission.request.runtime.model ?? "",
+              effort: pendingSubmission.request.runtime.effort ?? "",
+              speed: pendingSubmission.request.runtime.speed ?? "",
+            }
+          : allChatRuntimePayloadSnapshot({
           newAgentRequested,
           recipientCount: currentRecipientIds.length,
           selectedEngineId,
@@ -769,12 +782,13 @@ export function AllChatView({
           runtime: runtimeSelectionReady
             ? selectedRuntime
             : { model: "", effort: "", speed: "" },
-        });
+            });
         if (currentRecipientIds.length === 0 && !newAgentRequested) {
           throw new Error("Select at least one Agent or add #new-agent");
         }
         if (
           newAgentRequested &&
+          !pendingSubmission?.request &&
           (!currentConversationId ||
             !conversationsQuery.data?.some(candidate =>
               candidate.id === currentConversationId))
@@ -802,7 +816,10 @@ export function AllChatView({
             projectId: activeProjectId,
             body,
             files,
-            draftAttachmentIds,
+            draftAttachmentIds: pendingDraftAttachmentIds(
+              pendingSubmission,
+              draftAttachmentIds,
+            ),
             draftOwnerId,
             newAgentRequested,
             recipientIds: currentRecipientIds,
@@ -815,6 +832,18 @@ export function AllChatView({
             runtime: currentRuntime,
           }),
         );
+        if (pendingSubmission && !pendingSubmission.request && persistPendingSubmission) {
+          pendingSubmission = withPendingRequest(pendingSubmission, {
+            ...(currentConversationId ? { conversationId: currentConversationId } : {}),
+            recipientAgentIds: currentRecipientIds,
+            ...(mentionedAgents.length ? { mentionBindings: mentionedAgents } : {}),
+            runtime: {
+              activeRunDelivery: "steer",
+              ...currentRuntime,
+            },
+          });
+          await persistPendingSubmission(pendingSubmission);
+        }
       }
       if (previous && previous !== attempt && previous.prepared.uploads) {
         await discardRecipientUploads(

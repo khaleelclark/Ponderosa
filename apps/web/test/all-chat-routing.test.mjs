@@ -82,8 +82,11 @@ import {
   withPendingAgentTitle,
 } from "../src/components/idempotentAttempt.js";
 import {
+  pendingDraftAttachmentIds,
+  pendingPastedTextAttachmentId,
   pendingRecipientUploads,
   withPendingRecipientUploads,
+  withPendingRequest,
 } from "../src/conversationRouting.js";
 
 const bryce = {
@@ -1061,6 +1064,14 @@ test("conflict restaging omits unavailable bytes without hiding their recovery f
     files: [{ file: { name: "available.txt" }, attachmentId: "available" }],
     pastedTextAttachmentId: "missing-paste",
     mentionBindings: [],
+    pendingSubmission: {
+      fingerprint: "a".repeat(64),
+      idempotencyKey: "operation-a",
+      draftAttachmentIds: ["available", "missing"],
+      editableDraftAttachmentIds: ["available", "missing"],
+      pastedTextAttachmentId: "missing-paste",
+      editablePastedTextAttachmentId: "missing-paste",
+    },
     failedContents: [
       { id: "missing", kind: "attachment" },
       { id: "missing-paste", kind: "pasted-text" },
@@ -1074,6 +1085,10 @@ test("conflict restaging omits unavailable bytes without hiding their recovery f
   );
   assert.deepEqual(restaged.attachmentIds, ["fresh"]);
   assert.equal(restaged.pastedTextAttachmentId, undefined);
+  assert.deepEqual(restaged.pendingSubmission.draftAttachmentIds, ["available", "missing"]);
+  assert.deepEqual(restaged.pendingSubmission.editableDraftAttachmentIds, ["fresh"]);
+  assert.equal(restaged.pendingSubmission.pastedTextAttachmentId, "missing-paste");
+  assert.equal(restaged.pendingSubmission.editablePastedTextAttachmentId, undefined);
   assert.deepEqual(restaged.failedContents, snapshot.failedContents);
 });
 
@@ -1508,9 +1523,39 @@ test("prepared recipient assets remain exact across reload", () => {
   assert.equal(pendingRecipientUploads(pending, "broadcast"), undefined);
 });
 
+test("durable routing and original draft assets remain exact after reload recovery", () => {
+  const pending = withPendingRequest({
+    fingerprint: "a".repeat(64),
+    idempotencyKey: "operation-a",
+    draftAttachmentIds: ["old-file"],
+    editableDraftAttachmentIds: ["new-file"],
+    pastedTextAttachmentId: "old-paste",
+    editablePastedTextAttachmentId: "new-paste",
+  }, {
+    conversationId: "chat-a",
+    recipientAgentIds: ["agent-a", "agent-b"],
+    broadcastAttachmentOwnerAgentId: "agent-a",
+    runtime: { activeRunDelivery: "steer", model: "gpt" },
+  });
+  assert.deepEqual(pendingDraftAttachmentIds(pending, ["new-file"]), ["old-file"]);
+  assert.equal(pendingPastedTextAttachmentId(pending, "new-paste"), "old-paste");
+  assert.deepEqual(pending.request.recipientAgentIds, ["agent-a", "agent-b"]);
+  const unchanged = withPendingRequest(pending, {
+    conversationId: "chat-b",
+    recipientAgentIds: ["agent-c"],
+    runtime: { activeRunDelivery: "queue" },
+  }).request;
+  assert.equal(unchanged.conversationId, "chat-a");
+  assert.deepEqual(unchanged.recipientAgentIds, ["agent-a", "agent-b"]);
+  assert.equal(unchanged.broadcastAttachmentOwnerAgentId, "agent-a");
+  assert.deepEqual(unchanged.runtime, { activeRunDelivery: "steer", model: "gpt" });
+  assert.deepEqual(pendingDraftAttachmentIds(pending, ["edited-file"]), ["edited-file"]);
+});
+
 test("only definitive client failures release durable send identity", () => {
   assert.equal(definitiveSubmissionStatus(400), true);
-  assert.equal(definitiveSubmissionStatus(409), true);
+  assert.equal(definitiveSubmissionStatus(409, "No addressed Agent remains available"), true);
+  assert.equal(definitiveSubmissionStatus(409, "runtime communication ID collision"), false);
   assert.equal(definitiveSubmissionStatus(500), false);
   assert.equal(definitiveSubmissionStatus(503), false);
 });

@@ -12,10 +12,12 @@ import { queryKeys } from "../queryKeys";
 import {
   discardRecipientUploads,
   fileSelectionFingerprint,
+  pendingDraftAttachmentIds,
   pendingRecipientUploads,
   type RecipientUploads,
   uploadFilesForRecipients,
   withPendingRecipientUploads,
+  withPendingRequest,
 } from "../conversationRouting";
 import { directAgentDeliveryNotice } from "./AgentDetail.helpers";
 import {
@@ -155,6 +157,25 @@ export function useAgentMessageController({
       },
     ) => {
       const sent = (async () => {
+        let pendingSubmission = context?.pendingSubmission;
+        if (pendingSubmission && !pendingSubmission.request && context?.persistPendingSubmission) {
+          pendingSubmission = withPendingRequest(pendingSubmission, {
+            recipientAgentIds: [agentId],
+            runtime: {
+              activeRunDelivery,
+              ...(engine?.id ? { engine: engine.id } : {}),
+              ...(model ? { model } : {}),
+              ...(effortSelectionIsCompatible(engine, model, effort) && effort
+                ? { effort }
+                : {}),
+              ...(speed && speedSelectionIsCompatible(engine, model, speed)
+                ? { speed }
+                : {}),
+            },
+          });
+          await context.persistPendingSubmission(pendingSubmission);
+        }
+        const exactRuntime = pendingSubmission?.request?.runtime;
         const previous = sendAttempt.current;
         const attempt = selectIdempotentAttempt(
           previous,
@@ -170,7 +191,7 @@ export function useAgentMessageController({
             speed,
             activeRunDelivery,
           }),
-          () => context?.pendingSubmission?.idempotencyKey ?? createClientId(),
+          () => pendingSubmission?.idempotencyKey ?? createClientId(),
           () => ({
             agentId,
             files: [...files],
@@ -178,21 +199,25 @@ export function useAgentMessageController({
               text,
               idempotencyKey: "",
               attachmentIds: [],
-              ...(draftAttachmentIds.length
+              ...(pendingDraftAttachmentIds(context?.pendingSubmission, draftAttachmentIds).length
                 ? {
-                    draftAttachmentIds: [...draftAttachmentIds],
+                    draftAttachmentIds: pendingDraftAttachmentIds(
+                      context?.pendingSubmission,
+                      draftAttachmentIds,
+                    ),
                     draftId: `agent:${agentId}`,
                     draftOwnerId,
                   }
                 : {}),
-              model,
-              effort: effortSelectionIsCompatible(engine, model, effort)
-                ? effort
-                : "",
-              ...(speed && speedSelectionIsCompatible(engine, model, speed)
-                ? { speed }
+              model: exactRuntime?.model ?? model,
+              effort: exactRuntime
+                ? exactRuntime.effort ?? ""
+                : effortSelectionIsCompatible(engine, model, effort) ? effort : "",
+              ...((exactRuntime?.speed ??
+                    (speed && speedSelectionIsCompatible(engine, model, speed) ? speed : ""))
+                ? { speed: exactRuntime?.speed ?? speed }
                 : {}),
-              activeRunDelivery,
+              activeRunDelivery: exactRuntime?.activeRunDelivery ?? activeRunDelivery,
             },
             uploads: [],
           }),
@@ -207,7 +232,7 @@ export function useAgentMessageController({
         sendAttempt.current = attempt;
         const prepared = attempt.prepared;
         const durableUploads = pendingRecipientUploads(
-          context?.pendingSubmission,
+          pendingSubmission,
           "direct-agent",
         );
         if (durableUploads?.length === 1 &&
@@ -226,9 +251,9 @@ export function useAgentMessageController({
             (recipientId, attachment) =>
               api.deleteAttachment(recipientId, attachment.id),
           );
-          if (context?.pendingSubmission && context.persistPendingSubmission) {
+          if (pendingSubmission && context?.persistPendingSubmission) {
             await context.persistPendingSubmission(withPendingRecipientUploads(
-              context.pendingSubmission,
+              pendingSubmission,
               "direct-agent",
               prepared.uploads,
             ));

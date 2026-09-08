@@ -65,10 +65,15 @@ test("pending send authority survives restart, conflict restore, and authoritati
     agentId: "agent-a",
     attachmentIds: ["asset-a"],
   }]);
+  assert.deepEqual(store.draftRecoveryInventory()[0].pendingAttachmentIds, []);
   const displacedSubmission = {
     fingerprint: "c".repeat(64),
     intentFingerprint: "d".repeat(64),
     idempotencyKey: "send-b",
+    draftAttachmentIds: ["draft-a"],
+    editableDraftAttachmentIds: ["draft-a"],
+    pastedTextAttachmentId: "paste-a",
+    editablePastedTextAttachmentId: "paste-a",
     uploads: [{
       scope: "broadcast",
       recipients: [{ agentId: "agent-b", attachmentIds: ["asset-b"] }],
@@ -90,14 +95,30 @@ test("pending send authority survives restart, conflict restore, and authoritati
     { agentId: "agent-a", attachmentIds: ["asset-a"] },
     { agentId: "agent-b", attachmentIds: ["asset-b"] },
   ]);
+  assert.deepEqual(store.draftRecoveryInventory()[0].pendingAttachmentIds, [
+    "draft-a", "paste-a",
+  ]);
   const restored = store.restoreDraftConflict({
     conversationId: "chat-a",
     ownerId: "browser-a",
     conflictId: conflict.id,
     expectedRevision: pending.revision,
     clientId: "page:browser-a:draft:restored",
+    attachmentIds: ["draft-b"],
+    pastedTextAttachmentId: "paste-b",
+    attachmentReplacements: [
+      { fromId: "draft-a", toId: "draft-b" },
+      { fromId: "paste-a", toId: "paste-b" },
+    ],
   }).draft;
-  assert.deepEqual(restored.pendingSubmission, displacedSubmission);
+  assert.deepEqual(restored.pendingSubmission, {
+    ...displacedSubmission,
+    editableDraftAttachmentIds: ["draft-b"],
+    editablePastedTextAttachmentId: "paste-b",
+  });
+  assert.deepEqual(store.draftRecoveryInventory()[0].pendingAttachmentIds, [
+    "draft-a", "paste-a",
+  ]);
   const cleared = store.putDraft("chat-a", {
     ownerId: "browser-a",
     text: "",

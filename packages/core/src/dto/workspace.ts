@@ -214,6 +214,26 @@ export interface DraftPendingSubmissionDto {
   /** Pre-preparation fingerprint used to recognize the same intent on reload. */
   intentFingerprint?: string;
   idempotencyKey: string;
+  /** Immutable server-bound routing selected before dispatch. */
+  request?: {
+    conversationId?: string;
+    recipientAgentIds: string[];
+    mentionBindings?: AgentMentionBindingDto[];
+    broadcastAttachmentOwnerAgentId?: string;
+    runtime: {
+      activeRunDelivery: "steer" | "queue";
+      engine?: string;
+      model?: string;
+      effort?: string;
+      speed?: string;
+    };
+  };
+  /** Original request assets stay immutable while conflict recovery may replace
+   * the editable draft copies. */
+  draftAttachmentIds?: string[];
+  editableDraftAttachmentIds?: string[];
+  pastedTextAttachmentId?: string;
+  editablePastedTextAttachmentId?: string;
   /** Generated title bound to an Agent-creation submission before dispatch. */
   agentTitle?: string;
   /** Server asset IDs prepared before dispatch, grouped by request scope. */
