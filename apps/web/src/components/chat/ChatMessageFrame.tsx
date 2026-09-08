@@ -5,7 +5,10 @@ import { MessageSenderLabel } from "../MessageSenderLabel";
 import { MessageActionsAndTimestamp, MessageTimestamp } from "../MessageTimestamp";
 import { ChatAttachments } from "./ChatAttachments";
 import { ChatOperatorLabel } from "./ChatOperatorLabel";
-import { messageSelectionTargetIsInteractive } from "./messageSelection";
+import {
+  messageSelectionIntersectsCurrentTarget,
+  messageSelectionTargetIsInteractive,
+} from "./messageSelection";
 import { observeNotificationVisibility } from "../../notificationVisibility";
 
 export function ChatMessageFrame({
@@ -87,7 +90,8 @@ export function ChatMessageFrame({
       aria-label={message.ariaLabel ?? `${senderName} message`}
       onClick={selectable
         ? event => {
-            if (!messageSelectionTargetIsInteractive(event.target, event.currentTarget)) {
+            if (!messageSelectionTargetIsInteractive(event.target, event.currentTarget) &&
+                !messageSelectionIntersectsCurrentTarget(event.currentTarget)) {
               selectMessage();
             }
           }

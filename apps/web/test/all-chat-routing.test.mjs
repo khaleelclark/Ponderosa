@@ -60,7 +60,10 @@ import {
   shouldIgnoreComposerKey,
   shouldSendComposerKey,
 } from "../src/components/chat/composerUtils.js";
-import { messageSelectionTargetIsInteractive } from "../src/components/chat/messageSelection.js";
+import {
+  messageSelectionIntersectsCurrentTarget,
+  messageSelectionTargetIsInteractive,
+} from "../src/components/chat/messageSelection.js";
 import {
   findMentionedHandles,
   hasBroadcastMention,
@@ -448,6 +451,21 @@ test("interactive message descendants, including the source control, do not bubb
     ),
     false,
   );
+});
+
+test("message text selection does not become a blank-area source selection", () => {
+  const article = {};
+  const selection = (isCollapsed, intersects) => ({
+    isCollapsed,
+    rangeCount: 1,
+    getRangeAt: () => ({ intersectsNode: node => node === article && intersects }),
+  });
+
+  assert.equal(messageSelectionIntersectsCurrentTarget(article, selection(false, true)), true, "drag selection");
+  assert.equal(messageSelectionIntersectsCurrentTarget(article, selection(false, true)), true, "double-click selection");
+  assert.equal(messageSelectionIntersectsCurrentTarget(article, selection(false, false)), false, "selection outside message");
+  assert.equal(messageSelectionIntersectsCurrentTarget(article, selection(true, true)), false, "collapsed caret");
+  assert.equal(messageSelectionIntersectsCurrentTarget(article, null), false, "ordinary blank-area click");
 });
 
 test("All Messages routes a global provider action before Project validation", () => {
