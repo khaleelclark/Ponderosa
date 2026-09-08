@@ -17,6 +17,7 @@ import {
 import type {
   AgentMentionBindingDto,
   ArtifactDto,
+  ConversationDraftDto,
   DraftAttachmentDto,
   EngineCommand,
   EngineComposerCapability,
@@ -95,6 +96,8 @@ import {
   providerSlashSubmission,
   recoverableDraftConflict,
   redundantDraftConflictUploadIds,
+  resolvedDraftConflictDraft,
+  retryDraftRestoreForMissingAssets,
   refreshRecoverableDraftConflict,
   type RecoverableDraftConflict,
   restagedDraftConflictSnapshot,
@@ -138,7 +141,7 @@ type ComposerMentionToken = {
 };
 
 function unavailableDraftConflictAttachmentIds(error: unknown): string[] | undefined {
-  if (!(error instanceof ApiRequestError) || error.status !== 409 ||
+  if (!(error instanceof ApiRequestError) || ![400, 409].includes(error.status) ||
       !error.body || typeof error.body !== "object" || Array.isArray(error.body)) return undefined;
   const body = error.body as Partial<RestoreConversationDraftConflictUnavailableResponse>;
   return body.error === "draft conflict attachment is unavailable" &&
@@ -2263,78 +2266,45 @@ export function Composer({
               }> = [];
               const unavailableAttachmentIds = new Set<string>();
               let restoredPasteId: string | undefined;
-              let resolution: ResolveConversationDraftConflictResponse;
-              if (recovery.resolutionUnavailable) {
-                for (const { file, attachmentId } of recovery.snapshot.files) {
-                  const uploaded = await api.uploadDraftAttachment(scope, draftOwnerId, file);
-                  uploadedIds.push(uploaded.id);
-                  restoredFiles.push({ file, attachmentId: uploaded.id, fromId: attachmentId });
-                }
-                if (recovery.snapshot.pastedText !== undefined) {
-                  const uploaded = await api.uploadDraftAttachment(
-                    scope,
-                    draftOwnerId,
-                    new File([recovery.snapshot.pastedText], PASTED_TEXT_DRAFT_NAME, {
-                      type: "text/plain",
-                    }),
-                  );
-                  uploadedIds.push(uploaded.id);
-                  restoredPasteId = uploaded.id;
-                }
-                const recoverableIds = new Set([
-                  ...recovery.snapshot.files.map(item => item.attachmentId),
-                  ...(recovery.snapshot.pastedText !== undefined &&
-                      recovery.snapshot.pastedTextAttachmentId
-                    ? [recovery.snapshot.pastedTextAttachmentId]
-                    : []),
-                ]);
-                for (const id of [
-                  ...recovery.conflict.displaced.attachmentIds,
-                  ...(recovery.conflict.displaced.pastedTextAttachmentId
-                    ? [recovery.conflict.displaced.pastedTextAttachmentId]
-                    : []),
-                ]) {
-                  if (!recoverableIds.has(id)) unavailableAttachmentIds.add(id);
-                }
-                attemptedSnapshot = restagedDraftConflictSnapshot(
-                  recovery.snapshot,
-                  restoredFiles,
-                  restoredPasteId,
-                  unavailableAttachmentIds,
-                );
+              const replacements = () => [
+                ...restoredFiles.map(({ fromId, attachmentId }) => ({
+                  fromId,
+                  toId: attachmentId,
+                })),
+                ...(recovery.snapshot.pastedTextAttachmentId && restoredPasteId
+                  ? [{
+                      fromId: recovery.snapshot.pastedTextAttachmentId,
+                      toId: restoredPasteId,
+                    }]
+                  : []),
+              ];
+              const putSnapshot = async (
+                snapshot: typeof recovery.snapshot,
+              ): Promise<ResolveConversationDraftConflictResponse> => {
                 const draft = await api.putConversationDraft(scope, {
-                    text: attemptedSnapshot.text,
-                    attachmentIds: attemptedSnapshot.attachmentIds,
-                    ...(attemptedSnapshot.pastedTextAttachmentId
-                      ? { pastedTextAttachmentId: attemptedSnapshot.pastedTextAttachmentId }
-                      : {}),
-                    mentionBindings: attemptedSnapshot.mentionBindings,
-                    expectedRevision: recovery.conflict.current.revision,
-                    clientId: recoveryWriteChain.clientId,
-                    ownerId: draftOwnerId,
-                  });
-                resolution = {
+                  text: snapshot.text,
+                  attachmentIds: snapshot.attachmentIds,
+                  ...(snapshot.pastedTextAttachmentId
+                    ? { pastedTextAttachmentId: snapshot.pastedTextAttachmentId }
+                    : {}),
+                  mentionBindings: snapshot.mentionBindings,
+                  expectedRevision: recovery.conflict.current.revision,
+                  clientId: recoveryWriteChain.clientId,
+                  ownerId: draftOwnerId,
+                });
+                return {
                   conflictId: recovery.conflict.id,
                   action: "restored",
                   replayed: false,
                   draft,
-                  attachmentReplacements: [
-                    ...restoredFiles.map(({ fromId, attachmentId }) => ({
-                      fromId,
-                      toId: attachmentId,
-                    })),
-                    ...(recovery.snapshot.pastedTextAttachmentId && restoredPasteId
-                      ? [{
-                          fromId: recovery.snapshot.pastedTextAttachmentId,
-                          toId: restoredPasteId,
-                        }]
-                      : []),
-                  ],
+                  attachmentReplacements: replacements(),
                   unavailableAttachmentIds: [...unavailableAttachmentIds],
                 };
-              } else {
-                try {
-                  resolution = await api.restoreConversationDraftConflict(
+              };
+              const resolution = await retryDraftRestoreForMissingAssets(
+                () => recovery.resolutionUnavailable
+                  ? putSnapshot(recovery.snapshot)
+                  : api.restoreConversationDraftConflict(
                     scope,
                     recovery.conflict.id,
                     {
@@ -2342,10 +2312,9 @@ export function Composer({
                       expectedRevision: recovery.conflict.current.revision,
                       clientId: recoveryWriteChain.clientId,
                     },
-                  );
-                } catch (error) {
-                  const missingIds = unavailableDraftConflictAttachmentIds(error);
-                  if (!missingIds) throw error;
+                  ),
+                unavailableDraftConflictAttachmentIds,
+                async missingIds => {
                   for (const fromId of missingIds) {
                     const retained = recovery.snapshot.files.find(
                       item => item.attachmentId === fromId,
@@ -2387,32 +2356,26 @@ export function Composer({
                     restoredPasteId,
                     unavailableAttachmentIds,
                   );
-                  resolution = await api.restoreConversationDraftConflict(
-                    scope,
-                    recovery.conflict.id,
-                    {
-                      ownerId: draftOwnerId,
-                      expectedRevision: recovery.conflict.current.revision,
-                      clientId: recoveryWriteChain.clientId,
-                      attachmentReplacements: [
-                        ...restoredFiles.map(({ fromId, attachmentId }) => ({
-                          fromId,
-                          toId: attachmentId,
-                        })),
-                        ...(recovery.snapshot.pastedTextAttachmentId && restoredPasteId
-                          ? [{
-                              fromId: recovery.snapshot.pastedTextAttachmentId,
-                              toId: restoredPasteId,
-                            }]
-                          : []),
-                      ],
-                      unavailableAttachmentIds: [...unavailableAttachmentIds],
-                    },
-                  );
-                }
-              }
-              const canonical = resolution.draft;
+                  return recovery.resolutionUnavailable
+                    ? putSnapshot(attemptedSnapshot)
+                    : api.restoreConversationDraftConflict(
+                        scope,
+                        recovery.conflict.id,
+                        {
+                          ownerId: draftOwnerId,
+                          expectedRevision: recovery.conflict.current.revision,
+                          clientId: recoveryWriteChain.clientId,
+                          attachmentReplacements: replacements(),
+                          unavailableAttachmentIds: [...unavailableAttachmentIds],
+                        },
+                      );
+                },
+              );
+              const draftQueryKey = queryKeys.conversationDraft.detail(scope, draftOwnerId);
+              const observed = queryClient.getQueryData<ConversationDraftDto>(draftQueryKey);
+              const canonical = resolvedDraftConflictDraft(resolution, observed);
               if (!canonical) throw new Error("Restored draft state is unavailable.");
+              const applyingNewerCurrent = canonical !== resolution.draft;
               const canonicalIds = new Set([
                 ...canonical.attachmentIds,
                 ...(canonical.pastedTextAttachmentId
@@ -2546,12 +2509,14 @@ export function Composer({
                     : { pastedTextAttachmentId: undefined }),
                   mentionBindings: [...(canonical.mentionBindings ?? [])],
                   failedContents: [
-                    ...attemptedSnapshot.failedContents.filter(item => {
-                      const canonicalId = (resolution.attachmentReplacements ?? [])
-                        .find(replacement => replacement.fromId === item.id)?.toId ?? item.id;
-                      return !canonicalIds.has(canonicalId);
-                    }),
-                    ...explicitUnavailableFailures,
+                    ...(applyingNewerCurrent
+                      ? []
+                      : attemptedSnapshot.failedContents.filter(item => {
+                          const canonicalId = (resolution.attachmentReplacements ?? [])
+                            .find(replacement => replacement.fromId === item.id)?.toId ?? item.id;
+                          return !canonicalIds.has(canonicalId);
+                        })),
+                    ...(applyingNewerCurrent ? [] : explicitUnavailableFailures),
                     ...failedHydrations,
                     ...(failedPaste ? [failedPaste] : []),
                   ],
@@ -2588,10 +2553,7 @@ export function Composer({
                 );
               }
               updateFailedDraftContents(restored.failedContents);
-              queryClient.setQueryData(
-                queryKeys.conversationDraft.detail(scope, draftOwnerId),
-                canonical,
-              );
+              queryClient.setQueryData(draftQueryKey, canonical);
               setDraftConflict(undefined);
               setRestoringDraftConflict(false);
               setDraftReadyVersion(value => value + 1);

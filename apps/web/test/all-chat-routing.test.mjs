@@ -50,6 +50,8 @@ import {
   ownedDraftRevisionAfterObservation,
   recoverableDraftConflict,
   redundantDraftConflictUploadIds,
+  resolvedDraftConflictDraft,
+  retryDraftRestoreForMissingAssets,
   refreshRecoverableDraftConflict,
   removeComposerPasteSelection,
   restagedDraftConflictSnapshot,
@@ -992,6 +994,56 @@ test("conflict refresh keeps the stable displaced snapshot and adopts the latest
   assert.equal(unresolved.snapshot, recovery.snapshot);
   assert.equal(unresolved.conflict.current.revision, current.revision);
   assert.equal(unresolved.resolutionUnavailable, true);
+});
+
+test("lost restore replay keeps its receipt but applies only the newer canonical draft", () => {
+  const receipt = {
+    conversationId: "chat-a", ownerId: "browser-a", text: "restored",
+    attachmentIds: ["receipt-file"], revision: 2,
+    updatedAt: "2026-09-08T00:00:01.000Z", clientId: "page:restore",
+  };
+  const current = {
+    ...receipt, text: "newer", attachmentIds: ["current-file"], revision: 3,
+    updatedAt: "2026-09-08T00:00:02.000Z", clientId: "page:other",
+  };
+  const resolution = {
+    conflictId: "conflict-a", action: "restored", replayed: true,
+    draft: receipt, currentDraft: current,
+    attachmentReplacements: [{ fromId: "historical-file", toId: "receipt-file" }],
+  };
+  const observed = {
+    ...current, text: "already observed", attachmentIds: ["observed-file"], revision: 4,
+    updatedAt: "2026-09-08T00:00:03.000Z",
+  };
+
+  const canonical = resolvedDraftConflictDraft(resolution, observed);
+  assert.equal(canonical, observed);
+  assert.deepEqual(canonicalDraftConflictFiles(
+    [{ file: { name: "historical.txt" }, attachmentId: "historical-file" }],
+    canonical.attachmentIds,
+    resolution.attachmentReplacements,
+  ), { files: [], missingAttachmentIds: ["observed-file"] });
+  assert.equal(resolvedDraftConflictDraft(resolution), current);
+});
+
+test("draft restore probes durable IDs before restaging only the reported missing subset", async () => {
+  let retries = 0;
+  const durable = await retryDraftRestoreForMissingAssets(
+    async () => "saved without upload",
+    () => undefined,
+    async () => { retries += 1; return "unexpected"; },
+  );
+  assert.equal(durable, "saved without upload");
+  assert.equal(retries, 0);
+
+  const missing = ["missing-file", "missing-paste"];
+  const partial = await retryDraftRestoreForMissingAssets(
+    async () => { throw { missing }; },
+    error => error.missing,
+    async ids => { retries += 1; return ids; },
+  );
+  assert.deepEqual(partial, missing);
+  assert.equal(retries, 1);
 });
 
 test("conflict restaging omits unavailable bytes without hiding their recovery failure", () => {

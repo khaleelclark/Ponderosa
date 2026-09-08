@@ -8,7 +8,35 @@ import type {
   ConversationDraftDto,
   EngineCommand,
   EngineComposerCapability,
+  ResolveConversationDraftConflictResponse,
 } from "@ponderosa/core";
+
+export function resolvedDraftConflictDraft(
+  resolution: ResolveConversationDraftConflictResponse,
+  observed?: ConversationDraftDto,
+): ConversationDraftDto | undefined {
+  const restored = resolution.draft;
+  return [resolution.currentDraft, observed].reduce<ConversationDraftDto | undefined>(
+    (latest, candidate) => candidate && (!latest || candidate.revision > latest.revision)
+      ? candidate
+      : latest,
+    restored,
+  );
+}
+
+export async function retryDraftRestoreForMissingAssets<T>(
+  probe: () => Promise<T>,
+  unavailableIds: (error: unknown) => string[] | undefined,
+  retry: (missingIds: string[]) => Promise<T>,
+): Promise<T> {
+  try {
+    return await probe();
+  } catch (error) {
+    const missingIds = unavailableIds(error);
+    if (!missingIds) throw error;
+    return retry(missingIds);
+  }
+}
 
 export function deletableSupersededDraftAttachmentIds(
   pendingIds: Iterable<string>,

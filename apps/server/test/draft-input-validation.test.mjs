@@ -603,6 +603,24 @@ test("draft conflict restore adopts fresh bytes and leaves unavailable content e
   for (const id of [unavailable.id, lost.id, paste.id]) {
     rmSync(drafts.files("chat-a", "browser-one", id).body, { force: true });
   }
+  const unavailablePut = await app.inject({
+    method: "PUT",
+    url: "/api/conversations/chat-a/draft",
+    payload: {
+      ...validDraft,
+      text: "preserved",
+      attachmentIds: [retained.id, unavailable.id, lost.id],
+      pastedTextAttachmentId: paste.id,
+      expectedRevision: 1,
+      clientId: "page:restore",
+    },
+  });
+  assert.equal(unavailablePut.statusCode, 400, unavailablePut.body);
+  assert.deepEqual(unavailablePut.json().unavailableAttachmentIds, [
+    unavailable.id,
+    lost.id,
+    paste.id,
+  ]);
   const probe = await app.inject({
     method: "POST",
     url: `/api/conversations/chat-a/draft-conflicts/${conflictResponse.json().id}/restore`,
@@ -677,6 +695,8 @@ test("draft conflict restore adopts fresh bytes and leaves unavailable content e
   assert.equal(replay.statusCode, 200, replay.body);
   assert.equal(replay.json().replayed, true);
   assert.equal(replay.json().draft.text, "preserved");
+  assert.equal(replay.json().currentDraft.text, "later edit");
+  assert.equal(replay.json().currentDraft.revision, later.json().revision);
   assert.deepEqual(replay.json().attachmentReplacements, restored.json().attachmentReplacements);
   assert.deepEqual(replay.json().draft.attachmentIds, restored.json().draft.attachmentIds);
   assert.equal(

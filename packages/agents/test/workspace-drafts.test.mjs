@@ -225,6 +225,15 @@ test("draft conflicts keep stable IDs and resolve one snapshot idempotently acro
 
   store = new WorkspaceStore(directory);
   assert.deepEqual(store.getDraft("chat-a", "browser-a"), restored.draft);
+  const later = store.putDraft("chat-a", {
+    ownerId: "browser-a",
+    text: "later canonical",
+    attachmentIds: [],
+    expectedRevision: restored.draft.revision,
+    clientId: "page:browser-a:draft:later",
+  });
+  store = new WorkspaceStore(directory);
+  const cursorBeforeReplay = store.cursor();
   assert.deepEqual(store.restoreDraftConflict({
     conversationId: "chat-a",
     ownerId: "browser-a",
@@ -240,6 +249,8 @@ test("draft conflicts keep stable IDs and resolve one snapshot idempotently acro
     ],
     unavailableAttachmentIds: [],
   });
+  assert.deepEqual(store.getDraft("chat-a", "browser-a"), later);
+  assert.equal(store.cursor(), cursorBeforeReplay);
   assert.throws(
     () => store.discardDraftConflict({
       conversationId: "chat-a",

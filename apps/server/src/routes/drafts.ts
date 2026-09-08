@@ -761,10 +761,11 @@ export function registerDraftRoutes(
             service.read(request.params.id, ownerId, id),
           ),
         );
-        if (referenced.some(item => !item)) {
+        const unavailableAttachmentIds = referencedIds.filter((_, index) => !referenced[index]);
+        if (unavailableAttachmentIds.length) {
           return reply.code(400).send({
-            error:
-              "draft attachment is missing or belongs to another conversation",
+            error: "draft conflict attachment is unavailable",
+            unavailableAttachmentIds,
           });
         }
         service.enqueueReleasedAttachments(request.params.id, ownerId, current, body);
@@ -907,11 +908,17 @@ export function registerDraftRoutes(
             attachmentReplacements: request.body.attachmentReplacements,
             unavailableAttachmentIds: request.body.unavailableAttachmentIds,
           });
+          const currentDraft = restored.replayed
+            ? workspace.getDraft(request.params.id, ownerId)
+            : restored.draft;
           const response: ResolveConversationDraftConflictResponse = {
             conflictId: request.params.conflictId,
             action: "restored",
             replayed: restored.replayed,
             draft: await service.hydrateDraft(restored.draft),
+            ...(currentDraft.revision > restored.draft.revision
+              ? { currentDraft: await service.hydrateDraft(currentDraft) }
+              : {}),
             attachmentReplacements: restored.attachmentReplacements,
             unavailableAttachmentIds: restored.unavailableAttachmentIds,
           };

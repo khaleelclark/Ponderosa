@@ -218,6 +218,8 @@ export interface ResolveConversationDraftConflictResponse {
   action: "restored" | "discarded";
   replayed: boolean;
   draft?: ConversationDraftDto;
+  /** Latest canonical state when an idempotent replay's original result is no longer current. */
+  currentDraft?: ConversationDraftDto;
   /** Durable historical-to-canonical asset mapping, stable across restore replay. */
   attachmentReplacements?: Array<{ fromId: string; toId: string }>;
   unavailableAttachmentIds?: string[];
