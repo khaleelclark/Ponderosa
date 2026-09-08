@@ -6,7 +6,13 @@ import type {
   ModelOption,
   UpdateProjectRequest,
 } from "@ponderosa/core";
-import { stableJson, type AgentStore, type WorkspaceStore } from "@ponderosa/agents";
+import {
+  readRepairableJsonl,
+  stableJson,
+  writeAtomicFsyncedJsonl,
+  type AgentStore,
+  type WorkspaceStore,
+} from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
 import type { ActiveRun, EngineRegistration, PersistentRuntime } from "../app-contracts.js";
 import {
@@ -38,6 +44,115 @@ interface ProjectRoutesContext {
     reason: string,
     projectId: string,
   ): Promise<void>;
+}
+
+interface ManagedProjectCreationReceipt {
+  version: 1;
+  idempotencyKey: string;
+  payloadHash: string;
+  hostPath: string;
+}
+
+const MANAGED_PROJECT_CREATION_MARKER = ".ponderosa-project-creation.jsonl";
+
+function managedProjectReceiptPath(root: string, idempotencyKey: string): string {
+  return path.join(root, `.project-creation-${createHash("sha256").update(idempotencyKey).digest("hex")}.jsonl`);
+}
+
+function readManagedProjectReceipt(file: string): ManagedProjectCreationReceipt | undefined {
+  const records = readRepairableJsonl<ManagedProjectCreationReceipt>(
+    file, "managed Project creation receipt", true,
+  );
+  if (records.length === 0) return undefined;
+  if (records.length !== 1) throw new Error("managed Project creation receipt is invalid");
+  return records[0];
+}
+
+function assertManagedProjectReceipt(
+  actual: ManagedProjectCreationReceipt | undefined,
+  expected: ManagedProjectCreationReceipt,
+): void {
+  if (!actual || stableJson(actual) !== stableJson(expected)) {
+    throw new Error("managed Project creation key was reused with different input");
+  }
+}
+
+async function syncDirectory(directory: string): Promise<void> {
+  if (process.platform === "win32") return;
+  const handle = await fs.open(directory, "r");
+  try { await handle.sync(); } finally { await handle.close(); }
+}
+
+async function prepareManagedProjectFolder(
+  root: string,
+  receipt: ManagedProjectCreationReceipt,
+): Promise<void> {
+  const receiptPath = managedProjectReceiptPath(root, receipt.idempotencyKey);
+  const existingReceipt = readManagedProjectReceipt(receiptPath);
+  if (existingReceipt) assertManagedProjectReceipt(existingReceipt, receipt);
+  else {
+    try {
+      await fs.lstat(receipt.hostPath);
+      throw new Error("folder already exists");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    writeAtomicFsyncedJsonl(receiptPath, [receipt]);
+  }
+
+  try {
+    await fs.mkdir(receipt.hostPath, { recursive: false });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  const markerPath = path.join(receipt.hostPath, MANAGED_PROJECT_CREATION_MARKER);
+  const entries = await fs.readdir(receipt.hostPath);
+  if (entries.includes(MANAGED_PROJECT_CREATION_MARKER)) {
+    assertManagedProjectReceipt(readManagedProjectReceipt(markerPath), receipt);
+  } else {
+    if (entries.length > 0) throw new Error("folder already exists and is not owned by this Project creation");
+    writeAtomicFsyncedJsonl(markerPath, [receipt]);
+  }
+}
+
+async function finishManagedProjectFolder(
+  root: string,
+  receipt: ManagedProjectCreationReceipt,
+): Promise<void> {
+  const receiptPath = managedProjectReceiptPath(root, receipt.idempotencyKey);
+  const existingReceipt = readManagedProjectReceipt(receiptPath);
+  if (!existingReceipt) return;
+  assertManagedProjectReceipt(existingReceipt, receipt);
+  const markerPath = path.join(receipt.hostPath, MANAGED_PROJECT_CREATION_MARKER);
+  try {
+    assertManagedProjectReceipt(readManagedProjectReceipt(markerPath), receipt);
+    await fs.unlink(markerPath);
+    await syncDirectory(receipt.hostPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  await fs.unlink(receiptPath);
+  await syncDirectory(root);
+}
+
+async function rollbackManagedProjectFolder(
+  root: string,
+  receipt: ManagedProjectCreationReceipt,
+): Promise<void> {
+  const receiptPath = managedProjectReceiptPath(root, receipt.idempotencyKey);
+  assertManagedProjectReceipt(readManagedProjectReceipt(receiptPath), receipt);
+  const markerPath = path.join(receipt.hostPath, MANAGED_PROJECT_CREATION_MARKER);
+  try {
+    const marker = readManagedProjectReceipt(markerPath);
+    if (marker) assertManagedProjectReceipt(marker, receipt);
+    if (marker) await fs.unlink(markerPath);
+    await fs.rmdir(receipt.hostPath);
+    await syncDirectory(root);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  await fs.unlink(receiptPath);
+  await syncDirectory(root);
 }
 
 export function registerProjectRoutes(
@@ -97,13 +212,20 @@ export function registerProjectRoutes(
         defaultEffort: request.body.defaultEffort ?? null,
       })).digest("hex"),
     };
+    const managedReceipt: ManagedProjectCreationReceipt | undefined = request.body.hostPath
+      ? undefined
+      : { version: 1, ...creationIdentity, hostPath };
+    let replay;
     try {
-      const replay = store.getProjectCreation(creationIdentity);
-      if (replay) return replay;
+      replay = store.getProjectCreation(creationIdentity);
     } catch (error) {
       return reply.code(409).send({
         error: error instanceof Error ? error.message : "Project creation replay conflict",
       });
+    }
+    if (replay) {
+      if (managedReceipt) await finishManagedProjectFolder(managedWorkspacesRoot, managedReceipt);
+      return replay;
     }
     if (!engines.has(defaultEngine)) return reply.code(400).send({ error: "a configured default engine is required" });
     const creationAdapter = engines.get(defaultEngine)!.adapter;
@@ -116,7 +238,6 @@ export function registerProjectRoutes(
     );
     if (selectionError) return reply.code(400).send({ error: selectionError });
     await fs.mkdir(managedWorkspacesRoot, { recursive: true });
-    let createdManagedFolder = false;
     if (request.body.hostPath) {
       try {
         const stat = await fs.stat(hostPath);
@@ -127,12 +248,14 @@ export function registerProjectRoutes(
         return reply.code(400).send({ error: "hostPath does not exist" });
       }
     }
-    if (!request.body.hostPath) {
+    if (managedReceipt) {
       try {
-        await fs.mkdir(hostPath, { recursive: false });
-        createdManagedFolder = true;
+        await prepareManagedProjectFolder(managedWorkspacesRoot, managedReceipt);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "EEXIST") return reply.code(409).send({ error: "folder already exists" });
+        if (error instanceof Error && (error.message.includes("reused with different input") ||
+            error.message.includes("folder already exists"))) {
+          return reply.code(409).send({ error: error.message });
+        }
         throw error;
       }
     }
@@ -160,10 +283,11 @@ export function registerProjectRoutes(
       const committed = store.getProjectCreation(creationIdentity);
       if (committed) project = committed;
       else {
-        if (createdManagedFolder) await fs.rm(hostPath, { recursive: true, force: true });
+        if (managedReceipt) await rollbackManagedProjectFolder(managedWorkspacesRoot, managedReceipt);
         throw error;
       }
     }
+    if (managedReceipt) await finishManagedProjectFolder(managedWorkspacesRoot, managedReceipt);
     appendWorkspace({ type: "project_changed", projectId: project.id, action: "created" });
     refreshCommunicationReconciliation(project.id);
     if (project.lastConversationId) appendWorkspace({ type: "conversation_changed", projectId: project.id, conversationId: project.lastConversationId, action: "created" });

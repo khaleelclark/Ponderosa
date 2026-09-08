@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import Fastify from "fastify";
-import { AgentStore } from "@ponderosa/agents";
+import { AgentStore, stableJson } from "@ponderosa/agents";
 import { registerConversationRoutes } from "../dist/routes/conversations.js";
 import { registerProjectRoutes } from "../dist/routes/projects.js";
 
@@ -15,6 +16,28 @@ const adapter = {
   listModels: () => [],
   listEfforts: () => [],
 };
+
+function managedCreationReceipt(managedWorkspacesRoot, idempotencyKey, payload) {
+  const hostPath = path.join(managedWorkspacesRoot, payload.createFolderName);
+  return {
+    receipt: {
+      version: 1,
+      idempotencyKey,
+      payloadHash: createHash("sha256").update(stableJson({
+        label: payload.label,
+        hostPath,
+        defaultEngine: payload.defaultEngine,
+        defaultModel: null,
+        defaultEffort: null,
+      })).digest("hex"),
+      hostPath,
+    },
+    receiptPath: path.join(
+      managedWorkspacesRoot,
+      `.project-creation-${createHash("sha256").update(idempotencyKey).digest("hex")}.jsonl`,
+    ),
+  };
+}
 
 test("Project API replays lost responses and never deletes a committed managed folder", async (t) => {
   const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-project-route-create-"));
@@ -144,4 +167,79 @@ test("Chat API binds one stable creation key to one payload", async (t) => {
 
   const conflict = await app.inject({ ...request, payload: { title: "Backend" } });
   assert.equal(conflict.statusCode, 409, conflict.body);
+});
+
+test("managed Project folder receipts recover every pre-canonical crash boundary", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-managed-project-recovery-"));
+  const managedWorkspacesRoot = path.join(dataDir, "managed");
+  const store = new AgentStore(dataDir);
+  await mkdir(managedWorkspacesRoot, { recursive: true });
+  const app = Fastify();
+  const engines = new Map([["codex", { adapter }]]);
+  t.after(async () => {
+    await app.close();
+    store.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  registerProjectRoutes(app, {
+    store,
+    workspace: { getPreferences: () => ({}) },
+    engines,
+    managedWorkspacesRoot,
+    projectFolderPathBoundary: {
+      insideRoot: () => true,
+      validatedBrowsePath: async (candidate) => ({ candidate, root: "/" }),
+      defaultBrowsePath: async () => managedWorkspacesRoot,
+    },
+    activeRuns: new Map(), scheduledSessionRollovers: new Map(),
+    organizationEnvelopeStates: new Map(), cachedModelOptions: () => [],
+    appendWorkspace: () => {}, refreshCommunicationReconciliation: () => {},
+    clearAgentResumeSession: () => {}, persistentRuntimeForTermination: () => undefined,
+    teardownPersistentRuntime: async () => {},
+  });
+
+  for (const phase of ["receipt", "empty-folder", "marker"]) {
+    const idempotencyKey = `managed-${phase}`;
+    const payload = { label: phase, defaultEngine: "codex", createFolderName: phase };
+    const { receipt, receiptPath } = managedCreationReceipt(
+      managedWorkspacesRoot, idempotencyKey, payload,
+    );
+    await writeFile(receiptPath, `${JSON.stringify(receipt)}\n`);
+    if (phase !== "receipt") await mkdir(receipt.hostPath);
+    if (phase === "marker") {
+      await writeFile(
+        path.join(receipt.hostPath, ".ponderosa-project-creation.jsonl"),
+        `${JSON.stringify(receipt)}\n`,
+      );
+    }
+    const response = await app.inject({
+      method: "POST", url: "/api/projects",
+      headers: { "idempotency-key": idempotencyKey }, payload,
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(existsSync(receipt.hostPath), true);
+    assert.equal(existsSync(receiptPath), false);
+    assert.equal(existsSync(path.join(receipt.hostPath, ".ponderosa-project-creation.jsonl")), false);
+  }
+
+  const conflictKey = "managed-conflict";
+  const original = { label: "Original", defaultEngine: "codex", createFolderName: "conflict" };
+  const { receipt, receiptPath } = managedCreationReceipt(managedWorkspacesRoot, conflictKey, original);
+  await writeFile(receiptPath, `${JSON.stringify(receipt)}\n`);
+  const conflict = await app.inject({
+    method: "POST", url: "/api/projects", headers: { "idempotency-key": conflictKey },
+    payload: { ...original, label: "Changed" },
+  });
+  assert.equal(conflict.statusCode, 409, conflict.body);
+  assert.equal(await readFile(receiptPath, "utf8"), `${JSON.stringify(receipt)}\n`);
+
+  const foreign = path.join(managedWorkspacesRoot, "foreign");
+  await mkdir(foreign);
+  await writeFile(path.join(foreign, "owned-by-user.txt"), "keep");
+  const rejected = await app.inject({
+    method: "POST", url: "/api/projects", headers: { "idempotency-key": "managed-foreign" },
+    payload: { label: "Foreign", defaultEngine: "codex", createFolderName: "foreign" },
+  });
+  assert.equal(rejected.statusCode, 409, rejected.body);
+  assert.equal(await readFile(path.join(foreign, "owned-by-user.txt"), "utf8"), "keep");
 });

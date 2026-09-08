@@ -201,7 +201,8 @@ export class AgentStore extends AgentEventSessionFacade {
     recoveryMs: number;
     totalMs: number;
     projectCount: number;
-  } = { mode: "recovery", openMs: 0, componentsMs: 0, recoveryMs: 0, totalMs: 0, projectCount: 0 };
+    recoveryIssues: ReadonlyArray<{ projectId: string; detail: string }>;
+  } = { mode: "recovery", openMs: 0, componentsMs: 0, recoveryMs: 0, totalMs: 0, projectCount: 0, recoveryIssues: [] };
 
   constructor(dataDir: string) {
     super();
@@ -287,6 +288,7 @@ export class AgentStore extends AgentEventSessionFacade {
         recoveryMs: Math.round((completedAt - componentsCreatedAt) * 10) / 10,
         totalMs: Math.round((completedAt - startupStartedAt) * 10) / 10,
         projectCount: this.listProjects().length,
+        recoveryIssues: this.projectionRebuilder.listRecoveryIssues(),
       };
     } catch (error) {
       releaseDataDirectoryOwnership(this.ownership);
@@ -970,8 +972,16 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.workspaceCatalog.getAgentPreset(id);
   }
 
-  createAgentPreset(projectId: string, input: CreateAgentPresetRequest): AgentPresetDto {
-    return this.workspaceCatalog.createAgentPreset(projectId, input);
+  getAgentPresetCreation(projectId: string, identity: WorkspaceCreationIdentity): AgentPresetDto | undefined {
+    return this.workspaceCatalog.getAgentPresetCreation(projectId, identity);
+  }
+
+  createAgentPreset(
+    projectId: string,
+    input: CreateAgentPresetRequest,
+    identity?: WorkspaceCreationIdentity,
+  ): AgentPresetDto {
+    return this.workspaceCatalog.createAgentPreset(projectId, input, identity);
   }
 
   updateAgentPreset(id: string, patch: UpdateAgentPresetRequest): AgentPresetDto | undefined {

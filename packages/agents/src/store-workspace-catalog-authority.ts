@@ -59,7 +59,7 @@ function creationId(kind: "project" | "conversation", scope: string, key: string
 }
 
 function assertCreationIdentity(
-  record: Pick<ProjectJson | ConversationJson, "creationIdempotencyKey" | "creationPayloadHash">,
+  record: { creationIdempotencyKey?: string; creationPayloadHash?: string },
   identity: WorkspaceCreationIdentity,
 ): void {
   if (record.creationIdempotencyKey !== identity.idempotencyKey ||
@@ -319,11 +319,50 @@ export class AgentWorkspaceCatalogAuthority {
     const r = this.db.select().from(agentPresets).where(eq(agentPresets.id, id)).get();
     return r ? { ...r, model: r.model ?? undefined, effort: r.effort ?? undefined, enabled: r.enabled === 1, engine: r.engine as AgentPresetDto["engine"] } : undefined;
   }
-  createAgentPreset(projectId: string, input: CreateAgentPresetRequest): AgentPresetDto {
+  getAgentPresetCreation(
+    projectId: string,
+    identity: WorkspaceCreationIdentity,
+  ): AgentPresetDto | undefined {
+    const id = creationId("project", `${projectId}:preset-create`, identity.idempotencyKey);
+    const events = readRepairableJsonl<PresetEvent>(
+      agentPresetsPath(this.dataDir, projectId), "agent preset journal", true,
+    );
+    const creation = events.find((event) => event.type === "upsert" && event.preset.id === id &&
+      event.creationIdempotencyKey !== undefined);
+    if (!creation || creation.type !== "upsert") return undefined;
+    assertCreationIdentity(creation, identity);
+    const current = new Map<string, AgentPresetDto>();
+    for (const event of events) event.type === "upsert"
+      ? current.set(event.preset.id, event.preset)
+      : current.delete(event.id);
+    const preset = current.get(id);
+    if (!preset) throw new Error("This Agent preset creation was already deleted");
+    this.db.insert(agentPresets).values({ ...preset, enabled: preset.enabled ? 1 : 0 })
+      .onConflictDoUpdate({ target: agentPresets.id, set: { ...preset, enabled: preset.enabled ? 1 : 0 } }).run();
+    return preset;
+  }
+  createAgentPreset(
+    projectId: string,
+    input: CreateAgentPresetRequest,
+    identity?: WorkspaceCreationIdentity,
+  ): AgentPresetDto {
     if (!this.getProject(projectId)) throw new Error("unknown project");
+    const replay = identity ? this.getAgentPresetCreation(projectId, identity) : undefined;
+    if (replay) return replay;
     const now = new Date().toISOString();
-    const preset: AgentPresetDto = { id: randomUUID(), projectId, ...input, enabled: input.enabled ?? true, createdAt: now, updatedAt: now };
-    appendFsyncedJsonl(agentPresetsPath(this.dataDir, projectId), [{ type: "upsert", preset } satisfies PresetEvent]);
+    const preset: AgentPresetDto = {
+      id: identity
+        ? creationId("project", `${projectId}:preset-create`, identity.idempotencyKey)
+        : randomUUID(),
+      projectId, ...input, enabled: input.enabled ?? true, createdAt: now, updatedAt: now,
+    };
+    appendFsyncedJsonl(agentPresetsPath(this.dataDir, projectId), [{
+      type: "upsert", preset,
+      ...(identity ? {
+        creationIdempotencyKey: identity.idempotencyKey,
+        creationPayloadHash: identity.payloadHash,
+      } : {}),
+    } satisfies PresetEvent]);
     this.db.insert(agentPresets).values({ ...preset, enabled: preset.enabled ? 1 : 0 }).run(); return preset;
   }
   updateAgentPreset(id: string, patch: UpdateAgentPresetRequest): AgentPresetDto | undefined {

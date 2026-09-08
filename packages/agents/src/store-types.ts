@@ -115,7 +115,12 @@ export interface AgentSpawnOrigin {
   prompt?: string;
 }
 
-export type PresetEvent = { type: "upsert"; preset: AgentPresetDto } | { type: "delete"; id: string; at: string };
+export type PresetEvent = {
+  type: "upsert";
+  preset: AgentPresetDto;
+  creationIdempotencyKey?: string;
+  creationPayloadHash?: string;
+} | { type: "delete"; id: string; at: string };
 
 export interface ConversationJson {
   id: string;

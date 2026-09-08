@@ -127,7 +127,13 @@ test("late projection failure cannot roll back completed Project storage recover
   store.close();
   writeFileSync(unrelatedJson, "{corrupt unrelated projection");
 
-  assert.throws(() => new AgentStore(dataDir), /JSON/u);
+  const quarantined = new AgentStore(dataDir);
+  assert.equal(quarantined.getProject(unrelated.id), undefined);
+  const [recoveryIssue] = quarantined.startupProfile().recoveryIssues;
+  assert.equal(recoveryIssue?.projectId, unrelated.id);
+  assert.match(recoveryIssue?.detail ?? "", /JSON/u);
+  assert.equal(readFileSync(unrelatedJson, "utf8"), "{corrupt unrelated projection");
+  quarantined.close();
   const sqlite = new Database(join(dataDir, "ponderosa.db"), { readonly: true });
   const recoveredReceipt = sqlite.prepare(`
     SELECT removal_started removalStarted,

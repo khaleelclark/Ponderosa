@@ -446,8 +446,8 @@ export function ProjectShell({
 
   const dialogs = (
     <>
-      <PresetManagerDialog open={presetsOpen} engines={projectEngines} presets={presets} onClose={() => setPresetsOpen(false)} onSave={async (id, input) => {
-        const action = id ? api.updateAgentPreset(id, input) : api.createAgentPreset(projectId, input);
+      <PresetManagerDialog open={presetsOpen} engines={projectEngines} presets={presets} onClose={() => setPresetsOpen(false)} onSave={async (id, input, idempotencyKey) => {
+        const action = id ? api.updateAgentPreset(id, input) : api.createAgentPreset(projectId, input, idempotencyKey!);
         await action;
         await queryClient.invalidateQueries({ queryKey: queryKeys.agents.presets(projectId) });
       }} onDelete={async (id) => {

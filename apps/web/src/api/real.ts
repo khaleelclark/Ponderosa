@@ -670,7 +670,7 @@ export const realApi = {
     });
   },
   listAgentPresets(projectId: string): Promise<AgentPresetDto[]> { return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-presets`); },
-  createAgentPreset(projectId: string, request: CreateAgentPresetRequest): Promise<AgentPresetDto> { return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-presets`, { method: "POST", body: JSON.stringify(request) }); },
+  createAgentPreset(projectId: string, request: CreateAgentPresetRequest, idempotencyKey: string): Promise<AgentPresetDto> { return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-presets`, { method: "POST", headers: { "idempotency-key": idempotencyKey }, body: JSON.stringify(request) }); },
   updateAgentPreset(id: string, patch: UpdateAgentPresetRequest): Promise<AgentPresetDto> { return requestJson(`/api/agent-presets/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }); },
   async deleteAgentPreset(id: string): Promise<void> { await requestJson(`/api/agent-presets/${encodeURIComponent(id)}`, { method: "DELETE" }); },
   updateAgent(agentId: string, patch: UpdateAgentRequest): Promise<AgentDto> {

@@ -9,7 +9,7 @@ import {
 import type { Db } from "./db.js";
 import { EventLog } from "./eventlog.js";
 import { readRepairableJsonl } from "./append-jsonl.js";
-import { pruneArtifactDirectory, readJson, readJsonLines, writeJson } from "./store-filesystem.js";
+import { pruneArtifactDirectory, readJson, writeJson } from "./store-filesystem.js";
 import type { AgentJson, ConversationJson, PresetEvent, ProjectJson } from "./store-types.js";
 import { AgentArtifactCatalog } from "./store-artifact-catalog.js";
 import { AgentCatalogAuthority } from "./store-agent-catalog-authority.js";
@@ -49,6 +49,7 @@ import {
 } from "./paths.js";
 
 export class AgentProjectionRebuilder {
+  private recoveryIssues: Array<{ projectId: string; detail: string }> = [];
   constructor(
     private readonly dataDir: string,
     private readonly db: Db,
@@ -71,6 +72,7 @@ export class AgentProjectionRebuilder {
   }
 
   private rebuildProjectionsInTransaction(): void {
+    this.recoveryIssues = [];
     this.recoverAgentDeletionDirectories();
     this.client.prepare(`DELETE FROM all_chat_feed_projection`).run();
     this.client.prepare(`DELETE FROM agent_health_projection`).run();
@@ -105,6 +107,8 @@ export class AgentProjectionRebuilder {
         // projection rebuild must never authenticate storage by its name alone.
         continue;
       }
+      this.client.exec("SAVEPOINT ponderosa_project_projection");
+      try {
       const pj = projectJsonPath(this.dataDir, projectId);
       if (!existsSync(pj)) continue;
       const p = readJson<ProjectJson>(pj);
@@ -126,7 +130,9 @@ export class AgentProjectionRebuilder {
       for (const event of readRepairableJsonl<PresetEvent>(agentPresetsPath(this.dataDir, projectId), "agent preset journal", true)) event.type === "upsert" ? resolved.set(event.preset.id, event.preset) : resolved.delete(event.id);
       for (const preset of resolved.values()) this.db.insert(agentPresets).values({ ...preset, enabled: preset.enabled ? 1 : 0 }).run();
       const organizationalParents = new Map<string, string | null>();
-      for (const event of readJsonLines<AgentOrganizationEvent>(agentOrganizationEventsPath(this.dataDir, projectId))) {
+      for (const event of readRepairableJsonl<AgentOrganizationEvent>(
+        agentOrganizationEventsPath(this.dataDir, projectId), "agent organization log", true,
+      )) {
         if (event.projectId === projectId && event.type === "manager_changed") {
           organizationalParents.set(event.agentId, event.managerAgentId);
         }
@@ -279,15 +285,34 @@ export class AgentProjectionRebuilder {
         }
       }
       this.sanitizeOrganizationProjection(projectId);
+      } catch (error) {
+        this.client.exec("ROLLBACK TO ponderosa_project_projection");
+        this.recoveryIssues.push({
+          projectId,
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        this.client.exec("RELEASE ponderosa_project_projection");
+      }
     }
     // Project rows are rebuildable and are deleted/reinserted above. The
     // deletion quarantine is authoritative, so prune it only after canonical
     // Project folders have been fully reconstructed.
-    this.client.prepare(`
-      DELETE FROM project_deletion_pending
+    const quarantined = new Set(this.recoveryIssues.map((issue) => issue.projectId));
+    for (const row of this.client.prepare(`
+      SELECT project_id FROM project_deletion_pending
       WHERE project_id NOT IN (SELECT id FROM projects)
-    `).run();
+    `).all() as Array<{ project_id: string }>) {
+      if (!quarantined.has(row.project_id)) {
+        this.client.prepare("DELETE FROM project_deletion_pending WHERE project_id = ?")
+          .run(row.project_id);
+      }
+    }
     this.rebuildGlobalChatSearchProjection();
+  }
+
+  listRecoveryIssues(): ReadonlyArray<{ projectId: string; detail: string }> {
+    return this.recoveryIssues;
   }
 
 }

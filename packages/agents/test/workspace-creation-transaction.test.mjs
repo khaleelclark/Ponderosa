@@ -119,3 +119,125 @@ test("Chat creation rolls back ordinary projection failures and replays lost res
   assert.equal(store.getProject(project.id)?.lastConversationId, created.id);
   store.close();
 });
+
+test("Agent preset creation replays one canonical identity after projection failure", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-preset-create-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  let store = new AgentStore(dataDir);
+  const project = store.createProject({
+    label: "Project",
+    hostPath: "/tmp/project",
+    defaultEngine: "codex",
+  });
+  const attempt = identity("preset-create-stable", "preset-a");
+  const input = {
+    name: "Custom QA",
+    description: "Checks",
+    guidance: "Verify the exact behavior carefully.",
+    engine: "codex",
+  };
+  store.sqlite.exec(`
+    CREATE TRIGGER fail_custom_preset BEFORE INSERT ON agent_presets
+    WHEN NEW.name = 'Custom QA'
+    BEGIN SELECT RAISE(FAIL, 'injected preset projection failure'); END
+  `);
+  assert.throws(
+    () => store.createAgentPreset(project.id, input, attempt),
+    /injected preset projection failure/u,
+  );
+  assert.throws(
+    () => store.createAgentPreset(project.id, input, attempt),
+    /injected preset projection failure/u,
+  );
+  store.sqlite.exec("DROP TRIGGER fail_custom_preset");
+  const recovered = store.createAgentPreset(project.id, input, attempt);
+  assert.equal(store.createAgentPreset(project.id, input, attempt).id, recovered.id);
+  const presetEvents = (await readFile(
+    path.join(dataDir, "projects", project.id, "agent-presets.jsonl"), "utf8",
+  )).trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(presetEvents.filter((event) => event.preset?.id === recovered.id).length, 1);
+  assert.throws(
+    () => store.createAgentPreset(project.id, { ...input, name: "Changed" }, identity(attempt.idempotencyKey, "changed")),
+    /reused with different input/u,
+  );
+  assert.equal(store.listAgentPresets(project.id).filter((preset) => preset.name === input.name).length, 1);
+  store.close();
+
+  store = new AgentStore(dataDir);
+  assert.equal(store.createAgentPreset(project.id, input, attempt).id, recovered.id);
+  assert.equal(store.listAgentPresets(project.id).filter((preset) => preset.name === input.name).length, 1);
+  assert.equal(store.deleteAgentPreset(recovered.id), true);
+  assert.throws(
+    () => store.createAgentPreset(project.id, input, attempt),
+    /already deleted/u,
+  );
+  store.close();
+});
+
+test("startup repairs an organization torn tail and isolates a corrupt Project journal", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-project-journal-recovery-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  let store = new AgentStore(dataDir);
+  const affected = store.createProject({ label: "Affected", hostPath: "/tmp/a", defaultEngine: "codex" });
+  const healthy = store.createProject({ label: "Healthy", hostPath: "/tmp/b", defaultEngine: "codex" });
+  const chat = store.getConversation(affected.lastConversationId);
+  const manager = store.createAgent(affected.id, { title: "Manager", engine: "codex", conversationId: chat.id });
+  store.createAgent(affected.id, {
+    title: "Child", engine: "codex", conversationId: chat.id, managerAgentId: manager.id,
+  });
+  store.close();
+
+  const organizationFile = path.join(dataDir, "projects", affected.id, "agent-organization.jsonl");
+  const organizationBytes = await readFile(organizationFile);
+  await writeFile(organizationFile, organizationBytes.subarray(0, organizationBytes.length - 5));
+  store = new AgentStore(dataDir);
+  assert.deepEqual(store.listProjects().map((project) => project.label).sort(), ["Affected", "Healthy"]);
+  assert.equal((await readFile(organizationFile)).length, 0);
+  store.close();
+
+  const presetFile = path.join(dataDir, "projects", affected.id, "agent-presets.jsonl");
+  const presetBytes = await readFile(presetFile, "utf8");
+  const presetLines = presetBytes.trimEnd().split("\n");
+  presetLines.splice(1, 0, "{broken-middle");
+  const corrupted = `${presetLines.join("\n")}\n`;
+  await writeFile(presetFile, corrupted);
+  store = new AgentStore(dataDir);
+  assert.deepEqual(store.listProjects().map((project) => project.label), ["Healthy"]);
+  assert.deepEqual(store.startupProfile().recoveryIssues, [{
+    projectId: affected.id,
+    detail: "agent preset journal contains non-tail corruption",
+  }]);
+  assert.equal(await readFile(presetFile, "utf8"), corrupted);
+  store.close();
+
+  store = new AgentStore(dataDir);
+  assert.deepEqual(store.listProjects().map((project) => project.label), ["Healthy"]);
+  assert.equal(await readFile(presetFile, "utf8"), corrupted);
+  store.close();
+});
+
+test("startup preserves and isolates non-tail organization corruption", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-organization-quarantine-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  let store = new AgentStore(dataDir);
+  const affected = store.createProject({ label: "Affected", hostPath: "/tmp/a", defaultEngine: "codex" });
+  const healthy = store.createProject({ label: "Healthy", hostPath: "/tmp/b", defaultEngine: "codex" });
+  const chat = store.getConversation(affected.lastConversationId);
+  const manager = store.createAgent(affected.id, { title: "Manager", engine: "codex", conversationId: chat.id });
+  store.createAgent(affected.id, {
+    title: "Child", engine: "codex", conversationId: chat.id, managerAgentId: manager.id,
+  });
+  store.close();
+
+  const organizationFile = path.join(dataDir, "projects", affected.id, "agent-organization.jsonl");
+  const corrupted = `${await readFile(organizationFile, "utf8")}{broken\n`;
+  await writeFile(organizationFile, corrupted);
+  store = new AgentStore(dataDir);
+  assert.deepEqual(store.listProjects().map((project) => project.id), [healthy.id]);
+  assert.deepEqual(store.startupProfile().recoveryIssues, [{
+    projectId: affected.id,
+    detail: "agent organization log contains non-tail corruption",
+  }]);
+  assert.equal(await readFile(organizationFile, "utf8"), corrupted);
+  store.close();
+});

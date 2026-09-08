@@ -18,8 +18,9 @@ import type {
   CreateAgentPresetRequest,
   EngineDto,
 } from "@ponderosa/core";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { effortSelectionIsCompatible, modelSelectionIsCompatible } from "../conversationEngine";
+import { createClientId } from "../clientId";
 import { ResourceDeletionDialog } from "./ConfirmationDialogs";
 import { EngineModelEffortFields } from "./ProjectRuntimeFields";
 
@@ -30,7 +31,7 @@ export function PresetManagerDialog({ open, engines, presets, onClose, onSave, o
   engines: EngineDto[];
   presets: AgentPresetDto[];
   onClose(): void;
-  onSave(id: string | undefined, input: CreateAgentPresetRequest): Promise<void>;
+  onSave(id: string | undefined, input: CreateAgentPresetRequest, idempotencyKey?: string): Promise<void>;
   onDelete(id: string): Promise<void>;
 }): JSX.Element {
   const [editing, setEditing] = useState<AgentPresetDto | undefined>();
@@ -44,7 +45,9 @@ export function PresetManagerDialog({ open, engines, presets, onClose, onSave, o
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [enabled, setEnabled] = useState(true);
+  const creationIdempotencyKey = useRef(createClientId("preset-create-"));
   const edit = (preset?: AgentPresetDto) => {
+    if (!preset) creationIdempotencyKey.current = createClientId("preset-create-");
     setEditing(preset);
     setName(preset?.name ?? "");
     setDescription(preset?.description ?? "");
@@ -73,7 +76,7 @@ export function PresetManagerDialog({ open, engines, presets, onClose, onSave, o
         model: modelSelectionIsCompatible(selected, modelValue) ? modelValue || undefined : undefined,
         effort: effortSelectionIsCompatible(selected, modelValue, effortValue) ? effortValue || undefined : undefined,
         enabled,
-      });
+      }, editing ? undefined : creationIdempotencyKey.current);
       if (!editing) edit();
     } catch (error) {
       setActionError({ action: "save", message: String(error) });
