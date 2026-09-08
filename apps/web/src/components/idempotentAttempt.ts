@@ -1,8 +1,33 @@
+import type { DraftPendingSubmissionDto } from "@ponderosa/core";
+
 export interface IdempotentAttempt<T = undefined> {
   fingerprint: string;
   idempotencyKey: string;
   prepared: T;
 }
+
+export async function durableSubmissionFingerprint(value: unknown): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(JSON.stringify(value)),
+  );
+  return [...new Uint8Array(digest)]
+    .map(byte => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+export function selectDurableSubmission(
+  current: DraftPendingSubmissionDto | undefined,
+  fingerprint: string,
+  createId: () => string,
+): DraftPendingSubmissionDto {
+  return current?.fingerprint === fingerprint
+    ? current
+    : { fingerprint, idempotencyKey: createId() };
+}
+
+export const definitiveSubmissionStatus = (status: number): boolean =>
+  status >= 400 && status < 500;
 
 /** Release a prepared operation when the user changes its submission intent. */
 export const abandonIdempotentAttempt = <T>(

@@ -63,9 +63,11 @@ import { createClientId } from "../clientId";
 import {
   discardRecipientUploads,
   fileSelectionFingerprint,
+  pendingRecipientUploads,
   recipientUploadsForAgentIds,
   retryRecipientUploadCleanup,
   stableMessageActionText,
+  withPendingRecipientUploads,
   type RecipientUploads,
   uploadFilesForRecipients,
 } from "../conversationRouting";
@@ -106,7 +108,7 @@ interface AllChatSubmissionPrepared {
   conversationId?: string;
   runtime: AllChatRuntimePayload;
   title?: string;
-  uploads?: RecipientUploads<AssetDto>;
+  uploads?: RecipientUploads<Pick<AssetDto, "id">>;
 }
 import {
   ALL_CHAT_REPLY_TARGET_KEY,
@@ -716,6 +718,8 @@ export function AllChatView({
       submissionEpoch,
       submissionSourceKey,
       submissionTargetId,
+      pendingSubmission,
+      persistPendingSubmission,
     }: {
       body: string;
       files: File[];
@@ -727,6 +731,8 @@ export function AllChatView({
       submissionEpoch: number;
       submissionSourceKey?: string;
       submissionTargetId?: string;
+      pendingSubmission?: import("@ponderosa/core").DraftPendingSubmissionDto;
+      persistPendingSubmission?: (value: import("@ponderosa/core").DraftPendingSubmissionDto) => Promise<void>;
     }) => {
       const previous = sendAttempt.current;
       let attempt = preparedIdempotentAttemptForRetry(
@@ -790,7 +796,7 @@ export function AllChatView({
         attempt = retainIdempotentAttempt(
           previous,
           fingerprint,
-          () => createClientId(),
+          () => pendingSubmission?.idempotencyKey ?? createClientId(),
           (): AllChatSubmissionPrepared => ({
             projectId: activeProjectId,
             body,
@@ -853,13 +859,26 @@ export function AllChatView({
         if (!conversationId) {
           throw new Error("Every addressed Agent must belong to one active Chat");
         }
-        const uploaded = prepared.uploads ?? await uploadFilesForRecipients(
+        const durableUploads = pendingRecipientUploads(pendingSubmission, "direct");
+        const durableUploadsMatch = Boolean(durableUploads &&
+          JSON.stringify(durableUploads.map(item => item.agentId)) ===
+            JSON.stringify(recipientIds));
+        const uploaded = prepared.uploads ??
+          (durableUploadsMatch ? durableUploads! : await uploadFilesForRecipients(
           recipientIds,
           prepared.files,
           (agentId, file) => api.uploadAttachment(agentId, file),
           (agentId, attachment) => api.deleteAttachment(agentId, attachment.id),
-        );
+        ));
         prepared.uploads = uploaded;
+        if (!durableUploadsMatch && pendingSubmission && persistPendingSubmission) {
+          pendingSubmission = withPendingRecipientUploads(
+            pendingSubmission,
+            "direct",
+            uploaded,
+          );
+          await persistPendingSubmission(pendingSubmission);
+        }
         const uploadedByAgentId = new Map(uploaded.map(item => [item.agentId, item]));
         const response = await api.sendMultiAgentDirectMessage(conversationId, {
           text: submittedBody.trim(),
@@ -1556,6 +1575,12 @@ export function AllChatView({
           }
           enableVoiceDictation
           onCapabilitiesOpen={refreshSelectedCapabilities}
+          submissionRuntimeKey={JSON.stringify([
+            selectedEngineId ?? "",
+            selectedModel ?? "",
+            selectedRuntime.effort ?? "",
+            selectedRuntime.speed ?? "",
+          ])}
           onCommand={activeReplyTarget ? invokeCommand : undefined}
           controls={runtimeControls}
           disabled={
@@ -1598,6 +1623,8 @@ export function AllChatView({
               submissionEpoch: submissionIntent.epoch,
               submissionSourceKey: submissionIntent.sourceKey,
               submissionTargetId: activeReplyTarget?.id,
+              pendingSubmission: context?.pendingSubmission,
+              persistPendingSubmission: context?.persistPendingSubmission,
             })
           }
         />

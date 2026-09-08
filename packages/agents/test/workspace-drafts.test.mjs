@@ -34,6 +34,61 @@ test("conversation drafts retain stable mention bindings after restart", (t) => 
   assert.equal(restored.pastedTextAttachmentId, "paste-a");
 });
 
+test("pending send authority survives restart, conflict restore, and authoritative clear", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "ponderosa-draft-send-authority-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const pendingSubmission = {
+    fingerprint: "a".repeat(64),
+    idempotencyKey: "send-a",
+    uploads: [{
+      scope: "direct",
+      recipients: [{ agentId: "agent-a", attachmentIds: ["asset-a"] }],
+    }],
+  };
+  let store = new WorkspaceStore(directory);
+  const pending = store.putDraft("chat-a", {
+    ownerId: "browser-a",
+    text: "send once",
+    attachmentIds: ["draft-a"],
+    pendingSubmission,
+    expectedRevision: 0,
+    clientId: "page:browser-a:draft:first",
+  });
+  store = new WorkspaceStore(directory);
+  assert.deepEqual(
+    store.getDraft("chat-a", "browser-a").pendingSubmission,
+    pendingSubmission,
+  );
+  let conflict;
+  assert.throws(() => store.putDraft("chat-a", {
+    ownerId: "browser-a",
+    text: "send once",
+    attachmentIds: ["draft-a"],
+    pendingSubmission,
+    expectedRevision: 0,
+    clientId: "page:browser-a:draft:stale",
+  }), error => {
+    conflict = error.conflict;
+    return error?.code === "DRAFT_CONFLICT";
+  });
+  const restored = store.restoreDraftConflict({
+    conversationId: "chat-a",
+    ownerId: "browser-a",
+    conflictId: conflict.id,
+    expectedRevision: pending.revision,
+    clientId: "page:browser-a:draft:restored",
+  }).draft;
+  assert.deepEqual(restored.pendingSubmission, pendingSubmission);
+  const cleared = store.putDraft("chat-a", {
+    ownerId: "browser-a",
+    text: "",
+    attachmentIds: [],
+    expectedRevision: restored.revision,
+    clientId: "page:browser-a:draft:restored",
+  });
+  assert.equal(cleared.pendingSubmission, undefined);
+});
+
 test("draft incarnation fencing rejects delayed writes and clears after A to B to A", (t) => {
   const directory = mkdtempSync(join(tmpdir(), "ponderosa-draft-incarnation-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));

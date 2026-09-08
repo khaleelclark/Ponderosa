@@ -6,6 +6,7 @@ import type {
   AssetLimitsDto,
   ConversationDraftConflictDto,
   ConversationDraftDto,
+  DraftPendingSubmissionDto,
   EngineCommand,
   EngineComposerCapability,
   ResolveConversationDraftConflictResponse,
@@ -196,6 +197,7 @@ export interface DraftConflictRecoverySnapshot<TFile, TMention, TFailure> {
   pastedText?: string;
   pastedTextAttachmentId?: string;
   mentionBindings: TMention[];
+  pendingSubmission?: DraftPendingSubmissionDto;
   failedContents: TFailure[];
 }
 

@@ -18,6 +18,7 @@ import type {
   AgentMentionBindingDto,
   ArtifactDto,
   ConversationDraftDto,
+  DraftPendingSubmissionDto,
   DraftAttachmentDto,
   EngineCommand,
   EngineComposerCapability,
@@ -38,6 +39,7 @@ import { api } from "../../api";
 import { ApiRequestError } from "../../api/types";
 import { readChatState, writeChatState } from "../../chatState";
 import { createClientId, draftSurfaceClientId } from "../../clientId";
+import { stableMessageActionText } from "../../conversationRouting";
 import { findMentionedHandles, hasBroadcastMention } from "../../mentions";
 import { queryKeys } from "../../queryKeys";
 import { removeHandle } from "./Composer.helpers";
@@ -55,6 +57,11 @@ import {
   singleComposerDestination,
 } from "./composerDestination";
 import type { ComposerProps } from "./Composer.types";
+import {
+  definitiveSubmissionStatus,
+  durableSubmissionFingerprint,
+  selectDurableSubmission,
+} from "../idempotentAttempt";
 import {
   ComposerAttachmentList,
   ComposerDestinationBar,
@@ -243,6 +250,7 @@ export function Composer({
   recipientRequiredMessage,
   removeTextRequest,
   submissionIntentKey,
+  submissionRuntimeKey,
   onSubmissionIntentChange,
   onMentionedHandlesChange,
   onCommandTargetHandleChange,
@@ -299,6 +307,7 @@ export function Composer({
   const previousDraftStorageKey = useRef(draftStorageKey);
   const previousConversationDraftId = useRef(conversationDraftId);
   const draftRevision = useRef(0);
+  const pendingSubmissionRef = useRef<DraftPendingSubmissionDto>();
   const draftReady = useRef(false);
   const [initialDraftWriteChain] = useState(createDraftWriteChain);
   const draftWriteChain = useRef<DraftWriteChain>(initialDraftWriteChain);
@@ -347,6 +356,7 @@ export function Composer({
   const inputRef = useRef<ComposerEditorHandle | null>(null);
   const activeSubmissionIntentKeyRef = useRef(submissionIntentKey);
   activeSubmissionIntentKeyRef.current = submissionIntentKey;
+  const previousSubmissionRuntimeKey = useRef(submissionRuntimeKey);
   const activeDraftScopeRef = useRef(conversationDraftId);
   activeDraftScopeRef.current = conversationDraftId;
   const updateFailedDraftContents = useCallback(
@@ -365,6 +375,7 @@ export function Composer({
   );
   const markUserDraftMutation = useCallback(() => {
     userDraftMutationGeneration.current += 1;
+    pendingSubmissionRef.current = undefined;
     draftConflictGeneration.current += 1;
     setDraftConflict(undefined);
     setRestoringDraftConflict(false);
@@ -435,6 +446,13 @@ export function Composer({
     setKnownMentionBindings(previous =>
       refreshedMentionBindings(text, previous, mentionBindings ?? []));
   }, [mentionBindings, text]);
+  useEffect(() => {
+    if (previousSubmissionRuntimeKey.current === submissionRuntimeKey) return;
+    previousSubmissionRuntimeKey.current = submissionRuntimeKey;
+    pendingSubmissionRef.current = undefined;
+    setPreparedRetry(undefined);
+    onSubmissionIntentChange?.();
+  }, [onSubmissionIntentChange, submissionRuntimeKey]);
   const replacePastedText = useCallback(
     (
       next:
@@ -1018,6 +1036,7 @@ export function Composer({
       draftAttachmentsLocallyEdited.current = false;
       unrestoredDraftAttachmentIds.current = [];
       draftRevision.current = 0;
+      pendingSubmissionRef.current = undefined;
       setKnownMentionBindings([]);
       clearDraftAttachments();
     }
@@ -1122,6 +1141,7 @@ export function Composer({
         setDraftReadyVersion(value => value + 1);
         return;
       }
+      pendingSubmissionRef.current = draft.pendingSubmission;
       draftContentGeneration.current += 1;
       if (!draftAttachmentsLocallyEdited.current) {
         replaceRestoredDraftAttachments(restored);
@@ -1208,6 +1228,7 @@ export function Composer({
           setDraftReadyVersion(value => value + 1);
           return;
         }
+        pendingSubmissionRef.current = draft.pendingSubmission;
         draftContentGeneration.current += 1;
         unrestoredDraftAttachmentIds.current = draft.attachmentIds.filter(
           id => !locallyRemovedDraftAttachmentIds.current.has(id),
@@ -1488,6 +1509,9 @@ export function Composer({
           ? { pastedTextAttachmentId: submittedPastedTextAttachmentId }
           : {}),
         mentionBindings: [...knownMentionBindings],
+        ...(pendingSubmissionRef.current
+          ? { pendingSubmission: pendingSubmissionRef.current }
+          : {}),
         failedContents: [...failedDraftContentsRef.current],
       };
       writeChain.tail = settledDraftWriteContinuation(writeChain.tail, async () => {
@@ -1506,6 +1530,9 @@ export function Composer({
               ? { pastedTextAttachmentId: submittedPastedTextAttachmentId }
               : {}),
             mentionBindings: knownMentionBindings,
+            ...(pendingSubmissionRef.current
+              ? { pendingSubmission: pendingSubmissionRef.current }
+              : {}),
             expectedRevision: writeChain.ownedRevision,
             clientId,
             ownerId: draftOwnerId,
@@ -1892,6 +1919,8 @@ export function Composer({
         mentionedAgents?: import("@ponderosa/core").AgentMentionBindingDto[];
         newAgentRequested?: boolean;
         retryPreparedAttempt?: boolean;
+        pendingSubmission?: DraftPendingSubmissionDto;
+        persistPendingSubmission?(value: DraftPendingSubmissionDto): Promise<void>;
       },
     ) => Promise<unknown> | unknown,
     action: "send" | "queue",
@@ -1982,6 +2011,7 @@ export function Composer({
     const submittedText = normalizedDraft;
     const submittedPastedText = pastedTextRef.current;
     const submittedPastedTextAttachmentId = pastedTextAttachmentId.current;
+    const submittedMentionBindings = [...knownMentionBindings];
     const submittedDraftScope = conversationDraftId;
     const submittedOwnedDraftRevision = draftWriteChain.current.ownedRevision;
     const submittedDraftGeneration = draftGeneration.current;
@@ -2033,13 +2063,6 @@ export function Composer({
       }
     }
     const mentionedAgents = [...mentionedAgentsById.values()];
-    const submissionContext = mentionedAgents.length > 0 || safeNewAgentSelected || retryPreparedAttempt
-      ? {
-          mentionedAgents,
-          newAgentRequested: safeNewAgentSelected,
-          retryPreparedAttempt,
-        }
-      : undefined;
     const runtimeCommandSubmission =
       slash?.command.invocation === "runtime";
     if (!runtimeCommandSubmission) {
@@ -2048,16 +2071,98 @@ export function Composer({
       setCapabilityMenuAnchor(null);
       setSuppressMenu(true);
     }
-    const operation = Promise.resolve().then(() =>
-      runtimeCommandSubmission
-        ? onCommand!(slash.command, slash.argumentsText)
-        : handler(
-            safeSubmissionText,
-            files,
-            stagedIds,
-            conversationDraftId ? draftOwnerId : undefined,
-            submissionContext,
-          ));
+    const persistPendingSubmission = async (
+      value: DraftPendingSubmissionDto | undefined,
+    ): Promise<void> => {
+      if (!submittedDraftScope) return;
+      if (!submittedScopeStillActive()) {
+        throw new Error("The draft destination changed before it could be sent.");
+      }
+      let saved: ConversationDraftDto | undefined;
+      const write = settledDraftWriteContinuation(
+        submittedDraftWriteChain.tail,
+        async () => {
+          if (!submittedScopeStillActive()) {
+            throw new Error("The draft destination changed before it could be sent.");
+          }
+          saved = await api.putConversationDraft(submittedDraftScope, {
+            text: submittedText,
+            attachmentIds: stagedIds,
+            ...(submittedPastedTextAttachmentId
+              ? { pastedTextAttachmentId: submittedPastedTextAttachmentId }
+              : {}),
+            mentionBindings: submittedMentionBindings,
+            ...(value ? { pendingSubmission: value } : {}),
+            expectedRevision:
+              submittedDraftWriteChain.ownedRevision ||
+              submittedOwnedDraftRevision,
+            clientId: submittedDraftWriteChain.clientId,
+            ownerId: draftOwnerId,
+          });
+          submittedDraftWriteChain.ownedRevision = saved.revision;
+        },
+      );
+      submittedDraftWriteChain.tail = write;
+      await write;
+      if (!saved || !submittedScopeStillActive()) {
+        throw new Error("The draft destination changed before it could be sent.");
+      }
+      draftRevision.current = saved.revision;
+      pendingSubmissionRef.current = value;
+      queryClient.setQueryData(
+        queryKeys.conversationDraft.detail(submittedDraftScope, draftOwnerId),
+        saved,
+      );
+    };
+    const operation = Promise.resolve().then(async () => {
+      if (runtimeCommandSubmission) {
+        return onCommand!(slash.command, slash.argumentsText);
+      }
+      let pendingSubmission: DraftPendingSubmissionDto | undefined;
+      if (submittedDraftScope) {
+        const fingerprint = await durableSubmissionFingerprint({
+          version: 1,
+          action,
+          surface: submittedDraftScope,
+          text: stableMessageActionText(safeSubmissionText, mentionedAgents),
+          attachmentIds: stagedIds,
+          pastedTextAttachmentId: submittedPastedTextAttachmentId ?? null,
+          recipientAgentIds: mentionedAgents.map(item => item.agentId).sort(),
+          newAgentRequested: safeNewAgentSelected,
+          runtime: submissionRuntimeKey ?? null,
+        });
+        pendingSubmission = selectDurableSubmission(
+          pendingSubmissionRef.current,
+          fingerprint,
+          () => createClientId("send-"),
+        );
+        await persistPendingSubmission(pendingSubmission);
+        if (!submittedScopeStillActive()) {
+          throw new Error("The draft destination changed before it could be sent.");
+        }
+      }
+      const submissionContext =
+        mentionedAgents.length > 0 || safeNewAgentSelected ||
+          retryPreparedAttempt || pendingSubmission
+          ? {
+              mentionedAgents,
+              newAgentRequested: safeNewAgentSelected,
+              retryPreparedAttempt,
+              ...(pendingSubmission ? {
+                pendingSubmission,
+                persistPendingSubmission: (value: DraftPendingSubmissionDto) =>
+                  persistPendingSubmission(value),
+              } : {}),
+            }
+          : undefined;
+      return handler(
+        safeSubmissionText,
+        files,
+        stagedIds,
+        conversationDraftId ? draftOwnerId : undefined,
+        submissionContext,
+      );
+    });
     void operation
       .then(() => {
         if (submittedScopeStillActive()) setPreparedRetry(undefined);
@@ -2122,6 +2227,7 @@ export function Composer({
                     submittedOwnedDraftRevision,
                 );
                 submittedDraftWriteChain.ownedRevision = clearedDraft.revision;
+                pendingSubmissionRef.current = clearedDraft.pendingSubmission;
                 if (clearOwnsActiveScope()) {
                   draftRevision.current = clearedDraft.revision;
                 }
@@ -2167,8 +2273,12 @@ export function Composer({
         }
         if (submissionMayClearDraft && scopeStillActive) setCaret(0);
       })
-      .catch((error: unknown) => {
+      .catch(async (error: unknown) => {
         if (!submittedScopeStillActive()) return;
+        if (error instanceof ApiRequestError && definitiveSubmissionStatus(error.status) &&
+            pendingSubmissionRef.current) {
+          await persistPendingSubmission(undefined).catch(() => undefined);
+        }
         const intentUnchanged =
           userDraftMutationGeneration.current ===
             submittedUserMutationGeneration &&
@@ -2288,6 +2398,9 @@ export function Composer({
                     ? { pastedTextAttachmentId: snapshot.pastedTextAttachmentId }
                     : {}),
                   mentionBindings: snapshot.mentionBindings,
+                  ...(snapshot.pendingSubmission
+                    ? { pendingSubmission: snapshot.pendingSubmission }
+                    : {}),
                   expectedRevision: recovery.conflict.current.revision,
                   clientId: recoveryWriteChain.clientId,
                   ownerId: draftOwnerId,
@@ -2508,6 +2621,9 @@ export function Composer({
                     ? { pastedTextAttachmentId: canonical.pastedTextAttachmentId }
                     : { pastedTextAttachmentId: undefined }),
                   mentionBindings: [...(canonical.mentionBindings ?? [])],
+                  ...(canonical.pendingSubmission
+                    ? { pendingSubmission: canonical.pendingSubmission }
+                    : { pendingSubmission: undefined }),
                   failedContents: [
                     ...(applyingNewerCurrent
                       ? []
@@ -2526,6 +2642,7 @@ export function Composer({
               recoveryWriteChain.ownedRevision = canonical.revision;
               draftRevision.current = canonical.revision;
               markUserDraftMutation();
+              pendingSubmissionRef.current = restored.pendingSubmission;
               draftEditVersion.current = restored.editVersion;
               draftLocallyEdited.current = false;
               draftAttachmentsLocallyEdited.current = false;

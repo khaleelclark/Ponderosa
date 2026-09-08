@@ -33,6 +33,8 @@ export interface ComposerProps extends ChatComposerContract {
   removeTextRequest?: { id: string; text: string };
   /** Parent-owned epoch for explicit recipient/source changes. */
   submissionIntentKey?: string;
+  /** Stable provider/runtime identity included in durable send authority. */
+  submissionRuntimeKey?: string;
   /** Abandons any parent-owned prepared operation after a local draft mutation. */
   onSubmissionIntentChange?(): void;
   onMentionedHandlesChange?(handles: string[]): void;

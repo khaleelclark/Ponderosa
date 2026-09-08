@@ -1324,6 +1324,7 @@ export function ConversationView({
           }
           running={operationRunning}
           allowSendWhileRunning
+          submissionRuntimeKey={JSON.stringify([engine, model, effort, speed])}
           mentionHandles={mentionHandles}
           mentionBindings={mentionBindings}
           commands={composerCommands}
@@ -1370,6 +1371,8 @@ export function ConversationView({
               context?.mentionedAgents,
               context?.newAgentRequested,
               context?.retryPreparedAttempt,
+              context?.pendingSubmission,
+              context?.persistPendingSubmission,
             )
           }
           onQueue={(text, files, stagedIds, draftOwnerId, context) =>
@@ -1382,6 +1385,8 @@ export function ConversationView({
               context?.mentionedAgents,
               context?.newAgentRequested,
               context?.retryPreparedAttempt,
+              context?.pendingSubmission,
+              context?.persistPendingSubmission,
             )
           }
           agentResponding={false}

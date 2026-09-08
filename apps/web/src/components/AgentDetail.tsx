@@ -1185,6 +1185,12 @@ export function AgentDetail({
           projectId: detail.agent.projectId,
           draftStorageKey: chatStateKey("draft", `agent.${agentId}`),
           conversationDraftId: `agent:${agentId}`,
+          submissionRuntimeKey: JSON.stringify([
+            engine?.id ?? "",
+            model,
+            effort,
+            speed,
+          ]),
           controls: agentRuntimeControls,
           disabled: sendMessage.isPending || updateRuntimeSettings.isPending,
           running: false,

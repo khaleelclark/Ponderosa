@@ -22,10 +22,12 @@ import {
   fileSelectionFingerprint,
   recipientUploadsForAgentIds,
   recipientActionSnapshot,
+  pendingRecipientUploads,
   recipientUploadCacheKey,
   retryRecipientUploadCleanup,
   managerBroadcastText,
   stableMessageActionText,
+  withPendingRecipientUploads,
   type RecipientUploads,
   uploadFilesForRecipients,
 } from "../conversationRouting";
@@ -56,7 +58,7 @@ interface ConversationSubmissionPrepared {
   mentionedAgents: AgentMentionBindingDto[];
   broadcastUploadAgentIds: string[];
   recipientSnapshot: ReturnType<typeof recipientActionSnapshot>;
-  uploads: Map<string, RecipientUploads<AssetDto>>;
+  uploads: Map<string, RecipientUploads<Pick<AssetDto, "id">>>;
   titles: Map<string, string>;
 }
 
@@ -208,7 +210,7 @@ export function useConversationMessagingController({
     }: {
       agentIds: string[];
       text: string;
-      uploadedRecipients: RecipientUploads<AssetDto>;
+      uploadedRecipients: RecipientUploads<Pick<AssetDto, "id">>;
       requestId: string;
       activeRunDelivery: "steer" | "queue";
       runtimeConfig: ReturnType<typeof selectedRunConfig>;
@@ -282,7 +284,7 @@ export function useConversationMessagingController({
       activeRunDelivery,
     }: {
       text: string;
-      uploadedRecipients: RecipientUploads<AssetDto>;
+      uploadedRecipients: RecipientUploads<Pick<AssetDto, "id">>;
       requestId: string;
       agentMentions: AgentMentionBindingDto[];
       attachmentOwnerAgentId?: string;
@@ -296,11 +298,14 @@ export function useConversationMessagingController({
         ]),
       );
       const attachments = attachmentOwnerAgentId
-        ? (attachmentsByAgent.get(attachmentOwnerAgentId) ?? [])
+        ? (attachmentsByAgent.get(attachmentOwnerAgentId) ?? []).map(item => ({
+            id: item.id,
+            agentId: attachmentOwnerAgentId,
+          }))
         : [];
       return api.sendConversationMessage(conversationId, {
         text,
-        attachments,
+        attachments: attachments as AssetDto[],
         ...(agentMentions.length ? { recipientAgentMentions: agentMentions } : {}),
         recipientAttachments: agentIds.map(agentId => ({
           agentId,
@@ -508,6 +513,8 @@ export function useConversationMessagingController({
     mentionedAgents: AgentMentionBindingDto[] = [],
     newAgentRequested = false,
     retryPreparedAttempt = false,
+    pendingSubmission?: import("@ponderosa/core").DraftPendingSubmissionDto,
+    persistPendingSubmission?: (value: import("@ponderosa/core").DraftPendingSubmissionDto) => Promise<void>,
   ) => {
     setSpawnNotice(undefined);
     const previous = submissionAttempt.current;
@@ -555,7 +562,7 @@ export function useConversationMessagingController({
       attempt = retainIdempotentAttempt(
         previous,
         fingerprint,
-        () => createClientId(),
+        () => pendingSubmission?.idempotencyKey ?? createClientId(),
         () => ({
           text,
           files,
@@ -595,6 +602,12 @@ export function useConversationMessagingController({
       const key = recipientUploadCacheKey(scope, agentIds);
       const cached = prepared.uploads.get(key);
       if (cached) return cached;
+      const durable = pendingRecipientUploads(pendingSubmission, scope);
+      if (durable &&
+          JSON.stringify(durable.map(item => item.agentId)) === JSON.stringify(agentIds)) {
+        prepared.uploads.set(key, durable);
+        return durable;
+      }
       const uploaded = await uploadFilesForRecipients(
         agentIds,
         prepared.files,
@@ -602,6 +615,14 @@ export function useConversationMessagingController({
         (agentId, item) => api.deleteAttachment(agentId, item.id),
       );
       prepared.uploads.set(key, uploaded);
+      if (pendingSubmission && persistPendingSubmission) {
+        pendingSubmission = withPendingRecipientUploads(
+          pendingSubmission,
+          scope,
+          uploaded,
+        );
+        await persistPendingSubmission(pendingSubmission);
+      }
       return uploaded;
     };
     const finishAttempt = () => {

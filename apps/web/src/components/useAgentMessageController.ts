@@ -1,4 +1,4 @@
-import type { AssetDto, EngineDto, SendMessageRequest } from "@ponderosa/core";
+import type { AssetDto, DraftPendingSubmissionDto, EngineDto, SendMessageRequest } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
@@ -12,8 +12,10 @@ import { queryKeys } from "../queryKeys";
 import {
   discardRecipientUploads,
   fileSelectionFingerprint,
+  pendingRecipientUploads,
   type RecipientUploads,
   uploadFilesForRecipients,
+  withPendingRecipientUploads,
 } from "../conversationRouting";
 import { directAgentDeliveryNotice } from "./AgentDetail.helpers";
 import {
@@ -44,7 +46,7 @@ interface AgentMessageSubmissionPrepared {
     draftId?: string;
     draftOwnerId?: string;
   };
-  uploads: RecipientUploads<AssetDto>;
+  uploads: RecipientUploads<Pick<AssetDto, "id">>;
 }
 
 export function useAgentMessageController({
@@ -146,7 +148,11 @@ export function useAgentMessageController({
       files: File[],
       draftAttachmentIds: string[] = [],
       draftOwnerId?: string,
-      context?: { retryPreparedAttempt?: boolean },
+      context?: {
+        retryPreparedAttempt?: boolean;
+        pendingSubmission?: DraftPendingSubmissionDto;
+        persistPendingSubmission?(value: DraftPendingSubmissionDto): Promise<void>;
+      },
     ) => {
       const sent = (async () => {
         const previous = sendAttempt.current;
@@ -164,7 +170,7 @@ export function useAgentMessageController({
             speed,
             activeRunDelivery,
           }),
-          () => createClientId(),
+          () => context?.pendingSubmission?.idempotencyKey ?? createClientId(),
           () => ({
             agentId,
             files: [...files],
@@ -200,6 +206,14 @@ export function useAgentMessageController({
         }
         sendAttempt.current = attempt;
         const prepared = attempt.prepared;
+        const durableUploads = pendingRecipientUploads(
+          context?.pendingSubmission,
+          "direct-agent",
+        );
+        if (durableUploads?.length === 1 &&
+            durableUploads[0]?.agentId === prepared.agentId) {
+          prepared.uploads = durableUploads;
+        }
         if (
           !prepared.request.draftAttachmentIds?.length &&
           prepared.uploads.length === 0 &&
@@ -212,6 +226,13 @@ export function useAgentMessageController({
             (recipientId, attachment) =>
               api.deleteAttachment(recipientId, attachment.id),
           );
+          if (context?.pendingSubmission && context.persistPendingSubmission) {
+            await context.persistPendingSubmission(withPendingRecipientUploads(
+              context.pendingSubmission,
+              "direct-agent",
+              prepared.uploads,
+            ));
+          }
         }
         const attachments = prepared.uploads[0]?.attachments ?? [];
         const response = await sendMessage.mutateAsync(

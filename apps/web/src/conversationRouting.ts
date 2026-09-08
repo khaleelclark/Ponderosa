@@ -1,6 +1,7 @@
 import {
   messageTagTokens,
   type AgentMentionBindingDto,
+  type DraftPendingSubmissionDto,
 } from "@ponderosa/core";
 
 /** Remove the explicit #broadcast scope directive without matching longer tags. */
@@ -26,6 +27,37 @@ export const fileSelectionFingerprint = (files: readonly File[]) =>
   });
 
 export type RecipientUploads<T> = Array<{ agentId: string; attachments: T[] }>;
+
+export function pendingRecipientUploads(
+  pending: DraftPendingSubmissionDto | undefined,
+  scope: string,
+): RecipientUploads<{ id: string }> | undefined {
+  const prepared = pending?.uploads?.find(item => item.scope === scope);
+  return prepared?.recipients.map(recipient => ({
+    agentId: recipient.agentId,
+    attachments: recipient.attachmentIds.map(id => ({ id })),
+  }));
+}
+
+export function withPendingRecipientUploads<T extends { id: string }>(
+  pending: DraftPendingSubmissionDto,
+  scope: string,
+  recipients: RecipientUploads<T>,
+): DraftPendingSubmissionDto {
+  return {
+    ...pending,
+    uploads: [
+      ...(pending.uploads ?? []).filter(item => item.scope !== scope),
+      {
+        scope,
+        recipients: recipients.map(recipient => ({
+          agentId: recipient.agentId,
+          attachmentIds: recipient.attachments.map(item => item.id),
+        })),
+      },
+    ],
+  };
+}
 
 export function recipientActionSnapshot(
   agentIds: Iterable<string>,

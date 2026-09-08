@@ -47,6 +47,7 @@ const DRAFT_UPDATE_FIELDS = new Set([
   "attachmentIds",
   "pastedTextAttachmentId",
   "mentionBindings",
+  "pendingSubmission",
   "expectedRevision",
   "clientId",
   "ownerId",
@@ -105,6 +106,40 @@ export function draftUpdateBodyError(
     body.attachmentIds.includes(body.pastedTextAttachmentId)
   ) {
     return "draft pasted-text attachment must be distinct from file attachments";
+  }
+  if (body.pendingSubmission !== undefined) {
+    if (!body.pendingSubmission || typeof body.pendingSubmission !== "object" ||
+        Array.isArray(body.pendingSubmission)) return "invalid pending draft submission";
+    const pending = body.pendingSubmission as Record<string, unknown>;
+    if (Object.keys(pending).some(key => !["fingerprint", "idempotencyKey", "uploads"].includes(key)) ||
+        typeof pending.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(pending.fingerprint) ||
+        typeof pending.idempotencyKey !== "string" || !pending.idempotencyKey.trim() ||
+        pending.idempotencyKey.length > 200) return "invalid pending draft submission";
+    if (pending.uploads !== undefined &&
+        (!Array.isArray(pending.uploads) || pending.uploads.length > 4 ||
+          pending.uploads.some(value => {
+            if (!value || typeof value !== "object" || Array.isArray(value)) return true;
+            const upload = value as Record<string, unknown>;
+            if (Object.keys(upload).some(key => !["scope", "recipients"].includes(key)) ||
+                typeof upload.scope !== "string" || !upload.scope || upload.scope.length > 100 ||
+                !Array.isArray(upload.recipients) || upload.recipients.length > 100) return true;
+            return upload.recipients.some(value => {
+              if (!value || typeof value !== "object" || Array.isArray(value)) return true;
+              const recipient = value as Record<string, unknown>;
+              return Object.keys(recipient).some(key => !["agentId", "attachmentIds"].includes(key)) ||
+                typeof recipient.agentId !== "string" || !recipient.agentId || recipient.agentId.length > 200 ||
+                !Array.isArray(recipient.attachmentIds) ||
+                recipient.attachmentIds.length > maxAttachmentsPerMessage ||
+                recipient.attachmentIds.some(id => typeof id !== "string" || !RUNTIME_UUID.test(id)) ||
+                new Set(recipient.attachmentIds).size !== recipient.attachmentIds.length;
+            });
+          }) ||
+          new Set(pending.uploads.map(value => (value as { scope: string }).scope)).size !==
+            pending.uploads.length ||
+          pending.uploads.some(value => {
+            const recipients = (value as { recipients: Array<{ agentId: string }> }).recipients;
+            return new Set(recipients.map(recipient => recipient.agentId)).size !== recipients.length;
+          }))) return "invalid pending draft submission uploads";
   }
   if (body.mentionBindings === undefined) return undefined;
   if (!Array.isArray(body.mentionBindings) || body.mentionBindings.length > 100) {

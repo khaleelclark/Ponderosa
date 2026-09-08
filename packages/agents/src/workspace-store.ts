@@ -1019,7 +1019,7 @@ export class WorkspaceStore {
         left.ownerId.localeCompare(right.ownerId));
   }
 
-  putDraft(conversationId: string, input: { text: string; attachmentIds: string[]; pastedTextAttachmentId?: string; mentionBindings?: ConversationDraftDto["mentionBindings"]; expectedRevision: number; clientId: string; ownerId?: string }): ConversationDraftDto {
+  putDraft(conversationId: string, input: { text: string; attachmentIds: string[]; pastedTextAttachmentId?: string; mentionBindings?: ConversationDraftDto["mentionBindings"]; pendingSubmission?: ConversationDraftDto["pendingSubmission"]; expectedRevision: number; clientId: string; ownerId?: string }): ConversationDraftDto {
     const ownerId = input.ownerId ?? "legacy";
     const current = this.getDraft(conversationId, ownerId);
     const attachmentIds = [...new Set(input.attachmentIds)];
@@ -1036,6 +1036,7 @@ export class WorkspaceStore {
         attachmentIds,
         ...(input.pastedTextAttachmentId ? { pastedTextAttachmentId: input.pastedTextAttachmentId } : {}),
         mentionBindings,
+        ...(input.pendingSubmission ? { pendingSubmission: input.pendingSubmission } : {}),
         clientId: input.clientId,
         capturedAt: new Date().toISOString(),
       };
@@ -1048,6 +1049,7 @@ export class WorkspaceStore {
         attachmentIds: displaced.attachmentIds,
         pastedTextAttachmentId: displaced.pastedTextAttachmentId ?? null,
         mentionBindings: displaced.mentionBindings ?? [],
+        pendingSubmission: displaced.pendingSubmission ?? null,
         clientId: displaced.clientId,
       })).digest("hex")}`;
       const existing = (this.draftConflicts.get(this.draftKey(conversationId, ownerId)) ?? [])
@@ -1078,8 +1080,9 @@ export class WorkspaceStore {
     if (current.text === input.text &&
         JSON.stringify(current.attachmentIds) === JSON.stringify(attachmentIds) &&
         current.pastedTextAttachmentId === input.pastedTextAttachmentId &&
-        JSON.stringify(current.mentionBindings ?? []) === JSON.stringify(mentionBindings)) return current;
-    const draft: ConversationDraftDto = { conversationId, ownerId, text: input.text, attachmentIds, ...(input.pastedTextAttachmentId ? { pastedTextAttachmentId: input.pastedTextAttachmentId } : {}), mentionBindings, revision: current.revision + 1, updatedAt: new Date().toISOString(), clientId: input.clientId };
+        JSON.stringify(current.mentionBindings ?? []) === JSON.stringify(mentionBindings) &&
+        JSON.stringify(current.pendingSubmission ?? null) === JSON.stringify(input.pendingSubmission ?? null)) return current;
+    const draft: ConversationDraftDto = { conversationId, ownerId, text: input.text, attachmentIds, ...(input.pastedTextAttachmentId ? { pastedTextAttachmentId: input.pastedTextAttachmentId } : {}), mentionBindings, ...(input.pendingSubmission ? { pendingSubmission: input.pendingSubmission } : {}), revision: current.revision + 1, updatedAt: new Date().toISOString(), clientId: input.clientId };
     this.append({ type: "draft_changed", conversationId, revision: draft.revision, cleared: !draft.text && draft.attachmentIds.length === 0 && !draft.pastedTextAttachmentId }, { kind: "draft", draft });
     return draft;
   }
@@ -1148,6 +1151,9 @@ export class WorkspaceStore {
       attachmentIds: [...(input.attachmentIds ?? conflict.displaced.attachmentIds)],
       ...(pastedTextAttachmentId ? { pastedTextAttachmentId } : {}),
       mentionBindings: [...(conflict.displaced.mentionBindings ?? [])],
+      ...(conflict.displaced.pendingSubmission
+        ? { pendingSubmission: conflict.displaced.pendingSubmission }
+        : {}),
       revision: current.revision + 1,
       updatedAt: new Date().toISOString(),
       clientId: input.clientId,

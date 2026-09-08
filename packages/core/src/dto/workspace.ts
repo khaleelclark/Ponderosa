@@ -191,6 +191,8 @@ export interface ConversationDraftDto {
   pastedTextAttachment?: DraftAttachmentDto;
   /** Stable structural recipients captured before display handles can change. */
   mentionBindings?: AgentMentionBindingDto[];
+  /** Exact ambiguous send authority retained until the server settles it. */
+  pendingSubmission?: DraftPendingSubmissionDto;
   revision: number;
   updatedAt: string;
   clientId: string;
@@ -201,7 +203,18 @@ export interface ConversationDraftConflictDto {
   /** Stable identity used to restore or discard exactly this displaced write. */
   id: string;
   current: ConversationDraftDto;
-  displaced: Pick<ConversationDraftDto, "conversationId" | "text" | "attachmentIds" | "pastedTextAttachmentId" | "mentionBindings" | "clientId"> & { capturedAt: string };
+  displaced: Pick<ConversationDraftDto, "conversationId" | "text" | "attachmentIds" | "pastedTextAttachmentId" | "mentionBindings" | "pendingSubmission" | "clientId"> & { capturedAt: string };
+}
+
+export interface DraftPendingSubmissionDto {
+  /** SHA-256 of the exact durable content, routing, runtime, and action. */
+  fingerprint: string;
+  idempotencyKey: string;
+  /** Server asset IDs prepared before dispatch, grouped by request scope. */
+  uploads?: Array<{
+    scope: string;
+    recipients: Array<{ agentId: string; attachmentIds: string[] }>;
+  }>;
 }
 
 export interface RestoreConversationDraftConflictRequest {
@@ -242,6 +255,7 @@ export interface PutConversationDraftRequest {
   attachmentIds: string[];
   pastedTextAttachmentId?: string;
   mentionBindings?: AgentMentionBindingDto[];
+  pendingSubmission?: DraftPendingSubmissionDto;
   expectedRevision: number;
   clientId: string;
   ownerId?: string;

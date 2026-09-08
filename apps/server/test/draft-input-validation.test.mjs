@@ -78,6 +78,32 @@ test("draft updates accept only exact typed bounded state", () => {
       extra: true,
     }],
   }, 8));
+  const pendingSubmission = {
+    fingerprint: "a".repeat(64),
+    idempotencyKey: "send-a",
+    uploads: [{
+      scope: "direct",
+      recipients: [{ agentId: "agent-a", attachmentIds: [validAssetId] }],
+    }],
+  };
+  assert.equal(draftUpdateBodyError({
+    ...validDraft,
+    pendingSubmission,
+  }, 8), undefined);
+  for (const invalid of [
+    { ...pendingSubmission, fingerprint: "not-a-hash" },
+    { ...pendingSubmission, idempotencyKey: "" },
+    { ...pendingSubmission, extra: true },
+    { ...pendingSubmission, uploads: [{ scope: "direct", recipients: [{
+      agentId: "agent-a",
+      attachmentIds: ["not-a-uuid"],
+    }] }] },
+  ]) {
+    assert.ok(draftUpdateBodyError({
+      ...validDraft,
+      pendingSubmission: invalid,
+    }, 8));
+  }
 });
 
 test("draft asset identifiers are bounded UUIDs before stale conflict persistence", async (t) => {

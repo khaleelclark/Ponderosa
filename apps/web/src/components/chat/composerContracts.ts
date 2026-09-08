@@ -1,5 +1,6 @@
 import type {
   AgentMentionBindingDto,
+  DraftPendingSubmissionDto,
   EngineCommand,
   EngineComposerCapability,
 } from "@ponderosa/core";
@@ -18,6 +19,8 @@ export interface ChatComposerContract {
       newAgentRequested?: boolean;
       /** Re-dispatch the exact operation retained after an ambiguous response. */
       retryPreparedAttempt?: boolean;
+      pendingSubmission?: DraftPendingSubmissionDto;
+      persistPendingSubmission?(value: DraftPendingSubmissionDto): Promise<void>;
     },
   ): Promise<unknown> | unknown;
   onQueue?(
@@ -30,6 +33,8 @@ export interface ChatComposerContract {
       newAgentRequested?: boolean;
       /** Re-dispatch the exact operation retained after an ambiguous response. */
       retryPreparedAttempt?: boolean;
+      pendingSubmission?: DraftPendingSubmissionDto;
+      persistPendingSubmission?(value: DraftPendingSubmissionDto): Promise<void>;
     },
   ): Promise<unknown> | unknown;
   onCommand?(command: EngineCommand, argumentsText?: string): Promise<unknown> | unknown;

@@ -73,10 +73,17 @@ import {
 } from "../src/mentions.js";
 import {
   abandonIdempotentAttempt,
+  definitiveSubmissionStatus,
+  durableSubmissionFingerprint,
   preparedIdempotentAttemptForRetry,
   retainIdempotentAttempt,
   selectIdempotentAttempt,
+  selectDurableSubmission,
 } from "../src/components/idempotentAttempt.js";
+import {
+  pendingRecipientUploads,
+  withPendingRecipientUploads,
+} from "../src/conversationRouting.js";
 
 const bryce = {
   id: "bryce",
@@ -1402,4 +1409,59 @@ test("keeps autocomplete selection within a live suggestion list", () => {
   assert.equal(clampComposerMenuIndex(4, 2), 1);
   assert.equal(clampComposerMenuIndex(1, 2), 1);
   assert.equal(clampComposerMenuIndex(4, 0), 0);
+});
+
+test("durable send identity survives restart for direct, multi-recipient, and new-Agent work", async () => {
+  for (const intent of [
+    { kind: "direct", surface: "agent:a", recipients: ["a"] },
+    { kind: "multi", surface: "chat:a", recipients: ["a", "b"] },
+    { kind: "new-agent", surface: "chat:a", recipients: [] },
+  ]) {
+    const fingerprint = await durableSubmissionFingerprint({
+      ...intent,
+      text: "unchanged",
+      attachmentIds: ["asset-a"],
+      runtime: ["codex", "gpt", "high"],
+    });
+    let created = 0;
+    const first = selectDurableSubmission(undefined, fingerprint, () => `operation-${++created}`);
+    const committed = new Set([first.idempotencyKey]);
+    const afterRestart = selectDurableSubmission(first, fingerprint, () => `operation-${++created}`);
+    committed.add(afterRestart.idempotencyKey);
+    assert.equal(afterRestart.idempotencyKey, first.idempotencyKey, intent.kind);
+    assert.equal(committed.size, 1, intent.kind);
+    assert.equal(created, 1, intent.kind);
+  }
+});
+
+test("edited durable content starts a new send identity after restart", async () => {
+  const initial = await durableSubmissionFingerprint({ text: "before", recipient: "agent-a" });
+  const edited = await durableSubmissionFingerprint({ text: "after", recipient: "agent-a" });
+  const first = selectDurableSubmission(undefined, initial, () => "operation-a");
+  const second = selectDurableSubmission(first, edited, () => "operation-b");
+  assert.notEqual(initial, edited);
+  assert.equal(second.idempotencyKey, "operation-b");
+});
+
+test("prepared recipient assets remain exact across reload", () => {
+  const pending = withPendingRecipientUploads(
+    { fingerprint: "a".repeat(64), idempotencyKey: "operation-a" },
+    "direct",
+    [
+      { agentId: "agent-a", attachments: [{ id: "asset-a" }] },
+      { agentId: "agent-b", attachments: [{ id: "asset-b" }] },
+    ],
+  );
+  assert.deepEqual(pendingRecipientUploads(pending, "direct"), [
+    { agentId: "agent-a", attachments: [{ id: "asset-a" }] },
+    { agentId: "agent-b", attachments: [{ id: "asset-b" }] },
+  ]);
+  assert.equal(pendingRecipientUploads(pending, "broadcast"), undefined);
+});
+
+test("only definitive client failures release durable send identity", () => {
+  assert.equal(definitiveSubmissionStatus(400), true);
+  assert.equal(definitiveSubmissionStatus(409), true);
+  assert.equal(definitiveSubmissionStatus(500), false);
+  assert.equal(definitiveSubmissionStatus(503), false);
 });
