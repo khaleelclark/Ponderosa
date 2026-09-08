@@ -76,6 +76,7 @@ export interface WorkspaceConnectionState {
 
 export interface WorkspaceStreamOptions {
   onProjectDeleted?(projectId: string, at: string): void;
+  projectPreferences?(preferences: WorkspacePreferencesDto): WorkspacePreferencesDto;
 }
 
 export function reconcileDeletedProjectClientState(
@@ -678,7 +679,10 @@ export function useWorkspaceStream(
           previousPreferences,
           event.preferences,
         );
-        queryClient.setQueryData(queryKeys.workspacePreferences.all, event.preferences);
+        queryClient.setQueryData(
+          queryKeys.workspacePreferences.all,
+          options.projectPreferences?.(event.preferences) ?? event.preferences,
+        );
       }
       if (reconciliation.gap) {
         invalidateAll();

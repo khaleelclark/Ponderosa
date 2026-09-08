@@ -14,6 +14,24 @@ export type RouteSidebarSection =
 
 export type ProjectSidebarSection = "chats" | "agents" | "triggers";
 
+export function nestedProjectRouteResources(route: ProjectRoute): {
+  agentId?: string;
+  conversationId?: string;
+  triggerId?: string;
+} {
+  return {
+    ...((route.kind === "agent" || route.kind === "review" || route.kind === "browser") && route.agentId
+      ? { agentId: route.agentId }
+      : {}),
+    ...((route.kind === "conversation" || route.kind === "projectWork" || route.kind === "browser") && route.conversationId
+      ? { conversationId: route.conversationId }
+      : {}),
+    ...((route.kind === "automation" || route.kind === "agent") && route.triggerId
+      ? { triggerId: route.triggerId }
+      : {}),
+  };
+}
+
 interface RouteRegistryEntry<Kind extends RouteKind> {
   toPath(route: RouteOfKind<Kind>): string;
   scope: "global" | "project";

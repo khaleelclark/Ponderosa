@@ -35,12 +35,16 @@ type DirectoryQuery = {
   conversationId?: string;
   sort?: string;
   active?: string;
+  enabled?: string;
 };
+
+type DirectorySort = ProjectSort | "next_fire";
 
 type CursorPosition =
   | { kind: "custom"; rank: number; title: string; id: string }
   | { kind: "alphabetical"; title: string; id: string }
-  | { kind: "last_used"; updatedAt: string; id: string };
+  | { kind: "last_used"; updatedAt: string; id: string }
+  | { kind: "next_fire"; nextFireAt: string | null; id: string };
 
 type CursorPayload = {
   v: 4;
@@ -61,6 +65,7 @@ type ResourceRow = {
   recent_conversation_title: string | null;
   recent_conversation_updated_at: string | null;
   running_agent_count: number | null;
+  next_fire_at: string | null;
   custom_rank?: number;
   sort_title?: string;
 };
@@ -112,7 +117,7 @@ function encodeCursor(
 function decodeCursor(
   value: string,
   scope: string,
-  sort: ProjectSort,
+  sort: DirectorySort,
   revision: string,
 ): CursorPosition {
   try {
@@ -133,6 +138,11 @@ function decodeCursor(
     if (
       sort === "alphabetical" && position.kind === "alphabetical" &&
       typeof position.title === "string" && typeof position.id === "string"
+    ) return position;
+    if (
+      sort === "next_fire" && position.kind === "next_fire" &&
+      (position.nextFireAt === null || typeof position.nextFireAt === "string") &&
+      typeof position.id === "string"
     ) return position;
     if (
       sort === "last_used" && position.kind === "last_used" &&
@@ -286,7 +296,8 @@ function baseDirectoryQuery(
                     )
                 )
               )
-          ) AS running_agent_count
+          ) AS running_agent_count,
+          NULL AS next_fire_at
         FROM projects p
         ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
       `,
@@ -317,7 +328,8 @@ function baseDirectoryQuery(
           NULL AS conversation_count, NULL AS recent_conversation_id,
           NULL AS recent_conversation_title,
           NULL AS recent_conversation_updated_at,
-          NULL AS running_agent_count
+          NULL AS running_agent_count,
+          NULL AS next_fire_at
         FROM conversations c
         JOIN projects p ON p.id = c.project_id
         WHERE ${where.join(" AND ")}
@@ -365,7 +377,8 @@ function baseDirectoryQuery(
           NULL AS conversation_count, NULL AS recent_conversation_id,
           NULL AS recent_conversation_title,
           NULL AS recent_conversation_updated_at,
-          NULL AS running_agent_count
+          NULL AS running_agent_count,
+          NULL AS next_fire_at
         FROM agents a
         JOIN projects p ON p.id = a.project_id
         WHERE ${where.join(" AND ")}
@@ -393,6 +406,7 @@ function baseDirectoryQuery(
     where.push("t.conversation_id = ?");
     params.push(query.conversationId);
   }
+  if (query.enabled === "true") where.push("t.enabled = 1");
   if (normalizedSearch) {
     where.push(`lower(
       t.name || ' ' || t.instructions || ' ' || t.source_kind ||
@@ -407,7 +421,8 @@ function baseDirectoryQuery(
         NULL AS conversation_count, NULL AS recent_conversation_id,
         NULL AS recent_conversation_title,
         NULL AS recent_conversation_updated_at,
-        NULL AS running_agent_count
+        NULL AS running_agent_count,
+        t.next_fire_at
       FROM trigger_definitions t
       JOIN agents a ON a.id = t.agent_id
         AND a.archived = 0 AND a.deleted_at IS NULL
@@ -419,7 +434,7 @@ function baseDirectoryQuery(
 }
 
 function orderingSql(
-  sort: ProjectSort,
+  sort: DirectorySort,
   order: readonly string[],
 ): { sql: string; rankSql: string; rankParams: unknown[] } {
   if (sort === "alphabetical") {
@@ -427,6 +442,9 @@ function orderingSql(
   }
   if (sort === "last_used") {
     return { sql: "updated_at DESC, id ASC", rankSql: "0", rankParams: [] };
+  }
+  if (sort === "next_fire") {
+    return { sql: "next_fire_at IS NULL ASC, next_fire_at ASC, id ASC", rankSql: "0", rankParams: [] };
   }
   if (order.length === 0) {
     return {
@@ -465,6 +483,14 @@ function cursorSql(
       params: [position.title, position.title, position.id],
     };
   }
+  if (position.kind === "next_fire") {
+    return position.nextFireAt === null
+      ? { sql: "next_fire_at IS NULL AND id > ?", params: [position.id] }
+      : {
+          sql: "(next_fire_at IS NULL OR next_fire_at > ? OR (next_fire_at = ? AND id > ?))",
+          params: [position.nextFireAt, position.nextFireAt, position.id],
+        };
+  }
   return {
     sql: "(updated_at < ? OR (updated_at = ? AND id > ?))",
     params: [position.updatedAt, position.updatedAt, position.id],
@@ -473,7 +499,7 @@ function cursorSql(
 
 function nextCursorPosition(
   row: ResourceRow,
-  sort: ProjectSort,
+  sort: DirectorySort,
 ): CursorPosition {
   if (sort === "custom") {
     return {
@@ -485,6 +511,9 @@ function nextCursorPosition(
   }
   if (sort === "alphabetical") {
     return { kind: "alphabetical", title: row.title, id: row.id };
+  }
+  if (sort === "next_fire") {
+    return { kind: "next_fire", nextFireAt: row.next_fire_at, id: row.id };
   }
   return {
     kind: "last_used",
@@ -550,6 +579,10 @@ export function registerWorkspaceDirectoryRoutes(
         (kind !== "agent" || request.query.active !== "true")) {
       return reply.code(400).send({ error: "active=true is supported only for the Agent directory" });
     }
+    if (request.query.enabled !== undefined &&
+        (kind !== "trigger" || request.query.enabled !== "true")) {
+      return reply.code(400).send({ error: "enabled=true is supported only for the Automation directory" });
+    }
 
     let limit: number;
     try {
@@ -563,16 +596,20 @@ export function registerWorkspaceDirectoryRoutes(
       requestedSort !== undefined &&
       requestedSort !== "alphabetical" &&
       requestedSort !== "last_used" &&
-      requestedSort !== "custom"
+      requestedSort !== "custom" &&
+      requestedSort !== "next_fire"
     ) {
       return reply.code(400).send({ error: "invalid directory sort" });
+    }
+    if (requestedSort === "next_fire" && (kind !== "trigger" || request.query.enabled !== "true")) {
+      return reply.code(400).send({ error: "next_fire sort requires enabled Automations" });
     }
 
     const preferences = context.workspace.getPreferences();
     const settings = resourceSettings(preferences, kind);
     const sort = requestedSort ?? settings.sort;
     const sqlite = context.store.sqlite;
-    const order = settings.order;
+    const order = sort === "next_fire" ? [] : settings.order;
     const normalizedSearch = (request.query.search ?? "")
       .trim()
       .toLocaleLowerCase();
@@ -596,6 +633,7 @@ export function registerWorkspaceDirectoryRoutes(
       conversationId: request.query.conversationId ?? "",
       sort,
       active: request.query.active ?? "",
+      enabled: request.query.enabled ?? "",
       directorySettingsHash,
     });
 
@@ -640,7 +678,7 @@ export function registerWorkspaceDirectoryRoutes(
       }
     }
 
-    const stars = [...starredKeys(preferences)]
+    const stars = sort === "next_fire" ? [] : [...starredKeys(preferences)]
       .filter(key => key.startsWith(`${kind}:`))
       .map(key => key.slice(kind.length + 1));
     let starredRows: ResourceRow[] = [];

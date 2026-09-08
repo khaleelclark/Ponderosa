@@ -82,6 +82,8 @@ import {
   activeNotificationViewForRoute,
 } from "./notificationActiveView";
 import { PrimaryHeaderActionsProvider } from "./components/PrimaryHeaderActions";
+import { useMutationNotification } from "./components/MutationNotifications";
+import { WorkspacePreferencesWriter } from "./workspacePreferencesWriter";
 
 const PUSH_CLEANUP_RETRY_INITIAL_MS = 1_000;
 const PUSH_CLEANUP_RETRY_MAX_MS = 30_000;
@@ -95,6 +97,27 @@ export default function App({
 }): JSX.Element {
   useAppViewport();
   const queryClient = useQueryClient();
+  const notify = useMutationNotification();
+  const preferencesWriter = useRef<WorkspacePreferencesWriter>();
+  preferencesWriter.current ??= new WorkspacePreferencesWriter({
+    read: () => queryClient.getQueryData(queryKeys.workspacePreferences.all),
+    publish: value => queryClient.setQueryData(queryKeys.workspacePreferences.all, value),
+    write: patch => api.updateWorkspacePreferences(patch),
+    refresh: () => api.getWorkspacePreferences(),
+    onSuccess: (previous, value, patch) => {
+      for (const kind of changedWorkspaceDirectoryKinds(previous, value)) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind(kind) });
+      }
+      if (patch.starredResourceIds !== undefined || patch.starredProjectIds !== undefined) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceResourceRecency.all });
+      }
+      if (patch.claudeModelOptions !== undefined) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.engines.all });
+        void queryClient.invalidateQueries({ queryKey: ["engine-models"] });
+      }
+    },
+    onError: () => notify({ key: "workspace-preferences", message: "Workspace settings could not be saved.", severity: "error" }),
+  });
   const { route, navigate } = useRoute();
   const [pageVisible, setPageVisible] = useState(
     () => document.visibilityState === "visible",
@@ -134,6 +157,7 @@ export default function App({
   };
   const workspaceConnection = useWorkspaceStream({
     onProjectDeleted: reconcileDeletedProject,
+    projectPreferences: value => preferencesWriter.current!.projectCanonical(value),
   });
   const [sidebarPresentation, setSidebarPresentation] = useState(() => {
     try {
@@ -450,24 +474,7 @@ export default function App({
         engine.enabled !== false && Boolean(engine.providerUsageCommand)
       )?.id;
   const savePreferences = (patch: Partial<typeof preferences>) => {
-    queryClient.setQueryData(queryKeys.workspacePreferences.all, { ...preferences, ...patch });
-    void api.updateWorkspacePreferences(patch).then((value) => {
-      queryClient.setQueryData(queryKeys.workspacePreferences.all, value);
-      for (const kind of changedWorkspaceDirectoryKinds(preferences, value)) {
-        void queryClient.invalidateQueries({
-          queryKey: queryKeys.workspaceDirectory.kind(kind),
-        });
-      }
-      if (patch.starredResourceIds !== undefined || patch.starredProjectIds !== undefined) {
-        void queryClient.invalidateQueries({
-          queryKey: queryKeys.workspaceResourceRecency.all,
-        });
-      }
-      if (patch.claudeModelOptions !== undefined) {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.engines.all });
-        void queryClient.invalidateQueries({ queryKey: ["engine-models"] });
-      }
-    });
+    preferencesWriter.current!.enqueue(patch);
   };
   const closeProjectCreator = () => {
     setProjectDialogOpen(false);

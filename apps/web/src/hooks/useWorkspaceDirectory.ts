@@ -54,8 +54,9 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     projectId?: string;
     agentIds?: readonly string[];
     conversationId?: string;
-    sort?: ProjectSort;
+    sort?: ProjectSort | "next_fire";
     active?: boolean;
+    onlyEnabled?: boolean;
     enabled?: boolean;
     retainPreviousData?: boolean;
   },
@@ -78,6 +79,7 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     options.conversationId,
     options.sort,
     options.active,
+    options.onlyEnabled,
   );
   const query = useInfiniteQuery({
     queryKey,
@@ -91,6 +93,7 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
         conversationId: options.conversationId,
         sort: options.sort,
         active: options.active,
+        enabled: options.onlyEnabled,
       }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (

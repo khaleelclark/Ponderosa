@@ -250,27 +250,24 @@ export function HomeView({
     ...directoryOptions,
     active: true,
   });
-  const triggerQuery = useWorkspaceDirectory<WorkspaceTriggerDirectoryItemDto>("trigger", directoryOptions);
+  const triggerQuery = useWorkspaceDirectory<WorkspaceTriggerDirectoryItemDto>("trigger", {
+    sort: "next_fire",
+    onlyEnabled: true,
+  });
   const agentDirectory = workspaceDirectoryItems(agentQuery.data?.pages, preferences);
   const activeAgentDirectory = workspaceDirectoryItems(activeAgentQuery.data?.pages, preferences);
-  const triggerDirectory = workspaceDirectoryItems(triggerQuery.data?.pages, preferences);
   const agentItems = [...agentDirectory.starredItems, ...agentDirectory.items];
   const agentNamesById = new Map(
     agentItems.map(item => [item.agent.id, item.agent.title]),
   );
-  const triggerItems = [...triggerDirectory.starredItems, ...triggerDirectory.items];
+  const triggerItems = triggerQuery.data?.pages.flatMap(page => page.items) ?? [];
   const attention = notifications
     .filter(isOpenAttention)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   const working = [...activeAgentDirectory.starredItems, ...activeAgentDirectory.items]
     .filter(item => ACTIVE_STATUSES.has(item.health.status))
     .sort((left, right) => right.health.statusTimestamp.localeCompare(left.health.statusTimestamp));
-  const automations = triggerItems
-    .slice()
-    .sort((left, right) => {
-      if (left.trigger.enabled !== right.trigger.enabled) return left.trigger.enabled ? -1 : 1;
-      return (left.trigger.nextFireAt ?? "~").localeCompare(right.trigger.nextFireAt ?? "~");
-    });
+  const automations = triggerItems;
   const recentOutcomes = agentItems
     .filter(item => item.health.assignedWorkOutcome)
     .sort((left, right) =>
@@ -421,6 +418,12 @@ export function HomeView({
                   />
                 ))}
               </Box>
+            ) : triggerQuery.requestState.isInitialError ? (
+              <Alert severity="error" action={<Button onClick={() => void triggerQuery.requestState.retry()}>Retry</Button>}>
+                Could not load Automations.
+              </Alert>
+            ) : triggerQuery.requestState.isInitialLoading ? (
+              <Paper variant="outlined" sx={{ p: 2 }}><Typography color="text.secondary">Loading Automations…</Typography></Paper>
             ) : (
               <Paper variant="outlined" sx={{ p: 2 }}><Typography color="text.secondary">No Automations have been configured yet.</Typography></Paper>
             )}
@@ -441,6 +444,12 @@ export function HomeView({
                   />
                 ))}
               </Box>
+            ) : agentQuery.requestState.isInitialError ? (
+              <Alert severity="error" action={<Button onClick={() => void agentQuery.requestState.retry()}>Retry</Button>}>
+                Could not load recent outcomes.
+              </Alert>
+            ) : agentQuery.requestState.isInitialLoading ? (
+              <Paper variant="outlined" sx={{ p: 2 }}><Typography color="text.secondary">Loading recent outcomes…</Typography></Paper>
             ) : (
               <Paper variant="outlined" sx={{ p: 2 }}><Typography color="text.secondary">Completed Agent work will appear here.</Typography></Paper>
             )}

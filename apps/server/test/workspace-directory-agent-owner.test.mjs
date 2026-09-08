@@ -60,6 +60,8 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
       enabled: index < 30,
       now,
     });
+    store.sqlite.prepare("UPDATE trigger_definitions SET next_fire_at = ? WHERE id = ?")
+      .run(index === 30 ? "2000-01-01T00:00:00.000Z" : `2099-01-${String(30 - index).padStart(2, "0")}T00:00:00.000Z`, `trigger-${index}`);
   }
   registerWorkspaceDirectoryRoutes(app, {
     store,
@@ -120,4 +122,21 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
   assert.equal(automations.json().items.length, 25);
   assert.equal(automations.json().history.hasMore, true);
   assert.equal(automations.json().enabledCount, 30);
+
+  const homeAutomations = await app.inject({
+    method: "GET",
+    url: "/api/workspace/directory/trigger?enabled=true&sort=next_fire&limit=8",
+  });
+  assert.equal(homeAutomations.statusCode, 200, homeAutomations.body);
+  assert.deepEqual(homeAutomations.json().items.map(item => item.trigger.id), [
+    "trigger-29", "trigger-28", "trigger-27", "trigger-26",
+    "trigger-25", "trigger-24", "trigger-23", "trigger-22",
+  ]);
+  assert.equal(homeAutomations.json().items.some(item => item.trigger.id === "trigger-30"), false);
+  const nextHomeAutomations = await app.inject({
+    method: "GET",
+    url: `/api/workspace/directory/trigger?enabled=true&sort=next_fire&limit=8&cursor=${encodeURIComponent(homeAutomations.json().history.cursor)}`,
+  });
+  assert.equal(nextHomeAutomations.statusCode, 200, nextHomeAutomations.body);
+  assert.equal(nextHomeAutomations.json().items[0].trigger.id, "trigger-21");
 });

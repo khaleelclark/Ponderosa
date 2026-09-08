@@ -17,7 +17,7 @@ import { mergeAgentStatuses } from "../agents";
 import { useAgent, useAgentHealth, useAgentPresets, useConversations, useAgents } from "../hooks/queries";
 import { queryKeys } from "../queryKeys";
 import { enginesWithModelCatalog } from "../conversationEngine";
-import { assertNeverRoute, routeToPath, type ProjectRoute } from "../routeRegistry";
+import { assertNeverRoute, nestedProjectRouteResources, routeToPath, type ProjectRoute } from "../routeRegistry";
 import type { Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
 import { AgentOrganizationTree } from "./AgentOrganizationTree";
@@ -87,6 +87,13 @@ export function ProjectShell({
 
   const conversationsQuery = useConversations(projectId);
   const agentsQuery = useAgents(projectId);
+  const routeResources = nestedProjectRouteResources(route);
+  const routeTriggerId = routeResources.triggerId;
+  const triggersQuery = useQuery({
+    queryKey: queryKeys.triggers.projectOwnership(projectId),
+    queryFn: () => api.listTriggers(projectId),
+    enabled: Boolean(routeTriggerId),
+  });
   const healthQuery = useAgentHealth(projectId);
   const conversations = conversationsQuery.data ?? [];
   const agents = agentsQuery.data ?? [];
@@ -135,7 +142,11 @@ export function ProjectShell({
   // The review surface needs changed-file and Run detail for one Agent. Fetch
   // that Agent only while the route is open instead of hydrating every roster
   // member's full history from the Project shell.
-  const reviewAgentQuery = useAgent(route.kind === "review" ? route.agentId : undefined);
+  const reviewAgentQuery = useAgent(
+    route.kind === "review" && agents.some(agent => agent.id === route.agentId)
+      ? route.agentId
+      : undefined,
+  );
   const engineCapabilities = capabilitiesQuery.data ?? [] as ProjectEngineCapabilitiesDto[];
   const refreshCapabilities = useCallback(async (context?: { engineId?: string; model?: string; agentId?: string }) => {
     const discovered = await api.getEngineCapabilities(projectId, { ...context, refresh: true });
@@ -185,6 +196,33 @@ export function ProjectShell({
   };
 
   const loading = conversationsQuery.isLoading || agentsQuery.isLoading;
+
+  const routeAgentId = routeResources.agentId;
+  const routeConversationId = routeResources.conversationId;
+  const routeResourceLoading =
+    (Boolean(routeAgentId) && agentsQuery.isLoading) ||
+    (Boolean(routeConversationId) && conversationsQuery.isLoading) ||
+    (Boolean(routeTriggerId) && triggersQuery.isLoading);
+  const routeResourceError =
+    (Boolean(routeAgentId) && agentsQuery.isError) ||
+    (Boolean(routeConversationId) && conversationsQuery.isError) ||
+    (Boolean(routeTriggerId) && triggersQuery.isError);
+  const routeResourceUnavailable =
+    (Boolean(routeAgentId) && agentsQuery.isSuccess && !agents.some(agent => agent.id === routeAgentId)) ||
+    (Boolean(routeConversationId) && conversationsQuery.isSuccess && !conversations.some(conversation => conversation.id === routeConversationId)) ||
+    (Boolean(routeTriggerId) && triggersQuery.isSuccess && !triggersQuery.data?.some(trigger => trigger.id === routeTriggerId));
+
+  if (routeResourceLoading) return <LinearProgress aria-label="Loading requested resource" />;
+  if (routeResourceError) {
+    return <Box sx={{ p: 2 }}><Alert severity="error" action={<Button onClick={() => {
+      if (routeAgentId) void agentsQuery.refetch();
+      if (routeConversationId) void conversationsQuery.refetch();
+      if (routeTriggerId) void triggersQuery.refetch();
+    }}>Retry</Button>}>The requested resource could not be checked.</Alert></Box>;
+  }
+  if (routeResourceUnavailable) {
+    return <Box sx={{ p: 2 }}><Alert severity="warning" action={<Button onClick={() => navigate({ kind: "project", projectId })}>Back to Project</Button>}>This resource is unavailable in this Project.</Alert></Box>;
+  }
 
   if (conversationsQuery.isError || agentsQuery.isError) {
     return (

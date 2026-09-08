@@ -139,6 +139,7 @@ import type {
   WorkspaceStatusDto,
   WorkspaceStreamStatusDto,
 } from "@ponderosa/core";
+import { createClientId } from "../clientId";
 import {
   AGENT_DETAIL_PAGE_SIZE,
   AGENT_HISTORY_PAGE_SIZE,
@@ -470,8 +471,9 @@ export const realApi = {
       projectId?: string;
       agentIds?: string;
       conversationId?: string;
-      sort?: ProjectSort;
+      sort?: ProjectSort | "next_fire";
       active?: boolean;
+      enabled?: boolean;
     } = {},
   ): Promise<WorkspaceDirectoryPageDto<T>> {
     const path = `/api/workspace/directory/${encodeURIComponent(kind)}${toQuery({
@@ -483,6 +485,7 @@ export const realApi = {
         conversationId: options.conversationId,
         sort: options.sort,
         active: options.active ? "true" : undefined,
+        enabled: options.enabled ? "true" : undefined,
       })}`;
     return requestJson<WorkspaceDirectoryPageDto<T>>(path).catch(async (error) => {
       if (!(error instanceof ApiRequestError) || error.status !== 409 || !options.cursor) throw error;
@@ -736,7 +739,7 @@ export const realApi = {
   agentExportDownloadUrl(agentId: string, mode: AgentExportMode, organization: boolean = false): string {
     return `/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), download: 1 })}`;
   },
-  importAgents(projectId: string, request: ImportAgentPackageRequest, requestId = crypto.randomUUID()): Promise<ImportAgentPackageResponse> {
+  importAgents(projectId: string, request: ImportAgentPackageRequest, requestId = createClientId()): Promise<ImportAgentPackageResponse> {
     return requestJson<ImportAgentPackageResponse>(`/api/projects/${encodeURIComponent(projectId)}/import-agents`, {
       method: "POST",
       headers: { "idempotency-key": requestId },
@@ -747,7 +750,7 @@ export const realApi = {
     projectId: string,
     packageBlob: Blob,
     metadata: Omit<ImportAgentPackageRequest, "package">,
-    requestId = crypto.randomUUID(),
+    requestId = createClientId(),
   ): Promise<ImportAgentPackageResponse> {
     const body = new Blob(
       [`${JSON.stringify(metadata)}\n`, packageBlob],
@@ -792,7 +795,7 @@ export const realApi = {
   copyAgent(
     projectId: string,
     request: CopyAgentPackageRequest,
-    requestId = crypto.randomUUID(),
+    requestId = createClientId(),
   ): Promise<ImportAgentPackageResponse> {
     return requestJson<ImportAgentPackageResponse>(
       `/api/projects/${encodeURIComponent(projectId)}/copy-agent`,

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { routeToPath } from "../src/routeRegistry.js";
+import { nestedProjectRouteResources, routeToPath } from "../src/routeRegistry.js";
 import { parseRoute, parseRouteLocation } from "../src/routing.js";
 
 test("malformed encoded route segments fall back without throwing", () => {
@@ -40,4 +40,17 @@ test("initial and popstate-equivalent malformed locations request a stable URL",
   assert.deepEqual(parseRouteLocation("/projects/caf%C3%A9"), {
     route: { kind: "project", projectId: "café" },
   });
+});
+
+test("nested Project routes expose every resource that must match the Project", () => {
+  assert.deepEqual(nestedProjectRouteResources({ kind: "agent", projectId: "a", agentId: "agent-b", view: "triggers", triggerId: "trigger-b" }), {
+    agentId: "agent-b", triggerId: "trigger-b",
+  });
+  assert.deepEqual(nestedProjectRouteResources({ kind: "review", projectId: "a", agentId: "agent-b" }), { agentId: "agent-b" });
+  assert.deepEqual(nestedProjectRouteResources({ kind: "conversation", projectId: "a", conversationId: "chat-b" }), { conversationId: "chat-b" });
+  assert.deepEqual(nestedProjectRouteResources({ kind: "projectWork", projectId: "a", conversationId: "chat-b" }), { conversationId: "chat-b" });
+  assert.deepEqual(nestedProjectRouteResources({ kind: "browser", projectId: "a", agentId: "agent-b", runId: "run-b", conversationId: "chat-b" }), {
+    agentId: "agent-b", conversationId: "chat-b",
+  });
+  assert.deepEqual(nestedProjectRouteResources({ kind: "automation", projectId: "a", triggerId: "trigger-b" }), { triggerId: "trigger-b" });
 });

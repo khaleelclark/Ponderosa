@@ -32,8 +32,9 @@ export const queryKeys = {
       projectId: string | undefined,
       agentIds: string | undefined,
       conversationId: string | undefined,
-      sort: "alphabetical" | "last_used" | "custom" | undefined,
+      sort: "alphabetical" | "last_used" | "custom" | "next_fire" | undefined,
       active: boolean | undefined,
+      onlyEnabled: boolean | undefined,
     ) => [
       "workspace-directory",
       kind,
@@ -43,6 +44,7 @@ export const queryKeys = {
       conversationId ?? "",
       sort ?? "",
       active ? "active" : "",
+      onlyEnabled ? "enabled" : "",
     ] as const,
   },
   workspacePreferences: {
@@ -118,6 +120,7 @@ export const queryKeys = {
   triggers: {
     all: ["triggers"] as const,
     project: (projectId: string) => ["triggers", "project", projectId] as const,
+    projectOwnership: (projectId: string) => ["triggers", "project-ownership", projectId] as const,
     occurrencesAll: ["trigger-occurrences"] as const,
     occurrence: (triggerId: string | undefined) => ["trigger-occurrences", triggerId] as const,
     agentOccurrences: (agentId: string) => ["agent-trigger-occurrences", agentId] as const,

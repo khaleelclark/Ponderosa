@@ -17,6 +17,7 @@ import { useProjectBrowser } from "../ProjectBrowserContext";
 import { ChatDocumentCard } from "./ChatDocumentCard";
 import {
   chatMarkdownUrlTransform,
+  parseChatProjectFileHref,
   renderableChatLinkHref,
 } from "./chatMarkdownLink";
 
@@ -373,28 +374,6 @@ interface MarkdownAstNode {
   children?: MarkdownAstNode[];
 }
 
-function projectFileReference(href: string | undefined): {
-  projectId: string;
-  artifactId: string;
-  historicalFilename: string;
-  currentFilename: string;
-} | undefined {
-  if (!href?.startsWith("ponderosa://project-file/")) return undefined;
-  try {
-    const url = new URL(href);
-    const [projectId, artifactId] = url.pathname.split("/").filter(Boolean);
-    if (!projectId || !artifactId) return undefined;
-    return {
-      projectId: decodeURIComponent(projectId),
-      artifactId: decodeURIComponent(artifactId),
-      historicalFilename: url.searchParams.get("historical") ?? "Project file",
-      currentFilename: url.searchParams.get("current") ?? "",
-    };
-  } catch {
-    return undefined;
-  }
-}
-
 export const messageMentionSx = {
   display: "inline",
   px: 0.45,
@@ -512,7 +491,7 @@ function ChatMarkdown({
               : image;
           },
           a: ({ href, children: label }) => {
-            const fileReference = projectFileReference(href);
+            const fileReference = parseChatProjectFileHref(href);
             if (fileReference) {
               const filename = fileReference.currentFilename || fileReference.historicalFilename;
               if (!projectId || fileReference.projectId !== projectId) {
