@@ -785,14 +785,12 @@ export function registerConversationDeliveryRoutes(
         else if (target.projectId !== master.projectId) unavailableRecipients.push({ agentId: recipient.agentId, reason: "wrong_project" });
       });
       const unavailableIds = new Set(unavailableRecipients.map(recipient => recipient.agentId));
-      for (const [index, recipient] of recipients.entries()) {
-        if (!unavailableIds.has(recipient.agentId)) continue;
+      const skippedRecipientAttachments = recipients.flatMap((recipient, index) => {
         const target = targets[index];
-        if (!target) continue;
-        for (const attachmentId of recipient.attachmentIds ?? []) {
-          await assets.enqueueRemoval(target.projectId, target.id, attachmentId);
-        }
-      }
+        return unavailableIds.has(recipient.agentId) && target && recipient.attachmentIds?.length
+          ? [{ projectId: target.projectId, agentId: target.id, attachmentIds: recipient.attachmentIds }]
+          : [];
+      });
       recipients = recipients.filter(recipient => !unavailableIds.has(recipient.agentId));
       if (recipients.length === 0) {
         return reply.code(409).send({
@@ -857,6 +855,7 @@ export function registerConversationDeliveryRoutes(
           payload: {
             requestFingerprint,
             ...(unavailableRecipients.length ? { unavailableRecipients } : {}),
+            ...(skippedRecipientAttachments.length ? { skippedRecipientAttachments } : {}),
             communication,
             dispatch: {
               conversationId: master.id,

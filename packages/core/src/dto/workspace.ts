@@ -207,6 +207,10 @@ export interface RestoreConversationDraftConflictRequest {
   ownerId: string;
   expectedRevision: number;
   clientId: string;
+  /** Fresh same-surface assets replacing unavailable displaced assets. */
+  attachmentReplacements?: Array<{ fromId: string; toId: string }>;
+  /** Displaced assets whose bytes are no longer available in this browser. */
+  unavailableAttachmentIds?: string[];
 }
 
 export interface ResolveConversationDraftConflictResponse {

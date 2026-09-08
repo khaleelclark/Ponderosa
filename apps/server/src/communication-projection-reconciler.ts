@@ -177,6 +177,21 @@ export function createCommunicationProjectionReconciler(
       const dispatch = payload?.dispatch && typeof payload.dispatch === "object"
         ? payload.dispatch as Record<string, unknown>
         : undefined;
+      const skippedRecipientAttachments = Array.isArray(payload?.skippedRecipientAttachments)
+        ? payload.skippedRecipientAttachments.flatMap((value) => {
+            if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+            const item = value as Record<string, unknown>;
+            return typeof item.projectId === "string" && typeof item.agentId === "string" &&
+                Array.isArray(item.attachmentIds) &&
+                item.attachmentIds.every(id => typeof id === "string")
+              ? [{
+                  projectId: item.projectId,
+                  agentId: item.agentId,
+                  attachmentIds: item.attachmentIds as string[],
+                }]
+              : [];
+          })
+        : [];
 
       const recipientAgentIds = row.recipientAgentIds
         ?? coordinationV3.communicationRecipientAgentIds(row.projectId, row.id);
@@ -550,6 +565,13 @@ export function createCommunicationProjectionReconciler(
             throw new Error("runtime Communication attachment owner is unavailable");
           }
           await assets.associate(canonical.projectId, agentId, attachmentIds);
+        }
+        // Cleanup is a consequence of the durable runtime row, never a
+        // pre-commit side effect. Replaying this pass safely re-enqueues it.
+        for (const skipped of skippedRecipientAttachments) {
+          for (const attachmentId of skipped.attachmentIds) {
+            await assets.enqueueRemoval(skipped.projectId, skipped.agentId, attachmentId);
+          }
         }
       } catch (error) {
         if (exactCommunicationEventIds.has(communicationEventId) &&

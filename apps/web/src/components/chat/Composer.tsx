@@ -93,9 +93,11 @@ import {
   recoverableDraftConflict,
   refreshRecoverableDraftConflict,
   type RecoverableDraftConflict,
+  restagedDraftConflictSnapshot,
   restoreDraftConflictSnapshot,
   savedPastedTextCleanMutationGeneration,
   settledDraftWriteContinuation,
+  unresolvedRecoverableDraftConflict,
   shouldAdoptHydratedDraft,
   shouldShowQueueControl,
 } from "./composerUtils";
@@ -2229,20 +2231,87 @@ export function Composer({
           const recoveryWriteChain = draftWriteChain.current;
           const scopeGeneration = draftGeneration.current;
           const recoveryGeneration = ++draftConflictGeneration.current;
+          draftMutationLockedRef.current = true;
+          setDraftMutationLocked(true);
           setRestoringDraftConflict(true);
           setSendError(undefined);
           void (async () => {
+            const uploadedIds: string[] = [];
+            let attemptedSnapshot = recovery.snapshot;
+            const discardUploads = () => Promise.all(uploadedIds.map(id =>
+              api.deleteDraftAttachment(scope, draftOwnerId, id).catch(() => undefined)));
             try {
-              const resolution = await api.restoreConversationDraftConflict(
-                scope,
-                recovery.conflict.id,
-                {
-                  ownerId: draftOwnerId,
-                  expectedRevision: recovery.conflict.current.revision,
-                  clientId: recoveryWriteChain.clientId,
-                },
+              const restoredFiles: Array<{ file: File; attachmentId: string; fromId: string }> = [];
+              for (const { file, attachmentId } of recovery.snapshot.files) {
+                const uploaded = await api.uploadDraftAttachment(scope, draftOwnerId, file);
+                uploadedIds.push(uploaded.id);
+                restoredFiles.push({ file, attachmentId: uploaded.id, fromId: attachmentId });
+              }
+              let restoredPasteId: string | undefined;
+              if (recovery.snapshot.pastedText !== undefined) {
+                const uploaded = await api.uploadDraftAttachment(
+                  scope,
+                  draftOwnerId,
+                  new File([recovery.snapshot.pastedText], PASTED_TEXT_DRAFT_NAME, {
+                    type: "text/plain",
+                  }),
+                );
+                uploadedIds.push(uploaded.id);
+                restoredPasteId = uploaded.id;
+              }
+              const recoverableIds = new Set([
+                ...recovery.snapshot.files.map(item => item.attachmentId),
+                ...(recovery.snapshot.pastedText !== undefined &&
+                    recovery.snapshot.pastedTextAttachmentId
+                  ? [recovery.snapshot.pastedTextAttachmentId]
+                  : []),
+              ]);
+              const unavailableAttachmentIds = new Set([
+                ...recovery.conflict.displaced.attachmentIds,
+                ...(recovery.conflict.displaced.pastedTextAttachmentId
+                  ? [recovery.conflict.displaced.pastedTextAttachmentId]
+                  : []),
+              ].filter(id => !recoverableIds.has(id)));
+              attemptedSnapshot = restagedDraftConflictSnapshot(
+                recovery.snapshot,
+                restoredFiles.map(({ file, attachmentId }) => ({ file, attachmentId })),
+                restoredPasteId,
+                unavailableAttachmentIds,
               );
-              const canonical = resolution.draft;
+              const canonical = recovery.resolutionUnavailable
+                ? await api.putConversationDraft(scope, {
+                    text: attemptedSnapshot.text,
+                    attachmentIds: attemptedSnapshot.attachmentIds,
+                    ...(attemptedSnapshot.pastedTextAttachmentId
+                      ? { pastedTextAttachmentId: attemptedSnapshot.pastedTextAttachmentId }
+                      : {}),
+                    mentionBindings: attemptedSnapshot.mentionBindings,
+                    expectedRevision: recovery.conflict.current.revision,
+                    clientId: recoveryWriteChain.clientId,
+                    ownerId: draftOwnerId,
+                  })
+                : (await api.restoreConversationDraftConflict(
+                    scope,
+                    recovery.conflict.id,
+                    {
+                      ownerId: draftOwnerId,
+                      expectedRevision: recovery.conflict.current.revision,
+                      clientId: recoveryWriteChain.clientId,
+                      attachmentReplacements: [
+                        ...restoredFiles.map(({ fromId, attachmentId }) => ({
+                          fromId,
+                          toId: attachmentId,
+                        })),
+                        ...(recovery.snapshot.pastedTextAttachmentId && restoredPasteId
+                          ? [{
+                              fromId: recovery.snapshot.pastedTextAttachmentId,
+                              toId: restoredPasteId,
+                            }]
+                          : []),
+                      ],
+                      unavailableAttachmentIds: [...unavailableAttachmentIds],
+                    },
+                  )).draft;
               if (!canonical) throw new Error("Restored draft state is unavailable.");
               if (
                 recoveryGeneration !== draftConflictGeneration.current ||
@@ -2254,10 +2323,10 @@ export function Composer({
               }
               const restored = restoreDraftConflictSnapshot(
                 {
-                  ...recovery.snapshot,
+                  ...attemptedSnapshot,
                   text: canonical.text,
                   attachmentIds: [...canonical.attachmentIds],
-                  files: recovery.snapshot.files.filter(item =>
+                  files: attemptedSnapshot.files.filter(item =>
                     canonical.attachmentIds.includes(item.attachmentId)),
                   ...(canonical.pastedTextAttachmentId
                     ? { pastedTextAttachmentId: canonical.pastedTextAttachmentId }
@@ -2310,7 +2379,10 @@ export function Composer({
                 scope === activeDraftScopeRef.current &&
                 scopeGeneration === draftGeneration.current &&
                 recoveryWriteChain === draftWriteChain.current;
-              if (!stillOwnsRecovery()) return;
+              if (!stillOwnsRecovery()) {
+                await discardUploads();
+                return;
+              }
               if (error instanceof ApiRequestError &&
                   (error.status === 409 || error.status === 404)) {
                 try {
@@ -2324,31 +2396,53 @@ export function Composer({
                     current,
                     conflicts.conflicts,
                   );
+                  const retryConflict = recovery.resolutionUnavailable
+                    ? conflicts.conflicts.findLast(candidate =>
+                        candidate.displaced.clientId === recoveryWriteChain.clientId)
+                    : undefined;
                   queryClient.setQueryData(
                     queryKeys.conversationDraft.detail(scope, draftOwnerId),
                     current,
                   );
-                  setRestoringDraftConflict(false);
                   if (refreshed) {
+                    await discardUploads();
+                    setRestoringDraftConflict(false);
                     setDraftConflict(refreshed);
                     setSendError(
                       "The saved draft changed again. Review your preserved version, then choose Restore again.",
                     );
                     return;
                   }
+                  if (retryConflict) {
+                    recoveryWriteChain.ownedRevision = current.revision;
+                    draftRevision.current = current.revision;
+                    setDraftConflict(recoverableDraftConflict(
+                      { ...retryConflict, current },
+                      attemptedSnapshot,
+                    ));
+                    setRestoringDraftConflict(false);
+                    setSendError(
+                      "The saved draft changed again. Your preserved version is ready for an explicit Restore retry.",
+                    );
+                    return;
+                  }
+                  await discardUploads();
                   recoveryWriteChain.ownedRevision = current.revision;
                   draftRevision.current = current.revision;
-                  draftReady.current = false;
-                  draftLocallyEdited.current = false;
-                  draftAttachmentsLocallyEdited.current = false;
-                  setDraftConflict(undefined);
+                  draftLocallyEdited.current = true;
+                  draftAttachmentsLocallyEdited.current = true;
+                  setDraftConflict(unresolvedRecoverableDraftConflict(recovery, current));
+                  setRestoringDraftConflict(false);
                   setSendError(
-                    "This preserved draft was already resolved elsewhere. The current saved draft is being loaded.",
+                    "This conflict was resolved elsewhere. Your preserved draft is unchanged; choose Restore again to save it against the latest revision.",
                   );
-                  void draftQuery.refetch();
                   return;
                 } catch (refreshError) {
-                  if (!stillOwnsRecovery()) return;
+                  if (!stillOwnsRecovery()) {
+                    await discardUploads();
+                    return;
+                  }
+                  await discardUploads();
                   setRestoringDraftConflict(false);
                   setSendError(
                     refreshError instanceof Error
@@ -2358,12 +2452,17 @@ export function Composer({
                   return;
                 }
               }
+              await discardUploads();
               setRestoringDraftConflict(false);
               setSendError(
                 error instanceof Error
                   ? `Your preserved draft could not be restored: ${error.message}`
                   : "Your preserved draft could not be restored.",
               );
+            } finally {
+              draftMutationLockedRef.current = false;
+              setDraftMutationLocked(false);
+              setRestoringDraftConflict(false);
             }
           })();
         }}
@@ -2373,6 +2472,8 @@ export function Composer({
           const scope = conversationDraftId;
           const generation = ++draftConflictGeneration.current;
           const scopeGeneration = draftGeneration.current;
+          draftMutationLockedRef.current = true;
+          setDraftMutationLocked(true);
           setRestoringDraftConflict(true);
           setSendError(undefined);
           void api.discardConversationDraftConflict(scope, draftOwnerId, conflictId)
@@ -2393,6 +2494,11 @@ export function Composer({
                   ? `Your preserved draft could not be discarded: ${error.message}`
                   : "Your preserved draft could not be discarded.",
               );
+            })
+            .finally(() => {
+              draftMutationLockedRef.current = false;
+              setDraftMutationLocked(false);
+              setRestoringDraftConflict(false);
             });
         }}
         onRetryDraftContent={id => {

@@ -174,12 +174,15 @@ export interface DraftConflictRecoverySnapshot<TFile, TMention, TFailure> {
 export interface RecoverableDraftConflict<TFile, TMention, TFailure> {
   conflict: ConversationDraftConflictDto;
   snapshot: DraftConflictRecoverySnapshot<TFile, TMention, TFailure>;
+  /** The durable conflict was resolved elsewhere; one explicit retry may save the snapshot. */
+  resolutionUnavailable?: true;
 }
 
 export function restagedDraftConflictSnapshot<TFile, TMention, TFailure>(
   snapshot: DraftConflictRecoverySnapshot<TFile, TMention, TFailure>,
   files: Array<{ file: TFile; attachmentId: string }>,
   pastedTextAttachmentId?: string,
+  unavailableAttachmentIds: ReadonlySet<string> = new Set(),
 ): DraftConflictRecoverySnapshot<TFile, TMention, TFailure> {
   const replacementByHistoricalId = new Map(
     snapshot.files.map((item, index) => [
@@ -189,15 +192,16 @@ export function restagedDraftConflictSnapshot<TFile, TMention, TFailure>(
   );
   return {
     ...snapshot,
-    attachmentIds: snapshot.attachmentIds.map(
-      id => replacementByHistoricalId.get(id) ?? id,
-    ),
+    attachmentIds: snapshot.attachmentIds
+      .filter(id => !unavailableAttachmentIds.has(id))
+      .map(id => replacementByHistoricalId.get(id) ?? id),
     files: [...files],
     ...(snapshot.pastedText !== undefined
       ? { pastedTextAttachmentId }
-      : snapshot.pastedTextAttachmentId
+      : snapshot.pastedTextAttachmentId &&
+          !unavailableAttachmentIds.has(snapshot.pastedTextAttachmentId)
         ? { pastedTextAttachmentId: snapshot.pastedTextAttachmentId }
-        : {}),
+        : { pastedTextAttachmentId: undefined }),
     mentionBindings: [...snapshot.mentionBindings],
     failedContents: [...snapshot.failedContents],
   };
@@ -219,6 +223,18 @@ export function refreshRecoverableDraftConflict<TFile, TMention, TFailure>(
   return conflict
     ? { conflict: { ...conflict, current }, snapshot: recovery.snapshot }
     : undefined;
+}
+
+export function unresolvedRecoverableDraftConflict<TFile, TMention, TFailure>(
+  recovery: RecoverableDraftConflict<TFile, TMention, TFailure>,
+  current: ConversationDraftDto,
+): RecoverableDraftConflict<TFile, TMention, TFailure> {
+  return {
+    ...recovery,
+    conflict: { ...recovery.conflict, current },
+    snapshot: recovery.snapshot,
+    resolutionUnavailable: true,
+  };
 }
 
 export function restoreDraftConflictSnapshot<TFile, TMention, TFailure>(

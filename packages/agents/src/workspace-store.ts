@@ -26,7 +26,11 @@ import { workspaceEventsPath, workspaceInstancePath } from "./paths.js";
 type CanonicalWorkspaceEvent = WorkspaceEventEnvelope & {
   mutation?:
     | { kind: "draft"; draft: ConversationDraftDto }
-    | { kind: "draft_conflict"; conflict: ConversationDraftConflictDto }
+    | {
+        kind: "draft_conflict";
+        conflict: ConversationDraftConflictDto;
+        superseded?: ConversationDraftConflictDto[];
+      }
     | {
         kind: "draft_conflict_resolved";
         resolution: DraftConflictResolution;
@@ -51,6 +55,7 @@ interface DraftConflictResolution {
   ownerId: string;
   action: "restored" | "discarded";
   draft?: ConversationDraftDto;
+  displaced?: ConversationDraftConflictDto["displaced"];
 }
 
 export interface DecisionEventProjection {
@@ -211,6 +216,7 @@ export class WorkspaceStore {
   private readonly drafts = new Map<string, ConversationDraftDto>();
   private readonly draftConflicts = new Map<string, ConversationDraftConflictDto[]>();
   private readonly draftConflictResolutions = new Map<string, DraftConflictResolution>();
+  private readonly supersededDraftConflicts = new Map<string, ConversationDraftConflictDto[]>();
   private readonly notifications = new Map<string, WorkspaceNotificationDto>();
   private readonly notificationsByDedupeKey = new Map<string, WorkspaceNotificationDto>();
   private readonly openOperationalNotificationsByDedupeKey = new Map<string, WorkspaceNotificationDto>();
@@ -404,7 +410,23 @@ export class WorkspaceStore {
       };
       const conversationId = conflict.current.conversationId;
       const key = this.draftKey(conversationId, record.mutation.conflict.current.ownerId);
-      const conflicts = this.draftConflicts.get(key) ?? [];
+      const supersededIds = new Set(
+        (record.mutation.superseded ?? []).map(candidate => {
+          this.draftConflictResolutions.set(candidate.id, {
+            conflictId: candidate.id,
+            conversationId: candidate.current.conversationId,
+            ownerId: candidate.current.ownerId,
+            action: "discarded",
+            displaced: candidate.displaced,
+          });
+          return candidate.id;
+        }),
+      );
+      if (record.mutation.superseded?.length) {
+        this.supersededDraftConflicts.set(conflict.id, record.mutation.superseded);
+      }
+      const conflicts = (this.draftConflicts.get(key) ?? [])
+        .filter(candidate => !supersededIds.has(candidate.id));
       if (!conflicts.some(candidate => candidate.id === conflict.id)) conflicts.push(conflict);
       // Keep the canonical log complete, but bound the projection used by the UI.
       this.draftConflicts.set(key, conflicts.slice(-20));
@@ -422,12 +444,18 @@ export class WorkspaceStore {
       if (resolution.draft) this.drafts.set(key, resolution.draft);
     }
     if (record.mutation?.kind === "draft_deleted") {
-      const prefix = `${record.mutation.draftId}\u0000`;
+      const draftId = record.mutation.draftId;
+      const prefix = `${draftId}\u0000`;
       for (const key of [...this.drafts.keys()]) if (key.startsWith(prefix)) this.drafts.delete(key);
       for (const key of [...this.draftConflicts.keys()]) if (key.startsWith(prefix)) this.draftConflicts.delete(key);
       for (const [id, resolution] of this.draftConflictResolutions) {
         if (resolution.conversationId === record.mutation.draftId) {
           this.draftConflictResolutions.delete(id);
+        }
+      }
+      for (const [id, conflicts] of this.supersededDraftConflicts) {
+        if (conflicts.some(conflict => conflict.current.conversationId === draftId)) {
+          this.supersededDraftConflicts.delete(id);
         }
       }
     }
@@ -981,10 +1009,18 @@ export class WorkspaceStore {
       const existing = (this.draftConflicts.get(this.draftKey(conversationId, ownerId)) ?? [])
         .find(candidate => candidate.id === id);
       const conflict: ConversationDraftConflictDto = existing ?? { id, current, displaced };
+      const supersededConflicts = existing
+        ? this.supersededDraftConflicts.get(existing.id) ?? []
+        : (this.draftConflicts.get(this.draftKey(conversationId, ownerId)) ?? [])
+          .filter(candidate => candidate.displaced.clientId === input.clientId);
       if (!existing) {
         this.append(
           { type: "draft_conflict", conversationId, revision: current.revision },
-          { kind: "draft_conflict", conflict },
+          {
+            kind: "draft_conflict",
+            conflict,
+            ...(supersededConflicts.length ? { superseded: supersededConflicts } : {}),
+          },
         );
       }
       throw Object.assign(new Error("draft revision conflict"), {
@@ -992,6 +1028,7 @@ export class WorkspaceStore {
         conflict,
         current,
         displaced: conflict.displaced,
+        supersededConflicts,
       });
     }
     if (current.text === input.text &&
@@ -1017,6 +1054,8 @@ export class WorkspaceStore {
     conflictId: string;
     expectedRevision: number;
     clientId: string;
+    attachmentIds?: string[];
+    pastedTextAttachmentId?: string | null;
   }): { draft: ConversationDraftDto; replayed: boolean } {
     const prior = this.draftConflictResolutions.get(input.conflictId);
     if (prior) {
@@ -1043,14 +1082,15 @@ export class WorkspaceStore {
         current,
       });
     }
+    const pastedTextAttachmentId = input.pastedTextAttachmentId === null
+      ? undefined
+      : input.pastedTextAttachmentId ?? conflict.displaced.pastedTextAttachmentId;
     const draft: ConversationDraftDto = {
       conversationId: input.conversationId,
       ownerId: input.ownerId,
       text: conflict.displaced.text,
-      attachmentIds: [...conflict.displaced.attachmentIds],
-      ...(conflict.displaced.pastedTextAttachmentId
-        ? { pastedTextAttachmentId: conflict.displaced.pastedTextAttachmentId }
-        : {}),
+      attachmentIds: [...(input.attachmentIds ?? conflict.displaced.attachmentIds)],
+      ...(pastedTextAttachmentId ? { pastedTextAttachmentId } : {}),
       mentionBindings: [...(conflict.displaced.mentionBindings ?? [])],
       revision: current.revision + 1,
       updatedAt: new Date().toISOString(),
@@ -1062,6 +1102,7 @@ export class WorkspaceStore {
       ownerId: input.ownerId,
       action: "restored",
       draft,
+      displaced: conflict.displaced,
     };
     this.append(
       {
@@ -1104,6 +1145,7 @@ export class WorkspaceStore {
       conversationId: input.conversationId,
       ownerId: input.ownerId,
       action: "discarded",
+      displaced: conflict.displaced,
     };
     this.append(
       {

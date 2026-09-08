@@ -8,6 +8,7 @@ import {
 } from "@ponderosa/agents";
 import type {
   AssetDto,
+  ConversationDraftConflictDto,
   DraftAttachmentDto,
   PutConversationDraftRequest,
   ResolveConversationDraftConflictResponse,
@@ -713,7 +714,22 @@ export function registerDraftRoutes(
             return service.hydrate(request.params.id, ownerId);
           } catch (error) {
             if ((error as { code?: string }).code === "DRAFT_CONFLICT") {
-              const conflict = (error as { conflict?: { id?: string } }).conflict;
+              const conflictError = error as {
+                conflict?: { id?: string };
+                supersededConflicts?: ConversationDraftConflictDto[];
+              };
+              const conflict = conflictError.conflict;
+              for (const superseded of conflictError.supersededConflicts ?? []) {
+                for (const id of [
+                  ...superseded.displaced.attachmentIds,
+                  ...(superseded.displaced.pastedTextAttachmentId
+                    ? [superseded.displaced.pastedTextAttachmentId]
+                    : []),
+                ]) {
+                  service.enqueueAttachmentCleanup(request.params.id, ownerId, id);
+                }
+              }
+              void service.reconcileAttachmentCleanup().catch(() => undefined);
               return reply.code(409).send({
                 ...(conflict?.id ? { id: conflict.id } : {}),
                 current: await service.hydrate(request.params.id, ownerId),
@@ -765,10 +781,31 @@ export function registerDraftRoutes(
         return reply.code(404).send({ error: "draft surface not found" });
       }
       if (!request.body || typeof request.body !== "object" || Array.isArray(request.body) ||
-          Object.keys(request.body).some(key => !["ownerId", "expectedRevision", "clientId"].includes(key)) ||
+          Object.keys(request.body).some(key => ![
+            "ownerId", "expectedRevision", "clientId", "attachmentReplacements",
+            "unavailableAttachmentIds",
+          ].includes(key)) ||
           !Number.isSafeInteger(request.body.expectedRevision) || request.body.expectedRevision < 0 ||
           typeof request.body.clientId !== "string" || !request.body.clientId.trim() ||
-          request.body.clientId.length > 200) {
+          request.body.clientId.length > 200 ||
+          (request.body.attachmentReplacements !== undefined &&
+            (!Array.isArray(request.body.attachmentReplacements) ||
+              request.body.attachmentReplacements.length > maxAttachmentsPerMessage + 1 ||
+              request.body.attachmentReplacements.some(replacement =>
+                !replacement || typeof replacement !== "object" || Array.isArray(replacement) ||
+                Object.keys(replacement).some(key => !["fromId", "toId"].includes(key)) ||
+                !RUNTIME_UUID.test(replacement.fromId) ||
+                !RUNTIME_UUID.test(replacement.toId)) ||
+              new Set(request.body.attachmentReplacements.map(item => item.fromId)).size !==
+                request.body.attachmentReplacements.length ||
+              new Set(request.body.attachmentReplacements.map(item => item.toId)).size !==
+                request.body.attachmentReplacements.length)) ||
+          (request.body.unavailableAttachmentIds !== undefined &&
+            (!Array.isArray(request.body.unavailableAttachmentIds) ||
+              request.body.unavailableAttachmentIds.length > maxAttachmentsPerMessage + 1 ||
+              request.body.unavailableAttachmentIds.some(id => !RUNTIME_UUID.test(id)) ||
+              new Set(request.body.unavailableAttachmentIds).size !==
+                request.body.unavailableAttachmentIds.length))) {
         return reply.code(400).send({ error: "invalid draft conflict restore request" });
       }
       const ownerId = service.normalizedOwner(request.body.ownerId);
@@ -777,25 +814,57 @@ export function registerDraftRoutes(
         const prior = workspace.draftConflictResolution(request.params.conflictId);
         const conflict = workspace.listDraftConflicts(request.params.id, ownerId).conflicts
           .find(candidate => candidate.id === request.params.conflictId);
+        const previousDraft = workspace.getDraft(request.params.id, ownerId);
+        let restoredAttachmentIds: string[] | undefined;
+        let restoredPastedTextAttachmentId: string | null | undefined;
         if (!prior) {
           if (!conflict) return reply.code(404).send({ error: "draft conflict not found" });
-          const referencedIds = [
+          const displacedIds = [
             ...conflict.displaced.attachmentIds,
-            ...(conflict.displaced.pastedTextAttachmentId
-              ? [conflict.displaced.pastedTextAttachmentId]
-              : []),
+            ...(conflict.displaced.pastedTextAttachmentId ? [conflict.displaced.pastedTextAttachmentId] : []),
           ];
+          const replacements = new Map(
+            (request.body.attachmentReplacements ?? []).map(item => [item.fromId, item.toId]),
+          );
+          const unavailableIds = new Set(request.body.unavailableAttachmentIds ?? []);
+          if ([...replacements.keys(), ...unavailableIds].some(id => !displacedIds.includes(id)) ||
+              [...unavailableIds].some(id => replacements.has(id))) {
+            return reply.code(400).send({ error: "draft conflict replacement source is invalid" });
+          }
+          const current = workspace.getDraft(request.params.id, ownerId);
+          const currentIds = new Set([
+            ...current.attachmentIds,
+            ...(current.pastedTextAttachmentId ? [current.pastedTextAttachmentId] : []),
+          ]);
+          if ([...replacements.values()].some(id => currentIds.has(id))) {
+            return reply.code(409).send({ error: "draft conflict replacement is not fresh" });
+          }
+          restoredAttachmentIds = conflict.displaced.attachmentIds
+            .filter(id => !unavailableIds.has(id))
+            .map(id => replacements.get(id) ?? id);
+          restoredPastedTextAttachmentId = conflict.displaced.pastedTextAttachmentId
+            ? unavailableIds.has(conflict.displaced.pastedTextAttachmentId)
+              ? null
+              : replacements.get(conflict.displaced.pastedTextAttachmentId) ??
+                conflict.displaced.pastedTextAttachmentId
+            : undefined;
+          const referencedIds = [
+            ...restoredAttachmentIds,
+            ...(restoredPastedTextAttachmentId ? [restoredPastedTextAttachmentId] : []),
+          ];
+          if (new Set(referencedIds).size !== referencedIds.length) {
+            return reply.code(400).send({ error: "draft conflict replacements must be distinct" });
+          }
           const referenced = await Promise.all(referencedIds.map(id =>
             service.read(request.params.id, ownerId, id)));
           if (referenced.some(item => !item)) {
             return reply.code(409).send({ error: "draft conflict attachment is unavailable" });
           }
-          service.enqueueReleasedAttachments(
-            request.params.id,
-            ownerId,
-            workspace.getDraft(request.params.id, ownerId),
-            conflict.displaced,
-          );
+          const declaredUnavailable = await Promise.all([...unavailableIds].map(id =>
+            service.read(request.params.id, ownerId, id)));
+          if (declaredUnavailable.some(Boolean)) {
+            return reply.code(409).send({ error: "draft conflict attachment is still available" });
+          }
         }
         try {
           const cursor = workspace.cursor();
@@ -805,6 +874,10 @@ export function registerDraftRoutes(
             conflictId: request.params.conflictId,
             expectedRevision: request.body.expectedRevision,
             clientId: request.body.clientId,
+            ...(restoredAttachmentIds ? { attachmentIds: restoredAttachmentIds } : {}),
+            ...(restoredPastedTextAttachmentId !== undefined
+              ? { pastedTextAttachmentId: restoredPastedTextAttachmentId }
+              : {}),
           });
           const response: ResolveConversationDraftConflictResponse = {
             conflictId: request.params.conflictId,
@@ -812,6 +885,21 @@ export function registerDraftRoutes(
             replayed: restored.replayed,
             draft: await service.hydrate(request.params.id, ownerId),
           };
+          service.enqueueReleasedAttachments(
+            request.params.id,
+            ownerId,
+            previousDraft,
+            restored.draft,
+          );
+          const displaced = conflict?.displaced ?? prior?.displaced;
+          if (displaced) {
+            service.enqueueReleasedAttachments(
+              request.params.id,
+              ownerId,
+              displaced,
+              restored.draft,
+            );
+          }
           publishWorkspaceSince(cursor);
           void service.reconcileAttachmentCleanup().catch(() => undefined);
           return response;

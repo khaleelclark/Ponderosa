@@ -1870,7 +1870,7 @@ test("partial direct delivery durably owns skipped recipient attachment cleanup"
     id: "agent-b", projectId: chat.projectId, conversationId: chat.id,
     title: "Agent B", archived: true,
   };
-  const cleanups = [];
+  let runtimePayload;
   const app = Fastify();
   t.after(() => app.close());
   registerConversationDeliveryRoutes(app, {
@@ -1881,17 +1881,15 @@ test("partial direct delivery durably owns skipped recipient attachment cleanup"
     },
     coordinationV3: {
       runtimeCommunication: () => undefined,
-      recordRuntimeCommunication: () => ({
-        replayed: false,
-        activations: [{ id: "delivery-a", agentId: active.id }],
-      }),
-    },
-    assets: {
-      enqueueRemoval: async (projectId, agentId, assetId) => {
-        cleanups.push({ projectId, agentId, assetId });
-        return true;
+      recordRuntimeCommunication: (input) => {
+        runtimePayload = input.payload;
+        return {
+          replayed: false,
+          activations: [{ id: "delivery-a", agentId: active.id }],
+        };
       },
     },
+    assets: { enqueueRemoval: async () => assert.fail("cleanup must follow the durable journal") },
     projectDeletionInProgress: () => false,
     agentDeletionInProgress: () => false,
     attachmentDeletionInProgress: () => false,
@@ -1928,11 +1926,78 @@ test("partial direct delivery durably owns skipped recipient attachment cleanup"
     agentId: archived.id,
     reason: "archived",
   }]);
-  assert.deepEqual(cleanups, [{
+  assert.deepEqual(runtimePayload.skippedRecipientAttachments, [{
     projectId: chat.projectId,
     agentId: archived.id,
-    assetId: "asset-b",
+    attachmentIds: ["asset-b"],
   }]);
+});
+
+test("all-unavailable direct delivery rejects without consuming staged attachments", async (t) => {
+  const chat = { id: "chat-a", projectId: "project-a", archived: false };
+  const archived = {
+    id: "agent-a", projectId: chat.projectId, conversationId: chat.id, archived: true,
+  };
+  let cleanupAttempts = 0;
+  let commits = 0;
+  const app = Fastify();
+  t.after(() => app.close());
+  registerConversationDeliveryRoutes(app, {
+    store: {
+      getConversation: () => chat,
+      getAgent: () => archived,
+      getConversationMessageByReceiptKey: () => ({ id: "message-a" }),
+    },
+    coordinationV3: {
+      runtimeCommunication: () => undefined,
+      recordRuntimeCommunication: () => {
+        commits += 1;
+        return { replayed: false, activations: [{ id: "delivery-a", agentId: archived.id }] };
+      },
+    },
+    assets: {
+      enqueueRemoval: async () => { cleanupAttempts += 1; return true; },
+    },
+    projectDeletionInProgress: () => false,
+    agentDeletionInProgress: () => false,
+    attachmentDeletionInProgress: () => false,
+    assetReconciliationInProgress: () => false,
+    conversationDeliveryLeases: new Map(),
+    agentDeliveryLeases: new Map(),
+    assetMetadata: async (agentId, id) => ({
+      id, agentId, name: "note.txt", mediaType: "text/plain", size: 4,
+      state: "staged", createdAt: new Date().toISOString(),
+    }),
+    prepareUserCommunicationText: async ({ text }) => ({
+      canonicalText: text, publishedText: text,
+    }),
+    reconcileRuntimeCommunicationProjections: async () => 1,
+    publishCoordinationV3Changed: () => {},
+    notifyScheduler: () => {},
+  });
+  const response = await app.inject({
+    method: "POST", url: `/api/conversations/${chat.id}/direct-messages`,
+    payload: {
+      text: "hello",
+      recipients: [{ agentId: archived.id, attachmentIds: ["asset-a"] }],
+      idempotencyKey: "all-unavailable",
+    },
+  });
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(cleanupAttempts, 0);
+  assert.equal(commits, 0);
+  archived.archived = false;
+  const retry = await app.inject({
+    method: "POST", url: `/api/conversations/${chat.id}/direct-messages`,
+    payload: {
+      text: "hello",
+      recipients: [{ agentId: archived.id, attachmentIds: ["asset-a"] }],
+      idempotencyKey: "all-unavailable",
+    },
+  });
+  assert.equal(retry.statusCode, 200, retry.body);
+  assert.equal(commits, 1);
+  assert.equal(cleanupAttempts, 0);
 });
 
 test("disconnecting the client does not release a delivery lease before the handler settles", async (t) => {
@@ -2144,6 +2209,7 @@ test("projection recovery leases exact owners and restores only the persisted ro
   const conversationLeases = new Map();
   const agentLeases = new Map();
   const associations = [];
+  const skippedCleanups = [];
   let roomInput;
   const store = {
     getConversation: () => chat,
@@ -2170,6 +2236,11 @@ test("projection recovery leases exact owners and restores only the persisted ro
         recipientAgentIds: ["agent-a", "agent-b"],
         payload: {
           communication: event,
+          skippedRecipientAttachments: [{
+            projectId: chat.projectId,
+            agentId: "agent-c",
+            attachmentIds: ["skipped-asset"],
+          }],
           dispatch: {
             conversationAttachmentIds: ["asset-a"],
             recipients: attachments.map((attachment) => ({
@@ -2190,6 +2261,10 @@ test("projection recovery leases exact owners and restores only the persisted ro
       })),
       associate: async (_projectId, agentId, attachmentIds) => {
         associations.push([agentId, attachmentIds]);
+      },
+      enqueueRemoval: async (projectId, agentId, attachmentId) => {
+        skippedCleanups.push([projectId, agentId, attachmentId]);
+        return true;
       },
     },
     projectDeletionInProgress: () => false,
@@ -2214,6 +2289,7 @@ test("projection recovery leases exact owners and restores only the persisted ro
     ["agent-a", ["asset-a"]],
     ["agent-b", ["asset-b"]],
   ]);
+  assert.deepEqual(skippedCleanups, [[chat.projectId, "agent-c", "skipped-asset"]]);
   assert.equal(conversationLeases.size, 0);
   assert.equal(agentLeases.size, 0);
 });

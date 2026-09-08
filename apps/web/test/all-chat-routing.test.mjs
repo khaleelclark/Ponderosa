@@ -52,6 +52,7 @@ import {
   removeComposerPasteSelection,
   restagedDraftConflictSnapshot,
   restoreDraftConflictSnapshot,
+  unresolvedRecoverableDraftConflict,
   savedPastedTextCleanMutationGeneration,
   settledDraftWriteContinuation,
   shouldIgnoreComposerKey,
@@ -965,6 +966,34 @@ test("conflict refresh keeps the stable displaced snapshot and adopts the latest
   assert.equal(refreshed?.conflict.current.revision, 11);
   assert.equal(refreshed?.snapshot, recovery.snapshot);
   assert.equal(refreshRecoverableDraftConflict(recovery, current, []), undefined);
+
+  const unresolved = unresolvedRecoverableDraftConflict(recovery, current);
+  assert.equal(unresolved.snapshot, recovery.snapshot);
+  assert.equal(unresolved.conflict.current.revision, current.revision);
+  assert.equal(unresolved.resolutionUnavailable, true);
+});
+
+test("conflict restaging omits unavailable bytes without hiding their recovery failure", () => {
+  const snapshot = {
+    text: "preserve me",
+    attachmentIds: ["available", "missing"],
+    files: [{ file: { name: "available.txt" }, attachmentId: "available" }],
+    pastedTextAttachmentId: "missing-paste",
+    mentionBindings: [],
+    failedContents: [
+      { id: "missing", kind: "attachment" },
+      { id: "missing-paste", kind: "pasted-text" },
+    ],
+  };
+  const restaged = restagedDraftConflictSnapshot(
+    snapshot,
+    [{ file: snapshot.files[0].file, attachmentId: "fresh" }],
+    undefined,
+    new Set(["missing", "missing-paste"]),
+  );
+  assert.deepEqual(restaged.attachmentIds, ["fresh"]);
+  assert.equal(restaged.pastedTextAttachmentId, undefined);
+  assert.deepEqual(restaged.failedContents, snapshot.failedContents);
 });
 
 test("a rejected draft tail cannot suppress the next write continuation", async () => {

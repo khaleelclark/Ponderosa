@@ -554,6 +554,73 @@ test("draft conflict routes restore or discard exactly one durable asset snapsho
   assert.equal((await app.inject({ method: "GET", url: bounded.at(-1).attachment.downloadUrl })).statusCode, 200);
 });
 
+test("draft conflict restore adopts fresh bytes and leaves unavailable content explicitly failed", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "ponderosa-draft-conflict-restage-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const workspace = new WorkspaceStore(directory);
+  const assets = new AssetStore(directory);
+  t.after(() => assets.close());
+  const drafts = new DraftService(
+    directory,
+    { getAgent: () => undefined, getConversation: () => ({ id: "chat-a" }) },
+    workspace,
+    assets,
+  );
+  const app = Fastify();
+  t.after(() => app.close());
+  app.addContentTypeParser("application/octet-stream", { parseAs: "buffer" },
+    (_request, body, done) => done(null, body));
+  registerDraftRoutes(app, drafts, workspace, 8, () => undefined);
+  const upload = async (name, body) => {
+    const response = await app.inject({
+      method: "POST", url: "/api/conversations/chat-a/draft-attachments",
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-ponderosa-draft-owner": "browser-one",
+        "x-ponderosa-filename": name,
+        "x-ponderosa-media-type": "text/plain",
+      },
+      payload: Buffer.from(body),
+    });
+    assert.equal(response.statusCode, 201, response.body);
+    return response.json();
+  };
+  assert.equal((await app.inject({
+    method: "PUT", url: "/api/conversations/chat-a/draft", payload: validDraft,
+  })).statusCode, 200);
+  const retained = await upload("retained.txt", "retained bytes");
+  const unavailable = await upload("unavailable.txt", "unavailable bytes");
+  const paste = await upload("Pasted text.txt", "paste bytes");
+  const conflictResponse = await app.inject({
+    method: "PUT", url: "/api/conversations/chat-a/draft",
+    payload: {
+      ...validDraft, text: "preserved", attachmentIds: [retained.id, unavailable.id],
+      pastedTextAttachmentId: paste.id, clientId: "page:stale",
+    },
+  });
+  assert.equal(conflictResponse.statusCode, 409, conflictResponse.body);
+  for (const id of [retained.id, unavailable.id, paste.id]) {
+    rmSync(drafts.files("chat-a", "browser-one", id).body, { force: true });
+  }
+  const freshFile = await upload("retained.txt", "retained bytes");
+  const freshPaste = await upload("Pasted text.txt", "paste bytes");
+  const restored = await app.inject({
+    method: "POST",
+    url: `/api/conversations/chat-a/draft-conflicts/${conflictResponse.json().id}/restore`,
+    payload: {
+      ownerId: "browser-one", expectedRevision: 1, clientId: "page:restore",
+      attachmentReplacements: [
+        { fromId: retained.id, toId: freshFile.id },
+        { fromId: paste.id, toId: freshPaste.id },
+      ],
+      unavailableAttachmentIds: [unavailable.id],
+    },
+  });
+  assert.equal(restored.statusCode, 200, restored.body);
+  assert.deepEqual(restored.json().draft.attachmentIds, [freshFile.id]);
+  assert.equal(restored.json().draft.pastedTextAttachmentId, freshPaste.id);
+});
+
 test("draft clear survives partial cleanup and restart without deleting current file or paste references", async (t) => {
   const directory = mkdtempSync(join(tmpdir(), "ponderosa-draft-cleanup-restart-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
