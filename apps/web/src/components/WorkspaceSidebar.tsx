@@ -36,6 +36,7 @@ import {
   workspaceDirectoryItems,
 } from "../hooks/useWorkspaceDirectory";
 import { queryKeys } from "../queryKeys";
+import { routeClearsProjectSidebarContext } from "../routeRegistry";
 import { routeProjectId, type Route } from "../routing";
 import { useAgent, useConversation, useNotificationProjection } from "../hooks/queries";
 import {
@@ -153,10 +154,14 @@ export function WorkspaceSidebar({
     Boolean(routedProjectId),
   );
   useEffect(() => {
-    if (!routedProjectId) return;
-    setDrawerProjectId(routedProjectId);
-    setDrawerProjectPanelOpen(true);
-  }, [routedProjectId]);
+    if (routedProjectId) {
+      setDrawerProjectId(routedProjectId);
+      setDrawerProjectPanelOpen(true);
+    } else if (routeClearsProjectSidebarContext(route)) {
+      setDrawerProjectId(undefined);
+      setDrawerProjectPanelOpen(false);
+    }
+  }, [route, routedProjectId]);
   const projectContext = Boolean(drawerProjectId);
   const showingAgents = projectContext && projectSection === "agents";
   const showingChats = projectContext && projectSection === "chats";
@@ -218,9 +223,6 @@ export function WorkspaceSidebar({
     ? [...projectDirectory.starredItems, ...projectDirectory.items]
     : projectFallbackItems;
   const chatItems = [...chatDirectory.starredItems, ...chatDirectory.items];
-  const chatNamesById = new Map(
-    chatItems.map(item => [item.conversation.id, item.conversation.title] as const),
-  );
   const agentItems = [
     ...agentDirectory.starredItems,
     ...agentDirectory.items,
@@ -617,6 +619,7 @@ export function WorkspaceSidebar({
   type AgentSidebarRow = {
     agent: (typeof agentItems)[number]["agent"];
     project: (typeof agentItems)[number]["project"];
+    ownerConversation?: WorkspaceAgentDirectoryItemDto["ownerConversation"];
     health?: WorkspaceAgentDirectoryItemDto["health"];
     status?: (typeof agentItems)[number]["health"]["status"];
   };
@@ -624,12 +627,15 @@ export function WorkspaceSidebar({
     depth: number;
     hasChildren: boolean;
   };
-  const allAgentRows: AgentSidebarRow[] = agentItems.map(({ agent, project, health }) => ({
-    agent,
-    project,
-    health,
-    status: health.status,
-  }));
+  const allAgentRows: AgentSidebarRow[] = agentItems.map(
+    ({ agent, project, ownerConversation, health }) => ({
+      agent,
+      project,
+      ownerConversation,
+      health,
+      status: health.status,
+    }),
+  );
   const agentNamesById = new Map(
     allAgentRows.map(row => [row.agent.id, row.agent.title]),
   );
@@ -673,7 +679,7 @@ export function WorkspaceSidebar({
     return visible;
   };
   const agentResourceRows = (items: AgentSidebarTreeRow[]) =>
-    items.map(({ agent, project: agentProject, health, status, depth, hasChildren }) => {
+    items.map(({ agent, project: agentProject, ownerConversation, health, status, depth, hasChildren }) => {
       const starred = starredResourceIds.has(
         resourcePreferenceKey("agent", agent.id),
       );
@@ -784,7 +790,7 @@ export function WorkspaceSidebar({
             </ListItemIcon>
             <ListItemText
               primary={agent.title}
-              secondary={`${chatNamesById.get(agent.conversationId) ?? "Unavailable Chat"} · ${agent.activeEngine}`}
+              secondary={`${ownerConversation?.title ?? "Unavailable Chat"} · ${agent.activeEngine}`}
               primaryTypographyProps={{
                 noWrap: true,
                 fontSize: 13,

@@ -716,10 +716,21 @@ export function registerWorkspaceDirectoryRoutes(
         const agent = context.store.getAgent(row.id);
         const health = agentHealthById.get(row.id);
         if (!agent || !health) return undefined;
+        const ownerConversation = context.store.getConversation(
+          agent.conversationId,
+        );
         return {
           kind: "agent",
           project: projectSummary(project),
           agent,
+          ...(ownerConversation
+            ? {
+                ownerConversation: {
+                  id: ownerConversation.id,
+                  title: ownerConversation.title,
+                },
+              }
+            : {}),
           health,
         } satisfies WorkspaceAgentDirectoryItemDto;
       }

@@ -15,7 +15,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { AgentTelemetryStream, ConversationChannel } from "@ponderosa/core";
-import { routeToPath } from "./routeRegistry";
+import { routeToPath } from "./routeRegistry.js";
 
 export interface AgentTelemetryFocus {
   stream: AgentTelemetryStream;

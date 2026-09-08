@@ -93,6 +93,7 @@ export interface WorkspaceAgentDirectoryItemDto {
   kind: "agent";
   project: Pick<ProjectDto, "id" | "label" | "hostPath">;
   agent: AgentDto;
+  ownerConversation?: Pick<ConversationDto, "id" | "title">;
   health: AgentHealthDto;
 }
 

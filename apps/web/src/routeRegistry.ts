@@ -1,4 +1,4 @@
-import type { Route } from "./routing";
+import type { Route } from "./routing.js";
 
 type RouteKind = Route["kind"];
 type RouteOfKind<Kind extends RouteKind> = Extract<Route, { kind: Kind }>;
@@ -12,6 +12,7 @@ export type RouteSidebarSection =
   | "triggers"
   | "settings";
 
+export type ProjectSidebarSection = "chats" | "agents" | "triggers";
 
 interface RouteRegistryEntry<Kind extends RouteKind> {
   toPath(route: RouteOfKind<Kind>): string;
@@ -205,6 +206,23 @@ export function routeSynchronizedSidebarSection(
 ): RouteSidebarSection | undefined {
   if (route.kind === "create" && route.surface === "workspace") return undefined;
   return entryFor(route).synchronizedSidebarSection;
+}
+
+export function projectSidebarSectionForRoute(
+  route: Route,
+): ProjectSidebarSection | undefined {
+  if (route.kind === "conversation") return "chats";
+  if (route.kind === "agents" || route.kind === "review") return "agents";
+  if (route.kind === "automation") return "triggers";
+  if (route.kind === "agent") {
+    return route.view === "triggers" ? "triggers" : "agents";
+  }
+  return undefined;
+}
+
+export function routeClearsProjectSidebarContext(route: Route): boolean {
+  return entryFor(route).scope === "global" &&
+    Boolean(routeSynchronizedSidebarSection(route));
 }
 
 export function isProjectRoute(route: Route): route is ProjectRoute {

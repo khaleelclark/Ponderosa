@@ -2,8 +2,10 @@ import type { ConversationDto } from "@ponderosa/core";
 import { useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import {
+  projectSidebarSectionForRoute,
   routeInitialSidebarSection,
   routeSynchronizedSidebarSection,
+  type ProjectSidebarSection,
   type RouteSidebarSection,
 } from "../routeRegistry";
 import { routeProjectId, type Route } from "../routing";
@@ -77,20 +79,6 @@ export function useWorkspaceSidebarNavigation(route: Route) {
     setMenu,
     openResourceMenu,
   };
-}
-
-export type ProjectSidebarSection =
-  | "chats"
-  | "agents"
-  | "triggers";
-
-function projectSidebarSectionForRoute(route: Route): ProjectSidebarSection | undefined {
-  if (route.kind === "conversation") return "chats";
-  if (route.kind === "agents" || route.kind === "review") return "agents";
-  if (route.kind === "agent") {
-    return route.view === "triggers" ? "triggers" : "agents";
-  }
-  return undefined;
 }
 
 export function useWorkspaceSidebarResize(
