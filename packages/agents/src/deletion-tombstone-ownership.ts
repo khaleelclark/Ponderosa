@@ -26,11 +26,18 @@ export function validateDeletionTombstone<T extends object>(
   markerName: string,
   expected: T,
   label: string,
+  expectedDirectory?: {
+    dev: number | bigint | string;
+    ino: number | bigint | string;
+  },
 ): void {
   const expectedRoot = resolve(tombstone);
   const canonicalExpectedRoot = join(realpathSync(dirname(expectedRoot)), basename(expectedRoot));
   const before = lstatSync(expectedRoot);
   if (!before.isDirectory() || before.isSymbolicLink() ||
+      (expectedDirectory !== undefined &&
+        (String(before.dev) !== String(expectedDirectory.dev) ||
+          String(before.ino) !== String(expectedDirectory.ino))) ||
       relative(realpathSync(expectedRoot), canonicalExpectedRoot) !== "") {
     throw new Error(`${label} is not the owned directory`);
   }

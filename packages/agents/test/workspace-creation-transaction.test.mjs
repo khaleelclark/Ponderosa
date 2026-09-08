@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
-import { appendFile, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,6 +10,89 @@ import { AgentStore } from "../dist/index.js";
 const identity = (key, payload) => ({
   idempotencyKey: key,
   payloadHash: createHash("sha256").update(payload).digest("hex"),
+});
+
+const creationId = (kind, scope, key) => {
+  const hash = createHash("sha256").update(`${kind}\0${scope}\0${key}`).digest("hex");
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-5${hash.slice(13, 16)}-${
+    ((Number.parseInt(hash[16], 16) & 3) | 8).toString(16)
+  }${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+};
+
+test("Project and Chat creation preserve foreign canonical collisions", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-create-collision-"));
+  const store = new AgentStore(dataDir);
+  t.after(async () => {
+    store.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  for (const suffix of ["nonempty", "empty"]) {
+    const attempt = identity(`project-${suffix}`, suffix);
+    const id = creationId("project", "workspace", attempt.idempotencyKey);
+    const canonical = path.join(dataDir, "projects", id);
+    await mkdir(canonical);
+    if (suffix === "nonempty") await writeFile(path.join(canonical, "KEEP.txt"), "keep");
+    assert.throws(() => store.createProject({
+      label: suffix,
+      hostPath: `/tmp/${suffix}`,
+      defaultEngine: "codex",
+    }, attempt), /canonical path already exists/u);
+    assert.equal(existsSync(canonical), true);
+    if (suffix === "nonempty") assert.equal(await readFile(path.join(canonical, "KEEP.txt"), "utf8"), "keep");
+  }
+
+  const project = store.createProject({
+    label: "Chat parent",
+    hostPath: "/tmp/chat-parent",
+    defaultEngine: "codex",
+  });
+  for (const suffix of ["nonempty", "empty"]) {
+    const attempt = identity(`chat-${suffix}`, suffix);
+    const id = creationId("conversation", project.id, attempt.idempotencyKey);
+    const canonical = path.join(dataDir, "projects", project.id, "conversations", id);
+    await mkdir(canonical);
+    if (suffix === "nonempty") await writeFile(path.join(canonical, "KEEP.txt"), "keep");
+    assert.throws(() => store.createConversation(project.id, {
+      title: suffix,
+      defaultEngine: "codex",
+    }, attempt), /canonical path already exists/u);
+    assert.equal(existsSync(canonical), true);
+    if (suffix === "nonempty") assert.equal(await readFile(path.join(canonical, "KEEP.txt"), "utf8"), "keep");
+  }
+});
+
+test("Project creation rollback preserves an ABA replacement", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-create-aba-"));
+  const store = new AgentStore(dataDir);
+  t.after(async () => {
+    store.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const attempt = identity("project-aba", "project-aba");
+  const id = creationId("project", "workspace", attempt.idempotencyKey);
+  const canonical = path.join(dataDir, "projects", id);
+  const sentinel = path.join(canonical, "KEEP.txt");
+  store.sqlite.function("replace_project_creation", () => {
+    rmSync(canonical, { recursive: true, force: true });
+    mkdirSync(canonical);
+    writeFileSync(sentinel, "keep");
+    return 1;
+  });
+  store.sqlite.exec(`
+    CREATE TRIGGER replace_project_creation BEFORE INSERT ON projects
+    WHEN NEW.id = '${id}'
+    BEGIN
+      SELECT replace_project_creation();
+      SELECT RAISE(FAIL, 'injected projection failure');
+    END
+  `);
+  assert.throws(() => store.createProject({
+    label: "ABA",
+    hostPath: "/tmp/aba",
+    defaultEngine: "codex",
+  }, attempt), /not the owned directory/u);
+  assert.equal(await readFile(sentinel, "utf8"), "keep");
 });
 
 test("Project creation commits presets atomically and exact retries replay across restart", async (t) => {

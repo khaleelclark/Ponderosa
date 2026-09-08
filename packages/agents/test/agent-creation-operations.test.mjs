@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import fs, { existsSync, mkdtempSync, renameSync, rmSync } from "node:fs";
+import fs, {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -233,6 +242,120 @@ test("startup publishes a row-backed .creating directory before projection rebui
   }
 });
 
+test("Agent creation recovery requires exact durable staging ownership", () => {
+  const { directory, store } = temporaryStore();
+  const project = store.createProject({
+    label: "Project",
+    hostPath: "/tmp/project",
+    defaultEngine: "codex",
+  });
+  const conversation = store.createConversation(project.id, { title: "Chat" });
+  const agent = store.createAgent(project.id, {
+    title: "Interrupted creation",
+    engine: "codex",
+    conversationId: conversation.id,
+  });
+  const agentsDirectory = join(directory, "projects", project.id, "agents");
+  const canonical = join(agentsDirectory, agent.id);
+  const token = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const staged = join(agentsDirectory, `.${agent.id}.${token}.creating`);
+  const receiptPath = join(agentsDirectory, `.agent-creation-${agent.id}.json`);
+  const receipt = {
+    version: 1,
+    projectId: project.id,
+    agentId: agent.id,
+    ownershipToken: token,
+    phase: "canonical_committed",
+  };
+  renameSync(canonical, staged);
+  writeFileSync(join(staged, ".ponderosa-agent-creation.json"), JSON.stringify({
+    version: 1,
+    projectId: project.id,
+    agentId: agent.id,
+    ownershipToken: token,
+  }));
+  writeFileSync(receiptPath, JSON.stringify(receipt));
+  const foreignId = "00000000-0000-4000-8000-000000000099";
+  const foreign = join(agentsDirectory, `.${foreignId}.creating`);
+  mkdirSync(foreign);
+  writeFileSync(join(foreign, "KEEP.txt"), "keep");
+  store.close();
+
+  const reopened = new AgentStore(directory);
+  try {
+    assert.equal(existsSync(canonical), true);
+    assert.equal(existsSync(staged), false);
+    assert.equal(existsSync(receiptPath), false);
+    assert.equal(existsSync(join(canonical, ".ponderosa-agent-creation.json")), false);
+    assert.equal(existsSync(join(foreign, "KEEP.txt")), true);
+  } finally {
+    reopened.close();
+  }
+
+  const abandonedId = "00000000-0000-4000-8000-000000000097";
+  const abandonedToken = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const abandonedStage = join(agentsDirectory, `.${abandonedId}.${abandonedToken}.creating`);
+  const abandonedReceipt = join(agentsDirectory, `.agent-creation-${abandonedId}.json`);
+  mkdirSync(abandonedStage);
+  writeFileSync(join(abandonedStage, ".ponderosa-agent-creation.json"), JSON.stringify({
+    version: 1,
+    projectId: project.id,
+    agentId: abandonedId,
+    ownershipToken: abandonedToken,
+  }));
+  writeFileSync(join(abandonedStage, "partial.tmp"), "owned partial state");
+  writeFileSync(abandonedReceipt, JSON.stringify({
+    version: 1,
+    projectId: project.id,
+    agentId: abandonedId,
+    ownershipToken: abandonedToken,
+    phase: "staged",
+  }));
+  const recovered = new AgentStore(directory);
+  try {
+    assert.equal(existsSync(abandonedStage), false);
+    assert.equal(existsSync(abandonedReceipt), false);
+  } finally {
+    recovered.close();
+  }
+});
+
+test("Agent creation recovery rejects a symlinked receipt-bound stage", () => {
+  const { directory, store } = temporaryStore();
+  const project = store.createProject({
+    label: "Project",
+    hostPath: "/tmp/project",
+    defaultEngine: "codex",
+  });
+  const agentId = "00000000-0000-4000-8000-000000000098";
+  const token = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const agentsDirectory = join(directory, "projects", project.id, "agents");
+  const external = join(directory, "external-agent-stage");
+  const marker = join(external, ".ponderosa-agent-creation.json");
+  mkdirSync(external);
+  writeFileSync(marker, JSON.stringify({
+    version: 1,
+    projectId: project.id,
+    agentId,
+    ownershipToken: token,
+  }));
+  writeFileSync(
+    join(agentsDirectory, `.agent-creation-${agentId}.json`),
+    JSON.stringify({
+      version: 1,
+      projectId: project.id,
+      agentId,
+      ownershipToken: token,
+      phase: "staged",
+    }),
+  );
+  symlinkSync(external, join(agentsDirectory, `.${agentId}.${token}.creating`), "dir");
+  store.close();
+
+  assert.throws(() => new AgentStore(directory), /not the owned directory/u);
+  assert.equal(JSON.parse(readFileSync(marker, "utf8")).agentId, agentId);
+});
+
 test("a failed post-rename directory sync retains authority for exact rollback", () => {
   const { directory, store } = temporaryStore();
   const project = store.createProject({
@@ -244,11 +367,11 @@ test("a failed post-rename directory sync retains authority for exact rollback",
   const begun = store.beginAgentCreationOperation({ ...operation, projectId: project.id });
   const agentId = "00000000-0000-4000-8000-000000000002";
   store.addAgentCreationOperationMember(begun.operation.id, agentId, 0);
+  const canonical = join(directory, "projects", project.id, "agents", agentId);
 
   const originalFsync = fs.fsyncSync;
-  let directorySyncs = 0;
   fs.fsyncSync = (fd) => {
-    if (fs.fstatSync(fd).isDirectory() && ++directorySyncs === 2) {
+    if (fs.fstatSync(fd).isDirectory() && store.getAgent(agentId) && existsSync(canonical)) {
       throw new Error("injected post-rename directory sync failure");
     }
     return originalFsync(fd);

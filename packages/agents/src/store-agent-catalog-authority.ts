@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { and, eq, isNull } from "drizzle-orm";
 import type {
@@ -18,6 +19,7 @@ import { normalizeAgentTitle } from "./agent-identity.js";
 import { sharedWorkingCopy } from "./working-copy.js";
 import { requireManagementPermissions } from "./store-agent-management.js";
 import { appendFsyncedJsonl } from "./append-jsonl.js";
+import { pathEntryExists, validateDeletionTombstone } from "./deletion-tombstone-ownership.js";
 import { fsyncDirectory, readJson, writeJson } from "./store-filesystem.js";
 import type {
   AgentJson,
@@ -31,12 +33,36 @@ import {
   agentsDir,
   agentJsonPath,
   agentOrganizationEventsPath,
-  artifactsDir,
-  attachmentsDir,
   importedAgentHistoryPath,
 } from "./paths.js";
 
 const MAX_AGENT_TITLE_PROJECTION_IDS = 500;
+const AGENT_CREATION_MARKER = ".ponderosa-agent-creation.json";
+const agentIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+
+interface AgentCreationReceipt {
+  version: 1;
+  projectId: string;
+  agentId: string;
+  ownershipToken: string;
+  phase: "preparing" | "staged" | "canonical_committed";
+}
+
+function agentCreationReceiptPath(dataDir: string, projectId: string, agentId: string): string {
+  return join(agentsDir(dataDir, projectId), `.agent-creation-${agentId}.json`);
+}
+
+function agentCreationStagePath(dataDir: string, receipt: AgentCreationReceipt): string {
+  return join(
+    agentsDir(dataDir, receipt.projectId),
+    `.${receipt.agentId}.${receipt.ownershipToken}.creating`,
+  );
+}
+
+function agentCreationIdentity(receipt: AgentCreationReceipt): Omit<AgentCreationReceipt, "phase"> {
+  const { phase: _phase, ...identity } = receipt;
+  return identity;
+}
 
 function validateWorkingCopy(
   project: Pick<ProjectDto, "id" | "hostPath">,
@@ -99,6 +125,86 @@ export class AgentCatalogAuthority {
     private readonly getProject: (projectId: string) => ProjectDto | undefined,
   ) {}
 
+  private readCreationReceipt(projectId: string, agentId: string): AgentCreationReceipt | undefined {
+    const receiptPath = agentCreationReceiptPath(this.dataDir, projectId, agentId);
+    if (!pathEntryExists(receiptPath)) return undefined;
+    const stat = lstatSync(receiptPath);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Agent creation receipt is not a regular file");
+    const receipt = readJson<AgentCreationReceipt>(receiptPath);
+    if (receipt.version !== 1 || receipt.projectId !== projectId || receipt.agentId !== agentId ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(receipt.ownershipToken) ||
+        !["preparing", "staged", "canonical_committed"].includes(receipt.phase)) {
+      throw new Error("Agent creation receipt is invalid");
+    }
+    return receipt;
+  }
+
+  private finishCreationReceipt(receipt: AgentCreationReceipt): void {
+    const parent = agentsDir(this.dataDir, receipt.projectId);
+    const stage = agentCreationStagePath(this.dataDir, receipt);
+    const canonical = agentDir(this.dataDir, receipt.projectId, receipt.agentId);
+    const row = this.client.prepare(
+      "SELECT deleted_at FROM agents WHERE id = ? AND project_id = ?",
+    ).get(receipt.agentId, receipt.projectId) as { deleted_at: string | null } | undefined;
+    if (row) {
+      if (pathEntryExists(stage) && pathEntryExists(canonical)) {
+        throw new Error("Agent creation has ambiguous staged and canonical storage");
+      }
+      if (pathEntryExists(stage)) {
+        const stageStat = lstatSync(stage);
+        validateDeletionTombstone(
+          stage,
+          AGENT_CREATION_MARKER,
+          agentCreationIdentity(receipt),
+          "Agent creation staging",
+          { dev: stageStat.dev, ino: stageStat.ino },
+        );
+        // ponytail: Node has no portable directory rename-no-replace; retain the
+        // canonical preflight until the native host exposes that primitive.
+        renameSync(stage, canonical);
+        fsyncDirectory(parent);
+      }
+      if (!pathEntryExists(canonical)) {
+        if (row.deleted_at) return;
+        throw new Error("Agent creation storage is missing");
+      }
+      validateDeletionTombstone(
+        canonical,
+        pathEntryExists(join(canonical, AGENT_CREATION_MARKER)) ? AGENT_CREATION_MARKER : "agent.json",
+        pathEntryExists(join(canonical, AGENT_CREATION_MARKER))
+          ? agentCreationIdentity(receipt)
+          : { id: receipt.agentId, projectId: receipt.projectId },
+        "Agent creation canonical storage",
+      );
+      if (pathEntryExists(join(canonical, AGENT_CREATION_MARKER))) {
+        unlinkSync(join(canonical, AGENT_CREATION_MARKER));
+        fsyncDirectory(canonical);
+      }
+    } else {
+      if (pathEntryExists(canonical)) {
+        throw new Error("Agent creation canonical path exists without its durable row");
+      }
+      if (pathEntryExists(stage)) {
+        const stageStat = lstatSync(stage);
+        validateDeletionTombstone(
+          stage,
+          AGENT_CREATION_MARKER,
+          agentCreationIdentity(receipt),
+          "Agent creation staging",
+          { dev: stageStat.dev, ino: stageStat.ino },
+        );
+        rmSync(stage, { recursive: true, force: true });
+        fsyncDirectory(parent);
+      }
+    }
+    const storedReceipt = this.readCreationReceipt(receipt.projectId, receipt.agentId);
+    if (!storedReceipt || JSON.stringify(storedReceipt) !== JSON.stringify(receipt)) {
+      throw new Error("Agent creation receipt changed during recovery");
+    }
+    unlinkSync(agentCreationReceiptPath(this.dataDir, receipt.projectId, receipt.agentId));
+    fsyncDirectory(parent);
+  }
+
   createAgent(
     projectId: string,
     input: CreateAgentRequest,
@@ -109,10 +215,23 @@ export class AgentCatalogAuthority {
     const creationIdempotencyKey = input.idempotencyKey?.trim() || undefined;
     if (creationIdempotencyKey) {
       const existing = this.findAgentCreation(projectId, creationIdempotencyKey);
-      if (existing) return existing;
+      if (existing) {
+        const receipt = this.readCreationReceipt(projectId, existing.id);
+        if (receipt) this.finishCreationReceipt(receipt);
+        return this.rowToAgentDto(existing.id)!;
+      }
     }
     const id = predeterminedId;
-    const stagingId = `.${id}.creating`;
+    const previousReceipt = this.readCreationReceipt(projectId, id);
+    if (previousReceipt) this.finishCreationReceipt(previousReceipt);
+    const receipt: AgentCreationReceipt = {
+      version: 1,
+      projectId,
+      agentId: id,
+      ownershipToken: randomUUID(),
+      phase: "preparing",
+    };
+    const stagingRoot = agentCreationStagePath(this.dataDir, receipt);
     const now = new Date().toISOString();
     const title = normalizeAgentTitle(input.title);
     const handle = allocateAgentMentionHandle(
@@ -163,6 +282,7 @@ export class AgentCatalogAuthority {
       creationIdempotencyKey,
       workingCopy,
     };
+    writeJson(agentCreationReceiptPath(this.dataDir, projectId, id), receipt);
     try {
     this.client.transaction(() => {
       const ownerConversation = this.db.select({ id: conversations.id })
@@ -195,10 +315,13 @@ export class AgentCatalogAuthority {
       )) {
         throw new Error("Agent manager must be active in the same Project Chat");
       }
-      mkdirSync(agentDir(this.dataDir, projectId, stagingId), { recursive: true });
-      mkdirSync(artifactsDir(this.dataDir, projectId, stagingId), { recursive: true });
-      mkdirSync(attachmentsDir(this.dataDir, projectId, stagingId), { recursive: true });
-      writeJson(agentJsonPath(this.dataDir, projectId, stagingId), record);
+      mkdirSync(stagingRoot, { recursive: false });
+      writeJson(join(stagingRoot, AGENT_CREATION_MARKER), agentCreationIdentity(receipt));
+      mkdirSync(join(stagingRoot, "artifacts"), { recursive: false });
+      mkdirSync(join(stagingRoot, "attachments"), { recursive: false });
+      writeJson(join(stagingRoot, "agent.json"), record);
+      receipt.phase = "staged";
+      writeJson(agentCreationReceiptPath(this.dataDir, projectId, id), receipt);
       if (manager) {
         const organizationEvent: AgentOrganizationEvent = {
           eventId: randomUUID(),
@@ -251,28 +374,16 @@ export class AgentCatalogAuthority {
       }).run();
     })();
     } catch (error) {
-      rmSync(agentDir(this.dataDir, projectId, stagingId), { recursive: true, force: true });
-      throw error;
-    }
-    let published = false;
-    try {
-      renameSync(
-        agentDir(this.dataDir, projectId, stagingId),
-        agentDir(this.dataDir, projectId, id),
-      );
-      published = true;
-      fsyncDirectory(agentsDir(this.dataDir, projectId));
-    } catch (error) {
-      if (!published) {
-        this.client.transaction(() => {
-          this.db.delete(agentConversationMemberships).where(eq(agentConversationMemberships.agentId, id)).run();
-          this.db.delete(agents).where(eq(agents.id, id)).run();
-          this.db.delete(agentHandleReservations).where(eq(agentHandleReservations.agentId, id)).run();
-        })();
-        rmSync(agentDir(this.dataDir, projectId, stagingId), { recursive: true, force: true });
+      try {
+        this.finishCreationReceipt(receipt);
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], "Agent creation and rollback both failed");
       }
       throw error;
     }
+    receipt.phase = "canonical_committed";
+    writeJson(agentCreationReceiptPath(this.dataDir, projectId, id), receipt);
+    this.finishCreationReceipt(receipt);
     return this.rowToAgentDto(id)!;
   }
 
@@ -285,16 +396,30 @@ export class AgentCatalogAuthority {
       if (!existsSync(directory)) continue;
       let changed = false;
       for (const name of readdirSync(directory)) {
-        const match = /^\.(.+)\.creating$/u.exec(name);
-        if (!match) continue;
+        const match = /^\.agent-creation-([0-9a-f-]+)\.json$/u.exec(name);
+        if (!match || !agentIdPattern.test(match[1]!)) continue;
+        const receipt = this.readCreationReceipt(project.id, match[1]!);
+        if (!receipt) continue;
+        this.finishCreationReceipt(receipt);
+        changed = true;
+      }
+      for (const name of readdirSync(directory)) {
+        const match = /^\.([0-9a-f-]+)\.creating$/u.exec(name);
+        if (!match || !agentIdPattern.test(match[1]!)) continue;
         const id = match[1]!;
         const staging = agentDir(this.dataDir, project.id, name);
         const canonical = agentDir(this.dataDir, project.id, id);
         const row = this.client.prepare(
           "SELECT 1 FROM agents WHERE id = ? AND project_id = ? AND deleted_at IS NULL",
         ).get(id, project.id);
-        if (row && !existsSync(canonical)) renameSync(staging, canonical);
-        else rmSync(staging, { recursive: true, force: true });
+        if (!row || pathEntryExists(canonical)) continue;
+        validateDeletionTombstone(
+          staging,
+          "agent.json",
+          { id, projectId: project.id },
+          "Legacy Agent creation staging",
+        );
+        renameSync(staging, canonical);
         changed = true;
       }
       if (changed) fsyncDirectory(directory);

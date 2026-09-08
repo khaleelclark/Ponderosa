@@ -8,7 +8,9 @@ import type {
 } from "@ponderosa/core";
 import {
   readRepairableJsonl,
+  pathEntryExists,
   stableJson,
+  validateDeletionTombstone,
   writeAtomicFsyncedJsonl,
   type AgentStore,
   type WorkspaceStore,
@@ -59,7 +61,10 @@ interface LegacyManagedProjectCreationReceipt extends ManagedProjectCreationIden
 interface ManagedProjectCreationReceipt extends ManagedProjectCreationIdentity {
   version: 2;
   ownershipToken: string;
-  phase: "preparing" | "staged" | "target_reserved" | "installed";
+  phase: "preparing" | "staged" | "target_reserved" | "installed" |
+    "content_preserved" | "cleanup_prepared" | "cleanup_authorized";
+  cleanupDevice?: string;
+  cleanupInode?: string;
 }
 
 type AnyManagedProjectCreationReceipt =
@@ -96,7 +101,11 @@ function readManagedProjectReceipt(file: string): AnyManagedProjectCreationRecei
       (candidate.version === 2 && (
         typeof candidate.ownershipToken !== "string" ||
         !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(candidate.ownershipToken) ||
-        !["preparing", "staged", "target_reserved", "installed"].includes(candidate.phase ?? "")
+        !["preparing", "staged", "target_reserved", "installed", "content_preserved",
+          "cleanup_prepared", "cleanup_authorized"]
+          .includes(candidate.phase ?? "") ||
+        (candidate.phase === "cleanup_authorized" &&
+          (!candidate.cleanupDevice || !candidate.cleanupInode))
       ))) throw new Error("managed Project creation receipt is invalid");
   return candidate as AnyManagedProjectCreationReceipt;
 }
@@ -137,6 +146,21 @@ function managedProjectStagePath(root: string, receipt: ManagedProjectCreationRe
   return path.join(root, `.project-creation-${keyHash}-${receipt.ownershipToken}.staging`);
 }
 
+function managedProjectCleanupPath(root: string, receipt: ManagedProjectCreationReceipt): string {
+  const keyHash = createHash("sha256").update(receipt.idempotencyKey).digest("hex");
+  return path.join(root, `.project-creation-${keyHash}-${receipt.ownershipToken}.cleanup`);
+}
+
+function managedProjectOwnershipIdentity(receipt: ManagedProjectCreationReceipt) {
+  return {
+    version: 2 as const,
+    idempotencyKey: receipt.idempotencyKey,
+    payloadHash: receipt.payloadHash,
+    hostPath: receipt.hostPath,
+    ownershipToken: receipt.ownershipToken,
+  };
+}
+
 async function syncDirectory(directory: string): Promise<void> {
   if (process.platform === "win32") return;
   const handle = await fs.open(directory, "r");
@@ -146,17 +170,33 @@ async function syncDirectory(directory: string): Promise<void> {
 async function inspectManagedProjectStage(
   root: string,
   receipt: ManagedProjectCreationReceipt,
-): Promise<{ path: string; markerPath: string; hasMarker: boolean } | undefined> {
+): Promise<{
+  path: string;
+  markerPath: string;
+  hasMarker: boolean;
+  dev: number;
+  ino: number;
+} | undefined> {
   const stagePath = managedProjectStagePath(root, receipt);
   try {
+    const stat = await fs.lstat(stagePath);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error("managed Project creation staging is not an owned directory");
+    }
     const entries = await fs.readdir(stagePath);
     const markerPath = path.join(stagePath, MANAGED_PROJECT_CREATION_MARKER);
     const hasMarker = entries.includes(MANAGED_PROJECT_CREATION_MARKER);
-    if (hasMarker) assertManagedProjectMarker(readManagedProjectReceipt(markerPath), receipt);
+    if (hasMarker) validateDeletionTombstone(
+      stagePath,
+      MANAGED_PROJECT_CREATION_MARKER,
+      managedProjectOwnershipIdentity(receipt),
+      "Managed Project creation staging",
+      { dev: stat.dev, ino: stat.ino },
+    );
     if (entries.some((entry) => entry !== MANAGED_PROJECT_CREATION_MARKER)) {
       throw new Error("managed Project creation staging contains unowned content");
     }
-    return { path: stagePath, markerPath, hasMarker };
+    return { path: stagePath, markerPath, hasMarker, dev: stat.dev, ino: stat.ino };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
@@ -185,6 +225,12 @@ async function prepareManagedProjectFolder(
     };
     writeAtomicFsyncedJsonl(receiptPath, [receipt]);
   }
+  if (receipt.version === 2 &&
+      (receipt.phase === "content_preserved" || receipt.phase === "cleanup_prepared" ||
+        receipt.phase === "cleanup_authorized")) {
+    await removeManagedProjectFolderCreation(root, receipt);
+    return prepareManagedProjectFolder(root, identity);
+  }
 
   const markerPath = path.join(receipt.hostPath, MANAGED_PROJECT_CREATION_MARKER);
   if (receipt.version === 1) {
@@ -208,13 +254,18 @@ async function prepareManagedProjectFolder(
 
   const stagePath = managedProjectStagePath(root, receipt);
   const stageMarkerPath = path.join(stagePath, MANAGED_PROJECT_CREATION_MARKER);
+  let stageCreated = false;
   try {
     await fs.mkdir(stagePath, { recursive: false });
+    stageCreated = true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
   const stage = await inspectManagedProjectStage(root, receipt);
   if (!stage?.hasMarker) {
+    if (!stageCreated) {
+      throw new Error("managed Project creation staging is not authenticated");
+    }
     writeAtomicFsyncedJsonl(stageMarkerPath, [receipt]);
     await syncDirectory(stagePath);
   }
@@ -224,10 +275,22 @@ async function prepareManagedProjectFolder(
     writeAtomicFsyncedJsonl(stageMarkerPath, [receipt]);
   }
 
+  // ponytail: Node has no portable rename-no-replace for directories; the lstat
+  // preflight is the ceiling until the native host exposes renameat2/RENAME_NOREPLACE.
   try {
+    const targetStat = await fs.lstat(receipt.hostPath);
+    if (!targetStat.isDirectory() || targetStat.isSymbolicLink()) {
+      throw new Error("folder already exists and is not owned by this Project creation");
+    }
     const targetEntries = await fs.readdir(receipt.hostPath);
     if (targetEntries.includes(MANAGED_PROJECT_CREATION_MARKER)) {
-      assertManagedProjectMarker(readManagedProjectReceipt(markerPath), receipt);
+      validateDeletionTombstone(
+        receipt.hostPath,
+        MANAGED_PROJECT_CREATION_MARKER,
+        managedProjectOwnershipIdentity(receipt),
+        "Managed Project folder",
+        { dev: targetStat.dev, ino: targetStat.ino },
+      );
       if (receipt.phase !== "installed") {
         receipt = { ...receipt, phase: "installed" };
         writeAtomicFsyncedJsonl(receiptPath, [receipt]);
@@ -238,24 +301,11 @@ async function prepareManagedProjectFolder(
     if (receipt.phase !== "target_reserved" || targetEntries.length > 0) {
       throw new Error("folder already exists and is not owned by this Project creation");
     }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    await fs.mkdir(receipt.hostPath, { recursive: false });
-    receipt = { ...receipt, phase: "target_reserved" };
-    writeAtomicFsyncedJsonl(receiptPath, [receipt]);
-  }
-
-  try {
+    await fs.rmdir(receipt.hostPath);
     await fs.rename(stagePath, receipt.hostPath);
   } catch (error) {
-    if (["EEXIST", "ENOTEMPTY", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "") &&
-        receipt.phase === "target_reserved" &&
-        (await fs.readdir(receipt.hostPath)).length === 0) {
-      await fs.rmdir(receipt.hostPath);
-      await fs.rename(stagePath, receipt.hostPath);
-    } else {
-      throw error;
-    }
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    await fs.rename(stagePath, receipt.hostPath);
   }
   await syncDirectory(root);
   receipt = { ...receipt, phase: "installed" };
@@ -277,9 +327,23 @@ async function finishManagedProjectFolder(
     : undefined;
   const markerPath = path.join(receipt.hostPath, MANAGED_PROJECT_CREATION_MARKER);
   try {
-    const marker = readManagedProjectReceipt(markerPath);
-    if (marker) {
-      assertManagedProjectMarker(marker, receipt);
+    const targetStat = receipt.version === 2 ? await fs.lstat(receipt.hostPath) : undefined;
+    if (targetStat && (!targetStat.isDirectory() || targetStat.isSymbolicLink())) {
+      throw new Error("Managed Project folder is not the owned directory");
+    }
+    const markerPresent = pathEntryExists(markerPath);
+    if (markerPresent) {
+      if (receipt.version === 2) {
+        validateDeletionTombstone(
+          receipt.hostPath,
+          MANAGED_PROJECT_CREATION_MARKER,
+          managedProjectOwnershipIdentity(receipt),
+          "Managed Project folder",
+          { dev: targetStat!.dev, ino: targetStat!.ino },
+        );
+      } else {
+        assertManagedProjectMarker(readManagedProjectReceipt(markerPath), receipt);
+      }
       await fs.unlink(markerPath);
       await syncDirectory(receipt.hostPath);
     } else if (receipt.version === 2 && receipt.phase !== "installed") {
@@ -289,7 +353,16 @@ async function finishManagedProjectFolder(
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   if (stage) {
-    if (stage.hasMarker) await fs.unlink(stage.markerPath);
+    if (stage.hasMarker) {
+      validateDeletionTombstone(
+        stage.path,
+        MANAGED_PROJECT_CREATION_MARKER,
+        managedProjectOwnershipIdentity(receipt as ManagedProjectCreationReceipt),
+        "Managed Project creation staging",
+        { dev: stage.dev, ino: stage.ino },
+      );
+      await fs.unlink(stage.markerPath);
+    }
     await fs.rmdir(stage.path);
   }
   await fs.unlink(receiptPath).catch((error: NodeJS.ErrnoException) => {
@@ -304,12 +377,146 @@ async function removeManagedProjectFolderCreation(
 ): Promise<void> {
   const receiptPath = managedProjectReceiptPath(root, receipt.idempotencyKey);
   assertManagedProjectReceipt(readManagedProjectReceipt(receiptPath), receipt);
+  if (receipt.version === 2) {
+    let current = receipt;
+    const cleanupPath = managedProjectCleanupPath(root, current);
+    let targetExists = pathEntryExists(current.hostPath);
+    let cleanupExists = pathEntryExists(cleanupPath);
+    let preservedTarget = false;
+    if (targetExists && cleanupExists) {
+      throw new Error("managed Project cleanup has ambiguous target and tombstone storage");
+    }
+    if (targetExists) {
+      const targetStat = await fs.lstat(current.hostPath);
+      if (!targetStat.isDirectory() || targetStat.isSymbolicLink()) {
+        throw new Error("Managed Project folder is not the owned directory");
+      }
+      const entries = await fs.readdir(current.hostPath);
+      if (!entries.includes(MANAGED_PROJECT_CREATION_MARKER)) {
+        if (current.phase === "target_reserved" && entries.length === 0) {
+          await fs.rmdir(current.hostPath);
+          await syncDirectory(root);
+          targetExists = false;
+        } else if (current.phase === "content_preserved") {
+          preservedTarget = true;
+        } else {
+          throw new Error("Managed Project folder has no ownership marker");
+        }
+      } else {
+        validateDeletionTombstone(
+          current.hostPath,
+          MANAGED_PROJECT_CREATION_MARKER,
+          managedProjectOwnershipIdentity(current),
+          "Managed Project folder",
+          { dev: targetStat.dev, ino: targetStat.ino },
+        );
+        if (entries.some(entry => entry !== MANAGED_PROJECT_CREATION_MARKER)) {
+          if (current.phase !== "content_preserved") {
+            current = { ...current, phase: "content_preserved" };
+            writeAtomicFsyncedJsonl(receiptPath, [current]);
+          }
+          await fs.unlink(path.join(current.hostPath, MANAGED_PROJECT_CREATION_MARKER));
+          await syncDirectory(current.hostPath);
+          preservedTarget = true;
+        } else {
+          if (current.phase !== "cleanup_prepared" && current.phase !== "cleanup_authorized") {
+            current = { ...current, phase: "cleanup_prepared" };
+            writeAtomicFsyncedJsonl(receiptPath, [current]);
+          }
+          await fs.rename(current.hostPath, cleanupPath);
+          await syncDirectory(root);
+          targetExists = false;
+          cleanupExists = true;
+        }
+      }
+    }
+    const stage = await inspectManagedProjectStage(root, current);
+    if (stage) {
+      if (!stage.hasMarker) {
+        throw new Error("managed Project creation staging is not authenticated");
+      }
+      if (targetExists || cleanupExists || current.phase === "content_preserved" ||
+          current.phase === "cleanup_authorized") {
+        throw new Error("managed Project cleanup has ambiguous staged storage");
+      }
+      validateDeletionTombstone(
+        stage.path,
+        MANAGED_PROJECT_CREATION_MARKER,
+        managedProjectOwnershipIdentity(current),
+        "Managed Project creation staging",
+        { dev: stage.dev, ino: stage.ino },
+      );
+      if (current.phase !== "cleanup_prepared") {
+        current = { ...current, phase: "cleanup_prepared" };
+        writeAtomicFsyncedJsonl(receiptPath, [current]);
+      }
+      await fs.rename(stage.path, cleanupPath);
+      await syncDirectory(root);
+      cleanupExists = true;
+    }
+    if (cleanupExists) {
+      const cleanupStat = await fs.lstat(cleanupPath);
+      if (!cleanupStat.isDirectory() || cleanupStat.isSymbolicLink()) {
+        throw new Error("Managed Project cleanup tombstone is not the owned directory");
+      }
+      const entries = await fs.readdir(cleanupPath);
+      const hasMarker = entries.includes(MANAGED_PROJECT_CREATION_MARKER);
+      if (hasMarker) {
+        validateDeletionTombstone(
+          cleanupPath,
+          MANAGED_PROJECT_CREATION_MARKER,
+          managedProjectOwnershipIdentity(current),
+          "Managed Project cleanup tombstone",
+          { dev: cleanupStat.dev, ino: cleanupStat.ino },
+        );
+        if (current.phase === "cleanup_authorized" &&
+            (current.cleanupDevice !== String(cleanupStat.dev) ||
+              current.cleanupInode !== String(cleanupStat.ino))) {
+          throw new Error("Managed Project cleanup tombstone was replaced");
+        }
+        if (current.phase !== "cleanup_authorized") {
+          current = {
+            ...current,
+            phase: "cleanup_authorized",
+            cleanupDevice: String(cleanupStat.dev),
+            cleanupInode: String(cleanupStat.ino),
+          };
+          writeAtomicFsyncedJsonl(receiptPath, [current]);
+        }
+        validateDeletionTombstone(
+          cleanupPath,
+          MANAGED_PROJECT_CREATION_MARKER,
+          managedProjectOwnershipIdentity(current),
+          "Managed Project cleanup tombstone",
+          { dev: current.cleanupDevice!, ino: current.cleanupInode! },
+        );
+        await fs.rm(cleanupPath, { recursive: true });
+        await syncDirectory(root);
+      } else {
+        if (current.phase !== "cleanup_authorized" || entries.length > 0 ||
+            current.cleanupDevice !== String(cleanupStat.dev) ||
+            current.cleanupInode !== String(cleanupStat.ino)) {
+          throw new Error("Managed Project cleanup tombstone lost its ownership marker");
+        }
+        await fs.rmdir(cleanupPath);
+        await syncDirectory(root);
+      }
+    } else if (current.phase === "cleanup_prepared") {
+      throw new Error("Managed Project cleanup tombstone is missing before removal authority");
+    }
+    if (!preservedTarget && !cleanupExists && current.phase !== "preparing" &&
+        current.phase !== "cleanup_authorized") {
+      throw new Error("Managed Project creation storage is missing before cleanup completed");
+    }
+    await fs.unlink(receiptPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+    });
+    await syncDirectory(root);
+    return;
+  }
   const markerPath = path.join(receipt.hostPath, MANAGED_PROJECT_CREATION_MARKER);
   const marker = readManagedProjectReceipt(markerPath);
   if (marker) assertManagedProjectMarker(marker, receipt);
-  const stage = receipt.version === 2
-    ? await inspectManagedProjectStage(root, receipt)
-    : undefined;
   try {
     if (marker) {
       await fs.unlink(markerPath);
@@ -318,10 +525,6 @@ async function removeManagedProjectFolderCreation(
     await syncDirectory(root);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-  if (stage) {
-    if (stage.hasMarker) await fs.unlink(stage.markerPath);
-    await fs.rmdir(stage.path);
   }
   await fs.unlink(receiptPath).catch((error: NodeJS.ErrnoException) => {
     if (error.code !== "ENOENT") throw error;

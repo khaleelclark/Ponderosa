@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { asc, eq } from "drizzle-orm";
 import type {
   AgentDto,
@@ -19,6 +19,7 @@ import type {
 } from "@ponderosa/core";
 import type { Db } from "./db.js";
 import { appendFsyncedJsonl, readRepairableJsonl, writeAtomicFsyncedJsonl } from "./append-jsonl.js";
+import { pathEntryExists, validateDeletionTombstone } from "./deletion-tombstone-ownership.js";
 import { fsyncDirectory, readJson, writeJson } from "./store-filesystem.js";
 import type {
   ConversationDeletionReceipt,
@@ -246,6 +247,7 @@ export class AgentWorkspaceCatalogAuthority {
     };
     const stagingId = `.${id}.creating`;
     const stagingRoot = projectDir(this.dataDir, stagingId);
+    let publishedIdentity: { dev: number | bigint; ino: number | bigint } | undefined;
     try {
       if (existsSync(stagingRoot)) {
         const staged = readJson<ProjectJson>(projectJsonPath(this.dataDir, stagingId));
@@ -269,7 +271,17 @@ export class AgentWorkspaceCatalogAuthority {
         } satisfies AgentPresetDto,
       } satisfies PresetEvent));
       writeAtomicFsyncedJsonl(agentPresetsPath(this.dataDir, stagingId), presets);
+      const staged = lstatSync(stagingRoot);
+      if (!staged.isDirectory() || staged.isSymbolicLink()) {
+        throw new Error("Project creation staging is not an owned directory");
+      }
+      if (pathEntryExists(projectDir(this.dataDir, id))) {
+        throw new Error("Project creation canonical path already exists");
+      }
+      // ponytail: Node has no portable directory rename-no-replace; retain the
+      // canonical preflight until the native host exposes that primitive.
       renameSync(stagingRoot, projectDir(this.dataDir, id));
+      publishedIdentity = { dev: staged.dev, ino: staged.ino };
       fsyncDirectory(projectsDir(this.dataDir));
       this.db.transaction((tx) => {
         tx.insert(projects).values({ id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, lastConversationId: conversationId }).run();
@@ -280,7 +292,16 @@ export class AgentWorkspaceCatalogAuthority {
       });
     } catch (error) {
       rmSync(stagingRoot, { recursive: true, force: true });
-      rmSync(projectDir(this.dataDir, id), { recursive: true, force: true });
+      if (publishedIdentity) {
+        validateDeletionTombstone(
+          projectDir(this.dataDir, id),
+          "project.json",
+          { id, createdAt: now },
+          "Project creation rollback",
+          publishedIdentity,
+        );
+        rmSync(projectDir(this.dataDir, id), { recursive: true, force: true });
+      }
       fsyncDirectory(projectsDir(this.dataDir));
       throw error;
     }
@@ -489,6 +510,7 @@ export class AgentWorkspaceCatalogAuthority {
     const stagingRoot = conversationDir(this.dataDir, projectId, stagingId);
     const canonicalRoot = conversationDir(this.dataDir, projectId, id);
     const previousProjectRecord = readJson<ProjectJson>(projectJsonPath(this.dataDir, projectId));
+    let publishedIdentity: { dev: number | bigint; ino: number | bigint } | undefined;
     try {
       if (existsSync(stagingRoot)) {
         const staged = readJson<ConversationJson>(
@@ -500,7 +522,17 @@ export class AgentWorkspaceCatalogAuthority {
       }
       mkdirSync(stagingRoot, { recursive: true });
       writeJson(conversationJsonPath(this.dataDir, projectId, stagingId), record);
+      const staged = lstatSync(stagingRoot);
+      if (!staged.isDirectory() || staged.isSymbolicLink()) {
+        throw new Error("Chat creation staging is not an owned directory");
+      }
+      if (pathEntryExists(canonicalRoot)) {
+        throw new Error("Chat creation canonical path already exists");
+      }
+      // ponytail: Node has no portable directory rename-no-replace; retain the
+      // canonical preflight until the native host exposes that primitive.
       renameSync(stagingRoot, canonicalRoot);
+      publishedIdentity = { dev: staged.dev, ino: staged.ino };
       fsyncDirectory(conversationsDir(this.dataDir, projectId));
       writeJson(projectJsonPath(this.dataDir, projectId), {
         ...previousProjectRecord,
@@ -525,7 +557,16 @@ export class AgentWorkspaceCatalogAuthority {
     } catch (error) {
       try {
         rmSync(stagingRoot, { recursive: true, force: true });
-        rmSync(canonicalRoot, { recursive: true, force: true });
+        if (publishedIdentity) {
+          validateDeletionTombstone(
+            canonicalRoot,
+            "conversation.json",
+            { id, projectId, createdAt: now },
+            "Chat creation rollback",
+            publishedIdentity,
+          );
+          rmSync(canonicalRoot, { recursive: true, force: true });
+        }
         fsyncDirectory(conversationsDir(this.dataDir, projectId));
         writeJson(projectJsonPath(this.dataDir, projectId), previousProjectRecord);
       } catch (rollbackError) {

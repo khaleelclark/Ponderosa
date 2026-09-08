@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -259,9 +259,20 @@ test("managed Project folder receipts recover owned states and preserve ambiguou
     }
     if (boundary === "target-reserved") await mkdir(receipt.hostPath);
     await managedFolders.reconcileManagedProjectFolders();
+    if (boundary === "preparing-stage") {
+      assert.equal(existsSync(base.receiptPath), true);
+      assert.equal(existsSync(stagePath), true);
+      assert.equal(existsSync(receipt.hostPath), false);
+      continue;
+    }
     assert.equal(existsSync(base.receiptPath), false);
     assert.equal(existsSync(stagePath), false);
-    assert.equal(existsSync(receipt.hostPath), boundary === "target-reserved");
+    assert.equal(existsSync(receipt.hostPath), false);
+    const retry = await app.inject({
+      method: "POST", url: "/api/projects",
+      headers: { "idempotency-key": key }, payload,
+    });
+    assert.equal(retry.statusCode, 200, retry.body);
   }
 
   const conflictKey = "managed-conflict";
@@ -316,8 +327,8 @@ test("managed Project folder receipts recover owned states and preserve ambiguou
   assert.equal(existsSync(stagedBase.receiptPath), true);
   await managedFolders.reconcileManagedProjectFolders();
   assert.equal(existsSync(stagedReceipt.hostPath), true);
-  assert.equal(existsSync(stagedPath), false);
-  assert.equal(existsSync(stagedBase.receiptPath), false);
+  assert.equal(existsSync(stagedPath), true);
+  assert.equal(existsSync(stagedBase.receiptPath), true);
 
   const deletedKey = "managed-deleted-cleanup";
   const deletedPayload = { label: "Deleted", defaultEngine: "codex", createFolderName: "deleted" };
@@ -368,4 +379,141 @@ test("managed Project folder receipts recover owned states and preserve ambiguou
   assert.equal(existsSync(retainedReceipt.hostPath), true);
   assert.equal(existsSync(path.join(retainedReceipt.hostPath, ".ponderosa-project-creation.jsonl")), false);
   assert.equal(await readFile(path.join(retainedReceipt.hostPath, "user.txt"), "utf8"), "keep");
+
+  const preservedKey = "managed-preserved-restart";
+  const preservedPayload = { label: "Preserved", defaultEngine: "codex", createFolderName: "preserved" };
+  const preservedBase = managedCreationReceipt(managedWorkspacesRoot, preservedKey, preservedPayload);
+  const preservedReceipt = {
+    ...preservedBase.receipt,
+    version: 2,
+    ownershipToken: "65555555-5555-4555-8555-555555555555",
+    phase: "content_preserved",
+  };
+  await writeFile(preservedBase.receiptPath, `${JSON.stringify(preservedReceipt)}\n`);
+  await mkdir(preservedReceipt.hostPath);
+  await writeFile(path.join(preservedReceipt.hostPath, "user.txt"), "keep after marker removal");
+  await managedFolders.reconcileManagedProjectFolders();
+  assert.equal(existsSync(preservedBase.receiptPath), false);
+  assert.equal(await readFile(path.join(preservedReceipt.hostPath, "user.txt"), "utf8"), "keep after marker removal");
+
+  const abandonedKey = "managed-unauthenticated-stage";
+  const abandonedPayload = { label: "Abandoned", defaultEngine: "codex", createFolderName: "abandoned" };
+  const abandonedBase = managedCreationReceipt(managedWorkspacesRoot, abandonedKey, abandonedPayload);
+  const abandonedReceipt = {
+    ...abandonedBase.receipt,
+    version: 2,
+    ownershipToken: "66666666-6666-4666-8666-666666666666",
+    phase: "preparing",
+  };
+  const abandonedStage = path.join(
+    managedWorkspacesRoot,
+    `.project-creation-${createHash("sha256").update(abandonedKey).digest("hex")}-${abandonedReceipt.ownershipToken}.staging`,
+  );
+  await writeFile(abandonedBase.receiptPath, `${JSON.stringify(abandonedReceipt)}\n`);
+  await mkdir(abandonedStage);
+  await managedFolders.reconcileManagedProjectFolders();
+  assert.equal(existsSync(abandonedBase.receiptPath), true);
+  assert.equal(existsSync(abandonedStage), true);
+
+  const stagedCleanupKey = "managed-staged-cleanup-restart";
+  const stagedCleanupPayload = {
+    label: "Staged Cleanup",
+    defaultEngine: "codex",
+    createFolderName: "staged-cleanup",
+  };
+  const stagedCleanupBase = managedCreationReceipt(
+    managedWorkspacesRoot,
+    stagedCleanupKey,
+    stagedCleanupPayload,
+  );
+  const stagedCleanupReceipt = {
+    ...stagedCleanupBase.receipt,
+    version: 2,
+    ownershipToken: "67777777-7777-4777-8777-777777777777",
+    phase: "staged",
+  };
+  const stagedCleanupPath = path.join(
+    managedWorkspacesRoot,
+    `.project-creation-${createHash("sha256").update(stagedCleanupKey).digest("hex")}-${stagedCleanupReceipt.ownershipToken}.staging`,
+  );
+  await writeFile(stagedCleanupBase.receiptPath, `${JSON.stringify(stagedCleanupReceipt)}\n`);
+  await mkdir(stagedCleanupPath);
+  await writeFile(
+    path.join(stagedCleanupPath, ".ponderosa-project-creation.jsonl"),
+    `${JSON.stringify(stagedCleanupReceipt)}\n`,
+  );
+  await managedFolders.reconcileManagedProjectFolders();
+  assert.equal(existsSync(stagedCleanupBase.receiptPath), false);
+  assert.equal(existsSync(stagedCleanupPath), false);
+
+  for (const kind of ["stage", "target"]) {
+    const key = `managed-symlink-${kind}`;
+    const payload = { label: kind, defaultEngine: "codex", createFolderName: `symlink-${kind}` };
+    const base = managedCreationReceipt(managedWorkspacesRoot, key, payload);
+    const receipt = {
+      ...base.receipt,
+      version: 2,
+      ownershipToken: kind === "stage"
+        ? "76666666-6666-4666-8666-666666666666"
+        : "77777777-7777-4777-8777-777777777777",
+      phase: kind === "stage" ? "staged" : "installed",
+    };
+    const external = path.join(dataDir, `external-${kind}`);
+    await mkdir(external);
+    const externalMarker = path.join(external, ".ponderosa-project-creation.jsonl");
+    await writeFile(externalMarker, `${JSON.stringify(receipt)}\n`);
+    await writeFile(base.receiptPath, `${JSON.stringify(receipt)}\n`);
+    const linkedPath = kind === "stage"
+      ? path.join(
+          managedWorkspacesRoot,
+          `.project-creation-${createHash("sha256").update(key).digest("hex")}-${receipt.ownershipToken}.staging`,
+        )
+      : receipt.hostPath;
+    await symlink(external, linkedPath, "dir");
+    await managedFolders.reconcileManagedProjectFolders();
+    assert.equal(await readFile(externalMarker, "utf8"), `${JSON.stringify(receipt)}\n`);
+    assert.equal(existsSync(base.receiptPath), true);
+  }
+
+  const cleanupKey = "managed-cleanup-restart";
+  const cleanupPayload = { label: "Cleanup", defaultEngine: "codex", createFolderName: "cleanup" };
+  const cleanupBase = managedCreationReceipt(managedWorkspacesRoot, cleanupKey, cleanupPayload);
+  const cleanupReceipt = {
+    ...cleanupBase.receipt,
+    version: 2,
+    ownershipToken: "88888888-8888-4888-8888-888888888888",
+    phase: "cleanup_prepared",
+  };
+  await writeFile(cleanupBase.receiptPath, `${JSON.stringify(cleanupReceipt)}\n`);
+  await mkdir(cleanupReceipt.hostPath);
+  await writeFile(
+    path.join(cleanupReceipt.hostPath, ".ponderosa-project-creation.jsonl"),
+    `${JSON.stringify(cleanupReceipt)}\n`,
+  );
+  await managedFolders.reconcileManagedProjectFolders();
+  assert.equal(existsSync(cleanupReceipt.hostPath), false);
+  assert.equal(existsSync(cleanupBase.receiptPath), false);
+
+  const partialKey = "managed-cleanup-partial";
+  const partialPayload = { label: "Partial", defaultEngine: "codex", createFolderName: "partial" };
+  const partialBase = managedCreationReceipt(managedWorkspacesRoot, partialKey, partialPayload);
+  const partialToken = "99999999-9999-4999-8999-999999999999";
+  const partialPath = path.join(
+    managedWorkspacesRoot,
+    `.project-creation-${createHash("sha256").update(partialKey).digest("hex")}-${partialToken}.cleanup`,
+  );
+  await mkdir(partialPath);
+  const partialStat = await lstat(partialPath);
+  const partialReceipt = {
+    ...partialBase.receipt,
+    version: 2,
+    ownershipToken: partialToken,
+    phase: "cleanup_authorized",
+    cleanupDevice: String(partialStat.dev),
+    cleanupInode: String(partialStat.ino),
+  };
+  await writeFile(partialBase.receiptPath, `${JSON.stringify(partialReceipt)}\n`);
+  await managedFolders.reconcileManagedProjectFolders();
+  assert.equal(existsSync(partialPath), false);
+  assert.equal(existsSync(partialBase.receiptPath), false);
 });
