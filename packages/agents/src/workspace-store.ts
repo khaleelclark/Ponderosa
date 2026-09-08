@@ -977,6 +977,48 @@ export class WorkspaceStore {
     return this.drafts.get(this.draftKey(conversationId, ownerId)) ?? { conversationId, ownerId, text: "", attachmentIds: [], revision: 0, updatedAt: new Date(0).toISOString(), clientId: "" };
   }
 
+  draftRecoveryInventory(): Array<{
+    draftId: string;
+    ownerId: string;
+    attachmentIds: string[];
+  }> {
+    const inventory = new Map<string, Set<string>>();
+    const add = (
+      draftId: string,
+      ownerId: string,
+      value?: Pick<ConversationDraftDto, "attachmentIds" | "pastedTextAttachmentId">,
+    ) => {
+      const key = this.draftKey(draftId, ownerId);
+      const attachmentIds = inventory.get(key) ?? new Set<string>();
+      for (const id of value?.attachmentIds ?? []) attachmentIds.add(id);
+      if (value?.pastedTextAttachmentId) attachmentIds.add(value.pastedTextAttachmentId);
+      inventory.set(key, attachmentIds);
+    };
+    for (const draft of this.drafts.values()) {
+      add(draft.conversationId, draft.ownerId, draft);
+    }
+    for (const conflicts of this.draftConflicts.values()) {
+      for (const conflict of conflicts) {
+        add(conflict.current.conversationId, conflict.current.ownerId, conflict.current);
+        add(conflict.current.conversationId, conflict.current.ownerId, conflict.displaced);
+      }
+    }
+    for (const resolution of this.draftConflictResolutions.values()) {
+      add(resolution.conversationId, resolution.ownerId);
+    }
+    return [...inventory.entries()]
+      .map(([key, attachmentIds]) => {
+        const separator = key.indexOf("\u0000");
+        return {
+          draftId: key.slice(0, separator),
+          ownerId: key.slice(separator + 1),
+          attachmentIds: [...attachmentIds].sort(),
+        };
+      })
+      .sort((left, right) => left.draftId.localeCompare(right.draftId) ||
+        left.ownerId.localeCompare(right.ownerId));
+  }
+
   putDraft(conversationId: string, input: { text: string; attachmentIds: string[]; pastedTextAttachmentId?: string; mentionBindings?: ConversationDraftDto["mentionBindings"]; expectedRevision: number; clientId: string; ownerId?: string }): ConversationDraftDto {
     const ownerId = input.ownerId ?? "legacy";
     const current = this.getDraft(conversationId, ownerId);

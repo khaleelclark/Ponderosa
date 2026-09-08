@@ -384,6 +384,10 @@ export class AssetStore {
     this.authority.syncDraftAttachment(draftId, ownerId, assetId, size);
   }
 
+  draftSurfaceIds(): string[] {
+    return this.authority.draftSurfaceIds();
+  }
+
   pendingDraftAttachmentCleanups(now?: number): Array<{
     draftId: string;
     ownerId: string;

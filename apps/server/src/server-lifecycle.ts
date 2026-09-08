@@ -467,6 +467,8 @@ export function registerServerLifecycle(
     for (const pending of store.listPendingProjectDeletions()) {
       await drafts.fenceMutationGroup(`project:${pending.projectId}`, pending.draftSurfaceIds);
     }
+    await drafts.synchronizeAttachmentQuota();
+    completeLifecyclePhase("draft_attachment_authority_recovery");
     for (const initial of store.listPendingProjectDeletionReceipts()) {
       if (initial.draftCleanupCompleted) continue;
       await drafts.fenceMutationGroup(`project:${initial.projectId}`, initial.draftSurfaceIds);
@@ -499,8 +501,6 @@ export function registerServerLifecycle(
     // any crash gap in the workspace log before the listener becomes ready.
     reconcileCommittedProjectDeletions();
     completeLifecyclePhase("project_deletion_workspace_recovery");
-    await drafts.synchronizeAttachmentQuota();
-    completeLifecyclePhase("draft_attachment_quota_recovery");
     await runAgentCreationRecovery(Number.POSITIVE_INFINITY);
     const failedCreationRecovery = recoverFailedAgentCreations({
       store,

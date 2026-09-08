@@ -177,14 +177,15 @@ export class DraftService {
     >,
     private readonly workspace: Pick<
       WorkspaceStore,
-      "getDraft" | "listDraftConflicts" | "putDraft" | "cursor"
+      "cursor" | "deleteDraft" | "draftRecoveryInventory" | "getDraft" |
+      "listDraftConflicts" | "putDraft"
     >,
     private readonly cleanupAuthority: Pick<
       AssetStore,
       "enqueueDraftAttachmentCleanup" | "finishDraftAttachmentCleanup" |
       "pendingDraftAttachmentCleanups" | "releaseDraftAttachment" |
       "reserveDraftAttachment" | "settleDraftAttachment" |
-      "syncDraftAttachment" | "finishDraftSurfaceCleanup"
+      "syncDraftAttachment" | "finishDraftSurfaceCleanup" | "draftSurfaceIds"
     >,
   ) {
     this.root = path.resolve(dataDir, "draft-attachments");
@@ -427,11 +428,45 @@ export class DraftService {
     return removed;
   }
 
-  /** Backfill quota authority for pre-v9 files before uploads can be admitted.
-   * Cleanup eligibility remains unchanged; future-grace receipts are scanned
-   * here only to account for their already durable bytes. */
+  /** Remove surfaces with no canonical owner, then backfill every referenced
+   * pre-v9 file before uploads can be admitted. Future-grace cleanup receipts
+   * are included because their bytes remain durable until cleanup completes. */
   async synchronizeAttachmentQuota(): Promise<number> {
     let synchronized = 0;
+    const inventory = this.workspace.draftRecoveryInventory();
+    const orphaned = new Set([
+      ...inventory.map(item => item.draftId),
+      ...this.cleanupAuthority.draftSurfaceIds(),
+    ].filter(draftId => !this.validId(draftId)));
+    const release = await this.fenceMutations(orphaned);
+    try {
+      for (const draftId of [...orphaned].sort()) {
+        // File/ledger cleanup comes first: if the process stops before the
+        // workspace event, that durable projection identifies the retry.
+        await this.deleteSurface(draftId);
+        this.workspace.deleteDraft(draftId);
+      }
+    } finally {
+      release();
+    }
+    for (const item of inventory) {
+      if (orphaned.has(item.draftId)) continue;
+      for (const assetId of item.attachmentIds) {
+        const stored = await this.readStored(item.draftId, item.ownerId, assetId);
+        if (!stored) {
+          throw new Error(
+            `referenced draft attachment ${assetId} is missing or invalid`,
+          );
+        }
+        this.cleanupAuthority.syncDraftAttachment(
+          item.draftId,
+          item.ownerId,
+          assetId,
+          stored.size,
+        );
+        synchronized += 1;
+      }
+    }
     for (const receipt of this.cleanupAuthority.pendingDraftAttachmentCleanups(
       Number.MAX_SAFE_INTEGER,
     )) {

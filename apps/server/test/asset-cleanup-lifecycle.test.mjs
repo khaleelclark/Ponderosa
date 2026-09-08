@@ -14,8 +14,29 @@ import {
 } from "../dist/assets.js";
 import { AssetAuthority } from "../dist/asset-authority.js";
 import { DraftService } from "../dist/routes/drafts.js";
-import { AgentStore } from "@ponderosa/agents";
+import { AgentStore, WorkspaceStore } from "@ponderosa/agents";
 import { finishProjectAssetAuthorityCleanup } from "../dist/project-deletion-coordinator.js";
+
+async function writeLegacyDraftAttachment(
+  drafts,
+  draftId,
+  ownerId,
+  assetId,
+  body = "legacy",
+) {
+  const files = drafts.files(draftId, ownerId, assetId);
+  await mkdir(path.dirname(files.body), { recursive: true });
+  await writeFile(files.body, body);
+  await writeFile(files.metadata, JSON.stringify({
+    id: assetId,
+    conversationId: draftId,
+    ownerId,
+    name: `${assetId}.txt`,
+    mediaType: "text/plain",
+    size: Buffer.byteLength(body),
+    createdAt: new Date().toISOString(),
+  }));
+}
 
 function seedAuthorityRows(sqlite, projectId, agentId, draftId) {
   const reservationId = randomUUID();
@@ -167,6 +188,190 @@ test("Project receipt retries an authority-purge crash gap after restart", async
   finishProjectAssetAuthorityCleanup(store, assets, project.id);
   assert.equal(store.getProjectDeletionReceipt(project.id).assetAuthorityCleanupCompleted, true);
   assert.equal(store.listPendingProjectDeletionReceipts().length, 0);
+});
+
+test("legacy Project receipt recovery removes only orphan draft authority across restart", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-legacy-project-drafts-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  let store = new AgentStore(dataDir);
+  const liveProject = store.createProject({
+    label: "Live",
+    hostPath: "/tmp/live",
+    defaultEngine: "codex",
+  });
+  const liveChat = store.createConversation(liveProject.id, { title: "Live Chat" });
+  store.close();
+
+  const deletedProjectId = randomUUID();
+  const sqlite = new Database(path.join(dataDir, "ponderosa.db"));
+  sqlite.exec(`
+    ALTER TABLE project_deletion_receipts RENAME TO current_project_deletion_receipts;
+    CREATE TABLE project_deletion_receipts (
+      project_id TEXT PRIMARY KEY NOT NULL,
+      tombstone_name TEXT NOT NULL,
+      ownership_token TEXT,
+      removal_started INTEGER NOT NULL DEFAULT 0,
+      storage_cleanup_completed INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      completed_at TEXT
+    );
+  `);
+  const now = new Date().toISOString();
+  sqlite.prepare("INSERT INTO project_deletion_receipts VALUES (?,?,?,?,?,?,?,?,?)")
+    .run(
+      deletedProjectId,
+      `.${deletedProjectId}.deleting-legacy`,
+      randomUUID(),
+      1,
+      1,
+      null,
+      now,
+      now,
+      now,
+    );
+  sqlite.exec("DROP TABLE current_project_deletion_receipts");
+  sqlite.prepare("DELETE FROM _schema_version WHERE name IN (?, ?)").run(
+    "0017_project_deletion_draft_cleanup.ts",
+    "0018_project_deletion_asset_authority_cleanup.ts",
+  );
+  sqlite.close();
+
+  const orphanDraftId = randomUUID();
+  const liveAssetId = randomUUID();
+  const orphanAssetId = randomUUID();
+  const workspace = new WorkspaceStore(dataDir);
+  workspace.putDraft(liveChat.id, {
+    ownerId: "browser",
+    text: "live",
+    attachmentIds: [liveAssetId],
+    expectedRevision: 0,
+    clientId: "page:live:draft:one",
+  });
+  workspace.putDraft(orphanDraftId, {
+    ownerId: "browser",
+    text: "deleted",
+    attachmentIds: [orphanAssetId],
+    expectedRevision: 0,
+    clientId: "page:deleted:draft:one",
+  });
+
+  let assets = new AssetStore(dataDir);
+  let drafts = new DraftService(dataDir, {
+    getAgent: id => store.getAgent(id),
+    getConversation: id => store.getConversation(id),
+  }, workspace, assets);
+  await writeLegacyDraftAttachment(drafts, liveChat.id, "browser", liveAssetId);
+  await writeLegacyDraftAttachment(drafts, orphanDraftId, "browser", orphanAssetId);
+  assets.syncDraftAttachment(orphanDraftId, "browser", orphanAssetId, 6);
+  const finish = assets.finishDraftSurfaceCleanup.bind(assets);
+  assets.finishDraftSurfaceCleanup = id => {
+    if (id === orphanDraftId) throw new Error("injected authority interruption");
+    finish(id);
+  };
+
+  store = new AgentStore(dataDir);
+  const migrated = store.getProjectDeletionReceipt(deletedProjectId);
+  assert.deepEqual(migrated.draftSurfaceIds, []);
+  assert.equal(migrated.assetAuthorityCleanupCompleted, false);
+  await assert.rejects(
+    () => drafts.synchronizeAttachmentQuota(),
+    /injected authority interruption/u,
+  );
+  assert.equal(workspace.getDraft(orphanDraftId, "browser").text, "deleted");
+  assert.equal(store.getProjectDeletionReceipt(deletedProjectId).assetAuthorityCleanupCompleted, false);
+  assets.close();
+  store.close();
+
+  assets = new AssetStore(dataDir);
+  store = new AgentStore(dataDir);
+  const reopenedWorkspace = new WorkspaceStore(dataDir);
+  drafts = new DraftService(dataDir, store, reopenedWorkspace, assets);
+  assert.equal(await drafts.synchronizeAttachmentQuota(), 1);
+  finishProjectAssetAuthorityCleanup(store, assets, deletedProjectId);
+  assert.equal(store.getProjectDeletionReceipt(deletedProjectId).assetAuthorityCleanupCompleted, true);
+  assert.equal(store.listPendingProjectDeletionReceipts().length, 0);
+  assert.equal(reopenedWorkspace.getDraft(orphanDraftId, "browser").revision, 0);
+  assert.equal(existsSync(drafts.surfaceDir(orphanDraftId)), false);
+  assert.ok(await drafts.read(liveChat.id, "browser", liveAssetId));
+  const authority = new Database(path.join(dataDir, "asset-authority.sqlite"), { readonly: true });
+  assert.equal(authority.prepare("SELECT count(*) count FROM draft_asset_committed WHERE draft_id=?")
+    .get(orphanDraftId).count, 0);
+  assert.equal(authority.prepare("SELECT count(*) count FROM draft_asset_committed WHERE draft_id=?")
+    .get(liveChat.id).count, 1);
+  authority.close();
+  assets.close();
+  store.close();
+});
+
+test("quota recovery accounts live current, conflict, file, and paste references exactly once", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-legacy-live-drafts-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const store = new AgentStore(dataDir);
+  const project = store.createProject({ label: "Project", hostPath: "/tmp/project", defaultEngine: "codex" });
+  const chat = store.createConversation(project.id, { title: "Chat" });
+  const workspace = new WorkspaceStore(dataDir);
+  const assets = new AssetStore(dataDir);
+  const drafts = new DraftService(dataDir, store, workspace, assets);
+  t.after(() => { assets.close(); store.close(); });
+  const [currentFile, currentPaste, conflictFile, conflictPaste] =
+    Array.from({ length: 4 }, () => randomUUID());
+  workspace.putDraft(chat.id, {
+    ownerId: "browser",
+    text: "current",
+    attachmentIds: [currentFile],
+    pastedTextAttachmentId: currentPaste,
+    expectedRevision: 0,
+    clientId: "page:current:draft:one",
+  });
+  assert.throws(() => workspace.putDraft(chat.id, {
+    ownerId: "browser",
+    text: "displaced",
+    attachmentIds: [conflictFile],
+    pastedTextAttachmentId: conflictPaste,
+    expectedRevision: 0,
+    clientId: "page:conflict:draft:one",
+  }), error => error?.code === "DRAFT_CONFLICT");
+  for (const assetId of [currentFile, currentPaste, conflictFile, conflictPaste]) {
+    await writeLegacyDraftAttachment(drafts, chat.id, "browser", assetId);
+  }
+
+  assert.equal(await drafts.synchronizeAttachmentQuota(), 4);
+  assert.equal(await drafts.synchronizeAttachmentQuota(), 4);
+  const authority = new Database(path.join(dataDir, "asset-authority.sqlite"), { readonly: true });
+  assert.equal(authority.prepare("SELECT count(*) count FROM draft_asset_committed").get().count, 4);
+  assert.equal(authority.prepare("SELECT count(*) count FROM draft_attachment_cleanups").get().count, 0);
+  authority.close();
+});
+
+test("quota recovery preserves and rejects missing or corrupt live references until repaired", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-invalid-live-draft-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const store = new AgentStore(dataDir);
+  const project = store.createProject({ label: "Project", hostPath: "/tmp/project", defaultEngine: "codex" });
+  const chat = store.createConversation(project.id, { title: "Chat" });
+  const workspace = new WorkspaceStore(dataDir);
+  const assets = new AssetStore(dataDir);
+  const drafts = new DraftService(dataDir, store, workspace, assets);
+  t.after(() => { assets.close(); store.close(); });
+  const assetId = randomUUID();
+  workspace.putDraft(chat.id, {
+    ownerId: "browser",
+    text: "keep me",
+    attachmentIds: [assetId],
+    expectedRevision: 0,
+    clientId: "page:browser:draft:one",
+  });
+
+  await assert.rejects(() => drafts.synchronizeAttachmentQuota(), /missing or invalid/u);
+  assert.deepEqual(workspace.getDraft(chat.id, "browser").attachmentIds, [assetId]);
+  await writeLegacyDraftAttachment(drafts, chat.id, "browser", assetId);
+  await writeFile(drafts.files(chat.id, "browser", assetId).metadata, "not json");
+  await assert.rejects(() => drafts.synchronizeAttachmentQuota(), /missing or invalid/u);
+  assert.deepEqual(workspace.getDraft(chat.id, "browser").attachmentIds, [assetId]);
+  await writeLegacyDraftAttachment(drafts, chat.id, "browser", assetId);
+  assert.equal(await drafts.synchronizeAttachmentQuota(), 1);
 });
 
 test("partial asset deletion keeps its receipt and quota until restart completes every file", async (t) => {

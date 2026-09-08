@@ -524,6 +524,19 @@ export class AssetAuthority {
     }
   }
 
+  draftSurfaceIds(): string[] {
+    try {
+      return (this.db.prepare(`
+        SELECT draft_id draftId FROM draft_asset_reservations
+        UNION SELECT draft_id FROM draft_asset_committed
+        UNION SELECT draft_id FROM draft_asset_settlements
+        UNION SELECT draft_id FROM draft_attachment_cleanups
+        UNION SELECT draft_id FROM draft_asset_rate_events
+        ORDER BY draftId
+      `).all() as Array<{ draftId: string }>).map(row => row.draftId);
+    } catch (error) { throw this.mapped(error); }
+  }
+
   purgeAgents(agentIds: readonly string[]): void {
     const ids = [...new Set(agentIds)];
     if (ids.some((id) => !RUNTIME_UUID.test(id))) {
