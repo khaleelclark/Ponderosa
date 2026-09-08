@@ -44,9 +44,12 @@ export class WorkspacePreferencesWriter {
       this.pending = this.pending.filter(candidate => candidate !== entry);
       try {
         this.operations.publish(this.projectCanonical(await this.operations.refresh()));
-      } finally {
-        this.operations.onError?.(reason);
+      } catch {
+        if (this.canonical) this.operations.publish(this.projectPending());
       }
+      try {
+        this.operations.onError?.(reason);
+      } catch { /* A presentation callback must not break the write queue. */ }
     }
   }
 

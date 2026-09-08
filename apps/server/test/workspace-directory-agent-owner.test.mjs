@@ -33,6 +33,19 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
     engine: "codex",
     conversationId: owner.id,
   });
+  const workingAgents = new Map([[agent.id, "running"]]);
+  for (const [title, status] of [
+    ["Waiting Agent", "waiting"],
+    ["Provider Blocked Agent", "blocked"],
+    ["Decision Agent", "needs_decision"],
+  ]) {
+    const workingAgent = store.createAgent(project.id, {
+      title,
+      engine: "codex",
+      conversationId: owner.id,
+    });
+    workingAgents.set(workingAgent.id, status);
+  }
   for (let index = 0; index < 30; index += 1) {
     store.createAgent(project.id, {
       title: `Later Agent ${String(index).padStart(2, "0")}`,
@@ -73,7 +86,7 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
       agents: agents.map(({ id }) => ({
         agentId: id,
         childAgentIds: [],
-        status: id === agent.id ? "running" : "idle",
+        status: workingAgents.get(id) ?? "idle",
         statusTimestamp: new Date(0).toISOString(),
         reason: { kind: "idle" },
       })),
@@ -108,11 +121,26 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
 
   const activeAgents = await app.inject({
     method: "GET",
-    url: "/api/workspace/directory/agent?active=true&limit=6&sort=last_used",
+    url: "/api/workspace/directory/agent?active=true&limit=2&sort=last_used",
   });
   assert.equal(activeAgents.statusCode, 200, activeAgents.body);
-  assert.equal(activeAgents.json().activeCount, 1);
-  assert.deepEqual(activeAgents.json().items.map(item => item.agent.id), [agent.id]);
+  assert.equal(activeAgents.json().activeCount, 4);
+  assert.equal(activeAgents.json().items.length, 2);
+  assert.equal(activeAgents.json().history.hasMore, true);
+  const nextActiveAgents = await app.inject({
+    method: "GET",
+    url: `/api/workspace/directory/agent?active=true&limit=2&sort=last_used&cursor=${encodeURIComponent(activeAgents.json().history.cursor)}`,
+  });
+  assert.equal(nextActiveAgents.statusCode, 200, nextActiveAgents.body);
+  assert.equal(nextActiveAgents.json().activeCount, 4);
+  assert.deepEqual(
+    new Set([...activeAgents.json().items, ...nextActiveAgents.json().items].map(item => item.health.status)),
+    new Set(["running", "waiting", "blocked", "needs_decision"]),
+  );
+  assert.equal(
+    [...activeAgents.json().items, ...nextActiveAgents.json().items].some(item => item.health.status === "idle"),
+    false,
+  );
 
   const automations = await app.inject({
     method: "GET",

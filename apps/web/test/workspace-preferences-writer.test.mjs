@@ -62,6 +62,44 @@ test("a failed write reconciles canonical state before the next write", async ()
   assert.equal(cache.fontFamily, "system");
 });
 
+test("a failed write and refresh roll back only that intent and leave the queue usable", async () => {
+  let cache = preferences("2026-01-01T00:00:00.000Z", { sidebarWidth: 280, fontFamily: "inter" });
+  const first = deferred();
+  const calls = [];
+  let errors = 0;
+  const writer = new WorkspacePreferencesWriter({
+    read: () => cache,
+    publish: value => { cache = value; },
+    write: patch => {
+      calls.push(patch);
+      return calls.length === 1
+        ? first.promise
+        : Promise.resolve(preferences("2026-01-01T00:00:02.000Z", { sidebarWidth: 280, fontFamily: "system" }));
+    },
+    refresh: async () => { throw new Error("still offline"); },
+    onError: () => { errors += 1; },
+  });
+
+  writer.enqueue({ sidebarWidth: 300 });
+  writer.enqueue({ fontFamily: "system" });
+  await tick();
+  first.reject(new Error("offline"));
+  await tick();
+  await tick();
+
+  assert.equal(errors, 1);
+  assert.deepEqual(calls, [{ sidebarWidth: 300 }, { fontFamily: "system" }]);
+  assert.equal(cache.sidebarWidth, 280, "the failed optimistic field is rolled back");
+  assert.equal(cache.fontFamily, "system", "a different pending field remains optimistic");
+
+  writer.enqueue({ sidebarWidth: 320 });
+  await tick();
+  await tick();
+  assert.equal(calls.length, 3, "a rejected refresh does not poison later writes");
+  assert.equal(cache.sidebarWidth, 280);
+  assert.equal(cache.fontFamily, "system");
+});
+
 test("an older response cannot overwrite newer canonical cache state", async () => {
   let cache = preferences("2026-01-01T00:00:00.000Z", { sidebarWidth: 280, fontFamily: "inter" });
   const response = deferred();

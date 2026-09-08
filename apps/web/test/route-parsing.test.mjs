@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { nestedProjectRouteResources, routeToPath } from "../src/routeRegistry.js";
+import { fixedCreateConversationMatchesProject, nestedProjectRouteResources, routeToPath } from "../src/routeRegistry.js";
 import { parseRoute, parseRouteLocation } from "../src/routing.js";
 
 test("malformed encoded route segments fall back without throwing", () => {
@@ -53,4 +53,13 @@ test("nested Project routes expose every resource that must match the Project", 
     agentId: "agent-b", conversationId: "chat-b",
   });
   assert.deepEqual(nestedProjectRouteResources({ kind: "automation", projectId: "a", triggerId: "trigger-b" }), { triggerId: "trigger-b" });
+});
+
+test("a fixed create Chat must be live and owned by the selected Project", () => {
+  const chat = { id: "chat-b", projectId: "project-b", archived: false };
+  assert.equal(fixedCreateConversationMatchesProject("project-a", "chat-b", chat), false);
+  assert.equal(fixedCreateConversationMatchesProject("project-b", "chat-b", chat), true);
+  assert.equal(fixedCreateConversationMatchesProject("project-b", "chat-b", { ...chat, archived: true }), false);
+  assert.equal(fixedCreateConversationMatchesProject("project-b", "chat-b", { ...chat, deletedAt: "2026-01-01T00:00:00.000Z" }), false);
+  assert.equal(fixedCreateConversationMatchesProject("project-b", "chat-b", undefined), false);
 });

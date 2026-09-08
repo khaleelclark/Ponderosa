@@ -1,3 +1,4 @@
+import type { ConversationDto } from "@ponderosa/core";
 import type { Route } from "./routing.js";
 
 type RouteKind = Route["kind"];
@@ -13,6 +14,20 @@ export type RouteSidebarSection =
   | "settings";
 
 export type ProjectSidebarSection = "chats" | "agents" | "triggers";
+
+export function fixedCreateConversationMatchesProject(
+  projectId: string,
+  fixedConversationId: string | undefined,
+  conversation: Pick<ConversationDto, "id" | "projectId" | "archived" | "deletedAt"> | undefined,
+): boolean {
+  return Boolean(
+    fixedConversationId &&
+    conversation?.id === fixedConversationId &&
+    conversation.projectId === projectId &&
+    !conversation.archived &&
+    !conversation.deletedAt,
+  );
+}
 
 export function nestedProjectRouteResources(route: ProjectRoute): {
   agentId?: string;

@@ -195,29 +195,12 @@ function placeholders(count: number): string {
   return Array.from({ length: count }, () => "?").join(", ");
 }
 
-function activeAgentSql(alias: string): string {
-  return `(
-    EXISTS (
-      SELECT 1 FROM scheduler_runs active_run
-      WHERE active_run.agent_id = ${alias}.id
-        AND active_run.status IN ('leased', 'running')
-    )
-    OR EXISTS (
-      SELECT 1 FROM context_rollovers active_rollover
-      WHERE active_rollover.agent_id = ${alias}.id
-        AND active_rollover.state IN (
-          'requested', 'handoff_committed',
-          'session_retiring', 'continuation_ready'
-        )
-    )
-  )`;
-}
-
 function baseDirectoryQuery(
   kind: WorkspaceDirectoryKind,
   query: DirectoryQuery,
   normalizedSearch: string,
   filteredAgentIds: readonly string[],
+  workingAgentIds: readonly string[],
 ): { sql: string; params: unknown[] } {
   const where: string[] = [];
   const params: unknown[] = [];
@@ -363,7 +346,13 @@ function baseDirectoryQuery(
       )`);
       params.push(query.conversationId);
     }
-    if (query.active === "true") where.push(activeAgentSql("a"));
+    if (query.active === "true") {
+      if (workingAgentIds.length === 0) where.push("0");
+      else {
+        where.push(`a.id IN (${placeholders(workingAgentIds.length)})`);
+        params.push(...workingAgentIds);
+      }
+    }
     if (normalizedSearch) {
       where.push(
         "lower(a.title || ' ' || a.active_engine || ' ' || p.label || ' ' || p.host_path) LIKE ? ESCAPE '\\'",
@@ -522,12 +511,18 @@ function nextCursorPosition(
   };
 }
 
-function workspaceActiveAgentCount(sqlite: Database.Database): number {
-  const row = sqlite.prepare(`
-    SELECT COUNT(*) AS count
+const WORKING_AGENT_STATUSES = new Set<AgentHealthDto["status"]>([
+  "running", "waiting", "preparing", "compacting", "blocked",
+  "stalled", "interrupted", "needs_decision",
+]);
+
+function workspaceWorkingAgentIds(
+  context: WorkspaceDirectoryRoutesContext,
+): string[] {
+  const rows = context.store.sqlite.prepare(`
+    SELECT a.id, a.project_id
     FROM agents a
-    WHERE a.archived = 0
-      AND a.deleted_at IS NULL
+    WHERE a.archived = 0 AND a.deleted_at IS NULL
       AND NOT EXISTS (
         SELECT 1
         FROM agent_creation_operation_members creation_members
@@ -535,9 +530,25 @@ function workspaceActiveAgentCount(sqlite: Database.Database): number {
         WHERE creation_members.agent_id = a.id
           AND creation_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
       )
-      AND ${activeAgentSql("a")}
-  `).get() as { count: number };
-  return row.count;
+  `).all() as Array<{ id: string; project_id: string }>;
+  const agentsByProject = new Map<string, AgentDto[]>();
+  for (const row of rows) {
+    const agent = context.store.getAgent(row.id);
+    if (!agent) continue;
+    const agents = agentsByProject.get(row.project_id) ?? [];
+    agents.push(agent);
+    agentsByProject.set(row.project_id, agents);
+  }
+  const ids: string[] = [];
+  for (const [projectId, agents] of agentsByProject) {
+    for (const health of context.agentHealth(
+      { type: "project", id: projectId },
+      agents,
+    ).agents) {
+      if (WORKING_AGENT_STATUSES.has(health.status)) ids.push(health.agentId);
+    }
+  }
+  return ids.sort();
 }
 
 function workspaceEnabledTriggerCount(sqlite: Database.Database): number {
@@ -616,6 +627,9 @@ export function registerWorkspaceDirectoryRoutes(
     const filteredAgentIds = [
       ...new Set((request.query.agentIds ?? "").split(",").filter(Boolean)),
     ];
+    const workingAgentIds = kind === "agent"
+      ? workspaceWorkingAgentIds(context)
+      : [];
 
     const directorySettingsHash = createHash("sha256")
       .update(JSON.stringify({
@@ -633,6 +647,9 @@ export function registerWorkspaceDirectoryRoutes(
       conversationId: request.query.conversationId ?? "",
       sort,
       active: request.query.active ?? "",
+      workingAgentIdsHash: createHash("sha256")
+        .update(workingAgentIds.join("\0"))
+        .digest("base64url"),
       enabled: request.query.enabled ?? "",
       directorySettingsHash,
     });
@@ -642,6 +659,7 @@ export function registerWorkspaceDirectoryRoutes(
       request.query,
       normalizedSearch,
       filteredAgentIds,
+      workingAgentIds,
     );
     const projectScope = request.query.projectId;
     const scoped = (collection: string): string => projectScope
@@ -833,7 +851,7 @@ export function registerWorkspaceDirectoryRoutes(
       items,
       total,
       ...(kind === "agent"
-        ? { activeCount: workspaceActiveAgentCount(sqlite) }
+        ? { activeCount: workingAgentIds.length }
         : {}),
       ...(kind === "trigger"
         ? { enabledCount: workspaceEnabledTriggerCount(sqlite) }

@@ -26,9 +26,10 @@ import {
   modelSelectionIsCompatible,
   soleAvailableEngineId,
 } from "../conversationEngine";
-import { useAgentPresets } from "../hooks/queries";
+import { useAgentPresets, useConversation } from "../hooks/queries";
 import { pickAgentName } from "../parkNames";
 import { queryKeys } from "../queryKeys";
+import { fixedCreateConversationMatchesProject } from "../routeRegistry";
 import { EngineModelEffortFields } from "./ProjectRuntimeFields";
 import { ImportAgentForm } from "./ImportAgentDialog";
 import { retainIdempotentAttempt, type IdempotentAttempt } from "./idempotentAttempt";
@@ -80,9 +81,21 @@ export function AgentCreateForm({
         : projects[0]?.id ?? ""),
   );
   const project = projects.find(candidate => candidate.id === projectId);
-  const effectiveFixedConversationId = projectId === initialProjectId
-    ? fixedConversationId
-    : undefined;
+  const fixedConversationRequested = Boolean(
+    fixedConversationId && projectId === (fixedProjectId ?? initialProjectId),
+  );
+  const fixedConversationQuery = useConversation(
+    fixedConversationRequested ? fixedConversationId : undefined,
+    1,
+  );
+  const verifiedFixedConversation = fixedCreateConversationMatchesProject(
+    projectId,
+    fixedConversationId,
+    fixedConversationQuery.data?.conversation,
+  ) ? fixedConversationQuery.data!.conversation : undefined;
+  const effectiveFixedConversationId = verifiedFixedConversation?.id;
+  const fixedConversationLoading = fixedConversationRequested && fixedConversationQuery.isPending;
+  const fixedConversationInvalid = fixedConversationRequested && !fixedConversationLoading && !verifiedFixedConversation;
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.project(projectId),
     queryFn: () => api.listAgents(projectId),
@@ -96,9 +109,7 @@ export function AgentCreateForm({
   const presetsQuery = useAgentPresets(projectId || undefined);
   const agents = agentsQuery.data ?? [];
   const chats = chatsQuery.data ?? [];
-  const fixedConversation = effectiveFixedConversationId
-    ? chats.find(chat => chat.id === effectiveFixedConversationId)
-    : undefined;
+  const fixedConversation = verifiedFixedConversation;
   const presets = presetsQuery.data ?? [];
   const [title, setTitle] = useState(initialName ?? "");
   const [engine, setEngine] = useState(UNSET);
@@ -208,9 +219,11 @@ export function AgentCreateForm({
   useEffect(() => {
     const available = chats.filter(chat => !chat.archived);
     setConversationId(current =>
-      available.some(chat => chat.id === current)
-        ? current
-        : effectiveFixedConversationId ?? available[0]?.id ?? UNSET,
+      effectiveFixedConversationId ?? (
+        available.some(chat => chat.id === current)
+          ? current
+          : available[0]?.id ?? UNSET
+      ),
     );
   }, [chats, effectiveFixedConversationId]);
 
@@ -225,6 +238,10 @@ export function AgentCreateForm({
   }, [agents, conversationId]);
 
   const activeEngine = engines.find(candidate => candidate.id === engine);
+  const conversationAvailable = Boolean(
+    effectiveFixedConversationId ||
+    chats.some(chat => chat.id === conversationId && !chat.archived && !chat.deletedAt),
+  );
   const create = useMutation({
     mutationFn: () => {
       const options = {
@@ -393,7 +410,19 @@ export function AgentCreateForm({
         hideModelWhenEmpty
         hideEffortWhenEmpty
       />
-      {!effectiveFixedConversationId ? (
+      {fixedConversationInvalid ? (
+        <Alert
+          severity="warning"
+          action={fixedConversationQuery.isError ? (
+            <Button color="inherit" size="small" onClick={() => void fixedConversationQuery.refetch()}>
+              Retry
+            </Button>
+          ) : undefined}
+        >
+          The requested Chat is not available in this Project. Choose another Chat.
+        </Alert>
+      ) : null}
+      {!fixedConversationRequested || fixedConversationInvalid ? (
         <FormControl fullWidth size="small">
           <InputLabel id="create-agent-chat-label">
             Chat
@@ -426,7 +455,7 @@ export function AgentCreateForm({
       ) : (
         <TextField
           label="Project chat"
-          value={fixedConversation?.title ?? "Selected Chat"}
+          value={fixedConversation?.title ?? "Checking Chat…"}
           helperText="This Agent will join the Chat where creation was started."
           InputProps={{ readOnly: true }}
           fullWidth
@@ -496,7 +525,8 @@ export function AgentCreateForm({
         <Button
           variant="contained"
           disabled={
-            !projectId || !conversationId || !title.trim() ||
+            !projectId || !conversationId || !conversationAvailable ||
+            fixedConversationLoading || !title.trim() ||
             !engineIsAvailable(activeEngine) || create.isPending
           }
           onClick={() => {

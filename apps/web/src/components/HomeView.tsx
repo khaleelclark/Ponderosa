@@ -39,17 +39,6 @@ import {
   type SemanticStatusKind,
 } from "./SemanticStatus";
 
-const ACTIVE_STATUSES = new Set([
-  "running",
-  "waiting",
-  "preparing",
-  "compacting",
-  "blocked",
-  "stalled",
-  "interrupted",
-  "needs_decision",
-]);
-
 function humanizeStatus(status: string): string {
   return status.replaceAll("_", " ").replace(/\b\w/g, character => character.toUpperCase());
 }
@@ -265,7 +254,6 @@ export function HomeView({
     .filter(isOpenAttention)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   const working = [...activeAgentDirectory.starredItems, ...activeAgentDirectory.items]
-    .filter(item => ACTIVE_STATUSES.has(item.health.status))
     .sort((left, right) => right.health.statusTimestamp.localeCompare(left.health.statusTimestamp));
   const automations = triggerItems;
   const recentOutcomes = agentItems
