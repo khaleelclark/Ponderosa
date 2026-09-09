@@ -175,6 +175,9 @@ export const conversations = sqliteTable("conversations", {
 export const conversationDeletionReceipts = sqliteTable("conversation_deletion_receipts", {
   conversationId: text("conversation_id").primaryKey(),
   projectId: text("project_id").notNull(),
+  tombstoneName: text("tombstone_name"),
+  ownershipToken: text("ownership_token"),
+  removalStarted: integer("removal_started").notNull().default(0),
   canonicalDeletionCompleted: integer("canonical_deletion_completed").notNull().default(0),
   storageCleanupCompleted: integer("storage_cleanup_completed").notNull().default(0),
   serverCleanupCompleted: integer("server_cleanup_completed").notNull().default(0),

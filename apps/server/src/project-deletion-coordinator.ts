@@ -4,6 +4,7 @@ import type {
   CommunicationReconciliationReport,
 } from "@ponderosa/core";
 import type {
+  AgentDeletionReceipt,
   AgentStore,
   ConversationDeletionReceipt,
   CoordinationV3Store,
@@ -88,6 +89,7 @@ interface ProjectDeletionCoordinatorContext {
   processConversationDeletionCleanup(
     receipt: ConversationDeletionReceipt,
   ): Promise<boolean>;
+  processAgentDeletionCleanup(receipt: AgentDeletionReceipt): Promise<boolean>;
   assets: Pick<AssetStore, "purgeProject">;
 }
 
@@ -103,6 +105,34 @@ export function finishProjectAssetAuthorityCleanup(
       !receipt.storageCleanupCompleted || !receipt.draftCleanupCompleted) return;
   assets.purgeProject(projectId, receipt.draftSurfaceIds);
   store.markProjectDeletionAssetAuthorityCleanupComplete(projectId);
+}
+
+export async function drainProjectAgentDeletions(
+  store: Pick<AgentStore,
+    "listPendingAgentDeletionReceipts" | "finishAgentDeletionStorageCleanup" |
+    "getAgentDeletionReceiptByPreviewHash" | "recordAgentDeletionCleanupError">,
+  projectId: string,
+  processAgentDeletionCleanup: (receipt: AgentDeletionReceipt) => Promise<boolean>,
+): Promise<boolean> {
+  const pending = () => store.listPendingAgentDeletionReceipts()
+    .filter(receipt => receipt.projectId === projectId);
+  for (const initial of pending()) {
+    let receipt = initial;
+    if (!receipt.storageCleanupCompleted) {
+      try {
+        store.finishAgentDeletionStorageCleanup(receipt);
+      } catch (error) {
+        store.recordAgentDeletionCleanupError(
+          receipt.id,
+          error instanceof Error ? error.message : "Agent storage cleanup failed",
+        );
+        continue;
+      }
+      receipt = store.getAgentDeletionReceiptByPreviewHash(receipt.previewHash) ?? receipt;
+    }
+    if (!receipt.serverCleanupCompleted) await processAgentDeletionCleanup(receipt);
+  }
+  return pending().length === 0;
 }
 
 export function registerProjectDeletionRoutes(
@@ -156,6 +186,7 @@ export function registerProjectDeletionRoutes(
     drafts,
     workspace,
     processConversationDeletionCleanup,
+    processAgentDeletionCleanup,
     assets,
   } = context;
 
@@ -269,6 +300,15 @@ export function registerProjectDeletionRoutes(
     )) {
       return reply.code(409).send({
         error: "Wait for Chat deletion cleanup to finish before deleting this Project",
+      });
+    }
+    if (!await drainProjectAgentDeletions(
+      store,
+      project.id,
+      processAgentDeletionCleanup,
+    )) {
+      return reply.code(409).send({
+        error: "Wait for Agent deletion cleanup to finish before deleting this Project",
       });
     }
     if (store.listConversations(project.id).some((conversation) =>

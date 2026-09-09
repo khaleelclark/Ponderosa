@@ -1059,8 +1059,9 @@ export class AgentStore extends AgentEventSessionFacade {
 
   finishConversationDeletionStorageCleanup(
     receipt: ConversationDeletionReceipt,
+    afterTombstoneRemoval?: (conversationId: string) => void,
   ): void {
-    this.workspaceCatalog.finishConversationDeletionStorageCleanup(receipt);
+    this.workspaceCatalog.finishConversationDeletionStorageCleanup(receipt, afterTombstoneRemoval);
   }
 
   refreshConversationDeletionProjection(receipt: ConversationDeletionReceipt): void {

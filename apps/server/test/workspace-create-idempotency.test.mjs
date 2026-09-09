@@ -288,6 +288,63 @@ test("Chat API binds one stable creation key to one payload", async (t) => {
   assert.equal(conflict.statusCode, 409, conflict.body);
 });
 
+test("Chat creation is rejected after Project deletion quarantine at route and store boundaries", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-chat-project-quarantine-"));
+  const store = new AgentStore(dataDir);
+  const project = store.createProject({
+    label: "Project",
+    hostPath: "/tmp/project",
+    defaultEngine: "codex",
+  });
+  const existingChatIds = store.listConversations(project.id).map(chat => chat.id);
+  store.markProjectDeletionPending(project.id);
+  const app = Fastify();
+  t.after(async () => {
+    await app.close();
+    store.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  registerConversationRoutes(app, {
+    store,
+    workspace: { getPreferences: () => ({}) },
+    engines: new Map([["codex", { adapter }]]),
+    cachedModelOptions: () => [],
+    appendWorkspace: () => {},
+    generateConversationTitle: async () => ({ title: "Chat", generated: false }),
+    conversationDetail: () => undefined,
+    agentHealth: () => ({}),
+    teamDirectory: () => ({}),
+    hasActiveRun: () => false,
+    projectDeletionInProgress: () => true,
+    deletingConversationIds: new Set(),
+    agentCreationConversationLeases: new Map(),
+    conversationDeliveryLeases: new Map(),
+    reconcileConversationRuntimeCommunicationProjections: async () => 0,
+    refreshTriggers: async () => {},
+    processConversationDeletionCleanup: async () => true,
+  });
+
+  const response = await app.inject({
+    method: "POST",
+    url: `/api/projects/${project.id}/conversations`,
+    headers: { "idempotency-key": "late-chat-route" },
+    payload: { title: "Late Chat" },
+  });
+  assert.equal(response.statusCode, 409, response.body);
+  assert.deepEqual(store.listConversations(project.id).map(chat => chat.id), existingChatIds);
+
+  assert.throws(
+    () => store.createConversation(project.id, { title: "Store race loser" }, {
+      idempotencyKey: "late-chat-store",
+      payloadHash: "a".repeat(64),
+    }),
+    /Project deletion is in progress/u,
+  );
+  assert.deepEqual(store.listConversations(project.id).map(chat => chat.id), existingChatIds);
+  const receipt = store.commitProjectDeletion(project.id);
+  assert.deepEqual(receipt?.draftSurfaceIds, existingChatIds.flatMap(id => [id, `collaboration:${id}`]));
+});
+
 test("startup removes authenticated orphan contender stages and preserves foreign stages", async (t) => {
   const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-project-orphan-stages-"));
   const managedWorkspacesRoot = path.join(dataDir, "managed");

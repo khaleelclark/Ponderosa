@@ -519,6 +519,9 @@ CREATE TABLE project_deletion_receipts (
 CREATE TABLE conversation_deletion_receipts (
   conversation_id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
+  tombstone_name TEXT,
+  ownership_token TEXT,
+  removal_started INTEGER NOT NULL DEFAULT 0,
   canonical_deletion_completed INTEGER NOT NULL DEFAULT 0,
   storage_cleanup_completed INTEGER NOT NULL DEFAULT 0,
   server_cleanup_completed INTEGER NOT NULL DEFAULT 0,

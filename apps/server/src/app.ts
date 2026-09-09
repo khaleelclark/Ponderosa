@@ -1100,6 +1100,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     cancelAgentDecisions,
     awaitProjectDeletionBarrier,
     commitAgentDeletion,
+    processAgentDeletionCleanup,
     processConversationDeletionCleanup,
     contextCursors,
     browserScopeForRun,

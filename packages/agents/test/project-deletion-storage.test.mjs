@@ -245,3 +245,81 @@ test("Project asset authority cleanup cannot complete before physical cleanup", 
   assert.equal(completed?.assetAuthorityCleanupCompleted, true);
   assert.ok(completed?.completedAt);
 });
+
+test("Project commit preserves incomplete Agent deletion cleanup authority", (t) => {
+  const { dataDir, store, project } = fixture(t);
+  const chat = store.getConversation(project.lastConversationId);
+  const agent = store.createAgent(project.id, {
+    title: "Agent",
+    engine: "codex",
+    conversationId: chat.id,
+  });
+  const preview = store.previewAgentDeletion([agent.id]);
+  store.deleteAgentSubtrees(preview.rootAgentIds, preview.previewHash);
+  const agentReceipt = store.getAgentDeletionReceiptByPreviewHash(preview.previewHash);
+  assert.equal(agentReceipt?.storageCleanupCompleted, true);
+  assert.equal(agentReceipt?.serverCleanupCompleted, false);
+
+  assert.throws(
+    () => store.commitProjectDeletion(project.id),
+    /cannot commit while Agent deletion cleanup is pending/u,
+  );
+  assert.equal(store.getProject(project.id)?.id, project.id);
+  assert.equal(existsSync(join(dataDir, "projects", project.id)), true);
+  assert.ok(store.getAgentDeletionReceiptByPreviewHash(preview.previewHash));
+
+  store.markAgentDeletionServerCleanupComplete(agentReceipt.id);
+  assert.ok(store.commitProjectDeletion(project.id));
+  assert.equal(store.getAgentDeletionReceiptByPreviewHash(preview.previewHash), undefined);
+});
+
+test("Project commit preserves an Agent deletion precommit journal", (t) => {
+  const { dataDir, store, project } = fixture(t);
+  const chat = store.getConversation(project.lastConversationId);
+  const agent = store.createAgent(project.id, {
+    title: "Agent",
+    engine: "codex",
+    conversationId: chat.id,
+  });
+  store.sqlite.prepare(`
+    INSERT INTO agent_deletion_pending (
+      agent_id, project_id, conversation_id, tombstone_name, ownership_token, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    agent.id,
+    project.id,
+    chat.id,
+    `.${agent.id}.deleting-test`,
+    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    new Date().toISOString(),
+  );
+
+  assert.throws(
+    () => store.commitProjectDeletion(project.id),
+    /cannot commit while Agent deletion cleanup is pending/u,
+  );
+  assert.equal(existsSync(join(dataDir, "projects", project.id)), true);
+  assert.equal(store.sqlite.prepare(
+    "SELECT COUNT(*) count FROM agent_deletion_pending WHERE agent_id = ?",
+  ).get(agent.id).count, 1);
+});
+
+test("a sibling Project Agent deletion receipt does not block Project commit", (t) => {
+  const { store, project } = fixture(t);
+  const sibling = store.createProject({
+    label: "Sibling",
+    hostPath: "/tmp/sibling",
+    defaultEngine: "codex",
+  });
+  const siblingAgent = store.createAgent(sibling.id, {
+    title: "Sibling Agent",
+    engine: "codex",
+    conversationId: sibling.lastConversationId,
+  });
+  const preview = store.previewAgentDeletion([siblingAgent.id]);
+  store.deleteAgentSubtrees(preview.rootAgentIds, preview.previewHash);
+
+  assert.ok(store.commitProjectDeletion(project.id));
+  assert.ok(store.getProject(sibling.id));
+  assert.ok(store.getAgentDeletionReceiptByPreviewHash(preview.previewHash));
+});

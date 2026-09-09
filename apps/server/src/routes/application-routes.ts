@@ -190,6 +190,7 @@ export function registerApplicationRoutes(
     cancelAgentDecisions,
     awaitProjectDeletionBarrier,
     commitAgentDeletion,
+    processAgentDeletionCleanup,
     processConversationDeletionCleanup,
     contextCursors,
     browserScopeForRun,
@@ -365,6 +366,7 @@ registerProjectDeletionRoutes(app, {
   drafts,
   workspace,
   processConversationDeletionCleanup,
+  processAgentDeletionCleanup,
   assets,
 });
 

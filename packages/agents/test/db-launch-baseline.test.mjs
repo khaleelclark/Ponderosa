@@ -50,10 +50,48 @@ test("creates the canonical launch baseline for a fresh database", () => {
         "0016_conversation_deletion_precommit.ts",
         "0017_project_deletion_draft_cleanup.ts",
         "0018_project_deletion_asset_authority_cleanup.ts",
+        "0019_conversation_deletion_ownership.ts",
       ],
     );
   } finally {
     client.close();
+  }
+});
+
+test("upgrades legacy Chat deletion receipts without inventing ownership", () => {
+  const file = temporaryDatabase();
+  const opened = openDb(file);
+  opened.client.close();
+  const legacy = new Database(file);
+  legacy.exec(`
+    ALTER TABLE conversation_deletion_receipts DROP COLUMN tombstone_name;
+    ALTER TABLE conversation_deletion_receipts DROP COLUMN ownership_token;
+    ALTER TABLE conversation_deletion_receipts DROP COLUMN removal_started;
+    DELETE FROM _schema_version WHERE name = '0019_conversation_deletion_ownership.ts';
+  `);
+  legacy.prepare(`
+    INSERT INTO conversation_deletion_receipts (
+      conversation_id, project_id, canonical_deletion_completed,
+      storage_cleanup_completed, server_cleanup_completed, created_at, updated_at
+    ) VALUES (?, ?, 1, 0, 0, ?, ?)
+  `).run("legacy-chat", "legacy-project", "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z");
+  legacy.close();
+
+  const migrated = openDb(file);
+  try {
+    assert.deepEqual(
+      migrated.client.prepare(`
+        SELECT tombstone_name tombstoneName, ownership_token ownershipToken,
+               removal_started removalStarted
+        FROM conversation_deletion_receipts WHERE conversation_id = ?
+      `).get("legacy-chat"),
+      { tombstoneName: null, ownershipToken: null, removalStarted: 0 },
+    );
+    assert.equal(migrated.client.prepare(
+      "SELECT 1 FROM _schema_version WHERE name = ?",
+    ).pluck().get("0019_conversation_deletion_ownership.ts"), 1);
+  } finally {
+    migrated.client.close();
   }
 });
 

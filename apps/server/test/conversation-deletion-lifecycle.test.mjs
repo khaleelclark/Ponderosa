@@ -1,5 +1,15 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,6 +19,7 @@ import {
   createConversationDeletionAuthority,
   drainProjectConversationDeletions,
 } from "../dist/conversation-deletion-authority.js";
+import { drainProjectAgentDeletions } from "../dist/project-deletion-coordinator.js";
 import { DraftService } from "../dist/routes/drafts.js";
 import { registerConversationRoutes } from "../dist/routes/conversations.js";
 
@@ -92,7 +103,8 @@ test("canonical Chat deletion dominates leftover storage across restart", async 
   const receipt = store.commitConversationDeletion(chat.id);
   assert.ok(receipt?.canonicalDeletionCompleted);
   assert.equal(store.getConversation(chat.id), undefined);
-  assert.equal(existsSync(chatDirectory), true);
+  assert.equal(existsSync(chatDirectory), false);
+  assert.equal(existsSync(join(dataDir, "projects", project.id, "conversations", receipt.tombstoneName)), true);
 
   // Simulate a process exit after the canonical commit but before the retryable
   // storage phase removes the still-owned Chat directory.
@@ -147,6 +159,118 @@ test("canonical Chat deletion dominates leftover storage across restart", async 
   });
   assert.equal(mutation.statusCode, 404, mutation.body);
   assert.equal(store.getConversation(chat.id), undefined);
+});
+
+test("Chat cleanup preserves an ABA replacement at the canonical path", (t) => {
+  const { chat, dataDir, project, store } = fixture(t);
+  const receipt = store.commitConversationDeletion(chat.id);
+  assert.ok(receipt?.ownershipToken);
+  const canonical = join(dataDir, "projects", project.id, "conversations", chat.id);
+  mkdirSync(canonical);
+  const sentinel = join(canonical, "KEEP.txt");
+  writeFileSync(sentinel, "replacement data\n");
+
+  assert.throws(
+    () => store.finishConversationDeletionStorageCleanup(receipt),
+    /storage was resurrected/u,
+  );
+  assert.equal(readFileSync(sentinel, "utf8"), "replacement data\n");
+  assert.equal(store.getConversationDeletionReceipt(chat.id)?.storageCleanupCompleted, false);
+});
+
+test("Chat cleanup rejects a symlinked replacement tombstone", (t) => {
+  const { chat, dataDir, project, store } = fixture(t);
+  const receipt = store.commitConversationDeletion(chat.id);
+  assert.ok(receipt?.tombstoneName);
+  const root = join(dataDir, "projects", project.id, "conversations");
+  const tombstone = join(root, receipt.tombstoneName);
+  const external = join(dataDir, "external-chat-replacement");
+  renameSync(tombstone, external);
+  symlinkSync(external, tombstone, "dir");
+
+  assert.throws(
+    () => store.finishConversationDeletionStorageCleanup(receipt),
+    /not the owned directory/u,
+  );
+  assert.equal(existsSync(join(external, "conversation.json")), true);
+  assert.equal(store.getConversationDeletionReceipt(chat.id)?.storageCleanupCompleted, false);
+});
+
+test("Chat cleanup retry converges after a crash immediately following removal", (t) => {
+  const { chat, dataDir, project, store } = fixture(t);
+  const receipt = store.commitConversationDeletion(chat.id);
+  const tombstone = join(
+    dataDir,
+    "projects",
+    project.id,
+    "conversations",
+    receipt.tombstoneName,
+  );
+
+  assert.throws(
+    () => store.finishConversationDeletionStorageCleanup(receipt, () => {
+      throw new Error("injected crash after Chat tombstone removal");
+    }),
+    /injected crash/u,
+  );
+  assert.equal(existsSync(tombstone), false);
+  assert.equal(store.getConversationDeletionReceipt(chat.id)?.removalStarted, true);
+  assert.equal(store.getConversationDeletionReceipt(chat.id)?.storageCleanupCompleted, false);
+
+  store.finishConversationDeletionStorageCleanup(receipt);
+  assert.equal(store.getConversationDeletionReceipt(chat.id)?.storageCleanupCompleted, true);
+});
+
+test("startup restores a pre-canonical Chat deletion rename", (t) => {
+  const { chat, dataDir, project, store } = fixture(t);
+  const receipt = store.markConversationDeletionPending(chat.id);
+  const root = join(dataDir, "projects", project.id, "conversations");
+  const canonical = join(root, chat.id);
+  const tombstone = join(root, receipt.tombstoneName);
+  writeFileSync(join(canonical, ".ponderosa-conversation-deletion.json"), JSON.stringify({
+    version: 1,
+    kind: "conversation-deletion",
+    projectId: project.id,
+    conversationId: chat.id,
+    tombstoneName: receipt.tombstoneName,
+    ownershipToken: receipt.ownershipToken,
+  }));
+  renameSync(canonical, tombstone);
+  store.close();
+
+  const reopened = new AgentStore(dataDir);
+  try {
+    assert.equal(existsSync(tombstone), false);
+    assert.equal(existsSync(canonical), true);
+    assert.equal(reopened.getConversation(chat.id)?.id, chat.id);
+    assert.equal(reopened.getConversationDeletionReceipt(chat.id)?.canonicalDeletionCompleted, false);
+  } finally {
+    reopened.close();
+  }
+});
+
+test("legacy canonical-complete Chat receipts adopt owned storage safely", (t) => {
+  const { chat, dataDir, project, store } = fixture(t);
+  const receipt = store.commitConversationDeletion(chat.id);
+  const root = join(dataDir, "projects", project.id, "conversations");
+  const canonical = join(root, chat.id);
+  const tombstone = join(root, receipt.tombstoneName);
+  renameSync(tombstone, canonical);
+  unlinkSync(join(canonical, ".ponderosa-conversation-deletion.json"));
+  store.sqlite.prepare(`
+    UPDATE conversation_deletion_receipts
+    SET tombstone_name = NULL, ownership_token = NULL,
+        removal_started = 0, storage_cleanup_completed = 0
+    WHERE conversation_id = ?
+  `).run(chat.id);
+
+  store.finishConversationDeletionStorageCleanup(receipt);
+
+  assert.equal(existsSync(canonical), false);
+  const completed = store.getConversationDeletionReceipt(chat.id);
+  assert.equal(completed?.storageCleanupCompleted, true);
+  assert.match(completed?.tombstoneName ?? "", /deleting-legacy/u);
+  assert.ok(completed?.ownershipToken);
 });
 
 test("Chat storage cleanup removes a stale resurrected projection defensively", (t) => {
@@ -526,4 +650,30 @@ test("startup cleanup converges a legacy Chat receipt superseded by Project dele
   assert.equal(recovered.storageCleanupCompleted, true);
   assert.equal(recovered.serverCleanupCompleted, true);
   assert.equal(store.listPendingConversationDeletionReceipts().length, 0);
+});
+
+test("Project deletion drains an incomplete Agent deletion receipt before commit", async (t) => {
+  const { chat, project, store } = fixture(t);
+  const agent = store.createAgent(project.id, {
+    title: "Agent",
+    engine: "codex",
+    conversationId: chat.id,
+  });
+  const preview = store.previewAgentDeletion([agent.id]);
+  store.deleteAgentSubtrees(preview.rootAgentIds, preview.previewHash);
+  assert.equal(store.listPendingAgentDeletionReceipts().length, 1);
+  let cleanups = 0;
+
+  assert.equal(await drainProjectAgentDeletions(
+    store,
+    project.id,
+    async (receipt) => {
+      cleanups += 1;
+      store.markAgentDeletionServerCleanupComplete(receipt.id);
+      return true;
+    },
+  ), true);
+  assert.equal(cleanups, 1);
+  assert.equal(store.listPendingAgentDeletionReceipts().length, 0);
+  assert.ok(store.commitProjectDeletion(project.id));
 });

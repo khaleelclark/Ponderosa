@@ -198,6 +198,9 @@ export interface ProjectDeletionReceipt {
 export interface ConversationDeletionReceipt {
   conversationId: string;
   projectId: string;
+  tombstoneName?: string;
+  ownershipToken?: string;
+  removalStarted: boolean;
   canonicalDeletionCompleted: boolean;
   storageCleanupCompleted: boolean;
   serverCleanupCompleted: boolean;

@@ -59,6 +59,7 @@ const deletionRecoveryPhasesMigration = "0015_deletion_recovery_phases.ts";
 const conversationDeletionPrecommitMigration = "0016_conversation_deletion_precommit.ts";
 const projectDeletionDraftCleanupMigration = "0017_project_deletion_draft_cleanup.ts";
 const projectDeletionAssetAuthorityCleanupMigration = "0018_project_deletion_asset_authority_cleanup.ts";
+const conversationDeletionOwnershipMigration = "0019_conversation_deletion_ownership.ts";
 
 function hasApplicationSchema(sqlite: Database.Database): boolean {
   return sqlite
@@ -395,6 +396,33 @@ function establishProjectDeletionAssetAuthorityCleanupSchema(sqlite: Database.Da
     `);
     sqlite.prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
       .run(projectDeletionAssetAuthorityCleanupMigration, new Date().toISOString());
+  })();
+}
+
+function establishConversationDeletionOwnershipSchema(sqlite: Database.Database): void {
+  const applied = sqlite
+    .prepare(`SELECT 1 FROM ${schemaVersionTable} WHERE name = ?`)
+    .get(conversationDeletionOwnershipMigration) !== undefined;
+  if (applied) return;
+  sqlite.transaction(() => {
+    const columns = new Set(
+      (sqlite.prepare("PRAGMA table_info(conversation_deletion_receipts)").all() as Array<{ name: string }>)
+        .map(column => column.name),
+    );
+    if (!columns.has("tombstone_name")) {
+      sqlite.exec("ALTER TABLE conversation_deletion_receipts ADD COLUMN tombstone_name TEXT");
+    }
+    if (!columns.has("ownership_token")) {
+      sqlite.exec("ALTER TABLE conversation_deletion_receipts ADD COLUMN ownership_token TEXT");
+    }
+    if (!columns.has("removal_started")) {
+      sqlite.exec(`
+        ALTER TABLE conversation_deletion_receipts
+        ADD COLUMN removal_started INTEGER NOT NULL DEFAULT 0
+      `);
+    }
+    sqlite.prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
+      .run(conversationDeletionOwnershipMigration, new Date().toISOString());
   })();
 }
 
@@ -1020,6 +1048,7 @@ export function openDb(file: string): OpenedDb {
   establishConversationDeletionPrecommitSchema(sqlite);
   establishProjectDeletionDraftCleanupSchema(sqlite);
   establishProjectDeletionAssetAuthorityCleanupSchema(sqlite);
+  establishConversationDeletionOwnershipSchema(sqlite);
   establishPublicProviderRequestUpdates(sqlite);
   establishProviderActivationExecutionPayloads(sqlite);
   establishNestedProviderActivationExecutionPayloads(sqlite);

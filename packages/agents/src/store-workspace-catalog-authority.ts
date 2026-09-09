@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { and, asc, eq } from "drizzle-orm";
 import type {
   AgentDto,
@@ -32,6 +33,7 @@ import {
   conversationDeletionReceipts,
   conversations,
   projectDeletionReceipts,
+  projectDeletionPending,
   projects,
 } from "./schema.js";
 import {
@@ -51,6 +53,16 @@ export interface WorkspaceCreationIdentity {
 }
 
 const workspaceIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const CONVERSATION_DELETION_IDENTITY_FILE = ".ponderosa-conversation-deletion.json";
+
+interface ConversationDeletionIdentity {
+  version: 1;
+  kind: "conversation-deletion";
+  projectId: string;
+  conversationId: string;
+  tombstoneName: string;
+  ownershipToken: string;
+}
 
 function creationId(kind: "project" | "conversation", scope: string, key: string): string {
   const hash = createHash("sha256").update(`${kind}\0${scope}\0${key}`).digest("hex");
@@ -96,6 +108,7 @@ export class AgentWorkspaceCatalogAuthority {
   recoverCreationDirectories(): void {
     const projectsRoot = projectsDir(this.dataDir);
     if (!existsSync(projectsRoot)) return;
+    this.recoverConversationDeletionDirectories();
     for (const entry of readdirSync(projectsRoot)) {
       const projectMatch = /^\.(.+)\.creating$/u.exec(entry);
       if (projectMatch && workspaceIdPattern.test(projectMatch[1]!)) {
@@ -113,6 +126,114 @@ export class AgentWorkspaceCatalogAuthority {
         }
       }
       this.recoverConversationRecency(projectId);
+    }
+  }
+
+  private conversationDeletionIdentity(
+    receipt: ConversationDeletionReceipt,
+  ): ConversationDeletionIdentity {
+    const prefix = `.${receipt.conversationId}.deleting-`;
+    if (!receipt.tombstoneName || !receipt.ownershipToken ||
+        receipt.tombstoneName.includes("/") || receipt.tombstoneName.includes("\\") ||
+        !receipt.tombstoneName.startsWith(prefix)) {
+      throw new Error("invalid Chat deletion receipt");
+    }
+    return {
+      version: 1,
+      kind: "conversation-deletion",
+      projectId: receipt.projectId,
+      conversationId: receipt.conversationId,
+      tombstoneName: receipt.tombstoneName,
+      ownershipToken: receipt.ownershipToken,
+    };
+  }
+
+  private ensureConversationDeletionIdentity(
+    receipt: ConversationDeletionReceipt,
+  ): ConversationDeletionReceipt {
+    if (Boolean(receipt.tombstoneName) !== Boolean(receipt.ownershipToken)) {
+      throw new Error("Chat deletion receipt has incomplete storage identity");
+    }
+    if (receipt.tombstoneName && receipt.ownershipToken) {
+      this.conversationDeletionIdentity(receipt);
+      return receipt;
+    }
+    const ownershipToken = randomUUID();
+    const tombstoneName = `.${receipt.conversationId}.deleting-legacy-${ownershipToken}`;
+    this.db.update(conversationDeletionReceipts).set({ tombstoneName, ownershipToken })
+      .where(eq(conversationDeletionReceipts.conversationId, receipt.conversationId)).run();
+    const upgraded = this.getConversationDeletionReceipt(receipt.conversationId);
+    if (!upgraded) throw new Error("Chat deletion receipt not found");
+    this.conversationDeletionIdentity(upgraded);
+    return upgraded;
+  }
+
+  private stageConversationDeletionStorage(
+    receipt: ConversationDeletionReceipt,
+  ): ConversationDeletionReceipt {
+    const current = this.ensureConversationDeletionIdentity(receipt);
+    const identity = this.conversationDeletionIdentity(current);
+    const parent = conversationsDir(this.dataDir, current.projectId);
+    const canonical = conversationDir(this.dataDir, current.projectId, current.conversationId);
+    const tombstone = join(parent, identity.tombstoneName);
+    const hasCanonical = pathEntryExists(canonical);
+    const hasTombstone = pathEntryExists(tombstone);
+    if (hasCanonical && hasTombstone) throw new Error("Chat deletion storage is ambiguous");
+    if (hasTombstone) {
+      validateDeletionTombstone(
+        tombstone,
+        CONVERSATION_DELETION_IDENTITY_FILE,
+        identity,
+        "Chat deletion tombstone",
+      );
+      return current;
+    }
+    if (!hasCanonical) throw new Error("Chat deletion has no recoverable canonical storage");
+    const stat = lstatSync(canonical);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error("Chat deletion canonical storage is not the owned directory");
+    }
+    const record = readJson<ConversationJson>(
+      conversationJsonPath(this.dataDir, current.projectId, current.conversationId),
+    );
+    if (record.id !== current.conversationId || record.projectId !== current.projectId) {
+      throw new Error("Chat deletion canonical storage identity does not match");
+    }
+    const marker = join(canonical, CONVERSATION_DELETION_IDENTITY_FILE);
+    if (!pathEntryExists(marker)) writeJson(marker, identity);
+    validateDeletionTombstone(
+      canonical,
+      CONVERSATION_DELETION_IDENTITY_FILE,
+      identity,
+      "Chat deletion canonical storage",
+      { dev: stat.dev, ino: stat.ino },
+    );
+    renameSync(canonical, tombstone);
+    fsyncDirectory(parent);
+    return current;
+  }
+
+  private recoverConversationDeletionDirectories(): void {
+    for (const receipt of this.listPendingConversationDeletionReceipts()) {
+      if (receipt.canonicalDeletionCompleted || !receipt.tombstoneName || !receipt.ownershipToken) {
+        continue;
+      }
+      const identity = this.conversationDeletionIdentity(receipt);
+      const parent = conversationsDir(this.dataDir, receipt.projectId);
+      const canonical = conversationDir(this.dataDir, receipt.projectId, receipt.conversationId);
+      const tombstone = join(parent, identity.tombstoneName);
+      const hasCanonical = pathEntryExists(canonical);
+      const hasTombstone = pathEntryExists(tombstone);
+      if (hasCanonical && hasTombstone) throw new Error("pending Chat deletion storage is ambiguous");
+      if (!hasTombstone) continue;
+      validateDeletionTombstone(
+        tombstone,
+        CONVERSATION_DELETION_IDENTITY_FILE,
+        identity,
+        "pending Chat deletion tombstone",
+      );
+      renameSync(tombstone, canonical);
+      fsyncDirectory(parent);
     }
   }
 
@@ -540,6 +661,11 @@ export class AgentWorkspaceCatalogAuthority {
         lastConversationId: id,
       });
       this.db.transaction((tx) => {
+        if (tx.select({ projectId: projectDeletionPending.projectId })
+          .from(projectDeletionPending)
+          .where(eq(projectDeletionPending.projectId, projectId)).get()) {
+          throw new Error("Project deletion is in progress");
+        }
         tx.insert(conversations).values({
           id,
           projectId,
@@ -661,6 +787,9 @@ export class AgentWorkspaceCatalogAuthority {
     return row ? {
       conversationId: row.conversationId,
       projectId: row.projectId,
+      ...(row.tombstoneName ? { tombstoneName: row.tombstoneName } : {}),
+      ...(row.ownershipToken ? { ownershipToken: row.ownershipToken } : {}),
+      removalStarted: row.removalStarted === 1,
       canonicalDeletionCompleted: row.canonicalDeletionCompleted === 1,
       storageCleanupCompleted: row.storageCleanupCompleted === 1,
       serverCleanupCompleted: row.serverCleanupCompleted === 1,
@@ -678,6 +807,9 @@ export class AgentWorkspaceCatalogAuthority {
       .map(row => ({
         conversationId: row.conversationId,
         projectId: row.projectId,
+        ...(row.tombstoneName ? { tombstoneName: row.tombstoneName } : {}),
+        ...(row.ownershipToken ? { ownershipToken: row.ownershipToken } : {}),
+        removalStarted: row.removalStarted === 1,
         canonicalDeletionCompleted: row.canonicalDeletionCompleted === 1,
         storageCleanupCompleted: row.storageCleanupCompleted === 1,
         serverCleanupCompleted: row.serverCleanupCompleted === 1,
@@ -694,9 +826,13 @@ export class AgentWorkspaceCatalogAuthority {
     const row = this.db.select().from(conversations).where(eq(conversations.id, id)).get();
     if (!row) throw new Error("conversation not found");
     const now = new Date().toISOString();
+    const ownershipToken = randomUUID();
     this.db.insert(conversationDeletionReceipts).values({
       conversationId: id,
       projectId: row.projectId,
+      tombstoneName: `.${id}.deleting-${ownershipToken}`,
+      ownershipToken,
+      removalStarted: 0,
       canonicalDeletionCompleted: 0,
       storageCleanupCompleted: 0,
       serverCleanupCompleted: 0,
@@ -719,6 +855,7 @@ export class AgentWorkspaceCatalogAuthority {
 
   finishConversationDeletionStorageCleanup(
     receipt: ConversationDeletionReceipt,
+    afterTombstoneRemoval?: (conversationId: string) => void,
   ): void {
     const current = this.getConversationDeletionReceipt(receipt.conversationId);
     if (!current) throw new Error("Chat deletion receipt not found");
@@ -726,17 +863,76 @@ export class AgentWorkspaceCatalogAuthority {
       throw new Error("Chat canonical deletion must finish before storage cleanup");
     }
     if (current.storageCleanupCompleted) return;
+    const legacyReceipt = !current.tombstoneName && !current.ownershipToken;
+    const legacyRecovery = legacyReceipt || current.tombstoneName
+      ?.startsWith(`.${current.conversationId}.deleting-legacy-`) === true;
+    const canonical = conversationDir(this.dataDir, current.projectId, current.conversationId);
+    if (legacyReceipt && !pathEntryExists(canonical)) {
+      const now = new Date().toISOString();
+      this.db.delete(conversations).where(and(
+        eq(conversations.id, current.conversationId),
+        eq(conversations.projectId, current.projectId),
+      )).run();
+      this.db.update(conversationDeletionReceipts).set({
+        removalStarted: 1,
+        storageCleanupCompleted: 1,
+        lastError: null,
+        updatedAt: now,
+      }).where(eq(conversationDeletionReceipts.conversationId, current.conversationId)).run();
+      return;
+    }
+    if (!legacyRecovery && pathEntryExists(canonical)) {
+      throw new Error("committed Chat deletion storage was resurrected");
+    }
+    const currentTombstone = current.tombstoneName
+      ? join(conversationsDir(this.dataDir, current.projectId), current.tombstoneName)
+      : undefined;
+    const removalAlreadyCompleted = current.removalStarted &&
+      !pathEntryExists(canonical) &&
+      (!currentTombstone || !pathEntryExists(currentTombstone));
+    const staged = removalAlreadyCompleted
+      ? current
+      : this.stageConversationDeletionStorage(current);
+    const identity = this.conversationDeletionIdentity(staged);
+    const tombstone = join(
+      conversationsDir(this.dataDir, staged.projectId),
+      identity.tombstoneName,
+    );
+    if (!staged.removalStarted) {
+      if (!pathEntryExists(tombstone)) {
+        throw new Error("Chat deletion tombstone is missing before durable removal authority");
+      }
+      validateDeletionTombstone(
+        tombstone,
+        CONVERSATION_DELETION_IDENTITY_FILE,
+        identity,
+        "Chat deletion tombstone",
+      );
+      this.db.update(conversationDeletionReceipts).set({
+        removalStarted: 1,
+        updatedAt: new Date().toISOString(),
+      }).where(eq(conversationDeletionReceipts.conversationId, staged.conversationId)).run();
+    }
+    if (pathEntryExists(tombstone)) {
+      validateDeletionTombstone(
+        tombstone,
+        CONVERSATION_DELETION_IDENTITY_FILE,
+        identity,
+        "Chat deletion tombstone",
+      );
+      rmSync(tombstone, { recursive: true, force: true });
+      afterTombstoneRemoval?.(staged.conversationId);
+    }
+    const parent = conversationsDir(this.dataDir, staged.projectId);
+    if (existsSync(parent)) fsyncDirectory(parent);
     // A restart on the canonical-commit/storage-cleanup boundary must not let a
     // projection rebuilt from the leftover folder survive completed cleanup.
     this.db.delete(conversations).where(and(
       eq(conversations.id, current.conversationId),
       eq(conversations.projectId, current.projectId),
     )).run();
-    rmSync(conversationDir(this.dataDir, current.projectId, current.conversationId), {
-      recursive: true,
-      force: true,
-    });
     this.db.update(conversationDeletionReceipts).set({
+      removalStarted: 1,
       storageCleanupCompleted: 1,
       lastError: null,
       updatedAt: new Date().toISOString(),
@@ -794,19 +990,42 @@ export class AgentWorkspaceCatalogAuthority {
     }
     const linkedAgents = this.listAgents(row.projectId).filter((agent) => agent.conversationId === id);
     if (linkedAgents.length > 0) throw new Error("delete the Chat's Agents before deleting the Chat");
+    const staged = this.stageConversationDeletionStorage(intent);
+    const identity = this.conversationDeletionIdentity(staged);
+    const parent = conversationsDir(this.dataDir, row.projectId);
+    const tombstone = join(parent, identity.tombstoneName);
+    const canonical = conversationDir(this.dataDir, row.projectId, id);
     const now = new Date().toISOString();
-    this.db.transaction((tx) => {
-      // Communication and Automation cleanup share this SQLite connection, so
-      // no new work can target the Chat after its projection disappears.
-      beforeProjectionDelete?.(id);
-      this.setHistoryConversationVisibility(row.projectId, id, false);
-      tx.delete(conversations).where(eq(conversations.id, id)).run();
-      tx.update(conversationDeletionReceipts).set({
-        canonicalDeletionCompleted: 1,
-        lastError: null,
-        updatedAt: now,
-      }).where(eq(conversationDeletionReceipts.conversationId, id)).run();
-    });
+    try {
+      this.db.transaction((tx) => {
+        // Communication and Automation cleanup share this SQLite connection, so
+        // no new work can target the Chat after its projection disappears.
+        beforeProjectionDelete?.(id);
+        this.setHistoryConversationVisibility(row.projectId, id, false);
+        tx.delete(conversations).where(eq(conversations.id, id)).run();
+        tx.update(conversationDeletionReceipts).set({
+          canonicalDeletionCompleted: 1,
+          lastError: null,
+          updatedAt: now,
+        }).where(eq(conversationDeletionReceipts.conversationId, id)).run();
+      });
+    } catch (error) {
+      if (pathEntryExists(canonical)) {
+        throw new Error("Chat deletion rollback found ambiguous canonical storage", { cause: error });
+      }
+      if (!pathEntryExists(tombstone)) {
+        throw new Error("Chat deletion rollback lost its owned tombstone", { cause: error });
+      }
+      validateDeletionTombstone(
+        tombstone,
+        CONVERSATION_DELETION_IDENTITY_FILE,
+        identity,
+        "Chat deletion tombstone",
+      );
+      renameSync(tombstone, canonical);
+      fsyncDirectory(parent);
+      throw error;
+    }
     return this.getConversationDeletionReceipt(id)!;
   }
 

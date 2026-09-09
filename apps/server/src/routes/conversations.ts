@@ -220,6 +220,9 @@ export function registerConversationRoutes(
     Headers: { "idempotency-key"?: string };
     Body: unknown;
   }>("/api/projects/:id/conversations", async (request, reply) => {
+    if (projectDeletionInProgress(request.params.id)) {
+      return reply.code(409).send({ error: "Project deletion is in progress" });
+    }
     const idempotencyKey = request.headers["idempotency-key"]?.trim();
     if (!idempotencyKey || !/^[A-Za-z0-9_-]{8,128}$/u.test(idempotencyKey)) {
       return reply.code(400).send({ error: "a valid Chat creation idempotency key is required" });
