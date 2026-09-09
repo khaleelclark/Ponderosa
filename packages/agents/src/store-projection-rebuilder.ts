@@ -103,6 +103,16 @@ export class AgentProjectionRebuilder {
 
     const root = projectsDir(this.dataDir);
     if (!existsSync(root)) return;
+    const canonicallyDeletedConversationIds = new Map<string, Set<string>>();
+    for (const row of this.client.prepare(`
+      SELECT project_id, conversation_id FROM conversation_deletion_receipts
+      WHERE canonical_deletion_completed = 1
+    `).all() as Array<{ project_id: string; conversation_id: string }>) {
+      const projectConversationIds = canonicallyDeletedConversationIds.get(row.project_id) ??
+        new Set<string>();
+      projectConversationIds.add(row.conversation_id);
+      canonicallyDeletedConversationIds.set(row.project_id, projectConversationIds);
+    }
 
     for (const projectId of readdirSync(root)) {
       if (projectId.startsWith(".") || projectId.endsWith(".creating")) {
@@ -168,6 +178,7 @@ export class AgentProjectionRebuilder {
       if (existsSync(mDir)) {
         for (const conversationId of readdirSync(mDir)) {
           if (conversationId.startsWith(".") || conversationId.endsWith(".creating")) continue;
+          if (canonicallyDeletedConversationIds.get(projectId)?.has(conversationId)) continue;
           const mj = conversationJsonPath(this.dataDir, projectId, conversationId);
           if (!existsSync(mj)) continue;
           const m = readJson<ConversationJson>(mj);

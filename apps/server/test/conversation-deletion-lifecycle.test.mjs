@@ -43,6 +43,7 @@ function fixture(t) {
 
 function deletionAuthority({
   commitAgentDeletion = async () => {},
+  deletingConversationIds = new Set(),
   drafts,
   reconcile = async () => 0,
   refresh = async () => {},
@@ -53,7 +54,7 @@ function deletionAuthority({
     store,
     workspace,
     drafts,
-    deletingConversationIds: new Set(),
+    deletingConversationIds,
     agentCreationConversationLeases: new Map(),
     conversationDeliveryLeases: new Map(),
     reconcileConversationRuntimeCommunicationProjections: reconcile,
@@ -63,6 +64,128 @@ function deletionAuthority({
     publishWorkspace: () => {},
   });
 }
+
+test("canonical Chat deletion dominates leftover storage across restart", async (t) => {
+  const dataDir = mkdtempSync(join(tmpdir(), "ponderosa-chat-deletion-restart-"));
+  let store = new AgentStore(dataDir);
+  let app;
+  t.after(async () => {
+    await app?.close();
+    store.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+  const project = store.createProject({
+    label: "Project",
+    hostPath: "/tmp/project",
+    defaultEngine: "codex",
+  });
+  const chat = store.listConversations(project.id)[0];
+  const pendingChat = store.createConversation(project.id, { title: "Pending deletion" });
+  store.markConversationDeletionPending(pendingChat.id);
+  const chatDirectory = join(
+    dataDir,
+    "projects",
+    project.id,
+    "conversations",
+    chat.id,
+  );
+  const receipt = store.commitConversationDeletion(chat.id);
+  assert.ok(receipt?.canonicalDeletionCompleted);
+  assert.equal(store.getConversation(chat.id), undefined);
+  assert.equal(existsSync(chatDirectory), true);
+
+  // Simulate a process exit after the canonical commit but before the retryable
+  // storage phase removes the still-owned Chat directory.
+  store.close();
+  store = new AgentStore(dataDir);
+  assert.equal(store.getConversation(chat.id), undefined);
+  assert.equal(store.getConversation(pendingChat.id)?.id, pendingChat.id);
+
+  const workspace = new WorkspaceStore(dataDir);
+  const drafts = new DraftService(dataDir, store, workspace, noCleanup);
+  const deletingConversationIds = new Set([chat.id]);
+  const authority = deletionAuthority({
+    deletingConversationIds,
+    drafts,
+    store,
+    workspace,
+  });
+  const recovered = store.getConversationDeletionReceipt(chat.id);
+  assert.ok(recovered);
+  assert.equal(await authority.processConversationDeletionCleanup(recovered), true);
+  assert.equal(store.getConversation(chat.id), undefined);
+  assert.equal(existsSync(chatDirectory), false);
+  assert.equal(deletingConversationIds.has(chat.id), false);
+  const completed = store.getConversationDeletionReceipt(chat.id);
+  assert.equal(completed?.canonicalDeletionCompleted, true);
+  assert.equal(completed?.storageCleanupCompleted, true);
+  assert.equal(completed?.serverCleanupCompleted, true);
+
+  app = Fastify();
+  registerConversationRoutes(app, {
+    store,
+    workspace,
+    engines: new Map(),
+    cachedModelOptions: () => [],
+    appendWorkspace: () => {},
+    generateConversationTitle: async () => ({ title: chat.title, generated: false }),
+    conversationDetail: () => undefined,
+    agentHealth: () => ({}),
+    teamDirectory: () => ({}),
+    hasActiveRun: () => false,
+    deletingConversationIds,
+    agentCreationConversationLeases: new Map(),
+    conversationDeliveryLeases: new Map(),
+    reconcileConversationRuntimeCommunicationProjections: async () => 0,
+    refreshTriggers: async () => {},
+    processConversationDeletionCleanup: authority.processConversationDeletionCleanup,
+  });
+  const mutation = await app.inject({
+    method: "PATCH",
+    url: `/api/conversations/${chat.id}`,
+    payload: { title: "Resurrected" },
+  });
+  assert.equal(mutation.statusCode, 404, mutation.body);
+  assert.equal(store.getConversation(chat.id), undefined);
+});
+
+test("Chat storage cleanup removes a stale resurrected projection defensively", (t) => {
+  const { chat, dataDir, project, store } = fixture(t);
+  const receipt = store.commitConversationDeletion(chat.id);
+  assert.ok(receipt?.canonicalDeletionCompleted);
+  store.sqlite.prepare(`
+    INSERT INTO conversations (
+      id, project_id, title, default_engine, default_model, default_effort,
+      created_at, updated_at, archived
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    chat.id,
+    project.id,
+    chat.title,
+    chat.defaultEngine ?? null,
+    chat.defaultModel ?? null,
+    chat.defaultEffort ?? null,
+    chat.createdAt,
+    chat.updatedAt,
+    chat.archived ? 1 : 0,
+  );
+  assert.ok(store.getConversation(chat.id));
+
+  store.finishConversationDeletionStorageCleanup(receipt);
+
+  assert.equal(store.getConversation(chat.id), undefined);
+  assert.equal(existsSync(join(
+    dataDir,
+    "projects",
+    project.id,
+    "conversations",
+    chat.id,
+  )), false);
+  assert.equal(
+    store.getConversationDeletionReceipt(chat.id)?.storageCleanupCompleted,
+    true,
+  );
+});
 
 test("committed Chat cleanup retains refresh and draft rm failures for exact retry", async (t) => {
   const { chat, drafts, store, workspace } = fixture(t);

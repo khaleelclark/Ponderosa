@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import type {
   AgentDto,
   AgentPresetDto,
@@ -726,6 +726,12 @@ export class AgentWorkspaceCatalogAuthority {
       throw new Error("Chat canonical deletion must finish before storage cleanup");
     }
     if (current.storageCleanupCompleted) return;
+    // A restart on the canonical-commit/storage-cleanup boundary must not let a
+    // projection rebuilt from the leftover folder survive completed cleanup.
+    this.db.delete(conversations).where(and(
+      eq(conversations.id, current.conversationId),
+      eq(conversations.projectId, current.projectId),
+    )).run();
     rmSync(conversationDir(this.dataDir, current.projectId, current.conversationId), {
       recursive: true,
       force: true,
