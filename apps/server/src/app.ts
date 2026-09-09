@@ -1,4 +1,4 @@
-import { AgentStore, CoordinationV3Store, WorkspaceStore, type LogEvent } from "@ponderosa/agents";
+import { AgentStore, CoordinationV3Store, ProjectDeletionInProgressError, WorkspaceStore, type LogEvent } from "@ponderosa/agents";
 import { windowsJobObjectsSupported } from "@ponderosa/native-host";
 import type {
   TokenUsageRangeDto,
@@ -672,6 +672,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     },
   }) as unknown as PonderosaServer;
   app.setErrorHandler((error, request, reply) => {
+    if (error instanceof ProjectDeletionInProgressError) {
+      return reply.code(409).send({ error: error.message });
+    }
     if (!(error instanceof ProviderAdapterBoundaryError)) throw error;
     request.log.error({
       providerError: restrictedProviderExceptionLogDetail(error),

@@ -224,14 +224,8 @@ test("Agent preset creation replays one canonical identity after projection fail
     WHEN NEW.name = 'Custom QA'
     BEGIN SELECT RAISE(FAIL, 'injected preset projection failure'); END
   `);
-  assert.throws(
-    () => store.createAgentPreset(project.id, input, attempt),
-    /injected preset projection failure/u,
-  );
-  assert.throws(
-    () => store.createAgentPreset(project.id, input, attempt),
-    /injected preset projection failure/u,
-  );
+  const committed = store.createAgentPreset(project.id, input, attempt);
+  assert.equal(store.createAgentPreset(project.id, input, attempt).id, committed.id);
   store.sqlite.exec("DROP TRIGGER fail_custom_preset");
   const recovered = store.createAgentPreset(project.id, input, attempt);
   assert.equal(store.createAgentPreset(project.id, input, attempt).id, recovered.id);

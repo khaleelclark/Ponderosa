@@ -9,6 +9,7 @@ import type {
 import {
   readRepairableJsonl,
   pathEntryExists,
+  ProjectDeletionInProgressError,
   stableJson,
   validateDeletionTombstone,
   writeAtomicFsyncedJsonl,
@@ -986,6 +987,7 @@ export function registerProjectRoutes(
       if (request.body?.conversationId) appendWorkspace({ type: "conversation_changed", projectId: project.id, conversationId: request.body.conversationId, action: "used" });
       return project;
     } catch (error) {
+      if (error instanceof ProjectDeletionInProgressError) throw error;
       return reply.code(400).send({ error: error instanceof Error ? error.message : "project could not be selected" });
     }
   });

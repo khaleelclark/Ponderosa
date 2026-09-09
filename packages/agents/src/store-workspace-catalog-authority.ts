@@ -52,6 +52,15 @@ export interface WorkspaceCreationIdentity {
   payloadHash: string;
 }
 
+export class ProjectDeletionInProgressError extends Error {
+  readonly code = "PROJECT_DELETION_IN_PROGRESS";
+
+  constructor() {
+    super("Project deletion is in progress");
+    this.name = "ProjectDeletionInProgressError";
+  }
+}
+
 const workspaceIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const CONVERSATION_DELETION_IDENTITY_FILE = ".ponderosa-conversation-deletion.json";
 
@@ -104,6 +113,39 @@ export class AgentWorkspaceCatalogAuthority {
       visible: boolean,
     ) => void,
   ) {}
+
+  private assertProjectMetadataMutable(projectId: string): void {
+    if (this.db.select({ projectId: projectDeletionPending.projectId })
+      .from(projectDeletionPending)
+      .where(eq(projectDeletionPending.projectId, projectId)).get()) {
+      throw new ProjectDeletionInProgressError();
+    }
+  }
+
+  /** Commit canonical metadata while holding the same SQLite write boundary
+   * that fences Project deletion. SQLite is only a rebuildable projection: a
+   * failure after the durable write must not turn a committed mutation into a
+   * rejected one. Startup reconciliation repairs any projection left behind. */
+  private commitProjectMetadataMutation<T>(
+    projectId: string,
+    writeCanonical: () => T,
+    writeProjection: () => void,
+  ): T {
+    let canonicalCommitted = false;
+    let result: T | undefined;
+    try {
+      this.db.transaction(() => {
+        this.assertProjectMetadataMutable(projectId);
+        result = writeCanonical();
+        canonicalCommitted = true;
+        writeProjection();
+      });
+    } catch (error) {
+      if (!canonicalCommitted) throw error;
+      try { writeProjection(); } catch { /* canonical metadata remains authoritative */ }
+    }
+    return result!;
+  }
 
   recoverCreationDirectories(): void {
     const projectsRoot = projectsDir(this.dataDir);
@@ -430,8 +472,13 @@ export class AgentWorkspaceCatalogAuthority {
   }
 
   updateProject(id: string, input: UpdateProjectRequest): ProjectDto | undefined {
-    const current = this.getProject(id);
-    if (!current) return undefined;
+    if (!this.getProject(id)) return undefined;
+    this.assertProjectMetadataMutable(id);
+    const canonicalCurrent = readJson<ProjectJson>(projectJsonPath(this.dataDir, id));
+    const current: ProjectDto = {
+      ...canonicalCurrent,
+      defaultEngine: canonicalCurrent.defaultEngine as ProjectDto["defaultEngine"],
+    };
     const label = (input.label ?? current.label).trim();
     if (!label) throw new Error("project label is required");
     const instructions = (input.instructions ?? current.instructions ?? "").slice(0, 100_000);
@@ -439,19 +486,27 @@ export class AgentWorkspaceCatalogAuthority {
     const defaultModel = input.defaultModel === null ? undefined : input.defaultModel ?? current.defaultModel;
     const defaultEffort = input.defaultEffort === null ? undefined : input.defaultEffort ?? current.defaultEffort;
     const { instructions: _previousInstructions, ...projectWithoutInstructions } = current;
-    const canonical = readJson<ProjectJson>(projectJsonPath(this.dataDir, id));
-    const record: ProjectJson = {
-      ...canonical,
-      ...projectWithoutInstructions,
-      label,
-      defaultEngine,
-      ...(defaultModel ? { defaultModel } : { defaultModel: undefined }),
-      ...(defaultEffort ? { defaultEffort } : { defaultEffort: undefined }),
-      ...(instructions ? { instructions } : {}),
-    };
-    writeJson(projectJsonPath(this.dataDir, id), record);
-    this.db.update(projects).set({ label, defaultEngine, defaultModel: defaultModel ?? null, defaultEffort: defaultEffort ?? null }).where(eq(projects.id, id)).run();
-    return { ...projectWithoutInstructions, label, defaultEngine, ...(defaultModel ? { defaultModel } : {}), ...(defaultEffort ? { defaultEffort } : {}), ...(instructions ? { instructions } : {}) };
+    const next = { ...projectWithoutInstructions, label, defaultEngine, ...(defaultModel ? { defaultModel } : {}), ...(defaultEffort ? { defaultEffort } : {}), ...(instructions ? { instructions } : {}) };
+    const changed = label !== current.label || defaultEngine !== current.defaultEngine ||
+      defaultModel !== current.defaultModel || defaultEffort !== current.defaultEffort ||
+      instructions !== (current.instructions ?? "");
+    return this.commitProjectMetadataMutation(id, () => {
+      if (changed) {
+        const canonical = readJson<ProjectJson>(projectJsonPath(this.dataDir, id));
+        writeJson(projectJsonPath(this.dataDir, id), {
+          ...canonical,
+          ...projectWithoutInstructions,
+          label,
+          defaultEngine,
+          ...(defaultModel ? { defaultModel } : { defaultModel: undefined }),
+          ...(defaultEffort ? { defaultEffort } : { defaultEffort: undefined }),
+          ...(instructions ? { instructions } : { instructions: undefined }),
+        });
+      }
+      return next;
+    }, () => {
+      this.db.update(projects).set({ label, defaultEngine, defaultModel: defaultModel ?? null, defaultEffort: defaultEffort ?? null }).where(eq(projects.id, id)).run();
+    });
   }
 
   listAgentPresets(projectId: string): AgentPresetDto[] {
@@ -461,10 +516,37 @@ export class AgentWorkspaceCatalogAuthority {
     const r = this.db.select().from(agentPresets).where(eq(agentPresets.id, id)).get();
     return r ? { ...r, model: r.model ?? undefined, effort: r.effort ?? undefined, enabled: r.enabled === 1, engine: r.engine as AgentPresetDto["engine"] } : undefined;
   }
+  private canonicalAgentPreset(
+    id: string,
+    projectId?: string,
+  ): { projectId: string; preset?: AgentPresetDto } | undefined {
+    const projectIds = projectId
+      ? [projectId]
+      : readdirSync(projectsDir(this.dataDir)).filter((entry) => !entry.startsWith("."));
+    for (const candidateProjectId of projectIds) {
+      const events = readRepairableJsonl<PresetEvent>(
+        agentPresetsPath(this.dataDir, candidateProjectId), "agent preset journal", true,
+      );
+      let found: AgentPresetDto | undefined;
+      let seen = false;
+      for (const event of events) {
+        if (event.type === "upsert" && event.preset.id === id) {
+          found = event.preset;
+          seen = true;
+        } else if (event.type === "delete" && event.id === id) {
+          found = undefined;
+          seen = true;
+        }
+      }
+      if (seen) return { projectId: candidateProjectId, ...(found ? { preset: found } : {}) };
+    }
+    return undefined;
+  }
   getAgentPresetCreation(
     projectId: string,
     identity: WorkspaceCreationIdentity,
   ): AgentPresetDto | undefined {
+    this.assertProjectMetadataMutable(projectId);
     const id = creationId("project", `${projectId}:preset-create`, identity.idempotencyKey);
     const events = readRepairableJsonl<PresetEvent>(
       agentPresetsPath(this.dataDir, projectId), "agent preset journal", true,
@@ -479,9 +561,10 @@ export class AgentWorkspaceCatalogAuthority {
       : current.delete(event.id);
     const preset = current.get(id);
     if (!preset) throw new Error("This Agent preset creation was already deleted");
-    this.db.insert(agentPresets).values({ ...preset, enabled: preset.enabled ? 1 : 0 })
-      .onConflictDoUpdate({ target: agentPresets.id, set: { ...preset, enabled: preset.enabled ? 1 : 0 } }).run();
-    return preset;
+    return this.commitProjectMetadataMutation(projectId, () => preset, () => {
+      this.db.insert(agentPresets).values({ ...preset, enabled: preset.enabled ? 1 : 0 })
+        .onConflictDoUpdate({ target: agentPresets.id, set: { ...preset, enabled: preset.enabled ? 1 : 0 } }).run();
+    });
   }
   createAgentPreset(
     projectId: string,
@@ -498,25 +581,50 @@ export class AgentWorkspaceCatalogAuthority {
         : randomUUID(),
       projectId, ...input, enabled: input.enabled ?? true, createdAt: now, updatedAt: now,
     };
-    appendFsyncedJsonl(agentPresetsPath(this.dataDir, projectId), [{
-      type: "upsert", preset,
-      ...(identity ? {
-        creationIdempotencyKey: identity.idempotencyKey,
-        creationPayloadHash: identity.payloadHash,
-      } : {}),
-    } satisfies PresetEvent]);
-    this.db.insert(agentPresets).values({ ...preset, enabled: preset.enabled ? 1 : 0 }).run(); return preset;
+    return this.commitProjectMetadataMutation(projectId, () => {
+      appendFsyncedJsonl(agentPresetsPath(this.dataDir, projectId), [{
+        type: "upsert", preset,
+        ...(identity ? {
+          creationIdempotencyKey: identity.idempotencyKey,
+          creationPayloadHash: identity.payloadHash,
+        } : {}),
+      } satisfies PresetEvent]);
+      return preset;
+    }, () => {
+      this.db.insert(agentPresets).values({ ...preset, enabled: preset.enabled ? 1 : 0 })
+        .onConflictDoUpdate({ target: agentPresets.id, set: { ...preset, enabled: preset.enabled ? 1 : 0 } }).run();
+    });
   }
   updateAgentPreset(id: string, patch: UpdateAgentPresetRequest): AgentPresetDto | undefined {
-    const current = this.getAgentPreset(id); if (!current) return undefined;
-    const next = { ...current, ...patch, model: patch.model === null ? undefined : patch.model ?? current.model, effort: patch.effort === null ? undefined : patch.effort ?? current.effort, updatedAt: new Date().toISOString() } as AgentPresetDto;
-    appendFsyncedJsonl(agentPresetsPath(this.dataDir, current.projectId), [{ type: "upsert", preset: next } satisfies PresetEvent]);
-    this.db.update(agentPresets).set({ ...next, model: next.model ?? null, effort: next.effort ?? null, enabled: next.enabled ? 1 : 0 }).where(eq(agentPresets.id, id)).run(); return next;
+    const projected = this.getAgentPreset(id);
+    if (projected) this.assertProjectMetadataMutable(projected.projectId);
+    const canonical = this.canonicalAgentPreset(id, projected?.projectId);
+    const current = canonical?.preset;
+    if (!current) return undefined;
+    const candidate = { ...current, ...patch, model: patch.model === null ? undefined : patch.model ?? current.model, effort: patch.effort === null ? undefined : patch.effort ?? current.effort } as AgentPresetDto;
+    const changed = candidate.name !== current.name || candidate.description !== current.description ||
+      candidate.guidance !== current.guidance || candidate.engine !== current.engine ||
+      candidate.model !== current.model || candidate.effort !== current.effort ||
+      candidate.enabled !== current.enabled;
+    const next = { ...candidate, updatedAt: changed ? new Date().toISOString() : current.updatedAt };
+    return this.commitProjectMetadataMutation(canonical.projectId, () => {
+      if (changed) appendFsyncedJsonl(agentPresetsPath(this.dataDir, canonical.projectId), [{ type: "upsert", preset: next } satisfies PresetEvent]);
+      return next;
+    }, () => {
+      this.db.update(agentPresets).set({ ...next, model: next.model ?? null, effort: next.effort ?? null, enabled: next.enabled ? 1 : 0 }).where(eq(agentPresets.id, id)).run();
+    });
   }
   deleteAgentPreset(id: string): boolean {
-    const current = this.getAgentPreset(id); if (!current) return false;
-    appendFsyncedJsonl(agentPresetsPath(this.dataDir, current.projectId), [{ type: "delete", id, at: new Date().toISOString() } satisfies PresetEvent]);
-    this.db.delete(agentPresets).where(eq(agentPresets.id, id)).run(); return true;
+    const projected = this.getAgentPreset(id);
+    if (projected) this.assertProjectMetadataMutable(projected.projectId);
+    const canonical = this.canonicalAgentPreset(id, projected?.projectId);
+    if (!canonical) return false;
+    return this.commitProjectMetadataMutation(canonical.projectId, () => {
+      if (canonical.preset) appendFsyncedJsonl(agentPresetsPath(this.dataDir, canonical.projectId), [{ type: "delete", id, at: new Date().toISOString() } satisfies PresetEvent]);
+      return true;
+    }, () => {
+      this.db.delete(agentPresets).where(eq(agentPresets.id, id)).run();
+    });
   }
 
   listProjects(): ProjectDto[] {
@@ -567,18 +675,25 @@ export class AgentWorkspaceCatalogAuthority {
   markProjectUsed(projectId: string, conversationId?: string): ProjectDto | undefined {
     const project = this.getProject(projectId);
     if (!project) return undefined;
+    this.assertProjectMetadataMutable(projectId);
     if (conversationId) {
       const conversation = this.getConversation(conversationId);
       if (!conversation || conversation.projectId !== projectId || conversation.archived) throw new Error("conversation is unavailable");
     }
     const lastUsedAt = new Date().toISOString();
-    const next = { ...project, lastUsedAt, lastConversationId: conversationId ?? project.lastConversationId };
-    writeJson(projectJsonPath(this.dataDir, projectId), {
-      ...readJson<ProjectJson>(projectJsonPath(this.dataDir, projectId)),
-      ...next,
+    return this.commitProjectMetadataMutation(projectId, () => {
+      const canonical = readJson<ProjectJson>(projectJsonPath(this.dataDir, projectId));
+      const next: ProjectDto = {
+        ...canonical,
+        defaultEngine: canonical.defaultEngine as ProjectDto["defaultEngine"],
+        lastUsedAt,
+        lastConversationId: conversationId ?? canonical.lastConversationId,
+      };
+      writeJson(projectJsonPath(this.dataDir, projectId), { ...canonical, ...next });
+      return next;
+    }, () => {
+      this.db.update(projects).set({ lastUsedAt, ...(conversationId ? { lastConversationId: conversationId } : {}) }).where(eq(projects.id, projectId)).run();
     });
-    this.db.update(projects).set({ lastUsedAt, ...(conversationId ? { lastConversationId: conversationId } : {}) }).where(eq(projects.id, projectId)).run();
-    return next;
   }
 
   // ─── Conversations ─────────────────────────────────────────────────────────
@@ -664,7 +779,7 @@ export class AgentWorkspaceCatalogAuthority {
         if (tx.select({ projectId: projectDeletionPending.projectId })
           .from(projectDeletionPending)
           .where(eq(projectDeletionPending.projectId, projectId)).get()) {
-          throw new Error("Project deletion is in progress");
+          throw new ProjectDeletionInProgressError();
         }
         tx.insert(conversations).values({
           id,
@@ -742,43 +857,68 @@ export class AgentWorkspaceCatalogAuthority {
   updateConversation(id: string, patch: UpdateConversationRequest): ConversationDto | undefined {
     const row = this.db.select().from(conversations).where(eq(conversations.id, id)).get();
     if (!row) return undefined;
-    const now = new Date().toISOString();
+    this.assertProjectMetadataMutable(row.projectId);
+    const canonical = readJson<ConversationJson>(
+      conversationJsonPath(this.dataDir, row.projectId, id),
+    );
     const next = {
-      title: patch.title ?? row.title,
-      defaultEngine: patch.defaultEngine === undefined ? row.defaultEngine : patch.defaultEngine,
-      defaultModel: patch.defaultModel === undefined ? row.defaultModel : patch.defaultModel,
-      defaultEffort: patch.defaultEffort === undefined ? row.defaultEffort : patch.defaultEffort,
-      archived: patch.archived ?? row.archived === 1,
+      title: patch.title ?? canonical.title,
+      defaultEngine: patch.defaultEngine === undefined ? canonical.defaultEngine : patch.defaultEngine,
+      defaultModel: patch.defaultModel === undefined ? canonical.defaultModel : patch.defaultModel,
+      defaultEffort: patch.defaultEffort === undefined ? canonical.defaultEffort : patch.defaultEffort,
+      archived: patch.archived ?? canonical.archived,
     };
-    this.db.transaction((tx) => {
-      tx.update(conversations)
+    const changed = next.title !== canonical.title || next.defaultEngine !== canonical.defaultEngine ||
+      next.defaultModel !== canonical.defaultModel || next.defaultEffort !== canonical.defaultEffort ||
+      next.archived !== canonical.archived;
+    const updatedAt = changed ? new Date().toISOString() : canonical.updatedAt;
+    const result: ConversationDto = {
+      id: row.id,
+      projectId: row.projectId,
+      title: next.title,
+      defaultEngine: next.defaultEngine ?? undefined,
+      defaultModel: next.defaultModel ?? undefined,
+      defaultEffort: next.defaultEffort ?? undefined,
+      createdAt: canonical.createdAt,
+      updatedAt,
+      archived: next.archived,
+    };
+    const updated = this.commitProjectMetadataMutation(row.projectId, () => {
+      if (changed) {
+        const json = readJson<ConversationJson>(
+          conversationJsonPath(this.dataDir, row.projectId, id),
+        );
+        writeJson(conversationJsonPath(this.dataDir, row.projectId, id), {
+          ...json,
+          ...next,
+          defaultEngine: next.defaultEngine ?? undefined,
+          defaultModel: next.defaultModel ?? undefined,
+          defaultEffort: next.defaultEffort ?? undefined,
+          updatedAt,
+        });
+      }
+      return result;
+    }, () => {
+      this.db.update(conversations)
         .set({
           title: next.title,
           defaultEngine: next.defaultEngine,
           defaultModel: next.defaultModel,
           defaultEffort: next.defaultEffort,
           archived: next.archived ? 1 : 0,
-          updatedAt: now,
+          updatedAt,
         })
         .where(eq(conversations.id, id))
         .run();
-      if (next.archived !== (row.archived === 1)) {
+      if (next.archived !== canonical.archived) {
         this.setHistoryConversationVisibility(row.projectId, id, !next.archived);
       }
     });
-    const json = readJson<ConversationJson>(
-      conversationJsonPath(this.dataDir, row.projectId, id),
-    );
-    writeJson(conversationJsonPath(this.dataDir, row.projectId, id), {
-      ...json,
-      ...next,
-      defaultEngine: next.defaultEngine ?? undefined,
-      defaultModel: next.defaultModel ?? undefined,
-      defaultEffort: next.defaultEffort ?? undefined,
-      updatedAt: now,
-    });
-    if (next.archived !== (row.archived === 1)) this.refreshAllChatFeedProject(row.projectId);
-    return this.getConversation(id);
+    if (next.archived !== canonical.archived) {
+      try { this.refreshAllChatFeedProject(row.projectId); }
+      catch { /* canonical visibility is repaired by projection rebuild */ }
+    }
+    return updated;
   }
 
   getConversationDeletionReceipt(id: string): ConversationDeletionReceipt | undefined {
