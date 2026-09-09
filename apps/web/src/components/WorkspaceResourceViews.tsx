@@ -46,6 +46,7 @@ import {
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 import { markWorkspaceResourceUsed } from "../workspaceRecency";
 import { ResourceDeletionDialog, TextInputDialog } from "./ConfirmationDialogs";
+import { globalAgentCreateContext } from "./agentCreateOwnership";
 
 type ChatDirectoryResource = {
   route: Route;
@@ -175,7 +176,7 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
   projects: ProjectDto[]; engines: EngineDto[]; filterProjectId?: string; preferences: WorkspacePreferencesDto;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onNavigate(route: Route): void;
-  onCreate(projectId?: string, managerAgentId?: string): void;
+  onCreate(projectId?: string, managerAgentId?: string, conversationId?: string): void;
   onAgentsDeleted(projectId: string, agentIds: string[]): void;
 }): JSX.Element {
   const [projectId, setProjectId] = useState(filterProjectId ?? "");
@@ -322,12 +323,20 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
         const project = projectByAgentId.get(agentId)!;
         onNavigate({ kind: "agent", projectId: project.id, agentId, view: "settings" });
       }}
-      onNewAgent={(managerAgentId) => onCreate(
-        managerAgentId
-          ? projectByAgentId.get(managerAgentId)?.id
-          : projectId || undefined,
-        managerAgentId,
-      )}
+      onNewAgent={(managerAgentId) => {
+        const context = globalAgentCreateContext(
+          rows,
+          projectId || undefined,
+          managerAgentId,
+        );
+        if (context) {
+          onCreate(
+            context.projectId,
+            context.managerAgentId,
+            context.conversationId,
+          );
+        }
+      }}
       onAgentsDeleted={onAgentsDeleted}
       showImportAction={false}
     />

@@ -33,6 +33,10 @@ import { fixedCreateConversationMatchesProject } from "../routeRegistry";
 import { EngineModelEffortFields } from "./ProjectRuntimeFields";
 import { ImportAgentForm } from "./ImportAgentDialog";
 import { retainIdempotentAttempt, type IdempotentAttempt } from "./idempotentAttempt";
+import {
+  reconcileAgentCreateOwnership,
+  type AgentCreateOwnership,
+} from "./agentCreateOwnership";
 
 const UNSET = "";
 
@@ -115,13 +119,15 @@ export function AgentCreateForm({
   const [engine, setEngine] = useState(UNSET);
   const [model, setModel] = useState(UNSET);
   const [effort, setEffort] = useState(UNSET);
-  const [conversationId, setConversationId] = useState(
-    fixedConversationId ?? UNSET,
-  );
+  const [ownership, setOwnership] = useState<AgentCreateOwnership>({
+    conversationId: fixedConversationId ?? UNSET,
+    managerAgentId: UNSET,
+  });
+  const { conversationId, managerAgentId } = ownership;
   const [presetId, setPresetId] = useState(UNSET);
-  const [managerAgentId, setManagerAgentId] = useState(UNSET);
   const [initialMessage, setInitialMessage] = useState("");
   const titleEditedRef = useRef(Boolean(initialName));
+  const conversationEditedRef = useRef(false);
   const managerEditedRef = useRef(false);
   const pendingRef = useRef(false);
   const createAttemptRef = useRef<IdempotentAttempt<undefined> | undefined>(undefined);
@@ -147,10 +153,13 @@ export function AgentCreateForm({
       if (previousProjectIdRef.current === projectId) return;
       const previousProjectId = previousProjectIdRef.current;
       previousProjectIdRef.current = projectId;
+      conversationEditedRef.current = false;
       managerEditedRef.current = false;
-      setConversationId(effectiveFixedConversationId ?? UNSET);
+      setOwnership({
+        conversationId: effectiveFixedConversationId ?? UNSET,
+        managerAgentId: UNSET,
+      });
       setPresetId(UNSET);
-      setManagerAgentId(UNSET);
       if (!previousProjectId) {
         setEngine(
           initialEngine ??
@@ -166,6 +175,7 @@ export function AgentCreateForm({
     initializedRef.current = true;
     previousProjectIdRef.current = projectId;
     titleEditedRef.current = Boolean(initialName);
+    conversationEditedRef.current = false;
     managerEditedRef.current = false;
     setTitle(initialName ?? pickAgentName([]));
     setEngine(
@@ -176,13 +186,16 @@ export function AgentCreateForm({
     );
     setModel(initialModel ?? project?.defaultModel ?? UNSET);
     setEffort(initialEffort ?? project?.defaultEffort ?? UNSET);
-    setConversationId(effectiveFixedConversationId ?? UNSET);
+    setOwnership({
+      conversationId: fixedConversationId ?? UNSET,
+      managerAgentId: UNSET,
+    });
     setPresetId(UNSET);
-    setManagerAgentId(UNSET);
     setInitialMessage("");
   }, [
     engines,
     effectiveFixedConversationId,
+    fixedConversationId,
     initialEffort,
     initialEngine,
     initialModel,
@@ -203,39 +216,31 @@ export function AgentCreateForm({
     ) {
       setTitle(pickAgentName(loadedAgents.map(agent => agent.title)));
     }
-    if (
-      !managerEditedRef.current &&
-      !pendingRef.current &&
-      !createAttemptRef.current
-    ) {
-      setManagerAgentId(
-        loadedAgents.some(agent => agent.id === initialManagerAgentId)
-          ? initialManagerAgentId!
-          : UNSET,
-      );
-    }
   }, [agentsQuery.data, agentsQuery.isSuccess, initialManagerAgentId]);
 
   useEffect(() => {
-    const available = chats.filter(chat => !chat.archived);
-    setConversationId(current =>
-      effectiveFixedConversationId ?? (
-        available.some(chat => chat.id === current)
-          ? current
-          : available[0]?.id ?? UNSET
-      ),
-    );
-  }, [chats, effectiveFixedConversationId]);
-
-  useEffect(() => {
-    setManagerAgentId(current =>
-      agents.some(agent =>
-        agent.id === current && !agent.archived &&
-        agent.conversationId === conversationId)
-        ? current
-        : UNSET,
-    );
-  }, [agents, conversationId]);
+    setOwnership(current => reconcileAgentCreateOwnership(current, {
+      agents,
+      agentsResolved: agentsQuery.isSuccess,
+      chats,
+      chatsResolved: chatsQuery.isSuccess,
+      initialManagerAgentId,
+      requiredInitialManagerConversationId:
+        fixedConversationRequested ? fixedConversationId : undefined,
+      fixedConversationId: effectiveFixedConversationId,
+      conversationEdited: conversationEditedRef.current,
+      managerEdited: managerEditedRef.current,
+    }));
+  }, [
+    agents,
+    agentsQuery.isSuccess,
+    chats,
+    chatsQuery.isSuccess,
+    effectiveFixedConversationId,
+    fixedConversationId,
+    fixedConversationRequested,
+    initialManagerAgentId,
+  ]);
 
   const activeEngine = engines.find(candidate => candidate.id === engine);
   const conversationAvailable = Boolean(
@@ -433,14 +438,16 @@ export function AgentCreateForm({
             value={conversationId}
             onChange={(event: SelectChangeEvent) => {
               const nextConversationId = event.target.value;
-              setConversationId(nextConversationId);
-              setManagerAgentId(current =>
-                agents.some(agent =>
-                  agent.id === current && !agent.archived &&
+              conversationEditedRef.current = true;
+              managerEditedRef.current = true;
+              setOwnership(current => ({
+                conversationId: nextConversationId,
+                managerAgentId: agents.some(agent =>
+                  agent.id === current.managerAgentId && !agent.archived &&
                   agent.conversationId === nextConversationId)
-                  ? current
+                  ? current.managerAgentId
                   : UNSET,
-              );
+              }));
             }}
           >
             {chats
@@ -470,7 +477,10 @@ export function AgentCreateForm({
           value={managerAgentId}
           onChange={(event: SelectChangeEvent) => {
             managerEditedRef.current = true;
-            setManagerAgentId(event.target.value);
+            setOwnership(current => ({
+              ...current,
+              managerAgentId: event.target.value,
+            }));
           }}
         >
           <MenuItem value={UNSET}>User / Top Level</MenuItem>

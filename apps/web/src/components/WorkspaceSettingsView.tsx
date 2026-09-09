@@ -776,6 +776,7 @@ export function WorkspaceSettingsView({
   colorMode,
   onToggleColorMode,
   onPreferences,
+  onSavePreferences,
   section = "general",
   activityProjectId,
 }: {
@@ -785,6 +786,9 @@ export function WorkspaceSettingsView({
   colorMode: ColorMode;
   onToggleColorMode(): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
+  onSavePreferences(
+    patch: Partial<WorkspacePreferencesDto>,
+  ): Promise<WorkspacePreferencesDto>;
   section?: "general" | "providers" | "notifications" | "activity";
   activityProjectId?: string;
 }): JSX.Element {
@@ -862,13 +866,7 @@ export function WorkspaceSettingsView({
     mutationFn: (patch: {
       globalInstructions: string;
       maxConcurrentAgentRuns: number;
-    }) => api.updateWorkspacePreferences(patch),
-    onSuccess: updated => {
-      queryClient.setQueryData<WorkspacePreferencesDto>(
-        queryKeys.workspacePreferences.all,
-        updated,
-      );
-    },
+    }) => onSavePreferences(patch),
   });
   useEffect(() => {
     if (!saveAgentDefaults.isSuccess) return;

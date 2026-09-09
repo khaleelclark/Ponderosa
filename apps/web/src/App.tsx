@@ -476,6 +476,8 @@ export default function App({
   const savePreferences = (patch: Partial<typeof preferences>) => {
     preferencesWriter.current!.enqueue(patch);
   };
+  const savePreferencesAndWait = (patch: Partial<typeof preferences>) =>
+    preferencesWriter.current!.enqueueAndWait(patch);
   const closeProjectCreator = () => {
     setProjectDialogOpen(false);
     setOnboardingProjectCreation(false);
@@ -770,6 +772,7 @@ export default function App({
                     }}
                     onNavigate={navigateWorkspace}
                     onPreferences={savePreferences}
+                    onSavePreferences={savePreferencesAndWait}
                     onCreate={openCreationForm}
                     onCancelCreate={cancelCreationWorkspace}
                     onOpenInbox={openNotifications}

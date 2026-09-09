@@ -5,6 +5,8 @@ type PreferencePatch = Partial<WorkspacePreferencesDto>;
 interface PendingWrite {
   patch: PreferencePatch;
   previous: WorkspacePreferencesDto | undefined;
+  resolve?: (value: WorkspacePreferencesDto) => void;
+  reject?: (reason: unknown) => void;
 }
 
 export class WorkspacePreferencesWriter {
@@ -27,7 +29,16 @@ export class WorkspacePreferencesWriter {
   }
 
   enqueue(patch: PreferencePatch): void {
-    const entry = { patch, previous: this.operations.read() };
+    this.queue({ patch, previous: this.operations.read() });
+  }
+
+  enqueueAndWait(patch: PreferencePatch): Promise<WorkspacePreferencesDto> {
+    return new Promise((resolve, reject) => {
+      this.queue({ patch, previous: this.operations.read(), resolve, reject });
+    });
+  }
+
+  private queue(entry: PendingWrite): void {
     this.canonical ??= entry.previous;
     this.pending.push(entry);
     if (this.canonical) this.operations.publish(this.projectPending());
@@ -38,8 +49,10 @@ export class WorkspacePreferencesWriter {
     try {
       const response = await this.operations.write(entry.patch);
       this.pending = this.pending.filter(candidate => candidate !== entry);
-      this.operations.publish(this.projectCanonical(response));
+      const projected = this.projectCanonical(response);
+      this.operations.publish(projected);
       this.operations.onSuccess?.(entry.previous, response, entry.patch);
+      entry.resolve?.(projected);
     } catch (reason) {
       this.pending = this.pending.filter(candidate => candidate !== entry);
       try {
@@ -50,6 +63,7 @@ export class WorkspacePreferencesWriter {
       try {
         this.operations.onError?.(reason);
       } catch { /* A presentation callback must not break the write queue. */ }
+      entry.reject?.(reason);
     }
   }
 

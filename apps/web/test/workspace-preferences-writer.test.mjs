@@ -152,3 +152,65 @@ test("canonical revision orders same-millisecond SSE and PATCH responses", async
   assert.equal(cache.sidebarWidth, 340);
   assert.equal(cache.fontFamily, "inter");
 });
+
+test("an awaitable Agent Defaults save cannot overwrite newer SSE or queued intent", async () => {
+  let cache = preferences("2026-01-01T00:00:00.000Z", {
+    revision: 0,
+    globalInstructions: "old",
+    maxConcurrentAgentRuns: 4,
+    fontFamily: "inter",
+  });
+  const defaultsResponse = deferred();
+  const fontResponse = deferred();
+  const calls = [];
+  const writer = new WorkspacePreferencesWriter({
+    read: () => cache,
+    publish: value => { cache = value; },
+    write: patch => {
+      calls.push(patch);
+      return calls.length === 1 ? defaultsResponse.promise : fontResponse.promise;
+    },
+    refresh: async () => cache,
+  });
+
+  const defaultsSave = writer.enqueueAndWait({
+    globalInstructions: "new defaults",
+    maxConcurrentAgentRuns: 8,
+  });
+  writer.enqueue({ fontFamily: "system" });
+  await tick();
+  assert.equal(calls.length, 1, "both settings writes share one serial queue");
+
+  cache = writer.projectCanonical(preferences("2026-01-01T00:00:02.000Z", {
+    revision: 2,
+    globalInstructions: "new defaults",
+    maxConcurrentAgentRuns: 8,
+    fontFamily: "inter",
+  }));
+  defaultsResponse.resolve(preferences("2026-01-01T00:00:01.000Z", {
+    revision: 1,
+    globalInstructions: "new defaults",
+    maxConcurrentAgentRuns: 8,
+    fontFamily: "inter",
+  }));
+  await defaultsSave;
+  await tick();
+
+  assert.equal(cache.revision, 2);
+  assert.equal(cache.globalInstructions, "new defaults");
+  assert.equal(cache.fontFamily, "system");
+  assert.deepEqual(calls, [
+    { globalInstructions: "new defaults", maxConcurrentAgentRuns: 8 },
+    { fontFamily: "system" },
+  ]);
+
+  fontResponse.resolve(preferences("2026-01-01T00:00:03.000Z", {
+    revision: 3,
+    globalInstructions: "new defaults",
+    maxConcurrentAgentRuns: 8,
+    fontFamily: "system",
+  }));
+  await tick();
+  assert.equal(cache.revision, 3);
+  assert.equal(cache.fontFamily, "system");
+});

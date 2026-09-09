@@ -48,6 +48,9 @@ interface WorkspaceRouteOutletProps {
   onRetryLoad(): void;
   onNavigate(route: Route): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
+  onSavePreferences(
+    patch: Partial<WorkspacePreferencesDto>,
+  ): Promise<WorkspacePreferencesDto>;
   onCreate(
     kind: "project" | "chat" | "agent" | "trigger",
     context?: {
@@ -87,6 +90,7 @@ export function WorkspaceRouteOutlet({
   onRetryLoad,
   onNavigate,
   onPreferences,
+  onSavePreferences,
   onCreate,
   onCancelCreate,
   onOpenInbox,
@@ -180,9 +184,10 @@ export function WorkspaceRouteOutlet({
             preferences,
             onPreferences,
             onNavigate,
-            onCreate: (projectId, managerAgentId) =>
+            onCreate: (projectId, managerAgentId, conversationId) =>
               onCreate("agent", {
                 ...(projectId ? { projectId } : {}),
+                ...(conversationId ? { conversationId } : {}),
                 ...(managerAgentId ? { managerAgentId } : {}),
               }),
             onAgentsDeleted: (projectId, agentIds) =>
@@ -228,6 +233,7 @@ export function WorkspaceRouteOutlet({
             colorMode,
             onToggleColorMode,
             onPreferences,
+            onSavePreferences,
             section: route.section,
           }}
         />
@@ -248,6 +254,7 @@ export function WorkspaceRouteOutlet({
             colorMode,
             onToggleColorMode,
             onPreferences,
+            onSavePreferences,
             section: "activity",
             activityProjectId: route.projectId,
           }}
