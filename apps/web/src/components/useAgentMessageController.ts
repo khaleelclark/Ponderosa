@@ -2,6 +2,7 @@ import type { AssetDto, DraftPendingSubmissionDto, EngineDto, SendMessageRequest
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { ApiRequestError } from "../api/types";
 import { createClientId } from "../clientId";
 import {
   effortSelectionIsCompatible,
@@ -13,6 +14,7 @@ import {
   discardRecipientUploads,
   fileSelectionFingerprint,
   pendingDraftAttachmentIds,
+  recipientUploadCleanupSettled,
   pendingRecipientUploads,
   type RecipientUploads,
   uploadFilesForRecipients,
@@ -232,6 +234,8 @@ export function useAgentMessageController({
             previous.prepared.uploads,
             (recipientId, attachment) =>
               api.deleteAttachment(recipientId, attachment.id),
+            error => error instanceof ApiRequestError &&
+              recipientUploadCleanupSettled(error.status, error.message),
           );
         }
         sendAttempt.current = attempt;
@@ -255,6 +259,7 @@ export function useAgentMessageController({
             (recipientId, file) => api.uploadAttachment(recipientId, file),
             (recipientId, attachment) =>
               api.deleteAttachment(recipientId, attachment.id),
+            error => error instanceof ApiRequestError && error.status === 404,
           );
           if (pendingSubmission && context?.persistPendingSubmission) {
             await context.persistPendingSubmission(withPendingRecipientUploads(

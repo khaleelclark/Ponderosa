@@ -19,14 +19,18 @@ import {
 } from "../conversationEngine";
 import {
   discardRecipientUploads,
+  cleanupRecipientUploadsForDefinitiveFailure,
   fileSelectionFingerprint,
   recipientUploadsForAgentIds,
   recipientActionSnapshot,
+  recipientUploadCleanupSettled,
+  recipientUploadCleanupReporter,
   pendingRecipientUploads,
   pendingDraftAttachmentIds,
   recipientUploadCacheKey,
   retryRecipientUploadCleanup,
   managerBroadcastText,
+  persistRecipientUploadAuthority,
   stableMessageActionText,
   withPendingRecipientUploads,
   withPendingRequest,
@@ -39,6 +43,7 @@ import type { AgentStatus } from "../agents";
 import { activeDirectDeliveryAgentIds } from "./directDeliveryState";
 import {
   compoundCreationUnavailableUploads,
+  definitiveSubmissionStatus,
   preparedIdempotentAttemptForRetry,
   retainIdempotentAttempt,
   withCommittedAgentCreation,
@@ -136,6 +141,24 @@ export function useConversationMessagingController({
     ? effort
     : "";
   const runConfig = selectedRunConfig(compatibleModel, compatibleEffort, speed);
+  const recipientUnavailable = (error: unknown) =>
+    error instanceof ApiRequestError && error.status === 404;
+  const cleanupSettled = (error: unknown) =>
+    error instanceof ApiRequestError &&
+    recipientUploadCleanupSettled(error.status, error.message);
+  const definitiveFailure = (error: unknown) =>
+    error instanceof ApiRequestError &&
+    definitiveSubmissionStatus(error.status, error.message);
+  const cleanupPendingReporter = () => recipientUploadCleanupReporter(delta =>
+    setPendingUploadCleanups(count => Math.max(0, count + delta)));
+  const cleanupRecipientUploads = (
+    recipients: RecipientUploads<Pick<AssetDto, "id">>,
+  ) => discardRecipientUploads(
+    recipients,
+    (agentId, item) => api.deleteAttachment(agentId, item.id),
+    cleanupSettled,
+    cleanupPendingReporter(),
+  );
 
   const invalidate = () => {
     void queryClient.invalidateQueries({
@@ -641,8 +664,7 @@ export function useConversationMessagingController({
     if (previous && previous !== attempt) {
       await Promise.all(
         [...previous.prepared.uploads.values()].map(recipients =>
-          discardRecipientUploads(recipients, (agentId, item) =>
-            api.deleteAttachment(agentId, item.id)),
+          cleanupRecipientUploads(recipients),
         ),
       );
     }
@@ -657,21 +679,20 @@ export function useConversationMessagingController({
     } = prepared.recipientSnapshot;
     const preparedUploads = async (scope: string, agentIds: string[]) => {
       const key = recipientUploadCacheKey(scope, agentIds);
-      const cached = prepared.uploads.get(key);
-      if (cached) return cached;
+      let uploaded = prepared.uploads.get(key);
       const durable = pendingRecipientUploads(pendingSubmission, scope);
-      if (durable &&
+      if (!uploaded && durable &&
           JSON.stringify(durable.map(item => item.agentId)) === JSON.stringify(agentIds)) {
-        prepared.uploads.set(key, durable);
-        return durable;
+        uploaded = durable;
       }
-      const uploaded = await uploadFilesForRecipients(
-        agentIds,
-        prepared.files,
-        (agentId, file) => api.uploadAttachment(agentId, file),
-        (agentId, item) => api.deleteAttachment(agentId, item.id),
-        error => error instanceof ApiRequestError && error.status === 404,
-      );
+      uploaded ??= await uploadFilesForRecipients(
+          agentIds,
+          prepared.files,
+          (agentId, file) => api.uploadAttachment(agentId, file),
+          (agentId, item) => api.deleteAttachment(agentId, item.id),
+          recipientUnavailable,
+          cleanupPendingReporter(),
+        );
       prepared.uploads.set(key, uploaded);
       if (pendingSubmission && persistPendingSubmission) {
         pendingSubmission = withPendingRecipientUploads(
@@ -679,7 +700,22 @@ export function useConversationMessagingController({
           scope,
           uploaded,
         );
-        await persistPendingSubmission(pendingSubmission);
+        try {
+          await persistRecipientUploadAuthority({
+            pending: pendingSubmission,
+            recipients: uploaded,
+            persist: persistPendingSubmission,
+            cleanup: (agentId, item) => api.deleteAttachment(agentId, item.id),
+            definitiveFailure,
+            cleanupUnavailable: cleanupSettled,
+            onPendingChange: cleanupPendingReporter(),
+          });
+        } catch (error) {
+          if (definitiveFailure(error)) {
+            prepared.uploads.delete(key);
+          }
+          throw error;
+        }
       }
       return uploaded;
     };
@@ -736,19 +772,39 @@ export function useConversationMessagingController({
           "Create an agent before attaching files to shared project context.",
         );
       }
-      await broadcast.mutateAsync({
-        text: submittedBroadcastText,
-        uploadedRecipients: await preparedUploads(
-          "broadcast",
-          prepared.broadcastUploadAgentIds,
-        ),
-        requestId,
-        agentMentions: prepared.mentionedAgents,
-        attachmentOwnerAgentId: broadcastAttachmentOwnerAgentId,
-        activeRunDelivery: prepared.activeRunDelivery,
-        engine: prepared.engine,
-        runtimeConfig: prepared.runConfig,
-      });
+      const broadcastUploadKey = recipientUploadCacheKey(
+        "broadcast",
+        prepared.broadcastUploadAgentIds,
+      );
+      const uploadedRecipients = await preparedUploads(
+        "broadcast",
+        prepared.broadcastUploadAgentIds,
+      );
+      try {
+        await broadcast.mutateAsync({
+          text: submittedBroadcastText,
+          uploadedRecipients,
+          requestId,
+          agentMentions: prepared.mentionedAgents,
+          attachmentOwnerAgentId: broadcastAttachmentOwnerAgentId,
+          activeRunDelivery: prepared.activeRunDelivery,
+          engine: prepared.engine,
+          runtimeConfig: prepared.runConfig,
+        });
+      } catch (error) {
+        if (!agentCreationCommitted &&
+            await cleanupRecipientUploadsForDefinitiveFailure({
+              error,
+              recipients: uploadedRecipients,
+              definitiveFailure,
+              cleanup: (agentId, item) => api.deleteAttachment(agentId, item.id),
+              cleanupUnavailable: cleanupSettled,
+              onPendingChange: cleanupPendingReporter(),
+            })) {
+          prepared.uploads.delete(broadcastUploadKey);
+        }
+        throw error;
+      }
       if (createdAgentIds.length > 0) {
         setActiveOperation({ agentIds: createdAgentIds, state: "starting" });
       }
@@ -780,6 +836,18 @@ export function useConversationMessagingController({
           runtimeConfig: prepared.runConfig,
         });
       } catch (error) {
+        if (!agentCreationCommitted &&
+            await cleanupRecipientUploadsForDefinitiveFailure({
+              error,
+              recipients: uploadedRecipients,
+              definitiveFailure,
+              cleanup: (agentId, item) => api.deleteAttachment(agentId, item.id),
+              cleanupUnavailable: cleanupSettled,
+              onPendingChange: cleanupPendingReporter(),
+            })) {
+          prepared.uploads.delete(uploadKey);
+          throw error;
+        }
         const cleanupUploads = error instanceof ApiRequestError
           ? compoundCreationUnavailableUploads(
               agentCreationCommitted,
@@ -792,27 +860,16 @@ export function useConversationMessagingController({
           throw error;
         }
         sendToAgents.reset();
-        let cleanupReported = false;
         await retryRecipientUploadCleanup(
           cleanupUploads,
           async (agentId, attachment) => {
             try {
               await api.deleteAttachment(agentId, attachment.id);
             } catch (cleanupError) {
-              if (!(cleanupError instanceof ApiRequestError) || cleanupError.status !== 404) {
-                throw cleanupError;
-              }
+              if (!cleanupSettled(cleanupError)) throw cleanupError;
             }
           },
-          pending => {
-            if (pending && !cleanupReported) {
-              cleanupReported = true;
-              setPendingUploadCleanups(count => count + 1);
-            } else if (!pending && cleanupReported) {
-              cleanupReported = false;
-              setPendingUploadCleanups(count => Math.max(0, count - 1));
-            }
-          },
+          cleanupPendingReporter(),
         );
         setActiveOperation(createdAgentIds.length
           ? { agentIds: createdAgentIds, state: "starting" }
@@ -833,25 +890,16 @@ export function useConversationMessagingController({
         uploadKey,
         recipientUploadsForAgentIds(uploadedRecipients, deliveredRecipientIds),
       );
-      let cleanupReported = false;
       void retryRecipientUploadCleanup(
         recipientUploadsForAgentIds(uploadedRecipients, unavailableRecipientIds),
         async (agentId, attachment) => {
           try {
             await api.deleteAttachment(agentId, attachment.id);
           } catch (error) {
-            if (!(error instanceof ApiRequestError) || error.status !== 404) throw error;
+            if (!cleanupSettled(error)) throw error;
           }
         },
-        pending => {
-          if (pending && !cleanupReported) {
-            cleanupReported = true;
-            setPendingUploadCleanups(count => count + 1);
-          } else if (!pending && cleanupReported) {
-            cleanupReported = false;
-            setPendingUploadCleanups(count => Math.max(0, count - 1));
-          }
-        },
+        cleanupPendingReporter(),
       );
     } else if (!prepared.newAgentRequested) {
       setActiveOperation({ agentIds: [], state: "starting" });

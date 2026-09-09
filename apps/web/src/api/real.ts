@@ -920,8 +920,10 @@ export const realApi = {
     });
   },
   async deleteAttachment(agentId: string, attachmentId: string): Promise<void> {
-    const response = await fetch(`/api/agents/${encodeURIComponent(agentId)}/attachments/${encodeURIComponent(attachmentId)}`, { method: "DELETE" });
-    if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
+    await requestJson<void>(
+      `/api/agents/${encodeURIComponent(agentId)}/attachments/${encodeURIComponent(attachmentId)}`,
+      { method: "DELETE" },
+    );
   },
   cancelRun(agentId: string, request: CancelAgentRunRequest): Promise<CancelAgentRunResponse> {
     return requestJson<CancelAgentRunResponse>(`/api/agents/${encodeURIComponent(agentId)}/cancel`, {

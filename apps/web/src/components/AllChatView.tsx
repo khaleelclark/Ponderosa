@@ -61,10 +61,14 @@ import { uniqueBy } from "../collections";
 import TagIcon from "@mui/icons-material/Tag";
 import { createClientId } from "../clientId";
 import {
+  cleanupRecipientUploadsForDefinitiveFailure,
   discardRecipientUploads,
   fileSelectionFingerprint,
   pendingDraftAttachmentIds,
   pendingRecipientUploads,
+  persistRecipientUploadAuthority,
+  recipientUploadCleanupSettled,
+  recipientUploadCleanupReporter,
   recipientUploadsForAgentIds,
   retryRecipientUploadCleanup,
   stableMessageActionText,
@@ -93,6 +97,7 @@ import { ReadAloudControls } from "./speech/ReadAloudControls";
 import {
   abandonIdempotentAttempt,
   compoundCreationUnavailableUploads,
+  definitiveSubmissionStatus,
   preparedIdempotentAttemptForRetry,
   retainIdempotentAttempt,
   withCommittedAgentCreation,
@@ -265,6 +270,24 @@ export function AllChatView({
   const [runtimeAgentId, setRuntimeAgentId] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [pendingUploadCleanups, setPendingUploadCleanups] = useState(0);
+  const recipientUnavailable = (error: unknown) =>
+    error instanceof ApiRequestError && error.status === 404;
+  const cleanupSettled = (error: unknown) =>
+    error instanceof ApiRequestError &&
+    recipientUploadCleanupSettled(error.status, error.message);
+  const definitiveFailure = (error: unknown) =>
+    error instanceof ApiRequestError &&
+    definitiveSubmissionStatus(error.status, error.message);
+  const cleanupPendingReporter = () => recipientUploadCleanupReporter(delta =>
+    setPendingUploadCleanups(count => Math.max(0, count + delta)));
+  const cleanupRecipientUploads = (
+    recipients: RecipientUploads<Pick<AssetDto, "id">>,
+  ) => discardRecipientUploads(
+    recipients,
+    (agentId, item) => api.deleteAttachment(agentId, item.id),
+    cleanupSettled,
+    cleanupPendingReporter(),
+  );
   const [directSendConfirmation, setDirectSendConfirmation] = useState<{
     id: number;
     text: string;
@@ -854,10 +877,7 @@ export function AllChatView({
         }
       }
       if (previous && previous !== attempt && previous.prepared.uploads) {
-        await discardRecipientUploads(
-          previous.prepared.uploads,
-          (agentId, item) => api.deleteAttachment(agentId, item.id),
-        );
+        await cleanupRecipientUploads(previous.prepared.uploads);
       }
       sendAttempt.current = attempt;
       const requestId = attempt.idempotencyKey;
@@ -920,16 +940,32 @@ export function AllChatView({
           prepared.files,
           (agentId, file) => api.uploadAttachment(agentId, file),
           (agentId, attachment) => api.deleteAttachment(agentId, attachment.id),
-          error => error instanceof ApiRequestError && error.status === 404,
+          recipientUnavailable,
+          cleanupPendingReporter(),
         ));
         prepared.uploads = uploaded;
-        if (!durableUploadsMatch && pendingSubmission && persistPendingSubmission) {
+        if (pendingSubmission && persistPendingSubmission) {
           pendingSubmission = withPendingRecipientUploads(
             pendingSubmission,
             "direct",
             uploaded,
           );
-          await persistPendingSubmission(pendingSubmission);
+          try {
+            await persistRecipientUploadAuthority({
+              pending: pendingSubmission,
+              recipients: uploaded,
+              persist: persistPendingSubmission,
+              cleanup: (agentId, item) => api.deleteAttachment(agentId, item.id),
+              definitiveFailure,
+              cleanupUnavailable: cleanupSettled,
+              onPendingChange: cleanupPendingReporter(),
+            });
+          } catch (error) {
+            if (definitiveFailure(error)) {
+              prepared.uploads = undefined;
+            }
+            throw error;
+          }
         }
         const uploadedByAgentId = new Map(uploaded.map(item => [item.agentId, item]));
         let response;
@@ -949,6 +985,18 @@ export function AllChatView({
             ...(submittedRuntime.speed ? { speed: submittedRuntime.speed } : {}),
           });
         } catch (error) {
+          if (createdTitles.length === 0 &&
+              await cleanupRecipientUploadsForDefinitiveFailure({
+                error,
+                recipients: uploaded,
+                definitiveFailure,
+                cleanup: (agentId, item) => api.deleteAttachment(agentId, item.id),
+                cleanupUnavailable: cleanupSettled,
+                onPendingChange: cleanupPendingReporter(),
+              })) {
+            prepared.uploads = undefined;
+            throw error;
+          }
           const cleanupUploads = error instanceof ApiRequestError
             ? compoundCreationUnavailableUploads(
                 createdTitles.length > 0,
@@ -961,27 +1009,16 @@ export function AllChatView({
             throw error;
           }
           unavailableCount = recipientIds.length;
-          let cleanupReported = false;
           await retryRecipientUploadCleanup(
             cleanupUploads,
             async (agentId, attachment) => {
               try {
                 await api.deleteAttachment(agentId, attachment.id);
               } catch (cleanupError) {
-                if (!(cleanupError instanceof ApiRequestError) || cleanupError.status !== 404) {
-                  throw cleanupError;
-                }
+                if (!cleanupSettled(cleanupError)) throw cleanupError;
               }
             },
-            pending => {
-              if (pending && !cleanupReported) {
-                cleanupReported = true;
-                setPendingUploadCleanups(count => count + 1);
-              } else if (!pending && cleanupReported) {
-                cleanupReported = false;
-                setPendingUploadCleanups(count => Math.max(0, count - 1));
-              }
-            },
+            cleanupPendingReporter(),
           );
           if (sendAttempt.current === attempt) sendAttempt.current = undefined;
           return {
@@ -1006,25 +1043,16 @@ export function AllChatView({
           uploaded,
           deliveredRecipientIds,
         );
-        let cleanupReported = false;
         void retryRecipientUploadCleanup(
           unavailableUploads,
           async (agentId, attachment) => {
             try {
               await api.deleteAttachment(agentId, attachment.id);
             } catch (error) {
-              if (!(error instanceof ApiRequestError) || error.status !== 404) throw error;
+              if (!cleanupSettled(error)) throw error;
             }
           },
-          pending => {
-            if (pending && !cleanupReported) {
-              cleanupReported = true;
-              setPendingUploadCleanups(count => count + 1);
-            } else if (!pending && cleanupReported) {
-              cleanupReported = false;
-              setPendingUploadCleanups(count => Math.max(0, count - 1));
-            }
-          },
+          cleanupPendingReporter(),
         );
       }
       if (sendAttempt.current === attempt) sendAttempt.current = undefined;
@@ -1083,10 +1111,7 @@ export function AllChatView({
     const abandoned = abandonedSendAttempts.current.splice(0);
     void Promise.all(abandoned.flatMap(attempt =>
       attempt.prepared.uploads
-        ? [discardRecipientUploads(
-            attempt.prepared.uploads,
-            (agentId, item) => api.deleteAttachment(agentId, item.id),
-          )]
+        ? [cleanupRecipientUploads(attempt.prepared.uploads)]
         : [],
     ));
   }, [send.isPending, submissionIntent.epoch]);
@@ -1726,6 +1751,7 @@ export function AllChatView({
               )
             : "messages:composer"}
           conversationDraftId={composerConversationId}
+          projectId={activeProjectId}
           onSend={(body, files, draftAttachmentIds = [], draftOwnerId, context) =>
             send.mutateAsync({
               body,

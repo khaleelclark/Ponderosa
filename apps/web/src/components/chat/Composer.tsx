@@ -37,11 +37,19 @@ import {
 } from "react";
 import { api } from "../../api";
 import { ApiRequestError } from "../../api/types";
-import { readChatState, writeChatState } from "../../chatState";
+import { readChatState, readChatStateEntries, writeChatState } from "../../chatState";
 import { createClientId, draftSurfaceClientId } from "../../clientId";
 import {
+  createRecipientUploadAuthorityOutbox,
+  parseRecipientUploadAuthorityOutbox,
   pendingDraftAttachmentIds,
   pendingPastedTextAttachmentId,
+  recipientUploadAuthorityConfirmed,
+  recipientUploadAuthorityHasCapacity,
+  recipientUploadAuthorityStoragePrefix,
+  recipientUploadAuthorityStorageKey,
+  reconcileRecipientUploadAuthority,
+  serializeRecipientUploadAuthorityOutbox,
   stableMessageActionText,
 } from "../../conversationRouting";
 import { findMentionedHandles, hasBroadcastMention } from "../../mentions";
@@ -313,8 +321,12 @@ export function Composer({
   const fileInput = useRef<HTMLInputElement | null>(null);
   const previousDraftStorageKey = useRef(draftStorageKey);
   const previousConversationDraftId = useRef(conversationDraftId);
+  const uploadAuthorityStoragePrefix = draftStorageKey
+    ? recipientUploadAuthorityStoragePrefix(draftStorageKey)
+    : undefined;
   const draftRevision = useRef(0);
   const pendingSubmissionRef = useRef<DraftPendingSubmissionDto>();
+  const pendingUploadAuthorityStorageKeys = useRef(new Set<string>());
   const draftReady = useRef(false);
   const [initialDraftWriteChain] = useState(createDraftWriteChain);
   const draftWriteChain = useRef<DraftWriteChain>(initialDraftWriteChain);
@@ -380,6 +392,49 @@ export function Composer({
       setFailedDraftContents(resolved);
     },
     [],
+  );
+  const pendingSubmissionWithLocalUploadAuthority = useCallback(
+    (draft: ConversationDraftDto) => {
+      pendingUploadAuthorityStorageKeys.current.clear();
+      const candidates = uploadAuthorityStoragePrefix && draftStorageKey &&
+          conversationDraftId && projectId
+        ? readChatStateEntries(uploadAuthorityStoragePrefix).flatMap(([key, raw]) => {
+            const value = parseRecipientUploadAuthorityOutbox(raw, {
+              draftId: conversationDraftId,
+              draftStorageKey,
+              projectId,
+              ownerId: draftOwnerId,
+            });
+            if (!value) writeChatState(key, "");
+            return value ? [{ key, value }] : [];
+          }).sort((left, right) => right.value.createdAt - left.value.createdAt)
+        : [];
+      for (const candidate of candidates) {
+        const reconciled = reconcileRecipientUploadAuthority(
+          draft.pendingSubmission,
+          candidate.value,
+          draft,
+        );
+        if (reconciled.retainLocal) {
+          pendingUploadAuthorityStorageKeys.current.add(candidate.key);
+          return reconciled.pending;
+        }
+        if (recipientUploadAuthorityConfirmed(
+          draft.pendingSubmission,
+          candidate.value,
+        )) {
+          writeChatState(candidate.key, "");
+        }
+      }
+      return draft.pendingSubmission;
+    },
+    [
+      conversationDraftId,
+      draftOwnerId,
+      draftStorageKey,
+      projectId,
+      uploadAuthorityStoragePrefix,
+    ],
   );
   const markUserDraftMutation = useCallback(() => {
     userDraftMutationGeneration.current += 1;
@@ -1183,7 +1238,9 @@ export function Composer({
         setDraftReadyVersion(value => value + 1);
         return;
       }
-      pendingSubmissionRef.current = draft.pendingSubmission;
+      pendingSubmissionRef.current = pendingSubmissionWithLocalUploadAuthority(
+        draft,
+      );
       draftContentGeneration.current += 1;
       if (!draftAttachmentsLocallyEdited.current) {
         replaceRestoredDraftAttachments(restored);
@@ -1270,7 +1327,9 @@ export function Composer({
           setDraftReadyVersion(value => value + 1);
           return;
         }
-        pendingSubmissionRef.current = draft.pendingSubmission;
+        pendingSubmissionRef.current = pendingSubmissionWithLocalUploadAuthority(
+          draft,
+        );
         draftContentGeneration.current += 1;
         unrestoredDraftAttachmentIds.current = draft.attachmentIds.filter(
           id => !locallyRemovedDraftAttachmentIds.current.has(id),
@@ -1364,6 +1423,7 @@ export function Composer({
     conversationDraftId,
     draftQuery.data,
     draftStorageKey,
+    pendingSubmissionWithLocalUploadAuthority,
     updateFailedDraftContents,
   ]);
 
@@ -2059,6 +2119,8 @@ export function Composer({
     const submittedMentionBindings = [...knownMentionBindings];
     const submittedDraftScope = conversationDraftId;
     const submittedOwnedDraftRevision = draftWriteChain.current.ownedRevision;
+    let submittedDraftClientId = draftQuery.data?.clientId ??
+      draftWriteChain.current.clientId;
     const submittedDraftGeneration = draftGeneration.current;
     const submittedDraftWriteChain = draftWriteChain.current;
     const submittedSupersededPastedTextAttachmentIds = [
@@ -2136,7 +2198,58 @@ export function Composer({
       if (!submittedScopeStillActive()) {
         throw new Error("The draft destination changed before it could be sent.");
       }
-      if (retainOnFailure) pendingSubmissionRef.current = value;
+      if (retainOnFailure) {
+        pendingSubmissionRef.current = value;
+        if (draftStorageKey && projectId && value?.uploads?.some(upload =>
+            upload.recipients.some(recipient => recipient.attachmentIds.length))) {
+          const outbox = createRecipientUploadAuthorityOutbox({
+              draftId: submittedDraftScope,
+              draftStorageKey,
+              projectId,
+              ownerId: draftOwnerId,
+              baseDraftClientId: submittedDraftClientId,
+              writeClientId: submittedDraftWriteChain.clientId,
+              expectedRevision:
+                submittedDraftWriteChain.ownedRevision ||
+                submittedOwnedDraftRevision,
+              pending: value,
+            });
+          const serialized = serializeRecipientUploadAuthorityOutbox(outbox);
+          const authorityKey = recipientUploadAuthorityStorageKey(
+            draftStorageKey,
+            outbox.writeClientId,
+            value.idempotencyKey,
+          );
+          const existingAuthorityKeys = uploadAuthorityStoragePrefix
+            ? readChatStateEntries(uploadAuthorityStoragePrefix).flatMap(([key, raw]) => {
+                const valid = parseRecipientUploadAuthorityOutbox(raw, {
+                  draftId: submittedDraftScope,
+                  draftStorageKey,
+                  projectId,
+                  ownerId: draftOwnerId,
+                });
+                if (!valid) writeChatState(key, "");
+                return valid ? [key] : [];
+              })
+            : [];
+          if (!recipientUploadAuthorityHasCapacity(
+                existingAuthorityKeys,
+                authorityKey,
+              ) ||
+              !serialized || !writeChatState(authorityKey, serialized)) {
+            throw new ApiRequestError(
+              400,
+              "Upload cleanup authority could not be saved in this browser.",
+            );
+          }
+          pendingUploadAuthorityStorageKeys.current.add(authorityKey);
+        }
+      } else if (!value) {
+        for (const key of pendingUploadAuthorityStorageKeys.current) {
+          writeChatState(key, "");
+        }
+        pendingUploadAuthorityStorageKeys.current.clear();
+      }
       let saved: ConversationDraftDto | undefined;
       const write = settledDraftWriteContinuation(
         submittedDraftWriteChain.tail,
@@ -2159,6 +2272,7 @@ export function Composer({
             ownerId: draftOwnerId,
           });
           submittedDraftWriteChain.ownedRevision = saved.revision;
+          submittedDraftClientId = saved.clientId;
         },
       );
       submittedDraftWriteChain.tail = write;
@@ -2168,6 +2282,10 @@ export function Composer({
       }
       draftRevision.current = saved.revision;
       pendingSubmissionRef.current = value;
+      for (const key of pendingUploadAuthorityStorageKeys.current) {
+        writeChatState(key, "");
+      }
+      pendingUploadAuthorityStorageKeys.current.clear();
       queryClient.setQueryData(
         queryKeys.conversationDraft.detail(submittedDraftScope, draftOwnerId),
         saved,
