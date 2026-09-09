@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { lstatSync, promises as fs } from "node:fs";
 import path from "node:path";
 import type {
   CreateProjectRequest,
@@ -46,6 +46,13 @@ interface ProjectRoutesContext {
     reason: string,
     projectId: string,
   ): Promise<void>;
+  managedProjectCreationFault?: (boundary:
+    | "receipt_persisted"
+    | "marker_seed_persisted"
+    | "preparation_directory_created"
+    | "preparation_marker_installed"
+    | "stage_published"
+  ) => void | Promise<void>;
 }
 
 interface ManagedProjectCreationIdentity {
@@ -82,9 +89,18 @@ function managedProjectReceiptPath(root: string, idempotencyKey: string): string
   return path.join(root, `.project-creation-${createHash("sha256").update(idempotencyKey).digest("hex")}.jsonl`);
 }
 
-function readManagedProjectReceipt(file: string): AnyManagedProjectCreationReceipt | undefined {
+function readManagedProjectReceipt(
+  file: string,
+  repair = true,
+): AnyManagedProjectCreationReceipt | undefined {
+  if (pathEntryExists(file)) {
+    const stat = lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error("managed Project creation receipt is not a regular file");
+    }
+  }
   const records = readRepairableJsonl<unknown>(
-    file, "managed Project creation receipt", true,
+    file, "managed Project creation receipt", repair,
   );
   if (records.length === 0) return undefined;
   if (records.length !== 1) throw new Error("managed Project creation receipt is invalid");
@@ -129,6 +145,14 @@ function assertManagedProjectIdentity(
   }
 }
 
+function projectCreationIdentityMatches(
+  actual: ManagedProjectCreationIdentity,
+  expected: ManagedProjectCreationIdentity,
+): boolean {
+  return actual.idempotencyKey === expected.idempotencyKey &&
+    actual.payloadHash === expected.payloadHash && actual.hostPath === expected.hostPath;
+}
+
 function assertManagedProjectMarker(
   marker: AnyManagedProjectCreationReceipt | undefined,
   receipt: AnyManagedProjectCreationReceipt,
@@ -141,14 +165,29 @@ function assertManagedProjectMarker(
   }
 }
 
-function managedProjectStagePath(root: string, receipt: ManagedProjectCreationReceipt): string {
+function managedProjectOperationArtifactPath(
+  root: string,
+  receipt: ManagedProjectCreationReceipt,
+  suffix: "staging" | "preparing" | "marker.jsonl" | "cleanup",
+): string {
   const keyHash = createHash("sha256").update(receipt.idempotencyKey).digest("hex");
-  return path.join(root, `.project-creation-${keyHash}-${receipt.ownershipToken}.staging`);
+  return path.join(root, `.project-creation-${keyHash}-${receipt.ownershipToken}.${suffix}`);
+}
+
+function managedProjectStagePath(root: string, receipt: ManagedProjectCreationReceipt): string {
+  return managedProjectOperationArtifactPath(root, receipt, "staging");
+}
+
+function managedProjectPreparationPath(root: string, receipt: ManagedProjectCreationReceipt): string {
+  return managedProjectOperationArtifactPath(root, receipt, "preparing");
+}
+
+function managedProjectMarkerSeedPath(root: string, receipt: ManagedProjectCreationReceipt): string {
+  return managedProjectOperationArtifactPath(root, receipt, "marker.jsonl");
 }
 
 function managedProjectCleanupPath(root: string, receipt: ManagedProjectCreationReceipt): string {
-  const keyHash = createHash("sha256").update(receipt.idempotencyKey).digest("hex");
-  return path.join(root, `.project-creation-${keyHash}-${receipt.ownershipToken}.cleanup`);
+  return managedProjectOperationArtifactPath(root, receipt, "cleanup");
 }
 
 function managedProjectOwnershipIdentity(receipt: ManagedProjectCreationReceipt) {
@@ -167,9 +206,10 @@ async function syncDirectory(directory: string): Promise<void> {
   try { await handle.sync(); } finally { await handle.close(); }
 }
 
-async function inspectManagedProjectStage(
-  root: string,
+async function inspectManagedProjectDirectory(
+  directory: string,
   receipt: ManagedProjectCreationReceipt,
+  label: string,
 ): Promise<{
   path: string;
   markerPath: string;
@@ -177,35 +217,102 @@ async function inspectManagedProjectStage(
   dev: number;
   ino: number;
 } | undefined> {
-  const stagePath = managedProjectStagePath(root, receipt);
   try {
-    const stat = await fs.lstat(stagePath);
+    const stat = await fs.lstat(directory);
     if (!stat.isDirectory() || stat.isSymbolicLink()) {
-      throw new Error("managed Project creation staging is not an owned directory");
+      throw new Error(`${label} is not an owned directory`);
     }
-    const entries = await fs.readdir(stagePath);
-    const markerPath = path.join(stagePath, MANAGED_PROJECT_CREATION_MARKER);
+    const entries = await fs.readdir(directory);
+    const markerPath = path.join(directory, MANAGED_PROJECT_CREATION_MARKER);
     const hasMarker = entries.includes(MANAGED_PROJECT_CREATION_MARKER);
     if (hasMarker) validateDeletionTombstone(
-      stagePath,
+      directory,
       MANAGED_PROJECT_CREATION_MARKER,
       managedProjectOwnershipIdentity(receipt),
-      "Managed Project creation staging",
+      label,
       { dev: stat.dev, ino: stat.ino },
     );
     if (entries.some((entry) => entry !== MANAGED_PROJECT_CREATION_MARKER)) {
-      throw new Error("managed Project creation staging contains unowned content");
+      throw new Error(`${label} contains unowned content`);
     }
-    return { path: stagePath, markerPath, hasMarker, dev: stat.dev, ino: stat.ino };
+    return { path: directory, markerPath, hasMarker, dev: stat.dev, ino: stat.ino };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
   }
 }
 
+async function inspectManagedProjectStage(
+  root: string,
+  receipt: ManagedProjectCreationReceipt,
+) {
+  return inspectManagedProjectDirectory(
+    managedProjectStagePath(root, receipt),
+    receipt,
+    "Managed Project creation staging",
+  );
+}
+
+async function inspectManagedProjectPreparation(
+  root: string,
+  receipt: ManagedProjectCreationReceipt,
+) {
+  return inspectManagedProjectDirectory(
+    managedProjectPreparationPath(root, receipt),
+    receipt,
+    "Managed Project creation preparation",
+  );
+}
+
+function readManagedProjectMarkerSeed(
+  root: string,
+  receipt: ManagedProjectCreationReceipt,
+): AnyManagedProjectCreationReceipt | undefined {
+  const seed = readManagedProjectReceipt(managedProjectMarkerSeedPath(root, receipt));
+  if (seed) assertManagedProjectMarker(seed, receipt);
+  return seed;
+}
+
+async function removeManagedProjectPreparation(
+  root: string,
+  receipt: ManagedProjectCreationReceipt,
+): Promise<void> {
+  let preparation = await inspectManagedProjectPreparation(root, receipt);
+  const markerSeedPath = managedProjectMarkerSeedPath(root, receipt);
+  const markerSeed = readManagedProjectMarkerSeed(root, receipt);
+  if (preparation?.hasMarker && markerSeed) {
+    throw new Error("managed Project creation has ambiguous marker authority");
+  }
+  if (preparation && !preparation.hasMarker) {
+    if (!markerSeed) {
+      throw new Error("managed Project creation preparation is not authenticated");
+    }
+    await fs.rename(markerSeedPath, preparation.markerPath);
+    await syncDirectory(preparation.path);
+    await syncDirectory(root);
+    preparation = await inspectManagedProjectPreparation(root, receipt);
+  }
+  if (preparation?.hasMarker) {
+    validateDeletionTombstone(
+      preparation.path,
+      MANAGED_PROJECT_CREATION_MARKER,
+      managedProjectOwnershipIdentity(receipt),
+      "Managed Project creation preparation",
+      { dev: preparation.dev, ino: preparation.ino },
+    );
+    await fs.unlink(preparation.markerPath);
+    await fs.rmdir(preparation.path);
+    await syncDirectory(root);
+  } else if (markerSeed) {
+    await fs.unlink(markerSeedPath);
+    await syncDirectory(root);
+  }
+}
+
 async function prepareManagedProjectFolder(
   root: string,
   identity: ManagedProjectCreationIdentity,
+  fault?: ProjectRoutesContext["managedProjectCreationFault"],
 ): Promise<AnyManagedProjectCreationReceipt> {
   const receiptPath = managedProjectReceiptPath(root, identity.idempotencyKey);
   let receipt = readManagedProjectReceipt(receiptPath);
@@ -224,12 +331,13 @@ async function prepareManagedProjectFolder(
       phase: "preparing",
     };
     writeAtomicFsyncedJsonl(receiptPath, [receipt]);
+    await fault?.("receipt_persisted");
   }
   if (receipt.version === 2 &&
       (receipt.phase === "content_preserved" || receipt.phase === "cleanup_prepared" ||
         receipt.phase === "cleanup_authorized")) {
     await removeManagedProjectFolderCreation(root, receipt);
-    return prepareManagedProjectFolder(root, identity);
+    return prepareManagedProjectFolder(root, identity, fault);
   }
 
   const markerPath = path.join(receipt.hostPath, MANAGED_PROJECT_CREATION_MARKER);
@@ -249,26 +357,54 @@ async function prepareManagedProjectFolder(
     }
     await fs.unlink(receiptPath);
     await syncDirectory(root);
-    return prepareManagedProjectFolder(root, identity);
+    return prepareManagedProjectFolder(root, identity, fault);
   }
 
   const stagePath = managedProjectStagePath(root, receipt);
-  const stageMarkerPath = path.join(stagePath, MANAGED_PROJECT_CREATION_MARKER);
-  let stageCreated = false;
-  try {
-    await fs.mkdir(stagePath, { recursive: false });
-    stageCreated = true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  const preparationPath = managedProjectPreparationPath(root, receipt);
+  const markerSeedPath = managedProjectMarkerSeedPath(root, receipt);
+  let stage = await inspectManagedProjectStage(root, receipt);
+  let preparation = await inspectManagedProjectPreparation(root, receipt);
+  if (stage && preparation) {
+    throw new Error("managed Project creation has ambiguous staged and preparation storage");
   }
-  const stage = await inspectManagedProjectStage(root, receipt);
-  if (!stage?.hasMarker) {
-    if (!stageCreated) {
-      throw new Error("managed Project creation staging is not authenticated");
+  if (!stage) {
+    let markerSeed = readManagedProjectMarkerSeed(root, receipt);
+    if (!preparation) {
+      if (!markerSeed) {
+        writeAtomicFsyncedJsonl(markerSeedPath, [receipt]);
+        await fault?.("marker_seed_persisted");
+        markerSeed = readManagedProjectMarkerSeed(root, receipt);
+      }
+      try {
+        await fs.mkdir(preparationPath, { recursive: false });
+        await fault?.("preparation_directory_created");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+      preparation = await inspectManagedProjectPreparation(root, receipt);
     }
-    writeAtomicFsyncedJsonl(stageMarkerPath, [receipt]);
-    await syncDirectory(stagePath);
+    if (!preparation?.hasMarker) {
+      if (!preparation || !markerSeed) {
+        throw new Error("managed Project creation preparation is not authenticated");
+      }
+      await fs.rename(markerSeedPath, preparation.markerPath);
+      await syncDirectory(preparationPath);
+      await syncDirectory(root);
+      await fault?.("preparation_marker_installed");
+      preparation = await inspectManagedProjectPreparation(root, receipt);
+    } else if (markerSeed) {
+      throw new Error("managed Project creation has ambiguous marker authority");
+    }
+    await fs.rename(preparationPath, stagePath);
+    await syncDirectory(root);
+    await fault?.("stage_published");
+    stage = await inspectManagedProjectStage(root, receipt);
   }
+  if (!stage?.hasMarker) {
+    throw new Error("managed Project creation staging is not authenticated");
+  }
+  const stageMarkerPath = stage.markerPath;
   if (receipt.phase === "preparing") {
     receipt = { ...receipt, phase: "staged" };
     writeAtomicFsyncedJsonl(receiptPath, [receipt]);
@@ -325,6 +461,12 @@ async function finishManagedProjectFolder(
   const stage = receipt.version === 2
     ? await inspectManagedProjectStage(root, receipt)
     : undefined;
+  const preparation = receipt.version === 2
+    ? await inspectManagedProjectPreparation(root, receipt)
+    : undefined;
+  if (stage && preparation) {
+    throw new Error("managed Project creation has ambiguous staged and preparation storage");
+  }
   const markerPath = path.join(receipt.hostPath, MANAGED_PROJECT_CREATION_MARKER);
   try {
     const targetStat = receipt.version === 2 ? await fs.lstat(receipt.hostPath) : undefined;
@@ -365,6 +507,7 @@ async function finishManagedProjectFolder(
     }
     await fs.rmdir(stage.path);
   }
+  if (receipt.version === 2) await removeManagedProjectPreparation(root, receipt);
   await fs.unlink(receiptPath).catch((error: NodeJS.ErrnoException) => {
     if (error.code !== "ENOENT") throw error;
   });
@@ -383,6 +526,14 @@ async function removeManagedProjectFolderCreation(
     let targetExists = pathEntryExists(current.hostPath);
     let cleanupExists = pathEntryExists(cleanupPath);
     let preservedTarget = false;
+    const initialStage = await inspectManagedProjectStage(root, current);
+    const initialPreparation = await inspectManagedProjectPreparation(root, current);
+    if (initialStage && initialPreparation) {
+      throw new Error("managed Project cleanup has ambiguous staged and preparation storage");
+    }
+    if (initialPreparation || readManagedProjectMarkerSeed(root, current)) {
+      await removeManagedProjectPreparation(root, current);
+    }
     if (targetExists && cleanupExists) {
       throw new Error("managed Project cleanup has ambiguous target and tombstone storage");
     }
@@ -532,12 +683,70 @@ async function removeManagedProjectFolderCreation(
   await syncDirectory(root);
 }
 
+async function reconcileOrphanManagedProjectStages(
+  root: string,
+  store: ManagedProjectFolderRecoveryStore,
+  reportError: (error: unknown, stagePath: string) => void,
+): Promise<void> {
+  const stagePattern = /^\.project-creation-([0-9a-f]{64})-([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.staging$/u;
+  for (const name of await fs.readdir(root)) {
+    const match = stagePattern.exec(name);
+    if (!match) continue;
+    const stagePath = path.join(root, name);
+    try {
+      const markerPath = path.join(stagePath, MANAGED_PROJECT_CREATION_MARKER);
+      // A token-shaped directory is not authority: do not repair or otherwise
+      // mutate its marker until its exact identity has been authenticated.
+      const receipt = readManagedProjectReceipt(markerPath, false);
+      if (!receipt || receipt.version !== 2 ||
+          createHash("sha256").update(receipt.idempotencyKey).digest("hex") !== match[1] ||
+          receipt.ownershipToken !== match[2] ||
+          path.dirname(receipt.hostPath) !== path.resolve(root)) {
+        continue;
+      }
+      const current = readManagedProjectReceipt(
+        managedProjectReceiptPath(root, receipt.idempotencyKey),
+      );
+      if (current?.version === 2 && current.ownershipToken === receipt.ownershipToken) continue;
+      if (current) {
+        assertManagedProjectIdentity(current, receipt);
+      } else {
+        let settled = false;
+        try {
+          settled = Boolean(store.getProjectCreation(receipt));
+        } catch (error) {
+          if (!(error instanceof Error) || !error.message.includes("already deleted")) throw error;
+          settled = true;
+        }
+        if (!settled) continue;
+      }
+      const inspected = await inspectManagedProjectStage(root, receipt);
+      if (!inspected?.hasMarker) continue;
+      validateDeletionTombstone(
+        inspected.path,
+        MANAGED_PROJECT_CREATION_MARKER,
+        managedProjectOwnershipIdentity(receipt),
+        "Orphan managed Project creation staging",
+        { dev: inspected.dev, ino: inspected.ino },
+      );
+      await fs.unlink(inspected.markerPath);
+      await fs.rmdir(inspected.path);
+      await syncDirectory(root);
+    } catch (error) {
+      reportError(error, stagePath);
+    }
+  }
+}
+
 async function reconcileManagedProjectFolders(
   root: string,
   store: ManagedProjectFolderRecoveryStore,
   reportError: (error: unknown, receiptFile: string) => void,
 ): Promise<void> {
   await fs.mkdir(root, { recursive: true });
+  // Reconcile token-scoped siblings while the receipt still provides durable
+  // authority for aborted races where no canonical Project was committed.
+  await reconcileOrphanManagedProjectStages(root, store, reportError);
   for (const name of await fs.readdir(root)) {
     if (!/^\.project-creation-[0-9a-f]{64}\.jsonl$/u.test(name)) continue;
     const receiptPath = path.join(root, name);
@@ -588,6 +797,7 @@ export function registerProjectRoutes(
     clearAgentResumeSession,
     persistentRuntimeForTermination,
     teardownPersistentRuntime,
+    managedProjectCreationFault,
   } = context;
 
   registerProjectFolderRoutes(app, {
@@ -604,6 +814,38 @@ export function registerProjectRoutes(
     ),
   );
   app.addHook("onReady", reconcileManagedFolders);
+  const projectCreationClaims = new Map<string, {
+    identity: ManagedProjectCreationIdentity;
+    completion: Promise<void>;
+    complete: () => void;
+  }>();
+  const claimProjectCreation = async (
+    identity: ManagedProjectCreationIdentity,
+  ): Promise<() => void> => {
+    for (;;) {
+      const active = projectCreationClaims.get(identity.idempotencyKey);
+      if (active) {
+        if (!projectCreationIdentityMatches(active.identity, identity)) {
+          throw new Error("Project creation key was reused with different input");
+        }
+        await active.completion;
+        continue;
+      }
+      let complete!: () => void;
+      const completion = new Promise<void>((resolve) => { complete = resolve; });
+      const claim = { identity, completion, complete };
+      projectCreationClaims.set(identity.idempotencyKey, claim);
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        if (projectCreationClaims.get(identity.idempotencyKey) === claim) {
+          projectCreationClaims.delete(identity.idempotencyKey);
+        }
+        complete();
+      };
+    }
+  };
 
   app.post<{ Body: CreateProjectRequest; Headers: { "idempotency-key"?: string } }>("/api/projects", async (request, reply) => {
     const idempotencyKey = request.headers["idempotency-key"]?.trim();
@@ -638,6 +880,15 @@ export function registerProjectRoutes(
     const managedIdentity: ManagedProjectCreationIdentity | undefined = request.body.hostPath
       ? undefined
       : { ...creationIdentity, hostPath };
+    let releaseCreationClaim: (() => void) | undefined;
+    try {
+      releaseCreationClaim = await claimProjectCreation({ ...creationIdentity, hostPath });
+    } catch (error) {
+      return reply.code(409).send({
+        error: error instanceof Error ? error.message : "Project creation replay conflict",
+      });
+    }
+    try {
     let replay;
     try {
       replay = store.getProjectCreation(creationIdentity);
@@ -674,7 +925,11 @@ export function registerProjectRoutes(
     let managedReceipt: AnyManagedProjectCreationReceipt | undefined;
     if (managedIdentity) {
       try {
-        managedReceipt = await prepareManagedProjectFolder(managedWorkspacesRoot, managedIdentity);
+        managedReceipt = await prepareManagedProjectFolder(
+          managedWorkspacesRoot,
+          managedIdentity,
+          managedProjectCreationFault,
+        );
       } catch (error) {
         if (error instanceof Error && (error.message.includes("reused with different input") ||
             error.message.includes("folder already exists"))) {
@@ -718,6 +973,9 @@ export function registerProjectRoutes(
     refreshCommunicationReconciliation(project.id);
     if (project.lastConversationId) appendWorkspace({ type: "conversation_changed", projectId: project.id, conversationId: project.lastConversationId, action: "created" });
     return project;
+    } finally {
+      releaseCreationClaim?.();
+    }
   });
 
   app.post<{ Params: { id: string }; Body: { conversationId?: string } }>("/api/projects/:id/use", async (request, reply) => {

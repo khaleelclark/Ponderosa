@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -16,6 +16,34 @@ const adapter = {
   listModels: () => [],
   listEfforts: () => [],
 };
+
+function registerBasicProjectRoutes(app, store, managedWorkspacesRoot, options = {}) {
+  return registerProjectRoutes(app, {
+    store,
+    workspace: { getPreferences: () => ({}) },
+    engines: new Map([["codex", { adapter }]]),
+    managedWorkspacesRoot,
+    projectFolderPathBoundary: {
+      insideRoot: () => true,
+      validatedBrowsePath: async (candidate) => ({ candidate, root: "/" }),
+      defaultBrowsePath: async () => managedWorkspacesRoot,
+    },
+    activeRuns: new Map(),
+    scheduledSessionRollovers: new Map(),
+    organizationEnvelopeStates: new Map(),
+    cachedModelOptions: () => [],
+    appendWorkspace: () => {},
+    refreshCommunicationReconciliation: () => {},
+    clearAgentResumeSession: () => {},
+    persistentRuntimeForTermination: () => undefined,
+    teardownPersistentRuntime: async () => {},
+    ...options,
+  });
+}
+
+const projectCreationArtifacts = async (root) => (await readdir(root))
+  .filter((name) => name.startsWith(".project-creation-"))
+  .sort();
 
 function managedCreationReceipt(managedWorkspacesRoot, idempotencyKey, payload) {
   const hostPath = path.join(managedWorkspacesRoot, payload.createFolderName);
@@ -116,6 +144,97 @@ test("Project API replays lost responses and never deletes a committed managed f
   assert.equal(store.listProjects().some((item) => item.label === "Failed"), false);
 });
 
+test("concurrent managed Project creation serializes one exact idempotency claim", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-project-route-concurrent-"));
+  const managedWorkspacesRoot = path.join(dataDir, "managed");
+  const store = new AgentStore(dataDir);
+  const app = Fastify();
+  let releaseFirst;
+  const firstHeld = new Promise((resolve) => { releaseFirst = resolve; });
+  let reachedFirst;
+  const firstReached = new Promise((resolve) => { reachedFirst = resolve; });
+  let held = false;
+  registerBasicProjectRoutes(app, store, managedWorkspacesRoot, {
+    managedProjectCreationFault: async (boundary) => {
+      if (boundary !== "receipt_persisted" || held) return;
+      held = true;
+      reachedFirst();
+      await firstHeld;
+    },
+  });
+  t.after(async () => {
+    await app.close();
+    store.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const request = {
+    method: "POST",
+    url: "/api/projects",
+    headers: { "idempotency-key": "project-concurrent-exact" },
+    payload: { label: "Concurrent", defaultEngine: "codex", createFolderName: "concurrent" },
+  };
+  const first = app.inject(request);
+  await firstReached;
+  const followers = Array.from({ length: 7 }, () => app.inject(request));
+  const conflict = await app.inject({
+    ...request,
+    payload: { ...request.payload, label: "Different" },
+  });
+  assert.equal(conflict.statusCode, 409);
+  releaseFirst();
+  const responses = await Promise.all([first, ...followers]);
+  assert.deepEqual(responses.map((response) => response.statusCode), Array(8).fill(200));
+  assert.equal(new Set(responses.map((response) => response.json().id)).size, 1);
+  assert.equal(store.listProjects().filter((project) => project.label === "Concurrent").length, 1);
+  assert.deepEqual(await projectCreationArtifacts(managedWorkspacesRoot), []);
+});
+
+test("managed Project creation restarts cleanly at every durable preparation boundary", async (t) => {
+  const boundaries = [
+    "receipt_persisted",
+    "marker_seed_persisted",
+    "preparation_directory_created",
+    "preparation_marker_installed",
+    "stage_published",
+  ];
+  for (const boundary of boundaries) {
+    const dataDir = await mkdtemp(path.join(tmpdir(), `ponderosa-project-route-${boundary}-`));
+    t.after(() => rm(dataDir, { recursive: true, force: true }));
+    const managedWorkspacesRoot = path.join(dataDir, "managed");
+    let store = new AgentStore(dataDir);
+    let app = Fastify();
+    let injected = false;
+    registerBasicProjectRoutes(app, store, managedWorkspacesRoot, {
+      managedProjectCreationFault: (reached) => {
+        if (reached === boundary && !injected) {
+          injected = true;
+          throw new Error(`injected ${boundary} interruption`);
+        }
+      },
+    });
+    const request = {
+      method: "POST",
+      url: "/api/projects",
+      headers: { "idempotency-key": `restart-${boundary.replaceAll("_", "-")}` },
+      payload: { label: boundary, defaultEngine: "codex", createFolderName: boundary },
+    };
+    const interrupted = await app.inject(request);
+    assert.equal(interrupted.statusCode, 500, `${boundary}: ${interrupted.body}`);
+    await app.close();
+    store.close();
+
+    store = new AgentStore(dataDir);
+    app = Fastify();
+    registerBasicProjectRoutes(app, store, managedWorkspacesRoot);
+    await app.ready();
+    const retried = await app.inject(request);
+    assert.equal(retried.statusCode, 200, `${boundary}: ${retried.body}`);
+    assert.deepEqual(await projectCreationArtifacts(managedWorkspacesRoot), [], boundary);
+    await app.close();
+    store.close();
+  }
+});
+
 test("Chat API binds one stable creation key to one payload", async (t) => {
   const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-chat-route-create-"));
   const store = new AgentStore(dataDir);
@@ -167,6 +286,106 @@ test("Chat API binds one stable creation key to one payload", async (t) => {
 
   const conflict = await app.inject({ ...request, payload: { title: "Backend" } });
   assert.equal(conflict.statusCode, 409, conflict.body);
+});
+
+test("startup removes authenticated orphan contender stages and preserves foreign stages", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-project-orphan-stages-"));
+  const managedWorkspacesRoot = path.join(dataDir, "managed");
+  let store = new AgentStore(dataDir);
+  let app = Fastify();
+  registerBasicProjectRoutes(app, store, managedWorkspacesRoot);
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const key = "project-orphan-contenders";
+  const payload = {
+    label: "Settled",
+    defaultEngine: "codex",
+    createFolderName: "settled",
+  };
+  const created = await app.inject({
+    method: "POST", url: "/api/projects",
+    headers: { "idempotency-key": key }, payload,
+  });
+  assert.equal(created.statusCode, 200, created.body);
+  const base = managedCreationReceipt(managedWorkspacesRoot, key, payload);
+  for (const token of [
+    "31111111-1111-4111-8111-111111111111",
+    "32222222-2222-4222-8222-222222222222",
+  ]) {
+    const receipt = { ...base.receipt, version: 2, ownershipToken: token, phase: "staged" };
+    const stage = path.join(
+      managedWorkspacesRoot,
+      `.project-creation-${createHash("sha256").update(key).digest("hex")}-${token}.staging`,
+    );
+    await mkdir(stage);
+    await writeFile(
+      path.join(stage, ".ponderosa-project-creation.jsonl"),
+      `${JSON.stringify(receipt)}\n`,
+    );
+  }
+  const abortedKey = "project-aborted-contenders";
+  const abortedPayload = {
+    label: "Aborted",
+    defaultEngine: "codex",
+    createFolderName: "aborted",
+  };
+  const abortedBase = managedCreationReceipt(
+    managedWorkspacesRoot, abortedKey, abortedPayload,
+  );
+  for (const [token, current] of [
+    ["41111111-1111-4111-8111-111111111111", true],
+    ["42222222-2222-4222-8222-222222222222", false],
+  ]) {
+    const receipt = {
+      ...abortedBase.receipt,
+      version: 2,
+      ownershipToken: token,
+      phase: "staged",
+    };
+    if (current) {
+      await writeFile(abortedBase.receiptPath, `${JSON.stringify(receipt)}\n`);
+    }
+    const stage = path.join(
+      managedWorkspacesRoot,
+      `.project-creation-${createHash("sha256").update(abortedKey).digest("hex")}-${token}.staging`,
+    );
+    await mkdir(stage);
+    await writeFile(
+      path.join(stage, ".ponderosa-project-creation.jsonl"),
+      `${JSON.stringify(receipt)}\n`,
+    );
+  }
+  const foreignToken = "33333333-3333-4333-8333-333333333333";
+  const foreignStage = path.join(
+    managedWorkspacesRoot,
+    `.project-creation-${createHash("sha256").update(key).digest("hex")}-${foreignToken}.staging`,
+  );
+  await mkdir(foreignStage);
+  await writeFile(path.join(foreignStage, "KEEP.txt"), "keep");
+  const foreignMarkerToken = "34444444-4444-4444-8444-444444444444";
+  const foreignMarkerStage = path.join(
+    managedWorkspacesRoot,
+    `.project-creation-${createHash("sha256").update(key).digest("hex")}-${foreignMarkerToken}.staging`,
+  );
+  const foreignMarkerPath = path.join(
+    foreignMarkerStage, ".ponderosa-project-creation.jsonl",
+  );
+  await mkdir(foreignMarkerStage);
+  await writeFile(foreignMarkerPath, "{torn");
+
+  await app.close();
+  store.close();
+  store = new AgentStore(dataDir);
+  app = Fastify();
+  registerBasicProjectRoutes(app, store, managedWorkspacesRoot);
+  await app.ready();
+  assert.deepEqual(await projectCreationArtifacts(managedWorkspacesRoot), [
+    path.basename(foreignMarkerStage),
+    path.basename(foreignStage),
+  ].sort());
+  assert.equal(await readFile(path.join(foreignStage, "KEEP.txt"), "utf8"), "keep");
+  assert.equal(await readFile(foreignMarkerPath, "utf8"), "{torn");
+  await app.close();
+  store.close();
 });
 
 test("managed Project folder receipts recover owned states and preserve ambiguous folders", async (t) => {
