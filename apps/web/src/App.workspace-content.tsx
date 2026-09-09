@@ -145,7 +145,6 @@ export function WorkspaceRouteOutlet({
             engines={engines}
             notifications={notifications}
             notificationCounts={notificationCounts}
-            preferences={preferences}
             onNavigate={onNavigate}
             onCreateProject={() => onCreate("project")}
             onOpenInbox={onOpenInbox}

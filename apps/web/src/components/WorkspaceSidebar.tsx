@@ -186,6 +186,12 @@ export function WorkspaceSidebar({
       projectId: drawerProjectId,
       enabled: projectContext,
     });
+  const activeProjectAgentQuery =
+    useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
+      projectId: drawerProjectId,
+      active: true,
+      enabled: projectContext,
+    });
   const triggerDirectoryQuery =
     useWorkspaceDirectory<WorkspaceTriggerDirectoryItemDto>("trigger", {
       search: directorySearch,
@@ -279,7 +285,7 @@ export function WorkspaceSidebar({
   );
   const counts = {
     running:
-      agentDirectoryQuery.data?.pages.at(-1)?.activeCount ?? 0,
+      activeProjectAgentQuery.data?.pages.at(-1)?.total ?? 0,
     attention: notificationCounts?.unacknowledgedActionCount ?? notifications.filter(isOpenAttention).length,
     updates: notificationCounts?.unreadUpdateCount ?? notifications.filter(isUnreadNotificationUpdate).length,
   };
@@ -440,7 +446,7 @@ export function WorkspaceSidebar({
         agents: agentDirectoryQuery.requestState.hasResolved ? agentDirectory.total : undefined,
         triggers: triggerDirectoryQuery.requestState.hasResolved ? triggerDirectory.total : undefined,
       }}
-      runningCount={agentDirectoryQuery.requestState.hasResolved ? counts.running : undefined}
+      runningCount={activeProjectAgentQuery.requestState.hasResolved ? counts.running : undefined}
       unreadCount={projectUnread.get(activeProject.id)?.totalCount ?? 0}
       drawer={drawer}
       onSectionChange={section => {

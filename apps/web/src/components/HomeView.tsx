@@ -19,7 +19,6 @@ import type {
   WorkspaceAgentDirectoryItemDto,
   WorkspaceNotificationDto,
   WorkspaceNotificationPageDto,
-  WorkspacePreferencesDto,
   WorkspaceTriggerDirectoryItemDto,
 } from "@ponderosa/core";
 import type { ReactNode } from "react";
@@ -28,7 +27,6 @@ import { isOpenAttention, notificationOpenActionCount } from "../attention";
 import { engineAvailabilityPresentation } from "../conversationEngine";
 import {
   useWorkspaceDirectory,
-  workspaceDirectoryItems,
 } from "../hooks/useWorkspaceDirectory";
 import type { Route } from "../routing";
 import { CompactWorkspaceHeader } from "./WorkspaceFrame";
@@ -217,7 +215,6 @@ export function HomeView({
   engines,
   notifications,
   notificationCounts,
-  preferences,
   onNavigate,
   onCreateProject,
   onOpenInbox,
@@ -227,27 +224,23 @@ export function HomeView({
   engines: EngineDto[];
   notifications: WorkspaceNotificationDto[];
   notificationCounts?: Pick<WorkspaceNotificationPageDto, "openActionCount">;
-  preferences: WorkspacePreferencesDto;
   onNavigate(route: Route): void;
   onCreateProject(): void;
   onOpenInbox(): void;
 }): JSX.Element {
   const workspaceConnection = useWorkspaceConnection();
-  const directoryOptions = { sort: "last_used" as const };
   const outcomeQuery = useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
     recentOutcomes: true,
   });
   const activeAgentQuery = useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
-    ...directoryOptions,
     active: true,
   });
   const triggerQuery = useWorkspaceDirectory<WorkspaceTriggerDirectoryItemDto>("trigger", {
     sort: "next_fire",
     onlyEnabled: true,
   });
-  const activeAgentDirectory = workspaceDirectoryItems(activeAgentQuery.data?.pages, preferences);
   const outcomeItems = outcomeQuery.data?.pages.flatMap(page => page.items) ?? [];
-  const activeItems = [...activeAgentDirectory.starredItems, ...activeAgentDirectory.items];
+  const activeItems = activeAgentQuery.data?.pages.flatMap(page => page.items) ?? [];
   const agentNamesById = new Map(
     [...outcomeItems, ...activeItems].map(item => [item.agent.id, item.agent.title]),
   );
@@ -255,8 +248,7 @@ export function HomeView({
   const attention = notifications
     .filter(isOpenAttention)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
-  const working = activeItems
-    .sort((left, right) => right.health.statusTimestamp.localeCompare(left.health.statusTimestamp));
+  const working = activeItems;
   const automations = triggerItems;
   const recentOutcomes = outcomeItems.slice(0, 6);
   const provider = engineAvailabilityPresentation(engines);

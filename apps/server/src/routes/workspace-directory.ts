@@ -555,16 +555,20 @@ function workspaceAgentHealth(
     agentsByProject.set(row.project_id, agents);
   }
   const byId = new Map<string, AgentHealthDto>();
-  const workingIds: string[] = [];
   for (const [projectId, agents] of agentsByProject) {
     for (const health of context.agentHealth(
       { type: "project", id: projectId },
       agents,
     ).agents) {
       byId.set(health.agentId, health);
-      if (WORKING_AGENT_STATUSES.has(health.status)) workingIds.push(health.agentId);
     }
   }
+  const workingIds = [...byId.values()]
+    .filter(health => WORKING_AGENT_STATUSES.has(health.status))
+    .sort((left, right) =>
+      right.statusTimestamp.localeCompare(left.statusTimestamp) ||
+      left.agentId.localeCompare(right.agentId))
+    .map(health => health.agentId);
   const outcomes = [...byId.values()]
     .filter((health): health is AgentHealthDto & { assignedWorkOutcome: NonNullable<AgentHealthDto["assignedWorkOutcome"]> } =>
       Boolean(health.assignedWorkOutcome))
@@ -574,7 +578,7 @@ function workspaceAgentHealth(
     .slice(0, MAX_RECENT_OUTCOMES);
   return {
     byId,
-    workingIds: workingIds.sort(),
+    workingIds,
     outcomeIds: outcomes.map(health => health.agentId),
     revision: createHash("sha256")
       .update([...byId.values()]
@@ -662,16 +666,27 @@ export function registerWorkspaceDirectoryRoutes(
 
     const preferences = context.workspace.getPreferences();
     const settings = resourceSettings(preferences, kind);
+    const activeAgents = request.query.active === "true";
     const recentOutcomes = request.query.outcomes === "true";
-    if (recentOutcomes && requestedSort !== undefined) {
-      return reply.code(400).send({ error: "Recent Agent outcomes have a canonical sort" });
+    if (activeAgents && recentOutcomes) {
+      return reply.code(400).send({ error: "Active Agents and Recent Agent outcomes are separate directory views" });
+    }
+    if ((activeAgents || recentOutcomes) && requestedSort !== undefined) {
+      return reply.code(400).send({
+        error: activeAgents
+          ? "Active Agents have a canonical sort"
+          : "Recent Agent outcomes have a canonical sort",
+      });
     }
     const health = kind === "agent" ? workspaceAgentHealth(context) : undefined;
-    const sort = recentOutcomes ? "custom" : requestedSort ?? settings.sort;
+    const canonicalAgentView = activeAgents || recentOutcomes;
+    const sort = canonicalAgentView ? "custom" : requestedSort ?? settings.sort;
     const sqlite = context.store.sqlite;
-    const order = recentOutcomes
-      ? health?.outcomeIds ?? []
-      : sort === "next_fire" ? [] : settings.order;
+    const order = activeAgents
+      ? health?.workingIds ?? []
+      : recentOutcomes
+        ? health?.outcomeIds ?? []
+        : sort === "next_fire" ? [] : settings.order;
     const normalizedSearch = (request.query.search ?? "")
       .trim()
       .toLocaleLowerCase();
@@ -683,8 +698,8 @@ export function registerWorkspaceDirectoryRoutes(
 
     const directorySettingsHash = createHash("sha256")
       .update(JSON.stringify({
-        order: recentOutcomes ? [] : order,
-        stars: recentOutcomes ? [] : [...starredKeys(preferences)]
+        order: canonicalAgentView ? [] : order,
+        stars: canonicalAgentView ? [] : [...starredKeys(preferences)]
           .filter(key => key.startsWith(`${kind}:`))
           .sort(),
       }))
@@ -747,7 +762,7 @@ export function registerWorkspaceDirectoryRoutes(
       }
     }
 
-    const stars = sort === "next_fire" || recentOutcomes ? [] : [...starredKeys(preferences)]
+    const stars = sort === "next_fire" || canonicalAgentView ? [] : [...starredKeys(preferences)]
       .filter(key => key.startsWith(`${kind}:`))
       .map(key => key.slice(kind.length + 1));
     let starredRows: ResourceRow[] = [];

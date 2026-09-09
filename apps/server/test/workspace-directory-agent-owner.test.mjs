@@ -131,7 +131,7 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
 
   const activeAgents = await app.inject({
     method: "GET",
-    url: "/api/workspace/directory/agent?active=true&limit=2&sort=last_used",
+    url: "/api/workspace/directory/agent?active=true&limit=2",
   });
   assert.equal(activeAgents.statusCode, 200, activeAgents.body);
   assert.equal(activeAgents.json().activeCount, 4);
@@ -139,7 +139,7 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
   assert.equal(activeAgents.json().history.hasMore, true);
   const nextActiveAgents = await app.inject({
     method: "GET",
-    url: `/api/workspace/directory/agent?active=true&limit=2&sort=last_used&cursor=${encodeURIComponent(activeAgents.json().history.cursor)}`,
+    url: `/api/workspace/directory/agent?active=true&limit=2&cursor=${encodeURIComponent(activeAgents.json().history.cursor)}`,
   });
   assert.equal(nextActiveAgents.statusCode, 200, nextActiveAgents.body);
   assert.equal(nextActiveAgents.json().activeCount, 4);
@@ -154,13 +154,13 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
   workingAgents.set(agent.id, "idle");
   const staleActiveAgents = await app.inject({
     method: "GET",
-    url: `/api/workspace/directory/agent?active=true&limit=2&sort=last_used&cursor=${encodeURIComponent(activeAgents.json().history.cursor)}`,
+    url: `/api/workspace/directory/agent?active=true&limit=2&cursor=${encodeURIComponent(activeAgents.json().history.cursor)}`,
   });
   assert.equal(staleActiveAgents.statusCode, 409, staleActiveAgents.body);
   assert.equal(staleActiveAgents.json().code, "stale_collection_cursor");
   const refreshedActiveAgents = await app.inject({
     method: "GET",
-    url: "/api/workspace/directory/agent?active=true&limit=2&sort=last_used",
+    url: "/api/workspace/directory/agent?active=true&limit=2",
   });
   assert.equal(refreshedActiveAgents.statusCode, 200, refreshedActiveAgents.body);
   assert.equal(refreshedActiveAgents.json().activeCount, 3);
@@ -170,10 +170,15 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
   );
   const staleHealthPage = await app.inject({
     method: "GET",
-    url: `/api/workspace/directory/agent?active=true&limit=2&sort=last_used&cursor=${encodeURIComponent(refreshedActiveAgents.json().history.cursor)}`,
+    url: `/api/workspace/directory/agent?active=true&limit=2&cursor=${encodeURIComponent(refreshedActiveAgents.json().history.cursor)}`,
   });
   assert.equal(staleHealthPage.statusCode, 409, staleHealthPage.body);
   assert.equal(staleHealthPage.json().code, "stale_collection_cursor");
+  const activeSortOverride = await app.inject({
+    method: "GET",
+    url: "/api/workspace/directory/agent?active=true&sort=last_used",
+  });
+  assert.equal(activeSortOverride.statusCode, 400, activeSortOverride.body);
 
   const recentOutcomes = await app.inject({
     method: "GET",
@@ -219,4 +224,131 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
   });
   assert.equal(nextHomeAutomations.statusCode, 200, nextHomeAutomations.body);
   assert.equal(nextHomeAutomations.json().items[0].trigger.id, "trigger-21");
+});
+
+test("active Agent pages use canonical health order and retain Project-scoped totals", async (t) => {
+  const dataDir = mkdtempSync(join(tmpdir(), "ponderosa-active-agent-directory-"));
+  const store = new AgentStore(dataDir);
+  const workspace = new WorkspaceStore(dataDir);
+  const coordination = new CoordinationV3Store(store.sqlite);
+  const app = Fastify();
+  t.after(async () => {
+    await app.close();
+    store.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  const createProjectAgent = (label, suffix, agentTitle = `${label} Agent`) => {
+    const project = store.createProject({
+      label,
+      hostPath: `/tmp/${suffix}`,
+      defaultEngine: "codex",
+    });
+    const conversation = store.createConversation(project.id, { title: `${label} Chat` });
+    const agent = store.createAgent(project.id, {
+      title: agentTitle,
+      engine: "codex",
+      conversationId: conversation.id,
+    });
+    return { project, conversation, agent };
+  };
+  const first = createProjectAgent("First", "first");
+  const second = createProjectAgent("Second", "second");
+  const bulk = createProjectAgent("Bulk", "bulk", "Bulk Agent 00");
+  const bulkAgents = [bulk.agent];
+  for (let index = 1; index < 30; index += 1) {
+    bulkAgents.push(store.createAgent(bulk.project.id, {
+      title: `Bulk Agent ${String(index).padStart(2, "0")}`,
+      engine: "codex",
+      conversationId: bulk.conversation.id,
+    }));
+  }
+  const statusTimestamps = new Map([
+    [first.agent.id, "2025-12-01T00:00:00.000Z"],
+    [second.agent.id, "2025-12-01T00:00:00.000Z"],
+  ]);
+  store.sqlite.prepare("UPDATE agents SET updated_at = ? WHERE id IN (?, ?)").run(
+    "2025-12-01T00:00:00.000Z",
+    first.agent.id,
+    second.agent.id,
+  );
+  bulkAgents.forEach((agent, index) => {
+    store.sqlite.prepare("UPDATE agents SET updated_at = ? WHERE id = ?").run(
+      `2026-01-01T00:${String(index).padStart(2, "0")}:00.000Z`,
+      agent.id,
+    );
+    statusTimestamps.set(
+      agent.id,
+      index < 2
+        ? "2026-02-01T00:29:00.000Z"
+        : `2026-02-01T00:${String(30 - index).padStart(2, "0")}:00.000Z`,
+    );
+  });
+
+  registerWorkspaceDirectoryRoutes(app, {
+    store,
+    coordination,
+    workspace,
+    agentHealth: (scope, agents) => ({
+      scope,
+      generatedAt: "2026-03-01T00:00:00.000Z",
+      agents: agents.map(({ id }) => ({
+        agentId: id,
+        childAgentIds: [],
+        status: "running",
+        statusTimestamp: statusTimestamps.get(id),
+        reason: "active_run",
+      })),
+    }),
+    projectDisplayPath: (hostPath) => hostPath,
+  });
+
+  for (const { project } of [first, second]) {
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/workspace/directory/agent?active=true&projectId=${project.id}&limit=1`,
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.json().total, 1, "Project active totals remain scoped");
+    assert.equal(response.json().activeCount, 32, "the workspace-wide count remains available separately");
+  }
+
+  const expected = [...bulkAgents, first.agent, second.agent].sort((left, right) =>
+    statusTimestamps.get(right.id).localeCompare(statusTimestamps.get(left.id)) ||
+    left.id.localeCompare(right.id));
+  const lastUsedPage = await app.inject({
+    method: "GET",
+    url: "/api/workspace/directory/agent?sort=last_used&limit=1",
+  });
+  assert.equal(lastUsedPage.statusCode, 200, lastUsedPage.body);
+  assert.equal(lastUsedPage.json().items[0].agent.title, "Bulk Agent 29");
+  const firstPage = await app.inject({
+    method: "GET",
+    url: "/api/workspace/directory/agent?active=true&limit=25",
+  });
+  assert.equal(firstPage.statusCode, 200, firstPage.body);
+  assert.deepEqual(
+    firstPage.json().items.map(item => item.agent.id),
+    expected.slice(0, 25).map(agent => agent.id),
+    "the first page is the workspace's canonical newest health slice",
+  );
+  assert.equal(firstPage.json().items.slice(0, 8).some(item => item.agent.title === "Bulk Agent 00"), true);
+
+  const nextPage = await app.inject({
+    method: "GET",
+    url: `/api/workspace/directory/agent?active=true&limit=25&cursor=${encodeURIComponent(firstPage.json().history.cursor)}`,
+  });
+  assert.equal(nextPage.statusCode, 200, nextPage.body);
+  assert.deepEqual(
+    nextPage.json().items.map(item => item.agent.id),
+    expected.slice(25).map(agent => agent.id),
+  );
+
+  statusTimestamps.set(expected.at(-1).id, "2026-03-02T00:00:00.000Z");
+  const stalePage = await app.inject({
+    method: "GET",
+    url: `/api/workspace/directory/agent?active=true&limit=25&cursor=${encodeURIComponent(firstPage.json().history.cursor)}`,
+  });
+  assert.equal(stalePage.statusCode, 409, stalePage.body);
+  assert.equal(stalePage.json().code, "stale_collection_cursor");
 });
