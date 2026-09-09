@@ -79,6 +79,7 @@ export interface PushDeliveryRecord {
 }
 
 const DEFAULT_PREFERENCES: WorkspacePreferencesDto = {
+  revision: 0,
   projectSort: "last_used",
   projectOrder: [],
   homeOrder: [],
@@ -372,9 +373,14 @@ export class WorkspaceStore {
     }
     if (record.event.type === "preferences_updated") {
       const preferences = record.event.preferences;
-      this.preferences = {
+      const revision = Number.isSafeInteger(preferences.revision) &&
+        preferences.revision > this.preferences.revision
+        ? preferences.revision
+        : this.preferences.revision + 1;
+      const normalized: WorkspacePreferencesDto = {
         ...DEFAULT_PREFERENCES,
         ...preferences,
+        revision,
         notifications: normalizeNotifications(preferences.notifications),
         projectOrder: preferences.projectOrder ?? [],
         homeOrder: preferences.homeOrder ?? [],
@@ -402,6 +408,8 @@ export class WorkspaceStore {
         onboardingCompletedAt: preferences.onboardingCompletedAt ?? null,
         profile: normalizeProfile(preferences.profile),
       };
+      record.event = { ...record.event, preferences: normalized };
+      this.preferences = normalized;
     }
     if (record.mutation?.kind === "draft") this.drafts.set(this.draftKey(record.mutation.draft.conversationId, record.mutation.draft.ownerId), record.mutation.draft);
     if (record.mutation?.kind === "draft_conflict") {
@@ -938,6 +946,7 @@ export class WorkspaceStore {
     const preferences: WorkspacePreferencesDto = {
       ...this.preferences,
       ...patch,
+      revision: this.preferences.revision + 1,
       notifications,
       projectOrder: patch.projectOrder ?? this.preferences.projectOrder,
       homeOrder: patch.homeOrder ?? this.preferences.homeOrder,

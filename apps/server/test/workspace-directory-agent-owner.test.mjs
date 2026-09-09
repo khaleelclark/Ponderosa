@@ -34,6 +34,7 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
     conversationId: owner.id,
   });
   const workingAgents = new Map([[agent.id, "running"]]);
+  const assignedOutcomes = new Map();
   for (const [title, status] of [
     ["Waiting Agent", "waiting"],
     ["Provider Blocked Agent", "blocked"],
@@ -47,11 +48,12 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
     workingAgents.set(workingAgent.id, status);
   }
   for (let index = 0; index < 30; index += 1) {
-    store.createAgent(project.id, {
+    const laterAgent = store.createAgent(project.id, {
       title: `Later Agent ${String(index).padStart(2, "0")}`,
       engine: "codex",
       conversationId: owner.id,
     });
+    assignedOutcomes.set(laterAgent.id, `2026-01-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`);
   }
   const now = new Date().toISOString();
   store.sqlite.prepare(`
@@ -89,6 +91,14 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
         status: workingAgents.get(id) ?? "idle",
         statusTimestamp: new Date(0).toISOString(),
         reason: { kind: "idle" },
+        ...(assignedOutcomes.has(id) ? {
+          assignedWorkOutcome: {
+            runId: `outcome-${id}`,
+            status: "completed",
+            reason: { kind: "completed" },
+            updatedAt: assignedOutcomes.get(id),
+          },
+        } : {}),
       })),
     }),
     projectDisplayPath: (hostPath) => hostPath,
@@ -141,6 +151,48 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
     [...activeAgents.json().items, ...nextActiveAgents.json().items].some(item => item.health.status === "idle"),
     false,
   );
+  workingAgents.set(agent.id, "idle");
+  const staleActiveAgents = await app.inject({
+    method: "GET",
+    url: `/api/workspace/directory/agent?active=true&limit=2&sort=last_used&cursor=${encodeURIComponent(activeAgents.json().history.cursor)}`,
+  });
+  assert.equal(staleActiveAgents.statusCode, 409, staleActiveAgents.body);
+  assert.equal(staleActiveAgents.json().code, "stale_collection_cursor");
+  const refreshedActiveAgents = await app.inject({
+    method: "GET",
+    url: "/api/workspace/directory/agent?active=true&limit=2&sort=last_used",
+  });
+  assert.equal(refreshedActiveAgents.statusCode, 200, refreshedActiveAgents.body);
+  assert.equal(refreshedActiveAgents.json().activeCount, 3);
+  workingAgents.set(
+    refreshedActiveAgents.json().items[0].agent.id,
+    refreshedActiveAgents.json().items[0].health.status === "blocked" ? "waiting" : "blocked",
+  );
+  const staleHealthPage = await app.inject({
+    method: "GET",
+    url: `/api/workspace/directory/agent?active=true&limit=2&sort=last_used&cursor=${encodeURIComponent(refreshedActiveAgents.json().history.cursor)}`,
+  });
+  assert.equal(staleHealthPage.statusCode, 409, staleHealthPage.body);
+  assert.equal(staleHealthPage.json().code, "stale_collection_cursor");
+
+  const recentOutcomes = await app.inject({
+    method: "GET",
+    url: "/api/workspace/directory/agent?outcomes=true&limit=6",
+  });
+  assert.equal(recentOutcomes.statusCode, 200, recentOutcomes.body);
+  assert.deepEqual(
+    recentOutcomes.json().items.map(item => item.agent.title),
+    ["Later Agent 29", "Later Agent 28", "Later Agent 27", "Later Agent 26", "Later Agent 25", "Later Agent 24"],
+  );
+  assert.equal(recentOutcomes.json().total, 30);
+  assert.equal(recentOutcomes.json().history.hasMore, true);
+  assignedOutcomes.set(recentOutcomes.json().items[0].agent.id, "2025-01-01T00:00:00.000Z");
+  const staleOutcomes = await app.inject({
+    method: "GET",
+    url: `/api/workspace/directory/agent?outcomes=true&limit=6&cursor=${encodeURIComponent(recentOutcomes.json().history.cursor)}`,
+  });
+  assert.equal(staleOutcomes.statusCode, 409, staleOutcomes.body);
+  assert.equal(staleOutcomes.json().code, "stale_collection_cursor");
 
   const automations = await app.inject({
     method: "GET",

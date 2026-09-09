@@ -22,7 +22,7 @@ export class WorkspacePreferencesWriter {
   }) {}
 
   projectCanonical(value: WorkspacePreferencesDto): WorkspacePreferencesDto {
-    if (!this.canonical || value.updatedAt >= this.canonical.updatedAt) this.canonical = value;
+    if (!this.canonical || value.revision >= this.canonical.revision) this.canonical = value;
     return this.projectPending();
   }
 

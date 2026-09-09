@@ -473,6 +473,7 @@ export const realApi = {
       conversationId?: string;
       sort?: ProjectSort | "next_fire";
       active?: boolean;
+      outcomes?: boolean;
       enabled?: boolean;
     } = {},
   ): Promise<WorkspaceDirectoryPageDto<T>> {
@@ -485,6 +486,7 @@ export const realApi = {
         conversationId: options.conversationId,
         sort: options.sort,
         active: options.active ? "true" : undefined,
+        outcomes: options.outcomes ? "true" : undefined,
         enabled: options.enabled ? "true" : undefined,
       })}`;
     return requestJson<WorkspaceDirectoryPageDto<T>>(path).catch(async (error) => {

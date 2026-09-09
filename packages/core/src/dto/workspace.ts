@@ -13,6 +13,8 @@ export interface NotificationPreferencesDto {
 }
 
 export interface WorkspacePreferencesDto {
+  /** Canonical monotonic preference mutation sequence. */
+  revision: number;
   projectSort: ProjectSort;
   /** Stable project IDs in the operator's chosen order. Unknown/deleted IDs are ignored. */
   projectOrder: string[];
@@ -166,7 +168,7 @@ export interface UploadedOperatorAvatarDto {
   url: string;
 }
 
-export type UpdateWorkspacePreferencesRequest = Partial<Omit<WorkspacePreferencesDto, "updatedAt">>;
+export type UpdateWorkspacePreferencesRequest = Partial<Omit<WorkspacePreferencesDto, "revision" | "updatedAt">>;
 
 export interface DraftAttachmentDto {
   id: string;

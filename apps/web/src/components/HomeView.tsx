@@ -234,7 +234,9 @@ export function HomeView({
 }): JSX.Element {
   const workspaceConnection = useWorkspaceConnection();
   const directoryOptions = { sort: "last_used" as const };
-  const agentQuery = useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", directoryOptions);
+  const outcomeQuery = useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
+    recentOutcomes: true,
+  });
   const activeAgentQuery = useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
     ...directoryOptions,
     active: true,
@@ -243,26 +245,20 @@ export function HomeView({
     sort: "next_fire",
     onlyEnabled: true,
   });
-  const agentDirectory = workspaceDirectoryItems(agentQuery.data?.pages, preferences);
   const activeAgentDirectory = workspaceDirectoryItems(activeAgentQuery.data?.pages, preferences);
-  const agentItems = [...agentDirectory.starredItems, ...agentDirectory.items];
+  const outcomeItems = outcomeQuery.data?.pages.flatMap(page => page.items) ?? [];
+  const activeItems = [...activeAgentDirectory.starredItems, ...activeAgentDirectory.items];
   const agentNamesById = new Map(
-    agentItems.map(item => [item.agent.id, item.agent.title]),
+    [...outcomeItems, ...activeItems].map(item => [item.agent.id, item.agent.title]),
   );
   const triggerItems = triggerQuery.data?.pages.flatMap(page => page.items) ?? [];
   const attention = notifications
     .filter(isOpenAttention)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
-  const working = [...activeAgentDirectory.starredItems, ...activeAgentDirectory.items]
+  const working = activeItems
     .sort((left, right) => right.health.statusTimestamp.localeCompare(left.health.statusTimestamp));
   const automations = triggerItems;
-  const recentOutcomes = agentItems
-    .filter(item => item.health.assignedWorkOutcome)
-    .sort((left, right) =>
-      (right.health.assignedWorkOutcome?.updatedAt ?? "").localeCompare(
-        left.health.assignedWorkOutcome?.updatedAt ?? "",
-      ))
-    .slice(0, 6);
+  const recentOutcomes = outcomeItems.slice(0, 6);
   const provider = engineAvailabilityPresentation(engines);
   const activeCount = activeAgentQuery.requestState.hasResolved
     ? activeAgentQuery.data?.pages.at(-1)?.activeCount ?? 0
@@ -432,11 +428,11 @@ export function HomeView({
                   />
                 ))}
               </Box>
-            ) : agentQuery.requestState.isInitialError ? (
-              <Alert severity="error" action={<Button onClick={() => void agentQuery.requestState.retry()}>Retry</Button>}>
+            ) : outcomeQuery.requestState.isInitialError ? (
+              <Alert severity="error" action={<Button onClick={() => void outcomeQuery.requestState.retry()}>Retry</Button>}>
                 Could not load recent outcomes.
               </Alert>
-            ) : agentQuery.requestState.isInitialLoading ? (
+            ) : outcomeQuery.requestState.isInitialLoading ? (
               <Paper variant="outlined" sx={{ p: 2 }}><Typography color="text.secondary">Loading recent outcomes…</Typography></Paper>
             ) : (
               <Paper variant="outlined" sx={{ p: 2 }}><Typography color="text.secondary">Completed Agent work will appear here.</Typography></Paper>

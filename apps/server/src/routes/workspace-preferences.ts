@@ -143,6 +143,9 @@ export function registerWorkspacePreferenceRoutes(
 
   app.patch<{ Body: UpdateWorkspacePreferencesRequest }>("/api/workspace/preferences", async (request, reply) => {
     const patch = request.body ?? {};
+    if (Object.hasOwn(patch, "revision") || Object.hasOwn(patch, "updatedAt")) {
+      return reply.code(400).send({ error: "preference revision and timestamp are server-owned" });
+    }
     if (patch.projectSort && !["last_used", "alphabetical", "custom"].includes(patch.projectSort)) return reply.code(400).send({ error: "invalid project sort" });
     for (const [label, sort] of [["home", patch.homeSort], ["chat", patch.chatSort], ["agent", patch.agentSort], ["trigger", patch.triggerSort]] as const) {
       if (sort !== undefined && !["last_used", "alphabetical", "custom"].includes(sort)) return reply.code(400).send({ error: `invalid ${label} sort` });

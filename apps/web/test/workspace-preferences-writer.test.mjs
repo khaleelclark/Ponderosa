@@ -9,7 +9,13 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 const tick = () => new Promise(resolve => setImmediate(resolve));
-const preferences = (updatedAt, extra = {}) => ({ updatedAt, projectSort: "last_used", projectOrder: [], ...extra });
+const preferences = (updatedAt, extra = {}) => ({
+  revision: Math.max(0, (Date.parse(updatedAt) - Date.parse("2026-01-01T00:00:00.000Z")) / 1_000),
+  updatedAt,
+  projectSort: "last_used",
+  projectOrder: [],
+  ...extra,
+});
 
 test("preference writes stay ordered and newer intent remains optimistic", async () => {
   let cache = preferences("2026-01-01T00:00:00.000Z", { sidebarWidth: 280, fontFamily: "inter" });
@@ -115,6 +121,34 @@ test("an older response cannot overwrite newer canonical cache state", async () 
   response.resolve(preferences("2026-01-01T00:00:01.000Z", { sidebarWidth: 280, fontFamily: "system" }));
   await tick();
   assert.equal(cache.updatedAt, "2026-01-01T00:00:03.000Z");
+  assert.equal(cache.sidebarWidth, 340);
+  assert.equal(cache.fontFamily, "inter");
+});
+
+test("canonical revision orders same-millisecond SSE and PATCH responses", async () => {
+  const timestamp = "2026-01-01T00:00:00.000Z";
+  let cache = preferences(timestamp, { revision: 0, sidebarWidth: 280, fontFamily: "inter" });
+  const response = deferred();
+  const writer = new WorkspacePreferencesWriter({
+    read: () => cache,
+    publish: value => { cache = value; },
+    write: () => response.promise,
+    refresh: async () => cache,
+  });
+  writer.enqueue({ fontFamily: "system" });
+  await tick();
+  cache = writer.projectCanonical(preferences(timestamp, {
+    revision: 2,
+    sidebarWidth: 340,
+    fontFamily: "inter",
+  }));
+  response.resolve(preferences(timestamp, {
+    revision: 1,
+    sidebarWidth: 280,
+    fontFamily: "system",
+  }));
+  await tick();
+  assert.equal(cache.revision, 2);
   assert.equal(cache.sidebarWidth, 340);
   assert.equal(cache.fontFamily, "inter");
 });

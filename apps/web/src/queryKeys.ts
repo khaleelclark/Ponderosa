@@ -34,6 +34,7 @@ export const queryKeys = {
       conversationId: string | undefined,
       sort: "alphabetical" | "last_used" | "custom" | "next_fire" | undefined,
       active: boolean | undefined,
+      recentOutcomes: boolean | undefined,
       onlyEnabled: boolean | undefined,
     ) => [
       "workspace-directory",
@@ -44,6 +45,7 @@ export const queryKeys = {
       conversationId ?? "",
       sort ?? "",
       active ? "active" : "",
+      recentOutcomes ? "outcomes" : "",
       onlyEnabled ? "enabled" : "",
     ] as const,
   },

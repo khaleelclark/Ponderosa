@@ -15,6 +15,7 @@ const key = (kind, search, projectId, sort = "last_used", active) =>
     undefined,
     sort,
     active,
+    undefined,
   );
 
 test("directory placeholders never cross Project ownership", () => {
@@ -52,6 +53,15 @@ test("active-only Agent pages never retain unfiltered placeholders", () => {
     ),
     false,
   );
+});
+
+test("Recent Outcomes pages never retain ordinary Agent placeholders", () => {
+  const ordinary = key("agent", "", undefined);
+  const outcomes = queryKeys.workspaceDirectory.list(
+    "agent", "", undefined, undefined, undefined, undefined,
+    undefined, true, undefined,
+  );
+  assert.equal(sameWorkspaceDirectoryScope(ordinary, outcomes), false);
 });
 
 test("Project panels fail closed on foreign directory rows", () => {

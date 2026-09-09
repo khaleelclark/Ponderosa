@@ -25,6 +25,7 @@ import { collectionGenerationKey, sendCollectionPageError, sqliteCollectionRevis
 
 const DEFAULT_DIRECTORY_LIMIT = 25;
 const MAX_DIRECTORY_LIMIT = 100;
+const MAX_RECENT_OUTCOMES = 100;
 
 type DirectoryQuery = {
   limit?: string;
@@ -35,6 +36,7 @@ type DirectoryQuery = {
   conversationId?: string;
   sort?: string;
   active?: string;
+  outcomes?: string;
   enabled?: string;
 };
 
@@ -201,6 +203,7 @@ function baseDirectoryQuery(
   normalizedSearch: string,
   filteredAgentIds: readonly string[],
   workingAgentIds: readonly string[],
+  outcomeAgentIds: readonly string[],
 ): { sql: string; params: unknown[] } {
   const where: string[] = [];
   const params: unknown[] = [];
@@ -351,6 +354,13 @@ function baseDirectoryQuery(
       else {
         where.push(`a.id IN (${placeholders(workingAgentIds.length)})`);
         params.push(...workingAgentIds);
+      }
+    }
+    if (query.outcomes === "true") {
+      if (outcomeAgentIds.length === 0) where.push("0");
+      else {
+        where.push(`a.id IN (${placeholders(outcomeAgentIds.length)})`);
+        params.push(...outcomeAgentIds);
       }
     }
     if (normalizedSearch) {
@@ -516,9 +526,14 @@ const WORKING_AGENT_STATUSES = new Set<AgentHealthDto["status"]>([
   "stalled", "interrupted", "needs_decision",
 ]);
 
-function workspaceWorkingAgentIds(
+function workspaceAgentHealth(
   context: WorkspaceDirectoryRoutesContext,
-): string[] {
+): {
+  byId: Map<string, AgentHealthDto>;
+  workingIds: string[];
+  outcomeIds: string[];
+  revision: string;
+} {
   const rows = context.store.sqlite.prepare(`
     SELECT a.id, a.project_id
     FROM agents a
@@ -539,16 +554,41 @@ function workspaceWorkingAgentIds(
     agents.push(agent);
     agentsByProject.set(row.project_id, agents);
   }
-  const ids: string[] = [];
+  const byId = new Map<string, AgentHealthDto>();
+  const workingIds: string[] = [];
   for (const [projectId, agents] of agentsByProject) {
     for (const health of context.agentHealth(
       { type: "project", id: projectId },
       agents,
     ).agents) {
-      if (WORKING_AGENT_STATUSES.has(health.status)) ids.push(health.agentId);
+      byId.set(health.agentId, health);
+      if (WORKING_AGENT_STATUSES.has(health.status)) workingIds.push(health.agentId);
     }
   }
-  return ids.sort();
+  const outcomes = [...byId.values()]
+    .filter((health): health is AgentHealthDto & { assignedWorkOutcome: NonNullable<AgentHealthDto["assignedWorkOutcome"]> } =>
+      Boolean(health.assignedWorkOutcome))
+    .sort((left, right) =>
+      right.assignedWorkOutcome.updatedAt.localeCompare(left.assignedWorkOutcome.updatedAt) ||
+      left.agentId.localeCompare(right.agentId))
+    .slice(0, MAX_RECENT_OUTCOMES);
+  return {
+    byId,
+    workingIds: workingIds.sort(),
+    outcomeIds: outcomes.map(health => health.agentId),
+    revision: createHash("sha256")
+      .update([...byId.values()]
+        .sort((left, right) => left.agentId.localeCompare(right.agentId))
+        .map(health => [
+        health.agentId,
+        health.status,
+        health.statusTimestamp,
+        health.assignedWorkOutcome?.runId ?? "",
+        health.assignedWorkOutcome?.status ?? "",
+        health.assignedWorkOutcome?.updatedAt ?? "",
+      ].join("\0")).join("\n"))
+      .digest("base64url"),
+  };
 }
 
 function workspaceEnabledTriggerCount(sqlite: Database.Database): number {
@@ -590,6 +630,10 @@ export function registerWorkspaceDirectoryRoutes(
         (kind !== "agent" || request.query.active !== "true")) {
       return reply.code(400).send({ error: "active=true is supported only for the Agent directory" });
     }
+    if (request.query.outcomes !== undefined &&
+        (kind !== "agent" || request.query.outcomes !== "true")) {
+      return reply.code(400).send({ error: "outcomes=true is supported only for the Agent directory" });
+    }
     if (request.query.enabled !== undefined &&
         (kind !== "trigger" || request.query.enabled !== "true")) {
       return reply.code(400).send({ error: "enabled=true is supported only for the Automation directory" });
@@ -618,23 +662,29 @@ export function registerWorkspaceDirectoryRoutes(
 
     const preferences = context.workspace.getPreferences();
     const settings = resourceSettings(preferences, kind);
-    const sort = requestedSort ?? settings.sort;
+    const recentOutcomes = request.query.outcomes === "true";
+    if (recentOutcomes && requestedSort !== undefined) {
+      return reply.code(400).send({ error: "Recent Agent outcomes have a canonical sort" });
+    }
+    const health = kind === "agent" ? workspaceAgentHealth(context) : undefined;
+    const sort = recentOutcomes ? "custom" : requestedSort ?? settings.sort;
     const sqlite = context.store.sqlite;
-    const order = sort === "next_fire" ? [] : settings.order;
+    const order = recentOutcomes
+      ? health?.outcomeIds ?? []
+      : sort === "next_fire" ? [] : settings.order;
     const normalizedSearch = (request.query.search ?? "")
       .trim()
       .toLocaleLowerCase();
     const filteredAgentIds = [
       ...new Set((request.query.agentIds ?? "").split(",").filter(Boolean)),
     ];
-    const workingAgentIds = kind === "agent"
-      ? workspaceWorkingAgentIds(context)
-      : [];
+    const workingAgentIds = health?.workingIds ?? [];
+    const outcomeAgentIds = health?.outcomeIds ?? [];
 
     const directorySettingsHash = createHash("sha256")
       .update(JSON.stringify({
-        order,
-        stars: [...starredKeys(preferences)]
+        order: recentOutcomes ? [] : order,
+        stars: recentOutcomes ? [] : [...starredKeys(preferences)]
           .filter(key => key.startsWith(`${kind}:`))
           .sort(),
       }))
@@ -647,9 +697,7 @@ export function registerWorkspaceDirectoryRoutes(
       conversationId: request.query.conversationId ?? "",
       sort,
       active: request.query.active ?? "",
-      workingAgentIdsHash: createHash("sha256")
-        .update(workingAgentIds.join("\0"))
-        .digest("base64url"),
+      outcomes: request.query.outcomes ?? "",
       enabled: request.query.enabled ?? "",
       directorySettingsHash,
     });
@@ -660,6 +708,7 @@ export function registerWorkspaceDirectoryRoutes(
       normalizedSearch,
       filteredAgentIds,
       workingAgentIds,
+      outcomeAgentIds,
     );
     const projectScope = request.query.projectId;
     const scoped = (collection: string): string => projectScope
@@ -684,7 +733,9 @@ export function registerWorkspaceDirectoryRoutes(
             ]
           : [scoped("triggers"), scoped("agents"), projectKey];
     const collection = sqliteCollectionRevision(sqlite, base.sql, base.params, generationKeys);
-    const revision = collection.revision;
+    const revision = kind === "agent"
+      ? `${collection.revision}:health=${health?.revision ?? ""}`
+      : collection.revision;
     const total = collection.total;
 
     let cursorPosition: CursorPosition | undefined;
@@ -696,7 +747,7 @@ export function registerWorkspaceDirectoryRoutes(
       }
     }
 
-    const stars = sort === "next_fire" ? [] : [...starredKeys(preferences)]
+    const stars = sort === "next_fire" || recentOutcomes ? [] : [...starredKeys(preferences)]
       .filter(key => key.startsWith(`${kind}:`))
       .map(key => key.slice(kind.length + 1));
     let starredRows: ResourceRow[] = [];
@@ -748,7 +799,7 @@ export function registerWorkspaceDirectoryRoutes(
       return project;
     };
 
-    const agentHealthById = new Map<string, AgentHealthDto>();
+    const agentHealthById = health?.byId ?? new Map<string, AgentHealthDto>();
     if (kind === "agent") {
       const agentsByProject = new Map<string, AgentDto[]>();
       for (const row of [...starredRows, ...pageRows]) {
@@ -759,6 +810,7 @@ export function registerWorkspaceDirectoryRoutes(
         agentsByProject.set(agent.projectId, group);
       }
       for (const [projectId, agents] of agentsByProject) {
+        if (agents.every(agent => agentHealthById.has(agent.id))) continue;
         for (const health of context.agentHealth(
           { type: "project", id: projectId },
           agents,
