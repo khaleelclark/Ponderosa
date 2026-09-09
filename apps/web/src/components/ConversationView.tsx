@@ -594,6 +594,7 @@ export function ConversationView({
     editQueued,
     invalidate,
     operationRunning,
+    queuedMessageFailure,
     queuedMessageNotice,
     queuedMessagesQuery,
     sendError,
@@ -1272,6 +1273,17 @@ export function ConversationView({
         {cancelOperationError ? (
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
             Cancellation failed. {cancelOperationError.message}
+          </Alert>
+        ) : null}
+        {queuedMessageFailure ? (
+          <Alert
+            severity="error"
+            sx={{ mx: 1.5, mt: 1 }}
+            action={<Button color="inherit" size="small" onClick={queuedMessageFailure.retry}>
+              Retry
+            </Button>}
+          >
+            Queued messages could not be updated. {queuedMessageFailure.error.message}
           </Alert>
         ) : null}
         {activeView === "main" ? (

@@ -5,9 +5,10 @@ import { ApiRequestError } from "../api/types";
 import { createClientId } from "../clientId";
 import {
   activeOperationExecutionTargets,
-  activeOperationForScope,
+  activeOperationsForScope,
   activeOperationIsRunning,
   activeOperationNeedsExpiryTimer,
+  retainActiveOperation,
   reconcileActiveOperationTracker,
   type ActiveOperationReceipt,
   type ActiveOperationTracker,
@@ -31,8 +32,8 @@ export function useActiveOperationController({
   agentTitle(agentId: string | undefined): string;
   invalidate(): void;
 }) {
-  const [activeOperation, setActiveOperation] =
-    useState<ActiveOperationTracker>();
+  const [activeOperations, setActiveOperations] =
+    useState<ActiveOperationTracker[]>([]);
   const [stopConfirmation, setStopConfirmation] = useState<{
     targets: { agentId: string; runId: string }[];
     names: string;
@@ -54,32 +55,52 @@ export function useActiveOperationController({
   );
 
   useEffect(() => {
-    if (!activeOperation) return;
-    const reconciled = reconcileActiveOperationTracker(
-      activeOperation,
-      healthByAgentId,
-      receipts,
-    );
-    if (reconciled !== activeOperation) {
-      setActiveOperation(reconciled);
+    if (!activeOperations.length) return;
+    const reconciled = activeOperations.flatMap(operation => {
+      const next = reconcileActiveOperationTracker(
+        operation,
+        healthByAgentId,
+        receipts,
+      );
+      return next ? [next] : [];
+    });
+    if (reconciled.some((operation, index) => operation !== activeOperations[index]) ||
+        reconciled.length !== activeOperations.length) {
+      setActiveOperations(reconciled);
       return;
     }
-    if (!activeOperationNeedsExpiryTimer(activeOperation)) return;
-    const delay = Math.max(0, activeOperation.expiresAt - Date.now());
+    const nextExpiry = activeOperations
+      .filter(activeOperationNeedsExpiryTimer)
+      .map(operation => operation.expiresAt)
+      .sort((left, right) => left - right)[0];
+    if (nextExpiry === undefined) return;
+    const delay = Math.max(0, nextExpiry - Date.now());
     const timeout = window.setTimeout(() => {
-      setActiveOperation(current => current
-        ? reconcileActiveOperationTracker(current, healthByAgentId, receipts)
-        : current);
+      setActiveOperations(current => current.flatMap(operation => {
+        const next = reconcileActiveOperationTracker(
+          operation,
+          healthByAgentId,
+          receipts,
+        );
+        return next ? [next] : [];
+      }));
     }, delay + 1);
     return () => window.clearTimeout(timeout);
-  }, [activeOperation, healthByAgentId, receipts]);
+  }, [activeOperations, healthByAgentId, receipts]);
 
   useEffect(() => {
     setStopConfirmation(undefined);
     setCancelOperationError(undefined);
   }, [activeScopeId]);
 
-  const scopedOperation = activeOperationForScope(activeOperation, activeScopeId);
+  const scopedOperations = activeOperationsForScope(
+    activeOperations,
+    activeScopeId,
+  );
+  const trackActiveOperation = (operation: ActiveOperationTracker | undefined) => {
+    if (!operation) return;
+    setActiveOperations(current => retainActiveOperation(current, operation));
+  };
   const cancelOperationTargets = async (
     targets: { agentId: string; runId: string }[],
   ) => {
@@ -141,7 +162,9 @@ export function useActiveOperationController({
 
   const stopOperation = async () => {
     if (stopOperationPending.current) return;
-    const targets = activeOperationExecutionTargets(scopedOperation).filter(
+    const targets = [...new Map(scopedOperations.flatMap(
+      activeOperationExecutionTargets,
+    ).map(target => [`${target.agentId}:${target.runId}`, target] as const)).values()].filter(
       ({ agentId, runId }) =>
         healthByAgentId.get(agentId)?.runtimeActivity?.executionId === runId,
     );
@@ -156,9 +179,9 @@ export function useActiveOperationController({
   };
 
   return {
-    activeOperation,
-    setActiveOperation,
-    operationRunning: activeOperationIsRunning(scopedOperation),
+    activeOperations,
+    setActiveOperation: trackActiveOperation,
+    operationRunning: scopedOperations.some(activeOperationIsRunning),
     cancelOperationError,
     cancelOperationPending,
     cancelOperationTargets,

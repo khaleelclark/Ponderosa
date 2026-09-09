@@ -116,3 +116,31 @@ test("queued command runner retries a lost response with its frozen request", as
   });
   assert.equal(dispatched[2].idempotencyKey, "request-2");
 });
+
+test("queued command retries preserve identity across HTTP and network failures", async () => {
+  for (const failure of ["404", "409", "network"]) {
+    const registry = new Map();
+    const ids = [];
+    let generated = 0;
+    const input = { command: "steer", deliveryId: `delivery-${failure}` };
+    await assert.rejects(runQueuedMessageCommand(
+      registry,
+      input,
+      () => `request-${failure}-${++generated}`,
+      async request => {
+        ids.push(request.idempotencyKey);
+        throw new Error(failure);
+      },
+    ));
+    await runQueuedMessageCommand(
+      registry,
+      input,
+      () => `request-${failure}-${++generated}`,
+      async request => { ids.push(request.idempotencyKey); },
+    );
+    assert.deepEqual(ids, [
+      `request-${failure}-1`,
+      `request-${failure}-1`,
+    ]);
+  }
+});

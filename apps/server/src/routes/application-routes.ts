@@ -652,7 +652,12 @@ const globalChatSearch = (query: {
 };
 
 
-registerSearchRoutes(app, { ...serverContext, globalChatSearch, workspace });
+registerSearchRoutes(app, {
+  ...serverContext,
+  globalChatSearch,
+  workspace,
+  coordinationV3,
+});
 
 async function assetMetadata(agentId: string, id: string) {
   const agent = store.getAgent(agentId);

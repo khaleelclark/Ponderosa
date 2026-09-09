@@ -2523,6 +2523,64 @@ test("multi-Agent direct replay reports terminal recipient delivery state", asyn
   }]);
 });
 
+test("multi-Agent direct replay keeps an attached delivery active", async (t) => {
+  const chat = { id: "chat-a", projectId: "project-a", archived: false };
+  const requestPayload = {
+    text: "hello",
+    recipients: [{ agentId: "agent-a" }],
+    idempotencyKey: "attached-direct-replay",
+  };
+  const requestFingerprint = conversationDeliveryRequestFingerprint({
+    version: 1,
+    kind: "direct",
+    conversationId: chat.id,
+    text: requestPayload.text,
+    recipients: [{ agentId: "agent-a", attachmentIds: [] }],
+    activeRunDelivery: "steer",
+    runtimeSelection: {},
+  });
+  const app = Fastify();
+  t.after(() => app.close());
+  registerConversationDeliveryRoutes(app, {
+    store: {
+      getConversationMessageByReceiptKey: () => ({ id: "message-a" }),
+    },
+    coordinationV3: {
+      runtimeCommunication: () => ({
+        projectId: chat.projectId,
+        payload: {
+          requestFingerprint,
+          dispatch: { recipients: [{ agentId: "agent-a" }] },
+        },
+        activations: [{ id: "delivery-a", agentId: "agent-a" }],
+      }),
+      activation: () => ({
+        id: "delivery-a",
+        projectId: chat.projectId,
+        agentId: "agent-a",
+        state: "attached",
+      }),
+    },
+    projectDeletionInProgress: () => false,
+    agentDeletionInProgress: () => false,
+    conversationDeliveryLeases: new Map(),
+    agentDeliveryLeases: new Map(),
+    reconcileRuntimeCommunicationProjections: async () => 0,
+  });
+  const response = await app.inject({
+    method: "POST",
+    url: `/api/conversations/${chat.id}/direct-messages`,
+    payload: requestPayload,
+  });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json().recipients, [{
+    agentId: "agent-a",
+    queued: false,
+    deliveryId: "delivery-a",
+    state: "started",
+  }]);
+});
+
 test("direct message replay repair waits for attachment maintenance", async (t) => {
   const chat = { id: "chat-a", projectId: "project-a", archived: false };
   const requestPayload = {

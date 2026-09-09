@@ -46,6 +46,7 @@ import {
   acceptDirectOperation,
   createCreationOperationTracker,
   createDeliveryOperationTracker,
+  createQueuedSteerOperationTracker,
 } from "./activeOperationTracker";
 import {
   compoundCreationUnavailableUploads,
@@ -106,10 +107,6 @@ export function useConversationMessagingController({
   agentTitle,
 }: ConversationMessagingControllerInput) {
   const queryClient = useQueryClient();
-  const queuedMessages = useQueuedConversationMessagesController(conversationId);
-  const queuedMessagesQuery = queuedMessages.query;
-  const queuedMessageNotice = queuedMessages.notice;
-  const setQueuedMessageNotice = queuedMessages.setNotice;
   const [pendingUploadCleanups, setPendingUploadCleanups] = useState(0);
   const submissionAttempt =
     useRef<IdempotentAttempt<ConversationSubmissionPrepared>>();
@@ -181,6 +178,18 @@ export function useConversationMessagingController({
     agentTitle,
     invalidate,
   });
+  const queuedMessages = useQueuedConversationMessagesController(
+    conversationId,
+    message => setActiveOperation(createQueuedSteerOperationTracker(
+      message.deliveryId,
+      message.targetAgentId,
+      healthByAgentId,
+      conversationId,
+    )),
+  );
+  const queuedMessagesQuery = queuedMessages.query;
+  const queuedMessageNotice = queuedMessages.notice;
+  const setQueuedMessageNotice = queuedMessages.setNotice;
 
   const spawn = useMutation({
     mutationFn: async ({
@@ -751,6 +760,7 @@ export function useConversationMessagingController({
     ]
       .filter(Boolean)
       .join(" ") || undefined,
+    queuedMessageFailure: queuedMessages.failure,
     queuedMessagesQuery,
     sendError: spawn.error ?? sendToAgents.error,
     setQueuedMessageNotice,

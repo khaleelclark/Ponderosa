@@ -101,6 +101,7 @@ import {
   acceptDirectOperation,
   createCreationOperationTracker,
   createDeliveryOperationTracker,
+  createQueuedSteerOperationTracker,
 } from "./activeOperationTracker";
 import { useActiveOperationController } from "./useActiveOperationController";
 import { useQueuedConversationMessagesController } from "./useQueuedConversationMessagesController";
@@ -469,9 +470,6 @@ export function AllChatView({
     ),
     [agentHealthQuery.data?.agents, composerTargets.targetByHandle],
   );
-  const queuedMessages = useQueuedConversationMessagesController(
-    composerConversationId,
-  );
   const allChatAgentTitle = (agentId: string | undefined) =>
     projectAgentsQuery.data?.find(agent => agent.id === agentId)?.title ??
     [...composerTargets.targetByHandle.values()]
@@ -506,6 +504,17 @@ export function AllChatView({
     agentTitle: allChatAgentTitle,
     invalidate: invalidateOperation,
   });
+  const queuedMessages = useQueuedConversationMessagesController(
+    composerConversationId,
+    message => composerConversationId && setActiveOperation(
+      createQueuedSteerOperationTracker(
+        message.deliveryId,
+        message.targetAgentId,
+        healthByAgentId,
+        composerConversationId,
+      ),
+    ),
+  );
   const decisionEvents = useMemo(
     () => uniqueBy(
       [...(older?.decisions ?? []), ...(query.data?.decisions ?? [])],
@@ -1783,6 +1792,21 @@ export function AllChatView({
         {cancelOperationError ? (
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
             Cancellation failed. {cancelOperationError.message}
+          </Alert>
+        ) : null}
+        {queuedMessages.failure ? (
+          <Alert
+            severity="error"
+            sx={{ mx: 1.5, mt: 1 }}
+            action={<Button
+              color="inherit"
+              size="small"
+              onClick={queuedMessages.failure.retry}
+            >
+              Retry
+            </Button>}
+          >
+            Queued messages could not be updated. {queuedMessages.failure.error.message}
           </Alert>
         ) : null}
         <QueuedMessageTray

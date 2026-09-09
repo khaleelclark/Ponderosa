@@ -6,10 +6,13 @@ import {
   acceptDirectOperation,
   activeOperationExecutionTargets,
   activeOperationForScope,
+  activeOperationsForScope,
   activeOperationIsRunning,
   createActiveOperationTracker,
   createCreationOperationTracker,
   createDeliveryOperationTracker,
+  createQueuedSteerOperationTracker,
+  retainActiveOperation,
   reconcileActiveOperationTracker,
 } from "../src/components/activeOperationTracker.js";
 
@@ -488,4 +491,103 @@ test("operation controls are visible only in their owning Chat", () => {
   tracker.targets[0].matchedExecutionId = "execution-a";
   assert.equal(activeOperationForScope(tracker, "chat-a"), tracker);
   assert.equal(activeOperationForScope(tracker, "chat-b"), undefined);
+});
+
+test("queued-message Steer retains its exact activation and Run", () => {
+  const runningHealth = new Map([["agent-a", health(
+    "agent-a",
+    "execution-a",
+    "2026-09-09T12:00:00.000Z",
+  )]]);
+  const tracker = createQueuedSteerOperationTracker(
+    "activation-a",
+    "agent-a",
+    runningHealth,
+    "chat-a",
+    initiatedAt,
+  );
+  assert.equal(tracker.targets[0].activationId, "activation-a");
+  assert.deepEqual(activeOperationExecutionTargets(tracker), [{
+    agentId: "agent-a",
+    runId: "execution-a",
+  }]);
+});
+
+test("concurrent operations remain independently addressable by Chat", () => {
+  const first = createQueuedSteerOperationTracker(
+    "activation-a",
+    "agent-a",
+    new Map([["agent-a", health(
+      "agent-a",
+      "execution-a",
+      "2026-09-09T12:00:00.000Z",
+    )]]),
+    "chat-a",
+    initiatedAt,
+  );
+  const second = createQueuedSteerOperationTracker(
+    "activation-b",
+    "agent-b",
+    new Map([["agent-b", health(
+      "agent-b",
+      "execution-b",
+      "2026-09-09T12:00:01.000Z",
+    )]]),
+    "chat-b",
+    initiatedAt + 1_000,
+  );
+  const retained = retainActiveOperation(
+    retainActiveOperation([], first),
+    second,
+  );
+  assert.deepEqual(activeOperationsForScope(retained, "chat-a"), [first]);
+  assert.deepEqual(activeOperationsForScope(retained, "chat-b"), [second]);
+  assert.deepEqual(activeOperationExecutionTargets(
+    activeOperationsForScope(retained, "chat-a")[0],
+  ), [{ agentId: "agent-a", runId: "execution-a" }]);
+});
+
+test("All Messages receipt projection binds an idle Agent's exact Run", () => {
+  const tracker = acceptDirectOperation(
+    createDeliveryOperationTracker(
+      "steer",
+      ["agent-a"],
+      new Map(),
+      initiatedAt,
+      "chat-a",
+    ),
+    {
+      messageId: "message-a",
+      replayed: false,
+      recipients: [{
+        agentId: "agent-a",
+        queued: true,
+        deliveryId: "activation-a",
+        state: "queued",
+      }],
+    },
+  );
+  const running = reconcileActiveOperationTracker(
+    tracker,
+    new Map([["agent-a", health(
+      "agent-a",
+      "execution-a",
+      "2026-09-09T12:00:02.000Z",
+    )]]),
+    [{
+      communicationEventId: "message-a",
+      receipt: {
+        activationId: "activation-a",
+        targetAgentId: "agent-a",
+        executionId: "execution-a",
+        state: "started",
+        updatedAt: "2026-09-09T12:00:02.000Z",
+        attemptCount: 1,
+      },
+    }],
+  );
+  assert.deepEqual(activeOperationExecutionTargets(running), [{
+    agentId: "agent-a",
+    runId: "execution-a",
+  }]);
 });

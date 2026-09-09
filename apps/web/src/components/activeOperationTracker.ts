@@ -92,6 +92,24 @@ export function createCreationOperationTracker(
   };
 }
 
+export function createQueuedSteerOperationTracker(
+  deliveryId: string,
+  agentId: string,
+  healthByAgentId: ReadonlyMap<string, AgentHealthDto>,
+  scopeId: string,
+  initiatedAt = Date.now(),
+): ActiveOperationTracker {
+  const tracker = createActiveOperationTracker(
+    "delivery",
+    [agentId],
+    healthByAgentId,
+    initiatedAt,
+    scopeId,
+  );
+  tracker.targets[0]!.activationId = deliveryId;
+  return tracker;
+}
+
 export function acceptDirectOperation(
   tracker: ActiveOperationTracker,
   response: MultiAgentDirectMessageResponse,
@@ -247,3 +265,34 @@ export const activeOperationForScope = (
   tracker && (!tracker.scopeId || tracker.scopeId === scopeId)
     ? tracker
     : undefined;
+
+export function activeOperationKey(tracker: ActiveOperationTracker): string {
+  if (tracker.communicationEventId) {
+    return `communication:${tracker.communicationEventId}`;
+  }
+  const activationIds = tracker.targets.flatMap(target =>
+    target.activationId ? [target.activationId] : []
+  ).sort();
+  return activationIds.length === tracker.targets.length
+    ? `activations:${activationIds.join(",")}`
+    : `pending:${tracker.scopeId ?? "workspace"}:${tracker.kind}:${tracker.initiatedAt}`;
+}
+
+export function retainActiveOperation(
+  trackers: readonly ActiveOperationTracker[],
+  tracker: ActiveOperationTracker | undefined,
+): ActiveOperationTracker[] {
+  if (!tracker) return [...trackers];
+  const key = activeOperationKey(tracker);
+  return [
+    ...trackers.filter(candidate => activeOperationKey(candidate) !== key),
+    tracker,
+  ];
+}
+
+export const activeOperationsForScope = (
+  trackers: readonly ActiveOperationTracker[],
+  scopeId: string | undefined,
+): ActiveOperationTracker[] => trackers.filter(tracker =>
+  Boolean(activeOperationForScope(tracker, scopeId))
+);

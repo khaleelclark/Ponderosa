@@ -1,4 +1,8 @@
-import type { AgentStore, WorkspaceStore } from "@ponderosa/agents";
+import type {
+  AgentStore,
+  CoordinationV3Store,
+  WorkspaceStore,
+} from "@ponderosa/agents";
 import type { AgentDetailDto, AssetLimitsDto, GlobalChatSearchResponseDto, TokenUsageRangeDto, TokenUsageSummaryDto } from "@ponderosa/core";
 
 /**
@@ -49,4 +53,8 @@ export interface SearchRoutesContext extends ServerContext {
     kind?: string;
   }) => GlobalChatSearchResponseDto;
   readonly workspace: Pick<WorkspaceStore, "listDecisionEventPage">;
+  readonly coordinationV3: Pick<
+    CoordinationV3Store,
+    "deliveryReceiptsForCommunications"
+  >;
 }

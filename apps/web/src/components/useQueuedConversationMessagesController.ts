@@ -1,4 +1,6 @@
-import type { MultiAgentDirectMessageResponse } from "@ponderosa/core";
+import type {
+  MultiAgentDirectMessageResponse,
+} from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
@@ -11,6 +13,7 @@ import {
 
 export function useQueuedConversationMessagesController(
   conversationId: string | undefined,
+  onSteered?: (message: { deliveryId: string; targetAgentId: string }) => void,
 ) {
   const queryClient = useQueryClient();
   const query = useQuery({
@@ -22,9 +25,16 @@ export function useQueuedConversationMessagesController(
   const noticeDeliveryIds = useRef<Set<string>>(new Set());
   const noticeBaseline = useRef(0);
   const commandAttempts = useRef<QueuedMessageCommandAttemptRegistry>(new Map());
+  const [commandFailure, setCommandFailure] = useState<{
+    error: Error;
+    conversationId: string;
+    deliveryId: string;
+    retry(): void;
+  }>();
 
   useEffect(() => {
     setNotice(undefined);
+    setCommandFailure(undefined);
     noticeDeliveryIds.current.clear();
     noticeBaseline.current = 0;
   }, [conversationId]);
@@ -48,6 +58,14 @@ export function useQueuedConversationMessagesController(
     }
   }, [notice, query.data, query.dataUpdatedAt, query.isFetching]);
 
+  useEffect(() => {
+    if (!commandFailure || query.isFetching || !query.data) return;
+    if (!query.data.some(message =>
+      message.deliveryId === commandFailure.deliveryId)) {
+      setCommandFailure(undefined);
+    }
+  }, [commandFailure, query.data, query.isFetching]);
+
   const invalidate = () => {
     if (!conversationId) return;
     void queryClient.invalidateQueries({
@@ -67,7 +85,17 @@ export function useQueuedConversationMessagesController(
           }),
       );
     },
+    onMutate: () => setCommandFailure(undefined),
     onSuccess: invalidate,
+    onError: (error, deliveryId) => {
+      setCommandFailure({
+        error: error instanceof Error ? error : new Error(String(error)),
+        conversationId: conversationId!,
+        deliveryId,
+        retry: () => cancel.mutate(deliveryId),
+      });
+      invalidate();
+    },
   });
   const edit = useMutation({
     mutationFn: ({
@@ -88,7 +116,17 @@ export function useQueuedConversationMessagesController(
           idempotencyKey,
         }),
     ),
+    onMutate: () => setCommandFailure(undefined),
     onSuccess: invalidate,
+    onError: (error, variables) => {
+      setCommandFailure({
+        error: error instanceof Error ? error : new Error(String(error)),
+        conversationId: conversationId!,
+        deliveryId: variables.deliveryId,
+        retry: () => edit.mutate(variables),
+      });
+      invalidate();
+    },
   });
   const steer = useMutation({
     mutationFn: ({
@@ -106,7 +144,20 @@ export function useQueuedConversationMessagesController(
           idempotencyKey,
         }),
     ),
-    onSuccess: invalidate,
+    onMutate: () => setCommandFailure(undefined),
+    onSuccess: (response, message) => {
+      invalidate();
+      if (response.steered) onSteered?.(message);
+    },
+    onError: (error, variables) => {
+      setCommandFailure({
+        error: error instanceof Error ? error : new Error(String(error)),
+        conversationId: conversationId!,
+        deliveryId: variables.deliveryId,
+        retry: () => steer.mutate(variables),
+      });
+      invalidate();
+    },
   });
 
   const recordDelivery = (
@@ -141,11 +192,22 @@ export function useQueuedConversationMessagesController(
     noticeBaseline.current = query.dataUpdatedAt;
     invalidate();
   };
+  const failure = commandFailure?.conversationId === conversationId
+    ? commandFailure
+    : query.error
+    ? {
+        error: query.error instanceof Error
+          ? query.error
+          : new Error(String(query.error)),
+        retry: () => { void query.refetch(); },
+      }
+    : undefined;
 
   return {
     query,
     notice,
     setNotice,
+    failure,
     recordDelivery,
     cancel,
     edit,

@@ -806,6 +806,8 @@ export interface AllChatItemDto {
   createdAt: string;
   attachments?: CommunicationAttachmentDto[];
   artifactIds?: string[];
+  /** Durable per-recipient execution evidence for this authored Communication. */
+  deliveryReceipts?: MessageDeliveryReceiptDto[];
   /** Present only when this source item determines one exact active DM target. */
   directMessageAgent?: Pick<AgentDto, "id" | "title" | "handle">;
 }

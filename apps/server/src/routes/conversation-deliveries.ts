@@ -152,6 +152,9 @@ function replayedDirectRecipient(
       state: activation.state === "retry_pending" ? "retrying" : "queued",
     };
   }
+  if (activation.state === "attached") {
+    return { agentId, queued: false, deliveryId, state: "started" };
+  }
   return {
     agentId,
     queued: false,
