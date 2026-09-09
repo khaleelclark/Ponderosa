@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   eligibleAllChatTargets,
   authoritativeAllChatReplyTarget,
+  busyAllChatMentionHandles,
   allChatAttentionRoute,
   allChatComposerConversationId,
   allChatRuntimeMutationIsLatest,
@@ -191,6 +192,58 @@ test("All Messages retry runtime identity excludes presentation state", () => {
       runtime: refreshed,
     }),
     { engine: "claude", model: "gpt-5", effort: "high" },
+  );
+});
+
+test("All Messages derives busy controls from eligible canonical Agent health", () => {
+  const targets = eligibleAllChatTargets([
+    { id: "agent-a", handle: "A", title: "A", projectId: "project-a", conversationId: "chat-a" },
+    { id: "agent-b", handle: "B", title: "B", projectId: "project-a", conversationId: "chat-b" },
+  ], "chat-a");
+  assert.deepEqual(busyAllChatMentionHandles(targets, [{
+    agentId: "agent-a",
+    runtimeActivity: {
+      state: "responding",
+      executionId: "run-a",
+      startedAt: "2026-09-09T12:00:00.000Z",
+    },
+  }, {
+    agentId: "agent-b",
+    runtimeActivity: {
+      state: "responding",
+      executionId: "run-b",
+      startedAt: "2026-09-09T12:00:00.000Z",
+    },
+  }]), ["A"]);
+  assert.deepEqual(busyAllChatMentionHandles(targets, [{
+    agentId: "agent-a",
+  }]), []);
+});
+
+test("All Messages Queue is frozen into the reload request authority", () => {
+  const pending = withPendingRequest({
+    fingerprint: "a".repeat(64),
+    idempotencyKey: "queue-a",
+  }, {
+    conversationId: "chat-a",
+    recipientAgentIds: ["agent-a"],
+    runtime: {
+      activeRunDelivery: "queue",
+      ...allChatRuntimePayloadSnapshot({
+        newAgentRequested: false,
+        recipientCount: 1,
+        selectedEngineId: "codex",
+        runtime: { model: "gpt", effort: "high", speed: "priority" },
+      }),
+    },
+  });
+  assert.equal(pending.request.runtime.activeRunDelivery, "queue");
+  assert.equal(
+    composerDurableRetryAction(
+      undefined,
+      pending.request.runtime.activeRunDelivery,
+    ),
+    "queue",
   );
 });
 

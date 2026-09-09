@@ -5,9 +5,11 @@ import type {
   AssetDto,
   ConversationDto,
   EngineDto,
+  ConversationMessageDto,
+  MultiAgentDirectMessageResponse,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { hasBroadcastMention, hasEveryoneMention } from "../mentions";
 import { api } from "../api";
 import { ApiRequestError } from "../api/types";
@@ -39,8 +41,17 @@ import {
 } from "../conversationRouting";
 import { pickAgentName } from "../parkNames";
 import { queryKeys } from "../queryKeys";
-import type { AgentStatus } from "../agents";
-import { activeDirectDeliveryAgentIds } from "./directDeliveryState";
+import {
+  acceptBroadcastOperation,
+  acceptDirectOperation,
+  activeOperationExecutionTargets,
+  activeOperationIsRunning,
+  createActiveOperationTracker,
+  createDeliveryOperationTracker,
+  reconcileActiveOperationTracker,
+  type ActiveOperationReceipt,
+  type ActiveOperationTracker,
+} from "./activeOperationTracker";
 import {
   compoundCreationUnavailableUploads,
   definitiveSubmissionStatus,
@@ -82,8 +93,8 @@ interface ConversationMessagingControllerInput {
   model: string;
   effort: string;
   speed: string;
-  statusByAgentId: Map<string, AgentStatus>;
   healthByAgentId: Map<string, AgentHealthDto>;
+  messages: ConversationMessageDto[];
   agentTitle(agentId: string | undefined): string;
 }
 
@@ -97,8 +108,8 @@ export function useConversationMessagingController({
   model,
   effort,
   speed,
-  statusByAgentId,
   healthByAgentId,
+  messages,
   agentTitle,
 }: ConversationMessagingControllerInput) {
   const queryClient = useQueryClient();
@@ -116,10 +127,8 @@ export function useConversationMessagingController({
   const queuedCommandAttempts = useRef<QueuedMessageCommandAttemptRegistry>(
     new Map(),
   );
-  const [activeOperation, setActiveOperation] = useState<{
-    agentIds: string[];
-    state: "starting" | "running";
-  }>();
+  const [activeOperation, setActiveOperation] =
+    useState<ActiveOperationTracker>();
   const [stopConfirmation, setStopConfirmation] = useState<{
     targets: { agentId: string; runId: string }[];
     names: string;
@@ -189,6 +198,7 @@ export function useConversationMessagingController({
       idempotencyKey,
       selectedEngine,
       runtimeConfig,
+      initiatedAt,
     }: {
       text: string;
       draftAttachmentIds: string[];
@@ -197,9 +207,9 @@ export function useConversationMessagingController({
       idempotencyKey: string;
       selectedEngine: string;
       runtimeConfig: ReturnType<typeof selectedRunConfig>;
+      initiatedAt: number;
     }) => {
       if (!conversation) throw new Error("Project chat not loaded");
-      setActiveOperation({ agentIds: [], state: "starting" });
       const agent = await api.createAgent(
         conversation.projectId,
         conversationId,
@@ -213,9 +223,12 @@ export function useConversationMessagingController({
           idempotencyKey,
         },
       );
-      setActiveOperation("recovering" in agent
-        ? undefined
-        : { agentIds: [agent.id], state: "starting" });
+      setActiveOperation(createActiveOperationTracker(
+        "creation",
+        ["recovering" in agent ? agent.agentId : agent.id],
+        new Map(),
+        initiatedAt,
+      ));
       return agent;
     },
     onSuccess: agent => {
@@ -293,9 +306,6 @@ export function useConversationMessagingController({
           : [],
       );
       queuedNoticeBaseline.current = queuedMessagesQuery.dataUpdatedAt;
-      const activeIds = activeDirectDeliveryAgentIds(response);
-      if (activeIds.length === 0) setActiveOperation(undefined);
-      else setActiveOperation({ agentIds: activeIds, state: "starting" });
       for (const agentId of variables.agentIds) {
         void queryClient.invalidateQueries({
           queryKey: queryKeys.agents.detailPrefix(agentId),
@@ -423,6 +433,17 @@ export function useConversationMessagingController({
 
   const busy =
     spawn.isPending || sendToAgents.isPending || broadcast.isPending;
+  const activeOperationReceipts = useMemo<ActiveOperationReceipt[]>(
+    () => messages.flatMap(message =>
+      message.communicationEventId
+        ? (message.deliveryReceipts ?? []).map(receipt => ({
+            communicationEventId: message.communicationEventId!,
+            receipt,
+          }))
+        : []
+    ),
+    [messages],
+  );
   useEffect(() => {
     if (
       !queuedMessageNotice ||
@@ -447,20 +468,31 @@ export function useConversationMessagingController({
     queuedMessagesQuery.isFetching,
   ]);
   useEffect(() => {
-    if (!activeOperation || activeOperation.agentIds.length === 0) return;
-    const anyRunning = activeOperation.agentIds.some(
-      agentId => statusByAgentId.get(agentId) === "running",
+    if (!activeOperation) return;
+    const reconciled = reconcileActiveOperationTracker(
+      activeOperation,
+      healthByAgentId,
+      activeOperationReceipts,
     );
-    if (anyRunning && activeOperation.state !== "running") {
-      setActiveOperation({ ...activeOperation, state: "running" });
-    } else if (!busy && activeOperation.state === "running" && !anyRunning) {
-      setActiveOperation(undefined);
+    if (reconciled !== activeOperation) {
+      setActiveOperation(reconciled);
+      return;
     }
-  }, [activeOperation, busy, statusByAgentId]);
+    if (activeOperation.targets.every(target => target.matchedExecutionId)) return;
+    const delay = Math.max(0, activeOperation.expiresAt - Date.now());
+    const timeout = window.setTimeout(() => {
+      setActiveOperation(current => current
+        ? reconcileActiveOperationTracker(
+            current,
+            healthByAgentId,
+            activeOperationReceipts,
+          )
+        : current);
+    }, delay + 1);
+    return () => window.clearTimeout(timeout);
+  }, [activeOperation, activeOperationReceipts, healthByAgentId]);
 
-  const operationRunning = Boolean(
-    activeOperation && (busy || activeOperation.state === "running"),
-  );
+  const operationRunning = activeOperationIsRunning(activeOperation);
   const cancelOperationTargets = async (
     targets: { agentId: string; runId: string }[],
   ) => {
@@ -526,10 +558,10 @@ export function useConversationMessagingController({
   };
   const stopOperation = async () => {
     if (stopOperationPending.current) return;
-    const targets = (activeOperation?.agentIds ?? []).flatMap(agentId => {
-      const runId = healthByAgentId.get(agentId)?.runtimeActivity?.executionId;
-      return runId ? [{ agentId, runId }] : [];
-    });
+    const targets = activeOperationExecutionTargets(activeOperation).filter(
+      ({ agentId, runId }) =>
+        healthByAgentId.get(agentId)?.runtimeActivity?.executionId === runId,
+    );
     if (targets.length === 0) return;
     setCancelOperationError(undefined);
     const names = targets.map(({ agentId }) => agentTitle(agentId)).join(", ");
@@ -723,6 +755,7 @@ export function useConversationMessagingController({
       if (submissionAttempt.current === attempt) submissionAttempt.current = undefined;
     };
     const createdAgentIds: string[] = [];
+    let createdAgentInitiatedAt: number | undefined;
     const createdTitles = detailAgents.map(agent => agent.title);
     let agentCreationCommitted = false;
     const durableAgentTitle = async (
@@ -742,6 +775,7 @@ export function useConversationMessagingController({
       return title;
     };
     if (prepared.newAgentRequested) {
+      createdAgentInitiatedAt = Date.now();
       const titleKey = "new-agent:0";
       const title = await durableAgentTitle(titleKey);
       createdTitles.push(title);
@@ -753,6 +787,7 @@ export function useConversationMessagingController({
         idempotencyKey: `${requestId}:new-agent:0`,
         selectedEngine: prepared.engine,
         runtimeConfig: prepared.runConfig,
+        initiatedAt: createdAgentInitiatedAt,
       });
       agentCreationCommitted = true;
       if (pendingSubmission && persistPendingSubmission) {
@@ -780,8 +815,16 @@ export function useConversationMessagingController({
         "broadcast",
         prepared.broadcastUploadAgentIds,
       );
+      const broadcastTracker = submittedBroadcastText !== undefined &&
+          prepared.mentionedAgents.length > 0
+        ? createDeliveryOperationTracker(
+            prepared.activeRunDelivery,
+            prepared.mentionedAgents.map(binding => binding.agentId),
+            healthByAgentId,
+          )
+        : undefined;
       try {
-        await broadcast.mutateAsync({
+        const response = await broadcast.mutateAsync({
           text: submittedBroadcastText,
           uploadedRecipients,
           requestId,
@@ -791,6 +834,12 @@ export function useConversationMessagingController({
           engine: prepared.engine,
           runtimeConfig: prepared.runConfig,
         });
+        if (broadcastTracker) {
+          setActiveOperation(acceptBroadcastOperation(
+            broadcastTracker,
+            response.communicationEventId,
+          ));
+        }
       } catch (error) {
         if (!agentCreationCommitted &&
             await cleanupRecipientUploadsForDefinitiveFailure({
@@ -805,9 +854,6 @@ export function useConversationMessagingController({
         }
         throw error;
       }
-      if (createdAgentIds.length > 0) {
-        setActiveOperation({ agentIds: createdAgentIds, state: "starting" });
-      }
       finishAttempt();
       return;
     }
@@ -818,13 +864,14 @@ export function useConversationMessagingController({
       throw new Error("There are no active agents to notify.");
     }
     if (targetAgentIds.length > 0) {
-      setActiveOperation({
-        agentIds: targetAgentIds,
-        state: "starting",
-      });
       const uploadKey = recipientUploadCacheKey("direct", targetAgentIds);
       const uploadedRecipients = await preparedUploads("direct", targetAgentIds);
-      let response;
+      const directTracker = createDeliveryOperationTracker(
+        prepared.activeRunDelivery,
+        targetAgentIds,
+        healthByAgentId,
+      );
+      let response: MultiAgentDirectMessageResponse;
       try {
         response = await sendToAgents.mutateAsync({
           agentIds: targetAgentIds,
@@ -835,6 +882,9 @@ export function useConversationMessagingController({
           engine: prepared.engine,
           runtimeConfig: prepared.runConfig,
         });
+        if (directTracker) {
+          setActiveOperation(acceptDirectOperation(directTracker, response));
+        }
       } catch (error) {
         if (!agentCreationCommitted &&
             await cleanupRecipientUploadsForDefinitiveFailure({
@@ -872,7 +922,12 @@ export function useConversationMessagingController({
           cleanupPendingReporter(),
         );
         setActiveOperation(createdAgentIds.length
-          ? { agentIds: createdAgentIds, state: "starting" }
+          ? createActiveOperationTracker(
+              "creation",
+              createdAgentIds,
+              healthByAgentId,
+              createdAgentInitiatedAt,
+            )
           : undefined);
         setQueuedMessageNotice(
           `Created ${prepared.titles.get("new-agent:0") ?? "the new Agent"}; every other addressed Agent became unavailable.`,
@@ -902,9 +957,9 @@ export function useConversationMessagingController({
         cleanupPendingReporter(),
       );
     } else if (!prepared.newAgentRequested) {
-      setActiveOperation({ agentIds: [], state: "starting" });
       const titleKey = "default-agent";
       const title = await durableAgentTitle(titleKey);
+      createdAgentInitiatedAt = Date.now();
       await spawn.mutateAsync({
         text: submittedText,
         draftAttachmentIds: prepared.draftAttachmentIds,
@@ -913,9 +968,15 @@ export function useConversationMessagingController({
         idempotencyKey: `${requestId}:default-agent`,
         selectedEngine: prepared.engine,
         runtimeConfig: prepared.runConfig,
+        initiatedAt: createdAgentInitiatedAt,
       });
     } else if (createdAgentIds.length > 0) {
-      setActiveOperation({ agentIds: createdAgentIds, state: "starting" });
+      setActiveOperation(createActiveOperationTracker(
+        "creation",
+        createdAgentIds,
+        healthByAgentId,
+        createdAgentInitiatedAt,
+      ));
     }
     finishAttempt();
   };

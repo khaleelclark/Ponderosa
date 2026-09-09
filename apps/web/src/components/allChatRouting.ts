@@ -1,5 +1,6 @@
 import type {
   AgentDto,
+  AgentHealthDto,
   AllChatSourceDto,
   WorkspaceNotificationDto,
 } from "@ponderosa/core";
@@ -144,6 +145,18 @@ export function eligibleAllChatTargets(
 ): AllChatReplyTarget[] {
   return [...targets].filter(
     target => !conversationId || target.conversationId === conversationId,
+  );
+}
+
+export function busyAllChatMentionHandles(
+  targets: Iterable<Pick<AllChatReplyTarget, "id" | "handle">>,
+  health: Iterable<Pick<AgentHealthDto, "agentId" | "runtimeActivity">>,
+): string[] {
+  const activeAgentIds = new Set([...health].flatMap(item =>
+    item.runtimeActivity ? [item.agentId] : []
+  ));
+  return [...targets].flatMap(target =>
+    activeAgentIds.has(target.id) ? [target.handle] : []
   );
 }
 

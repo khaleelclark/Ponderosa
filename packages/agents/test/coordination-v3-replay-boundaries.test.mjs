@@ -216,3 +216,104 @@ test("coordinate replay survives a later Run side-effect fence", () => {
     context.close();
   }
 });
+
+test("delivery receipts project the exact execution reached by their activation", () => {
+  const context = fixture();
+  try {
+    const now = "2026-09-09T12:00:00.000Z";
+    const communication = {
+      eventId: "communication-exact-run",
+      schemaVersion: 2,
+      projectId: context.project.id,
+      conversationId: context.conversation.id,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "user_dm",
+      audience: {
+        kind: "user_agent",
+        userId: "local-operator",
+        agentId: context.recipient.id,
+      },
+      text: "work",
+      createdAt: now,
+    };
+    context.coordination.recordRuntimeCommunication({
+      id: communication.eventId,
+      projectId: context.project.id,
+      sender: communication.sender,
+      intent: communication.intent,
+      audience: communication.audience,
+      payload: {
+        communication,
+        dispatch: {
+          conversationId: context.conversation.id,
+          text: communication.text,
+          activeRunDelivery: "steer",
+          recipients: [{ agentId: context.recipient.id, attachments: [] }],
+        },
+      },
+      activation: {
+        agentId: context.recipient.id,
+        kind: "human_message",
+        priority: 100,
+        dispatchPolicy: "steer_or_run",
+        promptClass: "human",
+      },
+      now,
+    });
+    const lease = context.coordination.leaseNextRun({
+      workerId: "worker-a",
+      now,
+    });
+    assert.ok(lease);
+    context.coordination.markRunStarted(lease.runId, lease.fencingToken, now);
+    context.coordination.recordProviderInput({
+      executionId: "execution-exact",
+      schedulerRunId: lease.runId,
+      fencingToken: lease.fencingToken,
+      agentId: context.recipient.id,
+      projectId: context.project.id,
+      prompt: "work",
+      sourceManifest: {
+        schemaVersion: 1,
+        historyMessageCount: 0,
+        activationIds: lease.activationIds,
+        communicationEventIds: [communication.eventId],
+        artifactIds: [],
+        conversationId: context.conversation.id,
+        providerSessionDisposition: "fresh_task",
+        sources: [],
+      },
+      now,
+    });
+    context.coordination.preparePromptInjection({
+      injectionId: lease.injectionId,
+      runId: lease.runId,
+      fencingToken: lease.fencingToken,
+      prompt: "work",
+      now,
+    });
+    context.coordination.markPromptSubmitted({
+      injectionId: lease.injectionId,
+      runId: lease.runId,
+      fencingToken: lease.fencingToken,
+      now,
+    });
+    assert.deepEqual(
+      context.coordination.deliveryReceiptsForCommunication(
+        context.project.id,
+        communication.eventId,
+      ).map(receipt => ({
+        activationId: receipt.activationId,
+        executionId: receipt.executionId,
+        state: receipt.state,
+      })),
+      [{
+        activationId: lease.activationIds[0],
+        executionId: "execution-exact",
+        state: "started",
+      }],
+    );
+  } finally {
+    context.close();
+  }
+});

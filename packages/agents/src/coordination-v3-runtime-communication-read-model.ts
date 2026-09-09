@@ -412,7 +412,14 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         recipientCurrentlyAuthorized,
       }) => {
         const injection = this.sqlite.prepare(`
-          SELECT injection.id, injection.kind, injection.state, injection.updated_at
+          SELECT injection.id, injection.kind, injection.state, injection.updated_at,
+            (
+              SELECT provider.execution_id
+              FROM provider_inputs provider
+              WHERE provider.scheduler_run_id = injection.run_id
+              ORDER BY provider.created_at DESC, provider.execution_id DESC
+              LIMIT 1
+            ) AS execution_id
           FROM scheduler_prompt_injections injection, json_each(injection.activation_ids_json) member
           WHERE member.value = ?
           ORDER BY injection.created_at DESC, injection.sequence DESC LIMIT 1
@@ -421,6 +428,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
           kind: "turn" | "steer";
           state: string;
           updated_at: string;
+          execution_id: string | null;
         } | undefined;
         const recovery = injection
           ? this.sqlite.prepare(`
@@ -469,6 +477,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         return {
           activationId: activation.id,
           targetAgentId: activation.agent_id,
+          ...(injection?.execution_id ? { executionId: injection.execution_id } : {}),
           state,
           updatedAt: [
             latestAttemptAt,

@@ -397,8 +397,11 @@ export const realApi = {
   async deleteConversation(conversationId: string): Promise<void> {
     await requestJson("/api/conversations/" + encodeURIComponent(conversationId), { method: "DELETE" });
   },
-  async sendConversationMessage(conversationId: string, request: CreateConversationMessageRequest): Promise<void> {
-    await requestJson("/api/conversations/" + encodeURIComponent(conversationId) + "/messages", {
+  sendConversationMessage(
+    conversationId: string,
+    request: CreateConversationMessageRequest,
+  ): Promise<{ communicationEventId?: string }> {
+    return requestJson<{ communicationEventId?: string }>("/api/conversations/" + encodeURIComponent(conversationId) + "/messages", {
       method: "POST",
       body: JSON.stringify(request satisfies CreateConversationMessageRequest),
     });

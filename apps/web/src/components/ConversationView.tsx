@@ -613,8 +613,8 @@ export function ConversationView({
     model,
     effort,
     speed,
-    statusByAgentId,
     healthByAgentId,
+    messages,
     agentTitle,
   });
   const reconciledQueuedMessages = useMemo(

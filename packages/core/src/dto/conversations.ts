@@ -143,6 +143,8 @@ export type MessageDeliveryReceiptState =
 export interface MessageDeliveryReceiptDto {
   activationId: string;
   targetAgentId: string;
+  /** Exact provider execution reached by this activation, once a Run starts. */
+  executionId?: string;
   state: MessageDeliveryReceiptState;
   updatedAt: string;
   /** Number of durable attempts for this message/recipient pair. */

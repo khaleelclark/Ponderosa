@@ -37,6 +37,7 @@ import { ApiRequestError } from "../api/types";
 import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
 import {
   useAllChat,
+  useAgentHealth,
   useAgents,
   useConversations,
   useEngines,
@@ -129,6 +130,7 @@ import {
   allChatSubmissionSettlementStillCurrent,
   allChatSourceIntentKey,
   authoritativeAllChatReplyTarget,
+  busyAllChatMentionHandles,
   allChatRuntimePayloadSnapshot,
   allChatRuntimeSelectionReady,
   allChatSourceConversationId,
@@ -332,6 +334,7 @@ export function AllChatView({
   const activeProjectId =
     selected?.project.id ?? replyTarget?.projectId ?? composerSource?.projectId;
   const projectAgentsQuery = useAgents(activeProjectId);
+  const agentHealthQuery = useAgentHealth(activeProjectId);
   const selectedSourceConversationId = allChatSourceConversationId(
     selected?.source,
     projectAgentsQuery.data ?? [],
@@ -443,6 +446,19 @@ export function AllChatView({
     items,
     projectAgentsQuery.data,
   ]);
+  const healthByAgentId = useMemo(
+    () => new Map(
+      (agentHealthQuery.data?.agents ?? []).map(health => [health.agentId, health]),
+    ),
+    [agentHealthQuery.data?.agents],
+  );
+  const busyMentionHandles = useMemo(
+    () => busyAllChatMentionHandles(
+      composerTargets.targetByHandle.values(),
+      agentHealthQuery.data?.agents ?? [],
+    ),
+    [agentHealthQuery.data?.agents, composerTargets.targetByHandle],
+  );
   const decisionEvents = useMemo(
     () => uniqueBy(
       [...(older?.decisions ?? []), ...(query.data?.decisions ?? [])],
@@ -749,6 +765,7 @@ export function AllChatView({
       submissionTargetId,
       pendingSubmission,
       persistPendingSubmission,
+      activeRunDelivery,
     }: {
       body: string;
       files: File[];
@@ -757,6 +774,7 @@ export function AllChatView({
       mentionedAgents: AgentMentionBindingDto[];
       newAgentRequested: boolean;
       retryPreparedAttempt: boolean;
+      activeRunDelivery: "steer" | "queue";
       submissionEpoch: number;
       submissionSourceKey?: string;
       submissionTargetId?: string;
@@ -797,7 +815,8 @@ export function AllChatView({
         const currentRuntime = pendingSubmission?.request?.runtime
           ? {
               activeRunDelivery:
-                pendingSubmission.request.runtime.activeRunDelivery,
+                pendingSubmission.request.runtime.activeRunDelivery ??
+                activeRunDelivery,
               ...(pendingSubmission.request.runtime.engine
                 ? { engine: pendingSubmission.request.runtime.engine }
                 : {}),
@@ -805,15 +824,18 @@ export function AllChatView({
               effort: pendingSubmission.request.runtime.effort ?? "",
               speed: pendingSubmission.request.runtime.speed ?? "",
             }
-          : allChatRuntimePayloadSnapshot({
-          newAgentRequested,
-          recipientCount: currentRecipientIds.length,
-          selectedEngineId,
-          defaultEngine: project?.defaultEngine,
-          runtime: runtimeSelectionReady
-            ? selectedRuntime
-            : { model: "", effort: "", speed: "" },
-            });
+          : {
+              activeRunDelivery,
+              ...allChatRuntimePayloadSnapshot({
+                newAgentRequested,
+                recipientCount: currentRecipientIds.length,
+                selectedEngineId,
+                defaultEngine: project?.defaultEngine,
+                runtime: runtimeSelectionReady
+                  ? selectedRuntime
+                  : { model: "", effort: "", speed: "" },
+              }),
+            };
         if (currentRecipientIds.length === 0 && !newAgentRequested) {
           throw new Error("Select at least one Agent or add #new-agent");
         }
@@ -869,7 +891,6 @@ export function AllChatView({
             recipientAgentIds: currentRecipientIds,
             ...(mentionedAgents.length ? { mentionBindings: mentionedAgents } : {}),
             runtime: {
-              activeRunDelivery: "steer",
               ...currentRuntime,
             },
           });
@@ -1729,6 +1750,11 @@ export function AllChatView({
             Boolean(selectedAgentId && !runtimeSelectionReady)
           }
           running={false}
+          busyMentionHandles={busyMentionHandles}
+          agentResponding={Boolean(
+            activeReplyTarget &&
+            healthByAgentId.get(activeReplyTarget.id)?.runtimeActivity,
+          )}
           allowUnmentionedSend={Boolean(activeReplyTarget)}
           attachmentsEnabled={Boolean(composerConversationId)}
           attachmentsUnavailableReason={
@@ -1754,6 +1780,24 @@ export function AllChatView({
           projectId={activeProjectId}
           onSend={(body, files, draftAttachmentIds = [], draftOwnerId, context) =>
             send.mutateAsync({
+              activeRunDelivery: "steer",
+              body,
+              files,
+              draftAttachmentIds,
+              draftOwnerId,
+              mentionedAgents: context?.mentionedAgents ?? [],
+              newAgentRequested: context?.newAgentRequested ?? false,
+              retryPreparedAttempt: context?.retryPreparedAttempt ?? false,
+              submissionEpoch: submissionIntent.epoch,
+              submissionSourceKey: submissionIntent.sourceKey,
+              submissionTargetId: activeReplyTarget?.id,
+              pendingSubmission: context?.pendingSubmission,
+              persistPendingSubmission: context?.persistPendingSubmission,
+            })
+          }
+          onQueue={(body, files, draftAttachmentIds = [], draftOwnerId, context) =>
+            send.mutateAsync({
+              activeRunDelivery: "queue",
               body,
               files,
               draftAttachmentIds,
