@@ -213,11 +213,16 @@ export function parseRecipientUploadAuthorityOutbox(
         value.draftStorageKey !== scope.draftStorageKey ||
         value.projectId !== scope.projectId ||
         value.ownerId !== scope.ownerId ||
+        typeof value.baseDraftClientId !== "string" ||
+        !value.baseDraftClientId ||
+        typeof value.writeClientId !== "string" ||
+        !value.writeClientId ||
         !Number.isInteger(value.expectedRevision) || value.expectedRevision < 0 ||
-        !Number.isFinite(value.createdAt) || value.createdAt > now ||
+        !Number.isFinite(value.createdAt) || value.createdAt < 0 ||
+        value.createdAt > now ||
         now - value.createdAt > RECIPIENT_UPLOAD_AUTHORITY_MAX_AGE_MS ||
-        typeof pending?.fingerprint !== "string" ||
-        typeof pending.idempotencyKey !== "string" ||
+        typeof pending?.fingerprint !== "string" || !pending.fingerprint ||
+        typeof pending.idempotencyKey !== "string" || !pending.idempotencyKey ||
         !pending.uploads?.length ||
         pending.uploads.some(upload =>
           typeof upload.scope !== "string" ||
@@ -238,6 +243,8 @@ export const recipientUploadAuthorityConfirmed = (
   durable: DraftPendingSubmissionDto | undefined,
   local: RecipientUploadAuthorityOutbox,
 ): boolean => Boolean(durable &&
+  local.pending.idempotencyKey === durable.idempotencyKey &&
+  local.pending.fingerprint === durable.fingerprint &&
   JSON.stringify(local.pending.uploads) === JSON.stringify(durable.uploads) &&
   (!local.pending.agentCreationCommitted || durable.agentCreationCommitted));
 

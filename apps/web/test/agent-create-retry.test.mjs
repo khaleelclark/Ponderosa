@@ -10,6 +10,7 @@ import {
   persistRecipientUploadAuthority,
   reconcileRecipientUploadAuthority,
   recipientActionSnapshot,
+  recipientUploadAuthorityConfirmed,
   recipientUploadCleanupSettled,
   recipientUploadAuthorityHasCapacity,
   recipientUploadAuthorityStorageKey,
@@ -392,6 +393,16 @@ test("ambiguous upload authority survives reload only in its exact bounded draft
     scope,
     1_000 + 24 * 60 * 60 * 1_000 + 1,
   ), undefined);
+  assert.equal(parseRecipientUploadAuthorityOutbox(
+    JSON.stringify({ ...outbox, writeClientId: 7 }),
+    scope,
+    1_001,
+  ), undefined);
+  assert.equal(parseRecipientUploadAuthorityOutbox(
+    JSON.stringify({ ...outbox, baseDraftClientId: null }),
+    scope,
+    1_001,
+  ), undefined);
 
   const replay = reconcileRecipientUploadAuthority(base, parsed, {
     clientId: "draft-client-a",
@@ -424,6 +435,16 @@ test("ambiguous upload authority survives reload only in its exact bounded draft
     recipientUploadAuthorityStorageKey("draft.chat-a", "tab-a", "request-a"),
     recipientUploadAuthorityStorageKey("draft.chat-a", "tab-b", "request-b"),
   );
+  const otherTabIdentity = createRecipientUploadAuthorityOutbox({
+    ...outbox,
+    pending: { ...pending, fingerprint: "other", idempotencyKey: "other" },
+  }, 1_003);
+  assert.equal(recipientUploadAuthorityConfirmed(pending, otherTabIdentity), false);
+  assert.deepEqual(reconcileRecipientUploadAuthority(
+    pending,
+    otherTabIdentity,
+    { clientId: "draft-client-a", revision: 7 },
+  ), { pending, retainLocal: false });
 });
 
 test("cleanup retries transient 409s but accepts ownership transferred to a sent message", () => {
