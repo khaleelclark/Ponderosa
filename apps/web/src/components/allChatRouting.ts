@@ -40,6 +40,25 @@ export type AllChatSubmissionIntentEvent =
   | { kind: "recipient-selected" | "recipient-cleared" | "draft-mutated" }
   | { kind: "recipient-projection-missing" };
 
+export function allChatDeliveryConfirmation(input: {
+  recipientTitles: string[];
+  queuedRecipientTitles: string[];
+  unavailableCount: number;
+  creationRecovering: boolean;
+}): string {
+  if (input.creationRecovering) {
+    return "Agent creation is committed and recovery is finishing. It will appear when ready.";
+  }
+  const unavailable = input.unavailableCount
+    ? ` ${input.unavailableCount} unavailable recipient${
+      input.unavailableCount === 1 ? " was" : "s were"
+    } skipped.`
+    : "";
+  return input.queuedRecipientTitles.length
+    ? `Queued for ${input.queuedRecipientTitles.join(", ")}; it will start when the current response finishes.${unavailable}`
+    : `Message sent to ${input.recipientTitles.join(", ")}.${unavailable}`;
+}
+
 export function allChatSourceIntentKey(
   projectId: string,
   source: AllChatSourceDto,

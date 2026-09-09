@@ -317,3 +317,207 @@ test("delivery receipts project the exact execution reached by their activation"
     context.close();
   }
 });
+
+test("steering recovery receipts preserve original and exact recovery executions", () => {
+  const context = fixture();
+  try {
+    const communication = (eventId, text, now) => ({
+      eventId,
+      schemaVersion: 2,
+      projectId: context.project.id,
+      conversationId: context.conversation.id,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "user_dm",
+      audience: {
+        kind: "user_agent",
+        userId: "local-operator",
+        agentId: context.recipient.id,
+      },
+      text,
+      createdAt: now,
+    });
+    const record = (message, dispatchPolicy) =>
+      context.coordination.recordRuntimeCommunication({
+        id: message.eventId,
+        projectId: context.project.id,
+        sender: message.sender,
+        intent: message.intent,
+        audience: message.audience,
+        payload: {
+          communication: message,
+          dispatch: {
+            conversationId: context.conversation.id,
+            text: message.text,
+            activeRunDelivery: "steer",
+            recipients: [{ agentId: context.recipient.id, attachments: [] }],
+          },
+        },
+        activation: {
+          agentId: context.recipient.id,
+          kind: "human_message",
+          priority: 100,
+          dispatchPolicy,
+          promptClass: "human",
+        },
+        now: message.createdAt,
+      });
+    const base = communication(
+      "communication-base-run",
+      "base",
+      "2026-09-09T12:00:00.000Z",
+    );
+    record(base, "next_run");
+    const baseRun = context.coordination.leaseNextRun({
+      workerId: "worker-a",
+      now: "2026-09-09T12:00:01.000Z",
+    });
+    assert.ok(baseRun);
+    context.coordination.markRunStarted(
+      baseRun.runId,
+      baseRun.fencingToken,
+      "2026-09-09T12:00:02.000Z",
+    );
+    context.coordination.recordProviderInput({
+      executionId: "execution-original",
+      schedulerRunId: baseRun.runId,
+      fencingToken: baseRun.fencingToken,
+      agentId: context.recipient.id,
+      projectId: context.project.id,
+      prompt: "base",
+      sourceManifest: {
+        schemaVersion: 1,
+        historyMessageCount: 0,
+        activationIds: baseRun.activationIds,
+        communicationEventIds: [base.eventId],
+        artifactIds: [],
+        conversationId: context.conversation.id,
+        providerSessionDisposition: "fresh_task",
+        sources: [],
+      },
+      now: "2026-09-09T12:00:02.000Z",
+    });
+    context.coordination.preparePromptInjection({
+      injectionId: baseRun.injectionId,
+      runId: baseRun.runId,
+      fencingToken: baseRun.fencingToken,
+      prompt: "base",
+      now: "2026-09-09T12:00:02.000Z",
+    });
+    context.coordination.markPromptSubmitted({
+      injectionId: baseRun.injectionId,
+      runId: baseRun.runId,
+      fencingToken: baseRun.fencingToken,
+      now: "2026-09-09T12:00:02.000Z",
+    });
+    context.coordination.acknowledgePromptInjection({
+      injectionId: baseRun.injectionId,
+      runId: baseRun.runId,
+      fencingToken: baseRun.fencingToken,
+      now: "2026-09-09T12:00:03.000Z",
+    });
+
+    const target = communication(
+      "communication-recovered-steer",
+      "steer",
+      "2026-09-09T12:00:04.000Z",
+    );
+    record(target, "steer_or_run");
+    const steering = context.coordination.leaseNextSteering({
+      workerId: "worker-a",
+      now: "2026-09-09T12:00:05.000Z",
+    });
+    assert.ok(steering);
+    context.coordination.preparePromptInjection({
+      injectionId: steering.injectionId,
+      runId: steering.runId,
+      fencingToken: steering.fencingToken,
+      prompt: "steer",
+      now: "2026-09-09T12:00:05.000Z",
+    });
+    context.coordination.markPromptSubmitted({
+      injectionId: steering.injectionId,
+      runId: steering.runId,
+      fencingToken: steering.fencingToken,
+      now: "2026-09-09T12:00:05.000Z",
+    });
+    context.coordination.markSteeringOutcomeUnknown({
+      injectionId: steering.injectionId,
+      runId: steering.runId,
+      fencingToken: steering.fencingToken,
+      recoveryGraceMs: 0,
+      now: "2026-09-09T12:00:06.000Z",
+    });
+    context.coordination.processDueSteeringRecoveries(
+      "2026-09-09T12:00:06.000Z",
+    );
+    const recoveryRun = context.coordination.leaseNextRun({
+      workerId: "worker-a",
+      now: "2026-09-09T12:00:07.000Z",
+    });
+    assert.ok(recoveryRun);
+    context.coordination.markRunStarted(
+      recoveryRun.runId,
+      recoveryRun.fencingToken,
+      "2026-09-09T12:00:08.000Z",
+    );
+    context.coordination.recordProviderInput({
+      executionId: "execution-recovery",
+      schedulerRunId: recoveryRun.runId,
+      fencingToken: recoveryRun.fencingToken,
+      agentId: context.recipient.id,
+      projectId: context.project.id,
+      prompt: "recover",
+      sourceManifest: {
+        schemaVersion: 1,
+        historyMessageCount: 0,
+        activationIds: recoveryRun.activationIds,
+        communicationEventIds: [target.eventId],
+        artifactIds: [],
+        conversationId: context.conversation.id,
+        providerSessionDisposition: "fresh_task",
+        sources: [],
+      },
+      now: "2026-09-09T12:00:08.000Z",
+    });
+    context.coordination.preparePromptInjection({
+      injectionId: recoveryRun.injectionId,
+      runId: recoveryRun.runId,
+      fencingToken: recoveryRun.fencingToken,
+      prompt: "recover",
+      now: "2026-09-09T12:00:08.000Z",
+    });
+    context.coordination.markPromptSubmitted({
+      injectionId: recoveryRun.injectionId,
+      runId: recoveryRun.runId,
+      fencingToken: recoveryRun.fencingToken,
+      now: "2026-09-09T12:00:08.000Z",
+    });
+    const recovering = context.coordination.deliveryReceiptsForCommunication(
+      context.project.id,
+      target.eventId,
+    )[0];
+    assert.equal(recovering.state, "recovering");
+    assert.equal(recovering.executionId, "execution-original");
+    assert.equal(recovering.recoveryExecutionId, "execution-recovery");
+
+    context.coordination.acknowledgePromptInjection({
+      injectionId: recoveryRun.injectionId,
+      runId: recoveryRun.runId,
+      fencingToken: recoveryRun.fencingToken,
+      now: "2026-09-09T12:00:09.000Z",
+    });
+    context.coordination.completeRun(
+      recoveryRun.runId,
+      recoveryRun.fencingToken,
+      "2026-09-09T12:00:10.000Z",
+    );
+    const recovered = context.coordination.deliveryReceiptsForCommunication(
+      context.project.id,
+      target.eventId,
+    )[0];
+    assert.equal(recovered.state, "recovered");
+    assert.equal(recovered.recoveryExecutionId, "execution-recovery");
+  } finally {
+    context.close();
+  }
+});

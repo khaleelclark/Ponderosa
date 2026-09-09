@@ -94,7 +94,16 @@ import { useConversationNotificationVisibility } from "./useConversationNotifica
 import { NotificationAcknowledgementBoundary } from "./NotificationAcknowledgementBoundary";
 import { useNotificationAcknowledgement } from "../hooks/useNotificationAcknowledgement";
 import { ChatComposerDock } from "./chat/ChatComposerDock";
+import { QueuedMessageTray } from "./chat/QueuedMessageTray";
 import { ReadAloudControls } from "./speech/ReadAloudControls";
+import { ActiveOperationStopDialog } from "./ActiveOperationStopDialog";
+import {
+  acceptDirectOperation,
+  createCreationOperationTracker,
+  createDeliveryOperationTracker,
+} from "./activeOperationTracker";
+import { useActiveOperationController } from "./useActiveOperationController";
+import { useQueuedConversationMessagesController } from "./useQueuedConversationMessagesController";
 import {
   abandonIdempotentAttempt,
   compoundCreationUnavailableUploads,
@@ -124,6 +133,7 @@ interface AllChatSubmissionPrepared {
 import {
   ALL_CHAT_REPLY_TARGET_KEY,
   ALL_CHAT_SOURCE_KEY,
+  allChatDeliveryConfirmation,
   allChatAttentionRoute,
   allChatComposerConversationId,
   allChatRuntimeMutationOwnsSelection,
@@ -459,6 +469,43 @@ export function AllChatView({
     ),
     [agentHealthQuery.data?.agents, composerTargets.targetByHandle],
   );
+  const queuedMessages = useQueuedConversationMessagesController(
+    composerConversationId,
+  );
+  const allChatAgentTitle = (agentId: string | undefined) =>
+    projectAgentsQuery.data?.find(agent => agent.id === agentId)?.title ??
+    [...composerTargets.targetByHandle.values()]
+      .find(agent => agent.id === agentId)?.title ??
+    "Agent";
+  const invalidateOperation = () => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
+    if (activeProjectId) {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.health(activeProjectId),
+      });
+    }
+    if (composerConversationId) {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.conversations.detailPrefix(composerConversationId),
+      });
+    }
+  };
+  const {
+    cancelOperationError,
+    cancelOperationPending,
+    cancelOperationTargets,
+    operationRunning,
+    setActiveOperation,
+    setStopConfirmation,
+    stopConfirmation,
+    stopOperation,
+  } = useActiveOperationController({
+    activeScopeId: composerConversationId,
+    healthByAgentId,
+    receiptSources: items,
+    agentTitle: allChatAgentTitle,
+    invalidate: invalidateOperation,
+  });
   const decisionEvents = useMemo(
     () => uniqueBy(
       [...(older?.decisions ?? []), ...(query.data?.decisions ?? [])],
@@ -912,6 +959,7 @@ export function AllChatView({
       const createdTitles: string[] = [];
       let creationRecovering = false;
       let deliveredRecipientIds: string[] = [];
+      const queuedRecipientTitles: string[] = [];
       let unavailableCount = 0;
       if (prepared.newAgentRequested) {
         const title = pendingSubmission?.agentTitle ?? prepared.title ??
@@ -939,6 +987,11 @@ export function AllChatView({
           } : {}),
           idempotencyKey: `${requestId}:new-agent:0`,
         });
+        const createdAgentId = "recovering" in created ? created.agentId : created.id;
+        setActiveOperation(createCreationOperationTracker(
+          createdAgentId,
+          creationConversationId,
+        ));
         if ("recovering" in created) creationRecovering = true;
         else createdAgentIds.push(created.id);
         if (pendingSubmission && persistPendingSubmission) {
@@ -989,6 +1042,14 @@ export function AllChatView({
           }
         }
         const uploadedByAgentId = new Map(uploaded.map(item => [item.agentId, item]));
+        const activeRunDelivery = submittedRuntime.activeRunDelivery ?? "steer";
+        const directTracker = createDeliveryOperationTracker(
+          activeRunDelivery,
+          recipientIds,
+          healthByAgentId,
+          Date.now(),
+          conversationId,
+        );
         let response;
         try {
           response = await api.sendMultiAgentDirectMessage(conversationId, {
@@ -999,12 +1060,27 @@ export function AllChatView({
                 .map(attachment => attachment.id),
             })),
             idempotencyKey: `${requestId}:${conversationId}`,
-            activeRunDelivery: submittedRuntime.activeRunDelivery ?? "steer",
+            activeRunDelivery,
             ...(submittedRuntime.engine ? { engine: submittedRuntime.engine } : {}),
             ...(submittedRuntime.model ? { model: submittedRuntime.model } : {}),
             ...(submittedRuntime.effort ? { effort: submittedRuntime.effort } : {}),
             ...(submittedRuntime.speed ? { speed: submittedRuntime.speed } : {}),
           });
+          if (directTracker) {
+            setActiveOperation(acceptDirectOperation(directTracker, response));
+          }
+          queuedMessages.recordDelivery(
+            response,
+            activeRunDelivery,
+            agentId => prepared.recipientTitles.get(agentId) ?? "Agent",
+          );
+          if (activeRunDelivery === "queue") {
+            queuedRecipientTitles.push(...response.recipients.flatMap(recipient =>
+              recipient.queued
+                ? [prepared.recipientTitles.get(recipient.agentId) ?? "Agent"]
+                : []
+            ));
+          }
         } catch (error) {
           if (createdTitles.length === 0 &&
               await cleanupRecipientUploadsForDefinitiveFailure({
@@ -1045,6 +1121,7 @@ export function AllChatView({
           return {
             recipientIds: createdAgentIds,
             recipientTitles: createdTitles,
+            queuedRecipientTitles,
             unavailableCount,
             creationRecovering,
             submissionEpoch,
@@ -1083,6 +1160,7 @@ export function AllChatView({
           ...deliveredRecipientIds.map(id => prepared.recipientTitles.get(id) ?? "Agent"),
           ...createdTitles,
         ],
+        queuedRecipientTitles,
         unavailableCount,
         creationRecovering,
         submissionEpoch,
@@ -1105,11 +1183,7 @@ export function AllChatView({
       directSendConfirmationSequence.current += 1;
       setDirectSendConfirmation({
         id: directSendConfirmationSequence.current,
-        text: result.creationRecovering
-          ? "Agent creation is committed and recovery is finishing. It will appear when ready."
-          : `Message sent to ${result.recipientTitles.join(", ")}.${result.unavailableCount
-          ? ` ${result.unavailableCount} unavailable recipient${result.unavailableCount === 1 ? " was" : "s were"} skipped.`
-          : ""}`,
+        text: allChatDeliveryConfirmation(result),
       });
       void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
       for (const agentId of result.recipientIds) {
@@ -1688,6 +1762,11 @@ export function AllChatView({
             {notice}
           </Alert>
         ) : null}
+        {queuedMessages.notice ? (
+          <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>
+            {queuedMessages.notice}
+          </Alert>
+        ) : null}
         {pendingUploadCleanups ? (
           <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>
             Message sent. Temporary uploads for skipped recipients are still
@@ -1701,6 +1780,32 @@ export function AllChatView({
               : "Direct message could not be sent."}
           </Alert>
         ) : null}
+        {cancelOperationError ? (
+          <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
+            Cancellation failed. {cancelOperationError.message}
+          </Alert>
+        ) : null}
+        <QueuedMessageTray
+          messages={queuedMessages.query.data ?? []}
+          agentNameForId={agentId => allChatAgentTitle(agentId)}
+          busy={
+            queuedMessages.cancel.isPending ||
+            queuedMessages.edit.isPending ||
+            queuedMessages.steer.isPending
+          }
+          onSteer={message => queuedMessages.steer.mutateAsync({
+            deliveryId: message.deliveryId,
+            targetAgentId: message.targetAgentId,
+          })}
+          onEdit={(message, text) => queuedMessages.edit.mutateAsync({
+            deliveryId: message.deliveryId,
+            targetAgentId: message.targetAgentId,
+            text,
+          })}
+          onDelete={message => queuedMessages.cancel.mutateAsync(
+            message.deliveryId,
+          )}
+        />
         <Composer
           destinationMode="target-required"
           defaultDestination={activeReplyTarget ? {
@@ -1749,7 +1854,8 @@ export function AllChatView({
             updateRuntimeEngine.isPending ||
             Boolean(selectedAgentId && !runtimeSelectionReady)
           }
-          running={false}
+          running={operationRunning}
+          allowSendWhileRunning
           busyMentionHandles={busyMentionHandles}
           agentResponding={Boolean(
             activeReplyTarget &&
@@ -1812,8 +1918,19 @@ export function AllChatView({
               persistPendingSubmission: context?.persistPendingSubmission,
             })
           }
+          onCancel={stopOperation}
+          cancelPending={cancelOperationPending}
         />
       </ChatComposerDock>
+      <ActiveOperationStopDialog
+        confirmation={stopConfirmation}
+        pending={cancelOperationPending}
+        error={cancelOperationError?.message}
+        onCancel={() => {
+          if (!cancelOperationPending) setStopConfirmation(undefined);
+        }}
+        onConfirm={targets => void cancelOperationTargets(targets)}
+      />
     </Box>
   );
 }

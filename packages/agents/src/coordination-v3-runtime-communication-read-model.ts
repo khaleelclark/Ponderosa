@@ -448,6 +448,25 @@ export class CoordinationV3RuntimeCommunicationReadModel {
             recovery_activation_state: string | null;
           } | undefined
           : undefined;
+        const recoveryInjection = recovery?.recovery_activation_id
+          ? this.sqlite.prepare(`
+            SELECT injection.updated_at,
+              (
+                SELECT provider.execution_id
+                FROM provider_inputs provider
+                WHERE provider.scheduler_run_id = injection.run_id
+                ORDER BY provider.created_at DESC, provider.execution_id DESC
+                LIMIT 1
+              ) AS execution_id
+            FROM scheduler_prompt_injections injection,
+              json_each(injection.activation_ids_json) member
+            WHERE member.value = ?
+            ORDER BY injection.created_at DESC, injection.sequence DESC LIMIT 1
+          `).get(recovery.recovery_activation_id) as {
+            updated_at: string;
+            execution_id: string | null;
+          } | undefined
+          : undefined;
         let state: MessageDeliveryReceiptDto["state"];
         if (requiredReplyExhausted) state = "retry_exhausted";
         else if (activation.state === "outcome_unknown") {
@@ -478,10 +497,14 @@ export class CoordinationV3RuntimeCommunicationReadModel {
           activationId: activation.id,
           targetAgentId: activation.agent_id,
           ...(injection?.execution_id ? { executionId: injection.execution_id } : {}),
+          ...(recoveryInjection?.execution_id
+            ? { recoveryExecutionId: recoveryInjection.execution_id }
+            : {}),
           state,
           updatedAt: [
             latestAttemptAt,
             recovery?.updated_at,
+            recoveryInjection?.updated_at,
             injection?.updated_at,
             activation.updated_at,
           ].filter((value): value is string => Boolean(value)).sort().at(-1)!,

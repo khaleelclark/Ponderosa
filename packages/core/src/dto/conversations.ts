@@ -145,6 +145,8 @@ export interface MessageDeliveryReceiptDto {
   targetAgentId: string;
   /** Exact provider execution reached by this activation, once a Run starts. */
   executionId?: string;
+  /** Exact provider execution reached by a recovery activation, when distinct. */
+  recoveryExecutionId?: string;
   state: MessageDeliveryReceiptState;
   updatedAt: string;
   /** Number of durable attempts for this message/recipient pair. */

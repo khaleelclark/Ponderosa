@@ -4,6 +4,7 @@ import {
   eligibleAllChatTargets,
   authoritativeAllChatReplyTarget,
   busyAllChatMentionHandles,
+  allChatDeliveryConfirmation,
   allChatAttentionRoute,
   allChatComposerConversationId,
   allChatRuntimeMutationIsLatest,
@@ -110,6 +111,21 @@ test("restores only a complete stable All Messages recipient", () => {
   assert.equal(parseAllChatReplyTarget('{"id":"bryce"}'), undefined);
   assert.equal(parseAllChatReplyTarget(JSON.stringify({ ...bryce, id: "" })), undefined);
   assert.equal(parseAllChatReplyTarget("not json"), undefined);
+});
+
+test("All Messages reports Queue as queued rather than sent", () => {
+  assert.equal(allChatDeliveryConfirmation({
+    recipientTitles: ["Bryce Canyon"],
+    queuedRecipientTitles: ["Bryce Canyon"],
+    unavailableCount: 0,
+    creationRecovering: false,
+  }), "Queued for Bryce Canyon; it will start when the current response finishes.");
+  assert.equal(allChatDeliveryConfirmation({
+    recipientTitles: ["Bryce Canyon"],
+    queuedRecipientTitles: [],
+    unavailableCount: 2,
+    creationRecovering: false,
+  }), "Message sent to Bryce Canyon. 2 unavailable recipients were skipped.");
 });
 
 test("restores only a complete All Messages source Chat identity", () => {

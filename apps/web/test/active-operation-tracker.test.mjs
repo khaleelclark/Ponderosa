@@ -5,7 +5,10 @@ import {
   acceptBroadcastOperation,
   acceptDirectOperation,
   activeOperationExecutionTargets,
+  activeOperationForScope,
   activeOperationIsRunning,
+  createActiveOperationTracker,
+  createCreationOperationTracker,
   createDeliveryOperationTracker,
   reconcileActiveOperationTracker,
 } from "../src/components/activeOperationTracker.js";
@@ -83,10 +86,26 @@ test("fresh direct Steer binds its exact Run after a delayed start, then clears"
     agentId: "agent-a",
     runId: "execution-a",
   }]);
-  assert.equal(
-    reconcileActiveOperationTracker(running, new Map(), [], initiatedAt + 3_000),
-    undefined,
+  const awaitingTerminal = reconcileActiveOperationTracker(
+    running,
+    new Map(),
+    [],
+    initiatedAt + 3_000,
   );
+  assert.ok(awaitingTerminal);
+  assert.deepEqual(activeOperationExecutionTargets(awaitingTerminal), []);
+  assert.equal(reconcileActiveOperationTracker(
+    awaitingTerminal,
+    new Map(),
+    [receipt(
+      "activation-a",
+      "agent-a",
+      "processed",
+      "2026-09-09T12:00:40.000Z",
+      "execution-a",
+    )],
+    initiatedAt + 40_000,
+  ), undefined);
 });
 
 test("accepted Steer to an already-running Agent remains cancellable", () => {
@@ -245,7 +264,7 @@ test("terminal activation failure clears a pending tracker", () => {
   ), undefined);
 });
 
-test("an unmatched or completed tracker cannot attach to a later unrelated Run", () => {
+test("an exact tracker survives projection delay without attaching to another Run", () => {
   const pending = createDeliveryOperationTracker(
     "steer",
     ["agent-a"],
@@ -283,7 +302,7 @@ test("an unmatched or completed tracker cannot attach to a later unrelated Run",
   );
   assert.equal(stillPending, accepted);
   assert.deepEqual(activeOperationExecutionTargets(stillPending), []);
-  assert.equal(reconcileActiveOperationTracker(
+  const delayed = reconcileActiveOperationTracker(
     accepted,
     laterHealth,
     [receipt(
@@ -294,5 +313,179 @@ test("an unmatched or completed tracker cannot attach to a later unrelated Run",
       "expected-execution",
     )],
     initiatedAt + ACTIVE_OPERATION_START_TIMEOUT_MS + 1,
+  );
+  assert.ok(delayed);
+  assert.deepEqual(activeOperationExecutionTargets(delayed), []);
+  const exactHealth = new Map([["agent-a", health(
+    "agent-a",
+    "expected-execution",
+    "2026-09-09T12:02:10.000Z",
+  )]]);
+  const exact = reconcileActiveOperationTracker(
+    delayed,
+    exactHealth,
+    [receipt(
+      "activation-a",
+      "agent-a",
+      "started",
+      "2026-09-09T12:02:10.000Z",
+      "expected-execution",
+    )],
+    initiatedAt + ACTIVE_OPERATION_START_TIMEOUT_MS * 2,
+  );
+  assert.deepEqual(activeOperationExecutionTargets(exact), [{
+    agentId: "agent-a",
+    runId: "expected-execution",
+  }]);
+});
+
+test("only unattributed pending trackers expire", () => {
+  const unattributed = createActiveOperationTracker(
+    "creation",
+    ["agent-a"],
+    new Map(),
+    initiatedAt,
+  );
+  assert.equal(reconcileActiveOperationTracker(
+    unattributed,
+    new Map(),
+    [],
+    initiatedAt + ACTIVE_OPERATION_START_TIMEOUT_MS + 1,
   ), undefined);
+});
+
+test("creation replay and clock skew bind only the canonical opening execution", () => {
+  const tracker = createCreationOperationTracker(
+    "agent-a",
+    "chat-a",
+    initiatedAt,
+  );
+  const originalHealth = new Map([["agent-a", health(
+    "agent-a",
+    "opening-execution",
+    // Server time may precede the browser's initiation time.
+    "2026-09-09T11:59:30.000Z",
+  )]]);
+  const original = reconcileActiveOperationTracker(
+    tracker,
+    originalHealth,
+    [{
+      ...receipt(
+        "opening-activation",
+        "agent-a",
+        "started",
+        "2026-09-09T12:00:01.000Z",
+        "opening-execution",
+      ),
+      communicationEventId: "agent-opening:agent-a",
+    }],
+    initiatedAt + 1_000,
+  );
+  assert.deepEqual(activeOperationExecutionTargets(original), [{
+    agentId: "agent-a",
+    runId: "opening-execution",
+  }]);
+
+  const unrelatedHealth = new Map([["agent-a", health(
+    "agent-a",
+    "unrelated-execution",
+    "2026-09-09T12:00:10.000Z",
+  )]]);
+  const replayBeforeReceipt = reconcileActiveOperationTracker(
+    tracker,
+    unrelatedHealth,
+    [],
+    initiatedAt + 10_000,
+  );
+  assert.deepEqual(activeOperationExecutionTargets(replayBeforeReceipt), []);
+  assert.equal(reconcileActiveOperationTracker(
+    replayBeforeReceipt,
+    unrelatedHealth,
+    [{
+      ...receipt(
+        "opening-activation",
+        "agent-a",
+        "processed",
+        "2026-09-09T12:00:11.000Z",
+        "opening-execution",
+      ),
+      communicationEventId: "agent-opening:agent-a",
+    }],
+    initiatedAt + 11_000,
+  ), undefined);
+});
+
+test("steering recovery rebinds only its projected recovery execution", () => {
+  const baseline = new Map([["agent-a", health(
+    "agent-a",
+    "execution-original",
+    "2026-09-09T11:59:00.000Z",
+  )]]);
+  const pending = createDeliveryOperationTracker(
+    "steer",
+    ["agent-a"],
+    baseline,
+    initiatedAt,
+    "chat-a",
+  );
+  const accepted = acceptDirectOperation(pending, {
+    messageId: "message-a",
+    replayed: false,
+    recipients: [{
+      agentId: "agent-a",
+      queued: true,
+      deliveryId: "activation-a",
+      state: "queued",
+    }],
+  });
+  const original = reconcileActiveOperationTracker(
+    accepted,
+    baseline,
+    [receipt(
+      "activation-a",
+      "agent-a",
+      "delivered",
+      "2026-09-09T12:00:01.000Z",
+      "execution-original",
+    )],
+    initiatedAt + 1_000,
+  );
+  const recoveryHealth = new Map([["agent-a", health(
+    "agent-a",
+    "execution-recovery",
+    "2026-09-09T12:00:20.000Z",
+  )]]);
+  const recoveryReceipt = receipt(
+    "activation-a",
+    "agent-a",
+    "recovering",
+    "2026-09-09T12:00:20.000Z",
+    "execution-original",
+  );
+  recoveryReceipt.receipt.recoveryActivationId = "activation-recovery";
+  recoveryReceipt.receipt.recoveryExecutionId = "execution-recovery";
+  const recovery = reconcileActiveOperationTracker(
+    original,
+    recoveryHealth,
+    [recoveryReceipt],
+    initiatedAt + 20_000,
+  );
+  assert.deepEqual(activeOperationExecutionTargets(recovery), [{
+    agentId: "agent-a",
+    runId: "execution-recovery",
+  }]);
+  recoveryReceipt.receipt.state = "recovered";
+  assert.equal(reconcileActiveOperationTracker(
+    recovery,
+    new Map(),
+    [recoveryReceipt],
+    initiatedAt + 30_000,
+  ), undefined);
+});
+
+test("operation controls are visible only in their owning Chat", () => {
+  const tracker = createCreationOperationTracker("agent-a", "chat-a", initiatedAt);
+  tracker.targets[0].matchedExecutionId = "execution-a";
+  assert.equal(activeOperationForScope(tracker, "chat-a"), tracker);
+  assert.equal(activeOperationForScope(tracker, "chat-b"), undefined);
 });

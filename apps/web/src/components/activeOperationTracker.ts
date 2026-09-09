@@ -19,6 +19,7 @@ export interface ActiveOperationTracker {
   initiatedAt: number;
   expiresAt: number;
   communicationEventId?: string;
+  scopeId?: string;
 }
 
 export function createDeliveryOperationTracker(
@@ -26,6 +27,7 @@ export function createDeliveryOperationTracker(
   agentIds: readonly string[],
   healthByAgentId: ReadonlyMap<string, AgentHealthDto>,
   initiatedAt = Date.now(),
+  scopeId?: string,
 ): ActiveOperationTracker | undefined {
   return delivery === "steer" && agentIds.length > 0
     ? createActiveOperationTracker(
@@ -33,6 +35,7 @@ export function createDeliveryOperationTracker(
         agentIds,
         healthByAgentId,
         initiatedAt,
+        scopeId,
       )
     : undefined;
 }
@@ -55,11 +58,13 @@ export function createActiveOperationTracker(
   agentIds: readonly string[],
   healthByAgentId: ReadonlyMap<string, AgentHealthDto>,
   initiatedAt = Date.now(),
+  scopeId?: string,
 ): ActiveOperationTracker {
   return {
     kind,
     initiatedAt,
     expiresAt: initiatedAt + ACTIVE_OPERATION_START_TIMEOUT_MS,
+    ...(scopeId ? { scopeId } : {}),
     targets: [...new Set(agentIds)].map(agentId => {
       const executionId = healthByAgentId.get(agentId)?.runtimeActivity?.executionId;
       return {
@@ -69,6 +74,21 @@ export function createActiveOperationTracker(
         } : {}),
       };
     }),
+  };
+}
+
+export function createCreationOperationTracker(
+  agentId: string,
+  scopeId?: string,
+  initiatedAt = Date.now(),
+): ActiveOperationTracker {
+  return {
+    kind: "creation",
+    initiatedAt,
+    expiresAt: initiatedAt + ACTIVE_OPERATION_START_TIMEOUT_MS,
+    communicationEventId: `agent-opening:${agentId}`,
+    ...(scopeId ? { scopeId } : {}),
+    targets: [{ agentId }],
   };
 }
 
@@ -110,9 +130,21 @@ export interface ActiveOperationReceipt {
   receipt: MessageDeliveryReceiptDto;
 }
 
-/** Bind an accepted delivery to only the execution it causally reached. Once
- * bound, an execution-ID change is terminal so a later unrelated Run cannot
- * inherit the old Composer's Stop control. */
+const recoveryTransition = (state: MessageDeliveryReceiptDto["state"]): boolean =>
+  ["recovery_queued", "recovering", "recovered"].includes(state);
+
+function activeReceiptExecutionId(
+  receipt: MessageDeliveryReceiptDto,
+): string | undefined {
+  if (receipt.state === "recovering") return receipt.recoveryExecutionId;
+  if (["unconfirmed", "waiting_for_run"].includes(receipt.state)) {
+    return receipt.executionId;
+  }
+  return receiptSucceeded(receipt.state) ? receipt.executionId : undefined;
+}
+
+/** Bind an accepted delivery only to the execution it causally reached. A
+ * recovery may replace that execution only when its exact lineage is projected. */
 export function reconcileActiveOperationTracker(
   tracker: ActiveOperationTracker,
   healthByAgentId: ReadonlyMap<string, AgentHealthDto>,
@@ -133,64 +165,59 @@ export function reconcileActiveOperationTracker(
       changed = true;
       return [];
     }
-    if (target.receiptConfirmed) {
-      if (activity?.executionId === target.matchedExecutionId) {
-        return [target];
-      }
-      changed = true;
-      return [];
-    }
-    if (receipt?.executionId) {
-      if (
-        activity &&
-        receiptSucceeded(receipt.state) &&
-        receipt.executionId === activity.executionId
-      ) {
+    const receiptExecutionId = receipt
+      ? activeReceiptExecutionId(receipt)
+      : undefined;
+    if (receiptExecutionId) {
+      if (activity?.executionId === receiptExecutionId) {
+        if (
+          target.matchedExecutionId === receiptExecutionId &&
+          target.receiptConfirmed
+        ) return [target];
         changed = true;
         return [{
           ...target,
-          matchedExecutionId: activity.executionId,
+          matchedExecutionId: receiptExecutionId,
           receiptConfirmed: true as const,
         }];
       }
       if (target.matchedExecutionId) {
         changed = true;
-        return [{ ...target, matchedExecutionId: undefined }];
+        return [{
+          ...target,
+          matchedExecutionId: undefined,
+          receiptConfirmed: undefined,
+        }];
       }
-    } else if (target.matchedExecutionId) {
-      if (activity?.executionId === target.matchedExecutionId) return [target];
-      if (now >= tracker.expiresAt) {
+      return [target];
+    }
+    if (target.matchedExecutionId) {
+      if (
+        activity?.executionId === target.matchedExecutionId &&
+        (!receipt || !recoveryTransition(receipt.state))
+      ) return [target];
+      if (!target.activationId && !tracker.communicationEventId &&
+          now >= tracker.expiresAt) {
         changed = true;
         return [];
       }
       changed = true;
-      return [{ ...target, matchedExecutionId: undefined }];
+      return [{
+        ...target,
+        matchedExecutionId: undefined,
+        receiptConfirmed: undefined,
+      }];
     }
-    if (!activity) {
-      if (now >= tracker.expiresAt) {
-        changed = true;
-        return [];
-      }
-      return [target];
+    const canonicallyAttributed = Boolean(
+      target.activationId || tracker.communicationEventId,
+    );
+    if (!canonicallyAttributed && now >= tracker.expiresAt) {
+      changed = true;
+      return [];
     }
-    const causallyStarted = tracker.kind === "creation"
-      ? Date.parse(activity.startedAt) >= tracker.initiatedAt
-      : Boolean(receipt && receiptSucceeded(receipt.state) &&
-          receipt.executionId === activity.executionId);
-    if (!causallyStarted) {
-      if (now >= tracker.expiresAt) {
-        changed = true;
-        return [];
-      }
-      return [target];
-    }
-    changed = true;
-    return [{
-      ...target,
-      ...(receipt?.activationId ? { activationId: receipt.activationId } : {}),
-      matchedExecutionId: activity.executionId,
-      receiptConfirmed: true as const,
-    }];
+    // Pending trackers never claim a later Run merely because clocks appear
+    // ordered; canonical receipts are the only authority for a new binding.
+    return [target];
   });
   if (!targets.length) return undefined;
   return changed ? { ...tracker, targets } : tracker;
@@ -206,3 +233,17 @@ export const activeOperationExecutionTargets = (
 export const activeOperationIsRunning = (
   tracker: ActiveOperationTracker | undefined,
 ): boolean => Boolean(tracker?.targets.some(target => target.matchedExecutionId));
+
+export const activeOperationNeedsExpiryTimer = (
+  tracker: ActiveOperationTracker,
+): boolean => !tracker.communicationEventId && tracker.targets.some(target =>
+  !target.activationId && !target.matchedExecutionId
+);
+
+export const activeOperationForScope = (
+  tracker: ActiveOperationTracker | undefined,
+  scopeId: string | undefined,
+): ActiveOperationTracker | undefined =>
+  tracker && (!tracker.scopeId || tracker.scopeId === scopeId)
+    ? tracker
+    : undefined;

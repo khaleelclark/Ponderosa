@@ -6,14 +6,14 @@ import {
   DialogContent,
   DialogTitle,
   TextField,
-  Typography,
 } from "@mui/material";
 import type {
   ConversationDto,
   EngineDto,
 } from "@ponderosa/core";
-import { ConfirmDialog, ResourceDeletionDialog } from "./ConfirmationDialogs";
+import { ResourceDeletionDialog } from "./ConfirmationDialogs";
 import { ImportAgentDialog } from "./ImportAgentDialog";
+import { ActiveOperationStopDialog } from "./ActiveOperationStopDialog";
 
 interface ConversationDialogsProps {
   conversation: ConversationDto;
@@ -79,24 +79,16 @@ export function ConversationDialogs({
         onClose={onImportClose}
       />
 
-      <ConfirmDialog
-        open={Boolean(stopConfirmation)}
+      <ActiveOperationStopDialog
+        confirmation={stopConfirmation}
         pending={stopPending}
-        pendingLabel="Cancelling…"
         error={stopError}
-        title="Stop Operation Tree?"
-        confirmLabel="Stop Operation"
         onCancel={onStopCancel}
-        onConfirm={() => {
-          if (stopConfirmation)
-            onStopConfirm(stopConfirmation.targets, stopConfirmation.names);
-        }}
-      >
-        <Typography sx={{ pt: 1 }}>
-          Stop work for {stopConfirmation?.names}? Partial output from every
-          affected Agent will remain visible.
-        </Typography>
-      </ConfirmDialog>
+        onConfirm={targets => onStopConfirm(
+          targets,
+          stopConfirmation?.names ?? "the selected Agents",
+        )}
+      />
 
       <Dialog open={renameOpen} onClose={onRenameClose} fullWidth maxWidth="xs">
         <DialogTitle>Rename Project chat</DialogTitle>
