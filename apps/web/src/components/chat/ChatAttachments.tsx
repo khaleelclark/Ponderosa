@@ -1,6 +1,6 @@
 import CloseIcon from "@mui/icons-material/Close";
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
-import OpenInNewOutlinedIcon from "@mui/icons-material/OpenInNewOutlined";
+import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 import {
   Box,
   Button,
@@ -15,6 +15,14 @@ import {
 } from "@mui/material";
 import type { CommunicationAttachmentDto } from "@ponderosa/core";
 import { useEffect, useState } from "react";
+import { FilePreview } from "../filePreview/FilePreview";
+import { previewCapability } from "../filePreview/mimeCapabilities";
+import { readTextPreview } from "../filePreview/readTextPreview";
+
+const textPreviewSupported = (attachment: CommunicationAttachmentDto) =>
+  ["text", "markdown", "diff"].includes(previewCapability({
+    mediaType: attachment.mediaType, path: attachment.name,
+  }).kind);
 
 export function ChatAttachments({
   attachments,
@@ -25,6 +33,20 @@ export function ChatAttachments({
 }): JSX.Element | null {
   const [preview, setPreview] = useState<CommunicationAttachmentDto>();
   const [failed, setFailed] = useState<Set<string>>(() => new Set());
+  const [textPreview, setTextPreview] = useState<{ content?: string; truncated?: boolean; error?: string }>();
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    setTextPreview(undefined);
+    if (!preview || !textPreviewSupported(preview)) return;
+    const controller = new AbortController();
+    const url = preview.downloadUrl ?? preview.url ?? preview.previewUrl;
+    if (!url) { setTextPreview({ error: "File URL is unavailable" }); return; }
+    void readTextPreview(url, controller.signal).then(
+      result => { if (!controller.signal.aborted) setTextPreview(result); },
+      error => { if (!controller.signal.aborted) setTextPreview({ error: error instanceof Error ? error.message : "Could not load file" }); },
+    );
+    return () => controller.abort();
+  }, [preview, retry]);
   const availabilityKey = JSON.stringify(attachments.map((attachment) => [
     attachment.id,
     attachment.mediaType,
@@ -101,17 +123,22 @@ export function ChatAttachments({
                   <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{attachment.name}</Typography>
                   <Typography variant="caption" color="text.secondary">{attachment.mediaType} · {attachment.size} bytes</Typography>
                   <Stack direction="row" spacing={0.5}>
-                    {previewUrl ? <Button
+                    {textPreviewSupported(attachment) && (downloadUrl || previewUrl) ? <Button
+                      size="small"
+                      onClick={() => setPreview(attachment)}
+                      aria-label={`Preview ${attachment.name}`}
+                      startIcon={<VisibilityOutlinedIcon />}
+                    >
+                      Preview
+                    </Button> : attachment.previewUrl && attachment.previewUrl !== downloadUrl ? <Button
                       size="small"
                       component="a"
-                      href={previewUrl}
+                      href={attachment.previewUrl}
                       target="_blank"
                       rel="noreferrer"
                       aria-label={`Preview ${attachment.name}`}
-                      startIcon={<OpenInNewOutlinedIcon />}
-                    >
-                      Preview
-                    </Button> : null}
+                      startIcon={<VisibilityOutlinedIcon />}
+                    >Preview</Button> : null}
                     {downloadUrl ? <Button
                       size="small"
                       component="a"
@@ -164,7 +191,7 @@ export function ChatAttachments({
             </Tooltip>
           ) : null}
           <Tooltip title="Close">
-            <IconButton aria-label="Close image preview" onClick={() => setPreview(undefined)}>
+            <IconButton aria-label="Close attachment preview" onClick={() => setPreview(undefined)}>
               <CloseIcon />
             </IconButton>
           </Tooltip>
@@ -177,11 +204,28 @@ export function ChatAttachments({
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            bgcolor: "#0b0e0d",
+            bgcolor: preview && textPreviewSupported(preview) ? "background.paper" : "#0b0e0d",
             overflow: "auto",
           }}
         >
-          {preview && (preview.previewUrl ?? preview.url) ? (
+          {preview && textPreviewSupported(preview) ? (
+            <Box sx={{ width: "100%", height: "100%", p: 2, minWidth: 0 }}>
+              <FilePreview
+                title={preview.name}
+                path={preview.name}
+                mediaType={preview.mediaType}
+                content={textPreview?.content}
+                loading={!textPreview}
+                error={textPreview?.error}
+                truncated={textPreview?.truncated}
+                totalBytes={preview.size}
+                downloadUrl={preview.downloadUrl ?? preview.url}
+                hideHeader
+                maxHeight="100%"
+              />
+              {textPreview?.error ? <Button onClick={() => setRetry(value => value + 1)}>Retry preview</Button> : null}
+            </Box>
+          ) : preview && (preview.previewUrl ?? preview.url) ? (
             <Box
               component="img"
               src={preview.previewUrl ?? preview.url}
