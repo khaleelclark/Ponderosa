@@ -262,7 +262,8 @@ export function routeWaitsForWorkspacePreferences(
   route: Route,
   preferencesLoaded: boolean,
 ): boolean {
-  return route.kind === "profile" && !preferencesLoaded;
+  return (route.kind === "profile" || route.kind === "settings") &&
+    !preferencesLoaded;
 }
 
 export function isProjectRoute(route: Route): route is ProjectRoute {

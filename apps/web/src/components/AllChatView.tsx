@@ -80,6 +80,7 @@ import {
 } from "../conversationRouting";
 import { pickAgentName } from "../parkNames";
 import { queryKeys } from "../queryKeys";
+import { loadRetainedData } from "../retainedData";
 import { DecisionCard } from "./decisions/DecisionCard";
 import { AgentRuntimeControls } from "./AgentDetail.parts";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
@@ -137,6 +138,7 @@ import {
   allChatDeliveryConfirmation,
   allChatAttentionRoute,
   allChatComposerConversationId,
+  allChatRuntimeInitializationKey,
   allChatRuntimeMutationOwnsSelection,
   allChatSubmissionSettlementStillCurrent,
   allChatSourceIntentKey,
@@ -152,6 +154,7 @@ import {
   reduceAllChatSubmissionIntent,
   recordRuntimeCanonicalKey,
   runtimeCanonicalKey,
+  shouldInitializeAllChatRuntime,
   type AllChatReplyTarget,
   type AllChatRuntimePayload,
   type AllChatSourceIdentity,
@@ -243,6 +246,7 @@ export function AllChatView({
     hasMore: boolean;
   }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [olderError, setOlderError] = useState<string>();
   const [selectedId, setSelectedId] = useState<string>();
   const [replyTarget, setReplyTarget] = useState<AllChatReplyTarget | undefined>(
     () => parseAllChatReplyTarget(readChatState(ALL_CHAT_REPLY_TARGET_KEY)),
@@ -280,6 +284,7 @@ export function AllChatView({
   const runtimeMutationGenerationByAgent = useRef(new Map<string, number>());
   const runtimeCanonicalKeyByAgent = useRef(new Map<string, string>());
   const initializedRuntime = useRef<string>();
+  const dirtyRuntimeAgentId = useRef<string>();
   const [runtimeAgentId, setRuntimeAgentId] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [pendingUploadCleanups, setPendingUploadCleanups] = useState(0);
@@ -661,6 +666,7 @@ export function AllChatView({
   useEffect(() => {
     if (!selectedAgentId) {
       initializedRuntime.current = undefined;
+      dirtyRuntimeAgentId.current = undefined;
       setRuntimeEngine("");
       setModel("");
       setEffort("");
@@ -668,15 +674,27 @@ export function AllChatView({
       setRuntimeAgentId(undefined);
       return;
     }
+    if (dirtyRuntimeAgentId.current !== selectedAgentId) {
+      dirtyRuntimeAgentId.current = undefined;
+    }
     const agent = selectedAgent.data?.agent;
     if (!agent) return;
-    const initializationKey = [
-      agent.id,
-      agent.activeEngine,
-      agent.model ?? "",
-      agent.effort ?? "",
-    ].join(":");
-    if (initializedRuntime.current === initializationKey) return;
+    const engine = engines.find(item => item.id === agent.activeEngine);
+    const initializationKey = allChatRuntimeInitializationKey({
+      selectedAgentId,
+      agent,
+      engine,
+      project,
+      enginesLoaded: enginesQuery.data !== undefined,
+      preferencesLoaded: workspacePreferences.data !== undefined,
+      preferencesRevision: workspacePreferences.data?.revision,
+      projectsLoaded: projectsQuery.data !== undefined,
+    });
+    if (!shouldInitializeAllChatRuntime(
+      initializationKey,
+      initializedRuntime.current,
+      dirtyRuntimeAgentId.current === selectedAgentId,
+    )) return;
     const canonicalKey = runtimeCanonicalKey({
       engine: agent.activeEngine,
       model: agent.model,
@@ -688,7 +706,6 @@ export function AllChatView({
       agent.id,
       canonicalKey,
     );
-    const engine = engines.find(item => item.id === agent.activeEngine);
     const resolved = runtimeControlState(engine, {
       model:
         agent.model ??
@@ -716,7 +733,9 @@ export function AllChatView({
     setSpeed(resolved.speed);
   }, [
     engines,
+    enginesQuery.data,
     project,
+    projectsQuery.data,
     selectedAgent.data?.agent,
     selectedAgentId,
     workspacePreferences.data,
@@ -1321,7 +1340,12 @@ export function AllChatView({
     if (loadingOlder || !history.hasMore || !history.cursor) return;
     setLoadingOlder(true);
     try {
-      const page = await api.getAllChat(50, history.cursor);
+      const page = await loadRetainedData(
+        () => api.getAllChat(50, history.cursor),
+        setOlderError,
+        "Older messages could not be loaded.",
+      );
+      if (!page) return;
       setOlder(current => ({
         items: mergeAllChatItems(
           page.items,
@@ -1356,6 +1380,7 @@ export function AllChatView({
         onEngineChange={next => {
           const nextEngine = engines.find(item => item.id === next);
           if (!nextEngine || !selectedAgentId) return;
+          dirtyRuntimeAgentId.current = selectedAgentId;
           setSubmissionRuntimeIntent(value => value + 1);
           const mutationGeneration =
             (runtimeMutationGenerationByAgent.current.get(selectedAgentId) ?? 0) + 1;
@@ -1428,14 +1453,17 @@ export function AllChatView({
           );
         }}
         onModelChange={next => {
+          if (selectedAgentId) dirtyRuntimeAgentId.current = selectedAgentId;
           setSubmissionRuntimeIntent(value => value + 1);
           selectedRuntime.selectModel(next);
         }}
         onEffortChange={next => {
+          if (selectedAgentId) dirtyRuntimeAgentId.current = selectedAgentId;
           setSubmissionRuntimeIntent(value => value + 1);
           selectedRuntime.selectEffort(next);
         }}
         onSpeedChange={next => {
+          if (selectedAgentId) dirtyRuntimeAgentId.current = selectedAgentId;
           setSubmissionRuntimeIntent(value => value + 1);
           selectedRuntime.selectSpeed(next);
         }}
@@ -1499,6 +1527,18 @@ export function AllChatView({
                 }
               >
                 Messages could not be loaded.
+              </Alert>
+            ) : null}
+            {olderError ? (
+              <Alert
+                severity="error"
+                action={
+                  <Button color="inherit" size="small" onClick={() => void loadOlder()}>
+                    Retry
+                  </Button>
+                }
+              >
+                {olderError}
               </Alert>
             ) : null}
           </>

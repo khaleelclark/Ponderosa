@@ -1638,7 +1638,7 @@ export class WorkspaceStore {
     };
     const { idempotencyKey: _idempotencyKey, ...stored } = decision as DecisionDto & { idempotencyKey?: string };
     this.append(
-      { type: "notification_changed", action: "created", conversationId: decision.conversationId },
+      { type: "notification_changed", decisionId: decision.id, action: "created", conversationId: decision.conversationId },
       { kind: "decision", decision: stored, idempotencyKey: key },
     );
     return stored;
@@ -1744,7 +1744,7 @@ export class WorkspaceStore {
     const next: DecisionDto = { ...current, status: "resolved", response, updatedAt: response.respondedAt };
     const key = [...this.decisionIdempotency.entries()].find(([, decisionId]) => decisionId === id)?.[0] ?? `decision:${id}`;
     this.append(
-      { type: "notification_changed", action: "resolved", conversationId: current.conversationId },
+      { type: "notification_changed", decisionId: id, action: "resolved", conversationId: current.conversationId },
       { kind: "decision", decision: next, idempotencyKey: key },
     );
     return next;
@@ -1756,7 +1756,7 @@ export class WorkspaceStore {
     const next: DecisionDto = { ...current, status: "cancelled", updatedAt: at };
     const key = [...this.decisionIdempotency.entries()].find(([, decisionId]) => decisionId === id)?.[0] ?? `decision:${id}`;
     this.append(
-      { type: "notification_changed", action: "resolved", conversationId: current.conversationId },
+      { type: "notification_changed", decisionId: id, action: "resolved", conversationId: current.conversationId },
       { kind: "decision", decision: next, idempotencyKey: key },
     );
     return next;

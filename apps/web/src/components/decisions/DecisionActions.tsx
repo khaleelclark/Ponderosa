@@ -5,6 +5,7 @@ import { decisionAcceptsText, decisionTextActionLabel } from "../../decisions";
 import { useDecisionResponse } from "../../hooks/useDecisionResponse";
 import { DecisionResponseDialog } from "./DecisionResponseDialog";
 import { RuntimeElicitationActions } from "./RuntimeElicitationActions";
+import { settleDecisionResponse } from "./decisionResponse";
 
 export function DecisionActions({
   decision,
@@ -22,8 +23,9 @@ export function DecisionActions({
   });
   if (decision.status !== "pending") return null;
 
-  const respond = (value: DecisionResponse) =>
-    response.mutateAsync({ decisionId: decision.id, response: value });
+  const respond = (value: DecisionResponse) => settleDecisionResponse(() =>
+    response.mutateAsync({ decisionId: decision.id, response: value })
+  );
   const error = response.error instanceof Error
     ? response.error.message
     : response.isError
@@ -72,7 +74,11 @@ export function DecisionActions({
           </Button>
         ) : null}
       </Stack>
-      {!compact && error ? <Alert severity="error">{error}</Alert> : null}
+      {error ? (
+        <Alert severity="error" sx={compact ? { mt: 0.75 } : undefined}>
+          {error}
+        </Alert>
+      ) : null}
       <DecisionResponseDialog
         decision={decision}
         open={textDialogOpen}

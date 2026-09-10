@@ -2,6 +2,8 @@ import type {
   AgentDto,
   AgentHealthDto,
   AllChatSourceDto,
+  EngineDto,
+  ProjectDto,
   WorkspaceNotificationDto,
 } from "@ponderosa/core";
 import { notificationTechnicalFocusId } from "../technicalFocus.js";
@@ -205,6 +207,52 @@ export function allChatRuntimeSelectionReady(
   initializedAgentId: string | undefined,
 ): boolean {
   return Boolean(selectedAgentId && selectedAgentId === initializedAgentId);
+}
+
+export function allChatRuntimeInitializationKey(input: {
+  selectedAgentId?: string;
+  agent?: Pick<AgentDto, "id" | "activeEngine" | "model" | "effort">;
+  engine?: Pick<EngineDto, "id" | "defaultModel" | "defaultEffort" | "models">;
+  project?: Pick<ProjectDto, "id" | "defaultEngine" | "defaultModel" | "defaultEffort">;
+  enginesLoaded: boolean;
+  preferencesLoaded: boolean;
+  preferencesRevision?: number;
+  projectsLoaded: boolean;
+}): string | undefined {
+  if (
+    !input.selectedAgentId || !input.agent || !input.engine || !input.project ||
+    !input.enginesLoaded || !input.preferencesLoaded || !input.projectsLoaded
+  ) return undefined;
+  return JSON.stringify([
+    input.agent.id,
+    input.agent.activeEngine,
+    input.agent.model ?? "",
+    input.agent.effort ?? "",
+    input.preferencesRevision,
+    input.project.id,
+    input.project.defaultEngine,
+    input.project.defaultModel ?? "",
+    input.project.defaultEffort ?? "",
+    input.engine.id,
+    input.engine.defaultModel,
+    input.engine.defaultEffort,
+    input.engine.models.map(model => [
+      model.id,
+      model.defaultEffort,
+      model.defaultServiceTier,
+      model.availability,
+    ]),
+  ]);
+}
+
+export function shouldInitializeAllChatRuntime(
+  initializationKey: string | undefined,
+  initializedKey: string | undefined,
+  selectionDirty: boolean,
+): initializationKey is string {
+  return Boolean(
+    initializationKey && !selectionDirty && initializationKey !== initializedKey,
+  );
 }
 
 export function allChatRuntimeMutationIsLatest(

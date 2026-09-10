@@ -41,10 +41,12 @@ import { routeProjectId, type Route } from "../routing";
 import { projectScopedWorkspaceDirectoryItems } from "../workspaceDirectoryScope";
 import { useAgent, useConversation, useNotificationProjection } from "../hooks/queries";
 import {
+  projectOrderPreferenceKey,
   reorderStableIds,
   resourcePreferenceKey,
   sortWorkspaceResources,
   starredWorkspaceResources,
+  synchronizeProjectRailOrder,
   toggleWorkspaceResourceStar,
 } from "../resourcePreferences";
 import {
@@ -260,13 +262,16 @@ export function WorkspaceSidebar({
   for (const item of projectItems) projectById.set(item.project.id, item.project);
   const activeProjectId = drawerProjectId;
   const railProjectIds = useRef<string[]>([]);
-  const availableProjectIds = new Set(projects.map(project => project.id));
-  const stableProjectIds = railProjectIds.current.filter(projectId =>
-    availableProjectIds.has(projectId),
+  const railProjectOrderKey = useRef<string>();
+  const canonicalProjectOrderKey = projectOrderPreferenceKey(preferences);
+  const canonicalProjectOrderChanged =
+    railProjectOrderKey.current !== canonicalProjectOrderKey;
+  const stableProjectIds = synchronizeProjectRailOrder(
+    railProjectIds.current,
+    projects.map(project => project.id),
+    canonicalProjectOrderChanged,
   );
-  for (const project of projects) {
-    if (!stableProjectIds.includes(project.id)) stableProjectIds.push(project.id);
-  }
+  railProjectOrderKey.current = canonicalProjectOrderKey;
   railProjectIds.current = stableProjectIds;
   const stableRailProjects = stableProjectIds.flatMap(projectId => {
     const project = projects.find(candidate => candidate.id === projectId);

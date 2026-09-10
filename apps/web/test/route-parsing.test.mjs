@@ -69,9 +69,12 @@ test("a fixed create Chat must be live and owned by the selected Project", () =>
   assert.equal(fixedCreateConversationMatchesProject("project-b", "chat-b", undefined), false);
 });
 
-test("the Profile editor cannot mount before canonical preferences hydrate", () => {
+test("editable preference routes cannot mount before canonical preferences hydrate", () => {
   const profile = { kind: "profile" };
+  const settings = { kind: "settings" };
   assert.equal(routeWaitsForWorkspacePreferences(profile, false), true);
   assert.equal(routeWaitsForWorkspacePreferences(profile, true), false);
+  assert.equal(routeWaitsForWorkspacePreferences(settings, false), true);
+  assert.equal(routeWaitsForWorkspacePreferences(settings, true), false);
   assert.equal(routeWaitsForWorkspacePreferences({ kind: "home" }, false), false);
 });

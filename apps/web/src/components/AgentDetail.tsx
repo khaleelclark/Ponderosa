@@ -43,6 +43,7 @@ import {
 } from "../conversationEngine";
 import { telemetryElementId } from "../telemetryFocus";
 import { queryKeys } from "../queryKeys";
+import { loadRetainedData } from "../retainedData";
 import { useRuntimeControls } from "../hooks/useRuntimeControls";
 import {
   agentRelationshipPresentation,
@@ -125,6 +126,8 @@ export function AgentDetail({
   const [olderMessages, setOlderMessages] = useState<MessagePageState>();
   const [olderTelemetry, setOlderTelemetry] = useState<TelemetryPageState>({});
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [olderChatError, setOlderChatError] = useState<string>();
+  const [olderTelemetryError, setOlderTelemetryError] = useState<string>();
   const focusedTelemetryRef = useRef<string>();
   const stream = useAgentStream(agentId, projectId);
   const workspaceConnection = useWorkspaceConnection();
@@ -139,6 +142,7 @@ export function AgentDetail({
       ? (saved as AgentTab)
       : "chat";
   });
+  useEffect(() => setOlderTelemetryError(undefined), [tab]);
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [speed, setSpeed] = useState("");
@@ -178,6 +182,8 @@ export function AgentDetail({
     );
     setOlderMessages(undefined);
     setOlderTelemetry({});
+    setOlderChatError(undefined);
+    setOlderTelemetryError(undefined);
     setProviderUsageState(undefined);
     focusedMessage.current = undefined;
     focusedTelemetryRef.current = undefined;
@@ -554,21 +560,27 @@ export function AgentDetail({
     }
     setLoadingOlder(true);
     try {
-      const [messagePage, telemetryPages] = await Promise.all([
-        loadMessages
-          ? api.getAgent(agentId, AGENT_HISTORY_PAGE_SIZE, messageCursor)
-          : Promise.resolve(undefined),
-        Promise.all(
-          telemetryStreams.map(stream =>
-            api.getAgentHistory(
-              agentId,
-              stream,
-              AGENT_HISTORY_PAGE_SIZE,
-              detail?.telemetryHistory?.[stream]?.cursor,
+      const loaded = await loadRetainedData(
+        () => Promise.all([
+          loadMessages
+            ? api.getAgent(agentId, AGENT_HISTORY_PAGE_SIZE, messageCursor)
+            : Promise.resolve(undefined),
+          Promise.all(
+            telemetryStreams.map(stream =>
+              api.getAgentHistory(
+                agentId,
+                stream,
+                AGENT_HISTORY_PAGE_SIZE,
+                detail?.telemetryHistory?.[stream]?.cursor,
+              ),
             ),
           ),
-        ),
-      ]);
+        ]),
+        setOlderChatError,
+        "Older Agent history could not be loaded.",
+      );
+      if (!loaded) return;
+      const [messagePage, telemetryPages] = loaded;
       if (messagePage) {
         setOlderMessages(current =>
           mergeMessagePage(
@@ -646,16 +658,19 @@ export function AgentDetail({
     if (!detail || streams.length === 0 || loadingOlder) return;
     setLoadingOlder(true);
     try {
-      const pages = await Promise.all(
-        streams.map(stream =>
+      const pages = await loadRetainedData(
+        () => Promise.all(streams.map(stream =>
           api.getAgentHistory(
             agentId,
             stream,
             AGENT_HISTORY_PAGE_SIZE,
             detail.telemetryHistory?.[stream]?.cursor,
           ),
-        ),
+        )),
+        setOlderTelemetryError,
+        "Earlier Agent records could not be loaded.",
       );
+      if (!pages) return;
       setOlderTelemetry(current =>
         pages.reduce((state, page) => mergeTelemetryPage(state, page), current),
       );
@@ -1118,6 +1133,8 @@ export function AgentDetail({
         agentIdForHandle={agentIdForHandle}
         chatPreviewScope={chatPreviewScope}
         loadingOlder={loadingOlder}
+        olderChatError={olderChatError}
+        olderTelemetryError={olderTelemetryError}
         hasOlderTelemetry={hasOlderTelemetry}
         activeExecutionId={runtimeActivity?.executionId}
         focusTelemetry={focusTelemetry}

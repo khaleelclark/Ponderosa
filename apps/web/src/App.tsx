@@ -179,7 +179,7 @@ export default function App({
     retry: false,
   });
   const enginesQuery = useEngines();
-  const preferencesQuery = useWorkspacePreferences();
+  const preferencesQuery = useWorkspacePreferences(preferencesWriter.current);
   const notificationsQuery = useNotifications();
   const triggerPushCleanup = useRef<() => void>(() => undefined);
   const projectOrder = preferencesQuery.data?.projectOrder ?? [];
@@ -766,7 +766,7 @@ export default function App({
                     loadError={
                       enginesQuery.isError ||
                       (!isProjectRoute(route) && projectsQuery.isError) ||
-                      (route.kind === "profile" &&
+                      ((route.kind === "profile" || route.kind === "settings") &&
                         preferencesQuery.isError &&
                         preferencesQuery.data === undefined)
                     }

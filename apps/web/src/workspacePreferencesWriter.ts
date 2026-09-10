@@ -28,6 +28,12 @@ export class WorkspacePreferencesWriter {
     return this.projectPending();
   }
 
+  async fetchCanonical(
+    fetch: () => Promise<WorkspacePreferencesDto>,
+  ): Promise<WorkspacePreferencesDto> {
+    return this.projectCanonical(await fetch());
+  }
+
   enqueue(patch: PreferencePatch): void {
     this.queue({ patch, previous: this.operations.read() });
   }

@@ -196,6 +196,10 @@ export function ProjectShell({
   };
 
   const loading = conversationsQuery.isLoading || agentsQuery.isLoading;
+  const projectResourcesLoaded =
+    conversationsQuery.data !== undefined && agentsQuery.data !== undefined;
+  const projectResourcesFailed =
+    conversationsQuery.isError || agentsQuery.isError;
 
   const routeAgentId = routeResources.agentId;
   const routeConversationId = routeResources.conversationId;
@@ -477,6 +481,12 @@ export function ProjectShell({
         }}
         onOpenEngineStatus={onOpenEngineStatus}
         onOpenArtifact={openProjectArtifact}
+        projectResourcesLoaded={projectResourcesLoaded}
+        projectResourcesFailed={projectResourcesFailed}
+        onRetryProjectResources={() => {
+          void conversationsQuery.refetch();
+          void agentsQuery.refetch();
+        }}
       />
   } else {
     main = assertNeverRoute(route);

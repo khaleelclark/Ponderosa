@@ -107,6 +107,26 @@ export function workspaceResourceSortPatch(kind: WorkspaceResourceSortKind, sort
   return { triggerSort: sort };
 }
 
+export function projectOrderPreferenceKey(
+  preferences: Pick<WorkspacePreferencesDto, "projectSort" | "projectOrder">,
+): string {
+  return JSON.stringify([preferences.projectSort, preferences.projectOrder]);
+}
+
+export function synchronizeProjectRailOrder(
+  current: readonly string[],
+  available: readonly string[],
+  canonicalOrderChanged: boolean,
+): string[] {
+  if (canonicalOrderChanged) return [...available];
+  const availableIds = new Set(available);
+  const stable = current.filter(projectId => availableIds.has(projectId));
+  for (const projectId of available) {
+    if (!stable.includes(projectId)) stable.push(projectId);
+  }
+  return stable;
+}
+
 export function reorderStableIds(
   current: readonly string[] | undefined,
   visibleIds: readonly string[],

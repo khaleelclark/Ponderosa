@@ -214,3 +214,35 @@ test("an awaitable Agent Defaults save cannot overwrite newer SSE or queued inte
   assert.equal(cache.revision, 3);
   assert.equal(cache.fontFamily, "system");
 });
+
+test("a delayed GET is revision-fenced behind newer PATCH and SSE state", async () => {
+  let cache = preferences("2026-01-01T00:00:00.000Z", {
+    revision: 0,
+    fontFamily: "inter",
+  });
+  const staleGet = deferred();
+  const writer = new WorkspacePreferencesWriter({
+    read: () => cache,
+    publish: value => { cache = value; },
+    write: async patch => preferences("2026-01-01T00:00:01.000Z", {
+      revision: 1,
+      fontFamily: patch.fontFamily,
+    }),
+    refresh: async () => cache,
+  });
+
+  const pendingGet = writer.fetchCanonical(() => staleGet.promise);
+  await writer.enqueueAndWait({ fontFamily: "system" });
+  assert.equal(cache.revision, 1);
+  cache = writer.projectCanonical(preferences("2026-01-01T00:00:02.000Z", {
+    revision: 2,
+    fontFamily: "sans",
+  }));
+  staleGet.resolve(preferences("2026-01-01T00:00:00.000Z", {
+    revision: 0,
+    fontFamily: "inter",
+  }));
+  cache = await pendingGet;
+  assert.equal(cache.revision, 2);
+  assert.equal(cache.fontFamily, "sans");
+});

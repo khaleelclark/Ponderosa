@@ -170,6 +170,7 @@ export function ConversationView({
     mainHistory,
     mainTimeline,
     messages,
+    olderError,
     operationalEvents,
     operationalLayoutKey,
     setOlderCollaboration,
@@ -992,6 +993,15 @@ export function ConversationView({
             }}
             beforeMessages={
               <>
+                {olderError ? (
+                  <Alert
+                    severity="error"
+                    action={<Button color="inherit" size="small" onClick={() => void loadOlderHistory()}>Retry</Button>}
+                    sx={{ m: 1.5 }}
+                  >
+                    {olderError}
+                  </Alert>
+                ) : null}
                 <AttentionSurface
                   notifications={(notificationsQuery.data?.items ?? []).filter((item) => item.kind !== "decision")}
                   projectId={conversation.projectId}
@@ -1088,6 +1098,15 @@ export function ConversationView({
                 loading: loadingOlder,
                 onLoadEarlier: () => void loadOlderHistory(),
               }}
+              beforeMessages={olderError ? (
+                <Alert
+                  severity="error"
+                  action={<Button color="inherit" size="small" onClick={() => void loadOlderHistory()}>Retry</Button>}
+                  sx={{ m: 1.5 }}
+                >
+                  {olderError}
+                </Alert>
+              ) : null}
             >
               {collaborationQuery.isError && !collaborationQuery.data ? (
                 <Alert

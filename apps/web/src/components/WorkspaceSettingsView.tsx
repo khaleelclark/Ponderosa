@@ -54,6 +54,7 @@ import {
   RuntimeSettings,
 } from "./RuntimeSettings";
 import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
+import { synchronizePristineDraft } from "./settingsDrafts";
 
 const GLOBAL_AGENT_INSTRUCTIONS_LABEL = "Global Agent Instructions";
 const GLOBAL_AGENT_INSTRUCTIONS_HELPER_TEXT =
@@ -111,6 +112,7 @@ function GeneralSettingsSection({
   agentDefaultsSaveError,
   onRolloverTokens,
   onRolloverFraction,
+  onSaveRollover,
 }: {
   preferences: WorkspacePreferencesDto;
   colorMode: ColorMode;
@@ -128,6 +130,7 @@ function GeneralSettingsSection({
   agentDefaultsSaveError?: string;
   onRolloverTokens(value: string): void;
   onRolloverFraction(value: string): void;
+  onSaveRollover(tokens: number, fraction: number): void;
 }): JSX.Element {
   const parsedRolloverTokens = Number(rolloverTokens);
   const parsedRolloverFraction = Number(rolloverFraction);
@@ -268,12 +271,10 @@ function GeneralSettingsSection({
             variant="contained"
             sx={{ alignSelf: "flex-start" }}
             disabled={!rolloverValuesValid}
-            onClick={() =>
-              onPreferences({
-                contextRolloverTokens: parsedRolloverTokens,
-                contextRolloverWindowFraction: parsedRolloverFraction,
-              })
-            }
+            onClick={() => onSaveRollover(
+              parsedRolloverTokens,
+              parsedRolloverFraction,
+            )}
           >
             Save Rollover Limits
           </Button>
@@ -813,6 +814,10 @@ export function WorkspaceSettingsView({
   const [rolloverFraction, setRolloverFraction] = useState(
     String(preferences.contextRolloverWindowFraction),
   );
+  const [instructionsDirty, setInstructionsDirty] = useState(false);
+  const [limitDirty, setLimitDirty] = useState(false);
+  const [rolloverTokensDirty, setRolloverTokensDirty] = useState(false);
+  const [rolloverFractionDirty, setRolloverFractionDirty] = useState(false);
   const [pushState, setPushState] = useState<WebPushState>({
     kind: "permission_default",
     message: "Checking browser push status…",
@@ -833,16 +838,33 @@ export function WorkspaceSettingsView({
     };
   }, []);
   useEffect(() => {
-    setInstructions(preferences.globalInstructions);
-    setLimit(String(preferences.maxConcurrentAgentRuns));
-    setRolloverTokens(String(preferences.contextRolloverTokens));
-    setRolloverFraction(String(preferences.contextRolloverWindowFraction));
-  }, [
-    preferences.contextRolloverTokens,
-    preferences.contextRolloverWindowFraction,
-    preferences.globalInstructions,
-    preferences.maxConcurrentAgentRuns,
-  ]);
+    setInstructions(current => synchronizePristineDraft(
+      current,
+      preferences.globalInstructions,
+      instructionsDirty,
+    ));
+  }, [instructionsDirty, preferences.globalInstructions]);
+  useEffect(() => {
+    setLimit(current => synchronizePristineDraft(
+      current,
+      String(preferences.maxConcurrentAgentRuns),
+      limitDirty,
+    ));
+  }, [limitDirty, preferences.maxConcurrentAgentRuns]);
+  useEffect(() => {
+    setRolloverTokens(current => synchronizePristineDraft(
+      current,
+      String(preferences.contextRolloverTokens),
+      rolloverTokensDirty,
+    ));
+  }, [preferences.contextRolloverTokens, rolloverTokensDirty]);
+  useEffect(() => {
+    setRolloverFraction(current => synchronizePristineDraft(
+      current,
+      String(preferences.contextRolloverWindowFraction),
+      rolloverFractionDirty,
+    ));
+  }, [preferences.contextRolloverWindowFraction, rolloverFractionDirty]);
   const updateEngine = useMutation({
     mutationFn: ({
       engineId,
@@ -867,6 +889,10 @@ export function WorkspaceSettingsView({
       globalInstructions: string;
       maxConcurrentAgentRuns: number;
     }) => onSavePreferences(patch),
+    onSuccess: () => {
+      setInstructionsDirty(false);
+      setLimitDirty(false);
+    },
   });
   useEffect(() => {
     if (!saveAgentDefaults.isSuccess) return;
@@ -899,10 +925,12 @@ export function WorkspaceSettingsView({
             onPreferences={onPreferences}
             onInstructions={value => {
               saveAgentDefaults.reset();
+              setInstructionsDirty(true);
               setInstructions(value);
             }}
             onLimit={value => {
               saveAgentDefaults.reset();
+              setLimitDirty(true);
               setLimit(value);
             }}
             onSaveAgentDefaults={() =>
@@ -921,8 +949,22 @@ export function WorkspaceSettingsView({
                   : "Agent defaults could not be saved."
                 : undefined
             }
-            onRolloverTokens={setRolloverTokens}
-            onRolloverFraction={setRolloverFraction}
+            onRolloverTokens={value => {
+              setRolloverTokensDirty(true);
+              setRolloverTokens(value);
+            }}
+            onRolloverFraction={value => {
+              setRolloverFractionDirty(true);
+              setRolloverFraction(value);
+            }}
+            onSaveRollover={(tokens, fraction) => {
+              onPreferences({
+                contextRolloverTokens: tokens,
+                contextRolloverWindowFraction: fraction,
+              });
+              setRolloverTokensDirty(false);
+              setRolloverFractionDirty(false);
+            }}
           />
         ) : null}
         {section === "notifications" ? (

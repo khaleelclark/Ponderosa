@@ -7,6 +7,7 @@ import {
   allChatDeliveryConfirmation,
   allChatAttentionRoute,
   allChatComposerConversationId,
+  allChatRuntimeInitializationKey,
   allChatRuntimeMutationIsLatest,
   allChatRuntimeMutationOwnsSelection,
   allChatRuntimePayloadSnapshot,
@@ -21,7 +22,9 @@ import {
   recordRuntimeCanonicalKey,
   runtimeCanonicalKey,
   runtimeMutationOwnsAuthority,
+  shouldInitializeAllChatRuntime,
 } from "../src/components/allChatRouting.js";
+
 import {
   activeComposerMention,
   clampComposerMenuIndex,
@@ -105,6 +108,47 @@ const bryce = {
   projectId: "project-a",
   conversationId: "chat-a",
 };
+
+test("All Messages waits for runtime inheritance inputs and preserves a dirty choice", () => {
+  const agent = {
+    id: "agent-a",
+    activeEngine: "codex",
+    model: null,
+    effort: null,
+  };
+  const engine = {
+    id: "codex",
+    defaultModel: "model-a",
+    defaultEffort: "medium",
+    models: [{ id: "model-a", label: "Model A", efforts: [], availability: "available" }],
+  };
+  const project = {
+    id: "project-a",
+    defaultEngine: "codex",
+    defaultModel: "model-b",
+    defaultEffort: "high",
+  };
+  const base = {
+    selectedAgentId: "agent-a",
+    agent,
+    engine,
+    project,
+    enginesLoaded: true,
+    preferencesLoaded: true,
+    preferencesRevision: 1,
+    projectsLoaded: true,
+  };
+  assert.equal(allChatRuntimeInitializationKey({ ...base, enginesLoaded: false }), undefined);
+  assert.equal(allChatRuntimeInitializationKey({ ...base, preferencesLoaded: false }), undefined);
+  assert.equal(allChatRuntimeInitializationKey({ ...base, projectsLoaded: false }), undefined);
+  assert.equal(allChatRuntimeInitializationKey({ ...base, engine: undefined }), undefined);
+  assert.equal(allChatRuntimeInitializationKey({ ...base, project: undefined }), undefined);
+  const first = allChatRuntimeInitializationKey(base);
+  const refreshed = allChatRuntimeInitializationKey({ ...base, preferencesRevision: 2 });
+  assert.equal(shouldInitializeAllChatRuntime(first, undefined, false), true);
+  assert.equal(shouldInitializeAllChatRuntime(refreshed, first, false), true);
+  assert.equal(shouldInitializeAllChatRuntime(refreshed, first, true), false);
+});
 
 test("restores only a complete stable All Messages recipient", () => {
   assert.deepEqual(parseAllChatReplyTarget(JSON.stringify(bryce)), bryce);

@@ -4,6 +4,9 @@ import { useSyncExternalStore } from "react";
 import { api } from "../api";
 import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
 import { queryKeys } from "../queryKeys";
+import type { WorkspacePreferencesWriter } from "../workspacePreferencesWriter";
+
+const workspacePreferenceWriters = new WeakMap<QueryClient, WorkspacePreferencesWriter>();
 
 export function useProjects() {
   return useQuery({
@@ -12,8 +15,18 @@ export function useProjects() {
   });
 }
 
-export function useWorkspacePreferences() {
-  return useQuery({ queryKey: queryKeys.workspacePreferences.all, queryFn: () => api.getWorkspacePreferences() });
+export function useWorkspacePreferences(writer?: WorkspacePreferencesWriter) {
+  const queryClient = useQueryClient();
+  if (writer) workspacePreferenceWriters.set(queryClient, writer);
+  return useQuery({
+    queryKey: queryKeys.workspacePreferences.all,
+    queryFn: () => {
+      const activeWriter = workspacePreferenceWriters.get(queryClient);
+      return activeWriter
+        ? activeWriter.fetchCanonical(() => api.getWorkspacePreferences())
+        : api.getWorkspacePreferences();
+    },
+  });
 }
 
 interface NotificationFetchRevisionStore {

@@ -135,7 +135,9 @@ export function WorkspaceRouteOutlet({
       ) : routeWaitsForWorkspacePreferences(route, preferencesLoaded) ? (
         <Stack role="status" aria-live="polite" spacing={1} sx={{ p: 3 }}>
           <LinearProgress />
-          <Typography color="text.secondary">Loading profile…</Typography>
+          <Typography color="text.secondary">
+            Loading {route.kind === "profile" ? "profile" : "settings"}…
+          </Typography>
         </Stack>
       ) : route.kind === "create" ? (
         <RecoverableLazyRoute

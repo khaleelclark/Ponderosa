@@ -1,4 +1,4 @@
-import { Box, ButtonBase, Chip, Stack } from "@mui/material";
+import { Alert, Box, Button, ButtonBase, Chip, Stack } from "@mui/material";
 import { PONDEROSA_MESSAGE_TOOL } from "@ponderosa/core";
 import type {
   AgentActivityDto,
@@ -120,6 +120,7 @@ function ChatPaneComponent({
   hasOlder = false,
   loadingOlder = false,
   onLoadOlder,
+  historyError,
 }: {
   messages: MessageDto[];
   agentName?: string;
@@ -146,6 +147,7 @@ function ChatPaneComponent({
   hasOlder?: boolean;
   loadingOlder?: boolean;
   onLoadOlder?(): void;
+  historyError?: string;
 }): JSX.Element {
   const agentChat = useMemo(
     () => projectAgentChat(messages, runs),
@@ -328,6 +330,15 @@ function ChatPaneComponent({
         loading: loadingOlder,
         onLoadEarlier: () => onLoadOlder?.(),
       }}
+      beforeMessages={historyError ? (
+        <Alert
+          severity="error"
+          action={<Button color="inherit" size="small" onClick={() => onLoadOlder?.()}>Retry</Button>}
+          sx={{ m: 1.5 }}
+        >
+          {historyError}
+        </Alert>
+      ) : null}
       empty="Send a message to this agent to start the conversation."
     >
       {timeline.map(item => {
