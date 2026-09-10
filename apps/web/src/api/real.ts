@@ -1,4 +1,6 @@
 import type {
+  ActiveMessageDeliveryReceiptsDto,
+  ActiveMessageDeliveryReceiptsRequest,
   AgentActivityOutputDto,
   AgentImportOperationDto,
   AssetLimitsDto,
@@ -562,6 +564,15 @@ export const realApi = {
   },
   listQueuedConversationMessages(conversationId: string): Promise<QueuedConversationMessageDto[]> {
     return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/queued-messages`);
+  },
+  activeMessageDeliveryReceipts(
+    conversationId: string,
+    request: ActiveMessageDeliveryReceiptsRequest,
+  ): Promise<ActiveMessageDeliveryReceiptsDto> {
+    return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/message-delivery-receipts`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
   },
   cancelQueuedConversationMessage(conversationId: string, deliveryId: string, request: CancelQueuedMessageRequest): Promise<CancelQueuedMessageResponse> {
     return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/queued-messages/${encodeURIComponent(deliveryId)}/cancel`, {

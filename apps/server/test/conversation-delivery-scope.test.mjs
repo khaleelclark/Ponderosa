@@ -3326,7 +3326,15 @@ test("delivery routes reject malformed JSON shapes with 400", async (t) => {
   }
 });
 
-function queuedMessageApp({ coordinationV3 = {}, store = {}, notifyScheduler = () => {}, publishMessageDeliveryChanged = () => {} } = {}) {
+function queuedMessageApp({
+  coordinationV3 = {},
+  store = {},
+  notifyScheduler = () => {},
+  publishMessageDeliveryChanged = () => {},
+  projectDeletionInProgress = () => false,
+  conversationDeletionInProgress = () => false,
+  agentDeletionInProgress = () => false,
+} = {}) {
   const app = Fastify();
   registerQueuedMessageRoutes(app, {
     store: {
@@ -3336,9 +3344,9 @@ function queuedMessageApp({ coordinationV3 = {}, store = {}, notifyScheduler = (
     },
     coordinationV3,
     workspace: {},
-    projectDeletionInProgress: () => false,
-    conversationDeletionInProgress: () => false,
-    agentDeletionInProgress: () => false,
+    projectDeletionInProgress,
+    conversationDeletionInProgress,
+    agentDeletionInProgress,
     conversationDeliveryLeases: new Map(),
     agentDeliveryLeases: new Map(),
     prepareUserCommunicationText: async () => { throw new Error("unexpected text preparation"); },
@@ -3377,23 +3385,135 @@ test("queued-message commands replay before mutable queue and participant state"
       return { edited: true, replayed: true, status: "edited" };
     },
     replaySteerPendingActivation: () => ({ steered: true, replayed: true, status: "steered" }),
+    replayRetryMessageDelivery: () => ({ accepted: true, replayed: true, state: "queued", activationId: "delivery-b", targetAgentId: "agent-a" }),
   };
   const store = {
     getAgent: () => { throw new Error("mutable Agent state must not be read for replay"); },
     getConversation: () => { throw new Error("mutable Chat state must not be read for replay"); },
   };
   const apps = [
-    ["POST", "/api/conversations/chat-a/queued-messages/delivery-a/cancel", { idempotencyKey: "cancel" }],
-    ["POST", "/api/agents/agent-a/queued-messages/delivery-a/cancel", { idempotencyKey: "cancel" }],
-    ["PATCH", "/api/agents/agent-a/queued-messages/delivery-a", { text: " edited ", idempotencyKey: "edit" }],
-    ["POST", "/api/agents/agent-a/queued-messages/delivery-a/steer", { idempotencyKey: "steer" }],
-  ].map(([method, url, payload]) => ({ app: queuedMessageApp({ coordinationV3, store }), method, url, payload }));
+    ["POST", "/api/conversations/chat-a/queued-messages/delivery-a/cancel", { idempotencyKey: "cancel" }, 200],
+    ["POST", "/api/agents/agent-a/queued-messages/delivery-a/cancel", { idempotencyKey: "cancel" }, 200],
+    ["PATCH", "/api/agents/agent-a/queued-messages/delivery-a", { text: " edited ", idempotencyKey: "edit" }, 200],
+    ["POST", "/api/agents/agent-a/queued-messages/delivery-a/steer", { idempotencyKey: "steer" }, 200],
+    ["POST", "/api/projects/project-a/message-deliveries/delivery-a/retry", { idempotencyKey: "retry" }, 202],
+  ].map(([method, url, payload, status]) => ({
+    app: queuedMessageApp({
+      coordinationV3,
+      store,
+      projectDeletionInProgress: () => true,
+      conversationDeletionInProgress: () => true,
+      agentDeletionInProgress: () => true,
+    }),
+    method,
+    url,
+    payload,
+    status,
+  }));
   t.after(() => Promise.all(apps.map(({ app }) => app.close())));
   for (const item of apps) {
     const response = await item.app.inject({ method: item.method, url: item.url, payload: item.payload });
-    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.statusCode, item.status, response.body);
     assert.equal(response.json().replayed, true);
   }
+});
+
+test("work-resuming queued commands reject new intent during deletion quarantine", async (t) => {
+  const activation = {
+    id: "delivery-a",
+    projectId: "project-a",
+    agentId: "agent-a",
+    dispatchPolicy: "next_run",
+    state: "pending",
+    payload: {
+      communication: {
+        eventId: "message-a",
+        sender: { kind: "user", userId: "local-operator" },
+        conversationId: "chat-a",
+      },
+      dispatch: { conversationId: "chat-a" },
+    },
+  };
+  let mutations = 0;
+  const coordinationV3 = {
+    activationProjectId: () => activation.projectId,
+    activation: () => activation,
+    replaySteerPendingActivation: () => undefined,
+    replayRetryMessageDelivery: () => undefined,
+    steerPendingActivation: () => { mutations += 1; return { steered: true, replayed: false, status: "steered" }; },
+    retryMessageDelivery: () => { mutations += 1; return { accepted: true, replayed: false, state: "queued", targetAgentId: "agent-a" }; },
+  };
+  const commands = [
+    ["POST", "/api/agents/agent-a/queued-messages/delivery-a/steer", { idempotencyKey: "steer-new" }],
+    ["POST", "/api/projects/project-a/message-deliveries/delivery-a/retry", { idempotencyKey: "retry-new" }],
+  ];
+  const quarantines = [
+    { projectDeletionInProgress: () => true },
+    { conversationDeletionInProgress: () => true },
+    { agentDeletionInProgress: () => true },
+  ];
+  const apps = commands.flatMap(([method, url, payload]) =>
+    quarantines.map(quarantine => ({
+      app: queuedMessageApp({ coordinationV3, ...quarantine }),
+      method,
+      url,
+      payload,
+    })),
+  );
+  t.after(() => Promise.all(apps.map(({ app }) => app.close())));
+  for (const item of apps) {
+    const response = await item.app.inject({ method: item.method, url: item.url, payload: item.payload });
+    assert.equal(response.statusCode, 409, response.body);
+  }
+  assert.equal(mutations, 0);
+});
+
+test("active delivery receipt refresh resolves exact identities outside message pagination", async (t) => {
+  const requested = [];
+  const app = queuedMessageApp({
+    store: {
+      getConversation: () => ({ id: "chat-a", projectId: "project-a", archived: false }),
+      getCommunicationEvent: (_projectId, eventId) => ({
+        eventId,
+        conversationId: eventId === "foreign-message" ? "chat-b" : "chat-a",
+      }),
+    },
+    coordinationV3: {
+      activation: activationId => ({
+        id: activationId,
+        projectId: "project-a",
+        payload: { communication: { eventId: "message-by-activation" } },
+      }),
+      deliveryReceiptsForCommunications: (projectId, eventIds) => {
+        requested.push({ projectId, eventIds });
+        return new Map(eventIds.map(eventId => [eventId, [{
+          activationId: eventId === "message-by-activation" ? "delivery-a" : "delivery-b",
+          targetAgentId: "agent-a",
+          state: "waiting_for_run",
+          updatedAt: "2026-09-09T12:00:00.000Z",
+          attemptCount: 1,
+        }]]));
+      },
+    },
+  });
+  t.after(() => app.close());
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/conversations/chat-a/message-delivery-receipts",
+    payload: {
+      communicationEventIds: ["old-message", "foreign-message"],
+      activationIds: ["delivery-a"],
+    },
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.deepEqual(requested, [{
+    projectId: "project-a",
+    eventIds: ["old-message", "message-by-activation"],
+  }]);
+  assert.deepEqual(response.json().items.map(item => item.communicationEventId), [
+    "old-message",
+    "message-by-activation",
+  ]);
 });
 
 test("queued-message mutations reject malformed bodies before coordination", async (t) => {
@@ -3417,6 +3537,13 @@ test("queued-message mutations reject malformed bodies before coordination", asy
 test("queued-message retry stays successful when post-commit projections fail", async (t) => {
   const app = queuedMessageApp({
     coordinationV3: {
+      replayRetryMessageDelivery: () => undefined,
+      activation: () => ({
+        id: "delivery-a",
+        projectId: "project-a",
+        agentId: "agent-a",
+        payload: { communication: { conversationId: "chat-a" } },
+      }),
       retryMessageDelivery: () => ({ accepted: true, replayed: false, targetAgentId: "agent-a" }),
     },
     notifyScheduler: () => { throw new Error("scheduler unavailable"); },

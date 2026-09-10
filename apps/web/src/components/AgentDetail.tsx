@@ -411,6 +411,7 @@ export function AgentDetail({
     cancelQueuedMessage,
     editQueuedMessage,
     queueDeliveryNotice,
+    queuedMessageFailure,
     queuedMessagesQuery,
     sendMessage,
     steerQueuedMessage,
@@ -1142,6 +1143,7 @@ export function AgentDetail({
       <AgentDetailComposer
         visible={tab === "chat"}
         queuedMessageNotice={queueDeliveryNotice ?? queuedMessageNotice}
+        queuedMessageFailure={queuedMessageFailure}
         sendError={
           sendMessage.isError || cancelRun.isError
             ? `${sendMessage.isError ? "Message not sent." : "The active Run could not be cancelled."} ${String(

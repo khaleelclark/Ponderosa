@@ -1,4 +1,4 @@
-import { Alert } from "@mui/material";
+import { Alert, Button } from "@mui/material";
 import type {
   ProviderUsageStateDto,
   QueuedConversationMessageDto,
@@ -12,6 +12,7 @@ import { AgentProviderUsageCard } from "./ProviderUsageCenter";
 interface AgentDetailComposerProps {
   visible: boolean;
   queuedMessageNotice?: string;
+  queuedMessageFailure?: { error: Error; retry(): void };
   sendError?: string;
   providerUsageState?: ProviderUsageStateDto;
   agentId: string;
@@ -30,6 +31,7 @@ interface AgentDetailComposerProps {
 export function AgentDetailComposer({
   visible,
   queuedMessageNotice,
+  queuedMessageFailure,
   sendError,
   providerUsageState,
   agentId,
@@ -56,6 +58,15 @@ export function AgentDetailComposer({
       {sendError ? (
         <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
           {sendError}
+        </Alert>
+      ) : null}
+      {queuedMessageFailure ? (
+        <Alert
+          severity="error"
+          sx={{ mx: 1.5, mt: 1 }}
+          action={<Button color="inherit" size="small" onClick={queuedMessageFailure.retry}>Retry</Button>}
+        >
+          Queued messages could not be updated. {queuedMessageFailure.error.message}
         </Alert>
       ) : null}
       {providerUsageState ? (

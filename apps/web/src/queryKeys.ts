@@ -91,6 +91,17 @@ export const queryKeys = {
       ["conversation-members", conversationId, search] as const,
     targetedNextRun: (conversationId: string) =>
       ["targeted-next-run", conversationId] as const,
+    activeDeliveryReceipts: (
+      conversationId: string,
+      communicationEventIds: string,
+      activationIds: string,
+    ) => [
+      "conversation",
+      conversationId,
+      "active-delivery-receipts",
+      communicationEventIds,
+      activationIds,
+    ] as const,
   },
   agents: {
     all: ["agents"] as const,

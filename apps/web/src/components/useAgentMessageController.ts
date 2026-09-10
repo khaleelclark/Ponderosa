@@ -78,6 +78,15 @@ export function useAgentMessageController({
   const queuedCommandAttempts = useRef<QueuedMessageCommandAttemptRegistry>(
     new Map(),
   );
+  const [queuedMessageFailure, setQueuedMessageFailure] = useState<{
+    error: Error;
+    deliveryId: string;
+    retry(): void;
+  }>();
+  useEffect(() => {
+    setQueuedMessageFailure(undefined);
+    queuedCommandAttempts.current.clear();
+  }, [agentId]);
   useEffect(() => {
     if (
       !queueDeliveryNotice ||
@@ -95,6 +104,17 @@ export function useAgentMessageController({
     queuedMessagesQuery.dataUpdatedAt,
     queuedMessagesQuery.isFetching,
   ]);
+  useEffect(() => {
+    if (!queuedMessageFailure || queuedMessagesQuery.isFetching || !queuedMessagesQuery.data) return;
+    if (!queuedMessagesQuery.data.some(message =>
+      message.deliveryId === queuedMessageFailure.deliveryId)) {
+      setQueuedMessageFailure(undefined);
+    }
+  }, [queuedMessageFailure, queuedMessagesQuery.data, queuedMessagesQuery.isFetching]);
+  const invalidateQueuedMessages = () =>
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.queuedMessages.agent(agentId),
+    });
   const cancelQueuedMessage = useMutation({
     mutationFn: (deliveryId: string) =>
       runQueuedMessageCommand(
@@ -106,10 +126,16 @@ export function useAgentMessageController({
             idempotencyKey,
           }),
       ),
-    onSuccess: () =>
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.queuedMessages.agent(agentId),
-      }),
+    onMutate: () => setQueuedMessageFailure(undefined),
+    onSuccess: invalidateQueuedMessages,
+    onError: (error, deliveryId) => {
+      setQueuedMessageFailure({
+        error: error instanceof Error ? error : new Error(String(error)),
+        deliveryId,
+        retry: () => cancelQueuedMessage.mutate(deliveryId),
+      });
+      invalidateQueuedMessages();
+    },
   });
   const editQueuedMessage = useMutation({
     mutationFn: ({ deliveryId, text }: { deliveryId: string; text: string }) =>
@@ -123,10 +149,16 @@ export function useAgentMessageController({
             idempotencyKey,
           }),
       ),
-    onSuccess: () =>
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.queuedMessages.agent(agentId),
-      }),
+    onMutate: () => setQueuedMessageFailure(undefined),
+    onSuccess: invalidateQueuedMessages,
+    onError: (error, variables) => {
+      setQueuedMessageFailure({
+        error: error instanceof Error ? error : new Error(String(error)),
+        deliveryId: variables.deliveryId,
+        retry: () => editQueuedMessage.mutate(variables),
+      });
+      invalidateQueuedMessages();
+    },
   });
   const steerQueuedMessage = useMutation({
     mutationFn: (deliveryId: string) =>
@@ -139,10 +171,16 @@ export function useAgentMessageController({
             idempotencyKey,
           }),
       ),
-    onSuccess: () =>
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.queuedMessages.agent(agentId),
-      }),
+    onMutate: () => setQueuedMessageFailure(undefined),
+    onSuccess: invalidateQueuedMessages,
+    onError: (error, deliveryId) => {
+      setQueuedMessageFailure({
+        error: error instanceof Error ? error : new Error(String(error)),
+        deliveryId,
+        retry: () => steerQueuedMessage.mutate(deliveryId),
+      });
+      invalidateQueuedMessages();
+    },
   });
 
   const submitAgentMessage =
@@ -325,6 +363,14 @@ export function useAgentMessageController({
     editQueuedMessage,
     queueDeliveryNotice: queueDeliveryNotice?.text,
     queuedMessagesQuery,
+    queuedMessageFailure: queuedMessageFailure ?? (queuedMessagesQuery.error
+      ? {
+          error: queuedMessagesQuery.error instanceof Error
+            ? queuedMessagesQuery.error
+            : new Error(String(queuedMessagesQuery.error)),
+          retry: () => { void queuedMessagesQuery.refetch(); },
+        }
+      : undefined),
     sendMessage,
     steerQueuedMessage,
     submitAgentMessage,

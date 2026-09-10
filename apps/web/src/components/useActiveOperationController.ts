@@ -1,13 +1,17 @@
 import type { AgentHealthDto, MessageDeliveryReceiptDto } from "@ponderosa/core";
+import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { ApiRequestError } from "../api/types";
 import { createClientId } from "../clientId";
+import { queryKeys } from "../queryKeys";
 import {
   activeOperationExecutionTargets,
+  activeOperationReceiptIdentity,
   activeOperationsForScope,
   activeOperationIsRunning,
   activeOperationNeedsExpiryTimer,
+  mergeActiveOperationReceipts,
   retainActiveOperation,
   reconcileActiveOperationTracker,
   type ActiveOperationReceipt,
@@ -42,7 +46,25 @@ export function useActiveOperationController({
   const [cancelOperationError, setCancelOperationError] = useState<Error>();
   const stopOperationRequestIds = useRef<Map<string, string>>(new Map());
   const stopOperationPending = useRef(false);
-  const receipts = useMemo<ActiveOperationReceipt[]>(
+  const scopedOperations = activeOperationsForScope(
+    activeOperations,
+    activeScopeId,
+  );
+  const activeReceiptIdentity = useMemo(
+    () => activeOperationReceiptIdentity(activeOperations, activeScopeId),
+    [activeOperations, activeScopeId],
+  );
+  const exactReceiptsQuery = useQuery({
+    queryKey: queryKeys.conversations.activeDeliveryReceipts(
+      activeScopeId ?? "",
+      activeReceiptIdentity.communicationEventIds.join("\0"),
+      activeReceiptIdentity.activationIds.join("\0"),
+    ),
+    queryFn: () => api.activeMessageDeliveryReceipts(activeScopeId!, activeReceiptIdentity),
+    enabled: Boolean(activeScopeId) &&
+      (activeReceiptIdentity.communicationEventIds.length > 0 || activeReceiptIdentity.activationIds.length > 0),
+  });
+  const paginatedReceipts = useMemo<ActiveOperationReceipt[]>(
     () => receiptSources.flatMap(source =>
       source.communicationEventId
         ? (source.deliveryReceipts ?? []).map(receipt => ({
@@ -53,6 +75,15 @@ export function useActiveOperationController({
     ),
     [receiptSources],
   );
+  const receipts = useMemo<ActiveOperationReceipt[]>(() => mergeActiveOperationReceipts(
+    (exactReceiptsQuery.data?.items ?? []).flatMap(source =>
+      source.deliveryReceipts.map(receipt => ({
+        communicationEventId: source.communicationEventId,
+        receipt,
+      }))
+    ),
+    paginatedReceipts,
+  ), [exactReceiptsQuery.data?.items, paginatedReceipts]);
 
   useEffect(() => {
     if (!activeOperations.length) return;
@@ -93,10 +124,6 @@ export function useActiveOperationController({
     setCancelOperationError(undefined);
   }, [activeScopeId]);
 
-  const scopedOperations = activeOperationsForScope(
-    activeOperations,
-    activeScopeId,
-  );
   const trackActiveOperation = (operation: ActiveOperationTracker | undefined) => {
     if (!operation) return;
     setActiveOperations(current => retainActiveOperation(current, operation));

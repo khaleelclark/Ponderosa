@@ -8,10 +8,12 @@ import {
   activeOperationForScope,
   activeOperationsForScope,
   activeOperationIsRunning,
+  activeOperationReceiptIdentity,
   createActiveOperationTracker,
   createCreationOperationTracker,
   createDeliveryOperationTracker,
   createQueuedSteerOperationTracker,
+  mergeActiveOperationReceipts,
   retainActiveOperation,
   reconcileActiveOperationTracker,
 } from "../src/components/activeOperationTracker.js";
@@ -35,6 +37,55 @@ const receipt = (activationId, targetAgentId, state, updatedAt, executionId) => 
     updatedAt,
     attemptCount: 1,
   },
+});
+
+test("exact active-operation receipts override stale paginated copies", () => {
+  const stale = receipt(
+    "delivery-a",
+    "agent-a",
+    "waiting_for_run",
+    "2026-09-09T12:00:00.000Z",
+    "run-old",
+  );
+  const exact = receipt(
+    "delivery-a",
+    "agent-a",
+    "recovering",
+    "2026-09-09T12:01:00.000Z",
+  );
+  exact.receipt.recoveryExecutionId = "run-recovery";
+  assert.deepEqual(mergeActiveOperationReceipts([exact], [stale]), [exact]);
+});
+
+test("exact receipt refresh includes every operation in only the active Chat", () => {
+  assert.deepEqual(activeOperationReceiptIdentity([
+    {
+      kind: "delivery",
+      initiatedAt,
+      expiresAt: initiatedAt + 60_000,
+      communicationEventId: "communication-b",
+      scopeId: "chat-a",
+      targets: [{ agentId: "agent-a", activationId: "activation-b" }],
+    },
+    {
+      kind: "delivery",
+      initiatedAt,
+      expiresAt: initiatedAt + 60_000,
+      scopeId: "chat-a",
+      targets: [{ agentId: "agent-b", activationId: "activation-a" }],
+    },
+    {
+      kind: "delivery",
+      initiatedAt,
+      expiresAt: initiatedAt + 60_000,
+      communicationEventId: "foreign-communication",
+      scopeId: "chat-b",
+      targets: [{ agentId: "agent-c", activationId: "foreign-activation" }],
+    },
+  ], "chat-a"), {
+    communicationEventIds: ["communication-b"],
+    activationIds: ["activation-a", "activation-b"],
+  });
 });
 
 test("fresh direct Steer binds its exact Run after a delayed start, then clears", () => {

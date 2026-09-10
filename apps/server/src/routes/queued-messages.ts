@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type {
+  ActiveMessageDeliveryReceiptsDto,
+  ActiveMessageDeliveryReceiptsRequest,
   CancelMessageDeliveryRequest,
   CancelMessageDeliveryResponse,
   CancelQueuedMessageRequest,
@@ -22,7 +24,7 @@ import { CoordinationIdempotencyConflictError } from "@ponderosa/agents";
 import type { AgentStore, CoordinationV3Store, WorkspaceStore } from "@ponderosa/agents";
 import { AssetError } from "../assets.js";
 import { cleanupUncommittedCommunicationArtifact } from "../communication-artifacts.js";
-import { leaseConversationDelivery } from "../delivery-leases.js";
+import { leaseAgentDelivery, leaseConversationDelivery } from "../delivery-leases.js";
 import type { PreparedCommunicationArtifact } from "./conversation-deliveries.js";
 
 export type QueuedEditRevisionOutboxPayload = {
@@ -128,6 +130,26 @@ function exactStringBody(
   return { value: candidate as Record<string, string | undefined> };
 }
 
+function exactStringArrayBody(
+  body: unknown,
+  allowedFields: readonly string[],
+): { value: Record<string, string[]> } | { error: string } {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return { error: "request body must be an object" };
+  }
+  const candidate = body as Record<string, unknown>;
+  const unknownFields = Object.keys(candidate).filter((key) => !allowedFields.includes(key));
+  if (unknownFields.length) return { error: `unknown field(s): ${unknownFields.join(", ")}` };
+  for (const field of allowedFields) {
+    if (!Array.isArray(candidate[field]) || candidate[field].some(value =>
+      typeof value !== "string" || !value.trim() || value.length > 200
+    )) {
+      return { error: `${field} must be an array of non-empty strings of at most 200 characters` };
+    }
+  }
+  return { value: candidate as Record<string, string[]> };
+}
+
 function bestEffort(effect: () => void): void {
   try {
     effect();
@@ -158,6 +180,51 @@ export function registerQueuedMessageRoutes(
     publishMessageDeliveryChanged,
     notifyScheduler,
   } = dependencies;
+  app.post<{
+    Params: { id: string };
+    Body: ActiveMessageDeliveryReceiptsRequest;
+  }>("/api/conversations/:id/message-delivery-receipts", async (request, reply) => {
+    const parsed = exactStringArrayBody(request.body, ["communicationEventIds", "activationIds"]);
+    if ("error" in parsed) return reply.code(400).send({ error: parsed.error });
+    const requestedCommunicationIds = [...new Set((parsed.value.communicationEventIds ?? []).map(id => id.trim()))];
+    const activationIds = [...new Set((parsed.value.activationIds ?? []).map(id => id.trim()))];
+    if (requestedCommunicationIds.length > 1_000 || activationIds.length > 1_000) {
+      return reply.code(400).send({ error: "at most 1000 communicationEventIds and activationIds may be requested" });
+    }
+    const conversation = store.getConversation(request.params.id);
+    if (!conversation || conversation.archived) return reply.code(404).send({ error: "conversation not found" });
+    const activationCommunicationIds = activationIds.flatMap(activationId => {
+      const activation = coordinationV3.activation(activationId, conversation.projectId);
+      const payload = activation?.payload && typeof activation.payload === "object"
+        ? activation.payload as { communication?: CommunicationEvent }
+        : undefined;
+      return payload?.communication?.eventId ? [payload.communication.eventId] : [];
+    });
+    const communicationEventIds = [...new Set([
+      ...requestedCommunicationIds,
+      ...activationCommunicationIds,
+    ])].filter(eventId => {
+      const communication = store.getCommunicationEvent(conversation.projectId, eventId);
+      if (communication) return communication.conversationId === conversation.id;
+      const runtime = coordinationV3.runtimeCommunication(eventId);
+      const payload = runtime?.payload && typeof runtime.payload === "object"
+        ? runtime.payload as { communication?: { conversationId?: string } }
+        : undefined;
+      return runtime?.projectId === conversation.projectId &&
+        payload?.communication?.conversationId === conversation.id;
+    });
+    const receipts = coordinationV3.deliveryReceiptsForCommunications(
+      conversation.projectId,
+      communicationEventIds,
+    );
+    return {
+      items: communicationEventIds.map(communicationEventId => ({
+        communicationEventId,
+        deliveryReceipts: receipts.get(communicationEventId) ?? [],
+      })),
+    } satisfies ActiveMessageDeliveryReceiptsDto;
+  });
+
   app.post<{
     Params: { id: string; deliveryId: string };
     Body: CancelQueuedMessageRequest;
@@ -465,17 +532,39 @@ export function registerQueuedMessageRoutes(
         (activation.state !== "pending" && activation.state !== "retry_pending")) {
       return reply.code(404).send({ error: "queued message not found" });
     }
-    const result = coordinationV3.steerPendingActivation({
-      activationId: activation.id, projectId: agent.projectId, idempotencyKey,
-    });
-    if (!result.steered) return reply.code(409).send(result satisfies SteerQueuedMessageResponse);
     const conversationId = payload.communication.conversationId ?? agent.conversationId;
-    if (conversationId) {
-      bestEffort(() => appendWorkspace({ type: "queued_message_changed", conversationId, deliveryId: activation.id, action: "steered" }));
+    const conversation = conversationId ? store.getConversation(conversationId) : undefined;
+    if (projectDeletionInProgress(agent.projectId) || agentDeletionInProgress(agent.id) ||
+        (conversationId && (conversationDeletionInProgress(conversationId) || !conversation ||
+          conversation.archived || conversation.projectId !== agent.projectId))) {
+      return reply.code(409).send({ error: "queued message participants are no longer available" });
     }
-    bestEffort(() => publishCoordinationV3Changed(agent.id, { conversationIds: conversationId ? [conversationId] : [] }));
-    bestEffort(notifyScheduler);
-    return result satisfies SteerQueuedMessageResponse;
+    const releaseDeliveryLease = conversationId
+      ? leaseConversationDelivery(conversationDeliveryLeases, agentDeliveryLeases, conversationId, [agent.id])
+      : leaseAgentDelivery(agentDeliveryLeases, [agent.id]);
+    try {
+      const currentAgent = store.getAgent(agent.id);
+      const currentConversation = conversationId ? store.getConversation(conversationId) : undefined;
+      if (projectDeletionInProgress(agent.projectId) || agentDeletionInProgress(agent.id) ||
+          !currentAgent || currentAgent.archived || currentAgent.projectId !== agent.projectId ||
+          (conversationId && (conversationDeletionInProgress(conversationId) ||
+            !currentConversation || currentConversation.archived ||
+            currentConversation.projectId !== agent.projectId))) {
+        return reply.code(409).send({ error: "queued message participants are no longer available" });
+      }
+      const result = coordinationV3.steerPendingActivation({
+        activationId: activation.id, projectId: agent.projectId, idempotencyKey,
+      });
+      if (!result.steered) return reply.code(409).send(result satisfies SteerQueuedMessageResponse);
+      if (conversationId) {
+        bestEffort(() => appendWorkspace({ type: "queued_message_changed", conversationId, deliveryId: activation.id, action: "steered" }));
+      }
+      bestEffort(() => publishCoordinationV3Changed(agent.id, { conversationIds: conversationId ? [conversationId] : [] }));
+      bestEffort(notifyScheduler);
+      return result satisfies SteerQueuedMessageResponse;
+    } finally {
+      releaseDeliveryLease();
+    }
   });
 
   app.post<{
@@ -519,14 +608,56 @@ export function registerQueuedMessageRoutes(
     if (!idempotencyKey || idempotencyKey.length > 200) {
       return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
     }
-    const result = coordinationV3.retryMessageDelivery({ projectId, activationId, idempotencyKey });
-    if (!result.accepted || !result.targetAgentId) {
-      const status = result.rejectionReason === "not_found" ? 404 : 409;
-      return reply.code(status).send(result satisfies RetryMessageDeliveryResponse);
+    try {
+      const replay = coordinationV3.replayRetryMessageDelivery({ projectId, activationId, idempotencyKey });
+      if (replay) return reply.code(replay.accepted ? 202 : replay.rejectionReason === "not_found" ? 404 : 409)
+        .send(replay satisfies RetryMessageDeliveryResponse);
+    } catch (error) {
+      if (error instanceof CoordinationIdempotencyConflictError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
     }
-    bestEffort(notifyScheduler);
-    bestEffort(() => publishMessageDeliveryChanged(result.targetAgentId!));
-    return reply.code(202).send(result satisfies RetryMessageDeliveryResponse);
+    const activation = coordinationV3.activation(activationId, projectId);
+    const payload = activation?.payload && typeof activation.payload === "object"
+      ? activation.payload as { communication?: CommunicationEvent; dispatch?: { conversationId?: string; sourceConversationId?: string } }
+      : undefined;
+    const agent = activation ? store.getAgent(activation.agentId) : undefined;
+    if (!activation || !agent || agent.archived || agent.projectId !== projectId) {
+      return reply.code(404).send({ error: "message delivery not found" });
+    }
+    const conversationId = payload?.dispatch?.sourceConversationId ??
+      payload?.dispatch?.conversationId ?? payload?.communication?.conversationId ?? agent.conversationId;
+    const conversation = conversationId ? store.getConversation(conversationId) : undefined;
+    if (projectDeletionInProgress(projectId) || agentDeletionInProgress(agent.id) ||
+        (conversationId && (conversationDeletionInProgress(conversationId) || !conversation ||
+          conversation.archived || conversation.projectId !== projectId))) {
+      return reply.code(409).send({ error: "message delivery participants are no longer available" });
+    }
+    const releaseDeliveryLease = conversationId
+      ? leaseConversationDelivery(conversationDeliveryLeases, agentDeliveryLeases, conversationId, [agent.id])
+      : leaseAgentDelivery(agentDeliveryLeases, [agent.id]);
+    try {
+      const currentAgent = store.getAgent(agent.id);
+      const currentConversation = conversationId ? store.getConversation(conversationId) : undefined;
+      if (projectDeletionInProgress(projectId) || agentDeletionInProgress(agent.id) ||
+          !currentAgent || currentAgent.archived || currentAgent.projectId !== projectId ||
+          (conversationId && (conversationDeletionInProgress(conversationId) ||
+            !currentConversation || currentConversation.archived ||
+            currentConversation.projectId !== projectId))) {
+        return reply.code(409).send({ error: "message delivery participants are no longer available" });
+      }
+      const result = coordinationV3.retryMessageDelivery({ projectId, activationId, idempotencyKey });
+      if (!result.accepted || !result.targetAgentId) {
+        const status = result.rejectionReason === "not_found" ? 404 : 409;
+        return reply.code(status).send(result satisfies RetryMessageDeliveryResponse);
+      }
+      bestEffort(notifyScheduler);
+      bestEffort(() => publishMessageDeliveryChanged(result.targetAgentId!));
+      return reply.code(202).send(result satisfies RetryMessageDeliveryResponse);
+    } finally {
+      releaseDeliveryLease();
+    }
   });
 
   app.post<{

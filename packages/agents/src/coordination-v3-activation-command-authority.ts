@@ -232,6 +232,24 @@ export class CoordinationV3ActivationCommandAuthority {
     })();
   }
 
+  replayRetryMessageDelivery(input: {
+    projectId: string;
+    activationId: string;
+    idempotencyKey: string;
+  }): RetryMessageDeliveryResponse | undefined {
+    if (!input.idempotencyKey.trim()) throw new Error("delivery retry idempotency key is required");
+    return this.sqlite.transaction(() => {
+      const replay = this.idempotentReplay<Omit<RetryMessageDeliveryResponse, "replayed">>(
+        input.projectId,
+        "user:local-operator",
+        "retry_message_delivery",
+        input.idempotencyKey,
+        payloadHash({ projectId: input.projectId, activationId: input.activationId }),
+      );
+      return replay ? { ...replay, replayed: true } : undefined;
+    })();
+  }
+
   /** Acknowledge a terminal delivery failure without replaying the immutable
    * message. The original terminal outcome/error remain available for audit. */
   cancelTerminalMessageDelivery(input: {

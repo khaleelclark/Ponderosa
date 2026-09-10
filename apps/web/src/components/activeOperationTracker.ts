@@ -148,6 +148,22 @@ export interface ActiveOperationReceipt {
   receipt: MessageDeliveryReceiptDto;
 }
 
+/** Exact active-operation refreshes override a stale copy from message pagination. */
+export function mergeActiveOperationReceipts(
+  authoritative: readonly ActiveOperationReceipt[],
+  paginated: readonly ActiveOperationReceipt[],
+): ActiveOperationReceipt[] {
+  const exact = new Set(authoritative.map(entry =>
+    `${entry.communicationEventId}\0${entry.receipt.activationId}`
+  ));
+  return [
+    ...authoritative,
+    ...paginated.filter(entry => !exact.has(
+      `${entry.communicationEventId}\0${entry.receipt.activationId}`,
+    )),
+  ];
+}
+
 const recoveryTransition = (state: MessageDeliveryReceiptDto["state"]): boolean =>
   ["recovery_queued", "recovering", "recovered"].includes(state);
 
@@ -296,3 +312,18 @@ export const activeOperationsForScope = (
 ): ActiveOperationTracker[] => trackers.filter(tracker =>
   Boolean(activeOperationForScope(tracker, scopeId))
 );
+
+export function activeOperationReceiptIdentity(
+  trackers: readonly ActiveOperationTracker[],
+  scopeId: string | undefined,
+): { communicationEventIds: string[]; activationIds: string[] } {
+  const scoped = activeOperationsForScope(trackers, scopeId);
+  return {
+    communicationEventIds: [...new Set(scoped.flatMap(operation =>
+      operation.communicationEventId ? [operation.communicationEventId] : []
+    ))].sort(),
+    activationIds: [...new Set(scoped.flatMap(operation =>
+      operation.targets.flatMap(target => target.activationId ? [target.activationId] : [])
+    ))].sort(),
+  };
+}

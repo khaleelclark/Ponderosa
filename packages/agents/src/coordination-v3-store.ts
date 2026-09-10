@@ -476,6 +476,12 @@ export class CoordinationV3Store {
     return this.activationCommandAuthority.retryMessageDelivery(input);
   }
 
+  replayRetryMessageDelivery(
+    input: Parameters<CoordinationV3ActivationCommandAuthority["replayRetryMessageDelivery"]>[0],
+  ): ReturnType<CoordinationV3ActivationCommandAuthority["replayRetryMessageDelivery"]> {
+    return this.activationCommandAuthority.replayRetryMessageDelivery(input);
+  }
+
   cancelTerminalMessageDelivery(input: {
     projectId: string;
     activationId: string;

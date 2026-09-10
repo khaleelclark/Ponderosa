@@ -161,6 +161,19 @@ export interface MessageDeliveryReceiptDto {
   recoveryActivationId?: string;
 }
 
+/** Narrow receipt refresh for active operations that may be outside message pagination. */
+export interface ActiveMessageDeliveryReceiptsRequest {
+  communicationEventIds: string[];
+  activationIds: string[];
+}
+
+export interface ActiveMessageDeliveryReceiptsDto {
+  items: Array<{
+    communicationEventId: string;
+    deliveryReceipts: MessageDeliveryReceiptDto[];
+  }>;
+}
+
 export interface CancelMessageDeliveryRequest {
   idempotencyKey: string;
 }

@@ -123,6 +123,77 @@ test("request update replay and retry identity survive later mutable state", () 
   }
 });
 
+test("delivery retry has a read-only replay boundary", () => {
+  const context = fixture();
+  try {
+    const now = "2026-09-09T12:00:00.000Z";
+    const communication = {
+      eventId: "retry-message",
+      schemaVersion: 2,
+      projectId: context.project.id,
+      conversationId: context.conversation.id,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "user_dm",
+      audience: {
+        kind: "user_agent",
+        userId: "local-operator",
+        agentId: context.recipient.id,
+      },
+      text: "retry me",
+      createdAt: now,
+    };
+    const recorded = context.coordination.recordRuntimeCommunication({
+      id: communication.eventId,
+      projectId: context.project.id,
+      sender: communication.sender,
+      intent: communication.intent,
+      audience: communication.audience,
+      payload: {
+        communication,
+        dispatch: {
+          conversationId: context.conversation.id,
+          text: communication.text,
+          activeRunDelivery: "steer",
+          recipients: [{ agentId: context.recipient.id, attachments: [] }],
+        },
+      },
+      activation: {
+        agentId: context.recipient.id,
+        kind: "human_message",
+        priority: 100,
+        dispatchPolicy: "steer_or_run",
+        promptClass: "human",
+      },
+      now,
+    });
+    context.store.sqlite.prepare(
+      "UPDATE agent_activations SET state = 'failed' WHERE id = ?",
+    ).run(recorded.activationId);
+    const input = {
+      projectId: context.project.id,
+      activationId: recorded.activationId,
+      idempotencyKey: "retry-once",
+      now,
+    };
+    const first = context.coordination.retryMessageDelivery(input);
+    assert.equal(first.accepted, true);
+    assert.equal(first.replayed, false);
+    assert.deepEqual(
+      context.coordination.replayRetryMessageDelivery(input),
+      { ...first, replayed: true },
+    );
+    assert.equal(
+      context.coordination.replayRetryMessageDelivery({
+        ...input,
+        idempotencyKey: "not-recorded",
+      }),
+      undefined,
+    );
+  } finally {
+    context.close();
+  }
+});
+
 test("terminal request update replay survives the Run side-effect fence it created", () => {
   const context = fixture();
   try {
