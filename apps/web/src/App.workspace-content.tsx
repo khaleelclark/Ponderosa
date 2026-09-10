@@ -50,6 +50,7 @@ interface WorkspaceRouteOutletProps {
   colorMode: ColorMode;
   projectBrowserRequest?: ProjectBrowserRequest;
   loadError: boolean;
+  refreshError: boolean;
   onRetryLoad(): void;
   onNavigate(route: Route): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
@@ -93,6 +94,7 @@ export function WorkspaceRouteOutlet({
   colorMode,
   projectBrowserRequest,
   loadError,
+  refreshError,
   onRetryLoad,
   onNavigate,
   onPreferences,
@@ -115,9 +117,21 @@ export function WorkspaceRouteOutlet({
         minHeight: 0,
         minWidth: 0,
         display: "grid",
-        gridTemplateRows: "minmax(0, 1fr)",
+        gridTemplateRows: refreshError && !loadError
+          ? "auto minmax(0, 1fr)"
+          : "minmax(0, 1fr)",
       }}
     >
+      {refreshError && !loadError ? (
+        <Alert
+          severity="warning"
+          action={<Button color="inherit" size="small" onClick={onRetryLoad}>Retry</Button>}
+          sx={{ m: 1 }}
+        >
+          Some workspace data could not be refreshed. The last loaded data remains available.
+        </Alert>
+      ) : null}
+      <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
       {loadError ? (
         <Box sx={{ p: 2 }}>
           <Alert
@@ -330,6 +344,7 @@ export function WorkspaceRouteOutlet({
       ) : (
         assertNeverRoute(route)
       )}
+      </Box>
     </Box>
   );
 }

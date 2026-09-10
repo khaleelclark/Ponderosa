@@ -22,7 +22,7 @@ import {
 } from "@mui/material";
 import type { EngineDto, ProjectDto, ProjectEngineModelCatalogDto, WorkspacePreferencesDto } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import {
   effortOptionsForModel,
@@ -54,7 +54,10 @@ import {
   RuntimeSettings,
 } from "./RuntimeSettings";
 import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
-import { synchronizePristineDraft } from "./settingsDrafts";
+import {
+  draftChangedSinceSubmission,
+  synchronizePristineDraft,
+} from "./settingsDrafts";
 
 const GLOBAL_AGENT_INSTRUCTIONS_LABEL = "Global Agent Instructions";
 const GLOBAL_AGENT_INSTRUCTIONS_HELPER_TEXT =
@@ -390,6 +393,7 @@ function ClaudeModelOptionsSettings({
 }): JSX.Element {
   const [modelId, setModelId] = useState("");
   const [validationError, setValidationError] = useState<string>();
+  const [validationRequestError, setValidationRequestError] = useState<string>();
   const queryClient = useQueryClient();
   const normalizedId = modelId.trim();
   const configured = engine.configuredModels ?? [];
@@ -401,7 +405,18 @@ function ClaudeModelOptionsSettings({
   const addModel = async () => {
     if (!projectId || !normalizedId || idAlreadyExists) return;
     setValidationError(undefined);
-    const result = await validateModel.mutateAsync();
+    setValidationRequestError(undefined);
+    let result;
+    try {
+      result = await validateModel.mutateAsync();
+    } catch (error) {
+      setValidationRequestError(
+        error instanceof Error
+          ? error.message
+          : "The model could not be validated.",
+      );
+      return;
+    }
     if (!result.valid) {
       setValidationError(result.error);
       return;
@@ -504,7 +519,11 @@ function ClaudeModelOptionsSettings({
             fullWidth
             label="Model id"
             value={modelId}
-            onChange={event => setModelId(event.target.value)}
+            onChange={event => {
+              setModelId(event.target.value);
+              setValidationError(undefined);
+              setValidationRequestError(undefined);
+            }}
             helperText={
               idAlreadyExists
                 ? "This model id is already available."
@@ -522,6 +541,14 @@ function ClaudeModelOptionsSettings({
           </Button>
         </Stack>
         {validationError ? <Alert severity="error">{validationError}</Alert> : null}
+        {validationRequestError ? (
+          <Alert
+            severity="error"
+            action={<Button color="inherit" size="small" onClick={() => void addModel()}>Retry</Button>}
+          >
+            Model validation failed. {validationRequestError}
+          </Alert>
+        ) : null}
         {!projectId ? (
           <Alert severity="info">Create a Project before validating a Claude model.</Alert>
         ) : null}
@@ -534,6 +561,7 @@ function ProviderSettingsSection({
   preferences,
   engines,
   updatePending,
+  updateError,
   validationProjectId,
   modelCatalogLoading,
   recheckEngineId,
@@ -541,11 +569,13 @@ function ProviderSettingsSection({
   recheckError,
   onPreferences,
   onToggleEngine,
+  onRetryToggleEngine,
   onRecheckEngine,
 }: {
   preferences: WorkspacePreferencesDto;
   engines: EngineDto[];
   updatePending: boolean;
+  updateError?: string;
   validationProjectId?: string;
   modelCatalogLoading: boolean;
   recheckEngineId?: string;
@@ -553,6 +583,7 @@ function ProviderSettingsSection({
   recheckError?: string;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onToggleEngine(engineId: string, enabled: boolean): void;
+  onRetryToggleEngine(): void;
   onRecheckEngine(engineId: string): void;
 }): JSX.Element {
   const usageProviders = engines.filter(engine =>
@@ -567,6 +598,14 @@ function ProviderSettingsSection({
     : usageProviders.find(engine => engine.enabled !== false)?.id;
   return (
     <Stack spacing={2}>
+      {updateError ? (
+        <Alert
+          severity="error"
+          action={<Button color="inherit" size="small" onClick={onRetryToggleEngine}>Retry</Button>}
+        >
+          Provider setting was not saved. {updateError}
+        </Alert>
+      ) : null}
       {engines.length === 0 ? (
         <Alert severity="info">
           No AI providers are registered yet. Install and authenticate Codex or
@@ -818,6 +857,10 @@ export function WorkspaceSettingsView({
   const [limitDirty, setLimitDirty] = useState(false);
   const [rolloverTokensDirty, setRolloverTokensDirty] = useState(false);
   const [rolloverFractionDirty, setRolloverFractionDirty] = useState(false);
+  const instructionsRef = useRef(instructions);
+  const limitRef = useRef(limit);
+  instructionsRef.current = instructions;
+  limitRef.current = limit;
   const [pushState, setPushState] = useState<WebPushState>({
     kind: "permission_default",
     message: "Checking browser push status…",
@@ -889,9 +932,15 @@ export function WorkspaceSettingsView({
       globalInstructions: string;
       maxConcurrentAgentRuns: number;
     }) => onSavePreferences(patch),
-    onSuccess: () => {
-      setInstructionsDirty(false);
-      setLimitDirty(false);
+    onSuccess: (_preferences, submitted) => {
+      setInstructionsDirty(draftChangedSinceSubmission(
+        instructionsRef.current,
+        submitted.globalInstructions,
+      ));
+      setLimitDirty(draftChangedSinceSubmission(
+        limitRef.current,
+        String(submitted.maxConcurrentAgentRuns),
+      ));
     },
   });
   useEffect(() => {
@@ -982,6 +1031,13 @@ export function WorkspaceSettingsView({
             preferences={preferences}
             engines={settingsEngines}
             updatePending={updateEngine.isPending}
+            updateError={
+              updateEngine.isError
+                ? updateEngine.error instanceof Error
+                  ? updateEngine.error.message
+                  : "The provider could not be updated."
+                : undefined
+            }
             validationProjectId={validationProject?.id}
             modelCatalogLoading={modelCatalogQuery.isLoading}
             recheckEngineId={recheckEngine.variables}
@@ -999,6 +1055,9 @@ export function WorkspaceSettingsView({
             onToggleEngine={(engineId, enabled) =>
               updateEngine.mutate({ engineId, enabled })
             }
+            onRetryToggleEngine={() => {
+              if (updateEngine.variables) updateEngine.mutate(updateEngine.variables);
+            }}
             onRecheckEngine={engineId => recheckEngine.mutate(engineId)}
           />
         ) : null}

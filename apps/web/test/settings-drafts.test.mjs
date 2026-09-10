@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { synchronizePristineDraft } from "../src/components/settingsDrafts.js";
+import {
+  draftChangedSinceSubmission,
+  synchronizePristineDraft,
+} from "../src/components/settingsDrafts.js";
 
 test("canonical settings hydrate only pristine draft fields", () => {
   const drafts = {
@@ -17,4 +20,9 @@ test("canonical settings hydrate only pristine draft fields", () => {
   });
   assert.equal(synchronizePristineDraft("8", "4", false), "4");
   assert.equal(synchronizePristineDraft("0.7", "0.8", true), "0.7");
+});
+
+test("a save settles only the exact submitted draft", () => {
+  assert.equal(draftChangedSinceSubmission("submitted", "submitted"), false);
+  assert.equal(draftChangedSinceSubmission("edited while saving", "submitted"), true);
 });

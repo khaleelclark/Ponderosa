@@ -3,6 +3,7 @@ import {
   Box,
   Button,
   CircularProgress,
+  Stack,
 } from "@mui/material";
 import type {
   EngineCommand,
@@ -687,7 +688,7 @@ export function AgentDetail({
     );
   }
 
-  if (agentQuery.isError) {
+  if (agentQuery.isError && !agentQuery.data) {
     return (
       <Box sx={{ p: 2 }}>
         <Alert
@@ -721,6 +722,7 @@ export function AgentDetail({
   const hasOlderTelemetry = activeTelemetryStreams.some(
     stream => detail.telemetryHistory?.[stream]?.hasMore,
   );
+  const detailRefreshFailed = agentQuery.isError && agentQuery.data !== undefined;
 
   const models = selectedRuntime.models;
   const efforts = selectedRuntime.efforts;
@@ -1041,7 +1043,9 @@ export function AgentDetail({
         minWidth: 0,
         overflow: "hidden",
         display: "grid",
-        gridTemplateRows: "auto minmax(0, 1fr) auto",
+        gridTemplateRows: activeBrowser || detailRefreshFailed
+          ? "auto auto minmax(0, 1fr) auto"
+          : "auto minmax(0, 1fr) auto",
       }}
     >
       <AgentDetailHeader
@@ -1095,26 +1099,37 @@ export function AgentDetail({
         }}
       />
 
-      {activeBrowser ? (
-        <Alert
-          severity="info"
-          action={
-            <Button color="inherit" size="small" onClick={() => onOpenBrowser(activeBrowser.runId)}>
-              View Browser
-            </Button>
-          }
-          sx={{ mx: { xs: 1, sm: 2 }, mt: 1 }}
-        >
-          {activeBrowser.status === "opening"
-            ? activeBrowser.queuePosition
-              ? `Browser queued · position ${activeBrowser.queuePosition}`
-              : "Browser is opening"
-            : `Browser active${activeBrowser.title ? ` · ${activeBrowser.title}` : ""}`}
-          {activeBrowser.profileMode === "trusted" && activeBrowser.profileName
-            ? ` · Trusted profile: ${activeBrowser.profileName}`
-            : " · Disposable profile"}
-          {activeBrowser.controlOwner === "operator" ? " · Operator has control" : ""}
-        </Alert>
+      {activeBrowser || detailRefreshFailed ? (
+        <Stack spacing={1} sx={{ mx: { xs: 1, sm: 2 }, mt: 1 }}>
+          {detailRefreshFailed ? (
+            <Alert
+              severity="warning"
+              action={<Button color="inherit" size="small" onClick={() => void agentQuery.refetch()}>Retry</Button>}
+            >
+              This Agent could not be refreshed. The last loaded details remain available.
+            </Alert>
+          ) : null}
+          {activeBrowser ? (
+            <Alert
+              severity="info"
+              action={
+                <Button color="inherit" size="small" onClick={() => onOpenBrowser(activeBrowser.runId)}>
+                  View Browser
+                </Button>
+              }
+            >
+              {activeBrowser.status === "opening"
+                ? activeBrowser.queuePosition
+                  ? `Browser queued · position ${activeBrowser.queuePosition}`
+                  : "Browser is opening"
+                : `Browser active${activeBrowser.title ? ` · ${activeBrowser.title}` : ""}`}
+              {activeBrowser.profileMode === "trusted" && activeBrowser.profileName
+                ? ` · Trusted profile: ${activeBrowser.profileName}`
+                : " · Disposable profile"}
+              {activeBrowser.controlOwner === "operator" ? " · Operator has control" : ""}
+            </Alert>
+          ) : null}
+        </Stack>
       ) : null}
 
       <AgentDetailPanels

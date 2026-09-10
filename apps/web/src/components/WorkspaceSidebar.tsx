@@ -263,7 +263,7 @@ export function WorkspaceSidebar({
   const activeProjectId = drawerProjectId;
   const railProjectIds = useRef<string[]>([]);
   const railProjectOrderKey = useRef<string>();
-  const canonicalProjectOrderKey = projectOrderPreferenceKey(preferences);
+  const canonicalProjectOrderKey = projectOrderPreferenceKey(preferences, projects);
   const canonicalProjectOrderChanged =
     railProjectOrderKey.current !== canonicalProjectOrderKey;
   const stableProjectIds = synchronizeProjectRailOrder(

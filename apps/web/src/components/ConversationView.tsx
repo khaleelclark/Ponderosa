@@ -718,7 +718,7 @@ export function ConversationView({
     );
   }
 
-  if (detailQuery.isError) {
+  if (detailQuery.isError && !detailQuery.data) {
     return (
       <Box sx={{ p: 2 }}>
         <Alert
@@ -770,6 +770,7 @@ export function ConversationView({
     collaborationQuery.isPending &&
     collaborationMessages.length === 0 &&
     operationalEvents.length === 0;
+  const detailRefreshFailed = detailQuery.isError && detailQuery.data !== undefined;
 
   const transcriptTitle =
     activeView === "collaboration"
@@ -929,7 +930,9 @@ export function ConversationView({
         minHeight: 0,
         minWidth: 0,
         display: "grid",
-        gridTemplateRows: "auto minmax(0, 1fr) auto",
+        gridTemplateRows: detailRefreshFailed
+          ? "auto auto minmax(0, 1fr) auto"
+          : "auto minmax(0, 1fr) auto",
       }}
     >
       <ConversationHeader
@@ -952,6 +955,16 @@ export function ConversationView({
           onViewChange?.(next);
         }}
       />
+
+      {detailRefreshFailed ? (
+        <Alert
+          severity="warning"
+          action={<Button color="inherit" size="small" onClick={() => void detailQuery.refetch()}>Retry</Button>}
+          sx={{ m: 1 }}
+        >
+          This Project chat could not be refreshed. The last loaded messages remain available.
+        </Alert>
+      ) : null}
 
       <Box
         sx={{

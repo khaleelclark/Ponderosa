@@ -16,6 +16,7 @@ import { api } from "../api";
 import { mergeAgentStatuses } from "../agents";
 import { useAgent, useAgentHealth, useAgentPresets, useConversations, useAgents } from "../hooks/queries";
 import { queryKeys } from "../queryKeys";
+import { retainedDataFailure } from "../retainedData";
 import { enginesWithModelCatalog } from "../conversationEngine";
 import { assertNeverRoute, nestedProjectRouteResources, routeToPath, type ProjectRoute } from "../routeRegistry";
 import type { Route } from "../routing";
@@ -196,6 +197,18 @@ export function ProjectShell({
   };
 
   const loading = conversationsQuery.isLoading || agentsQuery.isLoading;
+  const conversationsFailure = retainedDataFailure(
+    conversationsQuery.data !== undefined,
+    conversationsQuery.isError,
+  );
+  const agentsFailure = retainedDataFailure(
+    agentsQuery.data !== undefined,
+    agentsQuery.isError,
+  );
+  const triggersFailure = retainedDataFailure(
+    triggersQuery.data !== undefined,
+    triggersQuery.isError,
+  );
   const projectResourcesLoaded =
     conversationsQuery.data !== undefined && agentsQuery.data !== undefined;
   const projectResourcesFailed =
@@ -208,9 +221,9 @@ export function ProjectShell({
     (Boolean(routeConversationId) && conversationsQuery.isLoading) ||
     (Boolean(routeTriggerId) && triggersQuery.isLoading);
   const routeResourceError =
-    (Boolean(routeAgentId) && agentsQuery.isError) ||
-    (Boolean(routeConversationId) && conversationsQuery.isError) ||
-    (Boolean(routeTriggerId) && triggersQuery.isError);
+    (Boolean(routeAgentId) && agentsFailure === "initial") ||
+    (Boolean(routeConversationId) && conversationsFailure === "initial") ||
+    (Boolean(routeTriggerId) && triggersFailure === "initial");
   const routeResourceUnavailable =
     (Boolean(routeAgentId) && agentsQuery.isSuccess && !agents.some(agent => agent.id === routeAgentId)) ||
     (Boolean(routeConversationId) && conversationsQuery.isSuccess && !conversations.some(conversation => conversation.id === routeConversationId)) ||
@@ -228,7 +241,7 @@ export function ProjectShell({
     return <Box sx={{ p: 2 }}><Alert severity="warning" action={<Button onClick={() => navigate({ kind: "project", projectId })}>Back to Project</Button>}>This resource is unavailable in this Project.</Alert></Box>;
   }
 
-  if (conversationsQuery.isError || agentsQuery.isError) {
+  if (conversationsFailure === "initial" || agentsFailure === "initial") {
     return (
       <Box sx={{ p: 2 }}>
         <Alert
@@ -492,6 +505,29 @@ export function ProjectShell({
     main = assertNeverRoute(route);
   }
 
+  const retainedResourceError = route.kind !== "project" && (
+    conversationsFailure === "refresh" ||
+    agentsFailure === "refresh" ||
+    (Boolean(routeTriggerId) && triggersFailure === "refresh")
+  );
+  const retainedResourceNotice = retainedResourceError ? (
+    <Alert
+      severity="warning"
+      action={
+        <Button color="inherit" size="small" onClick={() => {
+          if (conversationsFailure === "refresh") void conversationsQuery.refetch();
+          if (agentsFailure === "refresh") void agentsQuery.refetch();
+          if (triggersFailure === "refresh") void triggersQuery.refetch();
+        }}>
+          Retry
+        </Button>
+      }
+      sx={{ m: 1 }}
+    >
+      Some Project data could not be refreshed. The last loaded data remains available.
+    </Alert>
+  ) : null;
+
   const dialogs = (
     <>
       <PresetManagerDialog open={presetsOpen} engines={projectEngines} presets={presets} onClose={() => setPresetsOpen(false)} onSave={async (id, input, idempotencyKey) => {
@@ -510,8 +546,9 @@ export function ProjectShell({
   // and its title/engine chat-creation form must never become a second flow.
   if (isMobile) {
     return (
-      <Box sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
+      <Box sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: retainedResourceError ? "auto auto minmax(0, 1fr)" : "auto minmax(0, 1fr)" }}>
         {loading ? <LinearProgress /> : <Box />}
+        {retainedResourceNotice}
         <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "minmax(0, 1fr)" }}><WorkspaceErrorBoundary resetKey={routeToPath(route)} title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
         {dialogs}
       </Box>
@@ -519,7 +556,8 @@ export function ProjectShell({
   }
 
   return (
-    <Box sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "minmax(0, 1fr)" }}>
+    <Box sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: retainedResourceError ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
+      {retainedResourceNotice}
       <Box component="section" aria-label="Project workspace" sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "minmax(0, 1fr)", bgcolor: "background.default" }}><WorkspaceErrorBoundary resetKey={routeToPath(route)} title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
       {dialogs}
     </Box>

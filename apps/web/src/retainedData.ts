@@ -1,4 +1,5 @@
 export type RetainedDataState = "loading" | "error" | "ready";
+export type RetainedDataFailure = "initial" | "refresh" | undefined;
 
 export function retainedDataState(
   hasData: boolean,
@@ -6,6 +7,13 @@ export function retainedDataState(
 ): RetainedDataState {
   if (hasData) return "ready";
   return failed ? "error" : "loading";
+}
+
+export function retainedDataFailure(
+  hasData: boolean,
+  failed: boolean,
+): RetainedDataFailure {
+  return failed ? (hasData ? "refresh" : "initial") : undefined;
 }
 
 export async function loadRetainedData<T>(

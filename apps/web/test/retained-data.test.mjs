@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { loadRetainedData, retainedDataState } from "../src/retainedData.js";
+import {
+  loadRetainedData,
+  retainedDataFailure,
+  retainedDataState,
+} from "../src/retainedData.js";
 
 test("rejected pagination is caught while retained data remains authoritative", async () => {
   let error;
@@ -19,4 +23,10 @@ test("collection state never presents unresolved or failed data as empty", () =>
   assert.equal(retainedDataState(false, false), "loading");
   assert.equal(retainedDataState(false, true), "error");
   assert.equal(retainedDataState(true, true), "ready");
+});
+
+test("a refetch failure retains canonical data while an initial failure blocks", () => {
+  assert.equal(retainedDataFailure(false, true), "initial");
+  assert.equal(retainedDataFailure(true, true), "refresh");
+  assert.equal(retainedDataFailure(true, false), undefined);
 });

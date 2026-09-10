@@ -84,6 +84,7 @@ import {
 import { PrimaryHeaderActionsProvider } from "./components/PrimaryHeaderActions";
 import { useMutationNotification } from "./components/MutationNotifications";
 import { WorkspacePreferencesWriter } from "./workspacePreferencesWriter";
+import { retainedDataFailure } from "./retainedData";
 
 const PUSH_CLEANUP_RETRY_INITIAL_MS = 1_000;
 const PUSH_CLEANUP_RETRY_MAX_MS = 30_000;
@@ -764,11 +765,33 @@ export default function App({
                     colorMode={colorMode}
                     projectBrowserRequest={projectBrowserRequest}
                     loadError={
-                      enginesQuery.isError ||
-                      (!isProjectRoute(route) && projectsQuery.isError) ||
+                      retainedDataFailure(
+                        enginesQuery.data !== undefined,
+                        enginesQuery.isError,
+                      ) === "initial" ||
+                      (!isProjectRoute(route) && retainedDataFailure(
+                        projectsQuery.data !== undefined,
+                        projectsQuery.isError,
+                      ) === "initial") ||
                       ((route.kind === "profile" || route.kind === "settings") &&
-                        preferencesQuery.isError &&
-                        preferencesQuery.data === undefined)
+                        retainedDataFailure(
+                          preferencesQuery.data !== undefined,
+                          preferencesQuery.isError,
+                        ) === "initial")
+                    }
+                    refreshError={
+                      retainedDataFailure(
+                        enginesQuery.data !== undefined,
+                        enginesQuery.isError,
+                      ) === "refresh" ||
+                      retainedDataFailure(
+                        projectsQuery.data !== undefined,
+                        projectsQuery.isError,
+                      ) === "refresh" ||
+                      retainedDataFailure(
+                        preferencesQuery.data !== undefined,
+                        preferencesQuery.isError,
+                      ) === "refresh"
                     }
                     onRetryLoad={() => {
                       void projectsQuery.refetch();

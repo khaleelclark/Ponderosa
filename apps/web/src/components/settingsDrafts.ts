@@ -5,3 +5,10 @@ export function synchronizePristineDraft(
 ): string {
   return dirty ? current : canonical;
 }
+
+export function draftChangedSinceSubmission(
+  current: string,
+  submitted: string,
+): boolean {
+  return current !== submitted;
+}

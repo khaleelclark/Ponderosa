@@ -1811,6 +1811,19 @@ export function AllChatView({
             {notice}
           </Alert>
         ) : null}
+        {updateRuntimeEngine.isError ? (
+          <Alert
+            severity="error"
+            action={
+              <Button color="inherit" size="small" onClick={() => updateRuntimeEngine.reset()}>
+                Dismiss
+              </Button>
+            }
+            sx={{ mx: 1.5, mt: 1 }}
+          >
+            Provider selection was not saved. The last saved selection was restored; choose a provider to retry.
+          </Alert>
+        ) : null}
         {queuedMessages.notice ? (
           <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>
             {queuedMessages.notice}

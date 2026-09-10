@@ -109,8 +109,15 @@ export function workspaceResourceSortPatch(kind: WorkspaceResourceSortKind, sort
 
 export function projectOrderPreferenceKey(
   preferences: Pick<WorkspacePreferencesDto, "projectSort" | "projectOrder">,
+  projects: readonly { id: string; label: string }[] = [],
 ): string {
-  return JSON.stringify([preferences.projectSort, preferences.projectOrder]);
+  return JSON.stringify([
+    preferences.projectSort,
+    preferences.projectOrder,
+    preferences.projectSort === "alphabetical"
+      ? projects.map(project => [project.id, project.label])
+      : undefined,
+  ]);
 }
 
 export function synchronizeProjectRailOrder(
