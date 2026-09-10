@@ -232,7 +232,7 @@ export function useConversationMessagingController({
       setQueuedMessageNotice(undefined);
       setSpawnNotice("recovering" in agent
         ? "Agent creation is committed and recovery is finishing. It will appear when ready."
-        : `Created ${agent.title} and started its first Run.`);
+        : undefined);
     },
   });
 
