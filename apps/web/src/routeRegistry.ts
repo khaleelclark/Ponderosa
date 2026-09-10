@@ -258,6 +258,13 @@ export function routeClearsProjectSidebarContext(route: Route): boolean {
     Boolean(routeSynchronizedSidebarSection(route));
 }
 
+export function routeWaitsForWorkspacePreferences(
+  route: Route,
+  preferencesLoaded: boolean,
+): boolean {
+  return route.kind === "profile" && !preferencesLoaded;
+}
+
 export function isProjectRoute(route: Route): route is ProjectRoute {
   return entryFor(route).scope === "project";
 }

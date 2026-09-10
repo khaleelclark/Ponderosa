@@ -11,7 +11,11 @@ import { HomeView } from "./components/HomeView";
 import type { ProjectBrowserRequest } from "./components/ProjectBrowserContext";
 import { RecoverableLazyRoute } from "./components/RecoverableLazyRoute";
 import type { Route } from "./routing";
-import { assertNeverRoute, isProjectRoute } from "./routeRegistry";
+import {
+  assertNeverRoute,
+  isProjectRoute,
+  routeWaitsForWorkspacePreferences,
+} from "./routeRegistry";
 import type { ColorMode } from "./theme";
 
 type RemovableWorkspaceResourceRoute = Extract<
@@ -42,6 +46,7 @@ interface WorkspaceRouteOutletProps {
   notifications: WorkspaceNotificationDto[];
   notificationCounts?: Pick<WorkspaceNotificationPageDto, "openActionCount">;
   preferences: WorkspacePreferencesDto;
+  preferencesLoaded: boolean;
   colorMode: ColorMode;
   projectBrowserRequest?: ProjectBrowserRequest;
   loadError: boolean;
@@ -84,6 +89,7 @@ export function WorkspaceRouteOutlet({
   notifications,
   notificationCounts,
   preferences,
+  preferencesLoaded,
   colorMode,
   projectBrowserRequest,
   loadError,
@@ -126,6 +132,11 @@ export function WorkspaceRouteOutlet({
             connection and try again.
           </Alert>
         </Box>
+      ) : routeWaitsForWorkspacePreferences(route, preferencesLoaded) ? (
+        <Stack role="status" aria-live="polite" spacing={1} sx={{ p: 3 }}>
+          <LinearProgress />
+          <Typography color="text.secondary">Loading profile…</Typography>
+        </Stack>
       ) : route.kind === "create" ? (
         <RecoverableLazyRoute
           key={[

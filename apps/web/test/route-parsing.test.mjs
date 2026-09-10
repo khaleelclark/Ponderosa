@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fixedCreateConversationMatchesProject, nestedProjectRouteResources, routeToPath } from "../src/routeRegistry.js";
+import {
+  fixedCreateConversationMatchesProject,
+  nestedProjectRouteResources,
+  routeToPath,
+  routeWaitsForWorkspacePreferences,
+} from "../src/routeRegistry.js";
 import { parseRoute, parseRouteLocation } from "../src/routing.js";
 
 test("malformed encoded route segments fall back without throwing", () => {
@@ -62,4 +67,11 @@ test("a fixed create Chat must be live and owned by the selected Project", () =>
   assert.equal(fixedCreateConversationMatchesProject("project-b", "chat-b", { ...chat, archived: true }), false);
   assert.equal(fixedCreateConversationMatchesProject("project-b", "chat-b", { ...chat, deletedAt: "2026-01-01T00:00:00.000Z" }), false);
   assert.equal(fixedCreateConversationMatchesProject("project-b", "chat-b", undefined), false);
+});
+
+test("the Profile editor cannot mount before canonical preferences hydrate", () => {
+  const profile = { kind: "profile" };
+  assert.equal(routeWaitsForWorkspacePreferences(profile, false), true);
+  assert.equal(routeWaitsForWorkspacePreferences(profile, true), false);
+  assert.equal(routeWaitsForWorkspacePreferences({ kind: "home" }, false), false);
 });

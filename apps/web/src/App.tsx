@@ -760,15 +760,20 @@ export default function App({
                     notifications={presentedNotifications}
                     notificationCounts={notificationsQuery.data}
                     preferences={preferences}
+                    preferencesLoaded={preferencesQuery.data !== undefined}
                     colorMode={colorMode}
                     projectBrowserRequest={projectBrowserRequest}
                     loadError={
                       enginesQuery.isError ||
-                      (!isProjectRoute(route) && projectsQuery.isError)
+                      (!isProjectRoute(route) && projectsQuery.isError) ||
+                      (route.kind === "profile" &&
+                        preferencesQuery.isError &&
+                        preferencesQuery.data === undefined)
                     }
                     onRetryLoad={() => {
                       void projectsQuery.refetch();
                       void enginesQuery.refetch();
+                      void preferencesQuery.refetch();
                     }}
                     onNavigate={navigateWorkspace}
                     onPreferences={savePreferences}
