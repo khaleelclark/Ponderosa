@@ -1330,7 +1330,7 @@ export function registerDraftRoutes(
         if (!ownerId) {
           return reply.code(400).send({ error: "draft owner is required" });
         }
-        return await service.withMutationLock(request.params.id, ownerId, async () => {
+        const cleanupRequested = await service.withMutationLock(request.params.id, ownerId, async () => {
           if (
             !service.validId(request.params.id) ||
             !(await service.read(
@@ -1339,27 +1339,32 @@ export function registerDraftRoutes(
               request.params.attachmentId,
             ))
           ) {
-            return reply
+            reply
               .code(404)
               .send({ error: "draft attachment not found" });
+            return false;
           }
           if (service.attachmentReferenced(
             request.params.id,
             ownerId,
             request.params.attachmentId,
           )) {
-            return reply.code(409).send({
+            reply.code(409).send({
               error: "draft attachment is still referenced",
             });
+            return false;
           }
           service.enqueueAttachmentCleanup(
             request.params.id,
             ownerId,
             request.params.attachmentId,
           );
-          await service.reconcileAttachmentCleanup();
-          return reply.code(204).send();
+          return true;
         });
+        if (!cleanupRequested) return reply;
+        // Cleanup reacquires the draft lock, so run it after releasing that lock.
+        await service.reconcileAttachmentCleanup();
+        return reply.code(204).send();
       } finally {
         releaseMutation();
       }

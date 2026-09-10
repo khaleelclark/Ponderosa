@@ -692,8 +692,8 @@ function CreateFormContent({
   );
   return (
     <Box
-      onChangeCapture={onDirty}
-      onInputCapture={onDirty}
+      onChange={onDirty}
+      onInput={onDirty}
       sx={{ minWidth: 0 }}
     >
       {content}
