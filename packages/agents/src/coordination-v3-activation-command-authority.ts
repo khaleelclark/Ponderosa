@@ -464,46 +464,83 @@ export class CoordinationV3ActivationCommandAuthority {
         input.projectId, "user:local-operator", "edit_activation", input.idempotencyKey, hash,
       );
       if (replay) return { ...replay, replayed: true };
-      const row = this.sqlite.prepare(`
-        SELECT payload_json FROM agent_activations
-        WHERE id = ? AND project_id = ? AND state IN ('pending', 'retry_pending')
-      `).get(input.activationId, input.projectId) as { payload_json: string } | undefined;
+      const sources = this.sqlite.prepare(`
+        SELECT source.source_id
+        FROM agent_activations activation
+        JOIN activation_sources source
+          ON source.activation_id = activation.id
+          AND source.source_kind = 'communication'
+        WHERE activation.id = ? AND activation.project_id = ?
+        ORDER BY source.source_id
+      `).all(input.activationId, input.projectId) as Array<{ source_id: string }>;
       let edited = false;
-      if (row) {
-        const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
-        const dispatch = payload.dispatch && typeof payload.dispatch === "object"
-          ? payload.dispatch as Record<string, unknown>
-          : {};
-        const communication = payload.communication && typeof payload.communication === "object"
-          ? payload.communication as Record<string, unknown>
-          : undefined;
-        const { document: _oldDocument, ...communicationWithoutDocument } = communication ?? {};
-        const {
-          artifactId: _oldArtifactId,
-          resultRef: _oldResultRef,
-          ...dispatchWithoutArtifact
-        } = dispatch;
-        const nextPayload = {
-          ...payload,
-          ...(communication ? {
-            communication: {
-              ...communicationWithoutDocument,
-              text: input.text,
-              ...(input.document ? { document: input.document } : {}),
-            },
-          } : {}),
-          dispatch: {
-            ...dispatchWithoutArtifact,
-            text: input.text,
-            ...(input.artifactId ? { artifactId: input.artifactId } : {}),
-            ...(input.resultRef ? { resultRef: input.resultRef } : {}),
-          },
-        };
-        edited = this.sqlite.prepare(`
-          UPDATE agent_activations SET payload_json = ?, updated_at = ?
-          WHERE id = ? AND project_id = ? AND state IN ('pending', 'retry_pending')
-        `).run(stableJson(nextPayload), now, input.activationId, input.projectId).changes === 1;
-        if (edited) {
+      if (sources.length === 1) {
+        const siblings = this.sqlite.prepare(`
+          SELECT activation.id, activation.state, activation.payload_json
+          FROM activation_sources source
+          JOIN agent_activations activation ON activation.id = source.activation_id
+          WHERE source.source_kind = 'communication' AND source.source_id = ?
+            AND activation.project_id = ?
+          ORDER BY activation.id
+        `).all(sources[0]!.source_id, input.projectId) as Array<{
+          id: string;
+          state: string;
+          payload_json: string;
+        }>;
+        const targetIncluded = siblings.some((sibling) => sibling.id === input.activationId);
+        const allPending = siblings.length > 0 && siblings.every((sibling) =>
+          sibling.state === "pending" || sibling.state === "retry_pending");
+        const updates = targetIncluded && allPending
+          ? siblings.map((sibling) => {
+            const payload = JSON.parse(sibling.payload_json) as Record<string, unknown>;
+            const dispatch = payload.dispatch && typeof payload.dispatch === "object"
+              ? payload.dispatch as Record<string, unknown>
+              : {};
+            const communication = payload.communication && typeof payload.communication === "object"
+              ? payload.communication as Record<string, unknown>
+              : undefined;
+            if (communication?.eventId !== sources[0]!.source_id) return undefined;
+            const { document: _oldDocument, ...communicationWithoutDocument } = communication;
+            const {
+              artifactId: _oldArtifactId,
+              resultRef: _oldResultRef,
+              ...dispatchWithoutArtifact
+            } = dispatch;
+            return {
+              id: sibling.id,
+              payload: stableJson({
+                ...payload,
+                communication: {
+                  ...communicationWithoutDocument,
+                  text: input.text,
+                  ...(input.document ? { document: input.document } : {}),
+                },
+                dispatch: {
+                  ...dispatchWithoutArtifact,
+                  text: input.text,
+                  ...(input.artifactId ? { artifactId: input.artifactId } : {}),
+                  ...(input.resultRef ? { resultRef: input.resultRef } : {}),
+                },
+              }),
+            };
+          })
+          : [];
+        if (updates.length === siblings.length && updates.every((update) => update !== undefined)) {
+          const updateActivation = this.sqlite.prepare(`
+            UPDATE agent_activations SET payload_json = ?, updated_at = ?
+            WHERE id = ? AND project_id = ? AND state IN ('pending', 'retry_pending')
+          `);
+          for (const update of updates) {
+            if (updateActivation.run(
+              update!.payload,
+              now,
+              update!.id,
+              input.projectId,
+            ).changes !== 1) {
+              throw new Error("queued-message sibling changed during edit");
+            }
+          }
+          edited = true;
           if (resolvedArtifact) {
             this.sqlite.prepare(`
               INSERT INTO runtime_artifacts (
@@ -530,7 +567,7 @@ export class CoordinationV3ActivationCommandAuthority {
         input.projectId, "user:local-operator", "edit_activation", input.idempotencyKey, hash, result, now,
       );
       return { ...result, replayed: false };
-    })();
+    }).immediate();
   }
 
   replayEditPendingActivationText(input: {
