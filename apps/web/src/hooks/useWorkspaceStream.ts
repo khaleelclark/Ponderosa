@@ -32,6 +32,7 @@ import {
 } from "../phaseEvidenceReconciliation";
 import { hasLiveAgentStream } from "./agentStreamRegistry";
 import { reconcileCursor } from "./streamCursor";
+import { phaseQueryMatchesProject } from "../workspaceDirectoryScope";
 
 const CURSOR_KEY = "ponderosa.workspace.cursor.v2";
 const INSTANCE_KEY = "ponderosa.workspace.instance.v1";
@@ -343,6 +344,36 @@ function createAgentWorkInvalidator(
   };
 }
 
+/** Batch collection mutations using the same fixed-window policy as Agent
+ * state. Unscoped directory queries remain global; sibling Projects stay warm. */
+function createDirectoryInvalidator(queryClient: QueryClient, delayMs = 250) {
+  const pending = new Map<"project" | "conversation" | "agent" | "trigger", Set<string | undefined>>();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const dispose = () => {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+    pending.clear();
+  };
+  return {
+    schedule(kind: "project" | "conversation" | "agent" | "trigger", projectId?: string) {
+      const scopes = pending.get(kind) ?? new Set<string | undefined>();
+      scopes.add(projectId);
+      pending.set(kind, scopes);
+      timer ??= setTimeout(() => {
+        for (const [kind, scopes] of pending) {
+          void queryClient.invalidateQueries({
+            queryKey: queryKeys.workspaceDirectory.kind(kind),
+            predicate: query => [...scopes].some(projectId => phaseQueryMatchesProject(query.queryKey, projectId)),
+            refetchType: browserPageIsVisible() ? "active" : "none",
+          });
+        }
+        dispose();
+      }, delayMs);
+    },
+    dispose,
+  };
+}
+
 /** Coalesces workspace fallbacks for Agent-detail surfaces that do not mount
  * their own Agent stream, such as Project review. */
 function createAgentDetailInvalidator(
@@ -390,11 +421,8 @@ function createAgentStateInvalidator(
     timer = undefined;
     for (const projectId of projectIds) {
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(projectId) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.health(projectId) });
-      invalidateActiveQueries(
-        queryClient,
-        queryKeys.agents.organizationProject(projectId),
-      );
+      // Phase-bearing health, organization, and directory queries are refreshed
+      // once by the post-event boundary reconciler, not by a competing timer.
     }
     projectIds.clear();
   };
@@ -504,6 +532,7 @@ export function useWorkspaceStream(
     const agentWorkInvalidator = createAgentWorkInvalidator(queryClient);
     const agentDetailInvalidator = createAgentDetailInvalidator(queryClient);
     const agentStateInvalidator = createAgentStateInvalidator(queryClient);
+    const directoryInvalidator = createDirectoryInvalidator(queryClient);
     const workspaceRecencyInvalidator =
       createWorkspaceRecencyInvalidator(queryClient);
     const collaborationChatInvalidator = createCollaborationChatInvalidator(queryClient);
@@ -530,11 +559,18 @@ export function useWorkspaceStream(
     ];
     const activePhaseQueries = () => phaseQueries().filter(query => query.isActive());
     let observedActivePhaseQueries = new Set(activePhaseQueries());
-    const markPhaseEvidenceStale = () => {
+    const markPhaseEvidenceStale = (projectId?: string) => {
       phaseReconcileGeneration += 1;
-      phaseQueryBoundaries = capturePhaseQueryBoundaries(activePhaseQueries());
-      if (phaseReconcileTimer) clearTimeout(phaseReconcileTimer);
-      phaseReconcileTimer = undefined;
+      const matches = (query: Query) => phaseQueryMatchesProject(query.queryKey, projectId);
+      // Keep unrelated pending boundaries until they reconcile; later events
+      // replace only affected boundaries, never certify older in-flight data.
+      phaseQueryBoundaries = new Map([
+        ...phaseQueryBoundaries,
+        ...capturePhaseQueryBoundaries(activePhaseQueries().filter(matches)),
+      ]);
+      for (const query of phaseQueries().filter(matches)) {
+        void queryClient.invalidateQueries({ queryKey: query.queryKey, exact: true, refetchType: "none" });
+      }
       setConnection(current => current.phaseEvidenceFresh
         ? { ...current, phaseEvidenceFresh: false }
         : current);
@@ -546,14 +582,14 @@ export function useWorkspaceStream(
         || !connectedOnce
         || (phaseCatchUpCursor !== undefined && cursor.current < phaseCatchUpCursor)
       ) return;
-      if (phaseReconcileTimer) clearTimeout(phaseReconcileTimer);
-      const generation = phaseReconcileGeneration;
-      const boundaries = phaseQueryBoundaries;
+      if (phaseReconcileTimer) return;
       phaseReconcileTimer = setTimeout(() => {
         phaseReconcileTimer = undefined;
+        const generation = phaseReconcileGeneration;
+        const boundaries = phaseQueryBoundaries;
         void reconcilePhaseQueriesAfterBoundary(
           queryClient,
-          activePhaseQueries(),
+          activePhaseQueries().filter(query => boundaries.has(query)),
           boundaries,
           () => !stopped
             && !disconnected
@@ -569,6 +605,7 @@ export function useWorkspaceStream(
               schedulePhaseReconciliation(1_000);
               return;
             }
+            phaseQueryBoundaries = new Map();
             setConnection(current => ({
               ...current,
               phaseEvidenceFresh: true,
@@ -606,6 +643,7 @@ export function useWorkspaceStream(
       schedulePhaseReconciliation();
     });
     const invalidateAll = () => {
+      directoryInvalidator.dispose();
       agentWorkInvalidator.dispose();
       agentDetailInvalidator.dispose();
       agentStateInvalidator.dispose();
@@ -646,9 +684,10 @@ export function useWorkspaceStream(
       const event = envelope.event;
       const changesPhaseEvidence = workspaceAgentEventChangesPhase(event)
         || event.type === "coordination_changed"
-        || event.type === "notification_changed";
+        || (event.type === "notification_changed" && Boolean(event.decisionId));
       if (reconciliation.gap || envelope.replayed || changesPhaseEvidence) {
-        markPhaseEvidenceStale();
+        markPhaseEvidenceStale(reconciliation.gap || envelope.replayed
+          ? undefined : "projectId" in event ? event.projectId : undefined);
       }
       const deletedProjectId = reconcileDeletedProjectEvent(
         envelope,
@@ -700,21 +739,18 @@ export function useWorkspaceStream(
       }
       if (event.type === "preferences_updated") {
         for (const kind of preferenceDirectoryKinds) {
-          void queryClient.invalidateQueries({
-            queryKey: queryKeys.workspaceDirectory.kind(kind),
-          });
+          directoryInvalidator.schedule(kind);
         }
       } else if (event.type === "project_changed") {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("project") });
+        directoryInvalidator.schedule("project", event.projectId);
       } else if (event.type === "conversation_changed") {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("conversation") });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("project") });
+        directoryInvalidator.schedule("conversation", event.projectId);
+        directoryInvalidator.schedule("project", event.projectId);
       } else if (event.type === "trigger_changed") {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("trigger") });
+        directoryInvalidator.schedule("trigger", event.projectId);
       } else if (workspaceAgentEventChangesPhase(event)) {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("agent") });
         if (event.category === "lifecycle") {
-          void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("project") });
+          directoryInvalidator.schedule("project", event.projectId);
         }
       }
       if (event.type === "preferences_updated") return;
@@ -768,7 +804,6 @@ export function useWorkspaceStream(
       }
       else if (event.type === "coordination_changed") {
         agentStateInvalidator.schedule(event.projectId);
-        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("agent") });
         agentWorkInvalidator.schedule(event.projectId);
         collaborationChatInvalidator.schedule(event.conversationIds);
         for (const conversationId of event.conversationIds ?? []) {
@@ -814,13 +849,10 @@ export function useWorkspaceStream(
       }
       else if (event.type === "notification_changed") {
         void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
-        invalidateActiveQueries(queryClient, queryKeys.agents.healthAll);
-        invalidateActiveQueries(queryClient, queryKeys.agents.organizationAll);
-        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("agent") });
         if (event.conversationId) {
           decisionConversationInvalidator.schedule(event.conversationId);
         }
-        agentWorkInvalidator.schedule();
+        if (event.decisionId) agentWorkInvalidator.schedule(event.projectId);
       }
       if (changesPhaseEvidence) schedulePhaseReconciliation();
     };
@@ -930,6 +962,7 @@ export function useWorkspaceStream(
       if (replayReconcileTimer) clearTimeout(replayReconcileTimer);
       if (phaseReconcileTimer) clearTimeout(phaseReconcileTimer);
       unsubscribePhaseQueryCache();
+      directoryInvalidator.dispose();
       agentWorkInvalidator.dispose();
       agentDetailInvalidator.dispose();
       agentStateInvalidator.dispose();

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { phaseQueryMatchesProject } from "../src/workspaceDirectoryScope.js";
 import test from "node:test";
 import {
   projectScopedWorkspaceDirectoryItems,
@@ -17,6 +18,17 @@ const key = (kind, search, projectId, sort = "last_used", active) =>
     active,
     undefined,
   );
+
+test("phase refresh includes global queries but excludes unrelated Projects", () => {
+  assert.equal(phaseQueryMatchesProject(key("agent", "", "a"), "a"), true);
+  assert.equal(phaseQueryMatchesProject(key("agent", "", "b"), "a"), false);
+  assert.equal(phaseQueryMatchesProject(key("agent", "", undefined), "a"), true);
+  assert.equal(phaseQueryMatchesProject(["agent-health", "b"], "a"), false);
+  assert.equal(phaseQueryMatchesProject(["agent-organization", "a"], "a"), true);
+  assert.equal(phaseQueryMatchesProject(key("agent", "", "b")), true);
+  const summary=[...key("agent", "", "a")]; summary[10]="summary";
+  assert.equal(sameWorkspaceDirectoryScope(summary,key("agent", "", "a")),false);
+});
 
 test("directory placeholders never cross Project ownership", () => {
   for (const kind of ["conversation", "agent", "trigger"]) {

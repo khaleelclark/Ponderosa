@@ -36,6 +36,7 @@ export const queryKeys = {
       active: boolean | undefined,
       recentOutcomes: boolean | undefined,
       onlyEnabled: boolean | undefined,
+      summary?: boolean,
     ) => [
       "workspace-directory",
       kind,
@@ -47,6 +48,7 @@ export const queryKeys = {
       active ? "active" : "",
       recentOutcomes ? "outcomes" : "",
       onlyEnabled ? "enabled" : "",
+      summary ? "summary" : "",
     ] as const,
   },
   workspacePreferences: {

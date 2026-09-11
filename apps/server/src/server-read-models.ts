@@ -588,7 +588,7 @@ export function createServerReadModels(context: ReadModelContext) {
 
   const agentMessages = (agentId: string) => store.getProjectedAgentMessages(agentId);
 
-  function agentHealth(scope: AgentHealthProjectionDto["scope"], agents: AgentDto[]): AgentHealthProjectionDto {
+  function agentHealth(scope: AgentHealthProjectionDto["scope"], agents: AgentDto[], options?: { includeRunHistory?: boolean }): AgentHealthProjectionDto {
     const now = Date.now();
     for (const [agentId, run] of activeRuns) {
       if (run.ownershipState !== "running" || !run.lastEventReceivedAt) continue;
@@ -613,7 +613,7 @@ export function createServerReadModels(context: ReadModelContext) {
     );
     const preparingRuns = new Map(agents.flatMap((agent) => {
       if (ownership.has(agent.id)) return [];
-      const run = coordinationV3.agentSnapshot(agent.id).activeRun;
+      const run = coordinationV3.activeAgentRun(agent.id);
       return run ? [[agent.id, {
         runId: run.id,
         status: run.status,
@@ -641,7 +641,7 @@ export function createServerReadModels(context: ReadModelContext) {
       waitingPhase: (agentId) =>
         coordinationV3.activeWaitDependency(agentId, scope),
       latestEvent: (agentId) => store.latestHealthObservation(agentId),
-      runs: (agentId) => store.getRuns(agentId),
+      runs: options?.includeRunHistory === false ? undefined : (agentId) => store.getRuns(agentId),
     });
     return {
       ...projection,

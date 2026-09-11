@@ -1,0 +1,8 @@
+{
+  "passed": [
+    "Agent search filters visible rows",
+    "Real Decision response updates active summary through live SSE; unrelated client does not refetch",
+    "Project switching completes with scoped sidebar and composer",
+    "Inactive Agent sidebar requests contain summaries only; displayed Agent count remains 12"
+  ]
+}

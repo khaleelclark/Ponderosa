@@ -123,7 +123,7 @@ export interface WorkspaceDirectoryPageDto<
   items: T[];
   /** Total matching resources, including starred resources. */
   total: number;
-  /** Workspace-wide active count, present for the Agent directory. */
+  /** Workspace-wide active count, present for health-filtered Agent views. */
   activeCount?: number;
   /** Workspace-wide enabled count, present for the Automation directory. */
   enabledCount?: number;

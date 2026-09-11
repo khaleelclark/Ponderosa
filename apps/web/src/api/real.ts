@@ -480,6 +480,7 @@ export const realApi = {
       active?: boolean;
       outcomes?: boolean;
       enabled?: boolean;
+      summary?: boolean;
     } = {},
   ): Promise<WorkspaceDirectoryPageDto<T>> {
     const path = `/api/workspace/directory/${encodeURIComponent(kind)}${toQuery({
@@ -492,6 +493,7 @@ export const realApi = {
         sort: options.sort,
         active: options.active ? "true" : undefined,
         outcomes: options.outcomes ? "true" : undefined,
+        summary: options.summary ? "true" : undefined,
         enabled: options.enabled ? "true" : undefined,
       })}`;
     return requestJson<WorkspaceDirectoryPageDto<T>>(path).catch(async (error) => {

@@ -181,24 +181,28 @@ export function WorkspaceSidebar({
       search: directorySearch,
       projectId: drawerProjectId,
       enabled: projectContext,
+      summary: !showingChats,
     });
   const agentDirectoryQuery =
     useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
       search: showingAgents ? directorySearch : "",
       projectId: drawerProjectId,
       enabled: projectContext,
+      summary: !showingAgents,
     });
   const activeProjectAgentQuery =
     useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
       projectId: drawerProjectId,
       active: true,
       enabled: projectContext,
+      summary: true,
     });
   const triggerDirectoryQuery =
     useWorkspaceDirectory<WorkspaceTriggerDirectoryItemDto>("trigger", {
       search: directorySearch,
       projectId: drawerProjectId,
       enabled: projectContext,
+      summary: !showingTriggers,
     });
   const projectDirectory = workspaceDirectoryItems(
     projectDirectoryQuery.data?.pages,
