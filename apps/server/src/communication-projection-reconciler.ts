@@ -1,7 +1,7 @@
 import {
   deriveCommunicationBehavior,
   type CommunicationEvent,
-  type ImageAttachmentDto,
+  type AssetDto,
 } from "@ponderosa/core";
 import type {
   AgentStore,
@@ -28,7 +28,7 @@ interface CommunicationProjectionReconcilerContext {
     agentId: string,
     event: CommunicationEvent,
     renderedText: string,
-    attachments?: ImageAttachmentDto[],
+    attachments?: AssetDto[],
   ): void;
 }
 
@@ -60,9 +60,9 @@ function runtimeProjectionTargets(
 }
 
 function mergeAttachments(
-  ...groups: Array<readonly ImageAttachmentDto[] | undefined>
-): ImageAttachmentDto[] {
-  const attachments = new Map<string, ImageAttachmentDto>();
+  ...groups: Array<readonly AssetDto[] | undefined>
+): AssetDto[] {
+  const attachments = new Map<string, AssetDto>();
   for (const group of groups) {
     for (const attachment of group ?? []) attachments.set(attachment.id, attachment);
   }
@@ -251,11 +251,11 @@ export function createCommunicationProjectionReconciler(
         }
       }
 
-      const attachmentsByAgent = new Map<string, ImageAttachmentDto[]>();
+      const attachmentsByAgent = new Map<string, AssetDto[]>();
       for (const { agentId, rawAttachments } of rawRecipientSets) {
         if (attachmentsByAgent.has(agentId) || new Set(rawAttachments.map((raw) =>
           raw && typeof raw === "object" ? (raw as Record<string, unknown>).id : undefined)).size !== rawAttachments.length) continue;
-        const recovered: ImageAttachmentDto[] = [];
+        const recovered: AssetDto[] = [];
         for (const raw of rawAttachments) {
           if (!raw || typeof raw !== "object") continue;
           const expected = raw as Record<string, unknown>;

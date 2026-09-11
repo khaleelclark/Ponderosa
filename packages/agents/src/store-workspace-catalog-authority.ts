@@ -307,10 +307,9 @@ export class AgentWorkspaceCatalogAuthority {
         this.setHistoryConversationVisibility(row.projectId, id, !next.archived);
       }
     });
-    const persisted = readJson<ConversationJson & { providerPermissionMode?: unknown }>(
+    const json = readJson<ConversationJson>(
       conversationJsonPath(this.dataDir, row.projectId, id),
     );
-    const { providerPermissionMode: _legacyProviderPermissionMode, ...json } = persisted;
     writeJson(conversationJsonPath(this.dataDir, row.projectId, id), {
       ...json,
       ...next,

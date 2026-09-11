@@ -1,10 +1,8 @@
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
-import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
 import PersonAddAltOutlinedIcon from "@mui/icons-material/PersonAddAltOutlined";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
 import {
   Button,
-  Chip,
   IconButton,
   Stack,
   Tooltip,
@@ -33,46 +31,6 @@ export function ComposerDestinationBar({
       {destinationError}
     </Typography>
   ) : null;
-}
-
-export function ComposerTargetDestinationAction({
-  broadcast,
-  handles,
-  onClear,
-}: {
-  broadcast: boolean;
-  handles: string[];
-  onClear(): void;
-}): JSX.Element | null {
-  const labels = [
-    ...(broadcast ? ["#broadcast"] : []),
-    ...handles.map(handle => `#${handle}`),
-  ];
-  if (labels.length === 0) return null;
-  const destinationLabel = labels.length > 1
-    ? `${labels[0]} +${labels.length - 1}`
-    : labels[0]!;
-  return (
-    <Chip
-      size="small"
-      color={broadcast ? "info" : "primary"}
-      icon={broadcast ? <CampaignOutlinedIcon /> : undefined}
-      label={destinationLabel}
-      title={labels.join(" ")}
-      aria-label={`Destinations: ${labels.join(", ")}`}
-      onDelete={onClear}
-      sx={{
-        maxWidth: { xs: 124, sm: 240 },
-        height: 34,
-        fontWeight: 700,
-        "& .MuiChip-label": {
-          minWidth: 0,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-        },
-      }}
-    />
-  );
 }
 
 interface ComposerProjectDestinationActionProps {

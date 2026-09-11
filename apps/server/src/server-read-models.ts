@@ -227,18 +227,15 @@ export function createServerReadModels(context: ReadModelContext) {
     };
     let combined: CombinedCursor | undefined;
     if (input.cursor) {
-      try {
-        const parsed = JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8")) as Partial<CombinedCursor>;
-        if (parsed.v === 1) combined = parsed as CombinedCursor;
-      } catch {
-        // A pre-composite cursor remains a valid message cursor.
-      }
+      const parsed = JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8")) as Partial<CombinedCursor>;
+      if (parsed.v !== 1) throw new Error("invalid conversation cursor");
+      combined = parsed as CombinedCursor;
     }
     const page = combined?.messagesDone
       ? { messages: [], hasMore: false as const }
       : store.getProjectedConversationMessagePage(conversationId, "main", {
         limit,
-        cursor: combined ? combined.messages : input.cursor,
+        cursor: combined?.messages,
         focusId: input.focusId,
       });
     const decisionPage = combined?.decisionsDone
@@ -495,7 +492,7 @@ export function createServerReadModels(context: ReadModelContext) {
   ): AgentDetailDto | undefined {
     const limit = input.limit ?? 100;
     // Chat is read through the indexed canonical projection below; do not also
-    // hydrate the legacy Agent message table only to replace it.
+    // hydrate the superseded Agent message table only to replace it.
     const detail = store.getAgentDetail(agentId, limit, false);
     if (!detail) return detail;
     const messagePage = store.getProjectedAgentMessagePage(agentId, { limit, cursor: input.cursor, focusId: input.focusId });

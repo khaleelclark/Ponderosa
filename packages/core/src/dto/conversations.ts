@@ -9,7 +9,7 @@ import type {
   CoordinationRequestUpdateKind,
 } from "../coordination-v3.js";
 import type { AgentDto } from "./agents.js";
-import type { ArtifactKind, CommunicationAttachmentDto, ImageAttachmentDto } from "./artifacts.js";
+import type { ArtifactKind, AssetDto, CommunicationAttachmentDto } from "./artifacts.js";
 import type { HistoryWindowDto, ProviderBlockedWorkDto } from "./common.js";
 import type { ProjectDto } from "./projects.js";
 import type { DecisionDto } from "./workspace.js";
@@ -412,9 +412,7 @@ export interface ConversationDetailDto {
 export interface CreateConversationMessageRequest {
   role?: "user" | "assistant" | "system";
   text: string;
-  attachments?: ImageAttachmentDto[];
-  /** Stable Agent IDs to activate for this organizational Broadcast. */
-  recipientAgentIds?: string[];
+  attachments?: AssetDto[];
   /** Immutable #handle-to-Agent bindings that select Broadcast wake recipients. */
   recipientAgentMentions?: AgentMentionBindingDto[];
   /** Target-owned asset copies for safe delivery to each activated Agent. */
@@ -425,7 +423,7 @@ export interface CreateConversationMessageRequest {
   speed?: string;
   /** Active recipients steer by default; queue preserves an explicit turn boundary. */
   activeRunDelivery?: "steer" | "queue";
-  /** Stable across transport retries; absent is accepted for legacy clients. */
+  /** Stable across transport retries. */
   idempotencyKey?: string;
 }
 

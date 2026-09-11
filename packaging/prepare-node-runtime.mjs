@@ -26,8 +26,8 @@ async function download(url) {
   return Buffer.from(await response.arrayBuffer());
 }
 
-const version = option("version", process.env.PONDEROSA_NODE_VERSION ?? "22.22.1").replace(/^v/u, "");
-if (!/^22\.\d+\.\d+$/u.test(version)) throw new Error(`Ponderosa requires an exact Node 22 version; received ${version}.`);
+const version = option("version", process.env.PONDEROSA_NODE_VERSION ?? "24.16.0").replace(/^v/u, "");
+if (!/^24\.\d+\.\d+$/u.test(version)) throw new Error(`Ponderosa requires an exact Node 24 version; received ${version}.`);
 const platform = option("platform", process.platform);
 const arch = option("arch", process.arch);
 const supported = new Set(["linux-x64", "darwin-arm64", "win32-x64"]);

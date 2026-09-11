@@ -579,16 +579,15 @@ export function registerAgentMessageRunRoute(
       const sharedCommunication = communication?.intent === "broadcast" ? communication : undefined;
       const sharedTaskTurn = Boolean(sharedCommunication && shareWithOrganization);
       const directUserTaskTurn = Boolean(
-        communication?.schemaVersion === 2 &&
-        communication.intent === "user_dm" &&
+        communication?.intent === "user_dm" &&
         communication.sender.kind === "user" &&
         (communication.audience.kind === "user_agent"
           ? communication.audience.agentId === agent.id
-          : communication.audience.agentIds.includes(agent.id)),
+          : communication.audience.kind === "user_agents" && communication.audience.agentIds.includes(agent.id)),
       );
       let sourceMasterMessage: ConversationMessageDto | undefined;
       if (communicationEventId) {
-        if (communication?.schemaVersion === 2 && communication.intent === "user_dm") {
+        if (communication?.intent === "user_dm") {
           store.appendCommunicationProjection(project.id, {
             eventId: communicationEventId,
             surface: "user_inbox",

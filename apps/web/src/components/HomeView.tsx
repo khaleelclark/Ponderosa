@@ -8,7 +8,6 @@ import {
   Box,
   Button,
   ButtonBase,
-  Chip,
   Paper,
   Stack,
   Typography,
@@ -32,6 +31,11 @@ import {
 import type { Route } from "../routing";
 import { CompactWorkspaceHeader } from "./WorkspaceFrame";
 import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
+import {
+  SemanticStatus,
+  semanticAgentStatus,
+  type SemanticStatusKind,
+} from "./SemanticStatus";
 
 const ACTIVE_STATUSES = new Set([
   "running",
@@ -103,7 +107,18 @@ function SummaryCard({
   return (
     <Paper variant="outlined" sx={{ minWidth: 0, overflow: "hidden" }}>
       {onClick ? (
-        <ButtonBase onClick={onClick} sx={{ display: "block", width: "100%" }}>
+        <ButtonBase
+          onClick={onClick}
+          sx={{
+            display: "block",
+            width: "100%",
+            transition: theme => theme.transitions.create("background-color", {
+              duration: theme.transitions.duration.shortest,
+            }),
+            "&:hover": { bgcolor: "action.hover" },
+            "&.Mui-focusVisible": { bgcolor: "action.selected" },
+          }}
+        >
           {content}
         </ButtonBase>
       ) : content}
@@ -116,39 +131,75 @@ function ItemCard({
   title,
   detail,
   status,
+  statusLabel,
   statusAccessibleLabel,
   statusDetail,
+  multilineDetail = false,
   onClick,
 }: {
   icon: JSX.Element;
   title: string;
   detail: string;
-  status?: string;
+  status?: SemanticStatusKind;
+  statusLabel?: string;
   statusAccessibleLabel?: string;
   statusDetail?: string;
+  multilineDetail?: boolean;
   onClick(): void;
 }): JSX.Element {
   return (
-    <Paper variant="outlined" sx={{ minWidth: 0, overflow: "hidden" }}>
+    <Paper
+      variant="outlined"
+      sx={{ minWidth: 0, height: "100%", overflow: "hidden" }}
+    >
       <ButtonBase
         onClick={onClick}
-        sx={{ width: "100%", p: 1.35, gap: 1.25, justifyContent: "flex-start", textAlign: "left" }}
+        sx={{
+          width: "100%",
+          minHeight: multilineDetail ? 78 : undefined,
+          height: "100%",
+          p: 1.35,
+          gap: 1.25,
+          justifyContent: "flex-start",
+          textAlign: "left",
+          overflow: "hidden",
+          transition: theme => theme.transitions.create("background-color", {
+            duration: theme.transitions.duration.shortest,
+          }),
+          "&:hover": { bgcolor: "action.hover" },
+          "&.Mui-focusVisible": { bgcolor: "action.selected" },
+        }}
       >
         <Box sx={{ width: 36, height: 36, borderRadius: 1.25, bgcolor: "action.selected", color: "text.secondary", display: "grid", placeItems: "center", flexShrink: 0 }}>
           {icon}
         </Box>
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Typography fontWeight={750} noWrap>{title}</Typography>
-          <Typography variant="caption" color="text.secondary" noWrap>{detail}</Typography>
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            noWrap={!multilineDetail}
+            sx={multilineDetail ? {
+              display: "-webkit-box",
+              minHeight: "2.7em",
+              overflow: "hidden",
+              overflowWrap: "anywhere",
+              WebkitBoxOrient: "vertical",
+              WebkitLineClamp: 2,
+              lineHeight: 1.35,
+            } : undefined}
+          >
+            {detail}
+          </Typography>
         </Box>
         {status ? (
-          <Chip
-            size="small"
-            variant="outlined"
-            label={status}
-            aria-label={statusAccessibleLabel}
-            title={statusDetail}
-          />
+          <Box sx={{ flexShrink: 0 }}>
+            <SemanticStatus
+              status={status}
+              label={statusLabel}
+              detail={statusDetail ?? statusAccessibleLabel}
+            />
+          </Box>
         ) : null}
       </ButtonBase>
     </Paper>
@@ -275,7 +326,9 @@ export function HomeView({
                       icon={<WarningAmberOutlinedIcon color="warning" />}
                       title={item.title}
                       detail={item.body}
-                      status={item.severity === "urgent" ? "Urgent" : "Review"}
+                      status="needs_attention"
+                      statusLabel={item.severity === "urgent" ? "Urgent" : "Review"}
+                      multilineDetail
                       onClick={() => route ? onNavigate(route) : onOpenInbox()}
                     />
                   );
@@ -310,7 +363,8 @@ export function HomeView({
                       icon={<SmartToyOutlinedIcon />}
                       title={item.agent.title}
                       detail={item.project.label}
-                      status={presentation.label}
+                      status={semanticAgentStatus(item.health.status)}
+                      statusLabel={presentation.label}
                       statusAccessibleLabel={presentation.accessibleLabel}
                       statusDetail={presentation.detail}
                       onClick={() => onNavigate({ kind: "agent", projectId: item.project.id, agentId: item.agent.id })}
@@ -336,7 +390,7 @@ export function HomeView({
                     icon={<BoltOutlinedIcon />}
                     title={item.trigger.name}
                     detail={`${item.project.label} · ${item.targetAgent?.title ?? "Reassignment required"}`}
-                    status={item.trigger.enabled ? "Enabled" : "Disabled"}
+                    status={item.trigger.enabled ? "enabled" : "disabled"}
                     onClick={() => onNavigate({ kind: "automation", projectId: item.project.id, triggerId: item.trigger.id })}
                   />
                 ))}
@@ -355,7 +409,8 @@ export function HomeView({
                     icon={<CheckCircleOutlineIcon />}
                     title={item.agent.title}
                     detail={item.project.label}
-                    status={humanizeStatus(item.health.assignedWorkOutcome!.status)}
+                    status={semanticAgentStatus(item.health.assignedWorkOutcome!.status)}
+                    statusLabel={humanizeStatus(item.health.assignedWorkOutcome!.status)}
                     onClick={() => onNavigate({ kind: "agent", projectId: item.project.id, agentId: item.agent.id })}
                   />
                 ))}

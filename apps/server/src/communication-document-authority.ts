@@ -43,16 +43,16 @@ export function createCommunicationDocumentAuthority(
     const agent = store.getAgent(agentId);
     if (!agent || agent.projectId !== event.projectId || agent.archived) return false;
     if (event.intent === "broadcast") return event.conversationId === agent.conversationId;
-    if (event.schemaVersion === 2 && event.intent === "user_dm") {
+    if (event.intent === "user_dm") {
       return (event.audience.kind === "user_agent"
         ? event.audience.agentId === agentId
-        : event.audience.agentIds.includes(agentId)) ||
+        : event.audience.kind === "user_agents" && event.audience.agentIds.includes(agentId)) ||
         (event.sender.kind === "agent" && event.sender.agentId === agentId);
     }
     if (event.intent === "collaboration") {
       return event.audience.agentIds.includes(agentId) || (event.sender.kind === "agent" && event.sender.agentId === agentId);
     }
-    return event.sender.kind === "agent" && event.sender.agentId === agentId;
+    return false;
   }
 
   function agentCanReadRuntimeArtifact(
@@ -102,11 +102,7 @@ export function createCommunicationDocumentAuthority(
         ? document.authorUserId === event.sender.userId && !document.authorAgentId && !document.executionId
         : false;
     if (!validAuthor) return undefined;
-    if (document.content !== undefined) {
-      if (document.artifactId || document.byteLength !== Buffer.byteLength(document.content, "utf8")) return undefined;
-      return { event, document: { ...document, content: document.content } };
-    }
-    if (!document.artifactId || document.artifactId !== document.id) return undefined;
+    if (document.artifactId !== document.id) return undefined;
     const authoritative = assets.authoritativeRuntimeArtifactById(projectId, document.artifactId);
     if (!authoritative || authoritative.artifact.id !== document.id ||
         authoritative.artifact.title !== document.title ||

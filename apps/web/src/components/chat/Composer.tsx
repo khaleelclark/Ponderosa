@@ -41,7 +41,6 @@ import {
   ComposerDestinationBar,
   ComposerProjectDestinationAction,
   ComposerSendActions,
-  ComposerTargetDestinationAction,
 } from "./Composer.parts";
 import {
   ComposerAutocompleteMenu,
@@ -373,12 +372,16 @@ export function Composer({
     retryUpload: retryDraftUpload,
     uploadStates: draftUploadStates,
   } = draftAttachments;
+  const renderedDefaultDestination = destinationMode === "target-required"
+    ? defaultDestination
+    : activeDefaultDestination;
   const composedText = composerSubmissionText(text, pastedText);
   const submissionText =
-    destinationMode === "project-chat" && activeDefaultDestination
+    (destinationMode === "project-chat" || destinationMode === "target-required") &&
+    renderedDefaultDestination
       ? prependComposerDestination(
           composedText,
-          activeDefaultDestination.handle,
+          renderedDefaultDestination.handle,
         )
       : composedText;
   const routingMentionHandles = useMemo(
@@ -554,19 +557,6 @@ export function Composer({
   const clearRequiredRecipient = () => {
     const handle = targetRequiredHandles[0] ?? requiredRecipient?.handle;
     if (handle) update(current => removeHandle(current, handle));
-    requiredRecipient?.onClear();
-  };
-  const clearTargetDestinations = () => {
-    update(current => {
-      let next = current;
-      if (hasBroadcastDestination) {
-        next = removeHandle(next, "broadcast");
-      }
-      for (const handle of targetRequiredHandles) {
-        next = removeHandle(next, handle);
-      }
-      return next;
-    });
     requiredRecipient?.onClear();
   };
   const composerLocked = running && !allowSendWhileRunning;
@@ -758,7 +748,22 @@ export function Composer({
   useEffect(() => {
     if (conversationDraftId && !draftReady.current) return;
     const previous = appliedDefaultDestination.current;
-    if (!defaultDestination || destinationMode !== "project-chat") {
+    if (!defaultDestination) {
+      appliedDefaultDestination.current = undefined;
+      setActiveDefaultDestination(undefined);
+      return;
+    }
+    if (destinationMode === "target-required") {
+      appliedDefaultDestination.current = defaultDestination;
+      setActiveDefaultDestination(undefined);
+      const normalizedText = removeAllComposerDestinations(
+        textRef.current,
+        defaultDestination.handle,
+      );
+      if (normalizedText !== textRef.current) replaceText(normalizedText);
+      return;
+    }
+    if (destinationMode !== "project-chat") {
       appliedDefaultDestination.current = undefined;
       setActiveDefaultDestination(undefined);
       return;
@@ -1402,13 +1407,6 @@ export function Composer({
             onSettlingChange={handleDictationSettlingChange}
           />
         ) : null}
-        {destinationMode === "target-required" ? (
-          <ComposerTargetDestinationAction
-            broadcast={hasBroadcastDestination}
-            handles={targetRequiredHandles}
-            onClear={clearTargetDestinations}
-          />
-        ) : null}
         {destinationMode === "project-chat" ? (
           <ComposerProjectDestinationAction
             newAgentSelected={newAgentSelected}
@@ -1447,14 +1445,16 @@ export function Composer({
             menuSuggestions={menuSuggestions}
             destinationMode={destinationMode}
             requiredRecipient={requiredRecipient}
-            inlineDestination={activeDefaultDestination
+            inlineDestination={renderedDefaultDestination
               ? {
-                  handle: activeDefaultDestination.handle,
+                  handle: renderedDefaultDestination.handle,
                   title:
-                    activeDefaultDestination.binding?.currentTitle ??
-                    activeDefaultDestination.handle,
-                  agentId: activeDefaultDestination.binding?.agentId,
-                  onClear: clearActiveDefaultDestination,
+                    renderedDefaultDestination.binding?.currentTitle ??
+                    renderedDefaultDestination.handle,
+                  agentId: renderedDefaultDestination.binding?.agentId,
+                  onClear: destinationMode === "target-required"
+                    ? clearRequiredRecipient
+                    : clearActiveDefaultDestination,
                 }
               : undefined}
             mentionTokens={mentionTokens}

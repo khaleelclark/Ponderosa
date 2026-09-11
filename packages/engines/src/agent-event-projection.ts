@@ -366,11 +366,9 @@ export function projectAgentEvent(value: unknown): AgentEvent {
     }
     case "browser_screenshot": {
       const row = exact(value, ["sessionId", "executionId", "artifactId", "path", "width", "height", "size", "sha256"], budget);
-      const artifactId = optionalIdentifier(row, "artifactId", budget, 2);
-      const size = optionalInteger(row, "size", budget, 2);
-      const sha256 = optionalIdentifier(row, "sha256", budget, 2);
-      if (sha256 !== undefined && !/^[a-f0-9]{64}$/u.test(sha256)) reject();
-      return { type, sessionId: identifier(row, "sessionId", budget, 2), executionId: identifier(row, "executionId", budget, 2), ...(artifactId === undefined ? {} : { artifactId }), path: string(row, "path", budget, 2), width: integer(row, "width", budget, 2, 1), height: integer(row, "height", budget, 2, 1), ...(size === undefined ? {} : { size }), ...(sha256 === undefined ? {} : { sha256 }) };
+      const sha256 = identifier(row, "sha256", budget, 2);
+      if (!/^[a-f0-9]{64}$/u.test(sha256)) reject();
+      return { type, sessionId: identifier(row, "sessionId", budget, 2), executionId: identifier(row, "executionId", budget, 2), artifactId: identifier(row, "artifactId", budget, 2), path: string(row, "path", budget, 2), width: integer(row, "width", budget, 2, 1), height: integer(row, "height", budget, 2, 1), size: integer(row, "size", budget, 2, 0), sha256 };
     }
     case "work_item_update": {
       const row = exact(value, ["workItemId", "status", "title", "executionId"], budget);

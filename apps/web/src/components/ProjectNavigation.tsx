@@ -4,6 +4,7 @@ import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import ChevronRightRoundedIcon from "@mui/icons-material/ChevronRightRounded";
 import CloseIcon from "@mui/icons-material/Close";
 import DataUsageOutlinedIcon from "@mui/icons-material/DataUsageOutlined";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import LanguageIcon from "@mui/icons-material/Language";
@@ -31,7 +32,13 @@ import type {
   OperatorProfileDto,
   ProjectDto,
 } from "@ponderosa/core";
-import { useState, type MouseEvent, type ReactNode } from "react";
+import {
+  useRef,
+  useState,
+  type DragEvent,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 import type { Route } from "../routing";
 import type { UnreadNotificationProjection } from "../workspaceNavigation";
 import { OperatorAvatar } from "./OperatorAvatar";
@@ -72,13 +79,25 @@ function ProjectRailButton({
   current,
   expanded,
   unread,
+  dragging,
+  dropPosition,
   onClick,
+  onDragStart,
+  onDragEnd,
+  onDragOver,
+  onDrop,
 }: {
   project: ProjectDto;
   current: boolean;
   expanded: boolean;
   unread?: UnreadNotificationProjection;
+  dragging: boolean;
+  dropPosition?: "before" | "after";
   onClick(): void;
+  onDragStart(event: DragEvent<HTMLButtonElement>): void;
+  onDragEnd(): void;
+  onDragOver(event: DragEvent<HTMLButtonElement>): void;
+  onDrop(event: DragEvent<HTMLButtonElement>): void;
 }): JSX.Element {
   const color = PROJECT_COLORS[hashLabel(project.id || project.label) % PROJECT_COLORS.length];
   return (
@@ -87,7 +106,12 @@ function ProjectRailButton({
         aria-label={`${project.label}${unread?.importantCount ? `, ${unread.importantCount} important unread` : ""}${unread?.ordinaryCount ? `, ${unread.ordinaryCount} ordinary unread` : ""}`}
         aria-current={current ? "page" : undefined}
         aria-expanded={expanded}
+        draggable
         onClick={onClick}
+        onDragStart={onDragStart}
+        onDragEnd={onDragEnd}
+        onDragOver={onDragOver}
+        onDrop={onDrop}
         sx={{
           position: "relative",
           width: 48,
@@ -101,7 +125,8 @@ function ProjectRailButton({
           fontSize: 12,
           fontWeight: 850,
           letterSpacing: ".02em",
-          transition: "border-radius 140ms ease, transform 140ms ease, background-color 140ms ease",
+          opacity: dragging ? 0.45 : 1,
+          transition: "border-radius 140ms ease, transform 140ms ease, background-color 140ms ease, opacity 140ms ease",
           "&:hover": {
             borderRadius: 1.5,
             transform: "translateY(-1px)",
@@ -116,6 +141,18 @@ function ProjectRailButton({
                 height: 30,
                 borderRadius: "0 6px 6px 0",
                 bgcolor: "text.primary",
+              }
+            : undefined,
+          "&::after": dropPosition
+            ? {
+                content: '\"\"',
+                position: "absolute",
+                left: 6,
+                right: 6,
+                [dropPosition === "before" ? "top" : "bottom"]: -6,
+                height: 3,
+                borderRadius: 999,
+                bgcolor: "primary.main",
               }
             : undefined,
         }}
@@ -160,6 +197,7 @@ export function ProjectRail({
   attentionNotifications,
   unreadNotificationUpdates,
   projectUnread,
+  onReorderProject,
   onOpenHome,
   onOpenAllMessages,
   onOpenProject,
@@ -183,6 +221,11 @@ export function ProjectRail({
   attentionNotifications: number;
   unreadNotificationUpdates: number;
   projectUnread: ReadonlyMap<string, UnreadNotificationProjection>;
+  onReorderProject(
+    sourceProjectId: string,
+    targetProjectId: string,
+    position: "before" | "after",
+  ): void;
   onOpenHome(): void;
   onOpenAllMessages(): void;
   onOpenProject(project: ProjectDto): void;
@@ -198,6 +241,21 @@ export function ProjectRail({
 }): JSX.Element {
   const railWidth = drawer ? 64 : SIDEBAR_RAIL_WIDTH;
   const [operatorAnchor, setOperatorAnchor] = useState<HTMLElement>();
+  const [draggedProjectId, setDraggedProjectId] = useState<string>();
+  const [dropTarget, setDropTarget] = useState<{
+    projectId: string;
+    position: "before" | "after";
+  }>();
+  const suppressProjectClick = useRef<string>();
+  const finishProjectDrag = (projectId: string) => {
+    setDraggedProjectId(undefined);
+    setDropTarget(undefined);
+    window.setTimeout(() => {
+      if (suppressProjectClick.current === projectId) {
+        suppressProjectClick.current = undefined;
+      }
+    }, 0);
+  };
   const closeOperatorMenu = () => {
     const trigger = operatorAnchor;
     setOperatorAnchor(undefined);
@@ -290,7 +348,50 @@ export function ProjectRail({
             current={project.id === currentProjectId}
             expanded={project.id === activeProjectId}
             unread={projectUnread.get(project.id)}
-            onClick={() => onOpenProject(project)}
+            dragging={project.id === draggedProjectId}
+            dropPosition={
+              dropTarget?.projectId === project.id
+                ? dropTarget.position
+                : undefined
+            }
+            onClick={() => {
+              if (suppressProjectClick.current === project.id) return;
+              onOpenProject(project);
+            }}
+            onDragStart={event => {
+              suppressProjectClick.current = project.id;
+              setDraggedProjectId(project.id);
+              setDropTarget(undefined);
+              event.dataTransfer.effectAllowed = "move";
+              event.dataTransfer.setData("text/plain", project.id);
+            }}
+            onDragEnd={() => finishProjectDrag(project.id)}
+            onDragOver={event => {
+              if (!draggedProjectId || draggedProjectId === project.id) return;
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "move";
+              const bounds = event.currentTarget.getBoundingClientRect();
+              setDropTarget({
+                projectId: project.id,
+                position: event.clientY >= bounds.top + bounds.height / 2
+                  ? "after"
+                  : "before",
+              });
+            }}
+            onDrop={event => {
+              event.preventDefault();
+              if (!draggedProjectId || draggedProjectId === project.id) return;
+              const bounds = event.currentTarget.getBoundingClientRect();
+              onReorderProject(
+                draggedProjectId,
+                project.id,
+                event.clientY >= bounds.top + bounds.height / 2
+                  ? "after"
+                  : "before",
+              );
+              setDraggedProjectId(undefined);
+              setDropTarget(undefined);
+            }}
           />
         ))}
       </Stack>
@@ -380,6 +481,7 @@ export function ProjectSidebarHeader({
   onOpenBrowser,
   onRename,
   onOpenSettings,
+  onDelete,
 }: {
   project: ProjectDto;
   overviewActive: boolean;
@@ -393,6 +495,7 @@ export function ProjectSidebarHeader({
   onOpenBrowser(): void;
   onRename(): void;
   onOpenSettings(): void;
+  onDelete(): void;
 }): JSX.Element {
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement>();
   const openMenu = (event: MouseEvent<HTMLElement>) => setMenuAnchor(event.currentTarget);
@@ -563,6 +666,9 @@ export function ProjectSidebarHeader({
         </MenuItem>
         <MenuItem onClick={() => run(onOpenSettings)}>
           <SettingsOutlinedIcon fontSize="small" sx={{ mr: 1.25 }} /> Project Settings
+        </MenuItem>
+        <MenuItem onClick={() => run(onDelete)} sx={{ color: "error.main" }}>
+          <DeleteOutlineIcon fontSize="small" sx={{ mr: 1.25 }} /> Delete Project
         </MenuItem>
       </Menu>
     </Box>

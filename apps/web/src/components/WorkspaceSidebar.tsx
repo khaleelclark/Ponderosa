@@ -1,5 +1,7 @@
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
+import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
+import KeyboardArrowRightIcon from "@mui/icons-material/KeyboardArrowRight";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
@@ -67,6 +69,7 @@ import {
   SettingsSidebarPanel,
 } from "./WorkspaceSidebar.chrome";
 import { ProjectRail, ProjectSidebarHeader } from "./ProjectNavigation";
+import { ProjectDeletionDialog } from "./ProjectDeletionDialog";
 import {
   useWorkspaceSidebarNavigation,
   useWorkspaceSidebarResize,
@@ -85,6 +88,7 @@ export function WorkspaceSidebar({
   onPreferences,
   onRenameConversation,
   onDeleteConversation,
+  onProjectDeleted,
   onSearch,
   onOpenNotifications,
   onOpenEngineStatus,
@@ -114,6 +118,7 @@ export function WorkspaceSidebar({
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onRenameConversation(conversation: ConversationDto): void;
   onDeleteConversation(conversation: ConversationDto): void;
+  onProjectDeleted(projectId: string): void;
   onSearch?(): void;
   onOpenNotifications?(): void;
   onOpenEngineStatus?(): void;
@@ -139,6 +144,8 @@ export function WorkspaceSidebar({
     setMenu,
     openResourceMenu,
   } = useWorkspaceSidebarNavigation(route);
+  const [collapsedSidebarAgentIds, setCollapsedSidebarAgentIds] =
+    useState<Set<string>>(() => new Set());
 
   const routedProjectId = routeProjectId(route);
   const [drawerProjectId, setDrawerProjectId] = useState(routedProjectId);
@@ -282,6 +289,7 @@ export function WorkspaceSidebar({
     staleTime: 60_000,
   });
   const [renamingProject, setRenamingProject] = useState<ProjectDto>();
+  const [deletingProject, setDeletingProject] = useState<ProjectDto>();
   const projectBrowseState = useRef(
     new Map<string, { section: typeof projectSection; filter: string }>(),
   );
@@ -335,6 +343,25 @@ export function WorkspaceSidebar({
     setFilter(remembered?.filter ?? "");
     if (!drawer && collapsed) onCollapsedChange?.(false);
   };
+  const reorderRailProject = (
+    sourceProjectId: string,
+    targetProjectId: string,
+    position: "before" | "after",
+  ) => {
+    const currentOrder = stableRailProjects.map(project => project.id);
+    const projectOrder = reorderStableIds(
+      currentOrder,
+      currentOrder,
+      sourceProjectId,
+      targetProjectId,
+      position,
+    );
+    if (projectOrder.every((projectId, index) => projectId === currentOrder[index])) {
+      return;
+    }
+    railProjectIds.current = projectOrder;
+    onPreferences({ projectSort: "custom", projectOrder });
+  };
   const openTriggerManager = (
     projectId: string,
     _agentId: string | undefined,
@@ -372,6 +399,7 @@ export function WorkspaceSidebar({
       attentionNotifications={counts.attention}
       unreadNotificationUpdates={counts.updates}
       projectUnread={projectUnread}
+      onReorderProject={reorderRailProject}
       onOpenHome={() => showNavigation({ kind: "home" })}
       onOpenAllMessages={() => showNavigation({ kind: "allChat" })}
       onOpenProject={openProject}
@@ -418,6 +446,7 @@ export function WorkspaceSidebar({
       onOpenBrowser={() => onNavigate({ kind: "browser", projectId: activeProject.id })}
       onRename={() => setRenamingProject(activeProject)}
       onOpenSettings={() => onNavigate({ kind: "project", projectId: activeProject.id, view: "settings" })}
+      onDelete={() => setDeletingProject(activeProject)}
     />
   ) : undefined;
   const allChatRows = chatItems;
@@ -591,6 +620,10 @@ export function WorkspaceSidebar({
     health?: WorkspaceAgentDirectoryItemDto["health"];
     status?: (typeof agentItems)[number]["health"]["status"];
   };
+  type AgentSidebarTreeRow = AgentSidebarRow & {
+    depth: number;
+    hasChildren: boolean;
+  };
   const allAgentRows: AgentSidebarRow[] = agentItems.map(({ agent, project, health }) => ({
     agent,
     project,
@@ -608,8 +641,39 @@ export function WorkspaceSidebar({
       ? { agent: activeAgentQuery.data.agent, project: activeProject }
       : undefined;
   const agentRows = allAgentRows;
-  const agentResourceRows = (items: AgentSidebarRow[]) =>
-    items.map(({ agent, project: agentProject, health, status }) => {
+  const agentHierarchyRows = (items: AgentSidebarRow[]): AgentSidebarTreeRow[] => {
+    const byId = new Map(items.map(item => [item.agent.id, item]));
+    const childrenByManagerId = new Map<string, AgentSidebarRow[]>();
+    for (const item of items) {
+      const managerId = item.agent.managerAgentId;
+      if (!managerId || !byId.has(managerId)) continue;
+      const children = childrenByManagerId.get(managerId) ?? [];
+      children.push(item);
+      childrenByManagerId.set(managerId, children);
+    }
+    const roots = items.filter(item =>
+      !item.agent.managerAgentId || !byId.has(item.agent.managerAgentId));
+    const visited = new Set<string>();
+    const visible: AgentSidebarTreeRow[] = [];
+    const visit = (item: AgentSidebarRow, depth: number, parentVisible: boolean) => {
+      if (visited.has(item.agent.id)) return;
+      visited.add(item.agent.id);
+      const children = childrenByManagerId.get(item.agent.id) ?? [];
+      if (parentVisible) {
+        visible.push({ ...item, depth, hasChildren: children.length > 0 });
+      }
+      const childrenVisible = parentVisible &&
+        !collapsedSidebarAgentIds.has(item.agent.id);
+      for (const child of children) visit(child, depth + 1, childrenVisible);
+    };
+    for (const root of roots) visit(root, 0, true);
+    // Defensive fallback for malformed cyclic relationships: keep every loaded
+    // Agent reachable without allowing recursion to loop.
+    for (const item of items) if (!visited.has(item.agent.id)) visit(item, 0, true);
+    return visible;
+  };
+  const agentResourceRows = (items: AgentSidebarTreeRow[]) =>
+    items.map(({ agent, project: agentProject, health, status, depth, hasChildren }) => {
       const starred = starredResourceIds.has(
         resourcePreferenceKey("agent", agent.id),
       );
@@ -647,8 +711,38 @@ export function WorkspaceSidebar({
               agentId: agent.id,
             });
           }}
-          sx={{ alignItems: "center", mb: 0.25 }}
+          sx={{
+            alignItems: "center",
+            mb: 0.25,
+            pl: Math.min(depth, 4) * 1.75,
+          }}
         >
+          <Box sx={{ width: 28, flex: "0 0 28px", display: "grid", placeItems: "center" }}>
+            {hasChildren ? (
+              <Tooltip
+                title={`${collapsedSidebarAgentIds.has(agent.id) ? "Expand" : "Collapse"} ${agent.title}`}
+              >
+                <IconButton
+                  size="small"
+                  aria-label={`${collapsedSidebarAgentIds.has(agent.id) ? "Expand" : "Collapse"} ${agent.title}`}
+                  aria-expanded={!collapsedSidebarAgentIds.has(agent.id)}
+                  onClick={() => setCollapsedSidebarAgentIds(current => {
+                    const next = new Set(current);
+                    if (next.has(agent.id)) next.delete(agent.id);
+                    else next.add(agent.id);
+                    return next;
+                  })}
+                  sx={{ width: 28, height: 28 }}
+                >
+                  {collapsedSidebarAgentIds.has(agent.id) ? (
+                    <KeyboardArrowRightIcon fontSize="small" />
+                  ) : (
+                    <KeyboardArrowDownIcon fontSize="small" />
+                  )}
+                </IconButton>
+              </Tooltip>
+            ) : null}
+          </Box>
           <ListItemButton
             data-resource-id={"sidebar-agent:" + agent.id}
             aria-label={`Open agent ${agent.title} in ${projectDisambiguator(agentProject, projects)}`}
@@ -660,9 +754,32 @@ export function WorkspaceSidebar({
                 agentId: agent.id,
               })
             }
-            sx={{ borderRadius: 1.25, px: 1, py: 0.65, minWidth: 0 }}
+            sx={{
+              borderRadius: 1.25,
+              px: 1,
+              py: 0.65,
+              minWidth: 0,
+              ...(depth > 0
+                ? {
+                    bgcolor: "var(--ponderosa-delegated-surface)",
+                    borderLeft: 2,
+                    borderLeftColor: "primary.main",
+                    "&:hover": {
+                      bgcolor: "var(--ponderosa-delegated-hover)",
+                    },
+                    "&.Mui-selected": {
+                      bgcolor: "var(--ponderosa-delegated-hover)",
+                    },
+                    "&.Mui-selected:hover": {
+                      bgcolor: "var(--ponderosa-delegated-hover)",
+                    },
+                  }
+                : undefined),
+            }}
           >
-            <ListItemIcon sx={{ minWidth: 38 }}>
+            <ListItemIcon
+              sx={{ minWidth: 38, color: depth > 0 ? "primary.light" : undefined }}
+            >
               <SmartToyOutlinedIcon fontSize="small" />
             </ListItemIcon>
             <ListItemText
@@ -714,19 +831,23 @@ export function WorkspaceSidebar({
       topContent={activeAgentRow ? (
         <Box component="section" sx={{ mb: 2 }}>
           <SidebarSectionHeading>Open now</SidebarSectionHeading>
-          <List disablePadding>{agentResourceRows([activeAgentRow])}</List>
+          <List disablePadding>{agentResourceRows([{
+            ...activeAgentRow,
+            depth: 0,
+            hasChildren: false,
+          }])}</List>
         </Box>
       ) : undefined}
       starredRows={agentResourceRows(
-        agentRows.filter(({ agent }) =>
+        agentHierarchyRows(agentRows.filter(({ agent }) =>
           starredResourceIds.has(resourcePreferenceKey("agent", agent.id)),
-        ),
+        )),
       )}
       allRows={agentResourceRows(
-        agentRows.filter(
+        agentHierarchyRows(agentRows.filter(
           ({ agent }) =>
             !starredResourceIds.has(resourcePreferenceKey("agent", agent.id)),
-        ),
+        )),
       )}
       collectionFeedback={<CollectionStateFeedback request={agentDirectoryQuery.requestState} itemCount={agentRows.length} filtersActive={Boolean(filter.trim())} resourceLabel="Agents" emptyTitle="No Active Agents" noMatchTitle={"No Agents match “" + filter.trim() + "”."} onClearFilters={() => setFilter("")} compact />}
       loadMoreLabel={agentDirectoryQuery.hasNextPage ? "Load more" : undefined}
@@ -996,6 +1117,17 @@ export function WorkspaceSidebar({
           if (renamingProject) renameProject.mutate({ project: renamingProject, label });
         }}
       />
+      {deletingProject ? (
+        <ProjectDeletionDialog
+          project={deletingProject}
+          open
+          onClose={() => setDeletingProject(undefined)}
+          onDeleted={projectId => {
+            setDeletingProject(undefined);
+            onProjectDeleted(projectId);
+          }}
+        />
+      ) : null}
     </Box>
   );
 }

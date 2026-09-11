@@ -440,6 +440,15 @@ export default function App({
   };
 
   const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], homeSort: "last_used" as const, homeOrder: [], chatSort: "last_used" as const, chatOrder: [], agentSort: "last_used" as const, agentOrder: [], triggerSort: "last_used" as const, triggerOrder: [], starredResourceIds: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { directResponses: true, broadcasts: true }, fontFamily: "inter" as const, providerAvailability: {}, defaultUsageProvider: undefined as string | undefined, engineDefaults: {}, claudeModelOptions: [], globalInstructions: "", maxConcurrentAgentRuns: 8, contextRolloverEnabled: false, contextRolloverTokens: 150_000, contextRolloverWindowFraction: 0.7, onboardingCompletedAt: null, profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
+  const defaultUsageProvider = engines.some(engine =>
+    engine.id === preferences.defaultUsageProvider &&
+    engine.enabled !== false &&
+    Boolean(engine.providerUsageCommand)
+  )
+    ? preferences.defaultUsageProvider
+    : engines.find(engine =>
+        engine.enabled !== false && Boolean(engine.providerUsageCommand)
+      )?.id;
   const savePreferences = (patch: Partial<typeof preferences>) => {
     queryClient.setQueryData(queryKeys.workspacePreferences.all, { ...preferences, ...patch });
     void api.updateWorkspacePreferences(patch).then((value) => {
@@ -676,6 +685,7 @@ export default function App({
               onDeleteConversation={conversation =>
                 openSidebarConversationAction("delete", conversation)
               }
+              onProjectDeleted={handleProjectDeleted}
               onSearch={openGlobalSearch}
               onOpenNotifications={openNotifications}
               onOpenEngineStatus={openEngineStatus}
@@ -721,7 +731,7 @@ export default function App({
               <ActiveNotificationViewProvider value={activeNotificationView}>
               <WorkspaceConnectionProvider value={workspaceConnection}>
               <PrimaryHeaderActionsProvider
-                preferredProvider={preferences.defaultUsageProvider}
+                preferredProvider={defaultUsageProvider}
                 onOpenProviderSettings={() =>
                   navigateWorkspace({ kind: "settings", section: "providers" })
                 }
@@ -788,6 +798,7 @@ export default function App({
           onCreate={openCreationForm}
           onPreferences={savePreferences}
           onConversationAction={openSidebarConversationAction}
+          onProjectDeleted={handleProjectDeleted}
           onSearch={openGlobalSearch}
           onOpenNotifications={openNotifications}
           onOpenEngineStatus={openEngineStatus}

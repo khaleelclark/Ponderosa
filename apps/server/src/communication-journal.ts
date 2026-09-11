@@ -55,10 +55,12 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
     communicationReconciliationTimer.unref();
   };
   const withSendTimeIdentity = (event: CommunicationEvent): CommunicationEvent => {
-    const recipientAgentIds = event.intent === "collaboration"
+    const recipientAgentIds: string[] = event.intent === "collaboration"
       ? event.audience.agentIds
-      : event.schemaVersion === 2 && event.intent === "user_dm"
-        ? event.audience.kind === "user_agent" ? [event.audience.agentId] : event.audience.agentIds
+      : event.intent === "user_dm"
+        ? event.audience.kind === "user_agent"
+          ? [event.audience.agentId]
+          : event.audience.kind === "user_agents" ? event.audience.agentIds : []
         : [];
     const recipientAgents = new Map(recipientAgentIds.flatMap(agentId => {
       const agent = store.getAgent(agentId);
@@ -115,7 +117,7 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
         workspace.createNotification({
           projectId: stored.event.projectId,
           ...(stored.event.conversationId ? { conversationId: stored.event.conversationId } : {}),
-          ...(stored.event.intent === "direct_to_user"
+          ...(stored.event.intent === "user_dm" && stored.event.sender.kind === "agent"
             ? { agentId: stored.event.sender.agentId }
             : {}),
           communicationEventId: stored.event.eventId,

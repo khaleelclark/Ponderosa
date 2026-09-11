@@ -75,7 +75,23 @@ export function MutationNotificationProvider({
             severity={active.severity}
             variant="filled"
             onClose={dismiss}
-            sx={{ width: "100%", maxWidth: "min(92vw, 640px)" }}
+            sx={{
+              width: "auto",
+              minWidth: "min(88vw, 260px)",
+              maxWidth: "min(92vw, 480px)",
+              px: 1.25,
+              py: 0.25,
+              display: "grid",
+              gridTemplateColumns: "auto minmax(0, 1fr) auto",
+              alignItems: "center",
+              "& .MuiAlert-icon": { m: 0, mr: 1, p: 0, alignItems: "center" },
+              "& .MuiAlert-message": {
+                minWidth: 0,
+                py: 0.5,
+                textAlign: "center",
+              },
+              "& .MuiAlert-action": { m: 0, ml: 1, p: 0, alignItems: "center" },
+            }}
           >
             {active.message}
           </Alert>

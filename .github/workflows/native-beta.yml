@@ -37,7 +37,7 @@ jobs:
     env:
       CI: "true"
       PONDEROSA_RELEASE_CHANNEL: beta
-      PONDEROSA_NODE_VERSION: 22.22.1
+      PONDEROSA_NODE_VERSION: 24.16.0
       MACOSX_DEPLOYMENT_TARGET: "14.0"
 
     steps:
@@ -55,7 +55,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22.22.1
+          node-version: 24.16.0
           cache: pnpm
 
       - name: Assert exact source and toolchain
@@ -63,14 +63,22 @@ jobs:
         run: |
           expected="${{ github.sha }}"
           test "$(git rev-parse HEAD)" = "$expected"
-          git merge-base --is-ancestor "$expected" origin/master
-          test "$(node --version)" = "v22.22.1"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            git merge-base --is-ancestor origin/master "$expected"
+          else
+            git merge-base --is-ancestor "$expected" origin/master
+          fi
+          test "$(node --version)" = "v24.16.0"
           test "$(pnpm --version)" = "11.10.0"
 
       - name: Resolve product version
         shell: bash
         run: |
-          version="$(node packaging/beta-version.mjs --require-tag)"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            version="$(node packaging/beta-version.mjs)"
+          else
+            version="$(node packaging/beta-version.mjs --require-tag)"
+          fi
           test -n "$version"
           echo "PONDEROSA_BUILD_VERSION=$version" >> "$GITHUB_ENV"
 
@@ -91,7 +99,7 @@ jobs:
         shell: bash
         run: pnpm build
 
-      - name: Prepare checksummed official Node 22
+      - name: Prepare checksummed official Node 24
         shell: bash
         run: node packaging/prepare-node-runtime.mjs
 
@@ -102,6 +110,10 @@ jobs:
       - name: Verify native bundle
         shell: bash
         run: node packaging/verify-beta-bundle.mjs
+
+      - name: Restore installer build dependencies
+        shell: bash
+        run: pnpm install --frozen-lockfile
 
       - name: Install Inno Setup when absent
         if: runner.os == 'Windows'

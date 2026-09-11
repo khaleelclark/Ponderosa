@@ -8,9 +8,8 @@ import { messageId as projectedMessageId } from "./ids.js";
 import type { StoredLogEvent } from "./log-event.js";
 
 function communicationDocumentReference(projectId: string, document: CommunicationDocumentRecord): CommunicationDocumentReference {
-  const { content: _content, ...metadata } = document;
   const root = `/api/projects/${encodeURIComponent(projectId)}/communication-documents/${encodeURIComponent(document.id)}`;
-  return { ...metadata, previewUrl: root, downloadUrl: `${root}/download` };
+  return { ...document, previewUrl: root, downloadUrl: `${root}/download` };
 }
 
 function revisedRenderedText(rendered: string, original: string, replacement: string): string {
@@ -34,7 +33,7 @@ function communicationMessageProjection(agentId: string, stored: StoredLogEvent)
 }
 
 function userDmAgentIds(event: CommunicationEvent): string[] {
-  if (event.schemaVersion !== 2 || event.intent !== "user_dm") return [];
+  if (event.intent !== "user_dm" || event.audience.kind === "user") return [];
   return event.audience.kind === "user_agent" ? [event.audience.agentId] : event.audience.agentIds;
 }
 

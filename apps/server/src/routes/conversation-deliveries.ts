@@ -1,12 +1,13 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type {
+  AgentDto,
   AgentMentionBindingDto,
   AssetDto,
   CommunicationEvent,
+  ConversationDto,
   CreateConversationMessageRequest,
   CreateMultiAgentDirectMessageRequest,
-  ImageAttachmentDto,
   MultiAgentDirectMessageResponse,
   QueuedConversationMessageDto,
 } from "@ponderosa/core";
@@ -78,7 +79,7 @@ export interface ConversationDeliveryRouteDependencies {
     agentId: string,
     event: CommunicationEvent,
     renderedText: string,
-    attachments?: ImageAttachmentDto[],
+    attachments?: AssetDto[],
   ) => void;
   appendWorkspace: (event: Parameters<WorkspaceStore["append"]>[0]) => unknown;
   publishCoordinationV3Changed: (
@@ -89,6 +90,14 @@ export interface ConversationDeliveryRouteDependencies {
 }
 
 const MAX_ATTACHMENTS_PER_MESSAGE = ASSET_LIMITS.maxAssetsPerMessage;
+
+function isActiveConversationAgent(
+  agent: Pick<AgentDto, "projectId" | "conversationId" | "archived"> | undefined,
+  conversation: Pick<ConversationDto, "id" | "projectId">,
+): boolean {
+  return Boolean(agent && !agent.archived &&
+    agent.projectId === conversation.projectId && agent.conversationId === conversation.id);
+}
 
 function requestedRuntimeSelection(body: {
   model?: unknown;
@@ -142,7 +151,6 @@ export function registerConversationDeliveryRoutes(
       : undefined;
     const rawText = requestedText ? stripLeadingScopeTag(requestedText, "broadcast") : "";
     const requestedAssets = request.body?.attachments ?? [];
-    const legacyRecipientAgentIds = request.body?.recipientAgentIds ?? [];
     const requestedRecipientAgentMentions: unknown = request.body?.recipientAgentMentions;
     const requestedRecipientAttachments = request.body?.recipientAttachments ?? [];
     const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
@@ -155,9 +163,6 @@ export function registerConversationDeliveryRoutes(
     }
     if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
       return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
-    }
-    if (!Array.isArray(legacyRecipientAgentIds) || legacyRecipientAgentIds.length > 0) {
-      return reply.code(400).send({ error: "targeted next-run delivery requires canonical Agent mention bindings" });
     }
     if (requestedRecipientAgentMentions !== undefined &&
         (!Array.isArray(requestedRecipientAgentMentions) ||
@@ -188,14 +193,14 @@ export function registerConversationDeliveryRoutes(
         )) {
       return reply.code(400).send({ error: "broadcast recipient attachments must belong to unique explicit recipients" });
     }
-    const idempotencyKey = request.body?.idempotencyKey?.trim();
-    if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
+    const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
+    if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must contain 1 to 200 characters" });
     const master = store.getConversation(request.params.id);
     if (!master) return reply.code(404).send({ error: "conversation not found" });
     if (projectDeletionInProgress(master.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
     const agentIdsByHandle = new Map<string, string[]>();
     for (const agent of store.listAgents(master.projectId)) {
-      if (agent.archived) continue;
+      if (!isActiveConversationAgent(agent, master)) continue;
       const handle = agent.handle.toLocaleLowerCase();
       if (!handle || ["broadcast", "everyone", "user"].includes(handle)) continue;
       agentIdsByHandle.set(handle, [...(agentIdsByHandle.get(handle) ?? []), agent.id]);
@@ -216,9 +221,7 @@ export function registerConversationDeliveryRoutes(
       return reply.code(400).send({ error: "Broadcast Agent mention binding is stale, ambiguous, or invalid" });
     }
     const recipientAgents = recipientAgentIds.map((agentId) => store.getAgent(agentId));
-    if (recipientAgents.some((agent) =>
-      !agent || agent.archived || agent.projectId !== master.projectId
-    )) {
+    if (recipientAgents.some((agent) => !isActiveConversationAgent(agent, master))) {
       return reply.code(404).send({ error: "broadcast recipient not found" });
     }
     if (!Array.isArray(requestedAssets) || requestedAssets.length > MAX_ATTACHMENTS_PER_MESSAGE) return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} assets are allowed` });
@@ -260,9 +263,7 @@ export function registerConversationDeliveryRoutes(
       }
       recipientAssets.set(agentId, publicAssets);
     }
-    const eventId = idempotencyKey
-      ? `broadcast-${createHash("sha256").update(`${master.id}\0${idempotencyKey}`).digest("hex")}`
-      : randomUUID();
+    const eventId = `broadcast-${createHash("sha256").update(`${master.id}\0${idempotencyKey}`).digest("hex")}`;
     const existingRuntime = coordinationV3.runtimeCommunication(eventId);
     const createdAt = existingRuntime?.createdAt ?? new Date().toISOString();
     const validationCompletedAt = performance.now();
@@ -293,7 +294,7 @@ export function registerConversationDeliveryRoutes(
       ...(validatedAssets.length ? { attachments: validatedAssets } : {}),
       ...(prepared.document ? { document: prepared.document } : {}),
       createdAt,
-      ...(idempotencyKey ? { idempotencyKey: `broadcast:${master.id}:${idempotencyKey}` } : {}),
+      idempotencyKey: `broadcast:${master.id}:${idempotencyKey}`,
     };
     let intake;
     try {
@@ -360,7 +361,7 @@ export function registerConversationDeliveryRoutes(
       prepared.artifact,
       communicationArtifactAccess(communication),
     );
-    const replayedMessage = communication && idempotencyKey && intake.replayed
+    const replayedMessage = communication && intake.replayed
       ? store.getConversationMessages(master.id).find((candidate) => candidate.communicationEventId === communication.eventId)
       : undefined;
     const message = replayedMessage ?? store.appendConversationMessage(request.params.id, {
@@ -518,7 +519,7 @@ export function registerConversationDeliveryRoutes(
               associatedAt: _associatedAt, ...publicAsset
             } = item;
             return { ...publicAsset, state: "associated" as const };
-          }) as ImageAttachmentDto[];
+          }) as AssetDto[];
         }));
         const receiptKey = `multi-direct:${master.id}:${idempotencyKey}`;
         const eventId = `user-dm-${createHash("sha256").update(receiptKey).digest("hex")}`;

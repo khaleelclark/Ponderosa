@@ -31,9 +31,6 @@ export type CommunicationAttachmentDto = Omit<AssetDto, "mediaType"> & {
   mediaType: string;
 };
 
-/** Backward-compatible name retained while clients migrate to AssetDto. */
-export type ImageAttachmentDto = AssetDto;
-
 export interface AssetLimitsDto {
   maxFileBytes: number;
   maxRequestBytes: number;

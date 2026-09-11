@@ -7,7 +7,7 @@
 // core stays untouched (no SPEC edit needed — this is an additive superset, not a
 // redefinition of a core type).
 
-import type { AgentEvent, AgentExecutionDeltaEvent, AgentOutputEvent, AgentCoordinationV3Dto, ContextRolloverTriggeredEvent, ImageAttachmentDto } from "@ponderosa/core";
+import type { AgentEvent, AgentExecutionDeltaEvent, AgentOutputEvent, AgentCoordinationV3Dto, AssetDto, ContextRolloverTriggeredEvent } from "@ponderosa/core";
 import type { AgentLifecycleReason, AgentRunStatus, AgentRunWakeCause } from "@ponderosa/core";
 
 /** A human turn appended to the log when the user sends a message (SPEC §4). */
@@ -15,7 +15,7 @@ export interface UserMessageEvent {
   type: "user_message";
   communicationEventId?: string;
   text: string;
-  attachments?: ImageAttachmentDto[];
+  attachments?: AssetDto[];
 }
 
 /** Clear a provider session while retaining the canonical agent history. */
@@ -73,7 +73,7 @@ export interface CommunicationProjectionEvent {
   communicationEventId: string;
   text: string;
   role?: "user" | "assistant" | "system";
-  attachments?: ImageAttachmentDto[];
+  attachments?: AssetDto[];
 }
 
 /** Durable, text-minimal audit evidence for one bounded compaction-history read. */
@@ -127,8 +127,7 @@ export interface CoordinationV3ChangedEvent {
 /** Provider-created output copied into stable Ponderosa-managed storage. */
 export interface GeneratedArtifactEvent {
   type: "generated_artifact";
-  /** New captures use a Project-stable id; absent only on legacy events. */
-  artifactId?: string;
+  artifactId: string;
   executionId: string;
   path: string;
   sourcePath: string;
@@ -136,7 +135,7 @@ export interface GeneratedArtifactEvent {
   mediaType: string;
   size: number;
   /** Immutable digest of the already-published Project-owned bytes. */
-  sha256?: string;
+  sha256: string;
   visibility: "project" | "published";
   pinned?: boolean;
 }

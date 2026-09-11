@@ -41,4 +41,3 @@ export function restoreProjectRoute(
     ? { kind: "conversation", projectId, conversationId: fallbackConversationId }
     : { kind: "project", projectId };
 }
-

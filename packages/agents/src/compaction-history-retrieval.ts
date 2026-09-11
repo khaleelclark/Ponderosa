@@ -289,9 +289,11 @@ function eventAgentIds(event: CommunicationEvent): string[] {
   if (event.sender.kind === "agent") ids.add(event.sender.agentId);
   if (event.intent === "collaboration") {
     for (const agentId of event.audience.agentIds) ids.add(agentId);
-  } else if (event.schemaVersion === 2 && event.intent === "user_dm") {
+  } else if (event.intent === "user_dm") {
     if (event.audience.kind === "user_agent") ids.add(event.audience.agentId);
-    else for (const agentId of event.audience.agentIds) ids.add(agentId);
+    else if (event.audience.kind === "user_agents") {
+      for (const agentId of event.audience.agentIds) ids.add(agentId);
+    }
   }
   return [...ids];
 }
@@ -519,18 +521,12 @@ function authoritySql(input: HistoryAuthorityInput, alias = "m"): { sql: string;
               AND participant.agent_id = ?
           )
         )
-        OR (
-          ${alias}.communication_intent = 'direct_to_user'
-          AND ${alias}.sender_kind = 'agent'
-          AND ${alias}.sender_agent_id = ?
-        )
       )
     `,
     params: [
       input.agent.projectId,
       input.boundary.canonicalOrdinal,
       input.currentConversationId ?? null,
-      input.agent.id,
       input.agent.id,
       input.agent.id,
     ],
@@ -598,11 +594,10 @@ function canonicalAuthorizedScope(
     if (!input.currentConversationId || event.conversationId !== input.currentConversationId) return;
     return participants.includes(input.agent.id) ? "current_chat" : undefined;
   }
-  if (event.schemaVersion === 2 && event.intent === "user_dm") {
+  if (event.intent === "user_dm") {
     return participants.includes(input.agent.id) ? "agent_private" : undefined;
   }
-  return event.intent === "direct_to_user" && event.sender.kind === "agent" &&
-    event.sender.agentId === input.agent.id ? "agent_private" : undefined;
+  return;
 }
 
 function hydrateIndexedMessage(row: IndexedHistoryRow, input: HistoryAuthorityInput): IndexedMessage {

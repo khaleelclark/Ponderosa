@@ -20,7 +20,6 @@ import {
   ensureDataLayout,
   launcherStateLocation,
   readLauncherConfiguration,
-  readLegacyLauncherState,
   readLauncherState,
   writeJsonAtomic,
 } from "./paths.js";
@@ -28,7 +27,6 @@ import type {
   BuildManifest,
   LauncherDependencies,
   LauncherPaths,
-  LegacyLauncherState,
   LauncherState,
   PlatformAdapter,
   PublicLauncherState,
@@ -37,7 +35,6 @@ import type {
 const LOOPBACK_HOST = "127.0.0.1" as const;
 const START_TIMEOUT_MS = 45_000;
 const STOP_TIMEOUT_MS = 30_000;
-const LEGACY_PROVISIONAL_STATUS_RECOVERY_MS = 5_000;
 const OPERATION_LOCK_INITIALIZATION_GRACE_MS = 5_000;
 const LOG_ROTATE_BYTES = 5 * 1024 * 1024;
 const LOG_ARCHIVE_COUNT = 3;
@@ -215,23 +212,10 @@ async function responseDetail(response: Response): Promise<string> {
   return `${response.status} ${response.statusText}`.trim();
 }
 
-type LegacyLauncherStatus = Omit<LegacyLauncherState, "controlToken"> & Pick<
-  PublicLauncherState,
-  "healthy" | "detail" | "acceptingDurableIntake" | "leasingRuns" | "activeRunCount"
->;
-
-export function launcherStatus(
-  state: LauncherState,
-  fetchFn?: typeof globalThis.fetch,
-): Promise<PublicLauncherState | undefined>;
-export function launcherStatus(
-  state: LegacyLauncherState,
-  fetchFn?: typeof globalThis.fetch,
-): Promise<LegacyLauncherStatus | undefined>;
 export async function launcherStatus(
-  state: LauncherState | LegacyLauncherState,
+  state: LauncherState,
   fetchFn: typeof globalThis.fetch = globalThis.fetch,
-): Promise<PublicLauncherState | LegacyLauncherStatus | undefined> {
+): Promise<PublicLauncherState | undefined> {
   try {
     const response = await fetchFn(`${baseUrl(state)}/api/launcher/status`, {
       headers: bearer(state.controlToken),
@@ -274,19 +258,6 @@ export async function launcherStatus(
   }
 }
 
-async function waitForLegacyProvisionalStatus(
-  state: LegacyLauncherState,
-  fetchFn: typeof globalThis.fetch,
-): Promise<LegacyLauncherStatus | undefined> {
-  const deadline = Date.now() + LEGACY_PROVISIONAL_STATUS_RECOVERY_MS;
-  while (Date.now() < deadline) {
-    await delay(200);
-    const status = await launcherStatus(state, fetchFn);
-    if (status) return status;
-  }
-  return undefined;
-}
-
 /** Persist the exact process proved by the authenticated status route before
  * any shutdown fence can name it. POSIX requires immutable birth evidence;
  * Windows retains its supervisor generation and drained-Job authority. */
@@ -309,40 +280,6 @@ function canonicalizeAuthenticatedLauncherAuthority(
     if (state.processBirthMarker && state.processBirthMarker !== processBirthMarker) {
       throw new Error(
         "Authenticated Ponderosa process birth evidence changed. Shutdown remains blocked.",
-      );
-    }
-    canonical = { ...state, pid: status.pid, processBirthMarker };
-  }
-  if (canonical.pid !== state.pid ||
-      canonical.processBirthMarker !== state.processBirthMarker) {
-    writeJsonAtomic(paths.statePath, canonical);
-  }
-  return canonical;
-}
-
-/** Write-ahead identity for the one-time schema-1 cutover. A later launcher
- * can prove that this exact POSIX process exited, or await the exact Windows
- * supervisor/Job drain, even when the legacy control route closed before its
- * shutdown response arrived. */
-function canonicalizeAuthenticatedLegacyAuthority(
-  paths: LauncherPaths,
-  state: LegacyLauncherState,
-  status: Pick<LegacyLauncherStatus, "pid">,
-): LegacyLauncherState {
-  let canonical: LegacyLauncherState;
-  if (state.supervisorGeneration) {
-    const { processBirthMarker: _processBirthMarker, ...supervised } = state;
-    canonical = { ...supervised, pid: status.pid };
-  } else {
-    const processBirthMarker = launcherProcessBirthMarker(status.pid);
-    if (!processBirthMarker) {
-      throw new Error(
-        "Authenticated schema-1 Ponderosa process lacks exact POSIX birth evidence. Upgrade remains blocked.",
-      );
-    }
-    if (state.processBirthMarker && state.processBirthMarker !== processBirthMarker) {
-      throw new Error(
-        "Authenticated schema-1 Ponderosa process birth evidence changed. Upgrade remains blocked.",
       );
     }
     canonical = { ...state, pid: status.pid, processBirthMarker };
@@ -597,86 +534,6 @@ async function removeDeadState(
   removeExactStateFiles(paths, state);
 }
 
-async function cutoverLegacyLauncherState(
-  paths: LauncherPaths,
-  state: LegacyLauncherState,
-  fetchFn: typeof globalThis.fetch,
-): Promise<boolean> {
-  const immediate = await launcherStatus(state, fetchFn);
-  const current = immediate ?? (state.pid === 0
-    ? await waitForLegacyProvisionalStatus(state, fetchFn)
-    : undefined);
-  if (!current && state.pid === 0 && !state.supervisorGeneration) {
-    throw new Error(
-      "A schema-1 Ponderosa authority still has a provisional process identity and did not prove control ownership. Upgrade remains blocked; retry after the existing daemon becomes reachable.",
-    );
-  }
-  const canonicalState = current
-    ? canonicalizeAuthenticatedLegacyAuthority(paths, state, current)
-    : state;
-  const hasExactDrainAuthority = Boolean(
-    canonicalState.supervisorGeneration || canonicalState.processBirthMarker,
-  );
-  let shutdownError: Error | undefined;
-  if (current) {
-    try {
-      const response = await fetchFn(`${baseUrl(canonicalState)}/api/launcher/shutdown`, {
-        method: "POST",
-        headers: bearer(canonicalState.controlToken),
-        signal: AbortSignal.timeout(5_000),
-      });
-      if (!response.ok) {
-        shutdownError = new Error(
-          `Legacy Ponderosa cutover could not begin: ${await responseDetail(response)}`,
-        );
-      }
-    } catch (error) {
-      shutdownError = error instanceof Error ? error : new Error(String(error));
-    }
-  } else if (!hasExactDrainAuthority &&
-      (processAlive(canonicalState.pid) ||
-        Boolean(canonicalState.supervisorPid && processAlive(canonicalState.supervisorPid)))) {
-    throw new Error("A live schema-1 Ponderosa authority did not prove control ownership. Upgrade remains blocked.");
-  }
-
-  const authorityState = (): "live" | "drained" | "uncertain" => {
-    if (canonicalState.supervisorGeneration) {
-      if (canonicalState.supervisorPid && processAlive(canonicalState.supervisorPid)) return "live";
-      return supervisorDrained(paths, canonicalState) ? "drained" : "uncertain";
-    }
-    if (canonicalState.processBirthMarker) {
-      if (!processAlive(canonicalState.pid)) return "drained";
-      const marker = launcherProcessBirthMarker(canonicalState.pid);
-      if (marker === canonicalState.processBirthMarker) return "live";
-      return marker ? "drained" : "uncertain";
-    }
-    return processAlive(canonicalState.pid) ? "uncertain" : "drained";
-  };
-  const deadline = Date.now() + STOP_TIMEOUT_MS;
-  let observedAuthority = authorityState();
-  while (Date.now() < deadline && observedAuthority === "live") {
-    await delay(200);
-    observedAuthority = authorityState();
-  }
-  if (observedAuthority !== "drained") {
-    const detail = shutdownError ? ` ${shutdownError.message}` : "";
-    throw new Error(
-      `The exact schema-1 Ponderosa authority did not prove it drained; upgrade remains blocked.${detail}`,
-    );
-  }
-  if (!supervisorDrained(paths, canonicalState)) {
-    throw new Error("The schema-1 Windows Job did not publish its exact drained generation; upgrade remains blocked.");
-  }
-  removeSupervisorStatus(paths, canonicalState);
-  rmSync(paths.statePath, { force: true });
-  const daemonLock = path.join(paths.applicationDataDir, ".ponderosa-daemon.lock");
-  try {
-    const owner = JSON.parse(readFileSync(daemonLock, "utf8")) as { pid?: number };
-    if (owner.pid === canonicalState.pid) rmSync(daemonLock, { force: true });
-  } catch { /* Exact legacy daemon lock is already absent. */ }
-  return Boolean(current || hasExactDrainAuthority);
-}
-
 function selectedPort(configurationPort: number | undefined, requestedPort: number | undefined): number {
   const port = requestedPort ?? configurationPort ?? 8787;
   if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
@@ -734,8 +591,6 @@ export async function startPonderosa(input: {
   const release = await acquireOperationLockWithWait(input.paths.operationLockPath);
   const fetchFn = input.dependencies?.fetch ?? globalThis.fetch;
   try {
-    const legacy = readLegacyLauncherState(input.paths.statePath);
-    if (legacy) await cutoverLegacyLauncherState(input.paths, legacy, fetchFn);
     const existing = readLauncherState(input.paths.statePath);
     if (existing) {
       const immediate = await launcherStatus(existing, fetchFn);
@@ -855,11 +710,6 @@ export async function stopPonderosa(input: {
   const release = await acquireOperationLockWithWait(input.paths.operationLockPath);
   const fetchFn = input.fetch ?? globalThis.fetch;
   try {
-    const legacy = readLegacyLauncherState(input.paths.statePath);
-    if (legacy) {
-      const wasRunning = await cutoverLegacyLauncherState(input.paths, legacy, fetchFn);
-      return wasRunning ? "stopped" : "not_running";
-    }
     const state = readLauncherState(input.paths.statePath);
     if (!state) return "not_running";
     const current = await launcherStatus(state, fetchFn);

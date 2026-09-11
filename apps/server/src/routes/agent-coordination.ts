@@ -6,7 +6,7 @@ import {
   type AgentDto,
   type CommunicationEvent,
   type CoordinationRequestState,
-  type ImageAttachmentDto,
+  type AssetDto,
   type ModelOption,
   type RequestLifetime,
 } from "@ponderosa/core";
@@ -41,7 +41,7 @@ interface AgentCoordinationRoutesContext {
     agentId: string,
     event: CommunicationEvent,
     renderedText: string,
-    attachments?: ImageAttachmentDto[],
+    attachments?: AssetDto[],
   ): void;
   publishCoordinationV3Changed(
     agentId: string,
@@ -194,9 +194,7 @@ export function registerAgentCoordinationRoutes(
       delegations?: Array<{ recipientAgentId?: string; text?: string }>;
       completionMode?: "join" | "callback" | "record";
       wakePolicy?: "each_result" | "final_only";
-      awaitResult?: boolean;
       lifetime?: RequestLifetime;
-      deadlineAt?: string;
       requests?: Array<{ requestId?: string; recoveryOfRequestId?: string; recipientAgentId?: string; text?: string; lifetime?: RequestLifetime }>;
       join?: { id?: string; mode?: "all" | "any" | "quorum"; quorum?: number; deadlineAt?: string; satisfyingOutcomes?: CoordinationRequestState[]; requestIds?: string[]; wakePolicy?: "each_result" | "final_only" };
     };
@@ -212,7 +210,7 @@ export function registerAgentCoordinationRoutes(
     const steeringInjectionIds = coordinationV3.steeringInjectionIds(capability.runId);
     const body = request.body ?? {};
     const unknownTopLevel = Object.keys(body).filter((key) =>
-      !["idempotencyKey", "recipientAgentId", "text", "delegations", "completionMode", "wakePolicy", "awaitResult", "lifetime", "deadlineAt", "requests", "join"].includes(key));
+      !["idempotencyKey", "recipientAgentId", "text", "delegations", "completionMode", "wakePolicy", "lifetime", "requests", "join"].includes(key));
     if (unknownTopLevel.length) {
       return reply.code(400).send({ error: `unknown coordinate field(s): ${unknownTopLevel.join(", ")}` });
     }
@@ -226,8 +224,8 @@ export function registerAgentCoordinationRoutes(
       return reply.code(400).send({ error: "idempotencyKey must be a string" });
     }
     const shorthand = body.recipientAgentId !== undefined || body.text !== undefined || body.delegations !== undefined ||
-      body.completionMode !== undefined || body.wakePolicy !== undefined || body.awaitResult !== undefined ||
-      body.lifetime !== undefined || body.deadlineAt !== undefined;
+      body.completionMode !== undefined || body.wakePolicy !== undefined ||
+      body.lifetime !== undefined;
     if (shorthand && (body.requests !== undefined || body.join !== undefined)) {
       return reply.code(400).send({ error: "common delegation fields cannot be combined with requests or join" });
     }
@@ -235,10 +233,8 @@ export function registerAgentCoordinationRoutes(
     if (body.delegations !== undefined && hasSingleDelegation) {
       return reply.code(400).send({ error: "delegations cannot be combined with recipientAgentId or text" });
     }
-    if (hasSingleDelegation && (typeof body.recipientAgentId !== "string" || typeof body.text !== "string" ||
-        (body.awaitResult !== undefined && typeof body.awaitResult !== "boolean") ||
-        (body.deadlineAt !== undefined && typeof body.deadlineAt !== "string"))) {
-      return reply.code(400).send({ error: "coordinate shorthand requires string recipientAgentId and text; awaitResult is boolean and deadlineAt is an ISO timestamp" });
+    if (hasSingleDelegation && (typeof body.recipientAgentId !== "string" || typeof body.text !== "string")) {
+      return reply.code(400).send({ error: "coordinate shorthand requires string recipientAgentId and text" });
     }
     if (body.delegations !== undefined) {
       if (body.delegations.length === 0 || body.delegations.length > 100 || body.delegations.some((item) =>
@@ -253,16 +249,6 @@ export function registerAgentCoordinationRoutes(
     }
     if (body.wakePolicy !== undefined && !["each_result", "final_only"].includes(body.wakePolicy)) {
       return reply.code(400).send({ error: "wakePolicy must be each_result or final_only" });
-    }
-    if (body.completionMode !== undefined && body.awaitResult !== undefined) {
-      return reply.code(400).send({ error: "completionMode cannot be combined with legacy awaitResult" });
-    }
-    if (body.lifetime !== undefined && body.deadlineAt !== undefined) {
-      return reply.code(400).send({ error: "lifetime cannot be combined with legacy deadlineAt" });
-    }
-    if ((body.awaitResult !== undefined && typeof body.awaitResult !== "boolean") ||
-        (body.deadlineAt !== undefined && typeof body.deadlineAt !== "string")) {
-      return reply.code(400).send({ error: "awaitResult must be boolean and deadlineAt must be an ISO timestamp" });
     }
     if (body.lifetime !== undefined) {
       if (!body.lifetime || typeof body.lifetime !== "object" || Array.isArray(body.lifetime) ||
@@ -338,17 +324,13 @@ export function registerAgentCoordinationRoutes(
         ? canonicalizeProviderText(delegation.text, steeringInjectionIds)
         : delegation.text,
     }));
-    const completionMode = shorthand
-      ? body.completionMode ?? (body.awaitResult === false ? "callback" : "join")
-      : undefined;
+    const completionMode = shorthand ? body.completionMode ?? "join" : undefined;
     if (shorthand && completionMode !== "join" && body.wakePolicy !== undefined) {
       return reply.code(400).send({ error: "wakePolicy is only valid when completionMode is join" });
     }
     const commonLifetime = body.lifetime?.kind === "deadline"
       ? { kind: "deadline" as const, at: body.lifetime.at.trim() }
-      : body.lifetime ?? (body.deadlineAt?.trim()
-        ? { kind: "deadline" as const, at: body.deadlineAt.trim() }
-        : { kind: "indefinite" as const });
+      : body.lifetime ?? { kind: "indefinite" as const };
     const requests: Array<{ requestId?: string; recoveryOfRequestId?: string; recipientAgentId?: string; text?: string; lifetime?: RequestLifetime }> = shorthand ? commonDelegations.map((delegation) => ({
       recipientAgentId: delegation.recipientAgentId,
       text: delegation.text,
