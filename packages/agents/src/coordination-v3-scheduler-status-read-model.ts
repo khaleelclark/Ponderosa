@@ -216,6 +216,26 @@ export class CoordinationV3SchedulerStatusReadModel {
     `).get(runId, fencingToken, workerId ?? null, workerId ?? null));
   }
 
+  activeAgentRun(agentId: string): AgentCoordinationV3Dto["activeRun"] {
+    const run = this.sqlite.prepare(`
+      SELECT id, status, fencing_token, prompt_injection_state, context_disposition,
+        created_at, lease_expires_at
+      FROM scheduler_runs WHERE agent_id = ? AND status IN ('leased', 'running') LIMIT 1
+    `).get(agentId) as {
+      id: string; status: string; fencing_token: number;
+      prompt_injection_state: "not_injected" | "injecting" | "injected";
+      context_disposition: "fresh_task" | "continued_session" | "reseeded";
+      created_at: string; lease_expires_at: string;
+    } | undefined;
+    return run ? {
+      id: run.id, status: run.status, fencingToken: run.fencing_token,
+      promptInjectionState: run.prompt_injection_state,
+      providerContextDisposition: run.context_disposition,
+      leaseStartedAt: run.created_at,
+      leaseExpiresAt: run.lease_expires_at,
+    } : undefined;
+  }
+
   agentSnapshot(agentId: string): AgentCoordinationV3Dto {
     const requests = this.sqlite.prepare(`
       SELECT id, requester_agent_id, recipient_agent_id, state, version, deadline_at, updated_at
@@ -244,16 +264,7 @@ export class CoordinationV3SchedulerStatusReadModel {
       FROM agent_activations WHERE agent_id = ?
       ORDER BY created_at DESC, id DESC LIMIT 100
     `).all(agentId) as Array<{ id: string; kind: string; priority: number; state: string; created_at: string }>;
-    const activeRun = this.sqlite.prepare(`
-      SELECT id, status, fencing_token, prompt_injection_state, context_disposition,
-        created_at, lease_expires_at
-      FROM scheduler_runs WHERE agent_id = ? AND status IN ('leased', 'running') LIMIT 1
-    `).get(agentId) as {
-      id: string; status: string; fencing_token: number;
-      prompt_injection_state: "not_injected" | "injecting" | "injected";
-      context_disposition: "fresh_task" | "continued_session" | "reseeded";
-      created_at: string; lease_expires_at: string;
-    } | undefined;
+    const activeRun = this.activeAgentRun(agentId);
     return {
       availability: this.getAgentAvailability(agentId),
       requests: requests.map((request) => ({
@@ -277,13 +288,7 @@ export class CoordinationV3SchedulerStatusReadModel {
         id: activation.id, kind: activation.kind, priority: activation.priority,
         state: activation.state, createdAt: activation.created_at,
       })),
-      ...(activeRun ? { activeRun: {
-        id: activeRun.id, status: activeRun.status, fencingToken: activeRun.fencing_token,
-        promptInjectionState: activeRun.prompt_injection_state,
-        providerContextDisposition: activeRun.context_disposition,
-        leaseStartedAt: activeRun.created_at,
-        leaseExpiresAt: activeRun.lease_expires_at,
-      } } : {}),
+      ...(activeRun ? { activeRun } : {}),
     };
   }
 

@@ -1,0 +1,58 @@
+{
+  "idle": {
+    "send": {
+      "count": 12,
+      "p50": 17.50346300000001,
+      "p95": 57.759008,
+      "max": 57.759008
+    },
+    "upload": {
+      "count": 12,
+      "p50": 3.6605340000000126,
+      "p95": 10.40452700000003,
+      "max": 10.40452700000003
+    },
+    "serverTiming": [
+      "validation;dur=0.7, artifact;dur=0, sqlite;dur=0.3, canonical;dur=18.1, projection;dur=3, publish;dur=0.1, total;dur=22.2",
+      "validation;dur=0.6, artifact;dur=0, sqlite;dur=0.4, canonical;dur=11.1, projection;dur=3.1, publish;dur=0.1, total;dur=15.3",
+      "validation;dur=0.7, artifact;dur=0, sqlite;dur=0.3, canonical;dur=11, projection;dur=3.3, publish;dur=0.1, total;dur=15.6",
+      "validation;dur=0.5, artifact;dur=0, sqlite;dur=0.3, canonical;dur=10.6, projection;dur=3.5, publish;dur=0.1, total;dur=15.1",
+      "validation;dur=0.5, artifact;dur=0, sqlite;dur=0.3, canonical;dur=11, projection;dur=3.1, publish;dur=0.1, total;dur=15.1",
+      "validation;dur=0.5, artifact;dur=0, sqlite;dur=0.3, canonical;dur=11.6, projection;dur=3.7, publish;dur=0.1, total;dur=16.2",
+      "validation;dur=0.6, artifact;dur=0, sqlite;dur=0.4, canonical;dur=11.6, projection;dur=3.3, publish;dur=0.1, total;dur=16",
+      "validation;dur=0.6, artifact;dur=0, sqlite;dur=0.3, canonical;dur=11.7, projection;dur=3.8, publish;dur=0.1, total;dur=16.4",
+      "validation;dur=0.5, artifact;dur=0, sqlite;dur=0.3, canonical;dur=11.8, projection;dur=4, publish;dur=0.1, total;dur=16.7",
+      "validation;dur=0.5, artifact;dur=0, sqlite;dur=0.3, canonical;dur=12, projection;dur=4.2, publish;dur=0.1, total;dur=17.1",
+      "validation;dur=0.5, artifact;dur=0, sqlite;dur=0.3, canonical;dur=12.4, projection;dur=3.8, publish;dur=0.1, total;dur=17.3",
+      "validation;dur=0.6, artifact;dur=0, sqlite;dur=0.3, canonical;dur=11.9, projection;dur=3.8, publish;dur=0.1, total;dur=16.7"
+    ]
+  },
+  "concurrent-directory-load": {
+    "send": {
+      "count": 12,
+      "p50": 61.552583000000595,
+      "p95": 137.97530099999858,
+      "max": 137.97530099999858
+    },
+    "upload": {
+      "count": 12,
+      "p50": 405.6278360000001,
+      "p95": 509.0549719999999,
+      "max": 509.0549719999999
+    },
+    "serverTiming": [
+      "validation;dur=0.6, artifact;dur=0, sqlite;dur=0.3, canonical;dur=11.8, projection;dur=5, publish;dur=0.1, total;dur=17.9",
+      "validation;dur=0.6, artifact;dur=0, sqlite;dur=0.3, canonical;dur=14, projection;dur=4.2, publish;dur=0.1, total;dur=19.2",
+      "validation;dur=0.6, artifact;dur=0, sqlite;dur=0.3, canonical;dur=13.6, projection;dur=4.3, publish;dur=0.1, total;dur=18.9",
+      "validation;dur=0.7, artifact;dur=0, sqlite;dur=0.4, canonical;dur=13.6, projection;dur=4.5, publish;dur=0.1, total;dur=19.2",
+      "validation;dur=0.8, artifact;dur=0, sqlite;dur=0.3, canonical;dur=14.8, projection;dur=7.4, publish;dur=0.1, total;dur=23.5",
+      "validation;dur=0.5, artifact;dur=0, sqlite;dur=0.3, canonical;dur=16.3, projection;dur=4.6, publish;dur=0.1, total;dur=21.9",
+      "validation;dur=0.6, artifact;dur=0, sqlite;dur=0.3, canonical;dur=16.3, projection;dur=4.9, publish;dur=0.1, total;dur=22.2",
+      "validation;dur=0.6, artifact;dur=0, sqlite;dur=0.3, canonical;dur=15.1, projection;dur=7.8, publish;dur=0.1, total;dur=23.9",
+      "validation;dur=0.5, artifact;dur=0, sqlite;dur=0.3, canonical;dur=16.5, projection;dur=4.9, publish;dur=0.1, total;dur=22.3",
+      "validation;dur=1, artifact;dur=0, sqlite;dur=0.5, canonical;dur=25.3, projection;dur=11.5, publish;dur=0.1, total;dur=38.5",
+      "validation;dur=0.7, artifact;dur=0, sqlite;dur=0.3, canonical;dur=19.1, projection;dur=5.3, publish;dur=0.1, total;dur=25.6",
+      "validation;dur=0.5, artifact;dur=0, sqlite;dur=0.3, canonical;dur=14.6, projection;dur=7.6, publish;dur=0.1, total;dur=23.1"
+    ]
+  }
+}

@@ -769,6 +769,10 @@ export class CoordinationV3Store {
     return this.schedulerStatusReadModel.getAgentAvailability(agentId);
   }
 
+  activeAgentRun(agentId: string): import("@ponderosa/core").AgentCoordinationV3Dto["activeRun"] {
+    return this.schedulerStatusReadModel.activeAgentRun(agentId);
+  }
+
   activeWaitDependency(
     agentId: string,
     scope: import("@ponderosa/core").AgentHealthProjectionDto["scope"],

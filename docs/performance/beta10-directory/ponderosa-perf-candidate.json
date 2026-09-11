@@ -1,0 +1,133 @@
+{
+  "label": "candidate",
+  "fixture": {
+    "projects": 3,
+    "agents": 36,
+    "chats": 12
+  },
+  "navigationMilestone": "sidebar All Chats visible",
+  "requests": {
+    "agent?projectId=PROJECT&limit=5": {
+      "count": 30,
+      "p50": 4.811742999999979,
+      "p95": 8.69854399999997,
+      "max": 28.582841000000002
+    },
+    "agent?active=true&limit=5": {
+      "count": 30,
+      "p50": 13.673606000000063,
+      "p95": 19.21629299999995,
+      "max": 19.653321000000005
+    },
+    "agent?outcomes=true&limit=5": {
+      "count": 30,
+      "p50": 13.589486999999963,
+      "p95": 19.04758300000003,
+      "max": 19.679509999999937
+    },
+    "conversation?projectId=PROJECT&limit=5": {
+      "count": 30,
+      "p50": 1.0919880000001285,
+      "p95": 3.01815600000009,
+      "max": 3.0209910000000946
+    }
+  },
+  "clients": [
+    {
+      "initialMs": 258.520937,
+      "repeatMs": 162.93447200000082,
+      "metrics": {
+        "LayoutDuration": 0,
+        "RecalcStyleDuration": 0,
+        "ScriptDuration": 1.044718,
+        "TaskDuration": 1.139196
+      },
+      "longTasks": {
+        "count": 1,
+        "p50": 96,
+        "p95": 96,
+        "max": 96
+      },
+      "requests": {
+        "/api/projects/PROJECT_A/browser-sessions?conversationId=67684a8d-50ba-42a4-9949-3c1695ef1d69": {
+          "count": 6,
+          "p50": 2.446,
+          "p95": 2.627,
+          "max": 2.627
+        },
+        "/api/notifications?limit=100": {
+          "count": 10,
+          "p50": 3.217,
+          "p95": 4.73,
+          "max": 4.73
+        },
+        "/api/notifications/projection": {
+          "count": 10,
+          "p50": 3.091,
+          "p95": 4.513,
+          "max": 4.513
+        },
+        "/api/projects/PROJECT_A/agent-health": {
+          "count": 10,
+          "p50": 7.857,
+          "p95": 11.924,
+          "max": 11.924
+        },
+        "/api/workspace/directory/agent?limit=25&projectId=PROJECT_A&summary=true": {
+          "count": 10,
+          "p50": 7.444,
+          "p95": 13.361,
+          "max": 13.361
+        },
+        "/api/workspace/directory/agent?limit=25&projectId=PROJECT_A&active=true&summary=true": {
+          "count": 10,
+          "p50": 9.967,
+          "p95": 18.173,
+          "max": 18.173
+        },
+        "/api/projects/PROJECT_A/agents?limit=100": {
+          "count": 10,
+          "p50": 4.76,
+          "p95": 5.653,
+          "max": 5.653
+        }
+      }
+    },
+    {
+      "initialMs": 249.94235100000014,
+      "repeatMs": 170.66684500000338,
+      "metrics": {
+        "LayoutDuration": 0,
+        "RecalcStyleDuration": 0,
+        "ScriptDuration": 0.7339,
+        "TaskDuration": 0.774705
+      },
+      "longTasks": {
+        "count": 1,
+        "p50": 94,
+        "p95": 94,
+        "max": 94
+      },
+      "requests": {
+        "/api/notifications?limit=100": {
+          "count": 10,
+          "p50": 3.257,
+          "p95": 4.006,
+          "max": 4.006
+        },
+        "/api/notifications/projection": {
+          "count": 10,
+          "p50": 2.416,
+          "p95": 2.712,
+          "max": 2.712
+        },
+        "/api/projects/PROJECT_B/browser-sessions?conversationId=2afbc94e-cb20-4522-8712-150fa2272506": {
+          "count": 5,
+          "p50": 2.504,
+          "p95": 2.617,
+          "max": 2.617
+        }
+      }
+    }
+  ]
+}

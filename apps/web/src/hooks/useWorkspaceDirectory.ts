@@ -60,6 +60,7 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     onlyEnabled?: boolean;
     enabled?: boolean;
     retainPreviousData?: boolean;
+    summary?: boolean;
   },
 ) {
   const requestedSearch = options.search?.trim() ?? "";
@@ -82,6 +83,7 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     options.active,
     options.recentOutcomes,
     options.onlyEnabled,
+    options.summary,
   );
   const query = useInfiniteQuery({
     queryKey,
@@ -97,6 +99,7 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
         active: options.active,
         outcomes: options.recentOutcomes,
         enabled: options.onlyEnabled,
+        summary: options.summary,
       }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (
