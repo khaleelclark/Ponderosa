@@ -15,7 +15,7 @@ export class AgentWorkProjection {
   constructor(
     private readonly store: Pick<
       AgentStore,
-      "listAgents" | "getProjectArtifact" | "operatorCanReadProjectArtifact"
+      "listAgents" | "getProjectArtifact" | "operatorCanReadProjectArtifact" | "agentCreationPending"
     >,
     private readonly coordination: Pick<
       CoordinationV3Store,
@@ -39,7 +39,8 @@ export class AgentWorkProjection {
     const agentName = (id: string | undefined): string =>
       id ? names.get(id) ?? "Deleted Agent" : "You";
     const projection = this.coordination.agentWorkItems(input);
-    const items = projection.items;
+    const items = projection.items.filter((item) =>
+      !item.agentIds.some((agentId) => this.store.agentCreationPending(agentId)));
     for (const item of items) {
       if (item.kind === "request") {
         item.title = `${agentName(item.requesterAgentId)} asked ${agentName(item.recipientAgentId)} to work`;
@@ -122,6 +123,7 @@ export class AgentWorkProjection {
       || orderedDecisions.length > decisionLimit;
     const decisions = orderedDecisions.slice(0, decisionLimit);
     for (const decision of decisions) {
+      if (this.store.agentCreationPending(decision.agentId)) continue;
       const runItem = items.find((item) =>
         item.kind === "run" && item.referenceIds.includes(decision.runId));
       const responseActivation = items.find((item) =>
@@ -400,6 +402,15 @@ export class AgentWorkProjection {
     kind: AgentWorkItemDto["kind"];
     recordId: string;
   }): AgentWorkItemDetailsDto | undefined {
+    const focused = this.coordination.agentWorkItems({
+      projectId: input.projectId,
+      ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+      focusId: `${input.kind}:${input.recordId}`,
+      limit: 1,
+    }).items.find((item) => item.kind === input.kind && item.recordId === input.recordId);
+    if (focused?.agentIds.some((agentId) => this.store.agentCreationPending(agentId))) {
+      return undefined;
+    }
     let details: AgentWorkItemDetailsDto["details"] | undefined;
     let requestLifecycle: AgentWorkItemDetailsDto["requestLifecycle"];
     if (input.kind === "decision") {
@@ -407,6 +418,7 @@ export class AgentWorkProjection {
       if (
         !decision
         || decision.projectId !== input.projectId
+        || this.store.agentCreationPending(decision.agentId)
         || (input.conversationId && decision.conversationId !== input.conversationId)
       ) return undefined;
       details = [
@@ -479,7 +491,7 @@ export class AgentWorkProjection {
 export function registerAgentWorkRoutes(
   app: FastifyInstance,
   context: {
-    store: Pick<AgentStore, "getProject" | "getConversation" | "getAgent">;
+    store: Pick<AgentStore, "getProject" | "getConversation" | "getAgent" | "agentCreationPending">;
     projection: AgentWorkProjection;
   },
 ): void {
@@ -498,7 +510,7 @@ export function registerAgentWorkRoutes(
     }
     if (request.query.agentId) {
       const agent = store.getAgent(request.query.agentId);
-      if (!agent || agent.projectId !== project.id) {
+      if (!agent || agent.projectId !== project.id || store.agentCreationPending(agent.id)) {
         return reply.code(404).send({ error: "agent not found in project" });
       }
     }

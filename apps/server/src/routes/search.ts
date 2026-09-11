@@ -9,7 +9,7 @@ import {
 
 export function registerSearchRoutes(
   app: FastifyInstance,
-  { globalChatSearch, store, workspace }: SearchRoutesContext,
+  { globalChatSearch, store, workspace, coordinationV3 }: SearchRoutesContext,
 ): void {
   app.get<{ Querystring: { q?: string; limit?: string; kind?: string } }>("/api/search", async (request, reply) => {
     try {
@@ -42,13 +42,28 @@ export function registerSearchRoutes(
       const messagePage = combined?.messagesDone
         ? { items: [], history: { limit, hasMore: false } }
         : store.getAllChatPage({ limit, cursor: combined?.messages });
+      const receiptMaps = new Map([...new Set(
+        messagePage.items.map(item => item.project.id),
+      )].map(projectId => [
+        projectId,
+        coordinationV3.deliveryReceiptsForCommunications(
+          projectId,
+          messagePage.items.flatMap(item =>
+            item.project.id === projectId ? [item.communicationEventId] : []
+          ),
+        ),
+      ] as const));
       const messageItems = messagePage.items.map(item => {
         const communication = store.getCommunicationEvent(
           item.project.id,
           item.communicationEventId,
         );
         const recipientIds = communicationRecipientAgentIds(communication);
-        if (!recipientIds.length) return item;
+        const deliveryReceipts = receiptMaps.get(item.project.id)
+          ?.get(item.communicationEventId) ?? [];
+        if (!recipientIds.length) {
+          return deliveryReceipts.length ? { ...item, deliveryReceipts } : item;
+        }
         const projectAgents = store.listAgents(item.project.id);
         const agentMentions = resolveAgentMentionBindings(
           item.project.id,
@@ -64,7 +79,13 @@ export function registerSearchRoutes(
             ),
           ],
         );
-        return agentMentions.length ? { ...item, agentMentions } : item;
+        return agentMentions.length || deliveryReceipts.length
+          ? {
+              ...item,
+              ...(agentMentions.length ? { agentMentions } : {}),
+              ...(deliveryReceipts.length ? { deliveryReceipts } : {}),
+            }
+          : item;
       });
       const decisionPage = combined?.decisionsDone
         ? { events: [], hasMore: false as const }

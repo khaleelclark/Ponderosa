@@ -8,9 +8,13 @@ import {
 import type { AgentStore, CoordinationV3Store } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
 import type { ActiveRun, AgentMessageCapability } from "../app-contracts.js";
-import type { createCommunicationArtifactAuthority } from "../communication-artifacts.js";
+import {
+  communicationArtifactIdentity,
+  type createCommunicationArtifactAuthority,
+} from "../communication-artifacts.js";
 import type { PreparedCommunicationArtifact } from "./conversation-deliveries.js";
 import { derivedRunActionKey } from "../security.js";
+import { leaseAgentDelivery, leaseConversationDelivery } from "../delivery-leases.js";
 import {
   isRequestCommunicationHandoffKind,
   requestUpdateCommunicationEventId,
@@ -23,6 +27,11 @@ interface AgentRequestCommandRoutesContext {
   coordinationV3: CoordinationV3Store;
   agentMessageCapabilities: ReadonlyMap<string, AgentMessageCapability>;
   activeRuns: ReadonlyMap<string, ActiveRun>;
+  projectDeletionInProgress(projectId: string): boolean;
+  conversationDeletionInProgress(conversationId: string): boolean;
+  agentDeletionInProgress(agentId: string): boolean;
+  conversationDeliveryLeases: Map<string, number>;
+  agentDeliveryLeases: Map<string, number>;
   capabilityMatchesCleanupRun(
     capability: AgentMessageCapability,
     run: ActiveRun | undefined,
@@ -36,6 +45,7 @@ interface AgentRequestCommandRoutesContext {
   requestArtifactAccess: CommunicationArtifactAuthority["requestArtifactAccess"];
   runtimeArtifactMetadata: CommunicationArtifactAuthority["runtimeArtifactMetadata"];
   stageCommunicationArtifact: CommunicationArtifactAuthority["stageCommunicationArtifact"];
+  removeRuntimeArtifactReservation(projectId: string, artifactId: string): void;
   recordCommunication(event: CommunicationEvent): CommunicationEvent;
   projectCommunicationToAgentAudit(
     agentId: string,
@@ -58,12 +68,18 @@ export function registerAgentRequestCommandRoutes(
     coordinationV3,
     agentMessageCapabilities,
     activeRuns,
+    projectDeletionInProgress,
+    conversationDeletionInProgress,
+    agentDeletionInProgress,
+    conversationDeliveryLeases,
+    agentDeliveryLeases,
     capabilityMatchesCleanupRun,
     runAuthorization,
     projectCommunicationArtifact,
     requestArtifactAccess,
     runtimeArtifactMetadata,
     stageCommunicationArtifact,
+    removeRuntimeArtifactReservation,
     recordCommunication,
     projectCommunicationToAgentAudit,
     publishCoordinationV3Changed,
@@ -79,6 +95,30 @@ export function registerAgentRequestCommandRoutes(
     const active = capability ? activeRuns.get(capability.agentId) : undefined;
     if (!capability || !capabilityMatchesCleanupRun(capability, active) || active!.messageCapability !== token) {
       return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
+    }
+    const body = request.body as unknown;
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return reply.code(400).send({ error: "request update body must be an object" });
+    }
+    const candidate = body as Record<string, unknown>;
+    const unknownFields = Object.keys(candidate).filter((key) =>
+      !["requestId", "updateId", "kind", "text", "question", "inReplyToUpdateId"].includes(key));
+    if (unknownFields.length) {
+      return reply.code(400).send({ error: `unknown request update field(s): ${unknownFields.join(", ")}` });
+    }
+    for (const key of ["requestId", "updateId", "text", "question", "inReplyToUpdateId"] as const) {
+      if (candidate[key] !== undefined && typeof candidate[key] !== "string") {
+        return reply.code(400).send({ error: `${key} must be a string` });
+      }
+    }
+    const allowedKinds: readonly CoordinationRequestUpdateKind[] = [
+      "progress", "waiting_dependency", "dependency_resolved", "question", "answer",
+      "completed", "blocked", "failed", "cancelled", "superseded",
+      "recipient_unavailable", "outcome_unknown", "expired",
+    ];
+    if (candidate.kind !== undefined &&
+        (typeof candidate.kind !== "string" || !allowedKinds.includes(candidate.kind as CoordinationRequestUpdateKind))) {
+      return reply.code(400).send({ error: "kind is not a recognized request update kind" });
     }
     const steeringInjectionIds = coordinationV3.steeringInjectionIds(capability.runId);
     const suppliedRequestId = request.body?.requestId?.trim();
@@ -123,17 +163,67 @@ export function registerAgentRequestCommandRoutes(
         ? "Retry without requestId to target the current run's attached request"
         : "Retry with one exact currentRequestId",
     });
+    const currentRequest = coordinationV3.getRequest(requestId);
+    if (!currentRequest) return reply.code(409).send({ error: "request not found" });
     const updateId = request.body?.updateId?.trim() || derivedRunActionKey(capability.runId, "report", {
       requestId,
       kind,
       text: handoffText,
       inReplyToUpdateId: request.body.inReplyToUpdateId?.trim() || null,
     });
-    let artifact: PreparedCommunicationArtifact | undefined;
+    const artifactIdentity = shouldBackTextWithArtifact(handoffText)
+      ? communicationArtifactIdentity({
+          communicationId: updateId,
+          role: "long_text",
+          title: kind === "question" ? "Blocking question" : "Request result",
+          content: handoffText,
+          originAgentId: capability.agentId,
+          executionId: capability.runId,
+        })
+      : undefined;
+    const requestUpdateInput = (
+      backingArtifact: ReturnType<typeof communicationArtifactIdentity> | undefined,
+    ) => ({
+      requestId,
+      updateId,
+      kind,
+      actor: { kind: "agent" as const, id: capability.agentId },
+      runAuthorization: runAuthorization(capability),
+      ...(request.body.inReplyToUpdateId?.trim() ? { inReplyToUpdateId: request.body.inReplyToUpdateId.trim() } : {}),
+      payload: {
+        text: backingArtifact
+          ? `Full ${kind === "question" ? "question" : "result"}: ponderosa://artifact/${backingArtifact.id}`
+          : handoffText,
+        ...(backingArtifact ? {
+          artifactId: backingArtifact.id,
+          resultRef: `ponderosa://artifact/${backingArtifact.id}`,
+        } : {}),
+        executionId: capability.runId,
+        canonicalHandoff: (["completed", "blocked", "failed"] as CoordinationRequestUpdateKind[]).includes(kind),
+      },
+      ...(backingArtifact ? { artifacts: [runtimeArtifactMetadata(backingArtifact)] } : {}),
+    });
+    let durableResult: ReturnType<CoordinationV3Store["updateRequest"]> | undefined;
     try {
-      if (shouldBackTextWithArtifact(handoffText)) {
+      durableResult = coordinationV3.replayRequestUpdate(
+        requestUpdateInput(artifactIdentity),
+      );
+    } catch (error) {
+      return reply.code(409).send({ error: error instanceof Error ? error.message : "request update replay failed" });
+    }
+    let artifact: PreparedCommunicationArtifact | undefined;
+    const cleanupArtifact = () => {
+      if (!artifact?.reservationCreated) return;
+      try {
+        if (!coordinationV3.runtimeArtifact(artifact.id)) {
+          removeRuntimeArtifactReservation(currentRequest.projectId, artifact.id);
+        }
+      } catch { /* preserve uncertain authority for startup reconciliation */ }
+    };
+    try {
+      if (!durableResult && artifactIdentity) {
         artifact = await stageCommunicationArtifact({
-          projectId: store.getAgent(capability.agentId)!.projectId,
+          projectId: currentRequest.projectId,
           communicationId: updateId,
           role: "long_text",
           title: kind === "question" ? "Blocking question" : "Request result",
@@ -143,32 +233,72 @@ export function registerAgentRequestCommandRoutes(
           createdAt: new Date().toISOString(),
         });
       }
-      const persistedText = artifact
-        ? `Full ${kind === "question" ? "question" : "result"}: ponderosa://artifact/${artifact.id}`
-        : handoffText;
-      const result = coordinationV3.updateRequest({
-        requestId,
-        updateId,
-        kind,
-        actor: { kind: "agent", id: capability.agentId },
-        runAuthorization: runAuthorization(capability),
-        ...(request.body.inReplyToUpdateId?.trim() ? { inReplyToUpdateId: request.body.inReplyToUpdateId.trim() } : {}),
-        payload: {
-          text: persistedText,
-          ...(artifact ? { artifactId: artifact.id, resultRef: `ponderosa://artifact/${artifact.id}` } : {}),
-          executionId: capability.runId,
-          canonicalHandoff: (["completed", "blocked", "failed"] as CoordinationRequestUpdateKind[]).includes(kind),
-        },
-        ...(artifact ? { artifacts: [runtimeArtifactMetadata(artifact)] } : {}),
-      });
+    } catch (error) {
+      return reply.code(409).send({ error: error instanceof Error ? error.message : "request artifact staging failed" });
+    }
+    const updateInput = requestUpdateInput(artifact ?? artifactIdentity);
+    const resultArtifactId = (artifact ?? artifactIdentity)?.id;
+    if (!durableResult && artifact) {
+      try {
+        durableResult = coordinationV3.replayRequestUpdate(updateInput);
+      } catch (error) {
+        cleanupArtifact();
+        return reply.code(409).send({ error: error instanceof Error ? error.message : "request update replay failed" });
+      }
+    }
+    let releaseDeliveryLease = () => {};
+    if (!durableResult) {
+      const currentAuthor = store.getAgent(capability.agentId);
+      if (!currentAuthor || currentAuthor.archived || currentRequest.projectId !== currentAuthor.projectId) {
+        cleanupArtifact();
+        return reply.code(409).send({ error: "request participants are no longer available" });
+      }
+      const conversation = currentRequest.conversationId
+        ? store.getConversation(currentRequest.conversationId)
+        : undefined;
+      if (projectDeletionInProgress(currentAuthor.projectId) ||
+          (currentRequest.conversationId &&
+            (!conversation || conversation.projectId !== currentAuthor.projectId || conversation.archived ||
+              conversationDeletionInProgress(currentRequest.conversationId)))) {
+        cleanupArtifact();
+        return reply.code(409).send({ error: "request Chat is no longer available" });
+      }
+      const leasedAgentIds = [...new Set([
+        capability.agentId,
+        currentRequest.recipientAgentId,
+        ...(currentRequest.requesterAgentId ? [currentRequest.requesterAgentId] : []),
+      ])];
+      const participants = leasedAgentIds.map((agentId) => store.getAgent(agentId));
+      if (participants.some((agent) => !agent || agent.archived ||
+          agent.projectId !== currentAuthor.projectId ||
+          (currentRequest.conversationId && agent.conversationId !== currentRequest.conversationId))) {
+        cleanupArtifact();
+        return reply.code(409).send({ error: "request participants are no longer available" });
+      }
+      if (leasedAgentIds.some(agentDeletionInProgress)) {
+        cleanupArtifact();
+        return reply.code(409).send({ error: "Agent deletion is in progress" });
+      }
+      releaseDeliveryLease = conversation
+        ? leaseConversationDelivery(
+            conversationDeliveryLeases,
+            agentDeliveryLeases,
+            conversation.id,
+            leasedAgentIds,
+          )
+        : leaseAgentDelivery(agentDeliveryLeases, leasedAgentIds);
+    }
+    try {
+      const result = durableResult ?? coordinationV3.updateRequest(updateInput);
+      durableResult = result;
       const changedRequest = coordinationV3.getRequest(requestId);
       if (artifact && changedRequest) projectCommunicationArtifact(
-        store.getAgent(capability.agentId)!.projectId,
+        currentRequest.projectId,
         capability.agentId,
         artifact,
         requestArtifactAccess(updateId, changedRequest),
       );
-      const projectId = store.getAgent(capability.agentId)!.projectId;
+      const projectId = currentRequest.projectId;
       const requestLifecycle = changedRequest?.conversationId
         ? coordinationV3.requestLifecycleDetails({
             projectId,
@@ -257,9 +387,22 @@ export function registerAgentRequestCommandRoutes(
         publishCoordinationV3Changed(changedRequest.recipientAgentId, { conversationIds });
       }
       notifyScheduler();
-      return { ...result, ...(artifact ? { resultRef: `ponderosa://artifact/${artifact.id}` } : {}) };
+      return { ...result, ...(resultArtifactId ? { resultRef: `ponderosa://artifact/${resultArtifactId}` } : {}) };
     } catch (error) {
+      if (durableResult) {
+        return reply.code(202).send({
+          ...durableResult,
+          committed: true,
+          recovering: true,
+          ...(resultArtifactId ? { resultRef: `ponderosa://artifact/${resultArtifactId}` } : {}),
+        });
+      }
       return reply.code(409).send({ error: error instanceof Error ? error.message : "request update failed" });
+    } finally {
+      if (artifact && !durableResult) {
+        cleanupArtifact();
+      }
+      releaseDeliveryLease();
     }
   });
 }

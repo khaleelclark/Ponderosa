@@ -52,17 +52,14 @@ export class CoordinationV3CoordinateAuthority {
     ) => void,
   ) {}
 
-  coordinate(
-    input: CoordinateV3Input,
-    now = new Date().toISOString(),
-  ): CoordinateV3Result {
-    if (!input.idempotencyKey.trim()) {
-      throw new Error("idempotencyKey is required");
-    }
-    if (input.requests.length === 0 && !input.join?.requestIds?.length) {
-      throw new Error("at least one new or existing request is required");
-    }
-    const normalized = {
+  private requestHash(input: CoordinateV3Input): string {
+    const join = input.join
+      ? (({ continuationRequestIds: _serverDerived, ...submitted }) => ({
+          ...submitted,
+          id: input.join?.id ?? null,
+        }))(input.join)
+      : null;
+    return payloadHash({
       projectId: input.projectId,
       conversationId: input.conversationId ?? null,
       requesterAgentId: input.requesterAgentId,
@@ -74,19 +71,47 @@ export class CoordinationV3CoordinateAuthority {
         ...request,
         requestId: request.requestId ?? null,
       })),
-      join: input.join ? { ...input.join, id: input.join.id ?? null } : null,
-    };
-    const hash = payloadHash(normalized);
+      join,
+    });
+  }
 
+  replayCoordinate(input: CoordinateV3Input): CoordinateV3Result | undefined {
+    if (!input.idempotencyKey.trim()) throw new Error("idempotencyKey is required");
+    if (input.requests.length === 0 && !input.join?.requestIds?.length) {
+      throw new Error("at least one new or existing request is required");
+    }
     return this.sqlite.transaction(() => {
+      const replay = this.support.idempotentReplay<CoordinateV3Result>(
+        input.projectId,
+        input.actorScope,
+        "coordinate",
+        input.idempotencyKey,
+        this.requestHash(input),
+      );
+      if (replay) return { ...replay, replayed: true };
       if (input.runAuthorization) {
         this.support.requireAuthorizedRun(
           input.runAuthorization,
-          input.conversationId
-            ? `conversation:${input.conversationId}`
-            : undefined,
+          input.conversationId ? `conversation:${input.conversationId}` : undefined,
         );
       }
+      return undefined;
+    })();
+  }
+
+  coordinate(
+    input: CoordinateV3Input,
+    now = new Date().toISOString(),
+  ): CoordinateV3Result {
+    if (!input.idempotencyKey.trim()) {
+      throw new Error("idempotencyKey is required");
+    }
+    if (input.requests.length === 0 && !input.join?.requestIds?.length) {
+      throw new Error("at least one new or existing request is required");
+    }
+    const hash = this.requestHash(input);
+
+    return this.sqlite.transaction(() => {
       const replay = this.support.idempotentReplay<CoordinateV3Result>(
         input.projectId,
         input.actorScope,
@@ -95,6 +120,14 @@ export class CoordinationV3CoordinateAuthority {
         hash,
       );
       if (replay) return { ...replay, replayed: true };
+      if (input.runAuthorization) {
+        this.support.requireAuthorizedRun(
+          input.runAuthorization,
+          input.conversationId
+            ? `conversation:${input.conversationId}`
+            : undefined,
+        );
+      }
       this.support.requireProject(input.projectId);
       if (input.requesterAgentId) {
         this.support.requireAgent(

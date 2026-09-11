@@ -23,12 +23,33 @@ export function readChatState(key: string): string | undefined {
   }
 }
 
-export function writeChatState(key: string, value: string): void {
+export function readChatStateEntries(prefix: string): Array<[string, string]> {
   try {
-    if (value) storage()?.setItem(key, value);
-    else storage()?.removeItem(key);
+    const target = storage();
+    if (!target) return [];
+    const entries: Array<[string, string]> = [];
+    for (let index = 0; index < target.length; index += 1) {
+      const key = target.key(index);
+      if (!key?.startsWith(prefix)) continue;
+      const value = target.getItem(key);
+      if (value !== null) entries.push([key, value]);
+    }
+    return entries;
+  } catch {
+    return [];
+  }
+}
+
+export function writeChatState(key: string, value: string): boolean {
+  try {
+    const target = storage();
+    if (!target) return false;
+    if (value) target.setItem(key, value);
+    else target.removeItem(key);
+    return true;
   } catch {
     // Browsing remains usable when storage is unavailable or full.
+    return false;
   }
 }
 

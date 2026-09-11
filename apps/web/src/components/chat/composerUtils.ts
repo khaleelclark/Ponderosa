@@ -4,9 +4,76 @@ import {
 } from "@ponderosa/core";
 import type {
   AssetLimitsDto,
+  ConversationDraftConflictDto,
+  ConversationDraftDto,
+  DraftPendingSubmissionDto,
   EngineCommand,
   EngineComposerCapability,
+  ResolveConversationDraftConflictResponse,
 } from "@ponderosa/core";
+
+/** Observed runtime refreshes cannot replace an already-dispatched exact retry. */
+export function pendingSubmissionAfterRuntimeObservation(
+  pending: DraftPendingSubmissionDto | undefined,
+): DraftPendingSubmissionDto | undefined {
+  return pending?.request ? pending : undefined;
+}
+
+export function resolvedDraftConflictDraft(
+  resolution: ResolveConversationDraftConflictResponse,
+  observed?: ConversationDraftDto,
+): ConversationDraftDto | undefined {
+  const restored = resolution.draft;
+  return [resolution.currentDraft, observed].reduce<ConversationDraftDto | undefined>(
+    (latest, candidate) => candidate && (!latest || candidate.revision > latest.revision)
+      ? candidate
+      : latest,
+    restored,
+  );
+}
+
+export async function retryDraftRestoreForMissingAssets<T>(
+  probe: () => Promise<T>,
+  unavailableIds: (error: unknown) => string[] | undefined,
+  retry: (missingIds: string[]) => Promise<T>,
+): Promise<T> {
+  try {
+    return await probe();
+  } catch (error) {
+    const missingIds = unavailableIds(error);
+    if (!missingIds) throw error;
+    return retry(missingIds);
+  }
+}
+
+export function deletableSupersededDraftAttachmentIds(
+  pendingIds: Iterable<string>,
+  draft: Pick<ConversationDraftDto, "attachmentIds" | "pastedTextAttachmentId">,
+): string[] {
+  const referenced = new Set([
+    ...draft.attachmentIds,
+    ...(draft.pastedTextAttachmentId ? [draft.pastedTextAttachmentId] : []),
+  ]);
+  return [...pendingIds].filter(id => !referenced.has(id));
+}
+
+export async function cleanupReleasedDraftAttachmentIds(
+  pendingIds: Set<string>,
+  draft: Pick<ConversationDraftDto, "attachmentIds" | "pastedTextAttachmentId">,
+  remove: (id: string) => Promise<unknown>,
+): Promise<void> {
+  await Promise.all(
+    deletableSupersededDraftAttachmentIds(pendingIds, draft).map(async id => {
+      try {
+        await remove(id);
+        pendingIds.delete(id);
+      } catch {
+        // Keep the exact write incarnation's failed cleanup eligible for retry.
+        pendingIds.add(id);
+      }
+    }),
+  );
+}
 
 export function shouldSendComposerKey(event: {
   key: string;
@@ -14,14 +81,346 @@ export function shouldSendComposerKey(event: {
   isComposing: boolean;
   repeat: boolean;
 }): boolean {
-  return event.key === "Enter" && !event.shiftKey && !event.isComposing && !event.repeat;
+  return shouldConsumeComposerKey(event) && !event.repeat;
+}
+
+export function shouldConsumeComposerKey(event: {
+  key: string;
+  shiftKey: boolean;
+  isComposing: boolean;
+}): boolean {
+  return event.key === "Enter" && !event.shiftKey && !event.isComposing;
 }
 
 export function shouldIgnoreComposerKey(event: {
-  key: string;
   isComposing: boolean;
+  keyCode?: number;
 }): boolean {
-  return event.key === "Enter" && event.isComposing;
+  return event.isComposing || event.keyCode === 229;
+}
+
+export function shouldAdoptHydratedDraft(
+  _editorFocused: boolean,
+  locallyEdited: boolean,
+): boolean {
+  return !locallyEdited;
+}
+
+export function hydratedPastedTextContent<T>(input: {
+  attachmentId?: string;
+  restoredText?: string;
+  failure?: T;
+  cleanMutationGeneration: number;
+  currentMutationGeneration: number;
+}): {
+  attachmentId?: string;
+  text?: string;
+  failure?: T;
+} | undefined {
+  if (
+    input.cleanMutationGeneration !== input.currentMutationGeneration
+  ) return undefined;
+  return {
+    ...(input.attachmentId ? { attachmentId: input.attachmentId } : {}),
+    ...(input.failure
+      ? { failure: input.failure }
+      : input.restoredText !== undefined
+        ? { text: input.restoredText }
+        : {}),
+  };
+}
+
+export function savedPastedTextCleanMutationGeneration(input: {
+  cleanMutationGeneration: number;
+  submittedMutationGeneration: number;
+  currentMutationGeneration: number;
+  submittedAttachmentId?: string;
+  savedAttachmentId?: string;
+}): number {
+  return input.currentMutationGeneration === input.submittedMutationGeneration &&
+      input.savedAttachmentId === input.submittedAttachmentId
+    ? input.submittedMutationGeneration
+    : input.cleanMutationGeneration;
+}
+
+export function draftContentRetryStillOwned(input: {
+  capturedScope?: string;
+  currentScope?: string;
+  capturedHydrationGeneration: number;
+  currentHydrationGeneration: number;
+  removed: boolean;
+  failurePresent: boolean;
+  capturedPasteMutationGeneration?: number;
+  currentPasteMutationGeneration?: number;
+}): boolean {
+  return input.capturedScope === input.currentScope &&
+    input.capturedHydrationGeneration === input.currentHydrationGeneration &&
+    !input.removed &&
+    input.failurePresent &&
+    (input.capturedPasteMutationGeneration === undefined ||
+      input.capturedPasteMutationGeneration ===
+        input.currentPasteMutationGeneration);
+}
+
+export function draftWriteContinuationStillOwned(input: {
+  capturedScope?: string;
+  currentScope?: string;
+  capturedGeneration: number;
+  currentGeneration: number;
+}): boolean {
+  return input.capturedScope === input.currentScope &&
+    input.capturedGeneration === input.currentGeneration;
+}
+
+export function composerSubmissionMayClearDraft(input: {
+  submittedMutationGeneration: number;
+  currentMutationGeneration: number;
+  stillOwnsDraft: boolean;
+}): boolean {
+  return input.stillOwnsDraft &&
+    input.submittedMutationGeneration === input.currentMutationGeneration;
+}
+
+export function settledDraftWriteContinuation(
+  tail: Promise<void>,
+  continuation: () => Promise<void>,
+): Promise<void> {
+  return tail.catch(() => undefined).then(continuation);
+}
+
+/** Observing another surface's revision is not authority to overwrite or clear it. */
+export function ownedDraftRevisionAfterObservation(
+  ownedRevision: number,
+  observedRevision: number,
+  adopted: boolean,
+): number {
+  return adopted ? observedRevision : ownedRevision;
+}
+
+export interface DraftConflictRecoverySnapshot<TFile, TMention, TFailure> {
+  text: string;
+  attachmentIds: string[];
+  files: Array<{ file: TFile; attachmentId: string }>;
+  pastedText?: string;
+  pastedTextAttachmentId?: string;
+  mentionBindings: TMention[];
+  pendingSubmission?: DraftPendingSubmissionDto;
+  failedContents: TFailure[];
+}
+
+export interface RecoverableDraftConflict<TFile, TMention, TFailure> {
+  conflict: ConversationDraftConflictDto;
+  snapshot: DraftConflictRecoverySnapshot<TFile, TMention, TFailure>;
+  /** The durable conflict was resolved elsewhere; one explicit retry may save the snapshot. */
+  resolutionUnavailable?: true;
+}
+
+export function restagedDraftConflictSnapshot<TFile, TMention, TFailure>(
+  snapshot: DraftConflictRecoverySnapshot<TFile, TMention, TFailure>,
+  files: Array<{ file: TFile; attachmentId: string; fromId: string }>,
+  pastedTextAttachmentId?: string,
+  unavailableAttachmentIds: ReadonlySet<string> = new Set(),
+): DraftConflictRecoverySnapshot<TFile, TMention, TFailure> {
+  const replacementByHistoricalId = new Map(
+    files.map(item => [item.fromId, item.attachmentId]),
+  );
+  const pendingSubmission = snapshot.pendingSubmission ? {
+    ...snapshot.pendingSubmission,
+    ...(snapshot.pendingSubmission.editableDraftAttachmentIds ? {
+      editableDraftAttachmentIds: snapshot.pendingSubmission.editableDraftAttachmentIds
+        .filter(id => !unavailableAttachmentIds.has(id))
+        .map(id => replacementByHistoricalId.get(id) ?? id),
+    } : {}),
+    ...(snapshot.pendingSubmission.editablePastedTextAttachmentId
+      ? unavailableAttachmentIds.has(snapshot.pendingSubmission.editablePastedTextAttachmentId)
+        ? { editablePastedTextAttachmentId: undefined }
+        : {
+            editablePastedTextAttachmentId: pastedTextAttachmentId ??
+              snapshot.pendingSubmission.editablePastedTextAttachmentId,
+          }
+      : {}),
+  } : undefined;
+  return {
+    ...snapshot,
+    attachmentIds: snapshot.attachmentIds
+      .filter(id => !unavailableAttachmentIds.has(id))
+      .map(id => replacementByHistoricalId.get(id) ?? id),
+    files: snapshot.files
+      .filter(item => !unavailableAttachmentIds.has(item.attachmentId))
+      .map(item => ({
+        file: item.file,
+        attachmentId: replacementByHistoricalId.get(item.attachmentId) ?? item.attachmentId,
+      })),
+    ...(snapshot.pastedText !== undefined
+      ? {
+          pastedTextAttachmentId: pastedTextAttachmentId ??
+            (snapshot.pastedTextAttachmentId &&
+              !unavailableAttachmentIds.has(snapshot.pastedTextAttachmentId)
+              ? snapshot.pastedTextAttachmentId
+              : undefined),
+        }
+      : snapshot.pastedTextAttachmentId &&
+          !unavailableAttachmentIds.has(snapshot.pastedTextAttachmentId)
+        ? { pastedTextAttachmentId: snapshot.pastedTextAttachmentId }
+        : { pastedTextAttachmentId: undefined }),
+    mentionBindings: [...snapshot.mentionBindings],
+    ...(pendingSubmission ? { pendingSubmission } : {}),
+    failedContents: [...snapshot.failedContents],
+  };
+}
+
+export function canonicalDraftConflictFiles<TFile>(
+  files: Array<{ file: TFile; attachmentId: string }>,
+  canonicalAttachmentIds: string[],
+  replacements: Array<{ fromId: string; toId: string }> = [],
+): {
+  files: Array<{ file: TFile; attachmentId: string }>;
+  missingAttachmentIds: string[];
+} {
+  const historicalByCanonicalId = new Map(
+    replacements.map(item => [item.toId, item.fromId]),
+  );
+  const fileByHistoricalId = new Map(files.map(item => [item.attachmentId, item.file]));
+  const resolved = canonicalAttachmentIds.map(attachmentId => ({
+    attachmentId,
+    file: fileByHistoricalId.get(
+      historicalByCanonicalId.get(attachmentId) ?? attachmentId,
+    ),
+  }));
+  return {
+    files: resolved.flatMap(item => item.file
+      ? [{ file: item.file, attachmentId: item.attachmentId }]
+      : []),
+    missingAttachmentIds: resolved.flatMap(item =>
+      item.file ? [] : [item.attachmentId]),
+  };
+}
+
+export function redundantDraftConflictUploadIds(
+  uploadedIds: string[],
+  canonicalAttachmentIds: ReadonlySet<string>,
+): string[] {
+  return uploadedIds.filter(id => !canonicalAttachmentIds.has(id));
+}
+
+export function recoverableDraftConflict<TFile, TMention, TFailure>(
+  conflict: ConversationDraftConflictDto,
+  snapshot: DraftConflictRecoverySnapshot<TFile, TMention, TFailure>,
+): RecoverableDraftConflict<TFile, TMention, TFailure> {
+  return { conflict, snapshot };
+}
+
+export function refreshRecoverableDraftConflict<TFile, TMention, TFailure>(
+  recovery: RecoverableDraftConflict<TFile, TMention, TFailure>,
+  current: ConversationDraftDto,
+  conflicts: ConversationDraftConflictDto[],
+): RecoverableDraftConflict<TFile, TMention, TFailure> | undefined {
+  const conflict = conflicts.find(candidate => candidate.id === recovery.conflict.id);
+  return conflict
+    ? { conflict: { ...conflict, current }, snapshot: recovery.snapshot }
+    : undefined;
+}
+
+export function unresolvedRecoverableDraftConflict<TFile, TMention, TFailure>(
+  recovery: RecoverableDraftConflict<TFile, TMention, TFailure>,
+  current: ConversationDraftDto,
+): RecoverableDraftConflict<TFile, TMention, TFailure> {
+  return {
+    ...recovery,
+    conflict: { ...recovery.conflict, current },
+    snapshot: recovery.snapshot,
+    resolutionUnavailable: true,
+  };
+}
+
+export function restoreDraftConflictSnapshot<TFile, TMention, TFailure>(
+  snapshot: DraftConflictRecoverySnapshot<TFile, TMention, TFailure>,
+  currentEditVersion: number,
+): DraftConflictRecoverySnapshot<TFile, TMention, TFailure> & {
+  editVersion: number;
+  locallyEdited: true;
+} {
+  return {
+    ...snapshot,
+    attachmentIds: [...snapshot.attachmentIds],
+    files: [...snapshot.files],
+    mentionBindings: [...snapshot.mentionBindings],
+    failedContents: [...snapshot.failedContents],
+    editVersion: currentEditVersion + 1,
+    locallyEdited: true,
+  };
+}
+
+export function composerRecipientGateSatisfied(input: {
+  destinationMode?: "project-chat" | "fixed" | "target-required";
+  newAgentSelected: boolean;
+  requiredRecipientTagged: boolean;
+  retryPrepared: boolean;
+}): boolean {
+  return input.retryPrepared ||
+    input.destinationMode !== "target-required" ||
+    input.newAgentSelected ||
+    input.requiredRecipientTagged;
+}
+
+export function composerPreparedRetryAction<Action>(
+  prepared: { action: Action; submissionIntentKey?: string } | undefined,
+  submissionIntentKey?: string,
+): Action | undefined {
+  return prepared && prepared.submissionIntentKey === submissionIntentKey
+    ? prepared.action
+    : undefined;
+}
+
+export function composerDurableRetryAction(
+  prepared: "send" | "queue" | undefined,
+  activeRunDelivery: "steer" | "queue" | undefined,
+): "send" | "queue" | undefined {
+  return activeRunDelivery === "queue"
+    ? "queue"
+    : activeRunDelivery === "steer"
+      ? "send"
+      : prepared;
+}
+
+export function removeComposerPasteSelection(
+  selection:
+    | { kind: "range"; removeText: () => void }
+    | { kind: "node"; removeNodes: () => void }
+    | { kind: "other" },
+): void {
+  if (selection.kind === "range") selection.removeText();
+  else if (selection.kind === "node") selection.removeNodes();
+}
+
+export function hydratedDraftContent<T>(
+  revision: number,
+  draftText: string,
+  localText: string,
+  mentionBindings: readonly T[],
+): { text: string; mentionBindings: readonly T[] } {
+  const restoreLocalText = revision === 0 && Boolean(localText) && !draftText;
+  return {
+    text: restoreLocalText ? localText : draftText,
+    mentionBindings: restoreLocalText ? [] : mentionBindings,
+  };
+}
+
+export function durableDraftContentReady(input: {
+  conversationDraftId?: string;
+  filesReady: boolean;
+  pastedTextPresent: boolean;
+  pastedTextAttachmentId?: string;
+  pastedTextUploading: boolean;
+  failedRestoreCount: number;
+}): boolean {
+  return input.failedRestoreCount === 0 &&
+    (!input.conversationDraftId || input.filesReady) &&
+    (!input.pastedTextPresent || Boolean(
+      input.conversationDraftId &&
+      input.pastedTextAttachmentId &&
+      !input.pastedTextUploading
+    ));
 }
 
 export function matchingEngineCommands(

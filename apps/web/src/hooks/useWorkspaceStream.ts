@@ -12,6 +12,10 @@ import type {
 import { api } from "../api";
 import type { StreamSubscription } from "../api/types";
 import { queryKeys } from "../queryKeys";
+import {
+  workspaceEventInvalidatesAllChat,
+  workspaceEventInvalidatesGlobalSearch,
+} from "../workspaceEventInvalidation";
 import { isOpenAttention, isUnreadNotificationUpdate, isUnacknowledgedAction } from "../attention";
 import {
   browserPageIsVisible,
@@ -76,6 +80,7 @@ export interface WorkspaceConnectionState {
 
 export interface WorkspaceStreamOptions {
   onProjectDeleted?(projectId: string, at: string): void;
+  projectPreferences?(preferences: WorkspacePreferencesDto): WorkspacePreferencesDto;
 }
 
 export function reconcileDeletedProjectClientState(
@@ -224,19 +229,6 @@ function conversationChangedQueryKeys(
     queryKeys.conversations.detailPrefix(event.conversationId),
     queryKeys.collaborationPrefix(event.conversationId),
   ];
-}
-
-/** Chat mutations (including passive edits) and unread changes refresh search. */
-function workspaceEventInvalidatesGlobalSearch(event: WorkspaceEvent): boolean {
-  return event.type === "conversation_changed" || event.type === "notification_changed";
-}
-
-/** Messages is a canonical communication projection. Refresh it only for
- * workspace events that can add or change one of its communication rows. */
-function workspaceEventInvalidatesAllChat(event: WorkspaceEvent): boolean {
-  return event.type === "conversation_changed"
-    || event.type === "message_delivery_changed"
-    || (event.type === "agent_event" && event.category === "message");
 }
 
 function workspaceAgentEventChangesPhase(
@@ -678,7 +670,10 @@ export function useWorkspaceStream(
           previousPreferences,
           event.preferences,
         );
-        queryClient.setQueryData(queryKeys.workspacePreferences.all, event.preferences);
+        queryClient.setQueryData(
+          queryKeys.workspacePreferences.all,
+          options.projectPreferences?.(event.preferences) ?? event.preferences,
+        );
       }
       if (reconciliation.gap) {
         invalidateAll();

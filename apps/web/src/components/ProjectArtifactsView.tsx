@@ -23,6 +23,7 @@ import {
   ListItemButton,
   ListItemIcon,
   ListItemText,
+  LinearProgress,
   MenuItem,
   Select,
   Stack,
@@ -49,6 +50,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { uniqueBy } from "../collections";
 import { queryKeys } from "../queryKeys";
+import { loadRetainedData, retainedDataState } from "../retainedData";
 import { artifactDisplayLabel, artifactSearchText } from "./filePreview/artifactPresentation";
 import {
   ProjectOverview,
@@ -89,6 +91,9 @@ export function ProjectArtifactsView({
   initialView,
   initialArtifactId,
   onViewChange,
+  projectResourcesLoaded,
+  projectResourcesFailed,
+  onRetryProjectResources,
 }: {
   projectId: string;
   project: ProjectDto;
@@ -110,6 +115,9 @@ export function ProjectArtifactsView({
   initialView?: ProjectDetailView;
   initialArtifactId?: string;
   onViewChange(view: ProjectDetailView): void;
+  projectResourcesLoaded: boolean;
+  projectResourcesFailed: boolean;
+  onRetryProjectResources(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const theme = useTheme();
@@ -126,11 +134,13 @@ export function ProjectArtifactsView({
     hasMore: boolean;
   }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [olderError, setOlderError] = useState<string>();
   useEffect(() => {
     setTab(initialView ?? "overview");
     setOlderArtifacts(undefined);
     setPreviewArtifact(undefined);
     setFileCategories([]);
+    setOlderError(undefined);
   }, [projectId, initialView]);
   const changeTab = (next: ProjectDetailView) => {
     setTab(next);
@@ -238,6 +248,33 @@ export function ProjectArtifactsView({
     }))
     .filter(group => group.records.length > 0);
   const loading = projectArtifacts.isLoading;
+  const projectResourceState = retainedDataState(
+    projectResourcesLoaded,
+    projectResourcesFailed,
+  );
+  const loadOlderProjectFiles = async () => {
+    const cursor = olderArtifacts?.cursor ?? projectArtifacts.data?.history.cursor;
+    if (!cursor || loadingOlder) return;
+    setLoadingOlder(true);
+    try {
+      const page = await loadRetainedData(
+        () => api.listProjectArtifacts(projectId, 100, cursor),
+        setOlderError,
+        "Older project files could not be loaded.",
+      );
+      if (!page) return;
+      setOlderArtifacts(current => ({
+        items: uniqueBy(
+          [...page.items, ...(current?.items ?? [])],
+          artifact => artifact.id,
+        ),
+        cursor: page.history.cursor,
+        hasMore: page.history.hasMore,
+      }));
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
   const projectHealth = projectHealthPresentation(health, agents, engines);
   const projectHealthTooltip = projectHealthDetail(health, agents, engines);
 
@@ -306,7 +343,22 @@ export function ProjectArtifactsView({
         <Stack spacing={1.5} sx={{ width: "100%", minWidth: 0 }}>
           {tab === "overview" ? (
             <>
-              <ProjectOverview
+              {projectResourcesFailed ? (
+                <Alert
+                  severity="error"
+                  action={
+                    <Button color="inherit" size="small" onClick={onRetryProjectResources}>
+                      Retry
+                    </Button>
+                  }
+                >
+                  Project Chats and Agents could not be refreshed.
+                </Alert>
+              ) : null}
+              {projectResourceState === "loading" ? (
+                <LinearProgress aria-label="Loading Project Chats and Agents" />
+              ) : null}
+              {projectResourceState === "ready" ? <ProjectOverview
                 project={project}
                 agents={agents}
                 healthByAgentId={healthByAgentId}
@@ -339,7 +391,7 @@ export function ProjectArtifactsView({
                         });
                   }
                 }}
-              />
+              /> : null}
             </>
           ) : null}
           {tab === "files" ? (
@@ -467,11 +519,18 @@ export function ProjectArtifactsView({
                 </Stack>
               ) : null}
               {projectArtifacts.isError ? (
-                <Alert severity="error">
+                <Alert
+                  severity="error"
+                  action={
+                    <Button color="inherit" size="small" onClick={() => void projectArtifacts.refetch()}>
+                      Retry
+                    </Button>
+                  }
+                >
                   Project files could not be loaded. Try again.
                 </Alert>
               ) : null}
-              {!loading && records.length === 0 ? (
+              {!loading && !projectArtifacts.isError && records.length === 0 ? (
                 <Alert severity="info">
                   No project files yet. Agent-created documents, images,
                   downloads, and generated results will appear here.
@@ -657,30 +716,27 @@ export function ProjectArtifactsView({
                   size="small"
                   color="inherit"
                   disabled={loadingOlder}
-                  onClick={() => {
-                    const cursor =
-                      olderArtifacts?.cursor ??
-                      projectArtifacts.data?.history.cursor;
-                    if (!cursor) return;
-                    setLoadingOlder(true);
-                    void api
-                      .listProjectArtifacts(projectId, 100, cursor)
-                      .then(page => {
-                        setOlderArtifacts(current => ({
-                          items: uniqueBy(
-                            [...page.items, ...(current?.items ?? [])],
-                            artifact => artifact.id,
-                          ),
-                          cursor: page.history.cursor,
-                          hasMore: page.history.hasMore,
-                        }));
-                      })
-                      .finally(() => setLoadingOlder(false));
-                  }}
+                  onClick={() => void loadOlderProjectFiles()}
                   sx={{ alignSelf: "center" }}
                 >
                   {loadingOlder ? "Loading…" : "Load Older Files"}
                 </Button>
+              ) : null}
+              {olderError ? (
+                <Alert
+                  severity="error"
+                  action={
+                    <Button
+                      color="inherit"
+                      size="small"
+                      onClick={() => void loadOlderProjectFiles()}
+                    >
+                      Retry
+                    </Button>
+                  }
+                >
+                  {olderError}
+                </Alert>
               ) : null}
             </>
           ) : null}

@@ -3,8 +3,14 @@
 // from packages/engines except AgentEvent (re-exported through core).
 
 export { AgentStore, AgentDeletionConflictError } from "./store.js";
+export { ProjectDeletionInProgressError } from "./store-workspace-catalog-authority.js";
+export type {
+  AgentCreationArtifactIdentity,
+  AgentCreationOperation,
+  AgentCreationOperationStatus,
+} from "./store.js";
 export { normalizeAgentTitle } from "./agent-identity.js";
-export { WorkspaceStore } from "./workspace-store.js";
+export { WorkspaceStore, draftRevisionConflicts } from "./workspace-store.js";
 export type { PushDeliveryRecord } from "./workspace-store.js";
 export { highlightedSearchSnippet, searchProjectedChatMessages } from "./chat-search.js";
 export type { ProjectedChatSearchCandidate, ProjectedChatSearchOptions } from "./chat-search.js";
@@ -86,12 +92,21 @@ export type {
   PublishAgentNextRunDeliveryInput,
   PublishNextRunDeliveryResult,
   PublishOperatorNextRunDeliveryInput,
+  ReplayAgentNextRunDeliveryInput,
 } from "./coordination-v3-store.js";
 export type { ConversationDeliveryIntent, ManagedArtifactAccess } from "./store.js";
-export type { AgentDeletionReceipt, ProjectDeletionReceipt, AgentManagementAuthorization } from "./store.js";
+export type {
+  AgentDeletionReceipt,
+  ConversationDeletionReceipt,
+  ProjectDeletionReceipt,
+  AgentManagementAuthorization,
+} from "./store.js";
+export type { ManagementOperation, ManagementOperationProgress, ManagementPlan } from "./store-types.js";
 export { EventLog, readLog, readLogSince, lastSeq } from "./eventlog.js";
 export { appendFsyncedJsonl, readRepairableJsonl, writeAtomicFsyncedJsonl } from "./append-jsonl.js";
+export { pathEntryExists, validateDeletionTombstone } from "./deletion-tombstone-ownership.js";
 export { openDb } from "./db.js";
+export { stableJson } from "./coordination-v3-canonical-json.js";
 export {
   artifactContentPath, artifactsDir, managedArtifactsDir, managedArtifactsLogPath, managedArtifactContentPath, attachmentPath, attachmentsDir,
   communicationEventsPath,

@@ -60,7 +60,9 @@ export function resolveAgentWorkingCopy(
       workingCopy.branch !== undefined ||
       workingCopy.baseHead !== undefined ||
       workingCopy.branchOwned !== undefined ||
-      workingCopy.branchCreationIntent !== undefined
+      workingCopy.branchCreationIntent !== undefined ||
+      workingCopy.branchCreationReceipt !== undefined ||
+      workingCopy.cleanupReceipt !== undefined
     ) {
       throw new AgentWorkingCopyUnavailableError(
         workingCopy,
@@ -74,7 +76,9 @@ export function resolveAgentWorkingCopy(
     };
   }
   if (!workingCopy.id.startsWith("copy:") || !workingCopy.rootPath || !workingCopy.branch ||
-      workingCopy.branchOwned !== true || workingCopy.branchCreationIntent !== undefined) {
+      workingCopy.branchOwned !== true || workingCopy.branchCreationIntent !== undefined ||
+      workingCopy.branchCreationReceipt !== undefined ||
+      workingCopy.cleanupReceipt !== undefined) {
     throw new AgentWorkingCopyUnavailableError(
       workingCopy,
       "This Agent's Separate Git copy identity is incomplete.",

@@ -16,8 +16,12 @@ import type {
   WorkspaceStore,
 } from "@ponderosa/agents";
 import { ASSET_LIMITS, AssetError, type AssetStore } from "../assets.js";
-import { hasEveryoneMention } from "../agent-mentions.js";
-import type { PreparedCommunicationArtifact } from "./conversation-deliveries.js";
+import { cleanupUncommittedCommunicationArtifact } from "../communication-artifacts.js";
+import {
+  conversationDeliveryRequestFingerprint,
+  leaseConversationDelivery,
+  type PreparedCommunicationArtifact,
+} from "./conversation-deliveries.js";
 
 type RuntimeArtifactInput = NonNullable<
   Parameters<CoordinationV3Store["recordRuntimeCommunication"]>[0]["artifacts"]
@@ -35,6 +39,11 @@ export interface CollaborationRouteDependencies {
   coordinationV3: CoordinationV3Store;
   assets: AssetStore;
   projectDeletionInProgress: (projectId: string) => boolean;
+  agentDeletionInProgress: (agentId: string) => boolean;
+  attachmentDeletionInProgress: (agentId: string, attachmentId: string) => boolean;
+  assetReconciliationInProgress: (agentId: string) => boolean;
+  conversationDeliveryLeases: Map<string, number>;
+  agentDeliveryLeases: Map<string, number>;
   collaborationViewDetail: (
     conversationId: string,
     input?: { limit?: number; cursor?: string; focusId?: string; operationCursor?: string },
@@ -83,15 +92,16 @@ export function registerCollaborationRoutes(
     coordinationV3,
     assets,
     projectDeletionInProgress,
+    agentDeletionInProgress,
+    attachmentDeletionInProgress = () => false,
+    assetReconciliationInProgress = () => false,
+    conversationDeliveryLeases,
+    agentDeliveryLeases,
     collaborationViewDetail,
     assetMetadata,
     prepareUserCommunicationText,
     runtimeArtifactMetadata,
-    recordCommunication,
     reconcileRuntimeCommunicationProjections,
-    projectCommunicationArtifact,
-    communicationArtifactAccess,
-    projectCommunicationToAgentAudit,
     appendWorkspace,
     publishCoordinationV3Changed,
     notifyScheduler,
@@ -113,29 +123,118 @@ export function registerCollaborationRoutes(
     Params: { id: string };
     Body: CreateCollaborationMessageRequest;
   }>("/api/conversations/:id/collaboration/messages", async (request, reply) => {
-    const conversation = store.getConversation(request.params.id);
-    if (conversation && projectDeletionInProgress(conversation.projectId)) {
-      return reply.code(409).send({ error: "Project deletion is in progress" });
+    if (!request.body || typeof request.body !== "object" || Array.isArray(request.body) ||
+        Object.keys(request.body).some((key) => ![
+          "text", "recipientAgentIds", "recipientAttachments", "idempotencyKey",
+        ].includes(key))) {
+      return reply.code(400).send({ error: "collaboration body contains unknown or invalid fields" });
+    }
+    if (request.body?.text !== undefined && typeof request.body.text !== "string") {
+      return reply.code(400).send({ error: "text must be a string" });
+    }
+    if (!Array.isArray(request.body.recipientAgentIds) ||
+        request.body.recipientAgentIds.length === 0 || request.body.recipientAgentIds.length > 100 ||
+        request.body.recipientAgentIds.some((id) => typeof id !== "string" || !id.trim())) {
+      return reply.code(400).send({ error: "collaboration requires 1 to 100 recipientAgentIds" });
+    }
+    const normalizedRecipientAgentIds = request.body.recipientAgentIds.map((id) => id.trim());
+    if (new Set(normalizedRecipientAgentIds).size !== normalizedRecipientAgentIds.length) {
+      return reply.code(400).send({ error: "collaboration recipientAgentIds must be unique" });
     }
     const text = canonicalizeProviderText(request.body?.text ?? "").trim();
     const requestedRecipientAttachments = request.body?.recipientAttachments ?? [];
+    if (!Array.isArray(requestedRecipientAttachments) || requestedRecipientAttachments.some((entry) =>
+      !entry || typeof entry !== "object" || Array.isArray(entry) ||
+      Object.keys(entry).some((key) => !["agentId", "attachmentIds"].includes(key)) ||
+      typeof entry.agentId !== "string" || !Array.isArray(entry.attachmentIds) ||
+      entry.attachmentIds.some((id) => typeof id !== "string" || !id))) {
+      return reply.code(400).send({ error: "recipientAttachments must be valid Agent attachment lists" });
+    }
     if (!text && (!Array.isArray(requestedRecipientAttachments) || requestedRecipientAttachments.every((item) => !item?.attachmentIds?.length))) {
       return reply.code(400).send({ error: "text or an attachment is required" });
     }
     if (Buffer.byteLength(text, "utf8") > LONG_TEXT_MAX_UTF8_BYTES) return reply.code(413).send({ error: "text exceeds the 8 MiB limit" });
+    if (request.body?.idempotencyKey !== undefined && typeof request.body.idempotencyKey !== "string") {
+      return reply.code(400).send({ error: "idempotencyKey must be a string" });
+    }
     const idempotencyKey = request.body?.idempotencyKey?.trim();
     if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
+    const eventId = idempotencyKey
+      ? `collaboration-${createHash("sha256").update(`${request.params.id}\0${idempotencyKey}`).digest("hex")}`
+      : randomUUID();
+    const requestFingerprint = conversationDeliveryRequestFingerprint({
+      version: 1,
+      kind: "collaboration",
+      conversationId: request.params.id,
+      text,
+      recipientAgentIds: normalizedRecipientAgentIds,
+      recipientAttachments: requestedRecipientAttachments,
+    });
+    const existingRuntime = idempotencyKey
+      ? coordinationV3.runtimeCommunication(eventId)
+      : undefined;
+    const existingPayload = existingRuntime?.payload as {
+      requestFingerprint?: string;
+      communication?: CommunicationEvent;
+      dispatch?: { recipients?: Array<{ agentId?: string; attachments?: Array<{ id?: string }> }> };
+    } | undefined;
+    if (existingPayload?.requestFingerprint) {
+      if (existingPayload.requestFingerprint !== requestFingerprint) {
+        return reply.code(409).send({ error: "runtime communication ID collision" });
+      }
+      let message;
+      {
+        const replayAgentIds = [...new Set((existingPayload.dispatch?.recipients ?? []).flatMap((recipient) =>
+          typeof recipient.agentId === "string" && recipient.agentId.trim() ? [recipient.agentId.trim()] : []))];
+        const releaseReplayLease = leaseConversationDelivery(
+          conversationDeliveryLeases,
+          agentDeliveryLeases,
+          request.params.id,
+          replayAgentIds,
+        );
+        try {
+          await reconcileRuntimeCommunicationProjections({
+            projectId: existingRuntime!.projectId,
+            communicationEventId: eventId,
+          });
+          message = store.getConversationMessages(request.params.id, "collaboration")
+            .find((candidate) => candidate.communicationEventId === eventId);
+        } catch {
+          return reply.code(202).send({
+            communicationEventId: eventId,
+            committed: true,
+            recovering: true,
+            replayed: true,
+          });
+        } finally {
+          releaseReplayLease();
+        }
+      }
+      if (!message) return reply.code(202).send({
+        communicationEventId: eventId,
+        committed: true,
+        recovering: true,
+        replayed: true,
+      });
+      return {
+        message,
+        audience: "mention",
+        notifiedAgentIds: (existingPayload.dispatch?.recipients ?? [])
+          .flatMap((recipient) => recipient.agentId ? [recipient.agentId] : []),
+      };
+    }
+    const conversation = store.getConversation(request.params.id);
+    if (!conversation || conversation.archived) return reply.code(404).send({ error: "conversation not found" });
+    if (projectDeletionInProgress(conversation.projectId)) {
+      return reply.code(409).send({ error: "Project deletion is in progress" });
+    }
     const detail = collaborationViewDetail(request.params.id);
     if (!detail) return reply.code(404).send({ error: "conversation not found" });
 
     let renderedText = text;
     let routing: { intents: ConversationDeliveryIntent[]; blocked: Array<{ handle: string; reason: string }> };
     if (request.body.recipientAgentIds !== undefined) {
-      const ids = request.body.recipientAgentIds;
-      if (!Array.isArray(ids) || ids.length === 0 || ids.length > 100) {
-        return reply.code(400).send({ error: "collaboration requires 1 to 100 recipientAgentIds" });
-      }
-      const uniqueIds = [...new Set(ids)];
+      const uniqueIds = normalizedRecipientAgentIds;
       const members = new Map(detail.agents.map((agent) => [agent.id, agent]));
       const targets = uniqueIds.map((id) => members.get(id));
       if (targets.some((target) => !target || target.archived)) {
@@ -168,6 +267,27 @@ export function registerCollaborationRoutes(
       }
       attachmentIdsByAgent.set(recipient.agentId, recipient.attachmentIds);
     }
+    const leasedAgentIds = routing.intents.map((intent) => intent.targetAgentId);
+    if ([...attachmentIdsByAgent].some(([agentId, attachmentIds]) =>
+      attachmentIds.some((attachmentId) => attachmentDeletionInProgress(agentId, attachmentId)))) {
+      return reply.code(409).send({ error: "Asset deletion is in progress" });
+    }
+    if ([...attachmentIdsByAgent].some(([agentId, attachmentIds]) =>
+      attachmentIds.length > 0 && assetReconciliationInProgress(agentId))) {
+      return reply.code(409).send({ error: "Asset cleanup is in progress" });
+    }
+    if (leasedAgentIds.some(agentDeletionInProgress)) {
+      return reply.code(409).send({ error: "Agent deletion is in progress" });
+    }
+    const releaseDeliveryLease = leaseConversationDelivery(
+      conversationDeliveryLeases,
+      agentDeliveryLeases,
+      master.id,
+      leasedAgentIds,
+    );
+    let prepared: Awaited<ReturnType<typeof prepareUserCommunicationText>> | undefined;
+    let artifactCommitted = false;
+    try {
     const attachmentsByAgent = new Map<string, AssetDto[]>();
     for (const intent of routing.intents) {
       const ids = attachmentIdsByAgent.get(intent.targetAgentId) ?? [];
@@ -182,12 +302,7 @@ export function registerCollaborationRoutes(
     const canonicalAttachments = routing.intents
       .map((intent) => attachmentsByAgent.get(intent.targetAgentId) ?? [])
       .find((items) => items.length > 0) ?? [];
-    const eventId = idempotencyKey
-        ? `collaboration-${createHash("sha256").update(`${master.id}\0${idempotencyKey}`).digest("hex")}`
-        : randomUUID();
-    const existingRuntime = coordinationV3.runtimeCommunication(eventId);
     const createdAt = existingRuntime?.createdAt ?? new Date().toISOString();
-    let prepared: Awaited<ReturnType<typeof prepareUserCommunicationText>>;
     try {
       prepared = await prepareUserCommunicationText({
         projectId: master.projectId, communicationId: eventId, text, createdAt,
@@ -220,6 +335,7 @@ export function registerCollaborationRoutes(
         intent: communication.intent,
         audience: communication.audience,
         payload: {
+          requestFingerprint,
           communication,
           dispatch: {
             conversationId: master.id,
@@ -247,63 +363,72 @@ export function registerCollaborationRoutes(
         })),
         now: communication.createdAt,
       });
+      artifactCommitted = true;
     } catch (error) {
       const status = error instanceof AssetError ? error.statusCode : 409;
       return reply.code(status).send({ error: error instanceof Error ? error.message : "collaboration conflict" });
     }
-    const canonicalCommunication = recordCommunication(communication);
-    if (intake.replayed) await reconcileRuntimeCommunicationProjections({
-      projectId: communication.projectId,
-      communicationEventId: communication.eventId,
-    });
-    if (prepared.artifact) projectCommunicationArtifact(
-      master.projectId,
-      "local-operator",
-      prepared.artifact,
-      communicationArtifactAccess(canonicalCommunication),
-    );
-    const replayedMessage = detail.messages.find((candidate) => candidate.communicationEventId === communication.eventId);
-    if (replayedMessage && intake.replayed) {
-      return {
-        message: replayedMessage,
-        audience: hasEveryoneMention(text) ? "everyone" : "mention",
+    try {
+      await reconcileRuntimeCommunicationProjections({
+        projectId: communication.projectId,
+        communicationEventId: communication.eventId,
+      });
+    } catch {
+      try { notifyScheduler(); } catch { /* recovery is durable */ }
+      return reply.code(202).send({
+        communicationEventId: communication.eventId,
+        committed: true,
+        recovering: true,
         notifiedAgentIds: routing.intents.map((intent) => intent.targetAgentId),
-      };
+      });
     }
     let message;
-    message = store.appendConversationMessage(
-      request.params.id,
-      { role: "user", text: publishedRenderedText, attachments: canonicalAttachments },
-      // The canonical chat snapshot uses one copy; per-recipient copies stay in
-      // dispatch/audit data and are never rendered as duplicates.
-      undefined,
-      "collaboration",
-      routing.intents,
-      undefined,
-      communication?.eventId,
-    );
-    const notifiedAgentIds: string[] = [];
-    for (const intent of routing.intents) {
-      store.appendCommunicationProjection(master.projectId, {
-        eventId, surface: "agent_inbox", projectionKey: intent.targetAgentId, projectedAt: communication.createdAt,
-      });
-      const recipientAttachments = attachmentsByAgent.get(intent.targetAgentId) ?? [];
-      if (!intake.replayed && recipientAttachments.length) {
-        await assets.associate(master.projectId, intent.targetAgentId, recipientAttachments.map((item) => item.id));
-      }
-      projectCommunicationToAgentAudit(intent.targetAgentId, communication, publishedRenderedText, recipientAttachments);
-      publishCoordinationV3Changed(intent.targetAgentId, {
-        conversationIds: [master.id],
+    try {
+      message = store.getConversationMessages(master.id, "collaboration")
+        .find((candidate) => candidate.communicationEventId === communication.eventId);
+    } catch {
+      try { notifyScheduler(); } catch { /* recovery is durable */ }
+      return reply.code(202).send({
+        communicationEventId: communication.eventId,
+        committed: true,
+        recovering: true,
+        notifiedAgentIds: routing.intents.map((intent) => intent.targetAgentId),
       });
     }
-    if (!intake.replayed) appendWorkspace({ type: "conversation_changed", projectId: master.projectId, conversationId: master.id, action: "message" });
-    notifyScheduler();
+    if (!message) return reply.code(202).send({
+      communicationEventId: communication.eventId,
+      committed: true,
+      recovering: true,
+      notifiedAgentIds: routing.intents.map((intent) => intent.targetAgentId),
+    });
+    const notifiedAgentIds: string[] = [];
+    try {
+      for (const intent of routing.intents) {
+        publishCoordinationV3Changed(intent.targetAgentId, {
+          conversationIds: [master.id],
+        });
+      }
+      if (!intake.replayed) appendWorkspace({ type: "conversation_changed", projectId: master.projectId, conversationId: master.id, action: "message" });
+      notifyScheduler();
+    } catch { /* canonical communication remains durable; clients can refresh */ }
     notifiedAgentIds.push(...routing.intents.map((intent) => intent.targetAgentId));
     return {
       message,
-      audience: hasEveryoneMention(text) ? "everyone" : "mention",
+      audience: "mention",
       notifiedAgentIds,
     };
+    } finally {
+      if (!artifactCommitted) {
+        cleanupUncommittedCommunicationArtifact({
+          projectId: master.projectId,
+          artifact: prepared?.artifact,
+          runtimeArtifact: (artifactId) => coordinationV3.runtimeArtifact(artifactId),
+          removeRuntimeArtifactReservation: (projectId, artifactId) =>
+            assets.removeRuntimeArtifactReservation(projectId, artifactId),
+        });
+      }
+      releaseDeliveryLease();
+    }
   });
 
 }

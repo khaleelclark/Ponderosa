@@ -1,4 +1,5 @@
 import type {
+  AgentDeletionPreviewDto,
   AgentDto,
   AgentPresetDto,
   ArtifactDto,
@@ -65,6 +66,9 @@ export interface ProjectJson {
   defaultEffort?: string;
   lastConversationId?: string;
   instructions?: string;
+  /** Durable identity for an HTTP create retry. Missing on pre-idempotency Projects. */
+  creationIdempotencyKey?: string;
+  creationPayloadHash?: string;
 }
 
 export interface ManagedArtifactAccess {
@@ -111,7 +115,12 @@ export interface AgentSpawnOrigin {
   prompt?: string;
 }
 
-export type PresetEvent = { type: "upsert"; preset: AgentPresetDto } | { type: "delete"; id: string; at: string };
+export type PresetEvent = {
+  type: "upsert";
+  preset: AgentPresetDto;
+  creationIdempotencyKey?: string;
+  creationPayloadHash?: string;
+} | { type: "delete"; id: string; at: string };
 
 export interface ConversationJson {
   id: string;
@@ -123,6 +132,9 @@ export interface ConversationJson {
   createdAt: string;
   updatedAt: string;
   archived: boolean;
+  /** Durable identity for an HTTP create retry. Missing on pre-idempotency Chats. */
+  creationIdempotencyKey?: string;
+  creationPayloadHash?: string;
 }
 
 export interface ConversationDeliveryIntent {
@@ -171,7 +183,27 @@ export interface AgentDeletionReceipt {
 export interface ProjectDeletionReceipt {
   projectId: string;
   tombstoneName: string;
+  ownershipToken?: string;
+  removalStarted?: boolean;
   storageCleanupCompleted: boolean;
+  draftSurfaceIds: string[];
+  draftCleanupCompleted: boolean;
+  assetAuthorityCleanupCompleted: boolean;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
+export interface ConversationDeletionReceipt {
+  conversationId: string;
+  projectId: string;
+  tombstoneName?: string;
+  ownershipToken?: string;
+  removalStarted: boolean;
+  canonicalDeletionCompleted: boolean;
+  storageCleanupCompleted: boolean;
+  serverCleanupCompleted: boolean;
   lastError?: string;
   createdAt: string;
   updatedAt: string;
@@ -187,4 +219,47 @@ export interface AgentManagementAuthorization {
   scopeHash: string;
   permission: "deletion" | "reorganization";
   approvalDecisionId?: string;
+}
+
+export interface ManagementOperation {
+  kind: "create_agent" | "rename_agent" | "stop_agent" | "delete_agent" | "set_manager";
+  ref?: string;
+  targetAgentId?: string;
+  parentRef?: string;
+  managerAgentId?: string | null;
+  title?: string;
+  engine?: string;
+  model?: string;
+  effort?: string;
+  instructions?: string;
+  /** Server-captured authority for stop_agent. Provider input cannot set it. */
+  targetRunId?: string;
+}
+
+export interface ManagementOperationProgress {
+  index: number;
+  kind: ManagementOperation["kind"];
+  receipt: Record<string, unknown>;
+}
+
+export interface ManagementPlan {
+  id: string;
+  agentId: string;
+  runId: string;
+  conversationId: string;
+  projectId: string;
+  idempotencyKey: string;
+  requestHash: string;
+  operations: ManagementOperation[];
+  deletionPreview?: AgentDeletionPreviewDto;
+  scopeHash: string;
+  approvalRequired: boolean;
+  approvalDecisionId?: string;
+  status: "planned" | "applying" | "completed";
+  operationProgress: ManagementOperationProgress[];
+  refs: Record<string, string>;
+  changedAgentIds: string[];
+  createdAt: string;
+  appliedAt?: string;
+  result?: unknown;
 }

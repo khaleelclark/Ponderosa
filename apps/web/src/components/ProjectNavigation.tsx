@@ -40,9 +40,9 @@ import {
   type ReactNode,
 } from "react";
 import type { Route } from "../routing";
+import type { ProjectSidebarSection } from "../routeRegistry";
 import type { UnreadNotificationProjection } from "../workspaceNavigation";
 import { OperatorAvatar } from "./OperatorAvatar";
-import type { ProjectSidebarSection } from "./useWorkspaceSidebarState";
 import {
   SIDEBAR_RAIL_WIDTH,
   railSurface,

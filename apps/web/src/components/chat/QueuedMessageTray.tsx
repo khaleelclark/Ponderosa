@@ -15,6 +15,12 @@ export function QueuedMessageTray({ messages, agentNameForId, busy, onSteer, onE
 }): JSX.Element | null {
   const [editingId, setEditingId] = useState<string>();
   const [editingText, setEditingText] = useState("");
+  const run = (
+    action: () => Promise<unknown> | unknown,
+    onSuccess?: () => void,
+  ) => {
+    void Promise.resolve().then(action).then(onSuccess).catch(() => {});
+  };
   if (messages.length === 0) return null;
   return <Paper
     variant="outlined"
@@ -51,7 +57,7 @@ export function QueuedMessageTray({ messages, agentNameForId, busy, onSteer, onE
               if (event.key === "Escape") setEditingId(undefined);
               if (event.key === "Enter" && !event.shiftKey && editingText.trim()) {
                 event.preventDefault();
-                void Promise.resolve(onEdit(message, editingText.trim())).then(() => setEditingId(undefined));
+                run(() => onEdit(message, editingText.trim()), () => setEditingId(undefined));
               }
             }}
           /> : <Tooltip title={message.text}><Typography variant="body1" noWrap sx={{ flex: 1, minWidth: 0 }}>{message.text}</Typography></Tooltip>}
@@ -59,12 +65,12 @@ export function QueuedMessageTray({ messages, agentNameForId, busy, onSteer, onE
             {agentNameForId(message.targetAgentId)}
           </Typography> : null}
           {editing ? <>
-            <Button size="small" disabled={busy || !editingText.trim()} onClick={() => void Promise.resolve(onEdit(message, editingText.trim())).then(() => setEditingId(undefined))}>Save</Button>
+            <Button size="small" disabled={busy || !editingText.trim()} onClick={() => run(() => onEdit(message, editingText.trim()), () => setEditingId(undefined))}>Save</Button>
             <Button size="small" color="inherit" onClick={() => setEditingId(undefined)}>Cancel</Button>
           </> : <>
-            <Button size="small" color="inherit" disabled={busy} startIcon={<SubdirectoryArrowRightIcon />} onClick={() => void onSteer(message)}>Steer</Button>
+            <Button size="small" color="inherit" disabled={busy} startIcon={<SubdirectoryArrowRightIcon />} onClick={() => run(() => onSteer(message))}>Steer</Button>
             <Tooltip title="Edit Queued Message"><span><IconButton size="small" disabled={busy} aria-label={`Edit queued message ${message.position}`} onClick={() => { setEditingId(message.deliveryId); setEditingText(message.text); }}><EditOutlinedIcon fontSize="small" /></IconButton></span></Tooltip>
-            <Tooltip title="Delete Queued Message"><span><IconButton size="small" disabled={busy} aria-label={`Delete queued message ${message.position}`} onClick={() => void onDelete(message)}><DeleteOutlineIcon fontSize="small" /></IconButton></span></Tooltip>
+            <Tooltip title="Delete Queued Message"><span><IconButton size="small" disabled={busy} aria-label={`Delete queued message ${message.position}`} onClick={() => run(() => onDelete(message))}><DeleteOutlineIcon fontSize="small" /></IconButton></span></Tooltip>
           </>}
         </Box>;
       })}

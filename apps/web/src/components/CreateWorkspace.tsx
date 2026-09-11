@@ -34,8 +34,9 @@ import type {
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState, type ReactElement, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { api } from "../api";
+import { createClientId } from "../clientId";
 import {
   engineUnavailableReason,
   engineIsAvailable,
@@ -169,18 +170,29 @@ function ProjectCreateForm({
   const [defaultEffort, setDefaultEffort] = useState("");
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const [engineToTest, setEngineToTest] = useState<EngineDto>();
+  const creationAttempt = useRef<{ fingerprint: string; idempotencyKey: string }>();
   useEffect(() => {
     setDefaultEngine(current => current || soleAvailableEngineId(engines) || "");
   }, [engines]);
   const createProject = useMutation({
-    mutationFn: () => api.createProject(createProjectRequest({
-      label,
-      mode: folderMode,
-      existingPath: path,
-      defaultEngine: defaultEngine as ProjectDto["defaultEngine"],
-      defaultModel,
-      defaultEffort,
-    })),
+    mutationFn: () => {
+      const request = createProjectRequest({
+        label,
+        mode: folderMode,
+        existingPath: path,
+        defaultEngine: defaultEngine as ProjectDto["defaultEngine"],
+        defaultModel,
+        defaultEffort,
+      });
+      const fingerprint = JSON.stringify(request);
+      if (creationAttempt.current?.fingerprint !== fingerprint) {
+        creationAttempt.current = {
+          fingerprint,
+          idempotencyKey: createClientId("project-create-"),
+        };
+      }
+      return api.createProject(request, creationAttempt.current.idempotencyKey);
+    },
     onSuccess: project => {
       queryClient.setQueryData<ProjectDto[]>(queryKeys.projects.all, (current = []) =>
         current.some(item => item.id === project.id) ? current : [...current, project]);
@@ -337,6 +349,7 @@ function ChatCreateForm({
       ? initialProjectId!
       : projects[0]?.id ?? "",
   );
+  const creationAttempt = useRef<{ projectId: string; idempotencyKey: string }>();
   useEffect(() => {
     if (!projects.length) return;
     setProjectId(current => {
@@ -348,9 +361,20 @@ function ChatCreateForm({
     });
   }, [initialProjectId, projects]);
   const create = useMutation({
-    mutationFn: () => api.createConversation(projectId, {}),
+    mutationFn: () => {
+      if (creationAttempt.current?.projectId !== projectId) {
+        creationAttempt.current = {
+          projectId,
+          idempotencyKey: createClientId("chat-create-"),
+        };
+      }
+      return api.createConversation(
+        projectId,
+        { title: "New Chat" },
+        creationAttempt.current.idempotencyKey,
+      );
+    },
     onSuccess: async conversation => {
-      await api.markProjectUsed(projectId, conversation.id);
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.project(projectId) });
       onCreated(projectId, conversation.id);
     },
@@ -589,6 +613,7 @@ function CreateFormContent({
   onCancel,
   onNavigate,
   onDirty,
+  onPendingChange,
   anchoredActions = false,
 }: {
   route: Extract<Route, { kind: "create" }>;
@@ -598,6 +623,7 @@ function CreateFormContent({
   onCancel(): void;
   onNavigate(route: Route): void;
   onDirty?(): void;
+  onPendingChange?(pending: boolean): void;
   anchoredActions?: boolean;
 }): JSX.Element {
   const queryClient = useQueryClient();
@@ -636,6 +662,7 @@ function CreateFormContent({
       fixedConversationId={route.conversationId}
       initialManagerAgentId={route.managerAgentId}
       stickyActions={anchoredActions}
+      onPendingChange={onPendingChange}
       onCancel={onCancel}
       onCreated={(projectId, agent) => {
         refresh("agent");
@@ -665,8 +692,8 @@ function CreateFormContent({
   );
   return (
     <Box
-      onChangeCapture={onDirty}
-      onInputCapture={onDirty}
+      onChange={onDirty}
+      onInput={onDirty}
       sx={{ minWidth: 0 }}
     >
       {content}
@@ -693,16 +720,19 @@ export function ContextualCreateDialog({
   const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
   const [dirty, setDirty] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [pending, setPending] = useState(false);
   useEffect(() => {
     if (request) {
       setDirty(false);
       setConfirmDiscard(false);
+      setPending(false);
     }
   }, [request?.resource, request?.projectId, request?.conversationId, request?.agentId, request?.managerAgentId]);
   const route = request
     ? { kind: "create" as const, ...request, surface: "workspace" as const }
     : undefined;
   const close = () => {
+    if (pending) return;
     if (dirty) {
       setConfirmDiscard(true);
       return;
@@ -716,6 +746,7 @@ export function ContextualCreateDialog({
       <Dialog
         open={Boolean(route)}
         onClose={close}
+        disableEscapeKeyDown={pending}
         fullScreen={fullScreen}
         fullWidth
         maxWidth={route?.resource === "agent" || route?.resource === "trigger" ? "md" : "sm"}
@@ -742,6 +773,7 @@ export function ContextualCreateDialog({
           </DialogTitle>
           <IconButton
             aria-label={`Close ${title}`}
+            disabled={pending}
             onClick={close}
             sx={{ position: "absolute", right: 12, top: 12 }}
           >
@@ -766,6 +798,7 @@ export function ContextualCreateDialog({
               preferences={preferences}
               onCancel={close}
               onDirty={() => setDirty(true)}
+              onPendingChange={setPending}
               anchoredActions
               onNavigate={next => {
                 setDirty(false);

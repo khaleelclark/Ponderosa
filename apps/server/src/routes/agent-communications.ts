@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   LONG_TEXT_MAX_UTF8_BYTES,
-  TERMINAL_REQUEST_STATES,
   canonicalizeProviderText,
   shouldBackTextWithArtifact,
   unicodeCodePointLength,
@@ -18,20 +17,24 @@ import type {
 } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
 import { AssetError } from "../assets.js";
-import {
-  renderScopedMessage,
-  stripLeadingScopeTag,
-} from "../agent-mentions.js";
+import { stripLeadingScopeTag } from "../agent-mentions.js";
 import type {
   ActiveRun,
   AgentMessageCapability,
 } from "../app-contracts.js";
 import type { createAgentEventService } from "../agent-event-service.js";
-import type { createCommunicationArtifactAuthority } from "../communication-artifacts.js";
+import {
+  cleanupUncommittedCommunicationArtifact,
+  type createCommunicationArtifactAuthority,
+} from "../communication-artifacts.js";
 import { derivedRunActionKey } from "../security.js";
 import { normalizeExternalCitations } from "../external-content.js";
 import { selectsRequiredReply } from "../required-reply-route.js";
-import type { PreparedCommunicationArtifact } from "./conversation-deliveries.js";
+import { leaseAgentDelivery, leaseConversationDelivery } from "../delivery-leases.js";
+import {
+  conversationDeliveryRequestFingerprint,
+  type PreparedCommunicationArtifact,
+} from "./conversation-deliveries.js";
 
 type AgentEventService = ReturnType<typeof createAgentEventService>;
 type CommunicationArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>;
@@ -42,6 +45,11 @@ interface AgentCommunicationRoutesContext {
   workspace: WorkspaceStore;
   agentMessageCapabilities: ReadonlyMap<string, AgentMessageCapability>;
   activeRuns: ReadonlyMap<string, ActiveRun>;
+  projectDeletionInProgress(projectId: string): boolean;
+  conversationDeletionInProgress(conversationId: string): boolean;
+  agentDeletionInProgress(agentId: string): boolean;
+  conversationDeliveryLeases: Map<string, number>;
+  agentDeliveryLeases: Map<string, number>;
   capabilityOwnsAuthoritativeRun(
     capability: AgentMessageCapability,
     run: ActiveRun | undefined,
@@ -60,6 +68,7 @@ interface AgentCommunicationRoutesContext {
   projectCommunicationArtifact: CommunicationArtifactAuthority["projectCommunicationArtifact"];
   runtimeArtifactMetadata: CommunicationArtifactAuthority["runtimeArtifactMetadata"];
   stageCommunicationArtifact: CommunicationArtifactAuthority["stageCommunicationArtifact"];
+  removeRuntimeArtifactReservation(projectId: string, artifactId: string): void;
   publishCoordinationV3Changed(
     agentId: string,
     options?: { conversationIds?: string[] },
@@ -85,6 +94,43 @@ export function validateAgentMessageBodyShape(body: unknown): string | undefined
   const unknownKeys = Object.keys(candidate).filter((key) => !AGENT_MESSAGE_FIELDS.has(key));
   if (unknownKeys.length > 0) {
     return `unknown message field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.join(", ")}; collaboration recipients must use recipientAgentIds as an array`;
+  }
+  for (const key of ["intent", "text", "steeringInjectionId", "idempotencyKey", "expiresAt"] as const) {
+    if (candidate[key] !== undefined && typeof candidate[key] !== "string") {
+      return `${key} must be a string`;
+    }
+  }
+  if (candidate.intent !== undefined &&
+      !["broadcast", "direct_to_user", "collaboration"].includes(candidate.intent as string)) {
+    return "intent must be broadcast, direct_to_user, or collaboration";
+  }
+  if (candidate.urgency !== undefined &&
+      candidate.urgency !== "ordinary" && candidate.urgency !== "urgent") {
+    return "urgency must be ordinary or urgent";
+  }
+  if (candidate.recipientAgentIds !== undefined &&
+      (!Array.isArray(candidate.recipientAgentIds) ||
+        candidate.recipientAgentIds.some((id) => typeof id !== "string"))) {
+    return "recipientAgentIds must be an array of strings";
+  }
+  if (candidate.artifactIds !== undefined &&
+      (!Array.isArray(candidate.artifactIds) || candidate.artifactIds.some((id) => typeof id !== "string"))) {
+    return "artifactIds must be an array of strings";
+  }
+  if (candidate.document !== undefined) {
+    if (!candidate.document || typeof candidate.document !== "object" || Array.isArray(candidate.document)) {
+      return "document must be an object";
+    }
+    const document = candidate.document as Record<string, unknown>;
+    const unknownDocumentKeys = Object.keys(document).filter((key) => !["title", "content", "mediaType"].includes(key));
+    if (unknownDocumentKeys.length || typeof document.title !== "string" ||
+        typeof document.content !== "string" ||
+        (document.mediaType !== undefined && typeof document.mediaType !== "string")) {
+      return "document must contain only string title, content, and optional mediaType fields";
+    }
+  }
+  if (candidate.citations !== undefined && !Array.isArray(candidate.citations)) {
+    return "citations must be an array";
   }
   if (candidate.delivery !== undefined && candidate.delivery !== "next_run") {
     return "delivery must be next_run when supplied";
@@ -119,22 +165,22 @@ export function registerAgentCommunicationRoutes(
     coordinationV3,
     agentMessageCapabilities,
     activeRuns,
+    projectDeletionInProgress,
+    conversationDeletionInProgress,
+    agentDeletionInProgress,
+    conversationDeliveryLeases,
+    agentDeliveryLeases,
     capabilityOwnsAuthoritativeRun,
     runAuthorization,
-    recordCommunication,
-    projectBroadcastToAgentAudits,
-    projectCommunicationToAgentAudit,
     resolveExplicitCollaborationIntents,
     appendBlockedMentionWarnings,
-    communicationArtifactAccess,
-    projectCommunicationArtifact,
     runtimeArtifactMetadata,
     stageCommunicationArtifact,
+    removeRuntimeArtifactReservation,
     publishCoordinationV3Changed,
     resolveOperationalNotification,
     notifyScheduler,
     reconcileRuntimeCommunicationProjections,
-    publish,
   } = context;
 
   app.post<{
@@ -168,12 +214,6 @@ export function registerAgentCommunicationRoutes(
     const currentAuthor = store.getAgent(capability.agentId);
     if (request.body?.delivery === "next_run") {
       const suppliedSteeringFence = request.body.steeringInjectionId?.trim();
-      if (requiredSteeringFence && suppliedSteeringFence !== requiredSteeringFence) {
-        return reply.code(409).send({
-          error: "output is fenced behind acknowledged steering; reconsider the newest steering prompt and retry with its exact steeringInjectionId",
-          requiredSteeringInjectionId: requiredSteeringFence,
-        });
-      }
       const recipientAgentIds = request.body.recipientAgentIds;
       if (!Array.isArray(recipientAgentIds) || recipientAgentIds.length < 1 ||
           recipientAgentIds.length > 100) {
@@ -206,13 +246,6 @@ export function registerAgentCommunicationRoutes(
       )) {
         return reply.code(400).send({ error: "expiresAt must be a valid ISO timestamp" });
       }
-      if (!currentAuthor || currentAuthor.archived) {
-        return reply.code(409).send({ error: "agent is no longer available" });
-      }
-      if (!capability.conversationId ||
-          currentAuthor.conversationId !== capability.conversationId) {
-        return reply.code(409).send({ error: "next_run requires an active Team Chat scope" });
-      }
       const requestedIdempotencyKey = request.body.idempotencyKey?.trim();
       if (requestedIdempotencyKey && unicodeCodePointLength(requestedIdempotencyKey) > 200) {
         return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
@@ -222,7 +255,68 @@ export function registerAgentCommunicationRoutes(
         "message-next-run",
         { text, recipientAgentIds: [...normalizedRecipients].sort(), expiresAt: expiresAt ?? null },
       );
+      if (currentAuthor && capability.conversationId) {
+        try {
+          const replay = coordinationV3.replayAgentNextRunDelivery({
+            projectId: currentAuthor.projectId,
+            conversationId: capability.conversationId,
+            publisherAgentId: currentAuthor.id,
+            sourceRunId: capability.runId,
+            idempotencyKey,
+            text,
+            recipientAgentIds: normalizedRecipients,
+            ...(expiresAt ? { expiresAt } : {}),
+          });
+          if (replay) return {
+            delivery: "next_run",
+            deliveryId: replay.delivery.id,
+            recipientAgentIds: replay.delivery.recipientAgentIds,
+            replayed: true,
+            executionDirective: "Information will enter each recipient's next otherwise-authorized Run; no Run or reply was created.",
+          };
+        } catch (error) {
+          return reply.code(409).send({
+            error: error instanceof Error ? error.message : "next-run delivery replay failed",
+          });
+        }
+      }
+      if (requiredSteeringFence && suppliedSteeringFence !== requiredSteeringFence) {
+        return reply.code(409).send({
+          error: "output is fenced behind acknowledged steering; reconsider the newest steering prompt and retry with its exact steeringInjectionId",
+          requiredSteeringInjectionId: requiredSteeringFence,
+        });
+      }
+      if (!currentAuthor || currentAuthor.archived) {
+        return reply.code(409).send({ error: "agent is no longer available" });
+      }
+      if (!capability.conversationId ||
+          currentAuthor.conversationId !== capability.conversationId) {
+        return reply.code(409).send({ error: "next_run requires an active Team Chat scope" });
+      }
+      const conversation = store.getConversation(capability.conversationId);
+      const leasedAgentIds = [currentAuthor.id, ...normalizedRecipients];
+      if (projectDeletionInProgress(currentAuthor.projectId) ||
+          conversationDeletionInProgress(capability.conversationId) ||
+          leasedAgentIds.some(agentDeletionInProgress) ||
+          !conversation || conversation.archived || conversation.projectId !== currentAuthor.projectId) {
+        return reply.code(409).send({ error: "next-run delivery participants are no longer available" });
+      }
+      const releaseDeliveryLease = leaseConversationDelivery(
+        conversationDeliveryLeases,
+        agentDeliveryLeases,
+        capability.conversationId,
+        leasedAgentIds,
+      );
       try {
+        const currentParticipants = leasedAgentIds.map((agentId) => store.getAgent(agentId));
+        if (projectDeletionInProgress(currentAuthor.projectId) ||
+            conversationDeletionInProgress(capability.conversationId) ||
+            leasedAgentIds.some(agentDeletionInProgress) ||
+            currentParticipants.some((agent) => !agent || agent.archived ||
+              agent.projectId !== currentAuthor.projectId ||
+              agent.conversationId !== capability.conversationId)) {
+          return reply.code(409).send({ error: "next-run delivery participants are no longer available" });
+        }
         const result = coordinationV3.publishAgentNextRunDelivery({
           projectId: currentAuthor.projectId,
           conversationId: capability.conversationId,
@@ -234,11 +328,13 @@ export function registerAgentCommunicationRoutes(
           recipientAgentIds: normalizedRecipients,
           ...(expiresAt ? { expiresAt } : {}),
         });
-        for (const recipientAgentId of normalizedRecipients) {
-          publishCoordinationV3Changed(recipientAgentId, {
-            conversationIds: [capability.conversationId],
-          });
-        }
+        try {
+          for (const recipientAgentId of normalizedRecipients) {
+            publishCoordinationV3Changed(recipientAgentId, {
+              conversationIds: [capability.conversationId],
+            });
+          }
+        } catch { /* durable next-run delivery remains authoritative */ }
         return {
           delivery: "next_run",
           deliveryId: result.delivery.id,
@@ -250,6 +346,8 @@ export function registerAgentCommunicationRoutes(
         return reply.code(409).send({
           error: error instanceof Error ? error.message : "next-run delivery failed",
         });
+      } finally {
+        releaseDeliveryLease();
       }
     }
     if (!candidateIntent || !(["broadcast", "direct_to_user", "collaboration"] as const).includes(candidateIntent)) {
@@ -325,12 +423,30 @@ export function registerAgentCommunicationRoutes(
       citations,
       steeringInjectionId: requiredSteeringFence ?? null,
     })).digest("hex");
+    const requestFingerprint = conversationDeliveryRequestFingerprint({
+      version: 1,
+      intent,
+      text,
+      recipientAgentIds: [...inferredRecipientAgentIds].sort(),
+      artifactIds: artifactIds ?? [],
+      document: documentTitle && documentContent
+        ? { title: documentTitle, content: documentContent, mediaType: "text/markdown" }
+        : null,
+      citations,
+      urgency: v3Urgency ?? "ordinary",
+    });
     const requestedIdempotencyKey = request.body?.idempotencyKey?.trim();
     if (requestedIdempotencyKey && requestedIdempotencyKey.length > 200) {
       return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
     }
-    const requestedReceiptKey = requestedIdempotencyKey
-      ? `${capability.runId}:${intent}:${requestedIdempotencyKey}`
+    const replayIdempotencyKey = requestedIdempotencyKey ?? (inferredReply
+      ? derivedRunActionKey(capability.runId, "reply", {
+          authority: selectedReplyAuthority,
+          fingerprint: candidateRequiredReplyFingerprint,
+        })
+      : undefined);
+    const requestedReceiptKey = replayIdempotencyKey
+      ? `${capability.runId}:${intent}:${replayIdempotencyKey}`
       : undefined;
     const requestedCommunicationEventId = requestedReceiptKey
       ? `runtime-${createHash("sha256").update(`${currentAuthor?.projectId ?? "unknown"}\0${requestedReceiptKey}`).digest("hex")}`
@@ -341,8 +457,58 @@ export function registerAgentCommunicationRoutes(
     const requestedReplayPayload = requestedReplay?.payload &&
       typeof requestedReplay.payload === "object" &&
       !Array.isArray(requestedReplay.payload)
-      ? requestedReplay.payload as { requiredReplyFingerprint?: unknown }
+      ? requestedReplay.payload as {
+          requestFingerprint?: unknown;
+          requiredReplyFingerprint?: unknown;
+          communication?: CommunicationEvent;
+        }
       : undefined;
+    if (requestedReplay && requestedReplayPayload?.requestFingerprint) {
+      if (requestedReplayPayload.requestFingerprint !== requestFingerprint) {
+        return reply.code(409).send({ error: "runtime communication ID collision" });
+      }
+      const communication = requestedReplayPayload.communication;
+      const replayAgentIds = [...new Set([
+        ...(communication?.sender.kind === "agent" ? [communication.sender.agentId] : []),
+        ...(requestedReplay.activations ?? []).map((activation) => activation.agentId),
+      ])];
+      const releaseReplayLease = communication?.conversationId
+        ? leaseConversationDelivery(
+            conversationDeliveryLeases,
+            agentDeliveryLeases,
+            communication.conversationId,
+            replayAgentIds,
+          )
+        : leaseAgentDelivery(agentDeliveryLeases, replayAgentIds);
+      try {
+        await reconcileRuntimeCommunicationProjections({
+          projectId: requestedReplay.projectId,
+          communicationEventId: requestedReplay.id,
+        });
+      } catch {
+        return reply.code(202).send({
+          intent,
+          eventId: requestedReplay.id,
+          committed: true,
+          recovering: true,
+          replayed: true,
+          ...(communication?.document?.artifactId
+            ? { resultRef: `ponderosa://artifact/${communication.document.artifactId}` }
+            : {}),
+        });
+      } finally {
+        releaseReplayLease();
+      }
+      return {
+        intent,
+        eventId: requestedReplay.id,
+        messageId: requestedReplay.id,
+        replayed: true,
+        ...(communication?.document?.artifactId
+          ? { resultRef: `ponderosa://artifact/${communication.document.artifactId}` }
+          : {}),
+      };
+    }
     const keyedReplayRequiredReplyFingerprint =
       typeof requestedReplayPayload?.requiredReplyFingerprint === "string"
         ? requestedReplayPayload.requiredReplyFingerprint
@@ -407,11 +573,48 @@ export function registerAgentCommunicationRoutes(
         return { suppressed: true, reason: "acknowledgement_only", recipientAgentIds: ordinaryCollaborationRecipients };
       }
     }
+    const conversation = capability.conversationId
+      ? store.getConversation(capability.conversationId)
+      : undefined;
+    if (projectDeletionInProgress(currentAuthor.projectId)) {
+      return reply.code(409).send({ error: "Project deletion is in progress" });
+    }
+    if (capability.conversationId &&
+        (!conversation || conversation.projectId !== currentAuthor.projectId || conversation.archived ||
+          conversationDeletionInProgress(capability.conversationId) ||
+          currentAuthor.conversationId !== capability.conversationId)) {
+      return reply.code(409).send({ error: "agent Chat is no longer available" });
+    }
+    if (intent !== "direct_to_user" && !conversation) {
+      return reply.code(409).send({ error: "agent is not linked to a conversation" });
+    }
+    const recipientAgents = intent === "collaboration"
+      ? inferredRecipientAgentIds.map((agentId) => store.getAgent(agentId))
+      : [];
+    if (!replay && intent === "collaboration" && recipientAgents.some((agent) =>
+      !agent || agent.archived || agent.projectId !== currentAuthor.projectId ||
+      agent.conversationId !== capability.conversationId)) {
+      return reply.code(409).send({ error: "collaboration recipient is no longer available in this Chat" });
+    }
+    const leasedAgentIds = [capability.agentId, ...inferredRecipientAgentIds];
+    if (leasedAgentIds.some(agentDeletionInProgress)) {
+      return reply.code(409).send({ error: "Agent deletion is in progress" });
+    }
+    const releaseDeliveryLease = conversation
+      ? leaseConversationDelivery(
+          conversationDeliveryLeases,
+          agentDeliveryLeases,
+          conversation.id,
+          leasedAgentIds,
+        )
+      : leaseAgentDelivery(agentDeliveryLeases, leasedAgentIds);
+    const preparedArtifacts: PreparedCommunicationArtifact[] = [];
+    let artifactsCommitted = false;
+    try {
     const createdAt = replay?.createdAt ?? new Date().toISOString();
     const messageContent = intent === "broadcast" ? scopedText : text;
     const messageNeedsArtifact = shouldBackTextWithArtifact(messageContent);
     const explicitDocumentMatchesMessage = Boolean(documentContent && documentContent === messageContent);
-    const preparedArtifacts: PreparedCommunicationArtifact[] = [];
     let messageArtifact: PreparedCommunicationArtifact | undefined;
     let explicitDocumentArtifact: PreparedCommunicationArtifact | undefined;
     try {
@@ -485,77 +688,63 @@ export function registerAgentCommunicationRoutes(
           sender: proposedCommunication.sender,
           intent: proposedCommunication.intent,
           audience: proposedCommunication.audience,
-          payload: inferredReplyFingerprint
-            ? { communication: proposedCommunication, requiredReplyFingerprint: inferredReplyFingerprint }
-            : proposedCommunication,
+          payload: {
+            communication: proposedCommunication,
+            ...(!replay ? { requestFingerprint } : {}),
+            ...(inferredReplyFingerprint
+              ? { requiredReplyFingerprint: inferredReplyFingerprint }
+              : {}),
+          },
           ...(preparedArtifacts.length ? { artifacts: preparedArtifacts.map(runtimeArtifactMetadata) } : {}),
           scopeKey: capability.conversationId ? `conversation:${capability.conversationId}` : `agent:${capability.agentId}`,
           runAuthorization: runAuthorization(capability),
           ...(inferredReplyFingerprint ? { satisfiesRequiredReply: true } : {}),
           now: proposedCommunication.createdAt,
         });
+        artifactsCommitted = true;
       } catch (error) {
         return reply.code(409).send({ error: error instanceof Error ? error.message : "message authorization failed" });
       }
-      if (inferredReplyFingerprint) {
-        capability.requiredReplyFingerprints ??= {};
-        capability.requiredReplyFingerprints[selectedReplyAuthorityKey] = inferredReplyFingerprint;
-        capability.inferredReplyCommunicationEventId = communicationEventId;
-        coordinationV3.markContextRolloverVisibleResponseCommitted(capability.agentId, capability.runId);
-      }
-      if (intake.replayed) {
-        // The scheduler transaction can commit before the canonical JSONL
-        // append's derived history transaction. Replay the exact canonical
-        // identity first so the bounded index projection is repaired live.
-        recordCommunication(
-          store.getCommunicationEvent(proposedCommunication.projectId, proposedCommunication.eventId)
-            ?? replayCommunication
-            ?? proposedCommunication,
-        );
+      try {
+        if (inferredReplyFingerprint) {
+          capability.requiredReplyFingerprints ??= {};
+          capability.requiredReplyFingerprints[selectedReplyAuthorityKey] = inferredReplyFingerprint;
+          capability.inferredReplyCommunicationEventId = communicationEventId;
+          coordinationV3.markContextRolloverVisibleResponseCommitted(capability.agentId, capability.runId);
+        }
         await reconcileRuntimeCommunicationProjections({
           projectId: proposedCommunication.projectId,
           communicationEventId: proposedCommunication.eventId,
         });
-        const existing = store.readEvents(capability.agentId).find((item) =>
-          item.event.type === "communication_projection" && item.event.communicationEventId === proposedCommunication.eventId);
-        return {
-          intent, eventId: proposedCommunication.eventId,
-          messageId: existing ? `agent-event-${existing.seq}` : proposedCommunication.eventId,
-          replayed: true,
+      } catch {
+        return reply.code(202).send({
+          intent,
+          eventId: proposedCommunication.eventId,
+          committed: true,
+          recovering: true,
+          replayed: intake.replayed,
           ...(primaryArtifact ? { resultRef: `ponderosa://artifact/${primaryArtifact.id}` } : {}),
-        };
+        });
       }
-      const communication = recordCommunication(proposedCommunication);
-      for (const artifact of preparedArtifacts) projectCommunicationArtifact(
-        currentAuthor.projectId,
-        capability.agentId,
-        artifact,
-        communicationArtifactAccess(communication),
-      );
-      store.appendCommunicationProjection(currentAuthor.projectId, {
-        eventId: communication.eventId,
-        surface: "user_inbox",
-        projectionKey: "local-operator",
-        projectedAt: communication.createdAt,
-      });
-      if (capability.conversationId) {
-        store.appendConversationMessage(
-          capability.conversationId,
-          { text: renderScopedMessage("user", publishedText), ...(artifactIds?.length ? { artifactIds } : {}) },
-          capability.agentId,
-          "main",
-          undefined,
-          undefined,
-          communication.eventId,
-        );
+      let existing;
+      try {
+        existing = store.readEvents(capability.agentId).find((item) =>
+          item.event.type === "communication_projection" && item.event.communicationEventId === proposedCommunication.eventId);
+      } catch {
+        return reply.code(202).send({
+          intent,
+          eventId: proposedCommunication.eventId,
+          committed: true,
+          recovering: true,
+          replayed: intake.replayed,
+          ...(primaryArtifact ? { resultRef: `ponderosa://artifact/${primaryArtifact.id}` } : {}),
+        });
       }
-      const stored = store.appendEvent(capability.agentId, {
-        type: "communication_projection", communicationEventId: communication.eventId, text: publishedText,
-      });
-      publish(capability.agentId, stored);
-      const messageId = `agent-event-${stored.seq}`;
       return {
-        intent, eventId: communication.eventId, messageId, replayed: false,
+        intent,
+        eventId: proposedCommunication.eventId,
+        messageId: existing ? `agent-event-${existing.seq}` : proposedCommunication.eventId,
+        replayed: intake.replayed,
         ...(primaryArtifact ? { resultRef: `ponderosa://artifact/${primaryArtifact.id}` } : {}),
       };
     }
@@ -635,9 +824,14 @@ export function registerAgentCommunicationRoutes(
         sender: proposedCommunication.sender,
         intent: proposedCommunication.intent,
         audience: proposedCommunication.audience,
-        payload: inferredReplyFingerprint
-          ? { communication: proposedCommunication, requiredReplyFingerprint: inferredReplyFingerprint }
-          : proposedCommunication,
+        payload: {
+          communication: proposedCommunication,
+          ...(!replay ? { requestFingerprint } : {}),
+          ...(inferredReplyFingerprint
+            ? { requiredReplyFingerprint: inferredReplyFingerprint }
+            : {}),
+          ...(intent === "collaboration" ? { dispatch: { text: renderedText } } : {}),
+        },
         ...(preparedArtifacts.length ? { artifacts: preparedArtifacts.map(runtimeArtifactMetadata) } : {}),
         scopeKey: capability.conversationId ? `conversation:${capability.conversationId}` : `agent:${capability.agentId}`,
         runAuthorization: runAuthorization(capability),
@@ -654,149 +848,202 @@ export function registerAgentCommunicationRoutes(
         } : {}),
         now: proposedCommunication.createdAt,
       });
+      artifactsCommitted = true;
     } catch (error) {
       const message = error instanceof Error ? error.message : "message authorization failed";
       return reply.code(message.includes("scope") ? 409 : 403).send({ error: message });
     }
-    if (inferredReplyFingerprint) {
-      capability.requiredReplyFingerprints ??= {};
-      capability.requiredReplyFingerprints[selectedReplyAuthorityKey] = inferredReplyFingerprint;
-      capability.inferredReplyCommunicationEventId = communicationEventId;
-      coordinationV3.markContextRolloverVisibleResponseCommitted(capability.agentId, capability.runId);
-    }
-    if (intake.replayed) {
-      recordCommunication(
-        store.getCommunicationEvent(proposedCommunication.projectId, proposedCommunication.eventId)
-          ?? replayCommunication
-          ?? proposedCommunication,
-      );
+    try {
+      if (inferredReplyFingerprint) {
+        capability.requiredReplyFingerprints ??= {};
+        capability.requiredReplyFingerprints[selectedReplyAuthorityKey] = inferredReplyFingerprint;
+        capability.inferredReplyCommunicationEventId = communicationEventId;
+        coordinationV3.markContextRolloverVisibleResponseCommitted(capability.agentId, capability.runId);
+      }
       await reconcileRuntimeCommunicationProjections({
         projectId: proposedCommunication.projectId,
         communicationEventId: proposedCommunication.eventId,
       });
-      const existing = store.getConversationMessages(capability.conversationId, channel)
-        .find((candidate) => candidate.communicationEventId === proposedCommunication.eventId);
-      return {
+    } catch {
+      try { notifyScheduler(); } catch { /* the committed response remains recoverable */ }
+      return reply.code(202).send({
         intent,
         eventId: proposedCommunication.eventId,
-        messageId: existing?.id ?? proposedCommunication.eventId,
-        replayed: true,
+        committed: true,
+        recovering: true,
+        replayed: intake.replayed,
+        ...(primaryArtifact ? { resultRef: `ponderosa://artifact/${primaryArtifact.id}` } : {}),
         ...(passiveRecipientAgentIds.size ? { passiveRecipientAgentIds: [...passiveRecipientAgentIds].sort() } : {}),
-      };
-    }
-    const communication = recordCommunication(proposedCommunication);
-    for (const artifact of preparedArtifacts) projectCommunicationArtifact(
-      currentAuthor.projectId,
-      capability.agentId,
-      artifact,
-      communicationArtifactAccess(communication),
-    );
-    const message = store.appendConversationMessage(
-      capability.conversationId,
-      { role: "assistant", text: renderedText, ...(artifactIds?.length ? { artifactIds } : {}) },
-      capability.agentId,
-      channel,
-      routing.intents,
-      receiptKey,
-      communication?.eventId,
-    );
-    if (!message) return reply.code(404).send({ error: "conversation not found" });
-    if (communication?.intent === "broadcast") projectBroadcastToAgentAudits(communication);
-    if (communication?.intent === "collaboration") {
-      const authorAudit = store.appendEvent(capability.agentId, {
-        type: "communication_projection",
-        communicationEventId: communication.eventId,
-        text: renderedText,
-        role: "assistant",
       });
-      publish(capability.agentId, authorAudit);
+    }
+    let message;
+    try {
+      message = store.getConversationMessages(capability.conversationId, channel)
+        .find((candidate) => candidate.communicationEventId === proposedCommunication.eventId);
+    } catch {
+      try { notifyScheduler(); } catch { /* the committed response remains recoverable */ }
+      return reply.code(202).send({
+        intent,
+        eventId: proposedCommunication.eventId,
+        committed: true,
+        recovering: true,
+        replayed: intake.replayed,
+        ...(primaryArtifact ? { resultRef: `ponderosa://artifact/${primaryArtifact.id}` } : {}),
+        ...(passiveRecipientAgentIds.size ? { passiveRecipientAgentIds: [...passiveRecipientAgentIds].sort() } : {}),
+      });
     }
     if (intent === "collaboration") {
-      for (const delivery of routing.intents) {
-        if (communication?.intent === "collaboration") {
-          projectCommunicationToAgentAudit(delivery.targetAgentId, communication, renderedText);
+      try {
+        for (const delivery of routing.intents) {
+          publishCoordinationV3Changed(delivery.targetAgentId, {
+            conversationIds: [capability.conversationId],
+          });
         }
-        publishCoordinationV3Changed(delivery.targetAgentId, {
-          conversationIds: [capability.conversationId],
-        });
-      }
-      notifyScheduler();
-      appendBlockedMentionWarnings(capability.conversationId, routing.blocked);
+        notifyScheduler();
+        appendBlockedMentionWarnings(capability.conversationId, routing.blocked);
+      } catch { /* durable communication remains authoritative */ }
     }
     return {
       intent,
-      eventId: communication?.eventId,
-      messageId: message.id,
-      replayed: false,
+      eventId: proposedCommunication.eventId,
+      messageId: message?.id ?? proposedCommunication.eventId,
+      replayed: intake.replayed,
       ...(primaryArtifact ? { resultRef: `ponderosa://artifact/${primaryArtifact.id}` } : {}),
       ...(passiveRecipientAgentIds.size ? { passiveRecipientAgentIds: [...passiveRecipientAgentIds].sort() } : {}),
     };
+    } finally {
+      if (!artifactsCommitted) {
+        for (const artifact of preparedArtifacts) {
+          cleanupUncommittedCommunicationArtifact({
+            projectId: currentAuthor.projectId,
+            artifact,
+            runtimeArtifact: (artifactId) => coordinationV3.runtimeArtifact(artifactId),
+            removeRuntimeArtifactReservation,
+          });
+        }
+      }
+      releaseDeliveryLease();
+    }
   });
 
   app.post<{ Params: { id: string }; Body: { idempotencyKey?: string; createJoin?: boolean } }>(
     "/api/requests/:id/retry",
     async (request, reply) => {
+      if (request.body !== undefined && (!request.body || typeof request.body !== "object" || Array.isArray(request.body))) {
+        return reply.code(400).send({ error: "retry body must be an object" });
+      }
+      if (request.body && Object.keys(request.body).some((key) => !["idempotencyKey", "createJoin"].includes(key))) {
+        return reply.code(400).send({ error: "unknown retry field" });
+      }
+      if (request.body?.idempotencyKey !== undefined && typeof request.body.idempotencyKey !== "string") {
+        return reply.code(400).send({ error: "idempotencyKey must be a string" });
+      }
+      if (request.body?.createJoin !== undefined && typeof request.body.createJoin !== "boolean") {
+        return reply.code(400).send({ error: "createJoin must be a boolean" });
+      }
       const original = coordinationV3.getRequest(request.params.id);
       if (!original) return reply.code(404).send({ error: "request not found" });
       if (!["blocked", "expired", "outcome_unknown", "failed", "recipient_unavailable"].includes(original.state)) {
         return reply.code(409).send({ error: "only blocked, expired, uncertain, or failed requests can be retried" });
       }
+      const idempotencyKey = request.body?.idempotencyKey?.trim() || `retry:${original.id}`;
+      if (idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
+      const requestId = `${original.id}:retry:${createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 16)}`;
+      const originalPayload = original.payload && typeof original.payload === "object"
+        ? original.payload as Record<string, unknown>
+        : undefined;
+      const { retryOfRequestId: _legacyRetryMarker, ...canonicalPayload } = originalPayload ?? {};
+      const payload = originalPayload
+        ? { ...canonicalPayload, recoveryInstruction: "Audit current state before executing; do not blindly replay prior side effects." }
+        : { text: String(original.payload ?? ""), recoveryInstruction: "Audit current state before executing; do not blindly replay prior side effects." };
+      const retryInput = {
+        projectId: original.projectId,
+        ...(original.conversationId ? { conversationId: original.conversationId } : {}),
+        requesterAgentId: original.requesterAgentId,
+        actorScope: "user:local-operator",
+        idempotencyKey,
+        rolloverRecoveryForRequestId: original.id,
+        requests: [{
+          requestId,
+          recoveryOfRequestId: original.id,
+          recipientAgentId: original.recipientAgentId,
+          lifetime: { kind: "indefinite" as const },
+          payload,
+        }],
+        ...(request.body?.createJoin === false
+          ? {}
+          : { join: { id: `${requestId}:join`, mode: "all" as const } }),
+      };
       const retryStatus = coordinationV3.requestRetryStatus(original.id);
-      if (retryStatus.completedRequestId) {
-        return reply.code(409).send({ error: "this assignment was already recovered by a successful retry" });
-      }
-      if (retryStatus.activeRequestId) {
-        return reply.code(409).send({ error: "a retry of this assignment is already queued or running" });
+      if (retryStatus.successorRequestId) {
+        if (retryStatus.successorRequestId === requestId) {
+          try {
+            return {
+              ...coordinationV3.coordinate(retryInput),
+              retryOfRequestId: original.id,
+            };
+          } catch (error) {
+            return reply.code(409).send({ error: error instanceof Error ? error.message : "request retry replay failed" });
+          }
+        }
+        return reply.code(409).send({ error: "this assignment already has a different recovery attempt" });
       }
       const requester = original.requesterAgentId ? store.getAgent(original.requesterAgentId) : undefined;
       const recipient = store.getAgent(original.recipientAgentId);
       if (!requester || requester.archived || !recipient || recipient.archived) {
         return reply.code(409).send({ error: "request participants are no longer available" });
       }
-      const idempotencyKey = request.body?.idempotencyKey?.trim() || `retry:${original.id}`;
-      if (idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
+      const conversation = original.conversationId ? store.getConversation(original.conversationId) : undefined;
+      const leasedAgentIds = [requester.id, recipient.id];
+      if (projectDeletionInProgress(original.projectId) ||
+          (original.conversationId && (conversationDeletionInProgress(original.conversationId) ||
+            !conversation || conversation.archived || conversation.projectId !== original.projectId)) ||
+          leasedAgentIds.some(agentDeletionInProgress)) {
+        return reply.code(409).send({ error: "request participants are no longer available" });
+      }
+      const releaseDeliveryLease = conversation
+        ? leaseConversationDelivery(conversationDeliveryLeases, agentDeliveryLeases, conversation.id, leasedAgentIds)
+        : leaseAgentDelivery(agentDeliveryLeases, leasedAgentIds);
       try {
-        const requestId = `${original.id}:retry:${createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 16)}`;
-        const originalPayload = original.payload && typeof original.payload === "object"
-          ? original.payload as Record<string, unknown>
-          : undefined;
-        const { retryOfRequestId: _legacyRetryMarker, ...canonicalPayload } = originalPayload ?? {};
-        const payload = originalPayload
-          ? { ...canonicalPayload, recoveryInstruction: "Audit current state before executing; do not blindly replay prior side effects." }
-          : { text: String(original.payload ?? ""), recoveryInstruction: "Audit current state before executing; do not blindly replay prior side effects." };
-        const result = coordinationV3.coordinate({
-          projectId: original.projectId,
-          ...(original.conversationId ? { conversationId: original.conversationId } : {}),
-          requesterAgentId: requester.id,
-          actorScope: "user:local-operator",
-          idempotencyKey,
-          rolloverRecoveryForRequestId: original.id,
-          requests: [{
-            requestId,
-            recoveryOfRequestId: original.id,
-            recipientAgentId: recipient.id,
-            lifetime: { kind: "indefinite" },
-            payload,
-          }],
-          ...(request.body?.createJoin === false ? {} : { join: { id: `${requestId}:join`, mode: "all" as const } }),
-        });
-        const recoveredRollover = coordinationV3.contextRolloverRecoveryForRequest(
-          requestId,
-        );
+        const currentParticipants = leasedAgentIds.map((agentId) => store.getAgent(agentId));
+        if (projectDeletionInProgress(original.projectId) || leasedAgentIds.some(agentDeletionInProgress) ||
+            currentParticipants.some((agent) => !agent || agent.archived || agent.projectId !== original.projectId) ||
+            (original.conversationId && (conversationDeletionInProgress(original.conversationId) ||
+              !store.getConversation(original.conversationId)))) {
+          return reply.code(409).send({ error: "request participants are no longer available" });
+        }
+        const result = coordinationV3.coordinate(retryInput);
+        let recoveredRollover;
+        try {
+          recoveredRollover = coordinationV3.contextRolloverRecoveryForRequest(requestId);
+        } catch {
+          return reply.code(202).send({
+            ...result,
+            retryOfRequestId: original.id,
+            committed: true,
+            recovering: true,
+          });
+        }
         if (recoveredRollover) {
-          resolveOperationalNotification(
-            `context-rollover:${recoveredRollover.id}:confirmation-missing`,
-          );
+          try {
+            resolveOperationalNotification(
+              `context-rollover:${recoveredRollover.id}:confirmation-missing`,
+            );
+          } catch { /* the retry is already canonical */ }
         }
         const conversationIds = original.conversationId
           ? [original.conversationId]
           : [];
-        publishCoordinationV3Changed(requester.id, { conversationIds });
-        publishCoordinationV3Changed(recipient.id, { conversationIds });
-        notifyScheduler();
+        try {
+          publishCoordinationV3Changed(requester.id, { conversationIds });
+          publishCoordinationV3Changed(recipient.id, { conversationIds });
+          notifyScheduler();
+        } catch { /* durable retry remains authoritative */ }
         return { ...result, retryOfRequestId: original.id };
       } catch (error) {
         return reply.code(409).send({ error: error instanceof Error ? error.message : "request retry failed" });
+      } finally {
+        releaseDeliveryLease();
       }
     },
   );
@@ -804,11 +1051,20 @@ export function registerAgentCommunicationRoutes(
   app.post<{ Params: { id: string }; Body: { idempotencyKey?: string; reason?: string } }>(
     "/api/requests/:id/cancel",
     async (request, reply) => {
+      if (request.body !== undefined && (!request.body || typeof request.body !== "object" || Array.isArray(request.body))) {
+        return reply.code(400).send({ error: "cancel body must be an object" });
+      }
+      if (request.body && Object.keys(request.body).some((key) => !["idempotencyKey", "reason"].includes(key))) {
+        return reply.code(400).send({ error: "unknown cancel field" });
+      }
+      if (request.body?.idempotencyKey !== undefined && typeof request.body.idempotencyKey !== "string") {
+        return reply.code(400).send({ error: "idempotencyKey must be a string" });
+      }
+      if (request.body?.reason !== undefined && typeof request.body.reason !== "string") {
+        return reply.code(400).send({ error: "reason must be a string" });
+      }
       const current = coordinationV3.getRequest(request.params.id);
       if (!current) return reply.code(404).send({ error: "request not found" });
-      if (TERMINAL_REQUEST_STATES.has(current.state)) {
-        return reply.code(409).send({ error: `request is already terminal (${current.state})` });
-      }
       const key = request.body?.idempotencyKey?.trim() || `operator-cancel:${current.id}`;
       if (key.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
       const reason = request.body?.reason?.trim();
@@ -823,11 +1079,13 @@ export function registerAgentCommunicationRoutes(
         const conversationIds = current.conversationId
           ? [current.conversationId]
           : [];
-        if (current.requesterAgentId) {
-          publishCoordinationV3Changed(current.requesterAgentId, { conversationIds });
-        }
-        publishCoordinationV3Changed(current.recipientAgentId, { conversationIds });
-        notifyScheduler();
+        try {
+          if (current.requesterAgentId) {
+            publishCoordinationV3Changed(current.requesterAgentId, { conversationIds });
+          }
+          publishCoordinationV3Changed(current.recipientAgentId, { conversationIds });
+          notifyScheduler();
+        } catch { /* the cancellation is already canonical */ }
         return result;
       } catch (error) {
         return reply.code(409).send({ error: error instanceof Error ? error.message : "request cancellation failed" });

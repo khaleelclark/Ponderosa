@@ -49,6 +49,7 @@ import {
   type PublishAgentNextRunDeliveryInput,
   type PublishNextRunDeliveryResult,
   type PublishOperatorNextRunDeliveryInput,
+  type ReplayAgentNextRunDeliveryInput,
 } from "./communication-v4-next-run-delivery-authority.js";
 import type {
   CoordinateV3Input,
@@ -94,6 +95,7 @@ export type {
   PublishAgentNextRunDeliveryInput,
   PublishNextRunDeliveryResult,
   PublishOperatorNextRunDeliveryInput,
+  ReplayAgentNextRunDeliveryInput,
 } from "./communication-v4-next-run-delivery-authority.js";
 export type {
   RunAuthorizationV3,
@@ -368,6 +370,12 @@ export class CoordinationV3Store {
     return this.communicationV4NextRunDeliveries.publishAgent(input);
   }
 
+  replayAgentNextRunDelivery(
+    input: ReplayAgentNextRunDeliveryInput,
+  ): PublishNextRunDeliveryResult | undefined {
+    return this.communicationV4NextRunDeliveries.replayAgent(input);
+  }
+
   publishOperatorNextRunDelivery(
     input: PublishOperatorNextRunDeliveryInput,
   ): PublishNextRunDeliveryResult {
@@ -468,6 +476,12 @@ export class CoordinationV3Store {
     return this.activationCommandAuthority.retryMessageDelivery(input);
   }
 
+  replayRetryMessageDelivery(
+    input: Parameters<CoordinationV3ActivationCommandAuthority["replayRetryMessageDelivery"]>[0],
+  ): ReturnType<CoordinationV3ActivationCommandAuthority["replayRetryMessageDelivery"]> {
+    return this.activationCommandAuthority.replayRetryMessageDelivery(input);
+  }
+
   cancelTerminalMessageDelivery(input: {
     projectId: string;
     activationId: string;
@@ -486,6 +500,10 @@ export class CoordinationV3Store {
     projectId: string,
   ): ReturnType<CoordinationV3ActivationReadModel["activation"]> {
     return this.activationReadModel.activation(activationId, projectId);
+  }
+
+  activationProjectId(activationId: string): string | undefined {
+    return this.activationReadModel.activationProjectId(activationId);
   }
 
   terminalActivationDisposition(activationId: string): {
@@ -537,6 +555,12 @@ export class CoordinationV3Store {
     return this.activationCommandAuthority.cancelPendingActivation(input);
   }
 
+  replayCancelPendingActivation(
+    input: Parameters<CoordinationV3ActivationCommandAuthority["replayCancelPendingActivation"]>[0],
+  ): ReturnType<CoordinationV3ActivationCommandAuthority["replayCancelPendingActivation"]> {
+    return this.activationCommandAuthority.replayCancelPendingActivation(input);
+  }
+
   queuedMessageCancellationChange(
     activationId: string,
   ): ReturnType<CoordinationV3ActivationCommandAuthority["queuedMessageCancellationChange"]> {
@@ -560,6 +584,12 @@ export class CoordinationV3Store {
     return this.activationCommandAuthority.editPendingActivationText(input);
   }
 
+  replayEditPendingActivationText(
+    input: Parameters<CoordinationV3ActivationCommandAuthority["replayEditPendingActivationText"]>[0],
+  ): ReturnType<CoordinationV3ActivationCommandAuthority["replayEditPendingActivationText"]> {
+    return this.activationCommandAuthority.replayEditPendingActivationText(input);
+  }
+
   steerPendingActivation(input: {
     activationId: string;
     projectId: string;
@@ -567,6 +597,12 @@ export class CoordinationV3Store {
     now?: string;
   }): { steered: boolean; replayed: boolean; status: "steered" | "delivery_started" } {
     return this.activationCommandAuthority.steerPendingActivation(input);
+  }
+
+  replaySteerPendingActivation(
+    input: Parameters<CoordinationV3ActivationCommandAuthority["replaySteerPendingActivation"]>[0],
+  ): ReturnType<CoordinationV3ActivationCommandAuthority["replaySteerPendingActivation"]> {
+    return this.activationCommandAuthority.replaySteerPendingActivation(input);
   }
 
   activationPayloads(agentId: string, activationIds: string[], runId?: string): Array<{
@@ -624,6 +660,10 @@ export class CoordinationV3Store {
 
   coordinate(input: CoordinateV3Input, now = new Date().toISOString()): CoordinateV3Result {
     return this.coordinateAuthority.coordinate(input, now);
+  }
+
+  replayCoordinate(input: CoordinateV3Input): CoordinateV3Result | undefined {
+    return this.coordinateAuthority.replayCoordinate(input);
   }
 
   enqueueMessageActivation(input: EnqueueMessageActivationInput): string {
@@ -876,6 +916,10 @@ export class CoordinationV3Store {
     return this.requestAuthority.updateRequest(input);
   }
 
+  replayRequestUpdate(input: UpdateRequestV3Input): RequestUpdateV3Result | undefined {
+    return this.requestAuthority.replayRequestUpdate(input);
+  }
+
   getRequest(requestId: string): CoordinationRequestV3View | undefined {
     return this.requestReadModel.getRequest(requestId);
   }
@@ -885,8 +929,8 @@ export class CoordinationV3Store {
   }
 
   requestRetryStatus(requestId: string): {
-    activeRequestId?: string;
-    completedRequestId?: string;
+    successorRequestId?: string;
+    successorState?: import("@ponderosa/core").CoordinationRequestState;
   } {
     return this.requestReadModel.requestRetryStatus(requestId);
   }
@@ -1160,6 +1204,10 @@ export class CoordinationV3Store {
 
   cancelAgentRun(input: { agentId: string; idempotencyKey: string; expectedRunId?: string; now?: string }): CancellationResult {
     return this.runLifecycleAuthority.cancelAgentRun(input);
+  }
+
+  cancellationReceipt(agentId: string, idempotencyKey: string): CancellationResult | undefined {
+    return this.runLifecycleAuthority.cancellationReceipt(agentId, idempotencyKey);
   }
 
   claimProviderOperations(workerId: string, limit = 20, now = new Date().toISOString(), staleMs = 30_000): ProviderOperation[] {

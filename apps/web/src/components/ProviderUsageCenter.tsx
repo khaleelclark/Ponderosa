@@ -18,17 +18,23 @@ import {
   Typography,
 } from "@mui/material";
 import type {
-  ProviderUsageCenterDto,
   ProviderUsageFailureCode,
   ProviderUsageStateDto,
   ProviderUsageWindow,
 } from "@ponderosa/core";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../api";
+import {
+  loadLatestProviderUsage,
+  providerUsageRefreshInterval,
+  refreshLatestAgentProviderUsage,
+  refreshLatestProviderUsage,
+} from "../providerUsageQuery";
 import { queryKeys } from "../queryKeys";
+import { providerUsageCollectionPresentation } from "./providerUsagePresentation";
 
 function useClock(active = true): number {
   const [now, setNow] = useState(Date.now());
@@ -108,12 +114,14 @@ export function ProviderUsageCard({
   onClose,
   onOpenProviderSettings,
   compact = false,
+  requestPending = false,
 }: {
   state: ProviderUsageStateDto;
   onRefresh?: () => void;
   onClose?: () => void;
   onOpenProviderSettings?: () => void;
   compact?: boolean;
+  requestPending?: boolean;
 }): JSX.Element {
   const now = useClock();
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
@@ -157,10 +165,10 @@ export function ProviderUsageCard({
             <Button
               size="small"
               startIcon={<RefreshIcon />}
-              disabled={state.refreshing || !state.authenticated}
+              disabled={requestPending || state.refreshing || !state.authenticated}
               onClick={onRefresh}
             >
-              {state.refreshing ? "Refreshing…" : "Refresh"}
+              {requestPending || state.refreshing ? "Refreshing…" : "Refresh"}
             </Button>
           ) : null}
           {onClose ? (
@@ -213,7 +221,7 @@ export function ProviderUsageCard({
               <Button size="small" onClick={onOpenProviderSettings}>Open Provider Settings</Button>
             ) : null}
             {actions.retry && onRefresh ? (
-              <Button size="small" startIcon={<RefreshIcon />} disabled={state.refreshing} onClick={onRefresh}>Try Again</Button>
+              <Button size="small" startIcon={<RefreshIcon />} disabled={requestPending || state.refreshing} onClick={onRefresh}>Try Again</Button>
             ) : null}
             {actions.diagnostics ? (
               <Button size="small" onClick={() => setDiagnosticsOpen(value => !value)}>View Diagnostics</Button>
@@ -249,19 +257,6 @@ function constrainedProvider(providers: ProviderUsageStateDto[]): ProviderUsageS
     })[0];
 }
 
-function mergeProvider(
-  center: ProviderUsageCenterDto | undefined,
-  state: ProviderUsageStateDto,
-): ProviderUsageCenterDto {
-  const providers = center?.providers ?? [];
-  const index = providers.findIndex((candidate) => candidate.provider === state.provider);
-  return {
-    providers: index < 0
-      ? [...providers, state]
-      : providers.map((candidate, candidateIndex) => candidateIndex === index ? state : candidate),
-  };
-}
-
 export function ProviderQuotaIndicator({
   preferredProvider,
   mobile = false,
@@ -281,9 +276,21 @@ export function ProviderQuotaIndicator({
   const query = useQuery({
     queryKey: queryKeys.providerUsage.all,
     queryFn: () => api.getProviderUsage(),
-    refetchInterval: (current) =>
-      current.state.data?.providers.some((provider) => provider.refreshing) ? 1_000 : false,
+    refetchInterval: current =>
+      providerUsageRefreshInterval(current.state.data),
     staleTime: 30_000,
+  });
+  const load = useMutation({
+    mutationFn: () => loadLatestProviderUsage(
+      queryClient,
+      () => api.getProviderUsage(true),
+    ),
+  });
+  const refreshRequest = useMutation({
+    mutationFn: (providerId: string) => refreshLatestProviderUsage(
+      queryClient,
+      () => api.refreshProviderUsage(providerId),
+    ),
   });
   const providers = useMemo(
     () => query.data?.providers ?? [],
@@ -315,18 +322,21 @@ export function ProviderQuotaIndicator({
   const open = (element: HTMLElement) => {
     setAnchor(element);
     setSelectedProvider(preferredProvider ?? constrained?.provider);
-    void api.getProviderUsage(true).then((value) => {
-      queryClient.setQueryData(queryKeys.providerUsage.all, value);
-    });
+    load.mutate();
   };
   const refresh = (providerId: string) => {
-    void api.refreshProviderUsage(providerId).then((state) => {
-      queryClient.setQueryData<ProviderUsageCenterDto>(
-        queryKeys.providerUsage.all,
-        (current) => mergeProvider(current, state),
-      );
-    });
+    refreshRequest.mutate(providerId);
   };
+  const selectedRefreshFailed = refreshRequest.isError &&
+    refreshRequest.variables === selected?.provider;
+  const requestError = selectedRefreshFailed
+    ? refreshRequest.error
+    : load.error ?? query.error;
+  const presentation = providerUsageCollectionPresentation(
+    providers.length,
+    query.isPending || load.isPending,
+    requestError,
+  );
   useEffect(() => {
     if (!anchor) return;
     if (
@@ -425,10 +435,47 @@ export function ProviderQuotaIndicator({
               onClose={() => setAnchor(undefined)}
               onOpenProviderSettings={onOpenProviderSettings}
               compact
+              requestPending={load.isPending || (
+                refreshRequest.isPending &&
+                refreshRequest.variables === selected.provider
+              )}
             />
+          ) : presentation.kind === "loading" ? (
+            <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+              <CircularProgress size={18} />
+              <Typography variant="body2">Loading provider usage…</Typography>
+            </Stack>
+          ) : presentation.kind === "error" ? (
+            <Alert
+              severity="error"
+              action={<Button color="inherit" size="small" onClick={() => load.mutate()}>Retry</Button>}
+            >
+              {presentation.message}
+            </Alert>
           ) : (
             <Alert severity="info">No provider is configured.</Alert>
           )}
+          {presentation.kind === "ready" && presentation.warning ? (
+            <Alert
+              severity="warning"
+              sx={{ mt: 1 }}
+              action={(
+                <Button
+                  color="inherit"
+                  size="small"
+                  disabled={load.isPending || refreshRequest.isPending}
+                  onClick={() => {
+                    if (selectedRefreshFailed && selected) refresh(selected.provider);
+                    else load.mutate();
+                  }}
+                >
+                  Retry
+                </Button>
+              )}
+            >
+              {presentation.warning} Showing the last available reading.
+            </Alert>
+          ) : null}
         </Box>
       </Popover>
     </>
@@ -452,28 +499,45 @@ export function AgentProviderUsageCard({
     refetchInterval: (current) => current.state.data?.refreshing ? 750 : false,
   });
   const state = query.data ?? initialState;
-  useEffect(() => {
-    queryClient.setQueryData<ProviderUsageCenterDto>(
-      queryKeys.providerUsage.all,
-      (current) => mergeProvider(current, state),
-    );
-  }, [queryClient, state]);
+  const refreshRequest = useMutation({
+    mutationFn: () => refreshLatestAgentProviderUsage(
+      queryClient,
+      agentId,
+      () => api.refreshProviderUsage(state.provider),
+    ),
+  });
+  const presentation = providerUsageCollectionPresentation(
+    1,
+    query.isPending,
+    refreshRequest.error ?? query.error,
+  );
   return (
     <Box sx={{ mx: 1.5, mt: 1 }}>
       <ProviderUsageCard
         state={state}
         onClose={onClose}
         onOpenProviderSettings={() => globalThis.location.assign("/settings/providers")}
-        onRefresh={() => {
-          void api.refreshProviderUsage(state.provider).then((next) => {
-            queryClient.setQueryData(queryKeys.providerUsage.agent(agentId), next);
-            queryClient.setQueryData<ProviderUsageCenterDto>(
-              queryKeys.providerUsage.all,
-              (current) => mergeProvider(current, next),
-            );
-          });
-        }}
+        onRefresh={() => refreshRequest.mutate()}
+        requestPending={refreshRequest.isPending}
       />
+      {presentation.kind === "ready" && presentation.warning ? (
+        <Alert
+          severity="warning"
+          sx={{ mt: 1 }}
+          action={(
+            <Button
+              color="inherit"
+              size="small"
+              disabled={refreshRequest.isPending}
+              onClick={() => refreshRequest.mutate()}
+            >
+              Retry
+            </Button>
+          )}
+        >
+          {presentation.warning} Showing the last available reading.
+        </Alert>
+      ) : null}
     </Box>
   );
 }

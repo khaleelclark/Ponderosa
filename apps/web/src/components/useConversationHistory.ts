@@ -3,9 +3,10 @@ import type {
   ConversationMessageDto,
   TeamOperationalEventDto,
 } from "@ponderosa/core";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { compactDefined } from "../collections";
+import { loadRetainedData } from "../retainedData";
 import {
   useCollaborationView,
   useConversation,
@@ -53,6 +54,8 @@ export function useConversationHistory(
   const [olderCollaboration, setOlderCollaboration] =
     useState<OlderCollaborationHistory>();
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [olderError, setOlderError] = useState<string>();
+  useEffect(() => setOlderError(undefined), [activeView, conversationId]);
 
   // Live query updates can briefly leave sparse entries in cached collections.
   // Compact at the page boundary so historical chats remain renderable.
@@ -154,66 +157,68 @@ export function useConversationHistory(
     if (loadingOlder) return;
     setLoadingOlder(true);
     try {
-      if (activeView === "main") {
-        if (!mainHistory.hasMore || !mainHistory.cursor) return;
-        const page = await api.getConversation(
-          conversationId,
-          100,
-          mainHistory.cursor,
-        );
-        setOlderMain(current => ({
-          messages: mergeConversationMessages(
-            page.messages,
-            current?.messages ?? [],
-            detailQuery.data?.messages ?? [],
-          ),
-          decisionEvents: mergeDecisionEvents(
-            page.decisionEvents ?? [],
-            current?.decisionEvents ?? [],
-            detailQuery.data?.decisionEvents ?? [],
-          ),
-          cursor: page.history?.cursor,
-          hasMore: page.history?.hasMore ?? false,
-        }));
-      } else {
-        const loadMessages =
-          collaborationHistory.hasMore && Boolean(collaborationHistory.cursor);
-        const loadOperations =
-          collaborationHistory.operationHasMore &&
-          Boolean(collaborationHistory.operationCursor);
-        if (!loadMessages && !loadOperations) return;
-        const page = await api.getCollaborationView(
-          conversationId,
-          100,
-          loadMessages ? collaborationHistory.cursor : undefined,
-          undefined,
-          loadOperations ? collaborationHistory.operationCursor : undefined,
-        );
-        setOlderCollaboration(current => ({
-          messages: loadMessages
-            ? mergeConversationMessages(
-                page.messages,
-                current?.messages ?? [],
-                collaborationQuery.data?.messages ?? [],
-              )
-            : (current?.messages ?? []),
-          operations: loadOperations
-            ? mergeOperationalEvents(
-                page.operations ?? [],
-                current?.operations ?? [],
-                collaborationQuery.data?.operations ?? [],
-              )
-            : (current?.operations ?? []),
-          cursor: loadMessages ? page.history?.cursor : current?.cursor,
-          operationCursor: loadOperations
-            ? page.operationHistory?.cursor
-            : current?.operationCursor,
-          hasMore: loadMessages ? (page.history?.hasMore ?? false) : false,
-          operationHasMore: loadOperations
-            ? (page.operationHistory?.hasMore ?? false)
-            : false,
-        }));
-      }
+      await loadRetainedData(async () => {
+        if (activeView === "main") {
+          if (!mainHistory.hasMore || !mainHistory.cursor) return;
+          const page = await api.getConversation(
+            conversationId,
+            100,
+            mainHistory.cursor,
+          );
+          setOlderMain(current => ({
+            messages: mergeConversationMessages(
+              page.messages,
+              current?.messages ?? [],
+              detailQuery.data?.messages ?? [],
+            ),
+            decisionEvents: mergeDecisionEvents(
+              page.decisionEvents ?? [],
+              current?.decisionEvents ?? [],
+              detailQuery.data?.decisionEvents ?? [],
+            ),
+            cursor: page.history?.cursor,
+            hasMore: page.history?.hasMore ?? false,
+          }));
+        } else {
+          const loadMessages =
+            collaborationHistory.hasMore && Boolean(collaborationHistory.cursor);
+          const loadOperations =
+            collaborationHistory.operationHasMore &&
+            Boolean(collaborationHistory.operationCursor);
+          if (!loadMessages && !loadOperations) return;
+          const page = await api.getCollaborationView(
+            conversationId,
+            100,
+            loadMessages ? collaborationHistory.cursor : undefined,
+            undefined,
+            loadOperations ? collaborationHistory.operationCursor : undefined,
+          );
+          setOlderCollaboration(current => ({
+            messages: loadMessages
+              ? mergeConversationMessages(
+                  page.messages,
+                  current?.messages ?? [],
+                  collaborationQuery.data?.messages ?? [],
+                )
+              : (current?.messages ?? []),
+            operations: loadOperations
+              ? mergeOperationalEvents(
+                  page.operations ?? [],
+                  current?.operations ?? [],
+                  collaborationQuery.data?.operations ?? [],
+                )
+              : (current?.operations ?? []),
+            cursor: loadMessages ? page.history?.cursor : current?.cursor,
+            operationCursor: loadOperations
+              ? page.operationHistory?.cursor
+              : current?.operationCursor,
+            hasMore: loadMessages ? (page.history?.hasMore ?? false) : false,
+            operationHasMore: loadOperations
+              ? (page.operationHistory?.hasMore ?? false)
+              : false,
+          }));
+        }
+      }, setOlderError, "Older Chat history could not be loaded.");
     } finally {
       setLoadingOlder(false);
     }
@@ -228,6 +233,7 @@ export function useConversationHistory(
     detailQuery,
     loadOlderHistory,
     loadingOlder,
+    olderError,
     mainHistory,
     mainTimeline,
     messageLayoutKey,

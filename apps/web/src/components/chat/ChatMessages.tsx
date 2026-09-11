@@ -8,12 +8,18 @@ import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, 
 import { messageTagTokens, unicodeCodePointLength } from "@ponderosa/core";
 import type { AgentMentionBindingDto, CommunicationDocumentReference, CommunicationIntent, MessageDto, VerifiedCitationDto } from "@ponderosa/core";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
+import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { copyText } from "../../clipboard";
+import { MESSAGE_TAG_PREFIX, messageTagHandle } from "../../mentions";
 import { LazySyntaxHighlightedCode } from "../LazySyntaxHighlightedCode";
 import { useProjectBrowser } from "../ProjectBrowserContext";
 import { ChatDocumentCard } from "./ChatDocumentCard";
+import {
+  chatMarkdownUrlTransform,
+  parseChatProjectFileHref,
+  renderableChatLinkHref,
+} from "./chatMarkdownLink";
 
 function isLoopbackLink(url: URL): boolean {
   return url.protocol === "http:" && Boolean(url.port) && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname.toLowerCase());
@@ -368,30 +374,6 @@ interface MarkdownAstNode {
   children?: MarkdownAstNode[];
 }
 
-const MESSAGE_TAG_PREFIX = "#ponderosa-tag:";
-
-function projectFileReference(href: string | undefined): {
-  projectId: string;
-  artifactId: string;
-  historicalFilename: string;
-  currentFilename: string;
-} | undefined {
-  if (!href?.startsWith("ponderosa://project-file/")) return undefined;
-  try {
-    const url = new URL(href);
-    const [projectId, artifactId] = url.pathname.split("/").filter(Boolean);
-    if (!projectId || !artifactId) return undefined;
-    return {
-      projectId: decodeURIComponent(projectId),
-      artifactId: decodeURIComponent(artifactId),
-      historicalFilename: url.searchParams.get("historical") ?? "Project file",
-      currentFilename: url.searchParams.get("current") ?? "",
-    };
-  } catch {
-    return undefined;
-  }
-}
-
 export const messageMentionSx = {
   display: "inline",
   px: 0.45,
@@ -498,11 +480,7 @@ function ChatMarkdown({
     >
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMessageTags]}
-        urlTransform={url =>
-          url.startsWith("ponderosa://project-file/")
-            ? url
-            : defaultUrlTransform(url)
-        }
+        urlTransform={chatMarkdownUrlTransform}
         components={{
           pre: ({ children: code }) => <CopyableCodeBlock>{code}</CopyableCodeBlock>,
           img: ({ src, alt }) => {
@@ -513,7 +491,7 @@ function ChatMarkdown({
               : image;
           },
           a: ({ href, children: label }) => {
-            const fileReference = projectFileReference(href);
+            const fileReference = parseChatProjectFileHref(href);
             if (fileReference) {
               const filename = fileReference.currentFilename || fileReference.historicalFilename;
               if (!projectId || fileReference.projectId !== projectId) {
@@ -555,8 +533,14 @@ function ChatMarkdown({
                 </Box>
               );
             }
-            if (!href?.startsWith(MESSAGE_TAG_PREFIX)) return <ChatLink href={href ?? ""} previewScope={previewScope} projectId={projectId}>{label}</ChatLink>;
-            const handle = decodeURIComponent(href.slice(MESSAGE_TAG_PREFIX.length));
+            if (!href?.startsWith(MESSAGE_TAG_PREFIX)) {
+              const safeHref = renderableChatLinkHref(href);
+              return safeHref
+                ? <ChatLink href={safeHref} previewScope={previewScope} projectId={projectId}>{label}</ChatLink>
+                : <Box component="span">{label}</Box>;
+            }
+            const handle = messageTagHandle(href);
+            if (!handle) return <Box component="span">{label}</Box>;
             if (handle.toLocaleLowerCase() === "broadcast" && onOpenBroadcast) {
               return <Box className="chat-text-navigation" component="button" type="button" aria-label="Open originating broadcast in Project chat" onClick={onOpenBroadcast} sx={{ display: "inline", p: 0, border: 0, bgcolor: "transparent", color: "inherit", font: "inherit", fontWeight: 600, textDecoration: "none", cursor: "pointer" }}>{label}</Box>;
             }

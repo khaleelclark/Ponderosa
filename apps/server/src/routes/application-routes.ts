@@ -40,7 +40,7 @@ import { applyCollectionPageHeaders, collectionGenerationKey, sendCollectionPage
 import { registerAgentUsageRoute, registerUsageRoutes } from "./usage.js";
 import { registerAgentWorkRoutes } from "./agent-work.js";
 import { registerArtifactRoutes } from "./artifacts.js";
-import { registerAttachmentRoutes } from "./attachments.js";
+import { attachmentDeletionKey, registerAttachmentRoutes } from "./attachments.js";
 import { registerBrowserRoutes } from "./browsers.js";
 import { registerCollaborationRoutes } from "./collaboration.js";
 import { registerCommunicationDocumentRoutes } from "./communication-documents.js";
@@ -65,23 +65,30 @@ import { registerStreamRoutes } from "./streams.js";
 import { registerTriggerRoutes } from "./triggers.js";
 import { registerWorkspaceDirectoryRoutes } from "./workspace-directory.js";
 import { registerWorkspacePreferenceRoutes } from "./workspace-preferences.js";
+import { pendingAgentQuarantine } from "./pending-agent-quarantine.js";
 
 type ApplicationRoutesContext =
   Parameters<typeof registerProjectRoutes>[1] &
   Omit<Parameters<typeof registerProjectDeletionRoutes>[1], "logError"> &
   Omit<Parameters<typeof registerConversationRoutes>[1],
-    "hasActiveRun" |
-    "purgeCommunicationV4Conversation" | "refreshTriggers"> &
+    "hasActiveRun" | "projectDeletionInProgress" | "refreshTriggers"> &
   Omit<Parameters<typeof registerConversationDeliveryRoutes>[1],
-    "projectDeletionInProgress" | "assetMetadata"> &
-  Parameters<typeof registerQueuedMessageRoutes>[1] &
+    "projectDeletionInProgress" | "agentDeletionInProgress" | "attachmentDeletionInProgress" |
+    "assetReconciliationInProgress" | "assetMetadata"> &
+  Omit<Parameters<typeof registerQueuedMessageRoutes>[1],
+    "projectDeletionInProgress" | "conversationDeletionInProgress" |
+    "agentDeletionInProgress" | "removeRuntimeArtifactReservation"> &
   Omit<Parameters<typeof registerCollaborationRoutes>[1],
-    "projectDeletionInProgress" | "assetMetadata"> &
-  Parameters<typeof registerAgentCreationRoutes>[1] &
+    "projectDeletionInProgress" | "agentDeletionInProgress" | "attachmentDeletionInProgress" |
+    "assetReconciliationInProgress" | "assetMetadata"> &
+  Omit<Parameters<typeof registerAttachmentRoutes>[1], "agentDeletionInProgress"> &
+  Omit<Parameters<typeof registerAgentCreationRoutes>[1], "dataDir"> &
   Omit<Parameters<typeof registerAgentPackageRoutes>[1], "dataDir" | "coordination"> &
   Omit<Parameters<typeof registerAgentMaintenanceRoutes>[1], "workingCopies"> &
   Omit<Parameters<typeof registerAgentMessageRunRoute>[1],
-    "deploymentDraining" | "assetMetadata" | "workingCopies"> &
+    "attachmentDeletionInProgress" | "conversationDeletionInProgress" |
+    "deploymentDraining" | "assetMetadata" |
+    "assetReconciliationInProgress" | "workingCopies"> &
   Parameters<typeof registerWorkspacePreferenceRoutes>[1] &
   Parameters<typeof registerNotificationListRoute>[1] &
   Omit<Parameters<typeof registerPushRoutes>[1], "configuration"> &
@@ -183,6 +190,8 @@ export function registerApplicationRoutes(
     cancelAgentDecisions,
     awaitProjectDeletionBarrier,
     commitAgentDeletion,
+    processAgentDeletionCleanup,
+    processConversationDeletionCleanup,
     contextCursors,
     browserScopeForRun,
     browserProfiles,
@@ -195,7 +204,6 @@ export function registerApplicationRoutes(
     managedWorkspacesRoot,
     projectFolderPathBoundary,
     drafts,
-    draftAttachmentSurfaceDir,
     agentMessageCapabilities,
     scheduledSessionRollovers,
     contextRolloverPending,
@@ -206,6 +214,11 @@ export function registerApplicationRoutes(
     deletingAgentIds,
     deletingConversationIds,
     agentCreationConversationLeases,
+    conversationDeliveryLeases,
+    agentDeliveryLeases,
+    deletingAttachmentKeys,
+    reconcilingAssetAgentIds,
+    agentAttachmentDeletionInProgress,
     rejectQuarantinedTriggerMutation,
     projectDeletionInFlightIds,
     communicationReconciliation,
@@ -268,6 +281,7 @@ export function registerApplicationRoutes(
     validateEngineModel,
     triggerSources,
     webhookRawBodies,
+    reconcileConversationRuntimeCommunicationProjections,
     reconcileRuntimeCommunicationProjections,
     notifyManagerOfChildFailure,
     projectBroadcastToAgentAudits,
@@ -284,9 +298,11 @@ export function registerApplicationRoutes(
     drainDeploymentIdleAuthorities,
     workingCopies,
   } = context;
+
+app.addHook("preHandler", pendingAgentQuarantine(store));
 registerLinkPreviewRoutes(app);
 
-registerProjectRoutes(app, {
+const managedProjectFolders = registerProjectRoutes(app, {
   store,
   workspace,
   engines,
@@ -305,6 +321,7 @@ registerProjectRoutes(app, {
 
 registerProjectDeletionRoutes(app, {
   store,
+  reconcileManagedProjectFolders: managedProjectFolders.reconcileManagedProjectFolders,
   coordinationV3,
   engines,
   triggerSources,
@@ -314,7 +331,11 @@ registerProjectDeletionRoutes(app, {
   engineModelCatalogDiscoveryAuthorities,
   deletingProjectIds,
   deletingAgentIds,
+  reconcilingAssetAgentIds,
+  agentAttachmentDeletionInProgress,
   agentCreationConversationLeases,
+  conversationDeliveryLeases,
+  agentDeliveryLeases,
   projectDeletionInFlightIds,
   projectBrowserGrants,
   browserSessions,
@@ -342,6 +363,11 @@ registerProjectDeletionRoutes(app, {
   logError: (meta, message) => app.log.error(meta, message),
   providerProcessAuthority,
   workingCopies,
+  drafts,
+  workspace,
+  processConversationDeletionCleanup,
+  processAgentDeletionCleanup,
+  assets,
 });
 
 registerAgentWorkRoutes(app, { store, projection: agentWorkProjection });
@@ -354,19 +380,18 @@ registerConversationRoutes(app, {
   engines,
   cachedModelOptions,
   appendWorkspace,
-  publishWorkspaceSince,
   generateConversationTitle,
   conversationDetail,
   agentHealth,
   teamDirectory,
   hasActiveRun: agentId => activeRuns.has(agentId),
-  commitAgentDeletion,
+  projectDeletionInProgress: projectId => deletingProjectIds.has(projectId),
   deletingConversationIds,
   agentCreationConversationLeases,
-  purgeCommunicationV4Conversation: conversationId =>
-    coordinationV3.purgeCommunicationV4Conversation(conversationId),
+  conversationDeliveryLeases,
+  reconcileConversationRuntimeCommunicationProjections,
   refreshTriggers: () => triggerSources.refresh(),
-  draftAttachmentSurfaceDir,
+  processConversationDeletionCleanup,
 });
 
 registerConversationDeliveryRoutes(app, {
@@ -374,6 +399,12 @@ registerConversationDeliveryRoutes(app, {
   coordinationV3,
   assets,
   projectDeletionInProgress: (projectId) => deletingProjectIds.has(projectId),
+  agentDeletionInProgress: (agentId) => deletingAgentIds.has(agentId),
+  attachmentDeletionInProgress: (agentId, attachmentId) =>
+    deletingAttachmentKeys.has(attachmentDeletionKey(agentId, attachmentId)),
+  assetReconciliationInProgress: agentId => reconcilingAssetAgentIds.has(agentId),
+  conversationDeliveryLeases,
+  agentDeliveryLeases,
   assetMetadata,
   prepareUserCommunicationText,
   runtimeArtifactMetadata,
@@ -392,8 +423,15 @@ registerQueuedMessageRoutes(app, {
   store,
   coordinationV3,
   workspace,
+  projectDeletionInProgress: projectId => deletingProjectIds.has(projectId),
+  conversationDeletionInProgress: conversationId => deletingConversationIds.has(conversationId),
+  agentDeletionInProgress: agentId => deletingAgentIds.has(agentId),
+  conversationDeliveryLeases,
+  agentDeliveryLeases,
   prepareUserCommunicationText,
   runtimeArtifactMetadata,
+  removeRuntimeArtifactReservation: (projectId, artifactId) =>
+    assets.removeRuntimeArtifactReservation(projectId, artifactId),
   appendWorkspace,
   publishWorkspaceSince,
   publishCoordinationV3Changed,
@@ -405,6 +443,12 @@ registerCollaborationRoutes(app, {
   coordinationV3,
   assets,
   projectDeletionInProgress: projectId => deletingProjectIds.has(projectId),
+  agentDeletionInProgress: agentId => deletingAgentIds.has(agentId),
+  attachmentDeletionInProgress: (agentId, attachmentId) =>
+    deletingAttachmentKeys.has(attachmentDeletionKey(agentId, attachmentId)),
+  assetReconciliationInProgress: agentId => reconcilingAssetAgentIds.has(agentId),
+  conversationDeliveryLeases,
+  agentDeliveryLeases,
   collaborationViewDetail,
   assetMetadata,
   prepareUserCommunicationText,
@@ -428,6 +472,13 @@ app.get<{ Params: { id: string }; Querystring: CollectionQuery }>("/api/projects
         SELECT id, title, updated_at
         FROM agents
         WHERE project_id = ? AND deleted_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM agent_creation_operation_members members
+            JOIN agent_creation_operations operations ON operations.id = members.operation_id
+            WHERE members.agent_id = agents.id
+              AND operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+          )
           ${normalizedSearch ? "AND lower(title || ' ' || active_engine || ' ' || COALESCE(model, '')) LIKE ? ESCAPE '\\\\'" : ""}
       `,
       params: normalizedSearch
@@ -463,6 +514,7 @@ registerAgentPresetRoutes(app, {
 });
 
 registerAgentCreationRoutes(app, {
+  dataDir: opts.dataDir,
   store,
   coordinationV3,
   workspace,
@@ -473,12 +525,14 @@ registerAgentCreationRoutes(app, {
   deletingProjectIds,
   deletingConversationIds,
   agentCreationConversationLeases,
+  agentDeliveryLeases,
   cachedModelOptions,
   recordCommunication,
   prepareUserCommunicationText,
   runtimeArtifactMetadata,
   projectCommunicationArtifact,
   communicationArtifactAccess,
+  reconcileRuntimeCommunicationProjections,
   publish,
   publishMessageDeliveryChanged,
   notifyScheduler: notifyScheduler,
@@ -556,6 +610,8 @@ registerAgentPackageRoutes(app, {
   engines,
   deletingProjectIds,
   deletingConversationIds,
+  deletingAgentIds,
+  agentCreationConversationLeases,
   cachedModelOptions,
   appendWorkspace,
   agentMessages,
@@ -566,6 +622,7 @@ registerAgentUsageRoute(app, serverContext);
 
 registerAgentMaintenanceRoutes(app, {
   store, coordinationV3, engines, triggerSources, deletingAgentIds,
+  agentDeliveryLeases,
   cachedModelOptions, commitAgentDeletion,
   activeRuns, workingCopies, clearAgentResumeSession,
   persistentRuntimeForTermination, teardownPersistentRuntime,
@@ -595,7 +652,12 @@ const globalChatSearch = (query: {
 };
 
 
-registerSearchRoutes(app, { ...serverContext, globalChatSearch, workspace });
+registerSearchRoutes(app, {
+  ...serverContext,
+  globalChatSearch,
+  workspace,
+  coordinationV3,
+});
 
 async function assetMetadata(agentId: string, id: string) {
   const agent = store.getAgent(agentId);
@@ -606,13 +668,26 @@ async function assetMetadata(agentId: string, id: string) {
 
 registerLimitsRoutes(app, serverContext);
 
-registerAttachmentRoutes(app, { assets, store });
+registerAttachmentRoutes(app, {
+  agentDeliveryLeases,
+  agentDeletionInProgress: agentId => deletingAgentIds.has(agentId),
+  assets,
+  deletingAttachmentKeys,
+  reconcilingAssetAgentIds,
+  store,
+});
 
 registerAgentMessageRunRoute(app, {
   opts, store, workspace, coordinationV3, assets, drafts, engines, engineAvailability,
   contextCursors, activeRuns, agentMessageCapabilities, runtimeAuthorities,
   organizationEnvelopeStates, scheduledSessionRollovers, contextRolloverPending,
   engineModelCatalogCache, deletingProjectIds, deletingAgentIds,
+  conversationDeletionInProgress: conversationId => deletingConversationIds.has(conversationId),
+  attachmentDeletionInProgress: (agentId, attachmentId) =>
+    deletingAttachmentKeys.has(attachmentDeletionKey(agentId, attachmentId)),
+  conversationDeliveryLeases,
+  agentDeliveryLeases,
+  assetReconciliationInProgress: agentId => reconcilingAssetAgentIds.has(agentId),
   coordinationV3WorkerId, v3DispatchKey, deploymentDraining: isDeploymentDraining,
   isClosed: isClosed, providerEnabled, leaseExpiry, reusableRuntime, openingRuntime,
   closingRuntime, oneShotRuntime, runtimeAuthority, pruneRuntimeAuthority, clearAgentResumeSession,

@@ -55,6 +55,12 @@ export class CoordinationV3ActivationReadModel {
       : undefined;
   }
 
+  activationProjectId(activationId: string): string | undefined {
+    return (this.sqlite.prepare(
+      "SELECT project_id projectId FROM agent_activations WHERE id = ?",
+    ).get(activationId) as { projectId: string } | undefined)?.projectId;
+  }
+
   pendingActivations(projectId?: string): PendingActivationV3View[] {
     const rows = this.sqlite.prepare(`
       SELECT id, project_id, agent_id, kind, dispatch_policy, state,

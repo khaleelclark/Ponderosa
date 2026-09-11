@@ -3,6 +3,11 @@ import type { QueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
+import {
+  requeueFailedVisibleNotificationRead,
+  requeueVisibleNotificationReads,
+} from "../notificationVisibility";
+import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
 
 const VISIBLE_COMMUNICATION_BATCH_SIZE = 100;
 
@@ -13,9 +18,12 @@ export function useConversationNotificationVisibility(
   communicationEventId: string | undefined,
   visible: boolean,
 ) => void {
+  const workspaceConnection = useWorkspaceConnection();
   const visibleCommunicationEventIds = useRef(new Set<string>());
   const completedCommunicationEventIds = useRef(new Set<string>());
   const pendingCommunicationEventIds = useRef(new Set<string>());
+  const inFlightCommunicationEventIds = useRef(new Set<string>());
+  const deferredRequeueCommunicationEventIds = useRef(new Set<string>());
   const retryAttempts = useRef(new Map<string, number>());
   const flushTimer = useRef<ReturnType<typeof setTimeout>>();
   const mounted = useRef(false);
@@ -38,27 +46,34 @@ export function useConversationNotificationVisibility(
     if (!communicationEventIds.length) return;
     communicationEventIds.forEach((id) => {
       pendingCommunicationEventIds.current.delete(id);
-      completedCommunicationEventIds.current.add(id);
+      inFlightCommunicationEventIds.current.add(id);
     });
     void api.markNotificationCommunicationsRead(communicationEventIds)
       .then(() => {
-        communicationEventIds.forEach((id) => retryAttempts.current.delete(id));
+        communicationEventIds.forEach((id) => {
+          completedCommunicationEventIds.current.add(id);
+          retryAttempts.current.delete(id);
+          deferredRequeueCommunicationEventIds.current.delete(id);
+        });
         void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
       })
       .catch(() => {
         let retryDelay = 0;
         for (const id of communicationEventIds) {
-          completedCommunicationEventIds.current.delete(id);
-          if (!visibleCommunicationEventIds.current.has(id)) continue;
-          const attempt = retryAttempts.current.get(id) ?? 0;
-          if (attempt >= 3) continue;
-          retryAttempts.current.set(id, attempt + 1);
-          pendingCommunicationEventIds.current.add(id);
-          retryDelay = Math.max(retryDelay, 250 * (attempt + 1));
+          const delay = requeueFailedVisibleNotificationRead(
+            id,
+            mounted.current,
+            visibleCommunicationEventIds.current,
+            pendingCommunicationEventIds.current,
+            retryAttempts.current,
+            deferredRequeueCommunicationEventIds.current,
+          );
+          retryDelay = Math.max(retryDelay, delay ?? 0);
         }
         if (retryDelay) schedule.current(retryDelay);
       })
       .finally(() => {
+        communicationEventIds.forEach((id) => inFlightCommunicationEventIds.current.delete(id));
         if (pendingCommunicationEventIds.current.size) schedule.current();
       });
     if (pendingCommunicationEventIds.current.size) schedule.current();
@@ -66,23 +81,46 @@ export function useConversationNotificationVisibility(
 
   useEffect(() => {
     mounted.current = true;
-    const onVisibilityChange = () => {
+    const requeueVisible = () => {
       if (document.visibilityState === "hidden") return;
-      for (const id of visibleCommunicationEventIds.current) {
-        if (!completedCommunicationEventIds.current.has(id)) {
-          pendingCommunicationEventIds.current.add(id);
-        }
-      }
+      requeueVisibleNotificationReads(
+        visibleCommunicationEventIds.current,
+        completedCommunicationEventIds.current,
+        pendingCommunicationEventIds.current,
+        retryAttempts.current,
+        inFlightCommunicationEventIds.current,
+        deferredRequeueCommunicationEventIds.current,
+      );
       schedule.current();
     };
+    const onVisibilityChange = () => requeueVisible();
     document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("online", requeueVisible);
     return () => {
       mounted.current = false;
       document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("online", requeueVisible);
       if (flushTimer.current) clearTimeout(flushTimer.current);
       flushTimer.current = undefined;
     };
   }, []);
+
+  const previousWorkspaceStatus = useRef(workspaceConnection.status);
+  useEffect(() => {
+    const reconnected = workspaceConnection.status === "live" &&
+      previousWorkspaceStatus.current !== "live";
+    previousWorkspaceStatus.current = workspaceConnection.status;
+    if (!reconnected || document.visibilityState === "hidden") return;
+    requeueVisibleNotificationReads(
+      visibleCommunicationEventIds.current,
+      completedCommunicationEventIds.current,
+      pendingCommunicationEventIds.current,
+      retryAttempts.current,
+      inFlightCommunicationEventIds.current,
+      deferredRequeueCommunicationEventIds.current,
+    );
+    schedule.current();
+  }, [workspaceConnection.status]);
 
   return useCallback((communicationEventId: string | undefined, visible: boolean) => {
     if (!communicationEventId) return;
@@ -90,10 +128,12 @@ export function useConversationNotificationVisibility(
       visibleCommunicationEventIds.current.delete(communicationEventId);
       pendingCommunicationEventIds.current.delete(communicationEventId);
       retryAttempts.current.delete(communicationEventId);
+      deferredRequeueCommunicationEventIds.current.delete(communicationEventId);
       return;
     }
     visibleCommunicationEventIds.current.add(communicationEventId);
-    if (!completedCommunicationEventIds.current.has(communicationEventId)) {
+    if (!completedCommunicationEventIds.current.has(communicationEventId) &&
+        !inFlightCommunicationEventIds.current.has(communicationEventId)) {
       pendingCommunicationEventIds.current.add(communicationEventId);
       schedule.current();
     }

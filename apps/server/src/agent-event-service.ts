@@ -324,10 +324,14 @@ export function createAgentEventService(context: AgentEventServiceContext) {
       },
       now: createdAt,
     });
-    publishCoordinationV3Changed(manager.id, {
-      conversationIds: sharedConversationId ? [sharedConversationId] : [],
-    });
-    notifyScheduler();
+    try {
+      publishCoordinationV3Changed(manager.id, {
+        conversationIds: sharedConversationId ? [sharedConversationId] : [],
+      });
+      notifyScheduler();
+    } catch {
+      // The failure communication and Activation are already canonical.
+    }
   }
 
   return {

@@ -26,6 +26,7 @@ interface AgentMaintenanceRoutesContext {
   engines: ReadonlyMap<string, EngineRegistration>;
   triggerSources: TriggerSourceService;
   deletingAgentIds: Set<string>;
+  agentDeliveryLeases: ReadonlyMap<string, number>;
   activeRuns: ReadonlyMap<string, ActiveRun>;
   workingCopies: AgentWorkingCopyService;
   clearAgentResumeSession(agentId: string, reason: string): void;
@@ -60,6 +61,7 @@ export function registerAgentMaintenanceRoutes(
     engines,
     triggerSources,
     deletingAgentIds,
+    agentDeliveryLeases,
     activeRuns,
     workingCopies,
     clearAgentResumeSession,
@@ -76,6 +78,9 @@ export function registerAgentMaintenanceRoutes(
     async (request, reply) => {
       const project = store.getProject(request.params.projectId);
       if (!project) return reply.code(404).send({ error: "project not found" });
+      if (store.agentCreationPending(request.params.id)) {
+        return reply.code(404).send({ error: "deleted Agent not found" });
+      }
       const row = store.sqlite.prepare(`
         SELECT working_copy_json FROM agents
         WHERE id = ? AND project_id = ? AND deleted_at IS NOT NULL
@@ -90,10 +95,8 @@ export function registerAgentMaintenanceRoutes(
       try {
         const removed = await workingCopies.cleanupRetained(request.params.id, workingCopy, project, {
           allowSourceUnavailable: true,
+          deleted: true,
         });
-        if (!store.updateDeletedAgentWorkingCopy(request.params.id, removed)) {
-          throw new Error("Deleted Agent became unavailable while recording cleanup");
-        }
         appendWorkspace({ type: "project_changed", projectId: project.id, action: "updated" });
         return removed;
       } catch (error) {
@@ -116,6 +119,12 @@ export function registerAgentMaintenanceRoutes(
       const allowedFields = new Set(["title", "archived", "activeEngine", "model", "effort", "workingCopyMode", "managementPermissions"]);
       if (Object.keys(body).some((key) => !allowedFields.has(key))) {
         return reply.code(400).send({ error: "unknown agent field" });
+      }
+      if (body.archived !== undefined && typeof body.archived !== "boolean") {
+        return reply.code(400).send({ error: "archived must be a boolean" });
+      }
+      if (body.archived === true && (agentDeliveryLeases.get(current.id) ?? 0) > 0) {
+        return reply.code(409).send({ error: "Wait for message delivery to finish before archiving this Agent" });
       }
       let normalizedTitle: string | undefined;
       if (body.title !== undefined) {
@@ -227,7 +236,9 @@ export function registerAgentMaintenanceRoutes(
   app.put<{ Params: { id: string }; Body: UpdateAgentOrganizationRequest }>(
     "/api/agents/:id/manager",
     async (request, reply) => {
-      if (!request.body || !("managerAgentId" in request.body) ||
+      if (!request.body || typeof request.body !== "object" || Array.isArray(request.body) ||
+        Object.keys(request.body).some((key) => key !== "managerAgentId") ||
+        !("managerAgentId" in request.body) ||
         (request.body.managerAgentId !== null && (typeof request.body.managerAgentId !== "string" || !request.body.managerAgentId.trim()))) {
         return reply.code(400).send({ error: "managerAgentId must be a stable agent ID or null" });
       }

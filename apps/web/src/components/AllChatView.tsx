@@ -13,20 +13,31 @@ import {
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import type {
+  AgentMentionBindingDto,
+  AgentDetailDto,
   AllChatDecisionEventDto,
   AllChatItemDto,
+  AssetDto,
   EngineCommand,
   EngineDto,
   WorkspaceAgentDirectoryItemDto,
   WorkspaceNotificationDto,
 } from "@ponderosa/core";
-import { messageTagTokens } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import { api } from "../api";
+import { ApiRequestError } from "../api/types";
 import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
 import {
   useAllChat,
+  useAgentHealth,
   useAgents,
   useConversations,
   useEngines,
@@ -44,16 +55,32 @@ import {
 import { Composer } from "./chat/Composer";
 import { copyText } from "../clipboard";
 import { AttentionSurface } from "./AttentionSurface";
-import { notificationTechnicalFocusId } from "../technicalFocus";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
 import { TimedChatLiveBanner } from "./chat/ChatLiveBanner";
 import { ChatSurface } from "./chat/ChatSurface";
 import { uniqueBy } from "../collections";
 import TagIcon from "@mui/icons-material/Tag";
 import { createClientId } from "../clientId";
-import { uploadFilesForRecipients } from "../conversationRouting";
+import {
+  cleanupRecipientUploadsForDefinitiveFailure,
+  discardRecipientUploads,
+  fileSelectionFingerprint,
+  pendingDraftAttachmentIds,
+  pendingRecipientUploads,
+  persistRecipientUploadAuthority,
+  recipientUploadCleanupSettled,
+  recipientUploadCleanupReporter,
+  recipientUploadsForAgentIds,
+  retryRecipientUploadCleanup,
+  stableMessageActionText,
+  withPendingRecipientUploads,
+  withPendingRequest,
+  type RecipientUploads,
+  uploadFilesForRecipients,
+} from "../conversationRouting";
 import { pickAgentName } from "../parkNames";
 import { queryKeys } from "../queryKeys";
+import { loadRetainedData } from "../retainedData";
 import { DecisionCard } from "./decisions/DecisionCard";
 import { AgentRuntimeControls } from "./AgentDetail.parts";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
@@ -68,12 +95,69 @@ import { useConversationNotificationVisibility } from "./useConversationNotifica
 import { NotificationAcknowledgementBoundary } from "./NotificationAcknowledgementBoundary";
 import { useNotificationAcknowledgement } from "../hooks/useNotificationAcknowledgement";
 import { ChatComposerDock } from "./chat/ChatComposerDock";
+import { QueuedMessageTray } from "./chat/QueuedMessageTray";
 import { ReadAloudControls } from "./speech/ReadAloudControls";
+import { ActiveOperationStopDialog } from "./ActiveOperationStopDialog";
+import {
+  acceptDirectOperation,
+  createCreationOperationTracker,
+  createDeliveryOperationTracker,
+  createQueuedSteerOperationTracker,
+} from "./activeOperationTracker";
+import { useActiveOperationController } from "./useActiveOperationController";
+import { useQueuedConversationMessagesController } from "./useQueuedConversationMessagesController";
+import {
+  abandonIdempotentAttempt,
+  compoundCreationUnavailableUploads,
+  definitiveSubmissionStatus,
+  preparedIdempotentAttemptForRetry,
+  retainIdempotentAttempt,
+  withCommittedAgentCreation,
+  withPendingAgentTitle,
+  type IdempotentAttempt,
+} from "./idempotentAttempt";
+
+interface AllChatSubmissionPrepared {
+  projectId: string;
+  body: string;
+  files: File[];
+  draftAttachmentIds: string[];
+  draftOwnerId?: string;
+  newAgentRequested: boolean;
+  recipientIds: string[];
+  recipientTitles: Map<string, string>;
+  existingAgentTitles: string[];
+  conversationId?: string;
+  runtime: AllChatRuntimePayload;
+  title?: string;
+  uploads?: RecipientUploads<Pick<AssetDto, "id">>;
+}
 import {
   ALL_CHAT_REPLY_TARGET_KEY,
+  ALL_CHAT_SOURCE_KEY,
+  allChatDeliveryConfirmation,
+  allChatAttentionRoute,
+  allChatComposerConversationId,
+  allChatRuntimeInitializationKey,
+  allChatRuntimeMutationOwnsSelection,
+  allChatSubmissionSettlementStillCurrent,
+  allChatSourceIntentKey,
+  authoritativeAllChatReplyTarget,
+  busyAllChatMentionHandles,
+  allChatRuntimePayloadSnapshot,
+  allChatRuntimeSelectionReady,
+  allChatSourceConversationId,
+  allChatSourceIdentity,
   eligibleAllChatTargets,
   parseAllChatReplyTarget,
+  parseAllChatSourceIdentity,
+  reduceAllChatSubmissionIntent,
+  recordRuntimeCanonicalKey,
+  runtimeCanonicalKey,
+  shouldInitializeAllChatRuntime,
   type AllChatReplyTarget,
+  type AllChatRuntimePayload,
+  type AllChatSourceIdentity,
 } from "./allChatRouting";
 
 function allChatSourceRoute(item: AllChatItemDto): Route {
@@ -135,7 +219,7 @@ function allChatSourceAccessibleName(item: AllChatItemDto): string {
     normalized.length > 80
       ? `${normalized.slice(0, 79)}…`
       : normalized || "Empty message";
-  return `Message from ${item.author.label} in ${sourceLabel(item)}, sent ${new Date(item.createdAt).toLocaleString()}: ${excerpt}`;
+  return `Use ${sourceLabel(item)} as the source Chat. Message from ${item.author.label}, sent ${new Date(item.createdAt).toLocaleString()}: ${excerpt}`;
 }
 
 export function AllChatView({
@@ -162,16 +246,66 @@ export function AllChatView({
     hasMore: boolean;
   }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [olderError, setOlderError] = useState<string>();
   const [selectedId, setSelectedId] = useState<string>();
   const [replyTarget, setReplyTarget] = useState<AllChatReplyTarget | undefined>(
     () => parseAllChatReplyTarget(readChatState(ALL_CHAT_REPLY_TARGET_KEY)),
   );
+  const [composerSource, setComposerSource] = useState<
+    AllChatSourceIdentity | undefined
+  >(() => parseAllChatSourceIdentity(readChatState(ALL_CHAT_SOURCE_KEY)));
+  const [submissionIntent, dispatchSubmissionIntent] = useReducer(
+    reduceAllChatSubmissionIntent,
+    {
+      epoch: 0,
+      ...(composerSource
+        ? {
+            sourceKey: JSON.stringify([
+              composerSource.projectId,
+              composerSource.conversationId,
+            ]),
+          }
+        : {}),
+    },
+  );
+  const submissionIntentRef = useRef(submissionIntent);
+  submissionIntentRef.current = submissionIntent;
+  const replyTargetRef = useRef(replyTarget);
+  replyTargetRef.current = replyTarget;
+  const sendAttempt = useRef<IdempotentAttempt<AllChatSubmissionPrepared>>();
+  const abandonedSendAttempts = useRef<
+    IdempotentAttempt<AllChatSubmissionPrepared>[]
+  >([]);
   const [runtimeEngine, setRuntimeEngine] = useState("");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [speed, setSpeed] = useState("");
+  const [submissionRuntimeIntent, setSubmissionRuntimeIntent] = useState(0);
+  const runtimeMutationGenerationByAgent = useRef(new Map<string, number>());
+  const runtimeCanonicalKeyByAgent = useRef(new Map<string, string>());
   const initializedRuntime = useRef<string>();
+  const dirtyRuntimeAgentId = useRef<string>();
+  const [runtimeAgentId, setRuntimeAgentId] = useState<string>();
   const [notice, setNotice] = useState<string>();
+  const [pendingUploadCleanups, setPendingUploadCleanups] = useState(0);
+  const recipientUnavailable = (error: unknown) =>
+    error instanceof ApiRequestError && error.status === 404;
+  const cleanupSettled = (error: unknown) =>
+    error instanceof ApiRequestError &&
+    recipientUploadCleanupSettled(error.status, error.message);
+  const definitiveFailure = (error: unknown) =>
+    error instanceof ApiRequestError &&
+    definitiveSubmissionStatus(error.status, error.message);
+  const cleanupPendingReporter = () => recipientUploadCleanupReporter(delta =>
+    setPendingUploadCleanups(count => Math.max(0, count + delta)));
+  const cleanupRecipientUploads = (
+    recipients: RecipientUploads<Pick<AssetDto, "id">>,
+  ) => discardRecipientUploads(
+    recipients,
+    (agentId, item) => api.deleteAttachment(agentId, item.id),
+    cleanupSettled,
+    cleanupPendingReporter(),
+  );
   const [directSendConfirmation, setDirectSendConfirmation] = useState<{
     id: number;
     text: string;
@@ -203,6 +337,9 @@ export function AllChatView({
     setReplyTarget(current =>
       current && !availableProjectIds.has(current.projectId) ? undefined : current,
     );
+    setComposerSource(current =>
+      current && !availableProjectIds.has(current.projectId) ? undefined : current,
+    );
     setSelectedId(current =>
       current && !items.some(item => item.communicationEventId === current)
         ? undefined
@@ -210,8 +347,24 @@ export function AllChatView({
     );
   }, [availableProjectIds, items]);
   const selected = items.find(item => item.communicationEventId === selectedId);
-  const activeProjectId = replyTarget?.projectId ?? selected?.project.id;
+  const activeProjectId =
+    selected?.project.id ?? replyTarget?.projectId ?? composerSource?.projectId;
   const projectAgentsQuery = useAgents(activeProjectId);
+  const agentHealthQuery = useAgentHealth(activeProjectId);
+  const selectedSourceConversationId = allChatSourceConversationId(
+    selected?.source,
+    projectAgentsQuery.data ?? [],
+  );
+  const composerConversationId = allChatComposerConversationId(
+    selectedSourceConversationId,
+    replyTarget?.conversationId,
+    composerSource,
+  );
+  const activeReplyTarget = authoritativeAllChatReplyTarget(
+    replyTarget,
+    selected?.project.id ?? activeProjectId,
+    composerConversationId,
+  );
   const allProjectAgentsQuery = useQuery({
     queryKey: [...queryKeys.agents.all, "all-chat"],
     queryFn: async () => {
@@ -270,7 +423,7 @@ export function AllChatView({
     }
     const eligibleTargets = eligibleAllChatTargets(
       byId.values(),
-      replyTarget?.conversationId,
+      composerConversationId,
     );
     const groups = new Map<string, Array<{ handle: string; target: AllChatReplyTarget }>>();
     for (const target of eligibleTargets) {
@@ -305,10 +458,68 @@ export function AllChatView({
   }, [
     activeProjectId,
     allProjectAgentsQuery.data,
+    composerConversationId,
     items,
     projectAgentsQuery.data,
-    replyTarget?.conversationId,
   ]);
+  const healthByAgentId = useMemo(
+    () => new Map(
+      (agentHealthQuery.data?.agents ?? []).map(health => [health.agentId, health]),
+    ),
+    [agentHealthQuery.data?.agents],
+  );
+  const busyMentionHandles = useMemo(
+    () => busyAllChatMentionHandles(
+      composerTargets.targetByHandle.values(),
+      agentHealthQuery.data?.agents ?? [],
+    ),
+    [agentHealthQuery.data?.agents, composerTargets.targetByHandle],
+  );
+  const allChatAgentTitle = (agentId: string | undefined) =>
+    projectAgentsQuery.data?.find(agent => agent.id === agentId)?.title ??
+    [...composerTargets.targetByHandle.values()]
+      .find(agent => agent.id === agentId)?.title ??
+    "Agent";
+  const invalidateOperation = () => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
+    if (activeProjectId) {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.health(activeProjectId),
+      });
+    }
+    if (composerConversationId) {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.conversations.detailPrefix(composerConversationId),
+      });
+    }
+  };
+  const {
+    cancelOperationError,
+    cancelOperationPending,
+    cancelOperationTargets,
+    operationRunning,
+    setActiveOperation,
+    setStopConfirmation,
+    stopConfirmation,
+    stopOperation,
+  } = useActiveOperationController({
+    activeScopeId: composerConversationId,
+    healthByAgentId,
+    receiptSources: items,
+    agentTitle: allChatAgentTitle,
+    invalidate: invalidateOperation,
+  });
+  const queuedMessages = useQueuedConversationMessagesController(
+    composerConversationId,
+    message => composerConversationId && setActiveOperation(
+      createQueuedSteerOperationTracker(
+        message.deliveryId,
+        message.targetAgentId,
+        healthByAgentId,
+        composerConversationId,
+      ),
+    ),
+  );
   const decisionEvents = useMemo(
     () => uniqueBy(
       [...(older?.decisions ?? []), ...(query.data?.decisions ?? [])],
@@ -334,13 +545,26 @@ export function AllChatView({
     return entries.sort((left, right) => left.at.localeCompare(right.at) || left.id.localeCompare(right.id));
   }, [decisionEvents, items]);
   const layoutKey = timeline.map((entry) => entry.id).join(":");
-  const selectedAgentId = replyTarget?.id;
+  const selectedAgentId = activeReplyTarget?.id;
+  const selectedAgentIdRef = useRef(selectedAgentId);
+  selectedAgentIdRef.current = selectedAgentId;
   const selectedProjectId = activeProjectId;
   const selectedAgent = useQuery({
     queryKey: queryKeys.agents.detail(selectedAgentId),
     queryFn: () => api.getAgent(selectedAgentId!, AGENT_DETAIL_PAGE_SIZE),
     enabled: Boolean(selectedAgentId),
   });
+  const currentRuntimeCanonical = useRef<{ agentId: string; key: string }>();
+  if (selectedAgent.data?.agent) {
+    currentRuntimeCanonical.current = {
+      agentId: selectedAgent.data.agent.id,
+      key: runtimeCanonicalKey({
+        engine: selectedAgent.data.agent.activeEngine,
+        model: selectedAgent.data.agent.model,
+        effort: selectedAgent.data.agent.effort,
+      }),
+    };
+  }
   const conversationsQuery = useConversations(selectedProjectId);
   useEffect(() => {
     setReplyTarget(current => {
@@ -367,13 +591,58 @@ export function AllChatView({
       replyTarget ? JSON.stringify(replyTarget) : "",
     );
   }, [replyTarget]);
+  useEffect(() => {
+    if (!selected) return;
+    const identity = allChatSourceIdentity(
+      selected.project.id,
+      selected.source,
+      projectAgentsQuery.data ?? [],
+    );
+    if (identity) setComposerSource(identity);
+  }, [projectAgentsQuery.data, selected]);
+  useEffect(() => {
+    if (!selectedSourceConversationId && activeReplyTarget?.conversationId) {
+      setComposerSource({
+        projectId: activeReplyTarget.projectId,
+        conversationId: activeReplyTarget.conversationId,
+      });
+    }
+  }, [activeReplyTarget, selectedSourceConversationId]);
+  useEffect(() => {
+    if (!replyTarget || activeReplyTarget || !composerConversationId) return;
+    if (
+      !replyTarget.conversationId &&
+      replyTarget.projectId === (selected?.project.id ?? activeProjectId)
+    ) return;
+    pendingMentionTargetId.current = undefined;
+    setMentionRemoveRequest({
+      id: `source-mismatch:${replyTarget.id}:${Date.now()}`,
+      text: `#${replyTarget.handle}`,
+    });
+    setReplyTarget(undefined);
+  }, [activeProjectId, activeReplyTarget, composerConversationId, replyTarget, selected]);
+  useEffect(() => {
+    writeChatState(
+      ALL_CHAT_SOURCE_KEY,
+      composerSource ? JSON.stringify(composerSource) : "",
+    );
+  }, [composerSource]);
   const engines = enginesQuery.data ?? [];
   const project = projectsQuery.data?.find(
     item => item.id === selectedProjectId,
   );
-  const selectedEngineId =
-    runtimeEngine || selectedAgent.data?.agent.activeEngine;
-  const selectedModel = model || selectedAgent.data?.agent.model;
+  const runtimeSelectionReady = allChatRuntimeSelectionReady(
+    selectedAgentId,
+    runtimeAgentId,
+  );
+  const selectedEngineId = runtimeSelectionReady
+    ? runtimeEngine || selectedAgent.data?.agent.activeEngine
+    : selectedAgentId
+      ? selectedAgent.data?.agent.activeEngine
+      : undefined;
+  const selectedModel = runtimeSelectionReady
+    ? model || selectedAgent.data?.agent.model
+    : selectedAgent.data?.agent.model;
   const selectedEngine = engines.find(
     item => item.id === selectedEngineId,
   );
@@ -397,22 +666,46 @@ export function AllChatView({
   useEffect(() => {
     if (!selectedAgentId) {
       initializedRuntime.current = undefined;
+      dirtyRuntimeAgentId.current = undefined;
       setRuntimeEngine("");
       setModel("");
       setEffort("");
       setSpeed("");
+      setRuntimeAgentId(undefined);
       return;
+    }
+    if (dirtyRuntimeAgentId.current !== selectedAgentId) {
+      dirtyRuntimeAgentId.current = undefined;
     }
     const agent = selectedAgent.data?.agent;
     if (!agent) return;
-    const initializationKey = [
-      agent.id,
-      agent.activeEngine,
-      agent.model ?? "",
-      agent.effort ?? "",
-    ].join(":");
-    if (initializedRuntime.current === initializationKey) return;
     const engine = engines.find(item => item.id === agent.activeEngine);
+    const initializationKey = allChatRuntimeInitializationKey({
+      selectedAgentId,
+      agent,
+      engine,
+      project,
+      enginesLoaded: enginesQuery.data !== undefined,
+      preferencesLoaded: workspacePreferences.data !== undefined,
+      preferencesRevision: workspacePreferences.data?.revision,
+      projectsLoaded: projectsQuery.data !== undefined,
+    });
+    if (!shouldInitializeAllChatRuntime(
+      initializationKey,
+      initializedRuntime.current,
+      dirtyRuntimeAgentId.current === selectedAgentId,
+    )) return;
+    const canonicalKey = runtimeCanonicalKey({
+      engine: agent.activeEngine,
+      model: agent.model,
+      effort: agent.effort,
+    });
+    recordRuntimeCanonicalKey(
+      runtimeMutationGenerationByAgent.current,
+      runtimeCanonicalKeyByAgent.current,
+      agent.id,
+      canonicalKey,
+    );
     const resolved = runtimeControlState(engine, {
       model:
         agent.model ??
@@ -433,13 +726,16 @@ export function AllChatView({
       ),
     });
     initializedRuntime.current = initializationKey;
+    setRuntimeAgentId(agent.id);
     setRuntimeEngine(agent.activeEngine);
     setModel(resolved.model);
     setEffort(resolved.effort);
     setSpeed(resolved.speed);
   }, [
     engines,
+    enginesQuery.data,
     project,
+    projectsQuery.data,
     selectedAgent.data?.agent,
     selectedAgentId,
     workspacePreferences.data,
@@ -462,6 +758,10 @@ export function AllChatView({
         effort: nextEffort,
       }),
     onSuccess: updated => {
+      queryClient.setQueryData<AgentDetailDto>(
+        queryKeys.agents.detail(updated.id),
+        current => current ? { ...current, agent: updated } : current,
+      );
       void queryClient.invalidateQueries({
         queryKey: queryKeys.agents.detailPrefix(updated.id),
       });
@@ -523,7 +823,7 @@ export function AllChatView({
     });
     setNotice(
       result.message ??
-        `/${command.name} completed for ${replyTarget?.title ?? "Agent"}.`,
+        `/${command.name} completed for ${activeReplyTarget?.title ?? "Agent"}.`,
     );
   };
   const send = useMutation({
@@ -533,114 +833,385 @@ export function AllChatView({
       draftAttachmentIds,
       draftOwnerId,
       mentionedAgents,
+      newAgentRequested,
+      retryPreparedAttempt,
+      submissionEpoch,
+      submissionSourceKey,
+      submissionTargetId,
+      pendingSubmission,
+      persistPendingSubmission,
+      activeRunDelivery,
     }: {
       body: string;
       files: File[];
       draftAttachmentIds: string[];
       draftOwnerId?: string;
-      mentionedAgents: Array<{ agentId: string; currentTitle: string }>;
+      mentionedAgents: AgentMentionBindingDto[];
+      newAgentRequested: boolean;
+      retryPreparedAttempt: boolean;
+      activeRunDelivery: "steer" | "queue";
+      submissionEpoch: number;
+      submissionSourceKey?: string;
+      submissionTargetId?: string;
+      pendingSubmission?: import("@ponderosa/core").DraftPendingSubmissionDto;
+      persistPendingSubmission?: (
+        value: import("@ponderosa/core").DraftPendingSubmissionDto,
+        retainOnFailure?: boolean,
+      ) => Promise<void>;
     }) => {
-      if (!activeProjectId) throw new Error("Select a message to establish a Project first");
-      if (!body.trim() && files.length === 0)
-        throw new Error("Message text or an attachment is required");
-      const requestId = createClientId();
-      const validAgents = new Map((projectAgentsQuery.data ?? []).filter(agent =>
-        !agent.archived).map(agent => [agent.id, agent]));
-      const recipientIds = [...new Set(mentionedAgents.map(binding => binding.agentId))]
-        .filter(agentId => validAgents.has(agentId));
-      const recipientConversationIds = [...new Set(recipientIds.flatMap(agentId => {
-        const conversationId = validAgents.get(agentId)?.conversationId;
-        return conversationId ? [conversationId] : [];
-      }))];
-      if (recipientConversationIds.length > 1) {
-        throw new Error("One message can address Agents from only one Chat");
+      const previous = sendAttempt.current;
+      let attempt = preparedIdempotentAttemptForRetry(
+        previous,
+        retryPreparedAttempt,
+      );
+      if (!attempt) {
+        if (!activeProjectId) throw new Error("Select a message to establish a Project first");
+        if (!body.trim() && files.length === 0)
+          throw new Error("Message text or an attachment is required");
+        const selectedConversationId = composerConversationId;
+        const validAgents = new Map((projectAgentsQuery.data ?? []).filter(agent =>
+          !agent.archived).map(agent => [agent.id, agent]));
+        const liveRecipientIds = [...new Set(
+          mentionedAgents.map(binding => binding.agentId),
+        )].filter(agentId => validAgents.has(agentId));
+        const currentRecipientIds = pendingSubmission?.request?.recipientAgentIds ??
+          liveRecipientIds;
+        const currentRecipientConversationIds = [...new Set(
+          liveRecipientIds.flatMap(agentId => {
+            const conversationId = validAgents.get(agentId)?.conversationId;
+            return conversationId ? [conversationId] : [];
+          }),
+        )];
+        if (currentRecipientConversationIds.length > 1) {
+          throw new Error("One message can address Agents from only one Chat");
+        }
+        const currentConversationId = pendingSubmission?.request?.conversationId ??
+          currentRecipientConversationIds[0] ?? selectedConversationId;
+        const currentRuntime = pendingSubmission?.request?.runtime
+          ? {
+              activeRunDelivery:
+                pendingSubmission.request.runtime.activeRunDelivery ??
+                activeRunDelivery,
+              ...(pendingSubmission.request.runtime.engine
+                ? { engine: pendingSubmission.request.runtime.engine }
+                : {}),
+              model: pendingSubmission.request.runtime.model ?? "",
+              effort: pendingSubmission.request.runtime.effort ?? "",
+              speed: pendingSubmission.request.runtime.speed ?? "",
+            }
+          : {
+              activeRunDelivery,
+              ...allChatRuntimePayloadSnapshot({
+                newAgentRequested,
+                recipientCount: currentRecipientIds.length,
+                selectedEngineId,
+                defaultEngine: project?.defaultEngine,
+                runtime: runtimeSelectionReady
+                  ? selectedRuntime
+                  : { model: "", effort: "", speed: "" },
+              }),
+            };
+        if (currentRecipientIds.length === 0 && !newAgentRequested) {
+          throw new Error("Select at least one Agent or add #new-agent");
+        }
+        if (
+          newAgentRequested &&
+          !pendingSubmission?.request &&
+          (!currentConversationId ||
+            !conversationsQuery.data?.some(candidate =>
+              candidate.id === currentConversationId))
+        ) {
+          throw new Error("This Project has no active Chat for the new Agent");
+        }
+        const fingerprint = JSON.stringify({
+          activeProjectId,
+          selectedConversationId,
+          body: stableMessageActionText(body, mentionedAgents),
+          files: fileSelectionFingerprint(files),
+          draftAttachmentIds,
+          draftOwnerId,
+          mentionedAgentIds: [...new Set(
+            mentionedAgents.map(binding => binding.agentId),
+          )].sort(),
+          newAgentRequested,
+          runtime: currentRuntime,
+        });
+        attempt = retainIdempotentAttempt(
+          previous,
+          fingerprint,
+          () => pendingSubmission?.idempotencyKey ?? createClientId(),
+          (): AllChatSubmissionPrepared => ({
+            projectId: activeProjectId,
+            body,
+            files,
+            draftAttachmentIds: pendingDraftAttachmentIds(
+              pendingSubmission,
+              draftAttachmentIds,
+            ),
+            draftOwnerId,
+            newAgentRequested,
+            recipientIds: currentRecipientIds,
+            recipientTitles: new Map([...validAgents.values()].map(agent => [
+              agent.id,
+              agent.title,
+            ])),
+            existingAgentTitles: [...validAgents.values()].map(agent => agent.title),
+            conversationId: currentConversationId,
+            runtime: currentRuntime,
+          }),
+        );
+        if (pendingSubmission && !pendingSubmission.request && persistPendingSubmission) {
+          pendingSubmission = withPendingRequest(pendingSubmission, {
+            ...(currentConversationId ? { conversationId: currentConversationId } : {}),
+            recipientAgentIds: currentRecipientIds,
+            ...(mentionedAgents.length ? { mentionBindings: mentionedAgents } : {}),
+            runtime: {
+              ...currentRuntime,
+            },
+          });
+          await persistPendingSubmission(pendingSubmission);
+        }
       }
-      const selectedConversationId = selected && selected.source.kind !== "agent"
-        ? selected.source.conversationId
-        : undefined;
-      const creationConversationId = recipientConversationIds[0] ?? selectedConversationId;
-      const creationConversation = creationConversationId
-        ? conversationsQuery.data?.find(candidate => candidate.id === creationConversationId)
-        : conversationsQuery.data?.find(candidate => !candidate.archived);
-      const newAgentCount = messageTagTokens(body).filter(token =>
-        token.handle.toLocaleLowerCase() === "new-agent").length;
-      if (recipientIds.length === 0 && newAgentCount === 0) {
-        throw new Error("Select at least one Agent or add #new-agent");
+      if (previous && previous !== attempt && previous.prepared.uploads) {
+        await cleanupRecipientUploads(previous.prepared.uploads);
       }
-      const createdNames = [...validAgents.values()].map(agent => agent.title);
+      sendAttempt.current = attempt;
+      const requestId = attempt.idempotencyKey;
+      const prepared = attempt.prepared;
+      const submittedBody = prepared.body;
+      const recipientIds = prepared.recipientIds;
+      const creationConversationId = prepared.conversationId;
+      const submittedRuntime = prepared.runtime;
+      const createdNames = [...prepared.existingAgentTitles];
       const createdAgentIds: string[] = [];
       const createdTitles: string[] = [];
+      let creationRecovering = false;
       let deliveredRecipientIds: string[] = [];
+      const queuedRecipientTitles: string[] = [];
       let unavailableCount = 0;
-      if (newAgentCount > 0 && !creationConversation) {
-        throw new Error("This Project has no active Chat for the new Agent");
-      }
-      for (let index = 0; index < newAgentCount; index += 1) {
-        const title = pickAgentName(createdNames);
+      if (prepared.newAgentRequested) {
+        const title = pendingSubmission?.agentTitle ?? prepared.title ??
+          pickAgentName(createdNames);
+        prepared.title = title;
+        if (pendingSubmission && !pendingSubmission.agentTitle &&
+            persistPendingSubmission) {
+          pendingSubmission = await withPendingAgentTitle(
+            pendingSubmission,
+            title,
+          );
+          await persistPendingSubmission(pendingSubmission);
+        }
         createdNames.push(title);
         createdTitles.push(title);
-        const created = await api.createAgent(activeProjectId, creationConversation!.id, {
+        const created = await api.createAgent(prepared.projectId, creationConversationId!, {
           title,
-          engine: selectedEngineId ?? project?.defaultEngine ?? "codex",
-          ...(selectedRuntime.model ? { model: selectedRuntime.model } : {}),
-          ...(selectedRuntime.effort ? { effort: selectedRuntime.effort } : {}),
-          initialMessage: body.trim(),
-          ...(draftAttachmentIds.length ? {
-            draftAttachmentIds,
-            draftOwnerId,
+          engine: submittedRuntime.engine ?? "codex",
+          ...(submittedRuntime.model ? { model: submittedRuntime.model } : {}),
+          ...(submittedRuntime.effort ? { effort: submittedRuntime.effort } : {}),
+          initialMessage: submittedBody.trim(),
+          ...(prepared.draftAttachmentIds.length ? {
+            draftAttachmentIds: prepared.draftAttachmentIds,
+            draftOwnerId: prepared.draftOwnerId,
           } : {}),
-          idempotencyKey: `${requestId}:new-agent:${index}`,
+          idempotencyKey: `${requestId}:new-agent:0`,
         });
-        createdAgentIds.push(created.id);
+        const createdAgentId = "recovering" in created ? created.agentId : created.id;
+        setActiveOperation(createCreationOperationTracker(
+          createdAgentId,
+          creationConversationId,
+        ));
+        if ("recovering" in created) creationRecovering = true;
+        else createdAgentIds.push(created.id);
+        if (pendingSubmission && persistPendingSubmission) {
+          pendingSubmission = withCommittedAgentCreation(pendingSubmission);
+          await persistPendingSubmission(pendingSubmission, true);
+        }
       }
       if (recipientIds.length > 0) {
-        const conversationId = recipientConversationIds[0];
-        const conversation = conversationsQuery.data?.find(candidate =>
-          candidate.id === conversationId && !candidate.archived);
-        if (!conversationId || !conversation) {
+        const conversationId = prepared.conversationId;
+        if (!conversationId) {
           throw new Error("Every addressed Agent must belong to one active Chat");
         }
-        const uploaded = await uploadFilesForRecipients(
+        const durableUploads = pendingRecipientUploads(pendingSubmission, "direct");
+        const durableUploadsMatch = Boolean(durableUploads &&
+          JSON.stringify(durableUploads.map(item => item.agentId)) ===
+            JSON.stringify(recipientIds));
+        const uploaded = prepared.uploads ??
+          (durableUploadsMatch ? durableUploads! : await uploadFilesForRecipients(
           recipientIds,
-          files,
+          prepared.files,
           (agentId, file) => api.uploadAttachment(agentId, file),
           (agentId, attachment) => api.deleteAttachment(agentId, attachment.id),
-        );
+          recipientUnavailable,
+          cleanupPendingReporter(),
+        ));
+        prepared.uploads = uploaded;
+        if (pendingSubmission && persistPendingSubmission) {
+          pendingSubmission = withPendingRecipientUploads(
+            pendingSubmission,
+            "direct",
+            uploaded,
+          );
+          try {
+            await persistRecipientUploadAuthority({
+              pending: pendingSubmission,
+              recipients: uploaded,
+              persist: persistPendingSubmission,
+              cleanup: (agentId, item) => api.deleteAttachment(agentId, item.id),
+              definitiveFailure,
+              cleanupUnavailable: cleanupSettled,
+              onPendingChange: cleanupPendingReporter(),
+            });
+          } catch (error) {
+            if (definitiveFailure(error)) {
+              prepared.uploads = undefined;
+            }
+            throw error;
+          }
+        }
         const uploadedByAgentId = new Map(uploaded.map(item => [item.agentId, item]));
-        const response = await api.sendMultiAgentDirectMessage(conversationId, {
-          text: body.trim(),
-          recipients: recipientIds.map((agentId) => ({
-            agentId,
-            attachmentIds: (uploadedByAgentId.get(agentId)?.attachments ?? [])
-              .map(attachment => attachment.id),
-          })),
-          idempotencyKey: `${requestId}:${conversationId}`,
-          activeRunDelivery: "steer",
-          ...(recipientIds.length === 1 && selectedRuntime.model ? { model: selectedRuntime.model } : {}),
-          ...(recipientIds.length === 1 && selectedRuntime.effort ? { effort: selectedRuntime.effort } : {}),
-          ...(recipientIds.length === 1 && selectedRuntime.speed ? { speed: selectedRuntime.speed } : {}),
-        });
+        const activeRunDelivery = submittedRuntime.activeRunDelivery ?? "steer";
+        const directTracker = createDeliveryOperationTracker(
+          activeRunDelivery,
+          recipientIds,
+          healthByAgentId,
+          Date.now(),
+          conversationId,
+        );
+        let response;
+        try {
+          response = await api.sendMultiAgentDirectMessage(conversationId, {
+            text: submittedBody.trim(),
+            recipients: recipientIds.map((agentId) => ({
+              agentId,
+              attachmentIds: (uploadedByAgentId.get(agentId)?.attachments ?? [])
+                .map(attachment => attachment.id),
+            })),
+            idempotencyKey: `${requestId}:${conversationId}`,
+            activeRunDelivery,
+            ...(submittedRuntime.engine ? { engine: submittedRuntime.engine } : {}),
+            ...(submittedRuntime.model ? { model: submittedRuntime.model } : {}),
+            ...(submittedRuntime.effort ? { effort: submittedRuntime.effort } : {}),
+            ...(submittedRuntime.speed ? { speed: submittedRuntime.speed } : {}),
+          });
+          if (directTracker) {
+            setActiveOperation(acceptDirectOperation(directTracker, response));
+          }
+          queuedMessages.recordDelivery(
+            response,
+            activeRunDelivery,
+            agentId => prepared.recipientTitles.get(agentId) ?? "Agent",
+          );
+          if (activeRunDelivery === "queue") {
+            queuedRecipientTitles.push(...response.recipients.flatMap(recipient =>
+              recipient.queued
+                ? [prepared.recipientTitles.get(recipient.agentId) ?? "Agent"]
+                : []
+            ));
+          }
+        } catch (error) {
+          if (createdTitles.length === 0 &&
+              await cleanupRecipientUploadsForDefinitiveFailure({
+                error,
+                recipients: uploaded,
+                definitiveFailure,
+                cleanup: (agentId, item) => api.deleteAttachment(agentId, item.id),
+                cleanupUnavailable: cleanupSettled,
+                onPendingChange: cleanupPendingReporter(),
+              })) {
+            prepared.uploads = undefined;
+            throw error;
+          }
+          const cleanupUploads = error instanceof ApiRequestError
+            ? compoundCreationUnavailableUploads(
+                createdTitles.length > 0,
+                error.status,
+                error.message,
+                uploaded,
+              )
+            : undefined;
+          if (!cleanupUploads) {
+            throw error;
+          }
+          unavailableCount = recipientIds.length;
+          await retryRecipientUploadCleanup(
+            cleanupUploads,
+            async (agentId, attachment) => {
+              try {
+                await api.deleteAttachment(agentId, attachment.id);
+              } catch (cleanupError) {
+                if (!cleanupSettled(cleanupError)) throw cleanupError;
+              }
+            },
+            cleanupPendingReporter(),
+          );
+          if (sendAttempt.current === attempt) sendAttempt.current = undefined;
+          return {
+            recipientIds: createdAgentIds,
+            recipientTitles: createdTitles,
+            queuedRecipientTitles,
+            unavailableCount,
+            creationRecovering,
+            submissionEpoch,
+            submissionSourceKey,
+            submissionTargetId,
+          };
+        }
         deliveredRecipientIds = response.recipients.map(recipient => recipient.agentId);
-        unavailableCount = response.unavailableRecipients?.length ?? 0;
+        const unavailableRecipientIds = (response.unavailableRecipients ?? [])
+          .map(recipient => recipient.agentId);
+        unavailableCount = unavailableRecipientIds.length;
+        const unavailableUploads = recipientUploadsForAgentIds(
+          uploaded,
+          unavailableRecipientIds,
+        );
+        prepared.uploads = recipientUploadsForAgentIds(
+          uploaded,
+          deliveredRecipientIds,
+        );
+        void retryRecipientUploadCleanup(
+          unavailableUploads,
+          async (agentId, attachment) => {
+            try {
+              await api.deleteAttachment(agentId, attachment.id);
+            } catch (error) {
+              if (!cleanupSettled(error)) throw error;
+            }
+          },
+          cleanupPendingReporter(),
+        );
       }
+      if (sendAttempt.current === attempt) sendAttempt.current = undefined;
       return {
         recipientIds: [...deliveredRecipientIds, ...createdAgentIds],
         recipientTitles: [
-          ...deliveredRecipientIds.map(id => validAgents.get(id)?.title ?? "Agent"),
+          ...deliveredRecipientIds.map(id => prepared.recipientTitles.get(id) ?? "Agent"),
           ...createdTitles,
         ],
+        queuedRecipientTitles,
         unavailableCount,
+        creationRecovering,
+        submissionEpoch,
+        submissionSourceKey,
+        submissionTargetId,
       };
     },
     onSuccess: result => {
       setNotice(undefined);
-      setReplyTarget(undefined);
+      if (allChatSubmissionSettlementStillCurrent({
+        capturedEpoch: result.submissionEpoch,
+        currentEpoch: submissionIntentRef.current.epoch,
+        capturedSourceKey: result.submissionSourceKey,
+        currentSourceKey: submissionIntentRef.current.sourceKey,
+        capturedTargetId: result.submissionTargetId,
+        currentTargetId: replyTargetRef.current?.id,
+      })) {
+        setReplyTarget(undefined);
+      }
       directSendConfirmationSequence.current += 1;
       setDirectSendConfirmation({
         id: directSendConfirmationSequence.current,
-        text: `Message sent to ${result.recipientTitles.join(", ")}.${result.unavailableCount
-          ? ` ${result.unavailableCount} unavailable recipient${result.unavailableCount === 1 ? " was" : "s were"} skipped.`
-          : ""}`,
+        text: allChatDeliveryConfirmation(result),
       });
       void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
       for (const agentId of result.recipientIds) {
@@ -650,14 +1221,62 @@ export function AllChatView({
       }
     },
   });
-  const selectItem = (item: AllChatItemDto) => {
+  const previousSubmissionIntentEpoch = useRef(submissionIntent.epoch);
+  useEffect(() => {
+    if (previousSubmissionIntentEpoch.current === submissionIntent.epoch) return;
+    previousSubmissionIntentEpoch.current = submissionIntent.epoch;
+    const abandoned = abandonIdempotentAttempt(sendAttempt.current);
+    sendAttempt.current = abandoned.current;
+    abandonedSendAttempts.current.push(...abandoned.abandoned);
+  }, [submissionIntent.epoch]);
+  useEffect(() => {
+    if (send.isPending || abandonedSendAttempts.current.length === 0) return;
+    const abandoned = abandonedSendAttempts.current.splice(0);
+    void Promise.all(abandoned.flatMap(attempt =>
+      attempt.prepared.uploads
+        ? [cleanupRecipientUploads(attempt.prepared.uploads)]
+        : [],
+    ));
+  }, [send.isPending, submissionIntent.epoch]);
+  const invalidatePreparedSubmissionIntent = useCallback(() => {
+    if (!sendAttempt.current) return;
+    dispatchSubmissionIntent({ kind: "draft-mutated" });
+  }, []);
+  const selectItem = (item: AllChatItemDto, clearRecipient = false) => {
+    const sourceIdentity = allChatSourceIdentity(
+      item.project.id,
+      item.source,
+      projectAgentsQuery.data ?? [],
+    );
+    dispatchSubmissionIntent({
+      kind: "source-selected",
+      sourceKey: allChatSourceIntentKey(
+        item.project.id,
+        item.source,
+        projectAgentsQuery.data ?? [],
+      ),
+    });
     pendingMentionTargetId.current = undefined;
     setSelectedId(item.communicationEventId);
+    setComposerSource(sourceIdentity);
+    if (clearRecipient) {
+      dispatchSubmissionIntent({ kind: "recipient-cleared" });
+      if (replyTarget) {
+        setMentionRemoveRequest({
+          id: `source:${replyTarget.id}:${Date.now()}`,
+          text: `#${replyTarget.handle}`,
+        });
+      }
+      setReplyTarget(undefined);
+    }
     setNotice(undefined);
     setDirectSendConfirmation(undefined);
     send.reset();
   };
-  const clearReplyTarget = () => {
+  const clearReplyTarget = (advanceIntent = true) => {
+    if (advanceIntent) {
+      dispatchSubmissionIntent({ kind: "recipient-cleared" });
+    }
     pendingMentionTargetId.current = undefined;
     if (replyTarget) {
       setMentionRemoveRequest({
@@ -693,6 +1312,7 @@ export function AllChatView({
   const mentionItem = (item: AllChatItemDto) => {
     selectItem(item);
     if (!item.directMessageAgent) return;
+    dispatchSubmissionIntent({ kind: "recipient-selected" });
     const handle = item.directMessageAgent.handle;
     pendingMentionTargetId.current = mentionedHandlesRef.current.some(candidate =>
       candidate.toLocaleLowerCase() === handle.toLocaleLowerCase())
@@ -701,8 +1321,13 @@ export function AllChatView({
     setReplyTarget({
       ...item.directMessageAgent,
       projectId: item.project.id,
-      conversationId: projectAgentsQuery.data?.find(candidate =>
-        candidate.id === item.directMessageAgent?.id)?.conversationId,
+      conversationId:
+        projectAgentsQuery.data?.find(candidate =>
+          candidate.id === item.directMessageAgent?.id)?.conversationId ??
+        allChatSourceConversationId(
+          item.source,
+          projectAgentsQuery.data ?? [],
+        ),
     });
   };
   const history = older ?? {
@@ -715,7 +1340,12 @@ export function AllChatView({
     if (loadingOlder || !history.hasMore || !history.cursor) return;
     setLoadingOlder(true);
     try {
-      const page = await api.getAllChat(50, history.cursor);
+      const page = await loadRetainedData(
+        () => api.getAllChat(50, history.cursor),
+        setOlderError,
+        "Older messages could not be loaded.",
+      );
+      if (!page) return;
       setOlder(current => ({
         items: mergeAllChatItems(
           page.items,
@@ -735,7 +1365,7 @@ export function AllChatView({
     }
   };
   const runtimeControls =
-    replyTarget && selectedAgent.data && selectedEngine ? (
+    replyTarget && runtimeSelectionReady && selectedAgent.data && selectedEngine ? (
       <AgentRuntimeControls
         engine={selectedEngine}
         engines={engines}
@@ -746,14 +1376,35 @@ export function AllChatView({
         speed={selectedRuntime.speed}
         speeds={selectedRuntime.speeds}
         selectedRuntime={selectedRuntime}
+        disabled={updateRuntimeEngine.isPending}
         onEngineChange={next => {
           const nextEngine = engines.find(item => item.id === next);
           if (!nextEngine || !selectedAgentId) return;
+          dirtyRuntimeAgentId.current = selectedAgentId;
+          setSubmissionRuntimeIntent(value => value + 1);
+          const mutationGeneration =
+            (runtimeMutationGenerationByAgent.current.get(selectedAgentId) ?? 0) + 1;
+          runtimeMutationGenerationByAgent.current.set(
+            selectedAgentId,
+            mutationGeneration,
+          );
+          const capturedCanonicalKey = runtimeCanonicalKeyByAgent.current.get(
+            selectedAgentId,
+          ) ?? runtimeCanonicalKey({
+            engine: selectedAgent.data.agent.activeEngine,
+            model: selectedAgent.data.agent.model,
+            effort: selectedAgent.data.agent.effort,
+          });
+          const speedKey = chatStateKey(
+            "runtime",
+            `agent.${selectedAgentId}.speed`,
+          );
           const previous = {
             engine: selectedEngineId ?? "",
             model,
             effort,
             speed,
+            persistedSpeed: readChatState(speedKey),
           };
           const resolved = resolveRuntimeSelection(
             nextEngine,
@@ -765,7 +1416,7 @@ export function AllChatView({
           setEffort(resolved.effort);
           setSpeed(resolved.speed ?? "");
           writeChatState(
-            chatStateKey("runtime", `agent.${selectedAgentId}.speed`),
+            speedKey,
             resolved.speed ?? "",
           );
           updateRuntimeEngine.mutate(
@@ -777,6 +1428,22 @@ export function AllChatView({
             },
             {
               onError: () => {
+                const currentGeneration =
+                  runtimeMutationGenerationByAgent.current.get(selectedAgentId);
+                if (!allChatRuntimeMutationOwnsSelection({
+                  capturedAgentId: selectedAgentId,
+                  currentAgentId: selectedAgentIdRef.current,
+                  capturedGeneration: mutationGeneration,
+                  currentGeneration,
+                  capturedCanonicalKey,
+                  currentCanonicalKey:
+                    currentRuntimeCanonical.current?.agentId === selectedAgentId
+                      ? currentRuntimeCanonical.current.key
+                      : undefined,
+                })) return;
+                if (readChatState(speedKey) === (resolved.speed || undefined)) {
+                  writeChatState(speedKey, previous.persistedSpeed ?? "");
+                }
                 setRuntimeEngine(previous.engine);
                 setModel(previous.model);
                 setEffort(previous.effort);
@@ -784,6 +1451,21 @@ export function AllChatView({
               },
             },
           );
+        }}
+        onModelChange={next => {
+          if (selectedAgentId) dirtyRuntimeAgentId.current = selectedAgentId;
+          setSubmissionRuntimeIntent(value => value + 1);
+          selectedRuntime.selectModel(next);
+        }}
+        onEffortChange={next => {
+          if (selectedAgentId) dirtyRuntimeAgentId.current = selectedAgentId;
+          setSubmissionRuntimeIntent(value => value + 1);
+          selectedRuntime.selectEffort(next);
+        }}
+        onSpeedChange={next => {
+          if (selectedAgentId) dirtyRuntimeAgentId.current = selectedAgentId;
+          setSubmissionRuntimeIntent(value => value + 1);
+          selectedRuntime.selectSpeed(next);
         }}
       />
     ) : null;
@@ -806,30 +1488,8 @@ export function AllChatView({
           <AttentionSurface
             notifications={notifications.filter((item) => item.kind !== "decision")}
           onOpen={item => {
-            if (!item.projectId) return;
-            const focusId = notificationTechnicalFocusId(item);
-            if (item.action?.kind === "open_agent" && item.action.targetId) {
-              onNavigate({
-                kind: "agent",
-                projectId: item.projectId,
-                agentId: item.action.targetId,
-                view: "technical",
-                ...(focusId ? { technicalFocusId: focusId } : {}),
-              });
-            } else if (item.conversationId) {
-              onNavigate({
-                kind: "projectWork",
-                projectId: item.projectId,
-                conversationId: item.conversationId,
-                ...(focusId ? { focusId } : {}),
-              });
-            } else {
-              onNavigate({
-                kind: "projectWork",
-                projectId: item.projectId,
-                ...(focusId ? { focusId } : {}),
-              });
-            }
+            const route = allChatAttentionRoute(item);
+            if (route) onNavigate(route);
           }}
         />
       </Box>
@@ -867,6 +1527,18 @@ export function AllChatView({
                 }
               >
                 Messages could not be loaded.
+              </Alert>
+            ) : null}
+            {olderError ? (
+              <Alert
+                severity="error"
+                action={
+                  <Button color="inherit" size="small" onClick={() => void loadOlder()}>
+                    Retry
+                  </Button>
+                }
+              >
+                {olderError}
               </Alert>
             ) : null}
           </>
@@ -964,7 +1636,8 @@ export function AllChatView({
                       item.communicationEventId,
                       visible,
                     ),
-                  ariaLabel: allChatSourceAccessibleName(item),
+                  onSelect: () => selectItem(item, true),
+                  selectLabel: allChatSourceAccessibleName(item),
                   body: (
                     <ChatMessageBody
                       text={communicationVisibleText({
@@ -1106,7 +1779,7 @@ export function AllChatView({
       </ChatSurface>
       <ChatComposerDock
         onKeyDown={event => {
-          if (!event.defaultPrevented && event.key === "Escape" && replyTarget) {
+          if (!event.defaultPrevented && event.key === "Escape" && activeReplyTarget) {
             event.preventDefault();
             clearReplyTarget();
           }
@@ -1138,6 +1811,30 @@ export function AllChatView({
             {notice}
           </Alert>
         ) : null}
+        {updateRuntimeEngine.isError ? (
+          <Alert
+            severity="error"
+            action={
+              <Button color="inherit" size="small" onClick={() => updateRuntimeEngine.reset()}>
+                Dismiss
+              </Button>
+            }
+            sx={{ mx: 1.5, mt: 1 }}
+          >
+            Provider selection was not saved. The last saved selection was restored; choose a provider to retry.
+          </Alert>
+        ) : null}
+        {queuedMessages.notice ? (
+          <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>
+            {queuedMessages.notice}
+          </Alert>
+        ) : null}
+        {pendingUploadCleanups ? (
+          <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>
+            Message sent. Temporary uploads for skipped recipients are still
+            being cleaned up automatically.
+          </Alert>
+        ) : null}
         {send.isError ? (
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
             {send.error instanceof Error
@@ -1145,23 +1842,64 @@ export function AllChatView({
               : "Direct message could not be sent."}
           </Alert>
         ) : null}
+        {cancelOperationError ? (
+          <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
+            Cancellation failed. {cancelOperationError.message}
+          </Alert>
+        ) : null}
+        {queuedMessages.failure ? (
+          <Alert
+            severity="error"
+            sx={{ mx: 1.5, mt: 1 }}
+            action={<Button
+              color="inherit"
+              size="small"
+              onClick={queuedMessages.failure.retry}
+            >
+              Retry
+            </Button>}
+          >
+            Queued messages could not be updated. {queuedMessages.failure.error.message}
+          </Alert>
+        ) : null}
+        <QueuedMessageTray
+          messages={queuedMessages.query.data ?? []}
+          agentNameForId={agentId => allChatAgentTitle(agentId)}
+          busy={
+            queuedMessages.cancel.isPending ||
+            queuedMessages.edit.isPending ||
+            queuedMessages.steer.isPending
+          }
+          onSteer={message => queuedMessages.steer.mutateAsync({
+            deliveryId: message.deliveryId,
+            targetAgentId: message.targetAgentId,
+          })}
+          onEdit={(message, text) => queuedMessages.edit.mutateAsync({
+            deliveryId: message.deliveryId,
+            targetAgentId: message.targetAgentId,
+            text,
+          })}
+          onDelete={message => queuedMessages.cancel.mutateAsync(
+            message.deliveryId,
+          )}
+        />
         <Composer
           destinationMode="target-required"
-          defaultDestination={replyTarget ? {
-            handle: replyTarget.handle,
+          defaultDestination={activeReplyTarget ? {
+            handle: activeReplyTarget.handle,
             binding: {
-              projectId: replyTarget.projectId,
-              handle: replyTarget.handle,
-              agentId: replyTarget.id,
-              currentHandle: replyTarget.handle,
-              currentTitle: replyTarget.title,
+              projectId: activeReplyTarget.projectId,
+              handle: activeReplyTarget.handle,
+              agentId: activeReplyTarget.id,
+              currentHandle: activeReplyTarget.handle,
+              currentTitle: activeReplyTarget.title,
             },
-            selectionKey: `agent:${replyTarget.id}:${replyTarget.title}`,
+            selectionKey: `agent:${activeReplyTarget.id}:${activeReplyTarget.title}`,
           } : undefined}
-          requiredRecipient={replyTarget ? {
-            handle: replyTarget.handle,
-            title: replyTarget.title,
-            onClear: () => setReplyTarget(undefined),
+          requiredRecipient={activeReplyTarget ? {
+            handle: activeReplyTarget.handle,
+            title: activeReplyTarget.title,
+            onClear: () => clearReplyTarget(false),
           } : undefined}
           recipientRequiredMessage={
             selected && !selected.directMessageAgent
@@ -1173,36 +1911,103 @@ export function AllChatView({
           mentionSuggestionHandles={composerTargets.suggestionHandles}
           ambiguousMentionHandles={composerTargets.ambiguousHandles}
           onMentionedHandlesChange={syncReplyTargetFromMentions}
-          commands={replyTarget ? selectedCommands : undefined}
+          commands={activeReplyTarget ? selectedCommands : undefined}
           capabilities={
             selectedEngineCapabilities?.composerCapabilities ?? []
           }
           enableVoiceDictation
           onCapabilitiesOpen={refreshSelectedCapabilities}
-          onCommand={replyTarget ? invokeCommand : undefined}
+          submissionRuntimeKey={JSON.stringify([
+            selectedEngineId ?? "",
+            selectedModel ?? "",
+            selectedRuntime.effort ?? "",
+            selectedRuntime.speed ?? "",
+          ])}
+          submissionRuntimeIntentKey={String(submissionRuntimeIntent)}
+          onCommand={activeReplyTarget ? invokeCommand : undefined}
           controls={runtimeControls}
-          disabled={send.isPending || updateRuntimeEngine.isPending}
-          running={false}
-          allowUnmentionedSend={Boolean(replyTarget)}
-          attachmentsEnabled
+          disabled={
+            send.isPending ||
+            updateRuntimeEngine.isPending ||
+            Boolean(selectedAgentId && !runtimeSelectionReady)
+          }
+          running={operationRunning}
+          allowSendWhileRunning
+          busyMentionHandles={busyMentionHandles}
+          agentResponding={Boolean(
+            activeReplyTarget &&
+            healthByAgentId.get(activeReplyTarget.id)?.runtimeActivity,
+          )}
+          allowUnmentionedSend={Boolean(activeReplyTarget)}
+          attachmentsEnabled={Boolean(composerConversationId)}
+          attachmentsUnavailableReason={
+            composerConversationId
+              ? undefined
+              : "Select a source Chat before adding attachments."
+          }
           placeholder={
-            replyTarget
-              ? `Message ${replyTarget.title} directly`
+            activeReplyTarget
+              ? `Message ${activeReplyTarget.title} directly`
               : "Select an Agent with # then write a message"
           }
           removeTextRequest={mentionRemoveRequest}
-          draftStorageKey="messages:composer"
+          submissionIntentKey={String(submissionIntent.epoch)}
+          onSubmissionIntentChange={invalidatePreparedSubmissionIntent}
+          draftStorageKey={composerConversationId
+            ? chatStateKey(
+                "draft",
+                `conversation.${composerConversationId}.main`,
+              )
+            : "messages:composer"}
+          conversationDraftId={composerConversationId}
+          projectId={activeProjectId}
           onSend={(body, files, draftAttachmentIds = [], draftOwnerId, context) =>
             send.mutateAsync({
+              activeRunDelivery: "steer",
               body,
               files,
               draftAttachmentIds,
               draftOwnerId,
               mentionedAgents: context?.mentionedAgents ?? [],
+              newAgentRequested: context?.newAgentRequested ?? false,
+              retryPreparedAttempt: context?.retryPreparedAttempt ?? false,
+              submissionEpoch: submissionIntent.epoch,
+              submissionSourceKey: submissionIntent.sourceKey,
+              submissionTargetId: activeReplyTarget?.id,
+              pendingSubmission: context?.pendingSubmission,
+              persistPendingSubmission: context?.persistPendingSubmission,
             })
           }
+          onQueue={(body, files, draftAttachmentIds = [], draftOwnerId, context) =>
+            send.mutateAsync({
+              activeRunDelivery: "queue",
+              body,
+              files,
+              draftAttachmentIds,
+              draftOwnerId,
+              mentionedAgents: context?.mentionedAgents ?? [],
+              newAgentRequested: context?.newAgentRequested ?? false,
+              retryPreparedAttempt: context?.retryPreparedAttempt ?? false,
+              submissionEpoch: submissionIntent.epoch,
+              submissionSourceKey: submissionIntent.sourceKey,
+              submissionTargetId: activeReplyTarget?.id,
+              pendingSubmission: context?.pendingSubmission,
+              persistPendingSubmission: context?.persistPendingSubmission,
+            })
+          }
+          onCancel={stopOperation}
+          cancelPending={cancelOperationPending}
         />
       </ChatComposerDock>
+      <ActiveOperationStopDialog
+        confirmation={stopConfirmation}
+        pending={cancelOperationPending}
+        error={cancelOperationError?.message}
+        onCancel={() => {
+          if (!cancelOperationPending) setStopConfirmation(undefined);
+        }}
+        onConfirm={targets => void cancelOperationTargets(targets)}
+      />
     </Box>
   );
 }

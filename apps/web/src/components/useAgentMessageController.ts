@@ -1,7 +1,8 @@
-import type { EngineDto, SendMessageRequest } from "@ponderosa/core";
+import type { AssetDto, DraftPendingSubmissionDto, EngineDto, SendMessageRequest } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { ApiRequestError } from "../api/types";
 import { createClientId } from "../clientId";
 import {
   effortSelectionIsCompatible,
@@ -9,8 +10,26 @@ import {
 } from "../conversationEngine";
 import { useSendMessage } from "../hooks/useSendMessage";
 import { queryKeys } from "../queryKeys";
-import { uploadFilesForRecipients } from "../conversationRouting";
+import {
+  discardRecipientUploads,
+  fileSelectionFingerprint,
+  pendingDraftAttachmentIds,
+  recipientUploadCleanupSettled,
+  pendingRecipientUploads,
+  type RecipientUploads,
+  uploadFilesForRecipients,
+  withPendingRecipientUploads,
+  withPendingRequest,
+} from "../conversationRouting";
 import { directAgentDeliveryNotice } from "./AgentDetail.helpers";
+import {
+  selectIdempotentAttempt,
+  type IdempotentAttempt,
+} from "./idempotentAttempt";
+import {
+  runQueuedMessageCommand,
+  type QueuedMessageCommandAttemptRegistry,
+} from "./queuedMessageCommandAttempts";
 
 interface AgentMessageControllerInput {
   agentId: string;
@@ -21,6 +40,17 @@ interface AgentMessageControllerInput {
   speed: string;
   onNotice(value?: string): void;
   onChatSelected(): void;
+}
+
+interface AgentMessageSubmissionPrepared {
+  agentId: string;
+  files: File[];
+  request: SendMessageRequest & {
+    draftAttachmentIds?: string[];
+    draftId?: string;
+    draftOwnerId?: string;
+  };
+  uploads: RecipientUploads<Pick<AssetDto, "id">>;
 }
 
 export function useAgentMessageController({
@@ -34,7 +64,7 @@ export function useAgentMessageController({
   onChatSelected,
 }: AgentMessageControllerInput) {
   const queryClient = useQueryClient();
-  const sendMessage = useSendMessage(agentId);
+  const sendMessage = useSendMessage();
   const queuedMessagesQuery = useQuery({
     queryKey: queryKeys.queuedMessages.agent(agentId),
     queryFn: () => api.listQueuedAgentMessages(agentId),
@@ -44,6 +74,19 @@ export function useAgentMessageController({
     text: string;
   }>();
   const queueNoticeBaseline = useRef(0);
+  const sendAttempt = useRef<IdempotentAttempt<AgentMessageSubmissionPrepared>>();
+  const queuedCommandAttempts = useRef<QueuedMessageCommandAttemptRegistry>(
+    new Map(),
+  );
+  const [queuedMessageFailure, setQueuedMessageFailure] = useState<{
+    error: Error;
+    deliveryId: string;
+    retry(): void;
+  }>();
+  useEffect(() => {
+    setQueuedMessageFailure(undefined);
+    queuedCommandAttempts.current.clear();
+  }, [agentId]);
   useEffect(() => {
     if (
       !queueDeliveryNotice ||
@@ -61,36 +104,83 @@ export function useAgentMessageController({
     queuedMessagesQuery.dataUpdatedAt,
     queuedMessagesQuery.isFetching,
   ]);
+  useEffect(() => {
+    if (!queuedMessageFailure || queuedMessagesQuery.isFetching || !queuedMessagesQuery.data) return;
+    if (!queuedMessagesQuery.data.some(message =>
+      message.deliveryId === queuedMessageFailure.deliveryId)) {
+      setQueuedMessageFailure(undefined);
+    }
+  }, [queuedMessageFailure, queuedMessagesQuery.data, queuedMessagesQuery.isFetching]);
+  const invalidateQueuedMessages = () =>
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.queuedMessages.agent(agentId),
+    });
   const cancelQueuedMessage = useMutation({
     mutationFn: (deliveryId: string) =>
-      api.cancelQueuedAgentMessage(agentId, deliveryId, {
-        idempotencyKey: createClientId(),
-      }),
-    onSuccess: () =>
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.queuedMessages.agent(agentId),
-      }),
+      runQueuedMessageCommand(
+        queuedCommandAttempts.current,
+        { command: "cancel", deliveryId },
+        () => `cancel:${deliveryId}`,
+        ({ idempotencyKey }) =>
+          api.cancelQueuedAgentMessage(agentId, deliveryId, {
+            idempotencyKey,
+          }),
+      ),
+    onMutate: () => setQueuedMessageFailure(undefined),
+    onSuccess: invalidateQueuedMessages,
+    onError: (error, deliveryId) => {
+      setQueuedMessageFailure({
+        error: error instanceof Error ? error : new Error(String(error)),
+        deliveryId,
+        retry: () => cancelQueuedMessage.mutate(deliveryId),
+      });
+      invalidateQueuedMessages();
+    },
   });
   const editQueuedMessage = useMutation({
     mutationFn: ({ deliveryId, text }: { deliveryId: string; text: string }) =>
-      api.editQueuedAgentMessage(agentId, deliveryId, {
-        text,
-        idempotencyKey: createClientId(),
-      }),
-    onSuccess: () =>
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.queuedMessages.agent(agentId),
-      }),
+      runQueuedMessageCommand(
+        queuedCommandAttempts.current,
+        { command: "edit", deliveryId, text },
+        () => createClientId(),
+        ({ idempotencyKey, canonicalText }) =>
+          api.editQueuedAgentMessage(agentId, deliveryId, {
+            text: canonicalText!,
+            idempotencyKey,
+          }),
+      ),
+    onMutate: () => setQueuedMessageFailure(undefined),
+    onSuccess: invalidateQueuedMessages,
+    onError: (error, variables) => {
+      setQueuedMessageFailure({
+        error: error instanceof Error ? error : new Error(String(error)),
+        deliveryId: variables.deliveryId,
+        retry: () => editQueuedMessage.mutate(variables),
+      });
+      invalidateQueuedMessages();
+    },
   });
   const steerQueuedMessage = useMutation({
     mutationFn: (deliveryId: string) =>
-      api.steerQueuedAgentMessage(agentId, deliveryId, {
-        idempotencyKey: createClientId(),
-      }),
-    onSuccess: () =>
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.queuedMessages.agent(agentId),
-      }),
+      runQueuedMessageCommand(
+        queuedCommandAttempts.current,
+        { command: "steer", deliveryId },
+        () => `steer:${deliveryId}`,
+        ({ idempotencyKey }) =>
+          api.steerQueuedAgentMessage(agentId, deliveryId, {
+            idempotencyKey,
+          }),
+      ),
+    onMutate: () => setQueuedMessageFailure(undefined),
+    onSuccess: invalidateQueuedMessages,
+    onError: (error, deliveryId) => {
+      setQueuedMessageFailure({
+        error: error instanceof Error ? error : new Error(String(error)),
+        deliveryId,
+        retry: () => steerQueuedMessage.mutate(deliveryId),
+      });
+      invalidateQueuedMessages();
+    },
   });
 
   const submitAgentMessage =
@@ -100,80 +190,170 @@ export function useAgentMessageController({
       files: File[],
       draftAttachmentIds: string[] = [],
       draftOwnerId?: string,
+      context?: {
+        retryPreparedAttempt?: boolean;
+        pendingSubmission?: DraftPendingSubmissionDto;
+        persistPendingSubmission?(
+          value: DraftPendingSubmissionDto,
+          retainOnFailure?: boolean,
+        ): Promise<void>;
+      },
     ) => {
-      const sent = (
-        draftAttachmentIds.length
-          ? Promise.resolve([])
-          : uploadFilesForRecipients(
-              [agentId],
-              files,
-              (recipientId, file) => api.uploadAttachment(recipientId, file),
-              (recipientId, attachment) =>
-                api.deleteAttachment(recipientId, attachment.id),
-            ).then(recipients => recipients[0]?.attachments ?? [])
-      ).then(async attachments => {
-        try {
-          return await sendMessage.mutateAsync(
-            {
+      const sent = (async () => {
+        let pendingSubmission = context?.pendingSubmission;
+        if (pendingSubmission && !pendingSubmission.request && context?.persistPendingSubmission) {
+          pendingSubmission = withPendingRequest(pendingSubmission, {
+            recipientAgentIds: [agentId],
+            runtime: {
+              activeRunDelivery,
+              ...(engine?.id ? { engine: engine.id } : {}),
+              ...(model ? { model } : {}),
+              ...(effortSelectionIsCompatible(engine, model, effort) && effort
+                ? { effort }
+                : {}),
+              ...(speed && speedSelectionIsCompatible(engine, model, speed)
+                ? { speed }
+                : {}),
+            },
+          });
+          await context.persistPendingSubmission(pendingSubmission);
+        }
+        const exactRuntime = pendingSubmission?.request?.runtime;
+        const previous = sendAttempt.current;
+        const attempt = selectIdempotentAttempt(
+          previous,
+          context?.retryPreparedAttempt === true,
+          () => JSON.stringify({
+            agentId,
+            text,
+            files: fileSelectionFingerprint(files),
+            draftAttachmentIds,
+            draftOwnerId,
+            engine: engine?.id,
+            model,
+            effort,
+            speed,
+            activeRunDelivery,
+          }),
+          () => pendingSubmission?.idempotencyKey ?? createClientId(),
+          () => ({
+            agentId,
+            files: [...files],
+            request: {
               text,
-              idempotencyKey: createClientId(),
-              attachmentIds: attachments.map(item => item.id),
-              ...(draftAttachmentIds.length
+              idempotencyKey: "",
+              attachmentIds: [],
+              ...(pendingDraftAttachmentIds(context?.pendingSubmission, draftAttachmentIds).length
                 ? {
-                    draftAttachmentIds,
+                    draftAttachmentIds: pendingDraftAttachmentIds(
+                      context?.pendingSubmission,
+                      draftAttachmentIds,
+                    ),
                     draftId: `agent:${agentId}`,
                     draftOwnerId,
                   }
                 : {}),
-              model,
-              effort: effortSelectionIsCompatible(engine, model, effort)
-                ? effort
-                : "",
-              ...(speed && speedSelectionIsCompatible(engine, model, speed)
-                ? { speed }
+              engine: exactRuntime?.engine ?? engine?.id,
+              model: exactRuntime?.model ?? model,
+              effort: exactRuntime
+                ? exactRuntime.effort ?? ""
+                : effortSelectionIsCompatible(engine, model, effort) ? effort : "",
+              ...((exactRuntime?.speed ??
+                    (speed && speedSelectionIsCompatible(engine, model, speed) ? speed : ""))
+                ? { speed: exactRuntime?.speed ?? speed }
                 : {}),
-              activeRunDelivery,
+              activeRunDelivery: exactRuntime?.activeRunDelivery ?? activeRunDelivery,
             },
-            {
-              onSuccess: response => {
-                const notice = directAgentDeliveryNotice(
-                  response,
-                  activeRunDelivery,
-                );
-                if (
-                  response.queued &&
-                  activeRunDelivery === "queue" &&
-                  notice
-                ) {
-                  queueNoticeBaseline.current =
-                    queuedMessagesQuery.dataUpdatedAt;
-                  setQueueDeliveryNotice({
-                    deliveryId: response.deliveryId,
-                    text: notice,
-                  });
-                  onNotice(undefined);
-                } else {
-                  setQueueDeliveryNotice(undefined);
-                  onNotice(notice);
-                }
-                void queryClient.invalidateQueries({
-                  queryKey: queryKeys.queuedMessages.agent(agentId),
-                });
-                if (projectId) {
-                  void queryClient.invalidateQueries({
-                    queryKey: queryKeys.agents.health(projectId),
-                  });
-                }
-              },
-            },
+            uploads: [],
+          }),
+        );
+        if (previous && previous !== attempt) {
+          await discardRecipientUploads(
+            previous.prepared.uploads,
+            (recipientId, attachment) =>
+              api.deleteAttachment(recipientId, attachment.id),
+            error => error instanceof ApiRequestError &&
+              recipientUploadCleanupSettled(error.status, error.message),
           );
-        } catch (error) {
-          await Promise.allSettled(
-            attachments.map(item => api.deleteAttachment(agentId, item.id)),
-          );
-          throw error;
         }
-      });
+        sendAttempt.current = attempt;
+        const prepared = attempt.prepared;
+        const durableUploads = pendingRecipientUploads(
+          pendingSubmission,
+          "direct-agent",
+        );
+        if (durableUploads?.length === 1 &&
+            durableUploads[0]?.agentId === prepared.agentId) {
+          prepared.uploads = durableUploads;
+        }
+        if (
+          !prepared.request.draftAttachmentIds?.length &&
+          prepared.uploads.length === 0 &&
+          prepared.files.length > 0
+        ) {
+          prepared.uploads = await uploadFilesForRecipients(
+            [prepared.agentId],
+            prepared.files,
+            (recipientId, file) => api.uploadAttachment(recipientId, file),
+            (recipientId, attachment) =>
+              api.deleteAttachment(recipientId, attachment.id),
+            error => error instanceof ApiRequestError && error.status === 404,
+          );
+          if (pendingSubmission && context?.persistPendingSubmission) {
+            await context.persistPendingSubmission(withPendingRecipientUploads(
+              pendingSubmission,
+              "direct-agent",
+              prepared.uploads,
+            ));
+          }
+        }
+        const attachments = prepared.uploads[0]?.attachments ?? [];
+        const response = await sendMessage.mutateAsync(
+          {
+            agentId: prepared.agentId,
+            request: {
+              ...prepared.request,
+              idempotencyKey: attempt.idempotencyKey,
+              attachmentIds: attachments.map(item => item.id),
+            },
+          },
+          {
+            onSuccess: response => {
+              const notice = directAgentDeliveryNotice(
+                response,
+                prepared.request.activeRunDelivery ?? "steer",
+              );
+              if (
+                response.queued &&
+                prepared.request.activeRunDelivery === "queue" &&
+                notice &&
+                response.deliveryId
+              ) {
+                queueNoticeBaseline.current =
+                  queuedMessagesQuery.dataUpdatedAt;
+                setQueueDeliveryNotice({
+                  deliveryId: response.deliveryId,
+                  text: notice,
+                });
+                onNotice(undefined);
+              } else {
+                setQueueDeliveryNotice(undefined);
+                onNotice(notice);
+              }
+              void queryClient.invalidateQueries({
+                queryKey: queryKeys.queuedMessages.agent(prepared.agentId),
+              });
+              if (projectId) {
+                void queryClient.invalidateQueries({
+                  queryKey: queryKeys.agents.health(projectId),
+                });
+              }
+            },
+          },
+        );
+        if (sendAttempt.current === attempt) sendAttempt.current = undefined;
+        return response;
+      })();
       onChatSelected();
       return sent;
     };
@@ -183,6 +363,14 @@ export function useAgentMessageController({
     editQueuedMessage,
     queueDeliveryNotice: queueDeliveryNotice?.text,
     queuedMessagesQuery,
+    queuedMessageFailure: queuedMessageFailure ?? (queuedMessagesQuery.error
+      ? {
+          error: queuedMessagesQuery.error instanceof Error
+            ? queuedMessagesQuery.error
+            : new Error(String(queuedMessagesQuery.error)),
+          retry: () => { void queuedMessagesQuery.refetch(); },
+        }
+      : undefined),
     sendMessage,
     steerQueuedMessage,
     submitAgentMessage,

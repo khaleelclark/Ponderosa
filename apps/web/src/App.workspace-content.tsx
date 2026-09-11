@@ -4,13 +4,18 @@ import type {
   EngineDto,
   ProjectDto,
   WorkspaceNotificationDto,
+  WorkspaceNotificationPageDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { HomeView } from "./components/HomeView";
 import type { ProjectBrowserRequest } from "./components/ProjectBrowserContext";
 import { RecoverableLazyRoute } from "./components/RecoverableLazyRoute";
 import type { Route } from "./routing";
-import { assertNeverRoute, isProjectRoute } from "./routeRegistry";
+import {
+  assertNeverRoute,
+  isProjectRoute,
+  routeWaitsForWorkspacePreferences,
+} from "./routeRegistry";
 import type { ColorMode } from "./theme";
 
 type RemovableWorkspaceResourceRoute = Extract<
@@ -39,13 +44,19 @@ interface WorkspaceRouteOutletProps {
   projectsLoaded: boolean;
   engines: EngineDto[];
   notifications: WorkspaceNotificationDto[];
+  notificationCounts?: Pick<WorkspaceNotificationPageDto, "openActionCount">;
   preferences: WorkspacePreferencesDto;
+  preferencesLoaded: boolean;
   colorMode: ColorMode;
   projectBrowserRequest?: ProjectBrowserRequest;
   loadError: boolean;
+  refreshError: boolean;
   onRetryLoad(): void;
   onNavigate(route: Route): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
+  onSavePreferences(
+    patch: Partial<WorkspacePreferencesDto>,
+  ): Promise<WorkspacePreferencesDto>;
   onCreate(
     kind: "project" | "chat" | "agent" | "trigger",
     context?: {
@@ -77,13 +88,17 @@ export function WorkspaceRouteOutlet({
   projectsLoaded,
   engines,
   notifications,
+  notificationCounts,
   preferences,
+  preferencesLoaded,
   colorMode,
   projectBrowserRequest,
   loadError,
+  refreshError,
   onRetryLoad,
   onNavigate,
   onPreferences,
+  onSavePreferences,
   onCreate,
   onCancelCreate,
   onOpenInbox,
@@ -102,9 +117,21 @@ export function WorkspaceRouteOutlet({
         minHeight: 0,
         minWidth: 0,
         display: "grid",
-        gridTemplateRows: "minmax(0, 1fr)",
+        gridTemplateRows: refreshError && !loadError
+          ? "auto minmax(0, 1fr)"
+          : "minmax(0, 1fr)",
       }}
     >
+      {refreshError && !loadError ? (
+        <Alert
+          severity="warning"
+          action={<Button color="inherit" size="small" onClick={onRetryLoad}>Retry</Button>}
+          sx={{ m: 1 }}
+        >
+          Some workspace data could not be refreshed. The last loaded data remains available.
+        </Alert>
+      ) : null}
+      <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
       {loadError ? (
         <Box sx={{ p: 2 }}>
           <Alert
@@ -119,6 +146,13 @@ export function WorkspaceRouteOutlet({
             connection and try again.
           </Alert>
         </Box>
+      ) : routeWaitsForWorkspacePreferences(route, preferencesLoaded) ? (
+        <Stack role="status" aria-live="polite" spacing={1} sx={{ p: 3 }}>
+          <LinearProgress />
+          <Typography color="text.secondary">
+            Loading {route.kind === "profile" ? "profile" : "settings"}…
+          </Typography>
+        </Stack>
       ) : route.kind === "create" ? (
         <RecoverableLazyRoute
           key={[
@@ -141,7 +175,7 @@ export function WorkspaceRouteOutlet({
             projectsLoaded={projectsLoaded}
             engines={engines}
             notifications={notifications}
-            preferences={preferences}
+            notificationCounts={notificationCounts}
             onNavigate={onNavigate}
             onCreateProject={() => onCreate("project")}
             onOpenInbox={onOpenInbox}
@@ -177,9 +211,10 @@ export function WorkspaceRouteOutlet({
             preferences,
             onPreferences,
             onNavigate,
-            onCreate: (projectId, managerAgentId) =>
+            onCreate: (projectId, managerAgentId, conversationId) =>
               onCreate("agent", {
                 ...(projectId ? { projectId } : {}),
+                ...(conversationId ? { conversationId } : {}),
                 ...(managerAgentId ? { managerAgentId } : {}),
               }),
             onAgentsDeleted: (projectId, agentIds) =>
@@ -225,6 +260,7 @@ export function WorkspaceRouteOutlet({
             colorMode,
             onToggleColorMode,
             onPreferences,
+            onSavePreferences,
             section: route.section,
           }}
         />
@@ -245,6 +281,7 @@ export function WorkspaceRouteOutlet({
             colorMode,
             onToggleColorMode,
             onPreferences,
+            onSavePreferences,
             section: "activity",
             activityProjectId: route.projectId,
           }}
@@ -307,6 +344,7 @@ export function WorkspaceRouteOutlet({
       ) : (
         assertNeverRoute(route)
       )}
+      </Box>
     </Box>
   );
 }

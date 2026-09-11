@@ -147,7 +147,7 @@ export function registerAgentOrganizationRoutes(
         return reply.code(400).send({ error: "parentAgentId is required for children" });
       }
       const parent = context.store.getAgent(parentAgentId);
-      if (!parent || parent.projectId !== projectId || parent.archived) {
+      if (!parent || parent.projectId !== projectId || parent.archived || context.store.agentCreationPending(parentAgentId)) {
         return reply.code(404).send({ error: "parent Agent not found" });
       }
     } else if (parentAgentId) {
@@ -192,6 +192,13 @@ export function registerAgentOrganizationRoutes(
             AND manager.project_id = a.project_id
             AND manager.deleted_at IS NULL
             AND manager.archived = 0
+            AND NOT EXISTS (
+              SELECT 1
+              FROM agent_creation_operation_members manager_members
+              JOIN agent_creation_operations manager_operations ON manager_operations.id = manager_members.operation_id
+              WHERE manager_members.agent_id = manager.id
+                AND manager_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+            )
         )`;
     }
     const searchPredicate = normalizedSearch
@@ -202,6 +209,13 @@ export function registerAgentOrganizationRoutes(
       SELECT a.id, a.title, a.updated_at
       FROM agents a
       WHERE a.project_id = ? AND ${scopePredicate}
+      AND NOT EXISTS (
+        SELECT 1
+        FROM agent_creation_operation_members creation_members
+        JOIN agent_creation_operations creation_operations ON creation_operations.id = creation_members.operation_id
+        WHERE creation_members.agent_id = a.id
+          AND creation_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+      )
       ${searchPredicate}
     `;
 
@@ -240,9 +254,23 @@ export function registerAgentOrganizationRoutes(
                 AND manager.project_id = a.project_id
                 AND manager.deleted_at IS NULL
                 AND manager.archived = 0
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM agent_creation_operation_members manager_members
+                  JOIN agent_creation_operations manager_operations ON manager_operations.id = manager_members.operation_id
+                  WHERE manager_members.agent_id = manager.id
+                    AND manager_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+                )
             ) THEN 1 ELSE 0 END) AS orphaned,
           SUM(CASE WHEN a.deleted_at IS NOT NULL THEN 1 ELSE 0 END) AS deleted
         FROM agents a WHERE a.project_id = ?
+          AND NOT EXISTS (
+            SELECT 1
+            FROM agent_creation_operation_members creation_members
+            JOIN agent_creation_operations creation_operations ON creation_operations.id = creation_members.operation_id
+            WHERE creation_members.agent_id = a.id
+              AND creation_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+          )
       `).get(projectId) as {
         independent: number | null;
         orphaned: number | null;
@@ -282,6 +310,13 @@ export function registerAgentOrganizationRoutes(
                 AND child.manager_agent_id = a.id
                 AND child.deleted_at IS NULL
                 AND child.archived = 0
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM agent_creation_operation_members child_members
+                  JOIN agent_creation_operations child_operations ON child_operations.id = child_members.operation_id
+                  WHERE child_members.agent_id = child.id
+                    AND child_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+                )
             ) AS direct_report_count
           FROM agents a
           LEFT JOIN agents manager
@@ -289,6 +324,13 @@ export function registerAgentOrganizationRoutes(
             AND manager.project_id = a.project_id
             AND manager.deleted_at IS NULL
             AND manager.archived = 0
+            AND NOT EXISTS (
+              SELECT 1
+              FROM agent_creation_operation_members manager_members
+              JOIN agent_creation_operations manager_operations ON manager_operations.id = manager_members.operation_id
+              WHERE manager_members.agent_id = manager.id
+                AND manager_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+            )
           WHERE a.project_id = ? AND a.deleted_at IS NULL AND a.archived = 0
             AND a.id IN (${placeholders(idPage.items.length)})
         `).all(projectId, ...idPage.items) as LiveOrganizationRow[];

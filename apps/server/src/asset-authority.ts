@@ -5,6 +5,8 @@ import Database from "better-sqlite3";
 import type { RuntimeAttachmentReservationReceiptV3 } from "@ponderosa/agents";
 import {
   ASSET_LIMITS,
+  DRAFT_ASSET_LIMITS,
+  OWNER_ID,
   UPLOAD_LEASE_MS,
   RUNTIME_UUID,
   AssetError,
@@ -25,7 +27,7 @@ export class AssetAuthority {
       mkdirSyncSafe(dataDir); this.db = new Database(path.join(dataDir, "asset-authority.sqlite"));
       this.db.pragma("journal_mode = WAL"); this.db.pragma("synchronous = FULL"); this.db.pragma("busy_timeout = 500");
       const version = this.db.pragma("user_version", { simple: true }) as number;
-      if (version !== 0 && version !== 7) throw new AssetError(409, "asset authority schema is incompatible");
+      if (version !== 0 && version !== 7 && version !== 8 && version !== 9) throw new AssetError(409, "asset authority schema is incompatible");
       this.db.exec(`CREATE TABLE IF NOT EXISTS asset_reservations (
         id TEXT PRIMARY KEY, asset_id TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, agent_id TEXT NOT NULL,
         size INTEGER NOT NULL CHECK(size > 0), created_at INTEGER NOT NULL
@@ -77,7 +79,53 @@ export class AssetAuthority {
         FOREIGN KEY (project_id, artifact_id)
           REFERENCES generated_artifact_authority(project_id, id)
       );
-      PRAGMA user_version=7;`);
+      `);
+      if (version < 8) {
+        this.db.exec(`BEGIN IMMEDIATE;
+          ALTER TABLE asset_deletions ADD COLUMN requested_at INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE asset_deletions ADD COLUMN audit_event_id TEXT;
+          ALTER TABLE asset_deletions ADD COLUMN completed_at INTEGER;
+          UPDATE asset_deletions
+          SET requested_at = CAST(unixepoch('subsec') * 1000 AS INTEGER),
+              audit_event_id = lower(hex(randomblob(16)))
+          WHERE audit_event_id IS NULL;
+          CREATE TABLE draft_attachment_cleanups (
+            draft_id TEXT NOT NULL, owner_id TEXT NOT NULL, asset_id TEXT NOT NULL,
+            eligible_at INTEGER NOT NULL,
+            PRIMARY KEY (draft_id, owner_id, asset_id)
+          );
+          CREATE INDEX draft_attachment_cleanup_due
+            ON draft_attachment_cleanups(eligible_at);
+          PRAGMA user_version=8;
+          COMMIT;`);
+      }
+      if (version < 9) {
+        this.db.exec(`BEGIN IMMEDIATE;
+          CREATE TABLE draft_asset_reservations (
+            id TEXT PRIMARY KEY, asset_id TEXT NOT NULL UNIQUE,
+            draft_id TEXT NOT NULL, owner_id TEXT NOT NULL,
+            size INTEGER NOT NULL CHECK(size > 0), created_at INTEGER NOT NULL
+          );
+          CREATE INDEX draft_asset_reservation_surface
+            ON draft_asset_reservations(draft_id);
+          CREATE TABLE draft_asset_committed (
+            asset_id TEXT PRIMARY KEY, draft_id TEXT NOT NULL,
+            owner_id TEXT NOT NULL, size INTEGER NOT NULL CHECK(size > 0)
+          );
+          CREATE INDEX draft_asset_committed_surface
+            ON draft_asset_committed(draft_id);
+          CREATE TABLE draft_asset_settlements (
+            reservation_id TEXT PRIMARY KEY, asset_id TEXT NOT NULL,
+            draft_id TEXT NOT NULL, owner_id TEXT NOT NULL
+          );
+          CREATE TABLE draft_asset_rate_events (
+            id TEXT PRIMARY KEY, draft_id TEXT NOT NULL, created_at INTEGER NOT NULL
+          );
+          CREATE INDEX draft_asset_rate_surface
+            ON draft_asset_rate_events(draft_id, created_at);
+          PRAGMA user_version=9;
+          COMMIT;`);
+      }
     } catch (error) { throw error instanceof AssetError ? error : new AssetError(409, `asset authority unavailable: ${error instanceof Error ? error.message : String(error)}`); }
   }
   private now(): number { return (this.db.prepare("SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER) now").get() as { now: number }).now; }
@@ -109,6 +157,167 @@ export class AssetAuthority {
   release(id: string): boolean {
     try { return this.db.prepare("DELETE FROM asset_reservations WHERE id=?").run(id).changes === 1; } catch (error) { throw this.mapped(error); }
   }
+
+  reserveDraftAttachment(
+    draftId: string,
+    ownerId: string,
+    assetId: string,
+    size: number,
+  ): string {
+    if (!draftId || draftId.length > 256 || !OWNER_ID.test(ownerId) ||
+        !RUNTIME_UUID.test(assetId) || !Number.isSafeInteger(size) ||
+        size < 1 || size > ASSET_LIMITS.maxFileBytes) {
+      throw new AssetError(400, "draft upload reservation is invalid");
+    }
+    const id = randomUUID();
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      const now = this.now();
+      this.db.prepare("DELETE FROM draft_asset_reservations WHERE created_at <= ?")
+        .run(now - UPLOAD_LEASE_MS);
+      this.db.prepare("DELETE FROM draft_asset_rate_events WHERE created_at <= ?")
+        .run(now - 60_000);
+      const surfaceActive = this.db.prepare(`
+        SELECT count(*) count, coalesce(sum(size),0) bytes
+        FROM draft_asset_reservations WHERE draft_id=?
+      `).get(draftId) as { count: number; bytes: number };
+      const workspaceActive = this.db.prepare(`
+        SELECT count(*) count, coalesce(sum(size),0) bytes
+        FROM draft_asset_reservations
+      `).get() as { count: number; bytes: number };
+      const surfaceCommitted = this.db.prepare(`
+        SELECT count(*) count, coalesce(sum(size),0) bytes
+        FROM draft_asset_committed WHERE draft_id=?
+      `).get(draftId) as { count: number; bytes: number };
+      const workspaceCommitted = this.db.prepare(`
+        SELECT count(*) count, coalesce(sum(size),0) bytes
+        FROM draft_asset_committed
+      `).get() as { count: number; bytes: number };
+      const surfaceRate = (this.db.prepare(`
+        SELECT count(*) count FROM draft_asset_rate_events WHERE draft_id=?
+      `).get(draftId) as { count: number }).count;
+      const workspaceRate = (this.db.prepare(`
+        SELECT count(*) count FROM draft_asset_rate_events
+      `).get() as { count: number }).count;
+      if (surfaceActive.count >= DRAFT_ASSET_LIMITS.maxConcurrentUploadsPerSurface) {
+        throw new AssetError(429, "too many concurrent draft uploads");
+      }
+      if (surfaceRate >= DRAFT_ASSET_LIMITS.maxUploadsPerMinutePerSurface ||
+          workspaceRate >= DRAFT_ASSET_LIMITS.maxUploadsPerMinuteWorkspace) {
+        throw new AssetError(429, "draft upload rate limit exceeded");
+      }
+      if (surfaceCommitted.count + surfaceActive.count >= DRAFT_ASSET_LIMITS.maxSurfaceAssets ||
+          workspaceCommitted.count + workspaceActive.count >= DRAFT_ASSET_LIMITS.maxWorkspaceAssets) {
+        throw new AssetError(413, "draft asset count limit exceeded");
+      }
+      if (surfaceCommitted.bytes + surfaceActive.bytes + size > DRAFT_ASSET_LIMITS.maxSurfaceBytes ||
+          workspaceCommitted.bytes + workspaceActive.bytes + size > DRAFT_ASSET_LIMITS.maxWorkspaceBytes) {
+        throw new AssetError(413, "draft asset quota exceeded");
+      }
+      this.db.prepare(`
+        INSERT INTO draft_asset_reservations(id,asset_id,draft_id,owner_id,size,created_at)
+        VALUES (?,?,?,?,?,?)
+      `).run(id, assetId, draftId, ownerId, size, now);
+      this.db.prepare("INSERT INTO draft_asset_rate_events VALUES (?,?,?)")
+        .run(id, draftId, now);
+      this.db.exec("COMMIT");
+      return id;
+    } catch (error) {
+      if (this.db.inTransaction) this.db.exec("ROLLBACK");
+      throw this.mapped(error);
+    }
+  }
+
+  releaseDraftAttachment(id: string): boolean {
+    try {
+      return this.db.prepare("DELETE FROM draft_asset_reservations WHERE id=?")
+        .run(id).changes === 1;
+    } catch (error) { throw this.mapped(error); }
+  }
+
+  syncDraftAttachment(
+    draftId: string,
+    ownerId: string,
+    assetId: string,
+    size: number,
+  ): void {
+    if (!draftId || draftId.length > 256 || !OWNER_ID.test(ownerId) ||
+        !RUNTIME_UUID.test(assetId) || !Number.isSafeInteger(size) ||
+        size < 1 || size > ASSET_LIMITS.maxFileBytes) {
+      throw new AssetError(409, "stored draft attachment identity is invalid");
+    }
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      const active = this.db.prepare(`
+        SELECT draft_id draftId,owner_id ownerId,size
+        FROM draft_asset_reservations WHERE asset_id=?
+      `).get(assetId) as { draftId: string; ownerId: string; size: number } | undefined;
+      const committed = this.db.prepare(`
+        SELECT draft_id draftId,owner_id ownerId,size
+        FROM draft_asset_committed WHERE asset_id=?
+      `).get(assetId) as { draftId: string; ownerId: string; size: number } | undefined;
+      for (const existing of [active, committed]) {
+        if (existing && (existing.draftId !== draftId || existing.ownerId !== ownerId ||
+            existing.size !== size)) {
+          throw new AssetError(409, "stored draft attachment conflicts with quota authority");
+        }
+      }
+      this.db.prepare("DELETE FROM draft_asset_reservations WHERE asset_id=?")
+        .run(assetId);
+      if (!committed) {
+        this.db.prepare("INSERT INTO draft_asset_committed VALUES (?,?,?,?)")
+          .run(assetId, draftId, ownerId, size);
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      if (this.db.inTransaction) this.db.exec("ROLLBACK");
+      throw this.mapped(error);
+    }
+  }
+
+  settleDraftAttachment(id: string): void {
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      if (this.db.prepare("SELECT 1 FROM draft_asset_settlements WHERE reservation_id=?").get(id)) {
+        this.db.exec("COMMIT");
+        return;
+      }
+      const now = this.now();
+      const row = this.db.prepare(`
+        SELECT asset_id assetId,draft_id draftId,owner_id ownerId,size,created_at createdAt
+        FROM draft_asset_reservations WHERE id=?
+      `).get(id) as {
+        assetId: string;
+        draftId: string;
+        ownerId: string;
+        size: number;
+        createdAt: number;
+      } | undefined;
+      if (!row || row.createdAt <= now - UPLOAD_LEASE_MS) {
+        this.db.prepare("DELETE FROM draft_asset_reservations WHERE id=?").run(id);
+        throw new AssetError(409, "draft upload reservation expired");
+      }
+      const committed = this.db.prepare(`
+        SELECT draft_id draftId,owner_id ownerId,size
+        FROM draft_asset_committed WHERE asset_id=?
+      `).get(row.assetId) as { draftId: string; ownerId: string; size: number } | undefined;
+      if (committed && (committed.draftId !== row.draftId ||
+          committed.ownerId !== row.ownerId || committed.size !== row.size)) {
+        throw new AssetError(409, "draft asset ownership conflicts with committed usage");
+      }
+      if (!committed) {
+        this.db.prepare("INSERT INTO draft_asset_committed VALUES (?,?,?,?)")
+          .run(row.assetId, row.draftId, row.ownerId, row.size);
+      }
+      this.db.prepare("INSERT INTO draft_asset_settlements VALUES (?,?,?,?)")
+        .run(id, row.assetId, row.draftId, row.ownerId);
+      this.db.prepare("DELETE FROM draft_asset_reservations WHERE id=?").run(id);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      if (this.db.inTransaction) this.db.exec("ROLLBACK");
+      throw this.mapped(error);
+    }
+  }
   settle(id: string): void {
     try {
       this.db.exec("BEGIN IMMEDIATE");
@@ -128,7 +337,15 @@ export class AssetAuthority {
     try {
       this.db.exec("BEGIN IMMEDIATE");
       const rows = this.db.prepare("SELECT asset_id id,size FROM asset_committed WHERE project_id=? AND agent_id=?").all(projectId, agentId) as Array<{ id: string; size: number }>;
-      for (const row of rows) if (assets.get(row.id) !== row.size) throw new AssetError(409, "asset filesystem and quota ledger diverged");
+      for (const row of rows) {
+        const deleting = this.db.prepare(`
+          SELECT 1 FROM asset_deletions
+          WHERE asset_id=? AND project_id=? AND agent_id=? AND completed_at IS NULL
+        `).get(row.id, projectId, agentId);
+        if (!deleting && assets.get(row.id) !== row.size) {
+          throw new AssetError(409, "asset filesystem and quota ledger diverged");
+        }
+      }
       for (const [id, size] of assets) {
         const deletion = this.db.prepare("SELECT 1 FROM asset_deletions WHERE asset_id=? AND project_id=? AND agent_id=?").get(id, projectId, agentId);
         if (deletion) continue;
@@ -141,10 +358,245 @@ export class AssetAuthority {
       this.db.exec("COMMIT");
     } catch (error) { if (this.db.inTransaction) this.db.exec("ROLLBACK"); throw this.mapped(error); }
   }
-  beginDelete(assetId: string, projectId: string, agentId: string): void { try { this.db.exec("BEGIN IMMEDIATE"); this.db.prepare("INSERT OR REPLACE INTO asset_deletions VALUES (?,?,?)").run(assetId, projectId, agentId); this.db.exec("COMMIT"); } catch (error) { if (this.db.inTransaction) this.db.exec("ROLLBACK"); throw this.mapped(error); } }
-  finishDelete(assetId: string): void { try { this.db.exec("BEGIN IMMEDIATE"); this.db.prepare("DELETE FROM asset_committed WHERE asset_id=?").run(assetId); this.db.exec("COMMIT"); } catch (error) { if (this.db.inTransaction) this.db.exec("ROLLBACK"); throw this.mapped(error); } }
+  beginDelete(assetId: string, projectId: string, agentId: string): {
+    assetId: string;
+    projectId: string;
+    agentId: string;
+    auditEventId: string;
+    requestedAt: number;
+    completed: boolean;
+  } {
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      const runtimeOwner = this.db.prepare(`
+        SELECT 1 FROM runtime_attachment_associations
+        WHERE asset_id=? AND project_id=? AND agent_id=?
+      `).get(assetId, projectId, agentId);
+      if (runtimeOwner) throw new AssetError(409, "sent assets cannot be deleted");
+      const existing = this.db.prepare(`
+        SELECT project_id projectId, agent_id agentId, audit_event_id auditEventId,
+          requested_at requestedAt, completed_at completedAt
+        FROM asset_deletions WHERE asset_id=?
+      `).get(assetId) as {
+        projectId: string;
+        agentId: string;
+        auditEventId: string | null;
+        requestedAt: number;
+        completedAt: number | null;
+      } | undefined;
+      if (existing && (existing.projectId !== projectId || existing.agentId !== agentId)) {
+        throw new AssetError(409, "asset deletion ownership conflicts");
+      }
+      const auditEventId = existing?.auditEventId ?? randomUUID();
+      const requestedAt = existing?.requestedAt || this.now();
+      if (!existing) {
+        this.db.prepare(`
+          INSERT INTO asset_deletions(
+            asset_id,project_id,agent_id,requested_at,audit_event_id,completed_at
+          ) VALUES (?,?,?,?,?,NULL)
+        `).run(assetId, projectId, agentId, requestedAt, auditEventId);
+      } else if (!existing.auditEventId) {
+        this.db.prepare("UPDATE asset_deletions SET audit_event_id=? WHERE asset_id=?")
+          .run(auditEventId, assetId);
+      }
+      this.db.exec("COMMIT");
+      return {
+        assetId,
+        projectId,
+        agentId,
+        auditEventId,
+        requestedAt,
+        completed: existing?.completedAt !== null && existing?.completedAt !== undefined,
+      };
+    } catch (error) {
+      if (this.db.inTransaction) this.db.exec("ROLLBACK");
+      throw this.mapped(error);
+    }
+  }
+  finishDelete(assetId: string): void { try { this.db.exec("BEGIN IMMEDIATE"); this.db.prepare("DELETE FROM asset_committed WHERE asset_id=?").run(assetId); this.db.prepare("UPDATE asset_deletions SET completed_at=? WHERE asset_id=?").run(this.now(), assetId); this.db.exec("COMMIT"); } catch (error) { if (this.db.inTransaction) this.db.exec("ROLLBACK"); throw this.mapped(error); } }
   removeCommitted(assetId: string): void { this.finishDelete(assetId); }
-  recordAudit(file: string, projectId: string, agentId: string, record: Record<string, unknown>): void {
+  pendingDeletions(projectId?: string, agentId?: string): Array<{
+    assetId: string;
+    projectId: string;
+    agentId: string;
+    auditEventId: string;
+    requestedAt: number;
+  }> {
+    try {
+      const rows = this.db.prepare(`
+        SELECT asset_id assetId, project_id projectId, agent_id agentId,
+          audit_event_id auditEventId, requested_at requestedAt
+        FROM asset_deletions
+        WHERE completed_at IS NULL
+          AND (? IS NULL OR project_id = ?)
+          AND (? IS NULL OR agent_id = ?)
+        ORDER BY requested_at, asset_id
+      `).all(projectId ?? null, projectId ?? null, agentId ?? null, agentId ?? null) as Array<{
+        assetId: string;
+        projectId: string;
+        agentId: string;
+        auditEventId: string | null;
+        requestedAt: number;
+      }>;
+      return rows.map((row) => {
+        if (!row.auditEventId) throw new AssetError(409, "asset deletion receipt is incomplete");
+        return { ...row, auditEventId: row.auditEventId };
+      });
+    } catch (error) { throw this.mapped(error); }
+  }
+  deletionRequested(assetId: string): boolean {
+    try { return Boolean(this.db.prepare("SELECT 1 FROM asset_deletions WHERE asset_id=?").get(assetId)); }
+    catch (error) { throw this.mapped(error); }
+  }
+  enqueueDraftAttachmentCleanup(
+    draftId: string,
+    ownerId: string,
+    assetId: string,
+    eligibleAt: number,
+  ): void {
+    try {
+      this.db.prepare(`
+        INSERT INTO draft_attachment_cleanups(draft_id,owner_id,asset_id,eligible_at)
+        VALUES (?,?,?,?)
+        ON CONFLICT(draft_id,owner_id,asset_id) DO UPDATE SET
+          eligible_at = min(eligible_at, excluded.eligible_at)
+      `).run(draftId, ownerId, assetId, eligibleAt);
+    } catch (error) { throw this.mapped(error); }
+  }
+  pendingDraftAttachmentCleanups(now = this.now()): Array<{
+    draftId: string;
+    ownerId: string;
+    assetId: string;
+  }> {
+    try {
+      return this.db.prepare(`
+        SELECT draft_id draftId, owner_id ownerId, asset_id assetId
+        FROM draft_attachment_cleanups WHERE eligible_at <= ?
+        ORDER BY eligible_at, draft_id, owner_id, asset_id
+      `).all(now) as Array<{ draftId: string; ownerId: string; assetId: string }>;
+    } catch (error) { throw this.mapped(error); }
+  }
+  finishDraftAttachmentCleanup(draftId: string, ownerId: string, assetId: string): void {
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      const committed = this.db.prepare(`
+        SELECT draft_id draftId,owner_id ownerId
+        FROM draft_asset_committed WHERE asset_id=?
+      `).get(assetId) as { draftId: string; ownerId: string } | undefined;
+      if (committed && (committed.draftId !== draftId || committed.ownerId !== ownerId)) {
+        throw new AssetError(409, "draft asset cleanup ownership conflicts");
+      }
+      this.db.prepare(`
+        DELETE FROM draft_asset_committed
+        WHERE asset_id=? AND draft_id=? AND owner_id=?
+      `).run(assetId, draftId, ownerId);
+      this.db.prepare(`
+        DELETE FROM draft_asset_reservations
+        WHERE asset_id=? AND draft_id=? AND owner_id=?
+      `).run(assetId, draftId, ownerId);
+      this.db.prepare(`
+        DELETE FROM draft_asset_settlements
+        WHERE asset_id=? AND draft_id=? AND owner_id=?
+      `).run(assetId, draftId, ownerId);
+      this.db.prepare(`
+        DELETE FROM draft_attachment_cleanups
+        WHERE draft_id=? AND owner_id=? AND asset_id=?
+      `).run(draftId, ownerId, assetId);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      if (this.db.inTransaction) this.db.exec("ROLLBACK");
+      throw this.mapped(error);
+    }
+  }
+
+  finishDraftSurfaceCleanup(draftId: string): void {
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      this.db.prepare("DELETE FROM draft_asset_settlements WHERE draft_id=?").run(draftId);
+      this.db.prepare("DELETE FROM draft_asset_reservations WHERE draft_id=?").run(draftId);
+      this.db.prepare("DELETE FROM draft_asset_committed WHERE draft_id=?").run(draftId);
+      this.db.prepare("DELETE FROM draft_attachment_cleanups WHERE draft_id=?").run(draftId);
+      this.db.prepare("DELETE FROM draft_asset_rate_events WHERE draft_id=?").run(draftId);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      if (this.db.inTransaction) this.db.exec("ROLLBACK");
+      throw this.mapped(error);
+    }
+  }
+
+  draftSurfaceIds(): string[] {
+    try {
+      return (this.db.prepare(`
+        SELECT draft_id draftId FROM draft_asset_reservations
+        UNION SELECT draft_id FROM draft_asset_committed
+        UNION SELECT draft_id FROM draft_asset_settlements
+        UNION SELECT draft_id FROM draft_attachment_cleanups
+        UNION SELECT draft_id FROM draft_asset_rate_events
+        ORDER BY draftId
+      `).all() as Array<{ draftId: string }>).map(row => row.draftId);
+    } catch (error) { throw this.mapped(error); }
+  }
+
+  purgeAgents(agentIds: readonly string[]): void {
+    const ids = [...new Set(agentIds)];
+    if (ids.some((id) => !RUNTIME_UUID.test(id))) {
+      throw new AssetError(409, "Agent asset cleanup identity is invalid");
+    }
+    if (ids.length === 0) return;
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      for (const agentId of ids) {
+        this.db.prepare("DELETE FROM runtime_attachment_associations WHERE agent_id=?").run(agentId);
+        this.db.prepare("DELETE FROM asset_settlements WHERE agent_id=?").run(agentId);
+        this.db.prepare("DELETE FROM asset_deletions WHERE agent_id=?").run(agentId);
+        this.db.prepare("DELETE FROM asset_reservations WHERE agent_id=?").run(agentId);
+        this.db.prepare("DELETE FROM asset_committed WHERE agent_id=?").run(agentId);
+        this.db.prepare("DELETE FROM asset_rate_events WHERE agent_id=?").run(agentId);
+        this.db.prepare("DELETE FROM asset_audit WHERE agent_id=?").run(agentId);
+        const draftId = `agent:${agentId}`;
+        this.db.prepare("DELETE FROM draft_asset_settlements WHERE draft_id=?").run(draftId);
+        this.db.prepare("DELETE FROM draft_asset_reservations WHERE draft_id=?").run(draftId);
+        this.db.prepare("DELETE FROM draft_asset_committed WHERE draft_id=?").run(draftId);
+        this.db.prepare("DELETE FROM draft_attachment_cleanups WHERE draft_id=?").run(draftId);
+        this.db.prepare("DELETE FROM draft_asset_rate_events WHERE draft_id=?").run(draftId);
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      if (this.db.inTransaction) this.db.exec("ROLLBACK");
+      throw this.mapped(error);
+    }
+  }
+
+  purgeProject(projectId: string, draftSurfaceIds: readonly string[] = []): void {
+    if (!OWNER_ID.test(projectId) || draftSurfaceIds.some((id) => !id || id.length > 256)) {
+      throw new AssetError(409, "Project asset cleanup identity is invalid");
+    }
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      this.db.prepare("DELETE FROM generated_artifact_import_receipts WHERE project_id=?").run(projectId);
+      this.db.prepare("DELETE FROM generated_artifact_authority WHERE project_id=?").run(projectId);
+      this.db.prepare("DELETE FROM runtime_artifact_authority WHERE project_id=?").run(projectId);
+      this.db.prepare("DELETE FROM runtime_attachment_associations WHERE project_id=?").run(projectId);
+      this.db.prepare("DELETE FROM asset_settlements WHERE project_id=?").run(projectId);
+      this.db.prepare("DELETE FROM asset_deletions WHERE project_id=?").run(projectId);
+      this.db.prepare("DELETE FROM asset_reservations WHERE project_id=?").run(projectId);
+      this.db.prepare("DELETE FROM asset_committed WHERE project_id=?").run(projectId);
+      this.db.prepare("DELETE FROM asset_rate_events WHERE project_id=?").run(projectId);
+      this.db.prepare("DELETE FROM asset_audit WHERE project_id=?").run(projectId);
+      for (const draftId of new Set(draftSurfaceIds)) {
+        this.db.prepare("DELETE FROM draft_asset_settlements WHERE draft_id=?").run(draftId);
+        this.db.prepare("DELETE FROM draft_asset_reservations WHERE draft_id=?").run(draftId);
+        this.db.prepare("DELETE FROM draft_asset_committed WHERE draft_id=?").run(draftId);
+        this.db.prepare("DELETE FROM draft_attachment_cleanups WHERE draft_id=?").run(draftId);
+        this.db.prepare("DELETE FROM draft_asset_rate_events WHERE draft_id=?").run(draftId);
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      if (this.db.inTransaction) this.db.exec("ROLLBACK");
+      throw this.mapped(error);
+    }
+  }
+  recordAudit(file: string, projectId: string, agentId: string, record: Record<string, unknown>, eventId: string = randomUUID()): void {
     let fd: number | undefined;
     try {
       this.db.exec("BEGIN IMMEDIATE");
@@ -177,8 +629,13 @@ export class AssetAuthority {
         if (!existing) this.db.prepare("INSERT INTO asset_audit(event_id,project_id,agent_id,record_json) VALUES (?,?,?,?)").run(eventId, projectId, agentId, line);
       }
       if (info.size !== Buffer.byteLength(text)) { ftruncateSync(fd, Buffer.byteLength(text)); fsyncSync(fd); }
-      const eventId = randomUUID(); const withId = JSON.stringify({ ...record, event_id: eventId });
-      this.db.prepare("INSERT INTO asset_audit(event_id,project_id,agent_id,record_json) VALUES (?,?,?,?)").run(eventId, projectId, agentId, withId);
+      const withId = JSON.stringify({ ...record, event_id: eventId });
+      const existingRecord = this.db.prepare("SELECT record_json json FROM asset_audit WHERE event_id=?").get(eventId) as { json: string } | undefined;
+      if (existingRecord && existingRecord.json !== withId) throw new AssetError(409, "asset audit event ID conflicts");
+      if (!existingRecord) {
+        this.db.prepare("INSERT INTO asset_audit(event_id,project_id,agent_id,record_json) VALUES (?,?,?,?)")
+          .run(eventId, projectId, agentId, withId);
+      }
       const rows = this.db.prepare("SELECT event_id eventId,record_json json FROM asset_audit WHERE project_id=? AND agent_id=? ORDER BY seq").all(projectId, agentId) as Array<{ eventId: string; json: string }>;
       if (text && !text.endsWith("\n")) writeSync(fd, "\n");
       for (const row of rows) if (!fileIds.has(row.eventId)) { writeSync(fd, `${row.json}\n`); fileIds.set(row.eventId, row.json); }
@@ -288,7 +745,10 @@ export class AssetAuthority {
       return new Set(rows.map((row) => row.id));
     } catch (error) { throw this.mapped(error); }
   }
-  registerRuntimeArtifact(artifact: RegisteredRuntimeArtifact): RegisteredRuntimeArtifact {
+  registerRuntimeArtifact(artifact: RegisteredRuntimeArtifact): {
+    artifact: RegisteredRuntimeArtifact;
+    reservationCreated: boolean;
+  } {
     try {
       this.db.exec("BEGIN IMMEDIATE");
       const prior = this.db.prepare(`
@@ -318,7 +778,10 @@ export class AssetAuthority {
         artifact.originAgentId ?? null, artifact.executionId ?? null, artifact.createdAt,
       );
       this.db.exec("COMMIT");
-      return this.runtimeArtifact(artifact.projectId, artifact.id)!;
+      return {
+        artifact: this.runtimeArtifact(artifact.projectId, artifact.id)!,
+        reservationCreated: !prior,
+      };
     } catch (error) {
       if (this.db.inTransaction) this.db.exec("ROLLBACK");
       throw this.mapped(error);
@@ -365,6 +828,42 @@ export class AssetAuthority {
       );
       this.db.exec("COMMIT");
       return this.generatedArtifact(artifact.projectId, artifact.id)!;
+    } catch (error) {
+      if (this.db.inTransaction) this.db.exec("ROLLBACK");
+      throw this.mapped(error);
+    }
+  }
+  removeGeneratedArtifactIfMatches(
+    expected: RegisteredGeneratedArtifact,
+  ): "absent" | "removed" | "mismatch" {
+    if (!generatedArtifactMetadataIsValid(expected)) {
+      throw new AssetError(409, "generated artifact rollback identity is invalid");
+    }
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      const registered = this.generatedArtifact(expected.projectId, expected.id);
+      if (!registered) {
+        this.db.exec("COMMIT");
+        return "absent";
+      }
+      if (JSON.stringify(generatedArtifactIdentity(registered)) !==
+          JSON.stringify(generatedArtifactIdentity(expected))) {
+        this.db.exec("COMMIT");
+        return "mismatch";
+      }
+      const imported = this.db.prepare(`
+        SELECT 1 FROM generated_artifact_import_receipts
+        WHERE project_id = ? AND artifact_id = ?
+      `).get(expected.projectId, expected.id);
+      if (imported) {
+        this.db.exec("COMMIT");
+        return "mismatch";
+      }
+      const removed = this.db.prepare(`
+        DELETE FROM generated_artifact_authority WHERE project_id = ? AND id = ?
+      `).run(expected.projectId, expected.id).changes === 1;
+      this.db.exec("COMMIT");
+      return removed ? "removed" : "mismatch";
     } catch (error) {
       if (this.db.inTransaction) this.db.exec("ROLLBACK");
       throw this.mapped(error);

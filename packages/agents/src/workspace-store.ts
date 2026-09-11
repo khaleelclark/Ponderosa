@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type {
@@ -26,7 +26,15 @@ import { workspaceEventsPath, workspaceInstancePath } from "./paths.js";
 type CanonicalWorkspaceEvent = WorkspaceEventEnvelope & {
   mutation?:
     | { kind: "draft"; draft: ConversationDraftDto }
-    | { kind: "draft_conflict"; conflict: ConversationDraftConflictDto }
+    | {
+        kind: "draft_conflict";
+        conflict: ConversationDraftConflictDto;
+        superseded?: ConversationDraftConflictDto[];
+      }
+    | {
+        kind: "draft_conflict_resolved";
+        resolution: DraftConflictResolution;
+      }
     | { kind: "draft_deleted"; draftId: string }
     | { kind: "notification"; notification: WorkspaceNotificationDto; pushTargets?: Array<{ deviceId: string; subscriptionUpdatedAt: string }> }
     | { kind: "notifications_read"; conversationId: string; readAt: string }
@@ -40,6 +48,17 @@ type CanonicalWorkspaceEvent = WorkspaceEventEnvelope & {
     | { kind: "push_subscription"; subscription?: WebPushSubscriptionDto; deviceId: string; replacedDeviceIds?: string[] }
     | { kind: "push_delivery"; delivery: PushDeliveryRecord };
 };
+
+interface DraftConflictResolution {
+  conflictId: string;
+  conversationId: string;
+  ownerId: string;
+  action: "restored" | "discarded";
+  draft?: ConversationDraftDto;
+  displaced?: ConversationDraftConflictDto["displaced"];
+  attachmentReplacements?: Array<{ fromId: string; toId: string }>;
+  unavailableAttachmentIds?: string[];
+}
 
 export interface DecisionEventProjection {
   kind: "decision" | "decision_response";
@@ -60,6 +79,7 @@ export interface PushDeliveryRecord {
 }
 
 const DEFAULT_PREFERENCES: WorkspacePreferencesDto = {
+  revision: 0,
   projectSort: "last_used",
   projectOrder: [],
   homeOrder: [],
@@ -88,6 +108,16 @@ const DEFAULT_PREFERENCES: WorkspacePreferencesDto = {
   profile: { displayName: "User", handle: "operator", avatarId: "default-user" },
   updatedAt: new Date(0).toISOString(),
 };
+
+export function draftRevisionConflicts(
+  current: Pick<ConversationDraftDto, "revision" | "clientId">,
+  input: { expectedRevision: number; clientId: string },
+): boolean {
+  const provenSameIncarnation =
+    /^page:[^:]+:draft:[^:]+$/u.test(input.clientId)
+    && current.clientId === input.clientId;
+  return current.revision !== input.expectedRevision && !provenSameIncarnation;
+}
 
 function isOpenAttentionNotification(item: WorkspaceNotificationDto): boolean {
   return (item.status ?? "open") === "open" && (
@@ -188,6 +218,8 @@ export class WorkspaceStore {
   private readonly events: CanonicalWorkspaceEvent[];
   private readonly drafts = new Map<string, ConversationDraftDto>();
   private readonly draftConflicts = new Map<string, ConversationDraftConflictDto[]>();
+  private readonly draftConflictResolutions = new Map<string, DraftConflictResolution>();
+  private readonly supersededDraftConflicts = new Map<string, ConversationDraftConflictDto[]>();
   private readonly notifications = new Map<string, WorkspaceNotificationDto>();
   private readonly notificationsByDedupeKey = new Map<string, WorkspaceNotificationDto>();
   private readonly openOperationalNotificationsByDedupeKey = new Map<string, WorkspaceNotificationDto>();
@@ -211,6 +243,7 @@ export class WorkspaceStore {
   private readonly pushDeliveries = new Map<string, PushDeliveryRecord>();
   private readonly deletedProjectIds = new Set<string>();
   private readonly projectDeletionEvents = new Map<string, WorkspaceEventEnvelope>();
+  private readonly conversationDeletionEvents = new Map<string, WorkspaceEventEnvelope>();
   private readonly queuedMessageChanges = new Set<string>();
   private readonly resourceRecency = new Map<string, WorkspaceResourceRecencyDto>();
   private readonly resourceRecencyLinks = new Map<
@@ -340,9 +373,14 @@ export class WorkspaceStore {
     }
     if (record.event.type === "preferences_updated") {
       const preferences = record.event.preferences;
-      this.preferences = {
+      const revision = Number.isSafeInteger(preferences.revision) &&
+        preferences.revision > this.preferences.revision
+        ? preferences.revision
+        : this.preferences.revision + 1;
+      const normalized: WorkspacePreferencesDto = {
         ...DEFAULT_PREFERENCES,
         ...preferences,
+        revision,
         notifications: normalizeNotifications(preferences.notifications),
         projectOrder: preferences.projectOrder ?? [],
         homeOrder: preferences.homeOrder ?? [],
@@ -370,20 +408,66 @@ export class WorkspaceStore {
         onboardingCompletedAt: preferences.onboardingCompletedAt ?? null,
         profile: normalizeProfile(preferences.profile),
       };
+      record.event = { ...record.event, preferences: normalized };
+      this.preferences = normalized;
     }
     if (record.mutation?.kind === "draft") this.drafts.set(this.draftKey(record.mutation.draft.conversationId, record.mutation.draft.ownerId), record.mutation.draft);
     if (record.mutation?.kind === "draft_conflict") {
-      const conversationId = record.mutation.conflict.current.conversationId;
+      const raw = record.mutation.conflict as ConversationDraftConflictDto & { id?: string };
+      const conflict: ConversationDraftConflictDto = {
+        ...raw,
+        id: raw.id ?? `draft-conflict-event-${record.id}`,
+      };
+      const conversationId = conflict.current.conversationId;
       const key = this.draftKey(conversationId, record.mutation.conflict.current.ownerId);
-      const conflicts = this.draftConflicts.get(key) ?? [];
-      conflicts.push(record.mutation.conflict);
+      const supersededIds = new Set(
+        (record.mutation.superseded ?? []).map(candidate => {
+          this.draftConflictResolutions.set(candidate.id, {
+            conflictId: candidate.id,
+            conversationId: candidate.current.conversationId,
+            ownerId: candidate.current.ownerId,
+            action: "discarded",
+            displaced: candidate.displaced,
+          });
+          return candidate.id;
+        }),
+      );
+      if (record.mutation.superseded?.length) {
+        this.supersededDraftConflicts.set(conflict.id, record.mutation.superseded);
+      }
+      const conflicts = (this.draftConflicts.get(key) ?? [])
+        .filter(candidate => !supersededIds.has(candidate.id));
+      if (!conflicts.some(candidate => candidate.id === conflict.id)) conflicts.push(conflict);
       // Keep the canonical log complete, but bound the projection used by the UI.
       this.draftConflicts.set(key, conflicts.slice(-20));
     }
+    if (record.mutation?.kind === "draft_conflict_resolved") {
+      const resolution = record.mutation.resolution;
+      this.draftConflictResolutions.set(resolution.conflictId, resolution);
+      const key = this.draftKey(resolution.conversationId, resolution.ownerId);
+      this.draftConflicts.set(
+        key,
+        (this.draftConflicts.get(key) ?? []).filter(
+          conflict => conflict.id !== resolution.conflictId,
+        ),
+      );
+      if (resolution.draft) this.drafts.set(key, resolution.draft);
+    }
     if (record.mutation?.kind === "draft_deleted") {
-      const prefix = `${record.mutation.draftId}\u0000`;
+      const draftId = record.mutation.draftId;
+      const prefix = `${draftId}\u0000`;
       for (const key of [...this.drafts.keys()]) if (key.startsWith(prefix)) this.drafts.delete(key);
       for (const key of [...this.draftConflicts.keys()]) if (key.startsWith(prefix)) this.draftConflicts.delete(key);
+      for (const [id, resolution] of this.draftConflictResolutions) {
+        if (resolution.conversationId === record.mutation.draftId) {
+          this.draftConflictResolutions.delete(id);
+        }
+      }
+      for (const [id, conflicts] of this.supersededDraftConflicts) {
+        if (conflicts.some(conflict => conflict.current.conversationId === draftId)) {
+          this.supersededDraftConflicts.delete(id);
+        }
+      }
     }
     if (record.mutation?.kind === "notification") {
       let notification = this.deletedProjectNotification(
@@ -562,6 +646,7 @@ export class WorkspaceStore {
     }
     if (event.type === "conversation_changed") {
       if (event.action === "deleted") {
+        this.conversationDeletionEvents.set(event.conversationId, record);
         this.deleteResourceRecency(`conversation:${event.conversationId}`);
       } else if (
         event.action === "created"
@@ -754,6 +839,22 @@ export class WorkspaceStore {
     return this.append({ type: "project_changed", projectId, action: "deleted" });
   }
 
+  /** Materialize an irreversible Chat receipt in the durable workspace log.
+   * Returning the original envelope makes cleanup and publication retries idempotent. */
+  reconcileConversationDeletion(
+    projectId: string,
+    conversationId: string,
+  ): WorkspaceEventEnvelope {
+    const existing = this.conversationDeletionEvents.get(conversationId);
+    if (existing) return existing;
+    return this.append({
+      type: "conversation_changed",
+      projectId,
+      conversationId,
+      action: "deleted",
+    });
+  }
+
   readSince(id: number): WorkspaceEventEnvelope[] {
     // Reconnects usually ask for a small tail of a long canonical log. Locate
     // that tail without rescanning every prior event.
@@ -845,6 +946,7 @@ export class WorkspaceStore {
     const preferences: WorkspacePreferencesDto = {
       ...this.preferences,
       ...patch,
+      revision: this.preferences.revision + 1,
       notifications,
       projectOrder: patch.projectOrder ?? this.preferences.projectOrder,
       homeOrder: patch.homeOrder ?? this.preferences.homeOrder,
@@ -884,30 +986,146 @@ export class WorkspaceStore {
     return this.drafts.get(this.draftKey(conversationId, ownerId)) ?? { conversationId, ownerId, text: "", attachmentIds: [], revision: 0, updatedAt: new Date(0).toISOString(), clientId: "" };
   }
 
-  putDraft(conversationId: string, input: { text: string; attachmentIds: string[]; expectedRevision: number; clientId: string; ownerId?: string }): ConversationDraftDto {
+  draftRecoveryInventory(): Array<{
+    draftId: string;
+    ownerId: string;
+    attachmentIds: string[];
+    pendingAttachmentIds: string[];
+    pendingUploads: Array<{ agentId: string; attachmentIds: string[] }>;
+  }> {
+    const inventory = new Map<string, {
+      attachmentIds: Set<string>;
+      pendingAttachmentIds: Set<string>;
+      pendingUploads: Map<string, Set<string>>;
+    }>();
+    const add = (
+      draftId: string,
+      ownerId: string,
+      value?: Pick<ConversationDraftDto,
+        "attachmentIds" | "pastedTextAttachmentId" | "pendingSubmission">,
+    ) => {
+      const key = this.draftKey(draftId, ownerId);
+      const item = inventory.get(key) ?? {
+        attachmentIds: new Set<string>(),
+        pendingAttachmentIds: new Set<string>(),
+        pendingUploads: new Map<string, Set<string>>(),
+      };
+      for (const id of value?.attachmentIds ?? []) item.attachmentIds.add(id);
+      if (value?.pastedTextAttachmentId) {
+        item.attachmentIds.add(value.pastedTextAttachmentId);
+      }
+      for (const id of value?.pendingSubmission?.draftAttachmentIds ?? []) {
+        item.pendingAttachmentIds.add(id);
+      }
+      if (value?.pendingSubmission?.pastedTextAttachmentId) {
+        item.pendingAttachmentIds.add(value.pendingSubmission.pastedTextAttachmentId);
+      }
+      for (const upload of value?.pendingSubmission?.uploads ?? []) {
+        for (const recipient of upload.recipients) {
+          const ids = item.pendingUploads.get(recipient.agentId) ?? new Set<string>();
+          for (const id of recipient.attachmentIds) ids.add(id);
+          item.pendingUploads.set(recipient.agentId, ids);
+        }
+      }
+      inventory.set(key, item);
+    };
+    for (const draft of this.drafts.values()) {
+      add(draft.conversationId, draft.ownerId, draft);
+    }
+    for (const conflicts of this.draftConflicts.values()) {
+      for (const conflict of conflicts) {
+        add(conflict.current.conversationId, conflict.current.ownerId, conflict.current);
+        add(conflict.current.conversationId, conflict.current.ownerId, conflict.displaced);
+      }
+    }
+    for (const resolution of this.draftConflictResolutions.values()) {
+      add(resolution.conversationId, resolution.ownerId);
+    }
+    return [...inventory.entries()]
+      .map(([key, item]) => {
+        const separator = key.indexOf("\u0000");
+        return {
+          draftId: key.slice(0, separator),
+          ownerId: key.slice(separator + 1),
+          attachmentIds: [...item.attachmentIds].sort(),
+          pendingAttachmentIds: [...item.pendingAttachmentIds].sort(),
+          pendingUploads: [...item.pendingUploads.entries()]
+            .map(([agentId, attachmentIds]) => ({
+              agentId,
+              attachmentIds: [...attachmentIds].sort(),
+            }))
+            .sort((left, right) => left.agentId.localeCompare(right.agentId)),
+        };
+      })
+      .sort((left, right) => left.draftId.localeCompare(right.draftId) ||
+        left.ownerId.localeCompare(right.ownerId));
+  }
+
+  putDraft(conversationId: string, input: { text: string; attachmentIds: string[]; pastedTextAttachmentId?: string; mentionBindings?: ConversationDraftDto["mentionBindings"]; pendingSubmission?: ConversationDraftDto["pendingSubmission"]; expectedRevision: number; clientId: string; ownerId?: string }): ConversationDraftDto {
     const ownerId = input.ownerId ?? "legacy";
     const current = this.getDraft(conversationId, ownerId);
     const attachmentIds = [...new Set(input.attachmentIds)];
-    if (current.text === input.text && JSON.stringify(current.attachmentIds) === JSON.stringify(attachmentIds)) return current;
-    // A page can lose a successful response while its serialized write chain
-    // continues. Its next write is safe to fast-forward because page client
-    // identities are not shared with duplicated or restored browser pages.
-    const provenSamePage = input.clientId.startsWith("page:")
-      && current.clientId === input.clientId;
-    if (current.revision !== input.expectedRevision && !provenSamePage) {
+    const mentionBindings = input.mentionBindings ?? [];
+    // A draft-surface incarnation can lose a successful response while its
+    // serialized write chain continues. New clients rotate the identity when
+    // leaving a surface, so exact equality proves that incarnation. Legacy
+    // page IDs remain valid stored data but intentionally get no revision
+    // bypass because they identified a whole page rather than one visit.
+    if (draftRevisionConflicts(current, input)) {
       const displaced: ConversationDraftConflictDto["displaced"] = {
         conversationId,
         text: input.text,
         attachmentIds,
+        ...(input.pastedTextAttachmentId ? { pastedTextAttachmentId: input.pastedTextAttachmentId } : {}),
+        mentionBindings,
+        ...(input.pendingSubmission ? { pendingSubmission: input.pendingSubmission } : {}),
         clientId: input.clientId,
         capturedAt: new Date().toISOString(),
       };
-      const conflict: ConversationDraftConflictDto = { current, displaced };
-      this.append({ type: "draft_conflict", conversationId, revision: current.revision, }, { kind: "draft_conflict", conflict });
-      throw Object.assign(new Error("draft revision conflict"), { code: "DRAFT_CONFLICT", current, displaced });
+      const id = `draft-conflict-${createHash("sha256").update(JSON.stringify({
+        conversationId,
+        ownerId,
+        currentRevision: current.revision,
+        expectedRevision: input.expectedRevision,
+        text: displaced.text,
+        attachmentIds: displaced.attachmentIds,
+        pastedTextAttachmentId: displaced.pastedTextAttachmentId ?? null,
+        mentionBindings: displaced.mentionBindings ?? [],
+        pendingSubmission: displaced.pendingSubmission ?? null,
+        clientId: displaced.clientId,
+      })).digest("hex")}`;
+      const existing = (this.draftConflicts.get(this.draftKey(conversationId, ownerId)) ?? [])
+        .find(candidate => candidate.id === id);
+      const conflict: ConversationDraftConflictDto = existing ?? { id, current, displaced };
+      const supersededConflicts = existing
+        ? this.supersededDraftConflicts.get(existing.id) ?? []
+        : (this.draftConflicts.get(this.draftKey(conversationId, ownerId)) ?? [])
+          .filter(candidate => candidate.displaced.clientId === input.clientId);
+      if (!existing) {
+        this.append(
+          { type: "draft_conflict", conversationId, revision: current.revision },
+          {
+            kind: "draft_conflict",
+            conflict,
+            ...(supersededConflicts.length ? { superseded: supersededConflicts } : {}),
+          },
+        );
+      }
+      throw Object.assign(new Error("draft revision conflict"), {
+        code: "DRAFT_CONFLICT",
+        conflict,
+        current,
+        displaced: conflict.displaced,
+        supersededConflicts,
+      });
     }
-    const draft: ConversationDraftDto = { conversationId, ownerId, text: input.text, attachmentIds, revision: current.revision + 1, updatedAt: new Date().toISOString(), clientId: input.clientId };
-    this.append({ type: "draft_changed", conversationId, revision: draft.revision, cleared: !draft.text && draft.attachmentIds.length === 0 }, { kind: "draft", draft });
+    if (current.text === input.text &&
+        JSON.stringify(current.attachmentIds) === JSON.stringify(attachmentIds) &&
+        current.pastedTextAttachmentId === input.pastedTextAttachmentId &&
+        JSON.stringify(current.mentionBindings ?? []) === JSON.stringify(mentionBindings) &&
+        JSON.stringify(current.pendingSubmission ?? null) === JSON.stringify(input.pendingSubmission ?? null)) return current;
+    const draft: ConversationDraftDto = { conversationId, ownerId, text: input.text, attachmentIds, ...(input.pastedTextAttachmentId ? { pastedTextAttachmentId: input.pastedTextAttachmentId } : {}), mentionBindings, ...(input.pendingSubmission ? { pendingSubmission: input.pendingSubmission } : {}), revision: current.revision + 1, updatedAt: new Date().toISOString(), clientId: input.clientId };
+    this.append({ type: "draft_changed", conversationId, revision: draft.revision, cleared: !draft.text && draft.attachmentIds.length === 0 && !draft.pastedTextAttachmentId }, { kind: "draft", draft });
     return draft;
   }
 
@@ -915,11 +1133,179 @@ export class WorkspaceStore {
     return { conversationId, conflicts: [...(this.draftConflicts.get(this.draftKey(conversationId, ownerId)) ?? [])] };
   }
 
+  draftConflictResolution(conflictId: string): DraftConflictResolution | undefined {
+    return this.draftConflictResolutions.get(conflictId);
+  }
+
+  restoreDraftConflict(input: {
+    conversationId: string;
+    ownerId: string;
+    conflictId: string;
+    expectedRevision: number;
+    clientId: string;
+    attachmentIds?: string[];
+    pastedTextAttachmentId?: string | null;
+    attachmentReplacements?: Array<{ fromId: string; toId: string }>;
+    unavailableAttachmentIds?: string[];
+  }): {
+    draft: ConversationDraftDto;
+    replayed: boolean;
+    attachmentReplacements: Array<{ fromId: string; toId: string }>;
+    unavailableAttachmentIds: string[];
+  } {
+    const prior = this.draftConflictResolutions.get(input.conflictId);
+    if (prior) {
+      if (prior.conversationId !== input.conversationId || prior.ownerId !== input.ownerId ||
+          prior.action !== "restored" || !prior.draft) {
+        throw Object.assign(new Error("draft conflict resolution conflicts"), {
+          code: "DRAFT_CONFLICT_RESOLUTION_CONFLICT",
+        });
+      }
+      return {
+        draft: prior.draft,
+        replayed: true,
+        attachmentReplacements: [...(prior.attachmentReplacements ?? [])],
+        unavailableAttachmentIds: [...(prior.unavailableAttachmentIds ?? [])],
+      };
+    }
+    const key = this.draftKey(input.conversationId, input.ownerId);
+    const conflict = (this.draftConflicts.get(key) ?? [])
+      .find(candidate => candidate.id === input.conflictId);
+    if (!conflict) {
+      throw Object.assign(new Error("draft conflict not found"), {
+        code: "DRAFT_CONFLICT_NOT_FOUND",
+      });
+    }
+    const current = this.getDraft(input.conversationId, input.ownerId);
+    if (current.revision !== input.expectedRevision) {
+      throw Object.assign(new Error("draft changed before conflict restoration"), {
+        code: "DRAFT_REVISION_CHANGED",
+        current,
+      });
+    }
+    const pastedTextAttachmentId = input.pastedTextAttachmentId === null
+      ? undefined
+      : input.pastedTextAttachmentId ?? conflict.displaced.pastedTextAttachmentId;
+    const replacementById = new Map(
+      (input.attachmentReplacements ?? []).map(item => [item.fromId, item.toId]),
+    );
+    const unavailableIds = new Set(input.unavailableAttachmentIds ?? []);
+    const pendingSubmission = conflict.displaced.pendingSubmission;
+    const restoredPendingSubmission = pendingSubmission ? {
+      ...pendingSubmission,
+      ...(pendingSubmission.editableDraftAttachmentIds ? {
+        editableDraftAttachmentIds: pendingSubmission.editableDraftAttachmentIds
+          .filter(id => !unavailableIds.has(id))
+          .map(id => replacementById.get(id) ?? id),
+      } : {}),
+      ...(pendingSubmission.editablePastedTextAttachmentId
+        ? unavailableIds.has(pendingSubmission.editablePastedTextAttachmentId)
+          ? { editablePastedTextAttachmentId: undefined }
+          : {
+              editablePastedTextAttachmentId:
+                replacementById.get(pendingSubmission.editablePastedTextAttachmentId) ??
+                pendingSubmission.editablePastedTextAttachmentId,
+            }
+        : {}),
+    } : undefined;
+    const draft: ConversationDraftDto = {
+      conversationId: input.conversationId,
+      ownerId: input.ownerId,
+      text: conflict.displaced.text,
+      attachmentIds: [...(input.attachmentIds ?? conflict.displaced.attachmentIds)],
+      ...(pastedTextAttachmentId ? { pastedTextAttachmentId } : {}),
+      mentionBindings: [...(conflict.displaced.mentionBindings ?? [])],
+      ...(restoredPendingSubmission
+        ? { pendingSubmission: restoredPendingSubmission }
+        : {}),
+      revision: current.revision + 1,
+      updatedAt: new Date().toISOString(),
+      clientId: input.clientId,
+    };
+    const resolution: DraftConflictResolution = {
+      conflictId: input.conflictId,
+      conversationId: input.conversationId,
+      ownerId: input.ownerId,
+      action: "restored",
+      draft,
+      displaced: conflict.displaced,
+      attachmentReplacements: [...(input.attachmentReplacements ?? [])],
+      unavailableAttachmentIds: [...(input.unavailableAttachmentIds ?? [])],
+    };
+    this.append(
+      {
+        type: "draft_changed",
+        conversationId: input.conversationId,
+        revision: draft.revision,
+        cleared: !draft.text && draft.attachmentIds.length === 0 &&
+          !draft.pastedTextAttachmentId,
+      },
+      { kind: "draft_conflict_resolved", resolution },
+    );
+    return {
+      draft,
+      replayed: false,
+      attachmentReplacements: [...(input.attachmentReplacements ?? [])],
+      unavailableAttachmentIds: [...(input.unavailableAttachmentIds ?? [])],
+    };
+  }
+
+  discardDraftConflict(input: {
+    conversationId: string;
+    ownerId: string;
+    conflictId: string;
+  }): { replayed: boolean } {
+    const prior = this.draftConflictResolutions.get(input.conflictId);
+    if (prior) {
+      if (prior.conversationId !== input.conversationId || prior.ownerId !== input.ownerId ||
+          prior.action !== "discarded") {
+        throw Object.assign(new Error("draft conflict resolution conflicts"), {
+          code: "DRAFT_CONFLICT_RESOLUTION_CONFLICT",
+        });
+      }
+      return { replayed: true };
+    }
+    const key = this.draftKey(input.conversationId, input.ownerId);
+    const conflict = (this.draftConflicts.get(key) ?? [])
+      .find(candidate => candidate.id === input.conflictId);
+    if (!conflict) {
+      throw Object.assign(new Error("draft conflict not found"), {
+        code: "DRAFT_CONFLICT_NOT_FOUND",
+      });
+    }
+    const resolution: DraftConflictResolution = {
+      conflictId: input.conflictId,
+      conversationId: input.conversationId,
+      ownerId: input.ownerId,
+      action: "discarded",
+      displaced: conflict.displaced,
+    };
+    this.append(
+      {
+        type: "draft_conflict",
+        conversationId: input.conversationId,
+        revision: this.getDraft(input.conversationId, input.ownerId).revision,
+      },
+      { kind: "draft_conflict_resolved", resolution },
+    );
+    return { replayed: false };
+  }
+
   deleteDraft(draftId: string): void {
     const prefix = `${draftId}\u0000`;
     const current = [...this.drafts.entries()].find(([key]) => key.startsWith(prefix))?.[1];
-    if (!current) return;
-    this.append({ type: "draft_changed", conversationId: draftId, revision: current.revision + 1, cleared: true }, { kind: "draft_deleted", draftId });
+    const retainedProjection = current ||
+      [...this.draftConflicts.keys()].some(key => key.startsWith(prefix)) ||
+      [...this.draftConflictResolutions.values()].some(
+        resolution => resolution.conversationId === draftId,
+      );
+    if (!retainedProjection) return;
+    this.append({
+      type: "draft_changed",
+      conversationId: draftId,
+      revision: (current?.revision ?? 0) + 1,
+      cleared: true,
+    }, { kind: "draft_deleted", draftId });
   }
 
   createNotification(input: Omit<WorkspaceNotificationDto, "id" | "createdAt">, queueWebPush = false): WorkspaceNotificationDto {
@@ -1252,7 +1638,7 @@ export class WorkspaceStore {
     };
     const { idempotencyKey: _idempotencyKey, ...stored } = decision as DecisionDto & { idempotencyKey?: string };
     this.append(
-      { type: "notification_changed", action: "created", conversationId: decision.conversationId },
+      { type: "notification_changed", decisionId: decision.id, action: "created", conversationId: decision.conversationId },
       { kind: "decision", decision: stored, idempotencyKey: key },
     );
     return stored;
@@ -1358,7 +1744,7 @@ export class WorkspaceStore {
     const next: DecisionDto = { ...current, status: "resolved", response, updatedAt: response.respondedAt };
     const key = [...this.decisionIdempotency.entries()].find(([, decisionId]) => decisionId === id)?.[0] ?? `decision:${id}`;
     this.append(
-      { type: "notification_changed", action: "resolved", conversationId: current.conversationId },
+      { type: "notification_changed", decisionId: id, action: "resolved", conversationId: current.conversationId },
       { kind: "decision", decision: next, idempotencyKey: key },
     );
     return next;
@@ -1370,7 +1756,7 @@ export class WorkspaceStore {
     const next: DecisionDto = { ...current, status: "cancelled", updatedAt: at };
     const key = [...this.decisionIdempotency.entries()].find(([, decisionId]) => decisionId === id)?.[0] ?? `decision:${id}`;
     this.append(
-      { type: "notification_changed", action: "resolved", conversationId: current.conversationId },
+      { type: "notification_changed", decisionId: id, action: "resolved", conversationId: current.conversationId },
       { kind: "decision", decision: next, idempotencyKey: key },
     );
     return next;

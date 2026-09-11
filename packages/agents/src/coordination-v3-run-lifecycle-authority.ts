@@ -10,6 +10,7 @@ import {
   publicProviderFailureSummary,
 } from "@ponderosa/core";
 import { stableJson } from "./coordination-v3-canonical-json.js";
+import { CoordinationIdempotencyConflictError } from "./coordination-v3-errors.js";
 import type { CoordinationV3ActivationLifecycleAuthority } from "./coordination-v3-activation-lifecycle-authority.js";
 import type { CoordinationV3QuestionAuthority } from "./coordination-v3-question-authority.js";
 import type { CoordinationV3StoreSupport } from "./coordination-v3-store-support.js";
@@ -882,24 +883,12 @@ export class CoordinationV3RunLifecycleAuthority {
     }
     const now = input.now ?? new Date().toISOString();
     return this.sqlite.transaction(() => {
-      const replay = this.sqlite.prepare(`
-        SELECT run_id, accepted, fencing_token
-        FROM scheduler_cancellation_receipts
-        WHERE agent_id = ? AND idempotency_key = ?
-      `).get(input.agentId, input.idempotencyKey) as {
-        run_id: string | null;
-        accepted: number;
-        fencing_token: number | null;
-      } | undefined;
+      const replay = this.cancellationReceipt(input.agentId, input.idempotencyKey);
       if (replay) {
-        return {
-          cancelled: replay.accepted === 1,
-          replayed: true,
-          ...(replay.run_id ? { runId: replay.run_id } : {}),
-          ...(replay.fencing_token !== null
-            ? { fencingToken: replay.fencing_token }
-            : {}),
-        };
+        if (input.expectedRunId && replay.runId !== input.expectedRunId) {
+          throw new CoordinationIdempotencyConflictError();
+        }
+        return { ...replay, replayed: true };
       }
       const run = this.sqlite.prepare(`
         SELECT id, fencing_token FROM scheduler_runs
@@ -915,9 +904,13 @@ export class CoordinationV3RunLifecycleAuthority {
           INSERT INTO scheduler_cancellation_receipts (
             agent_id, idempotency_key, run_id, accepted,
             fencing_token, created_at
-          ) VALUES (?, ?, NULL, 0, NULL, ?)
-        `).run(input.agentId, input.idempotencyKey, now);
-        return { cancelled: false, replayed: false };
+          ) VALUES (?, ?, ?, 0, NULL, ?)
+        `).run(input.agentId, input.idempotencyKey, input.expectedRunId ?? null, now);
+        return {
+          cancelled: false,
+          replayed: false,
+          ...(input.expectedRunId ? { runId: input.expectedRunId } : {}),
+        };
       }
       const fence = this.support.nextFence(input.agentId);
       // Cancellation owns the rollover transition in the same transaction as
@@ -1071,6 +1064,30 @@ export class CoordinationV3RunLifecycleAuthority {
         operationId: Number(operation.lastInsertRowid),
       };
     })();
+  }
+
+  cancellationReceipt(
+    agentId: string,
+    idempotencyKey: string,
+  ): CancellationResult | undefined {
+    const receipt = this.sqlite.prepare(`
+      SELECT run_id, accepted, fencing_token
+      FROM scheduler_cancellation_receipts
+      WHERE agent_id = ? AND idempotency_key = ?
+    `).get(agentId, idempotencyKey) as {
+      run_id: string | null;
+      accepted: number;
+      fencing_token: number | null;
+    } | undefined;
+    if (!receipt) return undefined;
+    return {
+      cancelled: receipt.accepted === 1,
+      replayed: true,
+      ...(receipt.run_id ? { runId: receipt.run_id } : {}),
+      ...(receipt.fencing_token !== null
+        ? { fencingToken: receipt.fencing_token }
+        : {}),
+    };
   }
 
   markRelatedRequestsOutcomeUnknown(

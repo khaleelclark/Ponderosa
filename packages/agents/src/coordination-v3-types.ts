@@ -269,6 +269,7 @@ export interface RuntimeCommunicationV3View {
   /** Request-backed Communications share the canonical projection reconciler. */
   sourceKind?: "runtime" | "request";
   recipientAgentIds?: string[];
+  activations?: Array<{ id: string; agentId: string }>;
 }
 
 export interface RuntimeManagedArtifactAttachmentAuthorizationV3 {

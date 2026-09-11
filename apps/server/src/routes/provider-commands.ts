@@ -9,11 +9,12 @@ import type {
   RuntimeSession,
 } from "@ponderosa/core";
 import { publicProviderFailure } from "@ponderosa/core";
-import type {
-  AgentStore,
-  CoordinationV3Store,
-  StoredLogEvent,
-  WorkspaceStore,
+import {
+  CoordinationIdempotencyConflictError,
+  type AgentStore,
+  type CoordinationV3Store,
+  type StoredLogEvent,
+  type WorkspaceStore,
 } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
 import type {
@@ -158,11 +159,23 @@ app.post<{ Params: { id: string }; Body?: CancelAgentRunRequest }>("/api/agents/
     return reply.code(400).send({ error: "targetRunId and an idempotencyKey of at most 200 characters are required" });
   }
   const current = activeRuns.get(request.params.id);
-  const result = coordinationV3.cancelAgentRun({
-    agentId: request.params.id,
-    idempotencyKey,
-    expectedRunId: targetRunId,
-  });
+  let result: ReturnType<CoordinationV3Store["cancelAgentRun"]>;
+  try {
+    result = coordinationV3.cancelAgentRun({
+      agentId: request.params.id,
+      idempotencyKey,
+      expectedRunId: targetRunId,
+    });
+  } catch (error) {
+    if (error instanceof CoordinationIdempotencyConflictError) {
+      return reply.code(409).send({
+        error: "the cancellation key belongs to a different Run",
+        cancelled: false,
+        replayed: false,
+      });
+    }
+    throw error;
+  }
   if (!result.cancelled) {
     const authoritative = coordinationV3.agentSnapshot(request.params.id).activeRun;
     return reply.code(409).send({

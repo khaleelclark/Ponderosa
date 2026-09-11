@@ -9,7 +9,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import type { RuntimeElicitationActionDto } from "@ponderosa/core";
+import { safeProviderConnectionUrl, type RuntimeElicitationActionDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { api } from "../../api";
@@ -171,12 +171,17 @@ export function RuntimeElicitationActions({
   }
 
   if (action.data.mode === "url") {
+    const connectionUrl = safeProviderConnectionUrl(action.data.url);
+    if (!connectionUrl) {
+      return <Alert severity="warning">This provider supplied an unsafe connection link. Ask the Agent to try another connection method.</Alert>;
+    }
+    const secureConnection = new URL(connectionUrl).protocol === "https:";
     return (
       <Stack spacing={1}>
         <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
           <Button
             component="a"
-            href={action.data.url}
+            href={connectionUrl}
             target="_blank"
             rel="noreferrer"
             variant="contained"
@@ -194,7 +199,7 @@ export function RuntimeElicitationActions({
           <Button size="small" color="inherit" disabled={pending} onClick={() => setOtherOpen(true)}>Other</Button>
         </Stack>
         <Typography variant="caption" color="text.secondary">
-          The secure connection opens in a new tab. Return here and confirm when it is complete.
+          The {secureConnection ? "secure" : "local"} connection opens in a new tab. Return here and confirm when it is complete.
         </Typography>
         {otherResponse}
         {error ? <Alert severity="error">{error}</Alert> : null}

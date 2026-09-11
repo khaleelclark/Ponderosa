@@ -51,9 +51,12 @@ import {
 } from "@ponderosa/core";
 import {
   composerSubmissionText,
+  engineCommandDisabledReason,
   filesFromClipboard,
+  removeComposerPasteSelection,
   shouldExtractLongPaste,
   shouldIgnoreComposerKey,
+  shouldConsumeComposerKey,
   shouldSendComposerKey,
 } from "./composerUtils";
 import type { ComposerMenuSuggestion } from "./Composer.controls";
@@ -79,6 +82,32 @@ export type ComposerProjectFileDescriptor = {
 };
 
 const PROJECT_FILE_REFERENCE_PATTERN = /\[Project file\]\(ponderosa:\/\/project-file\/([^/()\s]+)\/([^?()\s]+)\?historical=([^&()\s]*)&current=([^()\s]*)\)/gu;
+const FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  "[tabindex]:not([tabindex='-1'])",
+  "[contenteditable='true']",
+].join(",");
+
+function adjacentFocusableElement(
+  current: HTMLElement,
+  backwards: boolean,
+): HTMLElement | undefined {
+  const focusable = [...document.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)]
+    .filter(element =>
+      element.tabIndex >= 0 &&
+      !element.closest('[aria-hidden="true"]') &&
+      !element.closest("[inert]") &&
+      element.getClientRects().length > 0
+    );
+  const currentIndex = focusable.indexOf(current);
+  if (currentIndex < 0 || focusable.length < 2) return undefined;
+  const nextIndex = (currentIndex + (backwards ? -1 : 1) + focusable.length) % focusable.length;
+  return focusable[nextIndex];
+}
 
 export function projectFileCanonicalText(
   descriptor: ComposerProjectFileDescriptor,
@@ -163,6 +192,7 @@ type SerializedProjectFileNode = Spread<
 const StructuralDestinationRemovalContext = createContext<
   (() => void) | undefined
 >(undefined);
+const ComposerMutationLockedContext = createContext(false);
 
 class ComposerMentionNode extends DecoratorNode<ReactNode> {
   __kind: "agent" | "special";
@@ -398,7 +428,9 @@ function ComposerProjectFileToken({
   filename: string;
 }): JSX.Element {
   const [editor] = useLexicalComposerContext();
+  const mutationLocked = useContext(ComposerMutationLockedContext);
   const remove = useCallback(() => {
+    if (mutationLocked) return;
     editor.update(() => {
       const node = $getNodeByKey(nodeKey);
       if (!$isComposerProjectFileNode(node)) return;
@@ -413,7 +445,7 @@ function ComposerProjectFileToken({
       }
     });
     requestAnimationFrame(() => editor.focus());
-  }, [editor, nodeKey]);
+  }, [editor, mutationLocked, nodeKey]);
 
   return (
     <Box
@@ -448,6 +480,7 @@ function ComposerProjectFileToken({
       <Box
         component="button"
         type="button"
+        disabled={mutationLocked}
         tabIndex={-1}
         aria-label={`Remove @${filename}`}
         onMouseDown={event => event.preventDefault()}
@@ -511,10 +544,12 @@ function ComposerMentionToken({
   structural: boolean;
 }): JSX.Element {
   const [editor] = useLexicalComposerContext();
+  const mutationLocked = useContext(ComposerMutationLockedContext);
   const removeStructuralDestination = useContext(
     StructuralDestinationRemovalContext,
   );
   const remove = useCallback(() => {
+    if (mutationLocked) return;
     if (structural) {
       removeStructuralDestination?.();
       return;
@@ -533,7 +568,7 @@ function ComposerMentionToken({
       }
     });
     requestAnimationFrame(() => editor.focus());
-  }, [editor, nodeKey, removeStructuralDestination, structural]);
+  }, [editor, mutationLocked, nodeKey, removeStructuralDestination, structural]);
 
   return (
     <Box
@@ -573,6 +608,7 @@ function ComposerMentionToken({
       <Box
         component="button"
         type="button"
+        disabled={mutationLocked}
         tabIndex={-1}
         aria-label={`Remove #${handle}`}
         onMouseDown={event => event.preventDefault()}
@@ -705,7 +741,11 @@ function descriptorsForCanonicalText(
   const sourceTokens = messageTagTokens(text);
   const exact = descriptors.filter(descriptor =>
     sourceTokens.some(
-      token => token.start === descriptor.start && token.end === descriptor.end,
+      token =>
+        token.start === descriptor.start &&
+        token.end === descriptor.end &&
+        token.handle.toLocaleLowerCase() ===
+          descriptor.handle.toLocaleLowerCase(),
     ),
   );
   if (exact.length > 0 || descriptors.length === 0) return exact;
@@ -790,6 +830,20 @@ function $insertCanonicalContent(
   const selection = $getSelection();
   if (!$isRangeSelection(selection)) return;
   selection.insertNodes($appendCanonicalContent(text, descriptors));
+}
+
+function $removeSelectedContent(): void {
+  const selection = $getSelection();
+  removeComposerPasteSelection(
+    $isRangeSelection(selection)
+      ? { kind: "range", removeText: () => selection.removeText() }
+      : $isNodeSelection(selection)
+        ? {
+            kind: "node",
+            removeNodes: () => selection.getNodes().forEach(node => node.remove()),
+          }
+        : { kind: "other" },
+  );
 }
 
 function EditorBridge({
@@ -1025,7 +1079,6 @@ function EditorBridge({
         const reconciled = binding
           ? {
               ...current,
-              handle: binding.currentHandle,
               title: binding.currentTitle,
               valid: true,
             }
@@ -1134,6 +1187,7 @@ function EditorBridge({
         if (utf8ByteLength(combined) > LONG_TEXT_MAX_UTF8_BYTES) {
           onPasteError("Pasted text exceeds the 8 MiB limit.");
         } else {
+          $removeSelectedContent();
           onPastedText(combined);
         }
         return true;
@@ -1255,20 +1309,22 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
 
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (
+      shouldIgnoreComposerKey({
+        isComposing: event.nativeEvent.isComposing,
+        keyCode: event.nativeEvent.keyCode,
+      })
+    ) {
+      event.stopPropagation();
+      return;
+    }
+    if (
       event.key === "Enter" &&
-      event.shiftKey &&
-      !event.nativeEvent.isComposing
+      event.shiftKey
     ) {
       event.preventDefault();
       bridgeRef.current?.insertText("\n");
       return;
     }
-    if (
-      shouldIgnoreComposerKey({
-        key: event.key,
-        isComposing: event.nativeEvent.isComposing,
-      })
-    ) return;
     if (menuOpen && event.key === "ArrowDown") {
       event.preventDefault();
       onHighlightChange((highlighted + 1) % menuSuggestions.length);
@@ -1281,19 +1337,51 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
       );
       return;
     }
+    const selectedSuggestion = menuSuggestions[highlighted];
+    const selectedSuggestionDisabled = selectedSuggestion?.kind === "command" &&
+      Boolean(engineCommandDisabledReason(selectedSuggestion.command));
     if (
       menuOpen &&
-      (event.key === "Enter" || event.key === "Tab") &&
-      !event.metaKey &&
-      !event.ctrlKey
+      event.key === "Enter" &&
+      !event.shiftKey
     ) {
       event.preventDefault();
-      onApplySuggestion(menuSuggestions[highlighted]!);
+      if (
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        selectedSuggestion &&
+        !selectedSuggestionDisabled
+      ) {
+        onApplySuggestion(selectedSuggestion);
+      }
+      return;
+    }
+    if (
+      menuOpen &&
+      event.key === "Tab" &&
+      !event.shiftKey &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      selectedSuggestion &&
+      !selectedSuggestionDisabled
+    ) {
+      event.preventDefault();
+      onApplySuggestion(selectedSuggestion);
       return;
     }
     if (menuOpen && event.key === "Escape") {
       event.preventDefault();
       onSuppressMenu();
+      return;
+    }
+    if (event.key === "Tab") {
+      if (menuOpen) onSuppressMenu();
+      const next = adjacentFocusableElement(event.currentTarget, event.shiftKey);
+      if (next) {
+        event.preventDefault();
+        next.focus();
+      }
       return;
     }
     if (
@@ -1305,21 +1393,20 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
       onClearRequiredRecipient();
       return;
     }
-    if (
-      shouldSendComposerKey({
-        key: event.key,
-        shiftKey: event.shiftKey,
-        isComposing: event.nativeEvent.isComposing,
-        repeat: event.repeat,
-      }) &&
-      canSend
-    ) {
+    const sendKey = {
+      key: event.key,
+      shiftKey: event.shiftKey,
+      isComposing: event.nativeEvent.isComposing,
+      repeat: event.repeat,
+    };
+    if (shouldConsumeComposerKey(sendKey)) {
       event.preventDefault();
-      onSend();
+      if (canSend && shouldSendComposerKey(sendKey)) onSend();
     }
   };
 
   return (
+    <ComposerMutationLockedContext.Provider value={disabled || locked}>
     <StructuralDestinationRemovalContext.Provider
       value={inlineDestination?.onClear}
     >
@@ -1358,6 +1445,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
           contentEditable={
             <ContentEditable
               className="composer-editor-input"
+              tabIndex={disabled || locked ? -1 : 0}
               aria-label="Message"
               role={comboboxEnabled ? "combobox" : "textbox"}
               aria-multiline="true"
@@ -1407,5 +1495,6 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
       </Box>
     </LexicalComposer>
     </StructuralDestinationRemovalContext.Provider>
+    </ComposerMutationLockedContext.Provider>
   );
 });

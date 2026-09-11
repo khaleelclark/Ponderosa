@@ -1,4 +1,4 @@
-import { AgentStore, CoordinationV3Store, WorkspaceStore, type LogEvent } from "@ponderosa/agents";
+import { AgentStore, CoordinationV3Store, ProjectDeletionInProgressError, WorkspaceStore, type LogEvent } from "@ponderosa/agents";
 import { windowsJobObjectsSupported } from "@ponderosa/native-host";
 import type {
   TokenUsageRangeDto,
@@ -68,6 +68,7 @@ import {
 } from "./runtime-attachments.js";
 import type { ServerContext } from "./server-context.js";
 import { registerServerLifecycle } from "./server-lifecycle.js";
+import { createConversationDeletionAuthority } from "./conversation-deletion-authority.js";
 import {
   publishWorkspaceEvent,
   reconcileCommittedProjectDeletion as reconcileProjectDeletionWorkspace,
@@ -284,7 +285,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     range: TokenUsageRangeDto = {},
   ): TokenUsageSummaryDto => store.getTokenUsage(scope, range);
   const activeRuns = new Map<string, ActiveRun>();
-  const managementPlans = new Map<string, ManagementPlan>();
+  const managementPlans = new Map<string, ManagementPlan>(
+    store.listAgentManagementPlans().map((plan) => [plan.id, plan]),
+  );
   const isArtifactDependentWorkIntake = (method: string, url: string, body?: unknown): boolean => {
     if (method !== "POST" && method !== "PUT" && method !== "PATCH" && method !== "DELETE") return false;
     const pathname = url.split("?", 1)[0]!;
@@ -311,6 +314,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       /^\/api\/requests\/[^/]+\/retry$/u.test(pathname) ||
       /^\/api\/projects\/[^/]+\/agents$/u.test(pathname) ||
       /^\/api\/projects\/[^/]+\/import-agents$/u.test(pathname) ||
+      /^\/api\/projects\/[^/]+\/(?:import-agent-package|copy-agent|agent-import-operations)$/u.test(pathname) ||
       /^\/api\/projects\/[^/]+\/message-deliveries\/[^/]+\/(?:retry|cancel)$/u.test(pathname) ||
       /^\/api\/projects\/[^/]+\/triggers$/u.test(pathname) ||
       /^\/api\/triggers\/[^/]+(?:\/(?:rotate-secret|allow-runs))?$/u.test(pathname) ||
@@ -400,9 +404,18 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   }
   const deletingProjectIds = new Set(store.listPendingProjectDeletions().map((entry) => entry.projectId));
   const deletingAgentIds = new Set<string>([...deletingProjectIds].flatMap((projectId) =>
-    store.listAgents(projectId).map((agent) => agent.id)));
-  const deletingConversationIds = new Set<string>();
+    store.listAgents(projectId, { includePendingCreation: true }).map((agent) => agent.id)));
+  for (const operation of store.listRecoverableAgentCreationOperations()) {
+    for (const agentId of operation.agentIds) deletingAgentIds.add(agentId);
+  }
+  const deletingConversationIds = new Set(
+    store.listPendingConversationDeletionReceipts().map((receipt) => receipt.conversationId),
+  );
   const agentCreationConversationLeases = new Map<string, number>();
+  const conversationDeliveryLeases = new Map<string, number>();
+  const agentDeliveryLeases = new Map<string, number>();
+  const deletingAttachmentKeys = new Set<string>();
+  const reconcilingAssetAgentIds = new Set<string>();
   const contextCursors = new ContextCursorStore(opts.dataDir);
   const {
     browserScopeForRun,
@@ -432,8 +445,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     managedWorkspacesRoot,
     allowedBrowseRoots: opts.allowedBrowseRoots,
   });
-  const drafts = new DraftService(opts.dataDir, store, workspace);
-  const draftAttachmentSurfaceDir = (draftId: string) => drafts.surfaceDir(draftId);
+  const drafts = new DraftService(opts.dataDir, store, workspace, assets);
   const agentMessageCapabilities = new Map<string, AgentMessageCapability>();
   // An agent can request rollover while its capability is live. The reset is
   // applied only after the turn ends, so it never destroys an in-flight session.
@@ -660,6 +672,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     },
   }) as unknown as PonderosaServer;
   app.setErrorHandler((error, request, reply) => {
+    if (error instanceof ProjectDeletionInProgressError) {
+      return reply.code(409).send({ error: error.message });
+    }
     if (!(error instanceof ProviderAdapterBoundaryError)) throw error;
     request.log.error({
       providerError: restrictedProviderExceptionLogDetail(error),
@@ -736,6 +751,10 @@ app.server.on("upgrade", linkPreviewUpgrade);
     scheduledSessionRollovers,
     contextRolloverPending,
     deletingAgentIds,
+    agentDeliveryLeases,
+    agentAttachmentDeletionInProgress: agentId => [...deletingAttachmentKeys]
+      .some((key) => key.startsWith(`${agentId}\0`)),
+    reconcilingAssetAgentIds,
     contextCursors,
     appendWorkspace,
     publishWorkspaceSince,
@@ -744,7 +763,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     teardownPersistentRuntime,
     drainProviderRuntimeAuthority,
     drainEngineCapabilityDiscoveries,
-    draftAttachmentSurfaceDir,
+    drafts,
     refreshTriggerSources: () => triggerSources.refresh(),
     notifyScheduler: () => coordinationV3Scheduler.notify(),
     createOperationalNotification,
@@ -753,6 +772,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     browserProfiles,
     closeAgentBrowsers,
     workingCopies,
+    assets,
   });
   const coordinationV3Scheduler = createCoordinationScheduler(app, {
     opts,
@@ -762,6 +782,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     workspace,
     activeRuns,
     runtimeAuthorities,
+    deletingAgentIds,
     engines,
     runtimeStatus,
     agentMessageCapabilities,
@@ -840,10 +861,21 @@ app.server.on("upgrade", linkPreviewUpgrade);
   });
   const webhookRawBodies = registerBodyParsers(app);
 
-  const { reconcileRuntimeCommunicationProjections } = createCommunicationProjectionReconciler({
+  const {
+    reconcileConversationRuntimeCommunicationProjections,
+    reconcileRuntimeCommunicationProjections,
+  } = createCommunicationProjectionReconciler({
     store,
     coordinationV3,
     assets,
+    projectDeletionInProgress: projectId => deletingProjectIds.has(projectId),
+    agentDeletionInProgress: agentId => deletingAgentIds.has(agentId),
+    conversationDeletionInProgress: conversationId => deletingConversationIds.has(conversationId),
+    attachmentDeletionInProgress: (agentId, attachmentId) =>
+      deletingAttachmentKeys.has(`${agentId}\0${attachmentId}`),
+    assetReconciliationInProgress: agentId => reconcilingAssetAgentIds.has(agentId),
+    conversationDeliveryLeases,
+    agentDeliveryLeases,
     recordCommunication,
     projectCommunicationArtifact,
     communicationArtifactAccess,
@@ -852,6 +884,20 @@ app.server.on("upgrade", linkPreviewUpgrade);
     logInfo: (meta, message) => app.log.info(meta, message),
     projectCommunicationToAgentAudit: (agentId, event, renderedText, attachments) =>
       projectCommunicationToAgentAudit(agentId, event, renderedText, attachments),
+  });
+  const { processConversationDeletionCleanup } = createConversationDeletionAuthority({
+    store,
+    workspace,
+    drafts,
+    deletingConversationIds,
+    agentCreationConversationLeases,
+    conversationDeliveryLeases,
+    reconcileConversationRuntimeCommunicationProjections,
+    commitAgentDeletion,
+    purgeCommunicationV4Conversation: conversationId =>
+      coordinationV3.purgeCommunicationV4Conversation(conversationId),
+    refreshTriggerSources: () => triggerSources.refresh(),
+    publishWorkspace,
   });
 
   registerRequestSecurityHooks(app, {
@@ -870,6 +916,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     opts,
     store,
     assets,
+    drafts,
     coordinationV3,
     workspace,
     reconcileCommittedProjectDeletions,
@@ -879,6 +926,11 @@ app.server.on("upgrade", linkPreviewUpgrade);
     activeRuns,
     runtimeAuthorities,
     agentMessageCapabilities,
+    agentDeliveryLeases,
+    deletingAgentIds,
+    attachmentDeletionInProgress: agentId => [...deletingAttachmentKeys]
+      .some((key) => key.startsWith(`${agentId}\0`)),
+    reconcilingAssetAgentIds,
     projectBrowserGrants,
     browserSessions,
     projectBrowserSessions,
@@ -887,6 +939,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     coordinationV3Scheduler,
     triggerSources,
     processAgentDeletionCleanup,
+    processConversationDeletionCleanup,
     reconcileRuntimeCommunicationProjections,
     retireCompletedContextRolloverSession,
     clearRunLeaseTimer,
@@ -951,6 +1004,9 @@ app.server.on("upgrade", linkPreviewUpgrade);
     managementPlans,
     deletingAgentIds,
     deletingProjectIds,
+    deletingConversationIds,
+    conversationDeliveryLeases,
+    agentDeliveryLeases,
     cachedModelOptions,
     publicManagementOperations,
     commitAgentDeletion,
@@ -1047,6 +1103,8 @@ app.server.on("upgrade", linkPreviewUpgrade);
     cancelAgentDecisions,
     awaitProjectDeletionBarrier,
     commitAgentDeletion,
+    processAgentDeletionCleanup,
+    processConversationDeletionCleanup,
     contextCursors,
     browserScopeForRun,
     browserProfiles,
@@ -1059,7 +1117,6 @@ app.server.on("upgrade", linkPreviewUpgrade);
     managedWorkspacesRoot,
     projectFolderPathBoundary,
     drafts,
-    draftAttachmentSurfaceDir,
     agentMessageCapabilities,
     scheduledSessionRollovers,
     contextRolloverPending,
@@ -1070,6 +1127,12 @@ app.server.on("upgrade", linkPreviewUpgrade);
     deletingAgentIds,
     deletingConversationIds,
     agentCreationConversationLeases,
+    conversationDeliveryLeases,
+    agentDeliveryLeases,
+    deletingAttachmentKeys,
+    reconcilingAssetAgentIds,
+    agentAttachmentDeletionInProgress: agentId => [...deletingAttachmentKeys]
+      .some((key) => key.startsWith(`${agentId}\0`)),
     rejectQuarantinedTriggerMutation,
     projectDeletionInFlightIds,
     communicationReconciliation,
@@ -1131,6 +1194,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     validateEngineModel,
     triggerSources,
     webhookRawBodies,
+    reconcileConversationRuntimeCommunicationProjections,
     reconcileRuntimeCommunicationProjections,
     notifyManagerOfChildFailure,
     projectBroadcastToAgentAudits,

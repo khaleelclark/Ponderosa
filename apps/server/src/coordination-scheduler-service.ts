@@ -24,6 +24,7 @@ import {
   CoordinationV3Scheduler,
 } from "./coordination-v3-scheduler.js";
 import type { createCommunicationArtifactAuthority } from "./communication-artifacts.js";
+import { appendReadableArtifactReferences } from "./communication-artifacts.js";
 import {
   applyQueuedMessageChangeOutbox,
   type QueuedEditRevisionOutboxPayload,
@@ -171,6 +172,7 @@ interface CoordinationSchedulerContext {
   workspace: WorkspaceStore;
   activeRuns: Map<string, ActiveRun>;
   runtimeAuthorities: Map<string, AgentRuntimeAuthority>;
+  deletingAgentIds: ReadonlySet<string>;
   engines: ReadonlyMap<string, EngineRegistration>;
   runtimeStatus(
     id: string,
@@ -219,6 +221,7 @@ export function createCoordinationScheduler(
     workspace,
     activeRuns,
     runtimeAuthorities,
+    deletingAgentIds,
     engines,
     runtimeStatus,
     agentMessageCapabilities,
@@ -327,6 +330,7 @@ return new CoordinationV3Scheduler(
       },
       payload: {
         text: dispatchText,
+        ...(typeof dispatch?.engine === "string" ? { engine: dispatch.engine } : {}),
         ...(typeof dispatch?.model === "string" ? { model: dispatch.model } : {}),
         ...(typeof dispatch?.effort === "string" ? { effort: dispatch.effort } : {}),
         ...(typeof dispatch?.speed === "string"
@@ -445,12 +449,25 @@ return new CoordinationV3Scheduler(
         }
       }
       signal.throwIfAborted();
-      return compileActivationPrompt(lease, {
+      const compilation = compileActivationPrompt(lease, {
         maxUtf8Bytes: AUTOMATIC_RESULT_PROVIDER_PACKET_UTF8_LIMIT,
         signal,
         deadlineAt,
         resolveResultArtifacts: activation => materials.get(activation.id) ?? [],
       });
+      // Steering bypasses ordinary Run preparation. Resolve its references
+      // before the scheduler records the exact injection, too.
+      const prompt = appendReadableArtifactReferences({
+        prompt: compilation.prompt, projectId: lease.projectId,
+        agentId: lease.agentId, store, assets,
+      });
+      signal.throwIfAborted();
+      if (Buffer.byteLength(prompt, "utf8") > AUTOMATIC_RESULT_PROVIDER_PACKET_UTF8_LIMIT) {
+        throw new ActivationPromptCompilationError({
+          code: "activation_payload_too_large", activation: lease.activations[0]!,
+        });
+      }
+      return { ...compilation, prompt };
     },
     dispatchProviderOperation: async (operation) => {
       const entry = [...activeRuns.entries()].find(([, run]) => run.runId === operation.runId);
@@ -552,6 +569,7 @@ return new CoordinationV3Scheduler(
         ...[...runtimeAuthorities].flatMap(([agentId, authority]) =>
           authority.opening || authority.closing || authority.oneShots.size > 0 ? [agentId] : []),
         ...activeRuns.keys(),
+        ...deletingAgentIds,
       ])];
     },
     onRunLeased: () => { reconcileTriggerOperationalNotifications(); },

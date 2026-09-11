@@ -222,6 +222,14 @@ export class AgentArtifactCatalog {
       managedArtifactsLogPath(this.dataDir, projectId),
       `managed artifacts for project ${projectId}`,
     )) {
+      if (!["created", "visibility", "deleted"].includes(event.type)) {
+        throw new Error(`managed artifact record does not belong to Project ${projectId}`);
+      }
+      const artifactId = event.type === "created" ? event.artifact.id : event.artifactId;
+      if (typeof artifactId !== "string" || !artifactId || artifactId.length > 200 ||
+          (event.type === "created" && event.artifact.projectId !== projectId)) {
+        throw new Error(`managed artifact record does not belong to Project ${projectId}`);
+      }
       this.projectManagedArtifactEvent(projectId, event);
     }
   }

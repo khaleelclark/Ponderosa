@@ -21,6 +21,7 @@ import {
 import type {
   AgentMentionBindingDto,
   AssetLimitsDto,
+  ConversationDraftConflictDto,
   EngineCommand,
   EngineComposerCapability,
   ArtifactDto,
@@ -44,19 +45,31 @@ export function ComposerNotices({
   pastedText,
   pastedTextBytes,
   error,
-  displacedDraft,
+  draftConflict,
+  failedDraftContents,
   onShowPastedText,
   onRemovePastedText,
   onRestoreDraft,
+  onDiscardDraft,
+  restoringDraft,
+  mutationLocked,
+  onRetryDraftContent,
+  onRemoveDraftContent,
   onClearError,
 }: {
   pastedText?: string;
   pastedTextBytes: number;
   error?: string;
-  displacedDraft?: string;
+  draftConflict?: ConversationDraftConflictDto;
+  failedDraftContents: Array<{ id: string; name: string }>;
   onShowPastedText(): void;
   onRemovePastedText(): void;
   onRestoreDraft(): void;
+  onDiscardDraft(): void;
+  restoringDraft: boolean;
+  mutationLocked: boolean;
+  onRetryDraftContent(id: string): void;
+  onRemoveDraftContent(id: string): void;
   onClearError(): void;
 }): JSX.Element {
   return (
@@ -80,17 +93,19 @@ export function ComposerNotices({
               Pasted text
             </Typography>
             <Button
+              disabled={mutationLocked}
               size="small"
               sx={{ p: 0, minWidth: 0, textTransform: "none" }}
               onClick={onShowPastedText}
             >
-              Show in Text Field
+              View or edit
             </Button>
           </Box>
           <Typography variant="caption" color="text.secondary">
             {pastedTextBytes.toLocaleString()} bytes
           </Typography>
           <IconButton
+            disabled={mutationLocked}
             size="small"
             aria-label="Remove pasted text"
             onClick={onRemovePastedText}
@@ -104,18 +119,55 @@ export function ComposerNotices({
           Message not sent. {error}
         </Alert>
       ) : null}
-      {displacedDraft ? (
+      {failedDraftContents.map(item => (
+        <Alert
+          key={item.id}
+          severity="warning"
+          sx={{ mb: 1 }}
+          action={
+            <Stack direction="row" spacing={0.5}>
+              <Button size="small" disabled={mutationLocked} onClick={() => onRetryDraftContent(item.id)}>
+                Retry
+              </Button>
+              <Button size="small" disabled={mutationLocked} onClick={() => onRemoveDraftContent(item.id)}>
+                Remove
+              </Button>
+            </Stack>
+          }
+        >
+          {item.name} could not be restored from this draft.
+        </Alert>
+      ))}
+      {draftConflict ? (
         <Alert
           severity="warning"
           sx={{ mb: 1 }}
           action={
-            <Button size="small" onClick={onRestoreDraft}>
-              Restore
-            </Button>
+            <Stack direction="row" spacing={0.5}>
+              <Button size="small" disabled={restoringDraft || mutationLocked} onClick={onDiscardDraft}>
+                Discard
+              </Button>
+              <Button size="small" disabled={restoringDraft || mutationLocked} onClick={onRestoreDraft}>
+                {restoringDraft ? "Working…" : "Restore"}
+              </Button>
+            </Stack>
           }
         >
-          This draft changed elsewhere. Your displaced text is preserved: “
-          {compactPreviewText(displacedDraft)}”
+          This draft changed elsewhere. Your version is preserved.
+          {draftConflict.displaced.text
+            ? ` Text: “${compactPreviewText(draftConflict.displaced.text)}”`
+            : ""}
+          {draftConflict.displaced.pastedTextAttachmentId
+            ? " It includes pasted text."
+            : ""}
+          {draftConflict.displaced.attachmentIds.length > 0
+            ? ` It includes ${draftConflict.displaced.attachmentIds.length} attachment${draftConflict.displaced.attachmentIds.length === 1 ? "" : "s"}.`
+            : ""}
+          {!draftConflict.displaced.text &&
+          !draftConflict.displaced.pastedTextAttachmentId &&
+          draftConflict.displaced.attachmentIds.length === 0
+            ? " It is an empty draft."
+            : ""}
         </Alert>
       ) : null}
     </>

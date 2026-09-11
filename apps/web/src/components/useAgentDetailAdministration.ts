@@ -4,6 +4,7 @@ import type {
   ConversationDetailDto,
 } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useRef } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import { useMutationNotification } from "./MutationNotifications";
@@ -37,6 +38,8 @@ export function useAgentDetailAdministration({
 }: AgentDetailAdministrationInput) {
   const queryClient = useQueryClient();
   const notify = useMutationNotification();
+  const currentAgentId = useRef(agentId);
+  currentAgentId.current = agentId;
   const rename = useMutation({
     mutationFn: (title: string) => api.updateAgent(agentId, { title }),
     onSuccess: updated => {
@@ -116,9 +119,10 @@ export function useAgentDetailAdministration({
         model: settingsModel || null,
         effort: settingsEffort || null,
       }),
-    onSuccess: updated => {
+    onMutate: () => ({ agentId }),
+    onSuccess: (updated, _variables, context) => {
       queryClient.setQueriesData<AgentDetailDto>(
-        { queryKey: queryKeys.agents.detailPrefix(agentId) },
+        { queryKey: queryKeys.agents.detailPrefix(updated.id) },
         current => (current ? { ...current, agent: updated } : current),
       );
       queryClient.setQueriesData<AgentDto[]>(
@@ -138,12 +142,18 @@ export function useAgentDetailAdministration({
               }
             : current,
       );
-      onRuntimeSettingsNotice(
-        "Saved. These runtime settings apply when the next Run starts.",
-      );
-      notify({ key: `agent-runtime:${agentId}`, message: "Agent defaults saved." });
+      if (currentAgentId.current === context.agentId) {
+        onRuntimeSettingsNotice(
+          "Saved. These runtime settings apply when the next Run starts.",
+        );
+      }
+      notify({ key: `agent-runtime:${updated.id}`, message: "Agent defaults saved." });
     },
-    onError: () => onRuntimeSettingsNotice(undefined),
+    onError: (_error, _variables, context) => {
+      if (currentAgentId.current === context?.agentId) {
+        onRuntimeSettingsNotice(undefined);
+      }
+    },
   });
 
   return {

@@ -22,7 +22,7 @@ import {
 } from "@mui/material";
 import type { EngineDto, ProjectDto, ProjectEngineModelCatalogDto, WorkspacePreferencesDto } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import {
   effortOptionsForModel,
@@ -54,6 +54,10 @@ import {
   RuntimeSettings,
 } from "./RuntimeSettings";
 import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
+import {
+  draftChangedSinceSubmission,
+  synchronizePristineDraft,
+} from "./settingsDrafts";
 
 const GLOBAL_AGENT_INSTRUCTIONS_LABEL = "Global Agent Instructions";
 const GLOBAL_AGENT_INSTRUCTIONS_HELPER_TEXT =
@@ -111,6 +115,7 @@ function GeneralSettingsSection({
   agentDefaultsSaveError,
   onRolloverTokens,
   onRolloverFraction,
+  onSaveRollover,
 }: {
   preferences: WorkspacePreferencesDto;
   colorMode: ColorMode;
@@ -128,6 +133,7 @@ function GeneralSettingsSection({
   agentDefaultsSaveError?: string;
   onRolloverTokens(value: string): void;
   onRolloverFraction(value: string): void;
+  onSaveRollover(tokens: number, fraction: number): void;
 }): JSX.Element {
   const parsedRolloverTokens = Number(rolloverTokens);
   const parsedRolloverFraction = Number(rolloverFraction);
@@ -268,12 +274,10 @@ function GeneralSettingsSection({
             variant="contained"
             sx={{ alignSelf: "flex-start" }}
             disabled={!rolloverValuesValid}
-            onClick={() =>
-              onPreferences({
-                contextRolloverTokens: parsedRolloverTokens,
-                contextRolloverWindowFraction: parsedRolloverFraction,
-              })
-            }
+            onClick={() => onSaveRollover(
+              parsedRolloverTokens,
+              parsedRolloverFraction,
+            )}
           >
             Save Rollover Limits
           </Button>
@@ -389,6 +393,7 @@ function ClaudeModelOptionsSettings({
 }): JSX.Element {
   const [modelId, setModelId] = useState("");
   const [validationError, setValidationError] = useState<string>();
+  const [validationRequestError, setValidationRequestError] = useState<string>();
   const queryClient = useQueryClient();
   const normalizedId = modelId.trim();
   const configured = engine.configuredModels ?? [];
@@ -400,7 +405,18 @@ function ClaudeModelOptionsSettings({
   const addModel = async () => {
     if (!projectId || !normalizedId || idAlreadyExists) return;
     setValidationError(undefined);
-    const result = await validateModel.mutateAsync();
+    setValidationRequestError(undefined);
+    let result;
+    try {
+      result = await validateModel.mutateAsync();
+    } catch (error) {
+      setValidationRequestError(
+        error instanceof Error
+          ? error.message
+          : "The model could not be validated.",
+      );
+      return;
+    }
     if (!result.valid) {
       setValidationError(result.error);
       return;
@@ -503,7 +519,11 @@ function ClaudeModelOptionsSettings({
             fullWidth
             label="Model id"
             value={modelId}
-            onChange={event => setModelId(event.target.value)}
+            onChange={event => {
+              setModelId(event.target.value);
+              setValidationError(undefined);
+              setValidationRequestError(undefined);
+            }}
             helperText={
               idAlreadyExists
                 ? "This model id is already available."
@@ -521,6 +541,14 @@ function ClaudeModelOptionsSettings({
           </Button>
         </Stack>
         {validationError ? <Alert severity="error">{validationError}</Alert> : null}
+        {validationRequestError ? (
+          <Alert
+            severity="error"
+            action={<Button color="inherit" size="small" onClick={() => void addModel()}>Retry</Button>}
+          >
+            Model validation failed. {validationRequestError}
+          </Alert>
+        ) : null}
         {!projectId ? (
           <Alert severity="info">Create a Project before validating a Claude model.</Alert>
         ) : null}
@@ -533,6 +561,7 @@ function ProviderSettingsSection({
   preferences,
   engines,
   updatePending,
+  updateError,
   validationProjectId,
   modelCatalogLoading,
   recheckEngineId,
@@ -540,11 +569,13 @@ function ProviderSettingsSection({
   recheckError,
   onPreferences,
   onToggleEngine,
+  onRetryToggleEngine,
   onRecheckEngine,
 }: {
   preferences: WorkspacePreferencesDto;
   engines: EngineDto[];
   updatePending: boolean;
+  updateError?: string;
   validationProjectId?: string;
   modelCatalogLoading: boolean;
   recheckEngineId?: string;
@@ -552,6 +583,7 @@ function ProviderSettingsSection({
   recheckError?: string;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onToggleEngine(engineId: string, enabled: boolean): void;
+  onRetryToggleEngine(): void;
   onRecheckEngine(engineId: string): void;
 }): JSX.Element {
   const usageProviders = engines.filter(engine =>
@@ -566,6 +598,14 @@ function ProviderSettingsSection({
     : usageProviders.find(engine => engine.enabled !== false)?.id;
   return (
     <Stack spacing={2}>
+      {updateError ? (
+        <Alert
+          severity="error"
+          action={<Button color="inherit" size="small" onClick={onRetryToggleEngine}>Retry</Button>}
+        >
+          Provider setting was not saved. {updateError}
+        </Alert>
+      ) : null}
       {engines.length === 0 ? (
         <Alert severity="info">
           No AI providers are registered yet. Install and authenticate Codex or
@@ -776,6 +816,7 @@ export function WorkspaceSettingsView({
   colorMode,
   onToggleColorMode,
   onPreferences,
+  onSavePreferences,
   section = "general",
   activityProjectId,
 }: {
@@ -785,6 +826,9 @@ export function WorkspaceSettingsView({
   colorMode: ColorMode;
   onToggleColorMode(): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
+  onSavePreferences(
+    patch: Partial<WorkspacePreferencesDto>,
+  ): Promise<WorkspacePreferencesDto>;
   section?: "general" | "providers" | "notifications" | "activity";
   activityProjectId?: string;
 }): JSX.Element {
@@ -809,6 +853,14 @@ export function WorkspaceSettingsView({
   const [rolloverFraction, setRolloverFraction] = useState(
     String(preferences.contextRolloverWindowFraction),
   );
+  const [instructionsDirty, setInstructionsDirty] = useState(false);
+  const [limitDirty, setLimitDirty] = useState(false);
+  const [rolloverTokensDirty, setRolloverTokensDirty] = useState(false);
+  const [rolloverFractionDirty, setRolloverFractionDirty] = useState(false);
+  const instructionsRef = useRef(instructions);
+  const limitRef = useRef(limit);
+  instructionsRef.current = instructions;
+  limitRef.current = limit;
   const [pushState, setPushState] = useState<WebPushState>({
     kind: "permission_default",
     message: "Checking browser push status…",
@@ -829,16 +881,33 @@ export function WorkspaceSettingsView({
     };
   }, []);
   useEffect(() => {
-    setInstructions(preferences.globalInstructions);
-    setLimit(String(preferences.maxConcurrentAgentRuns));
-    setRolloverTokens(String(preferences.contextRolloverTokens));
-    setRolloverFraction(String(preferences.contextRolloverWindowFraction));
-  }, [
-    preferences.contextRolloverTokens,
-    preferences.contextRolloverWindowFraction,
-    preferences.globalInstructions,
-    preferences.maxConcurrentAgentRuns,
-  ]);
+    setInstructions(current => synchronizePristineDraft(
+      current,
+      preferences.globalInstructions,
+      instructionsDirty,
+    ));
+  }, [instructionsDirty, preferences.globalInstructions]);
+  useEffect(() => {
+    setLimit(current => synchronizePristineDraft(
+      current,
+      String(preferences.maxConcurrentAgentRuns),
+      limitDirty,
+    ));
+  }, [limitDirty, preferences.maxConcurrentAgentRuns]);
+  useEffect(() => {
+    setRolloverTokens(current => synchronizePristineDraft(
+      current,
+      String(preferences.contextRolloverTokens),
+      rolloverTokensDirty,
+    ));
+  }, [preferences.contextRolloverTokens, rolloverTokensDirty]);
+  useEffect(() => {
+    setRolloverFraction(current => synchronizePristineDraft(
+      current,
+      String(preferences.contextRolloverWindowFraction),
+      rolloverFractionDirty,
+    ));
+  }, [preferences.contextRolloverWindowFraction, rolloverFractionDirty]);
   const updateEngine = useMutation({
     mutationFn: ({
       engineId,
@@ -862,12 +931,16 @@ export function WorkspaceSettingsView({
     mutationFn: (patch: {
       globalInstructions: string;
       maxConcurrentAgentRuns: number;
-    }) => api.updateWorkspacePreferences(patch),
-    onSuccess: updated => {
-      queryClient.setQueryData<WorkspacePreferencesDto>(
-        queryKeys.workspacePreferences.all,
-        updated,
-      );
+    }) => onSavePreferences(patch),
+    onSuccess: (_preferences, submitted) => {
+      setInstructionsDirty(draftChangedSinceSubmission(
+        instructionsRef.current,
+        submitted.globalInstructions,
+      ));
+      setLimitDirty(draftChangedSinceSubmission(
+        limitRef.current,
+        String(submitted.maxConcurrentAgentRuns),
+      ));
     },
   });
   useEffect(() => {
@@ -901,10 +974,12 @@ export function WorkspaceSettingsView({
             onPreferences={onPreferences}
             onInstructions={value => {
               saveAgentDefaults.reset();
+              setInstructionsDirty(true);
               setInstructions(value);
             }}
             onLimit={value => {
               saveAgentDefaults.reset();
+              setLimitDirty(true);
               setLimit(value);
             }}
             onSaveAgentDefaults={() =>
@@ -923,8 +998,22 @@ export function WorkspaceSettingsView({
                   : "Agent defaults could not be saved."
                 : undefined
             }
-            onRolloverTokens={setRolloverTokens}
-            onRolloverFraction={setRolloverFraction}
+            onRolloverTokens={value => {
+              setRolloverTokensDirty(true);
+              setRolloverTokens(value);
+            }}
+            onRolloverFraction={value => {
+              setRolloverFractionDirty(true);
+              setRolloverFraction(value);
+            }}
+            onSaveRollover={(tokens, fraction) => {
+              onPreferences({
+                contextRolloverTokens: tokens,
+                contextRolloverWindowFraction: fraction,
+              });
+              setRolloverTokensDirty(false);
+              setRolloverFractionDirty(false);
+            }}
           />
         ) : null}
         {section === "notifications" ? (
@@ -942,6 +1031,13 @@ export function WorkspaceSettingsView({
             preferences={preferences}
             engines={settingsEngines}
             updatePending={updateEngine.isPending}
+            updateError={
+              updateEngine.isError
+                ? updateEngine.error instanceof Error
+                  ? updateEngine.error.message
+                  : "The provider could not be updated."
+                : undefined
+            }
             validationProjectId={validationProject?.id}
             modelCatalogLoading={modelCatalogQuery.isLoading}
             recheckEngineId={recheckEngine.variables}
@@ -959,6 +1055,9 @@ export function WorkspaceSettingsView({
             onToggleEngine={(engineId, enabled) =>
               updateEngine.mutate({ engineId, enabled })
             }
+            onRetryToggleEngine={() => {
+              if (updateEngine.variables) updateEngine.mutate(updateEngine.variables);
+            }}
             onRecheckEngine={engineId => recheckEngine.mutate(engineId)}
           />
         ) : null}

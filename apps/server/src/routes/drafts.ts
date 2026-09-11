@@ -1,11 +1,23 @@
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { AgentStore, WorkspaceStore } from "@ponderosa/agents";
+import {
+  draftRevisionConflicts,
+  type AgentStore,
+  type WorkspaceStore,
+} from "@ponderosa/agents";
 import type {
   AssetDto,
+  ConversationDraftConflictDto,
+  ConversationDraftDto,
   DraftAttachmentDto,
   PutConversationDraftRequest,
+  ResolveConversationDraftConflictResponse,
+  RestoreConversationDraftConflictRequest,
+} from "@ponderosa/core";
+import {
+  INLINE_TEXT_MAX_CODE_POINTS,
+  unicodeCodePointLength,
 } from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
 import {
@@ -13,8 +25,11 @@ import {
   AssetError,
   contentDisposition,
   prepareAssetUpload,
+  writeAtomic,
+  type AssetStore,
   type PreparedAssetUpload,
 } from "../assets.js";
+import { RUNTIME_UUID } from "../asset-contracts.js";
 
 interface StoredDraftAttachment
   extends Omit<DraftAttachmentDto, "downloadUrl" | "mediaType" | "ownerId"> {
@@ -27,10 +42,221 @@ interface StoredDraftAttachment
   previewSha256?: string;
 }
 
+const DRAFT_UPDATE_FIELDS = new Set([
+  "text",
+  "attachmentIds",
+  "pastedTextAttachmentId",
+  "mentionBindings",
+  "pendingSubmission",
+  "expectedRevision",
+  "clientId",
+  "ownerId",
+]);
+const DRAFT_ORPHAN_GRACE_MS = 5 * 60 * 1000;
+
+const validPendingMentionBinding = (value: unknown): boolean => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const binding = value as Record<string, unknown>;
+  return !Object.keys(binding).some(key => ![
+    "agentId", "handle", "projectId", "currentHandle", "currentTitle",
+  ].includes(key)) && [
+    binding.agentId, binding.handle, binding.projectId, binding.currentHandle, binding.currentTitle,
+  ].every(field => typeof field === "string" && field.trim() && field.length <= 300);
+};
+
+export function draftUpdateBodyError(
+  value: unknown,
+  maxAttachmentsPerMessage: number,
+): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return "draft update must be an object";
+  }
+  const body = value as Record<string, unknown>;
+  const unknownKey = Object.keys(body).find(
+    key => !DRAFT_UPDATE_FIELDS.has(key),
+  );
+  if (unknownKey) return `unknown draft field: ${unknownKey}`;
+  if (
+    typeof body.text !== "string" ||
+    unicodeCodePointLength(body.text) > INLINE_TEXT_MAX_CODE_POINTS
+  ) {
+    return `draft text must be a string of at most ${INLINE_TEXT_MAX_CODE_POINTS} characters`;
+  }
+  if (
+    typeof body.clientId !== "string" ||
+    !body.clientId.trim() ||
+    body.clientId.length > 200
+  ) {
+    return "draft clientId must be a non-empty string of at most 200 characters";
+  }
+  if (
+    !Number.isSafeInteger(body.expectedRevision) ||
+    Number(body.expectedRevision) < 0
+  ) {
+    return "draft expectedRevision must be a non-negative safe integer";
+  }
+  if (
+    !Array.isArray(body.attachmentIds) ||
+    body.attachmentIds.length > maxAttachmentsPerMessage ||
+    body.attachmentIds.some(id =>
+      typeof id !== "string" || !RUNTIME_UUID.test(id)) ||
+    new Set(body.attachmentIds).size !== body.attachmentIds.length
+  ) {
+    return `at most ${maxAttachmentsPerMessage} unique draft attachment UUIDs are allowed`;
+  }
+  if (
+    body.pastedTextAttachmentId !== undefined &&
+    (typeof body.pastedTextAttachmentId !== "string" ||
+      !RUNTIME_UUID.test(body.pastedTextAttachmentId))
+  ) {
+    return "draft pasted-text attachment must be a UUID";
+  }
+  if (
+    body.pastedTextAttachmentId !== undefined &&
+    body.attachmentIds.includes(body.pastedTextAttachmentId)
+  ) {
+    return "draft pasted-text attachment must be distinct from file attachments";
+  }
+  if (body.pendingSubmission !== undefined) {
+    if (!body.pendingSubmission || typeof body.pendingSubmission !== "object" ||
+        Array.isArray(body.pendingSubmission)) return "invalid pending draft submission";
+    const pending = body.pendingSubmission as Record<string, unknown>;
+    if (Object.keys(pending).some(key => ![
+      "fingerprint", "intentFingerprint", "idempotencyKey", "request", "draftAttachmentIds",
+      "editableDraftAttachmentIds", "pastedTextAttachmentId", "editablePastedTextAttachmentId",
+      "agentTitle", "agentCreationCommitted", "uploads",
+    ].includes(key)) ||
+        typeof pending.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(pending.fingerprint) ||
+        (pending.intentFingerprint !== undefined &&
+          (typeof pending.intentFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(pending.intentFingerprint))) ||
+        typeof pending.idempotencyKey !== "string" || !pending.idempotencyKey.trim() ||
+        pending.idempotencyKey.length > 200 ||
+        [pending.draftAttachmentIds, pending.editableDraftAttachmentIds].some(ids =>
+          ids !== undefined && (!Array.isArray(ids) || ids.length > maxAttachmentsPerMessage ||
+            ids.some(id => typeof id !== "string" || !RUNTIME_UUID.test(id)) ||
+            new Set(ids).size !== ids.length)) ||
+        [pending.pastedTextAttachmentId, pending.editablePastedTextAttachmentId].some(id =>
+          id !== undefined && (typeof id !== "string" || !RUNTIME_UUID.test(id))) ||
+        (pending.request !== undefined && (() => {
+          if (!pending.request || typeof pending.request !== "object" || Array.isArray(pending.request)) return true;
+          const route = pending.request as Record<string, unknown>;
+          if (Object.keys(route).some(key => ![
+            "conversationId", "recipientAgentIds", "mentionBindings", "broadcastAttachmentOwnerAgentId", "runtime",
+          ].includes(key)) ||
+              (route.conversationId !== undefined &&
+                (typeof route.conversationId !== "string" || !route.conversationId || route.conversationId.length > 200)) ||
+              (route.broadcastAttachmentOwnerAgentId !== undefined &&
+                (typeof route.broadcastAttachmentOwnerAgentId !== "string" || !route.broadcastAttachmentOwnerAgentId ||
+                  route.broadcastAttachmentOwnerAgentId.length > 200)) ||
+              !Array.isArray(route.recipientAgentIds) || route.recipientAgentIds.length > 100 ||
+              route.recipientAgentIds.some(id => typeof id !== "string" || !id || id.length > 200) ||
+              new Set(route.recipientAgentIds).size !== route.recipientAgentIds.length ||
+              !route.runtime || typeof route.runtime !== "object" || Array.isArray(route.runtime)) return true;
+          const runtime = route.runtime as Record<string, unknown>;
+          if (Object.keys(runtime).some(key => ![
+            "activeRunDelivery", "engine", "model", "effort", "speed",
+          ].includes(key)) ||
+              (runtime.activeRunDelivery !== "steer" && runtime.activeRunDelivery !== "queue") ||
+              [runtime.engine, runtime.model, runtime.effort, runtime.speed].some(value =>
+                value !== undefined && (typeof value !== "string" || value.length > 200))) return true;
+          if (route.mentionBindings === undefined) return false;
+          if (!Array.isArray(route.mentionBindings) || route.mentionBindings.length > 100) return true;
+          return route.mentionBindings.some(binding => !validPendingMentionBinding(binding));
+        })()) ||
+        (pending.agentTitle !== undefined &&
+          (pending.intentFingerprint === undefined ||
+            typeof pending.agentTitle !== "string" || !pending.agentTitle.trim() ||
+            unicodeCodePointLength(pending.agentTitle) > 200)) ||
+        (pending.agentCreationCommitted !== undefined &&
+          pending.agentCreationCommitted !== true)) return "invalid pending draft submission";
+    if (pending.uploads !== undefined &&
+        (!Array.isArray(pending.uploads) || pending.uploads.length > 4 ||
+          pending.uploads.some(value => {
+            if (!value || typeof value !== "object" || Array.isArray(value)) return true;
+            const upload = value as Record<string, unknown>;
+            if (Object.keys(upload).some(key => !["scope", "recipients"].includes(key)) ||
+                typeof upload.scope !== "string" || !upload.scope || upload.scope.length > 100 ||
+                !Array.isArray(upload.recipients) || upload.recipients.length > 100) return true;
+            return upload.recipients.some(value => {
+              if (!value || typeof value !== "object" || Array.isArray(value)) return true;
+              const recipient = value as Record<string, unknown>;
+              return Object.keys(recipient).some(key => !["agentId", "attachmentIds"].includes(key)) ||
+                typeof recipient.agentId !== "string" || !recipient.agentId || recipient.agentId.length > 200 ||
+                !Array.isArray(recipient.attachmentIds) ||
+                recipient.attachmentIds.length > maxAttachmentsPerMessage ||
+                recipient.attachmentIds.some(id => typeof id !== "string" || !RUNTIME_UUID.test(id)) ||
+                new Set(recipient.attachmentIds).size !== recipient.attachmentIds.length;
+            });
+          }) ||
+          new Set(pending.uploads.map(value => (value as { scope: string }).scope)).size !==
+            pending.uploads.length ||
+          pending.uploads.some(value => {
+            const recipients = (value as { recipients: Array<{ agentId: string }> }).recipients;
+            return new Set(recipients.map(recipient => recipient.agentId)).size !== recipients.length;
+          }))) return "invalid pending draft submission uploads";
+  }
+  if (body.mentionBindings === undefined) return undefined;
+  if (!Array.isArray(body.mentionBindings) || body.mentionBindings.length > 100) {
+    return "at most 100 draft mention bindings are allowed";
+  }
+  const bindings = body.mentionBindings as unknown[];
+  for (const binding of bindings) {
+    if (!binding || typeof binding !== "object" || Array.isArray(binding)) {
+      return "invalid draft mention binding";
+    }
+    const fields = binding as Record<string, unknown>;
+    if (
+      Object.keys(fields).some(
+        key => ![
+          "agentId",
+          "handle",
+          "projectId",
+          "currentHandle",
+          "currentTitle",
+        ].includes(key),
+      ) ||
+      [
+        fields.agentId,
+        fields.handle,
+        fields.projectId,
+        fields.currentHandle,
+        fields.currentTitle,
+      ].some(
+        field =>
+          typeof field !== "string" ||
+          !field.trim() ||
+          field.length > 300,
+      )
+    ) {
+      return "invalid draft mention binding";
+    }
+  }
+  const typed = bindings as unknown as NonNullable<
+    PutConversationDraftRequest["mentionBindings"]
+  >;
+  if (
+    new Set(typed.map(binding => binding.agentId)).size !== typed.length ||
+    new Set(typed.map(binding => binding.handle.toLocaleLowerCase())).size !==
+      typed.length
+  ) {
+    return "draft mention bindings must be unique";
+  }
+  return undefined;
+}
+
 export class DraftService {
   private readonly root: string;
   private readonly attachmentId = /^[a-f0-9-]{36}$/i;
   private readonly ownerId = /^[A-Za-z0-9_-]{1,128}$/;
+  private readonly mutationTails = new Map<string, Promise<void>>();
+  private readonly mutationLeases = new Map<string, number>();
+  private readonly mutationDrainWaiters = new Map<string, Set<() => void>>();
+  private readonly deletionFences = new Set<string>();
+  private readonly deletionFenceGroups = new Map<string, {
+    ids: string[];
+    ready: Promise<void>;
+    release?: () => void;
+  }>();
 
   constructor(
     dataDir: string,
@@ -40,7 +266,15 @@ export class DraftService {
     >,
     private readonly workspace: Pick<
       WorkspaceStore,
-      "getDraft" | "listDraftConflicts" | "putDraft" | "cursor"
+      "cursor" | "deleteDraft" | "draftRecoveryInventory" | "getDraft" |
+      "listDraftConflicts" | "putDraft"
+    >,
+    private readonly cleanupAuthority: Pick<
+      AssetStore,
+      "enqueueDraftAttachmentCleanup" | "finishDraftAttachmentCleanup" |
+      "pendingDraftAttachmentCleanups" | "releaseDraftAttachment" |
+      "reserveDraftAttachment" | "settleDraftAttachment" |
+      "syncDraftAttachment" | "finishDraftSurfaceCleanup" | "draftSurfaceIds"
     >,
   ) {
     this.root = path.resolve(dataDir, "draft-attachments");
@@ -50,6 +284,321 @@ export class DraftService {
     return typeof value === "string" && this.ownerId.test(value)
       ? value
       : undefined;
+  }
+
+  async withMutationLock<T>(
+    draftId: string,
+    ownerId: string,
+    work: () => Promise<T>,
+  ): Promise<T> {
+    const key = `${draftId}\u0000${ownerId}`;
+    const previous = this.mutationTails.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>(resolve => { release = resolve; });
+    const tail = previous.catch(() => undefined).then(() => current);
+    this.mutationTails.set(key, tail);
+    await previous.catch(() => undefined);
+    try {
+      return await work();
+    } finally {
+      release();
+      if (this.mutationTails.get(key) === tail) this.mutationTails.delete(key);
+    }
+  }
+
+  acquireMutationLease(draftId: string): (() => void) | undefined {
+    if (this.deletionFences.has(draftId)) return undefined;
+    this.mutationLeases.set(draftId, (this.mutationLeases.get(draftId) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const remaining = (this.mutationLeases.get(draftId) ?? 1) - 1;
+      if (remaining > 0) {
+        this.mutationLeases.set(draftId, remaining);
+        return;
+      }
+      this.mutationLeases.delete(draftId);
+      const waiters = this.mutationDrainWaiters.get(draftId);
+      this.mutationDrainWaiters.delete(draftId);
+      for (const resolve of waiters ?? []) resolve();
+    };
+  }
+
+  /** Prevent new mutations synchronously, then drain every admitted mutation
+   * before destructive entity cleanup begins. */
+  async fenceMutations(draftIds: Iterable<string>): Promise<() => void> {
+    const ids = [...new Set(draftIds)];
+    if (ids.some(id => this.deletionFences.has(id))) {
+      throw new Error("draft deletion fence is already held");
+    }
+    for (const id of ids) this.deletionFences.add(id);
+    await Promise.all(ids.map(id => (this.mutationLeases.get(id) ?? 0) > 0
+      ? new Promise<void>(resolve => {
+          const waiters = this.mutationDrainWaiters.get(id) ?? new Set();
+          waiters.add(resolve);
+          this.mutationDrainWaiters.set(id, waiters);
+        })
+      : Promise.resolve()));
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      for (const id of ids) this.deletionFences.delete(id);
+    };
+  }
+
+  async fenceMutationGroup(key: string, draftIds: Iterable<string>): Promise<void> {
+    const ids = [...new Set(draftIds)].sort();
+    const existing = this.deletionFenceGroups.get(key);
+    if (existing) {
+      if (JSON.stringify(existing.ids) !== JSON.stringify(ids)) {
+        throw new Error("draft deletion fence inventory changed");
+      }
+      await existing.ready;
+      return;
+    }
+    const group: { ids: string[]; ready: Promise<void>; release?: () => void } = {
+      ids,
+      ready: Promise.resolve(),
+    };
+    group.ready = this.fenceMutations(ids).then(release => { group.release = release; });
+    this.deletionFenceGroups.set(key, group);
+    try { await group.ready; }
+    catch (error) {
+      if (this.deletionFenceGroups.get(key) === group) this.deletionFenceGroups.delete(key);
+      throw error;
+    }
+  }
+
+  releaseMutationGroup(key: string): void {
+    const group = this.deletionFenceGroups.get(key);
+    if (!group?.release) return;
+    group.release();
+    this.deletionFenceGroups.delete(key);
+  }
+
+  async deleteSurface(draftId: string): Promise<void> {
+    await fs.rm(this.surfaceDir(draftId), { recursive: true, force: true });
+    this.cleanupAuthority.finishDraftSurfaceCleanup(draftId);
+  }
+
+  attachmentReferenced(draftId: string, ownerId: string, id: string): boolean {
+    const references = (draft: Pick<
+      ConversationDraftDto,
+      "attachmentIds" | "pastedTextAttachmentId" | "pendingSubmission"
+    >) => draft.pastedTextAttachmentId === id || draft.attachmentIds.includes(id) ||
+      draft.pendingSubmission?.pastedTextAttachmentId === id ||
+      draft.pendingSubmission?.draftAttachmentIds?.includes(id);
+    const draft = this.workspace.getDraft(draftId, ownerId);
+    if (references(draft)) return true;
+    const listed = this.workspace.listDraftConflicts(draftId, ownerId);
+    return listed.conflicts.some(({ current, displaced }) =>
+      references(current) || references(displaced));
+  }
+
+  enqueueAttachmentCleanup(
+    draftId: string,
+    ownerId: string,
+    assetId: string,
+    eligibleAt = Date.now(),
+  ): void {
+    this.cleanupAuthority.enqueueDraftAttachmentCleanup(
+      draftId,
+      ownerId,
+      assetId,
+      eligibleAt,
+    );
+  }
+
+  reserveAttachment(
+    draftId: string,
+    ownerId: string,
+    assetId: string,
+    size: number,
+  ): string {
+    return this.cleanupAuthority.reserveDraftAttachment(
+      draftId,
+      ownerId,
+      assetId,
+      size,
+    );
+  }
+
+  settleAttachment(reservationId: string): void {
+    this.cleanupAuthority.settleDraftAttachment(reservationId);
+  }
+
+  releaseAttachment(reservationId: string): boolean {
+    return this.cleanupAuthority.releaseDraftAttachment(reservationId);
+  }
+
+  enqueueReleasedAttachments(
+    draftId: string,
+    ownerId: string,
+    previous: { attachmentIds: string[]; pastedTextAttachmentId?: string; pendingSubmission?: ConversationDraftDto["pendingSubmission"] },
+    next: { attachmentIds: string[]; pastedTextAttachmentId?: string; pendingSubmission?: ConversationDraftDto["pendingSubmission"] },
+  ): void {
+    const retained = new Set([
+      ...next.attachmentIds,
+      ...(next.pastedTextAttachmentId ? [next.pastedTextAttachmentId] : []),
+      ...(next.pendingSubmission?.draftAttachmentIds ?? []),
+      ...(next.pendingSubmission?.pastedTextAttachmentId
+        ? [next.pendingSubmission.pastedTextAttachmentId]
+        : []),
+    ]);
+    for (const id of new Set([
+      ...previous.attachmentIds,
+      ...(previous.pastedTextAttachmentId ? [previous.pastedTextAttachmentId] : []),
+      ...(previous.pendingSubmission?.draftAttachmentIds ?? []),
+      ...(previous.pendingSubmission?.pastedTextAttachmentId
+        ? [previous.pendingSubmission.pastedTextAttachmentId]
+        : []),
+    ])) {
+      if (!retained.has(id)) this.enqueueAttachmentCleanup(draftId, ownerId, id);
+    }
+  }
+
+  private async deleteAttachmentFiles(
+    draftId: string,
+    ownerId: string,
+    assetId: string,
+  ): Promise<void> {
+    const files = this.files(draftId, ownerId, assetId);
+    for (const file of [
+      files.body,
+      files.preview,
+      files.metadata,
+      files.bodyTemp,
+      files.previewTemp,
+    ]) {
+      try { await fs.unlink(file); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    const directory = this.attachmentDir(draftId, ownerId);
+    for (const entry of await fs.readdir(directory).catch(() => [])) {
+      if (!entry.startsWith(`${assetId}.`) || !entry.endsWith(".tmp")) continue;
+      await fs.unlink(path.join(directory, entry)).catch(error => {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      });
+    }
+    let handle;
+    try { handle = await fs.open(directory, "r"); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    try { await handle.sync(); }
+    finally { await handle.close(); }
+  }
+
+  async reconcileAttachmentCleanup(now = Date.now()): Promise<number> {
+    let removed = 0;
+    for (const receipt of this.cleanupAuthority.pendingDraftAttachmentCleanups(now)) {
+      const releaseMutation = this.acquireMutationLease(receipt.draftId);
+      if (!releaseMutation) continue;
+      try {
+        await this.withMutationLock(receipt.draftId, receipt.ownerId, async () => {
+          const stored = await this.readStored(
+            receipt.draftId,
+            receipt.ownerId,
+            receipt.assetId,
+          );
+          if (stored) {
+            this.cleanupAuthority.syncDraftAttachment(
+              receipt.draftId,
+              receipt.ownerId,
+              receipt.assetId,
+              stored.size,
+            );
+          }
+          if (this.attachmentReferenced(receipt.draftId, receipt.ownerId, receipt.assetId)) return;
+          await this.deleteAttachmentFiles(receipt.draftId, receipt.ownerId, receipt.assetId);
+          this.cleanupAuthority.finishDraftAttachmentCleanup(
+            receipt.draftId,
+            receipt.ownerId,
+            receipt.assetId,
+          );
+          removed += 1;
+        });
+      } finally {
+        releaseMutation();
+      }
+    }
+    return removed;
+  }
+
+  /** Remove surfaces with no canonical owner, then backfill every referenced
+   * pre-v9 file before uploads can be admitted. Future-grace cleanup receipts
+   * are included because their bytes remain durable until cleanup completes. */
+  async synchronizeAttachmentQuota(): Promise<number> {
+    let synchronized = 0;
+    const inventory = this.workspace.draftRecoveryInventory();
+    const orphaned = new Set([
+      ...inventory.map(item => item.draftId),
+      ...this.cleanupAuthority.draftSurfaceIds(),
+    ].filter(draftId => !this.validId(draftId)));
+    const release = await this.fenceMutations(orphaned);
+    try {
+      for (const draftId of [...orphaned].sort()) {
+        // File/ledger cleanup comes first: if the process stops before the
+        // workspace event, that durable projection identifies the retry.
+        await this.deleteSurface(draftId);
+        this.workspace.deleteDraft(draftId);
+      }
+    } finally {
+      release();
+    }
+    for (const item of inventory) {
+      if (orphaned.has(item.draftId)) continue;
+      for (const assetId of item.attachmentIds) {
+        const stored = await this.readStored(item.draftId, item.ownerId, assetId);
+        if (!stored) {
+          throw new Error(
+            `referenced draft attachment ${assetId} is missing or invalid`,
+          );
+        }
+        this.cleanupAuthority.syncDraftAttachment(
+          item.draftId,
+          item.ownerId,
+          assetId,
+          stored.size,
+        );
+        synchronized += 1;
+      }
+      for (const assetId of item.pendingAttachmentIds) {
+        if (item.attachmentIds.includes(assetId)) continue;
+        const stored = await this.readStored(item.draftId, item.ownerId, assetId);
+        if (!stored) continue;
+        this.cleanupAuthority.syncDraftAttachment(
+          item.draftId,
+          item.ownerId,
+          assetId,
+          stored.size,
+        );
+        synchronized += 1;
+      }
+    }
+    for (const receipt of this.cleanupAuthority.pendingDraftAttachmentCleanups(
+      Number.MAX_SAFE_INTEGER,
+    )) {
+      const stored = await this.readStored(
+        receipt.draftId,
+        receipt.ownerId,
+        receipt.assetId,
+      );
+      if (!stored) continue;
+      this.cleanupAuthority.syncDraftAttachment(
+        receipt.draftId,
+        receipt.ownerId,
+        receipt.assetId,
+        stored.size,
+      );
+      synchronized += 1;
+    }
+    return synchronized;
   }
 
   surfaceDir(draftId: string): string {
@@ -70,8 +619,10 @@ export class DraftService {
     const directory = this.attachmentDir(draftId, ownerId);
     return {
       body: path.join(directory, `${id}.bin`),
+      bodyTemp: path.join(directory, `${id}.bin.tmp`),
       metadata: path.join(directory, `${id}.json`),
       preview: path.join(directory, `${id}.preview.png`),
+      previewTemp: path.join(directory, `${id}.preview.png.tmp`),
     };
   }
 
@@ -210,12 +761,25 @@ export class DraftService {
 
   async hydrate(draftId: string, ownerId: string) {
     const draft = this.workspace.getDraft(draftId, ownerId);
+    return this.hydrateDraft(draft);
+  }
+
+  async hydrateDraft(draft: ConversationDraftDto) {
+    const draftId = draft.conversationId;
+    const ownerId = draft.ownerId;
     const attachments = (
       await Promise.all(
         draft.attachmentIds.map(id => this.read(draftId, ownerId, id)),
       )
     ).filter((item): item is DraftAttachmentDto => Boolean(item));
-    return { ...draft, attachments };
+    const pastedTextAttachment = draft.pastedTextAttachmentId
+      ? await this.read(draftId, ownerId, draft.pastedTextAttachmentId)
+      : undefined;
+    return {
+      ...draft,
+      attachments,
+      ...(pastedTextAttachment ? { pastedTextAttachment } : {}),
+    };
   }
 
   validId(draftId: string): boolean {
@@ -231,6 +795,12 @@ export class DraftService {
     if (kind === "agent") return Boolean(this.store.getAgent(id));
     return false;
   }
+
+  async syncAttachmentDirectory(directory: string): Promise<void> {
+    const handle = await fs.open(directory, "r");
+    try { await handle.sync(); }
+    finally { await handle.close(); }
+  }
 }
 
 export function registerDraftRoutes(
@@ -238,7 +808,9 @@ export function registerDraftRoutes(
   service: DraftService,
   workspace: Pick<
     WorkspaceStore,
-    "cursor" | "listDraftConflicts" | "putDraft"
+    "cursor" | "discardDraftConflict" | "draftConflictResolution" |
+    "getDraft" | "listDraftConflicts" | "putDraft" |
+    "restoreDraftConflict"
   >,
   maxAttachmentsPerMessage: number,
   publishWorkspaceSince: (cursor: number) => unknown,
@@ -275,156 +847,434 @@ export function registerDraftRoutes(
     Params: { id: string };
     Body: PutConversationDraftRequest;
   }>("/api/conversations/:id/draft", async (request, reply) => {
-    if (!service.validId(request.params.id)) {
+    const releaseMutation = service.acquireMutationLease(request.params.id);
+    if (!releaseMutation) {
       return reply.code(404).send({ error: "draft surface not found" });
     }
-    const ownerId = service.normalizedOwner(request.body?.ownerId);
-    if (
-      !ownerId ||
-      !request.body?.clientId ||
-      !Number.isSafeInteger(request.body.expectedRevision) ||
-      !Array.isArray(request.body.attachmentIds)
-    ) {
-      return reply.code(400).send({ error: "invalid draft update" });
-    }
-    if (
-      request.body.attachmentIds.length > maxAttachmentsPerMessage ||
-      new Set(request.body.attachmentIds).size !==
-        request.body.attachmentIds.length
-    ) {
-      return reply.code(400).send({
-        error: `at most ${maxAttachmentsPerMessage} unique draft attachments are allowed`,
-      });
-    }
-    const referenced = await Promise.all(
-      request.body.attachmentIds.map(id =>
-        service.read(request.params.id, ownerId, id),
-      ),
-    );
-    if (referenced.some(item => !item)) {
-      return reply.code(400).send({
-        error:
-          "draft attachment is missing or belongs to another conversation",
-      });
-    }
-    const cursor = workspace.cursor();
     try {
-      workspace.putDraft(request.params.id, { ...request.body, ownerId });
-      publishWorkspaceSince(cursor);
-      return service.hydrate(request.params.id, ownerId);
-    } catch (error) {
-      if ((error as { code?: string }).code === "DRAFT_CONFLICT") {
-        return reply.code(409).send({
-          current: await service.hydrate(request.params.id, ownerId),
-          displaced: (error as { displaced: unknown }).displaced,
-        });
+      if (!service.validId(request.params.id)) {
+        return reply.code(404).send({ error: "draft surface not found" });
       }
-      throw error;
+      const body = request.body;
+      const bodyError = draftUpdateBodyError(body, maxAttachmentsPerMessage);
+      if (bodyError) return reply.code(400).send({ error: bodyError });
+      const ownerId = service.normalizedOwner(body?.ownerId);
+      if (!ownerId) return reply.code(400).send({ error: "invalid draft owner" });
+      return await service.withMutationLock(request.params.id, ownerId, async () => {
+        const current = workspace.getDraft(request.params.id, ownerId);
+        const persist = async () => {
+          const cursor = workspace.cursor();
+          try {
+            workspace.putDraft(request.params.id, { ...body, ownerId });
+            publishWorkspaceSince(cursor);
+            return service.hydrate(request.params.id, ownerId);
+          } catch (error) {
+            if ((error as { code?: string }).code === "DRAFT_CONFLICT") {
+              const conflictError = error as {
+                conflict?: { id?: string };
+                supersededConflicts?: ConversationDraftConflictDto[];
+              };
+              const conflict = conflictError.conflict;
+              for (const superseded of conflictError.supersededConflicts ?? []) {
+                for (const id of [
+                  ...superseded.displaced.attachmentIds,
+                  ...(superseded.displaced.pastedTextAttachmentId
+                    ? [superseded.displaced.pastedTextAttachmentId]
+                    : []),
+                ]) {
+                  service.enqueueAttachmentCleanup(request.params.id, ownerId, id);
+                }
+              }
+              void service.reconcileAttachmentCleanup().catch(() => undefined);
+              return reply.code(409).send({
+                ...(conflict?.id ? { id: conflict.id } : {}),
+                current: await service.hydrate(request.params.id, ownerId),
+                displaced: (error as { displaced: unknown }).displaced,
+              });
+            }
+            throw error;
+          }
+        };
+        if (draftRevisionConflicts(
+          current,
+          body,
+        )) {
+          return persist();
+        }
+        const referencedIds = [
+          ...body.attachmentIds,
+          ...(body.pastedTextAttachmentId ? [body.pastedTextAttachmentId] : []),
+        ];
+        const referenced = await Promise.all(
+          referencedIds.map(id =>
+            service.read(request.params.id, ownerId, id),
+          ),
+        );
+        const unavailableAttachmentIds = referencedIds.filter((_, index) => !referenced[index]);
+        if (unavailableAttachmentIds.length) {
+          return reply.code(400).send({
+            error: "draft conflict attachment is unavailable",
+            unavailableAttachmentIds,
+          });
+        }
+        service.enqueueReleasedAttachments(request.params.id, ownerId, current, body);
+        const saved = await persist();
+        void service.reconcileAttachmentCleanup().catch(() => undefined);
+        return saved;
+      });
+    } finally {
+      releaseMutation();
+    }
+  });
+
+  app.post<{
+    Params: { id: string; conflictId: string };
+    Body: RestoreConversationDraftConflictRequest;
+  }>("/api/conversations/:id/draft-conflicts/:conflictId/restore", async (request, reply) => {
+    const releaseMutation = service.acquireMutationLease(request.params.id);
+    if (!releaseMutation) return reply.code(404).send({ error: "draft surface not found" });
+    try {
+      if (!service.validId(request.params.id)) {
+        return reply.code(404).send({ error: "draft surface not found" });
+      }
+      if (!request.body || typeof request.body !== "object" || Array.isArray(request.body) ||
+          Object.keys(request.body).some(key => ![
+            "ownerId", "expectedRevision", "clientId", "attachmentReplacements",
+            "unavailableAttachmentIds",
+          ].includes(key)) ||
+          !Number.isSafeInteger(request.body.expectedRevision) || request.body.expectedRevision < 0 ||
+          typeof request.body.clientId !== "string" || !request.body.clientId.trim() ||
+          request.body.clientId.length > 200 ||
+          (request.body.attachmentReplacements !== undefined &&
+            (!Array.isArray(request.body.attachmentReplacements) ||
+              request.body.attachmentReplacements.length > maxAttachmentsPerMessage + 1 ||
+              request.body.attachmentReplacements.some(replacement =>
+                !replacement || typeof replacement !== "object" || Array.isArray(replacement) ||
+                Object.keys(replacement).some(key => !["fromId", "toId"].includes(key)) ||
+                !RUNTIME_UUID.test(replacement.fromId) ||
+                !RUNTIME_UUID.test(replacement.toId)) ||
+              new Set(request.body.attachmentReplacements.map(item => item.fromId)).size !==
+                request.body.attachmentReplacements.length ||
+              new Set(request.body.attachmentReplacements.map(item => item.toId)).size !==
+                request.body.attachmentReplacements.length)) ||
+          (request.body.unavailableAttachmentIds !== undefined &&
+            (!Array.isArray(request.body.unavailableAttachmentIds) ||
+              request.body.unavailableAttachmentIds.length > maxAttachmentsPerMessage + 1 ||
+              request.body.unavailableAttachmentIds.some(id => !RUNTIME_UUID.test(id)) ||
+              new Set(request.body.unavailableAttachmentIds).size !==
+                request.body.unavailableAttachmentIds.length))) {
+        return reply.code(400).send({ error: "invalid draft conflict restore request" });
+      }
+      const ownerId = service.normalizedOwner(request.body.ownerId);
+      if (!ownerId) return reply.code(400).send({ error: "invalid draft owner" });
+      return await service.withMutationLock(request.params.id, ownerId, async () => {
+        const prior = workspace.draftConflictResolution(request.params.conflictId);
+        const conflict = workspace.listDraftConflicts(request.params.id, ownerId).conflicts
+          .find(candidate => candidate.id === request.params.conflictId);
+        const previousDraft = workspace.getDraft(request.params.id, ownerId);
+        let restoredAttachmentIds: string[] | undefined;
+        let restoredPastedTextAttachmentId: string | null | undefined;
+        if (!prior) {
+          if (!conflict) return reply.code(404).send({ error: "draft conflict not found" });
+          const displacedIds = [
+            ...conflict.displaced.attachmentIds,
+            ...(conflict.displaced.pastedTextAttachmentId ? [conflict.displaced.pastedTextAttachmentId] : []),
+          ];
+          const replacements = new Map(
+            (request.body.attachmentReplacements ?? []).map(item => [item.fromId, item.toId]),
+          );
+          const unavailableIds = new Set(request.body.unavailableAttachmentIds ?? []);
+          if ([...replacements.keys(), ...unavailableIds].some(id => !displacedIds.includes(id)) ||
+              [...unavailableIds].some(id => replacements.has(id))) {
+            return reply.code(400).send({ error: "draft conflict replacement source is invalid" });
+          }
+          const current = workspace.getDraft(request.params.id, ownerId);
+          const currentIds = new Set([
+            ...current.attachmentIds,
+            ...(current.pastedTextAttachmentId ? [current.pastedTextAttachmentId] : []),
+          ]);
+          if ([...replacements.values()].some(id => currentIds.has(id))) {
+            return reply.code(409).send({ error: "draft conflict replacement is not fresh" });
+          }
+          const replacementSources = [...replacements.keys(), ...unavailableIds];
+          const stillAvailableSources = await Promise.all(replacementSources.map(id =>
+            service.read(request.params.id, ownerId, id)));
+          if (stillAvailableSources.some(Boolean)) {
+            return reply.code(409).send({
+              error: "draft conflict replacement source is still available",
+            });
+          }
+          restoredAttachmentIds = conflict.displaced.attachmentIds
+            .filter(id => !unavailableIds.has(id))
+            .map(id => replacements.get(id) ?? id);
+          restoredPastedTextAttachmentId = conflict.displaced.pastedTextAttachmentId
+            ? unavailableIds.has(conflict.displaced.pastedTextAttachmentId)
+              ? null
+              : replacements.get(conflict.displaced.pastedTextAttachmentId) ??
+                conflict.displaced.pastedTextAttachmentId
+            : undefined;
+          const referenced = await Promise.all([
+            ...conflict.displaced.attachmentIds.flatMap(id =>
+              unavailableIds.has(id)
+                ? []
+                : [{ historicalId: id, resolvedId: replacements.get(id) ?? id }]),
+            ...(conflict.displaced.pastedTextAttachmentId && restoredPastedTextAttachmentId
+              ? [{
+                  historicalId: conflict.displaced.pastedTextAttachmentId,
+                  resolvedId: restoredPastedTextAttachmentId,
+                }]
+              : []),
+          ].map(async item => ({
+            ...item,
+            attachment: await service.read(request.params.id, ownerId, item.resolvedId),
+          })));
+          const referencedIds = referenced.map(item => item.resolvedId);
+          if (new Set(referencedIds).size !== referencedIds.length) {
+            return reply.code(400).send({ error: "draft conflict replacements must be distinct" });
+          }
+          const missingHistoricalIds = referenced
+            .filter(item => !item.attachment)
+            .map(item => item.historicalId);
+          if (missingHistoricalIds.length) {
+            return reply.code(409).send({
+              error: "draft conflict attachment is unavailable",
+              unavailableAttachmentIds: missingHistoricalIds,
+            });
+          }
+        }
+        try {
+          const cursor = workspace.cursor();
+          const restored = workspace.restoreDraftConflict({
+            conversationId: request.params.id,
+            ownerId,
+            conflictId: request.params.conflictId,
+            expectedRevision: request.body.expectedRevision,
+            clientId: request.body.clientId,
+            ...(restoredAttachmentIds ? { attachmentIds: restoredAttachmentIds } : {}),
+            ...(restoredPastedTextAttachmentId !== undefined
+              ? { pastedTextAttachmentId: restoredPastedTextAttachmentId }
+              : {}),
+            attachmentReplacements: request.body.attachmentReplacements,
+            unavailableAttachmentIds: request.body.unavailableAttachmentIds,
+          });
+          const currentDraft = restored.replayed
+            ? workspace.getDraft(request.params.id, ownerId)
+            : restored.draft;
+          const response: ResolveConversationDraftConflictResponse = {
+            conflictId: request.params.conflictId,
+            action: "restored",
+            replayed: restored.replayed,
+            draft: await service.hydrateDraft(restored.draft),
+            ...(currentDraft.revision > restored.draft.revision
+              ? { currentDraft: await service.hydrateDraft(currentDraft) }
+              : {}),
+            attachmentReplacements: restored.attachmentReplacements,
+            unavailableAttachmentIds: restored.unavailableAttachmentIds,
+          };
+          if (!restored.replayed) {
+            service.enqueueReleasedAttachments(
+              request.params.id,
+              ownerId,
+              previousDraft,
+              restored.draft,
+            );
+            if (conflict?.displaced) {
+              service.enqueueReleasedAttachments(
+                request.params.id,
+                ownerId,
+                conflict.displaced,
+                restored.draft,
+              );
+            }
+          }
+          publishWorkspaceSince(cursor);
+          void service.reconcileAttachmentCleanup().catch(() => undefined);
+          return response;
+        } catch (error) {
+          const code = (error as { code?: string }).code;
+          if (code === "DRAFT_REVISION_CHANGED" ||
+              code === "DRAFT_CONFLICT_RESOLUTION_CONFLICT") {
+            return reply.code(409).send({ error: (error as Error).message });
+          }
+          if (code === "DRAFT_CONFLICT_NOT_FOUND") {
+            return reply.code(404).send({ error: (error as Error).message });
+          }
+          throw error;
+        }
+      });
+    } finally {
+      releaseMutation();
+    }
+  });
+
+  app.delete<{
+    Params: { id: string; conflictId: string };
+    Querystring: { ownerId?: string };
+  }>("/api/conversations/:id/draft-conflicts/:conflictId", async (request, reply) => {
+    const releaseMutation = service.acquireMutationLease(request.params.id);
+    if (!releaseMutation) return reply.code(404).send({ error: "draft surface not found" });
+    try {
+      if (!service.validId(request.params.id)) {
+        return reply.code(404).send({ error: "draft surface not found" });
+      }
+      const ownerId = service.normalizedOwner(request.query.ownerId);
+      if (!ownerId) return reply.code(400).send({ error: "draft owner is required" });
+      return await service.withMutationLock(request.params.id, ownerId, async () => {
+        try {
+          const cursor = workspace.cursor();
+          const discarded = workspace.discardDraftConflict({
+            conversationId: request.params.id,
+            ownerId,
+            conflictId: request.params.conflictId,
+          });
+          const response: ResolveConversationDraftConflictResponse = {
+            conflictId: request.params.conflictId,
+            action: "discarded",
+            replayed: discarded.replayed,
+          };
+          publishWorkspaceSince(cursor);
+          void service.reconcileAttachmentCleanup().catch(() => undefined);
+          return response;
+        } catch (error) {
+          const code = (error as { code?: string }).code;
+          if (code === "DRAFT_CONFLICT_RESOLUTION_CONFLICT") {
+            return reply.code(409).send({ error: (error as Error).message });
+          }
+          if (code === "DRAFT_CONFLICT_NOT_FOUND") {
+            return reply.code(404).send({ error: (error as Error).message });
+          }
+          throw error;
+        }
+      });
+    } finally {
+      releaseMutation();
     }
   });
 
   app.post<{ Params: { id: string }; Body: Buffer }>(
     "/api/conversations/:id/draft-attachments",
     async (request, reply) => {
-      if (!service.validId(request.params.id)) {
+      const releaseMutation = service.acquireMutationLease(request.params.id);
+      if (!releaseMutation) {
         return reply.code(404).send({ error: "draft surface not found" });
       }
-      if (!Buffer.isBuffer(request.body) || request.body.length === 0) {
-        return reply.code(400).send({ error: "attachment body is required" });
-      }
-      if (request.body.length > ASSET_LIMITS.maxFileBytes) {
-        return reply
-          .code(413)
-          .send({ error: "draft attachment exceeds 8 MiB" });
-      }
-      const declaredMediaType = String(
-        request.headers["x-ponderosa-media-type"] ?? "",
-      ).toLowerCase();
-      const ownerId = service.normalizedOwner(
-        request.headers["x-ponderosa-draft-owner"],
-      );
-      if (!ownerId) {
-        return reply.code(400).send({ error: "draft owner is required" });
-      }
-      const suppliedName = String(
-        request.headers["x-ponderosa-filename"] ?? "attachment",
-      ).replace(/[\u0000-\u001f\u007f]/g, "");
-      const requestedName =
-        path.basename(suppliedName).slice(0, 240) || "attachment";
-      let prepared;
       try {
-        prepared = await prepareAssetUpload({
-          body: request.body,
-          name: requestedName,
-          declaredType: declaredMediaType,
-        });
-      } catch (error) {
-        if (error instanceof AssetError) {
-          return reply.code(error.statusCode).send({
-            error: `${requestedName}: ${error.message}`,
-          });
+        if (!service.validId(request.params.id)) {
+          return reply.code(404).send({ error: "draft surface not found" });
         }
-        throw error;
-      }
-      const {
-        name,
-        mediaType,
-        sha256,
-        width,
-        height,
-        preview,
-        previewSha256,
-      } = prepared;
-      const id = randomUUID();
-      const directory = service.attachmentDir(request.params.id, ownerId);
-      const files = service.files(request.params.id, ownerId, id);
-      const createdAt = new Date().toISOString();
-      const metadata: StoredDraftAttachment = {
-        id,
-        conversationId: request.params.id,
-        ownerId,
-        name,
-        mediaType,
-        size: request.body.length,
-        createdAt,
-        sha256,
-        ...(width !== undefined ? { width } : {}),
-        ...(height !== undefined ? { height } : {}),
-        ...(previewSha256 ? { previewSha256 } : {}),
-      };
-      await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-      const temp = `${files.body}.${randomUUID()}.tmp`;
-      const previewTemp = `${files.preview}.${randomUUID()}.tmp`;
-      try {
-        await fs.writeFile(temp, request.body, {
-          mode: 0o600,
-          flag: "wx",
-        });
-        if (preview) {
-          await fs.writeFile(previewTemp, preview, {
-            mode: 0o600,
-            flag: "wx",
-          });
+        if (!Buffer.isBuffer(request.body) || request.body.length === 0) {
+          return reply.code(400).send({ error: "attachment body is required" });
         }
-        await fs.rename(temp, files.body);
-        if (preview) await fs.rename(previewTemp, files.preview);
-        await fs.writeFile(files.metadata, JSON.stringify(metadata), {
-          mode: 0o600,
-          flag: "wx",
-        });
-      } catch (error) {
-        await Promise.allSettled([
-          fs.rm(temp, { force: true }),
-          fs.rm(previewTemp, { force: true }),
-          fs.rm(files.body, { force: true }),
-          fs.rm(files.preview, { force: true }),
-          fs.rm(files.metadata, { force: true }),
-        ]);
-        throw error;
+        if (request.body.length > ASSET_LIMITS.maxFileBytes) {
+          return reply
+            .code(413)
+            .send({ error: "draft attachment exceeds 8 MiB" });
+        }
+        const declaredMediaType = String(
+          request.headers["x-ponderosa-media-type"] ?? "",
+        ).toLowerCase();
+        const ownerId = service.normalizedOwner(
+          request.headers["x-ponderosa-draft-owner"],
+        );
+        if (!ownerId) {
+          return reply.code(400).send({ error: "draft owner is required" });
+        }
+        const suppliedName = String(
+          request.headers["x-ponderosa-filename"] ?? "attachment",
+        ).replace(/[\u0000-\u001f\u007f]/g, "");
+        const requestedName =
+          path.basename(suppliedName).slice(0, 240) || "attachment";
+        const id = randomUUID();
+        let reservationId: string;
+        try {
+          reservationId = service.reserveAttachment(
+            request.params.id,
+            ownerId,
+            id,
+            request.body.length,
+          );
+        } catch (error) {
+          if (error instanceof AssetError) {
+            return reply.code(error.statusCode).send({ error: error.message });
+          }
+          throw error;
+        }
+        let prepared;
+        try {
+          prepared = await prepareAssetUpload({
+            body: request.body,
+            name: requestedName,
+            declaredType: declaredMediaType,
+          });
+        } catch (error) {
+          service.releaseAttachment(reservationId);
+          if (error instanceof AssetError) {
+            return reply.code(error.statusCode).send({
+              error: `${requestedName}: ${error.message}`,
+            });
+          }
+          throw error;
+        }
+        const {
+          name,
+          mediaType,
+          sha256,
+          width,
+          height,
+          preview,
+          previewSha256,
+        } = prepared;
+        try {
+          return await service.withMutationLock(request.params.id, ownerId, async () => {
+            service.enqueueAttachmentCleanup(
+              request.params.id,
+              ownerId,
+              id,
+              Date.now() + DRAFT_ORPHAN_GRACE_MS,
+            );
+            const directory = service.attachmentDir(request.params.id, ownerId);
+            const files = service.files(request.params.id, ownerId, id);
+            const createdAt = new Date().toISOString();
+            const metadata: StoredDraftAttachment = {
+              id,
+              conversationId: request.params.id,
+              ownerId,
+              name,
+              mediaType,
+              size: request.body.length,
+              createdAt,
+              sha256,
+              ...(width !== undefined ? { width } : {}),
+              ...(height !== undefined ? { height } : {}),
+              ...(previewSha256 ? { previewSha256 } : {}),
+            };
+            try {
+              await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+              await writeAtomic(files.body, request.body);
+              if (preview) {
+                await writeAtomic(files.preview, preview);
+              }
+              await writeAtomic(files.metadata, JSON.stringify(metadata));
+              await service.syncAttachmentDirectory(directory);
+              service.settleAttachment(reservationId);
+            } catch (error) {
+              service.enqueueAttachmentCleanup(request.params.id, ownerId, id);
+              void service.reconcileAttachmentCleanup().catch(() => undefined);
+              if (error instanceof AssetError) {
+                return reply.code(error.statusCode).send({ error: error.message });
+              }
+              throw error;
+            }
+            return reply
+              .code(201)
+              .send(service.publicAttachment(request.params.id, ownerId, metadata));
+          });
+        } finally {
+          service.releaseAttachment(reservationId);
+        }
+      } finally {
+        releaseMutation();
       }
-      return reply
-        .code(201)
-        .send(service.publicAttachment(request.params.id, ownerId, metadata));
     },
   );
 
@@ -471,33 +1321,53 @@ export function registerDraftRoutes(
   }>(
     "/api/conversations/:id/draft-attachments/:attachmentId",
     async (request, reply) => {
-      const ownerId = service.normalizedOwner(request.query.ownerId);
-      if (!ownerId) {
-        return reply.code(400).send({ error: "draft owner is required" });
+      const releaseMutation = service.acquireMutationLease(request.params.id);
+      if (!releaseMutation) {
+        return reply.code(404).send({ error: "draft attachment not found" });
       }
-      if (
-        !service.validId(request.params.id) ||
-        !(await service.read(
-          request.params.id,
-          ownerId,
-          request.params.attachmentId,
-        ))
-      ) {
-        return reply
-          .code(404)
-          .send({ error: "draft attachment not found" });
+      try {
+        const ownerId = service.normalizedOwner(request.query.ownerId);
+        if (!ownerId) {
+          return reply.code(400).send({ error: "draft owner is required" });
+        }
+        const cleanupRequested = await service.withMutationLock(request.params.id, ownerId, async () => {
+          if (
+            !service.validId(request.params.id) ||
+            !(await service.read(
+              request.params.id,
+              ownerId,
+              request.params.attachmentId,
+            ))
+          ) {
+            reply
+              .code(404)
+              .send({ error: "draft attachment not found" });
+            return false;
+          }
+          if (service.attachmentReferenced(
+            request.params.id,
+            ownerId,
+            request.params.attachmentId,
+          )) {
+            reply.code(409).send({
+              error: "draft attachment is still referenced",
+            });
+            return false;
+          }
+          service.enqueueAttachmentCleanup(
+            request.params.id,
+            ownerId,
+            request.params.attachmentId,
+          );
+          return true;
+        });
+        if (!cleanupRequested) return reply;
+        // Cleanup reacquires the draft lock, so run it after releasing that lock.
+        await service.reconcileAttachmentCleanup();
+        return reply.code(204).send();
+      } finally {
+        releaseMutation();
       }
-      const files = service.files(
-        request.params.id,
-        ownerId,
-        request.params.attachmentId,
-      );
-      await Promise.all([
-        fs.rm(files.body, { force: true }),
-        fs.rm(files.preview, { force: true }),
-        fs.rm(files.metadata, { force: true }),
-      ]);
-      return reply.code(204).send();
     },
   );
 }

@@ -18,6 +18,7 @@ import type { AgentDto, EngineDto, ProjectDto } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { createClientId } from "../clientId";
 import {
   effortSelectionIsCompatible,
   engineUnavailableReason,
@@ -25,11 +26,17 @@ import {
   modelSelectionIsCompatible,
   soleAvailableEngineId,
 } from "../conversationEngine";
-import { useAgentPresets } from "../hooks/queries";
+import { useAgentPresets, useConversation } from "../hooks/queries";
 import { pickAgentName } from "../parkNames";
 import { queryKeys } from "../queryKeys";
+import { fixedCreateConversationMatchesProject } from "../routeRegistry";
 import { EngineModelEffortFields } from "./ProjectRuntimeFields";
 import { ImportAgentForm } from "./ImportAgentDialog";
+import { retainIdempotentAttempt, type IdempotentAttempt } from "./idempotentAttempt";
+import {
+  reconcileAgentCreateOwnership,
+  type AgentCreateOwnership,
+} from "./agentCreateOwnership";
 
 const UNSET = "";
 
@@ -78,9 +85,21 @@ export function AgentCreateForm({
         : projects[0]?.id ?? ""),
   );
   const project = projects.find(candidate => candidate.id === projectId);
-  const effectiveFixedConversationId = projectId === initialProjectId
-    ? fixedConversationId
-    : undefined;
+  const fixedConversationRequested = Boolean(
+    fixedConversationId && projectId === (fixedProjectId ?? initialProjectId),
+  );
+  const fixedConversationQuery = useConversation(
+    fixedConversationRequested ? fixedConversationId : undefined,
+    1,
+  );
+  const verifiedFixedConversation = fixedCreateConversationMatchesProject(
+    projectId,
+    fixedConversationId,
+    fixedConversationQuery.data?.conversation,
+  ) ? fixedConversationQuery.data!.conversation : undefined;
+  const effectiveFixedConversationId = verifiedFixedConversation?.id;
+  const fixedConversationLoading = fixedConversationRequested && fixedConversationQuery.isPending;
+  const fixedConversationInvalid = fixedConversationRequested && !fixedConversationLoading && !verifiedFixedConversation;
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.project(projectId),
     queryFn: () => api.listAgents(projectId),
@@ -94,23 +113,24 @@ export function AgentCreateForm({
   const presetsQuery = useAgentPresets(projectId || undefined);
   const agents = agentsQuery.data ?? [];
   const chats = chatsQuery.data ?? [];
-  const fixedConversation = effectiveFixedConversationId
-    ? chats.find(chat => chat.id === effectiveFixedConversationId)
-    : undefined;
+  const fixedConversation = verifiedFixedConversation;
   const presets = presetsQuery.data ?? [];
   const [title, setTitle] = useState(initialName ?? "");
   const [engine, setEngine] = useState(UNSET);
   const [model, setModel] = useState(UNSET);
   const [effort, setEffort] = useState(UNSET);
-  const [conversationId, setConversationId] = useState(
-    fixedConversationId ?? UNSET,
-  );
+  const [ownership, setOwnership] = useState<AgentCreateOwnership>({
+    conversationId: fixedConversationId ?? UNSET,
+    managerAgentId: UNSET,
+  });
+  const { conversationId, managerAgentId } = ownership;
   const [presetId, setPresetId] = useState(UNSET);
-  const [managerAgentId, setManagerAgentId] = useState(UNSET);
   const [initialMessage, setInitialMessage] = useState("");
   const titleEditedRef = useRef(Boolean(initialName));
+  const conversationEditedRef = useRef(false);
   const managerEditedRef = useRef(false);
   const pendingRef = useRef(false);
+  const createAttemptRef = useRef<IdempotentAttempt<undefined> | undefined>(undefined);
   const initializedRef = useRef(false);
   const previousProjectIdRef = useRef(projectId);
 
@@ -133,10 +153,13 @@ export function AgentCreateForm({
       if (previousProjectIdRef.current === projectId) return;
       const previousProjectId = previousProjectIdRef.current;
       previousProjectIdRef.current = projectId;
+      conversationEditedRef.current = false;
       managerEditedRef.current = false;
-      setConversationId(effectiveFixedConversationId ?? UNSET);
+      setOwnership({
+        conversationId: effectiveFixedConversationId ?? UNSET,
+        managerAgentId: UNSET,
+      });
       setPresetId(UNSET);
-      setManagerAgentId(UNSET);
       if (!previousProjectId) {
         setEngine(
           initialEngine ??
@@ -152,6 +175,7 @@ export function AgentCreateForm({
     initializedRef.current = true;
     previousProjectIdRef.current = projectId;
     titleEditedRef.current = Boolean(initialName);
+    conversationEditedRef.current = false;
     managerEditedRef.current = false;
     setTitle(initialName ?? pickAgentName([]));
     setEngine(
@@ -162,13 +186,16 @@ export function AgentCreateForm({
     );
     setModel(initialModel ?? project?.defaultModel ?? UNSET);
     setEffort(initialEffort ?? project?.defaultEffort ?? UNSET);
-    setConversationId(effectiveFixedConversationId ?? UNSET);
+    setOwnership({
+      conversationId: fixedConversationId ?? UNSET,
+      managerAgentId: UNSET,
+    });
     setPresetId(UNSET);
-    setManagerAgentId(UNSET);
     setInitialMessage("");
   }, [
     engines,
     effectiveFixedConversationId,
+    fixedConversationId,
     initialEffort,
     initialEngine,
     initialModel,
@@ -182,41 +209,47 @@ export function AgentCreateForm({
   useEffect(() => {
     if (!agentsQuery.isSuccess) return;
     const loadedAgents = agentsQuery.data ?? [];
-    if (!titleEditedRef.current) {
+    if (
+      !titleEditedRef.current &&
+      !pendingRef.current &&
+      !createAttemptRef.current
+    ) {
       setTitle(pickAgentName(loadedAgents.map(agent => agent.title)));
-    }
-    if (!managerEditedRef.current) {
-      setManagerAgentId(
-        loadedAgents.some(agent => agent.id === initialManagerAgentId)
-          ? initialManagerAgentId!
-          : UNSET,
-      );
     }
   }, [agentsQuery.data, agentsQuery.isSuccess, initialManagerAgentId]);
 
   useEffect(() => {
-    const available = chats.filter(chat => !chat.archived);
-    setConversationId(current =>
-      available.some(chat => chat.id === current)
-        ? current
-        : effectiveFixedConversationId ?? available[0]?.id ?? UNSET,
-    );
-  }, [chats, effectiveFixedConversationId]);
-
-  useEffect(() => {
-    setManagerAgentId(current =>
-      agents.some(agent =>
-        agent.id === current && !agent.archived &&
-        agent.conversationId === conversationId)
-        ? current
-        : UNSET,
-    );
-  }, [agents, conversationId]);
+    setOwnership(current => reconcileAgentCreateOwnership(current, {
+      agents,
+      agentsResolved: agentsQuery.isSuccess,
+      chats,
+      chatsResolved: chatsQuery.isSuccess,
+      initialManagerAgentId,
+      requiredInitialManagerConversationId:
+        fixedConversationRequested ? fixedConversationId : undefined,
+      fixedConversationId: effectiveFixedConversationId,
+      conversationEdited: conversationEditedRef.current,
+      managerEdited: managerEditedRef.current,
+    }));
+  }, [
+    agents,
+    agentsQuery.isSuccess,
+    chats,
+    chatsQuery.isSuccess,
+    effectiveFixedConversationId,
+    fixedConversationId,
+    fixedConversationRequested,
+    initialManagerAgentId,
+  ]);
 
   const activeEngine = engines.find(candidate => candidate.id === engine);
+  const conversationAvailable = Boolean(
+    effectiveFixedConversationId ||
+    chats.some(chat => chat.id === conversationId && !chat.archived && !chat.deletedAt),
+  );
   const create = useMutation({
-    mutationFn: () =>
-      api.createAgent(projectId, conversationId, {
+    mutationFn: () => {
+      const options = {
         title: title.trim(),
         engine,
         model: modelSelectionIsCompatible(activeEngine, model)
@@ -228,8 +261,26 @@ export function AgentCreateForm({
         presetId: presetId || undefined,
         managerAgentId: managerAgentId || undefined,
         initialMessage: initialMessage.trim() || undefined,
-      }),
+      };
+      createAttemptRef.current = retainIdempotentAttempt(
+        createAttemptRef.current,
+        JSON.stringify({ projectId, conversationId, ...options }),
+        () => createClientId("agent-create-"),
+        () => undefined,
+      );
+      return api.createAgent(projectId, conversationId, {
+        ...options,
+        idempotencyKey: createAttemptRef.current.idempotencyKey,
+      });
+    },
     onSuccess: agent => {
+      createAttemptRef.current = undefined;
+      if ("recovering" in agent) {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.agents.project(projectId),
+        });
+        return;
+      }
       queryClient.setQueryData<AgentDto[]>(
         queryKeys.agents.project(projectId),
         (current = []) =>
@@ -252,6 +303,19 @@ export function AgentCreateForm({
       onPendingChange?.(false);
     },
   });
+
+  if (create.data && "recovering" in create.data) {
+    return (
+      <Stack spacing={2.25}>
+        <Alert severity="info">
+          Agent creation is committed and recovery is finishing. It will appear when ready.
+        </Alert>
+        <Stack direction="row" sx={{ justifyContent: "flex-end" }}>
+          <Button onClick={onCancel}>Close</Button>
+        </Stack>
+      </Stack>
+    );
+  }
 
   return (
     <Stack spacing={2.25}>
@@ -351,7 +415,19 @@ export function AgentCreateForm({
         hideModelWhenEmpty
         hideEffortWhenEmpty
       />
-      {!effectiveFixedConversationId ? (
+      {fixedConversationInvalid ? (
+        <Alert
+          severity="warning"
+          action={fixedConversationQuery.isError ? (
+            <Button color="inherit" size="small" onClick={() => void fixedConversationQuery.refetch()}>
+              Retry
+            </Button>
+          ) : undefined}
+        >
+          The requested Chat is not available in this Project. Choose another Chat.
+        </Alert>
+      ) : null}
+      {!fixedConversationRequested || fixedConversationInvalid ? (
         <FormControl fullWidth size="small">
           <InputLabel id="create-agent-chat-label">
             Chat
@@ -362,14 +438,16 @@ export function AgentCreateForm({
             value={conversationId}
             onChange={(event: SelectChangeEvent) => {
               const nextConversationId = event.target.value;
-              setConversationId(nextConversationId);
-              setManagerAgentId(current =>
-                agents.some(agent =>
-                  agent.id === current && !agent.archived &&
+              conversationEditedRef.current = true;
+              managerEditedRef.current = true;
+              setOwnership(current => ({
+                conversationId: nextConversationId,
+                managerAgentId: agents.some(agent =>
+                  agent.id === current.managerAgentId && !agent.archived &&
                   agent.conversationId === nextConversationId)
-                  ? current
+                  ? current.managerAgentId
                   : UNSET,
-              );
+              }));
             }}
           >
             {chats
@@ -384,7 +462,7 @@ export function AgentCreateForm({
       ) : (
         <TextField
           label="Project chat"
-          value={fixedConversation?.title ?? "Selected Chat"}
+          value={fixedConversation?.title ?? "Checking Chat…"}
           helperText="This Agent will join the Chat where creation was started."
           InputProps={{ readOnly: true }}
           fullWidth
@@ -399,7 +477,10 @@ export function AgentCreateForm({
           value={managerAgentId}
           onChange={(event: SelectChangeEvent) => {
             managerEditedRef.current = true;
-            setManagerAgentId(event.target.value);
+            setOwnership(current => ({
+              ...current,
+              managerAgentId: event.target.value,
+            }));
           }}
         >
           <MenuItem value={UNSET}>User / Top Level</MenuItem>
@@ -454,7 +535,8 @@ export function AgentCreateForm({
         <Button
           variant="contained"
           disabled={
-            !projectId || !conversationId || !title.trim() ||
+            !projectId || !conversationId || !conversationAvailable ||
+            fixedConversationLoading || !title.trim() ||
             !engineIsAvailable(activeEngine) || create.isPending
           }
           onClick={() => {

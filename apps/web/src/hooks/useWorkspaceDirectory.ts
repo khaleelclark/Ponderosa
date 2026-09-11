@@ -5,7 +5,7 @@ import type {
   WorkspaceDirectoryPageDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
-import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
@@ -14,6 +14,7 @@ import {
   resourcePreferenceKey,
   starredWorkspaceResources,
 } from "../resourcePreferences";
+import { sameWorkspaceDirectoryScope } from "../workspaceDirectoryScope.js";
 
 export const WORKSPACE_DIRECTORY_PAGE_SIZE = 25;
 
@@ -53,7 +54,10 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     projectId?: string;
     agentIds?: readonly string[];
     conversationId?: string;
-    sort?: ProjectSort;
+    sort?: ProjectSort | "next_fire";
+    active?: boolean;
+    recentOutcomes?: boolean;
+    onlyEnabled?: boolean;
     enabled?: boolean;
     retainPreviousData?: boolean;
   },
@@ -68,24 +72,31 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     const timer = globalThis.setTimeout(() => setSearch(requestedSearch), 250);
     return () => globalThis.clearTimeout(timer);
   }, [requestedSearch]);
+  const queryKey = queryKeys.workspaceDirectory.list(
+    kind,
+    search,
+    options.projectId,
+    options.agentIds?.join(","),
+    options.conversationId,
+    options.sort,
+    options.active,
+    options.recentOutcomes,
+    options.onlyEnabled,
+  );
   const query = useInfiniteQuery({
-    queryKey: queryKeys.workspaceDirectory.list(
-      kind,
-      search,
-      options.projectId,
-      options.agentIds?.join(","),
-      options.conversationId,
-      options.sort,
-    ),
+    queryKey,
     queryFn: ({ pageParam }) =>
       api.getWorkspaceDirectory<T>(kind, {
         limit: WORKSPACE_DIRECTORY_PAGE_SIZE,
-        cursor: pageParam,
+        cursor: pageParam as string | undefined,
         search: search || undefined,
         projectId: options.projectId,
         agentIds: options.agentIds?.join(","),
         conversationId: options.conversationId,
         sort: options.sort,
+        active: options.active,
+        outcomes: options.recentOutcomes,
+        enabled: options.onlyEnabled,
       }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (
@@ -94,7 +105,12 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     enabled: options.enabled ?? true,
     ...(options.retainPreviousData === false
       ? {}
-      : { placeholderData: keepPreviousData }),
+      : {
+          placeholderData: (previousData, previousQuery) =>
+            sameWorkspaceDirectoryScope(previousQuery?.queryKey, queryKey)
+              ? previousData
+              : undefined,
+        }),
     select: normalizeResetPages,
     staleTime: 5_000,
   });

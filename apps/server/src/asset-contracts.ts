@@ -12,6 +12,15 @@ import type {
 
 export const ASSET_LIMITS: AssetLimitsDto = DEFAULT_ASSET_LIMITS;
 export const UPLOAD_LEASE_MS = 5 * 60 * 1000;
+export const DRAFT_ASSET_LIMITS = Object.freeze({
+  maxSurfaceBytes: ASSET_LIMITS.maxAgentBytes,
+  maxWorkspaceBytes: ASSET_LIMITS.maxAgentBytes * 4,
+  maxSurfaceAssets: 256,
+  maxWorkspaceAssets: 1_024,
+  maxConcurrentUploadsPerSurface: 4,
+  maxUploadsPerMinutePerSurface: 100,
+  maxUploadsPerMinuteWorkspace: 400,
+});
 export const ID = /^[a-f0-9-]{36}$/;
 export const RUNTIME_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 export const OWNER_ID = /^[A-Za-z0-9_-]{1,128}$/;

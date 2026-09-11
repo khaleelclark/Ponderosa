@@ -3,7 +3,7 @@ import type { AgentEvent } from "../events.js";
 import type { AgentDto, AgentState } from "./agents.js";
 import type { ArtifactDto, ChangedFileDto } from "./artifacts.js";
 import type { HistoryPageDto, HistoryWindowDto } from "./common.js";
-import type { MessageDto, ResponseFileActivityDto } from "./conversations.js";
+import type { ConversationDto, MessageDto, ResponseFileActivityDto } from "./conversations.js";
 import type { AgentCoordinationV3Dto, AgentRunDto, WorkItemDto } from "./runs.js";
 import type {
   WorkspacePreferencesDto,
@@ -17,7 +17,7 @@ export type WorkspaceEvent =
   | { type: "conversation_changed"; projectId: string; conversationId: string; action: "created" | "updated" | "deleted" | "used" | "message" }
   | { type: "draft_changed"; conversationId: string; revision: number; cleared: boolean }
   | { type: "draft_conflict"; conversationId: string; revision: number }
-  | { type: "notification_changed"; notificationId?: string; conversationId?: string; action: "created" | "updated" | "read" | "acknowledged" | "resolved" | "cleared" }
+  | { type: "notification_changed"; notificationId?: string; /** Present only for Decision mutations. */ decisionId?: string; conversationId?: string; action: "created" | "updated" | "read" | "acknowledged" | "resolved" | "cleared" }
   | { type: "queued_message_changed"; conversationId: string; deliveryId: string; action: "queued" | "edited" | "steered" | "cancelled" | "preparing" | "retrying" | "started" }
   | { type: "message_delivery_changed"; /** Absent on legacy persisted events. */ projectId?: string; agentId: string; conversationIds?: string[] }
   | {
@@ -152,6 +152,8 @@ export interface RunOutputTextDto {
  */
 export interface AgentDetailDto {
   agent: AgentDto;
+  /** Canonical owning Chat, absent only after that Chat no longer exists. */
+  ownerConversation?: Pick<ConversationDto, "id" | "title">;
   /** Stable current-or-historical evidence that this Agent managed another Agent. */
   hasSubagentHistory?: boolean;
   messages: MessageDto[];

@@ -143,9 +143,14 @@ function directAgentDeliveryNotice(
 ): string | undefined {
   if (response.queued) {
     if (activeRunDelivery === "steer") return undefined;
+    if (response.position === undefined) {
+      return "Queued successfully; delivery details are still being refreshed.";
+    }
     return `Queued in position ${response.position}; it will start when the current response finishes.`;
   }
-  return response.steered ? "Steered into the active turn." : undefined;
+  return "steered" in response && response.steered
+    ? "Steered into the active turn."
+    : undefined;
 }
 
 function portablePackageFileName(

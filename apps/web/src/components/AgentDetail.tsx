@@ -3,6 +3,7 @@ import {
   Box,
   Button,
   CircularProgress,
+  Stack,
 } from "@mui/material";
 import type {
   EngineCommand,
@@ -43,6 +44,7 @@ import {
 } from "../conversationEngine";
 import { telemetryElementId } from "../telemetryFocus";
 import { queryKeys } from "../queryKeys";
+import { loadRetainedData } from "../retainedData";
 import { useRuntimeControls } from "../hooks/useRuntimeControls";
 import {
   agentRelationshipPresentation,
@@ -74,6 +76,11 @@ import { useAgentPackageActions } from "./useAgentPackageActions";
 import { useAgentRunCancellation } from "./useAgentRunCancellation";
 import { useAgentProviderCommands } from "./useAgentProviderCommands";
 import { AgentDetailSettingsController } from "./AgentDetailSettingsController";
+import {
+  allChatRuntimeMutationOwnsSelection,
+  recordRuntimeCanonicalKey,
+  runtimeCanonicalKey,
+} from "./allChatRouting";
 
 export function AgentDetail({
   agentId,
@@ -120,6 +127,8 @@ export function AgentDetail({
   const [olderMessages, setOlderMessages] = useState<MessagePageState>();
   const [olderTelemetry, setOlderTelemetry] = useState<TelemetryPageState>({});
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [olderChatError, setOlderChatError] = useState<string>();
+  const [olderTelemetryError, setOlderTelemetryError] = useState<string>();
   const focusedTelemetryRef = useRef<string>();
   const stream = useAgentStream(agentId, projectId);
   const workspaceConnection = useWorkspaceConnection();
@@ -134,10 +143,17 @@ export function AgentDetail({
       ? (saved as AgentTab)
       : "chat";
   });
+  useEffect(() => setOlderTelemetryError(undefined), [tab]);
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [speed, setSpeed] = useState("");
   const [runtimeEngine, setRuntimeEngine] = useState("");
+  const [submissionRuntimeIntent, setSubmissionRuntimeIntent] = useState(0);
+  const runtimeMutationGenerationByAgent = useRef(new Map<string, number>());
+  const runtimeCanonicalKeyByAgent = useRef(new Map<string, string>());
+  const currentRuntimeCanonical = useRef<{ agentId: string; key: string }>();
+  const runtimeAgentIdRef = useRef(agentId);
+  runtimeAgentIdRef.current = agentId;
   const [settingsEngine, setSettingsEngine] = useState("");
   const [settingsModel, setSettingsModel] = useState("");
   const [settingsEffort, setSettingsEffort] = useState("");
@@ -167,6 +183,8 @@ export function AgentDetail({
     );
     setOlderMessages(undefined);
     setOlderTelemetry({});
+    setOlderChatError(undefined);
+    setOlderTelemetryError(undefined);
     setProviderUsageState(undefined);
     focusedMessage.current = undefined;
     focusedTelemetryRef.current = undefined;
@@ -187,6 +205,16 @@ export function AgentDetail({
       olderTelemetry,
     );
   }, [agentQuery.data, olderMessages, olderTelemetry]);
+  if (detail) {
+    currentRuntimeCanonical.current = {
+      agentId,
+      key: runtimeCanonicalKey({
+        engine: detail.agent.activeEngine,
+        model: detail.agent.model,
+        effort: detail.agent.effort,
+      }),
+    };
+  }
   const showSubagents = detail?.hasSubagentHistory === true;
   useEffect(() => {
     if (tab !== "subagents" || !detail || showSubagents) return;
@@ -390,6 +418,7 @@ export function AgentDetail({
     cancelQueuedMessage,
     editQueuedMessage,
     queueDeliveryNotice,
+    queuedMessageFailure,
     queuedMessagesQuery,
     sendMessage,
     steerQueuedMessage,
@@ -441,6 +470,17 @@ export function AgentDetail({
 
   useEffect(() => {
     if (!detail) return;
+    const canonicalKey = runtimeCanonicalKey({
+      engine: detail.agent.activeEngine,
+      model: detail.agent.model,
+      effort: detail.agent.effort,
+    });
+    recordRuntimeCanonicalKey(
+      runtimeMutationGenerationByAgent.current,
+      runtimeCanonicalKeyByAgent.current,
+      agentId,
+      canonicalKey,
+    );
     setRuntimeEngine(detail.agent.activeEngine);
     setSettingsEngine(detail.agent.activeEngine);
     setSettingsModel(detail.agent.model ?? "");
@@ -521,21 +561,27 @@ export function AgentDetail({
     }
     setLoadingOlder(true);
     try {
-      const [messagePage, telemetryPages] = await Promise.all([
-        loadMessages
-          ? api.getAgent(agentId, AGENT_HISTORY_PAGE_SIZE, messageCursor)
-          : Promise.resolve(undefined),
-        Promise.all(
-          telemetryStreams.map(stream =>
-            api.getAgentHistory(
-              agentId,
-              stream,
-              AGENT_HISTORY_PAGE_SIZE,
-              detail?.telemetryHistory?.[stream]?.cursor,
+      const loaded = await loadRetainedData(
+        () => Promise.all([
+          loadMessages
+            ? api.getAgent(agentId, AGENT_HISTORY_PAGE_SIZE, messageCursor)
+            : Promise.resolve(undefined),
+          Promise.all(
+            telemetryStreams.map(stream =>
+              api.getAgentHistory(
+                agentId,
+                stream,
+                AGENT_HISTORY_PAGE_SIZE,
+                detail?.telemetryHistory?.[stream]?.cursor,
+              ),
             ),
           ),
-        ),
-      ]);
+        ]),
+        setOlderChatError,
+        "Older Agent history could not be loaded.",
+      );
+      if (!loaded) return;
+      const [messagePage, telemetryPages] = loaded;
       if (messagePage) {
         setOlderMessages(current =>
           mergeMessagePage(
@@ -613,16 +659,19 @@ export function AgentDetail({
     if (!detail || streams.length === 0 || loadingOlder) return;
     setLoadingOlder(true);
     try {
-      const pages = await Promise.all(
-        streams.map(stream =>
+      const pages = await loadRetainedData(
+        () => Promise.all(streams.map(stream =>
           api.getAgentHistory(
             agentId,
             stream,
             AGENT_HISTORY_PAGE_SIZE,
             detail.telemetryHistory?.[stream]?.cursor,
           ),
-        ),
+        )),
+        setOlderTelemetryError,
+        "Earlier Agent records could not be loaded.",
       );
+      if (!pages) return;
       setOlderTelemetry(current =>
         pages.reduce((state, page) => mergeTelemetryPage(state, page), current),
       );
@@ -639,7 +688,7 @@ export function AgentDetail({
     );
   }
 
-  if (agentQuery.isError) {
+  if (agentQuery.isError && !agentQuery.data) {
     return (
       <Box sx={{ p: 2 }}>
         <Alert
@@ -673,6 +722,7 @@ export function AgentDetail({
   const hasOlderTelemetry = activeTelemetryStreams.some(
     stream => detail.telemetryHistory?.[stream]?.hasMore,
   );
+  const detailRefreshFailed = agentQuery.isError && agentQuery.data !== undefined;
 
   const models = selectedRuntime.models;
   const efforts = selectedRuntime.efforts;
@@ -713,9 +763,36 @@ export function AgentDetail({
     speed={selectedRuntime.speed}
     speeds={speeds}
     selectedRuntime={selectedRuntime}
+    disabled={updateRuntimeSettings.isPending}
     onEngineChange={next => {
       const nextEngine = engines.find(candidate => candidate.id === next);
       if (!nextEngine || !detail) return;
+      setSubmissionRuntimeIntent(value => value + 1);
+      const capturedAgentId = agentId;
+      const mutationGeneration =
+        (runtimeMutationGenerationByAgent.current.get(capturedAgentId) ?? 0) + 1;
+      runtimeMutationGenerationByAgent.current.set(
+        capturedAgentId,
+        mutationGeneration,
+      );
+      const capturedCanonicalKey = runtimeCanonicalKeyByAgent.current.get(
+        capturedAgentId,
+      ) ?? runtimeCanonicalKey({
+        engine: detail.agent.activeEngine,
+        model: detail.agent.model,
+        effort: detail.agent.effort,
+      });
+      const speedKey = chatStateKey("runtime", `agent.${capturedAgentId}.speed`);
+      const previous = {
+        engine: runtimeEngine,
+        model,
+        effort,
+        speed,
+        persistedSpeed: readChatState(speedKey),
+        settingsEngine,
+        settingsModel,
+        settingsEffort,
+      };
       const resolved = resolveRuntimeSelection(
         nextEngine,
         preferencesQuery.data,
@@ -725,10 +802,7 @@ export function AgentDetail({
       setModel(resolved.model);
       setEffort(resolved.effort);
       setSpeed(resolved.speed ?? "");
-      writeChatState(
-        chatStateKey("runtime", `agent.${agentId}.speed`),
-        resolved.speed ?? "",
-      );
+      writeChatState(speedKey, resolved.speed ?? "");
       setSettingsEngine(next);
       setSettingsModel(resolved.model);
       setSettingsEffort(resolved.effort);
@@ -740,22 +814,60 @@ export function AgentDetail({
         },
         {
           onError: () => {
-            setRuntimeEngine(detail.agent.activeEngine);
-            setModel(persistedModel);
-            setEffort(persistedEffort);
-            setSpeed(
-              runtimeControlState(engine, {
-                model: persistedModel,
-                effort: persistedEffort,
-                speed,
-              }).speed,
-            );
+            const currentGeneration =
+              runtimeMutationGenerationByAgent.current.get(capturedAgentId);
+            if (!allChatRuntimeMutationOwnsSelection({
+              capturedAgentId,
+              currentAgentId: runtimeAgentIdRef.current,
+              capturedGeneration: mutationGeneration,
+              currentGeneration,
+              capturedCanonicalKey,
+              currentCanonicalKey:
+                currentRuntimeCanonical.current?.agentId === capturedAgentId
+                  ? currentRuntimeCanonical.current.key
+                  : undefined,
+            })) return;
+            if (readChatState(speedKey) === (resolved.speed || undefined)) {
+              writeChatState(speedKey, previous.persistedSpeed ?? "");
+            }
+            setRuntimeEngine(previous.engine);
+            setModel(previous.model);
+            setEffort(previous.effort);
+            setSpeed(previous.speed);
+            setSettingsEngine(previous.settingsEngine);
+            setSettingsModel(previous.settingsModel);
+            setSettingsEffort(previous.settingsEffort);
           },
         },
       );
     }}
     onModelChange={next => {
       if (!engine || !detail) return;
+      setSubmissionRuntimeIntent(value => value + 1);
+      const capturedAgentId = agentId;
+      const mutationGeneration =
+        (runtimeMutationGenerationByAgent.current.get(capturedAgentId) ?? 0) + 1;
+      runtimeMutationGenerationByAgent.current.set(
+        capturedAgentId,
+        mutationGeneration,
+      );
+      const capturedCanonicalKey = runtimeCanonicalKeyByAgent.current.get(
+        capturedAgentId,
+      ) ?? runtimeCanonicalKey({
+        engine: detail.agent.activeEngine,
+        model: detail.agent.model,
+        effort: detail.agent.effort,
+      });
+      const speedKey = chatStateKey("runtime", `agent.${capturedAgentId}.speed`);
+      const previous = {
+        model,
+        effort,
+        speed,
+        persistedSpeed: readChatState(speedKey),
+        settingsEngine,
+        settingsModel,
+        settingsEffort,
+      };
       const resolved = selectedRuntime.selectModel(next);
       setSettingsEngine(engine.id);
       setSettingsModel(resolved.model);
@@ -768,14 +880,59 @@ export function AgentDetail({
         },
         {
           onError: () => {
-            setModel(persistedModel);
-            setEffort(persistedEffort);
+            const currentGeneration =
+              runtimeMutationGenerationByAgent.current.get(capturedAgentId);
+            if (!allChatRuntimeMutationOwnsSelection({
+              capturedAgentId,
+              currentAgentId: runtimeAgentIdRef.current,
+              capturedGeneration: mutationGeneration,
+              currentGeneration,
+              capturedCanonicalKey,
+              currentCanonicalKey:
+                currentRuntimeCanonical.current?.agentId === capturedAgentId
+                  ? currentRuntimeCanonical.current.key
+                  : undefined,
+            })) return;
+            if (readChatState(speedKey) === (resolved.speed || undefined)) {
+              writeChatState(speedKey, previous.persistedSpeed ?? "");
+            }
+            setModel(previous.model);
+            setEffort(previous.effort);
+            setSpeed(previous.speed);
+            setSettingsEngine(previous.settingsEngine);
+            setSettingsModel(previous.settingsModel);
+            setSettingsEffort(previous.settingsEffort);
           },
         },
       );
     }}
     onEffortChange={next => {
       if (!engine || !detail) return;
+      setSubmissionRuntimeIntent(value => value + 1);
+      const capturedAgentId = agentId;
+      const mutationGeneration =
+        (runtimeMutationGenerationByAgent.current.get(capturedAgentId) ?? 0) + 1;
+      runtimeMutationGenerationByAgent.current.set(
+        capturedAgentId,
+        mutationGeneration,
+      );
+      const capturedCanonicalKey = runtimeCanonicalKeyByAgent.current.get(
+        capturedAgentId,
+      ) ?? runtimeCanonicalKey({
+        engine: detail.agent.activeEngine,
+        model: detail.agent.model,
+        effort: detail.agent.effort,
+      });
+      const speedKey = chatStateKey("runtime", `agent.${capturedAgentId}.speed`);
+      const previous = {
+        model,
+        effort,
+        speed,
+        persistedSpeed: readChatState(speedKey),
+        settingsEngine,
+        settingsModel,
+        settingsEffort,
+      };
       const resolved = selectedRuntime.selectEffort(next);
       setSettingsEngine(engine.id);
       setSettingsModel(resolved.model);
@@ -788,11 +945,35 @@ export function AgentDetail({
         },
         {
           onError: () => {
-            setModel(persistedModel);
-            setEffort(persistedEffort);
+            const currentGeneration =
+              runtimeMutationGenerationByAgent.current.get(capturedAgentId);
+            if (!allChatRuntimeMutationOwnsSelection({
+              capturedAgentId,
+              currentAgentId: runtimeAgentIdRef.current,
+              capturedGeneration: mutationGeneration,
+              currentGeneration,
+              capturedCanonicalKey,
+              currentCanonicalKey:
+                currentRuntimeCanonical.current?.agentId === capturedAgentId
+                  ? currentRuntimeCanonical.current.key
+                  : undefined,
+            })) return;
+            if (readChatState(speedKey) === (resolved.speed || undefined)) {
+              writeChatState(speedKey, previous.persistedSpeed ?? "");
+            }
+            setModel(previous.model);
+            setEffort(previous.effort);
+            setSpeed(previous.speed);
+            setSettingsEngine(previous.settingsEngine);
+            setSettingsModel(previous.settingsModel);
+            setSettingsEffort(previous.settingsEffort);
           },
         },
       );
+    }}
+    onSpeedChange={next => {
+      setSubmissionRuntimeIntent(value => value + 1);
+      selectedRuntime.selectSpeed(next);
     }}
   />;
 
@@ -862,7 +1043,9 @@ export function AgentDetail({
         minWidth: 0,
         overflow: "hidden",
         display: "grid",
-        gridTemplateRows: "auto minmax(0, 1fr) auto",
+        gridTemplateRows: activeBrowser || detailRefreshFailed
+          ? "auto auto minmax(0, 1fr) auto"
+          : "auto minmax(0, 1fr) auto",
       }}
     >
       <AgentDetailHeader
@@ -916,26 +1099,37 @@ export function AgentDetail({
         }}
       />
 
-      {activeBrowser ? (
-        <Alert
-          severity="info"
-          action={
-            <Button color="inherit" size="small" onClick={() => onOpenBrowser(activeBrowser.runId)}>
-              View Browser
-            </Button>
-          }
-          sx={{ mx: { xs: 1, sm: 2 }, mt: 1 }}
-        >
-          {activeBrowser.status === "opening"
-            ? activeBrowser.queuePosition
-              ? `Browser queued · position ${activeBrowser.queuePosition}`
-              : "Browser is opening"
-            : `Browser active${activeBrowser.title ? ` · ${activeBrowser.title}` : ""}`}
-          {activeBrowser.profileMode === "trusted" && activeBrowser.profileName
-            ? ` · Trusted profile: ${activeBrowser.profileName}`
-            : " · Disposable profile"}
-          {activeBrowser.controlOwner === "operator" ? " · Operator has control" : ""}
-        </Alert>
+      {activeBrowser || detailRefreshFailed ? (
+        <Stack spacing={1} sx={{ mx: { xs: 1, sm: 2 }, mt: 1 }}>
+          {detailRefreshFailed ? (
+            <Alert
+              severity="warning"
+              action={<Button color="inherit" size="small" onClick={() => void agentQuery.refetch()}>Retry</Button>}
+            >
+              This Agent could not be refreshed. The last loaded details remain available.
+            </Alert>
+          ) : null}
+          {activeBrowser ? (
+            <Alert
+              severity="info"
+              action={
+                <Button color="inherit" size="small" onClick={() => onOpenBrowser(activeBrowser.runId)}>
+                  View Browser
+                </Button>
+              }
+            >
+              {activeBrowser.status === "opening"
+                ? activeBrowser.queuePosition
+                  ? `Browser queued · position ${activeBrowser.queuePosition}`
+                  : "Browser is opening"
+                : `Browser active${activeBrowser.title ? ` · ${activeBrowser.title}` : ""}`}
+              {activeBrowser.profileMode === "trusted" && activeBrowser.profileName
+                ? ` · Trusted profile: ${activeBrowser.profileName}`
+                : " · Disposable profile"}
+              {activeBrowser.controlOwner === "operator" ? " · Operator has control" : ""}
+            </Alert>
+          ) : null}
+        </Stack>
       ) : null}
 
       <AgentDetailPanels
@@ -954,6 +1148,8 @@ export function AgentDetail({
         agentIdForHandle={agentIdForHandle}
         chatPreviewScope={chatPreviewScope}
         loadingOlder={loadingOlder}
+        olderChatError={olderChatError}
+        olderTelemetryError={olderTelemetryError}
         hasOlderTelemetry={hasOlderTelemetry}
         activeExecutionId={runtimeActivity?.executionId}
         focusTelemetry={focusTelemetry}
@@ -979,6 +1175,7 @@ export function AgentDetail({
       <AgentDetailComposer
         visible={tab === "chat"}
         queuedMessageNotice={queueDeliveryNotice ?? queuedMessageNotice}
+        queuedMessageFailure={queuedMessageFailure}
         sendError={
           sendMessage.isError || cancelRun.isError
             ? `${sendMessage.isError ? "Message not sent." : "The active Run could not be cancelled."} ${String(
@@ -1030,6 +1227,13 @@ export function AgentDetail({
           projectId: detail.agent.projectId,
           draftStorageKey: chatStateKey("draft", `agent.${agentId}`),
           conversationDraftId: `agent:${agentId}`,
+          submissionRuntimeKey: JSON.stringify([
+            engine?.id ?? "",
+            model,
+            effort,
+            speed,
+          ]),
+          submissionRuntimeIntentKey: String(submissionRuntimeIntent),
           controls: agentRuntimeControls,
           disabled: sendMessage.isPending || updateRuntimeSettings.isPending,
           running: false,

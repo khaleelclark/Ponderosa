@@ -6,6 +6,7 @@ import type {
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
+import { refreshLatestAgentProviderUsage } from "../providerUsageQuery";
 import { queryKeys } from "../queryKeys";
 
 export function useAgentProviderCommands({
@@ -29,17 +30,23 @@ export function useAgentProviderCommands({
         ? { ...providerUsageState, refreshing: true }
         : undefined;
       if (!loading) {
-        const next = await api.getAgentProviderUsage(agentId, true);
+        const next = await refreshLatestAgentProviderUsage(
+          queryClient,
+          agentId,
+          () => api.getAgentProviderUsage(agentId, true),
+        );
         setProviderUsageState(next);
-        queryClient.setQueryData(queryKeys.providerUsage.agent(agentId), next);
         return;
       }
       setProviderUsageState(loading);
       queryClient.setQueryData(queryKeys.providerUsage.agent(agentId), loading);
       try {
-        const next = await api.getAgentProviderUsage(agentId, true);
+        const next = await refreshLatestAgentProviderUsage(
+          queryClient,
+          agentId,
+          () => api.getAgentProviderUsage(agentId, true),
+        );
         setProviderUsageState(next);
-        queryClient.setQueryData(queryKeys.providerUsage.agent(agentId), next);
       } catch (error) {
         const failed = { ...loading, refreshing: false };
         setProviderUsageState(failed);
