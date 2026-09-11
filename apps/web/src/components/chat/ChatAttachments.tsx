@@ -26,10 +26,8 @@ const textPreviewSupported = (attachment: CommunicationAttachmentDto) =>
 
 export function ChatAttachments({
   attachments,
-  density = "comfortable",
 }: {
   attachments: CommunicationAttachmentDto[];
-  density?: "comfortable" | "compact";
 }): JSX.Element | null {
   const [preview, setPreview] = useState<CommunicationAttachmentDto>();
   const [failed, setFailed] = useState<Set<string>>(() => new Set());
@@ -59,8 +57,6 @@ export function ChatAttachments({
     setPreview(undefined);
   }, [availabilityKey]);
   if (!attachments.length) return null;
-  const imageWidth = density === "compact" ? 220 : 320;
-  const imageHeight = density === "compact" ? 180 : 240;
 
   return (
     <>
@@ -92,6 +88,8 @@ export function ChatAttachments({
                   onClick={() => setPreview(attachment)}
                   sx={{
                     display: "block",
+                    width: 96,
+                    height: 96,
                     maxWidth: "100%",
                     borderRadius: 1,
                     overflow: "hidden",
@@ -110,10 +108,9 @@ export function ChatAttachments({
                     onError={() => setFailed((current) => new Set(current).add(attachment.id))}
                     sx={{
                       display: "block",
-                      width: "auto",
-                      maxWidth: { xs: "100%", sm: imageWidth },
-                      maxHeight: imageHeight,
-                      objectFit: "contain",
+                      width: "100%",
+                      height: "100%",
+                      objectFit: "cover",
                       transition: "filter 120ms ease",
                     }}
                   />

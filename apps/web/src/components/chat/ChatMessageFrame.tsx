@@ -225,7 +225,6 @@ export function ChatMessageFrame({
             {message.afterBody}
             <ChatAttachments
               attachments={message.attachments ?? []}
-              density={message.attachmentDensity}
             />
           </Box>
           {message.belowBody}
