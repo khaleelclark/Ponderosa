@@ -1152,6 +1152,7 @@ export function Composer({
   useEffect(() => {
     const draft = draftQuery.data;
     if (
+      sendingRef.current ||
       !conversationDraftId ||
       !draft ||
       (draftReady.current && draft.revision <= draftRevision.current)
@@ -1423,6 +1424,7 @@ export function Composer({
     conversationDraftId,
     draftQuery.data,
     draftStorageKey,
+    sending,
     pendingSubmissionWithLocalUploadAuthority,
     updateFailedDraftContents,
   ]);
@@ -1479,6 +1481,9 @@ export function Composer({
   ]);
 
   useEffect(() => {
+    // A reply can arrive through SSE before the send request acknowledges.
+    // Do not rewrite that submission's text/destination while it is settling.
+    if (sendingRef.current) return;
     if (conversationDraftId && !draftReady.current) return;
     const previous = appliedDefaultDestination.current;
     if (!defaultDestination) {
@@ -1552,6 +1557,7 @@ export function Composer({
     destinationMode,
     draftReadyVersion,
     replaceText,
+    sending,
   ]);
 
   useComposerDraftStorageWrite({
@@ -1563,11 +1569,17 @@ export function Composer({
   useEffect(() => {
     if (
       !conversationDraftId ||
+      sendingRef.current ||
       !draftReady.current ||
       !draftLocallyEdited.current
     )
       return;
+    const scheduledGeneration = draftGeneration.current;
     const timer = window.setTimeout(() => {
+      // A queued debounce must not revive a sent draft or save an empty
+      // snapshot after this surface has already relinquished draft ownership.
+      if (sendingRef.current || !draftLocallyEdited.current ||
+          scheduledGeneration !== draftGeneration.current) return;
       // Store the extracted paste and its draft reference as one logical draft
       // update. A partial write must never make a reload silently lose it.
       if (pastedText && !pastedTextAttachmentId.current) return;
@@ -1771,6 +1783,7 @@ export function Composer({
     queryClient,
     knownMentionBindings,
     pastedText,
+    sending,
     text,
   ]);
 
@@ -2371,8 +2384,10 @@ export function Composer({
           stillOwnsDraft:
             scopeStillActive &&
             draftWriteChain.current === submittedDraftWriteChain &&
-            activeSubmissionIntentKeyRef.current === submissionIntentKey &&
-            renderedDestinationIdentityRef.current === submittedDestinationIdentity,
+            (!runtimeCommandSubmission || (
+              activeSubmissionIntentKeyRef.current === submissionIntentKey &&
+              renderedDestinationIdentityRef.current === submittedDestinationIdentity
+            )),
         });
         // Clear only the exact draft incarnation that produced this submission.
         // This also preserves edits made while a runtime command is pending.
