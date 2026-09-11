@@ -2100,6 +2100,7 @@ test("direct message retries replay the original success after a recipient is ar
   assert.equal(reconciliations, 1);
   assert.deepEqual(response.json(), {
     messageId: "message-a",
+    message: { id: "message-a" },
     replayed: true,
     recipients: [
       { agentId: "agent-a", queued: true, deliveryId: "delivery-a", state: "queued" },
@@ -2222,7 +2223,7 @@ test("projection recovery leases exact owners and restores only the persisted ro
     getAgent: (id) => agents.get(id),
     getCommunicationEvent: () => event,
     canProjectCommunication: () => true,
-    getConversationMessages: () => [],
+    getProjectedConversationMessageById: () => undefined,
     appendConversationMessage: (_id, message) => {
       assert.equal(conversationLeases.get(chat.id), 1);
       assert.equal(agentLeases.get("agent-a"), 1);
@@ -2236,6 +2237,7 @@ test("projection recovery leases exact owners and restores only the persisted ro
   const reconciler = createCommunicationProjectionReconciler({
     store,
     coordinationV3: {
+      runtimeCommunication: () => undefined,
       runtimeCommunications: () => [{
         id: "runtime-a",
         projectId: chat.projectId,
@@ -2326,11 +2328,12 @@ test("projection recovery associates canonical attachments for a passive broadca
       getAgent: () => owner,
       getCommunicationEvent: () => event,
       canProjectCommunication: () => true,
-      getConversationMessages: () => [{ id: "message-a", communicationEventId: event.eventId }],
+      getProjectedConversationMessageById: () => ({ id: "message-a", communicationEventId: event.eventId }),
       getCommunicationProjection: () => ({ message: { messageId: "message-a" } }),
       appendCommunicationProjection: () => ({ replayed: true }),
     },
     coordinationV3: {
+      runtimeCommunication: () => undefined,
       runtimeCommunications: () => [{
         id: "runtime-a",
         projectId: chat.projectId,
@@ -3029,9 +3032,9 @@ test("targeted broadcasts accept the complete composer mention-binding shape", a
       getConversation: () => chat,
       listAgents: () => [agent],
       getAgent: () => agent,
-      getConversationMessages: () => acceptedEventId
-        ? [{ id: "message-a", communicationEventId: acceptedEventId }]
-        : [],
+      getProjectedConversationMessageById: () => acceptedEventId
+        ? { id: "message-a", communicationEventId: acceptedEventId }
+        : undefined,
     },
     coordinationV3: {
       runtimeCommunication: () => undefined,
@@ -3119,9 +3122,9 @@ test("targeted broadcasts keep a stable Agent binding through rename and old-han
       getConversation: () => chat,
       listAgents: () => [renamedAgent, reusedHandleAgent],
       getAgent: id => id === renamedAgent.id ? renamedAgent : reusedHandleAgent,
-      getConversationMessages: () => eventId
-        ? [{ id: "message-a", communicationEventId: eventId }]
-        : [],
+      getProjectedConversationMessageById: () => eventId
+        ? { id: "message-a", communicationEventId: eventId }
+        : undefined,
     },
     coordinationV3: {
       runtimeCommunication: () => undefined,

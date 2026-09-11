@@ -38,13 +38,14 @@ export class CoordinationV3RuntimeCommunicationReadModel {
   /** Provider coordination commits its deterministic Communication identity in
    * the Request transaction. Return only rows whose Agent audit projection is
    * incomplete so startup can close the post-commit projection crash window. */
-  requestCommunicationsNeedingProjection(projectId?: string): RuntimeCommunicationV3View[] {
+  requestCommunicationsNeedingProjection(projectId?: string, communicationEventId?: string): RuntimeCommunicationV3View[] {
     const rows = this.sqlite.prepare(`
       SELECT request.id, request.project_id, request.conversation_id,
         request.requester_agent_id, request.recipient_agent_id,
         request.communication_event_id, request.payload_json, request.created_at
       FROM coordination_requests request
       WHERE (? IS NULL OR request.project_id = ?)
+        ${communicationEventId === undefined ? "" : "AND request.communication_event_id = ?"}
         AND request.conversation_id IS NOT NULL
         AND request.requester_agent_id IS NOT NULL
         AND request.communication_event_id IS NOT NULL
@@ -64,7 +65,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
           )
         )
       ORDER BY request.created_at, request.id
-    `).all(projectId ?? null, projectId ?? null) as Array<{
+    `).all(projectId ?? null, projectId ?? null, ...(communicationEventId === undefined ? [] : [communicationEventId])) as Array<{
       id: string;
       project_id: string;
       conversation_id: string;

@@ -115,6 +115,8 @@ export function ChatAttachments({
                   <Box
                     component="img"
                     src={previewUrl}
+                    loading="lazy"
+                    decoding="async"
                     alt={attachment.name}
                     onError={() => setFailed((current) => new Set(current).add(attachment.id))}
                     sx={{

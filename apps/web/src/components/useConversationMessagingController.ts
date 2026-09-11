@@ -41,6 +41,7 @@ import {
 } from "../conversationRouting";
 import { pickAgentName } from "../parkNames";
 import { queryKeys } from "../queryKeys";
+import { publishConversationMessageReceipt } from "../conversationMessageReceipt";
 import {
   acceptBroadcastOperation,
   acceptDirectOperation,
@@ -269,7 +270,8 @@ export function useConversationMessagingController({
         ...(agentIds.length === 1 ? { engine, ...runtimeConfig } : {}),
       });
     },
-    onSuccess: (response, variables) => {
+    onSuccess: async (response, variables) => {
+      await publishConversationMessageReceipt(queryClient, conversationId, response.message);
       invalidate();
       queuedMessages.recordDelivery(
         response,
@@ -333,7 +335,11 @@ export function useConversationMessagingController({
         idempotencyKey: requestId,
       });
     },
-    onSuccess: invalidate,
+    onSuccess: async response => {
+      await publishConversationMessageReceipt(queryClient, conversationId,
+        "id" in response ? response : undefined);
+      invalidate();
+    },
   });
 
   const cancelQueued = queuedMessages.cancel;

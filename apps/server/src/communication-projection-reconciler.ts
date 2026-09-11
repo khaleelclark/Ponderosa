@@ -126,10 +126,19 @@ export function createCommunicationProjectionReconciler(
         exactRecoveryError ??= new Error(message);
       }
     };
-    const sources = [
-      ...coordinationV3.runtimeCommunications(),
-      ...coordinationV3.requestCommunicationsNeedingProjection(),
-    ];
+    const readSources = () => {
+      const exactRuntime = filter?.communicationEventId
+        ? coordinationV3.runtimeCommunication(filter.communicationEventId)
+        : undefined;
+      if (exactRuntime) return [exactRuntime];
+      // Legacy rows can have a runtime ID different from their event ID.
+      // Preserve their recovery path, scoped to the requested Project.
+      return [
+        ...coordinationV3.runtimeCommunications(filter?.projectId),
+        ...coordinationV3.requestCommunicationsNeedingProjection(filter?.projectId, filter?.communicationEventId),
+      ];
+    };
+    const sources = readSources();
     for (const row of sources) {
       if (filter?.projectId && row.projectId !== filter.projectId) continue;
       if (options.shouldContinue && !options.shouldContinue()) break;
@@ -476,8 +485,7 @@ export function createCommunicationProjectionReconciler(
           target.surface === "conversation" || target.surface === "collaboration_view");
         if (roomTarget && canonical.conversationId) {
           const channel = roomTarget.surface === "collaboration_view" ? "collaboration" : "main";
-          const roomMessage = store.getConversationMessages(canonical.conversationId, channel)
-            .find((message) => message.communicationEventId === canonical.eventId);
+          const roomMessage = store.getProjectedConversationMessageById(canonical.conversationId, channel, canonical.eventId);
           const deliveryIntents: ConversationDeliveryIntent[] = recipientIds.map((agentId) => ({
             targetAgentId: agentId,
             relayDepth: 0,
@@ -602,10 +610,7 @@ export function createCommunicationProjectionReconciler(
       // pass took its source snapshot. Its delivery lease may already have
       // been released by the time the route checks again, so force that route
       // to retry instead of silently stranding the new durable row.
-      const latestSources = [
-        ...coordinationV3.runtimeCommunications(),
-        ...coordinationV3.requestCommunicationsNeedingProjection(),
-      ];
+      const latestSources = readSources();
       for (const row of latestSources) {
         if (row.projectId !== filter.projectId) continue;
         const payload = row.payload && typeof row.payload === "object"

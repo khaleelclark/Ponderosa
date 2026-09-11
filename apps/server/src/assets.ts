@@ -196,8 +196,13 @@ export async function prepareAssetUpload(input: {
         withoutEnlargement: true,
       })
       .timeout({ seconds: 10 })
-      .png({ compressionLevel: 9, adaptiveFiltering: true })
+      .png({ compressionLevel: 6, adaptiveFiltering: true })
       .toBuffer();
+    // Default lossless compression avoids spending seconds optimizing a preview.
+    // Retain the old maximum-compression path only for quota-borderline images.
+    if (preview.length > ASSET_LIMITS.maxFileBytes) {
+      preview = await image.png({ compressionLevel: 9, adaptiveFiltering: true }).toBuffer();
+    }
   } catch {
     throw new AssetError(
       415,

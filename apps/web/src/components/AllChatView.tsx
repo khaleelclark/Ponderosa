@@ -1728,10 +1728,12 @@ export function AllChatView({
                           aria-label="Copy message"
                           onClick={event => {
                             event.stopPropagation();
-                            void copyText(resolveMessageMentionText(
-                              item.text,
-                              item.agentMentions,
-                            ));
+                            void copyText(communicationVisibleText({
+                              text: item.text,
+                              intent: item.communicationIntent,
+                              fromAgent: !fromUser,
+                              agentMentions: item.agentMentions,
+                            }));
                           }}
                         >
                           <ContentCopyOutlinedIcon fontSize="inherit" />

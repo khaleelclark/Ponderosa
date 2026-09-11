@@ -521,6 +521,8 @@ export interface CreateMultiAgentDirectMessageRequest {
 
 export interface MultiAgentDirectMessageResponse {
   messageId: string;
+  /** Canonical saved message, absent while projection recovery is pending. */
+  message?: ConversationMessageDto;
   replayed: boolean;
   recipients: Array<{
     agentId: string;
