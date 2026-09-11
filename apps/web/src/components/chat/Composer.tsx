@@ -1081,10 +1081,10 @@ export function Composer({
     draftQuery,
     draftReady,
     draftReadyVersion,
+    mutationLocked: draftMutationLocked,
     inputRef,
     insertTextRequest,
     setCaret,
-    updateText: update,
   });
 
   useComposerMentionedHandlesChange({
