@@ -1,4 +1,6 @@
 import CloseIcon from "@mui/icons-material/Close";
+import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
+import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
 import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 import {
@@ -6,6 +8,7 @@ import {
   Button,
   ButtonBase,
   Dialog,
+  DialogActions,
   DialogContent,
   DialogTitle,
   IconButton,
@@ -31,17 +34,17 @@ export function ChatAttachments({
 }): JSX.Element | null {
   const [preview, setPreview] = useState<CommunicationAttachmentDto>();
   const [failed, setFailed] = useState<Set<string>>(() => new Set());
-  const [textPreview, setTextPreview] = useState<{ content?: string; truncated?: boolean; error?: string }>();
+  const [textPreview, setTextPreview] = useState<{ attachmentId: string; content?: string; truncated?: boolean; error?: string }>();
   const [retry, setRetry] = useState(0);
   useEffect(() => {
     setTextPreview(undefined);
-    if (!preview || !textPreviewSupported(preview)) return;
+    if (!preview || preview.unavailable || !textPreviewSupported(preview)) return;
     const controller = new AbortController();
     const url = preview.downloadUrl ?? preview.url ?? preview.previewUrl;
-    if (!url) { setTextPreview({ error: "File URL is unavailable" }); return; }
+    if (!url) { setTextPreview({ attachmentId: preview.id, error: "File URL is unavailable" }); return; }
     void readTextPreview(url, controller.signal).then(
-      result => { if (!controller.signal.aborted) setTextPreview(result); },
-      error => { if (!controller.signal.aborted) setTextPreview({ error: error instanceof Error ? error.message : "Could not load file" }); },
+      result => { if (!controller.signal.aborted) setTextPreview({ ...result, attachmentId: preview.id }); },
+      error => { if (!controller.signal.aborted) setTextPreview({ attachmentId: preview.id, error: error instanceof Error ? error.message : "Could not load file" }); },
     );
     return () => controller.abort();
   }, [preview, retry]);
@@ -57,6 +60,14 @@ export function ChatAttachments({
     setPreview(undefined);
   }, [availabilityKey]);
   if (!attachments.length) return null;
+  const previewIndex = attachments.findIndex(attachment => attachment.id === preview?.id);
+  const previewUnavailable = preview && (preview.unavailable || failed.has(preview.id) ||
+    !(preview.previewUrl ?? preview.url ?? preview.downloadUrl));
+  const currentTextPreview = textPreview?.attachmentId === preview?.id ? textPreview : undefined;
+  const navigatePreview = (step: number) => setPreview(current => {
+    const index = attachments.findIndex(attachment => attachment.id === current?.id);
+    return index < 0 ? current : attachments[(index + step + attachments.length) % attachments.length];
+  });
 
   return (
     <>
@@ -156,6 +167,14 @@ export function ChatAttachments({
       <Dialog
         open={Boolean(preview)}
         onClose={() => setPreview(undefined)}
+        onKeyDown={(event) => {
+          if (attachments.length < 2 || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+          if ((event.target as HTMLElement).closest('input, textarea, select, [contenteditable="true"]')) return;
+          if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+          event.preventDefault();
+          event.stopPropagation();
+          navigatePreview(event.key === "ArrowLeft" ? -1 : 1);
+        }}
         fullWidth
         maxWidth="lg"
         aria-labelledby={preview ? `chat-image-preview-${preview.id}` : undefined}
@@ -175,7 +194,7 @@ export function ChatAttachments({
           <Typography component="span" variant="subtitle1" noWrap sx={{ flex: 1, minWidth: 0 }}>
             {preview?.name}
           </Typography>
-          {preview && (preview.downloadUrl ?? preview.url) ? (
+          {preview && !preview.unavailable && (preview.downloadUrl ?? preview.url) ? (
             <Tooltip title="Download">
               <IconButton
                 component="a"
@@ -205,31 +224,33 @@ export function ChatAttachments({
             overflow: "auto",
           }}
         >
-          {preview && textPreviewSupported(preview) ? (
+          {previewUnavailable ? (
+            <Typography role="status" sx={{ p: 2 }}>Artifact unavailable</Typography>
+          ) : preview && textPreviewSupported(preview) ? (
             <Box sx={{ width: "100%", height: "100%", p: 2, minWidth: 0 }}>
               <FilePreview
                 title={preview.name}
                 path={preview.name}
                 mediaType={preview.mediaType}
-                content={textPreview?.content}
-                loading={!textPreview}
-                error={textPreview?.error}
-                truncated={textPreview?.truncated}
+                content={currentTextPreview?.content}
+                loading={!currentTextPreview}
+                error={currentTextPreview?.error}
+                truncated={currentTextPreview?.truncated}
                 totalBytes={preview.size}
                 downloadUrl={preview.downloadUrl ?? preview.url}
                 hideHeader
                 maxHeight="100%"
               />
-              {textPreview?.error ? <Button onClick={() => setRetry(value => value + 1)}>Retry preview</Button> : null}
+              {currentTextPreview?.error ? <Button onClick={() => setRetry(value => value + 1)}>Retry preview</Button> : null}
             </Box>
-          ) : preview && (preview.previewUrl ?? preview.url) ? (
+          ) : preview && (!preview.mediaType || preview.mediaType.startsWith("image/")) && (preview.previewUrl ?? preview.url) ? (
             <Box
               component="img"
+              key={preview.id}
               src={preview.previewUrl ?? preview.url}
               alt={preview.name}
               onError={() => {
                 setFailed((current) => new Set(current).add(preview.id));
-                setPreview(undefined);
               }}
               sx={{
                 display: "block",
@@ -238,8 +259,30 @@ export function ChatAttachments({
                 objectFit: "contain",
               }}
             />
+          ) : preview ? (
+            <Stack spacing={1} sx={{ p: 2, minWidth: 0, alignItems: "center" }}>
+              <Typography sx={{ overflowWrap: "anywhere" }}>{preview.name}</Typography>
+              <Typography color="text.secondary">Preview unavailable for this file type.</Typography>
+              {preview.downloadUrl ?? preview.url ? <Button
+                component="a" href={preview.downloadUrl ?? preview.url} download
+                startIcon={<DownloadOutlinedIcon />}
+              >Download file</Button> : null}
+            </Stack>
           ) : null}
         </DialogContent>
+        {attachments.length > 1 ? (
+          <DialogActions sx={{ justifyContent: "center", gap: 1 }}>
+            <IconButton aria-label="Previous attachment" onClick={() => navigatePreview(-1)}>
+              <ChevronLeftIcon />
+            </IconButton>
+            <Typography variant="body2" role="status" aria-live="polite" aria-atomic="true">
+              {previewIndex + 1} of {attachments.length}
+            </Typography>
+            <IconButton aria-label="Next attachment" onClick={() => navigatePreview(1)}>
+              <ChevronRightIcon />
+            </IconButton>
+          </DialogActions>
+        ) : null}
       </Dialog>
     </>
   );
