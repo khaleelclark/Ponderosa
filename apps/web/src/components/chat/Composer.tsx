@@ -236,7 +236,8 @@ export function Composer({
   placeholder,
   projectId,
   mentionHandles,
-  mentionBindings,
+  mentionBindings: suppliedMentionBindings,
+  mentionBindingsReady = true,
   mentionSuggestionHandles,
   ambiguousMentionHandles,
   commands,
@@ -372,6 +373,11 @@ export function Composer({
   const [knownMentionBindings, setKnownMentionBindings] = useState<
     AgentMentionBindingDto[]
   >([]);
+  // Retain authored identities for display while loading, but do not permit sends
+  // until the current roster can validate them. A loaded deletion stays invalid.
+  const mentionBindings = mentionBindingsReady
+    ? suppliedMentionBindings
+    : knownMentionBindings;
   const inputRef = useRef<ComposerEditorHandle | null>(null);
   const activeSubmissionIntentKeyRef = useRef(submissionIntentKey);
   activeSubmissionIntentKeyRef.current = submissionIntentKey;
@@ -1049,6 +1055,7 @@ export function Composer({
     failedRestoreCount: failedDraftContents.length,
   });
   const canSend =
+    mentionBindingsReady &&
     !sending &&
     !dictationSettling &&
     (!destinationError || Boolean(durableRetryAction) || Boolean(pendingSubmissionRef.current?.request)) &&
@@ -1515,11 +1522,11 @@ export function Composer({
     if (previous?.selectionKey === defaultDestination.selectionKey) return;
     const editor = inputRef.current;
     if (!editor || draftMutationLockedRef.current) return;
-    appliedDefaultDestination.current = defaultDestination;
     // A continuation is a normal authored token, not an ephemeral overlay.
     // Seed only an empty draft: refreshes/new replies must never retarget work.
     const currentText = editor.getCanonicalText();
     if (textRef.current.trim() || currentText.trim()) return;
+    appliedDefaultDestination.current = defaultDestination;
     const nextText = prependComposerDestination(currentText, defaultDestination.handle);
     if (defaultDestination.binding) {
       const binding = defaultDestination.binding;
