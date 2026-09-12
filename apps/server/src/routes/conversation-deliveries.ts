@@ -329,8 +329,7 @@ export function registerConversationDeliveryRoutes(
           projectId: existingRuntime!.projectId,
           communicationEventId: eventId,
         });
-        replayedMessage = store.getConversationMessages(request.params.id)
-          .find((candidate) => candidate.communicationEventId === eventId);
+        replayedMessage = store.getProjectedConversationMessageById(request.params.id, "main", eventId);
       } catch {
         return reply.code(202).send({
           communicationEventId: eventId,
@@ -551,8 +550,7 @@ export function registerConversationDeliveryRoutes(
     const canonicalAppendCompletedAt = performance.now();
     let message;
     try {
-      message = store.getConversationMessages(master.id)
-        .find((candidate) => candidate.communicationEventId === communicationInput.eventId);
+      message = store.getProjectedConversationMessageById(master.id, "main", communicationInput.eventId);
     } catch {
       try { if (recipientAgentIds.length) notifyScheduler(); } catch { /* recovery is durable */ }
       return reply.code(202).send({
@@ -763,6 +761,7 @@ export function registerConversationDeliveryRoutes(
         if (!message) return reply.code(202).send(recoveringResponse());
         return {
           messageId: message.id,
+          message,
           replayed: true,
           recipients: originalRecipients.map((agentId) => replayedDirectRecipient(
             coordinationV3,
@@ -944,6 +943,7 @@ export function registerConversationDeliveryRoutes(
         }
         return {
           messageId: message.id,
+          message,
           replayed: intake.replayed,
           recipients: recipients.map((recipient) => ({
             agentId: recipient.agentId,

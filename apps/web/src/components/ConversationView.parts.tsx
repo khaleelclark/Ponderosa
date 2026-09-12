@@ -113,10 +113,7 @@ function ConversationMessageComponent({
   const senderName = fromManager
     ? (operatorProfile?.displayName ?? "You")
     : agentTitle(message.authorAgentId);
-  const resolvedCopyText = resolveMessageMentionText(
-    copyableText,
-    message.agentMentions,
-  );
+  const resolvedCopyText = visibleText;
 
   return (
     <ChatMessageFrame

@@ -42,6 +42,7 @@ import type {
   CommitAgentDeletionResponse,
   CommunicationDocumentContentDto,
   ConversationDetailDto,
+  ConversationMessageDto,
   ConversationDraftConflictListDto,
   ConversationDraftDto,
   ConversationDto,
@@ -402,8 +403,8 @@ export const realApi = {
   sendConversationMessage(
     conversationId: string,
     request: CreateConversationMessageRequest,
-  ): Promise<{ communicationEventId?: string }> {
-    return requestJson<{ communicationEventId?: string }>("/api/conversations/" + encodeURIComponent(conversationId) + "/messages", {
+  ): Promise<ConversationMessageDto | { communicationEventId?: string }> {
+    return requestJson<ConversationMessageDto | { communicationEventId?: string }>("/api/conversations/" + encodeURIComponent(conversationId) + "/messages", {
       method: "POST",
       body: JSON.stringify(request satisfies CreateConversationMessageRequest),
     });

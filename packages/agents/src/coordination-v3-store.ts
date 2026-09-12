@@ -429,8 +429,8 @@ export class CoordinationV3Store {
     return this.runtimeCommunicationReadModel.runtimeCommunications(projectId);
   }
 
-  requestCommunicationsNeedingProjection(projectId?: string): RuntimeCommunicationV3View[] {
-    return this.runtimeCommunicationReadModel.requestCommunicationsNeedingProjection(projectId);
+  requestCommunicationsNeedingProjection(projectId?: string, communicationEventId?: string): RuntimeCommunicationV3View[] {
+    return this.runtimeCommunicationReadModel.requestCommunicationsNeedingProjection(projectId, communicationEventId);
   }
 
   runtimeCommunication(id: string): RuntimeCommunicationV3View | undefined {

@@ -510,7 +510,7 @@ function ChatPaneComponent({
                 ) : undefined,
               actions: (
                 <>
-                  <CopyMessageButton text={message.text} />
+                  <CopyMessageButton text={visibleAgentMessageText(message)} />
                   <MessageRequestAction
                     projectId={projectId}
                     conversationId={message.conversationId}

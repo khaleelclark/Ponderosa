@@ -17,6 +17,7 @@ import {
   COPY_COMMAND,
   CUT_COMMAND,
   PASTE_COMMAND,
+  SKIP_DOM_SELECTION_TAG,
   DecoratorNode,
   type EditorConfig,
   type LexicalNode,
@@ -154,7 +155,7 @@ export interface ComposerEditorHandle {
   getCanonicalText(): string;
   getSelectionOffsets(): ComposerSelectionOffsets;
   setSelectionOffsets(start: number, end: number): void;
-  replaceCanonicalRange(start: number, end: number, content: string): void;
+  replaceCanonicalRange(start: number, end: number, content: string, options?: { focus?: boolean }): void;
   insertMention(descriptor: Omit<ComposerMentionDescriptor, "start" | "end">): void;
   insertProjectFile(
     descriptor: ComposerProjectFileDescriptor,
@@ -891,13 +892,13 @@ function EditorBridge({
     setSelectionOffsets: (start, end) => {
       editor.update(() => $setSelectionOffsets(start, end));
     },
-    replaceCanonicalRange: (start, end, content) => {
+    replaceCanonicalRange: (start, end, content, options) => {
       editor.update(() => {
         $setSelectionOffsets(start, end);
         const parsed = descriptorsForCanonicalText(content, descriptorsRef.current);
         $insertCanonicalContent(content, parsed);
-      });
-      requestAnimationFrame(() => editor.focus());
+      }, { tag: options?.focus === false ? SKIP_DOM_SELECTION_TAG : undefined });
+      if (options?.focus !== false) requestAnimationFrame(() => editor.focus());
     },
     insertMention: descriptor => {
       editor.update(() => {
