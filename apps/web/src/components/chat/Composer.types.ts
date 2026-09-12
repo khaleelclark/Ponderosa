@@ -9,6 +9,8 @@ export interface ComposerProps extends ChatComposerContract {
   mentionHandles?: string[];
   /** Stable recipient identities corresponding to selectable Agent handles. */
   mentionBindings?: AgentMentionBindingDto[];
+  /** False while the authoritative recipient roster is unavailable; never infer deletion from loading. */
+  mentionBindingsReady?: boolean;
   mentionSuggestionHandles?: string[];
   ambiguousMentionHandles?: string[];
   onCapabilitiesOpen?(): Promise<unknown> | unknown;

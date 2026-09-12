@@ -491,7 +491,7 @@ function ChatMarkdown({
         remarkPlugins={[remarkGfm, remarkMessageTags]}
         urlTransform={chatMarkdownUrlTransform}
         components={{
-          pre: ({ children: code }) => <CopyableCodeBlock>{code}</CopyableCodeBlock>,
+          pre: CopyableCodeBlock,
           img: ({ src, alt }) => {
             const projectPreview = projectFileHref(projectId ?? previewScope?.projectId, src, "preview");
             const image = <Box component="img" src={projectPreview ?? src} alt={alt ?? "Agent-provided image"} loading="lazy" sx={{ display: "block", width: "auto", maxWidth: "100%", maxHeight: { xs: 320, md: 520 }, objectFit: "contain", borderRadius: 1.5 }} />;

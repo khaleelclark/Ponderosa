@@ -654,7 +654,7 @@ export function ConversationView({
         : undefined
     );
     const agent = agentId
-      ? agents.find(candidate => candidate.id === agentId && !candidate.archived)
+      ? routingAgents.find(candidate => candidate.id === agentId && !candidate.archived)
       : undefined;
     return agent && message
       ? {
@@ -662,7 +662,7 @@ export function ConversationView({
           selectionKey: `${agent.id}:${message.id}`,
         }
       : undefined;
-  }, [agents, messages]);
+  }, [routingAgents, messages]);
   const mainTranscriptMarkdown = useMemo(
     () =>
       conversation
@@ -783,7 +783,7 @@ export function ConversationView({
   const mentionHandles = [
     "broadcast",
     "everyone",
-    ...agents
+    ...routingAgents
       .filter(agent => !agent.archived)
       .map(agent => agent.handle)
       .filter(
@@ -793,7 +793,7 @@ export function ConversationView({
           ),
       ),
   ];
-  const mentionBindings = agents
+  const mentionBindings = routingAgents
     .filter(agent => !agent.archived)
     .map(agent => ({
       projectId: conversation?.projectId ?? "",
@@ -1377,6 +1377,7 @@ export function ConversationView({
           submissionRuntimeIntentKey={String(submissionRuntimeIntent)}
           mentionHandles={mentionHandles}
           mentionBindings={mentionBindings}
+          mentionBindingsReady={projectAgentsQuery.data !== undefined}
           commands={composerCommands}
           onCommandTargetHandleChange={setCommandTargetHandle}
           onCommandTargetAgentIdChange={setCommandTargetAgentId}

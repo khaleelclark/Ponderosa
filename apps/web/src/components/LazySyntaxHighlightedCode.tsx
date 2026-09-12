@@ -29,6 +29,7 @@ export interface LazySyntaxHighlightedCodeProps
 
 const loadSyntaxHighlighter: SyntaxHighlighterLoad = () =>
   import("./SyntaxHighlightedCode");
+const DefaultHighlighter = lazy(loadSyntaxHighlighter);
 
 class SyntaxHighlightErrorBoundary extends Component<{
   children: ReactNode;
@@ -61,7 +62,10 @@ export function LazySyntaxHighlightedCode({
   ...props
 }: LazySyntaxHighlightedCodeProps): JSX.Element {
   const [attempt, setAttempt] = useState(0);
-  const Highlighter = useMemo(() => lazy(load), [attempt, load]);
+  const Highlighter = useMemo(
+    () => attempt === 0 && load === loadSyntaxHighlighter ? DefaultHighlighter : lazy(load),
+    [attempt, load],
+  );
   const retry = (): void => setAttempt((current) => current + 1);
 
   return (
