@@ -1,5 +1,11 @@
 # Chat responsiveness and copy correction
 
+## Follow-up: preserve reply targets
+
+The same PR also fixes the reproduced automatic-reply-chip race. An automatic Project reply target is now a normal structural mention in the draft, saved with its existing stable Agent binding. Incoming responses or a temporarily absent continuation target cannot rewrite a nonempty draft. Unavailable recipients use existing send-blocking validation instead of falling through to new-Agent creation. Selecting a runtime/command owner resolves the same saved identity.
+
+Twelve isolated actual-Composer browser scenarios pass; see `../reply-destination/README.md`. Existing Project mention-insertion checks, 175 web checks, web typecheck, and production web build were rerun. No chip CSS, communication semantics, live data, or deployment changed. Previously saved drafts whose targets were already lost cannot be safely repaired by guessing.
+
 Base: `f0aafbb9e3007d2740dbe09b6c39cdf1041ecd72` (experimental Beta 10).
 Branch: `fix/chat-responsiveness-copy`. Writer: this Codex task.
 No merge, deployment, live message sends, live uploads, or live draft writes.

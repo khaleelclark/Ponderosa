@@ -949,11 +949,8 @@ export function Composer({
     destinationMode === "project-chat" &&
       !hasBroadcastDestination &&
       !hasEveryoneDestination &&
-      renderedDefaultDestination?.binding &&
-      projectDestinations.length === 1 &&
-      projectDestinations[0]?.handle.toLocaleLowerCase() ===
-        renderedDefaultDestination.handle.toLocaleLowerCase()
-      ? renderedDefaultDestination.binding.agentId
+      projectDestinations.length === 1
+      ? resolvedMentionBinding(projectDestinations[0]!.handle, knownMentionBindings, mentionBindings ?? [])?.agentId
       : destinationMode === "fixed"
         ? defaultDestination?.binding?.agentId
         : undefined;
@@ -980,7 +977,10 @@ export function Composer({
     const selectingNewAgent = !newAgentSelected;
     update(current => {
       if (!selectingNewAgent) {
-        return removeComposerDestinations(current, [NEW_AGENT_DESTINATION_HANDLE]);
+        const next = removeComposerDestinations(current, [NEW_AGENT_DESTINATION_HANDLE]);
+        return destinationMode === "project-chat" && defaultDestination
+          ? prependComposerDestination(next, defaultDestination.handle)
+          : next;
       }
       return prependComposerDestination(
         removeComposerDestinations(current, [
@@ -995,7 +995,7 @@ export function Composer({
     });
     if (selectingNewAgent) requiredRecipient?.onClear();
     setActiveDefaultDestination(
-      selectingNewAgent ? undefined : defaultDestination,
+      selectingNewAgent || destinationMode === "project-chat" ? undefined : defaultDestination,
     );
     requestAnimationFrame(() => inputRef.current?.focus());
   };
@@ -1487,7 +1487,7 @@ export function Composer({
     if (conversationDraftId && !draftReady.current) return;
     const previous = appliedDefaultDestination.current;
     if (!defaultDestination) {
-      appliedDefaultDestination.current = undefined;
+      if (destinationMode !== "project-chat") appliedDefaultDestination.current = undefined;
       setActiveDefaultDestination(undefined);
       return;
     }
@@ -1512,42 +1512,20 @@ export function Composer({
       setActiveDefaultDestination(undefined);
       return;
     }
-    if (previous?.selectionKey === defaultDestination.selectionKey) {
-      appliedDefaultDestination.current = defaultDestination;
-      setActiveDefaultDestination(current =>
-        current?.selectionKey === defaultDestination.selectionKey
-          ? defaultDestination
-          : current,
-      );
-      return;
-    }
+    if (previous?.selectionKey === defaultDestination.selectionKey) return;
+    const editor = inputRef.current;
+    if (!editor || draftMutationLockedRef.current) return;
     appliedDefaultDestination.current = defaultDestination;
-    const currentText = textRef.current;
-    const nextText = selectingDestination
-      ? removeComposerDestinations(currentText, [
-          NEW_AGENT_DESTINATION_HANDLE,
-        ])
-      : currentText;
-    const normalizedText = removeAllComposerDestinations(
-      nextText,
-      defaultDestination.handle,
-    );
-    const previousWasActive = Boolean(
-      previous &&
-      activeDefaultDestination?.selectionKey === previous.selectionKey,
-    );
-    const destinationWasInline = normalizedText !== nextText;
-    const newAgentWasInline = nextText !== currentText;
-    const mayActivate = normalizedText.trim().length === 0
-      || previousWasActive
-      || destinationWasInline
-      || newAgentWasInline;
-    if (mayActivate) {
-      setActiveDefaultDestination(defaultDestination);
-    } else {
-      setActiveDefaultDestination(undefined);
+    // A continuation is a normal authored token, not an ephemeral overlay.
+    // Seed only an empty draft: refreshes/new replies must never retarget work.
+    const currentText = editor.getCanonicalText();
+    if (textRef.current.trim() || currentText.trim()) return;
+    const nextText = prependComposerDestination(currentText, defaultDestination.handle);
+    if (defaultDestination.binding) {
+      const binding = defaultDestination.binding;
+      setKnownMentionBindings(previous => refreshedMentionBindings(nextText, previous, [binding, ...(mentionBindings ?? [])]));
     }
-    if (normalizedText !== currentText) replaceText(normalizedText);
+    editor.replaceCanonicalRange(0, currentText.length, nextText, { focus: false });
   }, [
     conversationDraftId,
     activeDefaultDestination?.selectionKey,
@@ -1556,6 +1534,7 @@ export function Composer({
     defaultDestination?.selectionKey,
     destinationMode,
     draftReadyVersion,
+    draftMutationLocked,
     replaceText,
     sending,
   ]);
