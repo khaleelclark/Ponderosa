@@ -6,6 +6,7 @@ import type {
   AssetDto,
   CommunicationEvent,
   ConversationDto,
+  ConversationMessageDto,
   CreateConversationMessageRequest,
   CreateMultiAgentDirectMessageRequest,
   MultiAgentDirectMessageResponse,
@@ -52,6 +53,7 @@ type PreparedCommunication = {
 };
 
 export interface ConversationDeliveryRouteDependencies {
+  withMessagePresentation: (projectId: string, messages: ConversationMessageDto[]) => ConversationMessageDto[];
   store: AgentStore;
   coordinationV3: CoordinationV3Store;
   assets: AssetStore;
@@ -194,6 +196,7 @@ export function registerConversationDeliveryRoutes(
   dependencies: ConversationDeliveryRouteDependencies,
 ): void {
   const {
+    withMessagePresentation,
     store,
     coordinationV3,
     assets,
@@ -211,6 +214,17 @@ export function registerConversationDeliveryRoutes(
     publishCoordinationV3Changed,
     notifyScheduler,
   } = dependencies;
+  function presentedMessage(projectId: string, message: ConversationMessageDto | undefined): ConversationMessageDto | undefined {
+    if (!message) return undefined;
+    try {
+      return withMessagePresentation(projectId, [message])[0];
+    } catch (error) {
+      // Intake is already durable. Use the existing committed/recovering response,
+      // never a send failure or an incomplete message that looks like a deleted recipient.
+      app.log.error({ err: error, communicationEventId: message.communicationEventId }, "Committed message presentation unavailable");
+      return undefined;
+    }
+  }
   app.post<{
     Params: { id: string };
     Body: CreateConversationMessageRequest;
@@ -340,7 +354,7 @@ export function registerConversationDeliveryRoutes(
       } finally {
         releaseReplayLease();
       }
-      return replayedMessage ?? reply.code(202).send({
+      return presentedMessage(existingRuntime!.projectId, replayedMessage) ?? reply.code(202).send({
         communicationEventId: eventId,
         committed: true,
         recovering: true,
@@ -595,7 +609,7 @@ export function registerConversationDeliveryRoutes(
       replayed: intake.replayed,
       passive: recipientAgentIds.length === 0,
     }, "conversation message persisted");
-      return message ?? reply.code(202).send({
+      return presentedMessage(master.projectId, message) ?? reply.code(202).send({
         communicationEventId: communicationInput.eventId,
         committed: true,
         recovering: true,
@@ -759,9 +773,11 @@ export function registerConversationDeliveryRoutes(
           }
         }
         if (!message) return reply.code(202).send(recoveringResponse());
+        const presented = presentedMessage(existingRuntime!.projectId, message);
+        if (!presented) return reply.code(202).send(recoveringResponse(message.id));
         return {
           messageId: message.id,
-          message,
+          message: presented,
           replayed: true,
           recipients: originalRecipients.map((agentId) => replayedDirectRecipient(
             coordinationV3,
@@ -941,9 +957,11 @@ export function registerConversationDeliveryRoutes(
             recipients.some((recipient) => !deliveryIdByAgentId.has(recipient.agentId))) {
           return reply.code(202).send(recoveringResponse());
         }
+        const presented = presentedMessage(master.projectId, message);
+        if (!presented) return reply.code(202).send(recoveringResponse());
         return {
           messageId: message.id,
-          message,
+          message: presented,
           replayed: intake.replayed,
           recipients: recipients.map((recipient) => ({
             agentId: recipient.agentId,
