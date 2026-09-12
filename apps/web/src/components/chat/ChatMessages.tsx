@@ -386,6 +386,15 @@ export const messageMentionSx = {
   boxShadow: "inset 0 0 0 1px rgba(127, 196, 142, .18)",
 } as const;
 
+const messageHandleSx = {
+  font: "inherit",
+  ...messageMentionSx,
+  display: "inline-flex",
+  alignItems: "center",
+  minHeight: 24,
+  border: 0,
+} as const;
+
 /** Mark #tags in Markdown text nodes without touching code or existing links. */
 function remarkMessageTags() {
   return (tree: MarkdownAstNode): void => {
@@ -559,15 +568,15 @@ function ChatMarkdown({
               boundMention.authoredLabel.toLocaleLowerCase() !== boundMention.label.toLocaleLowerCase()
                 ? `Originally authored as #${boundMention.authoredLabel}`
                 : undefined;
-            if (operatorMention) return <Box component="span" sx={messageMentionSx}>{visibleLabel}</Box>;
+            if (operatorMention) return <Box component="span" sx={messageHandleSx}>{visibleLabel}</Box>;
             if (!agentId) {
               if (["broadcast", "everyone"].includes(handle.toLocaleLowerCase())) {
                 return <Box component="span" sx={messageMentionSx}>{label}</Box>;
               }
               return <>{label}</>;
             }
-            if (!onOpenAgent) return <Box component="span" title={mentionTitle} sx={messageMentionSx}>{visibleLabel}</Box>;
-            return <Box className="chat-text-navigation" component="button" type="button" title={mentionTitle} aria-label={`Open agent ${boundMention?.label ?? handle}${mentionTitle ? `. ${mentionTitle}` : ""}`} onClick={() => onOpenAgent(agentId)} sx={{ font: "inherit", ...messageMentionSx, display: "inline-flex", alignItems: "center", minHeight: 24, border: 0, cursor: "pointer" }}>{visibleLabel}</Box>;
+            if (!onOpenAgent) return <Box component="span" title={mentionTitle} sx={messageHandleSx}>{visibleLabel}</Box>;
+            return <Box className="chat-text-navigation" component="button" type="button" title={mentionTitle} aria-label={`Open agent ${boundMention?.label ?? handle}${mentionTitle ? `. ${mentionTitle}` : ""}`} onClick={() => onOpenAgent(agentId)} sx={{ ...messageHandleSx, cursor: "pointer" }}>{visibleLabel}</Box>;
           },
         }}
       >
