@@ -567,7 +567,7 @@ function ChatMarkdown({
               return <>{label}</>;
             }
             if (!onOpenAgent) return <Box component="span" title={mentionTitle} sx={messageMentionSx}>{visibleLabel}</Box>;
-            return <Box className="chat-text-navigation" component="button" type="button" title={mentionTitle} aria-label={`Open agent ${boundMention?.label ?? handle}${mentionTitle ? `. ${mentionTitle}` : ""}`} onClick={() => onOpenAgent(agentId)} sx={{ ...messageMentionSx, display: "inline-flex", alignItems: "center", minHeight: 24, border: 0, font: "inherit", cursor: "pointer" }}>{visibleLabel}</Box>;
+            return <Box className="chat-text-navigation" component="button" type="button" title={mentionTitle} aria-label={`Open agent ${boundMention?.label ?? handle}${mentionTitle ? `. ${mentionTitle}` : ""}`} onClick={() => onOpenAgent(agentId)} sx={{ font: "inherit", ...messageMentionSx, display: "inline-flex", alignItems: "center", minHeight: 24, border: 0, cursor: "pointer" }}>{visibleLabel}</Box>;
           },
         }}
       >
