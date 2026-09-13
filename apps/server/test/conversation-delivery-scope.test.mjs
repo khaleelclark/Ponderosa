@@ -15,8 +15,13 @@ import { AssetStore } from "../dist/assets.js";
 import { AssetAuthority } from "../dist/asset-authority.js";
 import {
   conversationDeliveryRequestFingerprint,
-  registerConversationDeliveryRoutes,
+  registerConversationDeliveryRoutes as registerDeliveryRoutes,
 } from "../dist/routes/conversation-deliveries.js";
+// These legacy route/lease checks stub presentation; end-to-end presentation
+// coverage uses the real read-model helper in send-message-presentation.test.mjs.
+function registerConversationDeliveryRoutes(app, dependencies) {
+  registerDeliveryRoutes(app, { withMessagePresentation: (_projectId, messages) => messages, ...dependencies });
+}
 import { registerConversationRoutes } from "../dist/routes/conversations.js";
 import { registerAgentMaintenanceRoutes } from "../dist/routes/agent-maintenance.js";
 import { registerCollaborationRoutes } from "../dist/routes/collaboration.js";

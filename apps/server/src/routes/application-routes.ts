@@ -254,6 +254,7 @@ export function registerApplicationRoutes(
     canonicalConversationContext,
     collaborationViewDetail,
     conversationDetail,
+    withMessagePresentation,
     ensureDecisionResponseActivation,
     runtimeElicitations,
     publishCoordinationV3Changed,
@@ -395,6 +396,7 @@ registerConversationRoutes(app, {
 });
 
 registerConversationDeliveryRoutes(app, {
+  withMessagePresentation,
   store,
   coordinationV3,
   assets,
