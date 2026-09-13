@@ -102,8 +102,31 @@ try{
    assert.ok((await input.boundingBox()).height<=110,'Long drafts remain bounded');
    await page.getByRole('button',{name:'Add attachment or capability',exact:true}).click();
    const capabilityFilter=page.getByRole('textbox',{name:'Filter runtime capabilities'});
+   if(name!=='desktop') {
+    assert.equal(await capabilityFilter.count(),0,'Mobile opens a compact action menu, not search');
+    assert.equal(await page.getByRole('menuitem').count(),2,'Only two initial actions');
+    if(name==='iPhone'&&!mention) await page.screenshot({path:'/tmp/mobile-plus-actions.png'});
+    await page.getByRole('menuitem',{name:'Skills & connectors',exact:true}).click();
+    assert.equal(await capabilityFilter.evaluate(el=>el===document.activeElement),false,'Browsing does not open keyboard');
+    await page.getByRole('button',{name:'← Back',exact:true}).click();
+    const picker=page.waitForEvent('filechooser');
+    await page.getByRole('menuitem',{name:'Add photo or file',exact:true}).click();
+    assert.equal((await picker).isMultiple(),true,'Existing multiple attachment picker preserved');
+    await page.getByRole('button',{name:'Add attachment or capability',exact:true}).click();
+    await page.getByRole('menuitem',{name:'Skills & connectors',exact:true}).click();
+   }
    await capabilityFilter.waitFor();
    assert.equal(await capabilityFilter.evaluate(el=>getComputedStyle(el).fontSize),ios?'16px':'14px','Plus-menu search uses iOS focus-zoom-safe text without changing other platforms');
+   if(name!=='desktop') {
+    const menu=page.getByRole('menu');
+    assert.ok((await menu.boundingBox()).height<=261,'Capability list remains bounded');
+    assert.equal(await page.getByText('Long description that should not crowd the mobile list.',{exact:true}).count(),0,'Descriptions hidden on mobile');
+    if(name==='iPhone'&&!mention) await page.screenshot({path:'/tmp/mobile-plus-skills.png'});
+   }
+   await capabilityFilter.fill('Example skill 19');
+   assert.equal(await page.getByRole('menuitem').filter({hasText:'Example skill'}).count(),1,'Search narrows existing capability list');
+   await page.getByRole('menuitem').filter({hasText:'Example skill 19'}).click();
+   assert.ok((await input.textContent()).includes('$skill-19'),'Selecting skill uses existing insertion');
    await page.keyboard.press('Escape');
    // Geometry simulation only: not an actual iOS/Android soft keyboard.
    for(const viewport of [{width:390,height:400},{width:844,height:390},{width:390,height:844}]){
