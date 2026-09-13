@@ -7,6 +7,7 @@ import { createRequire } from "node:module";
 import { createRsbuild } from "@rsbuild/core";
 import { DEFAULT_SPEECH_PREFERENCES } from "@ponderosa/core";
 import { registerSpeechRoutes } from "../../server/dist/routes/speech.js";
+import { registerRequestSecurityHooks } from "../../server/dist/server-request-hooks.js";
 
 if(!process.env.PONDEROSA_SPEECH_PACKAGE_DIRECTORY)throw new Error("Provide the qualified disposable package mirror.");
 const require=createRequire(new URL("../../server/package.json",import.meta.url));
@@ -18,8 +19,11 @@ const {chromium}=await import(process.env.PONDEROSA_PLAYWRIGHT_PATH??"playwright
 const app=Fastify();let browser;
 let preferences={speech:DEFAULT_SPEECH_PREFERENCES};
 try{
+  // Exercise the deployed policy, not a header-free fixture server.
+  registerRequestSecurityHooks(app,{opts:{},v3DispatchKey:"test-only",agentMessageCapabilities:new Map(),deletingAgentIds:new Set(),validLauncherSession:()=>false,artifactFilesystemError:()=>undefined,isArtifactDependentWorkIntake:()=>false,isPublicWebAssetRequest:()=>true});
   registerSpeechRoutes(app,{dataDir:path.join(temporary,"data"),workspace:{getPreferences:()=>preferences,cursor:()=>0,updatePreferences:patch=>{preferences={...preferences,...patch};}},changed(){},publishWorkspaceSince(){}});
   const build=await createRsbuild({cwd:root,rsbuildConfig:{source:{entry:{index:path.join(root,"test/speech-browser-entry.ts")}},output:{distPath:{root:output}},logLevel:"error"}});await build.build();
+  app.get("/favicon.ico",async(_request,reply)=>reply.code(204).send());
   app.get("/*",async(request,reply)=>{
     const name=new URL(request.url,"http://localhost").pathname;
     const file=path.resolve(output,"."+(name==="/"?"/index.html":name));
@@ -31,7 +35,7 @@ try{
   let ready=false;for(let i=0;i<200;i++){const status=(await app.inject("/api/speech/status")).json();if(status.kokoro.state==="ready"){ready=true;break;}if(status.kokoro.state==="repair_required")throw new Error(status.kokoro.reason);await new Promise(resolve=>setTimeout(resolve,100));}assert.equal(ready,true);
   const notices=await app.inject("/api/speech/notices");assert.match(notices.body,/GNU GENERAL PUBLIC LICENSE/);assert.match(notices.body,/MIT License/);
   browser=await chromium.launch({headless:true,executablePath:process.env.PONDEROSA_CHROMIUM_PATH});const page=await browser.newPage();
-  const errors=[];const external=[];page.on("pageerror",error=>errors.push(error.message));page.on("request",request=>{if(new URL(request.url()).origin!==base)external.push(request.url());});
+  const errors=[];const external=[];page.on("pageerror",error=>errors.push(error.message));page.on("console",message=>{if(message.type()==="error")errors.push(message.text());});page.on("request",request=>{if(new URL(request.url()).origin!==base)external.push(request.url());});
   await page.goto(base+"/?native=1");
   const started=performance.now();await page.click("#native-play");
   await page.waitForFunction(()=>window.speechTest.speechSnapshot().status==="speaking",{},{timeout:20000});
