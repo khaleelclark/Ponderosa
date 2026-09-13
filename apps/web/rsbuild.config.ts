@@ -27,7 +27,7 @@ export default defineConfig({
           start_url: "/",
           scope: "/",
           display: "standalone",
-          orientation: "portrait",
+          orientation: "any",
           background_color: "#faf6f3",
           theme_color: "#20382b",
           icons: [
@@ -78,6 +78,7 @@ export default defineConfig({
     },
   },
   html: {
+    template: "./index.html",
     title: "Ponderosa",
     meta: {
       viewport: "width=device-width, initial-scale=1, viewport-fit=cover",

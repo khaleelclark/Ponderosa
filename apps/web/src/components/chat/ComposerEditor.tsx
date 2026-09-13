@@ -63,12 +63,10 @@ import {
   shouldSendComposerKey,
 } from "./composerUtils";
 import type { ComposerMenuSuggestion } from "./Composer.controls";
+import { isIOSDevice } from "../../browserPlatform";
 
 // iPadOS can identify as a Mac. Do not change Android or desktop Return policy.
-const isIOSComposer = typeof navigator !== "undefined" && (
-  /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
-);
+const isIOSComposer = isIOSDevice();
 
 export type ComposerMentionDescriptor = {
   start: number;
@@ -1337,9 +1335,11 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
       event.stopPropagation();
       return;
     }
-    if (isIOSComposer && event.key === "Enter") {
+    if (event.key === "Enter" && (isIOSComposer || (
+      event.shiftKey && window.matchMedia("(max-width: 899.95px)").matches
+    ))) {
       if (menuOpen) onSuppressMenu();
-      // Leave Return/Shift+Return to Lexical; sending is an explicit button action.
+      // Lexical owns mobile Shift+Return. iOS also uses plain Return for a newline.
       return;
     }
     if (
@@ -1473,10 +1473,9 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
               className="composer-editor-input"
               tabIndex={disabled || locked ? -1 : 0}
               aria-label="Message"
-              role={comboboxEnabled ? "combobox" : "textbox"}
+              role="textbox"
               aria-multiline="true"
               aria-autocomplete={comboboxEnabled ? "list" : undefined}
-              aria-expanded={comboboxEnabled ? menuOpen : undefined}
               aria-controls={menuOpen ? listId : undefined}
               aria-activedescendant={menuOpen
                 ? `${listId}-option-${highlighted}`
@@ -1491,7 +1490,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
                 position: "absolute",
                 top: 6,
                 left: 2,
-                color: "text.disabled",
+                color: { xs: "text.secondary", md: "text.disabled" },
                 fontSize: isIOSComposer ? 16 : 15,
                 lineHeight: "22px",
                 pointerEvents: "none",

@@ -18,6 +18,10 @@ try{
    const input=page.locator('.composer-editor-input');
    await input.waitFor();
    const font=await input.evaluate(el=>getComputedStyle(el).fontSize);
+   assert.equal(await input.getAttribute('role'),'textbox');
+   assert.equal(await input.getAttribute('aria-multiline'),'true');
+   assert.equal(await input.getAttribute('aria-expanded'),null);
+   assert.equal(await page.locator('html').getAttribute('lang'),'en');
    if(!process.env.BASELINE) assert.equal(font,ios?'16px':'15px',`${name} editor size`);
    await input.click();await page.keyboard.press('End');await page.keyboard.type('first');
    await page.keyboard.press('Enter');
@@ -45,6 +49,12 @@ try{
     assert.equal((await sent()).length,2,'Composing must not submit');
    }else{
     assert.equal((await sent()).length,1,`${name} Enter-to-send unchanged`);
+    if(name==='Android'){
+     await input.click();await page.keyboard.press('End');await page.keyboard.type('first');
+     await page.keyboard.press('Shift+Enter');await page.keyboard.type('second');
+     await page.getByRole('button',{name:'Send message',exact:true}).click();await page.waitForTimeout(150);
+     assert.ok((await sent())[1].endsWith('first\nsecond'),'Mobile Chromium Shift+Enter must not duplicate newlines');
+    }
    }
    await input.click();await page.keyboard.press('End');
    await page.keyboard.insertText(Array.from({length:35},(_,i)=>`line ${i}`).join('\n'));

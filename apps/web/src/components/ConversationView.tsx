@@ -5,6 +5,7 @@ import {
   CircularProgress,
   Stack,
   Typography,
+  useMediaQuery,
 } from "@mui/material";
 import type {
   AgentHealthDto,
@@ -153,6 +154,7 @@ export function ConversationView({
   onCreateTrigger(agentId?: string): void;
   onDeleted(): void;
 }): JSX.Element {
+  const mobile = useMediaQuery("(max-width: 899.95px)");
   const queryClient = useQueryClient();
   const [activeView, setActiveView] = useConversationActiveViewState(
     conversationId,
@@ -1347,6 +1349,7 @@ export function ConversationView({
           <TargetedNextRunReceipts receipts={targetedNextRunReceipts.data.receipts} />
         ) : null}
         <Composer
+          enableVoiceDictation={mobile}
           draftStorageKey={chatStateKey(
             "draft",
             `conversation.${conversationId}.main`,

@@ -8,6 +8,7 @@ import {
   Tabs,
   Tooltip,
   Typography,
+  useMediaQuery,
 } from "@mui/material";
 import {
   useEffect,
@@ -74,14 +75,18 @@ export function useWorkspaceHeaderCollapse(): {
   collapsed: boolean;
   toggleCollapsed(): void;
 } {
+  const mobile = useMediaQuery("(max-width: 899.95px)");
+  const [mobileCollapsed, setMobileCollapsed] = useState(true);
   const collapsed = useSyncExternalStore(
     subscribeHeaderCollapsed,
     readHeaderCollapsed,
     () => false,
   );
   return {
-    collapsed,
-    toggleCollapsed: () => writeHeaderCollapsed(!collapsed),
+    collapsed: mobile ? mobileCollapsed : collapsed,
+    toggleCollapsed: () => mobile
+      ? setMobileCollapsed(value => !value)
+      : writeHeaderCollapsed(!collapsed),
   };
 }
 
