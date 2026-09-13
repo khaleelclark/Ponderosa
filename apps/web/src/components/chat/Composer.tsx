@@ -1,5 +1,6 @@
 import {
   Box,
+  IconButton,
   Button,
   Dialog,
   DialogActions,
@@ -8,7 +9,10 @@ import {
   Paper,
   Stack,
   TextField,
+  useMediaQuery,
+  useTheme,
 } from "@mui/material";
+import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import {
   LONG_TEXT_MAX_UTF8_BYTES,
   messageTagTokens,
@@ -356,6 +360,14 @@ export function Composer({
   const draftContentGeneration = useRef(0);
   const dictationSettlingRef = useRef(false);
   const [dictationSettling, setDictationSettling] = useState(false);
+  const mobile = useMediaQuery(useTheme().breakpoints.down("md"));
+  const [composerFocused, setComposerFocused] = useState(false);
+  const [dictationActive, setDictationActive] = useState(false);
+  const composerRoot = useRef<HTMLDivElement>(null);
+  const blurFrame = useRef<number>();
+  useEffect(() => () => {
+    if (blurFrame.current !== undefined) cancelAnimationFrame(blurFrame.current);
+  }, []);
   const [caret, setCaret] = useState(0);
   const [highlighted, setHighlighted] = useState(0);
   const [suppressMenu, setSuppressMenu] = useState(false);
@@ -2523,12 +2535,33 @@ export function Composer({
         mentionedBusyHandles.length > 0,
       disabled,
     });
+  const compact = mobile && !composerFocused && !dictationActive &&
+    !dictationSettling && !capabilityMenuAnchor && !menuOpen &&
+    !pastedTextEditorOpen && !attachments.error && !sendError &&
+    !destinationError && !draftConflict && !failedDraftContents.length;
   return (
     <Paper
+      ref={composerRoot}
       className="ponderosa-composer"
+      data-compact={compact ? "true" : "false"}
       elevation={0}
       sx={composerSurfaceSx}
+      onFocusCapture={event => {
+        if ((event.target as HTMLElement).closest('.composer-editor-input')) {
+          setComposerFocused(true);
+        }
+      }}
+      onBlurCapture={() => {
+        if (blurFrame.current !== undefined) cancelAnimationFrame(blurFrame.current);
+        blurFrame.current = requestAnimationFrame(() => {
+          const active = document.activeElement;
+          if (composerRoot.current?.contains(active) ||
+              active?.closest('[role="menu"], [role="dialog"], [role="listbox"]')) return;
+          setComposerFocused(false);
+        });
+      }}
     >
+      <Box sx={{ display: compact ? "none" : "contents" }}>
       <ComposerDestinationBar
         destinationError={destinationError}
         destinationMode={destinationMode}
@@ -3019,6 +3052,7 @@ export function Composer({
           }
         }}
       />
+      </Box>
       <Dialog
         open={pastedTextEditorOpen}
         onClose={() => setPastedTextEditorOpen(false)}
@@ -3058,10 +3092,10 @@ export function Composer({
         direction="row"
         spacing={{ xs: 0.25, sm: 0.5 }}
         useFlexGap
-        sx={{ alignItems: "center", flexWrap: "wrap" }}
+        sx={{ alignItems: "center", flexWrap: compact ? "nowrap" : "wrap" }}
       >
         <Box data-composer-toolbar sx={{
-          display: { xs: "flex", md: "contents" },
+          display: compact ? "contents" : { xs: "flex", md: "contents" },
           alignItems: "center", gap: 0.25, flex: "1 1 0", minWidth: 0,
           overflowX: { xs: "auto", md: "visible" },
           "& > *": { flexShrink: { xs: 0, md: undefined } },
@@ -3092,12 +3126,16 @@ export function Composer({
           onApplyCapability={applyCapability}
         />
         {enableVoiceDictation ? (
+          <Box sx={{ display: "contents", "& > *": { flexShrink: { xs: 0, md: undefined }, order: compact ? 2 : undefined } }}>
           <DictationControls
             disabled={disabled || composerLocked || sending}
             onFinalTranscript={insertDictatedText}
             onSettlingChange={handleDictationSettlingChange}
+            onActiveChange={setDictationActive}
           />
+          </Box>
         ) : null}
+        <Box sx={{ display: compact ? "none" : "contents", "& > *": { flexShrink: { xs: 0, md: undefined } } }}>
         {destinationMode === "project-chat" ? (
           <ComposerProjectDestinationAction
             disabled={draftMutationLocked}
@@ -3122,7 +3160,23 @@ export function Composer({
           </Box>
         ) : null}
         </Box>
-        <Box ref={anchorRef} sx={{ order: -1, flex: "1 0 100%", minWidth: 0 }}>
+        </Box>
+        <Box ref={anchorRef} sx={{
+          order: compact ? 1 : -1,
+          flex: compact ? "1 1 0" : "1 0 100%", minWidth: 0,
+          ...(compact ? {
+            position: "relative", overflow: "hidden", height: 44,
+            "&& .composer-editor-input": { height: 44, maxHeight: 44, overflow: "hidden", opacity: 0 },
+            "& .composer-editor-input *": { pointerEvents: "none" },
+            "& .composer-editor-input + span": { visibility: "hidden" },
+          } : {}),
+        }}>
+          {compact ? <Box data-compact-preview aria-hidden sx={{
+            position: "absolute", inset: 0, display: "flex", alignItems: "center",
+            pointerEvents: "none", color: text.trim() ? "text.primary" : "text.secondary",
+          }}><Box component="span" sx={{ overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", fontSize: 16 }}>
+            {text.replace(/\s+/g, " ").trim() || placeholder || "Write a message…"}
+          </Box></Box> : null}
           <ComposerTextInput
             text={text}
             inputRef={inputRef}
@@ -3206,9 +3260,16 @@ export function Composer({
             }}
           />
         </Box>
-        <Box data-composer-send-actions sx={{ display: { xs: "flex", md: "contents" }, alignItems: "center", gap: 0.25, flexShrink: 0 }}>
-        <ComposerSendActions
-          allowSendWhileRunning={allowSendWhileRunning}
+        {compact && (files.length > 0 || pastedText) ? (
+          <Button size="small" aria-label="View draft attachments" onClick={() => inputRef.current?.focus()} sx={{ order: 2, minWidth: 32, px: 0.5 }}>
+            +{files.length + (pastedText ? 1 : 0)}
+          </Button>
+        ) : null}
+        <Box data-composer-send-actions sx={{ display: { xs: "flex", md: "contents" }, order: compact ? 3 : undefined, alignItems: "center", gap: 0.25, flexShrink: 0 }}>
+        {compact && showQueue && !canCancel ? (
+          <IconButton aria-label="Choose send action" onClick={() => inputRef.current?.focus()}><ArrowUpwardIcon /></IconButton>
+        ) : <ComposerSendActions
+          allowSendWhileRunning={!compact && allowSendWhileRunning}
           canCancel={canCancel}
           cancelPending={cancelPending}
           canSend={canSend}
@@ -3224,10 +3285,10 @@ export function Composer({
               : sendUnavailableReason
           }
           send={send}
-          showQueue={showQueue}
+          showQueue={!compact && showQueue}
           steer={steer}
           targetRequiredRecipientTagged={targetRequiredRecipientTagged}
-        />
+        />}
         </Box>
       </Stack>
     </Paper>
