@@ -52,6 +52,7 @@ export function ComposerAttachment({
             component="img"
             src={preview}
             alt=""
+            onError={() => setPreview(undefined)}
             sx={{
               width: 72,
               height: 72,

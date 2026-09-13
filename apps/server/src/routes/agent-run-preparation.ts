@@ -163,12 +163,14 @@ export function compileNextRunDeliveryBatch(
 const extensionForMediaType = (mediaType: string): string =>
   RUNTIME_ATTACHMENT_EXTENSIONS[mediaType] ?? "";
 
-const runtimeAttachmentName = (item: AssetDto): string => {
+export const runtimeAttachmentName = (item: AssetDto): string => {
   const base = path.basename(item.name)
     .replaceAll(/[\\/\u0000-\u001f\u007f]/gu, "_")
     .trim()
     .slice(0, 180) || "attachment";
-  const name = path.extname(base) ? base : `${base}${extensionForMediaType(item.mediaType)}`;
+  const name = item.mediaType === "image/heic"
+    ? `${base.replace(/\.(heic|heif)$/iu, "")}.png`
+    : path.extname(base) ? base : `${base}${extensionForMediaType(item.mediaType)}`;
   return `${item.id}-${name}`;
 };
 
@@ -414,7 +416,8 @@ export async function prepareAgentRun(
     const existing = runtimeAttachmentCopies.get(item.id);
     if (existing) return existing;
     const operation = (async () => {
-      const source = path.join(attachmentsDir(opts.dataDir, agent.projectId, agent.id), `${item.id}.bin`);
+      const source = path.join(attachmentsDir(opts.dataDir, agent.projectId, agent.id),
+        `${item.id}${item.mediaType === "image/heic" ? ".preview.png" : ".bin"}`);
       if (!existsSync(source)) return { localPath: source, available: false };
       runtimeAttachmentDirectory ??= runtimeAttachmentsFollowSession
         ? runtimeAttachmentDirectoryForSession(opts.dataDir, agent.id)

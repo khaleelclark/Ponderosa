@@ -545,6 +545,7 @@ export function shouldShowQueueControl(input: {
 }
 
 const COMPOSER_ACCEPTED_MEDIA_TYPES = new Set([
+  "image/heic",
   "image/png",
   "image/jpeg",
   "image/webp",
@@ -554,6 +555,8 @@ const COMPOSER_ACCEPTED_MEDIA_TYPES = new Set([
   "application/zip",
 ]);
 const COMPOSER_EXTENSION_MEDIA_TYPES: Record<string, string> = {
+  ".heic": "image/heic",
+  ".heif": "image/heic",
   ".csv": "text/plain",
   ".json": "application/json",
   ".log": "text/plain",
@@ -563,6 +566,7 @@ const COMPOSER_EXTENSION_MEDIA_TYPES: Record<string, string> = {
   ".zip": "application/zip",
 };
 const COMPOSER_MEDIA_TYPE_ALIASES: Record<string, string> = {
+  "image/heif": "image/heic",
   "text/csv": "text/plain",
   "text/markdown": "text/plain",
   "text/x-markdown": "text/plain",

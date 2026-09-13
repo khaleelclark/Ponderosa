@@ -3,6 +3,7 @@ import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, re
 import { lstat, mkdir, open, readdir, realpath, rename, rm, stat, unlink, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
+import { decodeHeic, isHeicContainer } from "./heic.js";
 import type { ArtifactDto, AssetDto } from "@ponderosa/core";
 import {
   attachmentsDir,
@@ -62,6 +63,7 @@ function normalizeName(value: unknown): string {
 }
 
 function detectType(body: Buffer): AssetDto["mediaType"] | undefined {
+  if (isHeicContainer(body)) return "image/heic";
   if (body.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return "image/png";
   if (body[0] === 0xff && body[1] === 0xd8) return "image/jpeg";
   if (body.subarray(0, 4).toString("ascii") === "RIFF" && body.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
@@ -77,6 +79,7 @@ function detectType(body: Buffer): AssetDto["mediaType"] | undefined {
 }
 
 function hasStrictImageContainer(body: Buffer, mediaType: AssetDto["mediaType"]): boolean {
+  if (mediaType === "image/heic") return isHeicContainer(body);
   if (mediaType === "image/png") {
     let offset = 8;
     while (offset + 12 <= body.length) {
@@ -95,6 +98,7 @@ function hasStrictImageContainer(body: Buffer, mediaType: AssetDto["mediaType"])
 }
 
 const ASSET_EXTENSIONS: Readonly<Record<AssetDto["mediaType"], readonly string[]>> = {
+  "image/heic": [".heic", ".heif"],
   "image/png": [".png"], "image/jpeg": [".jpg", ".jpeg"], "image/webp": [".webp"],
   "application/pdf": [".pdf"], "text/plain": [".txt", ".md", ".csv", ".log"],
   "application/json": [".json"], "application/zip": [".zip"],
@@ -112,6 +116,7 @@ function extensionMatches(name: string, mediaType: AssetDto["mediaType"]): boole
 function contentTypeMatches(declared: string | undefined, detected: AssetDto["mediaType"]): boolean {
   if (!declared || declared === "application/octet-stream") return true;
   const normalized = declared.split(";", 1)[0]?.trim().toLocaleLowerCase();
+  if (detected === "image/heic" && normalized === "image/heif") return true;
   if (
     detected === "text/plain"
     && ["text/markdown", "text/x-markdown", "text/csv"].includes(normalized ?? "")
@@ -170,7 +175,9 @@ export async function prepareAssetUpload(input: {
   let height: number;
   let preview: Buffer;
   try {
-    const image = sharp(input.body, {
+    const decoded = mediaType === "image/heic" ? await decodeHeic(input.body, MAX_PIXELS) : undefined;
+    const image = sharp(decoded ? decoded.data : input.body, {
+      ...(decoded ? { raw: { width: decoded.width, height: decoded.height, channels: 4 as const } } : {}),
       animated: false,
       failOn: "error",
       limitInputPixels: MAX_PIXELS,
@@ -203,7 +210,8 @@ export async function prepareAssetUpload(input: {
     if (preview.length > ASSET_LIMITS.maxFileBytes) {
       preview = await image.png({ compressionLevel: 9, adaptiveFiltering: true }).toBuffer();
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof AssetError) throw error;
     throw new AssetError(
       415,
       `image could not be safely decoded as one bounded frame of at most ${MAX_PIXELS.toLocaleString("en-US")} pixels`,

@@ -27,6 +27,7 @@ import type {
   ArtifactDto,
 } from "@ponderosa/core";
 import { type RefObject } from "react";
+import { isIOSDevice } from "../../browserPlatform";
 import { compactPreviewText } from "./Composer.helpers";
 import { ComposerMentionStatus } from "./Composer.parts";
 import {
@@ -321,7 +322,7 @@ export function ComposerCapabilityPicker({
         ref={fileInput}
         hidden
         type="file"
-        accept="image/png,image/jpeg,image/webp,application/pdf,text/plain,application/json,application/zip,.txt,.md,.csv,.log,.json,.zip,.pdf"
+        accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif,application/pdf,text/plain,application/json,application/zip,.txt,.md,.csv,.log,.json,.zip,.pdf"
         multiple
         onChange={event => {
           onFiles(Array.from(event.target.files ?? []));
@@ -367,6 +368,7 @@ export function ComposerCapabilityPicker({
                 onChange={event => onFilterChange(event.target.value)}
                 placeholder="Find a skill, plugin, or connector"
                 inputProps={{ "aria-label": "Filter runtime capabilities" }}
+                sx={isIOSDevice() ? { "& input": { fontSize: 16 } } : undefined}
               />
             </Box>
             <MenuList
@@ -399,7 +401,7 @@ export function ComposerCapabilityPicker({
                         "Attachments are not supported in this chat.")
                       : fileCount >= maximumFiles
                         ? "Remove an attachment before adding another."
-                        : `Up to ${maximumFiles} PNG, JPEG, WebP, PDF, text, JSON, or ZIP files · ${Math.floor((assetLimits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES) / 1024 / 1024)} MiB each`}
+                        : `Up to ${maximumFiles} PNG, JPEG, WebP, HEIC, PDF, text, JSON, or ZIP files · ${Math.floor((assetLimits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES) / 1024 / 1024)} MiB each`}
                   </Typography>
                 </Box>
               </MenuItem>

@@ -1,5 +1,5 @@
 export const ASSET_MEDIA_TYPES = [
-  "image/png", "image/jpeg", "image/webp",
+  "image/png", "image/jpeg", "image/webp", "image/heic",
   "application/pdf", "text/plain", "application/json", "application/zip",
 ] as const;
 

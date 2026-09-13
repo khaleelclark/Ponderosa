@@ -101,6 +101,9 @@ try{
    await page.waitForTimeout(100);
    assert.ok((await input.boundingBox()).height<=110,'Long drafts remain bounded');
    await page.getByRole('button',{name:'Add attachment or capability',exact:true}).click();
+   const capabilityFilter=page.getByRole('textbox',{name:'Filter runtime capabilities'});
+   await capabilityFilter.waitFor();
+   assert.equal(await capabilityFilter.evaluate(el=>getComputedStyle(el).fontSize),ios?'16px':'14px','Plus-menu search uses iOS focus-zoom-safe text without changing other platforms');
    await page.keyboard.press('Escape');
    // Geometry simulation only: not an actual iOS/Android soft keyboard.
    for(const viewport of [{width:390,height:400},{width:844,height:390},{width:390,height:844}]){
