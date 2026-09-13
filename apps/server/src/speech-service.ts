@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { cleanupSpeechStorage, listSecureDirectory } from "@ponderosa/native-host";
 import { SPEECH_LIMITS, SPEECH_VOICES, type SpeechStatusDto, type SynthesizeSpeechRequest, type SpeechVoiceId } from "@ponderosa/core";
 import { SpeechWorker } from "./speech-worker.js";
 import { SpeechAdmission } from "./speech-admission.js";
@@ -10,6 +11,7 @@ export class SpeechService {
   private state: SpeechStatusDto["kokoro"];
   private active?: string;
   private protectedDirectory?: string;
+  private protectedIdentity?: string;
   private activeManifest?: SpeechArtifactManifest;
   private operation?: Promise<void>;
   private controller?: AbortController;
@@ -73,29 +75,9 @@ export class SpeechService {
   private update(patch:Partial<SpeechStatusDto["kokoro"]>):void{const previous=this.state.state;this.state={...this.state,...patch};if(this.closed)return;if(previous!==this.state.state)this.observe("state",{state:this.state.state});this.changed();}
   private async safeRoot():Promise<void>{await fs.mkdir(this.root,{recursive:true,mode:0o700});const stat=await fs.lstat(this.root);if(!stat.isDirectory()||stat.isSymbolicLink())throw new Error("unsafe speech storage");}
   private async reconcile():Promise<boolean>{
-    // Only installer-owned UUID entries are eligible. Never traverse symbolic links.
-    // ponytail: bound each pass to 128 root entries / 10,000 nodes / 32 levels;
-    // oversized or inaccessible residue stays visible and can be retried with Repair.
-    let nodes=0;
-    const remove=async(target:string,depth:number):Promise<void>=>{
-      if(++nodes>10_000||depth>32)throw new Error("cleanup limit");
-      const stat=await fs.lstat(target);
-      if(stat.isDirectory()&&!stat.isSymbolicLink()){
-        const directory=await fs.opendir(target);
-        for await(const entry of directory)await remove(path.join(target,entry.name),depth+1);
-        await fs.rmdir(target);
-      }else await fs.unlink(target);
-    };
     try{
       await this.safeRoot();
-      const directory=await fs.opendir(this.root);let entries=0;
-      for await(const entry of directory){
-        if(++entries>128)throw new Error("cleanup limit");
-        if(!/^(?:version-[a-f0-9-]{36}|current-[a-f0-9-]{36}\.json)$/u.test(entry.name))continue;
-        const target=path.join(this.root,entry.name);
-        if(target===this.active||target===this.protectedDirectory)continue;
-        await remove(target,0);
-      }
+      if(!cleanupSpeechStorage(this.root,this.protectedDirectory?path.basename(this.protectedDirectory):"",this.protectedIdentity))throw new Error("cleanup incomplete");
       return true;
     }catch{
       this.update({state:"repair_required",progress:undefined,reason:"Leftover local-voice files could not be fully removed; their remaining size is unavailable. Repair retries cleanup before downloading, or Remove local voices frees managed storage."});
@@ -128,6 +110,8 @@ export class SpeechService {
       const installedManifest=this.manifests.find(m=>m.platform===this.manifest!.platform&&m.version===record.version);
       if(typeof record.directory!=="string"||!/^version-[a-f0-9-]{36}$/u.test(record.directory))throw new Error("incompatible speech record");
       this.protectedDirectory=path.join(this.root,record.directory);
+      this.protectedIdentity=listSecureDirectory({root:this.root})?.find(entry=>entry.name===record.directory)?.identity;
+      if(!this.protectedIdentity)throw new Error("unavailable speech identity");
       if(!installedManifest)throw new Error("incompatible speech record");
       validateSpeechManifest(installedManifest);
       const active=path.join(this.root,record.directory);await this.verify(active,installedManifest);await this.probe(active,installedManifest);
@@ -177,6 +161,8 @@ export class SpeechService {
       await fs.rename(pointer,path.join(this.root,"current.json"));
       this.active=stage;this.activeManifest=this.manifest;committed=true;
       this.protectedDirectory=stage;
+      this.protectedIdentity=listSecureDirectory({root:this.root})?.find(entry=>entry.name===path.basename(stage))?.identity;
+      if(!this.protectedIdentity)throw new Error("unavailable speech identity");
       if(process.platform!=="win32"){const directory=await fs.open(this.root,"r");try{await directory.sync();}finally{await directory.close();}}
       this.failures=0;this.retryAfter=0;this.clearCache();this.update({state:"ready",version:this.manifest!.version,installedBytes:this.state.estimatedInstalledBytes,progress:undefined,reason:undefined});if(!this.closed)this.installed();
       await this.reconcile();
@@ -199,7 +185,7 @@ export class SpeechService {
     if(this.state.state==="removing")return;
     this.update({state:"removing"});
     this.generation++;
-    try{await this.worker?.stop();await this.busyDone;this.worker=undefined;await this.safeRoot();await fs.rm(this.root,{recursive:true});this.active=undefined;this.protectedDirectory=undefined;this.clearCache();this.update({state:this.manifest?"not_installed":"unsupported",version:undefined,installedBytes:undefined,reason:undefined});}
+    try{await this.worker?.stop();await this.busyDone;this.worker=undefined;await this.safeRoot();await fs.rm(this.root,{recursive:true});this.active=undefined;this.protectedDirectory=undefined;this.protectedIdentity=undefined;this.clearCache();this.update({state:this.manifest?"not_installed":"unsupported",version:undefined,installedBytes:undefined,reason:undefined});}
     catch{this.update({state:"repair_required",reason:"Local voice removal could not finish safely."});throw new Error("Local voice removal failed.");}
   }
   clearCache():void{this.cache.clear();this.cacheBytes=0;if(!this.closed)this.changed();}

@@ -43,22 +43,22 @@ test("SIGKILL before/after pointer replacement recovers without version growth",
     }
   }finally{await service?.close();await fs.rm(root,{recursive:true,force:true});}
 });
-test("cleanup failure is visible, blocks downloads, and retries; symlink targets and package media survive",async()=>{
-  const root=await fs.mkdtemp(path.join(tmpdir(),"ponderosa-speech-recovery-"));const speech=path.join(root,"local-speech");
-  const orphan=path.join(speech,`version-${randomUUID()}`);const service=make(root);const unlink=fs.unlink;const fetch=globalThis.fetch;
+test("cleanup failure is visible, blocks downloads, and retries; symlink targets and package media survive",{skip:process.platform==="win32"},async()=>{
+  const root=await fs.realpath(await fs.mkdtemp(path.join(tmpdir(),"ponderosa-speech-recovery-")));const speech=path.join(root,"local-speech");
+  const orphan=path.join(speech,`version-${randomUUID()}`);const service=make(root);const fetch=globalThis.fetch;
   try{
     await fs.mkdir(orphan,{recursive:true});await fs.writeFile(path.join(orphan,"worker"),Buffer.alloc(1024*1024));
     const external=path.join(root,"prepared-package");await fs.mkdir(external);await fs.writeFile(path.join(external,"keep"),"untouched");
     await fs.symlink(external,path.join(speech,`version-${randomUUID()}`));
     await fs.writeFile(path.join(speech,"unowned-file"),"untouched");
-    fs.unlink=async target=>{if(target===path.join(orphan,"worker"))throw Object.assign(new Error("denied"),{code:"EACCES"});return unlink(target);};
+    await fs.chmod(orphan,0o500);
     globalThis.fetch=async()=>assert.fail("cleanup failure must block download");
     await service.initialize();assert.equal(service.status().kokoro.state,"repair_required");assert.match(service.status().kokoro.reason,/remaining size is unavailable/);
     await service.repair();await service.operation;assert.equal((await versions(root)).length>=1,true);assert.equal(service.status().kokoro.state,"repair_required");
-    fs.unlink=unlink;await service.close();
+    await fs.chmod(orphan,0o700);await service.close();
     const retry=make(root);try{await retry.initialize();assert.equal(retry.status().kokoro.state,"not_installed");assert.deepEqual(await versions(root),[]);}finally{await retry.close();}
     assert.equal(await fs.readFile(path.join(external,"keep"),"utf8"),"untouched");assert.equal(await fs.readFile(path.join(speech,"unowned-file"),"utf8"),"untouched");
-  }finally{fs.unlink=unlink;globalThis.fetch=fetch;await service.close();await fs.rm(root,{recursive:true,force:true});}
+  }finally{await fs.chmod(orphan,0o700).catch(()=>{});globalThis.fetch=fetch;await service.close();await fs.rm(root,{recursive:true,force:true});}
 });
 test("bounded recovery retries excess residue without touching the active version",{skip:process.platform!=="linux",timeout:15000},async()=>{
   const root=await fs.mkdtemp(path.join(tmpdir(),"ponderosa-speech-recovery-"));let service;

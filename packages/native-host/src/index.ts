@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 
 interface NativeJobBinding {
+  cleanupSpeechStorage(root: string, protectedLeaf: string, protectedIdentity: string): boolean;
   windowsJobObjectsSupported(): boolean;
   darwinProcessBirthMarker(pid: number): string | null;
   createWindowsJob(): unknown;
@@ -37,6 +38,11 @@ export interface SecureDirectoryEntry {
   size?: number;
   modifiedMs: number;
   identity: string;
+}
+
+/** Bounded installer-only cleanup; no pathname-based deletion fallback. */
+export function cleanupSpeechStorage(root: string, protectedLeaf = "", protectedIdentity = ""): boolean {
+  return binding().cleanupSpeechStorage(root, protectedLeaf, protectedIdentity);
 }
 
 let loaded: NativeJobBinding | undefined;
