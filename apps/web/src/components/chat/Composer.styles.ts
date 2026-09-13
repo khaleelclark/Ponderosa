@@ -20,7 +20,10 @@ export const composerSurfaceSx: SxProps<Theme> = {
   bgcolor: "background.paper",
   px: { xs: 1, sm: 1.5 },
   pt: { xs: 1, sm: 1.25 },
-  pb: "max(10px, env(safe-area-inset-bottom))",
+  pb: {
+    xs: "max(10px, calc(env(safe-area-inset-bottom) - 16px))",
+    md: "max(10px, env(safe-area-inset-bottom))",
+  },
   boxShadow: theme =>
     theme.palette.mode === "dark"
       ? "0 10px 30px rgba(3,8,6,.18)"
