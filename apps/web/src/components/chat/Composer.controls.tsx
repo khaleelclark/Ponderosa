@@ -27,6 +27,7 @@ import type {
   ArtifactDto,
 } from "@ponderosa/core";
 import { type RefObject } from "react";
+import { isIOSDevice } from "../../browserPlatform";
 import { compactPreviewText } from "./Composer.helpers";
 import { ComposerMentionStatus } from "./Composer.parts";
 import {
@@ -367,6 +368,7 @@ export function ComposerCapabilityPicker({
                 onChange={event => onFilterChange(event.target.value)}
                 placeholder="Find a skill, plugin, or connector"
                 inputProps={{ "aria-label": "Filter runtime capabilities" }}
+                sx={isIOSDevice() ? { "& input": { fontSize: 16 } } : undefined}
               />
             </Box>
             <MenuList
