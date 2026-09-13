@@ -158,7 +158,7 @@ import { createResilientEventSource } from "./resilientEventSource";
 
 const API_BASE = "";
 
-async function requestJson<T>(path: string, init?: RequestInit, acceptedErrorStatuses: number[] = []): Promise<T> {
+export async function requestJson<T>(path: string, init?: RequestInit, acceptedErrorStatuses: number[] = []): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body != null && !headers.has("content-type")) {
     headers.set("content-type", "application/json");

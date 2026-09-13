@@ -1,3 +1,4 @@
+import { stopHandedOffSpeech, stopSpeech } from "./components/speech/speechCoordinator";
 import {
   Box,
   useMediaQuery,
@@ -546,9 +547,24 @@ export default function App({
     }
   };
   const navigateWorkspace = (next: Route) => {
+    stopHandedOffSpeech();
     recordWorkspaceRouteUse(next);
     navigate(next);
   };
+  useEffect(() => {
+    const openVoices = (event: Event) => {
+      if (!(event as CustomEvent<{ preservePlayback?: boolean }>).detail?.preservePlayback) stopSpeech();
+      navigate({ kind: "settings", section: "general" });
+      requestAnimationFrame(() => document.getElementById("local-voices")?.scrollIntoView({ block: "start" }));
+    };
+    const hidden = () => { if (document.visibilityState !== "visible") stopSpeech(); };
+    window.addEventListener("ponderosa:voice-settings", openVoices);
+    document.addEventListener("visibilitychange", hidden);
+    return () => {
+      window.removeEventListener("ponderosa:voice-settings", openVoices);
+      document.removeEventListener("visibilitychange", hidden);
+    };
+  }, [navigate]);
   const openCreationForm = (
     kind: "project" | "chat" | "agent" | "trigger",
     context?: {

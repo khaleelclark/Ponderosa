@@ -1,4 +1,5 @@
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
+import { LocalVoicesSettings } from "./speech/LocalVoicesSettings";
 import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
 import {
   Alert,
@@ -156,6 +157,7 @@ function GeneralSettingsSection({
     rolloverTokensError === undefined && rolloverFractionError === undefined;
   return (
     <Stack spacing={2.5}>
+      <LocalVoicesSettings preferences={preferences} onPreferences={onPreferences} />
       <Paper variant="outlined" sx={{ p: 2.5 }}>
         <Typography variant="h6" fontWeight={800} sx={{ mb: 1.5 }}>
           Appearance

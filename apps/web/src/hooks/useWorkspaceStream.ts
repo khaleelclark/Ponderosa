@@ -643,6 +643,7 @@ export function useWorkspaceStream(
       schedulePhaseReconciliation();
     });
     const invalidateAll = () => {
+      void queryClient.invalidateQueries({ queryKey: ["speech-status"] });
       directoryInvalidator.dispose();
       agentWorkInvalidator.dispose();
       agentDetailInvalidator.dispose();
@@ -682,6 +683,10 @@ export function useWorkspaceStream(
       cursor.current = reconciliation.cursor;
       persistWorkspaceCursor(reconciliation.cursor, instanceId.current ?? undefined);
       const event = envelope.event;
+      if (event.type === "speech_status_changed") {
+        void queryClient.invalidateQueries({ queryKey: ["speech-status"] });
+        if (!reconciliation.gap) return;
+      }
       const changesPhaseEvidence = workspaceAgentEventChangesPhase(event)
         || event.type === "coordination_changed"
         || (event.type === "notification_changed" && Boolean(event.decisionId));

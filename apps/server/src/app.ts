@@ -1,5 +1,6 @@
 import { AgentStore, CoordinationV3Store, ProjectDeletionInProgressError, WorkspaceStore, type LogEvent } from "@ponderosa/agents";
 import { windowsJobObjectsSupported } from "@ponderosa/native-host";
+import { registerSpeechRoutes } from "./routes/speech.js";
 import type {
   TokenUsageRangeDto,
   TokenUsageSummaryDto,
@@ -1056,6 +1057,14 @@ app.server.on("upgrade", linkPreviewUpgrade);
     drainDeploymentIdleAuthorities,
     refreshTriggerSources: () => triggerSources.refresh(),
     runtimeStatus,
+  });
+
+  registerSpeechRoutes(app, {
+    dataDir: opts.dataDir,
+    workspace,
+    changed: () => { appendWorkspace({ type: "speech_status_changed" }); },
+    observe: (event, fields) => { app.log.info({ speechEvent: event, ...fields }, "local speech operation"); },
+    publishWorkspaceSince,
   });
 
   registerApplicationRoutes(app, {

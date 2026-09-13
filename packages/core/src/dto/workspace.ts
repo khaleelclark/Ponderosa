@@ -1,4 +1,5 @@
 import type { EngineId } from "../adapter.js";
+import type { SpeechPreferencesDto } from "./speech.js";
 import type { AgentDto, AgentHealthDto, AgentWorkingCopyDto } from "./agents.js";
 import type { BrowserControlOwner, BrowserSessionStatus } from "../events.js";
 import type { AgentMentionBindingDto, ConversationDto } from "./conversations.js";
@@ -13,6 +14,8 @@ export interface NotificationPreferencesDto {
 }
 
 export interface WorkspacePreferencesDto {
+  /** Absent on pre-local-voice workspaces; resolves to browser speech. */
+  speech?: SpeechPreferencesDto;
   /** Canonical monotonic preference mutation sequence. */
   revision: number;
   projectSort: ProjectSort;

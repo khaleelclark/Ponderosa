@@ -4,6 +4,7 @@ import type {
   ProjectEngineModelCatalogDto,
   UpdateWorkspacePreferencesRequest,
 } from "@ponderosa/core";
+import { validSpeechPreferences } from "@ponderosa/core";
 import type {
   AgentStore,
   CoordinationV3Store,
@@ -143,6 +144,9 @@ export function registerWorkspacePreferenceRoutes(
 
   app.patch<{ Body: UpdateWorkspacePreferencesRequest }>("/api/workspace/preferences", async (request, reply) => {
     const patch = request.body ?? {};
+    if (patch.speech !== undefined && !validSpeechPreferences(patch.speech)) {
+      return reply.code(400).send({ error: "invalid speech preferences" });
+    }
     if (Object.hasOwn(patch, "revision") || Object.hasOwn(patch, "updatedAt")) {
       return reply.code(400).send({ error: "preference revision and timestamp are server-owned" });
     }
