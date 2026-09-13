@@ -156,6 +156,7 @@ function readableProjectFileReferences(text: string): string {
 }
 
 export interface ComposerEditorHandle {
+  placeCaretAfterLoneMention(): void;
   focus(): void;
   isFocused(): boolean;
   getCanonicalText(): string;
@@ -901,6 +902,24 @@ function EditorBridge({
   structuralDestinationRef.current = structuralDestination;
 
   useImperativeHandle(editorRef, () => ({
+    placeCaretAfterLoneMention: () => {
+      if (editor.isComposing()) return;
+      if (editor.getRootElement()?.ownerDocument.getSelection()?.isCollapsed === false) return;
+      editor.update(() => {
+        const selection = $getSelection();
+        if (!$isRangeSelection(selection) || !selection.isCollapsed()) return;
+        const paragraph = $getRoot().getFirstChild();
+        if (!$isElementNode(paragraph)) return;
+        const children = paragraph.getChildren();
+        const mentions = children.filter($isComposerMentionNode);
+        if (mentions.length !== 1 || mentions[0]!.getDescriptor().kind !== "agent") return;
+        if (children.some(node => !$isComposerMentionNode(node) && (!$isTextNode(node) || node.getTextContent().trim()))) return;
+        // Pointer focus can land on the leading side of an atomic reply chip.
+        // Only a chip-only draft has an unambiguous intended typing position.
+        const end = $canonicalText().length;
+        $setSelectionOffsets(end, end);
+      });
+    },
     focus: () => editor.focus(),
     isFocused: () => editor.getRootElement()?.contains(document.activeElement) ?? false,
     getCanonicalText: () => canonicalRef.current,
@@ -1481,6 +1500,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
                 ? `${listId}-option-${highlighted}`
                 : undefined}
               onKeyDown={handleKeyDown}
+              onFocus={() => bridgeRef.current?.placeCaretAfterLoneMention()}
+              onClick={() => bridgeRef.current?.placeCaretAfterLoneMention()}
             />
           }
           placeholder={
