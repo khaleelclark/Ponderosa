@@ -1,0 +1,10 @@
+import React from 'react';
+import {createRoot} from 'react-dom/client';
+import {ThemeProvider,CssBaseline,IconButton,Typography} from '@mui/material';
+import ChatIcon from '@mui/icons-material/ChatBubbleOutline';
+import PublicIcon from '@mui/icons-material/Public';
+import DonutIcon from '@mui/icons-material/DonutLarge';
+import {TabbedWorkspaceFrame} from '../../src/components/WorkspaceFrame';
+import {MobileNavigationProvider} from '../../src/components/MobileNavigationContext';
+import {createPonderosaTheme} from '../../src/theme';
+createRoot(document.getElementById('root')!).render(<ThemeProvider theme={createPonderosaTheme('dark')}><CssBaseline/><MobileNavigationProvider onOpen={()=>{}}><TabbedWorkspaceFrame icon={<ChatIcon/>} title="You’ll be working on ZindyCast — an exceptionally long project chat title" context={<Typography noWrap>ZindyCast</Typography>} actions={<><IconButton aria-label="Provider usage" sx={{width:44,height:44}}><DonutIcon/></IconButton><IconButton aria-label="Open browser" sx={{width:44,height:44}}><PublicIcon/></IconButton></>} tabs={{label:'Workspace tabs',value:'chat',onChange:()=>{},items:[{value:'chat',label:'Chat'},{value:'team',label:'Team Chat'},{value:'files',label:'Files & Results'}]}}/></MobileNavigationProvider></ThemeProvider>);

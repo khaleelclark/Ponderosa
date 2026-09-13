@@ -303,7 +303,7 @@ export function TabbedWorkspaceFrame<T extends string>({
           direction="row"
           spacing={1}
           useFlexGap
-          flexWrap={{ xs: "wrap", sm: "nowrap" }}
+          flexWrap="nowrap"
           sx={{ alignItems: { xs: "flex-start", sm: "center" }, minWidth: 0 }}
         >
           <MobileNavigationButton />
@@ -322,13 +322,13 @@ export function TabbedWorkspaceFrame<T extends string>({
           </Box>
           <Stack
             direction="row"
-            spacing={1}
+            spacing={{ xs: 0, sm: 1 }}
             useFlexGap
             sx={{
               alignItems: "center",
               justifyContent: "flex-end",
-              flexWrap: "wrap",
-              flex: { xs: "1 0 100%", sm: "0 1 auto" },
+              flexWrap: { xs: "nowrap", sm: "wrap" },
+              flex: { xs: "0 0 auto", sm: "0 1 auto" },
               minWidth: 0,
               maxWidth: "100%",
             }}
