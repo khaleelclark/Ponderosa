@@ -10,7 +10,7 @@ import {createPonderosaTheme} from '../../src/theme';
 import '../../src/global.css';
 import {ChatMessageBody} from '../../src/components/chat/ChatMessages';
 import {TabbedWorkspaceFrame} from '../../src/components/WorkspaceFrame';
-import {ProjectSidebarHeader} from '../../src/components/ProjectNavigation';
+import {ProjectRail,ProjectSidebarHeader} from '../../src/components/ProjectNavigation';
 import {HomeView} from '../../src/components/HomeView';
 import {classifyWebPushState,webPushEnableBlockReason} from '../../src/pushNotifications';
 import type {ProjectDto} from '@ponderosa/core';
@@ -51,4 +51,12 @@ function AuditFixture(){
  </div>;
 }
 const params=new URLSearchParams(location.search);
-createRoot(document.getElementById('root')!).render(<ThemeProvider theme={createPonderosaTheme(params.has('light')?'light':'dark')}><CssBaseline/><QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}>{params.has('audit')?<AuditFixture/>:<Fixture/>}</QueryClientProvider></ThemeProvider>);
+function RailFixture(){
+ const [projects,setProjects]=useState(Array.from({length:30},(_,i)=>({id:`p${i}`,label:`Project ${i}`} as ProjectDto)));
+ const noop=()=>{};
+ return <div style={{height:'100dvh'}}><ProjectRail drawer={params.has('drawer')} projects={projects} route={{kind:'home'}} profile={{} as never}
+  allMessagesUnread={{importantCount:0,ordinaryCount:0,totalCount:0}} attentionNotifications={0} unreadNotificationUpdates={0} projectUnread={new Map()}
+  onReorderProject={(source,target,position)=>setProjects(previous=>{const next=previous.filter(p=>p.id!==source);next.splice(next.findIndex(p=>p.id===target)+(position==='after'?1:0),0,previous.find(p=>p.id===source)!);return next;})}
+  onOpenHome={noop} onOpenAllMessages={noop} onOpenProject={noop} onOpenCreate={noop} onOpenSearch={noop} onOpenNotifications={noop} onOpenUsage={noop} onOpenEngineStatus={noop} onOpenSettings={noop} onOpenProfile={noop} onClose={noop}/></div>;
+}
+createRoot(document.getElementById('root')!).render(<ThemeProvider theme={createPonderosaTheme(params.has('light')?'light':'dark')}><CssBaseline/><QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}>{params.has('rail')?<RailFixture/>:params.has('audit')?<AuditFixture/>:<Fixture/>}</QueryClientProvider></ThemeProvider>);

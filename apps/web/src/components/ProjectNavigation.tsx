@@ -117,6 +117,7 @@ function ProjectRailButton({
           width: 48,
           minWidth: 48,
           height: 48,
+          flexShrink: 0,
           borderRadius: current || expanded ? 1.5 : 2,
           bgcolor: current ? "primary.main" : expanded ? "action.selected" : color,
           outline: expanded && !current ? "2px solid" : "none",
