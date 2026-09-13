@@ -568,8 +568,8 @@ export function ProjectSidebarHeader({
               {projectInitials(project.label)}
             </Box>
             <Box sx={{ minWidth: 0, flex: 1 }}>
-              <Typography fontWeight={800} noWrap={!drawer} sx={drawer ? { overflowWrap: "anywhere", lineHeight: 1.3 } : undefined}>{project.label}</Typography>
-              <Typography variant="caption" color="text.secondary" noWrap={!drawer}>
+              <Typography fontWeight={800} noWrap={!drawer} sx={drawer ? { overflowWrap: "anywhere", lineHeight: 1.3, fontSize: { xs: 14, sm: "0.875rem" }, fontWeight: { xs: 650, sm: 800 } } : undefined}>{project.label}</Typography>
+              <Typography variant="caption" color="text.secondary" noWrap={!drawer} sx={drawer ? { fontSize: { xs: 12, sm: "0.75rem" } } : undefined}>
                 {runningCount == null ? "Checking activity" : `${runningCount} active`} · {unreadCount} unread
               </Typography>
             </Box>
@@ -652,14 +652,14 @@ export function ProjectSidebarHeader({
                   maxWidth: "100%",
                   fontSize: drawer ? { xs: 14, sm: 11 } : mode.id === "triggers" ? 8.75 : 9.5,
                   letterSpacing: mode.id === "triggers" ? "-.025em" : undefined,
-                  fontWeight: 700,
+                  fontWeight: drawer ? { xs: 600, sm: 700 } : 700,
                 }}
                 noWrap
               >
                 {mode.label}
               </Typography>
               {count == null ? null : (
-                <Typography component="span" sx={{ fontSize: 9, color: "text.disabled" }}>
+                <Typography component="span" sx={{ fontSize: drawer ? { xs: 12, sm: 9 } : 9, color: "text.disabled" }}>
                   {count}
                 </Typography>
               )}
