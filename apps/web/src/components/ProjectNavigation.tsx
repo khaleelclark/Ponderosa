@@ -166,8 +166,16 @@ function ProjectRailButton({
           invisible={!unread?.totalCount}
           slotProps={{ badge: { "aria-hidden": true } }}
           sx={{
+            width: "100%",
+            height: "100%",
+            alignItems: "center",
+            justifyContent: "center",
             "& .MuiBadge-badge": {
-              border: `3px solid ${railSurface}`,
+              top: 4,
+              right: 0,
+              transform: "translateY(-50%)",
+              "&.MuiBadge-invisible": { transform: "translateY(-50%) scale(0)" },
+              border: `1px solid ${railSurface}`,
               fontWeight: 850,
               color: "#fff",
             },

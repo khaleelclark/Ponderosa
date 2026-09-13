@@ -1,0 +1,10 @@
+import React from 'react';
+import {createRoot} from 'react-dom/client';
+import {ThemeProvider,CssBaseline,Box} from '@mui/material';
+import {createPonderosaTheme} from '../../src/theme';
+import {MasterRespondingIndicator} from '../../src/components/ConversationComposerStatus';
+import {ProjectRail} from '../../src/components/ProjectNavigation';
+const noop=()=>{};
+const counts=[1,12,100,0];
+const projects=counts.map((_,i)=>({id:String(i),label:`Project ${i}`}));
+createRoot(document.getElementById('root')!).render(<ThemeProvider theme={createPonderosaTheme('dark')}><CssBaseline/><Box sx={{position:'absolute',top:0,left:80,right:0}}><MasterRespondingIndicator agents={[{id:'a',title:'Boston'}] as never} healthByAgentId={new Map([['a',{runtimeActivity:{startedAt:new Date(Date.now()-1000).toISOString()}}]]) as never}/></Box><Box sx={{height:'100vh'}}><ProjectRail drawer={false} projects={projects as never} route={{kind:'home'}} profile={{} as never} allMessagesUnread={{importantCount:0,ordinaryCount:0,totalCount:0}} attentionNotifications={0} unreadNotificationUpdates={0} projectUnread={new Map(counts.map((n,i)=>[String(i),{importantCount:n,ordinaryCount:n?0:1,totalCount:n||1}]))} onReorderProject={noop} onOpenHome={noop} onOpenAllMessages={noop} onOpenProject={noop} onOpenCreate={noop} onOpenSearch={noop} onOpenNotifications={noop} onOpenUsage={noop} onOpenEngineStatus={noop} onOpenSettings={noop} onOpenProfile={noop}/></Box></ThemeProvider>);
