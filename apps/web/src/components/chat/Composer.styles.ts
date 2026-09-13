@@ -21,7 +21,7 @@ export const composerSurfaceSx: SxProps<Theme> = {
   px: { xs: 1, sm: 1.5 },
   pt: { xs: 1, sm: 1.25 },
   pb: {
-    xs: "max(10px, calc(env(safe-area-inset-bottom) - 16px))",
+    xs: "6px",
     md: "max(10px, env(safe-area-inset-bottom))",
   },
   boxShadow: theme =>
