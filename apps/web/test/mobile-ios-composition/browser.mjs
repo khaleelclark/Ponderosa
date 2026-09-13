@@ -12,17 +12,57 @@ try{
  ]){
   for(const mention of [false,true]){
    const context=await browser.newContext(options);
+   await context.addInitScript(()=>{
+    window.SpeechRecognition=class {
+     start(){queueMicrotask(()=>this.onstart?.());}
+     stop(){queueMicrotask(()=>this.onend?.());}
+     abort(){this.stop();}
+    };
+   });
    const page=await context.newPage();
    await page.route('**/api/**',r=>r.fulfill({json:{}}));
    await page.goto(`http://127.0.0.1:21848/${mention?'?mention':''}`);
    const input=page.locator('.composer-editor-input');
    await input.waitFor();
+   assert.equal(await page.getByRole('button',{name:/dictation/i}).count(),1,`${name}: Project chat exposes dictation or its unsupported-browser reason`);
    const font=await input.evaluate(el=>getComputedStyle(el).fontSize);
    assert.equal(await input.getAttribute('role'),'textbox');
    assert.equal(await input.getAttribute('aria-multiline'),'true');
    assert.equal(await input.getAttribute('aria-expanded'),null);
    assert.equal(await page.locator('html').getAttribute('lang'),'en');
    if(!process.env.BASELINE) assert.equal(font,ios?'16px':'15px',`${name} editor size`);
+   if(name!=='desktop') {
+    for(const width of [320,390,412]) {
+     await page.setViewportSize({width,height:844});
+     await page.getByRole('button',{name:'Start voice dictation',exact:true}).click();
+     await page.getByRole('button',{name:'Pause voice dictation',exact:true}).waitFor();
+     const toolbar=await page.locator('[data-composer-toolbar]').boundingBox();
+     const send=await page.locator('[data-composer-send-actions]').boundingBox();
+     assert.ok(Math.abs(toolbar.y+toolbar.height/2-send.y-send.height/2)<2,'Send remains on the toolbar row during dictation');
+     assert.ok(send.x+send.width<=width,'Send stays horizontally visible');
+     if(name==='iPhone'&&mention&&width===390) await page.screenshot({path:'/tmp/ios-composer-dictating.png'});
+     await page.getByRole('button',{name:'Stop voice dictation',exact:true}).click();
+     await page.getByRole('button',{name:'Start voice dictation',exact:true}).waitFor();
+    }
+   }
+   if(ios) {
+    // Inject the two independent visual-viewport dimensions, rather than only
+    // resizing the layout viewport (which cannot reproduce iOS focus panning).
+    for(const [height,offsetTop] of [[360,220],[330,280],[844,0],[360,180],[844,0]]) {
+     await page.evaluate(({height,offsetTop})=>{
+      Object.defineProperties(visualViewport,{height:{configurable:true,value:height},offsetTop:{configurable:true,value:offsetTop}});
+      visualViewport.dispatchEvent(new Event('resize'));
+      visualViewport.dispatchEvent(new Event('scroll'));
+     },{height,offsetTop});
+     await page.waitForTimeout(50);
+     const frame=await page.locator('#root').boundingBox();
+     assert.equal(Math.round(frame.y),offsetTop,'App follows visual viewport origin');
+     assert.equal(Math.round(frame.height),height,'Pan offset must not inflate app height');
+     const send=await page.locator('[data-composer-send-actions]').boundingBox();
+     assert.ok(send.y>=offsetTop&&send.y+send.height<=offsetTop+height+1,'Send inside panned viewport');
+    }
+    await page.evaluate(()=>{delete visualViewport.height;delete visualViewport.offsetTop;visualViewport.dispatchEvent(new Event('resize'));});
+   }
    await input.click();await page.keyboard.press('End');await page.keyboard.type('first');
    await page.keyboard.press('Enter');
    await page.waitForTimeout(100);

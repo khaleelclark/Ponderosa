@@ -3060,6 +3060,12 @@ export function Composer({
         useFlexGap
         sx={{ alignItems: "center", flexWrap: "wrap" }}
       >
+        <Box data-composer-toolbar sx={{
+          display: { xs: "flex", md: "contents" },
+          alignItems: "center", gap: 0.25, flex: "1 1 0", minWidth: 0,
+          overflowX: { xs: "auto", md: "visible" },
+          "& > *": { flexShrink: { xs: 0, md: undefined } },
+        }}>
         <ComposerCapabilityPicker
           fileInput={fileInput}
           disabled={disabled || composerLocked || draftMutationLocked}
@@ -3115,6 +3121,7 @@ export function Composer({
             {controls}
           </Box>
         ) : null}
+        </Box>
         <Box ref={anchorRef} sx={{ order: -1, flex: "1 0 100%", minWidth: 0 }}>
           <ComposerTextInput
             text={text}
@@ -3199,6 +3206,7 @@ export function Composer({
             }}
           />
         </Box>
+        <Box data-composer-send-actions sx={{ display: { xs: "flex", md: "contents" }, alignItems: "center", gap: 0.25, flexShrink: 0 }}>
         <ComposerSendActions
           allowSendWhileRunning={allowSendWhileRunning}
           canCancel={canCancel}
@@ -3220,6 +3228,7 @@ export function Composer({
           steer={steer}
           targetRequiredRecipientTagged={targetRequiredRecipientTagged}
         />
+        </Box>
       </Stack>
     </Paper>
   );

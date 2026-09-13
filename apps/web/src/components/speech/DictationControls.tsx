@@ -109,7 +109,10 @@ export function DictationControls({
           color={dictation.error ? "error" : "text.secondary"}
           role={dictation.error ? "alert" : "status"}
           variant="caption"
-          sx={speechStatusSx}
+          sx={[
+            speechStatusSx,
+            !dictation.error ? { "@media (max-width: 899.95px)": visuallyHiddenSpeechStatusSx } : {},
+          ]}
           title={statusLabel}
         >
           {statusLabel}
