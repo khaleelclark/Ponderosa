@@ -17,6 +17,7 @@ try{
    await page.goto(`http://127.0.0.1:21848/${mention?'?mention':''}`);
    const input=page.locator('.composer-editor-input');
    await input.waitFor();
+   assert.equal(await page.getByRole('button',{name:/dictation/i}).count(),1,`${name}: Project chat exposes dictation or its unsupported-browser reason`);
    const font=await input.evaluate(el=>getComputedStyle(el).fontSize);
    assert.equal(await input.getAttribute('role'),'textbox');
    assert.equal(await input.getAttribute('aria-multiline'),'true');
