@@ -108,6 +108,18 @@ try{
     if(name==='iPhone'&&!mention) await page.screenshot({path:'/tmp/mobile-plus-actions.png'});
     await page.getByRole('menuitem',{name:'Skills & connectors',exact:true}).click();
     assert.equal(await capabilityFilter.evaluate(el=>el===document.activeElement),false,'Browsing does not open keyboard');
+    if(ios) {
+     // Simulate the app-frame layout commit after the keyboard's viewport event,
+     // without a window resize (the layout viewport does not resize on iOS).
+     for(const height of [500,844,500,844]) {
+      await page.evaluate(height=>document.documentElement.style.setProperty('--ponderosa-app-viewport-block-size',`${height}px`),height);
+      await page.waitForTimeout(100);
+      const anchor=await page.getByRole('button',{name:'Add attachment or capability',exact:true}).boundingBox();
+      const popup=await page.locator('.MuiPopper-root').filter({has:capabilityFilter}).boundingBox();
+      assert.ok(Math.abs(anchor.y-(popup.y+popup.height))<8,`Menu follows restored composer: gap=${anchor.y-popup.y-popup.height}`);
+     }
+     await page.evaluate(()=>window.visualViewport.dispatchEvent(new Event('resize')));
+    }
     await page.getByRole('button',{name:'← Back',exact:true}).click();
     const picker=page.waitForEvent('filechooser');
     await page.getByRole('menuitem',{name:'Add photo or file',exact:true}).click();

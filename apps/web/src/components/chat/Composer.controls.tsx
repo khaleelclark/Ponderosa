@@ -28,7 +28,7 @@ import type {
   EngineComposerCapability,
   ArtifactDto,
 } from "@ponderosa/core";
-import { type RefObject, useState } from "react";
+import { type RefObject, useEffect, useState } from "react";
 import { isIOSDevice } from "../../browserPlatform";
 import { compactPreviewText } from "./Composer.helpers";
 import { ComposerMentionStatus } from "./Composer.parts";
@@ -321,6 +321,30 @@ export function ComposerCapabilityPicker({
   const mobile = useMediaQuery(useTheme().breakpoints.down("md"));
   const [browseCapabilities, setBrowseCapabilities] = useState(false);
   const showCapabilities = !mobile || browseCapabilities;
+  const [popper, setPopper] = useState<{ update(): Promise<unknown> } | null>(null);
+  useEffect(() => {
+    if (!mobile || !menuAnchor || !popper) return;
+    let frame = 0;
+    const update = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => { void popper.update(); });
+    };
+    // The iOS app frame resizes after VisualViewport events. Popper's default
+    // window listener can measure the anchor before that layout has settled.
+    const observer = new ResizeObserver(update);
+    const root = document.getElementById("root");
+    if (root) observer.observe(root);
+    const viewport = window.visualViewport;
+    viewport?.addEventListener("resize", update);
+    viewport?.addEventListener("scroll", update);
+    update();
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      viewport?.removeEventListener("resize", update);
+      viewport?.removeEventListener("scroll", update);
+    };
+  }, [mobile, menuAnchor, popper]);
   return (
     <>
       <input
@@ -352,6 +376,7 @@ export function ComposerCapabilityPicker({
         </span>
       </Tooltip>
       <Popper
+        popperRef={setPopper}
         open={Boolean(menuAnchor)}
         anchorEl={menuAnchor}
         placement="top-start"
