@@ -1,4 +1,5 @@
 import type { AgentDto, AgentHealthDto } from "@ponderosa/core";
+import { Box } from "@mui/material";
 import { useEffect, useState } from "react";
 import { formatExecutionElapsed } from "../time";
 import { ChatLiveBanner } from "./chat/ChatLiveBanner";
@@ -27,7 +28,9 @@ export function MasterRespondingIndicator({
   return (
     <ChatLiveBanner>
       {names} {responding.length === 1 ? "is" : "are"} responding ·{" "}
-      {formatExecutionElapsed(earliest, now)}
+      <Box component="span" sx={{ display: "inline-block", minWidth: "8ch", fontFamily: "monospace", fontVariantNumeric: "tabular-nums", textAlign: "right", whiteSpace: "nowrap" }}>
+        {formatExecutionElapsed(earliest, now)}
+      </Box>
     </ChatLiveBanner>
   );
 }
